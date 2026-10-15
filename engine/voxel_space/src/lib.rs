@@ -8,17 +8,21 @@
 //! arithmetic on valid coordinates cannot overflow. There is no practical world edge.
 
 mod coordinates;
+mod face_direction;
 mod level_of_detail;
 mod local_voxel_index;
 mod voxel_box;
+mod world_position;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
 pub use coordinates::{BrickCoordinate, CoordinateOutOfRange, VoxelCoordinate};
+pub use face_direction::FaceDirection;
 pub use level_of_detail::LevelOfDetail;
 pub use local_voxel_index::LocalVoxelIndex;
 pub use voxel_box::VoxelBox;
+pub use world_position::WorldPosition;
 
 /// Base-2 logarithm of [`BRICK_EDGE_LENGTH`], used for shifts.
 pub const BRICK_EDGE_LENGTH_LOG2: u32 = 5;

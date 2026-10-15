@@ -1,0 +1,17 @@
+[package]
+name = "voxel_meshing"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Turns bricks of voxels into greedy-merged quads, compactly packed for the GPU."
+
+[dependencies]
+voxel_grid.workspace = true
+voxel_space.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

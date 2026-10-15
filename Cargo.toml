@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["engine/*"]
+members = ["engine/*", "tools/*"]
 
 [workspace.package]
 edition = "2024"
@@ -12,8 +12,11 @@ publish = false
 content_registry = { path = "engine/content_registry" }
 namespaced_id = { path = "engine/namespaced_id" }
 region_octree = { path = "engine/region_octree" }
+renderer = { path = "engine/renderer" }
 terrain = { path = "engine/terrain" }
+terrain_viewer = { path = "tools/terrain_viewer" }
 voxel_grid = { path = "engine/voxel_grid" }
+voxel_meshing = { path = "engine/voxel_meshing" }
 voxel_space = { path = "engine/voxel_space" }
 
 # External crates

@@ -1,0 +1,18 @@
+//! Draws voxel bricks with wgpu.
+//!
+//! The renderer is built to run on integrated GPUs: meshes are packed 8-byte quads expanded in the
+//! vertex shader, bricks outside the view are culled before any GPU work, and distance fog hides
+//! the edge of the loaded world so a short view distance looks intentional.
+//!
+//! Placement is camera-relative. Each brick's offset from the camera is computed from exact
+//! integer brick coordinates, so images are identical wherever in the world the scene is.
+
+mod camera;
+mod graphics_context;
+mod voxel_renderer;
+
+pub use camera::{Camera, Frustum};
+pub use graphics_context::{
+    AdapterPreference, GraphicsContext, GraphicsError, describe, new_instance,
+};
+pub use voxel_renderer::{Atmosphere, RenderStatistics, VoxelRenderer};

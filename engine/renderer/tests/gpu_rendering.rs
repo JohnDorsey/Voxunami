@@ -1,0 +1,474 @@
+//! Renders small scenes on every physical graphics adapter and checks the pixels.
+//!
+//! The tests need a GPU. Without one they print a notice and pass, unless the environment
+//! variable `VOX_REQUIRE_GPU` is set, in which case they fail. Set `VOX_SAVE_IMAGES` to a
+//! directory to also write the rendered images there as PNG files.
+
+use std::path::PathBuf;
+
+use glam::Vec3;
+use renderer::{Atmosphere, Camera, GraphicsContext, RenderStatistics, VoxelRenderer};
+use voxel_grid::ChannelStorage;
+use voxel_meshing::{BrickNeighbourhood, mesh_brick};
+use voxel_space::{BRICK_VOXEL_COUNT, BrickCoordinate, LocalVoxelIndex, WorldPosition};
+
+const SIZE: u32 = 64;
+const SKY: [f32; 3] = [0.2, 0.4, 0.8];
+const SKY_BYTES: [u8; 3] = [51, 102, 204];
+const RED: u32 = 1;
+const GREEN: u32 = 2;
+const UNKNOWN_MATERIAL: u32 = 77;
+
+fn contexts() -> Vec<GraphicsContext> {
+    let contexts = GraphicsContext::all_physical_adapters();
+    if contexts.is_empty() {
+        assert!(
+            std::env::var_os("VOX_REQUIRE_GPU").is_none(),
+            "VOX_REQUIRE_GPU is set but no graphics adapter is available"
+        );
+        eprintln!("no graphics adapter available; skipping GPU test");
+    }
+    contexts
+}
+
+fn new_renderer(context: &GraphicsContext) -> VoxelRenderer {
+    let mut renderer = VoxelRenderer::new(context, wgpu::TextureFormat::Rgba8UnormSrgb);
+    renderer.set_palette(&[[0.0, 0.0, 0.0], [0.9, 0.1, 0.1], [0.1, 0.8, 0.1]]);
+    renderer.set_atmosphere(Atmosphere {
+        sky_color: SKY,
+        fog_start: 1000.0,
+        fog_end: 2000.0,
+        ..Atmosphere::default()
+    });
+    renderer
+}
+
+/// A brick containing the given voxels (local x, y, z, material), meshed and uploaded.
+fn place_voxels(renderer: &mut VoxelRenderer, brick: BrickCoordinate, voxels: &[([u8; 3], u32)]) {
+    let mut values = vec![0u32; BRICK_VOXEL_COUNT];
+    for &([x, y, z], material) in voxels {
+        values[LocalVoxelIndex::new(x, y, z).index()] = material;
+    }
+    let storage = ChannelStorage::from_values(&values);
+    let quads = mesh_brick(
+        &BrickNeighbourhood {
+            center: &storage,
+            neighbours: [None; 6],
+        },
+        |value| value != 0,
+    );
+    let packed: Vec<_> = quads.iter().map(|quad| quad.pack()).collect();
+    renderer.upload_brick(brick, &packed);
+}
+
+fn camera_at(brick: BrickCoordinate, offset: [f32; 3]) -> Camera {
+    Camera::new(WorldPosition::new(brick, offset))
+}
+
+fn pixel(image: &[u8], x: u32, y: u32) -> [u8; 4] {
+    let start = ((y * SIZE + x) * 4) as usize;
+    [
+        image[start],
+        image[start + 1],
+        image[start + 2],
+        image[start + 3],
+    ]
+}
+
+fn close_to(pixel: [u8; 4], expected: [u8; 3], tolerance: u8) -> bool {
+    (0..3).all(|channel| pixel[channel].abs_diff(expected[channel]) <= tolerance)
+}
+
+fn is_sky(pixel: [u8; 4]) -> bool {
+    close_to(pixel, SKY_BYTES, 2)
+}
+
+fn is_red(pixel: [u8; 4]) -> bool {
+    pixel[0] > pixel[1].saturating_add(60) && pixel[0] > pixel[2].saturating_add(60)
+}
+
+fn is_green(pixel: [u8; 4]) -> bool {
+    pixel[1] > pixel[0].saturating_add(60) && pixel[1] > pixel[2].saturating_add(60)
+}
+
+fn brightness(pixel: [u8; 4]) -> u32 {
+    u32::from(pixel[0]) + u32::from(pixel[1]) + u32::from(pixel[2])
+}
+
+fn render(renderer: &mut VoxelRenderer, camera: &Camera) -> Vec<u8> {
+    renderer.render_to_rgba(camera, SIZE, SIZE).0
+}
+
+fn save_image(name: &str, adapter: &str, image: &[u8]) {
+    let Some(directory) = std::env::var_os("VOX_SAVE_IMAGES").map(PathBuf::from) else {
+        return;
+    };
+    std::fs::create_dir_all(&directory).expect("image directory can be created");
+    let adapter: String = adapter
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    let file =
+        std::fs::File::create(directory.join(format!("{name}_{adapter}.png"))).expect("image file");
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), SIZE, SIZE);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder
+        .write_header()
+        .and_then(|mut writer| writer.write_image_data(image))
+        .expect("the PNG is written");
+}
+
+fn adapter_name(context: &GraphicsContext) -> String {
+    renderer::describe(&context.adapter)
+}
+
+const CUBE: [([u8; 3], u32); 1] = [([16, 16, 16], RED)];
+const ORIGIN_BRICK: BrickCoordinate = BrickCoordinate::ORIGIN;
+
+#[test]
+fn an_empty_scene_is_all_sky() {
+    for context in contexts() {
+        let mut renderer = new_renderer(&context);
+        let image = render(&mut renderer, &camera_at(ORIGIN_BRICK, [0.0; 3]));
+        assert!(
+            image
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|texel| is_sky([texel[0], texel[1], texel[2], texel[3]])),
+            "{}",
+            adapter_name(&context)
+        );
+        assert!(image.as_chunks::<4>().0.iter().all(|texel| texel[3] == 255));
+    }
+}
+
+#[test]
+fn a_cube_is_drawn_in_its_material_colour_with_sky_around_it() {
+    for context in contexts() {
+        let mut renderer = new_renderer(&context);
+        place_voxels(&mut renderer, ORIGIN_BRICK, &CUBE);
+        let image = render(&mut renderer, &camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]));
+        save_image("cube", &adapter_name(&context), &image);
+
+        let name = adapter_name(&context);
+        assert!(
+            is_red(pixel(&image, SIZE / 2, SIZE / 2)),
+            "{name}: centre {:?}",
+            pixel(&image, 32, 32)
+        );
+        for (x, y) in [
+            (0, 0),
+            (SIZE - 1, 0),
+            (0, SIZE - 1),
+            (SIZE - 1, SIZE - 1),
+            (5, 40),
+        ] {
+            assert!(
+                is_sky(pixel(&image, x, y)),
+                "{name}: ({x}, {y}) is {:?}",
+                pixel(&image, x, y)
+            );
+        }
+    }
+}
+
+#[test]
+fn all_six_faces_wind_so_they_show_from_outside_and_the_sun_shades_them_differently() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        place_voxels(&mut renderer, ORIGIN_BRICK, &CUBE);
+        // (camera offset, yaw, pitch) looking at the cube centre from each side, 6 voxels away.
+        let half_pi = std::f32::consts::FRAC_PI_2;
+        let views = [
+            ("+z", [16.5, 16.5, 22.5], 0.0, 0.0),
+            ("-z", [16.5, 16.5, 10.5], std::f32::consts::PI, 0.0),
+            ("+x", [22.5, 16.5, 16.5], half_pi, 0.0),
+            ("-x", [10.5, 16.5, 16.5], -half_pi, 0.0),
+            ("+y", [16.5, 22.5, 16.5], 0.0, -Camera::MAXIMUM_PITCH),
+            ("-y", [16.5, 10.5, 16.5], 0.0, Camera::MAXIMUM_PITCH),
+        ];
+        let mut centres = Vec::new();
+        for (label, offset, yaw, pitch) in views {
+            let mut camera = camera_at(ORIGIN_BRICK, offset);
+            camera.yaw = yaw;
+            camera.pitch = pitch;
+            let image = render(&mut renderer, &camera);
+            save_image(
+                &format!(
+                    "face_{}",
+                    label
+                        .replace(['+', '-'], "p_n")
+                        .replace("p_n", if label.starts_with('+') { "pos" } else { "neg" })
+                ),
+                &name,
+                &image,
+            );
+            let centre = pixel(&image, SIZE / 2, SIZE / 2);
+            assert!(
+                is_red(centre),
+                "{name}: face {label} not visible, centre {centre:?}"
+            );
+            centres.push((label, brightness(centre)));
+        }
+        // The sun is at (0.4, 0.8, 0.3): faces towards it brighten in that order, and faces
+        // turned away all get the same ambient light.
+        let shade = |label: &str| centres.iter().find(|(l, _)| *l == label).unwrap().1;
+        assert!(
+            shade("+y") > shade("+x") && shade("+x") > shade("+z"),
+            "{name}: sunlit faces out of order: {centres:?}"
+        );
+        for away in ["-x", "-y", "-z"] {
+            assert!(
+                shade("+z") > shade(away),
+                "{name}: {away} is not darker than +z: {centres:?}"
+            );
+            assert_eq!(
+                shade(away),
+                shade("-x"),
+                "{name}: unlit faces differ: {centres:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn from_inside_a_solid_voxel_every_face_is_culled() {
+    for context in contexts() {
+        let mut renderer = new_renderer(&context);
+        place_voxels(&mut renderer, ORIGIN_BRICK, &CUBE);
+        let image = render(&mut renderer, &camera_at(ORIGIN_BRICK, [16.5, 16.5, 16.5]));
+        assert!(
+            is_sky(pixel(&image, SIZE / 2, SIZE / 2)),
+            "{}",
+            adapter_name(&context)
+        );
+    }
+}
+
+#[test]
+fn nearer_geometry_hides_farther_geometry_whatever_the_upload_order() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let far_red = (ORIGIN_BRICK, vec![([16, 16, 10], RED)]);
+        let near_green = (BrickCoordinate::new(0, 0, 0), vec![([16, 16, 20], GREEN)]);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 30.0]);
+
+        // Same brick holding both voxels, and two separate bricks uploaded in both orders.
+        let mut renderer = new_renderer(&context);
+        place_voxels(
+            &mut renderer,
+            ORIGIN_BRICK,
+            &[far_red.1[0], near_green.1[0]],
+        );
+        let together = render(&mut renderer, &camera);
+        assert!(
+            is_green(pixel(&together, 32, 32)),
+            "{name}: {:?}",
+            pixel(&together, 32, 32)
+        );
+
+        let behind = BrickCoordinate::new(0, 0, -1);
+        let front = BrickCoordinate::new(0, 0, 0);
+        let mut images = Vec::new();
+        for far_first in [true, false] {
+            let mut renderer = new_renderer(&context);
+            let upload_far = |renderer: &mut VoxelRenderer| {
+                place_voxels(renderer, behind, &[([16, 16, 26], RED)])
+            };
+            let upload_near = |renderer: &mut VoxelRenderer| {
+                place_voxels(renderer, front, &[([16, 16, 20], GREEN)])
+            };
+            if far_first {
+                upload_far(&mut renderer);
+                upload_near(&mut renderer);
+            } else {
+                upload_near(&mut renderer);
+                upload_far(&mut renderer);
+            }
+            images.push(render(&mut renderer, &camera));
+        }
+        assert!(is_green(pixel(&images[0], 32, 32)), "{name}");
+        assert_eq!(
+            images[0], images[1],
+            "{name}: upload order changed the image"
+        );
+    }
+}
+
+#[test]
+fn the_image_is_identical_a_hundred_billion_bricks_from_the_origin() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let render_at = |shift: [i64; 3]| {
+            let mut renderer = new_renderer(&context);
+            let at = |x: i64, y: i64, z: i64| {
+                BrickCoordinate::new(x + shift[0], y + shift[1], z + shift[2])
+            };
+            place_voxels(
+                &mut renderer,
+                at(0, 0, 0),
+                &[([16, 16, 16], RED), ([3, 4, 5], GREEN)],
+            );
+            place_voxels(&mut renderer, at(1, 0, 0), &[([2, 20, 9], GREEN)]);
+            place_voxels(&mut renderer, at(0, 0, -1), &[([16, 16, 20], RED)]);
+            let mut camera = camera_at(at(0, 0, 0), [14.3, 18.1, 29.7]);
+            camera.yaw = 0.2;
+            camera.pitch = -0.1;
+            render(&mut renderer, &camera)
+        };
+        let near_origin = render_at([0, 0, 0]);
+        let far_away = render_at([100_000_000_000, -100_000_000_000, 7]);
+        save_image("near_origin", &name, &near_origin);
+        assert!(
+            near_origin
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|t| !is_sky([t[0], t[1], t[2], t[3]])),
+            "{name}: scene is empty"
+        );
+        assert_eq!(
+            near_origin, far_away,
+            "{name}: precision differs far from the origin"
+        );
+    }
+}
+
+#[test]
+fn material_values_beyond_the_palette_draw_magenta() {
+    for context in contexts() {
+        let mut renderer = new_renderer(&context);
+        place_voxels(
+            &mut renderer,
+            ORIGIN_BRICK,
+            &[([16, 16, 16], UNKNOWN_MATERIAL)],
+        );
+        let image = render(&mut renderer, &camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]));
+        let centre = pixel(&image, 32, 32);
+        assert!(
+            centre[0] > 100 && centre[2] > 100 && u32::from(centre[1]) * 3 < u32::from(centre[0]),
+            "{}: {centre:?}",
+            adapter_name(&context)
+        );
+    }
+}
+
+#[test]
+fn bricks_outside_the_view_are_culled_and_counted() {
+    for context in contexts() {
+        let mut renderer = new_renderer(&context);
+        place_voxels(
+            &mut renderer,
+            BrickCoordinate::new(0, 0, -1),
+            &[([16, 16, 16], RED)],
+        ); // ahead
+        place_voxels(
+            &mut renderer,
+            BrickCoordinate::new(0, 0, 2),
+            &[([16, 16, 16], RED)],
+        ); // behind
+        place_voxels(
+            &mut renderer,
+            BrickCoordinate::new(9, 0, 0),
+            &[([16, 16, 16], RED)],
+        ); // far to the side
+        let (_, statistics) =
+            renderer.render_to_rgba(&camera_at(ORIGIN_BRICK, [16.0, 16.0, 16.0]), SIZE, SIZE);
+        assert_eq!(
+            (statistics.bricks_drawn, statistics.bricks_culled),
+            (1, 2),
+            "{}",
+            adapter_name(&context)
+        );
+        assert_eq!(statistics.quads_drawn, 6);
+        assert_eq!(renderer.brick_count(), 3);
+    }
+}
+
+#[test]
+fn distant_terrain_fades_into_the_sky() {
+    for context in contexts() {
+        let mut renderer = new_renderer(&context);
+        renderer.set_atmosphere(Atmosphere {
+            sky_color: SKY,
+            fog_start: 5.0,
+            fog_end: 10.0,
+            ..Atmosphere::default()
+        });
+        place_voxels(&mut renderer, ORIGIN_BRICK, &CUBE);
+        // 20 voxels away, well beyond the end of the fog.
+        let image = render(&mut renderer, &camera_at(ORIGIN_BRICK, [16.5, 16.5, 36.0]));
+        assert!(
+            is_sky(pixel(&image, 32, 32)),
+            "{}: {:?}",
+            adapter_name(&context),
+            pixel(&image, 32, 32)
+        );
+    }
+}
+
+#[test]
+fn replacing_and_removing_bricks_changes_what_is_drawn() {
+    for context in contexts() {
+        let mut renderer = new_renderer(&context);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+        place_voxels(&mut renderer, ORIGIN_BRICK, &CUBE);
+        assert!(is_red(pixel(&render(&mut renderer, &camera), 32, 32)));
+
+        place_voxels(&mut renderer, ORIGIN_BRICK, &[([16, 16, 16], GREEN)]);
+        assert!(is_green(pixel(&render(&mut renderer, &camera), 32, 32)));
+
+        renderer.remove_brick(ORIGIN_BRICK);
+        assert!(is_sky(pixel(&render(&mut renderer, &camera), 32, 32)));
+        assert_eq!(renderer.brick_count(), 0);
+
+        // Uploading no quads also leaves nothing.
+        place_voxels(&mut renderer, ORIGIN_BRICK, &[]);
+        assert!(!renderer.has_brick(ORIGIN_BRICK));
+    }
+}
+
+#[test]
+fn many_bricks_beyond_the_initial_placement_capacity_all_draw() {
+    for context in contexts() {
+        let mut renderer = new_renderer(&context);
+        // More bricks than the placement buffer starts with, in a row the camera looks along.
+        for index in 0..150 {
+            place_voxels(
+                &mut renderer,
+                BrickCoordinate::new(0, 0, -index),
+                &[([16, 16, 16], RED)],
+            );
+        }
+        let mut camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 28.0]);
+        camera.far_plane = 6000.0;
+        camera.vertical_field_of_view = 1.0;
+        let (image, statistics): (Vec<u8>, RenderStatistics) =
+            renderer.render_to_rgba(&camera, SIZE, SIZE);
+        assert_eq!(statistics.bricks_drawn, 150, "{}", adapter_name(&context));
+        assert!(is_red(pixel(&image, 32, 32)));
+    }
+}
+
+#[test]
+fn the_sun_direction_is_normalized_so_its_length_does_not_change_the_shading() {
+    for context in contexts() {
+        let render_with_sun = |sun: Vec3| {
+            let mut renderer = new_renderer(&context);
+            renderer.set_atmosphere(Atmosphere {
+                sky_color: SKY,
+                sun_direction: sun.to_array(),
+                ..Atmosphere::default()
+            });
+            place_voxels(&mut renderer, ORIGIN_BRICK, &CUBE);
+            render(&mut renderer, &camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]))
+        };
+        assert_eq!(
+            render_with_sun(Vec3::new(1.0, 2.0, 0.5)),
+            render_with_sun(Vec3::new(10.0, 20.0, 5.0))
+        );
+    }
+}

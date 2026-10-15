@@ -2,7 +2,7 @@ use std::fmt;
 
 use crate::{
     BRICK_COORDINATE_MAXIMUM, BRICK_COORDINATE_MINIMUM, BRICK_EDGE_LENGTH, BRICK_EDGE_LENGTH_LOG2,
-    LocalVoxelIndex, VOXEL_COORDINATE_MAXIMUM, VOXEL_COORDINATE_MINIMUM,
+    FaceDirection, LocalVoxelIndex, VOXEL_COORDINATE_MAXIMUM, VOXEL_COORDINATE_MINIMUM,
 };
 
 /// A coordinate component outside the supported range. Only produced for untrusted input
@@ -163,6 +163,12 @@ impl BrickCoordinate {
         )
         .ok()
     }
+
+    /// The brick across `face`, or `None` at the edge of the supported range.
+    pub fn neighbour(self, face: FaceDirection) -> Option<Self> {
+        let [dx, dy, dz] = face.offset();
+        self.checked_offset(dx, dy, dz)
+    }
 }
 
 impl fmt::Display for BrickCoordinate {
@@ -275,6 +281,26 @@ mod tests {
             brick.checked_offset(1, 0, 0),
             Some(BrickCoordinate::new(BRICK_COORDINATE_MINIMUM + 1, 0, 0))
         );
+    }
+
+    #[test]
+    fn neighbours_step_one_brick_and_stop_at_the_range_edge() {
+        let brick = BrickCoordinate::new(0, -3, 7);
+        assert_eq!(
+            brick.neighbour(FaceDirection::PositiveX),
+            Some(BrickCoordinate::new(1, -3, 7))
+        );
+        assert_eq!(
+            brick.neighbour(FaceDirection::NegativeY),
+            Some(BrickCoordinate::new(0, -4, 7))
+        );
+        assert_eq!(
+            brick.neighbour(FaceDirection::PositiveZ),
+            Some(BrickCoordinate::new(0, -3, 8))
+        );
+        let edge = BrickCoordinate::new(BRICK_COORDINATE_MAXIMUM, 0, 0);
+        assert_eq!(edge.neighbour(FaceDirection::PositiveX), None);
+        assert!(edge.neighbour(FaceDirection::NegativeX).is_some());
     }
 
     #[test]

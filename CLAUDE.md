@@ -1,6 +1,7 @@
 # Voxunami
 
 A voxel game engine plus several games in one monorepo, with a shared launcher.
+Games: Voxunami Cave (Minecraft-like), Voxunami 2048, Voxunami Flatworms (Tron-like), Voxunami Sculpt (tiny voxels).
 Read `docs/design-decisions.md` before architectural work; update it when a decision changes.
 Layout: `engine/*` libraries; later `plugins/*`, `games/*`, `launcher/`.
 

@@ -1,0 +1,22 @@
+[package]
+name = "terrain_viewer"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Developer tool: fly through procedurally generated terrain, or render it headlessly to an image."
+
+[dependencies]
+glam = "0.34.1"
+png = "0.18.1"
+pollster = "1.0.1"
+renderer.workspace = true
+terrain.workspace = true
+voxel_grid.workspace = true
+voxel_meshing.workspace = true
+voxel_space.workspace = true
+wgpu = "30.0.1"
+winit = "0.30.13"
+
+[lints]
+workspace = true
