@@ -8,6 +8,7 @@
 //! integer brick coordinates, so images are identical wherever in the world the scene is.
 
 mod camera;
+mod crosshair;
 mod graphics_context;
 mod voxel_renderer;
 

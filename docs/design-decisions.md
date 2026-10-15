@@ -40,7 +40,8 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - Game 4 simulation: water and heat run continuously; combustion fronts and falling blocks are event-driven. There are
   several fluid kinds; some are magnetic and some turn into gases (phase change).
 - Build order: walking skeleton (Phase 1), then 2048, then Minecraft-core, then Tron, then the sculpting game.
-- Workflow: Claude never commits; each phase ends with passing checks and a suggested commit message.
+- Workflow: Claude commits and pushes finished phases (rule lifted by the owner after Phase 1f); each phase ends with
+  passing checks.
 
 ## Voxunami Cave lighting (decided; not built yet)
 - Flood-fill light with 256 levels (0-255). The top levels are blindingly bright and rarely used.
@@ -81,7 +82,8 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   the result. Game and plugin messages ride in a generic message that names its owner by identifier.
 - Replay recording is the tick-by-tick stream one client received, appended to a checksummed file as it arrives; playing
   it back is a connection that plays the server, so the client code is unchanged.
-- Plugins are compile-time crates; one process per game, started by the launcher from a manifest.
+- Plugins are compile-time crates. The launcher links the games and starts one by command name (revised in 1f from
+  "one process per game from a manifest": simpler, and nothing needs it yet).
 - Brick size 32^3 voxels (rows fit a u32 bitmask; 1 m at Game 4 scale). Revisit when the mesher exists.
 
 ## Built
@@ -114,7 +116,7 @@ Phase 1c (seeing it):
   vertex shader expands each packed quad into two triangles, so there are no vertex or index buffers. Frustum culling
   and distance fog; placement is camera-relative from exact integers; material values beyond the palette draw
   magenta (how content from a missing plugin will look). Offscreen rendering to RGBA for tests and screenshots.
-- `tools/terrain_viewer`: developer tool. `WorldStreamer` generates and meshes bricks on worker threads (a brick is
+- `tools/terrain_viewer` (since retired, see 1f): `WorldStreamer` generated and meshed bricks on worker threads (a brick is
   meshed only when it and its six neighbours exist, unloading beyond the view radius); a winit window with a fly camera;
   headless `--screenshot` and `--benchmark`; `--adapter integrated` to test on the integrated GPU.
 - GPU tests run on every physical adapter and backend (here: RTX 3090 and the AMD iGPU, each on Vulkan and DX12).
@@ -127,6 +129,23 @@ Phase 1d (saving):
 - `terrain`: `WorldTerrain` exposes its configuration and can restore saved assignments.
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
+
+Phase 1f (first game):
+- `world_view`: `WorldMesher` keeps meshes of the bricks around a viewer up to date on worker threads, reading from a
+  client's world (generating unedited bricks from the generator the world assigns, taking edited ones as they are,
+  re-meshing a changed brick and its neighbours, discarding stale results); `cast_ray` finds the voxel under the
+  crosshair. It replaces the old viewer's streaming code.
+- `plugins/base_blocks`: air, stone, dirt, grass, and the frozen generator `base_blocks:rolling_hills_v1` (pinned).
+- `games/voxunami_cave`: `CaveContent` (plugins, new and loaded worlds), the server's `CaveLogic` (block changes within
+  reach of the player's last pose; everyone told where everyone is), `IntegratedServer` (the server on its own thread at
+  20 ticks per second: what singleplayer is), `Session` (a player's side without a window), a window with a fly camera,
+  mouse capture, crosshair, break and place, and headless screenshots and benchmarks. `--world FILE` saves and loads the
+  world, `--record FILE` records the session; replays play in real time from the recorded player's point of view, or
+  render one tick to an image.
+- `launcher` (`voxunami`): lists games, starts one by name, and opens a recording with the game its welcome names.
+- `renderer` gained an opt-in crosshair. `replay::read_welcome` reads which game a recording belongs to.
+- `tools/terrain_viewer` is gone: the game does everything it did (`--screenshot`, `--benchmark`, `--adapter`), through
+  the same client path a networked player uses.
 
 Phase 1e (the stream; protocol version 1, documented in `docs/protocol-and-replay.md`):
 - `binary_codec` (the byte primitives, moved out of `world_storage`), `voxel_space::BrickBox` (inclusive box of bricks,
@@ -158,6 +177,9 @@ Rendering and loading (Ryzen 7600X; 1280x720; default rolling hills, 1 m voxels;
 - Loading radius 12 (9171 bricks generated, 3366 meshed) took 4.2 s on 11 worker threads, so loading, not drawing, is
   the cost to attack next. Quad counts are high: 5.5 M quads (44 MB) at radius 12, from 1-voxel detail and caves.
 - Memory per quad is 8 bytes; indexed triangles would be about 56.
+- Through the game, which gets its world over the message stream (1f): the same scene gives 1.7 ms per frame on the
+  RTX 3090 and 6.8 ms (148 fps) on the integrated GPU at radius 12, and loads in 4.0 s, so the stream added nothing
+  measurable. The window ran at 60 fps (vsync) while recording.
 - Only the 7600X's integrated GPU was measured; a weaker minimum-spec GPU is untested.
 
 Cross-platform determinism: all tests, including the pinned terrain digests and the pinned recording of a standard
@@ -181,6 +203,9 @@ Implication: a continuous-valued channel stored densely costs 4 bytes per voxel 
 continuous channels need quantization or sparse activity.
 
 ## Open
+- The game is a fly camera: no gravity, collision or physics yet (the Rapier adapter comes with structures), other
+  players are told about but not drawn, and there is no inventory. A world file with no edits is 40 KB at view radius 8,
+  almost all of it the generator-assignment tree (see the compact wire format item below).
 - Phased-tick rule: accept or modify (see Proposed).
 - Network scale: a socket transport with bounded queues; a spatial index over watched regions (an edit currently scans all
   clients); resending single bricks to repair a client that fell out of sync; replay keyframes for seeking; interest with a
@@ -214,5 +239,6 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 1c Seeing it: CPU meshing, wgpu renderer, window with fly camera, offscreen render tests, integrated-GPU check. **Done.**
 - 1d Saving: world container with sections, edits over generated terrain, unknown-data preservation tests. **Done.**
 - 1e Server and stream: message protocol, loopback transport, recorder, replay-equals-live test. **Done.**
-- 1f Launcher and first game crate.
+- 1f Launcher and first game crate: `world_view`, the `base_blocks` plugin, Voxunami Cave, the launcher; the old viewer
+  retired. **Done.**
 The physics spike is done (`docs/physics-spike.md`); building the physics adapter belongs with the structures work.

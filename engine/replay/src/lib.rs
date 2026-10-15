@@ -13,7 +13,9 @@
 pub mod file;
 mod playback;
 mod recording;
+mod welcome;
 
 pub use file::{ReplayError, ReplayReader, ReplayWriter};
 pub use playback::{ReplayConnection, ReplayEnd};
 pub use recording::RecordingConnection;
+pub use welcome::read_welcome;

@@ -5,6 +5,7 @@
 //! directory to also write the rendered images there as PNG files.
 
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use glam::Vec3;
 use renderer::{Atmosphere, Camera, GraphicsContext, RenderStatistics, VoxelRenderer};
@@ -19,7 +20,28 @@ const RED: u32 = 1;
 const GREEN: u32 = 2;
 const UNKNOWN_MATERIAL: u32 = 77;
 
-fn contexts() -> Vec<GraphicsContext> {
+/// Held while a test uses the GPUs: tests take turns. Creating and using many graphics devices at
+/// once has twice hung the test process on this project's development machine, for a reason never
+/// found, and nothing here is gained by running these tests at the same time.
+static GPU_TURN: Mutex<()> = Mutex::new(());
+
+/// The graphics contexts to test on, which keeps the test's turn on the GPUs until dropped.
+struct Contexts {
+    _turn: MutexGuard<'static, ()>,
+    contexts: std::vec::IntoIter<GraphicsContext>,
+}
+
+impl Iterator for Contexts {
+    type Item = GraphicsContext;
+
+    fn next(&mut self) -> Option<GraphicsContext> {
+        self.contexts.next()
+    }
+}
+
+fn contexts() -> Contexts {
+    // A test that failed while holding its turn must not stop the others.
+    let turn = GPU_TURN.lock().unwrap_or_else(PoisonError::into_inner);
     let contexts = GraphicsContext::all_physical_adapters();
     if contexts.is_empty() {
         assert!(
@@ -28,7 +50,10 @@ fn contexts() -> Vec<GraphicsContext> {
         );
         eprintln!("no graphics adapter available; skipping GPU test");
     }
-    contexts
+    Contexts {
+        _turn: turn,
+        contexts: contexts.into_iter(),
+    }
 }
 
 fn new_renderer(context: &GraphicsContext) -> VoxelRenderer {
@@ -125,6 +150,58 @@ fn adapter_name(context: &GraphicsContext) -> String {
 
 const CUBE: [([u8; 3], u32); 1] = [([16, 16, 16], RED)];
 const ORIGIN_BRICK: BrickCoordinate = BrickCoordinate::ORIGIN;
+
+#[test]
+fn the_crosshair_is_drawn_at_the_centre_only_when_asked_for() {
+    for context in contexts() {
+        let mut renderer = new_renderer(&context);
+        let camera = camera_at(BrickCoordinate::ORIGIN, [0.0; 3]);
+        let without = render(&mut renderer, &camera);
+        assert!(
+            without
+                .chunks(4)
+                .all(|chunk| is_sky(chunk.try_into().unwrap())),
+            "an empty scene is all sky"
+        );
+
+        renderer.set_crosshair(true);
+        let with = render(&mut renderer, &camera);
+        save_image("crosshair", &adapter_name(&context), &with);
+        let changed: Vec<(u32, u32)> = (0..SIZE)
+            .flat_map(|y| (0..SIZE).map(move |x| (x, y)))
+            .filter(|&(x, y)| !is_sky(pixel(&with, x, y)))
+            .collect();
+        assert!(!changed.is_empty());
+        // Everything it draws is near the middle, symmetric about it, and the very centre is white.
+        for &(x, y) in &changed {
+            assert!(
+                x.abs_diff(SIZE / 2) <= 8 && y.abs_diff(SIZE / 2) <= 8,
+                "({x}, {y})"
+            );
+            assert!(
+                changed.contains(&(SIZE - 1 - x, SIZE - 1 - y)),
+                "({x}, {y}) has no mirror"
+            );
+        }
+        assert!(close_to(
+            pixel(&with, SIZE / 2, SIZE / 2),
+            [255, 255, 255],
+            2
+        ));
+        assert!(close_to(
+            pixel(&with, SIZE / 2, SIZE / 2 + 5),
+            [255, 255, 255],
+            2
+        ));
+        assert!(
+            is_sky(pixel(&with, SIZE / 2 + 5, SIZE / 2 + 5)),
+            "the corners of the plus are empty"
+        );
+
+        renderer.set_crosshair(false);
+        assert_eq!(render(&mut renderer, &camera), without);
+    }
+}
 
 #[test]
 fn an_empty_scene_is_all_sky() {

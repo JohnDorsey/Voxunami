@@ -213,3 +213,43 @@ fn something_that_is_not_a_replay_does_not_open() {
         Err(ReplayError::NotAReplay)
     ));
 }
+
+#[test]
+fn a_recording_names_its_game_in_the_welcome_it_starts_with() {
+    use protocol::{ClientId, PROTOCOL_VERSION, Welcome};
+
+    let welcome = ServerMessage::Welcome(Welcome {
+        protocol_version: PROTOCOL_VERSION,
+        game: "some_game:game".parse().unwrap(),
+        client: ClientId::new(1),
+        ticks_per_second: 20,
+        tick: Tick::ZERO,
+        world_description: vec![1, 2, 3],
+    });
+    let directory =
+        std::env::temp_dir().join(format!("voxunami_replay_test_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let write = |name: &str, frames: &[Vec<u8>]| {
+        let path = directory.join(name);
+        std::fs::write(&path, replay_bytes(frames)).unwrap();
+        path
+    };
+    let good = write("good.voxreplay", &[welcome.encode(), tick(1)]);
+    let found = replay::read_welcome(&good).unwrap();
+    assert_eq!(found.game.as_str(), "some_game:game");
+    assert_eq!(found.world_description, [1, 2, 3]);
+
+    for (name, frames) in [
+        ("empty.voxreplay", vec![]),
+        ("tick_first.voxreplay", vec![tick(1)]),
+        ("garbage_first.voxreplay", vec![vec![250, 1]]),
+    ] {
+        let path = write(name, &frames);
+        assert!(
+            matches!(replay::read_welcome(&path), Err(ReplayError::NoWelcome)),
+            "{name}"
+        );
+    }
+    assert!(replay::read_welcome(&directory.join("missing.voxreplay")).is_err());
+    std::fs::remove_dir_all(&directory).unwrap();
+}

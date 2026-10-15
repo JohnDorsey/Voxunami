@@ -8,10 +8,11 @@ use voxel_space::{BrickCoordinate, WorldPosition};
 use wgpu::util::DeviceExt;
 
 use crate::camera::{Camera, Frustum};
+use crate::crosshair::Crosshair;
 use crate::graphics_context::GraphicsContext;
 
 const PALETTE_SIZE: usize = 256;
-const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Radius of a sphere around a brick: half the diagonal of a 32-voxel cube.
 const BRICK_BOUNDING_RADIUS: f32 = 27.72;
 const BRICK_CENTER_OFFSET: f32 = 16.0;
@@ -93,6 +94,8 @@ pub struct VoxelRenderer {
     atmosphere: Atmosphere,
     depth: Option<SizedTarget>,
     offscreen: Option<SizedTarget>,
+    crosshair: Crosshair,
+    crosshair_enabled: bool,
 }
 
 impl std::fmt::Debug for VoxelRenderer {
@@ -227,6 +230,7 @@ impl VoxelRenderer {
         let placements =
             Self::create_placement_buffer(&device, &placement_layout, placement_stride, 64);
 
+        let crosshair = Crosshair::new(&device, color_format);
         let mut renderer = Self {
             device,
             queue,
@@ -242,6 +246,8 @@ impl VoxelRenderer {
             atmosphere: Atmosphere::default(),
             depth: None,
             offscreen: None,
+            crosshair,
+            crosshair_enabled: false,
         };
         renderer.set_palette(&[]);
         renderer
@@ -276,6 +282,11 @@ impl VoxelRenderer {
             bind_group,
             capacity,
         }
+    }
+
+    /// Draws a crosshair at the centre of every picture, for aiming. Off by default.
+    pub fn set_crosshair(&mut self, enabled: bool) {
+        self.crosshair_enabled = enabled;
     }
 
     /// Sets the colour of material values `0..colors.len()` (sRGB). Larger values draw magenta, which
@@ -377,6 +388,7 @@ impl VoxelRenderer {
 
         self.write_placements(visible.iter().map(|(_, _, corner)| *corner));
         self.write_frame_uniform(view_projection);
+        self.crosshair.set_screen_size(&self.queue, size);
 
         let depth_view = &self
             .depth
@@ -429,6 +441,9 @@ impl VoxelRenderer {
                 );
                 pass.set_vertex_buffer(0, brick.quads.slice(..));
                 pass.draw(0..6, 0..brick.quad_count);
+            }
+            if self.crosshair_enabled {
+                self.crosshair.draw(&mut pass);
             }
         }
         self.queue.submit([encoder.finish()]);

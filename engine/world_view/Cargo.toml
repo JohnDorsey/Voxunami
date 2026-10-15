@@ -1,0 +1,22 @@
+[package]
+name = "world_view"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Turns a world into what a viewer draws: meshes kept up to date in the background, and rays cast through voxels."
+
+[dependencies]
+terrain.workspace = true
+voxel_grid.workspace = true
+voxel_meshing.workspace = true
+voxel_space.workspace = true
+world_storage.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+region_octree.workspace = true
+world_storage = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

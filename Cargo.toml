@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["engine/*", "tools/*"]
+members = ["engine/*", "plugins/*", "games/*", "launcher"]
 
 [workspace.package]
 edition = "2024"
@@ -9,6 +9,7 @@ publish = false
 
 [workspace.dependencies]
 # Internal crates
+base_blocks = { path = "plugins/base_blocks" }
 binary_codec = { path = "engine/binary_codec" }
 client = { path = "engine/client" }
 content_registry = { path = "engine/content_registry" }
@@ -20,11 +21,12 @@ replay = { path = "engine/replay" }
 renderer = { path = "engine/renderer" }
 server = { path = "engine/server" }
 terrain = { path = "engine/terrain" }
-terrain_viewer = { path = "tools/terrain_viewer" }
 transport = { path = "engine/transport" }
 voxel_grid = { path = "engine/voxel_grid" }
 voxel_meshing = { path = "engine/voxel_meshing" }
 voxel_space = { path = "engine/voxel_space" }
+voxunami_cave = { path = "games/voxunami_cave" }
+world_view = { path = "engine/world_view" }
 world_storage = { path = "engine/world_storage" }
 
 # External crates

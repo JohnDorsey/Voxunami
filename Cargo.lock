@@ -117,6 +117,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "base_blocks"
+version = "0.0.0"
+dependencies = [
+ "content_registry",
+ "namespaced_id",
+ "terrain",
+ "voxel_grid",
+ "voxel_space",
+]
+
+[[package]]
 name = "binary_codec"
 version = "0.0.0"
 dependencies = [
@@ -849,6 +860,16 @@ name = "khronos_api"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
+
+[[package]]
+name = "launcher"
+version = "0.0.0"
+dependencies = [
+ "namespaced_id",
+ "protocol",
+ "replay",
+ "voxunami_cave",
+]
 
 [[package]]
 name = "libc"
@@ -2030,22 +2051,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "terrain_viewer"
-version = "0.0.0"
-dependencies = [
- "glam",
- "png",
- "pollster",
- "renderer",
- "terrain",
- "voxel_grid",
- "voxel_meshing",
- "voxel_space",
- "wgpu",
- "winit",
-]
-
-[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2234,6 +2239,34 @@ version = "0.0.0"
 dependencies = [
  "proptest",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "voxunami_cave"
+version = "0.0.0"
+dependencies = [
+ "base_blocks",
+ "binary_codec",
+ "client",
+ "content_registry",
+ "glam",
+ "namespaced_id",
+ "png",
+ "proptest",
+ "protocol",
+ "region_octree",
+ "renderer",
+ "replay",
+ "server",
+ "terrain",
+ "thiserror 2.0.21",
+ "transport",
+ "voxel_grid",
+ "voxel_space",
+ "wgpu",
+ "winit",
+ "world_storage",
+ "world_view",
 ]
 
 [[package]]
@@ -2912,6 +2945,19 @@ dependencies = [
  "terrain",
  "thiserror 2.0.21",
  "voxel_grid",
+ "voxel_space",
+ "world_storage",
+]
+
+[[package]]
+name = "world_view"
+version = "0.0.0"
+dependencies = [
+ "proptest",
+ "region_octree",
+ "terrain",
+ "voxel_grid",
+ "voxel_meshing",
  "voxel_space",
  "world_storage",
 ]

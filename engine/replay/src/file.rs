@@ -32,6 +32,8 @@ pub enum ReplayError {
     Truncated { record: u64 },
     #[error("frame {record} (counting from 0) is damaged")]
     Damaged { record: u64 },
+    #[error("the recording does not start with the server's welcome")]
+    NoWelcome,
     #[error("reading the replay failed: {0}")]
     Io(#[from] io::Error),
 }

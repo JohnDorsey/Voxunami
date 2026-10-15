@@ -1,0 +1,25 @@
+[package]
+name = "launcher"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Starts Voxunami games, and opens recordings with the game that made them."
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "voxunami"
+path = "src/main.rs"
+
+[dependencies]
+namespaced_id.workspace = true
+replay.workspace = true
+voxunami_cave.workspace = true
+
+[dev-dependencies]
+protocol.workspace = true
+
+[lints]
+workspace = true

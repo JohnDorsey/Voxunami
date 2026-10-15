@@ -1,0 +1,37 @@
+[package]
+name = "voxunami_cave"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Voxunami Cave: the Minecraft-like game. For now: fly through caverns and break and place blocks, alone or with others on the same server."
+
+[dependencies]
+base_blocks.workspace = true
+binary_codec.workspace = true
+client.workspace = true
+content_registry.workspace = true
+namespaced_id.workspace = true
+protocol.workspace = true
+region_octree.workspace = true
+renderer.workspace = true
+replay.workspace = true
+server.workspace = true
+terrain.workspace = true
+transport.workspace = true
+voxel_grid.workspace = true
+voxel_space.workspace = true
+world_storage.workspace = true
+world_view.workspace = true
+thiserror.workspace = true
+glam = "0.34.1"
+png = "0.18.1"
+wgpu = "30.0.1"
+winit = "0.30.13"
+
+[dev-dependencies]
+proptest.workspace = true
+world_view.workspace = true
+
+[lints]
+workspace = true
