@@ -4,15 +4,15 @@ use renderer::{Atmosphere, Camera, VoxelRenderer};
 use voxel_space::{BrickCoordinate, WorldPosition};
 use world_view::MeshUpdate;
 
-use crate::content::CaveContent;
+use crate::definition::GameContent;
 
 /// Palette and fog suited to the view distance: the world fades into the sky just before it ends.
 pub fn configure_renderer(
     renderer: &mut VoxelRenderer,
-    content: &CaveContent,
+    content: &impl GameContent,
     view_radius_bricks: i64,
 ) {
-    renderer.set_palette(&content.blocks.palette());
+    renderer.set_palette(&content.palette());
     let reach = (view_radius_bricks * 32) as f32;
     renderer.set_atmosphere(Atmosphere {
         fog_start: reach * 0.6,

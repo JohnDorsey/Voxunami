@@ -1,23 +1,20 @@
-//! A player's side of the game, without a window: the client, the meshes of what it sees, the
-//! camera, and the actions that turn into messages. Windows and headless runs both drive one.
+//! A player's side of a game, without a window: the client, the meshes of what it sees, the camera,
+//! and the messages the player's actions turn into. Windows and headless runs both drive one.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use client::{Client, ClientError, ClientEvent, Handshake, HandshakeProgress};
+use namespaced_id::NamespacedId;
+use player_presence::{PlayerPose, decode_players, encode_pose, players_kind, pose_kind};
 use protocol::ClientId;
 use renderer::Camera;
 use transport::Connection;
-use voxel_space::{BrickBox, BrickCoordinate, VoxelCoordinate, WorldPosition};
+use voxel_space::{BrickBox, BrickCoordinate};
 use world_view::{MeshUpdate, RayHit, ViewSettings, WorldMesher, cast_ray};
 
-use crate::content::{CaveContent, game_id};
+use crate::definition::{GameContent, GameDefinition};
 use crate::host::WATCH_MARGIN_BRICKS;
-use crate::logic::REACH;
-use crate::messages::{
-    PlayerPose, SetBlock, decode_players, encode_pose, encode_set_block, players_kind, pose_kind,
-    set_block_kind,
-};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -38,11 +35,13 @@ pub enum Mode {
 }
 
 #[derive(Debug)]
-pub struct Session<C: Connection> {
+pub struct Session<C: Connection, G: GameDefinition> {
     client: Client<C>,
-    content: CaveContent,
+    content: G::Content,
     mesher: WorldMesher,
     pub camera: Camera,
+    /// What the game keeps on the client between messages and clicks.
+    pub state: G::ClientState,
     players: BTreeMap<ClientId, PlayerPose>,
     mode: Mode,
     view_radius_bricks: i64,
@@ -50,7 +49,7 @@ pub struct Session<C: Connection> {
     last_pose_sent: Option<PlayerPose>,
 }
 
-impl<C: Connection> Session<C> {
+impl<C: Connection, G: GameDefinition> Session<C, G> {
     /// Connects and builds the player's picture of the world. `wait` is called between attempts to
     /// hear the server's welcome, and is where a program that ticks its own server steps it.
     pub fn connect(
@@ -60,7 +59,7 @@ impl<C: Connection> Session<C> {
         start: Camera,
         mut wait: impl FnMut(),
     ) -> Result<Self, SessionError> {
-        let mut handshake = Handshake::start(connection, game_id())?;
+        let mut handshake = Handshake::start(connection, G::id())?;
         let deadline = Instant::now() + Duration::from_secs(15);
         let welcomed = loop {
             match handshake.poll()? {
@@ -72,12 +71,11 @@ impl<C: Connection> Session<C> {
             }
             wait();
         };
-        let mut content = CaveContent::new();
+        let mut content = G::new_content();
         let seed = welcomed.world_seed()?;
         let (client, _report) = welcomed.finish(content.load_context(seed))?;
 
-        let air = content.blocks.air;
-        let opacity = content.blocks.opacity_table();
+        let opacity = content.opacity_table();
         let worker_count = std::thread::available_parallelism()
             .map_or(2, |count| count.get().saturating_sub(1).max(2));
         let mesher = WorldMesher::new(
@@ -85,14 +83,16 @@ impl<C: Connection> Session<C> {
                 view_radius_bricks,
                 worker_count,
             },
-            content.block_channel(),
-            move |value| opacity.get(value as usize).copied().unwrap_or(value != air),
+            content.material_channel(),
+            // Values the content does not list are drawn, so unknown content shows rather than vanishes.
+            move |value| opacity.get(value as usize).copied().unwrap_or(true),
         );
         Ok(Self {
             client,
             content,
             mesher,
             camera: start,
+            state: G::ClientState::default(),
             players: BTreeMap::new(),
             mode,
             view_radius_bricks,
@@ -109,7 +109,7 @@ impl<C: Connection> Session<C> {
         &self.client
     }
 
-    pub fn content(&self) -> &CaveContent {
+    pub fn content(&self) -> &G::Content {
         &self.content
     }
 
@@ -136,7 +136,10 @@ impl<C: Connection> Session<C> {
                         self.players = players.into_iter().collect();
                     }
                 }
-                ClientEvent::WatchedRegionChanged { .. } | ClientEvent::GameMessage { .. } => {}
+                ClientEvent::GameMessage { kind, payload } => {
+                    G::handle_game_message(&mut self.state, &kind, &payload);
+                }
+                ClientEvent::WatchedRegionChanged { .. } => {}
             }
         }
         if self.mode == Mode::Replaying {
@@ -232,45 +235,21 @@ impl<C: Connection> Session<C> {
         }
     }
 
-    /// The solid voxel under the crosshair, within reach.
+    /// The solid voxel under the crosshair, within the game's reach.
     pub fn target(&self) -> Option<RayHit> {
         let forward = self.camera.forward().to_array();
-        cast_ray(self.camera.position, forward, REACH as f32, |voxel| {
+        cast_ray(self.camera.position, forward, G::reach(), |voxel| {
             self.mesher.is_opaque_at(voxel)
         })
     }
 
-    /// Breaks the block under the crosshair, if there is one.
-    pub fn break_block(&mut self) {
-        if let Some(hit) = self.target() {
-            self.request_block(hit.voxel, "base_blocks:air");
-        }
-    }
-
-    /// Places `block` against the face under the crosshair, if there is one.
-    pub fn place_block(&mut self, block: &str) {
-        if let Some(hit) = self.target() {
-            self.request_block(hit.previous, block);
-        }
-    }
-
-    /// Asks the server to put `block` (named by identifier) at `at`. The server decides.
-    pub fn request_block(&mut self, at: VoxelCoordinate, block: &str) {
+    /// Sends the server a message for the game. A replay asks for nothing, so it sends nothing.
+    pub fn send_game_message(&mut self, kind: NamespacedId, payload: Vec<u8>) {
         if self.mode != Mode::Playing {
             return;
         }
-        let request = SetBlock {
-            at,
-            block: block.parse().expect("block names are valid identifiers"),
-        };
-        let _ = self
-            .client
-            .send_game_message(set_block_kind(), encode_set_block(&request));
-    }
-
-    /// Where the camera is, as a position the pose message can carry.
-    pub fn camera_position(&self) -> WorldPosition {
-        self.camera.position
+        // A closed connection shows up in the next `advance`, which reports it.
+        let _ = self.client.send_game_message(kind, payload);
     }
 
     /// Leaves the server politely.

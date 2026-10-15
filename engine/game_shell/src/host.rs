@@ -1,4 +1,4 @@
-//! Running the game's server inside the game's own process: what singleplayer is.
+//! Running a game's server inside the game's own process: what singleplayer is.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,8 +10,7 @@ use transport::ConnectionClosed;
 use transport::loopback::{LoopbackConnection, LoopbackConnector, loopback_listener};
 use world_storage::WorldData;
 
-use crate::content::{CaveContent, game_id};
-use crate::logic::CaveLogic;
+use crate::definition::{GameContent, GameDefinition};
 
 pub const TICKS_PER_SECOND: u32 = 20;
 
@@ -19,21 +18,22 @@ pub const TICKS_PER_SECOND: u32 = 20;
 pub const WATCH_MARGIN_BRICKS: i64 = 2;
 
 /// A server for `world`, and the way to connect to it. The caller decides when it ticks.
-pub fn build_server(
-    content: &CaveContent,
+pub fn build_server<G: GameDefinition>(
+    content: &G::Content,
     world: WorldData,
     view_radius_bricks: i64,
 ) -> Result<(Server, LoopbackConnector), ServerError> {
     let (listener, connector) = loopback_listener();
-    let mut config = ServerConfig::new(game_id());
+    let mut config = ServerConfig::new(G::id());
     config.ticks_per_second = TICKS_PER_SECOND;
     let edge = (2 * (view_radius_bricks + WATCH_MARGIN_BRICKS) + 1) as u64;
     config.maximum_watched_bricks = edge * edge * edge;
+    let logic = G::new_logic(content, &world);
     let server = Server::new(
         config,
         world,
         &content.registries(),
-        Box::new(CaveLogic::new(content)),
+        logic,
         Box::new(listener),
     )?;
     Ok((server, connector))
@@ -48,12 +48,12 @@ pub struct IntegratedServer {
 }
 
 impl IntegratedServer {
-    pub fn start(
-        content: &CaveContent,
+    pub fn start<G: GameDefinition>(
+        content: &G::Content,
         world: WorldData,
         view_radius_bricks: i64,
     ) -> Result<Self, ServerError> {
-        let (mut server, connector) = build_server(content, world, view_radius_bricks)?;
+        let (mut server, connector) = build_server::<G>(content, world, view_radius_bricks)?;
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stop);
         let thread = std::thread::spawn(move || {

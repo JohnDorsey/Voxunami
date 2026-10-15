@@ -859,3 +859,26 @@ fn setting_a_voxel_to_the_value_it_already_has_edits_nothing() {
     ));
     assert_eq!(harness.server.world().overrides.brick_count(), 0);
 }
+
+#[test]
+fn the_games_own_state_is_saved_with_the_world_and_survives_a_load() {
+    use world_storage::Section;
+
+    let game = Game::new(&ALL_PLUGINS);
+    let state = Section {
+        identifier: id("test_game:score"),
+        version: 2,
+        payload: vec![9, 9, 9],
+    };
+    let logic = ScriptedLogic::new().saving(state.clone());
+    let harness = Harness::with_logic(&game, game.new_world(), ServerConfig::new(game_id()), logic);
+    let world = harness.server.into_world();
+    assert_eq!(world.opaque_sections(), std::slice::from_ref(&state));
+
+    // The state rides in the saved file like any plugin section, even for a program without the game.
+    let bytes = game.save(&world);
+    let mut other = Game::new(&[Plugin::BaseBlocks]);
+    let (loaded, report) = other.load(&bytes).unwrap();
+    assert_eq!(report.opaque_sections, [id("test_game:score")]);
+    assert_eq!(loaded.opaque_sections(), [state]);
+}

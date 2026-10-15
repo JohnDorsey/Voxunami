@@ -7,14 +7,16 @@ use std::time::{Duration, Instant};
 
 use client::ClientError;
 use common::{Player, Rig, SEED, VIEW_RADIUS, above_ground, ground_height, position_of};
+use game_shell::GameContent;
+use game_shell::files::{open_world, record_connection, save_world};
+use game_shell::host::IntegratedServer;
+use game_shell::session::{Mode, Session};
+use game_shell::view::camera_at;
 use transport::{Connection, ConnectionClosed};
 use voxel_space::VoxelCoordinate;
 use voxunami_cave::content::CaveContent;
-use voxunami_cave::files::{open_world, record_connection, save_world};
-use voxunami_cave::host::IntegratedServer;
+use voxunami_cave::game::{Cave, break_block, place_block, request_block};
 use voxunami_cave::logic::REACH;
-use voxunami_cave::session::{Mode, Session};
-use voxunami_cave::view::camera_at;
 
 /// A player standing 3 voxels above the ground at the column (16, 16), looking straight down.
 fn player_above_ground(rig: &mut Rig) -> Player {
@@ -67,7 +69,7 @@ fn breaking_a_block_removes_it_for_every_player() {
         "the onlooker sees the block before it is broken"
     );
 
-    breaker.break_block();
+    break_block(&mut breaker);
     rig.settle(&mut [&mut breaker, &mut onlooker]);
 
     for (name, player) in [("breaker", &breaker), ("onlooker", &onlooker)] {
@@ -92,7 +94,7 @@ fn placing_puts_the_block_in_front_of_the_face_that_was_hit() {
         VoxelCoordinate::new(hit.voxel.x(), hit.voxel.y() + 1, hit.voxel.z())
     );
 
-    player.place_block("base_blocks:stone");
+    place_block(&mut player, "base_blocks:stone");
     rig.settle(&mut [&mut player]);
     assert_eq!(
         player.mesher().material_at(hit.previous),
@@ -115,20 +117,21 @@ fn the_server_refuses_what_is_out_of_reach_unknown_or_from_a_player_with_no_posi
 
     // Too far, a block nobody has heard of, and (from a second player who never said where they
     // are) a perfectly reasonable request: none changes the world.
-    player.request_block(
+    request_block(
+        &mut player,
         VoxelCoordinate::new(near.x() + (REACH as i64) + 5, near.y(), near.z()),
         "base_blocks:stone",
     );
-    player.request_block(near, "nonexistent:block");
+    request_block(&mut player, near, "nonexistent:block");
     let mut stranger = rig.join([16.5, 110.0, 16.5], 0.0, 0.0);
-    stranger.request_block(near, "base_blocks:stone");
+    request_block(&mut stranger, near, "base_blocks:stone");
     for _ in 0..3 {
         rig.step();
     }
     assert_eq!(rig.server.world().overrides.brick_count(), 0);
 
     // The same request from the player who is in reach works.
-    player.request_block(near, "base_blocks:stone");
+    request_block(&mut player, near, "base_blocks:stone");
     for _ in 0..2 {
         rig.step();
     }
@@ -174,7 +177,7 @@ fn edits_survive_saving_and_loading_the_world() {
     let mut rig = Rig::new();
     let mut player = player_above_ground(&mut rig);
     let hit = player.target().unwrap();
-    player.break_block();
+    break_block(&mut player);
     rig.settle(&mut [&mut player]);
     player.say_goodbye();
     rig.step();
@@ -226,7 +229,7 @@ fn a_recording_replays_the_session_from_the_recorded_players_point_of_view() {
     player.camera = above_ground(&player, 16, 16, 3.0);
     rig.settle(&mut [&mut player]);
     let hit = player.target().unwrap();
-    player.break_block();
+    break_block(&mut player);
     rig.settle(&mut [&mut player]);
     player.advance().unwrap();
     let final_summary = player.client().world().summary();
@@ -234,8 +237,8 @@ fn a_recording_replays_the_session_from_the_recorded_players_point_of_view() {
     drop(player); // closes the recording
 
     let connection: Box<dyn transport::Connection> =
-        Box::new(voxunami_cave::files::open_recording(&path).unwrap());
-    let mut replay = Session::connect(
+        Box::new(game_shell::files::open_recording(&path).unwrap());
+    let mut replay = Session::<_, Cave>::connect(
         connection,
         Mode::Replaying,
         VIEW_RADIUS,
@@ -293,7 +296,7 @@ fn a_session_that_is_watching_a_replay_asks_the_server_for_nothing() {
         sent: Arc::clone(&sent),
     };
     let server = &mut rig.server;
-    let mut watcher = Session::connect(
+    let mut watcher = Session::<_, Cave>::connect(
         Box::new(spy) as Box<dyn Connection>,
         Mode::Replaying,
         VIEW_RADIUS,
@@ -310,9 +313,13 @@ fn a_session_that_is_watching_a_replay_asks_the_server_for_nothing() {
     watcher.camera = player.camera;
     watcher.send_pose();
     let _ = watcher.update_view();
-    watcher.break_block();
-    watcher.place_block("base_blocks:stone");
-    watcher.request_block(VoxelCoordinate::new(16, 60, 16), "base_blocks:stone");
+    break_block(&mut watcher);
+    place_block(&mut watcher, "base_blocks:stone");
+    request_block(
+        &mut watcher,
+        VoxelCoordinate::new(16, 60, 16),
+        "base_blocks:stone",
+    );
     assert_eq!(sent.lock().unwrap().len(), after_hello);
     player.say_goodbye();
 }
@@ -321,10 +328,10 @@ fn a_session_that_is_watching_a_replay_asks_the_server_for_nothing() {
 fn the_integrated_server_ticks_by_itself_and_hands_back_the_world() {
     let content = CaveContent::new();
     let world = content.new_world(SEED);
-    let host = IntegratedServer::start(&content, world, VIEW_RADIUS).unwrap();
+    let host = IntegratedServer::start::<Cave>(&content, world, VIEW_RADIUS).unwrap();
     let connection = host.connect().unwrap();
     let start = camera_at([16.5, 110.0, 16.5], 0.0, 0.0, VIEW_RADIUS);
-    let mut player = Session::connect(
+    let mut player = Session::<_, Cave>::connect(
         Box::new(connection) as Box<dyn transport::Connection>,
         Mode::Playing,
         VIEW_RADIUS,

@@ -5,11 +5,12 @@
 mod common;
 
 use common::{Rig, VIEW_RADIUS, above_ground};
+use game_shell::files::{open_recording, record_connection};
+use game_shell::session::{Mode, Session};
+use game_shell::view::{apply_updates, camera_at, configure_renderer};
 use renderer::{GraphicsContext, VoxelRenderer};
 use transport::Connection;
-use voxunami_cave::files::{open_recording, record_connection};
-use voxunami_cave::session::{Mode, Session};
-use voxunami_cave::view::{apply_updates, camera_at, configure_renderer};
+use voxunami_cave::game::{Cave, break_block};
 
 const WIDTH: u32 = 160;
 const HEIGHT: u32 = 90;
@@ -69,7 +70,7 @@ fn an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw() 
         );
     }
     let before_updates = updates.clone();
-    player.break_block();
+    break_block(&mut player);
     let mut after_updates = Vec::new();
     {
         let server = &mut rig.server;
@@ -92,7 +93,7 @@ fn an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw() 
 
     // Watch the recording to its end.
     let connection: Box<dyn Connection> = Box::new(open_recording(&path).unwrap());
-    let mut replay = Session::connect(
+    let mut replay = Session::<_, Cave>::connect(
         connection,
         Mode::Replaying,
         VIEW_RADIUS,

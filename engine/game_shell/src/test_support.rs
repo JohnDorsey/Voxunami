@@ -1,0 +1,103 @@
+//! A minimal game for the shell's own tests, so they do not depend on any real game.
+
+use content_registry::IdentifierRegistry;
+use namespaced_id::NamespacedId;
+use server::GameLogic;
+use server::test_support::ScriptedLogic;
+use voxel_grid::ChannelIndex;
+use world_storage::test_support::{Game, Plugin, id};
+use world_storage::{LoadContext, WorldData};
+
+use crate::definition::{CameraStart, GameContent, GameDefinition};
+
+/// Flat ground of stone, dirt and grass, from the fixture game of `world_storage`.
+#[derive(Debug)]
+pub struct ExampleContent {
+    pub game: Game,
+}
+
+impl GameContent for ExampleContent {
+    fn material_channel(&self) -> ChannelIndex {
+        self.game
+            .new_world()
+            .overrides
+            .layout()
+            .channel_index(&id("core:block"))
+            .expect("the fixture has a block channel")
+    }
+
+    fn palette(&self) -> Vec<[f32; 3]> {
+        vec![[0.0; 3], [0.5; 3], [0.4, 0.3, 0.2], [0.3, 0.6, 0.2]]
+    }
+
+    fn opacity_table(&self) -> Vec<bool> {
+        vec![false, true, true, true]
+    }
+
+    fn new_world(&self, _seed: u64) -> WorldData {
+        self.game.new_world()
+    }
+
+    fn load_context(&mut self, _seed: u64) -> LoadContext<'_> {
+        self.game.load_context()
+    }
+
+    fn registries(&self) -> Vec<(NamespacedId, &dyn IdentifierRegistry)> {
+        self.game.registries()
+    }
+}
+
+/// A game that only has the defaults.
+#[derive(Debug)]
+pub struct ExampleGame;
+
+impl GameDefinition for ExampleGame {
+    type Content = ExampleContent;
+    type ClientState = ();
+
+    fn id() -> NamespacedId {
+        id("example:game")
+    }
+
+    fn title() -> &'static str {
+        "Example"
+    }
+
+    fn command() -> &'static str {
+        "example"
+    }
+
+    fn summary() -> &'static str {
+        "a game for tests"
+    }
+
+    fn controls() -> &'static str {
+        "Nothing else."
+    }
+
+    fn default_seed() -> u64 {
+        2024
+    }
+
+    fn default_camera() -> CameraStart {
+        CameraStart {
+            position: [16.0, 110.0, 16.0],
+            yaw_degrees: 0.0,
+            pitch_degrees: -15.0,
+        }
+    }
+
+    fn reach() -> f32 {
+        10.0
+    }
+
+    fn new_content() -> ExampleContent {
+        ExampleContent {
+            game: Game::new(&[Plugin::BaseBlocks]),
+        }
+    }
+
+    fn new_logic(_content: &ExampleContent, _world: &WorldData) -> Box<dyn GameLogic> {
+        Box::new(ScriptedLogic::new())
+    }
+}

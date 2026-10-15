@@ -2,20 +2,22 @@
 
 //! A server ticked by the test, and players connected to it.
 
+use game_shell::GameContent;
+use game_shell::host::build_server;
+use game_shell::session::{Mode, Session};
+use game_shell::view::camera_at;
 use renderer::Camera;
 use server::Server;
 use transport::Connection;
 use transport::loopback::LoopbackConnector;
 use voxel_space::{VoxelCoordinate, WorldPosition};
 use voxunami_cave::content::CaveContent;
-use voxunami_cave::host::build_server;
-use voxunami_cave::session::{Mode, Session};
-use voxunami_cave::view::camera_at;
+use voxunami_cave::game::Cave;
 
 pub const VIEW_RADIUS: i64 = 3;
 pub const SEED: u64 = 2024;
 
-pub type Player = Session<Box<dyn Connection>>;
+pub type Player = Session<Box<dyn Connection>, Cave>;
 
 pub struct Rig {
     pub content: CaveContent,
@@ -27,7 +29,7 @@ impl Rig {
     pub fn new() -> Self {
         let content = CaveContent::new();
         let world = content.new_world(SEED);
-        let (server, connector) = build_server(&content, world, VIEW_RADIUS).unwrap();
+        let (server, connector) = build_server::<Cave>(&content, world, VIEW_RADIUS).unwrap();
         Self {
             content,
             server,
@@ -36,7 +38,7 @@ impl Rig {
     }
 
     pub fn with_world(content: CaveContent, world: world_storage::WorldData) -> Self {
-        let (server, connector) = build_server(&content, world, VIEW_RADIUS).unwrap();
+        let (server, connector) = build_server::<Cave>(&content, world, VIEW_RADIUS).unwrap();
         Self {
             content,
             server,
@@ -59,7 +61,7 @@ impl Rig {
     ) -> Player {
         let start = camera_at(position, yaw, pitch, VIEW_RADIUS);
         let server = &mut self.server;
-        Session::connect(connection, Mode::Playing, VIEW_RADIUS, start, || {
+        Session::<_, Cave>::connect(connection, Mode::Playing, VIEW_RADIUS, start, || {
             server.step();
         })
         .unwrap()

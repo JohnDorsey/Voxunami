@@ -2,6 +2,7 @@ use std::fmt::Debug;
 
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, Tick};
+use world_storage::Section;
 
 use crate::server_world::ServerWorld;
 
@@ -27,4 +28,10 @@ pub trait GameLogic: Debug + Send {
 
     /// Advances the game by one tick, after the tick's incoming messages.
     fn tick(&mut self, tick: Tick, world: &mut ServerWorld);
+
+    /// The game's own state that is not in the voxels (a score, a counter), as world file sections
+    /// to save with the world. A game restores it from the world's plugin sections when it is built.
+    fn save_sections(&self) -> Vec<Section> {
+        Vec::new()
+    }
 }

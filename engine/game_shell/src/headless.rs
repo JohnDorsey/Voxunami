@@ -8,22 +8,22 @@ use client::ClientError;
 use renderer::{GraphicsContext, VoxelRenderer, describe};
 use transport::Connection;
 
-use crate::content::{CaveContent, game_id};
+use crate::definition::GameDefinition;
 use crate::files::{open_recording, open_world, record_connection, recorded_game, save_world};
 use crate::host::build_server;
 use crate::options::{PlayOptions, ReplayOptions};
 use crate::session::{Mode, Session};
 use crate::view::{apply_updates, camera_at, configure_renderer};
 
-pub fn play(options: &PlayOptions) -> Result<(), String> {
+pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
     let view = &options.view;
     let context = GraphicsContext::headless(view.adapter).map_err(|error| error.to_string())?;
     println!("graphics adapter: {}", describe(&context.adapter));
 
-    let mut content = CaveContent::new();
+    let mut content = G::new_content();
     let world = open_world(&mut content, options.world_file.as_deref(), options.seed)?;
     let (mut server, connector) =
-        build_server(&content, world, view.view_radius).map_err(|error| error.to_string())?;
+        build_server::<G>(&content, world, view.view_radius).map_err(|error| error.to_string())?;
     let connection = connector.connect().map_err(|error| error.to_string())?;
     let connection: Box<dyn Connection> = match &options.record {
         Some(path) => record_connection(connection, path)?,
@@ -35,10 +35,11 @@ pub fn play(options: &PlayOptions) -> Result<(), String> {
         options.pitch_degrees,
         view.view_radius,
     );
-    let mut session = Session::connect(connection, Mode::Playing, view.view_radius, start, || {
-        server.step();
-    })
-    .map_err(|error| error.to_string())?;
+    let mut session =
+        Session::<_, G>::connect(connection, Mode::Playing, view.view_radius, start, || {
+            server.step();
+        })
+        .map_err(|error| error.to_string())?;
 
     let mut renderer = VoxelRenderer::new(&context, wgpu::TextureFormat::Rgba8UnormSrgb);
     configure_renderer(&mut renderer, session.content(), view.view_radius);
@@ -72,19 +73,20 @@ pub fn play(options: &PlayOptions) -> Result<(), String> {
     Ok(())
 }
 
-pub fn replay(options: &ReplayOptions) -> Result<(), String> {
+pub fn replay<G: GameDefinition>(options: &ReplayOptions) -> Result<(), String> {
     let view = &options.view;
     let game = recorded_game(&options.file)?;
-    if game != game_id() {
+    if game != G::id() {
         return Err(format!(
             "this recording was made by {game}, not {}",
-            game_id()
+            G::id()
         ));
     }
     let connection: Box<dyn Connection> = Box::new(open_recording(&options.file)?);
     let start = camera_at([0.0, 0.0, 0.0], 0.0, 0.0, view.view_radius);
-    let mut session = Session::connect(connection, Mode::Replaying, view.view_radius, start, || {})
-        .map_err(|error| error.to_string())?;
+    let mut session =
+        Session::<_, G>::connect(connection, Mode::Replaying, view.view_radius, start, || {})
+            .map_err(|error| error.to_string())?;
     let context = GraphicsContext::headless(view.adapter).map_err(|error| error.to_string())?;
     println!("graphics adapter: {}", describe(&context.adapter));
 
@@ -120,9 +122,9 @@ pub fn replay(options: &ReplayOptions) -> Result<(), String> {
 }
 
 /// Writes the screenshot and runs the benchmark, as asked.
-fn render_outputs<C: Connection>(
+fn render_outputs<C: Connection, G: GameDefinition>(
     renderer: &mut VoxelRenderer,
-    session: &Session<C>,
+    session: &Session<C, G>,
     view: &crate::options::ViewOptions,
     benchmark: bool,
 ) -> Result<(), String> {

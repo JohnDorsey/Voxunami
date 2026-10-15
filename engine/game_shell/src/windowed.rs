@@ -1,5 +1,5 @@
-//! The interactive game: a window, a fly camera, and block breaking and placing; or the same window
-//! playing a recording back in real time.
+//! The interactive game: a window, a fly camera, and whatever the game's inputs do; or the same
+//! window playing a recording back in real time.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-use crate::content::{CaveContent, game_id};
+use crate::definition::GameDefinition;
 use crate::files::{open_recording, open_world, record_connection, recorded_game, save_world};
 use crate::host::IntegratedServer;
 use crate::options::{PlayOptions, ReplayOptions, ViewOptions};
@@ -27,17 +27,15 @@ const MOVEMENT_SPEED: f32 = 24.0; // voxels per second
 const SPRINT_MULTIPLIER: f32 = 5.0;
 const MOUSE_SENSITIVITY: f32 = 0.0025; // radians per pixel
 const POSE_INTERVAL: Duration = Duration::from_millis(50);
-const PLACEABLE_BLOCKS: [&str; 3] = ["base_blocks:stone", "base_blocks:dirt", "base_blocks:grass"];
-
-type GameSession = Session<Box<dyn Connection>>;
+type GameSession<G> = Session<Box<dyn Connection>, G>;
 
 /// Plays: starts a server in this process, joins it, and runs the window until it closes. The world
 /// is saved on exit if a file was named.
-pub fn play(options: PlayOptions) -> Result<(), String> {
+pub fn play<G: GameDefinition>(options: PlayOptions) -> Result<(), String> {
     let view = options.view.clone();
-    let mut content = CaveContent::new();
+    let mut content = G::new_content();
     let world = open_world(&mut content, options.world_file.as_deref(), options.seed)?;
-    let host = IntegratedServer::start(&content, world, view.view_radius)
+    let host = IntegratedServer::start::<G>(&content, world, view.view_radius)
         .map_err(|error| error.to_string())?;
     let connection = host.connect().map_err(|error| error.to_string())?;
     let connection: Box<dyn Connection> = match &options.record {
@@ -50,12 +48,13 @@ pub fn play(options: PlayOptions) -> Result<(), String> {
         options.pitch_degrees,
         view.view_radius,
     );
-    let session = Session::connect(connection, Mode::Playing, view.view_radius, start, || {
-        std::thread::sleep(Duration::from_millis(1));
-    })
-    .map_err(|error| error.to_string())?;
+    let session =
+        Session::<_, G>::connect(connection, Mode::Playing, view.view_radius, start, || {
+            std::thread::sleep(Duration::from_millis(1));
+        })
+        .map_err(|error| error.to_string())?;
 
-    let (_session, failure) = run_window(session, &view)?;
+    let (_session, failure) = run_window::<G>(session, &view)?;
     let mut world = host.stop();
     if let Some(path) = &options.world_file {
         save_world(&content, &mut world, path)?;
@@ -65,31 +64,32 @@ pub fn play(options: PlayOptions) -> Result<(), String> {
 }
 
 /// Watches a recording in real time from the recorded player's point of view.
-pub fn replay(options: ReplayOptions) -> Result<(), String> {
+pub fn replay<G: GameDefinition>(options: ReplayOptions) -> Result<(), String> {
     let game = recorded_game(&options.file)?;
-    if game != game_id() {
+    if game != G::id() {
         return Err(format!(
             "this recording was made by {game}, not {}",
-            game_id()
+            G::id()
         ));
     }
     let view = options.view;
     let connection: Box<dyn Connection> = Box::new(open_recording(&options.file)?);
     let start = camera_at([0.0, 0.0, 0.0], 0.0, 0.0, view.view_radius);
-    let session = Session::connect(connection, Mode::Replaying, view.view_radius, start, || {})
-        .map_err(|error| error.to_string())?;
-    let (_, failure) = run_window(session, &view)?;
+    let session =
+        Session::<_, G>::connect(connection, Mode::Replaying, view.view_radius, start, || {})
+            .map_err(|error| error.to_string())?;
+    let (_, failure) = run_window::<G>(session, &view)?;
     failure.map_or(Ok(()), Err)
 }
 
 /// Runs the window. Returns the session, and what went wrong during play if something did.
-fn run_window(
-    session: GameSession,
+fn run_window<G: GameDefinition>(
+    session: GameSession<G>,
     view: &ViewOptions,
-) -> Result<(GameSession, Option<String>), String> {
+) -> Result<(GameSession<G>, Option<String>), String> {
     let event_loop = EventLoop::new().map_err(|error| error.to_string())?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = App {
+    let mut app = App::<G> {
         view: view.clone(),
         session: Some(session),
         viewer: None,
@@ -107,24 +107,23 @@ fn run_window(
     Ok((session, app.failure))
 }
 
-struct App {
+struct App<G: GameDefinition> {
     view: ViewOptions,
     /// Held until the window exists.
-    session: Option<GameSession>,
-    viewer: Option<Viewer>,
+    session: Option<GameSession<G>>,
+    viewer: Option<Viewer<G>>,
     failure: Option<String>,
 }
 
-struct Viewer {
+struct Viewer<G: GameDefinition> {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
     surface_configuration: wgpu::SurfaceConfiguration,
     context: GraphicsContext,
     renderer: VoxelRenderer,
-    session: GameSession,
+    session: GameSession<G>,
     keys: HashSet<KeyCode>,
     mouse_captured: bool,
-    selected_block: usize,
     started: Instant,
     last_frame: Instant,
     last_pose_sent: Instant,
@@ -137,14 +136,14 @@ struct Viewer {
     recording_ended: bool,
 }
 
-impl Viewer {
+impl<G: GameDefinition> Viewer<G> {
     fn new(
         event_loop: &ActiveEventLoop,
         view: &ViewOptions,
-        session: GameSession,
+        session: GameSession<G>,
     ) -> Result<Self, String> {
         let attributes = Window::default_attributes()
-            .with_title("Voxunami Cave")
+            .with_title(G::title())
             .with_inner_size(PhysicalSize::new(view.width, view.height));
         let window = Arc::new(
             event_loop
@@ -197,7 +196,6 @@ impl Viewer {
             session,
             keys: HashSet::new(),
             mouse_captured: false,
-            selected_block: 0,
             started: now,
             last_frame: now,
             last_pose_sent: now,
@@ -347,12 +345,9 @@ impl Viewer {
         let statistics = self.last_statistics;
         let mode = match self.session.mode() {
             Mode::Playing => format!(
-                "players {} | placing {}",
+                "players {} | {}",
                 self.session.players().len().max(1),
-                PLACEABLE_BLOCKS[self.selected_block]
-                    .split(':')
-                    .next_back()
-                    .unwrap_or_default()
+                G::status_text(&self.session)
             ),
             Mode::Replaying => format!(
                 "replay {}{}",
@@ -361,7 +356,8 @@ impl Viewer {
             ),
         };
         self.window.set_title(&format!(
-            "Voxunami Cave | {fps:.0} fps | drawn {}/{} bricks, {} quads | loading {} | {mode} | {}",
+            "{} | {fps:.0} fps | drawn {}/{} bricks, {} quads | loading {} | {mode} | {}",
+            G::title(),
             statistics.bricks_drawn,
             statistics.bricks_drawn + statistics.bricks_culled,
             statistics.quads_drawn,
@@ -371,7 +367,7 @@ impl Viewer {
     }
 }
 
-impl ApplicationHandler for App {
+impl<G: GameDefinition> ApplicationHandler for App<G> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.viewer.is_some() {
             return;
@@ -410,12 +406,10 @@ impl ApplicationHandler for App {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     match event.state {
                         ElementState::Pressed => {
-                            match code {
-                                KeyCode::Escape => viewer.set_mouse_captured(false),
-                                KeyCode::Digit1 => viewer.selected_block = 0,
-                                KeyCode::Digit2 => viewer.selected_block = 1,
-                                KeyCode::Digit3 => viewer.selected_block = 2,
-                                _ => {}
+                            if code == KeyCode::Escape {
+                                viewer.set_mouse_captured(false);
+                            } else if !viewer.keys.contains(&code) {
+                                G::key_pressed(&mut viewer.session, code);
                             }
                             viewer.keys.insert(code);
                         }
@@ -431,10 +425,8 @@ impl ApplicationHandler for App {
                 ..
             } => match (button, viewer.mouse_captured) {
                 (MouseButton::Left, false) => viewer.set_mouse_captured(true),
-                (MouseButton::Left, true) => viewer.session.break_block(),
-                (MouseButton::Right, true) => viewer
-                    .session
-                    .place_block(PLACEABLE_BLOCKS[viewer.selected_block]),
+                (MouseButton::Left, true) => G::primary_action(&mut viewer.session),
+                (MouseButton::Right, true) => G::secondary_action(&mut viewer.session),
                 _ => {}
             },
             WindowEvent::Focused(false) => {

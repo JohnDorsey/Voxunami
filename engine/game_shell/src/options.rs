@@ -1,21 +1,26 @@
-//! The command lines of the game: playing, and watching a recording.
+//! The command lines of a game: playing, and watching a recording.
 
 use std::path::PathBuf;
 
 use renderer::AdapterPreference;
 
-pub const PLAY_USAGE: &str = "\
-Voxunami Cave: fly through caverns and break and place blocks.
+use crate::definition::GameDefinition;
 
-Usage: voxunami cave [options]
-  --seed NUMBER                   terrain seed of a new world (default 2024)
+/// The help for playing `G`.
+pub fn play_usage<G: GameDefinition>() -> String {
+    let camera = G::default_camera();
+    format!(
+        "{title}: {summary}
+
+Usage: voxunami {command} [options]
+  --seed NUMBER                   terrain seed of a new world (default {seed})
   --world FILE                    load this world if it exists, and save to it on exit
   --record FILE                   record what you see, to watch later with `voxunami replay`
   --view-radius BRICKS            how far to see, in 32-voxel bricks (default 12)
   --adapter discrete|integrated   which GPU to use (default: best available)
   --size WIDTHxHEIGHT             window or image size (default 1280x720)
-  --camera X,Y,Z                  start position in voxels (default 16,110,16)
-  --yaw DEGREES --pitch DEGREES   start orientation (default 0, -15)
+  --camera X,Y,Z                  start position in voxels (default {x},{y},{z})
+  --yaw DEGREES --pitch DEGREES   start orientation (default {yaw}, {pitch})
   --screenshot FILE.png           render one image without a window and exit
   --benchmark                     time frames without a window and exit
   --no-vsync                      do not wait for the display refresh
@@ -23,11 +28,24 @@ Usage: voxunami cave [options]
   --help                          show this text
 
 Controls: click the window to capture the mouse (Esc releases it). W A S D move, Space and Shift
-go up and down, Ctrl moves five times faster. Left click breaks the block you look at; right click
-places the selected block; 1, 2, 3 select stone, dirt, grass.";
+go up and down, Ctrl moves five times faster.
+{controls}",
+        title = G::title(),
+        summary = G::summary(),
+        command = G::command(),
+        seed = G::default_seed(),
+        x = camera.position[0],
+        y = camera.position[1],
+        z = camera.position[2],
+        yaw = camera.yaw_degrees,
+        pitch = camera.pitch_degrees,
+        controls = G::controls(),
+    )
+}
 
-pub const REPLAY_USAGE: &str = "\
-Watch a recording made with `voxunami cave --record`.
+/// The help for watching a recording.
+pub fn replay_usage() -> String {
+    "Watch a recording made with `voxunami GAME --record`.
 
 Usage: voxunami replay FILE [options]
   --view-radius BRICKS            how far to see, in bricks (default 12; at most what was recorded)
@@ -39,7 +57,9 @@ Usage: voxunami replay FILE [options]
   --exit-after SECONDS            close the window after this long
   --help                          show this text
 
-The recording plays in real time, from the recorded player's point of view.";
+The recording plays in real time, from the recorded player's point of view."
+        .to_owned()
+}
 
 /// What both commands share.
 #[derive(Clone, Debug, PartialEq)]
@@ -79,16 +99,18 @@ pub struct PlayOptions {
     pub benchmark: bool,
 }
 
-impl Default for PlayOptions {
-    fn default() -> Self {
+impl PlayOptions {
+    /// The options a command line without arguments gives for game `G`.
+    pub fn defaults_for<G: GameDefinition>() -> Self {
+        let camera = G::default_camera();
         Self {
             view: ViewOptions::default(),
-            seed: 2024,
+            seed: G::default_seed(),
             world_file: None,
             record: None,
-            camera: [16.0, 110.0, 16.0],
-            yaw_degrees: 0.0,
-            pitch_degrees: -15.0,
+            camera: camera.position,
+            yaw_degrees: camera.yaw_degrees,
+            pitch_degrees: camera.pitch_degrees,
             benchmark: false,
         }
     }
@@ -157,10 +179,10 @@ fn parse_view_flag(
     Ok(true)
 }
 
-pub fn parse_play(
+pub fn parse_play<G: GameDefinition>(
     arguments: impl IntoIterator<Item = String>,
 ) -> Result<Parsed<PlayOptions>, String> {
-    let mut options = PlayOptions::default();
+    let mut options = PlayOptions::defaults_for::<G>();
     let mut arguments = arguments.into_iter();
     while let Some(flag) = arguments.next() {
         if flag == "--help" || flag == "-h" {
@@ -237,13 +259,14 @@ pub fn parse_replay(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::ExampleGame;
 
     fn arguments(text: &str) -> Vec<String> {
         text.split_whitespace().map(str::to_owned).collect()
     }
 
     fn play(text: &str) -> PlayOptions {
-        match parse_play(arguments(text)).unwrap() {
+        match parse_play::<ExampleGame>(arguments(text)).unwrap() {
             Parsed::Run(options) => options,
             Parsed::ShowHelp => panic!("expected options"),
         }
@@ -251,7 +274,7 @@ mod tests {
 
     #[test]
     fn no_arguments_gives_the_defaults() {
-        assert_eq!(play(""), PlayOptions::default());
+        assert_eq!(play(""), PlayOptions::defaults_for::<ExampleGame>());
     }
 
     #[test]
@@ -310,9 +333,12 @@ mod tests {
 
     #[test]
     fn help_wins() {
-        assert_eq!(parse_play(arguments("--help")).unwrap(), Parsed::ShowHelp);
         assert_eq!(
-            parse_play(arguments("--seed 3 -h")).unwrap(),
+            parse_play::<ExampleGame>(arguments("--help")).unwrap(),
+            Parsed::ShowHelp
+        );
+        assert_eq!(
+            parse_play::<ExampleGame>(arguments("--seed 3 -h")).unwrap(),
             Parsed::ShowHelp
         );
         assert_eq!(
@@ -323,7 +349,7 @@ mod tests {
 
     #[test]
     fn bad_input_is_reported_with_the_offending_flag() {
-        let error = |text: &str| parse_play(arguments(text)).unwrap_err();
+        let error = |text: &str| parse_play::<ExampleGame>(arguments(text)).unwrap_err();
         assert!(error("--bogus").contains("--bogus"));
         assert!(error("--seed").contains("--seed needs a value"));
         assert!(error("--seed abc").contains("--seed"));
@@ -338,5 +364,16 @@ mod tests {
                 .unwrap_err()
                 .contains("--bogus")
         );
+    }
+
+    #[test]
+    fn the_usage_text_names_the_game_and_its_defaults() {
+        let usage = play_usage::<ExampleGame>();
+        assert!(usage.contains("Example: a game for tests"));
+        assert!(usage.contains("voxunami example [options]"));
+        assert!(usage.contains("(default 2024)"));
+        assert!(usage.contains("(default 16,110,16)"));
+        assert!(usage.contains("Nothing else."));
+        assert!(replay_usage().contains("voxunami replay FILE"));
     }
 }

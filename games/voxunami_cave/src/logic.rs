@@ -1,19 +1,17 @@
-//! What the Voxunami Cave server does: lets players move and change blocks, and tells everyone
+//! What the Voxunami Cave server does: lets players change blocks within reach, and tells everyone
 //! where everyone is.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
+use game_shell::{PlayerPose, PoseBook};
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, Tick};
-use server::{Audience, GameLogic, ServerWorld};
+use server::{GameLogic, ServerWorld};
 use voxel_grid::ChannelIndex;
 use voxel_space::{VoxelCoordinate, WorldPosition};
 
 use crate::content::CaveContent;
-use crate::messages::{
-    PlayerPose, decode_pose, decode_set_block, encode_players, players_kind, pose_kind,
-    set_block_kind,
-};
+use crate::messages::{decode_set_block, set_block_kind};
 
 /// How far from a player, in voxels, a block can be changed.
 pub const REACH: f64 = 10.0;
@@ -22,8 +20,7 @@ pub const REACH: f64 = 10.0;
 pub struct CaveLogic {
     block_ids: HashMap<NamespacedId, u32>,
     block_channel: ChannelIndex,
-    poses: BTreeMap<ClientId, PlayerPose>,
-    poses_changed: bool,
+    poses: PoseBook,
 }
 
 impl CaveLogic {
@@ -37,8 +34,7 @@ impl CaveLogic {
         Self {
             block_ids,
             block_channel: content.block_channel(),
-            poses: BTreeMap::new(),
-            poses_changed: false,
+            poses: PoseBook::new(),
         }
     }
 
@@ -49,10 +45,11 @@ impl CaveLogic {
         block: &NamespacedId,
         world: &mut ServerWorld,
     ) {
-        let (Some(pose), Some(&raw)) = (self.poses.get(&client), self.block_ids.get(block)) else {
+        let (Some(pose), Some(&raw)) = (self.poses.pose_of(client), self.block_ids.get(block))
+        else {
             return; // a player who has not said where they are, or a block this server lacks
         };
-        if distance_to_voxel(pose.position, at) > REACH {
+        if distance_to_voxel(pose, at) > REACH {
             return;
         }
         // Terrain this server cannot generate cannot be changed; the request is dropped.
@@ -60,8 +57,9 @@ impl CaveLogic {
     }
 }
 
-/// The distance in voxels from a position to the centre of a voxel.
-fn distance_to_voxel(position: WorldPosition, voxel: VoxelCoordinate) -> f64 {
+/// The distance in voxels from a player to the centre of a voxel.
+fn distance_to_voxel(pose: &PlayerPose, voxel: VoxelCoordinate) -> f64 {
+    let position: WorldPosition = pose.position;
     let brick = position.brick();
     let offset = position.offset();
     let along =
@@ -78,9 +76,7 @@ impl GameLogic for CaveLogic {
     fn client_joined(&mut self, _client: ClientId, _world: &mut ServerWorld) {}
 
     fn client_left(&mut self, client: ClientId, _world: &mut ServerWorld) {
-        if self.poses.remove(&client).is_some() {
-            self.poses_changed = true;
-        }
+        self.poses.client_left(client);
     }
 
     fn message_received(
@@ -90,13 +86,10 @@ impl GameLogic for CaveLogic {
         payload: &[u8],
         world: &mut ServerWorld,
     ) {
-        if *kind == pose_kind() {
-            if let Ok(pose) = decode_pose(payload)
-                && self.poses.insert(client, pose) != Some(pose)
-            {
-                self.poses_changed = true;
-            }
-        } else if *kind == set_block_kind()
+        if self.poses.handle_message(client, kind, payload) {
+            return;
+        }
+        if *kind == set_block_kind()
             && let Ok(request) = decode_set_block(payload)
         {
             self.set_block(client, request.at, &request.block, world);
@@ -105,10 +98,6 @@ impl GameLogic for CaveLogic {
     }
 
     fn tick(&mut self, _tick: Tick, world: &mut ServerWorld) {
-        if self.poses_changed {
-            let players: Vec<_> = self.poses.iter().map(|(&c, &p)| (c, p)).collect();
-            world.send(Audience::Everyone, players_kind(), encode_players(&players));
-            self.poses_changed = false;
-        }
+        self.poses.tell_everyone(world);
     }
 }

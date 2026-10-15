@@ -632,6 +632,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "game_shell"
+version = "0.0.0"
+dependencies = [
+ "client",
+ "content_registry",
+ "glam",
+ "namespaced_id",
+ "player_presence",
+ "png",
+ "proptest",
+ "protocol",
+ "renderer",
+ "replay",
+ "server",
+ "thiserror 2.0.21",
+ "transport",
+ "voxel_grid",
+ "voxel_space",
+ "wgpu",
+ "winit",
+ "world_storage",
+ "world_view",
+]
+
+[[package]]
 name = "gethostname"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1466,6 +1491,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
+name = "player_presence"
+version = "0.0.0"
+dependencies = [
+ "binary_codec",
+ "namespaced_id",
+ "proptest",
+ "protocol",
+ "server",
+ "voxel_space",
+]
+
+[[package]]
 name = "png"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2249,22 +2286,18 @@ dependencies = [
  "binary_codec",
  "client",
  "content_registry",
- "glam",
+ "game_shell",
  "namespaced_id",
- "png",
  "proptest",
  "protocol",
- "region_octree",
  "renderer",
  "replay",
  "server",
  "terrain",
- "thiserror 2.0.21",
  "transport",
  "voxel_grid",
  "voxel_space",
  "wgpu",
- "winit",
  "world_storage",
  "world_view",
 ]

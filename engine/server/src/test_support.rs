@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, Tick};
+use world_storage::Section;
 
 use crate::{GameLogic, ServerWorld};
 
@@ -33,6 +34,7 @@ pub struct ScriptedLogic {
     on_tick: Option<TickAction>,
     on_message: Option<MessageAction>,
     on_join: Option<ClientAction>,
+    saved_sections: Vec<Section>,
 }
 
 impl fmt::Debug for ScriptedLogic {
@@ -65,6 +67,12 @@ impl ScriptedLogic {
         action: impl FnMut(ClientId, &mut ServerWorld) + Send + 'static,
     ) -> Self {
         self.on_join = Some(Box::new(action));
+        self
+    }
+
+    /// A section the logic saves with the world, as a game saves its own state.
+    pub fn saving(mut self, section: Section) -> Self {
+        self.saved_sections.push(section);
         self
     }
 
@@ -108,6 +116,10 @@ impl GameLogic for ScriptedLogic {
         if let Some(action) = &mut self.on_message {
             action(client, kind, payload, world);
         }
+    }
+
+    fn save_sections(&self) -> Vec<Section> {
+        self.saved_sections.clone()
     }
 
     fn tick(&mut self, tick: Tick, world: &mut ServerWorld) {

@@ -1,4 +1,4 @@
-//! The files the game reads and writes: worlds and recordings.
+//! The files a game reads and writes: worlds and recordings.
 
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
@@ -10,11 +10,11 @@ use transport::Connection;
 use world_storage::file::write_atomically;
 use world_storage::{ParsedWorld, WorldData};
 
-use crate::content::CaveContent;
+use crate::definition::GameContent;
 
 /// The world in `path` if the file exists, else a new world with `seed`.
-pub fn open_world(
-    content: &mut CaveContent,
+pub fn open_world<Content: GameContent>(
+    content: &mut Content,
     path: Option<&Path>,
     seed: u64,
 ) -> Result<WorldData, String> {
@@ -39,7 +39,11 @@ pub fn open_world(
 }
 
 /// Saves the world to `path`, all or nothing.
-pub fn save_world(content: &CaveContent, world: &mut WorldData, path: &Path) -> Result<(), String> {
+pub fn save_world<Content: GameContent>(
+    content: &Content,
+    world: &mut WorldData,
+    path: &Path,
+) -> Result<(), String> {
     world.prune_unmodified_overrides();
     let bytes = world
         .save(&content.registries())

@@ -123,9 +123,15 @@ impl Server {
         self.sessions.keys().copied()
     }
 
-    /// Ends the server and returns its world, for saving.
+    /// Ends the server and returns its world, for saving, with the game's own state in its plugin
+    /// sections.
     pub fn into_world(self) -> WorldData {
-        self.world.into_data()
+        let sections = self.logic.save_sections();
+        let mut world = self.world.into_data();
+        for section in sections {
+            world.set_opaque_section(section);
+        }
+        world
     }
 
     /// Runs one tick.

@@ -6,6 +6,7 @@ use base_blocks::{
     BaseBlocks, block_channel_identifier, block_registry_kind, rolling_hills_generator_identifier,
 };
 use content_registry::IdentifierRegistry;
+use game_shell::GameContent;
 use namespaced_id::NamespacedId;
 use terrain::WorldTerrain;
 use voxel_grid::{ChannelIndex, Grid, GridLayout};
@@ -52,9 +53,23 @@ impl CaveContent {
             .channel_index(&block_channel_identifier())
             .expect("the layout has the block channel")
     }
+}
+
+impl GameContent for CaveContent {
+    fn material_channel(&self) -> ChannelIndex {
+        self.block_channel()
+    }
+
+    fn palette(&self) -> Vec<[f32; 3]> {
+        self.blocks.palette()
+    }
+
+    fn opacity_table(&self) -> Vec<bool> {
+        self.blocks.opacity_table()
+    }
 
     /// A new world with this seed: rolling hills everywhere, nothing edited.
-    pub fn new_world(&self, seed: u64) -> WorldData {
+    fn new_world(&self, seed: u64) -> WorldData {
         let layout = self.layout();
         let generators = self.blocks.terrain_generators(seed, self.block_channel());
         let default = generators
@@ -67,7 +82,7 @@ impl CaveContent {
 
     /// What loading a world file, or a server's description of a world, needs. `seed` is the
     /// world's: terrain generators are built from it.
-    pub fn load_context(&mut self, seed: u64) -> LoadContext<'_> {
+    fn load_context(&mut self, seed: u64) -> LoadContext<'_> {
         let block_channel = self.block_channel();
         let generators = self.blocks.terrain_generators(seed, block_channel);
         LoadContext {
@@ -80,7 +95,7 @@ impl CaveContent {
     }
 
     /// The content tables a save or a description needs.
-    pub fn registries(&self) -> Vec<(NamespacedId, &dyn IdentifierRegistry)> {
+    fn registries(&self) -> Vec<(NamespacedId, &dyn IdentifierRegistry)> {
         vec![(block_registry_kind(), &self.blocks.blocks)]
     }
 }
