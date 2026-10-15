@@ -1,0 +1,19 @@
+[package]
+name = "content_registry"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Maps stable namespaced identifiers to small runtime ids, keeping placeholders for content whose plugin is missing."
+
+[dependencies]
+namespaced_id.workspace = true
+rustc-hash.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+namespaced_id = { workspace = true, features = ["test-support"] }
+proptest.workspace = true
+
+[lints]
+workspace = true

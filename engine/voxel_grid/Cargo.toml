@@ -1,0 +1,26 @@
+[package]
+name = "voxel_grid"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Sparse grids of bricks holding palette-compressed voxel channels."
+
+[features]
+# Fixtures and property-test strategies for downstream crates' tests.
+test-support = ["dep:proptest", "namespaced_id/test-support", "voxel_space/test-support"]
+
+[dependencies]
+namespaced_id.workspace = true
+voxel_space.workspace = true
+rustc-hash.workspace = true
+thiserror.workspace = true
+proptest = { workspace = true, optional = true }
+
+[dev-dependencies]
+namespaced_id = { workspace = true, features = ["test-support"] }
+voxel_space = { workspace = true, features = ["test-support"] }
+proptest.workspace = true
+
+[lints]
+workspace = true

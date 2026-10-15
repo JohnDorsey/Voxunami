@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+
+# Generated at runtime
+/worlds
+/replays
+/videos
+
+.claude/settings.local.json

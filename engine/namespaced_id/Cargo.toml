@@ -1,0 +1,21 @@
+[package]
+name = "namespaced_id"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Stable `namespace:name` identifiers used in saved files, network messages and registries."
+
+[features]
+# Property-test strategies for downstream crates' tests.
+test-support = ["dep:proptest"]
+
+[dependencies]
+thiserror.workspace = true
+proptest = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

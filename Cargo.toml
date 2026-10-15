@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = ["engine/*"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+[workspace.dependencies]
+# Internal crates
+content_registry = { path = "engine/content_registry" }
+namespaced_id = { path = "engine/namespaced_id" }
+region_octree = { path = "engine/region_octree" }
+terrain = { path = "engine/terrain" }
+voxel_grid = { path = "engine/voxel_grid" }
+voxel_space = { path = "engine/voxel_space" }
+
+# External crates
+proptest = "1"
+rustc-hash = "2"
+thiserror = "2"
+
+[workspace.lints.rust]
+# Crates that genuinely need unsafe (e.g. SIMD kernels) opt in locally with a justification.
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+
+# Voxel code is far too slow unoptimized to test or play; keep debug assertions and overflow checks on.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
