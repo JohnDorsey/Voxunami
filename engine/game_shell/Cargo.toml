@@ -21,6 +21,7 @@ voxel_space.workspace = true
 world_storage.workspace = true
 world_view.workspace = true
 thiserror.workspace = true
+ctrlc = "3"
 glam = "0.34.1"
 png = "0.18.1"
 wgpu = "30.0.1"

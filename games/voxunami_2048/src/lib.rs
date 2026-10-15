@@ -29,6 +29,11 @@ pub fn run_play(arguments: impl IntoIterator<Item = String>) -> Result<(), Strin
     game_shell::run_play::<Game2048>(arguments)
 }
 
+/// Runs a dedicated server for the game. `arguments` are the command line after the game's name.
+pub fn run_serve(arguments: impl IntoIterator<Item = String>) -> Result<(), String> {
+    game_shell::run_serve::<Game2048>(arguments)
+}
+
 /// Watches a recording of the game. `arguments` are the command line after the command name.
 pub fn run_replay(arguments: impl IntoIterator<Item = String>) -> Result<(), String> {
     game_shell::run_replay::<Game2048>(arguments)

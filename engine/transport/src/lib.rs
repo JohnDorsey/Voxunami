@@ -2,12 +2,13 @@
 //!
 //! A *frame* is one encoded protocol message, as bytes. A [`Connection`] moves frames in order and
 //! without loss between two ends; it knows nothing about what they mean. Singleplayer and tests use
-//! the in-process [`loopback`]; networked play will add a socket-based connection behind the same
-//! interface, so the server and client code do not change.
+//! the in-process [`loopback`]; networked play uses [`tcp`]. Both sit behind the same interface, so
+//! the server and client code do not change.
 //!
 //! Connections never block. A program that handles many of them polls each in turn once per tick.
 
 pub mod loopback;
+pub mod tcp;
 
 use std::fmt::Debug;
 
@@ -40,4 +41,36 @@ impl Connection for Box<dyn Connection> {
 pub trait Listener: Debug + Send {
     /// The next client that has connected since the last call, if any. Never blocks.
     fn accept(&mut self) -> Option<Box<dyn Connection>>;
+}
+
+/// Several places to accept clients from at once, such as the player at this computer (loopback)
+/// and players on the network (TCP).
+#[derive(Debug, Default)]
+pub struct ListenerSet {
+    listeners: Vec<Box<dyn Listener>>,
+}
+
+impl ListenerSet {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with(mut self, listener: impl Listener + 'static) -> Self {
+        self.listeners.push(Box::new(listener));
+        self
+    }
+
+    pub fn with_boxed(mut self, listener: Box<dyn Listener>) -> Self {
+        self.listeners.push(listener);
+        self
+    }
+}
+
+impl Listener for ListenerSet {
+    /// Asks each listener in the order they were added.
+    fn accept(&mut self) -> Option<Box<dyn Connection>> {
+        self.listeners
+            .iter_mut()
+            .find_map(|listener| listener.accept())
+    }
 }

@@ -16,6 +16,9 @@ Usage: voxunami {command} [options]
   --seed NUMBER                   terrain seed of a new world (default {seed})
   --world FILE                    load this world if it exists, and save to it on exit
   --record FILE                   record what you see, to watch later with `voxunami replay`
+  --host [ADDRESS]                also let others join over the network (default port {port})
+  --join ADDRESS                  join a game hosted elsewhere instead of starting one
+  --autosave SECONDS              save the world to --world this often while playing
   --view-radius BRICKS            how far to see, in 32-voxel bricks (default 12)
   --adapter discrete|integrated   which GPU to use (default: best available)
   --size WIDTHxHEIGHT             window or image size (default 1280x720)
@@ -40,6 +43,29 @@ go up and down, Ctrl moves five times faster.
         yaw = camera.yaw_degrees,
         pitch = camera.pitch_degrees,
         controls = G::controls(),
+        port = crate::host::DEFAULT_PORT,
+    )
+}
+
+/// The help for running a server with no window.
+pub fn serve_usage<G: GameDefinition>() -> String {
+    format!(
+        "{title}: run a dedicated server.
+
+Usage: voxunami serve {command} [options]
+  --listen ADDRESS                where to accept players (default 0.0.0.0:{port})
+  --seed NUMBER                   terrain seed of a new world (default {seed})
+  --world FILE                    load this world if it exists, and save to it
+  --autosave SECONDS              save the world this often (default 60 with --world)
+  --view-radius BRICKS            the view radius players are expected to use (default 12)
+  --help                          show this text
+
+Players join with `voxunami {command} --join HOST[:PORT]`. The server saves on Ctrl-C.
+There are no passwords or encryption: run it on networks you trust.",
+        title = G::title(),
+        command = G::command(),
+        port = crate::host::DEFAULT_PORT,
+        seed = G::default_seed(),
     )
 }
 
@@ -93,6 +119,11 @@ pub struct PlayOptions {
     pub seed: u64,
     pub world_file: Option<PathBuf>,
     pub record: Option<PathBuf>,
+    /// Accept players over the network here, as well as the one at this computer.
+    pub host: Option<String>,
+    /// Join a server here instead of running one.
+    pub join: Option<String>,
+    pub autosave_seconds: Option<f32>,
     pub camera: [f64; 3],
     pub yaw_degrees: f32,
     pub pitch_degrees: f32,
@@ -108,6 +139,9 @@ impl PlayOptions {
             seed: G::default_seed(),
             world_file: None,
             record: None,
+            host: None,
+            join: None,
+            autosave_seconds: None,
             camera: camera.position,
             yaw_degrees: camera.yaw_degrees,
             pitch_degrees: camera.pitch_degrees,
@@ -200,6 +234,9 @@ pub fn parse_play<G: GameDefinition>(
             "--seed" => options.seed = parse_number(&flag, &value(&flag)?)?,
             "--world" => options.world_file = Some(PathBuf::from(value(&flag)?)),
             "--record" => options.record = Some(PathBuf::from(value(&flag)?)),
+            "--host" => options.host = Some(complete_address(&value(&flag)?, "0.0.0.0")),
+            "--join" => options.join = Some(complete_address(&value(&flag)?, "127.0.0.1")),
+            "--autosave" => options.autosave_seconds = Some(parse_number(&flag, &value(&flag)?)?),
             "--camera" => {
                 let text = value(&flag)?;
                 let parts: Vec<&str> = text.split(',').collect();
@@ -218,7 +255,95 @@ pub fn parse_play<G: GameDefinition>(
             other => return Err(format!("unknown option {other:?}; try --help")),
         }
     }
+    if options.join.is_some()
+        && (options.host.is_some()
+            || options.world_file.is_some()
+            || options.autosave_seconds.is_some())
+    {
+        return Err("--join plays on someone else's server: it cannot be combined with --host, --world or --autosave".to_owned());
+    }
+    if options.autosave_seconds.is_some() && options.world_file.is_none() {
+        return Err("--autosave needs --world to say where to save".to_owned());
+    }
+    if options
+        .autosave_seconds
+        .is_some_and(|seconds| seconds <= 0.0)
+    {
+        return Err("--autosave must be a positive number of seconds".to_owned());
+    }
     Ok(Parsed::Run(options))
+}
+
+/// What a dedicated server was asked for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ServeOptions {
+    pub listen: String,
+    pub seed: u64,
+    pub world_file: Option<PathBuf>,
+    pub autosave_seconds: f32,
+    pub view_radius: i64,
+}
+
+pub fn parse_serve<G: GameDefinition>(
+    arguments: impl IntoIterator<Item = String>,
+) -> Result<Parsed<ServeOptions>, String> {
+    let mut options = ServeOptions {
+        listen: format!("0.0.0.0:{}", crate::host::DEFAULT_PORT),
+        seed: G::default_seed(),
+        world_file: None,
+        autosave_seconds: 60.0,
+        view_radius: ViewOptions::default().view_radius,
+    };
+    let mut arguments = arguments.into_iter();
+    while let Some(flag) = arguments.next() {
+        let mut value = |flag: &str| {
+            arguments
+                .next()
+                .ok_or_else(|| format!("{flag} needs a value"))
+        };
+        match flag.as_str() {
+            "--help" | "-h" => return Ok(Parsed::ShowHelp),
+            "--listen" => options.listen = complete_address(&value(&flag)?, "0.0.0.0"),
+            "--seed" => options.seed = parse_number(&flag, &value(&flag)?)?,
+            "--world" => options.world_file = Some(PathBuf::from(value(&flag)?)),
+            "--autosave" => {
+                options.autosave_seconds = parse_number(&flag, &value(&flag)?)?;
+                if options.autosave_seconds <= 0.0 {
+                    return Err("--autosave must be a positive number of seconds".to_owned());
+                }
+            }
+            "--view-radius" => {
+                options.view_radius = parse_number(&flag, &value(&flag)?)?;
+                if !(1..=16).contains(&options.view_radius) {
+                    return Err("--view-radius must be between 1 and 16".to_owned());
+                }
+            }
+            other => return Err(format!("unknown option {other:?}; try --help")),
+        }
+    }
+    Ok(Parsed::Run(options))
+}
+
+/// An address as typed, made complete: with the default port added if it has none
+/// (`example.org` becomes `example.org:24816`), and a bare port number such as `1234` meaning port
+/// 1234 on `host_for_bare_port`.
+pub fn complete_address(text: &str, host_for_bare_port: &str) -> String {
+    if let Ok(port) = text.parse::<u16>() {
+        return format!("{host_for_bare_port}:{port}");
+    }
+    let has_port = match text.rsplit_once(':') {
+        Some((host, port)) => {
+            port.parse::<u16>().is_ok() && (!host.contains(':') || host.ends_with(']'))
+        }
+        None => false,
+    };
+    if has_port {
+        text.to_owned()
+    } else if text.contains(':') && !text.starts_with('[') {
+        format!("[{text}]:{}", crate::host::DEFAULT_PORT) // a bare IPv6 address
+    } else {
+        format!("{text}:{}", crate::host::DEFAULT_PORT)
+    }
 }
 
 pub fn parse_replay(
@@ -282,7 +407,7 @@ mod tests {
         let parsed = play(
             "--adapter integrated --view-radius 8 --seed 7 --size 640x360 --camera 1.5,2,-3 \
              --yaw 90 --pitch -45 --screenshot out.png --benchmark --no-vsync --exit-after 2.5 \
-             --world w.voxunami --record r.voxreplay",
+             --world w.voxunami --record r.voxreplay --host 4000 --autosave 30",
         );
         assert_eq!(
             parsed,
@@ -299,6 +424,9 @@ mod tests {
                 seed: 7,
                 world_file: Some(PathBuf::from("w.voxunami")),
                 record: Some(PathBuf::from("r.voxreplay")),
+                host: Some("0.0.0.0:4000".to_owned()),
+                join: None,
+                autosave_seconds: Some(30.0),
                 camera: [1.5, 2.0, -3.0],
                 yaw_degrees: 90.0,
                 pitch_degrees: -45.0,
@@ -364,6 +492,72 @@ mod tests {
                 .unwrap_err()
                 .contains("--bogus")
         );
+    }
+
+    #[test]
+    fn addresses_are_completed_the_way_people_type_them() {
+        let local = |text: &str| complete_address(text, "127.0.0.1");
+        assert_eq!(local("example.org"), "example.org:24816");
+        assert_eq!(local("example.org:99"), "example.org:99");
+        assert_eq!(local("192.168.1.5"), "192.168.1.5:24816");
+        assert_eq!(local("192.168.1.5:7000"), "192.168.1.5:7000");
+        assert_eq!(local("7000"), "127.0.0.1:7000");
+        assert_eq!(complete_address("7000", "0.0.0.0"), "0.0.0.0:7000");
+        assert_eq!(local("[::1]:7000"), "[::1]:7000");
+        assert_eq!(local("::1"), "[::1]:24816");
+        assert_eq!(local("localhost"), "localhost:24816");
+    }
+
+    #[test]
+    fn joining_and_hosting_are_read_and_do_not_mix_with_what_only_a_host_does() {
+        let joined = play("--join example.org");
+        assert_eq!(joined.join.as_deref(), Some("example.org:24816"));
+        assert_eq!(joined.host, None);
+        let hosted = play("--host 0.0.0.0:5000 --world w --autosave 5");
+        assert_eq!(hosted.host.as_deref(), Some("0.0.0.0:5000"));
+        let error = |text: &str| parse_play::<ExampleGame>(arguments(text)).unwrap_err();
+        for combined in [
+            "--join a --host b",
+            "--join a --world w",
+            "--join a --autosave 1",
+        ] {
+            assert!(error(combined).contains("--join"), "{combined}");
+        }
+        assert!(error("--autosave 5").contains("--world"));
+        assert!(error("--world w --autosave 0").contains("positive"));
+        assert!(error("--join").contains("needs a value"));
+    }
+
+    #[test]
+    fn a_dedicated_server_reads_its_options() {
+        let parse = |text: &str| parse_serve::<ExampleGame>(arguments(text));
+        let Parsed::Run(defaults) = parse("").unwrap() else {
+            panic!("expected options")
+        };
+        assert_eq!(defaults.listen, "0.0.0.0:24816");
+        assert_eq!(defaults.seed, 2024);
+        assert_eq!(defaults.autosave_seconds, 60.0);
+        let Parsed::Run(options) =
+            parse("--listen 9000 --seed 5 --world w.voxunami --autosave 10 --view-radius 6")
+                .unwrap()
+        else {
+            panic!("expected options")
+        };
+        assert_eq!(
+            options,
+            ServeOptions {
+                listen: "0.0.0.0:9000".to_owned(),
+                seed: 5,
+                world_file: Some(PathBuf::from("w.voxunami")),
+                autosave_seconds: 10.0,
+                view_radius: 6,
+            }
+        );
+        assert_eq!(parse("--help").unwrap(), Parsed::ShowHelp);
+        assert!(parse("--bogus").unwrap_err().contains("--bogus"));
+        assert!(parse("--autosave -1").unwrap_err().contains("positive"));
+        assert!(parse("--view-radius 99").unwrap_err().contains("between"));
+        assert!(serve_usage::<ExampleGame>().contains("voxunami serve example"));
     }
 
     #[test]

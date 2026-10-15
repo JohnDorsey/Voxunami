@@ -14,7 +14,7 @@ use crate::session::Session;
 
 /// A game's plugins, as the shell needs them to show and build worlds. Both the server and every
 /// client have one.
-pub trait GameContent: Debug {
+pub trait GameContent: Debug + Send {
     /// The channel holding what each voxel is, which is what gets drawn.
     fn material_channel(&self) -> ChannelIndex;
 
@@ -49,7 +49,7 @@ pub struct CameraStart {
 /// singleplayer server, joining it, streaming the world to the screen, screenshots, recording and
 /// replay. The game says what it is, how its server behaves, and what the player's inputs do.
 pub trait GameDefinition: Sized + 'static {
-    type Content: GameContent;
+    type Content: GameContent + 'static;
     /// What the client remembers between messages and clicks: a selected block, a score.
     type ClientState: Default + Debug;
 

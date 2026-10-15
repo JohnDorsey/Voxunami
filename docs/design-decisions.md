@@ -57,6 +57,12 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   source value for that block is part of building the lighting system.
 - Light that reaches 255 blocks crosses many bricks, so updates need the phased-tick rule's brick-boundary handling.
 
+## Decided (2048, later)
+- Voxunami 2048 is to become infinite: a landscape made of randomly numbered blocks. A player pushes individual blocks;
+  a pushed block keeps moving until it hits another block, and merges with it if they are identical. The first version
+  (a 4 x 4 x 4 board with push plates, built in Phase 2) is a stand-in. Moving blocks need tick-by-tick simulation across
+  bricks, so this is where the phased-tick rule (see Proposed) gets decided and used.
+
 ## Proposed
 - Rust, wgpu, mesh-based GPU-driven rendering, nested clipmap LOD shells.
 - Everything with voxels is a `Grid`: sparse, chunked, with a rigid transform. Terrain is the infinite root grid
@@ -76,7 +82,7 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - Physics: Rapier (rapier3d 0.36.1) behind a Voxunami adapter crate, with `enhanced-determinism`, single-threaded stepping
   on the server, a local floating-origin frame, large merged voxel colliders for terrain, and gravity, buoyancy and
   drag applied as per-body forces. Evidence and caveats are in `docs/physics-spike.md`. Awaiting the owner's confirmation.
-- 2048 interpretation (the owner may change it): "pushing tiles with tools" is a push plate per face of the board; the
+- 2048 first version (built; to be replaced by the infinite design under "Decided (2048, later)"): "pushing tiles with tools" is a push plate per face of the board; the
   tool is the click. Tiles are 4-voxel cubes, colours step around the hues, equal tiles merge once per push, a 2 appears
   after every push that changed anything (a 4 one time in ten), the game ends when no push changes the board.
 - Network stream (`docs/protocol-and-replay.md`): clients tell the server a box of bricks to watch; the server sends
@@ -132,6 +138,14 @@ Phase 1d (saving):
 - `terrain`: `WorldTerrain` exposes its configuration and can restore saved assignments.
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
+
+Phase 3 (the network):
+- `transport::tcp`: `TcpConnection` and `TcpServerListener` (length-prefixed frames, never blocking, a bounded queue per
+  peer, graceful close), and `ListenerSet` so one server accepts the local player and network players together.
+- `Server::save` saves a running server's world with its game's state; `game_shell` gained `ServerThread` (the old
+  integrated server, now with an optional network listener, autosave and join announcements), `--host`, `--join`,
+  `--autosave`, and `voxunami serve GAME` for a dedicated server. Verified with real processes on this machine and with
+  tests over real TCP; not yet across two machines.
 
 Phase 2 (second game, and what it showed was shared):
 - `game_shell` (engine): everything Cave had that is not Cave: the window and fly camera, the singleplayer server on a
@@ -201,6 +215,11 @@ Rendering and loading (Ryzen 7600X; 1280x720; default rolling hills, 1 m voxels;
 Cross-platform determinism: all tests, including the pinned terrain digests and the pinned recording of a standard
 multiplayer session, pass on Linux (Ubuntu in WSL2, rustc 1.99.0) as well as Windows. Same CPU architecture and compiler version, so this does not cover other architectures.
 
+Across machines (Phase 3): a Linux server (Ubuntu in WSL2) and a Windows client in separate processes, over TCP, drew a
+picture byte-identical to a Windows-only run of the same seed: the client regenerates terrain from the seed and the
+server's generator assignments, and both operating systems produce the same voxels. Only terrain was exercised (no
+edits), on one physical machine; a real two-computer network test is still to do.
+
 Terrain generation (default rolling hills, release, one thread): a surface brick takes 5.4 ms and a brick the bounds
 classify as sky 0.26 ms. Sheet caves run through almost everything, so only 1 of about 1300 sampled underground bricks was
 uniform stone: the bounds shortcut helps in the sky but not underground with this cave design. A column-constant
@@ -225,8 +244,8 @@ continuous channels need quantization or sparse activity.
   players are told about but not drawn, and there is no inventory. A world file with no edits is 40 KB at view radius 8,
   almost all of it the generator-assignment tree (see the compact wire format item below).
 - Phased-tick rule: accept or modify (see Proposed).
-- Network scale: a socket transport with bounded queues; a spatial index over watched regions (an edit currently scans all
-  clients); resending single bricks to repair a client that fell out of sync; replay keyframes for seeking; interest with a
+- Network scale: a spatial index over watched regions (an edit currently scans all clients); passwords or at least a
+  shared secret, and encryption, before play over the internet; resending single bricks to repair a client that fell out of sync; replay keyframes for seeking; interest with a
   level of detail. See "Known limits" in `docs/protocol-and-replay.md`.
 - Generated terrain on the server is regenerated on every read of an unedited brick; a cache is needed before real games.
 - Which replicated entity state (players, structures) is common to all games; it travels as game messages until a second

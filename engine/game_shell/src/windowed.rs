@@ -18,7 +18,7 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::definition::GameDefinition;
 use crate::files::{open_recording, open_world, record_connection, recorded_game, save_world};
-use crate::host::IntegratedServer;
+use crate::host::{Autosave, HostSettings, ServerThread, connect_to, listen_on};
 use crate::options::{PlayOptions, ReplayOptions, ViewOptions};
 use crate::session::{Mode, Session};
 use crate::view::{apply_updates, camera_at, configure_renderer};
@@ -29,18 +29,36 @@ const MOUSE_SENSITIVITY: f32 = 0.0025; // radians per pixel
 const POSE_INTERVAL: Duration = Duration::from_millis(50);
 type GameSession<G> = Session<Box<dyn Connection>, G>;
 
-/// Plays: starts a server in this process, joins it, and runs the window until it closes. The world
-/// is saved on exit if a file was named.
+/// Plays: starts a server in this process (open to the network if asked) and joins it, or joins a
+/// server elsewhere, and runs the window until it closes. The world is saved on exit if a file was
+/// named.
 pub fn play<G: GameDefinition>(options: PlayOptions) -> Result<(), String> {
     let view = options.view.clone();
-    let mut content = G::new_content();
-    let world = open_world(&mut content, options.world_file.as_deref(), options.seed)?;
-    let host = IntegratedServer::start::<G>(&content, world, view.view_radius)
-        .map_err(|error| error.to_string())?;
-    let connection = host.connect().map_err(|error| error.to_string())?;
+    let (connection, host): (Box<dyn Connection>, Option<ServerThread<G>>) = match &options.join {
+        Some(address) => (Box::new(connect_to(address)?), None),
+        None => {
+            let mut content = G::new_content();
+            let world = open_world(&mut content, options.world_file.as_deref(), options.seed)?;
+            let mut settings = HostSettings::local(view.view_radius);
+            if let Some(address) = &options.host {
+                settings.network = Some(Box::new(listen_on(address)?));
+                settings.announce_players = true;
+            }
+            if let (Some(seconds), Some(path)) = (options.autosave_seconds, &options.world_file) {
+                settings.autosave = Some(Autosave {
+                    interval: Duration::from_secs_f32(seconds),
+                    path: path.clone(),
+                });
+            }
+            let host = ServerThread::<G>::start(content, world, settings)
+                .map_err(|error| error.to_string())?;
+            let connection = host.connect().map_err(|error| error.to_string())?;
+            (Box::new(connection), Some(host))
+        }
+    };
     let connection: Box<dyn Connection> = match &options.record {
         Some(path) => record_connection(connection, path)?,
-        None => Box::new(connection),
+        None => connection,
     };
     let start = camera_at(
         options.camera,
@@ -55,10 +73,12 @@ pub fn play<G: GameDefinition>(options: PlayOptions) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
 
     let (_session, failure) = run_window::<G>(session, &view)?;
-    let mut world = host.stop();
-    if let Some(path) = &options.world_file {
-        save_world(&content, &mut world, path)?;
-        println!("saved the world to {}", path.display());
+    if let Some(host) = host {
+        let (mut world, content) = host.stop();
+        if let Some(path) = &options.world_file {
+            save_world(&content, &mut world, path)?;
+            println!("saved the world to {}", path.display());
+        }
     }
     failure.map_or(Ok(()), Err)
 }

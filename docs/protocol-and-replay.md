@@ -15,9 +15,25 @@ length then that many bytes, a "string" is bytes of UTF-8, an "identifier" is a 
 ## Frames and connections
 
 A *frame* is one encoded message. A `Connection` moves frames, in order and without loss, between two ends, never
-blocks, and reports a closed peer only after delivering every frame the peer sent. Only an in-process `loopback`
-exists; a socket transport will add a length prefix and nothing else. Frames are always encoded bytes, even in
-loopback, so singleplayer exercises the real codec.
+blocks, and reports a closed peer only after delivering every frame the peer sent. Two exist: an in-process
+`loopback`, and `tcp`. Frames are always encoded bytes, even in loopback, so singleplayer exercises the real codec.
+
+**TCP framing:** each frame is its length (`u32`, little-endian) then its bytes; nothing else. A length over 16 MiB is a
+protocol violation and closes the connection. There is no encryption, no authentication and no handshake of its own:
+use it on networks you trust. The protocol above it refuses what is malformed, drops connections that never say hello
+(counted in ticks), and limits how much of the world one client may watch; it cannot tell *who* is connecting.
+
+Connections never block: `send` queues bytes and sends what the network takes, `receive` collects what has arrived, and
+both happen inside those calls, so a program that polls once per tick keeps them moving. A peer that falls so far
+behind that 64 MiB are queued for it is treated as gone, so one slow client cannot use unbounded memory or stall the
+rest. Reading always comes before writing: writing to a peer that has already gone makes the network stack reset the
+connection, which can throw away what that peer sent and we had not yet read. Closing gives queued bytes (a farewell
+message) a moment to leave and waits briefly for the peer to finish too, for the same reason.
+
+**Playing over a network:** `voxunami GAME --host [ADDRESS]` runs the server in the game's process and lets others
+join, `voxunami serve GAME` runs a dedicated server (saving every `--autosave` seconds and on Ctrl-C), and
+`voxunami GAME --join HOST[:PORT]` plays on someone else's. The default port is 24816. Recording works on any of them,
+since a recording is just the frames a client received.
 
 ## The conversation
 
@@ -114,7 +130,9 @@ guarantees.
 
 ## Known limits and future work
 
-- No socket transport yet; the interface is ready for one. Bounded send queues and backpressure come with it.
+- Servers do not tell clients how much of the world they may watch (`maximum_watched_bricks`), so a client with a larger
+  view radius than its server expects is refused with a reason rather than adjusted. Passwords, encryption and
+  per-client bandwidth limits do not exist.
 - Seeking inside a replay means replaying from the start; periodic keyframes (a snapshot of the view) would fix that.
 - A client that finds itself out of sync can only reconnect; a request-and-resend for single bricks would repair it.
 - Finding who an edit concerns scans all clients each tick; a spatial index over watched regions takes this from dozens

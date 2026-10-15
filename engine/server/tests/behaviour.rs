@@ -882,3 +882,31 @@ fn the_games_own_state_is_saved_with_the_world_and_survives_a_load() {
     assert_eq!(report.opaque_sections, [id("test_game:score")]);
     assert_eq!(loaded.opaque_sections(), [state]);
 }
+
+#[test]
+fn a_running_server_can_be_saved_with_its_games_state_and_keeps_running() {
+    use world_storage::Section;
+
+    let game = Game::new(&ALL_PLUGINS);
+    let state = Section {
+        identifier: id("test_game:score"),
+        version: 1,
+        payload: vec![4, 2],
+    };
+    let logic = ScriptedLogic::new().saving(state.clone());
+    let mut harness =
+        Harness::with_logic(&game, game.new_world(), ServerConfig::new(game_id()), logic);
+    let mut client = harness.connect();
+    client.hello();
+    harness.server.step();
+    let bytes = harness.server.save(&game.registries()).unwrap();
+
+    let mut other = Game::new(&ALL_PLUGINS);
+    let (loaded, _) = other.load(&bytes).unwrap();
+    assert_eq!(loaded.opaque_sections(), [state]);
+    // Saving twice does not duplicate the section, and the server goes on serving.
+    let again = harness.server.save(&game.registries()).unwrap();
+    assert_eq!(again, bytes);
+    assert_eq!(harness.server.step().tick, Tick::new(2));
+    assert_eq!(harness.server.connected_clients().count(), 1);
+}

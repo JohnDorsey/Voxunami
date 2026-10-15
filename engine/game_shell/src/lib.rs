@@ -12,6 +12,7 @@ pub mod files;
 mod headless;
 pub mod host;
 pub mod options;
+pub mod serve;
 pub mod session;
 #[cfg(test)]
 mod test_support;
@@ -22,7 +23,7 @@ pub use definition::{CameraStart, GameContent, GameDefinition};
 pub use player_presence::{PlayerPose, PoseBook};
 pub use winit::keyboard::KeyCode;
 
-use options::{Parsed, play_usage, replay_usage};
+use options::{Parsed, play_usage, replay_usage, serve_usage};
 
 /// Plays game `G`. `arguments` are the command line after the command name.
 pub fn run_play<G: GameDefinition>(
@@ -39,6 +40,27 @@ pub fn run_play<G: GameDefinition>(
             headless::play::<G>(&options)
         }
         Parsed::Run(options) => windowed::play::<G>(options),
+    }
+}
+
+/// Runs a dedicated server for game `G`. `arguments` are the command line after the game's name.
+pub fn run_serve<G: GameDefinition>(
+    arguments: impl IntoIterator<Item = String>,
+) -> Result<(), String> {
+    let parsed = options::parse_serve::<G>(arguments).map_err(|message| {
+        format!(
+            "{message}
+
+{}",
+            serve_usage::<G>()
+        )
+    })?;
+    match parsed {
+        Parsed::ShowHelp => {
+            println!("{}", serve_usage::<G>());
+            Ok(())
+        }
+        Parsed::Run(options) => serve::serve::<G>(&options),
     }
 }
 

@@ -4,7 +4,8 @@ A voxel game engine plus several games in one monorepo, with a shared launcher.
 Games: Voxunami Cave (Minecraft-like), Voxunami 2048, Voxunami Flatworms (Tron-like), Voxunami Sculpt (tiny voxels).
 Read `docs/design-decisions.md` before architectural work; update it when a decision changes.
 Layout: `engine/*` libraries, `plugins/*` content, `games/*` games, `launcher/` starts them.
-Run a game: `cargo run --release -p launcher -- cave` (`--help` lists options; `replay FILE` watches a recording).
+Run a game: `cargo run --release -p launcher -- cave` (`--help` lists options; `replay FILE` watches a recording;
+`serve cave` runs a dedicated server; `cave --join HOST` joins one).
 
 ## Principles
 - Built to last and grow: no technical debt; bold refactors are fine if they are better.

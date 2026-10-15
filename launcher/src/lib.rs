@@ -24,6 +24,7 @@ pub struct Game {
     /// The id recordings of the game carry in their welcome.
     pub id: fn() -> NamespacedId,
     pub play: Command,
+    pub serve: Command,
     pub replay: Command,
 }
 
@@ -33,6 +34,7 @@ pub const GAMES: &[Game] = &[
         title: "Voxunami Cave: the Minecraft-like game",
         id: voxunami_cave::game_id,
         play: |arguments| voxunami_cave::run_play(arguments),
+        serve: |arguments| voxunami_cave::run_serve(arguments),
         replay: |arguments| voxunami_cave::run_replay(arguments),
     },
     Game {
@@ -40,13 +42,14 @@ pub const GAMES: &[Game] = &[
         title: "Voxunami 2048: 3D 2048",
         id: voxunami_2048::game_id,
         play: |arguments| voxunami_2048::run_play(arguments),
+        serve: |arguments| voxunami_2048::run_serve(arguments),
         replay: |arguments| voxunami_2048::run_replay(arguments),
     },
 ];
 
 fn usage() -> String {
     let mut text = String::from(
-        "Voxunami launcher\n\nUsage:\n  voxunami GAME [options]         play a game (GAME --help for its options)\n  voxunami replay FILE [options]  watch a recording, in the game that made it\n\nGames:\n",
+        "Voxunami launcher\n\nUsage:\n  voxunami GAME [options]         play a game (GAME --help for its options)\n  voxunami GAME --join HOST       play on someone else's server\n  voxunami serve GAME [options]   run a dedicated server for a game\n  voxunami replay FILE [options]  watch a recording, in the game that made it\n\nGames:\n",
     );
     for game in GAMES {
         text.push_str(&format!("  {:<8} {}\n", game.command, game.title));
@@ -68,10 +71,26 @@ pub fn run(arguments: impl IntoIterator<Item = String>) -> Result<(), String> {
             Ok(())
         }
         "replay" => replay(arguments),
+        "serve" => serve(arguments),
         other => match GAMES.iter().find(|game| game.command == other) {
             Some(game) => (game.play)(arguments),
             None => Err(format!("unknown command {other:?}\n\n{}", usage())),
         },
+    }
+}
+
+/// Runs a dedicated server for the game named first.
+fn serve(mut arguments: Vec<String>) -> Result<(), String> {
+    if arguments.is_empty() {
+        return Err(format!(
+            "which game to serve? usage: voxunami serve GAME [options]\n\n{}",
+            usage()
+        ));
+    }
+    let command = arguments.remove(0);
+    match GAMES.iter().find(|game| game.command == command) {
+        Some(game) => (game.serve)(arguments),
+        None => Err(format!("unknown game {command:?}\n\n{}", usage())),
     }
 }
 
@@ -163,6 +182,24 @@ mod tests {
         let ids: std::collections::BTreeSet<_> = GAMES.iter().map(|g| (g.id)()).collect();
         assert_eq!(commands.len(), GAMES.len());
         assert_eq!(ids.len(), GAMES.len());
+    }
+
+    #[test]
+    fn serve_needs_a_game_that_exists_and_reaches_its_options() {
+        assert!(run(arguments("serve")).unwrap_err().contains("which game"));
+        assert!(run(arguments("serve pong")).unwrap_err().contains("pong"));
+        for game in GAMES {
+            let serve = |option: &str| {
+                run(vec![
+                    "serve".to_owned(),
+                    game.command.to_owned(),
+                    option.to_owned(),
+                ])
+            };
+            assert!(serve("--help").is_ok());
+            let error = serve("--bogus").unwrap_err();
+            assert!(error.contains("--bogus"), "{error}");
+        }
     }
 
     #[test]

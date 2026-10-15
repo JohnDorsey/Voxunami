@@ -9,7 +9,7 @@ use client::ClientError;
 use common::{Player, Rig, SEED, VIEW_RADIUS, above_ground, ground_height, position_of};
 use game_shell::GameContent;
 use game_shell::files::{open_world, record_connection, save_world};
-use game_shell::host::IntegratedServer;
+use game_shell::host::{HostSettings, ServerThread};
 use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
 use transport::{Connection, ConnectionClosed};
@@ -328,7 +328,8 @@ fn a_session_that_is_watching_a_replay_asks_the_server_for_nothing() {
 fn the_integrated_server_ticks_by_itself_and_hands_back_the_world() {
     let content = CaveContent::new();
     let world = content.new_world(SEED);
-    let host = IntegratedServer::start::<Cave>(&content, world, VIEW_RADIUS).unwrap();
+    let host =
+        ServerThread::<Cave>::start(content, world, HostSettings::local(VIEW_RADIUS)).unwrap();
     let connection = host.connect().unwrap();
     let start = camera_at([16.5, 110.0, 16.5], 0.0, 0.0, VIEW_RADIUS);
     let mut player = Session::<_, Cave>::connect(
@@ -354,6 +355,6 @@ fn the_integrated_server_ticks_by_itself_and_hands_back_the_world() {
     }
     player.say_goodbye();
     drop(player);
-    let world = host.stop();
+    let (world, _content) = host.stop();
     assert_eq!(world.world_seed, SEED);
 }

@@ -123,6 +123,19 @@ impl Server {
         self.sessions.keys().copied()
     }
 
+    /// The world as a world file, as it is right now, with the game's own state in it. `registries`
+    /// are the content tables, as for [`Server::new`]. The server keeps running; this is how a
+    /// server that never stops saves its world.
+    pub fn save(
+        &mut self,
+        registries: &[(NamespacedId, &dyn IdentifierRegistry)],
+    ) -> Result<Vec<u8>, SaveError> {
+        for section in self.logic.save_sections() {
+            self.world.data_mut().set_opaque_section(section);
+        }
+        self.world.data().save(registries)
+    }
+
     /// Ends the server and returns its world, for saving, with the game's own state in its plugin
     /// sections.
     pub fn into_world(self) -> WorldData {
