@@ -1,0 +1,13 @@
+[package]
+name = "transport"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Carrying protocol frames between a server and its clients: the connection interface and an in-process loopback."
+
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true

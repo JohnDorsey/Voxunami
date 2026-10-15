@@ -1,0 +1,24 @@
+[package]
+name = "protocol"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "The messages a Voxunami server and its clients exchange, and their binary encoding."
+
+[dependencies]
+binary_codec.workspace = true
+namespaced_id.workspace = true
+region_octree.workspace = true
+voxel_grid.workspace = true
+voxel_space.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+namespaced_id = { workspace = true, features = ["test-support"] }
+voxel_grid = { workspace = true, features = ["test-support"] }
+voxel_space = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

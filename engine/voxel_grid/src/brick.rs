@@ -32,6 +32,16 @@ impl Brick {
         Self { channels }
     }
 
+    /// The storages in channel order.
+    pub fn channels(&self) -> &[ChannelStorage] {
+        &self.channels
+    }
+
+    /// The storages in channel order, consuming the brick.
+    pub fn into_channels(self) -> Vec<ChannelStorage> {
+        self.channels
+    }
+
     pub fn channel_count(&self) -> usize {
         self.channels.len()
     }

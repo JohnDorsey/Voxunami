@@ -9,7 +9,7 @@ use crate::packed_indices::PackedIndices;
 const MAXIMUM_PALETTE_LENGTH: usize = 256;
 
 #[derive(Clone)]
-enum Representation {
+pub(crate) enum Representation {
     Uniform(u32),
     Paletted {
         /// Distinct values, in no particular order. Entries may be stale (no voxel uses them)
@@ -43,7 +43,7 @@ pub enum StorageKind {
 /// the minimal form. Equality compares voxel values, never representations.
 #[derive(Clone)]
 pub struct ChannelStorage {
-    representation: Representation,
+    pub(crate) representation: Representation,
 }
 
 impl ChannelStorage {
@@ -171,9 +171,51 @@ impl ChannelStorage {
         }
     }
 
+    /// The largest value stored. Cheap: it does not visit every voxel when a palette is in use.
+    pub fn max_value(&self) -> u32 {
+        match &self.representation {
+            Representation::Uniform(value) => *value,
+            Representation::Paletted { palette, .. } => palette
+                .iter()
+                .copied()
+                .max()
+                .expect("a palette is never empty"),
+            Representation::Dense(values) => {
+                values.iter().copied().max().expect("a brick has voxels")
+            }
+        }
+    }
+
     /// All values in [`LocalVoxelIndex`] order.
     pub fn iter(&self) -> impl ExactSizeIterator<Item = u32> + '_ {
         LocalVoxelIndex::all().map(|index| self.get(index))
+    }
+
+    /// Replaces every stored value `v` with `mapping(v)`. Used to translate runtime ids when a world
+    /// is loaded. The mapping need not be one-to-one; the storage stays valid either way.
+    pub fn remap_values(&mut self, mapping: impl Fn(u32) -> u32) {
+        match &mut self.representation {
+            Representation::Uniform(value) => *value = mapping(*value),
+            Representation::Paletted { palette, .. } => {
+                for entry in palette.iter_mut() {
+                    *entry = mapping(*entry);
+                }
+                let has_duplicates = palette
+                    .iter()
+                    .enumerate()
+                    .any(|(position, entry)| palette[..position].contains(entry));
+                if has_duplicates {
+                    // Two entries now mean the same value; rebuild so palette entries stay distinct.
+                    let values: Vec<u32> = self.iter().collect();
+                    *self = Self::from_values(&values);
+                }
+            }
+            Representation::Dense(values) => {
+                for value in values.iter_mut() {
+                    *value = mapping(*value);
+                }
+            }
+        }
     }
 
     /// Rebuilds the minimal representation: drops unused palette entries, narrows the index
@@ -567,6 +609,55 @@ mod tests {
         let mut at_four = ChannelStorage::uniform(0);
         at_four.set(voxel(4), 8);
         assert_ne!(at_three.content_digest(), at_four.content_digest());
+    }
+
+    #[test]
+    fn max_value_looks_at_every_representation_including_stale_palette_entries() {
+        assert_eq!(ChannelStorage::uniform(9).max_value(), 9);
+        assert_eq!(storage_with_distinct_values(5).max_value(), 5);
+        assert_eq!(storage_with_distinct_values(300).max_value(), 300);
+        // A stale palette entry still counts, so the answer is an upper bound, never too small.
+        let mut stale = ChannelStorage::uniform(0);
+        stale.set(voxel(1), 50);
+        stale.set(voxel(1), 0);
+        assert_eq!(stale.max_value(), 50);
+    }
+
+    #[test]
+    fn remapping_changes_every_value_in_every_representation() {
+        let representations = [
+            ChannelStorage::uniform(4),
+            storage_with_distinct_values(5),
+            storage_with_distinct_values(300),
+        ];
+        for mut storage in representations {
+            let before: Vec<u32> = storage.iter().collect();
+            storage.remap_values(|value| value + 1000);
+            let expected: Vec<u32> = before.iter().map(|value| value + 1000).collect();
+            assert!(storage.iter().eq(expected.iter().copied()));
+        }
+    }
+
+    #[test]
+    fn a_remapping_that_merges_values_keeps_the_storage_valid() {
+        let mut storage = storage_with_distinct_values(5); // values 0..=5 in a palette
+        storage.remap_values(|value| value % 2);
+        let expected: Vec<u32> = (0..BRICK_VOXEL_COUNT)
+            .map(|index| {
+                if (1..=5).contains(&index) {
+                    index as u32 % 2
+                } else {
+                    0
+                }
+            })
+            .collect();
+        assert!(storage.iter().eq(expected.iter().copied()));
+        assert_eq!(storage, ChannelStorage::from_values(&expected));
+        // Writing still works afterwards, so the palette invariants held.
+        storage.set(voxel(7), 1);
+        assert_eq!(storage.get(voxel(7)), 1);
+        assert_eq!(storage.get(voxel(1)), 1);
+        assert_eq!(storage.get(voxel(2)), 0);
     }
 
     #[test]

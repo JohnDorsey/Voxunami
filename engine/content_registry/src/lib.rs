@@ -189,6 +189,37 @@ impl<T> Registry<T> {
     }
 }
 
+/// What loading and saving a world needs from a registry, whatever content it holds: translating
+/// between raw runtime ids and identifiers, and creating placeholders for content that is missing.
+pub trait IdentifierRegistry {
+    /// Number of entries, including placeholders.
+    fn entry_count(&self) -> usize;
+    /// The identifier registered under raw runtime id `raw`.
+    fn identifier_of_raw(&self, raw: u32) -> Option<&NamespacedId>;
+    fn raw_id_of(&self, identifier: &NamespacedId) -> Option<u32>;
+    /// Raw id for `identifier`, adding a content-less placeholder first if it has none.
+    fn register_missing_raw(&mut self, identifier: NamespacedId) -> u32;
+}
+
+impl<T> IdentifierRegistry for Registry<T> {
+    fn entry_count(&self) -> usize {
+        self.len()
+    }
+
+    fn identifier_of_raw(&self, raw: u32) -> Option<&NamespacedId> {
+        self.entry(RuntimeId::from_raw(raw))
+            .map(RegistryEntry::identifier)
+    }
+
+    fn raw_id_of(&self, identifier: &NamespacedId) -> Option<u32> {
+        self.runtime_id(identifier).map(RuntimeId::raw)
+    }
+
+    fn register_missing_raw(&mut self, identifier: NamespacedId) -> u32 {
+        self.register_missing(identifier).raw()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
@@ -321,6 +352,24 @@ mod tests {
                 (2, "gone_plugin:ghost".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn the_raw_id_view_agrees_with_the_typed_registry() {
+        let mut registry = registry_with(&["base:stone", "base:dirt"]);
+        let view: &mut dyn IdentifierRegistry = &mut registry;
+        assert_eq!(view.entry_count(), 2);
+        assert_eq!(view.raw_id_of(&id("base:dirt")), Some(1));
+        assert_eq!(view.raw_id_of(&id("base:sand")), None);
+        assert_eq!(view.identifier_of_raw(0), Some(&id("base:stone")));
+        assert_eq!(view.identifier_of_raw(2), None);
+
+        let ghost = view.register_missing_raw(id("gone_plugin:ghost"));
+        assert_eq!(ghost, 2);
+        assert_eq!(view.register_missing_raw(id("gone_plugin:ghost")), 2);
+        assert_eq!(view.register_missing_raw(id("base:stone")), 0);
+        assert_eq!(view.entry_count(), 3);
+        assert!(registry.entry(RuntimeId::from_raw(2)).unwrap().is_missing());
     }
 
     #[test]

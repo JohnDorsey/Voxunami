@@ -1,0 +1,17 @@
+[package]
+name = "binary_codec"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Bounds-checked reading and writing of the primitive values in saved files and network messages."
+
+[dependencies]
+namespaced_id.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

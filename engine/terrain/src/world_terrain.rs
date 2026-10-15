@@ -78,6 +78,24 @@ impl WorldTerrain {
         }
     }
 
+    pub fn generators(&self) -> &Registry<Arc<dyn TerrainGenerator>> {
+        &self.generators
+    }
+
+    pub fn default_generator(&self) -> GeneratorId {
+        self.default_generator
+    }
+
+    pub fn assignment_cube_level(&self) -> u8 {
+        self.assignment_cube_level
+    }
+
+    /// Restores a saved assignment, replacing whatever the cube held. For loading worlds; during play
+    /// regions are assigned with [`WorldTerrain::assign_unassigned`].
+    pub fn set_assignment(&mut self, cube: BrickCube, generator: Option<GeneratorId>) {
+        self.assignments.set_cube(cube, generator);
+    }
+
     pub fn assignments(&self) -> &RegionOctree<Option<GeneratorId>> {
         &self.assignments
     }
@@ -310,6 +328,23 @@ mod tests {
         );
         // One cube per brick is far more expensive.
         assert!(walk(&mut fine.terrain) > 20 * (1 + 7 * (usize::from(ROOT_LEVEL) - 8)));
+    }
+
+    #[test]
+    fn saved_assignments_can_be_restored_and_the_configuration_read_back() {
+        let mut fixture = fixture(3);
+        let cube = BrickCube::containing(brick(40, 0, 0), 3);
+        fixture.terrain.set_assignment(cube, Some(fixture.high));
+        assert_eq!(
+            fixture.terrain.assigned_generator(brick(41, 2, 3)),
+            Some(fixture.high)
+        );
+        assert_eq!(fixture.terrain.assigned_generator(brick(0, 0, 0)), None);
+        fixture.terrain.set_assignment(cube, None);
+        assert_eq!(fixture.terrain.assigned_generator(brick(41, 2, 3)), None);
+        assert_eq!(fixture.terrain.default_generator(), fixture.low);
+        assert_eq!(fixture.terrain.assignment_cube_level(), 3);
+        assert_eq!(fixture.terrain.generators().len(), 3);
     }
 
     #[test]

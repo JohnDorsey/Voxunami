@@ -27,12 +27,12 @@ const PALETTE: [[f32; 3]; 4] = [
 
 pub fn new_streamer(options: &Options) -> WorldStreamer {
     let layout = Arc::new(
-        GridLayout::new(vec![ChannelDefinition {
-            identifier: "viewer:material"
+        GridLayout::new(vec![ChannelDefinition::number(
+            "viewer:material"
                 .parse()
                 .expect("constant identifier is valid"),
-            default_value: MATERIALS.air,
-        }])
+            MATERIALS.air,
+        )])
         .expect("a single channel is a valid layout"),
     );
     let material: ChannelIndex = layout

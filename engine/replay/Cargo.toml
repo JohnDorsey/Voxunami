@@ -1,0 +1,20 @@
+[package]
+name = "replay"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Recording the stream a client receives, and playing a recording back as if it were a server."
+
+[dependencies]
+binary_codec.workspace = true
+protocol.workspace = true
+transport.workspace = true
+thiserror.workspace = true
+crc32fast = "1"
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

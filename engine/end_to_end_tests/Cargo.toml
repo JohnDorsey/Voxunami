@@ -1,0 +1,27 @@
+[package]
+name = "end_to_end_tests"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Scenarios that run a real server, clients and recorders together: the tests of the whole message stream."
+
+[dependencies]
+binary_codec.workspace = true
+client.workspace = true
+content_registry.workspace = true
+namespaced_id.workspace = true
+protocol.workspace = true
+replay.workspace = true
+server = { workspace = true, features = ["test-support"] }
+transport.workspace = true
+voxel_grid.workspace = true
+voxel_space.workspace = true
+world_storage = { workspace = true, features = ["test-support"] }
+
+[dev-dependencies]
+proptest.workspace = true
+crc32fast = "1"
+
+[lints]
+workspace = true

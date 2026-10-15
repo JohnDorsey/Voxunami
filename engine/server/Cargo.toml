@@ -1,0 +1,31 @@
+[package]
+name = "server"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "The authoritative game server: owns the world, runs ticks, and streams what each client watches."
+
+[features]
+# Scripted game logic for tests of servers and of code that talks to them.
+test-support = []
+
+[dependencies]
+content_registry.workspace = true
+namespaced_id.workspace = true
+protocol.workspace = true
+region_octree.workspace = true
+terrain.workspace = true
+transport.workspace = true
+voxel_grid.workspace = true
+voxel_space.workspace = true
+world_storage.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+server = { workspace = true, features = ["test-support"] }
+world_storage = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

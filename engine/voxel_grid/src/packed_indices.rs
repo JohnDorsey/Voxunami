@@ -58,6 +58,28 @@ impl PackedIndices {
         self.words.iter().all(|&word| word == pattern)
     }
 
+    pub(crate) fn words(&self) -> &[u64] {
+        &self.words
+    }
+
+    /// Rebuilds from stored words. `None` if the width or word count is wrong.
+    pub(crate) fn from_words(bits_per_index: u8, words: Vec<u64>) -> Option<Self> {
+        if !matches!(bits_per_index, 1 | 2 | 4 | 8)
+            || words.len() != BRICK_VOXEL_COUNT * usize::from(bits_per_index) / 64
+        {
+            return None;
+        }
+        Some(Self {
+            bits_per_index,
+            words: words.into_boxed_slice(),
+        })
+    }
+
+    /// True if every slot holds a value below `limit`.
+    pub(crate) fn all_slots_below(&self, limit: usize) -> bool {
+        (0..BRICK_VOXEL_COUNT).all(|index| self.get(index) < limit)
+    }
+
     pub(crate) fn heap_size_bytes(&self) -> usize {
         self.words.len() * size_of::<u64>()
     }

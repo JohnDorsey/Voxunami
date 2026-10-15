@@ -301,10 +301,10 @@ mod tests {
 
     fn streamer(radius: i64, ground_height: f64) -> WorldStreamer {
         let layout = Arc::new(
-            GridLayout::new(vec![ChannelDefinition {
-                identifier: "viewer:material".parse().unwrap(),
-                default_value: 0,
-            }])
+            GridLayout::new(vec![ChannelDefinition::number(
+                "viewer:material".parse().unwrap(),
+                0,
+            )])
             .unwrap(),
         );
         let material = layout

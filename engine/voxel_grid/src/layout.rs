@@ -16,11 +16,41 @@ impl ChannelIndex {
     }
 }
 
-/// A named per-voxel value and what an untouched voxel holds.
+/// What the numbers in a channel mean, which decides how they survive a save and load.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChannelValueKind {
+    /// Plain data (a temperature, a light level). Saved and loaded unchanged.
+    Number,
+    /// A runtime id from the content registry named `registry` (block types, materials...). Runtime
+    /// ids change between runs and plugin sets, so saving translates them to identifiers and loading
+    /// translates them back.
+    Content { registry: NamespacedId },
+}
+
+/// A named per-voxel value, what an untouched voxel holds, and what the values mean.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChannelDefinition {
     pub identifier: NamespacedId,
     pub default_value: u32,
+    pub value_kind: ChannelValueKind,
+}
+
+impl ChannelDefinition {
+    pub fn number(identifier: NamespacedId, default_value: u32) -> Self {
+        Self {
+            identifier,
+            default_value,
+            value_kind: ChannelValueKind::Number,
+        }
+    }
+
+    pub fn content(identifier: NamespacedId, default_value: u32, registry: NamespacedId) -> Self {
+        Self {
+            identifier,
+            default_value,
+            value_kind: ChannelValueKind::Content { registry },
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -97,10 +127,10 @@ mod tests {
     use super::*;
 
     fn definition(text: &str, default_value: u32) -> ChannelDefinition {
-        ChannelDefinition {
-            identifier: text.parse().expect("test identifiers are valid"),
+        ChannelDefinition::number(
+            text.parse().expect("test identifiers are valid"),
             default_value,
-        }
+        )
     }
 
     #[test]

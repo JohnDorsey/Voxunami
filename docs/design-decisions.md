@@ -42,17 +42,19 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - Build order: walking skeleton (Phase 1), then 2048, then Minecraft-core, then Tron, then the sculpting game.
 - Workflow: Claude never commits; each phase ends with passing checks and a suggested commit message.
 
-## Voxunami Cave lighting (owner's description; not built yet)
+## Voxunami Cave lighting (decided; not built yet)
 - Flood-fill light with 256 levels (0-255). The top levels are blindingly bright and rarely used.
 - Several channels of "sky light" that all look the same colour by default but could optionally be shown in different
   colours. All spread by flood fill, losing 1 per step, but they have different sources: a block exposed to air gets a
   brightness equal to the number of air blocks in a row in the channel's direction. Example: a stone block with 77 air
   blocks to its east has brightness 77 in the east channel, and passes 76 in the east channel to its neighbours even if
   those neighbours have fewer than 76 air blocks to their east.
-- Questions to settle before building it: are the channels the six axis directions? Is the brightness stored on the
-  exposed solid block, the air block, or both, and which neighbours receive it? Is the run capped at 255? How does
-  block light (torches) combine with sky light? Light that reaches 255 blocks crosses many bricks, so updates need the
-  phased-tick rule's brick-boundary handling.
+- Answers so far: the sky-light channels are the six axis directions; the run of air is capped at 255; block light
+  and sky light are separate channels that the client combines visually with maths similar to screen-mode blending;
+  light is stored on the transparent block, like Minecraft (decided; solid blocks hold no light). So the stone-block
+  example above is read as the exposed stone face lighting the transparent block in front of it; working out the exact
+  source value for that block is part of building the lighting system.
+- Light that reaches 255 blocks crosses many bricks, so updates need the phased-tick rule's brick-boundary handling.
 
 ## Proposed
 - Rust, wgpu, mesh-based GPU-driven rendering, nested clipmap LOD shells.
@@ -73,6 +75,12 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - Physics: Rapier (rapier3d 0.36.1) behind a Voxunami adapter crate, with `enhanced-determinism`, single-threaded stepping
   on the server, a local floating-origin frame, large merged voxel colliders for terrain, and gravity, buoyancy and
   drag applied as per-body forces. Evidence and caveats are in `docs/physics-spike.md`. Awaiting the owner's confirmation.
+- Network stream (`docs/protocol-and-replay.md`): clients tell the server a box of bricks to watch; the server sends
+  which generator made each part and every *edited* brick in it, then each tick the changes inside it. Terrain nobody
+  has edited is never sent. A brick's first edit is sent as the whole brick, later edits as change lists with a digest of
+  the result. Game and plugin messages ride in a generic message that names its owner by identifier.
+- Replay recording is the tick-by-tick stream one client received, appended to a checksummed file as it arrives; playing
+  it back is a connection that plays the server, so the client code is unchanged.
 - Plugins are compile-time crates; one process per game, started by the launcher from a manifest.
 - Brick size 32^3 voxels (rows fit a u32 bitmask; 1 m at Game 4 scale). Revisit when the mesher exists.
 
@@ -112,6 +120,26 @@ Phase 1c (seeing it):
 - GPU tests run on every physical adapter and backend (here: RTX 3090 and the AMD iGPU, each on Vulkan and DX12).
   Without a GPU they skip, unless `VOX_REQUIRE_GPU` is set.
 
+Phase 1d (saving):
+- `voxel_grid`: channels declare what their values mean (`ChannelValueKind`: a plain number, or an id from a named
+  registry); `remap_values`; a canonical, strictly validated brick encoding.
+- `content_registry`: `IdentifierRegistry`, a type-erased view for translating ids.
+- `terrain`: `WorldTerrain` exposes its configuration and can restore saved assignments.
+- `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
+  sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
+
+Phase 1e (the stream; protocol version 1, documented in `docs/protocol-and-replay.md`):
+- `binary_codec` (the byte primitives, moved out of `world_storage`), `voxel_space::BrickBox` (inclusive box of bricks,
+  with `without` for the newly watched part), `region_octree::BrickCube::covering`, `voxel_grid::Grid::content_digest`.
+- `world_storage`: `WorldData::describe` (the world's shape as a small world file), `SourceTranslator` (translates a
+  source's bricks, values and generator ids into the loaded world's numbering; loading uses it, and so does a client),
+  and a `test-support` module holding the pretend game with switchable plugins that the tests of every crate below share.
+- `protocol`, `transport` (connection interface and in-process loopback), `server` (the tick loop, sessions, watched
+  regions, edit replication, `GameLogic` for games to implement), `client` (handshake, a world view built only from
+  server messages, applied one whole tick at a time), `replay` (file format, recording connection, playback connection).
+- `end_to_end_tests`: a real server, clients and recorders together. Includes replay-equals-live and the check that
+  every player sees what the server has in the region it watches.
+
 ## Measured
 Storage (Ryzen 7600X, release, one thread, best of 7, counting allocator; the single-voxel `get` figures include
 loop and bounds overhead, so bulk decode will be faster):
@@ -132,8 +160,8 @@ Rendering and loading (Ryzen 7600X; 1280x720; default rolling hills, 1 m voxels;
 - Memory per quad is 8 bytes; indexed triangles would be about 56.
 - Only the 7600X's integrated GPU was measured; a weaker minimum-spec GPU is untested.
 
-Cross-platform determinism: all tests, including the pinned terrain digests, pass on Linux (Ubuntu in WSL2, rustc
-1.99.0) as well as Windows. Same CPU architecture and compiler version, so this does not cover other architectures.
+Cross-platform determinism: all tests, including the pinned terrain digests and the pinned recording of a standard
+multiplayer session, pass on Linux (Ubuntu in WSL2, rustc 1.99.0) as well as Windows. Same CPU architecture and compiler version, so this does not cover other architectures.
 
 Terrain generation (default rolling hills, release, one thread): a surface brick takes 5.4 ms and a brick the bounds
 classify as sky 0.26 ms. Sheet caves run through almost everything, so only 1 of about 1300 sampled underground bricks was
@@ -154,6 +182,12 @@ continuous channels need quantization or sparse activity.
 
 ## Open
 - Phased-tick rule: accept or modify (see Proposed).
+- Network scale: a socket transport with bounded queues; a spatial index over watched regions (an edit currently scans all
+  clients); resending single bricks to repair a client that fell out of sync; replay keyframes for seeking; interest with a
+  level of detail. See "Known limits" in `docs/protocol-and-replay.md`.
+- Generated terrain on the server is regenerated on every read of an unedited brick; a cache is needed before real games.
+- Which replicated entity state (players, structures) is common to all games; it travels as game messages until a second
+  game shows what to promote.
 - Active-voxel budget per tick for Game 4; set empirically once simulation exists.
 - Generator boundaries: hard cuts, or may a new generator blend toward its neighbour? Who can trigger regeneration?
 - How joints are authored, how merging aligns rotations (snap to 90 degrees?), and what happens on overlap.
@@ -178,7 +212,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 1b Terrain: density fields with bounds and footprint, deterministic noise, generator-version octree, brick
   generation with pinned golden digests. **Done.**
 - 1c Seeing it: CPU meshing, wgpu renderer, window with fly camera, offscreen render tests, integrated-GPU check. **Done.**
-- 1d Saving: world container with sections, edits over generated terrain, unknown-data preservation tests.
-- 1e Server and stream: message protocol, loopback transport, recorder, replay-equals-live test.
+- 1d Saving: world container with sections, edits over generated terrain, unknown-data preservation tests. **Done.**
+- 1e Server and stream: message protocol, loopback transport, recorder, replay-equals-live test. **Done.**
 - 1f Launcher and first game crate.
 The physics spike is done (`docs/physics-spike.md`); building the physics adapter belongs with the structures work.

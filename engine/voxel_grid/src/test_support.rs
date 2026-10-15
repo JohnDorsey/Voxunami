@@ -18,9 +18,11 @@ pub struct StandardTestLayout {
 
 impl Default for StandardTestLayout {
     fn default() -> Self {
-        let definition = |text: &str, default_value| ChannelDefinition {
-            identifier: text.parse().expect("fixture identifiers are valid"),
-            default_value,
+        let definition = |text: &str, default_value| {
+            ChannelDefinition::number(
+                text.parse().expect("fixture identifiers are valid"),
+                default_value,
+            )
         };
         let layout = GridLayout::new(vec![
             definition("test_content:material", MATERIAL_DEFAULT),

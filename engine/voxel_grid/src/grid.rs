@@ -5,6 +5,7 @@ use rustc_hash::FxHashMap;
 use voxel_space::{BrickCoordinate, VoxelCoordinate};
 
 use crate::brick::Brick;
+use crate::digest::Fnv1a64;
 use crate::layout::{ChannelIndex, GridLayout};
 
 /// A brick offered to a grid has a different number of channels than the grid's layout.
@@ -131,6 +132,21 @@ impl Grid {
         coordinates.sort_unstable();
         coordinates
     }
+
+    /// A 64-bit digest of which bricks exist and what they hold: FNV-1a over, for each brick in
+    /// coordinate order, its three coordinates (`i64`, little-endian) and its
+    /// [`Brick::content_digest`]. Equal grids of the same layout give equal digests on every
+    /// platform; the layout itself is not included.
+    pub fn content_digest(&self) -> u64 {
+        let mut hasher = Fnv1a64::new();
+        for coordinate in self.sorted_brick_coordinates() {
+            for component in [coordinate.x(), coordinate.y(), coordinate.z()] {
+                hasher.write(&component.to_le_bytes());
+            }
+            hasher.write(&self.bricks[&coordinate].content_digest().to_le_bytes());
+        }
+        hasher.finish()
+    }
 }
 
 impl fmt::Debug for Grid {
@@ -156,6 +172,35 @@ mod tests {
 
     fn voxel(x: i64, y: i64, z: i64) -> VoxelCoordinate {
         VoxelCoordinate::new(x, y, z)
+    }
+
+    #[test]
+    fn the_grid_digest_depends_on_where_bricks_are_and_what_they_hold_and_nothing_else() {
+        let fixture = StandardTestLayout::default();
+        let build = |edits: &[(i64, u32)]| {
+            let mut grid = Grid::new(Arc::clone(&fixture.layout));
+            for &(x, value) in edits {
+                grid.set(fixture.material, voxel(x, 0, 0), value);
+            }
+            grid
+        };
+        let empty = build(&[]).content_digest();
+        let one = build(&[(1, 5)]).content_digest();
+        assert_ne!(empty, one);
+        // Insertion order is irrelevant; so is editing a voxel and putting it back.
+        assert_eq!(
+            build(&[(1, 5), (40, 6)]).content_digest(),
+            build(&[(40, 6), (1, 5)]).content_digest()
+        );
+        assert_eq!(
+            build(&[(1, 5), (1, 0)]).content_digest(),
+            build(&[(1, 5), (1, 0)]).content_digest()
+        );
+        // The same contents in a different brick, or a different value, are different.
+        assert_ne!(one, build(&[(33, 5)]).content_digest());
+        assert_ne!(one, build(&[(1, 6)]).content_digest());
+        // Pinned, so a change to the digest definition is noticed.
+        assert_eq!(empty, 0xcbf2_9ce4_8422_2325);
     }
 
     fn brick(x: i64, y: i64, z: i64) -> BrickCoordinate {

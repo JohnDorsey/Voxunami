@@ -1,0 +1,31 @@
+[package]
+name = "world_storage"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Saving and loading worlds: a checksummed section container that keeps data from missing plugins intact."
+
+[features]
+# A pretend game with switchable plugins, for tests of code that loads, saves, serves or replays worlds.
+test-support = []
+
+[dependencies]
+binary_codec.workspace = true
+content_registry.workspace = true
+namespaced_id.workspace = true
+region_octree.workspace = true
+terrain.workspace = true
+voxel_grid.workspace = true
+voxel_space.workspace = true
+thiserror.workspace = true
+crc32fast = "1"
+
+[dev-dependencies]
+proptest.workspace = true
+world_storage = { workspace = true, features = ["test-support"] }
+voxel_grid = { workspace = true, features = ["test-support"] }
+voxel_space = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

@@ -9,7 +9,7 @@
 //! whatever order the cubes were assigned in, so equal trees compare equal and
 //! [`RegionOctree::leaves`] is a stable serialization order.
 
-use voxel_space::{BRICK_COORDINATE_MAXIMUM, BRICK_COORDINATE_MINIMUM, BrickCoordinate};
+use voxel_space::{BRICK_COORDINATE_MAXIMUM, BRICK_COORDINATE_MINIMUM, BrickBox, BrickCoordinate};
 
 /// Level of the root cube, which spans every valid brick coordinate (2^56 bricks per axis).
 pub const ROOT_LEVEL: u8 = 56;
@@ -79,6 +79,32 @@ impl BrickCube {
     /// Bricks along each edge.
     pub fn edge_length(self) -> u64 {
         1 << self.level
+    }
+
+    /// Every cube of the given level that holds at least one brick of `region`, x varying fastest,
+    /// then y, then z. Panics if `level > ROOT_LEVEL`.
+    pub fn covering(region: BrickBox, level: u8) -> impl Iterator<Item = BrickCube> {
+        let first = Self::containing(region.min(), level).origin();
+        let last = Self::containing(region.max(), level).origin();
+        let edge = 1i64 << level;
+        let count = |first: i64, last: i64| ((last - first) >> level) + 1;
+        let (columns, rows, layers) = (
+            count(first.x(), last.x()),
+            count(first.y(), last.y()),
+            count(first.z(), last.z()),
+        );
+        (0..layers).flat_map(move |layer| {
+            (0..rows).flat_map(move |row| {
+                (0..columns).map(move |column| Self {
+                    origin: BrickCoordinate::new(
+                        first.x() + column * edge,
+                        first.y() + row * edge,
+                        first.z() + layer * edge,
+                    ),
+                    level,
+                })
+            })
+        })
     }
 
     pub fn contains(self, brick: BrickCoordinate) -> bool {
@@ -251,6 +277,55 @@ mod tests {
 
     fn cube(x: i64, y: i64, z: i64, level: u8) -> BrickCube {
         BrickCube::new(brick(x, y, z), level).expect("test cubes are aligned")
+    }
+
+    #[test]
+    fn covering_lists_the_cubes_that_touch_a_region() {
+        let region = BrickBox::new(brick(-1, 0, 0), brick(8, 3, 1)).unwrap();
+        // Cubes of 4 bricks: x spans -4..-1, 0..3, 4..7, 8..11; y and z need one cube each row.
+        let level_two: Vec<_> = BrickCube::covering(region, 2).collect();
+        assert_eq!(level_two.len(), 4);
+        assert_eq!(level_two[0], cube(-4, 0, 0, 2));
+        assert_eq!(level_two[3], cube(8, 0, 0, 2));
+        let single = BrickBox::new(brick(5, 5, 5), brick(5, 5, 5)).unwrap();
+        assert_eq!(
+            BrickCube::covering(single, 0).collect::<Vec<_>>(),
+            [cube(5, 5, 5, 0)]
+        );
+        // A cube so large it holds the whole region is the only one.
+        assert_eq!(BrickCube::covering(region, ROOT_LEVEL).count(), 1);
+        // Cubes of 8 bricks: x runs over -8..-1, 0..7 and 8..15; y and z fit in one cube each.
+        assert_eq!(BrickCube::covering(region, 3).count(), 3);
+    }
+
+    proptest! {
+        #[test]
+        fn covering_is_exactly_the_cubes_containing_the_regions_bricks(
+            corner in (-12i64..12, -12i64..12, -12i64..12),
+            extent in (0i64..10, 0i64..10, 0i64..10),
+            level in 0u8..4,
+        ) {
+            let region = BrickBox::new(
+                brick(corner.0, corner.1, corner.2),
+                brick(corner.0 + extent.0, corner.1 + extent.1, corner.2 + extent.2),
+            ).unwrap();
+            let listed: Vec<_> = BrickCube::covering(region, level).collect();
+            let expected: std::collections::BTreeSet<_> = region
+                .bricks()
+                .map(|candidate| {
+                    let origin = BrickCube::containing(candidate, level).origin();
+                    (origin.z(), origin.y(), origin.x())
+                })
+                .collect();
+            let actual: Vec<_> = listed
+                .iter()
+                .map(|found| (found.origin().z(), found.origin().y(), found.origin().x()))
+                .collect();
+            prop_assert_eq!(actual.len(), listed.len());
+            prop_assert_eq!(actual.iter().copied().collect::<std::collections::BTreeSet<_>>(), expected);
+            // Listed once each, in z, y, x order.
+            prop_assert!(actual.windows(2).all(|pair| pair[0] < pair[1]));
+        }
     }
 
     #[test]

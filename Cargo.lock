@@ -117,6 +117,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "binary_codec"
+version = "0.0.0"
+dependencies = [
+ "namespaced_id",
+ "proptest",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -298,6 +307,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "client"
+version = "0.0.0"
+dependencies = [
+ "namespaced_id",
+ "protocol",
+ "region_octree",
+ "server",
+ "terrain",
+ "thiserror 2.0.21",
+ "transport",
+ "voxel_grid",
+ "voxel_space",
+ "world_storage",
+]
+
+[[package]]
 name = "codespan-reporting"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -464,6 +489,25 @@ name = "dpi"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
+
+[[package]]
+name = "end_to_end_tests"
+version = "0.0.0"
+dependencies = [
+ "binary_codec",
+ "client",
+ "content_registry",
+ "crc32fast",
+ "namespaced_id",
+ "proptest",
+ "protocol",
+ "replay",
+ "server",
+ "transport",
+ "voxel_grid",
+ "voxel_space",
+ "world_storage",
+]
 
 [[package]]
 name = "equivalent"
@@ -1499,6 +1543,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "protocol"
+version = "0.0.0"
+dependencies = [
+ "binary_codec",
+ "namespaced_id",
+ "proptest",
+ "region_octree",
+ "thiserror 2.0.21",
+ "voxel_grid",
+ "voxel_space",
+]
+
+[[package]]
 name = "quick-error"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1647,6 +1704,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "replay"
+version = "0.0.0"
+dependencies = [
+ "binary_codec",
+ "crc32fast",
+ "proptest",
+ "protocol",
+ "thiserror 2.0.21",
+ "transport",
+]
+
+[[package]]
 name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1779,6 +1848,24 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "server"
+version = "0.0.0"
+dependencies = [
+ "content_registry",
+ "namespaced_id",
+ "proptest",
+ "protocol",
+ "region_octree",
+ "server",
+ "terrain",
+ "thiserror 2.0.21",
+ "transport",
+ "voxel_grid",
+ "voxel_space",
+ "world_storage",
 ]
 
 [[package]]
@@ -2077,6 +2164,13 @@ name = "tracing-core"
 version = "0.1.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
+
+[[package]]
+name = "transport"
+version = "0.0.0"
+dependencies = [
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "ttf-parser"
@@ -2804,6 +2898,23 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "world_storage"
+version = "0.0.0"
+dependencies = [
+ "binary_codec",
+ "content_registry",
+ "crc32fast",
+ "namespaced_id",
+ "proptest",
+ "region_octree",
+ "terrain",
+ "thiserror 2.0.21",
+ "voxel_grid",
+ "voxel_space",
+ "world_storage",
+]
 
 [[package]]
 name = "x11-dl"

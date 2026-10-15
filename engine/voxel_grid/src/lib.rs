@@ -16,6 +16,7 @@
 mod brick;
 mod channel_storage;
 mod digest;
+mod encoding;
 mod grid;
 mod layout;
 mod packed_indices;
@@ -25,7 +26,9 @@ pub mod test_support;
 
 pub use brick::Brick;
 pub use channel_storage::{ChannelStorage, StorageKind};
+pub use encoding::{BrickDecodeError, StorageDecodeError};
 pub use grid::{ChannelCountMismatch, Grid};
 pub use layout::{
-    ChannelDefinition, ChannelIndex, GridLayout, GridLayoutError, MAXIMUM_CHANNEL_COUNT,
+    ChannelDefinition, ChannelIndex, ChannelValueKind, GridLayout, GridLayoutError,
+    MAXIMUM_CHANNEL_COUNT,
 };

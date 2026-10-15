@@ -7,6 +7,7 @@
 //! Coordinates are `i64` per axis, restricted to a range that leaves headroom so ordinary
 //! arithmetic on valid coordinates cannot overflow. There is no practical world edge.
 
+mod brick_box;
 mod coordinates;
 mod face_direction;
 mod level_of_detail;
@@ -17,6 +18,7 @@ mod world_position;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
+pub use brick_box::BrickBox;
 pub use coordinates::{BrickCoordinate, CoordinateOutOfRange, VoxelCoordinate};
 pub use face_direction::FaceDirection;
 pub use level_of_detail::LevelOfDetail;
