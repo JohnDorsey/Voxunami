@@ -27,13 +27,22 @@ pub struct Game {
     pub replay: Command,
 }
 
-pub const GAMES: &[Game] = &[Game {
-    command: "cave",
-    title: "Voxunami Cave: the Minecraft-like game",
-    id: voxunami_cave::game_id,
-    play: |arguments| voxunami_cave::run_play(arguments),
-    replay: |arguments| voxunami_cave::run_replay(arguments),
-}];
+pub const GAMES: &[Game] = &[
+    Game {
+        command: "cave",
+        title: "Voxunami Cave: the Minecraft-like game",
+        id: voxunami_cave::game_id,
+        play: |arguments| voxunami_cave::run_play(arguments),
+        replay: |arguments| voxunami_cave::run_replay(arguments),
+    },
+    Game {
+        command: "2048",
+        title: "Voxunami 2048: 3D 2048",
+        id: voxunami_2048::game_id,
+        play: |arguments| voxunami_2048::run_play(arguments),
+        replay: |arguments| voxunami_2048::run_replay(arguments),
+    },
+];
 
 fn usage() -> String {
     let mut text = String::from(
@@ -141,6 +150,19 @@ mod tests {
             error.contains("--bogus") && error.contains("Usage: voxunami cave"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn every_game_has_a_distinct_command_and_id_and_answers_help() {
+        for game in GAMES {
+            assert!(run(vec![game.command.to_owned(), "--help".to_owned()]).is_ok());
+            let error = run(vec![game.command.to_owned(), "--bogus".to_owned()]).unwrap_err();
+            assert!(error.contains("--bogus"), "{}: {error}", game.command);
+        }
+        let commands: std::collections::BTreeSet<_> = GAMES.iter().map(|g| g.command).collect();
+        let ids: std::collections::BTreeSet<_> = GAMES.iter().map(|g| (g.id)()).collect();
+        assert_eq!(commands.len(), GAMES.len());
+        assert_eq!(ids.len(), GAMES.len());
     }
 
     #[test]

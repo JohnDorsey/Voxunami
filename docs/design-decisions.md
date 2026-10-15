@@ -76,6 +76,9 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - Physics: Rapier (rapier3d 0.36.1) behind a Voxunami adapter crate, with `enhanced-determinism`, single-threaded stepping
   on the server, a local floating-origin frame, large merged voxel colliders for terrain, and gravity, buoyancy and
   drag applied as per-body forces. Evidence and caveats are in `docs/physics-spike.md`. Awaiting the owner's confirmation.
+- 2048 interpretation (the owner may change it): "pushing tiles with tools" is a push plate per face of the board; the
+  tool is the click. Tiles are 4-voxel cubes, colours step around the hues, equal tiles merge once per push, a 2 appears
+  after every push that changed anything (a 4 one time in ten), the game ends when no push changes the board.
 - Network stream (`docs/protocol-and-replay.md`): clients tell the server a box of bricks to watch; the server sends
   which generator made each part and every *edited* brick in it, then each tick the changes inside it. Terrain nobody
   has edited is never sent. A brick's first edit is sent as the whole brick, later edits as change lists with a digest of
@@ -129,6 +132,19 @@ Phase 1d (saving):
 - `terrain`: `WorldTerrain` exposes its configuration and can restore saved assignments.
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
+
+Phase 2 (second game, and what it showed was shared):
+- `game_shell` (engine): everything Cave had that is not Cave: the window and fly camera, the singleplayer server on a
+  thread, `Session` (client, mesher, camera, aiming, sending), worlds and recordings on disk, headless screenshots and
+  benchmarks, replay viewing, command-line options and help. A game implements `GameDefinition` (its name, content,
+  server rules, what clicks and keys do, what its status line says) and `GameContent` (its blocks and worlds).
+- `player_presence` (engine): the pose messages and the server's `PoseBook`, used by both games.
+- `GameLogic::save_sections`: a game saves state the voxels do not show (a score) as plugin sections of the world file.
+- `games/voxunami_2048`: a 4 x 4 x 4 board of tiles made of voxels (so it streams, saves and replays like any world),
+  frame and six orange push plates. Left click a plate to push every tile toward the opposite side; Enter starts a new
+  game. The rules (`board`) are plain code on a plain array; the server reads the board back from the voxels each push,
+  so the world is always the truth, and saves score, moves and game number in a section. Any player can push.
+- `voxunami_cave` shrank to its blocks, its one message, its rules and its clicks.
 
 Phase 1f (first game):
 - `world_view`: `WorldMesher` keeps meshes of the bricks around a viewer up to date on worker threads, reading from a
@@ -203,6 +219,8 @@ Implication: a continuous-valued channel stored densely costs 4 bytes per voxel 
 continuous channels need quantization or sparse activity.
 
 ## Open
+- 2048 shows tile values by colour only (the renderer draws no text), and the board is one fixed size; other sizes,
+  per-line pushes with other tools, and an undo are not built.
 - The game is a fly camera: no gravity, collision or physics yet (the Rapier adapter comes with structures), other
   players are told about but not drawn, and there is no inventory. A world file with no edits is 40 KB at view radius 8,
   almost all of it the generator-assignment tree (see the compact wire format item below).
@@ -239,6 +257,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 1c Seeing it: CPU meshing, wgpu renderer, window with fly camera, offscreen render tests, integrated-GPU check. **Done.**
 - 1d Saving: world container with sections, edits over generated terrain, unknown-data preservation tests. **Done.**
 - 1e Server and stream: message protocol, loopback transport, recorder, replay-equals-live test. **Done.**
+- 2 Second game (Voxunami 2048) and the shared shell. **Done.**
 - 1f Launcher and first game crate: `world_view`, the `base_blocks` plugin, Voxunami Cave, the launcher; the old viewer
   retired. **Done.**
 The physics spike is done (`docs/physics-spike.md`); building the physics adapter belongs with the structures work.

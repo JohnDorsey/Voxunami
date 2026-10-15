@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 namespaced_id.workspace = true
 replay.workspace = true
+voxunami_2048.workspace = true
 voxunami_cave.workspace = true
 
 [dev-dependencies]

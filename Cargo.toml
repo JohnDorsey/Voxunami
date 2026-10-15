@@ -27,6 +27,7 @@ transport = { path = "engine/transport" }
 voxel_grid = { path = "engine/voxel_grid" }
 voxel_meshing = { path = "engine/voxel_meshing" }
 voxel_space = { path = "engine/voxel_space" }
+voxunami_2048 = { path = "games/voxunami_2048" }
 voxunami_cave = { path = "games/voxunami_cave" }
 world_view = { path = "engine/world_view" }
 world_storage = { path = "engine/world_storage" }

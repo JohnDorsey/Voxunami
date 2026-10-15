@@ -893,6 +893,7 @@ dependencies = [
  "namespaced_id",
  "protocol",
  "replay",
+ "voxunami_2048",
  "voxunami_cave",
 ]
 
@@ -2276,6 +2277,27 @@ version = "0.0.0"
 dependencies = [
  "proptest",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "voxunami_2048"
+version = "0.0.0"
+dependencies = [
+ "binary_codec",
+ "client",
+ "content_registry",
+ "game_shell",
+ "namespaced_id",
+ "proptest",
+ "protocol",
+ "renderer",
+ "replay",
+ "server",
+ "terrain",
+ "transport",
+ "voxel_grid",
+ "voxel_space",
+ "world_storage",
 ]
 
 [[package]]
