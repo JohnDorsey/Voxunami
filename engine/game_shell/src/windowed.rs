@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use client::ClientError;
 use glam::Vec3;
+use namespaced_id::NamespacedId;
 use renderer::{GraphicsContext, RenderStatistics, VoxelRenderer, describe, new_instance};
 use transport::Connection;
 use winit::application::ApplicationHandler;
@@ -19,6 +20,7 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 use crate::command_entry::{CommandEntry, opens_a_command};
 use crate::definition::GameDefinition;
 use crate::files::{open_recording, open_world, record_connection, recorded_game, save_world};
+use crate::following::PoseFollower;
 use crate::host::{Autosave, HostSettings, ServerThread, connect_to, listen_on};
 use crate::options::{PlayOptions, ReplayOptions, ViewOptions};
 use crate::session::{Mode, Session};
@@ -28,6 +30,9 @@ const MOVEMENT_SPEED: f32 = 24.0; // voxels per second
 const SPRINT_MULTIPLIER: f32 = 5.0;
 const MOUSE_SENSITIVITY: f32 = 0.0025; // radians per pixel
 const POSE_INTERVAL: Duration = Duration::from_millis(50);
+
+/// How often what the keys ask is sent again when it has not changed.
+const MOVEMENT_REPEAT: Duration = Duration::from_millis(100);
 /// How long the answer to a command stays in the window title.
 const REPLY_SHOWN_FOR: Duration = Duration::from_secs(8);
 type GameSession<G> = Session<Box<dyn Connection>, G>;
@@ -154,6 +159,12 @@ struct Viewer<G: GameDefinition> {
     started: Instant,
     last_frame: Instant,
     last_pose_sent: Instant,
+    /// What the keys last asked of the player's body, in a game where the server moves it, and when it
+    /// was last sent.
+    last_movement: Option<(NamespacedId, Vec<u8>)>,
+    last_movement_sent: Instant,
+    /// Shows the camera smoothly where the server says the player is.
+    follower: PoseFollower,
     frames_since_title_update: u32,
     last_title_update: Instant,
     frames_total: u64,
@@ -228,6 +239,9 @@ impl<G: GameDefinition> Viewer<G> {
             started: now,
             last_frame: now,
             last_pose_sent: now,
+            last_movement: None,
+            last_movement_sent: now,
+            follower: PoseFollower::new(),
             frames_since_title_update: 0,
             last_title_update: now,
             frames_total: 0,
@@ -284,9 +298,33 @@ impl<G: GameDefinition> Viewer<G> {
         camera.move_in_world(Vec3::Y * vertical * speed * seconds);
     }
 
+    /// Tells a server that moves the player what the keys ask: when that changes, and now and then so
+    /// that the server knows the player is still there.
+    fn send_movement(&mut self, now: Instant) {
+        let Some(message) = G::movement_message(&self.keys, &self.session.camera) else {
+            return;
+        };
+        let changed = self.last_movement.as_ref() != Some(&message);
+        if changed || now.duration_since(self.last_movement_sent) >= MOVEMENT_REPEAT {
+            self.session
+                .send_game_message(message.0.clone(), message.1.clone());
+            self.last_movement = Some(message);
+            self.last_movement_sent = now;
+        }
+    }
+
     /// Takes in what the server has sent. Returns an error to stop the game with.
     fn follow_server(&mut self, now: Instant, seconds: f32) -> Result<(), ClientError> {
         match self.session.mode() {
+            Mode::Playing if G::server_moves_players() => {
+                self.send_movement(now);
+                self.session.advance()?;
+                // The server says where the player is a few times a second; the picture is carried on
+                // between those.
+                if let Some(told) = self.session.own_server_position() {
+                    self.session.camera.position = self.follower.view_position(told, now);
+                }
+            }
             Mode::Playing => {
                 self.move_camera(seconds);
                 if now.duration_since(self.last_pose_sent) >= POSE_INTERVAL {

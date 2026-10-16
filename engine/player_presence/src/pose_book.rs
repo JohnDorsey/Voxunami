@@ -31,6 +31,14 @@ impl PoseBook {
         self.poses.get(&client)
     }
 
+    /// Puts a player at a pose, for a game that moves players itself instead of taking their word
+    /// for where they are (see [`PoseBook::handle_message`]).
+    pub fn set_pose(&mut self, client: ClientId, pose: PlayerPose) {
+        if self.poses.insert(client, pose) != Some(pose) {
+            self.changed = true;
+        }
+    }
+
     /// The level the player is in: the main level until they move.
     pub fn level_of(&self, client: ClientId) -> LevelIndex {
         self.levels

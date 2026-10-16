@@ -1,0 +1,19 @@
+[package]
+name = "physics"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Bodies that move through voxel terrain: gravity, walking, jumping and collision, on Rapier. The only crate that knows Rapier."
+
+[dependencies]
+block_models.workspace = true
+libm = "0.2"
+rapier3d = { version = "=0.36.1", features = ["enhanced-determinism"] }
+voxel_space.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

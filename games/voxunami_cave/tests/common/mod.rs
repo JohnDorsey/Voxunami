@@ -2,10 +2,10 @@
 
 //! A server ticked by the test, and players connected to it.
 
-use game_shell::GameContent;
 use game_shell::host::build_server;
 use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
+use game_shell::{GameContent, KeyCode};
 use renderer::Camera;
 use server::Server;
 use transport::Connection;
@@ -61,6 +61,22 @@ impl Rig {
     ) -> Player {
         let start = camera_at(position, yaw, pitch, VIEW_RADIUS);
         let server = &mut self.server;
+        let mut player =
+            Session::<_, Cave>::connect(connection, Mode::Playing, VIEW_RADIUS, start, || {
+                server.step();
+            })
+            .unwrap();
+        // Players of these tests fly, so that they stay where they are put (the server moves them;
+        // the tests of walking join with `join_walking`).
+        player.send_command("/fly");
+        player
+    }
+
+    /// A player who is walking: they fall, and stand on what is under them.
+    pub fn join_walking(&mut self, position: [f64; 3], yaw: f32, pitch: f32) -> Player {
+        let connection: Box<dyn Connection> = Box::new(self.connector.connect().unwrap());
+        let start = camera_at(position, yaw, pitch, VIEW_RADIUS);
+        let server = &mut self.server;
         Session::<_, Cave>::connect(connection, Mode::Playing, VIEW_RADIUS, start, || {
             server.step();
         })
@@ -113,4 +129,39 @@ pub fn above_ground(player: &Player, x: i64, z: i64, height: f32) -> Camera {
 
 pub fn position_of(camera: &Camera) -> WorldPosition {
     camera.position
+}
+
+/// A position in voxels, as plain numbers.
+pub fn voxels_of(camera: &Camera) -> [f64; 3] {
+    let position = position_of(camera);
+    [
+        position.brick().x() as f64 * 32.0 + f64::from(position.offset()[0]),
+        position.brick().y() as f64 * 32.0 + f64::from(position.offset()[1]),
+        position.brick().z() as f64 * 32.0 + f64::from(position.offset()[2]),
+    ]
+}
+
+/// What a test can do to a player that the server moves: put them where their camera is.
+pub trait PlayerExt {
+    /// Asks the server to put the player's eyes where their camera is (`/tp`).
+    fn teleport_to_camera(&mut self);
+
+    /// Says what the keys held ask of the player's body, as the window does: from now on, until
+    /// this is said again.
+    fn hold(&mut self, keys: &[KeyCode]);
+}
+
+impl PlayerExt for Player {
+    fn teleport_to_camera(&mut self) {
+        let [x, y, z] = voxels_of(&self.camera);
+        self.send_command(&format!("/tp {x} {y} {z}"));
+    }
+
+    fn hold(&mut self, keys: &[KeyCode]) {
+        let keys: std::collections::HashSet<KeyCode> = keys.iter().copied().collect();
+        let (kind, payload) =
+            <Cave as game_shell::GameDefinition>::movement_message(&keys, &self.camera)
+                .expect("Cave moves players by messages");
+        self.send_game_message(kind, payload);
+    }
 }

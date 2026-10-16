@@ -20,6 +20,9 @@ pub struct BlockDefinition {
     /// How readily the block catches fire next to a fire, from 0 (it does not) to 255. A game's
     /// fire rule decides what the number means; the table only carries it.
     pub flammability: u8,
+    /// Whether bodies move through the block as if it were not there (flames), though it can still
+    /// be seen and aimed at.
+    pub passable: bool,
     shapes: Vec<Shape>,
     state_colors: Vec<[f32; 3]>,
 }
@@ -32,6 +35,7 @@ impl BlockDefinition {
             see_through: false,
             emission: 0,
             flammability: 0,
+            passable: false,
             shapes: vec![Shape::full()],
             state_colors: Vec::new(),
         }
@@ -44,6 +48,7 @@ impl BlockDefinition {
             see_through: true,
             emission: 0,
             flammability: 0,
+            passable: false,
             shapes: vec![Shape::empty()],
             state_colors: Vec::new(),
         }
@@ -80,6 +85,11 @@ impl BlockDefinition {
         self
     }
 
+    pub fn with_passable(mut self, passable: bool) -> Self {
+        self.passable = passable;
+        self
+    }
+
     pub fn with_see_through(mut self, see_through: bool) -> Self {
         self.see_through = see_through;
         self
@@ -109,7 +119,9 @@ mod tests {
     #[test]
     fn a_cube_is_opaque_whole_and_has_one_state_and_air_is_empty_and_see_through() {
         let cube = BlockDefinition::cube([0.2, 0.3, 0.4]);
-        assert!(!cube.see_through && cube.emission == 0 && cube.flammability == 0);
+        assert!(
+            !cube.see_through && cube.emission == 0 && cube.flammability == 0 && !cube.passable
+        );
         assert_eq!(cube.state_count(), 1);
         assert!(cube.shapes()[0].is_full());
         let air = BlockDefinition::air();
@@ -127,7 +139,9 @@ mod tests {
             ])
             .with_emission(200)
             .with_flammability(90)
+            .with_passable(true)
             .with_see_through(true);
+        assert!(slabs.passable);
         assert_eq!(slabs.state_count(), 3);
         assert_eq!(slabs.flammability, 90);
         assert!(slabs.shapes()[1].covers_face(FaceDirection::NegativeY));

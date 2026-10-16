@@ -16,6 +16,7 @@ pub mod game;
 pub mod lighting;
 pub mod logic;
 pub mod messages;
+pub mod movement;
 
 pub use content::game_id;
 pub use game::Cave;

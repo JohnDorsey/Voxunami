@@ -817,6 +817,54 @@ fn editing_terrain_whose_generator_is_not_loaded_is_an_error_not_a_crash() {
     assert_eq!(available, Ok(true));
 }
 
+#[test]
+fn a_brick_that_holds_one_value_everywhere_says_so_whether_generated_or_edited() {
+    let outcome = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&outcome);
+    let logic = ScriptedLogic::new().on_tick(move |tick, world| {
+        let channel = world
+            .data()
+            .main()
+            .overrides
+            .layout()
+            .channel_index(&id("core:block"))
+            .unwrap();
+        let sky = BrickCoordinate::new(0, 40, 0);
+        let mut found = Vec::new();
+        found.push(world.uniform_value(LevelIndex::MAIN, channel, sky));
+        // Editing one voxel of the brick makes it not uniform any more; changing it back does not
+        // need to make it uniform again.
+        if tick.get() == 1 {
+            let _ = world.set_voxel(
+                LevelIndex::MAIN,
+                channel,
+                VoxelCoordinate::new(3, 40 * 32, 3),
+                7,
+            );
+            found.push(world.uniform_value(LevelIndex::MAIN, channel, sky));
+        }
+        // A level that does not exist is an error.
+        found.push(world.uniform_value(LevelIndex::new(9), channel, sky));
+        recorded.lock().unwrap().push((tick.get(), found));
+    });
+    let game = Game::new(&[Plugin::BaseBlocks]);
+    let world = game.new_world();
+    let mut harness = Harness::with_logic(&game, world, ServerConfig::new(game_id()), logic);
+    harness.server.step();
+    harness.server.step();
+    let results = outcome.lock().unwrap().clone();
+    let air = game.raw_block("base_blocks:air");
+    // First tick: the sky is all air; after the edit it is not all anything.
+    assert_eq!(results[0].1[0], Ok(Some(air)));
+    assert_eq!(results[0].1[1], Ok(None));
+    assert_eq!(
+        results[0].1[2],
+        Err(server::AccessError::NoSuchLevel(LevelIndex::new(9)))
+    );
+    // Second tick: it stays edited.
+    assert_eq!(results[1].1[0], Ok(None));
+}
+
 /// Runs a fixed scenario and returns every frame each client received.
 fn scenario_frames() -> Vec<Vec<Vec<u8>>> {
     let (game, mut harness) = default_harness();

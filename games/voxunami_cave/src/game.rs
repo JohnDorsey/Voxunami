@@ -1,15 +1,23 @@
 //! Voxunami Cave as the shell runs it: what the player's clicks and keys do.
 
 use base_blocks::{SHAPE_NAMES, shape_name};
-use game_shell::{CameraStart, GameDefinition, KeyCode};
+use std::collections::HashSet;
+
+use game_shell::{CameraStart, GameDefinition, KeyCode, PlayerPose};
 use namespaced_id::NamespacedId;
+use physics::MoveInput;
+use renderer::Camera;
 use server::GameLogic;
 use transport::Connection;
+use voxel_space::WorldPosition;
 use world_storage::WorldData;
 
 use crate::content::{CaveContent, game_id};
 use crate::logic::{CaveLogic, REACH};
-use crate::messages::{SetBlock, encode_set_block, set_block_kind};
+use crate::messages::{
+    MoveRequest, SetBlock, encode_move_request, encode_set_block, encode_spawn, move_input_kind,
+    set_block_kind, spawn_kind,
+};
 
 /// The blocks a player can place, in the order the number keys choose them.
 pub const PLACEABLE_BLOCKS: [&str; 6] = [
@@ -103,7 +111,8 @@ impl GameDefinition for Cave {
     }
 
     fn controls() -> &'static str {
-        "Left click breaks the block you look at; right click places the selected block;\n1 to 6 select stone, dirt, grass, lamp, wood, fire (which burns grass and wood); R cycles whole block, slabs and stairs."
+        "Left click breaks the block you look at; right click places the selected block;\n1 to 6 select stone, dirt, grass, lamp, wood, fire (which burns grass and wood); R cycles whole block, slabs and stairs.
+W A S D walk, Space jumps, Ctrl runs; F flies or walks (then Space and Shift go up and down)."
     }
 
     fn default_seed() -> u64 {
@@ -120,6 +129,40 @@ impl GameDefinition for Cave {
 
     fn reach() -> f32 {
         REACH as f32
+    }
+
+    fn server_moves_players() -> bool {
+        true
+    }
+
+    fn join_message(position: WorldPosition) -> Option<(NamespacedId, Vec<u8>)> {
+        let pose = PlayerPose {
+            position,
+            yaw: 0.0,
+            pitch: 0.0,
+        };
+        Some((spawn_kind(), encode_spawn(&pose)))
+    }
+
+    fn movement_message(
+        keys: &HashSet<KeyCode>,
+        camera: &Camera,
+    ) -> Option<(NamespacedId, Vec<u8>)> {
+        let held = |code: KeyCode| i8::from(keys.contains(&code));
+        let request = MoveRequest {
+            input: MoveInput {
+                forward: held(KeyCode::KeyW) - held(KeyCode::KeyS),
+                strafe: held(KeyCode::KeyD) - held(KeyCode::KeyA),
+                vertical: held(KeyCode::Space)
+                    - held(KeyCode::ShiftLeft).max(held(KeyCode::ShiftRight)),
+                jump: keys.contains(&KeyCode::Space),
+                sprint: keys.contains(&KeyCode::ControlLeft)
+                    || keys.contains(&KeyCode::ControlRight),
+                yaw: camera.yaw,
+            },
+            pitch: camera.pitch,
+        };
+        Some((move_input_kind(), encode_move_request(&request)))
     }
 
     fn new_content() -> CaveContent {
@@ -148,6 +191,7 @@ impl GameDefinition for Cave {
             KeyCode::Digit4 => session.state.selected_block = 3,
             KeyCode::Digit5 => session.state.selected_block = 4,
             KeyCode::Digit6 => session.state.selected_block = 5,
+            KeyCode::KeyF => session.send_command("/fly"),
             KeyCode::KeyR => {
                 session.state.selected_shape =
                     (session.state.selected_shape + 1) % SHAPE_NAMES.len() as u32;

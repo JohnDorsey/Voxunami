@@ -1,7 +1,7 @@
 //! A player's side of a game, without a window: the client, the meshes of what it sees, the camera,
 //! and the messages the player's actions turn into. Windows and headless runs both drive one.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -15,7 +15,7 @@ use player_presence::{
 use protocol::ClientId;
 use renderer::Camera;
 use transport::Connection;
-use voxel_space::{BrickBox, BrickCoordinate, LevelIndex};
+use voxel_space::{BrickBox, BrickCoordinate, LevelIndex, WorldPosition};
 use world_view::{MeshUpdate, RayHit, ViewSettings, WorldMesher, cast_ray};
 
 use crate::definition::{GameContent, GameDefinition};
@@ -59,6 +59,8 @@ pub struct Session<C: Connection, G: GameDefinition> {
     meshed_level: Option<LevelIndex>,
     command_replies: Vec<String>,
     last_pose_sent: Option<PlayerPose>,
+    /// What a server that moves the player was last told they are asking of their body.
+    last_movement_sent: Option<(NamespacedId, Vec<u8>)>,
 }
 
 impl<C: Connection, G: GameDefinition> Session<C, G> {
@@ -87,6 +89,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         let seed = welcomed.world_seed()?;
         let (client, _report) = welcomed.finish(content.load_context(seed))?;
 
+        let join = G::join_message(start.position);
         let block_table = Arc::new(content.block_table());
         let worker_count = std::thread::available_parallelism()
             .map_or(2, |count| count.get().saturating_sub(1).max(2));
@@ -98,7 +101,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             content.view_channels(),
             Arc::clone(&block_table),
         );
-        Ok(Self {
+        let mut session = Self {
             client,
             content,
             block_table,
@@ -113,7 +116,13 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             meshed_level: None,
             command_replies: Vec::new(),
             last_pose_sent: None,
-        })
+            last_movement_sent: None,
+        };
+        // A server that moves players is told where this one joins.
+        if let Some((kind, payload)) = join {
+            session.send_game_message(kind, payload);
+        }
+        Ok(session)
     }
 
     /// The level the player is in: while playing, the one they asked for, which the view follows
@@ -204,8 +213,24 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         }
         if self.mode == Mode::Replaying {
             self.follow_recorded_player();
+        } else if G::server_moves_players() {
+            self.follow_own_pose();
         }
         Ok(true)
+    }
+
+    /// Where the server last said this player is, if it has said.
+    pub fn own_server_position(&self) -> Option<WorldPosition> {
+        let own = self.client.world().server_info().client;
+        self.players.get(&own).map(|state| state.pose.position)
+    }
+
+    /// In a game where the server moves players, the camera is where the server says the player is
+    /// (the way they face is their own).
+    fn follow_own_pose(&mut self) {
+        if let Some(position) = self.own_server_position() {
+            self.camera.position = position;
+        }
     }
 
     /// Sends the server a line of text as a command; its answer arrives with a later tick (see
@@ -309,6 +334,19 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     /// Tells the server where the player is, if that changed since the last time.
     pub fn send_pose(&mut self) {
         if self.mode != Mode::Playing {
+            return;
+        }
+        // A server that moves players is the one that says where they are; the player says which way
+        // they face, with no keys held (the window sends what is held itself).
+        if G::server_moves_players() {
+            if let Some(message) = G::movement_message(&HashSet::new(), &self.camera)
+                && self.last_movement_sent.as_ref() != Some(&message)
+            {
+                let _ = self
+                    .client
+                    .send_game_message(message.0.clone(), message.1.clone());
+                self.last_movement_sent = Some(message);
+            }
             return;
         }
         let pose = PlayerPose {

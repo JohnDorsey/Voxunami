@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{Rig, VIEW_RADIUS, above_ground};
+use common::{PlayerExt, Rig, VIEW_RADIUS, above_ground};
 use game_shell::files::{open_recording, record_connection};
 use game_shell::session::{Mode, Session};
 use game_shell::view::{apply_updates, camera_at, configure_renderer};
@@ -58,6 +58,7 @@ fn an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw() 
     }
     .unwrap();
     player.camera = above_ground(&player, 16, 16, 3.0);
+    player.teleport_to_camera();
     player.send_pose();
     {
         let server = &mut rig.server;
@@ -150,6 +151,7 @@ fn placing_a_block_in_a_state(
     }
     .unwrap();
     player.camera = above_ground(&player, 16, 16, 3.0);
+    player.teleport_to_camera();
     player.send_pose();
     {
         let server = &mut rig.server;

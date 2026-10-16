@@ -155,6 +155,7 @@ impl BaseBlocks {
             "fire",
             BlockDefinition::cube([0.95, 0.5, 0.1])
                 .with_shapes(vec![Shape::half(FaceDirection::NegativeY)])
+                .with_passable(true)
                 .with_emission(FIRE_EMISSION)
                 .with_state_colors(fire_colors()),
         );
@@ -336,6 +337,13 @@ mod tests {
             "grass and wood burn, and fire does not burn"
         );
         assert!(table.is_opaque_cube(table.model_of(4, 0)));
+        // Bodies pass through flames and nothing else of the blocks.
+        assert_eq!(
+            (0..7)
+                .map(|block| table.is_passable(block))
+                .collect::<Vec<_>>(),
+            [false, false, false, false, false, false, true]
+        );
         assert!(!table.is_solid(table.model_of(0, 0)));
         assert!(table.is_see_through(table.model_of(0, 0)));
         let missing = blocks

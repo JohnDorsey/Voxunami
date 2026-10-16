@@ -10,6 +10,7 @@
 mod command_entry;
 mod definition;
 pub mod files;
+pub mod following;
 mod headless;
 pub mod host;
 pub mod options;

@@ -1,12 +1,15 @@
 //! What a game tells the shell about itself.
 
+use std::collections::HashSet;
 use std::fmt::Debug;
 
 use block_models::BlockTable;
 use content_registry::IdentifierRegistry;
 use namespaced_id::NamespacedId;
+use renderer::Camera;
 use server::GameLogic;
 use transport::Connection;
+use voxel_space::WorldPosition;
 use winit::keyboard::KeyCode;
 use world_storage::{LoadContext, WorldData};
 use world_view::ViewChannels;
@@ -76,6 +79,30 @@ pub trait GameDefinition: Sized + 'static {
     fn reach() -> f32;
 
     fn new_content() -> Self::Content;
+
+    /// Whether the server moves the players' bodies (gravity, collision) and says where each one is,
+    /// instead of each player's program moving its own camera and reporting it. If so the shell
+    /// does not report the camera: it sends [`GameDefinition::join_message`] when joining and
+    /// [`GameDefinition::movement_message`] as keys are held, and shows the camera where the server
+    /// says the player is, though the way the player faces stays their own. The default is no.
+    fn server_moves_players() -> bool {
+        false
+    }
+
+    /// What to tell a server that moves players, on joining, to be put at `position` (the start of the
+    /// camera).
+    fn join_message(_position: WorldPosition) -> Option<(NamespacedId, Vec<u8>)> {
+        None
+    }
+
+    /// What the keys held and the way the camera faces ask of the player's body, as a message for a
+    /// server that moves players. Sent when it changes, and now and then.
+    fn movement_message(
+        _keys: &HashSet<KeyCode>,
+        _camera: &Camera,
+    ) -> Option<(NamespacedId, Vec<u8>)> {
+        None
+    }
     /// The server's rules, built from the world it will serve (which holds any saved game state).
     fn new_logic(content: &Self::Content, world: &WorldData) -> Box<dyn GameLogic>;
 

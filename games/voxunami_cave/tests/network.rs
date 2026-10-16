@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use common::{Player, VIEW_RADIUS, above_ground, ground_height};
+use common::{Player, PlayerExt, VIEW_RADIUS, above_ground, ground_height};
 use game_shell::GameContent;
 use game_shell::files::{open_recording, open_world, record_connection};
 use game_shell::host::{HostSettings, ServerThread};
@@ -112,6 +112,7 @@ fn players_on_a_dedicated_server_see_each_others_edits_and_positions() {
     settle(&mut breaker);
     settle(&mut watcher);
     breaker.camera = above_ground(&breaker, 16, 16, 3.0);
+    breaker.teleport_to_camera();
     settle(&mut breaker);
     settle(&mut watcher);
 
@@ -146,6 +147,7 @@ fn a_dedicated_server_saves_its_world_while_running_and_when_stopped() {
     let mut player = join(server.connect(), [16.5, 110.0, 16.5]);
     settle(&mut player);
     player.camera = above_ground(&player, 16, 16, 3.0);
+    player.teleport_to_camera();
     settle(&mut player);
     let hit = player.target().unwrap();
     break_block(&mut player);
@@ -201,6 +203,7 @@ fn a_hosted_game_has_the_local_player_and_network_players_in_one_world() {
     settle(&mut local);
     settle(&mut remote);
     local.camera = above_ground(&local, 16, 16, 3.0);
+    local.teleport_to_camera();
     settle(&mut local);
     let hit = local.target().unwrap();
     break_block(&mut local);
@@ -236,6 +239,7 @@ fn a_recording_made_over_the_network_replays_the_same_view() {
     );
     settle(&mut player);
     player.camera = above_ground(&player, 16, 16, 3.0);
+    player.teleport_to_camera();
     settle(&mut player);
     let hit = player.target().unwrap();
     break_block(&mut player);
@@ -384,6 +388,7 @@ fn a_player_over_the_network_goes_to_another_level_with_a_command_and_changes_on
     );
     settle(&mut remote);
     remote.camera = above_ground(&remote, 16, 16, 3.0);
+    remote.teleport_to_camera();
     settle(&mut remote);
     let hit = remote.target().expect("the ground is within reach");
     break_block(&mut remote);

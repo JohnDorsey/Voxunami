@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use client::ClientError;
-use common::{Player, Rig, SEED, VIEW_RADIUS, above_ground, ground_height, position_of};
+use common::{
+    Player, PlayerExt, Rig, SEED, VIEW_RADIUS, above_ground, ground_height, position_of, voxels_of,
+};
 use game_shell::files::{open_world, record_connection, save_world};
 use game_shell::host::{HostSettings, ServerThread};
 use game_shell::session::{Mode, Session};
@@ -25,7 +27,10 @@ fn player_above_ground(rig: &mut Rig) -> Player {
     let mut player = rig.join([16.5, 110.0, 16.5], 0.0, 0.0);
     rig.settle(&mut [&mut player]);
     player.camera = above_ground(&player, 16, 16, 3.0);
+    player.teleport_to_camera();
     rig.settle(&mut [&mut player]);
+    // (What the setting up was answered with is not what the test asks about.)
+    player.take_command_replies();
     player
 }
 
@@ -117,15 +122,15 @@ fn the_server_refuses_what_is_out_of_reach_unknown_or_from_a_player_with_no_posi
         own.brick().z() * 32 + own.offset()[2] as i64,
     );
 
-    // Too far, a block nobody has heard of, and (from a second player who never said where they
-    // are) a perfectly reasonable request: none changes the world.
+    // Too far, a block nobody has heard of, and (from a second player who is far away) a perfectly
+    // reasonable request: none changes the world.
     request_block(
         &mut player,
         VoxelCoordinate::new(near.x() + (REACH as i64) + 5, near.y(), near.z()),
         "base_blocks:stone",
     );
     request_block(&mut player, near, "nonexistent:block");
-    let mut stranger = rig.join([16.5, 110.0, 16.5], 0.0, 0.0);
+    let mut stranger = rig.join([500.5, 110.0, 16.5], 0.0, 0.0);
     request_block(&mut stranger, near, "base_blocks:stone");
     for _ in 0..3 {
         rig.step();
@@ -238,6 +243,7 @@ fn a_recording_replays_the_session_from_the_recorded_players_point_of_view() {
     let mut player = rig.join_with(recorded, [16.5, 110.0, 16.5], 0.0, 0.0);
     rig.settle(&mut [&mut player]);
     player.camera = above_ground(&player, 16, 16, 3.0);
+    player.teleport_to_camera();
     rig.settle(&mut [&mut player]);
     let hit = player.target().unwrap();
     break_block(&mut player);
@@ -322,6 +328,7 @@ fn a_session_that_is_watching_a_replay_asks_the_server_for_nothing() {
 
     // Whatever the watcher's camera is doing, it moves, aims and clicks without telling anyone.
     watcher.camera = player.camera;
+    watcher.teleport_to_camera();
     watcher.send_pose();
     let _ = watcher.update_view();
     break_block(&mut watcher);
@@ -465,6 +472,7 @@ fn a_recording_follows_the_recorded_player_into_another_level() {
     let mut player = rig.join_with(recorded, [16.5, 110.0, 16.5], 0.0, 0.0);
     rig.settle(&mut [&mut player]);
     player.camera = above_ground(&player, 16, 16, 3.0);
+    player.teleport_to_camera();
     rig.settle(&mut [&mut player]);
     player.send_command("/level go cellar");
     rig.settle(&mut [&mut player]);
@@ -489,10 +497,11 @@ fn a_recording_follows_the_recorded_player_into_another_level() {
     assert_eq!(replay.client().world().summary(), live_summary);
     assert_eq!(replay.level(), second);
     assert_eq!(replay.mesher().is_opaque_at(hit.voxel), Some(false));
-    assert_eq!(
-        replay.take_command_replies(),
-        ["you are now in voxunami_cave:cellar"]
-    );
+    let replies = replay.take_command_replies();
+    assert_eq!(replies.len(), 3, "{replies:?}");
+    assert_eq!(replies[0], "you are flying");
+    assert!(replies[1].starts_with("teleported to "), "{replies:?}");
+    assert_eq!(replies[2], "you are now in voxunami_cave:cellar");
     std::fs::remove_dir_all(&directory).unwrap();
 }
 
@@ -500,13 +509,13 @@ fn a_recording_follows_the_recorded_player_into_another_level() {
 fn commands_the_game_does_not_know_are_answered() {
     let mut rig = Rig::new();
     let mut player = player_above_ground(&mut rig);
-    player.send_command("/fly");
+    player.send_command("/dance");
     player.send_command("/level");
     rig.settle(&mut [&mut player]);
     assert_eq!(
         player.take_command_replies(),
         [
-            "unknown command; try /level",
+            "unknown command; try /level, /fly, /tp X Y Z",
             "you are in voxunami_cave:overworld"
         ]
     );
@@ -950,16 +959,6 @@ fn fires_burn_only_near_players_and_are_frozen_where_nobody_is() {
     assert_eq!(fires_in(&rig), 0);
 }
 
-/// A position in voxels, as a player is joined at, taken from a camera.
-fn voxels_of(camera: &renderer::Camera) -> [f64; 3] {
-    let position = position_of(camera);
-    [
-        position.brick().x() as f64 * 32.0 + f64::from(position.offset()[0]),
-        position.brick().y() as f64 * 32.0 + f64::from(position.offset()[1]),
-        position.brick().z() as f64 * 32.0 + f64::from(position.offset()[2]),
-    ]
-}
-
 #[test]
 fn a_fire_is_frozen_unless_a_player_in_its_level_is_within_range() {
     let (mut rig, second) = two_level_rig();
@@ -997,6 +996,7 @@ fn a_fire_is_frozen_unless_a_player_in_its_level_is_within_range() {
     rig.settle(&mut [&mut elsewhere]);
     assert_eq!(elsewhere.level(), second);
     elsewhere.camera = camera_at(here, 0.0, 0.0, VIEW_RADIUS);
+    elsewhere.teleport_to_camera();
     rig.settle(&mut [&mut elsewhere]);
     run_ticks(&mut rig, 200);
     assert_eq!(age(&rig), frozen_at, "nothing aged");
@@ -1054,4 +1054,333 @@ fn a_world_saved_while_it_burns_keeps_the_fire_and_it_goes_on_burning_when_loade
 
 fn world_main() -> voxel_space::LevelIndex {
     voxel_space::LevelIndex::MAIN
+}
+
+// ----- The server moves the players -----
+
+/// Lets the server tick `count` times, the player taking in what it says after each.
+fn tick_and_follow(rig: &mut Rig, player: &mut Player, count: usize) {
+    for _ in 0..count {
+        rig.step();
+        player.advance().unwrap();
+    }
+}
+
+/// A walking player who has fallen to the ground and stands quietly on it, at the column (16, 16).
+fn standing_walker(rig: &mut Rig) -> Player {
+    let mut player = rig.join_walking([16.5, 130.0, 16.5], 0.0, 0.0);
+    rig.settle(&mut [&mut player]);
+    tick_and_follow(rig, &mut player, 120);
+    player
+}
+
+#[test]
+fn a_walking_player_falls_and_stands_on_the_ground_and_stays_there() {
+    let mut rig = Rig::new();
+    let mut player = rig.join_walking([16.5, 130.0, 16.5], 0.0, 0.0);
+    let start = voxels_of(&player.camera)[1];
+    // They fall: after half a second they are several voxels lower.
+    tick_and_follow(&mut rig, &mut player, 10);
+    let falling = voxels_of(&player.camera)[1];
+    assert!(falling < start - 3.0, "{start} {falling}");
+    rig.settle(&mut [&mut player]);
+    tick_and_follow(&mut rig, &mut player, 120);
+    // Standing on the highest solid voxel of their column, eyes a standing player's height above it.
+    let ground = ground_height(&player, 16, 16) as f64;
+    let standing = voxels_of(&player.camera);
+    assert!(
+        (standing[1] - (ground + 1.0 + 1.62)).abs() < 0.05,
+        "{standing:?} on {ground}"
+    );
+    assert!((standing[0] - 16.5).abs() < 0.01 && (standing[2] - 16.5).abs() < 0.01);
+    // And they stay there, to the bit.
+    tick_and_follow(&mut rig, &mut player, 40);
+    assert_eq!(voxels_of(&player.camera), standing);
+}
+
+#[test]
+fn the_keys_held_walk_the_player_the_way_they_face_and_jumping_takes_them_up_and_back_down() {
+    let mut rig = Rig::new();
+    let mut player = standing_walker(&mut rig);
+    let start = voxels_of(&player.camera);
+
+    // Facing -z (yaw 0), W walks that way; a second of it is several voxels.
+    player.hold(&[KeyCode::KeyW]);
+    tick_and_follow(&mut rig, &mut player, 20);
+    let walked = voxels_of(&player.camera);
+    assert!(start[2] - walked[2] > 2.5, "{start:?} {walked:?}");
+    assert!((walked[0] - start[0]).abs() < 0.01, "straight ahead");
+
+    // Turned a quarter to the right, W walks toward +x.
+    player.camera.yaw = -std::f32::consts::FRAC_PI_2;
+    player.hold(&[KeyCode::KeyW]);
+    tick_and_follow(&mut rig, &mut player, 20);
+    assert!(voxels_of(&player.camera)[0] - walked[0] > 2.5);
+
+    // Standing still again, and jumping: up by about a block and a quarter, then back down. One
+    // tap between two ticks is enough.
+    player.hold(&[]);
+    tick_and_follow(&mut rig, &mut player, 40);
+    let before = voxels_of(&player.camera)[1];
+    player.hold(&[KeyCode::Space]);
+    player.hold(&[]);
+    let mut highest = before;
+    for _ in 0..30 {
+        tick_and_follow(&mut rig, &mut player, 1);
+        highest = highest.max(voxels_of(&player.camera)[1]);
+    }
+    assert!(
+        (1.1..1.5).contains(&(highest - before)),
+        "{}",
+        highest - before
+    );
+    assert!(
+        (voxels_of(&player.camera)[1] - before).abs() < 0.05,
+        "back on the ground"
+    );
+}
+
+#[test]
+fn a_wall_built_in_the_way_stops_the_player_against_it() {
+    let mut rig = Rig::new();
+    let mut player = standing_walker(&mut rig);
+    let standing = voxels_of(&player.camera);
+    let feet = (standing[1] - 1.62).round() as i64;
+    // A wall three blocks high, three voxels ahead (toward -z), wider than the player.
+    for height in 0..3 {
+        for x in 14..=18 {
+            request_block(
+                &mut player,
+                VoxelCoordinate::new(x, feet + height, 13),
+                "base_blocks:stone",
+            );
+        }
+    }
+    tick_and_follow(&mut rig, &mut player, 4);
+    player.hold(&[KeyCode::KeyW]);
+    tick_and_follow(&mut rig, &mut player, 90);
+    let at_wall = voxels_of(&player.camera);
+    // Stopped with their body (0.3 either side of the middle) against the wall's near face at z = 14.
+    assert!((at_wall[2] - 14.3).abs() < 0.05, "{at_wall:?}");
+    assert!((at_wall[0] - 16.5).abs() < 0.01);
+}
+
+#[test]
+fn breaking_the_ground_under_a_walker_lets_them_fall() {
+    let mut rig = Rig::new();
+    let mut player = standing_walker(&mut rig);
+    // They look straight down at what they stand on.
+    player.camera.look_by(0.0, -std::f32::consts::FRAC_PI_2);
+    player.hold(&[]);
+    tick_and_follow(&mut rig, &mut player, 3);
+    let before = voxels_of(&player.camera)[1];
+    break_block(&mut player);
+    tick_and_follow(&mut rig, &mut player, 60);
+    assert!(
+        before - voxels_of(&player.camera)[1] > 0.9,
+        "{before} {:?}",
+        voxels_of(&player.camera)
+    );
+}
+
+#[test]
+fn flying_hovers_and_the_commands_for_it_and_for_teleporting_answer() {
+    let mut rig = Rig::new();
+    let mut player = rig.join_walking([16.5, 130.0, 16.5], 0.0, 0.0);
+    rig.settle(&mut [&mut player]);
+    player.take_command_replies();
+    player.send_command("/fly");
+    tick_and_follow(&mut rig, &mut player, 2);
+    let hovering = voxels_of(&player.camera);
+    tick_and_follow(&mut rig, &mut player, 60);
+    assert_eq!(voxels_of(&player.camera), hovering);
+    player.hold(&[KeyCode::Space]);
+    tick_and_follow(&mut rig, &mut player, 20);
+    assert!(voxels_of(&player.camera)[1] - hovering[1] > 5.0);
+    player.hold(&[]);
+
+    player.send_command("/tp 100.5 200 -50.25");
+    tick_and_follow(&mut rig, &mut player, 3);
+    let moved = voxels_of(&player.camera);
+    assert!(
+        (moved[0] - 100.5).abs() < 0.01 && (moved[2] + 50.25).abs() < 0.01,
+        "{moved:?}"
+    );
+    assert!((moved[1] - 200.0).abs() < 0.1);
+    player.send_command("/tp 1 2");
+    player.send_command("/tp a b c");
+    player.send_command("/tp 1 2 99999999999999999999");
+    player.send_command("/fly");
+    tick_and_follow(&mut rig, &mut player, 2);
+    assert_eq!(
+        player.take_command_replies(),
+        [
+            "you are flying",
+            "teleported to 100.5 200 -50.25",
+            "usage: /tp X Y Z",
+            "usage: /tp X Y Z, with numbers",
+            "that is outside the world",
+            "you are walking",
+        ]
+    );
+    // Walking again, they fall.
+    tick_and_follow(&mut rig, &mut player, 30);
+    assert!(voxels_of(&player.camera)[1] < moved[1] - 3.0);
+}
+
+#[test]
+fn a_player_cannot_move_by_saying_where_they_are() {
+    let mut rig = Rig::new();
+    let mut player = rig.join([16.5, 130.0, 16.5], 0.0, 0.0);
+    rig.settle(&mut [&mut player]);
+    tick_and_follow(&mut rig, &mut player, 3);
+    let before = voxels_of(&player.camera);
+    // A pose, as the other games' players send; a second spawn; and nonsense for a move.
+    let far = player_presence::PlayerPose {
+        position: camera_at([500.5, 130.0, 500.5], 0.0, 0.0, VIEW_RADIUS).position,
+        yaw: 0.0,
+        pitch: 0.0,
+    };
+    player.send_game_message(
+        player_presence::pose_kind(),
+        player_presence::encode_pose(&far),
+    );
+    player.send_game_message(
+        voxunami_cave::messages::spawn_kind(),
+        voxunami_cave::messages::encode_spawn(&far),
+    );
+    player.send_game_message(voxunami_cave::messages::move_input_kind(), vec![9, 9, 9, 9]);
+    tick_and_follow(&mut rig, &mut player, 5);
+    assert_eq!(voxels_of(&player.camera), before);
+}
+
+#[test]
+fn walkers_pass_through_flames_and_the_cellar_has_the_same_ground() {
+    let (mut rig, second) = two_level_rig();
+    let mut player = standing_walker(&mut rig);
+    let standing = voxels_of(&player.camera);
+    // Flames on the ground ahead of them do not stop them.
+    let feet = (standing[1] - 1.62).round() as i64;
+    for z in 13..16 {
+        request_block(
+            &mut player,
+            VoxelCoordinate::new(16, feet, z),
+            "base_blocks:fire",
+        );
+    }
+    tick_and_follow(&mut rig, &mut player, 3);
+    player.hold(&[KeyCode::KeyW]);
+    tick_and_follow(&mut rig, &mut player, 40);
+    assert!(standing[2] - voxels_of(&player.camera)[2] > 3.0);
+    player.hold(&[]);
+    tick_and_follow(&mut rig, &mut player, 40);
+    let before = voxels_of(&player.camera);
+
+    // In the cellar they are at the same place, on that level's ground, which is the same.
+    player.send_command("/level go cellar");
+    rig.settle(&mut [&mut player]);
+    tick_and_follow(&mut rig, &mut player, 60);
+    assert_eq!(player.level(), second);
+    let in_the_cellar = voxels_of(&player.camera);
+    assert!(
+        in_the_cellar
+            .iter()
+            .zip(before)
+            .all(|(now, then)| (now - then).abs() < 0.05),
+        "{in_the_cellar:?} {before:?}"
+    );
+}
+
+/// A position, bit for bit, as a number.
+fn position_hash(camera: &renderer::Camera) -> u64 {
+    let position = position_of(camera);
+    let mut state: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |value: u64| {
+        for byte in value.to_le_bytes() {
+            state ^= u64::from(byte);
+            state = state.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    feed(position.brick().x() as u64);
+    feed(position.brick().y() as u64);
+    feed(position.brick().z() as u64);
+    for component in position.offset() {
+        feed(u64::from(component.to_bits()));
+    }
+    state
+}
+
+/// A scripted walk over the hills of the world: falling, walking in several directions, jumping,
+/// running. Returns where the player is after each stage, as numbers.
+fn scripted_walk() -> Vec<u64> {
+    let mut rig = Rig::new();
+    let mut player = rig.join_walking([40.5, 150.0, -20.5], 0.0, 0.0);
+    rig.settle(&mut [&mut player]);
+    let script: [(&[KeyCode], f32, usize); 7] = [
+        (&[], 0.0, 150),
+        (&[KeyCode::KeyW], 0.3, 60),
+        (&[KeyCode::KeyW, KeyCode::Space], 0.3, 40),
+        (&[KeyCode::KeyW, KeyCode::KeyD], -1.2, 80),
+        (&[KeyCode::KeyW, KeyCode::ControlLeft], 2.0, 100),
+        (&[KeyCode::KeyS, KeyCode::KeyA], 2.0, 60),
+        (
+            &[KeyCode::KeyW, KeyCode::ControlLeft, KeyCode::Space],
+            0.0,
+            120,
+        ),
+    ];
+    let mut hashes = Vec::new();
+    for (keys, yaw, ticks) in script {
+        player.camera.yaw = yaw;
+        player.hold(keys);
+        tick_and_follow(&mut rig, &mut player, ticks);
+        hashes.push(position_hash(&player.camera));
+    }
+    hashes
+}
+
+#[test]
+fn a_scripted_walk_over_the_hills_ends_in_the_same_place_every_time_and_on_every_machine() {
+    let first = scripted_walk();
+    assert_eq!(first, scripted_walk());
+    // Taken on Windows; the same numbers come out on Linux, so the two agree to the bit.
+    assert_eq!(first, PINNED_WALK, "{first:?}");
+}
+
+const PINNED_WALK: [u64; 7] = [
+    468_518_576_783_366_090,
+    12_890_916_843_119_075_606,
+    13_982_467_350_068_254_181,
+    17_157_314_486_479_003_852,
+    2_040_764_607_994_219_951,
+    14_899_297_459_819_532_857,
+    14_552_058_698_843_509_522,
+];
+
+#[test]
+fn a_walker_standing_in_flames_falls_when_the_fire_burns_the_ground_away() {
+    let mut rig = Rig::new();
+    let mut player = standing_walker(&mut rig);
+    let standing = voxels_of(&player.camera);
+    let grass = VoxelCoordinate::new(16, ground_height(&player, 16, 16), 16);
+    assert_eq!(server_block(&rig, grass), rig.content.blocks.grass);
+    // Fire where they stand and in the grass either side, so that their grass burns whatever the
+    // chance does.
+    for (dx, dz) in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
+        let at = VoxelCoordinate::new(grass.x() + dx, grass.y() + 1, grass.z() + dz);
+        request_block(&mut player, at, "base_blocks:fire");
+    }
+    tick_and_follow(&mut rig, &mut player, 2);
+    // (The ground is made again for the new blocks, which may settle them by a hair.)
+    assert!(
+        voxels_of(&player.camera)
+            .iter()
+            .zip(standing)
+            .all(|(now, then)| (now - then).abs() < 0.001),
+        "flames do not hold them up or push them"
+    );
+    tick_and_follow(&mut rig, &mut player, 600);
+    assert_eq!(server_block(&rig, grass), rig.content.blocks.air);
+    let fallen = standing[1] - voxels_of(&player.camera)[1];
+    assert!((fallen - 1.0).abs() < 0.05, "{fallen}");
 }

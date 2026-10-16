@@ -98,7 +98,12 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - Physics (confirmed by the owner): Rapier (rapier3d 0.36.1) behind a Voxunami adapter crate, with
   `enhanced-determinism`, single-threaded stepping on the server, a local floating-origin frame, large merged voxel
   colliders for terrain, and gravity, buoyancy and drag applied as per-body forces. Evidence and caveats are in
-  `docs/physics-spike.md`. Not built yet.
+  `docs/physics-spike.md`. Built so far for players only (Phases 15 and 16, below); rigid structures, buoyancy and
+  joints are not.
+- Players' bodies (decided with the physics, Phases 15 and 16): the server moves them. A client says which keys are
+  held and which way it faces; it never says where it is, and a game that moves players ignores pose messages. This is what
+  keeps recordings and every other player's view honest, and what makes the movement the same on every machine.
+  Prediction on the client is not built (see "Open").
 
 ## Decided (2048)
 - No largest number (owner, 2026-10-16). A voxel is a material's block and, as its state, a number (built: Phase 8), so
@@ -169,7 +174,7 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   5. Random ticks and fire in Cave: the second lattice rule; only then extract the common lattice-rule shape
   (neighbourhood snapshot in, edits out, deterministic random numbers, active region, budget; done: Phases 13 and
   14, see "Decided (rules for lattice simulation and physics)"). 6. Cave gravity and
-  collision on Rapier. 7. Flatworms (movable earlier or later; it needs no physics). 8. Mod stages 1 to 5 (see below),
+  collision on Rapier (done for players: Phases 15 and 16). 7. Flatworms (movable earlier or later; it needs no physics). 8. Mod stages 1 to 5 (see below),
   started once step 5 shows what a block definition and a rule hook carry. 9. Sub-grids with hinges and pistons, and Sculpt.
   10. Mod hooks: lattice rules first, then physics (engine-provided motor and piston parts that mods configure rather than
   implement). 11. Portals, user shaders, assets and an SDK. Level awareness must be in the mod API from its first version.
@@ -256,6 +261,44 @@ Phase 1d (saving):
 - `terrain`: `WorldTerrain` exposes its configuration and can restore saved assignments.
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
+
+Phase 15 (the `physics` crate: a walking body on Rapier; the only crate that imports Rapier):
+- `engine/physics`: `CharacterBody` is a player's body in a Rapier world of its own (one per player, around a floating
+  origin that is moved when the body gets far from it, so `f32` keeps its precision). Terrain is read through a
+  `CollisionSource` (what is in a voxel, and a cheap hint per brick: empty, solid or unknown), made into colliders a brick at
+  a time, and made again for a brick when `brick_changed` says it was edited. Terrain that cannot be read is a wall, not a
+  void, so a player never falls out of the world while it loads. `BlockDefinition::passable` (flames) takes a block out of
+  the way of bodies without changing how it is drawn or aimed at.
+- What worked and what did not, so it is not tried again: a Rapier capsule against `Voxels` stuck on seams and crept by
+  about 1e-4 a step. What works: a cuboid body (0.6 x 1.8 x 0.6), terrain as boxes merged greedily within a brick, a small
+  overlap (0.05) across solid brick boundaries, the character controller's sideways and vertical moves done as two moves,
+  `normal_nudge_factor` 1e-5, no snapping to the ground, and automatic stepping up 0.6. Partial shapes (slabs and the
+  like) are boxes of their own. The speeds are in `CharacterSettings` (gravity 32 voxels/s^2, jump 9, which is about 1.27
+  voxels, walk 4.3, run 5.6, fly 10.9 and 21.6, terminal speed 78), 60 steps a second; yaw uses `libm`.
+- Tested: 15 tests in `engine/physics/tests/walking.rs`, including a property test that a body is never inside solid
+  terrain, a scripted run whose hash is pinned and is the same on Windows (debug and release) and Linux, and that editing
+  terrain under a body is noticed. Mutation experiments on the crate: every change caught except one that changes nothing.
+
+Phase 16 (Voxunami Cave: gravity and collision; the server moves the players):
+- Messages (`games/voxunami_cave/src/messages.rs`): `voxunami_cave:spawn_at` (a pose, taken once, when the player joins) and
+  `voxunami_cave:move_input` (keys as a `MoveRequest`: forward/side/up, jump, sprint, yaw, pitch; repeated about every
+  100 ms and when it changes). `GameDefinition::{server_moves_players, join_message, movement_message}` let a game opt in; a
+  game that does not (2048) works as before.
+- Server (`movement.rs`, `logic.rs`): `Movement` holds a body per player, takes 3 physics steps per 20 Hz tick, and puts the
+  result in the `PoseBook` so everyone, and any recording, sees it. A jump asked for between two ticks still happens.
+  Edits, and the changes fire makes, tell the bodies to make the terrain again; a player moved to another level keeps
+  their place and gets that level's ground. `/fly` toggles flying (key F), `/tp X Y Z` puts the eyes at a position.
+- Client (`game_shell::following`): the camera follows what the server says; `PoseFollower` carries the view on at the
+  speed of the last two positions between ticks so that steady walking is smooth, and shows the last position told when
+  none comes (standing still). The way the player faces stays their own.
+- Tests (Cave `tests/play.rs`): falling and standing on the ground to a few hundredths and then bit-still; keys walk the way
+  the player faces; a tap of Space jumps 1.1 to 1.5 voxels and lands; a built wall stops them against its face; breaking
+  the ground under them, and fire burning it away, make them fall; flames do not stop them; `/fly` and `/tp` and their
+  error replies; a player's own pose, a second spawn and nonsense moves change nothing; the cellar level has the same
+  ground; a scripted walk over the hills with pinned hashes, identical on Windows (debug and release) and Linux. Mutation
+  experiments on the movement code: the step count, tap-jump, edit and fire notifications and flame passability are caught;
+  two survive because they cannot be seen (ignoring a pose message is also what falls through, and a second spawn is
+  overwritten by the next tick), and one is not tested (terrain that cannot be read being a wall; `physics` tests it).
 
 Phase 13 (fire, Voxunami Cave; the second lattice rule):
 - Blocks: `wood` (burns slowly), `fire`, and `grass` now burns fast. `BlockDefinition::flammability` (0 to 255, carried by
@@ -538,8 +581,12 @@ continuous channels need quantization or sparse activity.
 - Levels: a world cannot gain a level while a server runs, no game ships a second level yet, and `add_level` cannot check
   that a level's generators were built from the world's seed (a mismatch shows up as clients going out of sync). Typing
   commands in the window was written but never tried with a real keyboard.
-- The game is a fly camera: no gravity, collision or physics yet (the Rapier adapter comes with structures), other
-  players are drawn as a plain pillar that does not face where they look, and there is no inventory.
+- Movement (Phases 15 and 16): Cave players walk with gravity and collision, on the server. Not built: prediction on the
+  client (a player's own keys show after the round trip to the server, plus a tick; on a distant server that will be felt),
+  swimming, ladders, crouching and edge-holding, damage from falls, and pushing other players. The camera bobs by up to
+  about 1.4 cm where bricks meet (the body is momentarily held by two colliders), too little to see but not zero. How it feels
+  was not judged by eye: the tests measure heights and distances, and the real window was tried only with synthetic keys.
+  Other players are drawn as a plain pillar that does not face where they look, and there is no inventory.
 - Network scale: a spatial index over watched regions (an edit currently scans all clients); passwords or at least a
   shared secret, and encryption, before play over the internet; resending single bricks to repair a client that fell out of sync; replay keyframes for seeking; interest with a
   level of detail. See "Known limits" in `docs/protocol-and-replay.md`.
@@ -585,6 +632,8 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 12 Block light in Cave: lamp block, light channel, streaming, ambient light in the renderer. **Done.**
 - 13 Fire in Cave (the second lattice rule). **Done.**
 - 14 The `lattice` crate (active voxels, voxel chance) and a budget for the light. **Done.**
+- 15 The `physics` crate: a walking body on Rapier, pinned across Windows and Linux. **Done.**
+- 16 Cave gravity and collision: the server moves the players (`/fly`, `/tp`). **Done.**
 - 1f Launcher and first game crate: `world_view`, the `base_blocks` plugin, Voxunami Cave, the launcher; the old viewer
   retired. **Done.**
-The physics spike is done (`docs/physics-spike.md`); building the physics adapter belongs with the structures work.
+The physics spike is done (`docs/physics-spike.md`); the adapter for rigid structures belongs with the structures work.

@@ -130,6 +130,27 @@ impl ServerWorld {
         Ok(self.generated_brick(level, coordinate)?.get(channel, local))
     }
 
+    /// The value that every voxel of a brick has in a channel, if they all have the same one: a way
+    /// to know what a brick holds without looking at its voxels.
+    pub fn uniform_value(
+        &mut self,
+        level: LevelIndex,
+        channel: ChannelIndex,
+        brick: BrickCoordinate,
+    ) -> Result<Option<u32>, AccessError> {
+        let data = self
+            .data
+            .level(level)
+            .ok_or(AccessError::NoSuchLevel(level))?;
+        if let Some(edited) = data.overrides.brick(brick) {
+            return Ok(edited.channel(channel).uniform_value());
+        }
+        Ok(self
+            .generated_brick(level, brick)?
+            .channel(channel)
+            .uniform_value())
+    }
+
     /// Sets a voxel and replicates the change to the clients watching its brick. Returns whether
     /// the voxel changed; setting it to the value it has changes and sends nothing.
     pub fn set_voxel(

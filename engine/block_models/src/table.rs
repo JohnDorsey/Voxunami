@@ -22,6 +22,7 @@ struct Entry {
     color: [f32; 3],
     emission: u8,
     flammability: u8,
+    passable: bool,
     first_model: u32,
     state_count: u32,
     /// Where this block's state colours start in the palette, and how many there are (0 if the
@@ -65,6 +66,7 @@ impl BlockTable {
                     color: MISSING_BLOCK_COLOR,
                     emission: 0,
                     flammability: 0,
+                    passable: false,
                     first_model: u32::MAX,
                     state_count: 1,
                     first_state_material: 0,
@@ -80,6 +82,7 @@ impl BlockTable {
                 color: definition.color,
                 emission: definition.emission,
                 flammability: definition.flammability,
+                passable: definition.passable,
                 first_model,
                 state_count: definition.state_count() as u32,
                 first_state_material: (definitions.len() + state_palette.len()) as u32,
@@ -216,6 +219,14 @@ impl BlockTable {
             .map_or(MISSING_BLOCK_COLOR, |entry| entry.color)
     }
 
+    /// Whether bodies move through a block as if it were not there. An unknown block is not
+    /// passable: it is a wall.
+    pub fn is_passable(&self, block: u32) -> bool {
+        self.entries
+            .get(block as usize)
+            .is_some_and(|entry| entry.passable)
+    }
+
     /// How readily a block catches fire, 0 to 255; an unknown block does not.
     pub fn flammability(&self, block: u32) -> u8 {
         self.entries
@@ -275,7 +286,8 @@ mod tests {
         let glass = BlockDefinition::cube([0.7, 0.9, 1.0])
             .with_see_through(true)
             .with_emission(40)
-            .with_flammability(7);
+            .with_flammability(7)
+            .with_passable(true);
         BlockTable::from_definitions(&[Some(&air), Some(&stone), Some(&glass), None])
     }
 
@@ -370,6 +382,11 @@ mod tests {
             [[0.0; 3], [0.5; 3], [0.7, 0.9, 1.0], MISSING_BLOCK_COLOR]
         );
         assert_eq!((table.emission(1), table.emission(2)), (0, 40));
+        assert_eq!(
+            [0, 1, 2, 3, 9999].map(|block| table.is_passable(block)),
+            [false, false, true, false, false],
+            "only the glass of this table is passable"
+        );
         assert_eq!(
             [0, 1, 2, 3, 9999].map(|block| table.flammability(block)),
             [0, 0, 7, 0, 0],

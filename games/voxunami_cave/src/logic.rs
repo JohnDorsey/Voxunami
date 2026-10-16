@@ -7,16 +7,21 @@ use block_models::BlockTable;
 use game_shell::PoseBook;
 use lattice::ActiveVoxels;
 use namespaced_id::NamespacedId;
+use player_presence::pose_kind;
 use protocol::{ClientId, Tick};
-use server::{GameLogic, ServerWorld};
+use server::{CommandLine, GameLogic, ServerWorld};
 use voxel_grid::ChannelIndex;
-use voxel_space::{LevelIndex, VoxelCoordinate};
+use voxel_space::{LevelIndex, VoxelCoordinate, WorldPosition};
 use world_storage::{Section, WorldData};
 
 use crate::content::CaveContent;
 use crate::fire::{Fire, FireWorld};
 use crate::lighting::{self, LightWorld, Lighting};
-use crate::messages::{decode_set_block, set_block_kind};
+use crate::messages::{
+    decode_move_request, decode_set_block, decode_spawn, move_input_kind, set_block_kind,
+    spawn_kind,
+};
+use crate::movement::Movement;
 
 /// How far from a player, in voxels, a block can be changed.
 pub const REACH: f64 = 10.0;
@@ -98,6 +103,7 @@ pub struct CaveLogic {
     lighting: Lighting,
     fire: Fire,
     fire_block: u32,
+    movement: Movement,
     poses: PoseBook,
 }
 
@@ -139,6 +145,12 @@ impl CaveLogic {
                 fire_active,
             ),
             fire_block: content.blocks.fire,
+            movement: Movement::new(
+                content.blocks.block_table(),
+                content.block_channel(),
+                content.state_channel(),
+                content.blocks.air,
+            ),
             poses: PoseBook::new(),
         }
     }
@@ -168,9 +180,45 @@ impl CaveLogic {
         {
             let _ = world.set_voxel(level, self.block_channel, at, raw);
             self.lighting.voxel_changed(level, at);
+            self.movement.brick_changed(level, at.split().0);
             if raw == self.fire_block {
                 self.fire.ignite(level, at);
             }
+        }
+    }
+}
+
+impl CaveLogic {
+    /// `/tp X Y Z`: puts the player's eyes at a position, in voxels. Returns what to tell them.
+    fn teleport(&mut self, client: ClientId, arguments: &[&str]) -> String {
+        let [x, y, z] = arguments else {
+            return "usage: /tp X Y Z".to_owned();
+        };
+        let parsed =
+            [x, y, z].map(|text| text.parse::<f64>().ok().filter(|value| value.is_finite()));
+        let [Some(x), Some(y), Some(z)] = parsed else {
+            return "usage: /tp X Y Z, with numbers".to_owned();
+        };
+        // The position must be somewhere in the world.
+        let Ok(voxel) =
+            VoxelCoordinate::try_new(x.floor() as i64, y.floor() as i64, z.floor() as i64)
+        else {
+            return "that is outside the world".to_owned();
+        };
+        let (brick, local) = voxel.split();
+        let fraction = |value: f64| (value - value.floor()) as f32;
+        let position = WorldPosition::new(
+            brick,
+            [
+                f32::from(local.x()) + fraction(x),
+                f32::from(local.y()) + fraction(y),
+                f32::from(local.z()) + fraction(z),
+            ],
+        );
+        if self.movement.teleport(client, position) {
+            format!("teleported to {x} {y} {z}")
+        } else {
+            "you have not joined yet".to_owned()
         }
     }
 }
@@ -179,6 +227,7 @@ impl GameLogic for CaveLogic {
     fn client_joined(&mut self, _client: ClientId, _world: &mut ServerWorld) {}
 
     fn client_left(&mut self, client: ClientId, _world: &mut ServerWorld) {
+        self.movement.remove(client);
         self.poses.client_left(client);
     }
 
@@ -189,7 +238,24 @@ impl GameLogic for CaveLogic {
         payload: &[u8],
         world: &mut ServerWorld,
     ) {
-        if self.poses.handle_message(client, kind, payload) {
+        // Players do not say where they are: the server moves them (see `Movement`).
+        if *kind == pose_kind() {
+            return;
+        }
+        if *kind == spawn_kind() {
+            if !self.movement.has_body(client)
+                && let Ok(pose) = decode_spawn(payload)
+            {
+                self.movement
+                    .spawn(client, pose, self.poses.level_of(client));
+                self.poses.set_pose(client, pose);
+            }
+            return;
+        }
+        if *kind == move_input_kind() {
+            if let Ok(request) = decode_move_request(payload) {
+                self.movement.ask(client, request);
+            }
             return;
         }
         if *kind == set_block_kind()
@@ -201,12 +267,30 @@ impl GameLogic for CaveLogic {
     }
 
     fn command_received(&mut self, client: ClientId, command: &str, world: &mut ServerWorld) {
-        if !self.poses.handle_command(client, command, world) {
-            world.reply(client, "unknown command; try /level");
+        if self.poses.handle_command(client, command, world) {
+            return;
+        }
+        match CommandLine::parse(command) {
+            Some(line) if line.name == "fly" => match self.movement.toggle_flying(client) {
+                Some(true) => world.reply(client, "you are flying"),
+                Some(false) => world.reply(client, "you are walking"),
+                None => world.reply(client, "you have not joined yet"),
+            },
+            Some(line) if line.name == "tp" => {
+                let reply = self.teleport(client, &line.arguments);
+                world.reply(client, &reply);
+            }
+            _ => world.reply(client, "unknown command; try /level, /fly, /tp X Y Z"),
         }
     }
 
     fn tick(&mut self, _tick: Tick, world: &mut ServerWorld) {
+        // The bodies move first, so that what the players do this tick is from where they are.
+        let poses = &self.poses;
+        let moved = self.movement.step(world, |client| poses.level_of(client));
+        for (client, pose) in moved {
+            self.poses.set_pose(client, pose);
+        }
         self.poses.tell_everyone(world);
         // Fires near a player burn; what they change is looked at by the light in the same tick.
         let poses = &self.poses;
@@ -224,6 +308,7 @@ impl GameLogic for CaveLogic {
         );
         for (level, at) in changed {
             self.lighting.voxel_changed(level, at);
+            self.movement.brick_changed(level, at.split().0);
         }
         self.lighting.step_within(
             &mut WorldLight {
