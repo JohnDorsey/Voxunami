@@ -3,108 +3,163 @@
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
-use voxel_space::FaceDirection;
+use voxel_space::{FaceDirection, VoxelCoordinate};
 use world_storage::Section;
+
+use crate::motion::Mover;
 
 fn kind(text: &str) -> NamespacedId {
     text.parse().expect("constant identifier is valid")
 }
 
-/// Client to server: push every tile toward a side. The body is the side's face index.
+/// Client to server: push the block at a voxel.
 pub fn push_kind() -> NamespacedId {
-    kind("voxunami_2048:push")
+    kind("voxunami_2048:push_block")
 }
 
-/// Client to server: start a new game. No body.
-pub fn new_game_kind() -> NamespacedId {
-    kind("voxunami_2048:new_game")
+/// Server to everyone: how the game has gone so far.
+pub fn progress_kind() -> NamespacedId {
+    kind("voxunami_2048:progress")
 }
 
-/// Server to everyone: the score and whether the game goes on.
-pub fn status_kind() -> NamespacedId {
-    kind("voxunami_2048:status")
+/// A request to push the block at `voxel` toward `direction`. Pulling is pushing toward the puller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PushRequest {
+    pub voxel: VoxelCoordinate,
+    pub direction: FaceDirection,
 }
 
-pub fn encode_push(toward: FaceDirection) -> Vec<u8> {
-    vec![toward.index()]
-}
-
-pub fn decode_push(payload: &[u8]) -> Result<FaceDirection, DecodeError> {
-    let [index] = payload else {
-        return Err(DecodeError::Invalid("a push is one byte"));
-    };
-    FaceDirection::from_index(*index).ok_or(DecodeError::Invalid("no such direction"))
-}
-
-/// How the game stands.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Status {
-    pub score: u64,
-    pub moves: u64,
-    /// The exponent of the largest tile.
-    pub highest: u8,
-    /// Whether no push can change the board.
-    pub game_over: bool,
-    /// How many games have been started in this world, counting from 0.
-    pub game_number: u64,
-}
-
-impl Status {
-    /// Whether a 2048 tile has been made.
-    pub fn won(&self) -> bool {
-        self.highest >= crate::board::WINNING_EXPONENT
+fn write_voxel(writer: &mut ByteWriter, voxel: VoxelCoordinate) {
+    for component in [voxel.x(), voxel.y(), voxel.z()] {
+        writer.write_signed_varint(component);
     }
 }
 
-pub fn encode_status(status: &Status) -> Vec<u8> {
+fn read_voxel(reader: &mut ByteReader<'_>) -> Result<VoxelCoordinate, DecodeError> {
+    VoxelCoordinate::try_new(
+        reader.read_signed_varint()?,
+        reader.read_signed_varint()?,
+        reader.read_signed_varint()?,
+    )
+    .map_err(|_| DecodeError::Invalid("a voxel coordinate is out of range"))
+}
+
+fn read_direction(reader: &mut ByteReader<'_>) -> Result<FaceDirection, DecodeError> {
+    FaceDirection::from_index(reader.read_u8()?).ok_or(DecodeError::Invalid("no such direction"))
+}
+
+pub fn encode_push(request: &PushRequest) -> Vec<u8> {
     let mut writer = ByteWriter::new();
-    writer.write_varint(status.score);
-    writer.write_varint(status.moves);
-    writer.write_u8(status.highest);
-    writer.write_u8(u8::from(status.game_over));
-    writer.write_varint(status.game_number);
+    write_voxel(&mut writer, request.voxel);
+    writer.write_u8(request.direction.index());
     writer.into_bytes()
 }
 
-pub fn decode_status(payload: &[u8]) -> Result<Status, DecodeError> {
+pub fn decode_push(payload: &[u8]) -> Result<PushRequest, DecodeError> {
     let mut reader = ByteReader::new(payload);
-    let status = Status {
-        score: reader.read_varint()?,
-        moves: reader.read_varint()?,
-        highest: reader.read_u8()?,
-        game_over: match reader.read_u8()? {
-            0 => false,
-            1 => true,
-            _ => return Err(DecodeError::Invalid("a flag is 0 or 1")),
-        },
-        game_number: reader.read_varint()?,
+    let request = PushRequest {
+        voxel: read_voxel(&mut reader)?,
+        direction: read_direction(&mut reader)?,
     };
     reader.finish()?;
-    Ok(status)
+    Ok(request)
 }
 
-/// What the server remembers that the voxels do not show.
+/// How the game has gone, for everyone who plays it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SavedState {
+pub struct Progress {
+    /// The sum of the numbers of every block that merging has made.
     pub score: u64,
-    pub moves: u64,
-    pub game_number: u64,
+    /// How many blocks players have pushed.
+    pub pushes: u64,
+    /// The exponent of the largest block merging has made; 0 before the first merge.
+    pub largest_merge: u8,
+}
+
+impl Progress {
+    /// The number of the largest block merging has made, if there has been a merge.
+    pub fn largest_merged_value(&self) -> Option<u64> {
+        (self.largest_merge > 0).then(|| 1 << self.largest_merge)
+    }
+}
+
+fn write_progress(writer: &mut ByteWriter, progress: &Progress) {
+    writer.write_varint(progress.score);
+    writer.write_varint(progress.pushes);
+    writer.write_u8(progress.largest_merge);
+}
+
+fn read_progress(reader: &mut ByteReader<'_>) -> Result<Progress, DecodeError> {
+    let progress = Progress {
+        score: reader.read_varint()?,
+        pushes: reader.read_varint()?,
+        largest_merge: reader.read_u8()?,
+    };
+    if progress.largest_merge > crate::numbered_block::MAXIMUM_EXPONENT {
+        return Err(DecodeError::Invalid(
+            "a block is numbered beyond the largest",
+        ));
+    }
+    Ok(progress)
+}
+
+pub fn encode_progress(progress: &Progress) -> Vec<u8> {
+    let mut writer = ByteWriter::new();
+    write_progress(&mut writer, progress);
+    writer.into_bytes()
+}
+
+pub fn decode_progress(payload: &[u8]) -> Result<Progress, DecodeError> {
+    let mut reader = ByteReader::new(payload);
+    let progress = read_progress(&mut reader)?;
+    reader.finish()?;
+    Ok(progress)
+}
+
+/// What the server remembers that the voxels do not show: the progress, and which blocks were
+/// moving (the blocks themselves are in the voxels).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SavedState {
+    pub progress: Progress,
+    pub movers: Vec<Mover>,
 }
 
 pub fn saved_state_section_id() -> NamespacedId {
-    kind("voxunami_2048:state")
+    kind("voxunami_2048:progress")
 }
 
 pub fn saved_state_section(state: &SavedState) -> Section {
     let mut writer = ByteWriter::new();
-    writer.write_varint(state.score);
-    writer.write_varint(state.moves);
-    writer.write_varint(state.game_number);
+    write_progress(&mut writer, &state.progress);
+    writer.write_varint(state.movers.len() as u64);
+    for mover in &state.movers {
+        write_voxel(&mut writer, mover.position);
+        writer.write_u8(mover.direction.index());
+        writer.write_varint(u64::from(mover.steps_left));
+    }
     Section {
         identifier: saved_state_section_id(),
         version: 1,
         payload: writer.into_bytes(),
     }
+}
+
+fn read_saved_state_payload(payload: &[u8]) -> Result<SavedState, DecodeError> {
+    let mut reader = ByteReader::new(payload);
+    let progress = read_progress(&mut reader)?;
+    // A moving block takes at least three bytes of position, one of direction, one of steps.
+    let count = reader.read_count(5)?;
+    let mut movers = Vec::with_capacity(count);
+    for _ in 0..count {
+        movers.push(Mover {
+            position: read_voxel(&mut reader)?,
+            direction: read_direction(&mut reader)?,
+            steps_left: u32::try_from(reader.read_varint()?)
+                .map_err(|_| DecodeError::Invalid("a block has too many steps left"))?,
+        });
+    }
+    reader.finish()?;
+    Ok(SavedState { progress, movers })
 }
 
 /// The saved state in a world's sections, if the world has some this program can read. A newer
@@ -113,14 +168,7 @@ pub fn read_saved_state(sections: &[Section]) -> Option<SavedState> {
     let section = sections
         .iter()
         .find(|section| section.identifier == saved_state_section_id() && section.version == 1)?;
-    let mut reader = ByteReader::new(&section.payload);
-    let state = SavedState {
-        score: reader.read_varint().ok()?,
-        moves: reader.read_varint().ok()?,
-        game_number: reader.read_varint().ok()?,
-    };
-    reader.finish().ok()?;
-    Some(state)
+    read_saved_state_payload(&section.payload).ok()
 }
 
 #[cfg(test)]
@@ -129,47 +177,79 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn pushes_name_a_direction_and_nothing_else_is_accepted() {
-        for toward in FaceDirection::ALL {
-            assert_eq!(decode_push(&encode_push(toward)), Ok(toward));
+    fn mover(x: i64, direction: FaceDirection, steps_left: u32) -> Mover {
+        Mover {
+            position: VoxelCoordinate::new(x, -40, 7),
+            direction,
+            steps_left,
         }
-        assert!(decode_push(&[]).is_err());
-        assert!(decode_push(&[6]).is_err());
-        assert!(decode_push(&[0, 0]).is_err());
     }
 
     #[test]
-    fn status_survives_encoding_and_rejects_damage() {
-        let status = Status {
-            score: 123_456,
-            moves: 300,
-            highest: 11,
-            game_over: true,
-            game_number: 2,
-        };
-        assert_eq!(decode_status(&encode_status(&status)), Ok(status));
-        assert!(status.won());
-        assert!(!Status::default().won());
-        let good = encode_status(&status);
-        for length in 0..good.len() {
-            assert!(decode_status(&good[..length]).is_err());
+    fn a_push_names_a_voxel_and_a_direction_and_nothing_else_is_accepted() {
+        for direction in FaceDirection::ALL {
+            let request = PushRequest {
+                voxel: VoxelCoordinate::new(-5, 100, 7_000_000_000),
+                direction,
+            };
+            assert_eq!(decode_push(&encode_push(&request)), Ok(request));
         }
-        let mut bad_flag = good.clone();
-        let flag_position = good.len() - 2;
-        bad_flag[flag_position] = 7;
-        assert!(decode_status(&bad_flag).is_err());
-        let mut trailing = good;
+        let good = encode_push(&PushRequest {
+            voxel: VoxelCoordinate::ORIGIN,
+            direction: FaceDirection::PositiveY,
+        });
+        for length in 0..good.len() {
+            assert!(decode_push(&good[..length]).is_err(), "{length}");
+        }
+        let mut trailing = good.clone();
         trailing.push(0);
-        assert!(decode_status(&trailing).is_err());
+        assert!(decode_push(&trailing).is_err());
+        let mut bad_direction = good;
+        *bad_direction.last_mut().unwrap() = 6;
+        assert!(decode_push(&bad_direction).is_err());
+        // A coordinate beyond the world's edge.
+        let mut writer = ByteWriter::new();
+        writer.write_signed_varint(i64::MAX);
+        writer.write_signed_varint(0);
+        writer.write_signed_varint(0);
+        writer.write_u8(0);
+        assert!(decode_push(&writer.into_bytes()).is_err());
+    }
+
+    #[test]
+    fn progress_survives_encoding_and_rejects_damage() {
+        let progress = Progress {
+            score: 123_456,
+            pushes: 300,
+            largest_merge: 11,
+        };
+        assert_eq!(decode_progress(&encode_progress(&progress)), Ok(progress));
+        assert_eq!(progress.largest_merged_value(), Some(2048));
+        assert_eq!(Progress::default().largest_merged_value(), None);
+        let good = encode_progress(&progress);
+        for length in 0..good.len() {
+            assert!(decode_progress(&good[..length]).is_err());
+        }
+        let mut trailing = good.clone();
+        trailing.push(0);
+        assert!(decode_progress(&trailing).is_err());
+        let mut too_large = good;
+        *too_large.last_mut().unwrap() = crate::numbered_block::MAXIMUM_EXPONENT + 1;
+        assert!(decode_progress(&too_large).is_err());
     }
 
     #[test]
     fn saved_state_round_trips_and_ignores_what_it_cannot_read() {
         let state = SavedState {
-            score: 99,
-            moves: 7,
-            game_number: 3,
+            progress: Progress {
+                score: 99,
+                pushes: 7,
+                largest_merge: 4,
+            },
+            movers: vec![
+                mover(3, FaceDirection::PositiveX, 40),
+                mover(-1_000_000_000_000, FaceDirection::NegativeZ, 1),
+            ],
         };
         let section = saved_state_section(&state);
         assert_eq!(
@@ -189,11 +269,40 @@ mod tests {
         assert_eq!(read_saved_state(&[damaged]), None);
     }
 
+    #[test]
+    fn a_saved_state_with_no_movers_is_small_and_reads_back() {
+        let state = SavedState::default();
+        let section = saved_state_section(&state);
+        assert_eq!(section.payload.len(), 4);
+        assert_eq!(read_saved_state(&[section]), Some(state));
+    }
+
+    #[test]
+    fn a_saved_mover_with_a_wrong_direction_or_too_many_steps_is_unreadable() {
+        let good = saved_state_section(&SavedState {
+            progress: Progress::default(),
+            movers: vec![mover(0, FaceDirection::PositiveX, 5)],
+        });
+        let length = good.payload.len();
+        let mut bad_direction = good.clone();
+        bad_direction.payload[length - 2] = 9;
+        assert_eq!(read_saved_state(&[bad_direction]), None);
+        let mut too_many = good.payload[..length - 1].to_vec();
+        too_many.extend([0xFF, 0xFF, 0xFF, 0xFF, 0x1F]); // 2^33 - 1 steps
+        assert_eq!(
+            read_saved_state(&[Section {
+                payload: too_many,
+                ..good
+            }]),
+            None
+        );
+    }
+
     proptest! {
         #[test]
-        fn decoding_arbitrary_bytes_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..40)) {
+        fn decoding_arbitrary_bytes_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..60)) {
             let _ = decode_push(&bytes);
-            let _ = decode_status(&bytes);
+            let _ = decode_progress(&bytes);
             let _ = read_saved_state(&[Section {
                 identifier: saved_state_section_id(),
                 version: 1,

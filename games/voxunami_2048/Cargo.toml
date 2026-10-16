@@ -4,7 +4,7 @@ version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
-description = "Voxunami 2048: 3D 2048, played by pushing a board of tiles with push plates."
+description = "Voxunami 2048: an endless landscape of numbered blocks to push around and merge."
 
 [dependencies]
 binary_codec.workspace = true
@@ -24,6 +24,7 @@ client.workspace = true
 proptest.workspace = true
 renderer.workspace = true
 replay.workspace = true
+voxel_grid = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

@@ -3,12 +3,12 @@
 
 use std::collections::HashMap;
 
-use game_shell::{PlayerPose, PoseBook};
+use game_shell::PoseBook;
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, Tick};
 use server::{GameLogic, ServerWorld};
 use voxel_grid::ChannelIndex;
-use voxel_space::{VoxelCoordinate, WorldPosition};
+use voxel_space::VoxelCoordinate;
 
 use crate::content::CaveContent;
 use crate::messages::{decode_set_block, set_block_kind};
@@ -49,27 +49,12 @@ impl CaveLogic {
         else {
             return; // a player who has not said where they are, or a block this server lacks
         };
-        if distance_to_voxel(pose, at) > REACH {
+        if pose.distance_to_voxel(at) > REACH {
             return;
         }
         // Terrain this server cannot generate cannot be changed; the request is dropped.
         let _ = world.set_voxel(self.block_channel, at, raw);
     }
-}
-
-/// The distance in voxels from a player to the centre of a voxel.
-fn distance_to_voxel(pose: &PlayerPose, voxel: VoxelCoordinate) -> f64 {
-    let position: WorldPosition = pose.position;
-    let brick = position.brick();
-    let offset = position.offset();
-    let along =
-        |voxel: i64, brick: i64, offset: f32| (voxel - brick * 32) as f64 + 0.5 - f64::from(offset);
-    let (dx, dy, dz) = (
-        along(voxel.x(), brick.x(), offset[0]),
-        along(voxel.y(), brick.y(), offset[1]),
-        along(voxel.z(), brick.z(), offset[2]),
-    );
-    (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
 impl GameLogic for CaveLogic {

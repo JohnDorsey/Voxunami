@@ -3,7 +3,7 @@
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
 use protocol::ClientId;
-use voxel_space::{BrickCoordinate, WorldPosition};
+use voxel_space::{BRICK_EDGE_LENGTH, BrickCoordinate, VoxelCoordinate, WorldPosition};
 
 fn kind(text: &str) -> NamespacedId {
     text.parse().expect("constant identifier is valid")
@@ -25,6 +25,23 @@ pub struct PlayerPose {
     pub position: WorldPosition,
     pub yaw: f32,
     pub pitch: f32,
+}
+
+impl PlayerPose {
+    /// The distance in voxels from the player to the centre of a voxel.
+    pub fn distance_to_voxel(&self, voxel: VoxelCoordinate) -> f64 {
+        let brick = self.position.brick();
+        let offset = self.position.offset();
+        let along = |voxel: i64, brick: i64, offset: f32| {
+            (voxel - brick * BRICK_EDGE_LENGTH as i64) as f64 + 0.5 - f64::from(offset)
+        };
+        let (dx, dy, dz) = (
+            along(voxel.x(), brick.x(), offset[0]),
+            along(voxel.y(), brick.y(), offset[1]),
+            along(voxel.z(), brick.z(), offset[2]),
+        );
+        (dx * dx + dy * dy + dz * dz).sqrt()
+    }
 }
 
 fn write_pose(writer: &mut ByteWriter, pose: &PlayerPose) {
@@ -127,6 +144,28 @@ mod tests {
         ];
         assert_eq!(decode_players(&encode_players(&players)), Ok(players));
         assert_eq!(decode_players(&encode_players(&[])), Ok(vec![]));
+    }
+
+    #[test]
+    fn distance_is_measured_to_the_centre_of_the_voxel_across_bricks() {
+        let standing = pose(1, [4.0, 6.0, 8.0], 0.0, 0.0); // brick (1, -2, 7)
+        let at = |x: i64, y: i64, z: i64| standing.distance_to_voxel(VoxelCoordinate::new(x, y, z));
+        // The voxel holding the player is half a voxel from them along each axis.
+        assert_eq!(at(32 + 4, -64 + 6, 224 + 8), 0.75_f64.sqrt());
+        assert_eq!(
+            at(32 + 4 + 3, -64 + 6, 224 + 8),
+            (3.5_f64 * 3.5 + 0.5).sqrt()
+        );
+        assert_eq!(
+            at(32 + 4, -64 + 6 + 3, 224 + 8),
+            (3.5_f64 * 3.5 + 0.5).sqrt()
+        );
+        // Negative voxel coordinates are measured the same way.
+        let origin = pose(-1, [31.5, 0.5, 0.5], 0.0, 0.0);
+        assert_eq!(
+            origin.distance_to_voxel(VoxelCoordinate::new(-1, -64, 224)),
+            0.0
+        );
     }
 
     #[test]

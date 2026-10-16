@@ -1,25 +1,28 @@
-//! Voxunami 2048: 3D 2048.
+//! Voxunami 2048: 2048 in an endless landscape.
 //!
-//! A 4 x 4 x 4 board of tiles floats in the sky. A player clicks one of six push plates to push
-//! every tile toward the opposite side: equal tiles that meet merge into the next value, and after
-//! every push that changed anything a new tile appears. The game ends when no push changes the
-//! board. Any player on the server can push, so it can be played together.
+//! The ground is made of numbered blocks: powers of two, mostly small, in stone, ice and spring
+//! ice. Players push and pull blocks with a tool. A pushed block moves according to its material
+//! (stone one step; ice and spring ice coast), and a block that meets an equal number merges with
+//! it into the next number. Blocks never push each other. Every player on the server shares the
+//! same world and the same score.
 //!
-//! The board is made of voxels, so it is streamed, saved, recorded and replayed like any world:
-//! the rules in [`board`] only ever see a plain array, and [`logic`] turns it into voxels.
+//! Everything is made of voxels, so it is streamed, saved, recorded and replayed like any world.
 //!
-//! - [`board`]: the rules.
-//! - [`layout`]: where the board, frame and plates are in the world.
-//! - [`content`]: the blocks, and how worlds are made and loaded.
+//! - [`material`] and [`numbered_block`]: what blocks are, and what their materials do when pushed.
+//! - [`motion`]: the rules of moving and merging blocks.
+//! - [`landscape`]: the ground.
+//! - [`content`]: the blocks as the world stores them, and how worlds are made and loaded.
 //! - [`messages`] and [`logic`]: the game's messages, and what the server does with them.
 //! - [`game`]: the game as the shell runs it.
 
-pub mod board;
 pub mod content;
 pub mod game;
-pub mod layout;
+pub mod landscape;
 pub mod logic;
+pub mod material;
 pub mod messages;
+pub mod motion;
+pub mod numbered_block;
 
 pub use content::game_id;
 pub use game::Game2048;

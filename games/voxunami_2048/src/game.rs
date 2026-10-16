@@ -1,21 +1,24 @@
-//! Voxunami 2048 as the shell runs it: what the player's clicks and keys do.
+//! Voxunami 2048 as the shell runs it: what the player's clicks do.
 
 use game_shell::session::Session;
-use game_shell::{CameraStart, GameDefinition, KeyCode};
+use game_shell::{CameraStart, GameDefinition};
 use namespaced_id::NamespacedId;
 use server::GameLogic;
 use transport::Connection;
+use voxel_space::{FaceDirection, VoxelCoordinate};
 use world_storage::WorldData;
 
 use crate::content::{Content2048, game_id};
-use crate::layout::push_direction_for_plate;
-use crate::logic::Logic2048;
-use crate::messages::{Status, decode_status, encode_push, new_game_kind, push_kind, status_kind};
+use crate::logic::{Logic2048, REACH};
+use crate::messages::{
+    Progress, PushRequest, decode_progress, encode_push, progress_kind, push_kind,
+};
+use crate::numbered_block::NumberedBlock;
 
-/// What the 2048 client remembers: how the game stands, as the server last said.
+/// What the 2048 client remembers: how the game has gone, as the server last said.
 #[derive(Debug, Default)]
 pub struct ClientState2048 {
-    pub status: Status,
+    pub progress: Progress,
 }
 
 #[derive(Debug)]
@@ -23,18 +26,47 @@ pub struct Game2048;
 
 pub type Session2048<C> = Session<C, Game2048>;
 
-/// Pushes the tiles toward the side opposite the plate under the crosshair, if one is.
+/// The direction from one voxel to a voxel next to it, or `None` if they are not neighbours.
+pub fn direction_between(from: VoxelCoordinate, to: VoxelCoordinate) -> Option<FaceDirection> {
+    let step = [to.x() - from.x(), to.y() - from.y(), to.z() - from.z()];
+    FaceDirection::ALL
+        .into_iter()
+        .find(|direction| direction.offset() == step)
+}
+
+/// Asks the server to push the block under the crosshair away from the player.
 pub fn push_with_tool<C: Connection>(session: &mut Session2048<C>) {
-    let Some(hit) = session.target() else {
-        return;
-    };
-    if let Some(toward) = push_direction_for_plate(hit.voxel) {
-        session.send_game_message(push_kind(), encode_push(toward));
+    if let Some(hit) = session.target()
+        && let Some(direction) = direction_between(hit.previous, hit.voxel)
+    {
+        request_push(session, hit.voxel, direction);
     }
 }
 
-pub fn start_new_game<C: Connection>(session: &mut Session2048<C>) {
-    session.send_game_message(new_game_kind(), Vec::new());
+/// Asks the server to pull the block under the crosshair toward the player.
+pub fn pull_with_tool<C: Connection>(session: &mut Session2048<C>) {
+    if let Some(hit) = session.target()
+        && let Some(direction) = direction_between(hit.voxel, hit.previous)
+    {
+        request_push(session, hit.voxel, direction);
+    }
+}
+
+fn request_push<C: Connection>(
+    session: &mut Session2048<C>,
+    voxel: VoxelCoordinate,
+    direction: FaceDirection,
+) {
+    session.send_game_message(push_kind(), encode_push(&PushRequest { voxel, direction }));
+}
+
+/// What a block is, in words: "spring ice 8".
+fn describe(block: NumberedBlock) -> String {
+    format!(
+        "{} {}",
+        block.material.name().replace('_', " "),
+        block.value()
+    )
 }
 
 impl GameDefinition for Game2048 {
@@ -54,11 +86,11 @@ impl GameDefinition for Game2048 {
     }
 
     fn summary() -> &'static str {
-        "3D 2048: push the whole board of tiles and merge equal ones."
+        "push numbered blocks around an endless landscape and merge equal ones."
     }
 
     fn controls() -> &'static str {
-        "Left click an orange push plate to push every tile toward the opposite side; Enter starts a new game.\nTiles of equal colour merge into the next colour; the title shows the largest tile."
+        "Left click pushes the block you look at away from you; right click pulls it toward you.\nStone moves one step; ice coasts until it meets another block; spring ice bounces back off blocks it cannot merge with.\nA block that meets an equal number merges with it into the next number; the title shows the block you look at."
     }
 
     fn default_seed() -> u64 {
@@ -66,16 +98,15 @@ impl GameDefinition for Game2048 {
     }
 
     fn default_camera() -> CameraStart {
-        // Above and to the side of the board, looking at its middle.
         CameraStart {
-            position: [40.0, 30.0, 45.0],
-            yaw_degrees: 40.0,
-            pitch_degrees: -22.0,
+            position: [8.0, 30.0, 8.0],
+            yaw_degrees: 30.0,
+            pitch_degrees: -30.0,
         }
     }
 
     fn reach() -> f32 {
-        120.0
+        REACH as f32
     }
 
     fn new_content() -> Content2048 {
@@ -87,10 +118,10 @@ impl GameDefinition for Game2048 {
     }
 
     fn handle_game_message(state: &mut ClientState2048, kind: &NamespacedId, payload: &[u8]) {
-        if *kind == status_kind()
-            && let Ok(status) = decode_status(payload)
+        if *kind == progress_kind()
+            && let Ok(progress) = decode_progress(payload)
         {
-            state.status = status;
+            state.progress = progress;
         }
     }
 
@@ -98,29 +129,61 @@ impl GameDefinition for Game2048 {
         push_with_tool(session);
     }
 
-    fn key_pressed<C: Connection>(session: &mut Session2048<C>, key: KeyCode) {
-        if key == KeyCode::Enter {
-            start_new_game(session);
-        }
+    fn secondary_action<C: Connection>(session: &mut Session2048<C>) {
+        pull_with_tool(session);
     }
 
     fn status_text<C: Connection>(session: &Session2048<C>) -> String {
-        let status = &session.state.status;
-        let largest = if status.highest == 0 {
-            "-".to_owned()
-        } else {
-            (1u64 << status.highest).to_string()
-        };
-        let ending = if status.game_over {
-            " | GAME OVER (Enter for a new game)"
-        } else if status.won() {
-            " | 2048!"
-        } else {
-            ""
-        };
+        let progress = &session.state.progress;
+        let largest = progress
+            .largest_merged_value()
+            .map_or_else(|| "-".to_owned(), |value| value.to_string());
+        let looking_at = session
+            .target()
+            .and_then(|hit| session.mesher().material_at(hit.voxel))
+            .and_then(NumberedBlock::from_id)
+            .map_or_else(|| "nothing".to_owned(), describe);
         format!(
-            "score {} | moves {} | largest tile {largest}{ending}",
-            status.score, status.moves
+            "score {} | pushes {} | largest merge {largest} | looking at {looking_at}",
+            progress.score, progress.pushes
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::material::Material;
+
+    #[test]
+    fn directions_between_neighbours_and_nothing_else() {
+        let origin = VoxelCoordinate::new(5, 5, 5);
+        for direction in FaceDirection::ALL {
+            let [dx, dy, dz] = direction.offset();
+            let neighbour = origin.checked_offset(dx, dy, dz).unwrap();
+            assert_eq!(direction_between(origin, neighbour), Some(direction));
+            assert_eq!(
+                direction_between(neighbour, origin),
+                Some(direction.opposite())
+            );
+        }
+        assert_eq!(direction_between(origin, origin), None);
+        assert_eq!(
+            direction_between(origin, VoxelCoordinate::new(7, 5, 5)),
+            None
+        );
+        assert_eq!(
+            direction_between(origin, VoxelCoordinate::new(6, 6, 5)),
+            None
+        );
+    }
+
+    #[test]
+    fn blocks_are_described_by_material_and_number() {
+        assert_eq!(describe(NumberedBlock::new(Material::Stone, 1)), "stone 2");
+        assert_eq!(
+            describe(NumberedBlock::new(Material::SpringIce, 5)),
+            "spring ice 32"
+        );
     }
 }
