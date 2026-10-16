@@ -6,9 +6,12 @@
 //! - into a block that the pushing tool combines with (see [`Tool::combine`]): the moving block is
 //!   gone and the struck one stays where it was with the number the tool made of the two, or both
 //!   are gone, and the motion ends;
+//! - into any other block, if the moving block pushes (stone): the block, and the row of blocks behind
+//!   it, move one step ahead, provided the row is short enough ([`PUSH_LIMIT`]) and ends in empty
+//!   space, and the moving block follows into the place made;
 //! - into any other block, or into something that is not a numbered block at all (terrain this
-//!   program cannot read, the edge of the world): the motion ends, or for a material that bounces,
-//!   the block turns around.
+//!   program cannot read, the edge of the world), or into a row that cannot move: the motion ends,
+//!   or for a material that bounces, the block turns around.
 //!
 //! A mover has a limited number of steps (its material's range), which every tick uses up whether
 //! the block moved or bounced, so every motion ends.
@@ -16,7 +19,8 @@
 //! Movers are entities, not cells of a lattice: they act one at a time, in the order they started
 //! moving, each seeing what the ones before it did this tick. That order is part of the rules, since
 //! it decides what happens when blocks meet in the same tick, and it is the same on every machine.
-//! Blocks never push each other.
+//! A block that is pushed along by a row moves once and does not become a mover, but if it already
+//! was one it stays one, from its new place.
 //!
 //! A block moves within its level: a world has several, and blocks of different levels never meet.
 //!
@@ -25,6 +29,7 @@
 
 use voxel_space::{FaceDirection, LevelIndex, VoxelCoordinate};
 
+use crate::material::PUSH_LIMIT;
 use crate::numbered_block::NumberedBlock;
 use crate::tool::{Combination, Tool};
 
@@ -128,57 +133,129 @@ impl Movers {
     /// order they happened (a merge that made both blocks vanish made none).
     pub fn advance(&mut self, field: &mut impl BlockField) -> Vec<NumberedBlock> {
         let mut merges = Vec::new();
-        let mut still_moving = Vec::with_capacity(self.movers.len());
-        for mut mover in std::mem::take(&mut self.movers) {
-            if step(&mut mover, field, &mut merges) {
-                still_moving.push(mover);
+        for index in 0..self.movers.len() {
+            if !step(index, &mut self.movers, field, &mut merges) {
+                // A mover with no steps left is finished; it is dropped once everyone has acted.
+                self.movers[index].steps_left = 0;
             }
         }
-        self.movers = still_moving;
+        self.movers.retain(|mover| mover.steps_left > 0);
         merges
     }
 }
 
-/// One tick of one mover. Returns whether it is still moving afterwards.
-fn step(mover: &mut Mover, field: &mut impl BlockField, merges: &mut Vec<NumberedBlock>) -> bool {
-    // Something other than this program took the block away: nothing is moving any more.
+/// The blocks in a row that a push would move, nearest first, and the empty voxel the row ends in;
+/// `None` if the row is too long, ends at something that is not empty, or reaches the edge of the
+/// world. `first` is the voxel just ahead of the pushing block, and holds a block.
+fn row_to_push(
+    field: &mut impl BlockField,
+    level: LevelIndex,
+    first: VoxelCoordinate,
+    direction: FaceDirection,
+) -> Option<(Vec<(VoxelCoordinate, NumberedBlock)>, VoxelCoordinate)> {
+    let [dx, dy, dz] = direction.offset();
+    let mut row = Vec::new();
+    let mut cursor = first;
+    loop {
+        match field.occupant(level, cursor) {
+            Occupant::Block(block) => {
+                // The pushing block is one of the blocks that move.
+                if row.len() + 1 >= PUSH_LIMIT as usize {
+                    return None;
+                }
+                row.push((cursor, block));
+                cursor = cursor.checked_offset(dx, dy, dz)?;
+            }
+            Occupant::Empty => return Some((row, cursor)),
+            Occupant::Obstacle => return None,
+        }
+    }
+}
+
+/// One tick of the mover at `index`. Returns whether it is still moving afterwards.
+fn step(
+    index: usize,
+    movers: &mut [Mover],
+    field: &mut impl BlockField,
+    merges: &mut Vec<NumberedBlock>,
+) -> bool {
+    let mover = movers[index];
+    // A mover that finished earlier this tick, or whose block something other than this program
+    // took away: nothing is moving any more.
     let Occupant::Block(block) = field.occupant(mover.level, mover.position) else {
         return false;
     };
     let Some(steps_left) = mover.steps_left.checked_sub(1) else {
         return false;
     };
-    mover.steps_left = steps_left;
+    movers[index].steps_left = steps_left;
     let [dx, dy, dz] = mover.direction.offset();
     let ahead = mover
         .position
         .checked_offset(dx, dy, dz)
         .map(|target| (target, field.occupant(mover.level, target)));
+    let mut can_advance = false;
     match ahead {
-        Some((target, Occupant::Empty)) => {
-            field.place(mover.level, mover.position, None);
-            field.place(mover.level, target, Some(block));
-            mover.position = target;
-        }
-        Some((target, Occupant::Block(struck)))
-            if mover
-                .tool
-                .combine(block.number(), struck.number())
-                .is_some() =>
-        {
-            field.place(mover.level, mover.position, None);
+        Some((_, Occupant::Empty)) => can_advance = true,
+        Some((target, Occupant::Block(struck))) => {
             match mover.tool.combine(block.number(), struck.number()) {
-                Some(Combination::Becomes(number)) => {
-                    let made = NumberedBlock::new(struck.material, number);
-                    field.place(mover.level, target, Some(made));
-                    merges.push(made);
+                Some(combination) => {
+                    field.place(mover.level, mover.position, None);
+                    match combination {
+                        Combination::Becomes(number) => {
+                            let made = NumberedBlock::new(struck.material, number);
+                            field.place(mover.level, target, Some(made));
+                            merges.push(made);
+                        }
+                        Combination::Vanish => {
+                            field.place(mover.level, target, None);
+                            // The struck block is gone, and if it was moving, so is its motion.
+                            for other in movers.iter_mut() {
+                                if other.level == mover.level && other.position == target {
+                                    other.steps_left = 0;
+                                }
+                            }
+                        }
+                    }
+                    return false;
                 }
-                _ => field.place(mover.level, target, None),
+                None if block.material.motion().pushes => {
+                    if let Some((row, end)) =
+                        row_to_push(field, mover.level, target, mover.direction)
+                    {
+                        // Each block of the row moves into the place of the next, the last one
+                        // into the empty voxel at the end; the first one's place is the pushing
+                        // block's next.
+                        let mut into = end;
+                        for &(from, pushed) in row.iter().rev() {
+                            field.place(mover.level, into, Some(pushed));
+                            for other in movers.iter_mut() {
+                                if other.level == mover.level && other.position == from {
+                                    other.position = into;
+                                }
+                            }
+                            into = from;
+                        }
+                        can_advance = true;
+                    }
+                }
+                None => {}
             }
-            return false;
         }
-        _ if block.material.motion().bounces => mover.direction = mover.direction.opposite(),
-        _ => return false,
+        _ => {}
+    }
+    if can_advance {
+        let target = mover
+            .position
+            .checked_offset(dx, dy, dz)
+            .expect("the voxel ahead was just seen");
+        field.place(mover.level, mover.position, None);
+        field.place(mover.level, target, Some(block));
+        movers[index].position = target;
+    } else if block.material.motion().bounces {
+        movers[index].direction = mover.direction.opposite();
+    } else {
+        return false;
     }
     steps_left > 0
 }
@@ -191,7 +268,7 @@ mod tests {
     use voxel_space::VOXEL_COORDINATE_MAXIMUM;
 
     use super::*;
-    use crate::material::{COASTING_RANGE, Material};
+    use crate::material::{COASTING_RANGE, Material, PUSH_LIMIT};
 
     #[derive(Default)]
     struct TestField {
@@ -294,8 +371,15 @@ mod tests {
     }
 
     #[test]
-    fn stone_does_not_push_the_block_in_front_of_it() {
-        let mut field = TestField::with(&[((0, 0, 0), stone(1)), ((1, 0, 0), stone(2))]);
+    fn stone_pushes_the_row_in_front_of_it_one_step_and_the_pushed_blocks_do_not_coast() {
+        // A stone block, a stone block, ice, stone: the whole row moves one step into the empty
+        // voxel at its end. The ice in it is pushed along but does not start to coast.
+        let mut field = TestField::with(&[
+            ((0, 0, 0), stone(1)),
+            ((1, 0, 0), stone(2)),
+            ((2, 0, 0), ice(3)),
+            ((3, 0, 0), stone(4)),
+        ]);
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
@@ -306,8 +390,182 @@ mod tests {
         );
         let (ticks, merges) = run_to_rest(&mut movers, &mut field);
         assert_eq!((ticks, merges.len()), (1, 0));
+        assert_eq!(field.at(0, 0, 0), None);
+        assert_eq!(field.at(1, 0, 0), Some(stone(1)));
+        assert_eq!(field.at(2, 0, 0), Some(stone(2)));
+        assert_eq!(field.at(3, 0, 0), Some(ice(3)));
+        assert_eq!(field.at(4, 0, 0), Some(stone(4)));
+        assert_eq!(field.blocks.len(), 4);
+    }
+
+    #[test]
+    fn a_row_that_cannot_move_stays_where_it_is() {
+        // The row ends at an obstacle.
+        let mut field = TestField::with(&[((0, 0, 0), stone(1)), ((1, 0, 0), stone(2))]);
+        field.obstacles.insert((LevelIndex::MAIN, at(2, 0, 0)));
+        assert_eq!(push_origin_block(&mut field, Tool::Double), []);
         assert_eq!(field.at(0, 0, 0), Some(stone(1)));
         assert_eq!(field.at(1, 0, 0), Some(stone(2)));
+
+        // The row ends at the edge of the world.
+        let edge = VOXEL_COORDINATE_MAXIMUM;
+        let mut field = TestField::with(&[((edge - 1, 0, 0), stone(1)), ((edge, 0, 0), stone(2))]);
+        let mut movers = Movers::new();
+        movers.push_block(
+            &mut field,
+            LevelIndex::MAIN,
+            at(edge - 1, 0, 0),
+            FaceDirection::PositiveX,
+            Tool::Double,
+        );
+        run_to_rest(&mut movers, &mut field);
+        assert_eq!(field.at(edge - 1, 0, 0), Some(stone(1)));
+        assert_eq!(field.at(edge, 0, 0), Some(stone(2)));
+    }
+
+    #[test]
+    fn a_push_moves_at_most_the_push_limit_of_blocks_the_pushing_one_included() {
+        let row = |length: u32| {
+            // Distinct numbers, so that nothing merges.
+            let blocks: Vec<_> = (0..length)
+                .map(|position| {
+                    (
+                        (i64::from(position), 0, 0),
+                        block(Material::Stone, position + 1),
+                    )
+                })
+                .collect();
+            TestField::with(&blocks)
+        };
+        let mut field = row(PUSH_LIMIT);
+        push_origin_block(&mut field, Tool::Double);
+        assert_eq!(field.at(0, 0, 0), None);
+        for position in 0..PUSH_LIMIT {
+            assert_eq!(
+                field.at(i64::from(position) + 1, 0, 0),
+                Some(block(Material::Stone, position + 1)),
+                "block {position}"
+            );
+        }
+
+        let mut field = row(PUSH_LIMIT + 1);
+        push_origin_block(&mut field, Tool::Double);
+        for position in 0..=PUSH_LIMIT {
+            assert_eq!(
+                field.at(i64::from(position), 0, 0),
+                Some(block(Material::Stone, position + 1)),
+                "block {position} stayed"
+            );
+        }
+        assert_eq!(field.blocks.len(), PUSH_LIMIT as usize + 1);
+    }
+
+    #[test]
+    fn a_stone_block_merges_with_what_its_tool_combines_it_with_instead_of_pushing_it() {
+        // Equal numbers, with the double tool.
+        let mut field = TestField::with(&[
+            ((0, 0, 0), stone(2)),
+            ((1, 0, 0), stone(2)),
+            ((2, 0, 0), stone(5)),
+        ]);
+        assert_eq!(push_origin_block(&mut field, Tool::Double), [stone(3)]);
+        assert_eq!(field.at(1, 0, 0), Some(stone(3)));
+        assert_eq!(
+            field.at(2, 0, 0),
+            Some(stone(5)),
+            "the row behind did not move"
+        );
+        assert_eq!(field.blocks.len(), 2);
+
+        // Any numbers, with the add tool.
+        let mut field = TestField::with(&[
+            ((0, 0, 0), block(Material::Stone, 3)),
+            ((1, 0, 0), block(Material::Stone, 4)),
+        ]);
+        assert_eq!(
+            push_origin_block(&mut field, Tool::Add),
+            [block(Material::Stone, 7)]
+        );
+        assert_eq!(field.blocks.len(), 1);
+    }
+
+    #[test]
+    fn ice_and_spring_ice_do_not_push_a_row_they_stop_at_it_or_bounce_off_it() {
+        let mut field = TestField::with(&[((0, 0, 0), ice(1)), ((1, 0, 0), stone(2))]);
+        assert_eq!(push_origin_block(&mut field, Tool::Double), []);
+        assert_eq!(field.at(0, 0, 0), Some(ice(1)));
+        assert_eq!(field.at(1, 0, 0), Some(stone(2)));
+
+        let mut field = TestField::with(&[((0, 0, 0), spring_ice(1)), ((1, 0, 0), stone(2))]);
+        let mut movers = Movers::new();
+        movers.push_block(
+            &mut field,
+            LevelIndex::MAIN,
+            at(0, 0, 0),
+            FaceDirection::PositiveX,
+            Tool::Double,
+        );
+        movers.advance(&mut field);
+        assert_eq!(field.at(1, 0, 0), Some(stone(2)));
+        assert_eq!(movers.as_slice()[0].direction, FaceDirection::NegativeX);
+    }
+
+    #[test]
+    fn a_pushed_block_that_was_moving_goes_on_moving_from_the_place_it_was_pushed_to() {
+        // The stone block pushes the ice block sideways while the ice block coasts upward.
+        let mut field = TestField::with(&[((0, 0, 0), stone(1)), ((1, 0, 0), ice(2))]);
+        let mut movers = Movers::new();
+        movers.push_block(
+            &mut field,
+            LevelIndex::MAIN,
+            at(0, 0, 0),
+            FaceDirection::PositiveX,
+            Tool::Double,
+        );
+        movers.push_block(
+            &mut field,
+            LevelIndex::MAIN,
+            at(1, 0, 0),
+            FaceDirection::PositiveY,
+            Tool::Double,
+        );
+        movers.advance(&mut field);
+        assert_eq!(field.at(1, 0, 0), Some(stone(1)));
+        assert_eq!(field.at(2, 1, 0), Some(ice(2)));
+        assert_eq!(field.blocks.len(), 2);
+        assert_eq!(
+            movers.as_slice(),
+            [Mover {
+                level: LevelIndex::MAIN,
+                position: at(2, 1, 0),
+                direction: FaceDirection::PositiveY,
+                tool: Tool::Double,
+                steps_left: COASTING_RANGE - 1,
+            }]
+        );
+    }
+
+    #[test]
+    fn rows_are_pushed_within_their_level() {
+        let second = LevelIndex::new(1);
+        let mut field = TestField::with(&[((0, 0, 0), stone(1)), ((1, 0, 0), stone(2))]);
+        field.blocks.insert((second, at(0, 0, 0)), stone(3));
+        field.blocks.insert((second, at(1, 0, 0)), stone(4));
+        field.blocks.insert((second, at(2, 0, 0)), stone(5));
+        let mut movers = Movers::new();
+        movers.push_block(
+            &mut field,
+            LevelIndex::MAIN,
+            at(0, 0, 0),
+            FaceDirection::PositiveX,
+            Tool::Double,
+        );
+        run_to_rest(&mut movers, &mut field);
+        // The main level's row moved; the second level's, which has a block at the end of the
+        // main level's row, was not in its way and did not move.
+        assert_eq!(field.at(2, 0, 0), Some(stone(2)));
+        assert_eq!(field.blocks.get(&(second, at(0, 0, 0))), Some(&stone(3)));
+        assert_eq!(field.blocks.get(&(second, at(2, 0, 0))), Some(&stone(5)));
     }
 
     #[test]
@@ -807,6 +1065,34 @@ mod tests {
     }
 
     #[test]
+    fn a_block_cancelled_by_one_that_already_acted_this_tick_leaves_no_motion_behind() {
+        // The ice block acts first and slides next to the stone block, which then slides into it and
+        // cancels with it: the ice block's motion must not outlive it.
+        let mut field = TestField::with(&[
+            ((0, 0, 0), block(Material::Ice, 1)),
+            ((2, 0, 0), block(Material::Stone, 1)),
+        ]);
+        let mut movers = Movers::new();
+        movers.push_block(
+            &mut field,
+            LevelIndex::MAIN,
+            at(0, 0, 0),
+            FaceDirection::PositiveX,
+            Tool::Subtract,
+        );
+        movers.push_block(
+            &mut field,
+            LevelIndex::MAIN,
+            at(2, 0, 0),
+            FaceDirection::NegativeX,
+            Tool::Subtract,
+        );
+        assert_eq!(movers.advance(&mut field), []);
+        assert!(field.blocks.is_empty());
+        assert!(movers.is_empty(), "{:?}", movers.as_slice());
+    }
+
+    #[test]
     fn what_the_tool_does_not_combine_is_met_like_any_other_block_and_the_tool_stays_with_the_block()
      {
         // The same scene, a 2 coasting into a 3: only the add and subtract tools combine them.
@@ -849,12 +1135,13 @@ mod tests {
 
     #[test]
     fn a_result_that_does_not_fit_is_not_a_merge() {
+        // (Ice, which stops at a block it does not combine with; stone would push it.)
         let mut field = TestField::with(&[
-            ((0, 0, 0), block(Material::Stone, u32::MAX)),
+            ((0, 0, 0), block(Material::Ice, u32::MAX)),
             ((1, 0, 0), block(Material::Stone, 1)),
         ]);
         assert_eq!(push_origin_block(&mut field, Tool::Add), []);
-        assert_eq!(field.at(0, 0, 0), Some(block(Material::Stone, u32::MAX)));
+        assert_eq!(field.at(0, 0, 0), Some(block(Material::Ice, u32::MAX)));
         assert_eq!(field.at(1, 0, 0), Some(block(Material::Stone, 1)));
     }
 

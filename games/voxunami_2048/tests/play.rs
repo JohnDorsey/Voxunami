@@ -1015,3 +1015,50 @@ fn a_block_moving_with_a_tool_when_the_world_is_saved_still_has_that_tool_when_i
     resumed.step(18);
     assert_eq!(resumed.blocks(), control.blocks());
 }
+
+#[test]
+fn a_stone_block_pushed_by_a_player_pushes_the_row_in_front_of_it_for_everyone_to_see() {
+    // Three stone blocks in a row toward -z, with room beyond them; the player pushes the nearest.
+    let row = [
+        (at(10, SKY, 10), numbered(Material::Stone, 3)),
+        (at(10, SKY, 9), numbered(Material::Stone, 5)),
+        (at(10, SKY, 8), numbered(Material::Ice, 7)),
+    ];
+    let mut rig = Rig::with_blocks(&row);
+    let mut player = rig.join_looking(at(10, SKY, 10), FaceDirection::NegativeZ);
+    let mut watcher = rig.join([30.5, SKY as f64 + 0.5, 30.5], 0.0, 0.0);
+    rig.settle(&mut [&mut player, &mut watcher]);
+    push_with_tool(&mut player);
+    rig.step(30);
+    rig.settle(&mut [&mut player, &mut watcher]);
+
+    let moved = blocks_of(&[
+        (at(10, SKY, 9), numbered(Material::Stone, 3)),
+        (at(10, SKY, 8), numbered(Material::Stone, 5)),
+        (at(10, SKY, 7), numbered(Material::Ice, 7)),
+    ]);
+    assert_eq!(rig.blocks(), moved, "one step, and the ice did not coast");
+    assert_eq!(blocks_seen_by(&player, &rig.content), moved);
+    assert_eq!(blocks_seen_by(&watcher, &rig.content), moved);
+    assert_air_has_no_number(&rig.server.world().main().overrides, &rig.content);
+    assert_eq!(
+        player.state.progress,
+        Progress {
+            pushes: 1,
+            ..Progress::default()
+        }
+    );
+
+    // Pulling the nearest block back toward the player moves it alone: the row is behind it.
+    pull_with_tool(&mut player);
+    rig.step(3);
+    rig.settle(&mut [&mut player, &mut watcher]);
+    assert_eq!(
+        blocks_seen_by(&watcher, &rig.content),
+        blocks_of(&[
+            (at(10, SKY, 10), numbered(Material::Stone, 3)),
+            (at(10, SKY, 8), numbered(Material::Stone, 5)),
+            (at(10, SKY, 7), numbered(Material::Ice, 7)),
+        ]),
+    );
+}

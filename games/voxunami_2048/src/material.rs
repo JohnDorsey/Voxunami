@@ -4,6 +4,10 @@
 /// that never meets another, so every push has a range.
 pub const COASTING_RANGE: u32 = 48;
 
+/// The most blocks a push moves at once, the pushing block included: a block that pushes a row
+/// moves it only if the row is no longer than this and has room to move.
+pub const PUSH_LIMIT: u32 = 12;
+
 /// How a material answers a push.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Motion {
@@ -13,13 +17,18 @@ pub struct Motion {
     /// Whether hitting a block that cannot be merged with sends the block back the way it came
     /// (using up a step) instead of stopping it.
     pub bounces: bool,
+    /// Whether a block that meets a block it cannot merge with pushes it, and the row of blocks
+    /// behind it, one step ahead (at most [`PUSH_LIMIT`] blocks, and only into empty space), instead
+    /// of stopping. The pushed blocks move that one step and no more.
+    pub pushes: bool,
 }
 
-/// Blocks do not push each other: a moving block that meets another either merges with it, if the
-/// numbers are equal, or stops (or bounces). Materials that pass momentum on will be added later.
+/// How a moving block treats the blocks it meets: it merges with one its tool combines it with;
+/// otherwise stone pushes it along, ice stops, and spring ice bounces. Materials that pass momentum
+/// on will be added later.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Material {
-    /// Moves one step per push, and never coasts.
+    /// Moves one step per push, never coasts, and pushes a row of blocks.
     Stone,
     /// Coasts until it meets another block.
     Ice,
@@ -65,14 +74,17 @@ impl Material {
             Self::Stone => Motion {
                 range: 1,
                 bounces: false,
+                pushes: true,
             },
             Self::Ice => Motion {
                 range: COASTING_RANGE,
                 bounces: false,
+                pushes: false,
             },
             Self::SpringIce => Motion {
                 range: COASTING_RANGE,
                 bounces: true,
+                pushes: false,
             },
         }
     }
@@ -100,12 +112,18 @@ mod tests {
     }
 
     #[test]
-    fn stone_takes_one_step_and_the_ices_coast_and_only_spring_ice_bounces() {
+    fn stone_takes_one_step_and_pushes_the_ices_coast_and_only_spring_ice_bounces() {
         let stone = Material::Stone.motion();
-        assert_eq!((stone.range, stone.bounces), (1, false));
+        assert_eq!((stone.range, stone.bounces, stone.pushes), (1, false, true));
         let ice = Material::Ice.motion();
-        assert_eq!((ice.range, ice.bounces), (COASTING_RANGE, false));
+        assert_eq!(
+            (ice.range, ice.bounces, ice.pushes),
+            (COASTING_RANGE, false, false)
+        );
         let spring = Material::SpringIce.motion();
-        assert_eq!((spring.range, spring.bounces), (COASTING_RANGE, true));
+        assert_eq!(
+            (spring.range, spring.bounces, spring.pushes),
+            (COASTING_RANGE, true, false)
+        );
     }
 }

@@ -105,8 +105,14 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   leaves the difference, and equal numbers cancel and both blocks vanish. The block that was struck stays where it was,
   keeping its own material, with the new number. A result that does not fit in 32 bits is not a merge. The score is the
   sum of the numbers of the blocks merging has made (a cancellation makes none).
-- Assumptions made while building it, easy to change: blocks never push other blocks (the owner's words allow stone to
-  push a row; only the momentum materials will transfer motion); a push has a range (48 steps for the ices, since an
+- Chain pushing (built: Phase 10; the owner asked for it "eventually", and the details are mine, easy to change): a moving
+  block that meets a block its tool does not combine it with pushes it if its material pushes (stone does; ice stops and
+  spring ice bounces, as the owner said they do). The block and the row of blocks behind it move one step ahead, if the
+  row, with the pushing block, is at most 12 blocks (`PUSH_LIMIT`) and ends in empty space; otherwise nothing moves and
+  the pushing block stops. Pushed blocks move that one step and do not coast; one that was already moving keeps moving
+  from its new place. The add and subtract tools combine with any block they meet, so they never push; the double tool
+  pushes past blocks of different numbers.
+- Assumptions made while building it, easy to change: only the momentum materials (not built) will transfer motion; a push has a range (48 steps for the ices, since an
   infinite world may have nothing in the way) and every tick of a motion, bounce included, uses up a step; pushing a
   block that is already moving gives it the new direction and the full range; blocks of 2^20 do not merge.
 - Planned (owner): blocks will push chains of blocks, eventually. There may be tools beyond the three.
@@ -142,7 +148,8 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   the guide is: do first what is expensive to change later, what is most uncertain, and what gives a second user to a
   shared piece). 1. Levels: a level id through the protocol, save format and server, with one level existing; then a text
   command channel (done: Phase 6). 2. Block shapes in block definitions (open faces, collision shape, translucency, light), with a spike
-  on how light reaches the 8-byte quad (done: Phase 7). 3. 2048 tools: chain pushing and tool-chosen merging. 4. Lighting with
+  on how light reaches the 8-byte quad (done: Phase 7). 3. 2048 tools: chain pushing and tool-chosen merging (done:
+  Phases 8 to 10, with numbers as block states). 4. Lighting with
   directional flood fill: the first lattice rule, under the phased-tick rule and its partition-invariance test.
   5. Random ticks and fire in Cave: the second lattice rule; only then extract the common lattice-rule shape
   (neighbourhood snapshot in, edits out, deterministic random numbers, active region, budget). 6. Cave gravity and
@@ -233,6 +240,15 @@ Phase 1d (saving):
 - `terrain`: `WorldTerrain` exposes its configuration and can restore saved assignments.
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
+
+Phase 10 (chain pushing, Voxunami 2048):
+- `Motion::pushes` (stone only) and `PUSH_LIMIT` (12). `Movers::advance` works on the list of movers by index, so that a
+  push can move other movers along with their blocks and a cancellation can end the motion of the block it removes.
+- Found on the way, a bug of Phase 9: a block cancelled by a block that had already acted this tick left its mover
+  behind, pointing at an empty voxel until its next step. A property test found it (the saved case is in
+  `games/voxunami_2048/proptest-regressions/`); a cancellation now ends the struck block's motion at once.
+- Property tests run over scenes that now contain pushing stone: totals are kept (double, add), never grow (subtract), no
+  mover outlives its block, positions are unique, and all motion ends; 50 000 cases of each passed once, by hand.
 
 Phase 9 (tools choose how blocks combine, Voxunami 2048):
 - `tool::Tool` (`Double`, `Add`, `Subtract`) and `Tool::combine(moving, struck)`, which says whether two numbers combine
@@ -479,6 +495,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 7 Block states and shapes in block definitions, detailed quads, light in the quad (with its spike). **Done.**
 - 8 Numbers as block states in 2048 (colours by state in the engine, generator v2). **Done.**
 - 9 Tools in 2048: the push names a tool, and the tool decides how blocks combine. **Done.**
+- 10 Chain pushing in 2048: stone pushes a row of up to 12 blocks. **Done.**
 - 1f Launcher and first game crate: `world_view`, the `base_blocks` plugin, Voxunami Cave, the launcher; the old viewer
   retired. **Done.**
 The physics spike is done (`docs/physics-spike.md`); building the physics adapter belongs with the structures work.

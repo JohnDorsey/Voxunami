@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc b2126305a7c6e1d7706e0b202709f887840d50d2ca5df53bf3f08ce4d568f67d # shrinks to blocks = [(2, 3, 3, Stone, 1), (2, 3, 1, Ice, 1)], pushes = [(2, 3, 1, 5), (2, 3, 3, 4)]
