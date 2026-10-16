@@ -5,6 +5,9 @@ use crate::shape::Shape;
 /// A block has one or more *states*, and each state has its own shape, so a block can be a whole
 /// cube, a slab, a stair and so on without every shape being a block type of its own (block types
 /// share a small palette of colours). A voxel holds a block and a state.
+///
+/// A state can also change a block's colour ([`BlockDefinition::with_state_colors`]), and then it
+/// need not choose a shape: a block whose states are numbers, say, shows a colour for each.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlockDefinition {
     /// sRGB colour.
@@ -15,6 +18,7 @@ pub struct BlockDefinition {
     /// The light the block gives off, from 0 (none) to 255.
     pub emission: u8,
     shapes: Vec<Shape>,
+    state_colors: Vec<[f32; 3]>,
 }
 
 impl BlockDefinition {
@@ -25,6 +29,7 @@ impl BlockDefinition {
             see_through: false,
             emission: 0,
             shapes: vec![Shape::full()],
+            state_colors: Vec::new(),
         }
     }
 
@@ -35,6 +40,7 @@ impl BlockDefinition {
             see_through: true,
             emission: 0,
             shapes: vec![Shape::empty()],
+            state_colors: Vec::new(),
         }
     }
 
@@ -44,6 +50,18 @@ impl BlockDefinition {
     pub fn with_shapes(mut self, shapes: Vec<Shape>) -> Self {
         assert!(!shapes.is_empty(), "a block has at least one state");
         self.shapes = shapes;
+        self
+    }
+
+    /// The same block with a colour for each state, state `s` being drawn in `colors[s % colors.len()]`
+    /// instead of [`BlockDefinition::color`]. Any state, however large, has a colour (the colours
+    /// repeat), so the states of a block can be numbers without a limit. Each colour takes one of the
+    /// renderer's limited palette entries, so keep the list short.
+    ///
+    /// Panics if there are none.
+    pub fn with_state_colors(mut self, colors: Vec<[f32; 3]>) -> Self {
+        assert!(!colors.is_empty(), "a list of state colours has a colour");
+        self.state_colors = colors;
         self
     }
 
@@ -60,6 +78,11 @@ impl BlockDefinition {
     /// The shape of each state.
     pub fn shapes(&self) -> &[Shape] {
         &self.shapes
+    }
+
+    /// The colours that states are drawn in, repeating; empty if every state has [`color`](Self::color).
+    pub fn state_colors(&self) -> &[[f32; 3]] {
+        &self.state_colors
     }
 
     pub fn state_count(&self) -> usize {
@@ -97,6 +120,21 @@ mod tests {
         assert_eq!(slabs.state_count(), 3);
         assert!(slabs.shapes()[1].covers_face(FaceDirection::NegativeY));
         assert_eq!((slabs.emission, slabs.see_through), (200, true));
+    }
+
+    #[test]
+    fn state_colours_are_optional_and_do_not_add_states() {
+        let plain = BlockDefinition::cube([0.1; 3]);
+        assert!(plain.state_colors().is_empty());
+        let coloured = plain.with_state_colors(vec![[0.2; 3], [0.3; 3]]);
+        assert_eq!(coloured.state_colors(), [[0.2; 3], [0.3; 3]]);
+        assert_eq!(coloured.state_count(), 1, "colours are not shapes");
+    }
+
+    #[test]
+    #[should_panic(expected = "has a colour")]
+    fn an_empty_list_of_state_colours_is_refused() {
+        BlockDefinition::cube([0.0; 3]).with_state_colors(Vec::new());
     }
 
     #[test]

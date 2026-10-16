@@ -65,7 +65,7 @@ fn describe(block: NumberedBlock) -> String {
     format!(
         "{} {}",
         block.material.name().replace('_', " "),
-        block.value()
+        block.number()
     )
 }
 
@@ -90,7 +90,7 @@ impl GameDefinition for Game2048 {
     }
 
     fn controls() -> &'static str {
-        "Left click pushes the block you look at away from you; right click pulls it toward you.\nStone moves one step; ice coasts until it meets another block; spring ice bounces back off blocks it cannot merge with.\nA block that meets an equal number merges with it into the next number; the title shows the block you look at."
+        "Left click pushes the block you look at away from you; right click pulls it toward you.\nStone moves one step; ice coasts until it meets another block; spring ice bounces back off blocks it cannot merge with.\nA block that meets an equal number merges with it into the double; the title shows the block you look at."
     }
 
     fn default_seed() -> u64 {
@@ -135,13 +135,16 @@ impl GameDefinition for Game2048 {
 
     fn status_text<C: Connection>(session: &Session2048<C>) -> String {
         let progress = &session.state.progress;
-        let largest = progress
-            .largest_merged_value()
-            .map_or_else(|| "-".to_owned(), |value| value.to_string());
+        let largest = match progress.largest_merge {
+            0 => "-".to_owned(),
+            number => number.to_string(),
+        };
         let looking_at = session
             .target()
-            .and_then(|hit| session.mesher().material_at(hit.voxel))
-            .and_then(NumberedBlock::from_id)
+            .and_then(|hit| {
+                let block = session.mesher().material_at(hit.voxel)?;
+                NumberedBlock::from_voxel(block, session.mesher().state_at(hit.voxel)?)
+            })
             .map_or_else(|| "nothing".to_owned(), describe);
         format!(
             "score {} | pushes {} | largest merge {largest} | looking at {looking_at}",
@@ -180,10 +183,14 @@ mod tests {
 
     #[test]
     fn blocks_are_described_by_material_and_number() {
-        assert_eq!(describe(NumberedBlock::new(Material::Stone, 1)), "stone 2");
+        assert_eq!(describe(NumberedBlock::new(Material::Stone, 2)), "stone 2");
         assert_eq!(
-            describe(NumberedBlock::new(Material::SpringIce, 5)),
+            describe(NumberedBlock::new(Material::SpringIce, 32)),
             "spring ice 32"
+        );
+        assert_eq!(
+            describe(NumberedBlock::new(Material::Ice, 3_000_000_001)),
+            "ice 3000000001"
         );
     }
 }

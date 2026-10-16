@@ -30,32 +30,45 @@ pub const REACH: f64 = 12.0;
 /// this program does not know, are obstacles.
 struct WorldField<'a> {
     world: &'a mut ServerWorld,
-    channel: ChannelIndex,
+    block_channel: ChannelIndex,
+    number_channel: ChannelIndex,
 }
 
 impl BlockField for WorldField<'_> {
     fn occupant(&mut self, level: LevelIndex, at: VoxelCoordinate) -> Occupant {
-        match self.world.voxel(level, self.channel, at) {
+        match self.world.voxel(level, self.block_channel, at) {
             Ok(AIR) => Occupant::Empty,
-            Ok(id) => NumberedBlock::from_id(id).map_or(Occupant::Obstacle, Occupant::Block),
+            Ok(id) => match self.world.voxel(level, self.number_channel, at) {
+                Ok(number) => NumberedBlock::from_voxel(id, number)
+                    .map_or(Occupant::Obstacle, Occupant::Block),
+                Err(_) => Occupant::Obstacle,
+            },
             Err(_) => Occupant::Obstacle,
         }
     }
 
     fn place(&mut self, level: LevelIndex, at: VoxelCoordinate, block: Option<NumberedBlock>) {
-        // The voxel was just read, so the level and the terrain there are available.
+        // The voxel was just read, so the level and the terrain there are available. Air has no
+        // number, so emptying a voxel resets that too.
         let _ = self.world.set_voxel(
             level,
-            self.channel,
+            self.number_channel,
             at,
-            block.map_or(AIR, NumberedBlock::id),
+            block.map_or(0, NumberedBlock::state),
+        );
+        let _ = self.world.set_voxel(
+            level,
+            self.block_channel,
+            at,
+            block.map_or(AIR, NumberedBlock::block_id),
         );
     }
 }
 
 #[derive(Debug)]
 pub struct Logic2048 {
-    channel: ChannelIndex,
+    block_channel: ChannelIndex,
+    number_channel: ChannelIndex,
     /// The world's levels by identifier, in index order, for naming them in the saved state. Levels
     /// are never added or removed while a server runs.
     level_ids: Vec<NamespacedId>,
@@ -80,7 +93,8 @@ impl Logic2048 {
             })
         });
         Self {
-            channel: content.block_channel(),
+            block_channel: content.block_channel(),
+            number_channel: content.number_channel(),
             level_ids,
             progress: saved.progress,
             movers: Movers::from_saved(movers),
@@ -99,7 +113,8 @@ impl Logic2048 {
         let level = self.poses.level_of(client);
         let mut field = WorldField {
             world,
-            channel: self.channel,
+            block_channel: self.block_channel,
+            number_channel: self.number_channel,
         };
         if self
             .movers
@@ -152,11 +167,15 @@ impl GameLogic for Logic2048 {
         self.poses.tell_everyone(world);
         let mut field = WorldField {
             world,
-            channel: self.channel,
+            block_channel: self.block_channel,
+            number_channel: self.number_channel,
         };
         for merged in self.movers.advance(&mut field) {
-            self.progress.score += merged.value();
-            self.progress.largest_merge = self.progress.largest_merge.max(merged.exponent());
+            self.progress.score = self
+                .progress
+                .score
+                .saturating_add(u64::from(merged.number()));
+            self.progress.largest_merge = self.progress.largest_merge.max(merged.number());
             self.progress_changed = true;
         }
         if self.progress_changed {

@@ -23,6 +23,10 @@ struct Entry {
     emission: u8,
     first_model: u32,
     state_count: u32,
+    /// Where this block's state colours start in the palette, and how many there are (0 if the
+    /// block is one colour).
+    first_state_material: u32,
+    state_color_count: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -44,6 +48,8 @@ pub struct BlockTable {
     entries: Vec<Entry>,
     models: Vec<Model>,
     unknown: ModelId,
+    /// The colours after the blocks' own: every block's state colours, in block order.
+    state_palette: Vec<[f32; 3]>,
 }
 
 impl BlockTable {
@@ -51,6 +57,7 @@ impl BlockTable {
     pub fn from_definitions(definitions: &[Option<&BlockDefinition>]) -> Self {
         let mut models = Vec::new();
         let mut entries = Vec::with_capacity(definitions.len());
+        let mut state_palette = Vec::new();
         for (block, definition) in definitions.iter().enumerate() {
             let Some(definition) = definition else {
                 entries.push(Entry {
@@ -58,6 +65,8 @@ impl BlockTable {
                     emission: 0,
                     first_model: u32::MAX,
                     state_count: 1,
+                    first_state_material: 0,
+                    state_color_count: 0,
                 });
                 continue;
             };
@@ -70,7 +79,10 @@ impl BlockTable {
                 emission: definition.emission,
                 first_model,
                 state_count: definition.state_count() as u32,
+                first_state_material: (definitions.len() + state_palette.len()) as u32,
+                state_color_count: definition.state_colors().len() as u32,
             });
+            state_palette.extend_from_slice(definition.state_colors());
         }
         // The model of every unknown block is added last, once.
         let unknown = ModelId(models.len() as u32);
@@ -84,6 +96,7 @@ impl BlockTable {
             entries,
             models,
             unknown,
+            state_palette,
         }
     }
 
@@ -119,6 +132,18 @@ impl BlockTable {
         };
         let state = if state < entry.state_count { state } else { 0 };
         ModelId(entry.first_model + state)
+    }
+
+    /// What a voxel is drawn as: a value to give the renderer's palette. It is the block id, unless the
+    /// block has colours for its states, and then one of the palette entries after the blocks'.
+    /// Voxels are drawn in the same colour exactly when their materials are equal.
+    pub fn material_of(&self, block: u32, state: u32) -> u32 {
+        match self.entries.get(block as usize) {
+            Some(entry) if entry.state_color_count > 0 => {
+                entry.first_state_material + state % entry.state_color_count
+            }
+            _ => block,
+        }
     }
 
     pub fn shape(&self, model: ModelId) -> &Shape {
@@ -195,9 +220,14 @@ impl BlockTable {
             .map_or(0, |entry| entry.emission)
     }
 
-    /// The colour of every block, in id order, for the renderer's palette.
+    /// The renderer's palette: the colour of every block in id order, then the state colours of the
+    /// blocks that have them. [`BlockTable::material_of`] gives positions in it.
     pub fn palette(&self) -> Vec<[f32; 3]> {
-        self.entries.iter().map(|entry| entry.color).collect()
+        self.entries
+            .iter()
+            .map(|entry| entry.color)
+            .chain(self.state_palette.iter().copied())
+            .collect()
     }
 }
 
@@ -329,6 +359,52 @@ mod tests {
             [[0.0; 3], [0.5; 3], [0.7, 0.9, 1.0], MISSING_BLOCK_COLOR]
         );
         assert_eq!((table.emission(1), table.emission(2)), (0, 40));
+    }
+
+    #[test]
+    fn a_block_with_state_colours_is_drawn_by_its_state_and_other_blocks_by_their_id() {
+        let air = BlockDefinition::air();
+        let numbers =
+            BlockDefinition::cube([0.5; 3]).with_state_colors(vec![[0.1; 3], [0.2; 3], [0.3; 3]]);
+        let stone = BlockDefinition::cube([0.4; 3]);
+        let more = BlockDefinition::cube([0.6; 3]).with_state_colors(vec![[0.9; 3], [0.8; 3]]);
+        let table =
+            BlockTable::from_definitions(&[Some(&air), Some(&numbers), Some(&stone), Some(&more)]);
+        // The palette is the four blocks, then each block's state colours in block order.
+        assert_eq!(
+            table.palette(),
+            [
+                [0.0; 3], [0.5; 3], [0.4; 3], [0.6; 3], [0.1; 3], [0.2; 3], [0.3; 3], [0.9; 3],
+                [0.8; 3],
+            ]
+        );
+        let materials: Vec<u32> = (0..5).map(|state| table.material_of(1, state)).collect();
+        assert_eq!(
+            materials,
+            [4, 5, 6, 4, 5],
+            "the colours repeat, however large the state"
+        );
+        // 2^32 - 1 is a multiple of 3, and one less than it leaves 2.
+        assert_eq!(table.material_of(1, u32::MAX), 4);
+        assert_eq!(table.material_of(1, u32::MAX - 1), 6);
+        assert_eq!(table.palette()[table.material_of(1, 1) as usize], [0.2; 3]);
+        assert_eq!(table.material_of(3, 1), 8);
+        assert_eq!(table.palette()[table.material_of(3, 2) as usize], [0.9; 3]);
+        // Blocks without state colours are drawn as their own id, in every state.
+        assert_eq!(table.material_of(2, 0), 2);
+        assert_eq!(table.material_of(2, 77), 2);
+        assert_eq!(table.material_of(0, 0), 0);
+        // Colours are not shapes: every state is still the whole cube.
+        assert_eq!(table.state_count(1), 1);
+        assert_eq!(table.model_of(1, 1_000_000), table.model_of(1, 0));
+    }
+
+    #[test]
+    fn an_unknown_block_is_drawn_as_its_own_id() {
+        let table = table();
+        for block in [3, 4, 9999] {
+            assert_eq!(table.material_of(block, 5), block);
+        }
     }
 
     #[test]

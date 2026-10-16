@@ -70,35 +70,45 @@ pub struct Progress {
     pub score: u64,
     /// How many blocks players have pushed.
     pub pushes: u64,
-    /// The exponent of the largest block merging has made; 0 before the first merge.
-    pub largest_merge: u8,
-}
-
-impl Progress {
-    /// The number of the largest block merging has made, if there has been a merge.
-    pub fn largest_merged_value(&self) -> Option<u64> {
-        (self.largest_merge > 0).then(|| 1 << self.largest_merge)
-    }
+    /// The number of the largest block merging has made; 0 before the first merge.
+    pub largest_merge: u32,
 }
 
 fn write_progress(writer: &mut ByteWriter, progress: &Progress) {
     writer.write_varint(progress.score);
     writer.write_varint(progress.pushes);
-    writer.write_u8(progress.largest_merge);
+    writer.write_varint(u64::from(progress.largest_merge));
 }
 
 fn read_progress(reader: &mut ByteReader<'_>) -> Result<Progress, DecodeError> {
-    let progress = Progress {
+    Ok(Progress {
         score: reader.read_varint()?,
         pushes: reader.read_varint()?,
-        largest_merge: reader.read_u8()?,
+        largest_merge: u32::try_from(reader.read_varint()?)
+            .map_err(|_| DecodeError::Invalid("a block is numbered beyond the largest"))?,
+    })
+}
+
+/// The progress as saved before numbers were unbounded: the largest merge was the exponent of a power
+/// of two, in a byte.
+fn read_progress_with_exponent(reader: &mut ByteReader<'_>) -> Result<Progress, DecodeError> {
+    let score = reader.read_varint()?;
+    let pushes = reader.read_varint()?;
+    let exponent = reader.read_u8()?;
+    let largest_merge = match exponent {
+        0 => 0,
+        1..=31 => 1 << exponent,
+        _ => {
+            return Err(DecodeError::Invalid(
+                "a block is numbered beyond the largest",
+            ));
+        }
     };
-    if progress.largest_merge > crate::numbered_block::MAXIMUM_EXPONENT {
-        return Err(DecodeError::Invalid(
-            "a block is numbered beyond the largest",
-        ));
-    }
-    Ok(progress)
+    Ok(Progress {
+        score,
+        pushes,
+        largest_merge,
+    })
 }
 
 pub fn encode_progress(progress: &Progress) -> Vec<u8> {
@@ -133,8 +143,9 @@ pub struct SavedState {
 }
 
 /// The version of the saved state this program writes. Version 1, from before worlds had levels,
-/// did not say which level a moving block was in, and is still read.
-const SAVED_STATE_VERSION: u32 = 2;
+/// did not say which level a moving block was in; versions 1 and 2 kept the largest merge as the
+/// exponent of a power of two. Both are still read.
+const SAVED_STATE_VERSION: u32 = 3;
 
 pub fn saved_state_section_id() -> NamespacedId {
     kind("voxunami_2048:progress")
@@ -163,7 +174,11 @@ fn read_saved_state_payload(
     legacy_level: &NamespacedId,
 ) -> Result<SavedState, DecodeError> {
     let mut reader = ByteReader::new(payload);
-    let progress = read_progress(&mut reader)?;
+    let progress = if version <= 2 {
+        read_progress_with_exponent(&mut reader)?
+    } else {
+        read_progress(&mut reader)?
+    };
     // A moving block takes at least three bytes of position, one of direction, one of steps, and
     // from version 2 a level's name of at least three.
     let count = reader.read_count(if version == 1 { 5 } else { 8 })?;
@@ -252,11 +267,9 @@ mod tests {
         let progress = Progress {
             score: 123_456,
             pushes: 300,
-            largest_merge: 11,
+            largest_merge: 3_000_000_001,
         };
         assert_eq!(decode_progress(&encode_progress(&progress)), Ok(progress));
-        assert_eq!(progress.largest_merged_value(), Some(2048));
-        assert_eq!(Progress::default().largest_merged_value(), None);
         let good = encode_progress(&progress);
         for length in 0..good.len() {
             assert!(decode_progress(&good[..length]).is_err());
@@ -264,9 +277,11 @@ mod tests {
         let mut trailing = good.clone();
         trailing.push(0);
         assert!(decode_progress(&trailing).is_err());
-        let mut too_large = good;
-        *too_large.last_mut().unwrap() = crate::numbered_block::MAXIMUM_EXPONENT + 1;
-        assert!(decode_progress(&too_large).is_err());
+        let mut too_large = ByteWriter::new();
+        too_large.write_varint(1);
+        too_large.write_varint(1);
+        too_large.write_varint(u64::from(u32::MAX) + 1);
+        assert!(decode_progress(&too_large.into_bytes()).is_err());
     }
 
     #[test]
@@ -275,7 +290,7 @@ mod tests {
             progress: Progress {
                 score: 99,
                 pushes: 7,
-                largest_merge: 4,
+                largest_merge: 16,
             },
             movers: vec![
                 mover(3, FaceDirection::PositiveX, 40),
@@ -318,6 +333,10 @@ mod tests {
         let state = read_saved_state(&[section], &level("old")).unwrap();
         assert_eq!(state.progress.score, 40);
         assert_eq!(
+            state.progress.largest_merge, 4,
+            "an exponent of 2 is the number 4"
+        );
+        assert_eq!(
             state.movers,
             [SavedMover {
                 level: level("old"),
@@ -329,10 +348,42 @@ mod tests {
     }
 
     #[test]
+    fn a_version_2_saved_state_has_the_largest_merge_as_an_exponent_and_it_becomes_a_number() {
+        let version_2 = |exponent: u8| {
+            let mut writer = ByteWriter::new();
+            writer.write_varint(500); // score
+            writer.write_varint(9); // pushes
+            writer.write_u8(exponent); // largest merge
+            writer.write_varint(1); // one mover
+            writer.write_identifier(&level("landscape"));
+            write_voxel(&mut writer, VoxelCoordinate::new(5, 6, 7));
+            writer.write_u8(FaceDirection::NegativeX.index());
+            writer.write_varint(9);
+            Section {
+                identifier: saved_state_section_id(),
+                version: 2,
+                payload: writer.into_bytes(),
+            }
+        };
+        for (exponent, number) in [(0, 0), (1, 2), (11, 2048), (20, 1 << 20), (31, 1 << 31)] {
+            let state = read_saved_state(&[version_2(exponent)], &level("landscape")).unwrap();
+            assert_eq!(state.progress.largest_merge, number, "exponent {exponent}");
+            assert_eq!(state.progress.score, 500);
+            assert_eq!(state.movers.len(), 1);
+        }
+        // An exponent whose number does not fit is damage, not a number.
+        assert_eq!(
+            read_saved_state(&[version_2(32)], &level("landscape")),
+            None
+        );
+    }
+
+    #[test]
     fn a_saved_state_with_no_movers_is_small_and_reads_back() {
         let state = SavedState::default();
         let section = saved_state_section(&state);
         assert_eq!(section.payload.len(), 4);
+        assert_eq!(section.version, SAVED_STATE_VERSION);
         assert_eq!(
             read_saved_state(&[section], &level("landscape")),
             Some(state)

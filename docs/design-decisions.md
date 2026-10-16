@@ -88,8 +88,11 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   `docs/physics-spike.md`. Not built yet.
 
 ## Decided (2048)
-- No largest number (owner, 2026-10-16). Today a block is one of 60 values (3 materials times exponents 1 to 20), which is
-  a limit; with block states the number is a state of the material block, so it is unbounded. Not built.
+- No largest number (owner, 2026-10-16). A voxel is a material's block and, as its state, a number (built: Phase 8), so
+  numbers are not a list of blocks and are not limited to powers of two. The one remaining limit is that the state is 32
+  bits: the largest number is 4 294 967 295, and a merge whose result would not fit does not happen (the blocks meet as
+  if they were different). Reaching it by play is not realistic (2^31 needs a billion merges of 2s), and going further
+  is additive: a second channel for the high 32 bits, which old worlds already hold as its default 0.
 - Voxunami 2048 is infinite: a landscape of rolling hills in which every solid voxel is a numbered block (a power of
   two, half of them 2s, a quarter 4s, and so on up to 64s; material in cubes of 8 voxels: 70% stone, 20% ice, 10% spring
   ice). Any block can be pushed, and only tools push or pull blocks (left click pushes away from the player, right click
@@ -229,6 +232,24 @@ Phase 1d (saving):
 - `terrain`: `WorldTerrain` exposes its configuration and can restore saved assignments.
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
+
+Phase 8 (numbers as block states, Voxunami 2048):
+- A voxel of 2048 is a material's block (`voxunami_2048:stone`, `ice`, `spring_ice`; air is `voxunami_2048:air`) and, in
+  the channel `voxunami_2048:number`, its number as the state. `NumberedBlock` is a material and a `u32` number;
+  `from_voxel(block, number)` is `None` for air, for blocks from elsewhere and for a number of 0. Emptying a voxel resets
+  its number, so air holds the default in both channels (tested).
+- The engine learned colours by state: `BlockDefinition::with_state_colors` and `BlockTable::material_of` give each
+  (block, state) a palette entry, and the mesher merges by that. Colours repeat (state `s` has colour `s % count`), so
+  every state has one. 2048 uses 61 colours per material: 2 is a primitive root modulo 61, so the first 60 powers of
+  two each have a colour of their own and any other number shares the colour of the power with its residue. The
+  renderer's palette limit (240) is respected: 4 blocks plus 183 colours.
+- The landscape generator is now `voxunami_2048:numbered_hills_v2`: the same numbers and materials at the same voxels as
+  version 1, written as a material block plus a number. Version 1 (a block for every number) is retired, not edited: a
+  world that names it still loads, keeps its edits and its generator name, and has no terrain where that generator made
+  it (tested). Worlds made before this phase are therefore not playable; none were kept.
+- The progress message and the saved state carry the largest merge as a number; the saved section is version 3, and
+  versions 1 and 2 (an exponent) are still read. The score saturates instead of overflowing.
+- Merging is still the doubling rule of `NumberedBlock`; moving it into tools is the next phase.
 
 Phase 7 (block states and shapes, and light in the quad):
 - `block_models` (new engine crate): a `Shape` is a union of boxes in eighths of a voxel, from which it works out what the
@@ -398,6 +419,8 @@ Implication: a continuous-valued channel stored densely costs 4 bytes per voxel 
 continuous channels need quantization or sparse activity.
 
 ## Open
+- Keyboard controls in a window (reported by the owner, 2026-10-16): in both games the keys type into the title bar instead
+  of moving the player. Not yet investigated.
 - 2048 shows numbers by colour only (the renderer draws no text; the title names the block you look at), and only
   stone, ice and spring ice exist. Materials that pass momentum on, other tools (a line push, an undo), and players
   being in the way of blocks are not built. The play controls were never tried with a real mouse and keyboard.
@@ -444,6 +467,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 5 Other players drawn, server brick cache, compact generator tree. **Done.**
 - 6 Levels (protocol 2, file format, server, client, session) and a text command channel with `/level`. **Done.**
 - 7 Block states and shapes in block definitions, detailed quads, light in the quad (with its spike). **Done.**
+- 8 Numbers as block states in 2048 (colours by state in the engine, generator v2). **Done.**
 - 1f Launcher and first game crate: `world_view`, the `base_blocks` plugin, Voxunami Cave, the launcher; the old viewer
   retired. **Done.**
 The physics spike is done (`docs/physics-spike.md`); building the physics adapter belongs with the structures work.

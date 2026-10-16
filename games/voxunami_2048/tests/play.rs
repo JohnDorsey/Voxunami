@@ -39,25 +39,29 @@ fn at(x: i64, y: i64, z: i64) -> VoxelCoordinate {
     VoxelCoordinate::new(x, y, z)
 }
 
+/// The blocks of these tests are named by the exponent of the power of two they show.
 fn stone(exponent: u8) -> NumberedBlock {
-    NumberedBlock::new(Material::Stone, exponent)
+    NumberedBlock::new(Material::Stone, 1 << exponent)
 }
 
 fn ice(exponent: u8) -> NumberedBlock {
-    NumberedBlock::new(Material::Ice, exponent)
+    NumberedBlock::new(Material::Ice, 1 << exponent)
 }
 
 fn spring_ice(exponent: u8) -> NumberedBlock {
-    NumberedBlock::new(Material::SpringIce, exponent)
+    NumberedBlock::new(Material::SpringIce, 1 << exponent)
 }
 
 /// Every numbered block in a world's edited bricks.
 fn blocks_in(grid: &Grid, content: &Content2048) -> Blocks {
-    let channel = content.block_channel();
+    let (block_channel, number_channel) = (content.block_channel(), content.number_channel());
     let mut blocks = Blocks::new();
     for (coordinate, brick) in grid.bricks() {
         for local in LocalVoxelIndex::all() {
-            if let Some(block) = NumberedBlock::from_id(brick.get(channel, local)) {
+            if let Some(block) = NumberedBlock::from_voxel(
+                brick.get(block_channel, local),
+                brick.get(number_channel, local),
+            ) {
                 blocks.insert(coordinate.voxel_at(local), block);
             }
         }
@@ -65,12 +69,44 @@ fn blocks_in(grid: &Grid, content: &Content2048) -> Blocks {
     blocks
 }
 
+/// Puts a block in the voxels of a grid, as the game would.
+fn put_block(grid: &mut Grid, content: &Content2048, voxel: VoxelCoordinate, block: NumberedBlock) {
+    grid.set(content.block_channel(), voxel, block.block_id());
+    grid.set(content.number_channel(), voxel, block.state());
+}
+
+/// Air has no number: wherever blocks have been, the voxels they left hold the default again, so
+/// that edited bricks hold nothing the blocks do not show.
+fn assert_air_has_no_number(grid: &Grid, content: &Content2048) {
+    let (block_channel, number_channel) = (content.block_channel(), content.number_channel());
+    for (_, brick) in grid.bricks() {
+        for local in LocalVoxelIndex::all() {
+            if brick.get(block_channel, local) == 0 {
+                assert_eq!(brick.get(number_channel, local), 0);
+            }
+        }
+    }
+}
+
+/// The block a world holds at a voxel of its main level, if it is a numbered block.
+fn block_in_world(
+    world: &WorldData,
+    content: &Content2048,
+    voxel: VoxelCoordinate,
+) -> Option<NumberedBlock> {
+    let grid = &world.main().overrides;
+    NumberedBlock::from_voxel(
+        grid.get(content.block_channel(), voxel),
+        grid.get(content.number_channel(), voxel),
+    )
+}
+
 fn blocks_of(list: &[(VoxelCoordinate, NumberedBlock)]) -> Blocks {
     list.iter().copied().collect()
 }
 
 fn total_value(blocks: &Blocks) -> u64 {
-    blocks.values().map(|block| block.value()).sum()
+    blocks.values().map(|block| u64::from(block.number())).sum()
 }
 
 fn blocks_seen_by(player: &Player, content: &Content2048) -> Blocks {
@@ -99,9 +135,8 @@ impl Rig {
     fn with_blocks(blocks: &[(VoxelCoordinate, NumberedBlock)]) -> Self {
         let content = Content2048::new();
         let mut world = content.new_world(SEED);
-        let channel = content.block_channel();
         for &(voxel, block) in blocks {
-            world.main_mut().overrides.set(channel, voxel, block.id());
+            put_block(&mut world.main_mut().overrides, &content, voxel, block);
         }
         Self::with_world(content, world)
     }
@@ -212,6 +247,7 @@ fn the_tools_push_a_stone_block_away_and_pull_it_toward_the_player_from_every_si
             );
             let expected = blocks_of(&[(moved, stone(2))]);
             assert_eq!(rig.blocks(), expected, "{direction:?}, pulling: {pulling}");
+            assert_air_has_no_number(&rig.server.world().main().overrides, &rig.content);
             assert_eq!(blocks_seen_by(&player, &rig.content), expected);
             assert_eq!(
                 player.state.progress,
@@ -283,7 +319,7 @@ fn equal_blocks_that_meet_merge_and_everyone_hears_the_score() {
     let progress = Progress {
         score: 8,
         pushes: 1,
-        largest_merge: 3,
+        largest_merge: 8,
     };
     assert_eq!(pusher.state.progress, progress);
     assert_eq!(watcher.state.progress, progress);
@@ -318,7 +354,7 @@ fn the_score_adds_up_every_merge_and_remembers_the_largest_block_made() {
         Progress {
             score: 16 + 4,
             pushes: 2,
-            largest_merge: 4
+            largest_merge: 16
         }
     );
 }
@@ -384,7 +420,7 @@ fn world_with_a_block_from_elsewhere(
     let mut world = content.new_world(SEED);
     let mut blocks = Registry::new();
     let names = std::iter::once("voxunami_2048:air".to_owned())
-        .chain(NumberedBlock::all().map(|block| format!("voxunami_2048:{}", block.name())))
+        .chain(Material::ALL.map(|material| format!("voxunami_2048:{}", material.name())))
         .chain(["elsewhere:marble".to_owned()]);
     let mut marble = 0;
     for name in names {
@@ -394,7 +430,12 @@ fn world_with_a_block_from_elsewhere(
             .raw();
     }
     world.main_mut().overrides.set(channel, unknown, marble);
-    world.main_mut().overrides.set(channel, ice_at, ice(1).id());
+    // The marble has a number of its own, which the game must not read as a numbered block.
+    world
+        .main_mut()
+        .overrides
+        .set(content.number_channel(), unknown, 2);
+    put_block(&mut world.main_mut().overrides, &content, ice_at, ice(1));
     let bytes = world
         .save(&[(block_registry_kind(), &blocks as &dyn IdentifierRegistry)])
         .unwrap();
@@ -449,11 +490,11 @@ fn the_ground_is_made_of_blocks_that_can_be_pushed_like_any_other() {
         .map(|y| at(8, y, 8))
         .find(|&voxel| player.mesher().is_opaque_at(voxel) == Some(true))
         .expect("the column has ground");
-    let block = player
-        .mesher()
-        .material_at(top)
-        .and_then(NumberedBlock::from_id)
-        .expect("the ground is numbered blocks");
+    let block = NumberedBlock::from_voxel(
+        player.mesher().material_at(top).unwrap(),
+        player.mesher().state_at(top).unwrap(),
+    )
+    .expect("the ground is numbered blocks");
     player.camera = camera_at([8.5, top.y() as f64 + 5.5, 8.5], 0.0, -89.0, VIEW_RADIUS);
     rig.settle(&mut [&mut player]);
     send_push(&mut player, top, FaceDirection::PositiveY);
@@ -462,18 +503,20 @@ fn the_ground_is_made_of_blocks_that_can_be_pushed_like_any_other() {
 
     // Stone moved one step, and ice of either kind coasted its whole range through the air.
     let landed = at(8, top.y() + i64::from(block.material.motion().range), 8);
-    for (what, material_at) in [
+    for (what, found) in [
         (
             "the server",
-            rig.server
-                .world()
-                .main()
-                .overrides
-                .get(rig.content.block_channel(), landed),
+            block_in_world(rig.server.world(), &rig.content, landed),
         ),
-        ("the player", player.mesher().material_at(landed).unwrap()),
+        (
+            "the player",
+            NumberedBlock::from_voxel(
+                player.mesher().material_at(landed).unwrap(),
+                player.mesher().state_at(landed).unwrap(),
+            ),
+        ),
     ] {
-        assert_eq!(NumberedBlock::from_id(material_at), Some(block), "{what}");
+        assert_eq!(found, Some(block), "{what}");
     }
     assert_eq!(player.mesher().is_opaque_at(top), Some(false));
 }
@@ -483,8 +526,8 @@ fn direction_strategy() -> impl Strategy<Value = FaceDirection> {
 }
 
 fn block_strategy() -> impl Strategy<Value = NumberedBlock> {
-    (0..Material::ALL.len(), 1u8..=3)
-        .prop_map(|(material, exponent)| NumberedBlock::new(Material::ALL[material], exponent))
+    (0..Material::ALL.len(), 1u32..=3)
+        .prop_map(|(material, exponent)| NumberedBlock::new(Material::ALL[material], 1 << exponent))
 }
 
 proptest! {
@@ -513,6 +556,7 @@ proptest! {
         }
         rig.step(COASTING_RANGE + 2);
         rig.settle(&mut [&mut player, &mut watcher]);
+        assert_air_has_no_number(&rig.server.world().main().overrides, &rig.content);
         let blocks = rig.blocks();
         prop_assert_eq!(total_value(&blocks), starting_value);
         prop_assert_eq!(blocks_seen_by(&player, &rig.content), blocks.clone());
@@ -628,11 +672,10 @@ fn world_with_a_second_level(
     blocks: &[(VoxelCoordinate, NumberedBlock)],
 ) -> (Content2048, WorldData, voxel_space::LevelIndex) {
     let content = Content2048::new();
-    let channel = content.block_channel();
     let mut world = content.new_world(SEED);
     let mut level = content.new_world(SEED).into_main();
     for &(voxel, block) in blocks {
-        level.overrides.set(channel, voxel, block.id());
+        put_block(&mut level.overrides, &content, voxel, block);
     }
     let second = world
         .add_level("voxunami_2048:underside".parse().unwrap(), level)
@@ -645,11 +688,12 @@ fn blocks_pushed_in_another_level_move_and_merge_there_and_the_score_is_shared()
     let (content, mut world, second) =
         world_with_a_second_level(&[(at(10, SKY, 10), ice(2)), (at(10, SKY, 6), stone(2))]);
     // The main level has a block in the way at the same place, which must not matter.
-    let channel = content.block_channel();
-    world
-        .main_mut()
-        .overrides
-        .set(channel, at(10, SKY, 8), stone(5).id());
+    put_block(
+        &mut world.main_mut().overrides,
+        &content,
+        at(10, SKY, 8),
+        stone(5),
+    );
     let mut rig = Rig::with_world(content, world);
     let mut player = rig.join_looking(at(10, SKY, 10), FaceDirection::NegativeZ);
     rig.settle(&mut [&mut player]);
@@ -697,7 +741,7 @@ fn blocks_pushed_in_another_level_move_and_merge_there_and_the_score_is_shared()
         Progress {
             score: 8,
             pushes: 1,
-            largest_merge: 3
+            largest_merge: 8
         }
     );
 }
@@ -778,12 +822,13 @@ fn a_saved_state_from_before_levels_had_moving_blocks_without_a_level_and_they_g
     payload.write_u8(FaceDirection::NegativeZ.index());
     payload.write_varint(30);
     let content = Content2048::new();
-    let channel = content.block_channel();
     let mut world = content.new_world(SEED);
-    world
-        .main_mut()
-        .overrides
-        .set(channel, at(10, SKY, 10), ice(1).id());
+    put_block(
+        &mut world.main_mut().overrides,
+        &content,
+        at(10, SKY, 10),
+        ice(1),
+    );
     world.set_opaque_section(world_storage::Section {
         identifier: saved_state_section_id(),
         version: 1,

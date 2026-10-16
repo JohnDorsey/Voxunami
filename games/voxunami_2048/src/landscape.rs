@@ -2,10 +2,12 @@
 //!
 //! Every solid voxel is a numbered block. Small numbers are common (half are 2s, a quarter 4s, and
 //! so on up to 64s), so there are always equal neighbours to merge. The material comes in cubes of
-//! 8 voxels: mostly stone, with patches of ice and of spring ice to slide blocks on.
+//! 8 voxels: mostly stone, with patches of ice and of spring ice to slide blocks on. A voxel holds
+//! the material's block and, in the number channel, its number.
 //!
-//! The generator `voxunami_2048:numbered_hills_v1` is part of every world's file format: its output
-//! for a seed must never change. A better landscape is a new generator with a new name.
+//! The generator `voxunami_2048:numbered_hills_v2` is part of every world's file format: its output
+//! for a seed must never change. A better landscape is a new generator with a new name. (Version 1
+//! made the same landscape out of a block for each number, before numbers were states; it is gone.)
 
 use terrain::{
     DensityField, Dimensionality, FractalNoise, Heightfield, TerrainGenerator, lattice_hash,
@@ -28,8 +30,8 @@ const MATERIAL_CUBE_EDGE_LOG2: u32 = 3;
 const NUMBER_SALT: u64 = 0x2048_0000_4E55_4D42;
 const MATERIAL_SALT: u64 = 0x2048_0000_4D41_5445;
 
-/// The block at a voxel, if the landscape is solid there. Depends on nothing but the seed and the
-/// voxel, so bricks come out the same however and whenever they are generated.
+/// The block the landscape has at a voxel, if it is solid there. Depends on nothing but the seed and
+/// the voxel, so bricks come out the same however and whenever they are generated.
 pub fn numbered_block_at(seed: u64, voxel: VoxelCoordinate) -> NumberedBlock {
     let number = lattice_hash(seed ^ NUMBER_SALT, voxel.x(), voxel.y(), voxel.z());
     // Each further zero bit halves the chance: 1 in 2 for the 2s, 1 in 4 for the 4s, ...
@@ -45,7 +47,7 @@ pub fn numbered_block_at(seed: u64, voxel: VoxelCoordinate) -> NumberedBlock {
         7 | 8 => Material::Ice,
         _ => Material::SpringIce,
     };
-    NumberedBlock::new(material, exponent as u8)
+    NumberedBlock::new(material, 1 << exponent)
 }
 
 /// Hills of numbered blocks, with solid ground all the way down.
@@ -54,15 +56,17 @@ pub struct NumberedHills {
     seed: u64,
     ground: Heightfield,
     block_channel: ChannelIndex,
+    number_channel: ChannelIndex,
 }
 
 impl NumberedHills {
-    pub fn new(seed: u64, block_channel: ChannelIndex) -> Self {
+    pub fn new(seed: u64, block_channel: ChannelIndex, number_channel: ChannelIndex) -> Self {
         let hills = FractalNoise::standard(seed, Dimensionality::Planar, 6, 4, 14.0, 0.5);
         Self {
             seed,
             ground: Heightfield::new(0.0, hills),
             block_channel,
+            number_channel,
         }
     }
 
@@ -83,6 +87,7 @@ impl TerrainGenerator for NumberedHills {
         let all_solid = bounds.lower() > 0.0;
         let origin = coordinate.origin();
         let mut blocks = vec![AIR; BRICK_VOXEL_COUNT];
+        let mut numbers = vec![0; BRICK_VOXEL_COUNT];
         for z in 0..BRICK_EDGE_LENGTH {
             for y in 0..BRICK_EDGE_LENGTH {
                 for x in 0..BRICK_EDGE_LENGTH {
@@ -91,12 +96,15 @@ impl TerrainGenerator for NumberedHills {
                         .expect("the voxels of a brick are within range");
                     if all_solid || self.is_solid(voxel) {
                         let local = LocalVoxelIndex::new(x as u8, y as u8, z as u8);
-                        blocks[local.index()] = numbered_block_at(self.seed, voxel).id();
+                        let block = numbered_block_at(self.seed, voxel);
+                        blocks[local.index()] = block.block_id();
+                        numbers[local.index()] = block.number();
                     }
                 }
             }
         }
         *brick.channel_mut(self.block_channel) = ChannelStorage::from_values(&blocks);
+        *brick.channel_mut(self.number_channel) = ChannelStorage::from_values(&numbers);
         brick
     }
 }
@@ -109,13 +117,21 @@ mod tests {
 
     use super::*;
 
+    /// The fixture's two channels stand in for the game's: its material is the block channel and
+    /// its temperature the number channel (whose default is 20, not 0, which the generator must
+    /// not depend on for solid voxels).
     fn generate(seed: u64, brick: BrickCoordinate) -> Brick {
         let fixture = StandardTestLayout::default();
-        NumberedHills::new(seed, fixture.material).generate_brick(&fixture.layout, brick)
+        NumberedHills::new(seed, fixture.material, fixture.temperature)
+            .generate_brick(&fixture.layout, brick)
     }
 
     fn block_channel() -> ChannelIndex {
         StandardTestLayout::default().material
+    }
+
+    fn number_channel() -> ChannelIndex {
+        StandardTestLayout::default().temperature
     }
 
     #[test]
@@ -140,8 +156,8 @@ mod tests {
         );
     }
 
-    const PINNED_SURFACE_DIGEST: u64 = 4_541_207_031_239_676_783;
-    const PINNED_UNDERGROUND_DIGEST: u64 = 15_234_628_967_280_726_699;
+    const PINNED_SURFACE_DIGEST: u64 = 3_739_225_538_795_315_993;
+    const PINNED_UNDERGROUND_DIGEST: u64 = 4_695_932_706_205_432_390;
     const PINNED_SKY_DIGEST: u64 = 12_280_675_352_798_744_816;
 
     #[test]
@@ -176,19 +192,22 @@ mod tests {
 
     #[test]
     fn generated_voxels_are_the_numbered_blocks_of_the_solid_ground() {
-        let channel = block_channel();
+        let (blocks, numbers) = (block_channel(), number_channel());
         let seed = 31;
-        let hills = NumberedHills::new(seed, channel);
+        let hills = NumberedHills::new(seed, blocks, numbers);
         let coordinate = BrickCoordinate::new(-1, 0, 1);
         let brick = generate(seed, coordinate);
         for local in LocalVoxelIndex::all() {
             let voxel = coordinate.voxel_at(local);
-            let expected = if hills.is_solid(voxel) {
-                numbered_block_at(seed, voxel).id()
-            } else {
-                AIR
-            };
-            assert_eq!(brick.get(channel, local), expected, "{voxel}");
+            let found =
+                NumberedBlock::from_voxel(brick.get(blocks, local), brick.get(numbers, local));
+            let expected = hills
+                .is_solid(voxel)
+                .then(|| numbered_block_at(seed, voxel));
+            assert_eq!(found, expected, "{voxel}");
+            if expected.is_none() {
+                assert_eq!(brick.get(blocks, local), AIR, "{voxel}");
+            }
         }
     }
 
@@ -203,7 +222,8 @@ mod tests {
                 for z in -20..20 {
                     let voxel = VoxelCoordinate::new(x, y, z);
                     let block = numbered_block_at(seed, voxel);
-                    counts[usize::from(block.exponent())] += 1;
+                    assert!(block.number().is_power_of_two());
+                    counts[block.number().trailing_zeros() as usize] += 1;
                     materials.insert(block.material);
                     let cube = (x >> 3, y >> 3, z >> 3);
                     assert_eq!(

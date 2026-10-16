@@ -133,7 +133,9 @@ impl Layer {
 /// A brick's voxels, looked at the way meshing needs.
 struct MeshedBrick<'a> {
     table: &'a BlockTable,
-    blocks: Vec<u32>,
+    /// What each voxel is drawn as: its block, or for a block with colours for its states, the
+    /// colour of its state (see [`BlockTable::material_of`]).
+    materials: Vec<u32>,
     models: Vec<ModelId>,
     light: Vec<u8>,
     /// Indexed by [`FaceDirection::index`].
@@ -144,12 +146,16 @@ impl<'a> MeshedBrick<'a> {
     fn new(input: &BrickNeighbourhood<'_>, table: &'a BlockTable) -> Self {
         let blocks: Vec<u32> = input.center.blocks.iter().collect();
         let states: Option<Vec<u32>> = input.center.states.map(|states| states.iter().collect());
+        let state_of = |index: usize| states.as_ref().map_or(0, |states| states[index]);
         let models = blocks
             .iter()
             .enumerate()
-            .map(|(index, &block)| {
-                table.model_of(block, states.as_ref().map_or(0, |states| states[index]))
-            })
+            .map(|(index, &block)| table.model_of(block, state_of(index)))
+            .collect();
+        let materials = blocks
+            .iter()
+            .enumerate()
+            .map(|(index, &block)| table.material_of(block, state_of(index)))
             .collect();
         let light = match input.center.light {
             Some(light) => light.iter().map(|value| value.min(255) as u8).collect(),
@@ -157,7 +163,7 @@ impl<'a> MeshedBrick<'a> {
         };
         Self {
             table,
-            blocks,
+            materials,
             models,
             light,
             layers: std::array::from_fn(|index| {
@@ -219,7 +225,7 @@ impl<'a> MeshedBrick<'a> {
                     if self.table.is_opaque_cube(model) {
                         let (front, light) = self.in_front(p, face);
                         if self.hidden_by(model, front, face) != u64::MAX {
-                            key = Some((self.blocks[index], light));
+                            key = Some((self.materials[index], light));
                         }
                     }
                     any |= key.is_some();
@@ -272,7 +278,7 @@ impl<'a> MeshedBrick<'a> {
                                 width: u16::from(rectangle.width),
                                 height: u16::from(rectangle.height),
                                 face,
-                                material: self.blocks[index],
+                                material: self.materials[index],
                                 light,
                             });
                         }
@@ -352,6 +358,8 @@ mod tests {
     const ROCK: u32 = 4;
     /// A see-through whole cube.
     const GLASS: u32 = 5;
+    /// A whole cube drawn in one of three colours by its state, which any number can be.
+    const NUMBERED: u32 = 6;
 
     fn table() -> BlockTable {
         let air = BlockDefinition::air();
@@ -363,6 +371,8 @@ mod tests {
             Shape::stair(FaceDirection::PositiveX),
         ]);
         let glass = BlockDefinition::cube([0.7; 3]).with_see_through(true);
+        let numbered =
+            BlockDefinition::cube([0.3; 3]).with_state_colors(vec![[0.1; 3], [0.2; 3], [0.3; 3]]);
         BlockTable::from_definitions(&[
             Some(&air),
             Some(&cube),
@@ -370,6 +380,7 @@ mod tests {
             Some(&cube),
             Some(&rock),
             Some(&glass),
+            Some(&numbered),
         ])
     }
 
@@ -597,6 +608,40 @@ mod tests {
         );
         assert_eq!(mesh.quads.len(), 6);
         assert!(mesh.quads.iter().all(|quad| quad.light == FULL_LIGHT));
+    }
+
+    #[test]
+    fn a_block_with_state_colours_merges_by_the_colour_of_its_state() {
+        // The palette is the seven blocks, then the three colours of the numbered block, so its
+        // states 1 and 4 are material 8 (both the second colour), and state 2 is material 9.
+        let blocks = brick_from(|_, y, _| if y == 0 { NUMBERED } else { AIR });
+        let states = brick_from(|x, _, _| match x {
+            0..10 => 1,
+            10..20 => 4,
+            _ => 2,
+        });
+        let mesh = with_states(&blocks, &states);
+        assert!(mesh.detailed.is_empty());
+        let tops: Vec<Quad> = mesh
+            .quads
+            .iter()
+            .copied()
+            .filter(|quad| quad.face == FaceDirection::PositiveY)
+            .collect();
+        assert_eq!(tops.len(), 2, "{tops:?}");
+        // Y faces span z (width) then x (height).
+        assert!(tops.contains(&quad([0, 0, 0], 32, 20, FaceDirection::PositiveY, 8)));
+        assert!(tops.contains(&quad([20, 0, 0], 32, 12, FaceDirection::PositiveY, 9)));
+    }
+
+    #[test]
+    fn a_block_without_a_state_channel_is_drawn_in_the_colour_of_state_zero() {
+        let blocks = brick_from(|_, y, _| if y == 0 { NUMBERED } else { AIR });
+        let tops: Vec<Quad> = isolated(&blocks)
+            .into_iter()
+            .filter(|quad| quad.face == FaceDirection::PositiveY)
+            .collect();
+        assert_eq!(tops, [quad([0, 0, 0], 32, 32, FaceDirection::PositiveY, 7)]);
     }
 
     // ----- Blocks that do not fill their cell -----

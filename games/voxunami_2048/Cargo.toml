@@ -27,6 +27,8 @@ proptest.workspace = true
 renderer.workspace = true
 replay.workspace = true
 voxel_grid = { workspace = true, features = ["test-support"] }
+voxel_meshing.workspace = true
+wgpu = "30.0.1"
 
 [lints]
 workspace = true

@@ -2337,7 +2337,9 @@ dependencies = [
  "terrain",
  "transport",
  "voxel_grid",
+ "voxel_meshing",
  "voxel_space",
+ "wgpu",
  "world_storage",
  "world_view",
 ]

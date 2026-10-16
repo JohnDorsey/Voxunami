@@ -1,10 +1,11 @@
 //! Voxunami 2048: 2048 in an endless landscape.
 //!
 //! The ground is made of numbered blocks: powers of two, mostly small, in stone, ice and spring
-//! ice. Players push and pull blocks with a tool. A pushed block moves according to its material
-//! (stone one step; ice and spring ice coast), and a block that meets an equal number merges with
-//! it into the next number. Blocks never push each other. Every player on the server shares the
-//! same world and the same score.
+//! ice. A block is its material's block and, as the state of its voxel, its number, so numbers are
+//! not limited to a list of blocks. Players push and pull blocks with a tool. A pushed block moves
+//! according to its material (stone one step; ice and spring ice coast), and a block that meets an
+//! equal number merges with it into the double. Blocks never push each other. Every player on the
+//! server shares the same world and the same score.
 //!
 //! Everything is made of voxels, so it is streamed, saved, recorded and replayed like any world.
 //!

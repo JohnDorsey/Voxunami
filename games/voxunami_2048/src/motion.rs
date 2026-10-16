@@ -222,7 +222,10 @@ mod tests {
         }
 
         fn total_value(&self) -> u64 {
-            self.blocks.values().map(|block| block.value()).sum()
+            self.blocks
+                .values()
+                .map(|block| u64::from(block.number()))
+                .sum()
         }
     }
 
@@ -230,16 +233,17 @@ mod tests {
         VoxelCoordinate::new(x, y, z)
     }
 
+    /// The blocks of these tests are named by the exponent of the power of two they show.
     fn stone(exponent: u8) -> NumberedBlock {
-        NumberedBlock::new(Material::Stone, exponent)
+        NumberedBlock::new(Material::Stone, 1 << exponent)
     }
 
     fn ice(exponent: u8) -> NumberedBlock {
-        NumberedBlock::new(Material::Ice, exponent)
+        NumberedBlock::new(Material::Ice, 1 << exponent)
     }
 
     fn spring_ice(exponent: u8) -> NumberedBlock {
-        NumberedBlock::new(Material::SpringIce, exponent)
+        NumberedBlock::new(Material::SpringIce, 1 << exponent)
     }
 
     /// Advances until nothing moves, returning how many ticks it took and every merge made.
@@ -663,7 +667,7 @@ mod tests {
         ) {
             let mut field = TestField::default();
             for (x, y, z, material, exponent) in blocks {
-                field.blocks.insert((LevelIndex::MAIN, at(x, y, z)), NumberedBlock::new(material, exponent));
+                field.blocks.insert((LevelIndex::MAIN, at(x, y, z)), NumberedBlock::new(material, 1 << exponent));
             }
             let (starting_value, starting_count) = (field.total_value(), field.blocks.len());
             let mut movers = Movers::new();

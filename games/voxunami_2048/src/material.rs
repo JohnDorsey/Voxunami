@@ -40,6 +40,17 @@ impl Material {
         Self::ALL.get(index).copied()
     }
 
+    /// The id of this material's block in the world's content: air is block 0, and the materials
+    /// follow in order.
+    pub fn block_id(self) -> u32 {
+        self.index() as u32 + 1
+    }
+
+    /// The material whose block has this id, or `None` for air and for ids that are not one.
+    pub fn from_block_id(id: u32) -> Option<Self> {
+        Self::from_index(id.checked_sub(1)? as usize)
+    }
+
     /// The material's name as it appears in block identifiers.
     pub fn name(self) -> &'static str {
         match self {
@@ -78,6 +89,12 @@ mod tests {
             assert_eq!(Material::from_index(index), Some(material));
         }
         assert_eq!(Material::from_index(3), None);
+        for material in Material::ALL {
+            assert_eq!(Material::from_block_id(material.block_id()), Some(material));
+        }
+        assert_eq!(Material::Stone.block_id(), 1);
+        assert_eq!(Material::from_block_id(0), None);
+        assert_eq!(Material::from_block_id(4), None);
         let names: Vec<_> = Material::ALL.into_iter().map(Material::name).collect();
         assert_eq!(names, ["stone", "ice", "spring_ice"]);
     }
