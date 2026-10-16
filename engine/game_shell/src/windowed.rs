@@ -400,8 +400,9 @@ impl<G: GameDefinition> Viewer<G> {
                 if self.recording_ended { " (ended)" } else { "" }
             ),
         };
+        // What the player is doing comes first: a narrow window cuts the end of its title off.
         self.window.set_title(&format!(
-            "{} | {fps:.0} fps | drawn {}/{} bricks, {} quads | loading {} | {mode} | {}",
+            "{mode} | {} | {fps:.0} fps | drawn {}/{} bricks, {} quads | loading {} | {}",
             G::title(),
             statistics.bricks_drawn,
             statistics.bricks_drawn + statistics.bricks_culled,
