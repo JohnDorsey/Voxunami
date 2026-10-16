@@ -91,6 +91,12 @@ pub struct Atmosphere {
     pub fog_end: f32,
     /// Direction towards the sun (need not be normalized).
     pub sun_direction: [f32; 3],
+    /// How bright, from 0 to 255, a face is that no light reaches. A face's brightness is its light
+    /// and this one combined like screen blending in an image editor (each as a fraction of full
+    /// brightness, one minus the product of what is missing from each), so light adds to the
+    /// ambient and never goes beyond full. 0, the default, is no ambient light: brightness is the
+    /// face's light alone.
+    pub ambient_light: u8,
 }
 
 impl Default for Atmosphere {
@@ -100,6 +106,7 @@ impl Default for Atmosphere {
             fog_start: 400.0,
             fog_end: 900.0,
             sun_direction: [0.4, 0.8, 0.3],
+            ambient_light: 0,
         }
     }
 }
@@ -816,7 +823,12 @@ impl VoxelRenderer {
         let uniform = FrameUniform {
             view_projection: view_projection.to_cols_array_2d(),
             fog_color: [fog_red, fog_green, fog_blue, 1.0],
-            fog_range: [self.atmosphere.fog_start, self.atmosphere.fog_end, 0.0, 0.0],
+            fog_range: [
+                self.atmosphere.fog_start,
+                self.atmosphere.fog_end,
+                f32::from(self.atmosphere.ambient_light) / 255.0,
+                0.0,
+            ],
             sun_direction: [sun.x, sun.y, sun.z, 0.0],
             palette: *self.palette,
         };

@@ -811,6 +811,47 @@ fn slabs_and_cubes_in_one_brick_both_draw_and_the_slab_sits_on_the_floor_of_its_
 }
 
 #[test]
+fn ambient_light_is_the_brightness_of_a_face_no_light_reaches_and_light_adds_to_it() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+        let atmosphere = |ambient_light| Atmosphere {
+            sky_color: SKY,
+            fog_start: 1000.0,
+            fog_end: 2000.0,
+            ambient_light,
+            ..Atmosphere::default()
+        };
+        let seen = |renderer: &mut VoxelRenderer, ambient: u8, light: u32| {
+            renderer.set_atmosphere(atmosphere(ambient));
+            place_blocks(renderer, ORIGIN_BRICK, &[([16, 16, 16], 2, 0)], Some(light));
+            linear_brightness(pixel(&render(renderer, &camera), SIZE / 2, SIZE / 2))
+        };
+        let full = seen(&mut renderer, 0, 255);
+        // With no light at all the face is as bright as the ambient light says.
+        let ambient_only = seen(&mut renderer, 128, 0) / full;
+        assert!(
+            (0.48..0.52).contains(&ambient_only),
+            "{name}: {ambient_only}"
+        );
+        // Light and ambient combine like a screen blend: half and half is three quarters.
+        let both = seen(&mut renderer, 128, 128) / full;
+        assert!((0.74..0.76).contains(&both), "{name}: {both}");
+        // Full light is full brightness whatever the ambient light is, and no ambient light leaves
+        // the light as it was.
+        assert_eq!(seen(&mut renderer, 128, 255), full, "{name}");
+        let without = seen(&mut renderer, 0, 128) / full;
+        assert!((0.48..0.52).contains(&without), "{name}: {without}");
+        assert_eq!(
+            seen(&mut renderer, 255, 0),
+            full,
+            "{name}: full ambient light is full light"
+        );
+    }
+}
+
+#[test]
 fn a_face_is_as_bright_as_its_light_says() {
     for context in contexts() {
         let name = adapter_name(&context);

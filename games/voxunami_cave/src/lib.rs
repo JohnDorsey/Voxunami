@@ -12,6 +12,8 @@
 
 pub mod content;
 pub mod game;
+pub mod light_state;
+pub mod lighting;
 pub mod logic;
 pub mod messages;
 

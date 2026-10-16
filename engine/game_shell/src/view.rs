@@ -19,6 +19,7 @@ pub fn configure_renderer(
     renderer.set_atmosphere(Atmosphere {
         fog_start: reach * 0.6,
         fog_end: reach - 16.0,
+        ambient_light: content.ambient_light(),
         ..Atmosphere::default()
     });
 }

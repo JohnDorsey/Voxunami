@@ -55,7 +55,9 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - Workflow: Claude commits and pushes finished phases (rule lifted by the owner after Phase 1f); each phase ends with
   passing checks.
 
-## Voxunami Cave lighting (decided; not built yet)
+## Voxunami Cave lighting (decided; block light built in Phases 11 and 12, sky light not)
+- Built so far: one channel of block light, from lamps (see "Built", Phases 11 and 12). The rest of this section is the
+  plan for sky light, and for how the two combine.
 - Flood-fill light with 256 levels (0-255). The top levels are blindingly bright and rarely used.
 - Several channels of "sky light" that all look the same colour by default but could optionally be shown in different
   colours. All spread by flood fill, losing 1 per step, but they have different sources: a block exposed to air gets a
@@ -150,7 +152,8 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   command channel (done: Phase 6). 2. Block shapes in block definitions (open faces, collision shape, translucency, light), with a spike
   on how light reaches the 8-byte quad (done: Phase 7). 3. 2048 tools: chain pushing and tool-chosen merging (done:
   Phases 8 to 10, with numbers as block states). 4. Lighting with
-  directional flood fill: the first lattice rule, under the phased-tick rule and its partition-invariance test.
+  directional flood fill: the first lattice rule, under the phased-tick rule and its partition-invariance test (block
+  light, the rule and its tests: done, Phases 11 and 12; sky light with directions: not).
   5. Random ticks and fire in Cave: the second lattice rule; only then extract the common lattice-rule shape
   (neighbourhood snapshot in, edits out, deterministic random numbers, active region, budget). 6. Cave gravity and
   collision on Rapier. 7. Flatworms (movable earlier or later; it needs no physics). 8. Mod stages 1 to 5 (see below),
@@ -240,6 +243,39 @@ Phase 1d (saving):
 - `terrain`: `WorldTerrain` exposes its configuration and can restore saved assignments.
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
+
+Phase 11 (the light rule, Voxunami Cave; the first lattice rule):
+- `games/voxunami_cave/src/lighting.rs`: `Lighting` is the rule and the set of voxels it has yet to look at; `LightWorld`
+  is what it needs of a world (the block and state of a voxel, and its light), so it runs the same on the server's world
+  and on the plain maps the tests use. A step works out the light of every pending voxel from the world as it stood at the
+  start of the step, writes the ones that changed, and makes those and their neighbours pending. So light spreads and
+  dies out one voxel a tick (a lamp of 64 takes 64 ticks to reach its full range), in an order that cannot matter, and a
+  world with nothing pending is settled and not looked at.
+- What a voxel's light is: its block's emission, or one less than the brightest neighbour that lets light out through the
+  face between them, if the voxel lets it in through that face; a voxel with no open face (a whole block) holds none, and a
+  whole lamp gives light to its neighbours without holding any. Open faces are `BlockTable::connections`, so slabs and
+  stairs pass light where their empty part reaches.
+- Approximation, so it is not forgotten: the stored light is one number per voxel, so light that comes in by one open face
+  is treated as able to leave by any other. A block with a wall inside its cell between two open faces would be wrong; no
+  block has one.
+- Tested against an independent search from the sources (a priority queue, not a relaxation): any random scene of air,
+  stone, glass, slabs, stairs and lamps settles to what the search finds; so do edits made while light is still spreading;
+  and a scene moved by any offset (across brick boundaries differently) settles to the same light moved. 3000 cases of each
+  passed once by hand. Nine deliberate breakages of the rule are all caught. A reference bug found on the way: the search
+  overwrote a brighter source with a dimmer one at the same voxel.
+- Pending voxels are saved with the world (`voxunami_cave:light`, tested: a world saved six ticks after a lamp was placed
+  settles to byte-identical voxels as one that never stopped).
+
+Phase 12 (light in Voxunami Cave):
+- `base_blocks` has the `lamp` block (a whole solid block, emission `LAMP_EMISSION` = 64) and the channel
+  `base_blocks:block_light`; the Cave grid has a third channel for it. A server that places or breaks a block tells the rule;
+  every tick it steps the rule and the changed light streams to clients as ordinary voxel edits. The client's mesher takes
+  the light of the voxel in front of each face (Phase 7), so faces beside a lamp are drawn bright. Key 4 selects the lamp.
+- The renderer has `Atmosphere::ambient_light` (and `GameContent::ambient_light`, default 0, so other games and the
+  renderer tests are unchanged): the brightness of a face no light reaches, combined with a face's light like a screen blend
+  (`1 - (1 - ambient)(1 - light)`). Cave uses 160 of 255 as a placeholder for day light until there is sky light, so the
+  whole of Cave is now dimmer than it was (the lamp's light is only 64 of 255 at its brightest, so its glow is subtle).
+- Worlds saved before the light channel existed load with every voxel unlit (tested).
 
 Phase 10 (chain pushing, Voxunami 2048):
 - `Motion::pushes` (stone only) and `PUSH_LIMIT` (12). `Movers::advance` works on the list of movers by index, so that a
@@ -445,6 +481,11 @@ Implication: a continuous-valued channel stored densely costs 4 bytes per voxel 
 continuous channels need quantization or sparse activity.
 
 ## Open
+- Light (Phase 12): cost is one lamp's 64 ticks of spreading averaged 15 ms a tick in a release build (with two clients
+  watching; measured once, not repeated), and a tick is 50 ms, so a few lamps placed at once would overrun it. A budget of
+  voxels looked at per tick, carrying the rest over in the same fixed order, is the lever and is not built. The sky light
+  with its six directions, how block and sky light combine, and a daylight cycle (replacing the placeholder ambient light)
+  are not built either, and the glow of a lamp could not be judged by eye here.
 - Keyboard controls in a window (reported by the owner, 2026-10-16): in both games the keys type into the title bar instead
   of moving the player. Not reproduced: with real key events sent to the real window (Windows 10, RTX 3090, built from
   this code), pressing W and A left the title as it was, and holding W for two seconds changed the picture (the camera
@@ -502,6 +543,8 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 8 Numbers as block states in 2048 (colours by state in the engine, generator v2). **Done.**
 - 9 Tools in 2048: the push names a tool, and the tool decides how blocks combine. **Done.**
 - 10 Chain pushing in 2048: stone pushes a row of up to 12 blocks. **Done.**
+- 11 The light rule (first lattice rule), tested against a search from the sources. **Done.**
+- 12 Block light in Cave: lamp block, light channel, streaming, ambient light in the renderer. **Done.**
 - 1f Launcher and first game crate: `world_view`, the `base_blocks` plugin, Voxunami Cave, the launcher; the old viewer
   retired. **Done.**
 The physics spike is done (`docs/physics-spike.md`); building the physics adapter belongs with the structures work.

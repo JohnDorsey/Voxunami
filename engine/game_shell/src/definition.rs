@@ -20,6 +20,13 @@ pub trait GameContent: Debug + Send {
     /// the game has them, the state of the block (its shape) and the voxel's light.
     fn view_channels(&self) -> ViewChannels;
 
+    /// How bright a face is that no light reaches, from 0 (black) to 255; see
+    /// `renderer::Atmosphere::ambient_light`. Games with no light channel have light everywhere
+    /// and are not affected. The default is 0.
+    fn ambient_light(&self) -> u8 {
+        0
+    }
+
     /// What every block and state looks like and how it fills its cell, by block id. Built after
     /// the world is loaded, so that blocks from plugins that are not loaded are in it as unknown.
     fn block_table(&self) -> BlockTable;

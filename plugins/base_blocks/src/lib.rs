@@ -1,4 +1,5 @@
-//! Plugin: the first blocks (air, stone, dirt, grass) and the rolling hills terrain made of them.
+//! Plugin: the first blocks (air, stone, dirt, grass, lamp) and the rolling hills terrain made of
+//! them.
 //!
 //! The solid blocks come in several shapes, chosen by the voxel's *state* (the channel
 //! `base_blocks:block_state`): a whole cube, slabs, and stairs, so shapes do not take block types
@@ -34,6 +35,16 @@ pub fn block_channel_identifier() -> NamespacedId {
 pub fn state_channel_identifier() -> NamespacedId {
     identifier("base_blocks:block_state")
 }
+
+/// The grid channel holding the block light of each voxel: 0 to 255, in the voxels light can be in
+/// (air, and the empty parts of blocks) and 0 in the others.
+pub fn light_channel_identifier() -> NamespacedId {
+    identifier("base_blocks:block_light")
+}
+
+/// How much light a lamp gives off. Light loses one level for every voxel it spreads, so this is
+/// also how many voxels away a lamp lights things.
+pub const LAMP_EMISSION: u8 = 64;
 
 /// The terrain generator version this plugin provides.
 pub fn rolling_hills_generator_identifier() -> NamespacedId {
@@ -78,6 +89,8 @@ pub struct BaseBlocks {
     pub stone: u32,
     pub dirt: u32,
     pub grass: u32,
+    /// A solid block that gives off light. Not part of the terrain.
+    pub lamp: u32,
 }
 
 impl Default for BaseBlocks {
@@ -100,12 +113,17 @@ impl BaseBlocks {
         let stone = register("stone", solid([0.50, 0.50, 0.53]));
         let dirt = register("dirt", solid([0.45, 0.30, 0.18]));
         let grass = register("grass", solid([0.30, 0.62, 0.20]));
+        let lamp = register(
+            "lamp",
+            BlockDefinition::cube([1.0, 0.92, 0.65]).with_emission(LAMP_EMISSION),
+        );
         Self {
             blocks,
             air,
             stone,
             dirt,
             grass,
+            lamp,
         }
     }
 
@@ -127,6 +145,11 @@ impl BaseBlocks {
     /// whole cube.
     pub fn state_channel(&self) -> ChannelDefinition {
         ChannelDefinition::number(state_channel_identifier(), 0)
+    }
+
+    /// The channel definition for the light of each voxel; new voxels have none.
+    pub fn light_channel(&self) -> ChannelDefinition {
+        ChannelDefinition::number(light_channel_identifier(), 0)
     }
 
     /// The terrain generators this plugin provides for a world with this seed, writing blocks into
@@ -177,10 +200,16 @@ mod tests {
     fn air_is_block_zero_and_the_blocks_have_their_names() {
         let blocks = BaseBlocks::new();
         assert_eq!(
-            (blocks.air, blocks.stone, blocks.dirt, blocks.grass),
-            (0, 1, 2, 3)
+            (
+                blocks.air,
+                blocks.stone,
+                blocks.dirt,
+                blocks.grass,
+                blocks.lamp
+            ),
+            (0, 1, 2, 3, 4)
         );
-        let names: Vec<String> = (0..4)
+        let names: Vec<String> = (0..5)
             .map(|raw| blocks.blocks.identifier_of_raw(raw).unwrap().to_string())
             .collect();
         assert_eq!(
@@ -189,8 +218,14 @@ mod tests {
                 "base_blocks:air",
                 "base_blocks:stone",
                 "base_blocks:dirt",
-                "base_blocks:grass"
+                "base_blocks:grass",
+                "base_blocks:lamp"
             ]
+        );
+        assert_eq!(blocks.light_channel().default_value, 0);
+        assert_eq!(
+            blocks.light_channel().identifier.to_string(),
+            "base_blocks:block_light"
         );
         assert_eq!(blocks.block_channel().default_value, 0);
         assert_eq!(blocks.state_channel().default_value, 0);
@@ -201,9 +236,10 @@ mod tests {
     }
 
     #[test]
-    fn solid_blocks_have_seven_shapes_by_state_and_air_has_one() {
+    fn solid_blocks_have_seven_shapes_by_state_and_air_and_the_lamp_have_one() {
         let table = BaseBlocks::new().block_table();
         assert_eq!(table.state_count(0), 1);
+        assert_eq!(table.state_count(4), 1);
         for block in 1..4 {
             assert_eq!(table.state_count(block), SHAPE_NAMES.len() as u32);
         }
@@ -230,17 +266,25 @@ mod tests {
     fn the_table_has_the_blocks_colours_air_is_see_through_and_missing_blocks_are_magenta_cubes() {
         let mut blocks = BaseBlocks::new();
         let table = blocks.block_table();
-        assert_eq!(table.palette().len(), 4);
+        assert_eq!(table.palette().len(), 5);
         assert_eq!(table.color(3), [0.30, 0.62, 0.20]);
+        // Only the lamp gives off light, and it is a whole opaque block.
+        assert_eq!(
+            (0..5)
+                .map(|block| table.emission(block))
+                .collect::<Vec<_>>(),
+            [0, 0, 0, 0, LAMP_EMISSION]
+        );
+        assert!(table.is_opaque_cube(table.model_of(4, 0)));
         assert!(!table.is_solid(table.model_of(0, 0)));
         assert!(table.is_see_through(table.model_of(0, 0)));
         let missing = blocks
             .blocks
             .register_missing(identifier("elsewhere:marble"));
-        assert_eq!(missing.raw(), 4);
+        assert_eq!(missing.raw(), 5);
         let table = blocks.block_table();
-        assert_eq!(table.palette()[4], MISSING_BLOCK_COLOR);
-        assert!(table.is_opaque_cube(table.model_of(4, 0)));
+        assert_eq!(table.palette()[5], MISSING_BLOCK_COLOR);
+        assert!(table.is_opaque_cube(table.model_of(5, 0)));
     }
 
     #[test]

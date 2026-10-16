@@ -12,8 +12,12 @@ use crate::logic::{CaveLogic, REACH};
 use crate::messages::{SetBlock, encode_set_block, set_block_kind};
 
 /// The blocks a player can place, in the order the number keys choose them.
-pub const PLACEABLE_BLOCKS: [&str; 3] =
-    ["base_blocks:stone", "base_blocks:dirt", "base_blocks:grass"];
+pub const PLACEABLE_BLOCKS: [&str; 4] = [
+    "base_blocks:stone",
+    "base_blocks:dirt",
+    "base_blocks:grass",
+    "base_blocks:lamp",
+];
 
 /// What the cave client remembers.
 #[derive(Debug, Default)]
@@ -97,7 +101,7 @@ impl GameDefinition for Cave {
     }
 
     fn controls() -> &'static str {
-        "Left click breaks the block you look at; right click places the selected block;\n1, 2, 3 select stone, dirt, grass; R cycles whole block, slabs and stairs."
+        "Left click breaks the block you look at; right click places the selected block;\n1, 2, 3, 4 select stone, dirt, grass, lamp; R cycles whole block, slabs and stairs."
     }
 
     fn default_seed() -> u64 {
@@ -120,8 +124,8 @@ impl GameDefinition for Cave {
         CaveContent::new()
     }
 
-    fn new_logic(content: &CaveContent, _world: &WorldData) -> Box<dyn GameLogic> {
-        Box::new(CaveLogic::new(content))
+    fn new_logic(content: &CaveContent, world: &WorldData) -> Box<dyn GameLogic> {
+        Box::new(CaveLogic::new(content, world))
     }
 
     fn primary_action<C: Connection>(session: &mut CaveSession<C>) {
@@ -139,6 +143,7 @@ impl GameDefinition for Cave {
             KeyCode::Digit1 => session.state.selected_block = 0,
             KeyCode::Digit2 => session.state.selected_block = 1,
             KeyCode::Digit3 => session.state.selected_block = 2,
+            KeyCode::Digit4 => session.state.selected_block = 3,
             KeyCode::KeyR => {
                 session.state.selected_shape =
                     (session.state.selected_shape + 1) % SHAPE_NAMES.len() as u32;

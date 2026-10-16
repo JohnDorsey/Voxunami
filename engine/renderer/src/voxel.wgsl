@@ -11,7 +11,8 @@
 struct Frame {
     view_projection: mat4x4<f32>,
     fog_color: vec4<f32>,
-    // x: distance where fog starts, y: distance where terrain is fully fogged.
+    // x: distance where fog starts, y: distance where terrain is fully fogged, z: ambient light
+    // (0 to 1), the brightness of a face that no light reaches.
     fog_range: vec4<f32>,
     // Unit vector pointing towards the sun.
     sun_direction: vec4<f32>,
@@ -84,7 +85,10 @@ fn corner_position(vertex_index: u32, face: u32, origin: vec3<f32>, width: f32, 
 
 fn finish(relative: vec3<f32>, face: u32, material: u32, light: u32) -> VertexOutput {
     let normal = axis_unit(face / 2u) * select(-1.0, 1.0, (face & 1u) == 1u);
-    let shade = (0.4 + 0.6 * max(dot(normal, frame.sun_direction.xyz), 0.0)) * (f32(light) / 255.0);
+    // The light of the face and the ambient light combine like a screen blend: each is the share of
+    // full brightness, and what is missing from both is what is missing from the result.
+    let lit = 1.0 - (1.0 - frame.fog_range.z) * (1.0 - f32(light) / 255.0);
+    let shade = (0.4 + 0.6 * max(dot(normal, frame.sun_direction.xyz), 0.0)) * lit;
 
     var base = vec3<f32>(1.0, 0.0, 1.0);
     if (material < 256u) {

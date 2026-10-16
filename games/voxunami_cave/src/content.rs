@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use base_blocks::{
-    BaseBlocks, block_channel_identifier, block_registry_kind, rolling_hills_generator_identifier,
-    state_channel_identifier,
+    BaseBlocks, block_channel_identifier, block_registry_kind, light_channel_identifier,
+    rolling_hills_generator_identifier, state_channel_identifier,
 };
 use block_models::BlockTable;
 use content_registry::IdentifierRegistry;
@@ -14,6 +14,10 @@ use terrain::WorldTerrain;
 use voxel_grid::{ChannelDefinition, ChannelIndex, Grid, GridLayout};
 use world_storage::{LevelData, LoadContext, WorldData};
 use world_view::ViewChannels;
+
+/// How bright, from 0 to 255, a face is that no light reaches. There is no sky light yet, so this
+/// stands in for the light of the day: bright enough to play by, dim enough that lamps show.
+pub const AMBIENT_LIGHT: u8 = 160;
 
 /// Terrain generators are assigned to cubes of 8 bricks (256 voxels) per side.
 pub const ASSIGNMENT_CUBE_LEVEL: u8 = 3;
@@ -54,9 +58,14 @@ impl CaveContent {
         Arc::new(GridLayout::new(self.channels()).expect("the channels are distinct"))
     }
 
-    /// The channels of every brick: the block of each voxel, and its state (which shape it has).
+    /// The channels of every brick: the block of each voxel, its state (which shape it has), and
+    /// the block light in it.
     fn channels(&self) -> Vec<ChannelDefinition> {
-        vec![self.blocks.block_channel(), self.blocks.state_channel()]
+        vec![
+            self.blocks.block_channel(),
+            self.blocks.state_channel(),
+            self.blocks.light_channel(),
+        ]
     }
 
     /// The channel holding each voxel's block.
@@ -72,6 +81,13 @@ impl CaveContent {
             .channel_index(&state_channel_identifier())
             .expect("the layout has the state channel")
     }
+
+    /// The channel holding the block light of each voxel.
+    pub fn light_channel(&self) -> ChannelIndex {
+        self.layout()
+            .channel_index(&light_channel_identifier())
+            .expect("the layout has the light channel")
+    }
 }
 
 impl GameContent for CaveContent {
@@ -79,8 +95,12 @@ impl GameContent for CaveContent {
         ViewChannels {
             blocks: self.block_channel(),
             states: Some(self.state_channel()),
-            light: None,
+            light: Some(self.light_channel()),
         }
+    }
+
+    fn ambient_light(&self) -> u8 {
+        AMBIENT_LIGHT
     }
 
     fn block_table(&self) -> BlockTable {
@@ -201,6 +221,8 @@ mod tests {
         let content = CaveContent::new();
         assert_eq!(content.block_channel().get(), 0);
         assert_eq!(content.state_channel().get(), 1);
+        assert_eq!(content.light_channel().get(), 2);
+        assert_eq!(content.blocks.light_channel().default_value, 0);
         assert_eq!(content.blocks.state_channel().default_value, 0);
         assert_eq!(
             content.blocks.block_channel().default_value,

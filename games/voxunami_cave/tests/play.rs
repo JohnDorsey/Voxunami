@@ -615,8 +615,209 @@ fn the_shape_key_cycles_through_every_shape_and_placing_uses_the_one_chosen() {
     // Choosing another block keeps the shape; pressing the key enough times comes back to whole.
     Cave::key_pressed(&mut player, KeyCode::Digit3);
     assert_eq!(Cave::status_text(&player), "placing grass (bottom slab)");
+    Cave::key_pressed(&mut player, KeyCode::Digit4);
+    assert_eq!(Cave::status_text(&player), "placing lamp (bottom slab)");
+    Cave::key_pressed(&mut player, KeyCode::Digit3);
     for _ in 1..base_blocks::SHAPE_NAMES.len() {
         Cave::key_pressed(&mut player, KeyCode::KeyR);
     }
     assert_eq!(Cave::status_text(&player), "placing grass (whole)");
+}
+
+/// Ticks the server `count` times.
+fn run_ticks(rig: &mut Rig, count: usize) {
+    for _ in 0..count {
+        rig.step();
+    }
+}
+
+/// The block light the server holds at a voxel of the main level.
+fn server_light(rig: &Rig, voxel: VoxelCoordinate) -> u32 {
+    rig.server
+        .world()
+        .main()
+        .overrides
+        .get(rig.content.light_channel(), voxel)
+}
+
+/// The block light a player's copy of the world holds at a voxel of the main level.
+fn seen_light(rig: &Rig, player: &Player, voxel: VoxelCoordinate) -> u32 {
+    player
+        .client()
+        .world()
+        .world()
+        .main()
+        .overrides
+        .get(rig.content.light_channel(), voxel)
+}
+
+fn above(voxel: VoxelCoordinate, height: i64) -> VoxelCoordinate {
+    VoxelCoordinate::new(voxel.x(), voxel.y() + height, voxel.z())
+}
+
+#[test]
+fn a_lamp_lights_the_air_around_it_a_voxel_a_tick_and_every_player_sees_it() {
+    let mut rig = Rig::new();
+    let mut builder = player_above_ground(&mut rig);
+    let mut onlooker = rig.join([20.5, 110.0, 20.5], 0.0, 0.0);
+    rig.settle(&mut [&mut builder, &mut onlooker]);
+    let spot = builder.target().unwrap().previous;
+    let emission = u32::from(base_blocks::LAMP_EMISSION);
+
+    place_block(&mut builder, "base_blocks:lamp");
+    // The lamp is placed and looked at on the server in the same tick, and the light has gone one
+    // voxel by then, and one more with each tick.
+    run_ticks(&mut rig, 1);
+    assert_eq!(server_light(&rig, above(spot, 1)), emission - 1);
+    assert_eq!(server_light(&rig, above(spot, 2)), 0);
+    run_ticks(&mut rig, 3);
+    assert_eq!(server_light(&rig, above(spot, 4)), emission - 4);
+    assert_eq!(server_light(&rig, above(spot, 5)), 0);
+    run_ticks(&mut rig, 60);
+    rig.settle(&mut [&mut builder, &mut onlooker]);
+
+    // Straight up from a lamp there is only air: a level less for every voxel.
+    for height in [1, 5, 20, 63] {
+        let expected = emission - height as u32;
+        assert_eq!(
+            server_light(&rig, above(spot, height)),
+            expected,
+            "{height}"
+        );
+        for (name, player) in [("builder", &builder), ("onlooker", &onlooker)] {
+            assert_eq!(
+                seen_light(&rig, player, above(spot, height)),
+                expected,
+                "{name} {height}"
+            );
+        }
+    }
+    assert_eq!(
+        server_light(&rig, above(spot, 64)),
+        0,
+        "the reach of a lamp is its emission"
+    );
+    assert_eq!(
+        server_light(&rig, spot),
+        0,
+        "the lamp itself is a whole block and holds none"
+    );
+    assert_eq!(
+        rig.server
+            .world()
+            .main()
+            .overrides
+            .get(rig.content.block_channel(), spot),
+        rig.content.blocks.lamp
+    );
+}
+
+#[test]
+fn the_faces_next_to_a_lamp_are_drawn_with_its_light() {
+    let mut rig = Rig::new();
+    let mut builder = player_above_ground(&mut rig);
+    let mut updates = Vec::new();
+    place_block(&mut builder, "base_blocks:lamp");
+    run_ticks(&mut rig, 84);
+    {
+        let server = &mut rig.server;
+        updates.extend(
+            builder
+                .settle(|| {
+                    server.step();
+                })
+                .unwrap(),
+        );
+    }
+    // The newest mesh of each brick is the one drawn.
+    let mut newest = std::collections::HashMap::new();
+    for update in updates {
+        if let world_view::MeshUpdate::Upload { coordinate, mesh } = update {
+            newest.insert(coordinate, mesh);
+        }
+    }
+    let lights: Vec<u8> = newest
+        .values()
+        .flat_map(|mesh| mesh.quads.iter().map(|quad| quad.unpack().light))
+        .collect();
+    assert!(
+        lights.iter().any(|&light| light >= 60),
+        "faces beside the lamp are bright"
+    );
+    assert!(lights.contains(&0), "and far from it none is lit");
+    // A face a few voxels from the lamp is lit by exactly the light there.
+    assert!(lights.iter().any(|&light| (40..60).contains(&light)));
+}
+
+#[test]
+fn taking_the_lamp_away_puts_the_light_out_for_everyone() {
+    let mut rig = Rig::new();
+    let mut builder = player_above_ground(&mut rig);
+    let hit = builder.target().unwrap();
+    let spot = hit.previous;
+    place_block(&mut builder, "base_blocks:lamp");
+    run_ticks(&mut rig, 70);
+    rig.settle(&mut [&mut builder]);
+    assert_eq!(seen_light(&rig, &builder, above(spot, 3)), 61);
+
+    // Break the lamp: it is what the crosshair is on now.
+    break_block(&mut builder);
+    run_ticks(&mut rig, 2);
+    // The light does not go out at once: it fades from the lamp's side a level a tick or two.
+    assert!(server_light(&rig, above(spot, 3)) > 0);
+    run_ticks(&mut rig, 300);
+    rig.settle(&mut [&mut builder]);
+    for height in 0..=70 {
+        assert_eq!(server_light(&rig, above(spot, height)), 0, "{height}");
+        assert_eq!(
+            seen_light(&rig, &builder, above(spot, height)),
+            0,
+            "{height}"
+        );
+    }
+}
+
+#[test]
+fn a_world_saved_while_light_is_still_spreading_carries_on_as_if_it_never_stopped() {
+    let place_lamp = |rig: &mut Rig| {
+        let mut player = player_above_ground(rig);
+        place_block(&mut player, "base_blocks:lamp");
+        run_ticks(rig, 1);
+        player.say_goodbye();
+        run_ticks(rig, 1);
+    };
+    let mut control = Rig::new();
+    place_lamp(&mut control);
+    run_ticks(&mut control, 150);
+
+    let mut interrupted = Rig::new();
+    place_lamp(&mut interrupted);
+    run_ticks(&mut interrupted, 6);
+    let Rig {
+        content, server, ..
+    } = interrupted;
+    let world = server.into_world();
+    let saved = voxunami_cave::light_state::read_pending(world.opaque_sections())
+        .expect("the game saved its light");
+    assert!(!saved.is_empty(), "the light was still spreading");
+    let bytes = world.save(&content.registries()).unwrap();
+
+    let mut content = CaveContent::new();
+    let parsed = world_storage::ParsedWorld::parse(&bytes).unwrap();
+    let seed = parsed.world_seed();
+    let (loaded, report) = parsed.load(content.load_context(seed)).unwrap();
+    assert!(report.extra_channels.is_empty() && report.missing_content.is_empty());
+    let mut resumed = Rig::with_world(content, loaded);
+    run_ticks(&mut resumed, 144);
+    assert_eq!(
+        resumed.server.world().main().overrides.content_digest(),
+        control.server.world().main().overrides.content_digest(),
+        "the light came out the same"
+    );
+    assert!(
+        voxunami_cave::light_state::read_pending(resumed.server.into_world().opaque_sections())
+            .unwrap()
+            .is_empty(),
+        "and it settled"
+    );
 }
