@@ -5,11 +5,11 @@ use std::sync::Arc;
 
 use block_models::{BlockDefinition, BlockTable};
 use content_registry::{IdentifierRegistry, Registry};
-use game_shell::GameContent;
+use game_shell::{ContentPackage, GameContent, PackageSpec};
 use namespaced_id::NamespacedId;
-use terrain::{TerrainGenerator, WorldTerrain};
-use voxel_grid::{ChannelDefinition, ChannelIndex, Grid, GridLayout};
-use world_storage::{LevelData, LoadContext, WorldData};
+use terrain::TerrainGenerator;
+use voxel_grid::{ChannelDefinition, ChannelIndex};
+use world_storage::{LoadContext, WorldData};
 use world_view::ViewChannels;
 
 use crate::landscape::NumberedHills;
@@ -99,10 +99,11 @@ pub fn number_color(material: Material, number: u32) -> [f32; 3] {
     number_colors(material)[number as usize % NUMBER_COLOR_COUNT]
 }
 
-/// The blocks, registered in a fixed order: air, then each material (see [`Material::block_id`]).
+/// The blocks, registered in a fixed order: air, then each material (see [`Material::block_id`]),
+/// declared as a package.
 #[derive(Debug)]
 pub struct Content2048 {
-    blocks: Registry<BlockDefinition>,
+    package: ContentPackage,
 }
 
 impl Default for Content2048 {
@@ -129,7 +130,39 @@ impl Content2048 {
                 .expect("the material names are distinct");
             assert_eq!(registered.raw(), material.block_id());
         }
-        Self { blocks }
+        let spec = PackageSpec {
+            level: landscape_id(),
+            block_registry_kind: block_registry_kind(),
+            channels: Self::channels(),
+            block_channel: block_channel_identifier(),
+            state_channel: Some(number_channel_identifier()),
+            light_channel: None,
+            generators: Arc::new(|seed, layout| {
+                let channel = |id: &NamespacedId| {
+                    layout
+                        .channel_index(id)
+                        .expect("the layout has the channel")
+                };
+                let mut generators: Registry<Arc<dyn TerrainGenerator>> = Registry::new();
+                generators
+                    .register(
+                        numbered_hills_generator_identifier(),
+                        Arc::new(NumberedHills::new(
+                            seed,
+                            channel(&block_channel_identifier()),
+                            channel(&number_channel_identifier()),
+                        )),
+                    )
+                    .expect("the registry is empty");
+                generators
+            }),
+            default_generator: numbered_hills_generator_identifier(),
+            assignment_cube_level: ASSIGNMENT_CUBE_LEVEL,
+            ambient_light: 0,
+        };
+        Self {
+            package: ContentPackage::new(blocks, spec),
+        }
     }
 
     fn channels() -> Vec<ChannelDefinition> {
@@ -139,85 +172,37 @@ impl Content2048 {
         ]
     }
 
-    fn layout(&self) -> Arc<GridLayout> {
-        Arc::new(GridLayout::new(Self::channels()).expect("the channels are distinct"))
-    }
-
     /// The channel holding each voxel's block.
     pub fn block_channel(&self) -> ChannelIndex {
-        self.layout()
-            .channel_index(&block_channel_identifier())
-            .expect("the layout has the block channel")
+        self.package.block_channel()
     }
 
     /// The channel holding each voxel's number.
     pub fn number_channel(&self) -> ChannelIndex {
-        self.layout()
-            .channel_index(&number_channel_identifier())
-            .expect("the layout has the number channel")
-    }
-
-    fn generators(&self, seed: u64) -> Registry<Arc<dyn TerrainGenerator>> {
-        let mut generators: Registry<Arc<dyn TerrainGenerator>> = Registry::new();
-        let generator: Arc<dyn TerrainGenerator> = Arc::new(NumberedHills::new(
-            seed,
-            self.block_channel(),
-            self.number_channel(),
-        ));
-        generators
-            .register(numbered_hills_generator_identifier(), generator)
-            .expect("the registry is empty");
-        generators
+        self.package.state_channel()
     }
 }
 
 impl GameContent for Content2048 {
     fn view_channels(&self) -> ViewChannels {
-        ViewChannels {
-            blocks: self.block_channel(),
-            states: Some(self.number_channel()),
-            light: None,
-        }
+        self.package.view_channels()
     }
 
     fn block_table(&self) -> BlockTable {
-        let definitions: Vec<Option<&BlockDefinition>> = self
-            .blocks
-            .iter()
-            .map(|(_, entry)| entry.content())
-            .collect();
-        BlockTable::from_definitions(&definitions)
+        self.package.block_table()
     }
 
     /// A new world: numbered hills as far as anyone goes, with nothing changed yet.
     fn new_world(&self, seed: u64) -> WorldData {
-        let generators = self.generators(seed);
-        let default = generators
-            .runtime_id(&numbered_hills_generator_identifier())
-            .expect("the generator was just registered");
-        let terrain = WorldTerrain::new(generators, default, ASSIGNMENT_CUBE_LEVEL)
-            .expect("the generator is available");
-        WorldData::new(
-            seed,
-            landscape_id(),
-            LevelData::new(terrain, Grid::new(self.layout())),
-        )
+        self.package.new_world(seed)
     }
 
     fn load_context(&mut self, seed: u64) -> LoadContext<'_> {
-        let generators = self.generators(seed);
-        LoadContext {
-            channels: Self::channels(),
-            registries: vec![(block_registry_kind(), &mut self.blocks)],
-            generators,
-            fallback_default_generator: numbered_hills_generator_identifier(),
-            assignment_cube_level: ASSIGNMENT_CUBE_LEVEL,
-            legacy_level: landscape_id(),
-        }
+        self.package.load_context(seed)
     }
 
     fn registries(&self) -> Vec<(NamespacedId, &dyn IdentifierRegistry)> {
-        vec![(block_registry_kind(), &self.blocks)]
+        self.package.registries()
     }
 }
 
@@ -225,14 +210,22 @@ impl GameContent for Content2048 {
 mod tests {
     use std::collections::HashSet;
 
-    use world_storage::ParsedWorld;
+    use terrain::WorldTerrain;
+    use voxel_grid::{Grid, GridLayout};
+    use world_storage::{LevelData, ParsedWorld};
 
     use super::*;
 
     #[test]
     fn blocks_are_registered_as_air_then_the_materials() {
         let content = Content2048::new();
-        let name = |raw: u32| content.blocks.identifier_of_raw(raw).unwrap().to_string();
+        let name = |raw: u32| {
+            content.registries()[0]
+                .1
+                .identifier_of_raw(raw)
+                .unwrap()
+                .to_string()
+        };
         assert_eq!(name(AIR), "voxunami_2048:air");
         assert_eq!(name(Material::Stone.block_id()), "voxunami_2048:stone");
         assert_eq!(name(Material::Ice.block_id()), "voxunami_2048:ice");
@@ -380,7 +373,10 @@ mod tests {
         let mut old_world = WorldData::new(
             3,
             landscape_id(),
-            LevelData::new(terrain, Grid::new(content.layout())),
+            LevelData::new(
+                terrain,
+                Grid::new(Arc::new(GridLayout::new(Content2048::channels()).unwrap())),
+            ),
         );
         let edited = voxel_space::VoxelCoordinate::new(4, 5, 6);
         let stone = Material::Stone;

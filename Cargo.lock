@@ -706,6 +706,7 @@ dependencies = [
  "renderer",
  "replay",
  "server",
+ "terrain",
  "thiserror 2.0.21",
  "transport",
  "voxel_grid",

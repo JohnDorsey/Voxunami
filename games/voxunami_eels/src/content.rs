@@ -7,11 +7,11 @@ use std::sync::Arc;
 
 use block_models::{BlockDefinition, BlockTable};
 use content_registry::{IdentifierRegistry, Registry};
-use game_shell::GameContent;
+use game_shell::{ContentPackage, GameContent, PackageSpec};
 use namespaced_id::NamespacedId;
-use terrain::{TerrainGenerator, WorldTerrain};
-use voxel_grid::{ChannelDefinition, ChannelIndex, Grid, GridLayout};
-use world_storage::{LevelData, LoadContext, WorldData};
+use terrain::TerrainGenerator;
+use voxel_grid::{ChannelDefinition, ChannelIndex};
+use world_storage::{LoadContext, WorldData};
 use world_view::ViewChannels;
 
 use crate::arena::ArenaWalls;
@@ -84,10 +84,10 @@ fn brighter(color: [f32; 3]) -> [f32; 3] {
     color.map(|channel| channel + (1.0 - channel) * 0.55)
 }
 
-/// The blocks, registered in a fixed order: see [`blocks`].
+/// The blocks, registered in a fixed order (see [`blocks`]), declared as a package.
 #[derive(Debug)]
 pub struct ContentEels {
-    block_definitions: Registry<BlockDefinition>,
+    package: ContentPackage,
 }
 
 impl Default for ContentEels {
@@ -127,95 +127,73 @@ impl ContentEels {
                 .with_state_colors(SLOT_COLORS.map(brighter).to_vec()),
             blocks::HEAD,
         );
-        Self { block_definitions }
-    }
-
-    fn channels() -> Vec<ChannelDefinition> {
-        vec![
-            ChannelDefinition::content(
-                block_channel_identifier(),
-                blocks::AIR,
-                block_registry_kind(),
-            ),
-            ChannelDefinition::number(slot_channel_identifier(), 0),
-        ]
-    }
-
-    fn layout(&self) -> Arc<GridLayout> {
-        Arc::new(GridLayout::new(Self::channels()).expect("the channels are distinct"))
+        let spec = PackageSpec {
+            level: arena_level_id(),
+            block_registry_kind: block_registry_kind(),
+            channels: vec![
+                ChannelDefinition::content(
+                    block_channel_identifier(),
+                    blocks::AIR,
+                    block_registry_kind(),
+                ),
+                ChannelDefinition::number(slot_channel_identifier(), 0),
+            ],
+            block_channel: block_channel_identifier(),
+            state_channel: Some(slot_channel_identifier()),
+            light_channel: None,
+            generators: Arc::new(|_seed, layout| {
+                let block_channel = layout
+                    .channel_index(&block_channel_identifier())
+                    .expect("the layout has the block channel");
+                let mut generators: Registry<Arc<dyn TerrainGenerator>> = Registry::new();
+                generators
+                    .register(
+                        arena_generator_identifier(),
+                        Arc::new(ArenaWalls::new(block_channel)),
+                    )
+                    .expect("the registry is empty");
+                generators
+            }),
+            default_generator: arena_generator_identifier(),
+            assignment_cube_level: ASSIGNMENT_CUBE_LEVEL,
+            ambient_light: 0,
+        };
+        Self {
+            package: ContentPackage::new(block_definitions, spec),
+        }
     }
 
     /// The channel holding each voxel's block.
     pub fn block_channel(&self) -> ChannelIndex {
-        self.layout()
-            .channel_index(&block_channel_identifier())
-            .expect("the layout has the block channel")
+        self.package.block_channel()
     }
 
     /// The channel holding each voxel's eel colour.
     pub fn slot_channel(&self) -> ChannelIndex {
-        self.layout()
-            .channel_index(&slot_channel_identifier())
-            .expect("the layout has the slot channel")
-    }
-
-    fn generators(&self) -> Registry<Arc<dyn TerrainGenerator>> {
-        let mut generators: Registry<Arc<dyn TerrainGenerator>> = Registry::new();
-        let generator: Arc<dyn TerrainGenerator> = Arc::new(ArenaWalls::new(self.block_channel()));
-        generators
-            .register(arena_generator_identifier(), generator)
-            .expect("the registry is empty");
-        generators
+        self.package.state_channel()
     }
 }
 
 impl GameContent for ContentEels {
     fn view_channels(&self) -> ViewChannels {
-        ViewChannels {
-            blocks: self.block_channel(),
-            states: Some(self.slot_channel()),
-            light: None,
-        }
+        self.package.view_channels()
     }
 
     fn block_table(&self) -> BlockTable {
-        let definitions: Vec<Option<&BlockDefinition>> = self
-            .block_definitions
-            .iter()
-            .map(|(_, entry)| entry.content())
-            .collect();
-        BlockTable::from_definitions(&definitions)
+        self.package.block_table()
     }
 
     /// A new world: the arena, with nobody's body in it yet. The seed changes nothing.
     fn new_world(&self, seed: u64) -> WorldData {
-        let generators = self.generators();
-        let default = generators
-            .runtime_id(&arena_generator_identifier())
-            .expect("the generator was just registered");
-        let terrain = WorldTerrain::new(generators, default, ASSIGNMENT_CUBE_LEVEL)
-            .expect("the generator is available");
-        WorldData::new(
-            seed,
-            arena_level_id(),
-            LevelData::new(terrain, Grid::new(self.layout())),
-        )
+        self.package.new_world(seed)
     }
 
-    fn load_context(&mut self, _seed: u64) -> LoadContext<'_> {
-        let generators = self.generators();
-        LoadContext {
-            channels: Self::channels(),
-            registries: vec![(block_registry_kind(), &mut self.block_definitions)],
-            generators,
-            fallback_default_generator: arena_generator_identifier(),
-            assignment_cube_level: ASSIGNMENT_CUBE_LEVEL,
-            legacy_level: arena_level_id(),
-        }
+    fn load_context(&mut self, seed: u64) -> LoadContext<'_> {
+        self.package.load_context(seed)
     }
 
     fn registries(&self) -> Vec<(NamespacedId, &dyn IdentifierRegistry)> {
-        vec![(block_registry_kind(), &self.block_definitions)]
+        self.package.registries()
     }
 }
 
@@ -229,11 +207,9 @@ mod tests {
     fn blocks_are_registered_in_the_order_the_constants_say() {
         let content = ContentEels::new();
         let name = |raw: u32| {
-            content
-                .block_definitions
-                .identifier_of_raw(raw)
-                .unwrap()
-                .to_string()
+            let registries = content.registries();
+            let registry = registries[0].1;
+            registry.identifier_of_raw(raw).unwrap().to_string()
         };
         assert_eq!(name(blocks::AIR), "voxunami_eels:air");
         assert_eq!(name(blocks::WALL), "voxunami_eels:wall");

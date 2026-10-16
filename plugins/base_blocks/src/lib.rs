@@ -103,10 +103,11 @@ pub fn shape_name(state: u32) -> &'static str {
     SHAPE_NAMES.get(state as usize).copied().unwrap_or("whole")
 }
 
-/// The blocks, registered in a fixed order: air first, so a world whose voxels are all zero is sky.
-#[derive(Debug)]
-pub struct BaseBlocks {
-    pub blocks: Registry<BlockDefinition>,
+/// The ids of the blocks, which are fixed: air first, so a world whose voxels are all zero is sky.
+/// Everything a game needs to use the blocks and their channels and terrain once the registry is
+/// the game's.
+#[derive(Clone, Copy, Debug)]
+pub struct BaseBlockIds {
     pub air: u32,
     pub stone: u32,
     pub dirt: u32,
@@ -118,6 +119,68 @@ pub struct BaseBlocks {
     /// Flames: a low, lit, non-solid-looking block that spreads to what burns and goes out. Its state
     /// is its age, which any number can be (see [`FIRE_LIFETIME`]).
     pub fire: u32,
+}
+
+impl BaseBlockIds {
+    pub fn terrain_materials(&self) -> TerrainMaterials {
+        TerrainMaterials {
+            air: self.air,
+            stone: self.stone,
+            dirt: self.dirt,
+            grass: self.grass,
+        }
+    }
+
+    /// The channel definition for the block of each voxel; new voxels are air.
+    pub fn block_channel(&self) -> ChannelDefinition {
+        ChannelDefinition::content(block_channel_identifier(), self.air, block_registry_kind())
+    }
+
+    /// The channel definition for the state of each voxel's block; new voxels are in state 0, the
+    /// whole cube.
+    pub fn state_channel(&self) -> ChannelDefinition {
+        ChannelDefinition::number(state_channel_identifier(), 0)
+    }
+
+    /// The channel definition for the light of each voxel; new voxels have none.
+    pub fn light_channel(&self) -> ChannelDefinition {
+        ChannelDefinition::number(light_channel_identifier(), 0)
+    }
+
+    /// The terrain generators this plugin provides for a world with this seed, writing blocks into
+    /// `block_channel` of the world's grid layout.
+    pub fn terrain_generators(
+        &self,
+        seed: u64,
+        block_channel: ChannelIndex,
+    ) -> Registry<Arc<dyn TerrainGenerator>> {
+        let mut generators: Registry<Arc<dyn TerrainGenerator>> = Registry::new();
+        let generator: Arc<dyn TerrainGenerator> = Arc::new(rolling_hills(
+            RollingHillsSettings::for_one_metre_voxels(seed),
+            block_channel,
+            self.terrain_materials(),
+        ));
+        generators
+            .register(rolling_hills_generator_identifier(), generator)
+            .expect("the registry is empty");
+        generators
+    }
+}
+
+/// The blocks, registered in a fixed order (see [`BaseBlockIds`]), with their ids. A game takes
+/// the registry for its world and keeps the ids.
+#[derive(Debug)]
+pub struct BaseBlocks {
+    pub blocks: Registry<BlockDefinition>,
+    ids: BaseBlockIds,
+}
+
+impl std::ops::Deref for BaseBlocks {
+    type Target = BaseBlockIds;
+
+    fn deref(&self) -> &BaseBlockIds {
+        &self.ids
+    }
 }
 
 impl Default for BaseBlocks {
@@ -161,58 +224,26 @@ impl BaseBlocks {
         );
         Self {
             blocks,
-            air,
-            stone,
-            dirt,
-            grass,
-            lamp,
-            wood,
-            fire,
+            ids: BaseBlockIds {
+                air,
+                stone,
+                dirt,
+                grass,
+                lamp,
+                wood,
+                fire,
+            },
         }
     }
 
-    pub fn terrain_materials(&self) -> TerrainMaterials {
-        TerrainMaterials {
-            air: self.air,
-            stone: self.stone,
-            dirt: self.dirt,
-            grass: self.grass,
-        }
+    /// The ids of the blocks, to keep when the registry goes to a game.
+    pub fn ids(&self) -> BaseBlockIds {
+        self.ids
     }
 
-    /// The channel definition for the block of each voxel; new voxels are air.
-    pub fn block_channel(&self) -> ChannelDefinition {
-        ChannelDefinition::content(block_channel_identifier(), self.air, block_registry_kind())
-    }
-
-    /// The channel definition for the state of each voxel's block; new voxels are in state 0, the
-    /// whole cube.
-    pub fn state_channel(&self) -> ChannelDefinition {
-        ChannelDefinition::number(state_channel_identifier(), 0)
-    }
-
-    /// The channel definition for the light of each voxel; new voxels have none.
-    pub fn light_channel(&self) -> ChannelDefinition {
-        ChannelDefinition::number(light_channel_identifier(), 0)
-    }
-
-    /// The terrain generators this plugin provides for a world with this seed, writing blocks into
-    /// `block_channel` of the world's grid layout.
-    pub fn terrain_generators(
-        &self,
-        seed: u64,
-        block_channel: ChannelIndex,
-    ) -> Registry<Arc<dyn TerrainGenerator>> {
-        let mut generators: Registry<Arc<dyn TerrainGenerator>> = Registry::new();
-        let generator: Arc<dyn TerrainGenerator> = Arc::new(rolling_hills(
-            RollingHillsSettings::for_one_metre_voxels(seed),
-            block_channel,
-            self.terrain_materials(),
-        ));
-        generators
-            .register(rolling_hills_generator_identifier(), generator)
-            .expect("the registry is empty");
-        generators
+    /// The registry of the blocks, to give to a game's content.
+    pub fn into_registry(self) -> Registry<BlockDefinition> {
+        self.blocks
     }
 
     /// What every block looks like and how it fills its cell, by block id. Blocks from plugins that

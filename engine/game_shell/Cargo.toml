@@ -16,6 +16,7 @@ protocol.workspace = true
 renderer.workspace = true
 replay.workspace = true
 server.workspace = true
+terrain.workspace = true
 transport.workspace = true
 voxel_grid.workspace = true
 voxel_space.workspace = true

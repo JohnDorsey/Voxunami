@@ -263,6 +263,23 @@ Phase 1d (saving):
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
 
+Phase 18 (mod stage 1, first step: the plugin contract, from what three games repeat):
+- Finding: the three games hand-wrote nearly the same `GameContent` (a block registry, channels, one terrain generator
+  made from the seed, a level name, how the view reads the channels); Cave got part of it from the `base_blocks` plugin,
+  2048 and Eels wrote all of it. That repeated shape is the contract a data-driven mod will have to fill in.
+- `game_shell::package`: `PackageSpec` (level, block registry kind, channels, which are block/state/light, a generator
+  factory `seed + layout -> generators`, default generator, assignment cube level, ambient light) and `ContentPackage`, which
+  is the `GameContent` for it. Eels, 2048 and Cave now declare a spec and keep thin wrappers for their own channel accessors.
+  `base_blocks` split its ids from its registry (`BaseBlockIds` is `Copy`, with the channels and generators; `BaseBlocks`
+  derefs to it and hands its registry to the game), so a plugin is: a registry, ids, channel definitions, generators.
+- Checked, not assumed: the saved bytes of a new world are identical before and after, for all three games (hash of
+  `new_world(5).save`, computed in a worktree of the old commit), and every pinned generator digest and save test passes
+  unchanged on Windows and Linux.
+- Not done, and what it shows about the rest of stage 1: only one terrain generator and one level per package (a mod
+  would add more), no block registration from several plugins into one registry (the registry still comes from one
+  place), Cave's rules (light, fire, movement) and 2048's motion rules are still in the games (they are lattice rules and
+  entity rules, which stage 7 is about), and the spec is a Rust struct, not yet data on disk (stage 2).
+
 Phase 17 (Voxunami Eels, 3D Tron; `games/voxunami_eels`; the owner's design is only "3D Tron with flat worms that barrel-roll", so the rules below are mine and easy to change):
 - Rules (`round.rs`, on any arena, no servers): up to 8 eels in a hollow 64-cell cube. Each swims one cell every 3 ticks (30 ticks
   a second, so 10 cells a second) and leaves its body behind as a permanent wall of its colour. An eel dies on the wall, on any body,
@@ -671,6 +688,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 15 The `physics` crate: a walking body on Rapier, pinned across Windows and Linux. **Done.**
 - 16 Cave gravity and collision: the server moves the players (`/fly`, `/tp`). **Done.**
 - 17 Voxunami Eels (3D Tron) and the shell hooks it needed. **Done.**
+- 18 Mod stage 1, first step: a game's content as one declared package (`ContentPackage`). **Done.**
 - 1f Launcher and first game crate: `world_view`, the `base_blocks` plugin, Voxunami Cave, the launcher; the old viewer
   retired. **Done.**
 The physics spike is done (`docs/physics-spike.md`); the adapter for rigid structures belongs with the structures work.

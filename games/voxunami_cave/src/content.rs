@@ -3,16 +3,15 @@
 use std::sync::Arc;
 
 use base_blocks::{
-    BaseBlocks, block_channel_identifier, block_registry_kind, light_channel_identifier,
-    rolling_hills_generator_identifier, state_channel_identifier,
+    BaseBlockIds, BaseBlocks, block_channel_identifier, block_registry_kind,
+    light_channel_identifier, rolling_hills_generator_identifier, state_channel_identifier,
 };
 use block_models::BlockTable;
 use content_registry::IdentifierRegistry;
-use game_shell::GameContent;
+use game_shell::{ContentPackage, GameContent, PackageSpec};
 use namespaced_id::NamespacedId;
-use terrain::WorldTerrain;
-use voxel_grid::{ChannelDefinition, ChannelIndex, Grid, GridLayout};
-use world_storage::{LevelData, LoadContext, WorldData};
+use voxel_grid::ChannelIndex;
+use world_storage::{LoadContext, WorldData};
 use world_view::ViewChannels;
 
 /// How bright, from 0 to 255, a face is that no light reaches. There is no sky light yet, so this
@@ -35,10 +34,12 @@ pub fn game_id() -> NamespacedId {
         .expect("constant identifier is valid")
 }
 
-/// The plugins this game uses. Both the server and every client have one.
+/// The plugins this game uses, declared as a package. Both the server and every client have one.
 #[derive(Debug)]
 pub struct CaveContent {
-    pub blocks: BaseBlocks,
+    /// The ids of the base blocks (the registry itself is in the package).
+    pub blocks: BaseBlockIds,
+    package: ContentPackage,
 }
 
 impl Default for CaveContent {
@@ -49,104 +50,88 @@ impl Default for CaveContent {
 
 impl CaveContent {
     pub fn new() -> Self {
+        let base = BaseBlocks::new();
+        let ids = base.ids();
+        let spec = PackageSpec {
+            level: overworld_id(),
+            block_registry_kind: block_registry_kind(),
+            // The channels of every brick: the block of each voxel, its state (which shape it
+            // has), and the block light in it.
+            channels: vec![
+                ids.block_channel(),
+                ids.state_channel(),
+                ids.light_channel(),
+            ],
+            block_channel: block_channel_identifier(),
+            state_channel: Some(state_channel_identifier()),
+            light_channel: Some(light_channel_identifier()),
+            generators: Arc::new(move |seed, layout| {
+                let block_channel = layout
+                    .channel_index(&block_channel_identifier())
+                    .expect("the layout has the block channel");
+                ids.terrain_generators(seed, block_channel)
+            }),
+            default_generator: rolling_hills_generator_identifier(),
+            assignment_cube_level: ASSIGNMENT_CUBE_LEVEL,
+            ambient_light: AMBIENT_LIGHT,
+        };
         Self {
-            blocks: BaseBlocks::new(),
+            blocks: ids,
+            package: ContentPackage::new(base.into_registry(), spec),
         }
-    }
-
-    fn layout(&self) -> Arc<GridLayout> {
-        Arc::new(GridLayout::new(self.channels()).expect("the channels are distinct"))
-    }
-
-    /// The channels of every brick: the block of each voxel, its state (which shape it has), and
-    /// the block light in it.
-    fn channels(&self) -> Vec<ChannelDefinition> {
-        vec![
-            self.blocks.block_channel(),
-            self.blocks.state_channel(),
-            self.blocks.light_channel(),
-        ]
     }
 
     /// The channel holding each voxel's block.
     pub fn block_channel(&self) -> ChannelIndex {
-        self.layout()
-            .channel_index(&block_channel_identifier())
-            .expect("the layout has the block channel")
+        self.package.block_channel()
     }
 
     /// The channel holding each voxel's block state.
     pub fn state_channel(&self) -> ChannelIndex {
-        self.layout()
-            .channel_index(&state_channel_identifier())
-            .expect("the layout has the state channel")
+        self.package.state_channel()
     }
 
     /// The channel holding the block light of each voxel.
     pub fn light_channel(&self) -> ChannelIndex {
-        self.layout()
-            .channel_index(&light_channel_identifier())
-            .expect("the layout has the light channel")
+        self.package.channel(&light_channel_identifier())
     }
 }
 
 impl GameContent for CaveContent {
     fn view_channels(&self) -> ViewChannels {
-        ViewChannels {
-            blocks: self.block_channel(),
-            states: Some(self.state_channel()),
-            light: Some(self.light_channel()),
-        }
+        self.package.view_channels()
     }
 
     fn ambient_light(&self) -> u8 {
-        AMBIENT_LIGHT
+        self.package.ambient_light()
     }
 
     fn block_table(&self) -> BlockTable {
-        self.blocks.block_table()
+        self.package.block_table()
     }
 
     /// A new world with this seed: rolling hills everywhere, nothing edited.
     fn new_world(&self, seed: u64) -> WorldData {
-        let layout = self.layout();
-        let generators = self.blocks.terrain_generators(seed, self.block_channel());
-        let default = generators
-            .runtime_id(&rolling_hills_generator_identifier())
-            .expect("the plugin registers its generator");
-        let terrain = WorldTerrain::new(generators, default, ASSIGNMENT_CUBE_LEVEL)
-            .expect("the generator is available");
-        WorldData::new(
-            seed,
-            overworld_id(),
-            LevelData::new(terrain, Grid::new(layout)),
-        )
+        self.package.new_world(seed)
     }
 
     /// What loading a world file, or a server's description of a world, needs. `seed` is the
     /// world's: terrain generators are built from it.
     fn load_context(&mut self, seed: u64) -> LoadContext<'_> {
-        let block_channel = self.block_channel();
-        let generators = self.blocks.terrain_generators(seed, block_channel);
-        LoadContext {
-            channels: self.channels(),
-            registries: vec![(block_registry_kind(), &mut self.blocks.blocks)],
-            generators,
-            fallback_default_generator: rolling_hills_generator_identifier(),
-            assignment_cube_level: ASSIGNMENT_CUBE_LEVEL,
-            legacy_level: overworld_id(),
-        }
+        self.package.load_context(seed)
     }
 
     /// The content tables a save or a description needs.
     fn registries(&self) -> Vec<(NamespacedId, &dyn IdentifierRegistry)> {
-        vec![(block_registry_kind(), &self.blocks.blocks)]
+        self.package.registries()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use world_storage::ParsedWorld;
+    use terrain::WorldTerrain;
+    use voxel_grid::{Grid, GridLayout};
+    use world_storage::{LevelData, ParsedWorld};
 
     use super::*;
 

@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use block_models::BlockTable;
-use game_shell::PoseBook;
+use game_shell::{GameContent, PoseBook};
 use lattice::ActiveVoxels;
 use namespaced_id::NamespacedId;
 use player_presence::pose_kind;
@@ -119,25 +119,24 @@ impl CaveLogic {
             |level| world.level_index(level),
         )
         .unwrap_or_default();
-        let block_ids = content
-            .blocks
-            .blocks
-            .iter()
-            .map(|(id, entry)| (entry.identifier().clone(), id.raw()))
+        let registries = content.registries();
+        let blocks = registries[0].1;
+        let block_ids = (0..blocks.entry_count() as u32)
+            .filter_map(|raw| Some((blocks.identifier_of_raw(raw)?.clone(), raw)))
             .collect();
         let (fire_clock, fire_active) =
             Fire::read_section(world.opaque_sections(), |level| world.level_index(level))
                 .unwrap_or_default();
         Self {
             block_ids,
-            table: content.blocks.block_table(),
+            table: content.block_table(),
             block_channel: content.block_channel(),
             state_channel: content.state_channel(),
             light_channel: content.light_channel(),
             level_ids,
-            lighting: Lighting::with_pending(content.blocks.block_table(), pending),
+            lighting: Lighting::with_pending(content.block_table(), pending),
             fire: Fire::new(
-                content.blocks.block_table(),
+                content.block_table(),
                 content.blocks.fire,
                 content.blocks.air,
                 world.world_seed,
@@ -146,7 +145,7 @@ impl CaveLogic {
             ),
             fire_block: content.blocks.fire,
             movement: Movement::new(
-                content.blocks.block_table(),
+                content.block_table(),
                 content.block_channel(),
                 content.state_channel(),
                 content.blocks.air,

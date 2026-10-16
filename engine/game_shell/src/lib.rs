@@ -14,6 +14,7 @@ pub mod following;
 mod headless;
 pub mod host;
 pub mod options;
+pub mod package;
 pub mod serve;
 pub mod session;
 #[cfg(test)]
@@ -22,6 +23,7 @@ pub mod view;
 mod windowed;
 
 pub use definition::{CameraStart, GameContent, GameDefinition};
+pub use package::{ContentPackage, GeneratorFactory, PackageSpec};
 pub use player_presence::{PlayerPose, PoseBook};
 pub use winit::keyboard::KeyCode;
 
