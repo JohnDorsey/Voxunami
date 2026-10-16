@@ -17,8 +17,6 @@ use world_storage::file::write_atomically;
 
 use crate::definition::{GameContent, GameDefinition};
 
-pub const TICKS_PER_SECOND: u32 = 20;
-
 /// How far beyond the drawn distance a client watches, so every drawn brick has its neighbours.
 pub const WATCH_MARGIN_BRICKS: i64 = 2;
 
@@ -27,7 +25,7 @@ pub const DEFAULT_PORT: u16 = 24816;
 
 fn server_config<G: GameDefinition>(view_radius_bricks: i64) -> ServerConfig {
     let mut config = ServerConfig::new(G::id());
-    config.ticks_per_second = TICKS_PER_SECOND;
+    config.ticks_per_second = G::ticks_per_second();
     let edge = (2 * (view_radius_bricks + WATCH_MARGIN_BRICKS) + 1) as u64;
     config.maximum_watched_bricks = edge * edge * edge;
     config
@@ -157,7 +155,7 @@ impl<G: GameDefinition> ServerThread<G> {
         let (autosave, announce) = (settings.autosave, settings.announce_players);
         let thread = std::thread::spawn(move || {
             // The clock only paces the loop; the server itself never reads it.
-            let tick_length = Duration::from_secs_f64(1.0 / f64::from(TICKS_PER_SECOND));
+            let tick_length = Duration::from_secs_f64(1.0 / f64::from(G::ticks_per_second()));
             let mut next_tick = Instant::now();
             let mut last_save = Instant::now();
             while !stopped.load(Ordering::Relaxed) {

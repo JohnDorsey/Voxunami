@@ -101,7 +101,8 @@ impl GameDefinition for Game2048 {
     }
 
     fn controls() -> &'static str {
-        "Left click pushes the block you look at away from you; right click pulls it toward you.\nStone moves one step and pushes the row of blocks in front of it (up to 12 blocks, into empty space); ice coasts until it meets another block; spring ice bounces back off blocks it cannot merge with.\n1, 2, 3 choose the tool: double merges equal numbers into their double, add adds any two numbers, subtract takes the smaller from the larger (equal numbers cancel).\nThe title shows the tool and the block you look at."
+        "Left click pushes the block you look at away from you; right click pulls it toward you.\nStone moves one step and pushes the row of blocks in front of it (up to 12 blocks, into empty space); ice coasts until it meets another block; spring ice bounces back off blocks it cannot merge with.\n1, 2, 3 choose the tool: double merges equal numbers into their double, add adds any two numbers, subtract takes the smaller from the larger (equal numbers cancel).\nThe title shows the tool and the block you look at.
+W A S D move, Space and Shift go up and down, Ctrl moves five times faster. Commands: /level shows which level you are in, /level list lists them, /level go NAME moves you."
     }
 
     fn default_seed() -> u64 {

@@ -32,6 +32,7 @@ voxel_meshing = { path = "engine/voxel_meshing" }
 voxel_space = { path = "engine/voxel_space" }
 voxunami_2048 = { path = "games/voxunami_2048" }
 voxunami_cave = { path = "games/voxunami_cave" }
+voxunami_eels = { path = "games/voxunami_eels" }
 world_view = { path = "engine/world_view" }
 world_storage = { path = "engine/world_storage" }
 

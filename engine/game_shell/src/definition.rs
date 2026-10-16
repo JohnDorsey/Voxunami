@@ -80,6 +80,31 @@ pub trait GameDefinition: Sized + 'static {
 
     fn new_content() -> Self::Content;
 
+    /// How many ticks a second the game's server runs. Most games want the default, 20.
+    fn ticks_per_second() -> u32 {
+        20
+    }
+
+    /// Whether the server also decides which way the player looks (a game that steers the player's
+    /// avatar, such as a worm): the camera then turns to the angles the server says, smoothly, and
+    /// the mouse does not turn it. Only meaningful with [`GameDefinition::server_moves_players`].
+    /// The default is no.
+    fn server_sets_view() -> bool {
+        false
+    }
+
+    /// Whether a crosshair is drawn in the middle of the view. A game that does not aim at anything
+    /// has none. The default is yes.
+    fn shows_crosshair() -> bool {
+        true
+    }
+
+    /// Whether the other players are drawn as pillars where they are. A game whose players are
+    /// visible in the world itself does not want them. The default is yes.
+    fn shows_other_players() -> bool {
+        true
+    }
+
     /// Whether the server moves the players' bodies (gravity, collision) and says where each one is,
     /// instead of each player's program moving its own camera and reporting it. If so the shell
     /// does not report the camera: it sends [`GameDefinition::join_message`] when joining and

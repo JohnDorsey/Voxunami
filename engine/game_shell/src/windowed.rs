@@ -20,7 +20,7 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 use crate::command_entry::{CommandEntry, opens_a_command};
 use crate::definition::GameDefinition;
 use crate::files::{open_recording, open_world, record_connection, recorded_game, save_world};
-use crate::following::PoseFollower;
+use crate::following::{PoseFollower, turned_toward};
 use crate::host::{Autosave, HostSettings, ServerThread, connect_to, listen_on};
 use crate::options::{PlayOptions, ReplayOptions, ViewOptions};
 use crate::session::{Mode, Session};
@@ -223,7 +223,7 @@ impl<G: GameDefinition> Viewer<G> {
 
         let mut renderer = VoxelRenderer::new(&context, format);
         configure_renderer(&mut renderer, session.content(), view.view_radius);
-        renderer.set_crosshair(session.mode() == Mode::Playing);
+        renderer.set_crosshair(session.mode() == Mode::Playing && G::shows_crosshair());
         let now = Instant::now();
         Ok(Self {
             window,
@@ -321,8 +321,13 @@ impl<G: GameDefinition> Viewer<G> {
                 self.session.advance()?;
                 // The server says where the player is a few times a second; the picture is carried on
                 // between those.
-                if let Some(told) = self.session.own_server_position() {
-                    self.session.camera.position = self.follower.view_position(told, now);
+                if let Some(pose) = self.session.own_server_pose() {
+                    self.session.camera.position = self.follower.view_position(pose.position, now);
+                    if G::server_sets_view() {
+                        let camera = &mut self.session.camera;
+                        camera.yaw = turned_toward(camera.yaw, pose.yaw, seconds);
+                        camera.pitch = turned_toward(camera.pitch, pose.pitch, seconds);
+                    }
                 }
             }
             Mode::Playing => {
@@ -589,6 +594,7 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
         if let DeviceEvent::MouseMotion { delta } = event
             && viewer.mouse_captured
             && viewer.session.mode() == Mode::Playing
+            && !G::server_sets_view()
         {
             viewer.session.camera.look_by(
                 -delta.0 as f32 * MOUSE_SENSITIVITY,

@@ -18,6 +18,7 @@ namespaced_id.workspace = true
 replay.workspace = true
 voxunami_2048.workspace = true
 voxunami_cave.workspace = true
+voxunami_eels.workspace = true
 
 [dev-dependencies]
 protocol.workspace = true

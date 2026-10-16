@@ -1029,6 +1029,7 @@ dependencies = [
  "replay",
  "voxunami_2048",
  "voxunami_cave",
+ "voxunami_eels",
 ]
 
 [[package]]
@@ -2702,6 +2703,31 @@ dependencies = [
  "lattice",
  "namespaced_id",
  "physics",
+ "player_presence",
+ "proptest",
+ "protocol",
+ "renderer",
+ "replay",
+ "server",
+ "terrain",
+ "transport",
+ "voxel_grid",
+ "voxel_space",
+ "wgpu",
+ "world_storage",
+ "world_view",
+]
+
+[[package]]
+name = "voxunami_eels"
+version = "0.0.0"
+dependencies = [
+ "binary_codec",
+ "block_models",
+ "client",
+ "content_registry",
+ "game_shell",
+ "namespaced_id",
  "player_presence",
  "proptest",
  "protocol",

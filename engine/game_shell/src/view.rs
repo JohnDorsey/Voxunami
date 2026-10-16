@@ -40,6 +40,7 @@ pub fn show_other_players<C: Connection, G: GameDefinition>(
 ) {
     let avatars: Vec<Avatar> = session
         .other_players()
+        .filter(|_| G::shows_other_players())
         .map(|(client, pose)| Avatar {
             position: pose.position,
             color: client.get(),

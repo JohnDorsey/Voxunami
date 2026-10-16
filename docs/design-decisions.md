@@ -10,7 +10,8 @@ The engine is **Voxunami**.
    terrain types should be added later. Textured blocks near the player, untextured blocks beyond a distance. Flood-fill
    lighting with 256 levels (see Voxunami Cave lighting below).
 2. **Voxunami 2048**: 3D 2048, pushing tiles with tools. Small and bounded.
-3. **Voxunami Flatworms**: 3D Tron with voxel flatworms that barrel-roll.
+3. **Voxunami Eels** (first called Flatworms; renamed by the owner, 2026-10-16): 3D Tron with flat voxel eels that
+   barrel-roll. Built: Phase 17.
 4. **Voxunami Sculpt**: tiny-voxel sculpting world: 1/32 m cubes, infinite and procedural, simulated water, swaying
    transparent leaves, gears / magnetism / gravity / friction heating / heat transfer / combustion, free-moving structures.
 
@@ -174,7 +175,7 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   5. Random ticks and fire in Cave: the second lattice rule; only then extract the common lattice-rule shape
   (neighbourhood snapshot in, edits out, deterministic random numbers, active region, budget; done: Phases 13 and
   14, see "Decided (rules for lattice simulation and physics)"). 6. Cave gravity and
-  collision on Rapier (done for players: Phases 15 and 16). 7. Flatworms (movable earlier or later; it needs no physics). 8. Mod stages 1 to 5 (see below),
+  collision on Rapier (done for players: Phases 15 and 16). 7. Eels (done: Phase 17). 8. Mod stages 1 to 5 (see below),
   started once step 5 shows what a block definition and a rule hook carry. 9. Sub-grids with hinges and pistons, and Sculpt.
   10. Mod hooks: lattice rules first, then physics (engine-provided motor and piston parts that mods configure rather than
   implement). 11. Portals, user shaders, assets and an SDK. Level awareness must be in the mod API from its first version.
@@ -261,6 +262,37 @@ Phase 1d (saving):
 - `terrain`: `WorldTerrain` exposes its configuration and can restore saved assignments.
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
+
+Phase 17 (Voxunami Eels, 3D Tron; `games/voxunami_eels`; the owner's design is only "3D Tron with flat worms that barrel-roll", so the rules below are mine and easy to change):
+- Rules (`round.rs`, on any arena, no servers): up to 8 eels in a hollow 64-cell cube. Each swims one cell every 3 ticks (30 ticks
+  a second, so 10 cells a second) and leaves its body behind as a permanent wall of its colour. An eel dies on the wall, on any body,
+  or when two want the same cell. The last one swimming wins the round and a point; a lone player plays until they die; a new
+  round starts 3 s after each one ends, the arena cleared. Players joining during the countdown are in the round, later ones wait for
+  the next. A step works from the arena as it stood, so the order of eels never matters.
+- The eel is a ribbon 3 cells wide and 1 thick. Rolling turns it a quarter about its heading (flat or on its edge), which changes
+  which gaps it fits and the wall it leaves. Simplifications to know: only quarter rolls (two states, so Q, E and Space all do the
+  same), steering is relative to the camera whose up is always the world's, and the wings fold in on a step that turns (the eel is
+  its head cell then), because a 3-wide ribbon swung round sweeps back over the body it just laid and could never turn. An eel
+  is not hurt by the cells of its own previous step, so it can turn into its own wing's cell.
+- Controls: A/D (or the arrows) left and right, W/S up and down, Space/Q/E roll. Chase camera 6 cells behind and 2.5 above the
+  head; the server computes every camera (as the players' poses) and moves it a third of a cell each tick so it glides.
+  Clients never say where they are.
+- Terrain: `voxunami_eels:arena_v1` makes only the wall (dark panels, bright grid lines every 8 cells and along the edges), pinned
+  like the other generators; bodies are edits (block `trail` or `head`, the eel's colour slot as the state, 8 colours).
+- State: the match (who swims, scores) is in memory only, so a saved world holds only bodies, and the first round after loading
+  clears them. Scores last while their player stays.
+- Shell hooks added for it (all default to the old behaviour): `GameDefinition::ticks_per_second` (the 20 Hz constant moved
+  into the trait; Eels uses 30, which the doc had planned for Tron), `server_sets_view` (the camera takes the server's angles,
+  turned toward them smoothly, and the mouse does not turn it), `shows_other_players`, `shows_crosshair`. The generic controls
+  line no longer claims W A S D fly: each game's own text says how it moves (Cave and 2048 text fixed).
+- Tests: 36 unit tests (steering, ribbon geometry, rules on a plain map with a property test that live eels never overlap and
+  everything painted is inside, messages, camera), 9 through server and sessions (colours, countdown, glide, steering and rolls,
+  death and clearing, two players, leaving, ignored poses, save/load, recording and replay). Mutation experiments: 14 of 17
+  caught; the survivors are the skip for all-air bricks when clearing (only speed), sending standings only when they change
+  (only traffic), and the glide fraction, which then got its own test.
+- Not done: nothing is shown but the title for scores (the renderer has no text); no gaps or power-ups; players always start in the
+  same places; a client that never presses a key swims into the wall in about 6 s; real play with two people on a network was not
+  tried, and how steering feels (ten cells a second, one steer remembered per step) was judged only from screenshots and key taps.
 
 Phase 15 (the `physics` crate: a walking body on Rapier; the only crate that imports Rapier):
 - `engine/physics`: `CharacterBody` is a player's body in a Rapier world of its own (one per player, around a floating
@@ -581,6 +613,10 @@ continuous channels need quantization or sparse activity.
 - Levels: a world cannot gain a level while a server runs, no game ships a second level yet, and `add_level` cannot check
   that a level's generators were built from the world's seed (a mismatch shows up as clients going out of sync). Typing
   commands in the window was written but never tried with a real keyboard.
+- Client-side prediction (owner, 2026-10-16: walking and falling feel jerky and stuttery; deferred). My view: the stutter is
+  as likely to come from the 20 Hz updates and the dead reckoning in `PoseFollower` as from latency, so smoothing the
+  followed pose comes first; real prediction (the client runs the same `CharacterBody` and corrects toward the server) changes no
+  API: `movement_message` and the server's `Movement` stay as they are. Eels already glides by sending a pose every tick.
 - Movement (Phases 15 and 16): Cave players walk with gravity and collision, on the server. Not built: prediction on the
   client (a player's own keys show after the round trip to the server, plus a tick; on a distant server that will be felt),
   swimming, ladders, crouching and edge-holding, damage from falls, and pushing other players. The camera bobs by up to
@@ -634,6 +670,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 14 The `lattice` crate (active voxels, voxel chance) and a budget for the light. **Done.**
 - 15 The `physics` crate: a walking body on Rapier, pinned across Windows and Linux. **Done.**
 - 16 Cave gravity and collision: the server moves the players (`/fly`, `/tp`). **Done.**
+- 17 Voxunami Eels (3D Tron) and the shell hooks it needed. **Done.**
 - 1f Launcher and first game crate: `world_view`, the `base_blocks` plugin, Voxunami Cave, the launcher; the old viewer
   retired. **Done.**
 The physics spike is done (`docs/physics-spike.md`); the adapter for rigid structures belongs with the structures work.

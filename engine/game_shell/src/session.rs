@@ -225,11 +225,21 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         self.players.get(&own).map(|state| state.pose.position)
     }
 
+    /// Where the server last said this player is and which way they look, if it has said.
+    pub fn own_server_pose(&self) -> Option<PlayerPose> {
+        let own = self.client.world().server_info().client;
+        self.players.get(&own).map(|state| state.pose)
+    }
+
     /// In a game where the server moves players, the camera is where the server says the player is
-    /// (the way they face is their own).
+    /// (the way they face is their own, unless the server sets the view too).
     fn follow_own_pose(&mut self) {
-        if let Some(position) = self.own_server_position() {
-            self.camera.position = position;
+        if let Some(pose) = self.own_server_pose() {
+            self.camera.position = pose.position;
+            if G::server_sets_view() {
+                self.camera.yaw = pose.yaw;
+                self.camera.pitch = pose.pitch;
+            }
         }
     }
 

@@ -45,6 +45,14 @@ pub const GAMES: &[Game] = &[
         serve: |arguments| voxunami_2048::run_serve(arguments),
         replay: |arguments| voxunami_2048::run_replay(arguments),
     },
+    Game {
+        command: "eels",
+        title: "Voxunami Eels: 3D Tron with flat eels",
+        id: voxunami_eels::game_id,
+        play: |arguments| voxunami_eels::run_play(arguments),
+        serve: |arguments| voxunami_eels::run_serve(arguments),
+        replay: |arguments| voxunami_eels::run_replay(arguments),
+    },
 ];
 
 fn usage() -> String {

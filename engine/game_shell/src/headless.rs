@@ -152,7 +152,7 @@ fn render_outputs<C: Connection, G: GameDefinition>(
     show_other_players(renderer, session);
     let mut camera = session.camera;
     if let Some(path) = &view.screenshot {
-        renderer.set_crosshair(session.mode() == Mode::Playing);
+        renderer.set_crosshair(session.mode() == Mode::Playing && G::shows_crosshair());
         let (pixels, statistics) = renderer.render_to_rgba(&camera, view.width, view.height);
         write_png(path, view.width, view.height, &pixels)?;
         println!(
