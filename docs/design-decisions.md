@@ -317,8 +317,8 @@ Phase 6 (levels and commands; protocol version 2):
 - `GameLogic::command_received` and `ServerWorld::reply`; `server::CommandLine` takes a command apart. Replies reach
   only the sender, after the tick's game messages. Games use `PoseBook::handle_command` for `/level`.
 - The client keeps every level's data and forgets other levels' bricks when the watched level changes; the session
-  re-meshes from scratch for the new level (`WorldMesher::reset`) and draws only players in its level. In a window, `/` or
-  Enter opens a command line shown in the title; Enter sends it, Esc drops it; answers show in the title and print.
+  re-meshes from scratch for the new level (`WorldMesher::reset`) and draws only players in its level. In a window, `/`
+  opens a command line shown in the title; Enter sends it, Esc drops it; answers show in the title and print.
 - Cave and 2048 act in the level the player is in. 2048's moving blocks belong to a level and are saved by level name.
   Neither game makes a second level yet; tests do.
 
@@ -448,8 +448,11 @@ continuous channels need quantization or sparse activity.
 - Keyboard controls in a window (reported by the owner, 2026-10-16): in both games the keys type into the title bar instead
   of moving the player. Not reproduced: with real key events sent to the real window (Windows 10, RTX 3090, built from
   this code), pressing W and A left the title as it was, and holding W for two seconds changed the picture (the camera
-  moved). The title only shows typed text after `/` or Enter has opened the command line, so the owner's keyboard
-  probably sent one of those (or an input method is involved); the exact keys and layout are needed.
+  moved). The title shows typed text only while the command line is open, and it was opened by Enter or `/`. The owner
+  gets control back by pressing Enter, so an Enter (or a `/`) reached the window first. One way was reproduced, an Enter
+  still down when the window is brought to the front, but not shown to be the owner's. Changes: only `/` opens the
+  command line now (Enter only sends it), a repeated or made-up press does not, a change of focus drops a half-typed
+  command, and the console says when it opens. Whether that cures the owner's case is not known.
 - 2048 shows numbers by colour only (the renderer draws no text; the title names the block you look at), and only
   stone, ice and spring ice exist. Materials that pass momentum on, other tools (a line push, an undo), and players
   being in the way of blocks are not built. The play controls were never tried with a real mouse and keyboard.

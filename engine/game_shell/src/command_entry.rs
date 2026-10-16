@@ -1,7 +1,21 @@
-//! The line a player types a command on: opened with `/` or Enter, edited with the keyboard, sent
+//! The line a player types a command on: opened with `/`, edited with the keyboard, sent
 //! with Enter, dropped with Escape. It only holds the text; the window decides when keys go to it.
 
 use protocol::MAXIMUM_COMMAND_LENGTH;
+
+/// Whether a key press opens the command line: the key that types a slash, and nothing else, so a
+/// player who presses Enter (as one does when a game starts, or to confirm) does not find every
+/// key typing into the title bar. Only a press the player makes counts: not one the system repeats
+/// for a key held down, not one it makes up on gaining focus, and not one of a key the window
+/// already knows is down.
+pub fn opens_a_command(
+    text: Option<&str>,
+    repeated: bool,
+    synthetic: bool,
+    already_down: bool,
+) -> bool {
+    !repeated && !synthetic && !already_down && text == Some("/")
+}
 
 #[derive(Debug, Default)]
 pub struct CommandEntry {
@@ -62,6 +76,20 @@ impl CommandEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_fresh_press_of_slash_opens_a_command() {
+        assert!(opens_a_command(Some("/"), false, false, false));
+        // Enter, and the keys that move the player or choose things, do not.
+        assert!(!opens_a_command(None, false, false, false));
+        assert!(!opens_a_command(Some("\r"), false, false, false));
+        assert!(!opens_a_command(Some("w"), false, false, false));
+        assert!(!opens_a_command(Some("1"), false, false, false));
+        // A held key repeating, a press made up on gaining focus, and a key already down do not.
+        assert!(!opens_a_command(Some("/"), true, false, false));
+        assert!(!opens_a_command(Some("/"), false, true, false));
+        assert!(!opens_a_command(Some("/"), false, false, true));
+    }
 
     #[test]
     fn typing_editing_and_sending_a_command() {

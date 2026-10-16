@@ -16,7 +16,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-use crate::command_entry::CommandEntry;
+use crate::command_entry::{CommandEntry, opens_a_command};
 use crate::definition::GameDefinition;
 use crate::files::{open_recording, open_world, record_connection, recorded_game, save_world};
 use crate::host::{Autosave, HostSettings, ServerThread, connect_to, listen_on};
@@ -447,6 +447,13 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                     .surface
                     .configure(&viewer.context.device, &viewer.surface_configuration);
             }
+            // A press the system makes up when the window gains focus while a key is down belongs
+            // to whatever had the focus before; a release is harmless.
+            WindowEvent::KeyboardInput {
+                event,
+                is_synthetic: true,
+                ..
+            } if event.state == ElementState::Pressed => {}
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     match event.state {
@@ -466,13 +473,17 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                         },
                         ElementState::Pressed => {
                             let opens_a_command = viewer.session.mode() == Mode::Playing
-                                && !viewer.keys.contains(&code)
-                                && (code == KeyCode::Enter || event.text.as_deref() == Some("/"));
+                                && opens_a_command(
+                                    event.text.as_deref(),
+                                    event.repeat,
+                                    false,
+                                    viewer.keys.contains(&code),
+                                );
                             if opens_a_command {
                                 // Typing is not moving: let go of every key.
                                 viewer.keys.clear();
-                                let first = if code == KeyCode::Enter { "" } else { "/" };
-                                viewer.entry.begin(first);
+                                viewer.entry.begin("/");
+                                println!("command line open: Enter sends it, Esc drops it");
                             } else if code == KeyCode::Escape {
                                 viewer.set_mouse_captured(false);
                                 viewer.keys.insert(code);
@@ -499,9 +510,13 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                 (MouseButton::Right, true) => G::secondary_action(&mut viewer.session),
                 _ => {}
             },
-            WindowEvent::Focused(false) => {
+            WindowEvent::Focused(focused) => {
+                // Keys held, and a command half typed, belong to the window that had the focus.
                 viewer.keys.clear();
-                viewer.set_mouse_captured(false);
+                viewer.entry.cancel();
+                if !focused {
+                    viewer.set_mouse_captured(false);
+                }
             }
             WindowEvent::RedrawRequested => match viewer.frame() {
                 Ok(true) => {}
