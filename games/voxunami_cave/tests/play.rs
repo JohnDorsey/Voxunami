@@ -7,15 +7,17 @@ use std::time::{Duration, Instant};
 
 use client::ClientError;
 use common::{Player, Rig, SEED, VIEW_RADIUS, above_ground, ground_height, position_of};
-use game_shell::GameContent;
 use game_shell::files::{open_world, record_connection, save_world};
 use game_shell::host::{HostSettings, ServerThread};
 use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
+use game_shell::{GameContent, GameDefinition, KeyCode};
 use transport::{Connection, ConnectionClosed};
 use voxel_space::VoxelCoordinate;
 use voxunami_cave::content::CaveContent;
-use voxunami_cave::game::{Cave, break_block, place_block, request_block};
+use voxunami_cave::game::{
+    Cave, break_block, place_block, place_block_with_state, request_block, request_block_with_state,
+};
 use voxunami_cave::logic::REACH;
 
 /// A player standing 3 voxels above the ground at the column (16, 16), looking straight down.
@@ -508,4 +510,113 @@ fn commands_the_game_does_not_know_are_answered() {
             "you are in voxunami_cave:overworld"
         ]
     );
+}
+
+/// The block and state the server holds at a voxel of the main level.
+fn server_block_and_state(rig: &Rig, voxel: VoxelCoordinate) -> (u32, u32) {
+    let overrides = &rig.server.world().main().overrides;
+    (
+        overrides.get(rig.content.block_channel(), voxel),
+        overrides.get(rig.content.state_channel(), voxel),
+    )
+}
+
+#[test]
+fn a_block_placed_in_a_state_has_that_shape_for_every_player() {
+    let mut rig = Rig::new();
+    let mut builder = player_above_ground(&mut rig);
+    let mut onlooker = rig.join([20.5, 110.0, 20.5], 0.0, 0.0);
+    rig.settle(&mut [&mut builder, &mut onlooker]);
+    let hit = builder.target().unwrap();
+
+    place_block_with_state(&mut builder, "base_blocks:stone", 1); // a bottom slab
+    rig.settle(&mut [&mut builder, &mut onlooker]);
+
+    let stone = rig.content.blocks.stone;
+    assert_eq!(server_block_and_state(&rig, hit.previous), (stone, 1));
+    for (name, player) in [("builder", &builder), ("onlooker", &onlooker)] {
+        let mesher = player.mesher();
+        assert_eq!(mesher.material_at(hit.previous), Some(stone), "{name}");
+        assert_eq!(mesher.state_at(hit.previous), Some(1), "{name}");
+        // A slab is something to stand on and to aim at, but it does not hide what is behind it.
+        assert_eq!(mesher.is_solid_at(hit.previous), Some(true), "{name}");
+        assert_eq!(mesher.is_opaque_at(hit.previous), Some(false), "{name}");
+    }
+    assert_eq!(builder.target().unwrap().voxel, hit.previous);
+}
+
+#[test]
+fn the_server_refuses_states_a_block_does_not_have_and_air_has_only_the_first() {
+    let mut rig = Rig::new();
+    let mut player = player_above_ground(&mut rig);
+    let own = position_of(&player.camera);
+    let near = VoxelCoordinate::new(
+        own.brick().x() * 32 + own.offset()[0] as i64,
+        own.brick().y() * 32 + own.offset()[1] as i64 - 3,
+        own.brick().z() * 32 + own.offset()[2] as i64,
+    );
+    let shapes = base_blocks::SHAPE_NAMES.len() as u32;
+
+    request_block_with_state(&mut player, near, "base_blocks:stone", shapes);
+    request_block_with_state(&mut player, near, "base_blocks:stone", u32::MAX);
+    request_block_with_state(&mut player, near, "base_blocks:air", 1);
+    for _ in 0..3 {
+        rig.step();
+    }
+    assert_eq!(rig.server.world().main().overrides.brick_count(), 0);
+
+    // The last state that exists is accepted.
+    request_block_with_state(&mut player, near, "base_blocks:stone", shapes - 1);
+    for _ in 0..2 {
+        rig.step();
+    }
+    assert_eq!(
+        server_block_and_state(&rig, near),
+        (rig.content.blocks.stone, shapes - 1)
+    );
+}
+
+#[test]
+fn breaking_a_shaped_block_leaves_air_in_the_first_state() {
+    let mut rig = Rig::new();
+    let mut player = player_above_ground(&mut rig);
+    let hit = player.target().unwrap();
+    place_block_with_state(&mut player, "base_blocks:dirt", 5);
+    rig.settle(&mut [&mut player]);
+    assert_eq!(
+        server_block_and_state(&rig, hit.previous),
+        (rig.content.blocks.dirt, 5)
+    );
+
+    break_block(&mut player);
+    rig.settle(&mut [&mut player]);
+
+    assert_eq!(server_block_and_state(&rig, hit.previous), (air(&rig), 0));
+    assert_eq!(player.mesher().state_at(hit.previous), Some(0));
+    assert_eq!(player.mesher().is_solid_at(hit.previous), Some(false));
+}
+
+#[test]
+fn the_shape_key_cycles_through_every_shape_and_placing_uses_the_one_chosen() {
+    let mut rig = Rig::new();
+    let mut player = player_above_ground(&mut rig);
+    let hit = player.target().unwrap();
+    assert_eq!(Cave::status_text(&player), "placing stone (whole)");
+
+    Cave::key_pressed(&mut player, KeyCode::KeyR);
+    assert_eq!(Cave::status_text(&player), "placing stone (bottom slab)");
+    Cave::secondary_action(&mut player);
+    rig.settle(&mut [&mut player]);
+    assert_eq!(
+        server_block_and_state(&rig, hit.previous),
+        (rig.content.blocks.stone, 1)
+    );
+
+    // Choosing another block keeps the shape; pressing the key enough times comes back to whole.
+    Cave::key_pressed(&mut player, KeyCode::Digit3);
+    assert_eq!(Cave::status_text(&player), "placing grass (bottom slab)");
+    for _ in 1..base_blocks::SHAPE_NAMES.len() {
+        Cave::key_pressed(&mut player, KeyCode::KeyR);
+    }
+    assert_eq!(Cave::status_text(&player), "placing grass (whole)");
 }

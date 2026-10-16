@@ -1,5 +1,6 @@
 //! Voxunami Cave as the shell runs it: what the player's clicks and keys do.
 
+use base_blocks::{SHAPE_NAMES, shape_name};
 use game_shell::{CameraStart, GameDefinition, KeyCode};
 use namespaced_id::NamespacedId;
 use server::GameLogic;
@@ -18,6 +19,8 @@ pub const PLACEABLE_BLOCKS: [&str; 3] =
 #[derive(Debug, Default)]
 pub struct CaveClientState {
     pub selected_block: usize,
+    /// The state, which is the shape, that placed blocks get (see [`SHAPE_NAMES`]).
+    pub selected_shape: u32,
 }
 
 #[derive(Debug)]
@@ -25,15 +28,27 @@ pub struct Cave;
 
 pub type CaveSession<C> = game_shell::session::Session<C, Cave>;
 
-/// Asks the server to put `block` (named by identifier) at `at`. The server decides.
+/// Asks the server to put `block` (named by identifier) at `at`, as a whole cube. The server
+/// decides.
 pub fn request_block<C: Connection>(
     session: &mut CaveSession<C>,
     at: voxel_space::VoxelCoordinate,
     block: &str,
 ) {
+    request_block_with_state(session, at, block, 0);
+}
+
+/// Asks the server to put `block` in `state` (which shape it has) at `at`. The server decides.
+pub fn request_block_with_state<C: Connection>(
+    session: &mut CaveSession<C>,
+    at: voxel_space::VoxelCoordinate,
+    block: &str,
+    state: u32,
+) {
     let request = SetBlock {
         at,
         block: block.parse().expect("block names are valid identifiers"),
+        state,
     };
     session.send_game_message(set_block_kind(), encode_set_block(&request));
 }
@@ -45,10 +60,19 @@ pub fn break_block<C: Connection>(session: &mut CaveSession<C>) {
     }
 }
 
-/// Places `block` against the face under the crosshair, if there is one.
+/// Places `block`, as a whole cube, against the face under the crosshair, if there is one.
 pub fn place_block<C: Connection>(session: &mut CaveSession<C>, block: &str) {
+    place_block_with_state(session, block, 0);
+}
+
+/// Places `block` in `state` against the face under the crosshair, if there is one.
+pub fn place_block_with_state<C: Connection>(
+    session: &mut CaveSession<C>,
+    block: &str,
+    state: u32,
+) {
     if let Some(hit) = session.target() {
-        request_block(session, hit.previous, block);
+        request_block_with_state(session, hit.previous, block, state);
     }
 }
 
@@ -73,7 +97,7 @@ impl GameDefinition for Cave {
     }
 
     fn controls() -> &'static str {
-        "Left click breaks the block you look at; right click places the selected block;\n1, 2, 3 select stone, dirt, grass."
+        "Left click breaks the block you look at; right click places the selected block;\n1, 2, 3 select stone, dirt, grass; R cycles whole block, slabs and stairs."
     }
 
     fn default_seed() -> u64 {
@@ -106,7 +130,8 @@ impl GameDefinition for Cave {
 
     fn secondary_action<C: Connection>(session: &mut CaveSession<C>) {
         let block = PLACEABLE_BLOCKS[session.state.selected_block];
-        place_block(session, block);
+        let state = session.state.selected_shape;
+        place_block_with_state(session, block, state);
     }
 
     fn key_pressed<C: Connection>(session: &mut CaveSession<C>, key: KeyCode) {
@@ -114,6 +139,10 @@ impl GameDefinition for Cave {
             KeyCode::Digit1 => session.state.selected_block = 0,
             KeyCode::Digit2 => session.state.selected_block = 1,
             KeyCode::Digit3 => session.state.selected_block = 2,
+            KeyCode::KeyR => {
+                session.state.selected_shape =
+                    (session.state.selected_shape + 1) % SHAPE_NAMES.len() as u32;
+            }
             _ => {}
         }
     }
@@ -121,8 +150,9 @@ impl GameDefinition for Cave {
     fn status_text<C: Connection>(session: &CaveSession<C>) -> String {
         let block = PLACEABLE_BLOCKS[session.state.selected_block];
         format!(
-            "placing {}",
-            block.split(':').next_back().unwrap_or_default()
+            "placing {} ({})",
+            block.split(':').next_back().unwrap_or_default(),
+            shape_name(session.state.selected_shape)
         )
     }
 }

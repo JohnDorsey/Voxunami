@@ -21,8 +21,8 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - Voxels are strictly cubic. Real-time rendering is rasterized; a path-traced offline renderer for replay export comes later.
 - The grid is always cubic (owner, 2026-10-16), apart from coarser levels of detail in the distance. A block may fill only
   part of its cell, using a block shape chosen by the block's *state*, so that shapes do not multiply the number of block
-  types and run into the renderer's palette cap (256 material values, 16 of them used by avatars). So a voxel will carry
-  a block and a state, as two channels. Not built.
+  types and run into the renderer's palette cap (256 material values, 16 of them used by avatars). So a voxel carries
+  a block and a state, as two channels (built; see "Built", Phase 7). A game without states leaves the second channel out.
 - Worlds have several levels (built; see "Built", Phase 6). Each level has its own grid, terrain assignments and edited
   bricks. All levels of a world share its channels, content registries, terrain generator versions and **seed**: a level
   differs from another by which generator versions it uses and by what players have changed, since a client regenerates
@@ -68,6 +68,12 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   example above is read as the exposed stone face lighting the transparent block in front of it; working out the exact
   source value for that block is part of building the lighting system.
 - Light that reaches 255 blocks crosses many bricks, so updates need the phased-tick rule's brick-boundary handling.
+- How light reaches the renderer (decided by the spike in `docs/light-spike.md`, built in Phase 7): each quad carries its
+  light in 8 bits of its material word, the mesher uses the light of the voxel in front of a face as part of the merge
+  key, and the quad stays 8 bytes. Measured on rolling hills with made-up lamp light: meshing time +2 to +8 percent, quad
+  count +25 percent for Minecraft-style 16 levels around very dense lamps, +62 percent for 256 smooth levels, none for
+  uniform light. Rounding light to fewer bands in the mesher is the lever if a scene gets heavy (not built); a light
+  texture is the later route to smooth shading and would not change storage or the protocol.
 
 ## Decided (rules for lattice simulation and physics)
 - Tick phases (confirmed by the owner): each tick reads a frozen snapshot of the previous tick and produces the next one.
@@ -110,8 +116,9 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 
 ## Future goals (owner, 2026-10-16; none built)
 - Blocks that let flood fill (light, and later other fills) through some sides but not others, like a slab or a stair.
-  Needs a block shape in the block definition (which faces are open, plus a collision shape), used by the mesher, lighting
-  and physics. (The grid stays cubic; a block fills part of its cell through its state; see "Decided".)
+  The block shape in the block definition now says which faces are open (`Shape::connections`, built in Phase 7) and
+  is the collision shape; lighting and physics do not use it yet. (The grid stays cubic; a block fills part of its cell
+  through its state; see "Decided".)
 - Shaders written in GLSL or HLSL. (Not checked here: wgpu's shader translator, naga, reads WGSL, SPIR-V and GLSL, and I
   believe not HLSL directly, which would need compiling to SPIR-V first.) Cosmetic and client-side only, so they cannot
   affect simulation; they need a defined interface, validation and limits, and do not exist in the planned offline
@@ -131,7 +138,7 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   the guide is: do first what is expensive to change later, what is most uncertain, and what gives a second user to a
   shared piece). 1. Levels: a level id through the protocol, save format and server, with one level existing; then a text
   command channel (done: Phase 6). 2. Block shapes in block definitions (open faces, collision shape, translucency, light), with a spike
-  on how light reaches the 8-byte quad. 3. 2048 tools: chain pushing and tool-chosen merging. 4. Lighting with
+  on how light reaches the 8-byte quad (done: Phase 7). 3. 2048 tools: chain pushing and tool-chosen merging. 4. Lighting with
   directional flood fill: the first lattice rule, under the phased-tick rule and its partition-invariance test.
   5. Random ticks and fire in Cave: the second lattice rule; only then extract the common lattice-rule shape
   (neighbourhood snapshot in, edits out, deterministic random numbers, active region, budget). 6. Cave gravity and
@@ -222,6 +229,34 @@ Phase 1d (saving):
 - `terrain`: `WorldTerrain` exposes its configuration and can restore saved assignments.
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
+
+Phase 7 (block states and shapes, and light in the quad):
+- `block_models` (new engine crate): a `Shape` is a union of boxes in eighths of a voxel, from which it works out what the
+  mesher and later lighting need: which part of each face of the cell it covers (`face_cover`, 64 bits per face), the
+  rectangles of it that show (`exposed`), and which faces of the cell are connected through it (`FaceConnections`, a 6 x 6
+  matrix: the open faces a flood fill may cross). `Shape::full/empty/half/stair/from_boxes`. A `BlockDefinition` has a
+  colour, whether it is see-through, a light emission and the shape of each of its states; `BlockTable` turns the
+  definitions of a game's block registry into what every consumer asks of a (block, state): shape, solidity, opacity, what
+  hides what, colour. An unknown block (from a plugin that is not loaded) is an opaque magenta cube; a state the block does
+  not have is state 0.
+- `voxel_meshing`: `mesh_brick` takes `BrickChannels` (blocks, optional states, optional light) and a `BlockTable`. Whole
+  opaque cubes are merged greedily with the key (block, light) as before; blocks that do not fill their cell, and
+  see-through ones, give `DetailedQuad`s at eighths of a voxel (16 bytes packed), culled where a neighbour hides them. The
+  8-byte quad carries light in the top 8 bits of its material word (block ids are 24 bits).
+- `renderer`: a second pipeline draws detailed quads; both shade by the light; `RenderStatistics::detailed_quads_drawn`.
+  `upload_brick` takes a `PackedBrickMesh`.
+- `world_view`: `ViewChannels { blocks, states, light }` and an `Arc<BlockTable>` are what a mesher is built from;
+  queries `state_at`, `is_solid_at` (something to stand on and aim at) and `is_opaque_at` (hides what is behind it).
+- `game_shell`: `GameContent::view_channels` and `block_table` replace the material channel, palette and opacity table.
+- `base_blocks`: the channel `base_blocks:block_state`, and seven shapes for stone, dirt and grass (whole, bottom slab,
+  top slab, stairs rising east, west, north, south); the terrain generator is unchanged (its pinned digests still pass).
+- Voxunami Cave: the server accepts `SetBlock` with a state and refuses a state the block does not have (air has only 0),
+  writing both channels; R cycles the shape of the block you place; the status line names it. A world file written
+  before states exists loads with every voxel in state 0 (tested). Voxunami 2048 uses plain cube definitions; its
+  unbounded numbers through the state channel come with the 2048 tools step.
+- Limits, so they are not forgotten: see-through blocks are drawn in their opaque colour (no blending), and hide only faces
+  of the same block; a sealed hollow between shaped blocks (two stacked slabs) still draws the faces inside it; aiming uses
+  whole voxels, not the shape; no game has a light channel yet, so light was only exercised with test and spike fields.
 
 Phase 6 (levels and commands; protocol version 2):
 - `WorldData` is a list of levels (`LevelData`: terrain assignments and edited bricks), the first being the main level.
@@ -320,6 +355,10 @@ loop and bounds overhead, so bulk decode will be faster):
   Uniform bricks cost almost nothing; a 3-value surface brick channel is 8 KB; a dense channel is 4 bytes per voxel.
 - Cloning a 2048-brick grid takes 14.5 us; the first write to a snapshotted surface brick takes 2.3 us.
 
+Light in the quad (Windows 10 machine, release, one thread; `docs/light-spike.md`): meshing a 416 x 416 x 256 voxel patch
+of rolling hills with a light channel takes 2 to 8 percent longer than without one; quads grow 0 to 25 percent for
+Minecraft-style light and 62 percent for 256 smooth levels around very dense lamps.
+
 Rendering and loading (Ryzen 7600X; 1280x720; default rolling hills, 1 m voxels; offscreen, GPU time included):
 - Integrated GPU (AMD Radeon, Vulkan): 6.9 ms per frame (146 fps) at view radius 12 (1.4 M quads drawn of 5.5 M
   resident) and 2.4 ms (416 fps) at radius 8. The target was 30 fps. The windowed viewer ran at 359 fps on it.
@@ -404,6 +443,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 4 Infinite 2048: numbered landscape, pushing, coasting, merging. **Done.**
 - 5 Other players drawn, server brick cache, compact generator tree. **Done.**
 - 6 Levels (protocol 2, file format, server, client, session) and a text command channel with `/level`. **Done.**
+- 7 Block states and shapes in block definitions, detailed quads, light in the quad (with its spike). **Done.**
 - 1f Launcher and first game crate: `world_view`, the `base_blocks` plugin, Voxunami Cave, the launcher; the old viewer
   retired. **Done.**
 The physics spike is done (`docs/physics-spike.md`); building the physics adapter belongs with the structures work.

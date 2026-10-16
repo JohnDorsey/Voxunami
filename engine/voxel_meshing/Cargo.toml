@@ -7,6 +7,7 @@ publish.workspace = true
 description = "Turns bricks of voxels into greedy-merged quads, compactly packed for the GPU."
 
 [dependencies]
+block_models.workspace = true
 voxel_grid.workspace = true
 voxel_space.workspace = true
 

@@ -1,26 +1,20 @@
 //! Plugin: the first blocks (air, stone, dirt, grass) and the rolling hills terrain made of them.
 //!
+//! The solid blocks come in several shapes, chosen by the voxel's *state* (the channel
+//! `base_blocks:block_state`): a whole cube, slabs, and stairs, so shapes do not take block types
+//! of their own.
+//!
 //! The terrain generator `base_blocks:rolling_hills_v1` is part of every world's file format: its
 //! output for a seed must never change. Better terrain is a new generator with a new name.
 
 use std::sync::Arc;
 
+use block_models::{BlockDefinition, BlockTable, Shape};
 use content_registry::{Registry, RuntimeId};
 use namespaced_id::NamespacedId;
 use terrain::{RollingHillsSettings, TerrainGenerator, TerrainMaterials, rolling_hills};
 use voxel_grid::{ChannelDefinition, ChannelIndex};
-
-/// How a block looks and behaves, as far as drawing is concerned.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BlockAppearance {
-    /// sRGB colour.
-    pub color: [f32; 3],
-    /// Whether the block hides the faces behind it.
-    pub opaque: bool,
-}
-
-/// Shown for block types whose plugin is not loaded.
-pub const MISSING_BLOCK_COLOR: [f32; 3] = [1.0, 0.0, 1.0];
+use voxel_space::FaceDirection;
 
 fn identifier(text: &str) -> NamespacedId {
     text.parse().expect("constant identifiers are valid")
@@ -36,15 +30,50 @@ pub fn block_channel_identifier() -> NamespacedId {
     identifier("base_blocks:block")
 }
 
+/// The grid channel holding each voxel's state: which shape its block has.
+pub fn state_channel_identifier() -> NamespacedId {
+    identifier("base_blocks:block_state")
+}
+
 /// The terrain generator version this plugin provides.
 pub fn rolling_hills_generator_identifier() -> NamespacedId {
     identifier("base_blocks:rolling_hills_v1")
 }
 
+/// What each state of a solid block of this plugin looks like, by name; the position is the state.
+pub const SHAPE_NAMES: [&str; 7] = [
+    "whole",
+    "bottom slab",
+    "top slab",
+    "stair rising east",
+    "stair rising west",
+    "stair rising north",
+    "stair rising south",
+];
+
+/// The shape of each state of a solid block: a whole cube, the two slabs, and a stair rising toward
+/// each of the four sides (east is +x, north is -z).
+pub fn standard_shapes() -> Vec<Shape> {
+    vec![
+        Shape::full(),
+        Shape::half(FaceDirection::NegativeY),
+        Shape::half(FaceDirection::PositiveY),
+        Shape::stair(FaceDirection::PositiveX),
+        Shape::stair(FaceDirection::NegativeX),
+        Shape::stair(FaceDirection::NegativeZ),
+        Shape::stair(FaceDirection::PositiveZ),
+    ]
+}
+
+/// The name of a state of a solid block, as for [`SHAPE_NAMES`].
+pub fn shape_name(state: u32) -> &'static str {
+    SHAPE_NAMES.get(state as usize).copied().unwrap_or("whole")
+}
+
 /// The blocks, registered in a fixed order: air first, so a world whose voxels are all zero is sky.
 #[derive(Debug)]
 pub struct BaseBlocks {
-    pub blocks: Registry<BlockAppearance>,
+    pub blocks: Registry<BlockDefinition>,
     pub air: u32,
     pub stone: u32,
     pub dirt: u32,
@@ -60,19 +89,17 @@ impl Default for BaseBlocks {
 impl BaseBlocks {
     pub fn new() -> Self {
         let mut blocks = Registry::new();
-        let mut register = |name: &str, color: [f32; 3], opaque: bool| -> u32 {
+        let mut register = |name: &str, definition: BlockDefinition| -> u32 {
             blocks
-                .register(
-                    identifier(&format!("base_blocks:{name}")),
-                    BlockAppearance { color, opaque },
-                )
+                .register(identifier(&format!("base_blocks:{name}")), definition)
                 .expect("the block names are distinct")
                 .raw()
         };
-        let air = register("air", [0.0, 0.0, 0.0], false);
-        let stone = register("stone", [0.50, 0.50, 0.53], true);
-        let dirt = register("dirt", [0.45, 0.30, 0.18], true);
-        let grass = register("grass", [0.30, 0.62, 0.20], true);
+        let solid = |color: [f32; 3]| BlockDefinition::cube(color).with_shapes(standard_shapes());
+        let air = register("air", BlockDefinition::air());
+        let stone = register("stone", solid([0.50, 0.50, 0.53]));
+        let dirt = register("dirt", solid([0.45, 0.30, 0.18]));
+        let grass = register("grass", solid([0.30, 0.62, 0.20]));
         Self {
             blocks,
             air,
@@ -96,6 +123,12 @@ impl BaseBlocks {
         ChannelDefinition::content(block_channel_identifier(), self.air, block_registry_kind())
     }
 
+    /// The channel definition for the state of each voxel's block; new voxels are in state 0, the
+    /// whole cube.
+    pub fn state_channel(&self) -> ChannelDefinition {
+        ChannelDefinition::number(state_channel_identifier(), 0)
+    }
+
     /// The terrain generators this plugin provides for a world with this seed, writing blocks into
     /// `block_channel` of the world's grid layout.
     pub fn terrain_generators(
@@ -115,35 +148,25 @@ impl BaseBlocks {
         generators
     }
 
-    /// Colours by block id, for the renderer's palette. Blocks from plugins that are not loaded are
-    /// magenta.
-    pub fn palette(&self) -> Vec<[f32; 3]> {
-        self.blocks
+    /// What every block looks like and how it fills its cell, by block id. Blocks from plugins that
+    /// are not loaded are opaque magenta cubes.
+    pub fn block_table(&self) -> BlockTable {
+        let definitions: Vec<Option<&BlockDefinition>> = self
+            .blocks
             .iter()
-            .map(|(_, entry)| {
-                entry
-                    .content()
-                    .map_or(MISSING_BLOCK_COLOR, |appearance| appearance.color)
-            })
-            .collect()
+            .map(|(_, entry)| entry.content())
+            .collect();
+        BlockTable::from_definitions(&definitions)
     }
 
-    /// Whether each block id hides the faces behind it. Blocks that are not loaded count as opaque,
-    /// so unknown content is drawn rather than disappearing.
-    pub fn opacity_table(&self) -> Vec<bool> {
-        self.blocks
-            .iter()
-            .map(|(_, entry)| entry.content().is_none_or(|appearance| appearance.opaque))
-            .collect()
-    }
-
-    pub fn block_id(&self, identifier: &NamespacedId) -> Option<RuntimeId<BlockAppearance>> {
+    pub fn block_id(&self, identifier: &NamespacedId) -> Option<RuntimeId<BlockDefinition>> {
         self.blocks.runtime_id(identifier)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use block_models::MISSING_BLOCK_COLOR;
     use content_registry::IdentifierRegistry;
     use voxel_grid::test_support::StandardTestLayout;
     use voxel_space::BrickCoordinate;
@@ -170,20 +193,54 @@ mod tests {
             ]
         );
         assert_eq!(blocks.block_channel().default_value, 0);
+        assert_eq!(blocks.state_channel().default_value, 0);
+        assert_eq!(
+            blocks.state_channel().identifier.to_string(),
+            "base_blocks:block_state"
+        );
     }
 
     #[test]
-    fn palette_and_opacity_follow_the_registry_with_missing_blocks_magenta_and_opaque() {
+    fn solid_blocks_have_seven_shapes_by_state_and_air_has_one() {
+        let table = BaseBlocks::new().block_table();
+        assert_eq!(table.state_count(0), 1);
+        for block in 1..4 {
+            assert_eq!(table.state_count(block), SHAPE_NAMES.len() as u32);
+        }
+        assert_eq!(standard_shapes().len(), SHAPE_NAMES.len());
+        // State 0 is the whole cube and the others are not; the names follow the shapes.
+        let stone = |state| table.model_of(1, state);
+        assert!(table.is_opaque_cube(stone(0)));
+        for state in 1..7 {
+            assert!(!table.is_opaque_cube(stone(state)), "{}", shape_name(state));
+            assert!(table.is_solid(stone(state)));
+        }
+        assert!(table.shape(stone(1)).covers_face(FaceDirection::NegativeY));
+        assert!(table.shape(stone(2)).covers_face(FaceDirection::PositiveY));
+        assert!(table.shape(stone(3)).covers_face(FaceDirection::PositiveX));
+        assert!(table.shape(stone(4)).covers_face(FaceDirection::NegativeX));
+        assert!(table.shape(stone(5)).covers_face(FaceDirection::NegativeZ));
+        assert!(table.shape(stone(6)).covers_face(FaceDirection::PositiveZ));
+        assert_eq!(shape_name(0), "whole");
+        assert_eq!(shape_name(2), "top slab");
+        assert_eq!(shape_name(99), "whole");
+    }
+
+    #[test]
+    fn the_table_has_the_blocks_colours_air_is_see_through_and_missing_blocks_are_magenta_cubes() {
         let mut blocks = BaseBlocks::new();
-        assert_eq!(blocks.opacity_table(), [false, true, true, true]);
-        assert_eq!(blocks.palette().len(), 4);
-        assert_eq!(blocks.palette()[3], [0.30, 0.62, 0.20]);
+        let table = blocks.block_table();
+        assert_eq!(table.palette().len(), 4);
+        assert_eq!(table.color(3), [0.30, 0.62, 0.20]);
+        assert!(!table.is_solid(table.model_of(0, 0)));
+        assert!(table.is_see_through(table.model_of(0, 0)));
         let missing = blocks
             .blocks
             .register_missing(identifier("elsewhere:marble"));
         assert_eq!(missing.raw(), 4);
-        assert_eq!(blocks.palette()[4], MISSING_BLOCK_COLOR);
-        assert!(blocks.opacity_table()[4]);
+        let table = blocks.block_table();
+        assert_eq!(table.palette()[4], MISSING_BLOCK_COLOR);
+        assert!(table.is_opaque_cube(table.model_of(4, 0)));
     }
 
     #[test]

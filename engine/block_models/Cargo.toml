@@ -1,0 +1,16 @@
+[package]
+name = "block_models"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "What blocks look like and how they fill their cell: shapes, appearance, light, and the table that answers for every block and state."
+
+[dependencies]
+voxel_space.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

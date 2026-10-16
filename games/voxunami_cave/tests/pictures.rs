@@ -10,7 +10,7 @@ use game_shell::session::{Mode, Session};
 use game_shell::view::{apply_updates, camera_at, configure_renderer};
 use renderer::{GraphicsContext, VoxelRenderer};
 use transport::Connection;
-use voxunami_cave::game::{Cave, break_block};
+use voxunami_cave::game::{Cave, break_block, place_block_with_state};
 
 const WIDTH: u32 = 160;
 const HEIGHT: u32 = 90;
@@ -132,4 +132,62 @@ fn an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw() 
         );
     }
     std::fs::remove_dir_all(&directory).unwrap();
+}
+
+/// Looks down at the ground from three voxels up, places a stone block in `state` on the ground below
+/// and returns what the picture was before and after, with the statistics of the second.
+fn placing_a_block_in_a_state(
+    context: &GraphicsContext,
+    state: u32,
+) -> (Vec<u8>, Vec<u8>, renderer::RenderStatistics) {
+    let mut rig = Rig::new();
+    let mut player = rig.join([16.5, 110.0, 16.5], 0.0, 0.0);
+    let mut updates = {
+        let server = &mut rig.server;
+        player.settle(|| {
+            server.step();
+        })
+    }
+    .unwrap();
+    player.camera = above_ground(&player, 16, 16, 3.0);
+    player.send_pose();
+    {
+        let server = &mut rig.server;
+        updates.extend(
+            player
+                .settle(|| {
+                    server.step();
+                })
+                .unwrap(),
+        );
+    }
+    let mut renderer = renderer_for(context, &player, updates);
+    let (before, _) = renderer.render_to_rgba(&player.camera, WIDTH, HEIGHT);
+
+    place_block_with_state(&mut player, "base_blocks:stone", state);
+    let updates = {
+        let server = &mut rig.server;
+        player.settle(|| {
+            server.step();
+        })
+    }
+    .unwrap();
+    apply_updates(&mut renderer, updates);
+    let (after, statistics) = renderer.render_to_rgba(&player.camera, WIDTH, HEIGHT);
+    (before, after, statistics)
+}
+
+#[test]
+fn a_slab_a_player_places_is_drawn_as_a_slab_and_a_whole_block_is_not() {
+    for context in contexts() {
+        let (before, whole, whole_statistics) = placing_a_block_in_a_state(&context, 0);
+        let (_, slab, slab_statistics) = placing_a_block_in_a_state(&context, 1);
+        let (_, stair, stair_statistics) = placing_a_block_in_a_state(&context, 3);
+        assert_eq!(whole_statistics.detailed_quads_drawn, 0);
+        assert!(slab_statistics.detailed_quads_drawn > 0);
+        assert!(stair_statistics.detailed_quads_drawn > slab_statistics.detailed_quads_drawn);
+        // Each placement changes the picture, and the three blocks look different from one another.
+        assert!(before != whole && before != slab && before != stair);
+        assert!(whole != slab && whole != stair && slab != stair);
+    }
 }

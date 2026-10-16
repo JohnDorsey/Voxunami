@@ -1,0 +1,20 @@
+# Throwaway light experiment (see ../../light-spike.md). A standalone project, not part of the
+# workspace: `cd docs/spikes/light && cargo run --release`.
+[package]
+name = "light_spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+base_blocks = { path = "../../../plugins/base_blocks" }
+block_models = { path = "../../../engine/block_models" }
+terrain = { path = "../../../engine/terrain" }
+voxel_grid = { path = "../../../engine/voxel_grid" }
+voxel_meshing = { path = "../../../engine/voxel_meshing" }
+voxel_space = { path = "../../../engine/voxel_space" }
+
+[profile.release]
+debug = false

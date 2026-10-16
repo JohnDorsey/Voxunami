@@ -8,6 +8,7 @@ description = "Voxunami 2048: an endless landscape of numbered blocks to push ar
 
 [dependencies]
 binary_codec.workspace = true
+block_models.workspace = true
 content_registry.workspace = true
 game_shell.workspace = true
 namespaced_id.workspace = true
@@ -18,6 +19,7 @@ transport.workspace = true
 voxel_grid.workspace = true
 voxel_space.workspace = true
 world_storage.workspace = true
+world_view.workspace = true
 
 [dev-dependencies]
 client.workspace = true

@@ -7,6 +7,7 @@ publish.workspace = true
 description = "Turns a world into what a viewer draws: meshes kept up to date in the background, and rays cast through voxels."
 
 [dependencies]
+block_models.workspace = true
 terrain.workspace = true
 voxel_grid.workspace = true
 voxel_meshing.workspace = true

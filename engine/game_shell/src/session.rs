@@ -2,8 +2,10 @@
 //! and the messages the player's actions turn into. Windows and headless runs both drive one.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use block_models::BlockTable;
 use client::{Client, ClientError, ClientEvent, Handshake, HandshakeProgress};
 use namespaced_id::NamespacedId;
 use player_presence::{
@@ -41,6 +43,7 @@ pub enum Mode {
 pub struct Session<C: Connection, G: GameDefinition> {
     client: Client<C>,
     content: G::Content,
+    block_table: Arc<BlockTable>,
     mesher: WorldMesher,
     pub camera: Camera,
     /// What the game keeps on the client between messages and clicks.
@@ -84,7 +87,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         let seed = welcomed.world_seed()?;
         let (client, _report) = welcomed.finish(content.load_context(seed))?;
 
-        let opacity = content.opacity_table();
+        let block_table = Arc::new(content.block_table());
         let worker_count = std::thread::available_parallelism()
             .map_or(2, |count| count.get().saturating_sub(1).max(2));
         let mesher = WorldMesher::new(
@@ -92,13 +95,13 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                 view_radius_bricks,
                 worker_count,
             },
-            content.material_channel(),
-            // Values the content does not list are drawn, so unknown content shows rather than vanishes.
-            move |value| opacity.get(value as usize).copied().unwrap_or(true),
+            content.view_channels(),
+            Arc::clone(&block_table),
         );
         Ok(Self {
             client,
             content,
+            block_table,
             mesher,
             camera: start,
             state: G::ClientState::default(),
@@ -146,6 +149,11 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
 
     pub fn mesher(&self) -> &WorldMesher {
         &self.mesher
+    }
+
+    /// What every block and state of this game looks like and how it fills its cell.
+    pub fn block_table(&self) -> &BlockTable {
+        &self.block_table
     }
 
     /// Where every player is, and in which level, as far as the server has said.
@@ -320,7 +328,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     pub fn target(&self) -> Option<RayHit> {
         let forward = self.camera.forward().to_array();
         cast_ray(self.camera.position, forward, G::reach(), |voxel| {
-            self.mesher.is_opaque_at(voxel)
+            self.mesher.is_solid_at(voxel)
         })
     }
 

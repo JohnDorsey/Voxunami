@@ -7,14 +7,15 @@ publish.workspace = true
 description = "Plugin: air, stone, dirt and grass, and the rolling hills terrain that uses them."
 
 [dependencies]
+block_models.workspace = true
 content_registry.workspace = true
 namespaced_id.workspace = true
 terrain.workspace = true
 voxel_grid.workspace = true
+voxel_space.workspace = true
 
 [dev-dependencies]
 voxel_grid = { workspace = true, features = ["test-support"] }
-voxel_space.workspace = true
 
 [lints]
 workspace = true

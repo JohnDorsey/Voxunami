@@ -14,7 +14,7 @@ pub fn configure_renderer(
     content: &impl GameContent,
     view_radius_bricks: i64,
 ) {
-    renderer.set_palette(&content.palette());
+    renderer.set_palette(&content.block_table().palette());
     let reach = (view_radius_bricks * 32) as f32;
     renderer.set_atmosphere(Atmosphere {
         fog_start: reach * 0.6,
@@ -26,7 +26,7 @@ pub fn configure_renderer(
 pub fn apply_updates(renderer: &mut VoxelRenderer, updates: Vec<MeshUpdate>) {
     for update in updates {
         match update {
-            MeshUpdate::Upload { coordinate, quads } => renderer.upload_brick(coordinate, &quads),
+            MeshUpdate::Upload { coordinate, mesh } => renderer.upload_brick(coordinate, &mesh),
             MeshUpdate::Remove(coordinate) => renderer.remove_brick(coordinate),
         }
     }

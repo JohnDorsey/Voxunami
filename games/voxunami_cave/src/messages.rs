@@ -1,7 +1,8 @@
 //! The game's own message, carried inside the engine's generic game messages.
 //!
 //! Blocks are named by identifier text, never by number, so a client and server that number their
-//! content differently still agree.
+//! content differently still agree. A block's state (which shape it has) is a number the block's
+//! own definition gives meaning to.
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
@@ -14,11 +15,12 @@ pub fn set_block_kind() -> NamespacedId {
         .expect("constant identifier is valid")
 }
 
-/// A request to put `block` at `at`.
+/// A request to put `block`, in `state`, at `at`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SetBlock {
     pub at: VoxelCoordinate,
     pub block: NamespacedId,
+    pub state: u32,
 }
 
 pub fn encode_set_block(request: &SetBlock) -> Vec<u8> {
@@ -27,6 +29,7 @@ pub fn encode_set_block(request: &SetBlock) -> Vec<u8> {
         writer.write_signed_varint(component);
     }
     writer.write_identifier(&request.block);
+    writer.write_varint(u64::from(request.state));
     writer.into_bytes()
 }
 
@@ -39,8 +42,10 @@ pub fn decode_set_block(payload: &[u8]) -> Result<SetBlock, DecodeError> {
     )
     .map_err(|_| DecodeError::Invalid("a voxel coordinate is out of range"))?;
     let block = reader.read_identifier()?;
+    let state = u32::try_from(reader.read_varint()?)
+        .map_err(|_| DecodeError::Invalid("a block state is out of range"))?;
     reader.finish()?;
-    Ok(SetBlock { at, block })
+    Ok(SetBlock { at, block, state })
 }
 
 #[cfg(test)]
@@ -54,8 +59,29 @@ mod tests {
         let request = SetBlock {
             at: VoxelCoordinate::new(-5, 100, 7),
             block: "base_blocks:stone".parse().unwrap(),
+            state: 5,
         };
         assert_eq!(decode_set_block(&encode_set_block(&request)), Ok(request));
+    }
+
+    #[test]
+    fn every_state_up_to_the_largest_survives_and_larger_ones_are_errors() {
+        let request = |state| SetBlock {
+            at: VoxelCoordinate::ORIGIN,
+            block: "a:b".parse().unwrap(),
+            state,
+        };
+        for state in [0, 1, 127, 128, 70_000, u32::MAX] {
+            let request = request(state);
+            assert_eq!(decode_set_block(&encode_set_block(&request)), Ok(request));
+        }
+        let mut oversized = ByteWriter::new();
+        for _ in 0..3 {
+            oversized.write_signed_varint(0);
+        }
+        oversized.write_identifier(&"a:b".parse().unwrap());
+        oversized.write_varint(u64::from(u32::MAX) + 1);
+        assert!(decode_set_block(&oversized.into_bytes()).is_err());
     }
 
     #[test]
@@ -63,6 +89,7 @@ mod tests {
         let good = encode_set_block(&SetBlock {
             at: VoxelCoordinate::ORIGIN,
             block: "a:b".parse().unwrap(),
+            state: 300,
         });
         for length in 0..good.len() {
             assert!(decode_set_block(&good[..length]).is_err(), "{length}");

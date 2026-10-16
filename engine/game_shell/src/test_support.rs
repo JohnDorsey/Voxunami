@@ -1,12 +1,13 @@
 //! A minimal game for the shell's own tests, so they do not depend on any real game.
 
+use block_models::BlockTable;
 use content_registry::IdentifierRegistry;
 use namespaced_id::NamespacedId;
 use server::GameLogic;
 use server::test_support::ScriptedLogic;
-use voxel_grid::ChannelIndex;
 use world_storage::test_support::{Game, Plugin, id};
 use world_storage::{LoadContext, WorldData};
+use world_view::ViewChannels;
 
 use crate::definition::{CameraStart, GameContent, GameDefinition};
 
@@ -17,22 +18,23 @@ pub struct ExampleContent {
 }
 
 impl GameContent for ExampleContent {
-    fn material_channel(&self) -> ChannelIndex {
-        self.game
-            .new_world()
-            .main()
-            .overrides
-            .layout()
-            .channel_index(&id("core:block"))
-            .expect("the fixture has a block channel")
+    fn view_channels(&self) -> ViewChannels {
+        ViewChannels {
+            blocks: self
+                .game
+                .new_world()
+                .main()
+                .overrides
+                .layout()
+                .channel_index(&id("core:block"))
+                .expect("the fixture has a block channel"),
+            states: None,
+            light: None,
+        }
     }
 
-    fn palette(&self) -> Vec<[f32; 3]> {
-        vec![[0.0; 3], [0.5; 3], [0.4, 0.3, 0.2], [0.3, 0.6, 0.2]]
-    }
-
-    fn opacity_table(&self) -> Vec<bool> {
-        vec![false, true, true, true]
+    fn block_table(&self) -> BlockTable {
+        BlockTable::of_cubes(&[false, true, true, true])
     }
 
     fn new_world(&self, _seed: u64) -> WorldData {

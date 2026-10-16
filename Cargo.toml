@@ -10,6 +10,7 @@ publish = false
 [workspace.dependencies]
 # Internal crates
 base_blocks = { path = "plugins/base_blocks" }
+block_models = { path = "engine/block_models" }
 binary_codec = { path = "engine/binary_codec" }
 client = { path = "engine/client" }
 content_registry = { path = "engine/content_registry" }

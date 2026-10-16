@@ -9,6 +9,7 @@ description = "Voxunami Cave: the Minecraft-like game. For now: fly through cave
 [dependencies]
 base_blocks.workspace = true
 binary_codec.workspace = true
+block_models.workspace = true
 content_registry.workspace = true
 game_shell.workspace = true
 namespaced_id.workspace = true
@@ -19,12 +20,12 @@ transport.workspace = true
 voxel_grid.workspace = true
 voxel_space.workspace = true
 world_storage.workspace = true
+world_view.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
 renderer.workspace = true
 wgpu = "30.0.1"
-world_view.workspace = true
 replay.workspace = true
 client.workspace = true
 

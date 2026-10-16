@@ -4,16 +4,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use block_models::BlockTable;
 use content_registry::Registry;
 use terrain::{TerrainGenerator, WorldTerrain};
 
 use region_octree::BrickCube;
 use voxel_grid::{Brick, ChannelIndex, Grid, GridLayout};
-use voxel_meshing::{PackedQuad, Quad};
+use voxel_meshing::{FULL_LIGHT, PackedBrickMesh, Quad};
 use voxel_space::{BrickBox, BrickCoordinate, FaceDirection, VoxelCoordinate};
 use world_storage::test_support::{Game, Plugin, brick, id};
 use world_storage::{LevelData, WorldData};
-use world_view::{MeshUpdate, ViewSettings, WorldMesher};
+use world_view::{MeshUpdate, ViewChannels, ViewSettings, WorldMesher};
 
 struct Scene {
     game: Game,
@@ -54,14 +55,20 @@ impl Scene {
     }
 
     fn mesher(&self, radius: i64) -> WorldMesher {
-        let air = self.air;
+        // Air is see-through; every other block of the fixtures is an opaque cube.
+        let mut opaque = vec![true; 16];
+        opaque[self.air as usize] = false;
         WorldMesher::new(
             ViewSettings {
                 view_radius_bricks: radius,
                 worker_count: 3,
             },
-            self.material,
-            move |value| value != air,
+            ViewChannels {
+                blocks: self.material,
+                states: None,
+                light: None,
+            },
+            Arc::new(BlockTable::of_cubes(&opaque)),
         )
     }
 
@@ -97,14 +104,14 @@ impl Scene {
 }
 
 /// Applies updates the way a renderer would.
-fn apply(live: &mut HashMap<BrickCoordinate, Vec<PackedQuad>>, updates: Vec<MeshUpdate>) {
+fn apply(live: &mut HashMap<BrickCoordinate, PackedBrickMesh>, updates: Vec<MeshUpdate>) {
     for update in updates {
         match update {
-            MeshUpdate::Upload { coordinate, quads } if quads.is_empty() => {
+            MeshUpdate::Upload { coordinate, mesh } if mesh.is_empty() => {
                 live.remove(&coordinate);
             }
-            MeshUpdate::Upload { coordinate, quads } => {
-                live.insert(coordinate, quads);
+            MeshUpdate::Upload { coordinate, mesh } => {
+                live.insert(coordinate, mesh);
             }
             MeshUpdate::Remove(coordinate) => {
                 live.remove(&coordinate);
@@ -113,8 +120,10 @@ fn apply(live: &mut HashMap<BrickCoordinate, Vec<PackedQuad>>, updates: Vec<Mesh
     }
 }
 
-fn unpacked(quads: &[PackedQuad]) -> Vec<Quad> {
-    quads.iter().map(|quad| quad.unpack()).collect()
+/// The whole-voxel quads of a mesh; the fixtures' blocks are all whole cubes, so it has no others.
+fn unpacked(mesh: &PackedBrickMesh) -> Vec<Quad> {
+    assert!(mesh.detailed.is_empty());
+    mesh.quads.iter().map(|quad| quad.unpack()).collect()
 }
 
 #[test]
@@ -148,7 +157,8 @@ fn flat_ground_streams_in_exactly_one_top_quad_per_surface_brick() {
                 width: 32,
                 height: 32,
                 face: FaceDirection::PositiveY,
-                material: grass
+                material: grass,
+                light: FULL_LIGHT,
             }],
             "{coordinate}"
         );
@@ -173,6 +183,14 @@ fn nothing_is_loaded_until_the_world_says_which_generator_made_the_terrain() {
     );
     assert_eq!(
         mesher.is_opaque_at(VoxelCoordinate::new(5, 20, 5)),
+        Some(false)
+    );
+    assert_eq!(
+        mesher.is_solid_at(VoxelCoordinate::new(5, 3, 5)),
+        Some(true)
+    );
+    assert_eq!(
+        mesher.is_solid_at(VoxelCoordinate::new(5, 20, 5)),
         Some(false)
     );
     assert_eq!(
@@ -292,7 +310,7 @@ fn editing_everything_away_removes_the_mesh() {
     let updates = mesher.settle(scene.world.main(), brick(0, 0, 0));
     assert!(updates.iter().any(|update| matches!(
         update,
-        MeshUpdate::Upload { coordinate, quads } if *coordinate == brick(0, 0, 0) && quads.is_empty()
+        MeshUpdate::Upload { coordinate, mesh } if *coordinate == brick(0, 0, 0) && mesh.is_empty()
     )));
     apply(&mut live, updates);
     assert!(!live.contains_key(&brick(0, 0, 0)));

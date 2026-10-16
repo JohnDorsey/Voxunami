@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 
+use block_models::BlockDefinition;
 use content_registry::{IdentifierRegistry, Registry};
 use game_shell::GameContent;
 use game_shell::files::{open_recording, record_connection};
@@ -16,7 +17,7 @@ use transport::Connection;
 use transport::loopback::LoopbackConnector;
 use voxel_grid::Grid;
 use voxel_space::{FaceDirection, LocalVoxelIndex, VoxelCoordinate};
-use voxunami_2048::content::{BlockAppearance, Content2048, block_registry_kind, landscape_id};
+use voxunami_2048::content::{Content2048, block_registry_kind, landscape_id};
 use voxunami_2048::game::{Game2048, pull_with_tool, push_with_tool};
 use voxunami_2048::logic::REACH;
 use voxunami_2048::material::{COASTING_RANGE, Material};
@@ -382,17 +383,13 @@ fn world_with_a_block_from_elsewhere(
     let channel = content.block_channel();
     let mut world = content.new_world(SEED);
     let mut blocks = Registry::new();
-    let appearance = BlockAppearance {
-        color: [0.5; 3],
-        opaque: true,
-    };
     let names = std::iter::once("voxunami_2048:air".to_owned())
         .chain(NumberedBlock::all().map(|block| format!("voxunami_2048:{}", block.name())))
         .chain(["elsewhere:marble".to_owned()]);
     let mut marble = 0;
     for name in names {
         marble = blocks
-            .register(name.parse().unwrap(), appearance)
+            .register(name.parse().unwrap(), BlockDefinition::cube([0.5; 3]))
             .unwrap()
             .raw();
     }

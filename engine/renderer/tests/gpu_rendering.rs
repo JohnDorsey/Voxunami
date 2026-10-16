@@ -7,11 +7,14 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use block_models::{BlockDefinition, BlockTable, Shape};
 use glam::Vec3;
 use renderer::{Atmosphere, Avatar, Camera, GraphicsContext, RenderStatistics, VoxelRenderer};
 use voxel_grid::ChannelStorage;
-use voxel_meshing::{BrickNeighbourhood, mesh_brick};
-use voxel_space::{BRICK_VOXEL_COUNT, BrickCoordinate, LocalVoxelIndex, WorldPosition};
+use voxel_meshing::{BrickChannels, BrickNeighbourhood, mesh_brick};
+use voxel_space::{
+    BRICK_VOXEL_COUNT, BrickCoordinate, FaceDirection, LocalVoxelIndex, WorldPosition,
+};
 
 const SIZE: u32 = 64;
 const SKY: [f32; 3] = [0.2, 0.4, 0.8];
@@ -75,15 +78,16 @@ fn place_voxels(renderer: &mut VoxelRenderer, brick: BrickCoordinate, voxels: &[
         values[LocalVoxelIndex::new(x, y, z).index()] = material;
     }
     let storage = ChannelStorage::from_values(&values);
-    let quads = mesh_brick(
+    let mut opaque = vec![true; 256];
+    opaque[0] = false;
+    let mesh = mesh_brick(
         &BrickNeighbourhood {
-            center: &storage,
+            center: BrickChannels::blocks_only(&storage),
             neighbours: [None; 6],
         },
-        |value| value != 0,
+        &BlockTable::of_cubes(&opaque),
     );
-    let packed: Vec<_> = quads.iter().map(|quad| quad.pack()).collect();
-    renderer.upload_brick(brick, &packed);
+    renderer.upload_brick(brick, &mesh.pack());
 }
 
 fn camera_at(brick: BrickCoordinate, offset: [f32; 3]) -> Camera {
@@ -651,5 +655,184 @@ fn the_sun_direction_is_normalized_so_its_length_does_not_change_the_shading() {
             render_with_sun(Vec3::new(1.0, 2.0, 0.5)),
             render_with_sun(Vec3::new(10.0, 20.0, 5.0))
         );
+    }
+}
+
+/// How much light a pixel stands for: its colour channels decoded from sRGB and added.
+#[allow(clippy::disallowed_methods)] // a test of cosmetics, not simulation
+fn linear_brightness(pixel: [u8; 4]) -> f64 {
+    pixel[..3]
+        .iter()
+        .map(|&byte| {
+            let value = f64::from(byte) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        })
+        .sum()
+}
+
+/// Blocks for the shape tests: air, red (a block with states: whole, bottom slab, top slab), green.
+fn shaped_table() -> BlockTable {
+    let air = BlockDefinition::air();
+    let red = BlockDefinition::cube([0.9, 0.1, 0.1]).with_shapes(vec![
+        Shape::full(),
+        Shape::half(FaceDirection::NegativeY),
+        Shape::half(FaceDirection::PositiveY),
+    ]);
+    let green = BlockDefinition::cube([0.1, 0.8, 0.1]);
+    BlockTable::from_definitions(&[Some(&air), Some(&red), Some(&green)])
+}
+
+/// A brick holding the given blocks (local position, block, state) with `light` in every voxel, if
+/// given, meshed against the shaped table and uploaded.
+fn place_blocks(
+    renderer: &mut VoxelRenderer,
+    brick: BrickCoordinate,
+    blocks: &[([u8; 3], u32, u32)],
+    light: Option<u32>,
+) {
+    let mut block_values = vec![0u32; BRICK_VOXEL_COUNT];
+    let mut state_values = vec![0u32; BRICK_VOXEL_COUNT];
+    for &([x, y, z], block, state) in blocks {
+        let index = LocalVoxelIndex::new(x, y, z).index();
+        block_values[index] = block;
+        state_values[index] = state;
+    }
+    let (blocks, states) = (
+        ChannelStorage::from_values(&block_values),
+        ChannelStorage::from_values(&state_values),
+    );
+    let light = light.map(ChannelStorage::uniform);
+    let mesh = mesh_brick(
+        &BrickNeighbourhood {
+            center: BrickChannels {
+                blocks: &blocks,
+                states: Some(&states),
+                light: light.as_ref(),
+            },
+            neighbours: [None; 6],
+        },
+        &shaped_table(),
+    );
+    renderer.upload_brick(brick, &mesh.pack());
+}
+
+#[test]
+fn a_slab_fills_only_half_of_its_cell_and_is_drawn_through_the_detailed_pipeline() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        place_blocks(&mut renderer, ORIGIN_BRICK, &[([16, 16, 16], 1, 1)], None);
+        // Looking along -z at the slab's cell from the front: a ray through its lower half hits the
+        // slab; one through its upper half goes over it.
+        let through_the_slab = render(&mut renderer, &camera_at(ORIGIN_BRICK, [16.5, 16.25, 22.0]));
+        let over_the_slab = render(&mut renderer, &camera_at(ORIGIN_BRICK, [16.5, 16.75, 22.0]));
+        save_image("slab", &name, &through_the_slab);
+        assert!(
+            is_red(pixel(&through_the_slab, SIZE / 2, SIZE / 2)),
+            "{name}"
+        );
+        assert!(is_sky(pixel(&over_the_slab, SIZE / 2, SIZE / 2)), "{name}");
+        // Seen from above the slab's top is a red surface, and from below its bottom.
+        let top = camera_at(ORIGIN_BRICK, [16.5, 22.0, 16.5]);
+        let mut from_above = top;
+        from_above.look_by(0.0, -std::f32::consts::FRAC_PI_2);
+        assert!(is_red(pixel(
+            &render(&mut renderer, &from_above),
+            SIZE / 2,
+            SIZE / 2
+        )));
+
+        let (_, statistics) =
+            renderer.render_to_rgba(&camera_at(ORIGIN_BRICK, [16.5, 16.25, 22.0]), SIZE, SIZE);
+        assert_eq!(
+            (statistics.quads_drawn, statistics.detailed_quads_drawn),
+            (6, 6)
+        );
+        assert_eq!(renderer.total_quad_count(), 6);
+
+        // A top slab is the other half.
+        place_blocks(&mut renderer, ORIGIN_BRICK, &[([16, 16, 16], 1, 2)], None);
+        assert!(is_sky(pixel(
+            &render(&mut renderer, &camera_at(ORIGIN_BRICK, [16.5, 16.25, 22.0])),
+            SIZE / 2,
+            SIZE / 2
+        )));
+        assert!(is_red(pixel(
+            &render(&mut renderer, &camera_at(ORIGIN_BRICK, [16.5, 16.75, 22.0])),
+            SIZE / 2,
+            SIZE / 2
+        )));
+
+        // In state 0 the same block is a whole cube, drawn the cheap way.
+        place_blocks(&mut renderer, ORIGIN_BRICK, &[([16, 16, 16], 1, 0)], None);
+        let (_, statistics) =
+            renderer.render_to_rgba(&camera_at(ORIGIN_BRICK, [16.5, 16.75, 22.0]), SIZE, SIZE);
+        assert_eq!(
+            (statistics.quads_drawn, statistics.detailed_quads_drawn),
+            (6, 0)
+        );
+    }
+}
+
+#[test]
+fn slabs_and_cubes_in_one_brick_both_draw_and_the_slab_sits_on_the_floor_of_its_cell() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        // A green cube, and a red bottom slab right behind it.
+        place_blocks(
+            &mut renderer,
+            ORIGIN_BRICK,
+            &[([16, 16, 17], 2, 0), ([16, 16, 14], 1, 1)],
+            None,
+        );
+        // Straight on at the height of the lower half: the green cube hides the slab behind it.
+        let image = render(&mut renderer, &camera_at(ORIGIN_BRICK, [16.5, 16.25, 24.0]));
+        assert!(is_green(pixel(&image, SIZE / 2, SIZE / 2)), "{name}");
+        // Higher up, looking down over the cube: the slab's top is visible beyond it.
+        let mut looking_down = camera_at(ORIGIN_BRICK, [16.5, 20.0, 24.0]);
+        looking_down.look_by(0.0, -0.40);
+        let image = render(&mut renderer, &looking_down);
+        save_image("slab_and_cube", &name, &image);
+        let reds = (0..SIZE)
+            .flat_map(|y| (0..SIZE).map(move |x| (x, y)))
+            .filter(|&(x, y)| is_red(pixel(&image, x, y)))
+            .count();
+        let greens = (0..SIZE)
+            .flat_map(|y| (0..SIZE).map(move |x| (x, y)))
+            .filter(|&(x, y)| is_green(pixel(&image, x, y)))
+            .count();
+        assert!(reds > 0 && greens > 0, "{name}: {reds} red, {greens} green");
+    }
+}
+
+#[test]
+fn a_face_is_as_bright_as_its_light_says() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+        let mut brightness_at = |light: Option<u32>| {
+            place_blocks(&mut renderer, ORIGIN_BRICK, &[([16, 16, 16], 2, 0)], light);
+            pixel(&render(&mut renderer, &camera), SIZE / 2, SIZE / 2)
+        };
+        let full = brightness_at(None);
+        assert_eq!(
+            brightness_at(Some(255)),
+            full,
+            "{name}: full light is no light value at all"
+        );
+        let half = brightness_at(Some(128));
+        let dark = brightness_at(Some(0));
+        let ratio = linear_brightness(half) / linear_brightness(full);
+        assert!(
+            (0.48..0.52).contains(&ratio),
+            "{name}: half light is {ratio} of full, in the light the colours stand for"
+        );
+        assert_eq!(brightness(dark), 0, "{name}: no light is black");
     }
 }

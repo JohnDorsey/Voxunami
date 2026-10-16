@@ -3,12 +3,14 @@
 
 use std::sync::Arc;
 
+use block_models::{BlockDefinition, BlockTable};
 use content_registry::{IdentifierRegistry, Registry};
 use game_shell::GameContent;
 use namespaced_id::NamespacedId;
 use terrain::{TerrainGenerator, WorldTerrain};
 use voxel_grid::{ChannelDefinition, ChannelIndex, Grid, GridLayout};
 use world_storage::{LevelData, LoadContext, WorldData};
+use world_view::ViewChannels;
 
 use crate::landscape::NumberedHills;
 use crate::material::Material;
@@ -40,13 +42,6 @@ pub fn block_channel_identifier() -> NamespacedId {
 
 pub fn numbered_hills_generator_identifier() -> NamespacedId {
     identifier("voxunami_2048:numbered_hills_v1")
-}
-
-/// How a block looks.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BlockAppearance {
-    pub color: [f32; 3],
-    pub opaque: bool,
 }
 
 /// A colour (sRGB) for a number, stepping around the hues so neighbouring numbers differ clearly.
@@ -81,7 +76,7 @@ fn block_color(block: NumberedBlock) -> [f32; 3] {
 /// [`NumberedBlock::id`]).
 #[derive(Debug)]
 pub struct Content2048 {
-    blocks: Registry<BlockAppearance>,
+    blocks: Registry<BlockDefinition>,
 }
 
 impl Default for Content2048 {
@@ -94,23 +89,14 @@ impl Content2048 {
     pub fn new() -> Self {
         let mut blocks = Registry::new();
         let air = blocks
-            .register(
-                identifier("voxunami_2048:air"),
-                BlockAppearance {
-                    color: [0.0; 3],
-                    opaque: false,
-                },
-            )
+            .register(identifier("voxunami_2048:air"), BlockDefinition::air())
             .expect("the registry is empty");
         assert_eq!(air.raw(), AIR);
         for block in NumberedBlock::all() {
             let registered = blocks
                 .register(
                     identifier(&format!("voxunami_2048:{}", block.name())),
-                    BlockAppearance {
-                        color: block_color(block),
-                        opaque: true,
-                    },
+                    BlockDefinition::cube(block_color(block)),
                 )
                 .expect("the block names are distinct");
             assert_eq!(registered.raw(), block.id());
@@ -148,22 +134,21 @@ impl Content2048 {
 }
 
 impl GameContent for Content2048 {
-    fn material_channel(&self) -> ChannelIndex {
-        self.block_channel()
+    fn view_channels(&self) -> ViewChannels {
+        ViewChannels {
+            blocks: self.block_channel(),
+            states: None,
+            light: None,
+        }
     }
 
-    fn palette(&self) -> Vec<[f32; 3]> {
-        self.blocks
+    fn block_table(&self) -> BlockTable {
+        let definitions: Vec<Option<&BlockDefinition>> = self
+            .blocks
             .iter()
-            .map(|(_, entry)| entry.content().map_or([1.0, 0.0, 1.0], |block| block.color))
-            .collect()
-    }
-
-    fn opacity_table(&self) -> Vec<bool> {
-        self.blocks
-            .iter()
-            .map(|(_, entry)| entry.content().is_none_or(|block| block.opaque))
-            .collect()
+            .map(|(_, entry)| entry.content())
+            .collect();
+        BlockTable::from_definitions(&definitions)
     }
 
     /// A new world: numbered hills as far as anyone goes, with nothing changed yet.
@@ -220,12 +205,13 @@ mod tests {
             name(NumberedBlock::new(Material::SpringIce, MAXIMUM_EXPONENT).id()),
             "voxunami_2048:spring_ice_1048576"
         );
-        assert_eq!(
-            content.palette().len(),
-            1 + 3 * usize::from(MAXIMUM_EXPONENT)
+        let table = content.block_table();
+        assert_eq!(table.palette().len(), 1 + 3 * usize::from(MAXIMUM_EXPONENT));
+        assert!(!table.is_solid(table.model_of(AIR, 0)));
+        assert!(
+            (1..table.block_count() as u32)
+                .all(|block| table.is_opaque_cube(table.model_of(block, 0)))
         );
-        assert!(!content.opacity_table()[0]);
-        assert!(content.opacity_table()[1..].iter().all(|&opaque| opaque));
     }
 
     fn distance(first: [f32; 3], second: [f32; 3]) -> f32 {

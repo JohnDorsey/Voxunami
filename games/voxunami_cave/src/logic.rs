@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use block_models::BlockTable;
 use game_shell::PoseBook;
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, Tick};
@@ -19,7 +20,10 @@ pub const REACH: f64 = 10.0;
 #[derive(Debug)]
 pub struct CaveLogic {
     block_ids: HashMap<NamespacedId, u32>,
+    /// How many states each block has, which is what makes a request for a state valid.
+    table: BlockTable,
     block_channel: ChannelIndex,
+    state_channel: ChannelIndex,
     poses: PoseBook,
 }
 
@@ -33,7 +37,9 @@ impl CaveLogic {
             .collect();
         Self {
             block_ids,
+            table: content.blocks.block_table(),
             block_channel: content.block_channel(),
+            state_channel: content.state_channel(),
             poses: PoseBook::new(),
         }
     }
@@ -43,19 +49,26 @@ impl CaveLogic {
         client: ClientId,
         at: VoxelCoordinate,
         block: &NamespacedId,
+        state: u32,
         world: &mut ServerWorld,
     ) {
         let (Some(pose), Some(&raw)) = (self.poses.pose_of(client), self.block_ids.get(block))
         else {
             return; // a player who has not said where they are, or a block this server lacks
         };
-        if pose.distance_to_voxel(at) > REACH {
+        // Air has one state, so breaking a block always resets its state too.
+        if pose.distance_to_voxel(at) > REACH || state >= self.table.state_count(raw) {
             return;
         }
         // Terrain this server cannot generate cannot be changed; the request is dropped.
         // Players change the level they are in.
         let level = self.poses.level_of(client);
-        let _ = world.set_voxel(level, self.block_channel, at, raw);
+        if world
+            .set_voxel(level, self.state_channel, at, state)
+            .is_ok()
+        {
+            let _ = world.set_voxel(level, self.block_channel, at, raw);
+        }
     }
 }
 
@@ -79,7 +92,7 @@ impl GameLogic for CaveLogic {
         if *kind == set_block_kind()
             && let Ok(request) = decode_set_block(payload)
         {
-            self.set_block(client, request.at, &request.block, world);
+            self.set_block(client, request.at, &request.block, request.state, world);
         }
         // Anything else is another game's, or malformed: ignored.
     }

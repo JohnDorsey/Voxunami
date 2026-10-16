@@ -14,9 +14,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 
+use block_models::BlockTable;
 use terrain::TerrainGenerator;
 use voxel_grid::{Brick, ChannelIndex, GridLayout};
-use voxel_meshing::{BrickNeighbourhood, PackedQuad, mesh_brick};
+use voxel_meshing::{BrickChannels, BrickNeighbourhood, PackedBrickMesh, mesh_brick};
 use voxel_space::{BrickCoordinate, FaceDirection, VoxelCoordinate};
 use world_storage::LevelData;
 
@@ -28,13 +29,24 @@ pub struct ViewSettings {
     pub worker_count: usize,
 }
 
+/// The channels of a world's bricks that say what to draw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewChannels {
+    /// The block in each voxel.
+    pub blocks: ChannelIndex,
+    /// The state of each voxel's block, for games whose blocks have states.
+    pub states: Option<ChannelIndex>,
+    /// How bright each voxel is, for games with lighting.
+    pub light: Option<ChannelIndex>,
+}
+
 /// A change the renderer must apply.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MeshUpdate {
     /// Replaces the brick's mesh; an empty mesh removes it.
     Upload {
         coordinate: BrickCoordinate,
-        quads: Vec<PackedQuad>,
+        mesh: PackedBrickMesh,
     },
     Remove(BrickCoordinate),
 }
@@ -70,8 +82,17 @@ enum JobResult {
         epoch: u64,
         coordinate: BrickCoordinate,
         version: u64,
-        quads: Vec<PackedQuad>,
+        mesh: PackedBrickMesh,
     },
+}
+
+/// The channels of a brick that meshing looks at.
+fn brick_channels(brick: &Brick, channels: ViewChannels) -> BrickChannels<'_> {
+    BrickChannels {
+        blocks: brick.channel(channels.blocks),
+        states: channels.states.map(|states| brick.channel(states)),
+        light: channels.light.map(|light| brick.channel(light)),
+    }
 }
 
 /// Integer offsets within `radius` of the origin, nearest first.
@@ -100,12 +121,10 @@ fn distance_squared(a: BrickCoordinate, b: BrickCoordinate) -> i128 {
     dx * dx + dy * dy + dz * dz
 }
 
-type OpacityTest = Arc<dyn Fn(u32) -> bool + Send + Sync>;
-
 pub struct WorldMesher {
     settings: ViewSettings,
-    material_channel: ChannelIndex,
-    is_opaque: OpacityTest,
+    channels: ViewChannels,
+    table: Arc<BlockTable>,
     /// The bricks near the viewer, whether edited or generated here.
     bricks: HashMap<BrickCoordinate, Arc<Brick>>,
     generating: HashSet<BrickCoordinate>,
@@ -139,13 +158,9 @@ impl std::fmt::Debug for WorldMesher {
 }
 
 impl WorldMesher {
-    /// `is_opaque` says which values of the material channel hide the faces behind them.
-    pub fn new(
-        settings: ViewSettings,
-        material_channel: ChannelIndex,
-        is_opaque: impl Fn(u32) -> bool + Send + Sync + 'static,
-    ) -> Self {
-        let is_opaque: OpacityTest = Arc::new(is_opaque);
+    /// `table` says what each block and state of the channels is: which faces it hides, and how it
+    /// fills its cell.
+    pub fn new(settings: ViewSettings, channels: ViewChannels, table: Arc<BlockTable>) -> Self {
         let (job_sender, job_receiver) = mpsc::channel::<Job>();
         let (result_sender, results) = mpsc::channel::<JobResult>();
         let job_receiver = Arc::new(Mutex::new(job_receiver));
@@ -153,7 +168,7 @@ impl WorldMesher {
             .map(|_| {
                 let job_receiver = Arc::clone(&job_receiver);
                 let result_sender = result_sender.clone();
-                let is_opaque = Arc::clone(&is_opaque);
+                let table = Arc::clone(&table);
                 std::thread::spawn(move || {
                     loop {
                         // Hold the lock only while waiting for the next job, not while running it.
@@ -177,20 +192,16 @@ impl WorldMesher {
                                 snapshot,
                             } => {
                                 let neighbourhood = BrickNeighbourhood {
-                                    center: snapshot.center.channel(material_channel),
+                                    center: brick_channels(&snapshot.center, channels),
                                     neighbours: std::array::from_fn(|face| {
-                                        Some(snapshot.neighbours[face].channel(material_channel))
+                                        Some(brick_channels(&snapshot.neighbours[face], channels))
                                     }),
                                 };
-                                let quads = mesh_brick(&neighbourhood, |value| is_opaque(value))
-                                    .iter()
-                                    .map(|quad| quad.pack())
-                                    .collect();
                                 JobResult::Meshed {
                                     epoch,
                                     coordinate,
                                     version,
-                                    quads,
+                                    mesh: mesh_brick(&neighbourhood, &table).pack(),
                                 }
                             }
                         };
@@ -203,8 +214,8 @@ impl WorldMesher {
             .collect();
         Self {
             settings,
-            material_channel,
-            is_opaque,
+            channels,
+            table,
             bricks: HashMap::new(),
             generating: HashSet::new(),
             meshing: HashMap::new(),
@@ -230,18 +241,39 @@ impl WorldMesher {
         self.bricks.len()
     }
 
-    /// The material of a voxel, if its brick is loaded.
+    /// The block in a voxel, if its brick is loaded.
     pub fn material_at(&self, coordinate: VoxelCoordinate) -> Option<u32> {
         let (brick, local) = coordinate.split();
         self.bricks
             .get(&brick)
-            .map(|loaded| loaded.get(self.material_channel, local))
+            .map(|loaded| loaded.get(self.channels.blocks, local))
     }
 
-    /// Whether a voxel hides what is behind it, if its brick is loaded.
+    /// The state of the block in a voxel (0 where the game has no states), if its brick is loaded.
+    pub fn state_at(&self, coordinate: VoxelCoordinate) -> Option<u32> {
+        let (brick, local) = coordinate.split();
+        self.bricks.get(&brick).map(|loaded| {
+            self.channels
+                .states
+                .map_or(0, |states| loaded.get(states, local))
+        })
+    }
+
+    /// Whether a voxel holds something that fills any part of it (anything but air), if its brick is
+    /// loaded. This is what a crosshair can point at.
+    pub fn is_solid_at(&self, coordinate: VoxelCoordinate) -> Option<bool> {
+        let model = self
+            .table
+            .model_of(self.material_at(coordinate)?, self.state_at(coordinate)?);
+        Some(self.table.is_solid(model))
+    }
+
+    /// Whether a voxel holds a whole cube that hides what is behind it, if its brick is loaded.
     pub fn is_opaque_at(&self, coordinate: VoxelCoordinate) -> Option<bool> {
-        self.material_at(coordinate)
-            .map(|material| (self.is_opaque)(material))
+        let model = self
+            .table
+            .model_of(self.material_at(coordinate)?, self.state_at(coordinate)?);
+        Some(self.table.is_opaque_cube(model))
     }
 
     /// Tells the mesher a brick's edited contents changed, so it and its neighbours are meshed
@@ -300,7 +332,7 @@ impl WorldMesher {
                     epoch,
                     coordinate,
                     version,
-                    quads,
+                    mesh,
                 } => {
                     if epoch != self.epoch
                         || self.meshing.remove(&coordinate).is_none()
@@ -309,15 +341,15 @@ impl WorldMesher {
                         continue; // unloaded, or changed since: the brick will be meshed again
                     }
                     self.meshed.insert(coordinate);
-                    if quads.is_empty() && !self.displayed.contains(&coordinate) {
+                    if mesh.is_empty() && !self.displayed.contains(&coordinate) {
                         continue;
                     }
-                    if quads.is_empty() {
+                    if mesh.is_empty() {
                         self.displayed.remove(&coordinate);
                     } else {
                         self.displayed.insert(coordinate);
                     }
-                    updates.push(MeshUpdate::Upload { coordinate, quads });
+                    updates.push(MeshUpdate::Upload { coordinate, mesh });
                 }
             }
         }

@@ -120,6 +120,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 name = "base_blocks"
 version = "0.0.0"
 dependencies = [
+ "block_models",
  "content_registry",
  "namespaced_id",
  "terrain",
@@ -198,6 +199,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5"
 dependencies = [
  "objc2 0.6.5",
+]
+
+[[package]]
+name = "block_models"
+version = "0.0.0"
+dependencies = [
+ "proptest",
+ "voxel_space",
 ]
 
 [[package]]
@@ -648,6 +657,7 @@ dependencies = [
 name = "game_shell"
 version = "0.0.0"
 dependencies = [
+ "block_models",
  "client",
  "content_registry",
  "ctrlc",
@@ -1779,6 +1789,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 name = "renderer"
 version = "0.0.0"
 dependencies = [
+ "block_models",
  "bytemuck",
  "glam",
  "png",
@@ -2294,6 +2305,7 @@ dependencies = [
 name = "voxel_meshing"
 version = "0.0.0"
 dependencies = [
+ "block_models",
  "proptest",
  "voxel_grid",
  "voxel_space",
@@ -2312,6 +2324,7 @@ name = "voxunami_2048"
 version = "0.0.0"
 dependencies = [
  "binary_codec",
+ "block_models",
  "client",
  "content_registry",
  "game_shell",
@@ -2326,6 +2339,7 @@ dependencies = [
  "voxel_grid",
  "voxel_space",
  "world_storage",
+ "world_view",
 ]
 
 [[package]]
@@ -2334,6 +2348,7 @@ version = "0.0.0"
 dependencies = [
  "base_blocks",
  "binary_codec",
+ "block_models",
  "client",
  "content_registry",
  "game_shell",
@@ -3036,6 +3051,7 @@ dependencies = [
 name = "world_view"
 version = "0.0.0"
 dependencies = [
+ "block_models",
  "content_registry",
  "proptest",
  "region_octree",

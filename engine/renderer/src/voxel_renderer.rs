@@ -1,10 +1,13 @@
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 
+use block_models::BlockTable;
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 use voxel_grid::ChannelStorage;
-use voxel_meshing::{BrickNeighbourhood, PackedQuad, mesh_brick};
+use voxel_meshing::{
+    BrickChannels, BrickNeighbourhood, PackedBrickMesh, PackedDetailedQuad, PackedQuad, mesh_brick,
+};
 use voxel_space::{BRICK_VOXEL_COUNT, BrickCoordinate, LocalVoxelIndex, WorldPosition};
 use wgpu::util::DeviceExt;
 
@@ -57,7 +60,7 @@ pub struct Avatar {
 }
 
 /// The mesh of an avatar of one colour: two voxels, the head with the eyes in it over the body.
-fn avatar_quads(color: usize) -> Vec<PackedQuad> {
+fn avatar_mesh(color: usize) -> PackedBrickMesh {
     let material = (MAXIMUM_GAME_MATERIALS + color) as u32;
     let mut values = vec![0u32; BRICK_VOXEL_COUNT];
     for y in [AVATAR_EYE_VOXEL - 1, AVATAR_EYE_VOXEL] {
@@ -65,16 +68,17 @@ fn avatar_quads(color: usize) -> Vec<PackedQuad> {
         values[at.index()] = material;
     }
     let storage = ChannelStorage::from_values(&values);
+    // Every palette value is an opaque cube; air is the value that is not used.
+    let mut opaque = vec![true; PALETTE_SIZE];
+    opaque[0] = false;
     mesh_brick(
         &BrickNeighbourhood {
-            center: &storage,
+            center: BrickChannels::blocks_only(&storage),
             neighbours: [None; 6],
         },
-        |value| value != 0,
+        &BlockTable::of_cubes(&opaque),
     )
-    .into_iter()
-    .map(|quad| quad.pack())
-    .collect()
+    .pack()
 }
 
 /// Colours are given in sRGB, as in an image editor; the renderer converts them.
@@ -105,7 +109,10 @@ impl Default for Atmosphere {
 pub struct RenderStatistics {
     pub bricks_drawn: usize,
     pub bricks_culled: usize,
+    /// Whole-voxel quads and detailed quads together.
     pub quads_drawn: usize,
+    /// Of those, the detailed ones.
+    pub detailed_quads_drawn: usize,
     pub avatars_drawn: usize,
 }
 
@@ -119,9 +126,18 @@ struct FrameUniform {
     palette: [[f32; 4]; PALETTE_SIZE],
 }
 
+/// The meshes of a brick on the GPU: whole-voxel quads, and detailed ones if it has any.
 struct GpuBrick {
-    quads: wgpu::Buffer,
+    quads: Option<wgpu::Buffer>,
     quad_count: u32,
+    detailed: Option<wgpu::Buffer>,
+    detailed_count: u32,
+}
+
+impl GpuBrick {
+    fn quad_total(&self) -> usize {
+        (self.quad_count + self.detailed_count) as usize
+    }
 }
 
 struct PlacementBuffer {
@@ -144,6 +160,7 @@ pub struct VoxelRenderer {
     queue: wgpu::Queue,
     color_format: wgpu::TextureFormat,
     pipeline: wgpu::RenderPipeline,
+    detailed_pipeline: wgpu::RenderPipeline,
     frame_buffer: wgpu::Buffer,
     frame_bind_group: wgpu::BindGroup,
     placement_layout: wgpu::BindGroupLayout,
@@ -231,46 +248,63 @@ impl VoxelRenderer {
             label: Some("voxel shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("voxel.wgsl").into()),
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("voxel pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vertex_main"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: size_of::<PackedQuad>() as u64,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Uint32, 1 => Uint32],
-                })],
+        let make_pipeline =
+            |label: &str, entry_point: &str, vertex_buffer: wgpu::VertexBufferLayout<'_>| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some(entry_point),
+                        compilation_options: Default::default(),
+                        buffers: &[Some(vertex_buffer)],
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fragment_main"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: color_format,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode: Some(wgpu::Face::Back),
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: DEPTH_FORMAT,
+                        depth_write_enabled: Some(true),
+                        depth_compare: Some(wgpu::CompareFunction::Less),
+                        stencil: wgpu::StencilState::default(),
+                        bias: wgpu::DepthBiasState::default(),
+                    }),
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
+        let pipeline = make_pipeline(
+            "voxel pipeline",
+            "vertex_main",
+            wgpu::VertexBufferLayout {
+                array_stride: size_of::<PackedQuad>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &wgpu::vertex_attr_array![0 => Uint32, 1 => Uint32],
             },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fragment_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: color_format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
+        );
+        let detailed_pipeline = make_pipeline(
+            "detailed voxel pipeline",
+            "vertex_detailed",
+            wgpu::VertexBufferLayout {
+                array_stride: size_of::<PackedDetailedQuad>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &wgpu::vertex_attr_array![0 => Uint32, 1 => Uint32, 2 => Uint32, 3 => Uint32],
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        );
 
         let frame_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame uniform"),
@@ -298,6 +332,7 @@ impl VoxelRenderer {
             queue,
             color_format,
             pipeline,
+            detailed_pipeline,
             frame_buffer,
             frame_bind_group,
             placement_layout,
@@ -315,26 +350,36 @@ impl VoxelRenderer {
         };
         renderer.set_palette(&[]);
         renderer.avatar_meshes = (0..AVATAR_COLOR_COUNT)
-            .map(|color| renderer.gpu_brick(&avatar_quads(color)))
+            .map(|color| renderer.gpu_brick(&avatar_mesh(color)))
             .collect();
         renderer
     }
 
-    fn gpu_brick(&self, quads: &[PackedQuad]) -> GpuBrick {
-        let words: Vec<u32> = quads
-            .iter()
-            .flat_map(|quad| [quad.geometry, quad.material])
-            .collect();
-        let buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("quads"),
-                contents: bytemuck::cast_slice(&words),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
+    fn gpu_brick(&self, mesh: &PackedBrickMesh) -> GpuBrick {
+        let buffer = |label: &str, words: Vec<u32>| {
+            (!words.is_empty()).then(|| {
+                self.device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some(label),
+                        contents: bytemuck::cast_slice(&words),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    })
+            })
+        };
         GpuBrick {
-            quads: buffer,
-            quad_count: quads.len() as u32,
+            quads: buffer(
+                "quads",
+                mesh.quads
+                    .iter()
+                    .flat_map(|quad| [quad.geometry, quad.material])
+                    .collect(),
+            ),
+            quad_count: mesh.quads.len() as u32,
+            detailed: buffer(
+                "detailed quads",
+                mesh.detailed.iter().flat_map(|quad| quad.words).collect(),
+            ),
+            detailed_count: mesh.detailed.len() as u32,
         }
     }
 
@@ -405,13 +450,13 @@ impl VoxelRenderer {
         self.atmosphere = atmosphere;
     }
 
-    /// Replaces the mesh of one brick. An empty slice removes the brick.
-    pub fn upload_brick(&mut self, coordinate: BrickCoordinate, quads: &[PackedQuad]) {
-        if quads.is_empty() {
+    /// Replaces the mesh of one brick. An empty mesh removes the brick.
+    pub fn upload_brick(&mut self, coordinate: BrickCoordinate, mesh: &PackedBrickMesh) {
+        if mesh.is_empty() {
             self.bricks.remove(&coordinate);
             return;
         }
-        let brick = self.gpu_brick(quads);
+        let brick = self.gpu_brick(mesh);
         self.bricks.insert(coordinate, brick);
     }
 
@@ -427,11 +472,9 @@ impl VoxelRenderer {
         self.bricks.contains_key(&coordinate)
     }
 
+    /// Whole-voxel quads and detailed quads of every brick held.
     pub fn total_quad_count(&self) -> usize {
-        self.bricks
-            .values()
-            .map(|brick| brick.quad_count as usize)
-            .sum()
+        self.bricks.values().map(GpuBrick::quad_total).sum()
     }
 
     /// Draws every visible brick into `color_view`, which must be `size` pixels in the renderer's
@@ -477,7 +520,11 @@ impl VoxelRenderer {
             bricks_culled: self.bricks.len() - visible.len(),
             quads_drawn: visible
                 .iter()
-                .map(|(_, coordinate, _)| self.bricks[coordinate].quad_count as usize)
+                .map(|(_, coordinate, _)| self.bricks[coordinate].quad_total())
+                .sum(),
+            detailed_quads_drawn: visible
+                .iter()
+                .map(|(_, coordinate, _)| self.bricks[coordinate].detailed_count as usize)
                 .sum(),
         };
 
@@ -534,22 +581,44 @@ impl VoxelRenderer {
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
             for (index, (_, coordinate, _)) in visible.iter().enumerate() {
                 let brick = &self.bricks[coordinate];
+                let Some(quads) = &brick.quads else {
+                    continue;
+                };
                 pass.set_bind_group(
                     1,
                     &self.placements.bind_group,
                     &[(index as u64 * self.placement_stride) as u32],
                 );
-                pass.set_vertex_buffer(0, brick.quads.slice(..));
+                pass.set_vertex_buffer(0, quads.slice(..));
                 pass.draw(0..6, 0..brick.quad_count);
             }
+            // The bricks that have blocks that do not fill their cells, with the other pipeline.
+            pass.set_pipeline(&self.detailed_pipeline);
+            for (index, (_, coordinate, _)) in visible.iter().enumerate() {
+                let brick = &self.bricks[coordinate];
+                let Some(detailed) = &brick.detailed else {
+                    continue;
+                };
+                pass.set_bind_group(
+                    1,
+                    &self.placements.bind_group,
+                    &[(index as u64 * self.placement_stride) as u32],
+                );
+                pass.set_vertex_buffer(0, detailed.slice(..));
+                pass.draw(0..6, 0..brick.detailed_count);
+            }
+            pass.set_pipeline(&self.pipeline);
             for (index, (color, _)) in visible_avatars.iter().enumerate() {
                 let mesh = &self.avatar_meshes[*color];
+                let Some(quads) = &mesh.quads else {
+                    continue;
+                };
                 pass.set_bind_group(
                     1,
                     &self.placements.bind_group,
                     &[((visible.len() + index) as u64 * self.placement_stride) as u32],
                 );
-                pass.set_vertex_buffer(0, mesh.quads.slice(..));
+                pass.set_vertex_buffer(0, quads.slice(..));
                 pass.draw(0..6, 0..mesh.quad_count);
             }
             if self.crosshair_enabled {

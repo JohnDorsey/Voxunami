@@ -2,27 +2,27 @@
 
 use std::fmt::Debug;
 
+use block_models::BlockTable;
 use content_registry::IdentifierRegistry;
 use namespaced_id::NamespacedId;
 use server::GameLogic;
 use transport::Connection;
-use voxel_grid::ChannelIndex;
 use winit::keyboard::KeyCode;
 use world_storage::{LoadContext, WorldData};
+use world_view::ViewChannels;
 
 use crate::session::Session;
 
 /// A game's plugins, as the shell needs them to show and build worlds. Both the server and every
 /// client have one.
 pub trait GameContent: Debug + Send {
-    /// The channel holding what each voxel is, which is what gets drawn.
-    fn material_channel(&self) -> ChannelIndex;
+    /// The channels of a world's bricks that say what each voxel is drawn as: its block, and where
+    /// the game has them, the state of the block (its shape) and the voxel's light.
+    fn view_channels(&self) -> ViewChannels;
 
-    /// The colour (sRGB) of each material value, in value order.
-    fn palette(&self) -> Vec<[f32; 3]>;
-
-    /// Whether each material value hides the faces behind it, in value order.
-    fn opacity_table(&self) -> Vec<bool>;
+    /// What every block and state looks like and how it fills its cell, by block id. Built after
+    /// the world is loaded, so that blocks from plugins that are not loaded are in it as unknown.
+    fn block_table(&self) -> BlockTable;
 
     /// A new world with this seed.
     fn new_world(&self, seed: u64) -> WorldData;

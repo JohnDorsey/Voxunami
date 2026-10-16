@@ -1,5 +1,12 @@
-// Draws packed voxel quads. Each instance is one quad (two u32s, see voxel_meshing::PackedQuad);
-// the vertex shader expands it into two triangles, so there are no vertex or index buffers.
+// Draws packed voxel quads. Each instance is one quad; the vertex shader expands it into two
+// triangles, so there are no vertex or index buffers. Two kinds of quad share the fragment shader:
+//
+//  * whole-voxel quads (two u32s, see voxel_meshing::PackedQuad): a rectangle of whole voxel faces
+//    on a voxel boundary;
+//  * detailed quads (four u32s, see voxel_meshing::PackedDetailedQuad): a rectangle at any eighth of
+//    a voxel, for blocks that do not fill their cell.
+//
+// Both carry the block (an index into the palette) and a brightness from 0 to 255.
 
 struct Frame {
     view_projection: mat4x4<f32>,
@@ -22,7 +29,18 @@ struct Placement {
 
 struct Instance {
     @location(0) geometry: u32,
+    // Bits 0-23: the block. Bits 24-31: the light.
     @location(1) material: u32,
+}
+
+struct DetailedInstance {
+    // Origin x (bits 0-15) and y (16-31), in eighths of a voxel.
+    @location(0) first: u32,
+    // Origin z and width.
+    @location(1) second: u32,
+    // Height (0-15), face (16-23), light (24-31).
+    @location(2) third: u32,
+    @location(3) material: u32,
 }
 
 struct VertexOutput {
@@ -35,6 +53,51 @@ fn axis_unit(axis: u32) -> vec3<f32> {
     return vec3<f32>(f32(axis == 0u), f32(axis == 1u), f32(axis == 2u));
 }
 
+// Which corner of the quad (0 to 3, counter-clockwise seen from outside for positive faces) each of
+// the six vertices of its two triangles is; negative faces list them the other way round so they
+// also wind counter-clockwise.
+fn corner_of(vertex_index: u32, positive: bool) -> u32 {
+    var order = array<u32, 6>(0u, 1u, 2u, 0u, 2u, 3u);
+    if (!positive) {
+        order = array<u32, 6>(0u, 2u, 1u, 0u, 3u, 2u);
+    }
+    return order[vertex_index];
+}
+
+// The position of a corner of a quad whose lowest corner is `origin` (in voxels) on the plane of
+// its face, `width` along the first axis it spans and `height` along the second. A quad on axis a
+// spans axes (a + 1) % 3 and (a + 2) % 3. Built from unit vectors rather than by writing to a
+// dynamically indexed component, which some shader compilers reject.
+fn corner_position(vertex_index: u32, face: u32, origin: vec3<f32>, width: f32, height: f32) -> vec3<f32> {
+    let axis = face / 2u;
+    let corner = corner_of(vertex_index, (face & 1u) == 1u);
+    var u_extent = 0.0;
+    if (corner == 1u || corner == 2u) {
+        u_extent = width;
+    }
+    var v_extent = 0.0;
+    if (corner == 2u || corner == 3u) {
+        v_extent = height;
+    }
+    return origin + axis_unit((axis + 1u) % 3u) * u_extent + axis_unit((axis + 2u) % 3u) * v_extent;
+}
+
+fn finish(relative: vec3<f32>, face: u32, material: u32, light: u32) -> VertexOutput {
+    let normal = axis_unit(face / 2u) * select(-1.0, 1.0, (face & 1u) == 1u);
+    let shade = (0.4 + 0.6 * max(dot(normal, frame.sun_direction.xyz), 0.0)) * (f32(light) / 255.0);
+
+    var base = vec3<f32>(1.0, 0.0, 1.0);
+    if (material < 256u) {
+        base = frame.palette[material].rgb;
+    }
+
+    var out: VertexOutput;
+    out.position = frame.view_projection * vec4<f32>(relative, 1.0);
+    out.color = base * shade;
+    out.distance = length(relative);
+    return out;
+}
+
 @vertex
 fn vertex_main(@builtin(vertex_index) vertex_index: u32, instance: Instance) -> VertexOutput {
     let origin = vec3<f32>(
@@ -45,46 +108,24 @@ fn vertex_main(@builtin(vertex_index) vertex_index: u32, instance: Instance) -> 
     let width = f32(((instance.geometry >> 15u) & 31u) + 1u);
     let height = f32(((instance.geometry >> 20u) & 31u) + 1u);
     let face = (instance.geometry >> 25u) & 7u;
-    let axis = face / 2u;
-    let positive = (face & 1u) == 1u;
+    // The voxel owns its face; a positive face is on the voxel's far side.
+    let plane = origin + axis_unit(face / 2u) * select(0.0, 1.0, (face & 1u) == 1u);
+    let local = corner_position(vertex_index, face, plane, width, height);
+    return finish(local + placement.offset.xyz, face, instance.material & 0xFFFFFFu, instance.material >> 24u);
+}
 
-    // Corners 0..3 run counter-clockwise around the quad seen from outside for positive faces;
-    // negative faces list them the other way round so they also wind counter-clockwise.
-    var order = array<u32, 6>(0u, 1u, 2u, 0u, 2u, 3u);
-    if (!positive) {
-        order = array<u32, 6>(0u, 2u, 1u, 0u, 3u, 2u);
-    }
-    let corner = order[vertex_index];
-    var u_extent = 0.0;
-    if (corner == 1u || corner == 2u) {
-        u_extent = width;
-    }
-    var v_extent = 0.0;
-    if (corner == 2u || corner == 3u) {
-        v_extent = height;
-    }
-
-    // A quad on axis a spans axes (a + 1) % 3 and (a + 2) % 3. Built from unit vectors rather than
-    // by writing to a dynamically indexed component, which some shader compilers reject.
-    let normal_axis = axis_unit(axis);
-    let u_axis = axis_unit((axis + 1u) % 3u);
-    let v_axis = axis_unit((axis + 2u) % 3u);
-    let local = origin + normal_axis * select(0.0, 1.0, positive) + u_axis * u_extent + v_axis * v_extent;
-    let relative = local + placement.offset.xyz;
-
-    let normal = normal_axis * select(-1.0, 1.0, positive);
-    let shade = 0.4 + 0.6 * max(dot(normal, frame.sun_direction.xyz), 0.0);
-
-    var base = vec3<f32>(1.0, 0.0, 1.0);
-    if (instance.material < 256u) {
-        base = frame.palette[instance.material].rgb;
-    }
-
-    var out: VertexOutput;
-    out.position = frame.view_projection * vec4<f32>(relative, 1.0);
-    out.color = base * shade;
-    out.distance = length(relative);
-    return out;
+@vertex
+fn vertex_detailed(@builtin(vertex_index) vertex_index: u32, instance: DetailedInstance) -> VertexOutput {
+    let origin = vec3<f32>(
+        f32(instance.first & 0xFFFFu),
+        f32(instance.first >> 16u),
+        f32(instance.second & 0xFFFFu),
+    ) / 8.0;
+    let width = f32(instance.second >> 16u) / 8.0;
+    let height = f32(instance.third & 0xFFFFu) / 8.0;
+    let face = (instance.third >> 16u) & 7u;
+    let local = corner_position(vertex_index, face, origin, width, height);
+    return finish(local + placement.offset.xyz, face, instance.material & 0xFFFFFFu, instance.third >> 24u);
 }
 
 @fragment
