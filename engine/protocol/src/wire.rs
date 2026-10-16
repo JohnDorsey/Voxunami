@@ -1,7 +1,17 @@
 //! Encoding of the values messages are built from.
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
-use voxel_space::{BrickBox, BrickCoordinate};
+use voxel_space::{BrickBox, BrickCoordinate, LevelIndex};
+
+pub fn write_level(writer: &mut ByteWriter, level: LevelIndex) {
+    writer.write_varint(u64::from(level.get()));
+}
+
+pub fn read_level(reader: &mut ByteReader<'_>) -> Result<LevelIndex, DecodeError> {
+    u32::try_from(reader.read_varint()?)
+        .map(LevelIndex::new)
+        .map_err(|_| DecodeError::Invalid("a level number is too large"))
+}
 
 pub fn write_brick_coordinate(writer: &mut ByteWriter, coordinate: BrickCoordinate) {
     writer.write_signed_varint(coordinate.x());

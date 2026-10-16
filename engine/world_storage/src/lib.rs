@@ -22,6 +22,8 @@ mod world;
 
 pub use container::{ContainerError, Section};
 pub use translation::{SourceTranslator, TranslationError};
+pub use voxel_space::LevelIndex;
 pub use world::{
-    BrickSource, LoadContext, LoadError, LoadReport, ParsedWorld, SaveError, WorldData,
+    BrickSource, LevelData, LevelError, LoadContext, LoadError, LoadReport, ParsedWorld, SaveError,
+    WorldData,
 };

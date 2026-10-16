@@ -10,10 +10,17 @@ use game_shell::GameContent;
 use namespaced_id::NamespacedId;
 use terrain::WorldTerrain;
 use voxel_grid::{ChannelIndex, Grid, GridLayout};
-use world_storage::{LoadContext, WorldData};
+use world_storage::{LevelData, LoadContext, WorldData};
 
 /// Terrain generators are assigned to cubes of 8 bricks (256 voxels) per side.
 pub const ASSIGNMENT_CUBE_LEVEL: u8 = 3;
+
+/// The level players start in, and the only one a new world has.
+pub fn overworld_id() -> NamespacedId {
+    "voxunami_cave:overworld"
+        .parse()
+        .expect("constant identifier is valid")
+}
 
 pub fn game_id() -> NamespacedId {
     "voxunami_cave:game"
@@ -77,7 +84,11 @@ impl GameContent for CaveContent {
             .expect("the plugin registers its generator");
         let terrain = WorldTerrain::new(generators, default, ASSIGNMENT_CUBE_LEVEL)
             .expect("the generator is available");
-        WorldData::new(seed, terrain, Grid::new(layout))
+        WorldData::new(
+            seed,
+            overworld_id(),
+            LevelData::new(terrain, Grid::new(layout)),
+        )
     }
 
     /// What loading a world file, or a server's description of a world, needs. `seed` is the
@@ -91,6 +102,7 @@ impl GameContent for CaveContent {
             generators,
             fallback_default_generator: rolling_hills_generator_identifier(),
             assignment_cube_level: ASSIGNMENT_CUBE_LEVEL,
+            legacy_level: overworld_id(),
         }
     }
 
@@ -121,7 +133,7 @@ mod tests {
         assert!(report.extra_channels.is_empty());
         assert_eq!(loaded.world_seed, 77);
         assert_eq!(
-            loaded.preferred_default_generator(),
+            loaded.main().preferred_default_generator(),
             &rolling_hills_generator_identifier()
         );
         assert_eq!(loaded.save(&later.registries()).unwrap(), bytes);

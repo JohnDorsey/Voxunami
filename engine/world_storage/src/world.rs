@@ -4,29 +4,40 @@ use std::sync::Arc;
 use binary_codec::DecodeError;
 use content_registry::{IdentifierRegistry, Registry};
 use namespaced_id::NamespacedId;
-use region_octree::BrickCube;
 use terrain::{GenerationOutcome, GeneratorId, TerrainGenerator, WorldTerrain, WorldTerrainError};
 use voxel_grid::{Brick, ChannelDefinition, ChannelValueKind, Grid, GridLayout, GridLayoutError};
-use voxel_space::BrickCoordinate;
+use voxel_space::{BrickCoordinate, LevelIndex};
 
 use crate::container::{ContainerError, Section, read_container, write_container};
 use crate::engine_sections::{
-    self as sections, ChannelRecord, GeneratorsRecord, Header, RegistryTable,
+    self as sections, ChannelRecord, GeneratorsRecord, Header, LevelRecord, LevelToWrite,
+    RegistryTable,
 };
 use crate::translation::{SourceTranslator, TranslationError};
 
-/// Everything about a world that is saved: the terrain recipe, the player-made changes to it, and
-/// the sections of plugins that are not loaded.
+/// One level of a world: the terrain recipe and the player-made changes to it.
 ///
 /// Terrain is *regenerated* from `terrain` wherever `overrides` has no brick; a brick in `overrides`
 /// replaces the generated one entirely.
 #[derive(Debug)]
-pub struct WorldData {
-    pub world_seed: u64,
+pub struct LevelData {
     pub terrain: WorldTerrain,
     pub overrides: Grid,
-    /// The default generator the world asked for, which may be unavailable right now.
+    /// The default generator the level asked for, which may be unavailable right now.
     preferred_default_generator: NamespacedId,
+}
+
+/// Everything about a world that is saved: its levels, and the sections of plugins that are not
+/// loaded.
+///
+/// Every level has its own terrain assignments and edited bricks. All levels share the world's
+/// content (the channels, the registries) and its terrain generator versions, which levels differ
+/// in by which of them they use.
+#[derive(Debug)]
+pub struct WorldData {
+    pub world_seed: u64,
+    /// Never empty. The first is the main level.
+    levels: Vec<(NamespacedId, LevelData)>,
     /// Registry tables of kinds nobody supplied a registry for; kept so their ids stay meaningful.
     unknown_registry_tables: BTreeMap<NamespacedId, Vec<NamespacedId>>,
     opaque_sections: Vec<Section>,
@@ -53,8 +64,34 @@ pub enum SaveError {
     },
 }
 
-impl WorldData {
-    pub fn new(world_seed: u64, terrain: WorldTerrain, overrides: Grid) -> Self {
+/// Why a level cannot be added to a world.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum LevelError {
+    #[error("the world already has a level {0}")]
+    Duplicate(NamespacedId),
+    #[error("level {0} uses different terrain generator versions than the world's other levels")]
+    DifferentGenerators(NamespacedId),
+    #[error("level {0} has different channels than the world's other levels")]
+    DifferentChannels(NamespacedId),
+}
+
+fn generator_table(terrain: &WorldTerrain) -> Vec<NamespacedId> {
+    table_of(terrain.generators())
+}
+
+fn table_of(registry: &dyn IdentifierRegistry) -> Vec<NamespacedId> {
+    (0..registry.entry_count() as u32)
+        .map(|raw| {
+            registry
+                .identifier_of_raw(raw)
+                .expect("registry ids are dense")
+                .clone()
+        })
+        .collect()
+}
+
+impl LevelData {
+    pub fn new(terrain: WorldTerrain, overrides: Grid) -> Self {
         let preferred_default_generator = terrain
             .generators()
             .entry(terrain.default_generator())
@@ -62,12 +99,9 @@ impl WorldData {
             .identifier()
             .clone();
         Self {
-            world_seed,
             terrain,
             overrides,
             preferred_default_generator,
-            unknown_registry_tables: BTreeMap::new(),
-            opaque_sections: Vec::new(),
         }
     }
 
@@ -89,23 +123,6 @@ impl WorldData {
             .identifier()
             .clone();
         Ok(())
-    }
-
-    /// Sections of plugins, in file order. Never interpreted here.
-    pub fn opaque_sections(&self) -> &[Section] {
-        &self.opaque_sections
-    }
-
-    /// Adds a plugin's section, or replaces its existing one of the same identifier.
-    pub fn set_opaque_section(&mut self, section: Section) {
-        match self
-            .opaque_sections
-            .iter_mut()
-            .find(|existing| existing.identifier == section.identifier)
-        {
-            Some(existing) => *existing = section,
-            None => self.opaque_sections.push(section),
-        }
     }
 
     /// The brick as the game should see it: the edited one if there is one, else the generated one.
@@ -142,6 +159,117 @@ impl WorldData {
         }
         unchanged.len()
     }
+}
+
+impl WorldData {
+    /// A world with one level, its main level, named `main_level`.
+    pub fn new(world_seed: u64, main_level: NamespacedId, level: LevelData) -> Self {
+        Self {
+            world_seed,
+            levels: vec![(main_level, level)],
+            unknown_registry_tables: BTreeMap::new(),
+            opaque_sections: Vec::new(),
+        }
+    }
+
+    /// Adds a level after the existing ones. It must use the same channels and terrain generator
+    /// versions as they do, and its generators must have been built from this world's seed: clients
+    /// regenerate terrain from the seed they are told, so a level made with another seed shows them
+    /// other terrain than the server has. Nothing here can check that.
+    pub fn add_level(
+        &mut self,
+        id: NamespacedId,
+        level: LevelData,
+    ) -> Result<LevelIndex, LevelError> {
+        if self.level_index(&id).is_some() {
+            return Err(LevelError::Duplicate(id));
+        }
+        let main = self.main();
+        if main.overrides.layout() != level.overrides.layout() {
+            return Err(LevelError::DifferentChannels(id));
+        }
+        if generator_table(&main.terrain) != generator_table(&level.terrain) {
+            return Err(LevelError::DifferentGenerators(id));
+        }
+        let index = LevelIndex::new(u32::try_from(self.levels.len()).expect("few levels"));
+        self.levels.push((id, level));
+        Ok(index)
+    }
+
+    pub fn level_count(&self) -> usize {
+        self.levels.len()
+    }
+
+    /// Every level with its identifier, in index order.
+    pub fn levels(&self) -> impl ExactSizeIterator<Item = (LevelIndex, &NamespacedId, &LevelData)> {
+        self.levels
+            .iter()
+            .enumerate()
+            .map(|(index, (id, level))| (LevelIndex::new(index as u32), id, level))
+    }
+
+    pub fn level(&self, index: LevelIndex) -> Option<&LevelData> {
+        self.levels
+            .get(index.get() as usize)
+            .map(|(_, level)| level)
+    }
+
+    pub fn level_mut(&mut self, index: LevelIndex) -> Option<&mut LevelData> {
+        self.levels
+            .get_mut(index.get() as usize)
+            .map(|(_, level)| level)
+    }
+
+    pub fn level_id(&self, index: LevelIndex) -> Option<&NamespacedId> {
+        self.levels.get(index.get() as usize).map(|(id, _)| id)
+    }
+
+    pub fn level_index(&self, id: &NamespacedId) -> Option<LevelIndex> {
+        self.levels
+            .iter()
+            .position(|(level_id, _)| level_id == id)
+            .map(|position| LevelIndex::new(position as u32))
+    }
+
+    /// The level where players start.
+    pub fn main(&self) -> &LevelData {
+        &self.levels[0].1
+    }
+
+    pub fn main_mut(&mut self) -> &mut LevelData {
+        &mut self.levels[0].1
+    }
+
+    /// The main level's data, dropping the rest of the world. How a game makes a level of its own
+    /// kind to add to another world: build a new world and take its main level.
+    pub fn into_main(mut self) -> LevelData {
+        self.levels.swap_remove(0).1
+    }
+
+    /// Prunes every level; see [`LevelData::prune_unmodified_overrides`].
+    pub fn prune_unmodified_overrides(&mut self) -> usize {
+        self.levels
+            .iter_mut()
+            .map(|(_, level)| level.prune_unmodified_overrides())
+            .sum()
+    }
+
+    /// Sections of plugins, in file order. Never interpreted here.
+    pub fn opaque_sections(&self) -> &[Section] {
+        &self.opaque_sections
+    }
+
+    /// Adds a plugin's section, or replaces its existing one of the same identifier.
+    pub fn set_opaque_section(&mut self, section: Section) {
+        match self
+            .opaque_sections
+            .iter_mut()
+            .find(|existing| existing.identifier == section.identifier)
+        {
+            Some(existing) => *existing = section,
+            None => self.opaque_sections.push(section),
+        }
+    }
 
     /// Serializes the world. `registries` supplies, per registry kind, the table translating raw ids
     /// to identifiers; it must include every kind a content channel uses (unless the kind came from
@@ -150,46 +278,20 @@ impl WorldData {
         &self,
         registries: &[(NamespacedId, &dyn IdentifierRegistry)],
     ) -> Result<Vec<u8>, SaveError> {
-        let leaves = self
-            .terrain
-            .assignments()
-            .leaves()
-            .into_iter()
-            .map(|(cube, generator)| (cube, generator.map(|id| id.raw())))
-            .collect();
-        let mut all = self.engine_sections(registries, leaves)?;
-        let coordinates = self.overrides.sorted_brick_coordinates();
-        let bricks: Vec<(BrickCoordinate, &Brick)> = coordinates
-            .iter()
-            .map(|&coordinate| {
-                (
-                    coordinate,
-                    &**self
-                        .overrides
-                        .brick(coordinate)
-                        .expect("listed brick exists"),
-                )
-            })
-            .collect();
-        all.push(Self::section(
-            sections::override_bricks_id(),
-            sections::encode_override_bricks(&bricks),
-        ));
+        let mut all = self.engine_sections(registries, true)?;
         all.extend(self.opaque_sections.iter().cloned());
         Ok(write_container(&all))
     }
 
     /// The world's shape without its contents, as a small world file: seed, registry tables, channel
-    /// layout and generator setup, but no generator assignments, edited bricks or plugin sections.
-    /// A server sends this to a joining client, which loads it like a save and then learns the
-    /// assignments and bricks it needs as they come into view.
+    /// layout, and each level's name and generator setup, but no generator assignments, edited
+    /// bricks or plugin sections. A server sends this to a joining client, which loads it like a
+    /// save and then learns the assignments and bricks it needs as they come into view.
     pub fn describe(
         &self,
         registries: &[(NamespacedId, &dyn IdentifierRegistry)],
     ) -> Result<Vec<u8>, SaveError> {
-        Ok(write_container(
-            &self.engine_sections(registries, Vec::new())?,
-        ))
+        Ok(write_container(&self.engine_sections(registries, false)?))
     }
 
     fn section(identifier: NamespacedId, payload: Vec<u8>) -> Section {
@@ -200,40 +302,24 @@ impl WorldData {
         }
     }
 
-    fn generators_section(record: &sections::GeneratorsRecord) -> Section {
-        Section {
-            identifier: sections::generators_id(),
-            version: sections::GENERATORS_VERSION,
-            payload: sections::encode_generators(record),
-        }
-    }
-
-    /// Header, registries, channels and generators, with the given assignment leaves.
+    /// Header, registries, channels and levels, with the levels' assignments and bricks if
+    /// `with_contents`.
     fn engine_sections(
         &self,
         registries: &[(NamespacedId, &dyn IdentifierRegistry)],
-        assignment_leaves: Vec<(BrickCube, Option<u32>)>,
+        with_contents: bool,
     ) -> Result<Vec<Section>, SaveError> {
-        let table_of = |registry: &dyn IdentifierRegistry| -> Vec<NamespacedId> {
-            (0..registry.entry_count() as u32)
-                .map(|raw| {
-                    registry
-                        .identifier_of_raw(raw)
-                        .expect("registry ids are dense")
-                        .clone()
-                })
-                .collect()
-        };
+        let main = self.main();
         let mut tables = self.unknown_registry_tables.clone();
         for (kind, registry) in registries {
             tables.insert(kind.clone(), table_of(*registry));
         }
         tables.insert(
             sections::terrain_generator_registry_kind(),
-            table_of(self.terrain.generators()),
+            generator_table(&main.terrain),
         );
 
-        let layout = self.overrides.layout();
+        let layout = main.overrides.layout();
         let channel_records: Vec<ChannelRecord> = layout
             .channels()
             .iter()
@@ -254,11 +340,52 @@ impl WorldData {
             }
         }
 
-        let generators = GeneratorsRecord {
-            default_generator: self.preferred_default_generator.clone(),
-            assignment_cube_level: self.terrain.assignment_cube_level(),
-            leaves: assignment_leaves,
-        };
+        let sorted_bricks: Vec<Vec<BrickCoordinate>> = self
+            .levels
+            .iter()
+            .map(|(_, level)| {
+                if with_contents {
+                    level.overrides.sorted_brick_coordinates()
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+        let to_write: Vec<LevelToWrite<'_>> = self
+            .levels
+            .iter()
+            .zip(&sorted_bricks)
+            .map(|((id, level), coordinates)| LevelToWrite {
+                id,
+                generators: GeneratorsRecord {
+                    default_generator: level.preferred_default_generator.clone(),
+                    assignment_cube_level: level.terrain.assignment_cube_level(),
+                    leaves: if with_contents {
+                        level
+                            .terrain
+                            .assignments()
+                            .leaves()
+                            .into_iter()
+                            .map(|(cube, generator)| (cube, generator.map(|id| id.raw())))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    },
+                },
+                bricks: coordinates
+                    .iter()
+                    .map(|&coordinate| {
+                        (
+                            coordinate,
+                            &**level
+                                .overrides
+                                .brick(coordinate)
+                                .expect("listed brick exists"),
+                        )
+                    })
+                    .collect(),
+            })
+            .collect();
         Ok(vec![
             Self::section(
                 sections::header_id(),
@@ -280,7 +407,7 @@ impl WorldData {
                 sections::channels_id(),
                 sections::encode_channels(&channel_records),
             ),
-            Self::generators_section(&generators),
+            Self::section(sections::levels_id(), sections::encode_levels(&to_write)),
         ])
     }
 }
@@ -300,6 +427,10 @@ pub enum LoadError {
         "section {section} is version {version}, newer than this program understands; loading would lose data"
     )]
     UnsupportedEngineSection { section: NamespacedId, version: u32 },
+    #[error(
+        "the world file has both a list of levels and the generator or brick sections of a file with one level"
+    )]
+    LevelsAndLegacySections,
     #[error("registry {0} is listed twice")]
     DuplicateRegistry(NamespacedId),
     #[error("registry {registry} lists {entry} twice")]
@@ -338,10 +469,12 @@ pub struct LoadContext<'a> {
     pub registries: Vec<(NamespacedId, &'a mut dyn IdentifierRegistry)>,
     /// The terrain generator versions currently available.
     pub generators: Registry<Arc<dyn TerrainGenerator>>,
-    /// Used as the default generator when the one the world asked for is unavailable.
+    /// Used as the default generator when the one a level asked for is unavailable.
     pub fallback_default_generator: NamespacedId,
     /// Used when the file has no generator section.
     pub assignment_cube_level: u8,
+    /// The name of the one level of a file written before worlds had levels, which does not name it.
+    pub legacy_level: NamespacedId,
 }
 
 impl std::fmt::Debug for LoadContext<'_> {
@@ -379,8 +512,8 @@ pub struct LoadReport {
     pub opaque_sections: Vec<NamespacedId>,
     /// Registry kinds in the file that the game supplied no registry for.
     pub unknown_registry_kinds: Vec<NamespacedId>,
-    /// Set when the world's preferred default generator is unavailable: the one it asked for.
-    pub unavailable_default_generator: Option<NamespacedId>,
+    /// Levels whose preferred default generator is unavailable, as (level, the generator it asked for).
+    pub unavailable_default_generators: Vec<(NamespacedId, NamespacedId)>,
 }
 
 impl LoadReport {
@@ -393,6 +526,26 @@ impl LoadReport {
     }
 }
 
+/// The levels of a file, as they were written.
+#[derive(Debug)]
+enum ParsedLevels {
+    Listed(Vec<LevelRecord>),
+    /// A file written before worlds had levels: one level, with its generators and bricks in
+    /// sections of their own.
+    Legacy {
+        generators: Option<GeneratorsRecord>,
+        bricks: Vec<(BrickCoordinate, Brick)>,
+    },
+}
+
+/// A level read from a file, before it is turned into runtime data. A file written before worlds had
+/// levels may have no generator setup.
+struct LevelToLoad {
+    id: NamespacedId,
+    generators: Option<GeneratorsRecord>,
+    bricks: Vec<(BrickCoordinate, Brick)>,
+}
+
 /// A world file that has been read and checked but not yet turned into runtime data. This split lets
 /// a game read the seed first and build its terrain generators from it.
 #[derive(Debug)]
@@ -400,8 +553,7 @@ pub struct ParsedWorld {
     header: Header,
     registries: Vec<RegistryTable>,
     channels: Vec<ChannelRecord>,
-    generators: Option<GeneratorsRecord>,
-    bricks: Vec<(BrickCoordinate, Brick)>,
+    levels: ParsedLevels,
     opaque_sections: Vec<Section>,
 }
 
@@ -410,14 +562,16 @@ impl ParsedWorld {
         let mut header = None;
         let mut registries = Vec::new();
         let mut channels = Vec::new();
-        let mut generators = None;
-        let mut bricks = Vec::new();
+        let mut listed_levels = None;
+        let mut legacy_generators = None;
+        let mut legacy_bricks = None;
         let mut opaque_sections = Vec::new();
         for section in read_container(bytes)? {
             let known = [
                 sections::header_id(),
                 sections::registries_id(),
                 sections::channels_id(),
+                sections::levels_id(),
                 sections::generators_id(),
                 sections::override_bricks_id(),
             ]
@@ -448,19 +602,32 @@ impl ParsedWorld {
                 registries = sections::decode_registries(payload).map_err(wrap)?;
             } else if section.identifier == sections::channels_id() {
                 channels = sections::decode_channels(payload).map_err(wrap)?;
+            } else if section.identifier == sections::levels_id() {
+                listed_levels = Some(sections::decode_levels(payload).map_err(wrap)?);
             } else if section.identifier == sections::generators_id() {
-                generators =
+                legacy_generators =
                     Some(sections::decode_generators(payload, section.version).map_err(wrap)?);
             } else {
-                bricks = sections::decode_override_bricks(payload).map_err(wrap)?;
+                legacy_bricks = Some(sections::decode_override_bricks(payload).map_err(wrap)?);
             }
         }
+        let levels = match listed_levels {
+            Some(levels) => {
+                if legacy_generators.is_some() || legacy_bricks.is_some() {
+                    return Err(LoadError::LevelsAndLegacySections);
+                }
+                ParsedLevels::Listed(levels)
+            }
+            None => ParsedLevels::Legacy {
+                generators: legacy_generators,
+                bricks: legacy_bricks.unwrap_or_default(),
+            },
+        };
         Ok(Self {
             header: header.ok_or(LoadError::MissingHeader)?,
             registries,
             channels,
-            generators,
-            bricks,
+            levels,
             opaque_sections,
         })
     }
@@ -489,6 +656,7 @@ impl ParsedWorld {
             generators: mut generator_registry,
             fallback_default_generator,
             assignment_cube_level,
+            legacy_level,
         } = context;
         let mut report = LoadReport::default();
 
@@ -539,7 +707,7 @@ impl ParsedWorld {
             }
         }
 
-        // Terrain generators.
+        // Terrain generators, shared by every level.
         let generator_file_entries: &[NamespacedId] = file_tables
             .get(&generator_kind)
             .map_or(&[][..], |entries| &entries[..]);
@@ -557,42 +725,75 @@ impl ParsedWorld {
                 },
             )
             .collect();
-        let preferred_default = self.generators.as_ref().map_or_else(
-            || fallback_default_generator.clone(),
-            |record| record.default_generator.clone(),
-        );
         let available = |identifier: &NamespacedId,
                          registry: &Registry<Arc<dyn TerrainGenerator>>| {
             registry
                 .runtime_id(identifier)
                 .filter(|id| registry.entry(*id).is_some_and(|entry| !entry.is_missing()))
         };
-        let default_generator = match available(&preferred_default, &generator_registry) {
-            Some(id) => id,
-            None => {
-                report.unavailable_default_generator = Some(preferred_default.clone());
-                available(&fallback_default_generator, &generator_registry).ok_or_else(|| {
-                    WorldTerrainError::GeneratorUnavailable(fallback_default_generator.clone())
-                })?
-            }
+
+        // Each level's terrain; its bricks wait until the channels are known.
+        let level_records: Vec<LevelToLoad> = match self.levels {
+            ParsedLevels::Listed(records) => records
+                .into_iter()
+                .map(|record| LevelToLoad {
+                    id: record.id,
+                    generators: Some(record.generators),
+                    bricks: record.bricks,
+                })
+                .collect(),
+            ParsedLevels::Legacy { generators, bricks } => vec![LevelToLoad {
+                id: legacy_level,
+                generators,
+                bricks,
+            }],
         };
-        let cube_level = self
-            .generators
-            .as_ref()
-            .map_or(assignment_cube_level, |record| record.assignment_cube_level);
-        let mut terrain = WorldTerrain::new(generator_registry, default_generator, cube_level)?;
-        if let Some(record) = &self.generators {
-            for (cube, file_id) in &record.leaves {
-                let generator = match file_id {
-                    None => None,
-                    Some(file_id) => Some(
-                        *generator_mapping
-                            .get(*file_id as usize)
-                            .ok_or(TranslationError::GeneratorOutsideTable(*file_id))?,
-                    ),
-                };
-                terrain.set_assignment(*cube, generator);
+
+        let mut levels = Vec::with_capacity(level_records.len());
+        for LevelToLoad {
+            id,
+            generators,
+            bricks,
+        } in level_records
+        {
+            let preferred_default = generators.as_ref().map_or_else(
+                || fallback_default_generator.clone(),
+                |record| record.default_generator.clone(),
+            );
+            let default_generator = match available(&preferred_default, &generator_registry) {
+                Some(generator) => generator,
+                None => {
+                    report
+                        .unavailable_default_generators
+                        .push((id.clone(), preferred_default.clone()));
+                    available(&fallback_default_generator, &generator_registry).ok_or_else(
+                        || {
+                            WorldTerrainError::GeneratorUnavailable(
+                                fallback_default_generator.clone(),
+                            )
+                        },
+                    )?
+                }
+            };
+            let cube_level = generators
+                .as_ref()
+                .map_or(assignment_cube_level, |record| record.assignment_cube_level);
+            let mut terrain =
+                WorldTerrain::new(generator_registry.clone(), default_generator, cube_level)?;
+            if let Some(record) = &generators {
+                for (cube, file_id) in &record.leaves {
+                    let generator = match file_id {
+                        None => None,
+                        Some(file_id) => Some(
+                            *generator_mapping
+                                .get(*file_id as usize)
+                                .ok_or(TranslationError::GeneratorOutsideTable(*file_id))?,
+                        ),
+                    };
+                    terrain.set_assignment(*cube, generator);
+                }
             }
+            levels.push((id, terrain, preferred_default, bricks));
         }
 
         // Channels: the game's first, then any only the file knows.
@@ -683,12 +884,25 @@ impl ParsedWorld {
             generator_mapping,
         )?;
 
-        let mut overrides = Grid::new(layout);
-        for (coordinate, brick) in self.bricks {
-            overrides
-                .insert_brick(coordinate, Arc::new(translator.translate_brick(brick)?))
-                .expect("the translated brick has one storage per layout channel");
-        }
+        let levels = levels
+            .into_iter()
+            .map(|(id, terrain, preferred_default_generator, bricks)| {
+                let mut overrides = Grid::new(Arc::clone(&layout));
+                for (coordinate, brick) in bricks {
+                    overrides
+                        .insert_brick(coordinate, Arc::new(translator.translate_brick(brick)?))
+                        .expect("the translated brick has one storage per layout channel");
+                }
+                Ok((
+                    id,
+                    LevelData {
+                        terrain,
+                        overrides,
+                        preferred_default_generator,
+                    },
+                ))
+            })
+            .collect::<Result<Vec<_>, LoadError>>()?;
 
         report.opaque_sections = self
             .opaque_sections
@@ -697,9 +911,7 @@ impl ParsedWorld {
             .collect();
         let world = WorldData {
             world_seed: self.header.world_seed,
-            terrain,
-            overrides,
-            preferred_default_generator: preferred_default,
+            levels,
             unknown_registry_tables,
             opaque_sections: self.opaque_sections,
         };

@@ -18,6 +18,10 @@ single damaged byte anywhere in a section is detected. Unknown sections are carr
 
 ## Engine sections (all version 1, except `engine:generators`, which is version 2)
 
+A world file has a list of levels, in `engine:levels`. Files written before levels existed have an `engine:generators` and
+an `engine:override_bricks` instead, which describe one level; they load as a world of one level that the game names, and
+are saved in the new form. A file with both is refused.
+
 Everything else in the file refers to content by *file id*: an index into a registry table below.
 
 | Section | Contents |
@@ -26,6 +30,7 @@ Everything else in the file refers to content by *file id*: an index into a regi
 | `engine:registries` | count, then per registry kind: identifier, entry count, the entries' identifiers in file-id order |
 | `engine:channels` | count, then per channel: identifier, default value (`u32`), value kind (`0` number, or `1` + the registry kind its ids come from) |
 | `engine:generators` | default terrain generator (identifier), assignment cube level (`u8`), leaf count, then per leaf of the generator-assignment octree, in Morton order: one varint, (generator file id plus one, `0` = unassigned) times 64 plus the cube's level. The leaves tile the whole space, so each leaf's place follows from the levels before it. A leaf count of 0 means no assignments are given (a description of a world's shape). Version 1, which this program still reads, gave each leaf's origin x, y, z (zigzag) and level (`u8`) before its generator number, about ten times the size. |
+| `engine:levels` | count (at least 1), then per level in order, the first being the main level: its identifier, its generator setup as length-prefixed bytes (the payload of `engine:generators`, version 2), and its edited bricks as length-prefixed bytes (the payload of `engine:override_bricks`). Level identifiers are distinct. |
 | `engine:override_bricks` | count, then per brick in strictly increasing coordinate order: x, y, z (zigzag), length-prefixed brick bytes |
 
 The generator table is the registry kind `engine:terrain_generator`.
@@ -40,7 +45,7 @@ one completely, and is only stored if it differs from what the generator makes (
 ## Descriptions
 
 `WorldData::describe` writes the same container with only `engine:header`, `engine:registries`, `engine:channels` and
-`engine:generators` (with no assignment leaves): the world's shape without its contents. A server sends it to a joining
+`engine:levels` (each level with no assignment leaves and no bricks): the world's shape without its contents. A server sends it to a joining
 client (`docs/protocol-and-replay.md`), which loads it exactly like a save, and keeps the `SourceTranslator` that loading
 builds to translate the bricks, values and generator ids the server sends afterwards.
 

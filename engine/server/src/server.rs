@@ -9,7 +9,7 @@ use protocol::{
 use region_octree::BrickCube;
 use transport::{Connection, ConnectionClosed, Listener};
 use voxel_grid::Grid;
-use voxel_space::{BrickBox, BrickCoordinate};
+use voxel_space::{BrickBox, BrickCoordinate, LevelIndex};
 use world_storage::{SaveError, WorldData};
 
 use crate::config::ServerConfig;
@@ -48,10 +48,10 @@ enum Phase {
         ticks_waited: u32,
     },
     Joined {
-        /// The region the client has been told it watches.
-        watched: Option<BrickBox>,
+        /// The region of a level the client has been told it watches.
+        watched: Option<(LevelIndex, BrickBox)>,
         /// The latest region it asked for, not yet answered.
-        requested: Option<BrickBox>,
+        requested: Option<(LevelIndex, BrickBox)>,
     },
 }
 
@@ -63,6 +63,7 @@ struct Session {
 
 /// What one edited brick needs sent to the clients that already hold it.
 struct EditedBrick {
+    level: LevelIndex,
     brick: BrickCoordinate,
     update: ServerMessage,
 }
@@ -162,6 +163,7 @@ impl Server {
         self.send_updates(tick, &mut report);
         self.world.edits.clear();
         self.world.outgoing.clear();
+        self.world.replies.clear();
         report
     }
 
@@ -243,7 +245,10 @@ impl Server {
             (true, ClientMessage::Hello { .. }) => {
                 Some(self.refuse(id, "hello was already sent".to_owned()))
             }
-            (true, ClientMessage::SetInterest { region }) => {
+            (true, ClientMessage::SetInterest { level, region }) => {
+                if self.world.data().level(level).is_none() {
+                    return Some(self.refuse(id, format!("the world has no {level}")));
+                }
                 if region.brick_count() > u128::from(self.config.maximum_watched_bricks) {
                     return Some(self.refuse(
                         id,
@@ -260,13 +265,17 @@ impl Server {
                     .expect("the session exists")
                     .phase
                 {
-                    *requested = Some(region);
+                    *requested = Some((level, region));
                 }
                 None
             }
             (true, ClientMessage::GameMessage { kind, payload }) => {
                 self.logic
                     .message_received(id, &kind, &payload, &mut self.world);
+                None
+            }
+            (true, ClientMessage::Command { text }) => {
+                self.logic.command_received(id, &text, &mut self.world);
                 None
             }
         }
@@ -366,24 +375,35 @@ impl Server {
         self.world
             .edits
             .iter()
-            .map(|(&brick, edits)| {
+            .map(|(&(level, brick), edits)| {
                 let contents = Arc::clone(
                     self.world
                         .data()
+                        .level(level)
+                        .expect("an edited level exists")
                         .overrides
                         .brick(brick)
                         .expect("an edited brick has contents"),
                 );
                 let update = if edits.created {
-                    ServerMessage::BrickContents { brick, contents }
+                    ServerMessage::BrickContents {
+                        level,
+                        brick,
+                        contents,
+                    }
                 } else {
                     ServerMessage::VoxelEdits {
+                        level,
                         brick,
                         changes: edits.changes.clone(),
                         resulting_digest: contents.content_digest(),
                     }
                 };
-                EditedBrick { brick, update }
+                EditedBrick {
+                    level,
+                    brick,
+                    update,
+                }
             })
             .collect()
     }
@@ -396,48 +416,54 @@ impl Server {
         };
         let previous = *watched;
         let current = match requested.take() {
-            Some(region) if previous != Some(region) => {
-                *watched = Some(region);
-                Some(region)
+            Some(asked) if previous != Some(asked) => {
+                *watched = Some(asked);
+                Some(asked)
             }
             _ => previous,
         };
 
         let mut messages = Vec::new();
         if current != previous
-            && let Some(region) = current
+            && let Some((level, region)) = current
         {
+            // Within the same level only the newly watched part is new; another level is new whole.
             let newly_watched = match previous {
-                Some(before) => region.without(before),
-                None => vec![region],
+                Some((before_level, before)) if before_level == level => region.without(before),
+                _ => vec![region],
             };
             messages.push(ServerMessage::InterestChanged {
+                level,
                 region,
-                assignments: self.assignments_covering(&newly_watched),
+                assignments: self.assignments_covering(level, &newly_watched),
             });
+            let overrides = &self
+                .world
+                .data()
+                .level(level)
+                .expect("a watched level exists")
+                .overrides;
             for slab in newly_watched {
-                for brick in edited_bricks_in(&self.world.data().overrides, slab) {
+                for brick in edited_bricks_in(overrides, slab) {
                     messages.push(ServerMessage::BrickContents {
+                        level,
                         brick,
                         contents: Arc::clone(
-                            self.world
-                                .data()
-                                .overrides
-                                .brick(brick)
-                                .expect("the brick was just found"),
+                            overrides.brick(brick).expect("the brick was just found"),
                         ),
                     });
                 }
             }
         }
         // Bricks the client has just been sent are in their final state already.
-        if let (Some(before), Some(now)) = (previous, current)
+        if let (Some((before_level, before)), Some((level, now))) = (previous, current)
+            && before_level == level
             && let Some(kept) = before.intersection(now)
         {
             messages.extend(
                 edited
                     .iter()
-                    .filter(|entry| kept.contains(entry.brick))
+                    .filter(|entry| entry.level == level && kept.contains(entry.brick))
                     .map(|entry| entry.update.clone()),
             );
         }
@@ -449,18 +475,32 @@ impl Server {
                 });
             }
         }
+        for (client, text) in &self.world.replies {
+            if *client == id {
+                messages.push(ServerMessage::CommandReply { text: text.clone() });
+            }
+        }
         messages.push(ServerMessage::TickCompleted { tick });
         messages.iter().map(ServerMessage::encode).collect()
     }
 
-    /// Which generator made the terrain of every assignment cube touching `regions`, assigning the
-    /// world's current default to cubes that have none yet.
-    fn assignments_covering(&mut self, regions: &[BrickBox]) -> Vec<GeneratorAssignment> {
-        let terrain = &mut self.world.data_mut().terrain;
-        let level = terrain.assignment_cube_level();
+    /// Which generator made the terrain of every assignment cube of `level` touching `regions`,
+    /// assigning the level's current default to cubes that have none yet.
+    fn assignments_covering(
+        &mut self,
+        level: LevelIndex,
+        regions: &[BrickBox],
+    ) -> Vec<GeneratorAssignment> {
+        let terrain = &mut self
+            .world
+            .data_mut()
+            .level_mut(level)
+            .expect("a watched level exists")
+            .terrain;
+        let cube_level = terrain.assignment_cube_level();
         let origins: BTreeSet<BrickCoordinate> = regions
             .iter()
-            .flat_map(|&region| BrickCube::covering(region, level))
+            .flat_map(|&region| BrickCube::covering(region, cube_level))
             .map(|cube| cube.origin())
             .collect();
         origins
@@ -468,7 +508,8 @@ impl Server {
             .map(|origin| {
                 let generator = terrain.assign_unassigned(origin);
                 GeneratorAssignment {
-                    cube: BrickCube::new(origin, level).expect("covering yields aligned cubes"),
+                    cube: BrickCube::new(origin, cube_level)
+                        .expect("covering yields aligned cubes"),
                     generator: Some(generator.raw()),
                 }
             })
@@ -476,11 +517,17 @@ impl Server {
     }
 }
 
-fn reaches(message: &OutgoingGameMessage, client: ClientId, watched: Option<BrickBox>) -> bool {
+fn reaches(
+    message: &OutgoingGameMessage,
+    client: ClientId,
+    watched: Option<(LevelIndex, BrickBox)>,
+) -> bool {
     match message.audience {
         Audience::Everyone => true,
         Audience::Client(target) => target == client,
-        Audience::Watching(brick) => watched.is_some_and(|region| region.contains(brick)),
+        Audience::Watching(level, brick) => watched.is_some_and(|(watched_level, region)| {
+            watched_level == level && region.contains(brick)
+        }),
     }
 }
 

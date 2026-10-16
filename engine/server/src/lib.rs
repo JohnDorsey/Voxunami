@@ -9,6 +9,7 @@
 //! world. Finding the clients an edit concerns is currently a scan of all clients; a spatial index
 //! over their watched regions is the step that takes this from dozens to thousands of clients.
 
+mod command_line;
 mod config;
 mod game_logic;
 mod generated_cache;
@@ -17,7 +18,8 @@ mod server_world;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 
+pub use command_line::CommandLine;
 pub use config::ServerConfig;
 pub use game_logic::GameLogic;
 pub use server::{LeaveReason, Server, ServerError, StepReport};
-pub use server_world::{Audience, ServerWorld, TerrainUnavailable};
+pub use server_world::{AccessError, Audience, ServerWorld};

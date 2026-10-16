@@ -31,7 +31,8 @@ Usage: voxunami {command} [options]
   --help                          show this text
 
 Controls: click the window to capture the mouse (Esc releases it). W A S D move, Space and Shift
-go up and down, Ctrl moves five times faster.
+go up and down, Ctrl moves five times faster. / or Enter starts typing a command (Enter sends it,
+Esc drops it): /level shows which level you are in, /level list lists them, /level go NAME moves you.
 {controls}",
         title = G::title(),
         summary = G::summary(),

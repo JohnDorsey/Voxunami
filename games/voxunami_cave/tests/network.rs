@@ -20,7 +20,7 @@ use game_shell::view::camera_at;
 use protocol::{ClientMessage, PROTOCOL_VERSION, ServerMessage};
 use transport::Connection;
 use transport::tcp::{TcpConnection, TcpServerListener};
-use voxel_space::{BrickBox, BrickCoordinate};
+use voxel_space::{BrickBox, BrickCoordinate, LevelIndex};
 use voxunami_cave::content::CaveContent;
 use voxunami_cave::game::{Cave, break_block};
 
@@ -156,8 +156,12 @@ fn a_dedicated_server_saves_its_world_while_running_and_when_stopped() {
         let _ = player.advance();
         path.exists()
             && open_world(&mut content, Some(&path), 0).is_ok_and(|world| {
-                world.overrides.brick_count() == 1
-                    && world.overrides.get(content.block_channel(), hit.voxel) == content.blocks.air
+                world.main().overrides.brick_count() == 1
+                    && world
+                        .main()
+                        .overrides
+                        .get(content.block_channel(), hit.voxel)
+                        == content.blocks.air
             })
     });
     drop(player);
@@ -166,7 +170,10 @@ fn a_dedicated_server_saves_its_world_while_running_and_when_stopped() {
     let world = open_world(&mut content, Some(&path), 0).unwrap();
     assert_eq!(world.world_seed, SEED);
     assert_eq!(
-        world.overrides.get(content.block_channel(), hit.voxel),
+        world
+            .main()
+            .overrides
+            .get(content.block_channel(), hit.voxel),
         content.blocks.air
     );
     assert!(
@@ -211,7 +218,7 @@ fn a_hosted_game_has_the_local_player_and_network_players_in_one_world() {
     drop(local);
     drop(remote);
     let (world, _) = host.stop();
-    assert_eq!(world.overrides.brick_count(), 1);
+    assert_eq!(world.main().overrides.brick_count(), 1);
 }
 
 #[test]
@@ -318,6 +325,7 @@ fn a_player_who_asks_to_watch_more_than_the_server_allows_is_refused_with_a_reas
     connection
         .send(
             ClientMessage::SetInterest {
+                level: LevelIndex::MAIN,
                 region: BrickBox::around(BrickCoordinate::ORIGIN, 40),
             }
             .encode(),
@@ -340,4 +348,52 @@ fn a_player_who_asks_to_watch_more_than_the_server_allows_is_refused_with_a_reas
     };
     assert!(reason.contains("limit"), "{reason}");
     server.stop();
+}
+
+#[test]
+fn a_player_over_the_network_goes_to_another_level_with_a_command_and_changes_only_that_level() {
+    let content = CaveContent::new();
+    let mut world = content.new_world(SEED);
+    let cellar = world
+        .add_level(
+            "voxunami_cave:cellar".parse().unwrap(),
+            content.new_world(SEED).into_main(),
+        )
+        .unwrap();
+    let listener = TcpServerListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_address().unwrap();
+    let mut settings = HostSettings::local(VIEW_RADIUS);
+    settings.network = Some(Box::new(listener));
+    let host = ServerThread::<Cave>::start(content, world, settings).unwrap();
+
+    let mut remote = join(
+        Box::new(TcpConnection::connect(address, Duration::from_secs(5)).unwrap()),
+        [16.5, 110.0, 16.5],
+    );
+    settle(&mut remote);
+    remote.send_command("/level go cellar");
+    wait_until("the move to the cellar", || {
+        let _ = remote.advance();
+        let _ = remote.update_view();
+        remote.level() == cellar
+            && remote.client().world().watched().map(|(level, _)| level) == Some(cellar)
+    });
+    assert_eq!(
+        remote.take_command_replies(),
+        ["you are now in voxunami_cave:cellar"]
+    );
+    settle(&mut remote);
+    remote.camera = above_ground(&remote, 16, 16, 3.0);
+    settle(&mut remote);
+    let hit = remote.target().expect("the ground is within reach");
+    break_block(&mut remote);
+    wait_until("the edit to come back", || {
+        let _ = remote.advance();
+        let _ = remote.update_view();
+        remote.mesher().is_opaque_at(hit.voxel) == Some(false)
+    });
+    drop(remote);
+    let (world, _) = host.stop();
+    assert_eq!(world.main().overrides.brick_count(), 0);
+    assert_eq!(world.level(cellar).unwrap().overrides.brick_count(), 1);
 }

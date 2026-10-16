@@ -12,7 +12,7 @@ use region_octree::BrickCube;
 use transport::Connection;
 use transport::loopback::{LoopbackConnection, loopback_pair};
 use voxel_grid::Brick;
-use voxel_space::{BrickBox, BrickCoordinate, LocalVoxelIndex, VoxelCoordinate};
+use voxel_space::{BrickBox, BrickCoordinate, LevelIndex, LocalVoxelIndex, VoxelCoordinate};
 use world_storage::TranslationError;
 use world_storage::test_support::{ALL_PLUGINS, Game, Plugin, brick, id};
 
@@ -89,6 +89,7 @@ impl Rig {
     /// Watches the region around the origin, as the first tick after the welcome (tick 5).
     fn watch_origin(&mut self, radius: u32) {
         self.send(ServerMessage::InterestChanged {
+            level: LevelIndex::MAIN,
             region: BrickBox::around(BrickCoordinate::ORIGIN, radius),
             assignments: vec![assignment_everywhere(0)],
         });
@@ -100,7 +101,7 @@ impl Rig {
         let mut world = self.game.new_world();
         self.game.set_block(&mut world, at, block);
         let coordinate = VoxelCoordinate::new(at[0], at[1], at[2]).split().0;
-        Arc::clone(world.overrides.brick(coordinate).unwrap())
+        Arc::clone(world.main().overrides.brick(coordinate).unwrap())
     }
 }
 
@@ -133,7 +134,7 @@ fn connecting_sends_hello_waits_for_the_welcome_and_loads_the_world() {
     assert!(report.missing_content.is_empty());
     let world = client.world();
     assert_eq!(world.tick(), Tick::new(41));
-    assert_eq!(world.watched_region(), None);
+    assert_eq!(world.watched(), None);
     assert_eq!(world.server_info().game, game_id());
     assert_eq!(world.server_info().client, ClientId::new(7));
     assert_eq!(world.server_info().ticks_per_second, 20);
@@ -208,18 +209,20 @@ fn a_refusal_a_wrong_first_message_and_a_wrong_version_fail_the_handshake() {
 fn a_tick_is_applied_only_when_all_of_it_has_arrived() {
     let mut rig = Rig::new();
     rig.send(ServerMessage::InterestChanged {
+        level: LevelIndex::MAIN,
         region: BrickBox::around(BrickCoordinate::ORIGIN, 1),
         assignments: vec![assignment_everywhere(0)],
     });
     // Half a tick: the message is held back, the view unchanged.
     assert_eq!(rig.client.poll_tick().unwrap(), None);
-    assert_eq!(rig.client.world().watched_region(), None);
+    assert_eq!(rig.client.world().watched(), None);
     rig.tick(5);
     let update = rig.client.poll_tick().unwrap().expect("the tick completed");
     assert_eq!(update.tick, Tick::new(5));
     assert_eq!(
         update.events,
         [ClientEvent::WatchedRegionChanged {
+            level: LevelIndex::MAIN,
             region: BrickBox::around(BrickCoordinate::ORIGIN, 1)
         }]
     );
@@ -235,10 +238,20 @@ fn a_tick_is_applied_only_when_all_of_it_has_arrived() {
 #[test]
 fn the_client_generates_terrain_where_the_server_named_a_generator() {
     let mut rig = Rig::new();
-    let before = rig.client.world().world().effective_brick(brick(0, 0, 0));
+    let before = rig
+        .client
+        .world()
+        .world()
+        .main()
+        .effective_brick(brick(0, 0, 0));
     assert!(matches!(before, world_storage::BrickSource::Unassigned));
     rig.watch_origin(1);
-    let after = rig.client.world().world().effective_brick(brick(0, 0, 0));
+    let after = rig
+        .client
+        .world()
+        .world()
+        .main()
+        .effective_brick(brick(0, 0, 0));
     let world_storage::BrickSource::Generated(generated) = after else {
         panic!("{after:?}");
     };
@@ -247,6 +260,7 @@ fn the_client_generates_terrain_where_the_server_named_a_generator() {
         .client
         .world()
         .world()
+        .main()
         .overrides
         .layout()
         .channel_index(&id("core:block"))
@@ -268,6 +282,7 @@ fn edited_bricks_replace_generated_terrain_and_edits_change_them() {
     let marble = rig.game.raw_block("fancy_blocks:marble");
     let contents = rig.edited_brick([1, 2, 3], "fancy_blocks:marble");
     rig.send(ServerMessage::BrickContents {
+        level: LevelIndex::MAIN,
         brick: brick(0, 0, 0),
         contents: Arc::clone(&contents),
     });
@@ -276,15 +291,17 @@ fn edited_bricks_replace_generated_terrain_and_edits_change_them() {
     assert_eq!(
         update.events,
         [ClientEvent::BrickChanged {
+            level: LevelIndex::MAIN,
             brick: brick(0, 0, 0)
         }]
     );
-    let layout = Arc::clone(rig.client.world().world().overrides.layout());
+    let layout = Arc::clone(rig.client.world().world().main().overrides.layout());
     let block_channel = layout.channel_index(&id("core:block")).unwrap();
     let held = rig
         .client
         .world()
         .world()
+        .main()
         .overrides
         .brick(brick(0, 0, 0))
         .unwrap();
@@ -300,6 +317,7 @@ fn edited_bricks_replace_generated_terrain_and_edits_change_them() {
     let voxel = VoxelCoordinate::new(9, 9, 9).split().1;
     edited.set(block_channel, voxel, dirt);
     rig.send(ServerMessage::VoxelEdits {
+        level: LevelIndex::MAIN,
         brick: brick(0, 0, 0),
         changes: vec![VoxelChange {
             voxel,
@@ -315,6 +333,7 @@ fn edited_bricks_replace_generated_terrain_and_edits_change_them() {
             .client
             .world()
             .world()
+            .main()
             .overrides
             .brick(brick(0, 0, 0))
             .unwrap(),
@@ -330,16 +349,18 @@ fn moving_the_watched_region_forgets_bricks_left_behind_and_keeps_the_rest() {
         let coordinate = VoxelCoordinate::new(at[0], at[1], at[2]).split().0;
         let contents = rig.edited_brick(at, "fancy_blocks:marble");
         rig.send(ServerMessage::BrickContents {
+            level: LevelIndex::MAIN,
             brick: coordinate,
             contents,
         });
     }
     rig.tick(6);
     rig.client.poll_tick().unwrap().unwrap();
-    assert_eq!(rig.client.world().world().overrides.brick_count(), 3);
+    assert_eq!(rig.client.world().world().main().overrides.brick_count(), 3);
 
     // Bricks (0), (1) and (-2) were edited; the new region spans x = 0..=4, so (-2) is left behind.
     rig.send(ServerMessage::InterestChanged {
+        level: LevelIndex::MAIN,
         region: BrickBox::new(brick(0, -2, -2), brick(4, 2, 2)).unwrap(),
         assignments: vec![],
     });
@@ -349,6 +370,7 @@ fn moving_the_watched_region_forgets_bricks_left_behind_and_keeps_the_rest() {
         rig.client
             .world()
             .world()
+            .main()
             .overrides
             .sorted_brick_coordinates(),
         [brick(0, 0, 0), brick(1, 0, 0)]
@@ -365,6 +387,7 @@ fn a_stream_that_breaks_the_rules_is_an_error_not_a_wrong_picture() {
             "a brick outside the watched region",
             Box::new(move |rig| {
                 vec![ServerMessage::BrickContents {
+                    level: LevelIndex::MAIN,
                     brick: brick(30, 0, 0),
                     contents: contents_of(rig),
                 }]
@@ -374,6 +397,7 @@ fn a_stream_that_breaks_the_rules_is_an_error_not_a_wrong_picture() {
             "an edit to a brick never sent",
             Box::new(|_| {
                 vec![ServerMessage::VoxelEdits {
+                    level: LevelIndex::MAIN,
                     brick: brick(0, 0, 0),
                     changes: vec![],
                     resulting_digest: 0,
@@ -396,6 +420,7 @@ fn a_stream_that_breaks_the_rules_is_an_error_not_a_wrong_picture() {
             "a generator the description never listed",
             Box::new(|_| {
                 vec![ServerMessage::InterestChanged {
+                    level: LevelIndex::MAIN,
                     region: BrickBox::around(BrickCoordinate::ORIGIN, 1),
                     assignments: vec![assignment_everywhere(99)],
                 }]
@@ -405,6 +430,7 @@ fn a_stream_that_breaks_the_rules_is_an_error_not_a_wrong_picture() {
             "a brick with the wrong number of channels",
             Box::new(|_| {
                 vec![ServerMessage::BrickContents {
+                    level: LevelIndex::MAIN,
                     brick: brick(0, 0, 0),
                     contents: Arc::new(Brick::from_channels(vec![
                         voxel_grid::ChannelStorage::uniform(0),
@@ -422,10 +448,11 @@ fn a_stream_that_breaks_the_rules_is_an_error_not_a_wrong_picture() {
         rig.tick(6);
         let error = rig.client.poll_tick().expect_err(name);
         let recognised = match (name, &error) {
-            ("a brick outside the watched region", ClientError::BrickOutsideWatchedRegion(_)) => {
-                true
-            }
-            ("an edit to a brick never sent", ClientError::EditToUnknownBrick(_)) => true,
+            (
+                "a brick outside the watched region",
+                ClientError::BrickOutsideWatchedRegion(_, _),
+            ) => true,
+            ("an edit to a brick never sent", ClientError::EditToUnknownBrick(_, _)) => true,
             ("a second welcome", ClientError::UnexpectedMessage(_)) => true,
             ("the server disconnecting", ClientError::DisconnectedByServer(reason)) => {
                 reason == "bye"
@@ -458,10 +485,12 @@ fn ticks_must_be_consecutive_and_edits_must_match_the_servers_digest() {
     rig.watch_origin(1);
     let contents = rig.edited_brick([1, 2, 3], "fancy_blocks:marble");
     rig.send(ServerMessage::BrickContents {
+        level: LevelIndex::MAIN,
         brick: brick(0, 0, 0),
         contents: Arc::clone(&contents),
     });
     rig.send(ServerMessage::VoxelEdits {
+        level: LevelIndex::MAIN,
         brick: brick(0, 0, 0),
         changes: vec![],
         resulting_digest: contents.content_digest() ^ 1,
@@ -469,7 +498,7 @@ fn ticks_must_be_consecutive_and_edits_must_match_the_servers_digest() {
     rig.tick(6);
     assert!(matches!(
         rig.client.poll_tick().unwrap_err(),
-        ClientError::OutOfSync(coordinate) if coordinate == BrickCoordinate::ORIGIN
+        ClientError::OutOfSync(LevelIndex::MAIN, coordinate) if coordinate == BrickCoordinate::ORIGIN
     ));
 }
 
@@ -487,10 +516,12 @@ fn edits_to_channels_or_values_the_server_has_no_table_for_are_refused() {
         rig.watch_origin(1);
         let contents = rig.edited_brick([1, 2, 3], "fancy_blocks:marble");
         rig.send(ServerMessage::BrickContents {
+            level: LevelIndex::MAIN,
             brick: brick(0, 0, 0),
             contents,
         });
         rig.send(ServerMessage::VoxelEdits {
+            level: LevelIndex::MAIN,
             brick: brick(0, 0, 0),
             changes: vec![VoxelChange {
                 voxel,
@@ -533,7 +564,7 @@ fn game_messages_arrive_as_events_in_order_and_requests_reach_the_server() {
     );
 
     let region = BrickBox::around(brick(3, 3, 3), 1);
-    rig.client.watch(region).unwrap();
+    rig.client.watch(LevelIndex::MAIN, region).unwrap();
     rig.client
         .send_game_message(id("test_game:chat"), vec![9])
         .unwrap();
@@ -545,7 +576,10 @@ fn game_messages_arrive_as_events_in_order_and_requests_reach_the_server() {
     assert_eq!(
         sent,
         [
-            ClientMessage::SetInterest { region },
+            ClientMessage::SetInterest {
+                level: LevelIndex::MAIN,
+                region
+            },
             ClientMessage::GameMessage {
                 kind: id("test_game:chat"),
                 payload: vec![9]
@@ -581,12 +615,14 @@ fn views_built_from_the_same_messages_are_equal_and_different_messages_differ() 
         rig.watch_origin(1);
         let contents = rig.edited_brick([1, 2, 3], "fancy_blocks:marble");
         rig.send(ServerMessage::BrickContents {
+            level: LevelIndex::MAIN,
             brick: brick(0, 0, 0),
             contents,
         });
         if extra_edit {
             let contents = rig.edited_brick([40, 2, 3], "fancy_blocks:glass");
             rig.send(ServerMessage::BrickContents {
+                level: LevelIndex::MAIN,
                 brick: brick(1, 0, 0),
                 contents,
             });
@@ -601,11 +637,14 @@ fn views_built_from_the_same_messages_are_equal_and_different_messages_differ() 
     assert_eq!(summary.tick, Tick::new(6));
     assert_eq!(
         summary.watched,
-        Some(BrickBox::around(BrickCoordinate::ORIGIN, 1))
+        Some((
+            LevelIndex::MAIN,
+            BrickBox::around(BrickCoordinate::ORIGIN, 1)
+        ))
     );
     // The cube at the origin has the flat generator; the rest of space is unassigned.
     assert!(
-        summary
+        summary.levels[0]
             .generator_assignments
             .iter()
             .any(|(cube, name)| cube.origin() == BrickCoordinate::ORIGIN
@@ -625,15 +664,17 @@ fn a_client_with_different_plugins_follows_the_stream_and_sees_the_same_meaning(
     rig.watch_origin(1);
     let contents = rig.edited_brick([1, 2, 3], "fancy_blocks:marble");
     rig.send(ServerMessage::BrickContents {
+        level: LevelIndex::MAIN,
         brick: brick(0, 0, 0),
         contents: Arc::clone(&contents),
     });
     // An edit, with a digest that could not match in the client's numbering.
-    let server_layout = Arc::clone(rig.game.new_world().overrides.layout());
+    let server_layout = Arc::clone(rig.game.new_world().main().overrides.layout());
     let block_channel = server_layout.channel_index(&id("core:block")).unwrap();
     let voxel = VoxelCoordinate::new(9, 9, 9).split().1;
     let dirt = rig.game.raw_block("base_blocks:dirt");
     rig.send(ServerMessage::VoxelEdits {
+        level: LevelIndex::MAIN,
         brick: brick(0, 0, 0),
         changes: vec![VoxelChange {
             voxel,
@@ -647,11 +688,12 @@ fn a_client_with_different_plugins_follows_the_stream_and_sees_the_same_meaning(
 
     let mut expected = (*contents).clone();
     expected.set(block_channel, voxel, dirt);
-    let client_layout = Arc::clone(rig.client.world().world().overrides.layout());
+    let client_layout = Arc::clone(rig.client.world().world().main().overrides.layout());
     let held = rig
         .client
         .world()
         .world()
+        .main()
         .overrides
         .brick(brick(0, 0, 0))
         .unwrap();
@@ -670,5 +712,280 @@ fn a_client_with_different_plugins_follows_the_stream_and_sees_the_same_meaning(
         rig.client_game
             .value_name(client_layout.definition(client_block), raw),
         "fancy_blocks:marble"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Levels and commands
+// ---------------------------------------------------------------------------------------------
+
+impl Rig {
+    /// A client of a server whose world has a second level, `test_content:second`.
+    fn with_two_levels() -> Self {
+        let server_game = Game::new(&ALL_PLUGINS);
+        let mut world = server_game.new_world();
+        world
+            .add_level(
+                id("test_content:second"),
+                server_game.new_level("fancy_terrain:cliffs_v1"),
+            )
+            .unwrap();
+        let (client_end, mut server) = loopback_pair();
+        let handshake = Handshake::start(client_end, game_id()).unwrap();
+        server.receive().unwrap().unwrap();
+        server
+            .send(
+                ServerMessage::Welcome(Welcome {
+                    protocol_version: PROTOCOL_VERSION,
+                    game: game_id(),
+                    client: ClientId::new(7),
+                    ticks_per_second: 20,
+                    tick: Tick::new(4),
+                    world_description: world.describe(&server_game.registries()).unwrap(),
+                })
+                .encode(),
+            )
+            .unwrap();
+        let HandshakeProgress::Welcomed(welcomed) = handshake.poll().unwrap() else {
+            panic!("the welcome was sent");
+        };
+        let mut client_game = Game::new(&ALL_PLUGINS);
+        let (client, _) = welcomed.finish(client_game.load_context()).unwrap();
+        Self {
+            game: server_game,
+            client_game,
+            server,
+            client,
+        }
+    }
+
+    /// Watches the region around the origin of a level, as the next tick after `after`.
+    fn watch_level_origin(&mut self, level: LevelIndex, radius: u32, tick: u64) {
+        self.send(ServerMessage::InterestChanged {
+            level,
+            region: BrickBox::around(BrickCoordinate::ORIGIN, radius),
+            assignments: vec![assignment_everywhere(0)],
+        });
+        self.tick(tick);
+        self.client.poll_tick().unwrap().unwrap();
+    }
+}
+
+const SECOND: LevelIndex = LevelIndex::new(1);
+
+#[test]
+fn the_client_knows_every_level_the_server_described() {
+    let rig = Rig::with_two_levels();
+    let world = rig.client.world().world();
+    assert_eq!(world.level_count(), 2);
+    assert_eq!(world.level_id(SECOND), Some(&id("test_content:second")));
+    assert_eq!(rig.client.world().watched(), None);
+    assert!(rig.client.world().watched_level().is_none());
+}
+
+#[test]
+fn following_the_server_into_another_level_forgets_what_was_held_of_the_first() {
+    let mut rig = Rig::with_two_levels();
+    rig.watch_level_origin(LevelIndex::MAIN, 1, 5);
+    rig.send(ServerMessage::BrickContents {
+        level: LevelIndex::MAIN,
+        brick: brick(0, 0, 0),
+        contents: rig.edited_brick([1, 2, 3], "fancy_blocks:marble"),
+    });
+    rig.tick(6);
+    rig.client.poll_tick().unwrap().unwrap();
+    assert_eq!(rig.client.world().world().main().overrides.brick_count(), 1);
+
+    // The same region of the second level: the first level's bricks are not the second's.
+    rig.send(ServerMessage::InterestChanged {
+        level: SECOND,
+        region: BrickBox::around(BrickCoordinate::ORIGIN, 1),
+        assignments: vec![assignment_everywhere(1)],
+    });
+    rig.send(ServerMessage::BrickContents {
+        level: SECOND,
+        brick: brick(1, 0, 0),
+        contents: rig.edited_brick([33, 2, 3], "base_blocks:dirt"),
+    });
+    rig.tick(7);
+    let update = rig.client.poll_tick().unwrap().unwrap();
+    assert_eq!(
+        update.events,
+        [
+            ClientEvent::WatchedRegionChanged {
+                level: SECOND,
+                region: BrickBox::around(BrickCoordinate::ORIGIN, 1)
+            },
+            ClientEvent::BrickChanged {
+                level: SECOND,
+                brick: brick(1, 0, 0)
+            }
+        ]
+    );
+    let world = rig.client.world().world();
+    assert_eq!(
+        world.main().overrides.brick_count(),
+        0,
+        "the main level was forgotten"
+    );
+    assert_eq!(world.level(SECOND).unwrap().overrides.brick_count(), 1);
+    assert_eq!(
+        rig.client.world().watched(),
+        Some((SECOND, BrickBox::around(BrickCoordinate::ORIGIN, 1)))
+    );
+    let (level, data) = rig.client.world().watched_level().unwrap();
+    assert_eq!(level, SECOND);
+    assert!(std::ptr::eq(data, world.level(SECOND).unwrap()));
+    // The second level uses the generator the server assigned it: entry 1 of the shared table.
+    let second = world.level(SECOND).unwrap();
+    let assigned = second.terrain.assigned_generator(brick(0, 0, 0)).unwrap();
+    assert_eq!(
+        second
+            .terrain
+            .generators()
+            .entry(assigned)
+            .unwrap()
+            .identifier(),
+        &id("fancy_terrain:cliffs_v1")
+    );
+    assert!(
+        world
+            .main()
+            .terrain
+            .assigned_generator(brick(0, 0, 0))
+            .is_some()
+    );
+}
+
+#[test]
+fn the_summary_tells_the_levels_apart() {
+    let mut rig = Rig::with_two_levels();
+    rig.watch_level_origin(SECOND, 1, 5);
+    let before = rig.client.world().summary();
+    assert_eq!(before.levels.len(), 2);
+    assert_eq!(
+        before.watched,
+        Some((SECOND, BrickBox::around(BrickCoordinate::ORIGIN, 1)))
+    );
+    rig.send(ServerMessage::BrickContents {
+        level: SECOND,
+        brick: brick(0, 0, 0),
+        contents: rig.edited_brick([1, 2, 3], "fancy_blocks:marble"),
+    });
+    rig.tick(6);
+    rig.client.poll_tick().unwrap().unwrap();
+    let after = rig.client.world().summary();
+    assert_eq!(
+        after.levels[0], before.levels[0],
+        "the main level did not change"
+    );
+    assert_ne!(
+        after.levels[1].edited_bricks,
+        before.levels[1].edited_bricks
+    );
+}
+
+#[test]
+fn what_names_a_level_the_world_does_not_have_or_one_that_is_not_watched_is_an_error() {
+    type Case = (&'static str, ServerMessage, fn(&ClientError) -> bool);
+    let cases: Vec<Case> = vec![
+        (
+            "interest in a level that does not exist",
+            ServerMessage::InterestChanged {
+                level: LevelIndex::new(5),
+                region: BrickBox::around(BrickCoordinate::ORIGIN, 1),
+                assignments: vec![],
+            },
+            |error| matches!(error, ClientError::UnknownLevel(level) if level.get() == 5),
+        ),
+        (
+            "an edit in a level that does not exist",
+            ServerMessage::VoxelEdits {
+                level: LevelIndex::new(5),
+                brick: brick(0, 0, 0),
+                changes: vec![],
+                resulting_digest: 0,
+            },
+            |error| matches!(error, ClientError::UnknownLevel(level) if level.get() == 5),
+        ),
+        (
+            "contents of a level that is not the watched one",
+            ServerMessage::BrickContents {
+                level: SECOND,
+                brick: brick(0, 0, 0),
+                contents: Arc::new(Brick::from_channels(vec![])),
+            },
+            |error| matches!(error, ClientError::BrickOutsideWatchedRegion(level, _) if *level == SECOND),
+        ),
+        (
+            "an edit to a brick held in another level",
+            ServerMessage::VoxelEdits {
+                level: SECOND,
+                brick: brick(0, 0, 0),
+                changes: vec![],
+                resulting_digest: 0,
+            },
+            |error| matches!(error, ClientError::EditToUnknownBrick(level, _) if *level == SECOND),
+        ),
+    ];
+    for (name, message, recognised) in cases {
+        let mut rig = Rig::with_two_levels();
+        rig.watch_level_origin(LevelIndex::MAIN, 1, 5);
+        // A brick held in the main level, so an edit to the same brick of the second is the mistake.
+        rig.send(ServerMessage::BrickContents {
+            level: LevelIndex::MAIN,
+            brick: brick(0, 0, 0),
+            contents: rig.edited_brick([1, 2, 3], "fancy_blocks:marble"),
+        });
+        rig.tick(6);
+        rig.client.poll_tick().unwrap().unwrap();
+        rig.send(message);
+        rig.tick(7);
+        let error = rig.client.poll_tick().expect_err(name);
+        assert!(recognised(&error), "{name}: {error}");
+    }
+}
+
+#[test]
+fn watching_names_the_level_and_commands_go_out_as_text_and_replies_come_in_as_events() {
+    let mut rig = Rig::with_two_levels();
+    rig.client
+        .watch(SECOND, BrickBox::around(brick(2, 2, 2), 1))
+        .unwrap();
+    rig.client.send_command("/level go second").unwrap();
+    let sent: Vec<ClientMessage> = std::iter::from_fn(|| rig.server.receive().unwrap())
+        .map(|frame| ClientMessage::decode(&frame).unwrap())
+        .collect();
+    assert_eq!(
+        sent,
+        [
+            ClientMessage::SetInterest {
+                level: SECOND,
+                region: BrickBox::around(brick(2, 2, 2), 1)
+            },
+            ClientMessage::Command {
+                text: "/level go second".to_owned()
+            }
+        ]
+    );
+
+    rig.send(ServerMessage::CommandReply {
+        text: "you are now in the second level".to_owned(),
+    });
+    rig.send(ServerMessage::CommandReply {
+        text: "have fun".to_owned(),
+    });
+    rig.tick(5);
+    let update = rig.client.poll_tick().unwrap().unwrap();
+    assert_eq!(
+        update.events,
+        [
+            ClientEvent::CommandReply {
+                text: "you are now in the second level".to_owned()
+            },
+            ClientEvent::CommandReply {
+                text: "have fun".to_owned()
+            }
+        ]
     );
 }

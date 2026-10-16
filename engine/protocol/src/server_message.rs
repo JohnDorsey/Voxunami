@@ -4,11 +4,15 @@ use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
 use region_octree::BrickCube;
 use voxel_grid::Brick;
-use voxel_space::{BrickBox, BrickCoordinate, LocalVoxelIndex};
+use voxel_space::{BrickBox, BrickCoordinate, LevelIndex, LocalVoxelIndex};
 
+use crate::MAXIMUM_COMMAND_LENGTH;
 use crate::error::ProtocolError;
 use crate::types::{ClientId, Tick};
-use crate::wire::{read_brick_box, read_brick_coordinate, write_brick_box, write_brick_coordinate};
+use crate::wire::{
+    read_brick_box, read_brick_coordinate, read_level, write_brick_box, write_brick_coordinate,
+    write_level,
+};
 
 const KIND_WELCOME: u8 = 1;
 const KIND_INTEREST_CHANGED: u8 = 2;
@@ -17,6 +21,7 @@ const KIND_VOXEL_EDITS: u8 = 4;
 const KIND_GAME_MESSAGE: u8 = 5;
 const KIND_TICK_COMPLETED: u8 = 6;
 const KIND_DISCONNECTED: u8 = 7;
+const KIND_COMMAND_REPLY: u8 = 8;
 
 /// The server's answer to `Hello`: everything a client needs to start interpreting the stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,8 +35,9 @@ pub struct Welcome {
     /// The last tick the server completed before this client joined.
     pub tick: Tick,
     /// A world file holding the world's shape without its contents (`WorldData::describe`): seed,
-    /// registry tables, channels and generator setup. Loading it is how a client learns the numbering
-    /// every brick and edit below uses.
+    /// registry tables, channels, and each level's name and generator setup. Loading it is how a
+    /// client learns the numbering every brick and edit below uses, and which level each level
+    /// number names (they are numbered in the file's order).
     pub world_description: Vec<u8>,
 }
 
@@ -58,21 +64,25 @@ pub struct VoxelChange {
 pub enum ServerMessage {
     /// The first message on a connection.
     Welcome(Welcome),
-    /// The client now watches exactly `region`: it should forget edited bricks outside it. For every
-    /// part of `region` it was not already watching, `assignments` tells it which generator made the
-    /// terrain, and `BrickContents` for edited bricks follow.
+    /// The client now watches exactly `region` of `level`: it should forget edited bricks outside it
+    /// (all of them, if it was watching another level). For every part of `region` it was not already
+    /// watching, `assignments` tells it which generator made the terrain, and `BrickContents` for
+    /// edited bricks follow.
     InterestChanged {
+        level: LevelIndex,
         region: BrickBox,
         assignments: Vec<GeneratorAssignment>,
     },
     /// The whole contents of an edited brick, replacing whatever the client has for it. A brick
     /// that has never been edited is not sent: clients generate it.
     BrickContents {
+        level: LevelIndex,
         brick: BrickCoordinate,
         contents: Arc<Brick>,
     },
     /// Changes to a brick the client already has contents for.
     VoxelEdits {
+        level: LevelIndex,
         brick: BrickCoordinate,
         changes: Vec<VoxelChange>,
         /// `Brick::content_digest` of the brick once the changes are applied, in the server's own
@@ -88,6 +98,8 @@ pub enum ServerMessage {
     TickCompleted { tick: Tick },
     /// The server is closing this connection, for the stated reason.
     Disconnected { reason: String },
+    /// The answer to a `Command` this client sent: at most [`MAXIMUM_COMMAND_LENGTH`] bytes of text.
+    CommandReply { text: String },
 }
 
 /// Whether `frame` is a `TickCompleted` message. Recorders use it to know when a tick ends without
@@ -110,10 +122,12 @@ impl ServerMessage {
                 writer.write_bytes(&welcome.world_description);
             }
             Self::InterestChanged {
+                level,
                 region,
                 assignments,
             } => {
                 writer.write_u8(KIND_INTEREST_CHANGED);
+                write_level(&mut writer, *level);
                 write_brick_box(&mut writer, *region);
                 writer.write_varint(assignments.len() as u64);
                 for assignment in assignments {
@@ -122,19 +136,26 @@ impl ServerMessage {
                     writer.write_varint(assignment.generator.map_or(0, |id| u64::from(id) + 1));
                 }
             }
-            Self::BrickContents { brick, contents } => {
+            Self::BrickContents {
+                level,
+                brick,
+                contents,
+            } => {
                 writer.write_u8(KIND_BRICK_CONTENTS);
+                write_level(&mut writer, *level);
                 write_brick_coordinate(&mut writer, *brick);
                 let mut encoded = Vec::new();
                 contents.encode(&mut encoded);
                 writer.write_bytes(&encoded);
             }
             Self::VoxelEdits {
+                level,
                 brick,
                 changes,
                 resulting_digest,
             } => {
                 writer.write_u8(KIND_VOXEL_EDITS);
+                write_level(&mut writer, *level);
                 write_brick_coordinate(&mut writer, *brick);
                 writer.write_u64(*resulting_digest);
                 writer.write_varint(changes.len() as u64);
@@ -157,6 +178,10 @@ impl ServerMessage {
                 writer.write_u8(KIND_DISCONNECTED);
                 writer.write_string(reason);
             }
+            Self::CommandReply { text } => {
+                writer.write_u8(KIND_COMMAND_REPLY);
+                writer.write_string(text);
+            }
         }
         writer.into_bytes()
     }
@@ -173,6 +198,7 @@ impl ServerMessage {
                 world_description: reader.read_bytes()?.to_vec(),
             }),
             KIND_INTEREST_CHANGED => {
+                let level = read_level(&mut reader)?;
                 let region = read_brick_box(&mut reader)?;
                 let count = reader.read_count(5)?;
                 let mut assignments = Vec::with_capacity(count);
@@ -192,11 +218,13 @@ impl ServerMessage {
                     assignments.push(GeneratorAssignment { cube, generator });
                 }
                 Self::InterestChanged {
+                    level,
                     region,
                     assignments,
                 }
             }
             KIND_BRICK_CONTENTS => {
+                let level = read_level(&mut reader)?;
                 let brick = read_brick_coordinate(&mut reader)?;
                 let mut encoded = reader.read_bytes()?;
                 let contents = Brick::decode(&mut encoded)?;
@@ -204,11 +232,13 @@ impl ServerMessage {
                     return Err(DecodeError::TrailingBytes(encoded.len()).into());
                 }
                 Self::BrickContents {
+                    level,
                     brick,
                     contents: Arc::new(contents),
                 }
             }
             KIND_VOXEL_EDITS => {
+                let level = read_level(&mut reader)?;
                 let brick = read_brick_coordinate(&mut reader)?;
                 let resulting_digest = reader.read_u64()?;
                 let count = reader.read_count(3)?;
@@ -229,6 +259,7 @@ impl ServerMessage {
                     });
                 }
                 Self::VoxelEdits {
+                    level,
                     brick,
                     changes,
                     resulting_digest,
@@ -244,6 +275,15 @@ impl ServerMessage {
             KIND_DISCONNECTED => Self::Disconnected {
                 reason: reader.read_string()?.to_owned(),
             },
+            KIND_COMMAND_REPLY => {
+                let text = reader.read_string()?;
+                if text.len() > MAXIMUM_COMMAND_LENGTH {
+                    return Err(DecodeError::Invalid("a command reply is too long").into());
+                }
+                Self::CommandReply {
+                    text: text.to_owned(),
+                }
+            }
             unknown => return Err(ProtocolError::UnknownMessageKind(unknown)),
         };
         reader.finish()?;
@@ -276,7 +316,7 @@ mod tests {
     fn samples() -> Vec<ServerMessage> {
         vec![
             ServerMessage::Welcome(Welcome {
-                protocol_version: 1,
+                protocol_version: 2,
                 game: id("voxunami_cave:game"),
                 client: ClientId::new(3),
                 ticks_per_second: 20,
@@ -284,6 +324,7 @@ mod tests {
                 world_description: vec![5; 40],
             }),
             ServerMessage::InterestChanged {
+                level: LevelIndex::new(1),
                 region: BrickBox::around(BrickCoordinate::new(0, -2, 9), 3),
                 assignments: vec![
                     GeneratorAssignment {
@@ -297,14 +338,17 @@ mod tests {
                 ],
             },
             ServerMessage::InterestChanged {
+                level: LevelIndex::MAIN,
                 region: BrickBox::around(BrickCoordinate::ORIGIN, 0),
                 assignments: Vec::new(),
             },
             ServerMessage::BrickContents {
+                level: LevelIndex::new(300),
                 brick: BrickCoordinate::new(-5, 6, 7),
                 contents: sample_brick(),
             },
             ServerMessage::VoxelEdits {
+                level: LevelIndex::new(2),
                 brick: BrickCoordinate::new(1, 1, 1),
                 changes: vec![
                     VoxelChange {
@@ -329,6 +373,9 @@ mod tests {
             },
             ServerMessage::Disconnected {
                 reason: "the server is shutting down".to_owned(),
+            },
+            ServerMessage::CommandReply {
+                text: "you are in the nether".to_owned(),
             },
         ]
     }
@@ -370,7 +417,15 @@ mod tests {
             [5, 3, b'a', b':', b'b', 1, 9]
         );
         assert_eq!(
+            ServerMessage::CommandReply {
+                text: "ok".to_owned()
+            }
+            .encode(),
+            [8, 2, b'o', b'k']
+        );
+        assert_eq!(
             ServerMessage::VoxelEdits {
+                level: LevelIndex::new(1),
                 brick: BrickCoordinate::new(1, 0, 0),
                 changes: vec![VoxelChange {
                     voxel: LocalVoxelIndex::new(1, 0, 0),
@@ -380,10 +435,11 @@ mod tests {
                 resulting_digest: 1,
             }
             .encode(),
-            [4, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0xAC, 2, 5]
+            [4, 1, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0xAC, 2, 5]
         );
         assert_eq!(
             ServerMessage::InterestChanged {
+                level: LevelIndex::new(2),
                 region: BrickBox::around(BrickCoordinate::ORIGIN, 1),
                 assignments: vec![GeneratorAssignment {
                     cube: BrickCube::new(BrickCoordinate::new(0, 0, 0), 0).unwrap(),
@@ -391,7 +447,7 @@ mod tests {
                 }],
             }
             .encode(),
-            [2, 1, 1, 1, 2, 2, 2, 1, 0, 0, 0, 0, 3]
+            [2, 2, 1, 1, 1, 2, 2, 2, 1, 0, 0, 0, 0, 3]
         );
     }
 
@@ -432,6 +488,7 @@ mod tests {
         let edit_frame = |voxel_index: u64| {
             let mut writer = ByteWriter::new();
             writer.write_u8(KIND_VOXEL_EDITS);
+            writer.write_varint(0); // level
             for coordinate in [0, 0, 0] {
                 writer.write_signed_varint(coordinate);
             }
@@ -451,12 +508,13 @@ mod tests {
     #[test]
     fn a_brick_with_a_malformed_channel_is_refused() {
         let mut frame = ServerMessage::BrickContents {
+            level: LevelIndex::MAIN,
             brick: BrickCoordinate::ORIGIN,
             contents: Arc::new(Brick::from_channels(vec![ChannelStorage::uniform(1)])),
         }
         .encode();
-        // Kind, three coordinates, brick length, channel count (2 bytes), then the storage tag.
-        let tag_position = 1 + 3 + 1 + 2;
+        // Kind, level, three coordinates, brick length, channel count (2 bytes), then the storage tag.
+        let tag_position = 1 + 1 + 3 + 1 + 2;
         assert_eq!(frame[tag_position], 0);
         frame[tag_position] = 77;
         assert!(matches!(
@@ -486,10 +544,13 @@ mod tests {
             contents in arbitrary_brick(),
             changes in proptest::collection::vec((local_voxel_index(), any::<u16>(), any::<u32>()), 0..30),
             digest in any::<u64>(),
+            level in any::<u32>(),
         ) {
-            let brick_message = ServerMessage::BrickContents { brick: coordinate, contents };
+            let level = LevelIndex::new(level);
+            let brick_message = ServerMessage::BrickContents { level, brick: coordinate, contents };
             prop_assert_eq!(ServerMessage::decode(&brick_message.encode()), Ok(brick_message));
             let edit_message = ServerMessage::VoxelEdits {
+                level,
                 brick: coordinate,
                 changes: changes
                     .into_iter()

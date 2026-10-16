@@ -9,7 +9,7 @@ use server::test_support::{LogicEvent, ScriptedLogic};
 use server::{Audience, LeaveReason, Server, ServerConfig, StepReport};
 use transport::loopback::{LoopbackConnection, LoopbackConnector, loopback_listener};
 use transport::{Connection, ConnectionClosed};
-use voxel_space::{BrickBox, BrickCoordinate, VoxelCoordinate};
+use voxel_space::{BrickBox, BrickCoordinate, LevelIndex, VoxelCoordinate};
 use world_storage::ParsedWorld;
 use world_storage::WorldData;
 use world_storage::test_support::{ALL_PLUGINS, Game, Plugin, brick, id, sample_world};
@@ -37,6 +37,7 @@ impl TestClient {
 
     fn watch(&mut self, center: BrickCoordinate, radius: u32) {
         self.send(&ClientMessage::SetInterest {
+            level: LevelIndex::MAIN,
             region: BrickBox::around(center, radius),
         });
     }
@@ -80,6 +81,7 @@ impl Harness {
             if *kind == id("test_game:set_block") {
                 let channel = world
                     .data()
+                    .main()
                     .overrides
                     .layout()
                     .channel_index(&id("core:block"))
@@ -89,7 +91,9 @@ impl Harness {
                     i64::from(payload[1] as i8),
                     i64::from(payload[2] as i8),
                 );
-                world.set_voxel(channel, at, u32::from(payload[3])).unwrap();
+                world
+                    .set_voxel(LevelIndex::MAIN, channel, at, u32::from(payload[3]))
+                    .unwrap();
             }
         });
         Self::with_logic(game, world, config, logic)
@@ -173,7 +177,7 @@ fn a_joining_client_is_welcomed_with_a_description_it_can_load() {
     assert_eq!(parsed.world_seed(), harness.server.world().world_seed);
     let (described, report) = parsed.load(receiver.load_context()).unwrap();
     assert!(report.missing_content.is_empty());
-    assert_eq!(described.overrides.brick_count(), 0);
+    assert_eq!(described.main().overrides.brick_count(), 0);
     assert_eq!(
         harness.logic_events(),
         [
@@ -228,6 +232,7 @@ fn refusal_cases() -> Vec<(&'static str, Vec<Vec<u8>>, &'static str)> {
             "not hello first",
             vec![
                 ClientMessage::SetInterest {
+                    level: LevelIndex::MAIN,
                     region: BrickBox::around(BrickCoordinate::ORIGIN, 1),
                 }
                 .encode(),
@@ -314,6 +319,7 @@ fn watching_a_region_tells_the_client_which_generator_made_each_part() {
     let messages = client.received();
     let [
         ServerMessage::InterestChanged {
+            level: LevelIndex::MAIN,
             region,
             assignments,
         },
@@ -329,6 +335,7 @@ fn watching_a_region_tells_the_client_which_generator_made_each_part() {
     let flat = harness
         .server
         .world()
+        .main()
         .terrain
         .generators()
         .runtime_id(&id("base_terrain:flat_v1"))
@@ -340,6 +347,7 @@ fn watching_a_region_tells_the_client_which_generator_made_each_part() {
             harness
                 .server
                 .world()
+                .main()
                 .terrain
                 .assigned_generator(assignment.cube.origin())
                 .is_some(),
@@ -367,13 +375,23 @@ fn unedited_terrain_is_never_sent_and_edited_bricks_are_sent_when_they_come_into
     let sent_bricks: Vec<_> = messages
         .iter()
         .filter_map(|m| match m {
-            ServerMessage::BrickContents { brick, .. } => Some(*brick),
+            ServerMessage::BrickContents {
+                level: LevelIndex::MAIN,
+                brick,
+                ..
+            } => Some(*brick),
             _ => None,
         })
         .collect();
     assert_eq!(sent_bricks, [brick(0, 0, 0)]);
     assert!(
-        matches!(messages[0], ServerMessage::InterestChanged { .. }),
+        matches!(
+            messages[0],
+            ServerMessage::InterestChanged {
+                level: LevelIndex::MAIN,
+                ..
+            }
+        ),
         "the region change comes first"
     );
 
@@ -385,12 +403,17 @@ fn unedited_terrain_is_never_sent_and_edited_bricks_are_sent_when_they_come_into
     let sent_bricks: Vec<_> = messages
         .iter()
         .filter_map(|m| match m {
-            ServerMessage::BrickContents { brick, .. } => Some(*brick),
+            ServerMessage::BrickContents {
+                level: LevelIndex::MAIN,
+                brick,
+                ..
+            } => Some(*brick),
             _ => None,
         })
         .collect();
     assert_eq!(sent_bricks, [brick(3, 0, 0)]);
     let ServerMessage::InterestChanged {
+        level: LevelIndex::MAIN,
         region,
         assignments,
     } = &messages[0]
@@ -420,7 +443,7 @@ fn the_contents_sent_are_exactly_the_servers_brick() {
     let mut world = game.new_world();
     game.set_block(&mut world, [1, 2, 3], "base_blocks:stone");
     game.set(&mut world, [1, 2, 3], "core:temperature", 77);
-    let expected = Arc::clone(world.overrides.brick(brick(0, 0, 0)).unwrap());
+    let expected = Arc::clone(world.main().overrides.brick(brick(0, 0, 0)).unwrap());
     let mut harness = Harness::new(&game, world, ServerConfig::new(game_id()));
     let mut client = harness.connect();
     client.hello();
@@ -430,7 +453,11 @@ fn the_contents_sent_are_exactly_the_servers_brick() {
         .received()
         .into_iter()
         .find_map(|m| match m {
-            ServerMessage::BrickContents { contents, .. } => Some(contents),
+            ServerMessage::BrickContents {
+                level: LevelIndex::MAIN,
+                contents,
+                ..
+            } => Some(contents),
             _ => None,
         })
         .expect("the edited brick was sent");
@@ -463,6 +490,7 @@ fn a_first_edit_sends_the_whole_brick_and_later_edits_send_only_changes() {
     let messages = watcher.received();
     let [
         ServerMessage::BrickContents {
+            level: LevelIndex::MAIN,
             brick: edited,
             contents,
         },
@@ -477,6 +505,7 @@ fn a_first_edit_sends_the_whole_brick_and_later_edits_send_only_changes() {
         *harness
             .server
             .world()
+            .main()
             .overrides
             .brick(brick(0, 0, 0))
             .unwrap()
@@ -499,6 +528,7 @@ fn a_first_edit_sends_the_whole_brick_and_later_edits_send_only_changes() {
     let messages = watcher.received();
     let [
         ServerMessage::VoxelEdits {
+            level: LevelIndex::MAIN,
             brick: edited,
             changes,
             resulting_digest,
@@ -523,6 +553,7 @@ fn a_first_edit_sends_the_whole_brick_and_later_edits_send_only_changes() {
         harness
             .server
             .world()
+            .main()
             .overrides
             .brick(brick(0, 0, 0))
             .unwrap()
@@ -554,13 +585,25 @@ fn a_brick_that_comes_into_view_in_the_tick_it_is_edited_is_sent_once() {
             .iter()
             .filter(|m| matches!(
                 m,
-                ServerMessage::BrickContents { .. } | ServerMessage::VoxelEdits { .. }
+                ServerMessage::BrickContents {
+                    level: LevelIndex::MAIN,
+                    ..
+                } | ServerMessage::VoxelEdits {
+                    level: LevelIndex::MAIN,
+                    ..
+                }
             ))
             .count(),
         1,
         "{messages:?}"
     );
-    assert!(matches!(messages[1], ServerMessage::BrickContents { .. }));
+    assert!(matches!(
+        messages[1],
+        ServerMessage::BrickContents {
+            level: LevelIndex::MAIN,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -575,7 +618,7 @@ fn game_messages_reach_exactly_their_audience() {
                 vec![2],
             );
             world.send(
-                Audience::Watching(BrickCoordinate::ORIGIN),
+                Audience::Watching(LevelIndex::MAIN, BrickCoordinate::ORIGIN),
                 id("test_game:near_origin"),
                 vec![3],
             );
@@ -695,6 +738,7 @@ fn watching_more_than_the_limit_is_refused_without_the_server_doing_the_work() {
     let mut greedy = harness.connect();
     greedy.hello();
     greedy.send(&ClientMessage::SetInterest {
+        level: LevelIndex::MAIN,
         region: BrickBox::around(BrickCoordinate::ORIGIN, u32::MAX),
     });
     let report = harness.server.step();
@@ -741,21 +785,34 @@ fn editing_terrain_whose_generator_is_not_loaded_is_an_error_not_a_crash() {
     let logic = ScriptedLogic::new().on_tick(move |_, world| {
         let channel = world
             .data()
+            .main()
             .overrides
             .layout()
             .channel_index(&id("core:block"))
             .unwrap();
         // Brick (100, 0, 0) was generated by fancy_terrain:cliffs_v1; brick (-50, 0, 0) is fine.
-        let unavailable = world.set_voxel(channel, VoxelCoordinate::new(100 * 32, 5, 5), grass);
-        let available = world.set_voxel(channel, VoxelCoordinate::new(-50 * 32, 5, 5), grass);
+        let unavailable = world.set_voxel(
+            LevelIndex::MAIN,
+            channel,
+            VoxelCoordinate::new(100 * 32, 5, 5),
+            grass,
+        );
+        let available = world.set_voxel(
+            LevelIndex::MAIN,
+            channel,
+            VoxelCoordinate::new(-50 * 32, 5, 5),
+            grass,
+        );
         *recorded.lock().unwrap() = Some((unavailable, available));
     });
     let mut harness = Harness::with_logic(&reduced, world, ServerConfig::new(game_id()), logic);
     harness.server.step();
     let (unavailable, available) = outcome.lock().unwrap().take().unwrap();
     assert_eq!(
-        unavailable.unwrap_err().generator,
-        id("fancy_terrain:cliffs_v1")
+        unavailable.unwrap_err(),
+        server::AccessError::TerrainUnavailable {
+            generator: id("fancy_terrain:cliffs_v1")
+        }
     );
     assert_eq!(available, Ok(true));
 }
@@ -815,7 +872,11 @@ fn a_region_that_moves_partly_sends_only_the_bricks_it_gains_and_shrinking_sends
     let sent: Vec<_> = messages
         .iter()
         .filter_map(|m| match m {
-            ServerMessage::BrickContents { brick, .. } => Some(*brick),
+            ServerMessage::BrickContents {
+                level: LevelIndex::MAIN,
+                brick,
+                ..
+            } => Some(*brick),
             _ => None,
         })
         .collect();
@@ -827,6 +888,7 @@ fn a_region_that_moves_partly_sends_only_the_bricks_it_gains_and_shrinking_sends
     let messages = client.received();
     let [
         ServerMessage::InterestChanged {
+            level: LevelIndex::MAIN,
             region,
             assignments,
         },
@@ -857,7 +919,7 @@ fn setting_a_voxel_to_the_value_it_already_has_edits_nothing() {
         &client.received()[..],
         [ServerMessage::TickCompleted { .. }]
     ));
-    assert_eq!(harness.server.world().overrides.brick_count(), 0);
+    assert_eq!(harness.server.world().main().overrides.brick_count(), 0);
 }
 
 #[test]
@@ -909,4 +971,444 @@ fn a_running_server_can_be_saved_with_its_games_state_and_keeps_running() {
     assert_eq!(again, bytes);
     assert_eq!(harness.server.step().tick, Tick::new(2));
     assert_eq!(harness.server.connected_clients().count(), 1);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Levels and commands
+// ---------------------------------------------------------------------------------------------
+
+impl TestClient {
+    fn watch_level(&mut self, level: LevelIndex, center: BrickCoordinate, radius: u32) {
+        self.send(&ClientMessage::SetInterest {
+            level,
+            region: BrickBox::around(center, radius),
+        });
+    }
+
+    fn command(&mut self, text: &str) {
+        self.send(&ClientMessage::Command {
+            text: text.to_owned(),
+        });
+    }
+}
+
+/// A world of two levels: the main level (flat ground) with an edited brick at (1, 0, 0), and a
+/// second one (cliffs) with edited bricks at (0, 0, 0) and (1, 1, 1).
+fn two_level_world(game: &Game) -> (WorldData, LevelIndex) {
+    let mut world = game.new_world();
+    let grass = game.raw_block("base_blocks:grass");
+    game.set(&mut world, [32, 1, 1], "core:block", grass);
+    let second = world
+        .add_level(
+            id("test_content:second"),
+            game.new_level("fancy_terrain:cliffs_v1"),
+        )
+        .unwrap();
+    game.set_in_level(&mut world, second, [1, 1, 1], "core:block", grass);
+    game.set_in_level(&mut world, second, [40, 40, 40], "core:block", grass);
+    (world, second)
+}
+
+/// A game whose clients place blocks in a level, with `test_game:set_block_in`: the level number,
+/// three signed voxel coordinates and a block number.
+fn level_placing_logic() -> ScriptedLogic {
+    ScriptedLogic::new().on_message(|_, kind, payload, world| {
+        if *kind == id("test_game:set_block_in") {
+            let channel = world
+                .data()
+                .main()
+                .overrides
+                .layout()
+                .channel_index(&id("core:block"))
+                .unwrap();
+            let at = VoxelCoordinate::new(
+                i64::from(payload[1] as i8),
+                i64::from(payload[2] as i8),
+                i64::from(payload[3] as i8),
+            );
+            world
+                .set_voxel(
+                    LevelIndex::new(u32::from(payload[0])),
+                    channel,
+                    at,
+                    u32::from(payload[4]),
+                )
+                .unwrap();
+        }
+    })
+}
+
+fn place_in(client: &mut TestClient, level: LevelIndex, at: [i8; 3], block: u8) {
+    client.send(&ClientMessage::GameMessage {
+        kind: id("test_game:set_block_in"),
+        payload: vec![
+            level.get() as u8,
+            at[0] as u8,
+            at[1] as u8,
+            at[2] as u8,
+            block,
+        ],
+    });
+}
+
+/// The bricks a client was sent contents of, as (level, brick).
+fn contents_sent(messages: &[ServerMessage]) -> Vec<(LevelIndex, BrickCoordinate)> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            ServerMessage::BrickContents { level, brick, .. } => Some((*level, *brick)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn edits_sent(messages: &[ServerMessage]) -> Vec<(LevelIndex, BrickCoordinate)> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            ServerMessage::VoxelEdits { level, brick, .. } => Some((*level, *brick)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn has_command_reply(messages: &[ServerMessage]) -> bool {
+    messages
+        .iter()
+        .any(|message| matches!(message, ServerMessage::CommandReply { .. }))
+}
+
+#[test]
+fn the_welcome_describes_every_level_by_name() {
+    let game = Game::new(&ALL_PLUGINS);
+    let (world, _) = two_level_world(&game);
+    let mut harness = Harness::new(&game, world, ServerConfig::new(game_id()));
+    let mut client = harness.connect();
+    client.hello();
+    harness.server.step();
+    let Some(ServerMessage::Welcome(welcome)) = client.received().into_iter().next() else {
+        panic!("a welcome comes first");
+    };
+    let mut receiver = Game::new(&ALL_PLUGINS);
+    let (described, _) = ParsedWorld::parse(&welcome.world_description)
+        .unwrap()
+        .load(receiver.load_context())
+        .unwrap();
+    assert_eq!(described.level_count(), 2);
+    let second = LevelIndex::new(1);
+    assert_eq!(described.level_id(second), Some(&id("test_content:second")));
+    // Shape only: no contents, and the second level's generator setup is told.
+    let level = described.level(second).unwrap();
+    assert_eq!(level.overrides.brick_count(), 0);
+    assert_eq!(
+        level.preferred_default_generator(),
+        &id("fancy_terrain:cliffs_v1")
+    );
+}
+
+#[test]
+fn clients_watching_different_levels_are_sent_only_that_levels_bricks_generators_and_edits() {
+    let game = Game::new(&ALL_PLUGINS);
+    let (world, second) = two_level_world(&game);
+    let mut harness = Harness::with_logic(
+        &game,
+        world,
+        ServerConfig::new(game_id()),
+        level_placing_logic(),
+    );
+    let (mut main_watcher, mut second_watcher) = (harness.connect(), harness.connect());
+    main_watcher.hello();
+    second_watcher.hello();
+    harness.server.step();
+    main_watcher.received();
+    second_watcher.received();
+    main_watcher.watch_level(LevelIndex::MAIN, brick(0, 0, 0), 1);
+    second_watcher.watch_level(second, brick(0, 0, 0), 1);
+    harness.server.step();
+
+    let (for_main, for_second) = (main_watcher.received(), second_watcher.received());
+    let generator_of = |messages: &[ServerMessage]| {
+        messages.iter().find_map(|message| match message {
+            ServerMessage::InterestChanged {
+                level, assignments, ..
+            } => Some((*level, assignments[0].generator)),
+            _ => None,
+        })
+    };
+    // The flat generator is entry 0 of the shared table and the cliffs entry 1.
+    assert_eq!(generator_of(&for_main), Some((LevelIndex::MAIN, Some(0))));
+    assert_eq!(generator_of(&for_second), Some((second, Some(1))));
+    assert_eq!(
+        contents_sent(&for_main),
+        [(LevelIndex::MAIN, brick(1, 0, 0))]
+    );
+    assert_eq!(
+        contents_sent(&for_second),
+        [(second, brick(0, 0, 0)), (second, brick(1, 1, 1))]
+    );
+
+    // A change in each level reaches only those watching it, as the kind of message the brick's
+    // history calls for: the main level's brick (0, 0, 0) is edited for the first time, the second
+    // level's already was.
+    let dirt = block_of(&game, "base_blocks:dirt");
+    place_in(&mut main_watcher, LevelIndex::MAIN, [5, 5, 5], dirt);
+    place_in(&mut main_watcher, second, [6, 6, 6], dirt);
+    harness.server.step();
+    let (for_main, for_second) = (main_watcher.received(), second_watcher.received());
+    assert_eq!(
+        contents_sent(&for_main),
+        [(LevelIndex::MAIN, brick(0, 0, 0))]
+    );
+    assert_eq!(edits_sent(&for_main), []);
+    assert_eq!(contents_sent(&for_second), []);
+    assert_eq!(edits_sent(&for_second), [(second, brick(0, 0, 0))]);
+}
+
+#[test]
+fn moving_to_another_level_sends_the_whole_region_again_and_back_again() {
+    let game = Game::new(&ALL_PLUGINS);
+    let (world, second) = two_level_world(&game);
+    let mut harness = Harness::new(&game, world, ServerConfig::new(game_id()));
+    let mut client = harness.connect();
+    client.hello();
+    harness.server.step();
+    client.watch_level(LevelIndex::MAIN, brick(0, 0, 0), 1);
+    harness.server.step();
+    assert_eq!(
+        contents_sent(&client.received()),
+        [(LevelIndex::MAIN, brick(1, 0, 0))]
+    );
+
+    // The same region of another level is all new, not a change to what was held.
+    client.watch_level(second, brick(0, 0, 0), 1);
+    harness.server.step();
+    let messages = client.received();
+    assert!(matches!(
+        messages
+            .iter()
+            .find(|message| matches!(message, ServerMessage::InterestChanged { .. })),
+        Some(ServerMessage::InterestChanged { level, .. }) if *level == second
+    ));
+    assert_eq!(
+        contents_sent(&messages),
+        [(second, brick(0, 0, 0)), (second, brick(1, 1, 1))]
+    );
+
+    client.watch_level(LevelIndex::MAIN, brick(0, 0, 0), 1);
+    harness.server.step();
+    assert_eq!(
+        contents_sent(&client.received()),
+        [(LevelIndex::MAIN, brick(1, 0, 0))]
+    );
+
+    // Moving within a level still sends only the newly watched part: nothing here, since the
+    // newly watched bricks hold no edits.
+    client.watch_level(LevelIndex::MAIN, brick(-1, 0, 0), 1);
+    harness.server.step();
+    assert_eq!(contents_sent(&client.received()), []);
+}
+
+#[test]
+fn watching_a_level_the_world_does_not_have_is_refused_with_a_reason() {
+    let (_, mut harness) = default_harness();
+    let mut client = harness.connect();
+    client.hello();
+    harness.server.step();
+    client.received();
+    client.watch_level(LevelIndex::new(5), brick(0, 0, 0), 1);
+    let report = harness.server.step();
+    assert_eq!(
+        report.left,
+        [(
+            ClientId::new(1),
+            LeaveReason::Refused("the world has no level 5".to_owned())
+        )]
+    );
+    let messages = client.received();
+    assert!(matches!(
+        &messages[..],
+        [ServerMessage::Disconnected { reason }] if reason == "the world has no level 5"
+    ));
+}
+
+#[test]
+fn a_game_message_for_those_watching_a_brick_reaches_only_those_watching_that_level() {
+    let game = Game::new(&ALL_PLUGINS);
+    let (world, second) = two_level_world(&game);
+    let logic = ScriptedLogic::new().on_message(move |_, kind, _, world| {
+        if *kind == id("test_game:ping") {
+            world.send(
+                Audience::Watching(second, BrickCoordinate::ORIGIN),
+                id("test_game:pong"),
+                vec![],
+            );
+        }
+    });
+    let mut harness = Harness::with_logic(&game, world, ServerConfig::new(game_id()), logic);
+    let (mut main_watcher, mut second_watcher) = (harness.connect(), harness.connect());
+    for client in [&mut main_watcher, &mut second_watcher] {
+        client.hello();
+    }
+    harness.server.step();
+    main_watcher.watch_level(LevelIndex::MAIN, brick(0, 0, 0), 1);
+    second_watcher.watch_level(second, brick(0, 0, 0), 1);
+    harness.server.step();
+    main_watcher.received();
+    second_watcher.received();
+    main_watcher.send(&ClientMessage::GameMessage {
+        kind: id("test_game:ping"),
+        payload: vec![],
+    });
+    harness.server.step();
+    let pongs = |messages: Vec<ServerMessage>| {
+        messages
+            .iter()
+            .filter(|message| {
+                matches!(message, ServerMessage::GameMessage { kind, .. } if *kind == id("test_game:pong"))
+            })
+            .count()
+    };
+    assert_eq!(pongs(main_watcher.received()), 0);
+    assert_eq!(pongs(second_watcher.received()), 1);
+}
+
+#[test]
+fn a_command_reaches_the_game_in_order_and_its_reply_goes_to_the_sender_after_the_game_messages() {
+    let game = Game::new(&ALL_PLUGINS);
+    let logic = ScriptedLogic::new().on_command(|client, text, world| {
+        world.send(Audience::Everyone, id("test_game:heard"), vec![]);
+        world.reply(client, &format!("you said {text}"));
+    });
+    let mut harness =
+        Harness::with_logic(&game, game.new_world(), ServerConfig::new(game_id()), logic);
+    let (mut speaker, mut listener) = (harness.connect(), harness.connect());
+    speaker.hello();
+    listener.hello();
+    harness.server.step();
+    speaker.received();
+    listener.received();
+    speaker.command("/echo hi");
+    speaker.command("/echo again");
+    harness.server.step();
+
+    let heard = speaker.received();
+    let kinds: Vec<&str> = heard
+        .iter()
+        .map(|message| match message {
+            ServerMessage::GameMessage { .. } => "game message",
+            ServerMessage::CommandReply { .. } => "reply",
+            ServerMessage::TickCompleted { .. } => "tick",
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        ["game message", "game message", "reply", "reply", "tick"]
+    );
+    let replies: Vec<&str> = heard
+        .iter()
+        .filter_map(|message| match message {
+            ServerMessage::CommandReply { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(replies, ["you said /echo hi", "you said /echo again"]);
+    // The other client heard the game's broadcast but not the reply meant for the speaker.
+    assert!(!has_command_reply(&listener.received()));
+    let commands: Vec<LogicEvent> = harness
+        .logic_events()
+        .into_iter()
+        .filter(|event| matches!(event, LogicEvent::Command { .. }))
+        .collect();
+    assert_eq!(
+        commands,
+        [
+            LogicEvent::Command {
+                client: ClientId::new(1),
+                text: "/echo hi".to_owned()
+            },
+            LogicEvent::Command {
+                client: ClientId::new(1),
+                text: "/echo again".to_owned()
+            }
+        ]
+    );
+    // Replies are not repeated on later ticks.
+    harness.server.step();
+    assert!(!has_command_reply(&speaker.received()));
+}
+
+#[test]
+fn a_game_with_no_commands_says_so_and_bad_commands_are_protocol_violations() {
+    let (_, mut harness) = default_harness();
+    let mut client = harness.connect();
+    client.hello();
+    harness.server.step();
+    client.received();
+    client.command("/anything");
+    harness.server.step();
+    assert!(matches!(
+        client
+            .received()
+            .iter()
+            .find(|message| matches!(message, ServerMessage::CommandReply { .. })),
+        Some(ServerMessage::CommandReply { text }) if text == "this game has no commands"
+    ));
+
+    // Before hello, a command is the wrong first message.
+    let mut early = harness.connect();
+    early.command("/level list");
+    let report = harness.server.step();
+    assert!(
+        report.left.iter().any(
+            |(_, reason)| matches!(reason, LeaveReason::Refused(text) if text.contains("hello"))
+        )
+    );
+
+    // A command longer than allowed does not decode.
+    let mut rude = harness.connect();
+    rude.hello();
+    harness.server.step();
+    rude.received();
+    rude.command(&"a".repeat(protocol::MAXIMUM_COMMAND_LENGTH + 1));
+    let report = harness.server.step();
+    assert!(report.left.iter().any(
+        |(_, reason)| matches!(reason, LeaveReason::Refused(text) if text.contains("malformed"))
+    ));
+}
+
+#[test]
+fn switching_levels_in_the_tick_of_an_edit_sends_each_brick_once_in_its_final_state() {
+    let game = Game::new(&ALL_PLUGINS);
+    let (world, second) = two_level_world(&game);
+    let mut harness = Harness::with_logic(
+        &game,
+        world,
+        ServerConfig::new(game_id()),
+        level_placing_logic(),
+    );
+    let (mut switcher, mut editor) = (harness.connect(), harness.connect());
+    switcher.hello();
+    editor.hello();
+    harness.server.step();
+    switcher.watch_level(LevelIndex::MAIN, brick(0, 0, 0), 1);
+    harness.server.step();
+    switcher.received();
+
+    // In one tick the switcher moves to the second level and the second level's brick (0, 0, 0),
+    // which was already edited, is edited again inside the region both levels share.
+    switcher.watch_level(second, brick(0, 0, 0), 1);
+    let dirt = block_of(&game, "base_blocks:dirt");
+    place_in(&mut editor, second, [6, 6, 6], dirt);
+    harness.server.step();
+    let messages = switcher.received();
+    assert_eq!(
+        contents_sent(&messages),
+        [(second, brick(0, 0, 0)), (second, brick(1, 1, 1))]
+    );
+    assert_eq!(
+        edits_sent(&messages),
+        [],
+        "the bricks already carry the edit; sending it again would apply it twice"
+    );
 }

@@ -79,7 +79,7 @@ fn breaking_a_block_removes_it_for_every_player() {
             "{name} still sees the block"
         );
     }
-    assert_eq!(rig.server.world().overrides.brick_count(), 1);
+    assert_eq!(rig.server.world().main().overrides.brick_count(), 1);
     // The player looks into the hole now: the next block down is the target.
     assert_eq!(breaker.target().unwrap().voxel.y(), hit.voxel.y() - 1);
 }
@@ -128,14 +128,14 @@ fn the_server_refuses_what_is_out_of_reach_unknown_or_from_a_player_with_no_posi
     for _ in 0..3 {
         rig.step();
     }
-    assert_eq!(rig.server.world().overrides.brick_count(), 0);
+    assert_eq!(rig.server.world().main().overrides.brick_count(), 0);
 
     // The same request from the player who is in reach works.
     request_block(&mut player, near, "base_blocks:stone");
     for _ in 0..2 {
         rig.step();
     }
-    assert_eq!(rig.server.world().overrides.brick_count(), 1);
+    assert_eq!(rig.server.world().main().overrides.brick_count(), 1);
 }
 
 #[test]
@@ -148,7 +148,7 @@ fn players_see_where_each_other_are_until_they_leave() {
     second.advance().unwrap();
 
     for player in [&first, &second] {
-        let poses: Vec<_> = player.players().values().collect();
+        let poses: Vec<_> = player.players().values().map(|state| &state.pose).collect();
         assert_eq!(poses.len(), 2);
         assert!(
             poses
@@ -366,4 +366,146 @@ fn the_integrated_server_ticks_by_itself_and_hands_back_the_world() {
     drop(player);
     let (world, _content) = host.stop();
     assert_eq!(world.world_seed, SEED);
+}
+
+/// A world of two levels with the same terrain, so that what differs between them is only what
+/// players do. (Levels of one world share its seed; they would differ by terrain generator version.)
+fn two_level_rig() -> (Rig, voxel_space::LevelIndex) {
+    let content = CaveContent::new();
+    let mut world = content.new_world(SEED);
+    let second = world
+        .add_level(
+            "voxunami_cave:cellar".parse().unwrap(),
+            content.new_world(SEED).into_main(),
+        )
+        .unwrap();
+    (Rig::with_world(content, world), second)
+}
+
+#[test]
+fn a_player_can_go_to_another_level_and_what_they_do_there_stays_there() {
+    let (mut rig, second) = two_level_rig();
+    let mut mover = player_above_ground(&mut rig);
+    let mut stayer = rig.join([20.5, 110.0, 20.5], 0.0, 0.0);
+    rig.settle(&mut [&mut mover, &mut stayer]);
+    assert_eq!(mover.level(), voxel_space::LevelIndex::MAIN);
+
+    // The player asks to go to the cellar by its short name and is moved there, with the same
+    // coordinates, and told so.
+    mover.send_command("/level go cellar");
+    rig.settle(&mut [&mut mover, &mut stayer]);
+    assert_eq!(mover.level(), second);
+    assert_eq!(
+        mover.take_command_replies(),
+        ["you are now in voxunami_cave:cellar"]
+    );
+    assert_eq!(
+        mover.client().world().watched().map(|(level, _)| level),
+        Some(second)
+    );
+    // The view is the cellar's terrain, around the same place.
+    assert!(mover.mesher().loaded_brick_count() > 100);
+    let ground = ground_height(&mover, 16, 16);
+    assert_eq!(
+        mover
+            .mesher()
+            .is_opaque_at(VoxelCoordinate::new(16, ground, 16)),
+        Some(true)
+    );
+
+    // Players in different levels do not see each other, though both are known to the server.
+    assert_eq!(mover.players().len(), 2);
+    assert_eq!(mover.other_players().count(), 0);
+    assert_eq!(stayer.other_players().count(), 0);
+
+    // What the player breaks in the cellar is broken only there.
+    let hit = mover.target().expect("the ground is within reach");
+    break_block(&mut mover);
+    rig.settle(&mut [&mut mover, &mut stayer]);
+    assert_eq!(
+        rig.server
+            .world()
+            .level(second)
+            .unwrap()
+            .overrides
+            .brick_count(),
+        1
+    );
+    assert_eq!(rig.server.world().main().overrides.brick_count(), 0);
+    assert_eq!(mover.mesher().is_opaque_at(hit.voxel), Some(false));
+    assert_eq!(stayer.mesher().is_opaque_at(hit.voxel), Some(true));
+
+    // When the other player follows, they see each other and the broken block.
+    stayer.send_command("/level go voxunami_cave:cellar");
+    rig.settle(&mut [&mut mover, &mut stayer]);
+    assert_eq!(stayer.level(), second);
+    assert_eq!(stayer.mesher().is_opaque_at(hit.voxel), Some(false));
+    assert_eq!(mover.other_players().count(), 1);
+    assert_eq!(stayer.other_players().count(), 1);
+
+    // And back: the main level is as it was, whole.
+    mover.send_command("/level go overworld");
+    rig.settle(&mut [&mut mover, &mut stayer]);
+    assert_eq!(mover.level(), voxel_space::LevelIndex::MAIN);
+    assert_eq!(mover.mesher().is_opaque_at(hit.voxel), Some(true));
+    assert_eq!(mover.other_players().count(), 0);
+}
+
+#[test]
+fn a_recording_follows_the_recorded_player_into_another_level() {
+    let (mut rig, second) = two_level_rig();
+    let directory =
+        std::env::temp_dir().join(format!("voxunami_cave_levels_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("levels.voxreplay");
+    let connection = rig.connector.connect().unwrap();
+    let recorded = record_connection(connection, &path).unwrap();
+    let mut player = rig.join_with(recorded, [16.5, 110.0, 16.5], 0.0, 0.0);
+    rig.settle(&mut [&mut player]);
+    player.camera = above_ground(&player, 16, 16, 3.0);
+    rig.settle(&mut [&mut player]);
+    player.send_command("/level go cellar");
+    rig.settle(&mut [&mut player]);
+    let hit = player.target().unwrap();
+    break_block(&mut player);
+    rig.settle(&mut [&mut player]);
+    let live_summary = player.client().world().summary();
+    drop(player);
+
+    let connection: Box<dyn Connection> =
+        Box::new(game_shell::files::open_recording(&path).unwrap());
+    let mut replay = Session::<_, Cave>::connect(
+        connection,
+        Mode::Replaying,
+        VIEW_RADIUS,
+        camera_at([0.0; 3], 0.0, 0.0, VIEW_RADIUS),
+        || {},
+    )
+    .unwrap();
+    while replay.advance_one_tick().is_ok() {}
+    replay.settle(|| {}).unwrap();
+    assert_eq!(replay.client().world().summary(), live_summary);
+    assert_eq!(replay.level(), second);
+    assert_eq!(replay.mesher().is_opaque_at(hit.voxel), Some(false));
+    assert_eq!(
+        replay.take_command_replies(),
+        ["you are now in voxunami_cave:cellar"]
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn commands_the_game_does_not_know_are_answered() {
+    let mut rig = Rig::new();
+    let mut player = player_above_ground(&mut rig);
+    player.send_command("/fly");
+    player.send_command("/level");
+    rig.settle(&mut [&mut player]);
+    assert_eq!(
+        player.take_command_replies(),
+        [
+            "unknown command; try /level",
+            "you are in voxunami_cave:overworld"
+        ]
+    );
 }

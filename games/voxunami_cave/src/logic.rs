@@ -53,7 +53,9 @@ impl CaveLogic {
             return;
         }
         // Terrain this server cannot generate cannot be changed; the request is dropped.
-        let _ = world.set_voxel(self.block_channel, at, raw);
+        // Players change the level they are in.
+        let level = self.poses.level_of(client);
+        let _ = world.set_voxel(level, self.block_channel, at, raw);
     }
 }
 
@@ -80,6 +82,12 @@ impl GameLogic for CaveLogic {
             self.set_block(client, request.at, &request.block, world);
         }
         // Anything else is another game's, or malformed: ignored.
+    }
+
+    fn command_received(&mut self, client: ClientId, command: &str, world: &mut ServerWorld) {
+        if !self.poses.handle_command(client, command, world) {
+            world.reply(client, "unknown command; try /level");
+        }
     }
 
     fn tick(&mut self, _tick: Tick, world: &mut ServerWorld) {

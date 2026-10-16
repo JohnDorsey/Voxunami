@@ -16,7 +16,7 @@ use transport::Connection;
 use transport::loopback::LoopbackConnector;
 use voxel_grid::Grid;
 use voxel_space::{FaceDirection, LocalVoxelIndex, VoxelCoordinate};
-use voxunami_2048::content::{BlockAppearance, Content2048, block_registry_kind};
+use voxunami_2048::content::{BlockAppearance, Content2048, block_registry_kind, landscape_id};
 use voxunami_2048::game::{Game2048, pull_with_tool, push_with_tool};
 use voxunami_2048::logic::REACH;
 use voxunami_2048::material::{COASTING_RANGE, Material};
@@ -73,7 +73,7 @@ fn total_value(blocks: &Blocks) -> u64 {
 }
 
 fn blocks_seen_by(player: &Player, content: &Content2048) -> Blocks {
-    blocks_in(&player.client().world().world().overrides, content)
+    blocks_in(&player.client().world().world().main().overrides, content)
 }
 
 /// Which way a player faces, in degrees of yaw, to look along a horizontal direction.
@@ -100,7 +100,7 @@ impl Rig {
         let mut world = content.new_world(SEED);
         let channel = content.block_channel();
         for &(voxel, block) in blocks {
-            world.overrides.set(channel, voxel, block.id());
+            world.main_mut().overrides.set(channel, voxel, block.id());
         }
         Self::with_world(content, world)
     }
@@ -178,7 +178,7 @@ impl Rig {
     }
 
     fn blocks(&self) -> Blocks {
-        blocks_in(&self.server.world().overrides, &self.content)
+        blocks_in(&self.server.world().main().overrides, &self.content)
     }
 }
 
@@ -396,8 +396,8 @@ fn world_with_a_block_from_elsewhere(
             .unwrap()
             .raw();
     }
-    world.overrides.set(channel, unknown, marble);
-    world.overrides.set(channel, ice_at, ice(1).id());
+    world.main_mut().overrides.set(channel, unknown, marble);
+    world.main_mut().overrides.set(channel, ice_at, ice(1).id());
     let bytes = world
         .save(&[(block_registry_kind(), &blocks as &dyn IdentifierRegistry)])
         .unwrap();
@@ -415,21 +415,27 @@ fn blocks_stop_at_content_the_game_does_not_know_and_never_overwrite_it() {
     let unknown = at(10, SKY, 5);
     let (content, world) = world_with_a_block_from_elsewhere(unknown, at(10, SKY, 10));
     let channel = content.block_channel();
-    let marble = world.overrides.get(channel, unknown);
+    let marble = world.main().overrides.get(channel, unknown);
     let mut rig = Rig::with_world(content, world);
     let mut player = rig.join_looking(at(10, SKY, 10), FaceDirection::NegativeZ);
     rig.settle(&mut [&mut player]);
     push_with_tool(&mut player);
     rig.step(20);
     assert_eq!(rig.blocks(), blocks_of(&[(at(10, SKY, 6), ice(1))]));
-    assert_eq!(rig.server.world().overrides.get(channel, unknown), marble);
+    assert_eq!(
+        rig.server.world().main().overrides.get(channel, unknown),
+        marble
+    );
 
     // Pushing the unknown block itself does nothing either: this game cannot move what it
     // does not know.
     send_push(&mut player, unknown, FaceDirection::PositiveX);
     rig.step(3);
     rig.settle(&mut [&mut player]);
-    assert_eq!(rig.server.world().overrides.get(channel, unknown), marble);
+    assert_eq!(
+        rig.server.world().main().overrides.get(channel, unknown),
+        marble
+    );
     assert_eq!(player.state.progress.pushes, 1);
 }
 
@@ -464,6 +470,7 @@ fn the_ground_is_made_of_blocks_that_can_be_pushed_like_any_other() {
             "the server",
             rig.server
                 .world()
+                .main()
                 .overrides
                 .get(rig.content.block_channel(), landed),
         ),
@@ -548,7 +555,8 @@ fn a_world_saved_while_blocks_are_moving_carries_on_exactly_as_if_it_never_stopp
         content, server, ..
     } = interrupted;
     let world = server.into_world();
-    let saved = read_saved_state(world.opaque_sections()).expect("the game saved its state");
+    let saved = read_saved_state(world.opaque_sections(), &landscape_id())
+        .expect("the game saved its state");
     assert_eq!(saved.movers.len(), 2, "both blocks were in motion");
     assert_eq!(saved.progress.pushes, 2);
     let bytes = world.save(&content.registries()).unwrap();
@@ -564,8 +572,8 @@ fn a_world_saved_while_blocks_are_moving_carries_on_exactly_as_if_it_never_stopp
     assert_ne!(resumed.blocks(), moving_at_save, "they went on moving");
     assert_eq!(resumed.blocks(), control.blocks());
     assert_eq!(
-        resumed.server.world().overrides.content_digest(),
-        control.server.world().overrides.content_digest()
+        resumed.server.world().main().overrides.content_digest(),
+        control.server.world().main().overrides.content_digest()
     );
 }
 
@@ -604,4 +612,187 @@ fn a_recording_of_a_game_replays_the_blocks_and_the_score() {
     );
     assert_eq!(replay.state.progress.score, 8);
     std::fs::remove_dir_all(&directory).unwrap();
+}
+
+/// The blocks in one level of a world.
+fn blocks_in_level(
+    world: &WorldData,
+    level: voxel_space::LevelIndex,
+    content: &Content2048,
+) -> Blocks {
+    blocks_in(
+        &world.level(level).expect("the level exists").overrides,
+        content,
+    )
+}
+
+/// A world with a second level, `voxunami_2048:underside`, holding these blocks in its sky.
+fn world_with_a_second_level(
+    blocks: &[(VoxelCoordinate, NumberedBlock)],
+) -> (Content2048, WorldData, voxel_space::LevelIndex) {
+    let content = Content2048::new();
+    let channel = content.block_channel();
+    let mut world = content.new_world(SEED);
+    let mut level = content.new_world(SEED).into_main();
+    for &(voxel, block) in blocks {
+        level.overrides.set(channel, voxel, block.id());
+    }
+    let second = world
+        .add_level("voxunami_2048:underside".parse().unwrap(), level)
+        .unwrap();
+    (content, world, second)
+}
+
+#[test]
+fn blocks_pushed_in_another_level_move_and_merge_there_and_the_score_is_shared() {
+    let (content, mut world, second) =
+        world_with_a_second_level(&[(at(10, SKY, 10), ice(2)), (at(10, SKY, 6), stone(2))]);
+    // The main level has a block in the way at the same place, which must not matter.
+    let channel = content.block_channel();
+    world
+        .main_mut()
+        .overrides
+        .set(channel, at(10, SKY, 8), stone(5).id());
+    let mut rig = Rig::with_world(content, world);
+    let mut player = rig.join_looking(at(10, SKY, 10), FaceDirection::NegativeZ);
+    rig.settle(&mut [&mut player]);
+    player.send_command("/level go underside");
+    rig.settle(&mut [&mut player]);
+    assert_eq!(player.level(), second);
+    assert_eq!(
+        player.take_command_replies(),
+        ["you are now in voxunami_2048:underside"]
+    );
+
+    push_with_tool(&mut player);
+    rig.step(10);
+    rig.settle(&mut [&mut player]);
+
+    let merged = blocks_of(&[(at(10, SKY, 6), stone(3))]);
+    assert_eq!(
+        blocks_in_level(rig.server.world(), second, &rig.content),
+        merged
+    );
+    assert_eq!(
+        blocks_in_level(
+            rig.server.world(),
+            voxel_space::LevelIndex::MAIN,
+            &rig.content
+        ),
+        blocks_of(&[(at(10, SKY, 8), stone(5))]),
+        "nothing happened in the main level"
+    );
+    assert_eq!(
+        blocks_in(
+            &player
+                .client()
+                .world()
+                .world()
+                .level(second)
+                .unwrap()
+                .overrides,
+            &rig.content
+        ),
+        merged
+    );
+    assert_eq!(
+        player.state.progress,
+        Progress {
+            score: 8,
+            pushes: 1,
+            largest_merge: 3
+        }
+    );
+}
+
+#[test]
+fn a_block_moving_in_another_level_when_the_world_is_saved_is_still_moving_there_when_it_is_loaded()
+{
+    let scene = [(at(10, SKY, 10), ice(1))];
+    let play = |save_after: Option<u32>| {
+        let (content, world, second) = world_with_a_second_level(&scene);
+        let mut rig = Rig::with_world(content, world);
+        let mut player = rig.join_looking(at(10, SKY, 10), FaceDirection::NegativeZ);
+        rig.settle(&mut [&mut player]);
+        player.send_command("/level go underside");
+        rig.settle(&mut [&mut player]);
+        push_with_tool(&mut player);
+        rig.step(1);
+        player.say_goodbye();
+        rig.step(1);
+        let Some(ticks_before_saving) = save_after else {
+            rig.step(80);
+            return (
+                blocks_in_level(rig.server.world(), second, &rig.content),
+                None,
+            );
+        };
+        rig.step(ticks_before_saving);
+        let Rig {
+            content, server, ..
+        } = rig;
+        let world = server.into_world();
+        let saved = read_saved_state(world.opaque_sections(), &landscape_id()).unwrap();
+        assert_eq!(saved.movers.len(), 1);
+        assert_eq!(saved.movers[0].level.to_string(), "voxunami_2048:underside");
+        let bytes = world.save(&content.registries()).unwrap();
+
+        let mut content = Content2048::new();
+        let parsed = world_storage::ParsedWorld::parse(&bytes).unwrap();
+        let seed = parsed.world_seed();
+        let (loaded, _) = parsed.load(content.load_context(seed)).unwrap();
+        let mut resumed = Rig::with_world(content, loaded);
+        resumed.step(80);
+        (
+            blocks_in_level(resumed.server.world(), second, &resumed.content),
+            Some(blocks_in_level(
+                resumed.server.world(),
+                voxel_space::LevelIndex::MAIN,
+                &resumed.content,
+            )),
+        )
+    };
+    let (uninterrupted, _) = play(None);
+    let (resumed, main_level) = play(Some(5));
+    assert_eq!(resumed, uninterrupted);
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(
+        main_level,
+        Some(Blocks::new()),
+        "nothing leaked into the main level"
+    );
+    // The block went all of its range, so it really was moving after the world was loaded.
+    assert!(resumed.keys().any(|voxel| voxel.z() < 10 - 5));
+}
+
+#[test]
+fn a_saved_state_from_before_levels_had_moving_blocks_without_a_level_and_they_go_to_the_main_one()
+{
+    use voxunami_2048::messages::saved_state_section_id;
+    // Version 1 of the section: progress, then movers as position, direction, steps.
+    let mut payload = binary_codec::ByteWriter::new();
+    payload.write_varint(40); // score
+    payload.write_varint(3); // pushes
+    payload.write_u8(2); // largest merge
+    payload.write_varint(1); // one mover
+    for component in [10i64, SKY, 10] {
+        payload.write_signed_varint(component);
+    }
+    payload.write_u8(FaceDirection::NegativeZ.index());
+    payload.write_varint(30);
+    let content = Content2048::new();
+    let channel = content.block_channel();
+    let mut world = content.new_world(SEED);
+    world
+        .main_mut()
+        .overrides
+        .set(channel, at(10, SKY, 10), ice(1).id());
+    world.set_opaque_section(world_storage::Section {
+        identifier: saved_state_section_id(),
+        version: 1,
+        payload: payload.into_bytes(),
+    });
+    let mut rig = Rig::with_world(content, world);
+    rig.step(40);
+    assert_eq!(rig.blocks(), blocks_of(&[(at(10, SKY, 10 - 30), ice(1))]));
 }

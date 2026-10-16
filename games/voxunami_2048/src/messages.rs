@@ -6,8 +6,6 @@ use namespaced_id::NamespacedId;
 use voxel_space::{FaceDirection, VoxelCoordinate};
 use world_storage::Section;
 
-use crate::motion::Mover;
-
 fn kind(text: &str) -> NamespacedId {
     text.parse().expect("constant identifier is valid")
 }
@@ -116,13 +114,27 @@ pub fn decode_progress(payload: &[u8]) -> Result<Progress, DecodeError> {
     Ok(progress)
 }
 
+/// A block that was moving when the world was saved. The level is named by identifier, since level
+/// numbers belong to one running server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedMover {
+    pub level: NamespacedId,
+    pub position: VoxelCoordinate,
+    pub direction: FaceDirection,
+    pub steps_left: u32,
+}
+
 /// What the server remembers that the voxels do not show: the progress, and which blocks were
 /// moving (the blocks themselves are in the voxels).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SavedState {
     pub progress: Progress,
-    pub movers: Vec<Mover>,
+    pub movers: Vec<SavedMover>,
 }
+
+/// The version of the saved state this program writes. Version 1, from before worlds had levels,
+/// did not say which level a moving block was in, and is still read.
+const SAVED_STATE_VERSION: u32 = 2;
 
 pub fn saved_state_section_id() -> NamespacedId {
     kind("voxunami_2048:progress")
@@ -133,25 +145,37 @@ pub fn saved_state_section(state: &SavedState) -> Section {
     write_progress(&mut writer, &state.progress);
     writer.write_varint(state.movers.len() as u64);
     for mover in &state.movers {
+        writer.write_identifier(&mover.level);
         write_voxel(&mut writer, mover.position);
         writer.write_u8(mover.direction.index());
         writer.write_varint(u64::from(mover.steps_left));
     }
     Section {
         identifier: saved_state_section_id(),
-        version: 1,
+        version: SAVED_STATE_VERSION,
         payload: writer.into_bytes(),
     }
 }
 
-fn read_saved_state_payload(payload: &[u8]) -> Result<SavedState, DecodeError> {
+fn read_saved_state_payload(
+    payload: &[u8],
+    version: u32,
+    legacy_level: &NamespacedId,
+) -> Result<SavedState, DecodeError> {
     let mut reader = ByteReader::new(payload);
     let progress = read_progress(&mut reader)?;
-    // A moving block takes at least three bytes of position, one of direction, one of steps.
-    let count = reader.read_count(5)?;
+    // A moving block takes at least three bytes of position, one of direction, one of steps, and
+    // from version 2 a level's name of at least three.
+    let count = reader.read_count(if version == 1 { 5 } else { 8 })?;
     let mut movers = Vec::with_capacity(count);
     for _ in 0..count {
-        movers.push(Mover {
+        let level = if version == 1 {
+            legacy_level.clone()
+        } else {
+            reader.read_identifier()?
+        };
+        movers.push(SavedMover {
+            level,
             position: read_voxel(&mut reader)?,
             direction: read_direction(&mut reader)?,
             steps_left: u32::try_from(reader.read_varint()?)
@@ -164,11 +188,13 @@ fn read_saved_state_payload(payload: &[u8]) -> Result<SavedState, DecodeError> {
 
 /// The saved state in a world's sections, if the world has some this program can read. A newer
 /// version of the section is left alone (and so kept in the file) and counts as no state.
-pub fn read_saved_state(sections: &[Section]) -> Option<SavedState> {
-    let section = sections
-        .iter()
-        .find(|section| section.identifier == saved_state_section_id() && section.version == 1)?;
-    read_saved_state_payload(&section.payload).ok()
+/// `legacy_level` is the level that blocks saved before worlds had levels were in.
+pub fn read_saved_state(sections: &[Section], legacy_level: &NamespacedId) -> Option<SavedState> {
+    let section = sections.iter().find(|section| {
+        section.identifier == saved_state_section_id()
+            && (1..=SAVED_STATE_VERSION).contains(&section.version)
+    })?;
+    read_saved_state_payload(&section.payload, section.version, legacy_level).ok()
 }
 
 #[cfg(test)]
@@ -177,8 +203,13 @@ mod tests {
 
     use super::*;
 
-    fn mover(x: i64, direction: FaceDirection, steps_left: u32) -> Mover {
-        Mover {
+    fn level(name: &str) -> NamespacedId {
+        format!("voxunami_2048:{name}").parse().unwrap()
+    }
+
+    fn mover(x: i64, direction: FaceDirection, steps_left: u32) -> SavedMover {
+        SavedMover {
+            level: level("landscape"),
             position: VoxelCoordinate::new(x, -40, 7),
             direction,
             steps_left,
@@ -253,20 +284,48 @@ mod tests {
         };
         let section = saved_state_section(&state);
         assert_eq!(
-            read_saved_state(std::slice::from_ref(&section)),
+            read_saved_state(std::slice::from_ref(&section), &level("landscape")),
             Some(state)
         );
-        assert_eq!(read_saved_state(&[]), None);
+        assert_eq!(read_saved_state(&[], &level("landscape")), None);
         let newer = Section {
-            version: 2,
+            version: SAVED_STATE_VERSION + 1,
             ..section.clone()
         };
-        assert_eq!(read_saved_state(&[newer]), None);
+        assert_eq!(read_saved_state(&[newer], &level("landscape")), None);
         let damaged = Section {
             payload: vec![0x80],
             ..section
         };
-        assert_eq!(read_saved_state(&[damaged]), None);
+        assert_eq!(read_saved_state(&[damaged], &level("landscape")), None);
+    }
+
+    #[test]
+    fn a_version_1_saved_state_has_movers_with_no_level_and_gives_them_the_one_asked_for() {
+        let mut writer = ByteWriter::new();
+        writer.write_varint(40); // score
+        writer.write_varint(3); // pushes
+        writer.write_u8(2); // largest merge
+        writer.write_varint(1); // one mover
+        write_voxel(&mut writer, VoxelCoordinate::new(5, 6, 7));
+        writer.write_u8(FaceDirection::NegativeX.index());
+        writer.write_varint(9);
+        let section = Section {
+            identifier: saved_state_section_id(),
+            version: 1,
+            payload: writer.into_bytes(),
+        };
+        let state = read_saved_state(&[section], &level("old")).unwrap();
+        assert_eq!(state.progress.score, 40);
+        assert_eq!(
+            state.movers,
+            [SavedMover {
+                level: level("old"),
+                position: VoxelCoordinate::new(5, 6, 7),
+                direction: FaceDirection::NegativeX,
+                steps_left: 9,
+            }]
+        );
     }
 
     #[test]
@@ -274,7 +333,10 @@ mod tests {
         let state = SavedState::default();
         let section = saved_state_section(&state);
         assert_eq!(section.payload.len(), 4);
-        assert_eq!(read_saved_state(&[section]), Some(state));
+        assert_eq!(
+            read_saved_state(&[section], &level("landscape")),
+            Some(state)
+        );
     }
 
     #[test]
@@ -286,14 +348,20 @@ mod tests {
         let length = good.payload.len();
         let mut bad_direction = good.clone();
         bad_direction.payload[length - 2] = 9;
-        assert_eq!(read_saved_state(&[bad_direction]), None);
+        assert_eq!(
+            read_saved_state(&[bad_direction], &level("landscape")),
+            None
+        );
         let mut too_many = good.payload[..length - 1].to_vec();
         too_many.extend([0xFF, 0xFF, 0xFF, 0xFF, 0x1F]); // 2^33 - 1 steps
         assert_eq!(
-            read_saved_state(&[Section {
-                payload: too_many,
-                ..good
-            }]),
+            read_saved_state(
+                &[Section {
+                    payload: too_many,
+                    ..good
+                }],
+                &level("landscape")
+            ),
             None
         );
     }
@@ -307,7 +375,7 @@ mod tests {
                 identifier: saved_state_section_id(),
                 version: 1,
                 payload: bytes,
-            }]);
+            }], &level("landscape"));
         }
     }
 }

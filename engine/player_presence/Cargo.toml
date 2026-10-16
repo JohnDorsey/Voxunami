@@ -15,6 +15,9 @@ voxel_space.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+server = { workspace = true, features = ["test-support"] }
+transport.workspace = true
+world_storage = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

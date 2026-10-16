@@ -14,7 +14,9 @@ use terrain::{
 use voxel_grid::{Brick, ChannelDefinition, ChannelValueKind, Grid, GridLayout};
 use voxel_space::{BrickCoordinate, VoxelCoordinate};
 
-use crate::{LoadContext, LoadError, LoadReport, ParsedWorld, Section, WorldData};
+use crate::{
+    LevelData, LevelIndex, LoadContext, LoadError, LoadReport, ParsedWorld, Section, WorldData,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Plugin {
@@ -33,6 +35,11 @@ pub const ALL_PLUGINS: [Plugin; 5] = [Newcomer, BaseBlocks, FancyBlocks, Magic, 
 
 pub fn id(text: &str) -> NamespacedId {
     text.parse().unwrap()
+}
+
+/// The name of the fixture world's one level.
+pub fn main_level_id() -> NamespacedId {
+    id("test_content:main")
 }
 
 pub fn block_kind() -> NamespacedId {
@@ -154,7 +161,11 @@ impl Game {
         let default = generators.runtime_id(&id("base_terrain:flat_v1")).unwrap();
         let terrain = WorldTerrain::new(generators, default, 3).unwrap();
         let layout = Arc::new(GridLayout::new(self.channel_definitions()).unwrap());
-        WorldData::new(0xFEED_FACE, terrain, Grid::new(layout))
+        WorldData::new(
+            0xFEED_FACE,
+            main_level_id(),
+            LevelData::new(terrain, Grid::new(layout)),
+        )
     }
 
     /// What loading a world file or a server's description into this game needs.
@@ -172,6 +183,7 @@ impl Game {
             generators,
             fallback_default_generator: id("base_terrain:flat_v1"),
             assignment_cube_level: 3,
+            legacy_level: main_level_id(),
         }
     }
 
@@ -194,12 +206,24 @@ impl Game {
     }
 
     pub fn set(&self, world: &mut WorldData, at: [i64; 3], channel: &str, value: u32) {
-        let index = world
+        self.set_in_level(world, LevelIndex::MAIN, at, channel, value);
+    }
+
+    pub fn set_in_level(
+        &self,
+        world: &mut WorldData,
+        level: LevelIndex,
+        at: [i64; 3],
+        channel: &str,
+        value: u32,
+    ) {
+        let level = world.level_mut(level).expect("the level exists");
+        let index = level
             .overrides
             .layout()
             .channel_index(&id(channel))
             .unwrap();
-        world
+        level
             .overrides
             .set(index, VoxelCoordinate::new(at[0], at[1], at[2]), value);
     }
@@ -252,10 +276,25 @@ impl Game {
 
     /// The world as meaning, with every runtime id replaced by its identifier.
     pub fn describe(&self, world: &WorldData) -> Description {
-        let layout = world.overrides.layout();
+        Description {
+            seed: world.world_seed,
+            levels: world
+                .levels()
+                .map(|(_, id, level)| self.describe_level(id, level))
+                .collect(),
+            opaque: world
+                .opaque_sections()
+                .iter()
+                .map(|s| (s.identifier.to_string(), s.version, s.payload.clone()))
+                .collect(),
+        }
+    }
+
+    fn describe_level(&self, id: &NamespacedId, level: &LevelData) -> LevelDescription {
+        let layout = level.overrides.layout();
         let mut bricks = BTreeMap::new();
-        for coordinate in world.overrides.sorted_brick_coordinates() {
-            let stored = world.overrides.brick(coordinate).unwrap();
+        for coordinate in level.overrides.sorted_brick_coordinates() {
+            let stored = level.overrides.brick(coordinate).unwrap();
             for (channel, definition) in layout.channels().iter().enumerate() {
                 let index = layout.channel_index(&definition.identifier).unwrap();
                 let name_of = |raw: u32| self.value_name(definition, raw);
@@ -274,7 +313,7 @@ impl Game {
                 );
             }
         }
-        let assignments = world
+        let assignments = level
             .terrain
             .assignments()
             .leaves()
@@ -282,7 +321,7 @@ impl Game {
             .map(|(cube, generator)| {
                 let origin = cube.origin();
                 let name = generator.map(|g| {
-                    world
+                    level
                         .terrain
                         .generators()
                         .entry(g)
@@ -293,17 +332,22 @@ impl Game {
                 ((origin.x(), origin.y(), origin.z()), cube.level(), name)
             })
             .collect();
-        Description {
-            seed: world.world_seed,
-            preferred_default: world.preferred_default_generator().to_string(),
+        LevelDescription {
+            id: id.to_string(),
+            preferred_default: level.preferred_default_generator().to_string(),
             assignments,
             bricks: bricks.into_iter().collect(),
-            opaque: world
-                .opaque_sections()
-                .iter()
-                .map(|s| (s.identifier.to_string(), s.version, s.payload.clone()))
-                .collect(),
         }
+    }
+
+    /// A new level that uses this game's channels and terrain generators and starts with `default`
+    /// as its default generator, for adding to a world of this game.
+    pub fn new_level(&self, default: &str) -> LevelData {
+        let generators = self.generator_registry();
+        let default = generators.runtime_id(&id(default)).unwrap();
+        let terrain = WorldTerrain::new(generators, default, 3).unwrap();
+        let layout = Arc::new(GridLayout::new(self.channel_definitions()).unwrap());
+        LevelData::new(terrain, Grid::new(layout))
     }
 }
 
@@ -315,35 +359,57 @@ pub type ChannelChanges = (String, Vec<(usize, String)>);
 /// A plugin section: identifier, version, payload.
 pub type OpaqueRecord = (String, u32, Vec<u8>);
 
+/// One level as meaning.
 #[derive(Debug, PartialEq)]
-pub struct Description {
-    pub seed: u64,
+pub struct LevelDescription {
+    pub id: String,
     pub preferred_default: String,
     pub assignments: Vec<Assignment>,
     /// (brick, channel name, channel position) -> changes.
     pub bricks: BTreeMap<(BrickCoordinate, String, usize), ChannelChanges>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Description {
+    pub seed: u64,
+    pub levels: Vec<LevelDescription>,
     pub opaque: Vec<OpaqueRecord>,
 }
 
-/// Like `Description` but without channel positions, which legitimately differ between plugin sets.
+/// Like `LevelDescription` but without channel positions, which legitimately differ between plugin
+/// sets.
 #[derive(Debug, PartialEq)]
-pub struct Comparable {
-    pub seed: u64,
+pub struct ComparableLevel {
+    pub id: String,
     pub preferred_default: String,
     pub assignments: Vec<Assignment>,
     pub bricks: BTreeMap<(BrickCoordinate, String), ChannelChanges>,
+}
+
+/// Like `Description` but without channel positions.
+#[derive(Debug, PartialEq)]
+pub struct Comparable {
+    pub seed: u64,
+    pub levels: Vec<ComparableLevel>,
     pub opaque: Vec<OpaqueRecord>,
 }
 
 pub fn comparable(description: Description) -> Comparable {
     Comparable {
         seed: description.seed,
-        preferred_default: description.preferred_default,
-        assignments: description.assignments,
-        bricks: description
-            .bricks
+        levels: description
+            .levels
             .into_iter()
-            .map(|((brick, name, _), value)| ((brick, name), value))
+            .map(|level| ComparableLevel {
+                id: level.id,
+                preferred_default: level.preferred_default,
+                assignments: level.assignments,
+                bricks: level
+                    .bricks
+                    .into_iter()
+                    .map(|((brick, name, _), value)| ((brick, name), value))
+                    .collect(),
+            })
             .collect(),
         opaque: description.opaque,
     }
@@ -371,15 +437,16 @@ pub fn sample_world(game: &Game) -> WorldData {
             spells.raw_id_of(&id("magic:fireball")).unwrap(),
         );
     }
-    world.terrain.assign_unassigned(brick(0, 0, 0));
+    world.main_mut().terrain.assign_unassigned(brick(0, 0, 0));
     if game.has(FancyTerrain) {
         let cliffs = world
+            .main()
             .terrain
             .generators()
             .runtime_id(&id("fancy_terrain:cliffs_v1"))
             .unwrap();
-        world.set_default_generator(cliffs).unwrap();
-        world.terrain.assign_unassigned(brick(100, 0, 0));
+        world.main_mut().set_default_generator(cliffs).unwrap();
+        world.main_mut().terrain.assign_unassigned(brick(100, 0, 0));
     }
     world.set_opaque_section(Section {
         identifier: id("magic:spellbook"),

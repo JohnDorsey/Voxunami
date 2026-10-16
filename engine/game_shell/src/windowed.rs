@@ -16,6 +16,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
+use crate::command_entry::CommandEntry;
 use crate::definition::GameDefinition;
 use crate::files::{open_recording, open_world, record_connection, recorded_game, save_world};
 use crate::host::{Autosave, HostSettings, ServerThread, connect_to, listen_on};
@@ -27,6 +28,8 @@ const MOVEMENT_SPEED: f32 = 24.0; // voxels per second
 const SPRINT_MULTIPLIER: f32 = 5.0;
 const MOUSE_SENSITIVITY: f32 = 0.0025; // radians per pixel
 const POSE_INTERVAL: Duration = Duration::from_millis(50);
+/// How long the answer to a command stays in the window title.
+const REPLY_SHOWN_FOR: Duration = Duration::from_secs(8);
 type GameSession<G> = Session<Box<dyn Connection>, G>;
 
 /// Plays: starts a server in this process (open to the network if asked) and joins it, or joins a
@@ -144,6 +147,10 @@ struct Viewer<G: GameDefinition> {
     session: GameSession<G>,
     keys: HashSet<KeyCode>,
     mouse_captured: bool,
+    /// The command being typed, if one is.
+    entry: CommandEntry,
+    /// The latest answer to a command, and when it came.
+    reply: Option<(String, Instant)>,
     started: Instant,
     last_frame: Instant,
     last_pose_sent: Instant,
@@ -216,6 +223,8 @@ impl<G: GameDefinition> Viewer<G> {
             session,
             keys: HashSet::new(),
             mouse_captured: false,
+            entry: CommandEntry::default(),
+            reply: None,
             started: now,
             last_frame: now,
             last_pose_sent: now,
@@ -321,6 +330,10 @@ impl<G: GameDefinition> Viewer<G> {
 
         self.follow_server(now, seconds)
             .map_err(|error| error.to_string())?;
+        for text in self.session.take_command_replies() {
+            println!("{text}");
+            self.reply = Some((text, now));
+        }
         let updates = self.session.update_view();
         apply_updates(&mut self.renderer, updates);
         show_other_players(&mut self.renderer, &self.session);
@@ -364,11 +377,22 @@ impl<G: GameDefinition> Viewer<G> {
     fn update_title(&self, since_last: Duration) {
         let fps = f64::from(self.frames_since_title_update) / since_last.as_secs_f64();
         let statistics = self.last_statistics;
+        let typing = self.entry.display();
+        let reply = self
+            .reply
+            .as_ref()
+            .filter(|(_, when)| when.elapsed() < REPLY_SHOWN_FOR)
+            .map(|(text, _)| text.as_str());
         let mode = match self.session.mode() {
             Mode::Playing => format!(
-                "players {} | {}",
+                "players {} | {}{}",
                 self.session.players().len().max(1),
-                G::status_text(&self.session)
+                G::status_text(&self.session),
+                match (&typing, reply) {
+                    (Some(line), _) => format!(" | {line}"),
+                    (None, Some(text)) => format!(" | {text}"),
+                    (None, None) => String::new(),
+                }
             ),
             Mode::Replaying => format!(
                 "replay {}{}",
@@ -426,13 +450,38 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     match event.state {
-                        ElementState::Pressed => {
-                            if code == KeyCode::Escape {
-                                viewer.set_mouse_captured(false);
-                            } else if !viewer.keys.contains(&code) {
-                                G::key_pressed(&mut viewer.session, code);
+                        ElementState::Pressed if viewer.entry.is_active() => match code {
+                            KeyCode::Escape => viewer.entry.cancel(),
+                            KeyCode::Enter | KeyCode::NumpadEnter => {
+                                if let Some(text) = viewer.entry.submit() {
+                                    viewer.session.send_command(&text);
+                                }
                             }
-                            viewer.keys.insert(code);
+                            KeyCode::Backspace => viewer.entry.backspace(),
+                            _ => {
+                                if let Some(text) = &event.text {
+                                    viewer.entry.insert(text);
+                                }
+                            }
+                        },
+                        ElementState::Pressed => {
+                            let opens_a_command = viewer.session.mode() == Mode::Playing
+                                && !viewer.keys.contains(&code)
+                                && (code == KeyCode::Enter || event.text.as_deref() == Some("/"));
+                            if opens_a_command {
+                                // Typing is not moving: let go of every key.
+                                viewer.keys.clear();
+                                let first = if code == KeyCode::Enter { "" } else { "/" };
+                                viewer.entry.begin(first);
+                            } else if code == KeyCode::Escape {
+                                viewer.set_mouse_captured(false);
+                                viewer.keys.insert(code);
+                            } else {
+                                if !viewer.keys.contains(&code) {
+                                    G::key_pressed(&mut viewer.session, code);
+                                }
+                                viewer.keys.insert(code);
+                            }
                         }
                         ElementState::Released => {
                             viewer.keys.remove(&code);

@@ -1,8 +1,10 @@
 //! The sections the engine itself defines. Every other section in a world file belongs to a plugin
 //! and is carried as opaque bytes.
 //!
-//! All five are at version 1, except `engine:generators`, which is at version 2 (version 1 files still
-//! load). They are listed here in the order they are written.
+//! All of them are at version 1, except `engine:generators`, which is at version 2 (version 1 files still
+//! load). A file has either `engine:levels`, or (every file written before levels existed) a
+//! `engine:generators` and an `engine:override_bricks`, which describe its one level. They are listed
+//! here in the order they are written.
 //!
 //! - `engine:header`: world seed (`u64`), engine version text.
 //! - `engine:registries`: for each registry kind, the identifiers of its entries in file-id order.
@@ -13,7 +15,11 @@
 //!   the generator-assignment octree. Version 2 lists each leaf as one number (generator file id plus
 //!   one, 0 = none, times 64, plus the cube level), in Morton order: the leaves tile the whole space, so
 //!   where each one is follows from the levels before it. Version 1 also gave each leaf's origin.
-//! - `engine:override_bricks`: the bricks that replace generated terrain, sorted by coordinate.
+//! - `engine:levels`: the world's levels in order, the first being the main level where players start.
+//!   Per level: its identifier, its generator setup (as the payload of `engine:generators`, version 2) and
+//!   its edited bricks (as the payload of `engine:override_bricks`).
+//! - `engine:override_bricks`: the bricks that replace generated terrain, sorted by coordinate. (Files
+//!   written before levels existed; newer files keep them inside `engine:levels`.)
 
 use namespaced_id::NamespacedId;
 use region_octree::BrickCube;
@@ -46,6 +52,9 @@ pub fn generators_id() -> NamespacedId {
 }
 pub fn override_bricks_id() -> NamespacedId {
     engine_id("override_bricks")
+}
+pub fn levels_id() -> NamespacedId {
+    engine_id("levels")
 }
 
 /// The registry kind that holds terrain generator versions.
@@ -278,6 +287,58 @@ fn read_brick_coordinate(reader: &mut ByteReader<'_>) -> Result<BrickCoordinate,
     );
     BrickCoordinate::try_new(x, y, z)
         .map_err(|_| DecodeError::Invalid("a brick coordinate is out of range"))
+}
+
+/// One level as it is written to a file.
+#[derive(Debug)]
+pub struct LevelToWrite<'a> {
+    pub id: &'a NamespacedId,
+    pub generators: GeneratorsRecord,
+    /// Sorted by coordinate.
+    pub bricks: Vec<(BrickCoordinate, &'a Brick)>,
+}
+
+/// One level as it is read from a file.
+#[derive(Debug)]
+pub struct LevelRecord {
+    pub id: NamespacedId,
+    pub generators: GeneratorsRecord,
+    pub bricks: Vec<(BrickCoordinate, Brick)>,
+}
+
+pub fn encode_levels(levels: &[LevelToWrite<'_>]) -> Vec<u8> {
+    let mut writer = ByteWriter::new();
+    writer.write_varint(levels.len() as u64);
+    for level in levels {
+        writer.write_identifier(level.id);
+        writer.write_bytes(&encode_generators(&level.generators));
+        writer.write_bytes(&encode_override_bricks(&level.bricks));
+    }
+    writer.into_bytes()
+}
+
+pub fn decode_levels(payload: &[u8]) -> Result<Vec<LevelRecord>, DecodeError> {
+    let mut reader = ByteReader::new(payload);
+    let count = reader.read_count(3)?;
+    if count == 0 {
+        return Err(DecodeError::Invalid("a world has at least one level"));
+    }
+    let mut levels: Vec<LevelRecord> = Vec::with_capacity(count);
+    for _ in 0..count {
+        let id = reader.read_identifier()?;
+        if levels.iter().any(|level| level.id == id) {
+            return Err(DecodeError::Invalid("a level is listed twice"));
+        }
+        let generators = decode_generators(reader.read_bytes()?, GENERATORS_VERSION)?;
+        let bricks = decode_override_bricks(reader.read_bytes()?)?;
+        levels.push(LevelRecord {
+            id,
+            generators,
+            bricks,
+        });
+    }
+    reader.finish()?;
+    Ok(levels)
 }
 
 /// Bricks must be given sorted by coordinate so equal worlds produce equal bytes.
@@ -519,6 +580,61 @@ mod tests {
         let mut record = sample_generators();
         record.leaves.pop();
         encode_generators(&record);
+    }
+
+    #[test]
+    fn levels_round_trip_in_order_and_refuse_duplicates_and_emptiness() {
+        let fixture = StandardTestLayout::default();
+        let mut brick = Brick::new(&fixture.layout);
+        brick.set(fixture.material, LocalVoxelIndex::new(4, 5, 6), 3);
+        let main = id("game:main");
+        let nether = id("game:nether");
+        let written = encode_levels(&[
+            LevelToWrite {
+                id: &main,
+                generators: sample_generators(),
+                bricks: vec![(BrickCoordinate::new(1, 2, 3), &brick)],
+            },
+            LevelToWrite {
+                id: &nether,
+                generators: GeneratorsRecord {
+                    default_generator: id("game:lava_v1"),
+                    assignment_cube_level: 4,
+                    leaves: Vec::new(),
+                },
+                bricks: Vec::new(),
+            },
+        ]);
+        let read = decode_levels(&written).unwrap();
+        assert_eq!(read.len(), 2);
+        assert_eq!((read[0].id.clone(), read[1].id.clone()), (main, nether));
+        assert_eq!(read[0].generators, sample_generators());
+        assert_eq!(read[0].bricks, vec![(BrickCoordinate::new(1, 2, 3), brick)]);
+        assert_eq!(read[1].generators.default_generator, id("game:lava_v1"));
+        assert_eq!(read[1].generators.assignment_cube_level, 4);
+        assert!(read[1].bricks.is_empty());
+
+        for length in 0..written.len() {
+            assert!(decode_levels(&written[..length]).is_err(), "{length}");
+        }
+        let mut trailing = written.clone();
+        trailing.push(0);
+        assert!(decode_levels(&trailing).is_err());
+
+        assert_eq!(
+            decode_levels(&encode_levels(&[])).unwrap_err(),
+            DecodeError::Invalid("a world has at least one level")
+        );
+        let twice = id("game:main");
+        let level = || LevelToWrite {
+            id: &twice,
+            generators: sample_generators(),
+            bricks: Vec::new(),
+        };
+        assert_eq!(
+            decode_levels(&encode_levels(&[level(), level()])).unwrap_err(),
+            DecodeError::Invalid("a level is listed twice")
+        );
     }
 
     #[test]

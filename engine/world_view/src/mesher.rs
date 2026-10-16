@@ -18,7 +18,7 @@ use terrain::TerrainGenerator;
 use voxel_grid::{Brick, ChannelIndex, GridLayout};
 use voxel_meshing::{BrickNeighbourhood, PackedQuad, mesh_brick};
 use voxel_space::{BrickCoordinate, FaceDirection, VoxelCoordinate};
-use world_storage::WorldData;
+use world_storage::LevelData;
 
 /// How far to keep bricks loaded around the viewer, and how much work to run at once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,11 +47,13 @@ struct NeighbourhoodSnapshot {
 
 enum Job {
     Generate {
+        epoch: u64,
         coordinate: BrickCoordinate,
         generator: Arc<dyn TerrainGenerator>,
         layout: Arc<GridLayout>,
     },
     Mesh {
+        epoch: u64,
         coordinate: BrickCoordinate,
         version: u64,
         snapshot: Box<NeighbourhoodSnapshot>,
@@ -59,8 +61,13 @@ enum Job {
 }
 
 enum JobResult {
-    Generated(BrickCoordinate, Arc<Brick>),
+    Generated {
+        epoch: u64,
+        coordinate: BrickCoordinate,
+        brick: Arc<Brick>,
+    },
     Meshed {
+        epoch: u64,
         coordinate: BrickCoordinate,
         version: u64,
         quads: Vec<PackedQuad>,
@@ -116,6 +123,8 @@ pub struct WorldMesher {
     results: mpsc::Receiver<JobResult>,
     workers: Vec<JoinHandle<()>>,
     scheduled_last_update: usize,
+    /// Counts the times the mesher was reset; work and results from an earlier count are ignored.
+    epoch: u64,
 }
 
 impl std::fmt::Debug for WorldMesher {
@@ -152,14 +161,17 @@ impl WorldMesher {
                         let Ok(job) = job else { return };
                         let result = match job {
                             Job::Generate {
+                                epoch,
                                 coordinate,
                                 generator,
                                 layout,
-                            } => JobResult::Generated(
+                            } => JobResult::Generated {
+                                epoch,
                                 coordinate,
-                                Arc::new(generator.generate_brick(&layout, coordinate)),
-                            ),
+                                brick: Arc::new(generator.generate_brick(&layout, coordinate)),
+                            },
                             Job::Mesh {
+                                epoch,
                                 coordinate,
                                 version,
                                 snapshot,
@@ -175,6 +187,7 @@ impl WorldMesher {
                                     .map(|quad| quad.pack())
                                     .collect();
                                 JobResult::Meshed {
+                                    epoch,
                                     coordinate,
                                     version,
                                     quads,
@@ -203,6 +216,7 @@ impl WorldMesher {
             results,
             workers,
             scheduled_last_update: 0,
+            epoch: 0,
         }
     }
 
@@ -245,30 +259,51 @@ impl WorldMesher {
         }
     }
 
+    /// Forgets every brick and all work in progress, as when the viewer moves to another level whose
+    /// bricks have nothing to do with the old ones. Returns the removal of every mesh displayed.
+    pub fn reset(&mut self) -> Vec<MeshUpdate> {
+        self.epoch += 1;
+        self.bricks.clear();
+        self.generating.clear();
+        self.meshing.clear();
+        self.meshed.clear();
+        self.versions.clear();
+        self.scheduled_last_update = 0;
+        let mut displayed: Vec<BrickCoordinate> = self.displayed.drain().collect();
+        displayed.sort();
+        displayed.into_iter().map(MeshUpdate::Remove).collect()
+    }
+
     fn version_of(&self, coordinate: BrickCoordinate) -> u64 {
         self.versions.get(&coordinate).copied().unwrap_or(0)
     }
 
     /// Collects finished jobs, unloads far bricks and schedules nearby work around `center`, reading
-    /// from `world`. Returns what the renderer should change.
-    pub fn update(&mut self, world: &WorldData, center: BrickCoordinate) -> Vec<MeshUpdate> {
+    /// from `level`. Returns what the renderer should change.
+    pub fn update(&mut self, level: &LevelData, center: BrickCoordinate) -> Vec<MeshUpdate> {
         let mut updates = Vec::new();
         let view_radius = self.settings.view_radius_bricks;
         let keep_radius_squared = i128::from((view_radius + 2) * (view_radius + 2));
 
         while let Ok(result) = self.results.try_recv() {
             match result {
-                JobResult::Generated(coordinate, brick) => {
-                    if self.generating.remove(&coordinate) {
+                JobResult::Generated {
+                    epoch,
+                    coordinate,
+                    brick,
+                } => {
+                    if epoch == self.epoch && self.generating.remove(&coordinate) {
                         self.bricks.entry(coordinate).or_insert(brick);
                     }
                 }
                 JobResult::Meshed {
+                    epoch,
                     coordinate,
                     version,
                     quads,
                 } => {
-                    if self.meshing.remove(&coordinate).is_none()
+                    if epoch != self.epoch
+                        || self.meshing.remove(&coordinate).is_none()
                         || version != self.version_of(coordinate)
                     {
                         continue; // unloaded, or changed since: the brick will be meshed again
@@ -313,19 +348,20 @@ impl WorldMesher {
                 continue;
             };
             if let Entry::Vacant(slot) = self.bricks.entry(coordinate) {
-                if let Some(edited) = world.overrides.brick(coordinate) {
+                if let Some(edited) = level.overrides.brick(coordinate) {
                     slot.insert(Arc::clone(edited));
                 } else if !self.generating.contains(&coordinate)
-                    && let Some(generator) = Self::generator_for(world, coordinate)
+                    && let Some(generator) = Self::generator_for(level, coordinate)
                 {
                     self.generating.insert(coordinate);
                     self.jobs
                         .as_ref()
                         .expect("workers run until the mesher is dropped")
                         .send(Job::Generate {
+                            epoch: self.epoch,
                             coordinate,
                             generator,
-                            layout: Arc::clone(world.overrides.layout()),
+                            layout: Arc::clone(level.overrides.layout()),
                         })
                         .expect("workers are running");
                     scheduled += 1;
@@ -346,6 +382,7 @@ impl WorldMesher {
                     .as_ref()
                     .expect("workers run until the mesher is dropped")
                     .send(Job::Mesh {
+                        epoch: self.epoch,
                         coordinate,
                         version,
                         snapshot: Box::new(snapshot),
@@ -358,14 +395,14 @@ impl WorldMesher {
         updates
     }
 
-    /// The generator the world assigns to a brick's region, if the world has assigned one and this
+    /// The generator the level assigns to a brick's region, if the level has assigned one and this
     /// program has it.
     fn generator_for(
-        world: &WorldData,
+        level: &LevelData,
         coordinate: BrickCoordinate,
     ) -> Option<Arc<dyn TerrainGenerator>> {
-        let id = world.terrain.assigned_generator(coordinate)?;
-        world.terrain.generators().entry(id)?.content().cloned()
+        let id = level.terrain.assigned_generator(coordinate)?;
+        level.terrain.generators().entry(id)?.content().cloned()
     }
 
     /// The brick and its six neighbours, if all of them are loaded.
@@ -384,10 +421,10 @@ impl WorldMesher {
 
     /// Updates until no work is pending or schedulable, returning every change. For headless
     /// rendering and tests; an interactive viewer calls [`WorldMesher::update`] once per frame.
-    pub fn settle(&mut self, world: &WorldData, center: BrickCoordinate) -> Vec<MeshUpdate> {
+    pub fn settle(&mut self, level: &LevelData, center: BrickCoordinate) -> Vec<MeshUpdate> {
         let mut updates = Vec::new();
         loop {
-            updates.extend(self.update(world, center));
+            updates.extend(self.update(level, center));
             if self.pending_jobs() == 0 && self.scheduled_last_update == 0 {
                 return updates;
             }

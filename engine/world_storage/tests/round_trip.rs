@@ -7,13 +7,17 @@ use proptest::prelude::*;
 use voxel_grid::{Brick, ChannelDefinition};
 use voxel_space::VoxelCoordinate;
 use world_storage::container::{read_container, write_container};
+use world_storage::engine_sections::{
+    self, decode_levels, encode_generators, encode_override_bricks,
+};
 use world_storage::test_support::Plugin::*;
 use world_storage::test_support::{
-    ALL_PLUGINS, Description, Game, Plugin, block_kind, brick, comparable, id, sample_world,
-    spell_kind,
+    ALL_PLUGINS, Description, Game, Plugin, block_kind, brick, comparable, id, main_level_id,
+    sample_world, spell_kind,
 };
 use world_storage::{
-    BrickSource, ContainerError, LoadContext, LoadError, ParsedWorld, Section, TranslationError,
+    BrickSource, ContainerError, LevelError, LevelIndex, LoadContext, LoadError, ParsedWorld,
+    Section, TranslationError, WorldData,
 };
 
 fn round_trip(bytes: &[u8], plugins: &[Plugin]) -> Vec<u8> {
@@ -40,7 +44,7 @@ fn a_world_loaded_with_the_same_plugins_is_identical_and_saves_to_the_same_bytes
     assert_eq!(report.missing_content, []);
     assert_eq!(report.extra_channels, []);
     assert_eq!(report.unknown_registry_kinds, []);
-    assert_eq!(report.unavailable_default_generator, None);
+    assert_eq!(report.unavailable_default_generators, []);
     assert_eq!(
         report.opaque_sections,
         [id("magic:spellbook"), id("unheard_of:data")]
@@ -65,8 +69,8 @@ fn loading_without_plugins_loses_nothing_and_saving_again_brings_everything_back
     assert_eq!(report.extra_channels, [id("magic:mana"), id("magic:spell")]);
     assert_eq!(report.unknown_registry_kinds, [spell_kind()]);
     assert_eq!(
-        report.unavailable_default_generator,
-        Some(id("fancy_terrain:cliffs_v1"))
+        report.unavailable_default_generators,
+        [(main_level_id(), id("fancy_terrain:cliffs_v1"))]
     );
     assert!(report.changed_channel_defaults.is_empty());
 
@@ -77,10 +81,10 @@ fn loading_without_plugins_loses_nothing_and_saving_again_brings_everything_back
         .unwrap();
     assert!(reduced.blocks.entry(marble).unwrap().is_missing());
     assert!(
-        matches!(partial.effective_brick(brick(100, 0, 0)), BrickSource::MissingGenerator(name) if name == id("fancy_terrain:cliffs_v1"))
+        matches!(partial.main().effective_brick(brick(100, 0, 0)), BrickSource::MissingGenerator(name) if name == id("fancy_terrain:cliffs_v1"))
     );
     assert!(matches!(
-        partial.effective_brick(brick(0, 0, 0)),
+        partial.main().effective_brick(brick(0, 0, 0)),
         BrickSource::Edited(_)
     ));
 
@@ -228,6 +232,7 @@ fn a_channel_whose_meaning_changed_or_whose_registry_is_missing_is_refused() {
             generators,
             fallback_default_generator: id("base_terrain:flat_v1"),
             assignment_cube_level: 3,
+            legacy_level: main_level_id(),
         })
         .unwrap_err();
     assert!(
@@ -244,6 +249,7 @@ fn a_channel_whose_meaning_changed_or_whose_registry_is_missing_is_refused() {
             generators: unsupplied.generator_registry(),
             fallback_default_generator: id("base_terrain:flat_v1"),
             assignment_cube_level: 3,
+            legacy_level: main_level_id(),
         })
         .unwrap_err();
     assert!(
@@ -281,12 +287,13 @@ fn saving_refuses_a_content_channel_whose_registry_table_is_unavailable() {
 fn only_real_changes_are_kept_when_pruning() {
     let game = Game::new(&ALL_PLUGINS);
     let mut world = game.new_world();
-    world.terrain.assign_unassigned(brick(0, 0, 0)); // flat ground at height 10
+    world.main_mut().terrain.assign_unassigned(brick(0, 0, 0)); // flat ground at height 10
     // An edit that changes nothing: a copy of the generated brick.
-    let BrickSource::Generated(generated) = world.effective_brick(brick(0, 0, 0)) else {
+    let BrickSource::Generated(generated) = world.main().effective_brick(brick(0, 0, 0)) else {
         panic!("expected terrain")
     };
     world
+        .main_mut()
         .overrides
         .insert_brick(brick(0, 0, 0), Arc::new(generated))
         .unwrap();
@@ -297,7 +304,7 @@ fn only_real_changes_are_kept_when_pruning() {
 
     assert_eq!(world.prune_unmodified_overrides(), 1);
     assert_eq!(
-        world.overrides.sorted_brick_coordinates(),
+        world.main().overrides.sorted_brick_coordinates(),
         [brick(1, 0, 0), brick(28, 0, 0)]
     );
 }
@@ -307,17 +314,17 @@ fn effective_bricks_come_from_edits_then_generators_then_nothing() {
     let game = Game::new(&ALL_PLUGINS);
     let mut world = game.new_world();
     assert!(matches!(
-        world.effective_brick(brick(0, 0, 0)),
+        world.main().effective_brick(brick(0, 0, 0)),
         BrickSource::Unassigned
     ));
-    world.terrain.assign_unassigned(brick(0, 0, 0));
+    world.main_mut().terrain.assign_unassigned(brick(0, 0, 0));
     assert!(matches!(
-        world.effective_brick(brick(0, 0, 0)),
+        world.main().effective_brick(brick(0, 0, 0)),
         BrickSource::Generated(_)
     ));
     game.set_block(&mut world, [1, 1, 1], "base_blocks:stone");
     assert!(matches!(
-        world.effective_brick(brick(0, 0, 0)),
+        world.main().effective_brick(brick(0, 0, 0)),
         BrickSource::Edited(_)
     ));
 }
@@ -332,16 +339,17 @@ fn a_loaded_world_can_keep_being_edited_and_saved() {
     let saved = later.save(&world);
 
     let described_all = described(&saved, &ALL_PLUGINS);
-    let has_new_edit = described_all
-        .bricks
-        .iter()
-        .any(|((coordinate, name, _), (_, changed))| {
-            *coordinate == brick(-3, 0, 0)
-                && name == "core:block"
-                && changed
-                    .iter()
-                    .any(|(_, value)| value == "fancy_blocks:glass")
-        });
+    let has_new_edit =
+        described_all.levels[0]
+            .bricks
+            .iter()
+            .any(|((coordinate, name, _), (_, changed))| {
+                *coordinate == brick(-3, 0, 0)
+                    && name == "core:block"
+                    && changed
+                        .iter()
+                        .any(|(_, value)| value == "fancy_blocks:glass")
+            });
     assert!(has_new_edit);
     // Everything saved before is still there too.
     assert!(
@@ -368,7 +376,7 @@ fn a_description_loads_as_the_same_world_shape_with_no_contents() {
             "engine:header",
             "engine:registries",
             "engine:channels",
-            "engine:generators"
+            "engine:levels"
         ]
     );
     assert!(bytes.len() < game.save(&world).len());
@@ -377,23 +385,23 @@ fn a_description_loads_as_the_same_world_shape_with_no_contents() {
         let mut receiver = Game::new(plugins);
         let (described, report) = receiver.load(&bytes).unwrap();
         assert_eq!(described.world_seed, world.world_seed);
-        assert_eq!(described.overrides.brick_count(), 0);
+        assert_eq!(described.main().overrides.brick_count(), 0);
         assert!(described.opaque_sections().is_empty());
         assert_eq!(
-            described.preferred_default_generator(),
-            world.preferred_default_generator()
+            described.main().preferred_default_generator(),
+            world.main().preferred_default_generator()
         );
         assert_eq!(
-            described.terrain.assignment_cube_level(),
-            world.terrain.assignment_cube_level()
+            described.main().terrain.assignment_cube_level(),
+            world.main().terrain.assignment_cube_level()
         );
         // Nothing is assigned yet: the receiver learns assignments as regions come into view.
         assert!(matches!(
-            described.effective_brick(brick(0, 0, 0)),
+            described.main().effective_brick(brick(0, 0, 0)),
             BrickSource::Unassigned
         ));
         assert_eq!(
-            described.overrides.layout().channels().len(),
+            described.main().overrides.layout().channels().len(),
             4,
             "channels the receiving game lacks are kept, so the layout is always complete"
         );
@@ -410,6 +418,7 @@ fn the_translator_converts_bricks_values_and_generators_from_the_source_numberin
     let mut source_world = source.new_world();
     source.set_block(&mut source_world, [1, 2, 3], "fancy_blocks:marble");
     let source_brick = source_world
+        .main()
         .overrides
         .brick(VoxelCoordinate::new(1, 2, 3).split().0)
         .unwrap();
@@ -421,6 +430,7 @@ fn the_translator_converts_bricks_values_and_generators_from_the_source_numberin
         .load_with_translator(receiver.load_context())
         .unwrap();
     let block_channel = world
+        .main()
         .overrides
         .layout()
         .channel_index(&id("core:block"))
@@ -450,6 +460,7 @@ fn the_translator_converts_bricks_values_and_generators_from_the_source_numberin
     assert_eq!(
         temperature_channel,
         world
+            .main()
             .overrides
             .layout()
             .channel_index(&id("core:temperature"))
@@ -459,6 +470,7 @@ fn the_translator_converts_bricks_values_and_generators_from_the_source_numberin
     assert_eq!(
         translator.translate_generator(0).unwrap(),
         world
+            .main()
             .terrain
             .generators()
             .runtime_id(&id("base_terrain:flat_v1"))
@@ -496,7 +508,7 @@ fn the_translator_knows_when_numbering_is_the_same_on_both_sides() {
         .unwrap()
         .load_with_translator(context)
         .unwrap();
-    assert_eq!(world.overrides.layout().channel_count(), 2);
+    assert_eq!(world.main().overrides.layout().channel_count(), 2);
     assert!(!translator.is_identity());
 }
 
@@ -589,4 +601,278 @@ proptest! {
         let through = round_trip(&bytes, &subset);
         prop_assert_eq!(comparable(described(&through, &ALL_PLUGINS)), original);
     }
+}
+
+/// A world with a second level, which uses the flat generator where the main level uses the
+/// cliffs, and edits in each level.
+fn two_level_world(game: &Game) -> (WorldData, LevelIndex) {
+    let mut world = sample_world(game);
+    let nether = world
+        .add_level(
+            id("test_content:nether"),
+            game.new_level("base_terrain:flat_v1"),
+        )
+        .unwrap();
+    game.set_in_level(
+        &mut world,
+        nether,
+        [7, 7, 7],
+        "core:block",
+        game.raw_block("base_blocks:grass"),
+    );
+    world
+        .level_mut(nether)
+        .unwrap()
+        .terrain
+        .assign_unassigned(brick(3, 0, 0));
+    (world, nether)
+}
+
+#[test]
+fn levels_have_indices_in_order_and_names_that_resolve() {
+    let game = Game::new(&ALL_PLUGINS);
+    let (world, nether) = two_level_world(&game);
+    assert_eq!(world.level_count(), 2);
+    assert_eq!((LevelIndex::MAIN.get(), nether.get()), (0, 1));
+    assert_eq!(world.level_id(LevelIndex::MAIN), Some(&main_level_id()));
+    assert_eq!(world.level_id(nether), Some(&id("test_content:nether")));
+    assert_eq!(world.level_index(&main_level_id()), Some(LevelIndex::MAIN));
+    assert_eq!(world.level_index(&id("test_content:nether")), Some(nether));
+    assert_eq!(world.level_index(&id("test_content:missing")), None);
+    assert!(world.level(LevelIndex::new(2)).is_none());
+    assert!(world.level_id(LevelIndex::new(2)).is_none());
+    let listed: Vec<_> = world
+        .levels()
+        .map(|(index, name, _)| (index, name.to_string()))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            (LevelIndex::MAIN, "test_content:main".to_owned()),
+            (nether, "test_content:nether".to_owned())
+        ]
+    );
+    assert!(std::ptr::eq(
+        world.main(),
+        world.level(LevelIndex::MAIN).unwrap()
+    ));
+}
+
+#[test]
+fn a_level_can_only_be_added_if_it_matches_the_world() {
+    let game = Game::new(&ALL_PLUGINS);
+    let mut world = game.new_world();
+    assert_eq!(
+        world
+            .add_level(main_level_id(), game.new_level("base_terrain:flat_v1"))
+            .unwrap_err(),
+        LevelError::Duplicate(main_level_id())
+    );
+    // Without the fancy terrain plugin the generator versions differ.
+    let without_fancy_terrain = Game::new(&[Newcomer, BaseBlocks, FancyBlocks, Magic]);
+    assert_eq!(
+        world
+            .add_level(
+                id("test_content:other"),
+                without_fancy_terrain.new_level("base_terrain:flat_v1")
+            )
+            .unwrap_err(),
+        LevelError::DifferentGenerators(id("test_content:other"))
+    );
+    // Without the magic plugin the channels differ.
+    let without_magic = Game::new(&[BaseBlocks]);
+    assert_eq!(
+        world
+            .add_level(
+                id("test_content:other"),
+                without_magic.new_level("base_terrain:flat_v1")
+            )
+            .unwrap_err(),
+        LevelError::DifferentChannels(id("test_content:other"))
+    );
+    assert_eq!(world.level_count(), 1, "nothing was added");
+}
+
+#[test]
+fn levels_are_saved_and_loaded_each_with_its_own_edits_and_terrain() {
+    let game = Game::new(&ALL_PLUGINS);
+    let (world, nether) = two_level_world(&game);
+    let bytes = game.save(&world);
+
+    let mut again = Game::new(&ALL_PLUGINS);
+    let (loaded, report) = again.load(&bytes).unwrap();
+    assert!(report.unavailable_default_generators.is_empty());
+    assert_eq!(loaded.level_count(), 2);
+    assert_eq!(loaded.level_id(nether), Some(&id("test_content:nether")));
+    // Each level has only its own edits.
+    let main_bricks = loaded.main().overrides.sorted_brick_coordinates();
+    let nether_bricks = loaded
+        .level(nether)
+        .unwrap()
+        .overrides
+        .sorted_brick_coordinates();
+    assert!(main_bricks.len() > 1);
+    assert_eq!(nether_bricks, [brick(0, 0, 0)]);
+    assert_ne!(
+        loaded.main().overrides.brick(brick(0, 0, 0)),
+        loaded
+            .level(nether)
+            .unwrap()
+            .overrides
+            .brick(brick(0, 0, 0))
+    );
+    // And its own generators.
+    assert_eq!(
+        loaded.main().preferred_default_generator(),
+        &id("fancy_terrain:cliffs_v1")
+    );
+    assert_eq!(
+        loaded.level(nether).unwrap().preferred_default_generator(),
+        &id("base_terrain:flat_v1")
+    );
+    assert_eq!(
+        again.describe(&loaded).levels[1].assignments.len(),
+        game.describe(&world).levels[1].assignments.len()
+    );
+    assert_eq!(again.describe(&loaded), game.describe(&world));
+    assert_eq!(again.save(&loaded), bytes);
+
+    // A description names the levels and their generators, and holds none of their contents.
+    let described = world.describe(&game.registries()).unwrap();
+    let mut receiver = Game::new(&ALL_PLUGINS);
+    let (shape, _) = receiver.load(&described).unwrap();
+    assert_eq!(shape.level_count(), 2);
+    assert_eq!(shape.level_id(nether), Some(&id("test_content:nether")));
+    for (_, _, level) in shape.levels() {
+        assert_eq!(level.overrides.brick_count(), 0);
+        assert!(level.terrain.assignments().leaves().len() == 1);
+    }
+    assert_eq!(
+        shape.level(nether).unwrap().preferred_default_generator(),
+        &id("base_terrain:flat_v1")
+    );
+}
+
+#[test]
+fn loading_without_plugins_keeps_every_levels_data() {
+    let game = Game::new(&ALL_PLUGINS);
+    let (world, _) = two_level_world(&game);
+    let bytes = game.save(&world);
+    let mut reduced = Game::new(&[BaseBlocks]);
+    let (_, report) = reduced.load(&bytes).unwrap();
+    // Only the main level asked for a generator that is gone.
+    assert_eq!(
+        report.unavailable_default_generators,
+        [(main_level_id(), id("fancy_terrain:cliffs_v1"))]
+    );
+    assert_eq!(
+        comparable(described(&round_trip(&bytes, &[BaseBlocks]), &ALL_PLUGINS)),
+        comparable(game.describe(&world))
+    );
+}
+
+/// The sections of a one-level world as files had them before levels: the generators and the
+/// edited bricks in sections of their own.
+fn before_levels(bytes: &[u8]) -> Vec<u8> {
+    let sections = read_container(bytes).unwrap();
+    let mut legacy = Vec::new();
+    for section in sections {
+        if section.identifier != engine_sections::levels_id() {
+            legacy.push(section);
+            continue;
+        }
+        let mut levels = decode_levels(&section.payload).unwrap();
+        assert_eq!(
+            levels.len(),
+            1,
+            "only a world of one level can be written the old way"
+        );
+        let level = levels.remove(0);
+        legacy.push(Section {
+            identifier: engine_sections::generators_id(),
+            version: engine_sections::GENERATORS_VERSION,
+            payload: encode_generators(&level.generators),
+        });
+        let bricks: Vec<_> = level
+            .bricks
+            .iter()
+            .map(|(at, brick)| (*at, brick))
+            .collect();
+        legacy.push(Section {
+            identifier: engine_sections::override_bricks_id(),
+            version: engine_sections::SUPPORTED_VERSION,
+            payload: encode_override_bricks(&bricks),
+        });
+    }
+    write_container(&legacy)
+}
+
+#[test]
+fn a_file_from_before_levels_loads_as_one_level_the_game_names_and_is_saved_in_the_new_form() {
+    let game = Game::new(&ALL_PLUGINS);
+    let world = sample_world(&game);
+    let new_form = game.save(&world);
+    let old_form = before_levels(&new_form);
+    let names = |bytes: &[u8]| -> Vec<String> {
+        read_container(bytes)
+            .unwrap()
+            .into_iter()
+            .map(|section| section.identifier.to_string())
+            .collect()
+    };
+    assert!(names(&old_form).contains(&"engine:override_bricks".to_owned()));
+    assert!(!names(&old_form).contains(&"engine:levels".to_owned()));
+
+    let mut loading = Game::new(&ALL_PLUGINS);
+    let (loaded, report) = loading.load(&old_form).unwrap();
+    assert!(report.unavailable_default_generators.is_empty());
+    assert_eq!(loaded.level_count(), 1);
+    assert_eq!(loaded.level_id(LevelIndex::MAIN), Some(&main_level_id()));
+    assert_eq!(loading.describe(&loaded), game.describe(&world));
+    // Saving writes the new form, and is the same file as saving the world in the first place.
+    assert_eq!(loading.save(&loaded), new_form);
+}
+
+#[test]
+fn a_file_with_a_list_of_levels_and_the_old_sections_too_is_refused() {
+    let game = Game::new(&ALL_PLUGINS);
+    let bytes = game.save(&sample_world(&game));
+    let mut sections = read_container(&bytes).unwrap();
+    sections.push(Section {
+        identifier: engine_sections::override_bricks_id(),
+        version: engine_sections::SUPPORTED_VERSION,
+        payload: encode_override_bricks(&[]),
+    });
+    let error = ParsedWorld::parse(&write_container(&sections)).unwrap_err();
+    assert!(
+        matches!(error, LoadError::LevelsAndLegacySections),
+        "{error}"
+    );
+}
+
+#[test]
+fn pruning_unchanged_bricks_covers_every_level() {
+    let game = Game::new(&ALL_PLUGINS);
+    let mut world = game.new_world();
+    let nether = world
+        .add_level(
+            id("test_content:nether"),
+            game.new_level("base_terrain:flat_v1"),
+        )
+        .unwrap();
+    // In each level, an edited brick that is exactly what the generator makes.
+    for level in [LevelIndex::MAIN, nether] {
+        let level = world.level_mut(level).unwrap();
+        level.terrain.assign_unassigned(brick(0, 0, 0));
+        let BrickSource::Generated(generated) = level.effective_brick(brick(0, 0, 0)) else {
+            panic!("the brick is generated");
+        };
+        level
+            .overrides
+            .insert_brick(brick(0, 0, 0), Arc::new(generated))
+            .unwrap();
+    }
+    assert_eq!(world.prune_unmodified_overrides(), 2);
+    assert_eq!(world.main().overrides.brick_count(), 0);
+    assert_eq!(world.level(nether).unwrap().overrides.brick_count(), 0);
 }

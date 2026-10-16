@@ -19,6 +19,18 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 ## Decided
 - Plugins are an internal modularity tool, not an end-user mod system.
 - Voxels are strictly cubic. Real-time rendering is rasterized; a path-traced offline renderer for replay export comes later.
+- The grid is always cubic (owner, 2026-10-16), apart from coarser levels of detail in the distance. A block may fill only
+  part of its cell, using a block shape chosen by the block's *state*, so that shapes do not multiply the number of block
+  types and run into the renderer's palette cap (256 material values, 16 of them used by avatars). So a voxel will carry
+  a block and a state, as two channels. Not built.
+- Worlds have several levels (built; see "Built", Phase 6). Each level has its own grid, terrain assignments and edited
+  bricks. All levels of a world share its channels, content registries, terrain generator versions and **seed**: a level
+  differs from another by which generator versions it uses and by what players have changed, since a client regenerates
+  terrain from the world's seed and has no other way to learn a level's. The first level is the main level, where players
+  start. Levels are named by identifier in files and in game messages, and by their position (`LevelIndex`) between a
+  server and its clients. A world's levels are fixed while a server runs.
+- Which level a player is in is the server's to say (`player_presence::PoseBook`); players say only where they are in it. A
+  player moves with the `/level go NAME` command, or a game moves them (a portal later) through the same message.
 - Platforms: Windows and Linux. Integrated-GPU target: 30 fps at 720p with reduced view distance on the dev
   machine's own AMD iGPU.
 - Naming: no uncommon abbreviations; very common ones (ID, LOD, GPU, UI) are fine.
@@ -70,6 +82,8 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   `docs/physics-spike.md`. Not built yet.
 
 ## Decided (2048)
+- No largest number (owner, 2026-10-16). Today a block is one of 60 values (3 materials times exponents 1 to 20), which is
+  a limit; with block states the number is a state of the material block, so it is unbounded. Not built.
 - Voxunami 2048 is infinite: a landscape of rolling hills in which every solid voxel is a numbered block (a power of
   two, half of them 2s, a quarter 4s, and so on up to 64s; material in cubes of 8 voxels: 70% stone, 20% ice, 10% spring
   ice). Any block can be pushed, and only tools push or pull blocks (left click pushes away from the player, right click
@@ -97,7 +111,7 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 ## Future goals (owner, 2026-10-16; none built)
 - Blocks that let flood fill (light, and later other fills) through some sides but not others, like a slab or a stair.
   Needs a block shape in the block definition (which faces are open, plus a collision shape), used by the mesher, lighting
-  and physics. Open: "Voxels are strictly cubic" is read as the grid being cubic; a block may fill only part of its cell.
+  and physics. (The grid stays cubic; a block fills part of its cell through its state; see "Decided".)
 - Shaders written in GLSL or HLSL. (Not checked here: wgpu's shader translator, naga, reads WGSL, SPIR-V and GLSL, and I
   believe not HLSL directly, which would need compiling to SPIR-V first.) Cosmetic and client-side only, so they cannot
   affect simulation; they need a defined interface, validation and limits, and do not exist in the planned offline
@@ -116,7 +130,7 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - Order of features, to let real uses shape the engine and the plugin API before either is frozen (proposed 2026-10-16;
   the guide is: do first what is expensive to change later, what is most uncertain, and what gives a second user to a
   shared piece). 1. Levels: a level id through the protocol, save format and server, with one level existing; then a text
-  command channel. 2. Block shapes in block definitions (open faces, collision shape, translucency, light), with a spike
+  command channel (done: Phase 6). 2. Block shapes in block definitions (open faces, collision shape, translucency, light), with a spike
   on how light reaches the 8-byte quad. 3. 2048 tools: chain pushing and tool-chosen merging. 4. Lighting with
   directional flood fill: the first lattice rule, under the phased-tick rule and its partition-invariance test.
   5. Random ticks and fire in Cave: the second lattice rule; only then extract the common lattice-rule shape
@@ -208,6 +222,23 @@ Phase 1d (saving):
 - `terrain`: `WorldTerrain` exposes its configuration and can restore saved assignments.
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
+
+Phase 6 (levels and commands; protocol version 2):
+- `WorldData` is a list of levels (`LevelData`: terrain assignments and edited bricks), the first being the main level.
+  `LevelIndex` (in `voxel_space`) numbers them. The file has an `engine:levels` section; files written before levels
+  load as one level named by the game (`LoadContext::legacy_level`) and are saved in the new form. `add_level` refuses a
+  level with other channels or generator versions, or a name already used.
+- The protocol names a level in `SetInterest`, `InterestChanged`, `BrickContents` and `VoxelEdits`, and adds `Command`
+  and `CommandReply`. A client watches one region of one level at a time; moving to another level sends the whole new
+  region. The server tracks edits, generated bricks and audiences per level (`Audience::Watching(level, brick)`).
+  Recordings of protocol 1 cannot be played.
+- `GameLogic::command_received` and `ServerWorld::reply`; `server::CommandLine` takes a command apart. Replies reach
+  only the sender, after the tick's game messages. Games use `PoseBook::handle_command` for `/level`.
+- The client keeps every level's data and forgets other levels' bricks when the watched level changes; the session
+  re-meshes from scratch for the new level (`WorldMesher::reset`) and draws only players in its level. In a window, `/` or
+  Enter opens a command line shown in the title; Enter sends it, Esc drops it; answers show in the title and print.
+- Cave and 2048 act in the level the player is in. 2048's moving blocks belong to a level and are saved by level name.
+  Neither game makes a second level yet; tests do.
 
 Phase 5 (what the earlier phases left):
 - Other players are drawn: `renderer::Avatar` (a head over a body in one of 16 colours, taken from the last 16 palette
@@ -331,6 +362,9 @@ continuous channels need quantization or sparse activity.
 - 2048 shows numbers by colour only (the renderer draws no text; the title names the block you look at), and only
   stone, ice and spring ice exist. Materials that pass momentum on, other tools (a line push, an undo), and players
   being in the way of blocks are not built. The play controls were never tried with a real mouse and keyboard.
+- Levels: a world cannot gain a level while a server runs, no game ships a second level yet, and `add_level` cannot check
+  that a level's generators were built from the world's seed (a mismatch shows up as clients going out of sync). Typing
+  commands in the window was written but never tried with a real keyboard.
 - The game is a fly camera: no gravity, collision or physics yet (the Rapier adapter comes with structures), other
   players are drawn as a plain pillar that does not face where they look, and there is no inventory.
 - Network scale: a spatial index over watched regions (an edit currently scans all clients); passwords or at least a
@@ -369,6 +403,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 3 The network: TCP, hosting, joining, dedicated servers. **Done.**
 - 4 Infinite 2048: numbered landscape, pushing, coasting, merging. **Done.**
 - 5 Other players drawn, server brick cache, compact generator tree. **Done.**
+- 6 Levels (protocol 2, file format, server, client, session) and a text command channel with `/level`. **Done.**
 - 1f Launcher and first game crate: `world_view`, the `base_blocks` plugin, Voxunami Cave, the launcher; the old viewer
   retired. **Done.**
 The physics spike is done (`docs/physics-spike.md`); building the physics adapter belongs with the structures work.

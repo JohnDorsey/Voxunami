@@ -20,12 +20,17 @@ pub enum LogicEvent {
         kind: NamespacedId,
         payload: Vec<u8>,
     },
+    Command {
+        client: ClientId,
+        text: String,
+    },
     Tick(Tick),
 }
 
 type TickAction = Box<dyn FnMut(Tick, &mut ServerWorld) + Send>;
 type MessageAction = Box<dyn FnMut(ClientId, &NamespacedId, &[u8], &mut ServerWorld) + Send>;
 type ClientAction = Box<dyn FnMut(ClientId, &mut ServerWorld) + Send>;
+type CommandAction = Box<dyn FnMut(ClientId, &str, &mut ServerWorld) + Send>;
 
 /// Game logic that records every call it receives and otherwise does only what the test gives it.
 #[derive(Default)]
@@ -34,6 +39,7 @@ pub struct ScriptedLogic {
     on_tick: Option<TickAction>,
     on_message: Option<MessageAction>,
     on_join: Option<ClientAction>,
+    on_command: Option<CommandAction>,
     saved_sections: Vec<Section>,
 }
 
@@ -67,6 +73,16 @@ impl ScriptedLogic {
         action: impl FnMut(ClientId, &mut ServerWorld) + Send + 'static,
     ) -> Self {
         self.on_join = Some(Box::new(action));
+        self
+    }
+
+    /// Called when a client sends a command. Without it, commands are answered with the default
+    /// text saying the game has none.
+    pub fn on_command(
+        mut self,
+        action: impl FnMut(ClientId, &str, &mut ServerWorld) + Send + 'static,
+    ) -> Self {
+        self.on_command = Some(Box::new(action));
         self
     }
 
@@ -115,6 +131,17 @@ impl GameLogic for ScriptedLogic {
         });
         if let Some(action) = &mut self.on_message {
             action(client, kind, payload, world);
+        }
+    }
+
+    fn command_received(&mut self, client: ClientId, command: &str, world: &mut ServerWorld) {
+        self.record(LogicEvent::Command {
+            client,
+            text: command.to_owned(),
+        });
+        match &mut self.on_command {
+            Some(action) => action(client, command, world),
+            None => world.reply(client, "this game has no commands"),
         }
     }
 

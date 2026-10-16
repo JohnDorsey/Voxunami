@@ -13,5 +13,5 @@ mod client_world;
 mod error;
 
 pub use client::{Client, Handshake, HandshakeProgress, TickUpdate, Welcomed};
-pub use client_world::{ClientEvent, ClientWorld, ServerInfo, ViewSummary};
+pub use client_world::{ClientEvent, ClientWorld, LevelSummary, ServerInfo, ViewSummary};
 pub use error::ClientError;

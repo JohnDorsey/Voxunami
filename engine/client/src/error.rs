@@ -1,5 +1,5 @@
 use protocol::{ProtocolError, Tick};
-use voxel_space::BrickCoordinate;
+use voxel_space::{BrickCoordinate, LevelIndex};
 use world_storage::{LoadError, TranslationError};
 
 /// Why a client could not follow its server's stream. After any of these the client's view cannot be
@@ -22,12 +22,16 @@ pub enum ClientError {
     UnexpectedMessage(&'static str),
     #[error("tick {found} arrived where tick {expected} was due")]
     TickOutOfOrder { expected: Tick, found: Tick },
-    #[error("the server sent contents for brick {0}, outside the region it was told to watch")]
-    BrickOutsideWatchedRegion(BrickCoordinate),
-    #[error("the server sent changes to brick {0}, which this client has no contents for")]
-    EditToUnknownBrick(BrickCoordinate),
-    #[error("brick {0} differs from the server's after applying its changes")]
-    OutOfSync(BrickCoordinate),
+    #[error(
+        "the server sent contents for brick {1} of {0}, outside the region it was told to watch"
+    )]
+    BrickOutsideWatchedRegion(LevelIndex, BrickCoordinate),
+    #[error("the server sent changes to brick {1} of {0}, which this client has no contents for")]
+    EditToUnknownBrick(LevelIndex, BrickCoordinate),
+    #[error("brick {1} of {0} differs from the server's after applying its changes")]
+    OutOfSync(LevelIndex, BrickCoordinate),
+    #[error("the server named {0}, which its world description does not have")]
+    UnknownLevel(LevelIndex),
 }
 
 impl From<LoadError> for ClientError {

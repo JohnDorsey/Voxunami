@@ -3,7 +3,7 @@
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
 use protocol::ClientId;
-use voxel_space::{BRICK_EDGE_LENGTH, BrickCoordinate, VoxelCoordinate, WorldPosition};
+use voxel_space::{BRICK_EDGE_LENGTH, BrickCoordinate, LevelIndex, VoxelCoordinate, WorldPosition};
 
 fn kind(text: &str) -> NamespacedId {
     text.parse().expect("constant identifier is valid")
@@ -19,12 +19,26 @@ pub fn players_kind() -> NamespacedId {
     kind("player_presence:players")
 }
 
+/// Server to a client: the player has moved to another level. The body is the level's identifier,
+/// not its number, so it means the same to a client numbering levels differently.
+pub fn level_kind() -> NamespacedId {
+    kind("player_presence:level")
+}
+
 /// Where a player is and which way they look.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlayerPose {
     pub position: WorldPosition,
     pub yaw: f32,
     pub pitch: f32,
+}
+
+/// What the server knows of a player: where they are, and which level they are in. The server
+/// decides the level; players only say where they are in it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayerState {
+    pub pose: PlayerPose,
+    pub level: LevelIndex,
 }
 
 impl PlayerPose {
@@ -97,24 +111,43 @@ pub fn decode_pose(payload: &[u8]) -> Result<PlayerPose, DecodeError> {
     Ok(pose)
 }
 
-/// Every player's pose, in client id order.
-pub fn encode_players(players: &[(ClientId, PlayerPose)]) -> Vec<u8> {
+/// The level a player is moving to, by identifier.
+pub fn encode_level_change(level: &NamespacedId) -> Vec<u8> {
+    let mut writer = ByteWriter::new();
+    writer.write_identifier(level);
+    writer.into_bytes()
+}
+
+pub fn decode_level_change(payload: &[u8]) -> Result<NamespacedId, DecodeError> {
+    let mut reader = ByteReader::new(payload);
+    let level = reader.read_identifier()?;
+    reader.finish()?;
+    Ok(level)
+}
+
+/// Every player's state, in client id order.
+pub fn encode_players(players: &[(ClientId, PlayerState)]) -> Vec<u8> {
     let mut writer = ByteWriter::new();
     writer.write_varint(players.len() as u64);
-    for (client, pose) in players {
+    for (client, state) in players {
         writer.write_u32(client.get());
-        write_pose(&mut writer, pose);
+        writer.write_varint(u64::from(state.level.get()));
+        write_pose(&mut writer, &state.pose);
     }
     writer.into_bytes()
 }
 
-pub fn decode_players(payload: &[u8]) -> Result<Vec<(ClientId, PlayerPose)>, DecodeError> {
+pub fn decode_players(payload: &[u8]) -> Result<Vec<(ClientId, PlayerState)>, DecodeError> {
     let mut reader = ByteReader::new(payload);
-    let count = reader.read_count(4 + 3 + 20)?;
+    let count = reader.read_count(4 + 1 + 3 + 20)?;
     let mut players = Vec::with_capacity(count);
     for _ in 0..count {
         let client = ClientId::new(reader.read_u32()?);
-        players.push((client, read_pose(&mut reader)?));
+        let level = u32::try_from(reader.read_varint()?)
+            .map(LevelIndex::new)
+            .map_err(|_| DecodeError::Invalid("a level number is too large"))?;
+        let pose = read_pose(&mut reader)?;
+        players.push((client, PlayerState { pose, level }));
     }
     reader.finish()?;
     Ok(players)
@@ -139,11 +172,39 @@ mod tests {
         let first = pose(3, [1.5, 31.99, 0.0], 0.25, -1.0);
         assert_eq!(decode_pose(&encode_pose(&first)), Ok(first));
         let players = vec![
-            (ClientId::new(1), first),
-            (ClientId::new(4), pose(-9, [0.0; 3], 3.0, 0.5)),
+            (
+                ClientId::new(1),
+                PlayerState {
+                    pose: first,
+                    level: LevelIndex::MAIN,
+                },
+            ),
+            (
+                ClientId::new(4),
+                PlayerState {
+                    pose: pose(-9, [0.0; 3], 3.0, 0.5),
+                    level: LevelIndex::new(300),
+                },
+            ),
         ];
         assert_eq!(decode_players(&encode_players(&players)), Ok(players));
         assert_eq!(decode_players(&encode_players(&[])), Ok(vec![]));
+    }
+
+    #[test]
+    fn a_level_change_names_the_level_by_identifier_and_nothing_else() {
+        let level: NamespacedId = "game:nether".parse().unwrap();
+        assert_eq!(
+            decode_level_change(&encode_level_change(&level)),
+            Ok(level.clone())
+        );
+        let good = encode_level_change(&level);
+        for length in 0..good.len() {
+            assert!(decode_level_change(&good[..length]).is_err(), "{length}");
+        }
+        let mut trailing = good;
+        trailing.push(0);
+        assert!(decode_level_change(&trailing).is_err());
     }
 
     #[test]
@@ -212,6 +273,7 @@ mod tests {
         fn decoding_arbitrary_bytes_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..80)) {
             let _ = decode_pose(&bytes);
             let _ = decode_players(&bytes);
+            let _ = decode_level_change(&bytes);
         }
     }
 }

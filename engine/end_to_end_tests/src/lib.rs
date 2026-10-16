@@ -1,8 +1,8 @@
 //! The pieces of an end-to-end scenario: a server running a small pretend game, players that join it
 //! (live, recorded, or as a replay of a recording), and the ways to compare what they saw.
 //!
-//! The pretend game: players place blocks by name (`test_game:place_block`), and the world also
-//! changes by itself (a block appears at a computed place every fifth tick). The game tells players
+//! The pretend game: players place blocks by name in a level (`test_game:place_block`), and the main
+//! level also changes by itself (a block appears at a computed place every fifth tick). The game tells players
 //! near a placement about it, and everyone the time every tenth tick.
 
 use std::collections::HashMap;
@@ -20,9 +20,9 @@ use server::{Audience, Server, ServerConfig};
 use transport::Connection;
 use transport::loopback::{LoopbackConnection, LoopbackConnector, loopback_listener};
 use voxel_grid::Brick;
-use voxel_space::{BrickBox, BrickCoordinate, VoxelCoordinate};
+use voxel_space::{BrickBox, BrickCoordinate, LevelIndex, VoxelCoordinate};
 use world_storage::test_support::{ALL_PLUGINS, Game, Plugin, id};
-use world_storage::{BrickSource, WorldData};
+use world_storage::{BrickSource, LevelData, WorldData};
 
 pub fn game_id() -> NamespacedId {
     id("test_game:game")
@@ -72,6 +72,7 @@ impl Fixture {
                     return;
                 }
                 let mut reader = ByteReader::new(payload);
+                let level = LevelIndex::new(reader.read_varint().unwrap() as u32);
                 let at = VoxelCoordinate::new(
                     reader.read_signed_varint().unwrap(),
                     reader.read_signed_varint().unwrap(),
@@ -83,17 +84,18 @@ impl Fixture {
                 };
                 let channel = world
                     .data()
+                    .main()
                     .overrides
                     .layout()
                     .channel_index(&id("core:block"))
                     .unwrap();
-                if world.set_voxel(channel, at, raw) == Ok(true) {
+                if world.set_voxel(level, channel, at, raw) == Ok(true) {
                     let mut announcement = ByteWriter::new();
                     announcement.write_signed_varint(at.x());
                     announcement.write_signed_varint(at.y());
                     announcement.write_signed_varint(at.z());
                     world.send(
-                        Audience::Watching(at.split().0),
+                        Audience::Watching(level, at.split().0),
                         block_placed_kind(),
                         announcement.into_bytes(),
                     );
@@ -107,6 +109,7 @@ impl Fixture {
                     if count % 5 == 0 {
                         let channel = world
                             .data()
+                            .main()
                             .overrides
                             .layout()
                             .channel_index(&id("core:block"))
@@ -118,7 +121,7 @@ impl Fixture {
                         );
                         let block = if count % 10 == 0 { marble } else { glass };
                         world
-                            .set_voxel(channel, at, block)
+                            .set_voxel(LevelIndex::MAIN, channel, at, block)
                             .expect("flat terrain is always available");
                     }
                     if count % 10 == 0 {
@@ -243,12 +246,23 @@ impl<C: Connection> Player<C> {
         Ok(applied)
     }
 
+    /// Watches a region of the main level.
     pub fn watch(&mut self, region: BrickBox) {
-        self.client.watch(region).unwrap();
+        self.watch_level(LevelIndex::MAIN, region);
     }
 
+    pub fn watch_level(&mut self, level: LevelIndex, region: BrickBox) {
+        self.client.watch(level, region).unwrap();
+    }
+
+    /// Asks the server to place a block in the main level.
     pub fn place(&mut self, at: [i64; 3], block: &str) {
+        self.place_in(LevelIndex::MAIN, at, block);
+    }
+
+    pub fn place_in(&mut self, level: LevelIndex, at: [i64; 3], block: &str) {
         let mut payload = ByteWriter::new();
+        payload.write_varint(u64::from(level.get()));
         for component in at {
             payload.write_signed_varint(component);
         }
@@ -278,8 +292,8 @@ pub fn replay_player(
 
 /// The brick as the world shows it: the edited brick if there is one, else the generated one. `None`
 /// where the world cannot say (no generator assigned, or its plugin missing).
-pub fn brick_contents(world: &WorldData, coordinate: BrickCoordinate) -> Option<Brick> {
-    match world.effective_brick(coordinate) {
+pub fn brick_contents(level: &LevelData, coordinate: BrickCoordinate) -> Option<Brick> {
+    match level.effective_brick(coordinate) {
         BrickSource::Edited(brick) => Some((*brick).clone()),
         BrickSource::Generated(brick) => Some(brick),
         BrickSource::Unassigned | BrickSource::MissingGenerator(_) => None,
@@ -287,23 +301,21 @@ pub fn brick_contents(world: &WorldData, coordinate: BrickCoordinate) -> Option<
 }
 
 /// Whether a player and the server agree about one brick, by what it means (numbering may differ).
-fn same_meaning<C: Connection>(
-    player: &Player<C>,
-    server_world: &WorldData,
+fn same_meaning(
+    player_level: &LevelData,
+    player_game: &Game,
+    server_level: &LevelData,
     server_game: &Game,
     coordinate: BrickCoordinate,
 ) -> bool {
-    let player_world = player.client.world().world();
     let (Some(theirs), Some(ours)) = (
-        brick_contents(player_world, coordinate),
-        brick_contents(server_world, coordinate),
+        brick_contents(player_level, coordinate),
+        brick_contents(server_level, coordinate),
     ) else {
         return true; // terrain that one side cannot generate has nothing to compare
     };
-    let theirs = player
-        .game
-        .brick_meaning(player_world.overrides.layout(), &theirs);
-    let ours = server_game.brick_meaning(server_world.overrides.layout(), &ours);
+    let theirs = player_game.brick_meaning(player_level.overrides.layout(), &theirs);
+    let ours = server_game.brick_meaning(server_level.overrides.layout(), &ours);
     ["core:block", "core:temperature"]
         .iter()
         .all(|channel| theirs[*channel] == ours[*channel])
@@ -319,27 +331,32 @@ pub fn quick_differences<C: Connection>(
     changed: &[BrickCoordinate],
 ) -> Vec<String> {
     let mut differences = Vec::new();
-    let Some(region) = player.client.world().watched_region() else {
+    let Some((level, region)) = player.client.world().watched() else {
         return differences;
     };
-    let player_world = player.client.world().world();
+    let (Some(player_level), Some(server_level)) = (
+        player.client.world().world().level(level),
+        server_world.level(level),
+    ) else {
+        return vec![format!("the server or the client has no {level}")];
+    };
     for coordinate in region.bricks() {
-        let theirs = player_world.overrides.brick(coordinate).is_some();
-        let ours = server_world.overrides.brick(coordinate).is_some();
+        let theirs = player_level.overrides.brick(coordinate).is_some();
+        let ours = server_level.overrides.brick(coordinate).is_some();
         if theirs != ours {
             differences.push(format!(
                 "brick {coordinate} is edited on the server: {ours}, on the client: {theirs}"
             ));
         }
-        let player_generator = player_world
+        let player_generator = player_level
             .terrain
             .assigned_generator(coordinate)
-            .and_then(|id| player_world.terrain.generators().entry(id))
+            .and_then(|id| player_level.terrain.generators().entry(id))
             .map(|entry| entry.identifier().clone());
-        let server_generator = server_world
+        let server_generator = server_level
             .terrain
             .assigned_generator(coordinate)
-            .and_then(|id| server_world.terrain.generators().entry(id))
+            .and_then(|id| server_level.terrain.generators().entry(id))
             .map(|entry| entry.identifier().clone());
         if player_generator != server_generator {
             differences.push(format!(
@@ -349,7 +366,13 @@ pub fn quick_differences<C: Connection>(
     }
     for &coordinate in changed {
         if region.contains(coordinate)
-            && !same_meaning(player, server_world, server_game, coordinate)
+            && !same_meaning(
+                player_level,
+                &player.game,
+                server_level,
+                server_game,
+                coordinate,
+            )
         {
             differences.push(format!("brick {coordinate} holds different things"));
         }
@@ -365,7 +388,7 @@ pub fn differences_from_server<C: Connection>(
     server_world: &WorldData,
     server_game: &Game,
 ) -> Vec<String> {
-    let Some(region) = player.client.world().watched_region() else {
+    let Some((_, region)) = player.client.world().watched() else {
         return Vec::new();
     };
     let everything: Vec<BrickCoordinate> = region.bricks().collect();

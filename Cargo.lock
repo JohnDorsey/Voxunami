@@ -1526,7 +1526,9 @@ dependencies = [
  "proptest",
  "protocol",
  "server",
+ "transport",
  "voxel_space",
+ "world_storage",
 ]
 
 [[package]]
@@ -3034,6 +3036,7 @@ dependencies = [
 name = "world_view"
 version = "0.0.0"
 dependencies = [
+ "content_registry",
  "proptest",
  "region_octree",
  "terrain",

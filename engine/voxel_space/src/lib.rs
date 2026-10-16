@@ -5,11 +5,13 @@
 //! [`LocalVoxelIndex`] (position inside one brick); [`VoxelCoordinate::split`] converts.
 //!
 //! Coordinates are `i64` per axis, restricted to a range that leaves headroom so ordinary
-//! arithmetic on valid coordinates cannot overflow. There is no practical world edge.
+//! arithmetic on valid coordinates cannot overflow. There is no practical world edge. A world has
+//! several levels, each with its own grid, named by a [`LevelIndex`].
 
 mod brick_box;
 mod coordinates;
 mod face_direction;
+mod level_index;
 mod level_of_detail;
 mod local_voxel_index;
 mod voxel_box;
@@ -21,6 +23,7 @@ pub mod test_support;
 pub use brick_box::BrickBox;
 pub use coordinates::{BrickCoordinate, CoordinateOutOfRange, VoxelCoordinate};
 pub use face_direction::FaceDirection;
+pub use level_index::LevelIndex;
 pub use level_of_detail::LevelOfDetail;
 pub use local_voxel_index::LocalVoxelIndex;
 pub use voxel_box::VoxelBox;

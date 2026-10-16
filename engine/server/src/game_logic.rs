@@ -26,6 +26,13 @@ pub trait GameLogic: Debug + Send {
         world: &mut ServerWorld,
     );
 
+    /// A client sent a line of text as a command (see [`CommandLine`](crate::CommandLine) for taking it
+    /// apart). Answer it with [`ServerWorld::reply`]. Commands arrive with the client's other
+    /// messages, in the order sent. The default says the game has no commands.
+    fn command_received(&mut self, client: ClientId, _command: &str, world: &mut ServerWorld) {
+        world.reply(client, "this game has no commands");
+    }
+
     /// Advances the game by one tick, after the tick's incoming messages.
     fn tick(&mut self, tick: Tick, world: &mut ServerWorld);
 

@@ -10,7 +10,7 @@ use end_to_end_tests::{
 use protocol::ServerMessage;
 use replay::{RecordingConnection, ReplayConnection, ReplayEnd, ReplayReader};
 use transport::loopback::LoopbackConnection;
-use voxel_space::{BrickBox, BrickCoordinate};
+use voxel_space::{BrickBox, BrickCoordinate, LevelIndex};
 use world_storage::test_support::{ALL_PLUGINS, Game, Plugin, brick, sample_world};
 
 type RecordedPlayer = Player<RecordingConnection<LoopbackConnection, SharedBuffer>>;
@@ -123,6 +123,7 @@ fn the_scenario_exercises_every_kind_of_message() {
             ServerMessage::GameMessage { .. } => game_messages += 1,
             ServerMessage::TickCompleted { .. } => ticks += 1,
             ServerMessage::Disconnected { .. } => panic!("nobody was disconnected"),
+            ServerMessage::CommandReply { .. } => panic!("nobody sent a command"),
         }
     }
     assert_eq!(welcomes, 1);
@@ -177,8 +178,8 @@ fn the_standard_session_makes_the_same_recording_on_every_platform() {
     );
 }
 
-const PINNED_RECORDING_LENGTH: usize = 84_704;
-const PINNED_RECORDING_CHECKSUM: u32 = 182_984_571;
+const PINNED_RECORDING_LENGTH: usize = 84_749;
+const PINNED_RECORDING_CHECKSUM: u32 = 1_435_984_007;
 
 #[test]
 fn identical_sessions_make_byte_identical_recordings() {
@@ -226,6 +227,7 @@ fn a_replay_with_fewer_plugins_still_rebuilds_what_the_edited_bricks_mean() {
             .client
             .world()
             .world()
+            .main()
             .effective_brick(BrickCoordinate::new(100, 0, 0)),
         world_storage::BrickSource::MissingGenerator(_)
     ));
@@ -293,4 +295,58 @@ fn a_damaged_recording_replays_up_to_the_damage_and_no_further() {
         replayed.client.connection().end(),
         ReplayEnd::Failed(_) | ReplayEnd::Interrupted
     ));
+}
+
+#[test]
+fn a_replay_follows_the_recorded_player_between_levels() {
+    let game = Game::new(&ALL_PLUGINS);
+    let mut world = game.new_world();
+    let second = world
+        .add_level(
+            world_storage::test_support::id("test_content:second"),
+            game.new_level("fancy_terrain:cliffs_v1"),
+        )
+        .unwrap();
+    let mut fixture = Fixture::with_world(game, world);
+    let (mut alice, recording) = fixture.join_recorded(&ALL_PLUGINS);
+    let region = BrickBox::around(brick(0, 0, 0), 1);
+    for step in 0..30 {
+        if step == 0 {
+            alice.watch(region);
+        }
+        if step == 10 {
+            alice.watch_level(second, region);
+        }
+        if step == 20 {
+            alice.watch(region);
+        }
+        if step % 4 == 0 {
+            alice.place_in(
+                if !(10..20).contains(&step) {
+                    LevelIndex::MAIN
+                } else {
+                    second
+                },
+                [step, 2, 3],
+                "fancy_blocks:marble",
+            );
+        }
+        fixture.step();
+        alice.catch_up().unwrap();
+    }
+    let mut replayed = replay_player(recording.contents(), &ALL_PLUGINS).unwrap();
+    play_to_the_end(&mut replayed);
+    assert_eq!(replayed.updates, alice.updates, "events differ");
+    assert_eq!(replayed.summaries, alice.summaries, "views differ");
+    // It really did visit the second level.
+    assert!(
+        alice
+            .summaries
+            .iter()
+            .any(|summary| summary.watched.is_some_and(|(level, _)| level == second))
+    );
+    assert_eq!(
+        differences_from_server(&replayed, fixture.server.world(), &fixture.game),
+        Vec::<String>::new()
+    );
 }

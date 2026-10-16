@@ -20,6 +20,7 @@ impl GameContent for ExampleContent {
     fn material_channel(&self) -> ChannelIndex {
         self.game
             .new_world()
+            .main()
             .overrides
             .layout()
             .channel_index(&id("core:block"))

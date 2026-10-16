@@ -1,14 +1,16 @@
-use binary_codec::{ByteReader, ByteWriter};
+use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
-use voxel_space::BrickBox;
+use voxel_space::{BrickBox, LevelIndex};
 
+use crate::MAXIMUM_COMMAND_LENGTH;
 use crate::error::ProtocolError;
-use crate::wire::{read_brick_box, write_brick_box};
+use crate::wire::{read_brick_box, read_level, write_brick_box, write_level};
 
 const KIND_HELLO: u8 = 1;
 const KIND_SET_INTEREST: u8 = 2;
 const KIND_GAME_MESSAGE: u8 = 3;
 const KIND_GOODBYE: u8 = 4;
+const KIND_COMMAND: u8 = 5;
 
 /// Sent from a client to the server.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,9 +22,9 @@ pub enum ClientMessage {
         /// of another game.
         game: NamespacedId,
     },
-    /// The region of bricks the client wants to watch. The server sends what is in it, and
-    /// keeps the client up to date on it, until the next `SetInterest`.
-    SetInterest { region: BrickBox },
+    /// The region of bricks of one level the client wants to watch. The server sends what is in it,
+    /// and keeps the client up to date on it, until the next `SetInterest`.
+    SetInterest { level: LevelIndex, region: BrickBox },
     /// A message for the game or one of its plugins.
     GameMessage {
         kind: NamespacedId,
@@ -30,6 +32,10 @@ pub enum ClientMessage {
     },
     /// The client is leaving. Closing the connection means the same.
     Goodbye,
+    /// A line of text the player typed as a command, such as `/level go nether`. At most
+    /// [`MAXIMUM_COMMAND_LENGTH`] bytes. The game's server logic decides what it means and answers
+    /// with a `CommandReply`.
+    Command { text: String },
 }
 
 impl ClientMessage {
@@ -44,8 +50,9 @@ impl ClientMessage {
                 writer.write_u32(*protocol_version);
                 writer.write_identifier(game);
             }
-            Self::SetInterest { region } => {
+            Self::SetInterest { level, region } => {
                 writer.write_u8(KIND_SET_INTEREST);
+                write_level(&mut writer, *level);
                 write_brick_box(&mut writer, *region);
             }
             Self::GameMessage { kind, payload } => {
@@ -54,6 +61,10 @@ impl ClientMessage {
                 writer.write_bytes(payload);
             }
             Self::Goodbye => writer.write_u8(KIND_GOODBYE),
+            Self::Command { text } => {
+                writer.write_u8(KIND_COMMAND);
+                writer.write_string(text);
+            }
         }
         writer.into_bytes()
     }
@@ -66,6 +77,7 @@ impl ClientMessage {
                 game: reader.read_identifier()?,
             },
             KIND_SET_INTEREST => Self::SetInterest {
+                level: read_level(&mut reader)?,
                 region: read_brick_box(&mut reader)?,
             },
             KIND_GAME_MESSAGE => Self::GameMessage {
@@ -73,6 +85,15 @@ impl ClientMessage {
                 payload: reader.read_bytes()?.to_vec(),
             },
             KIND_GOODBYE => Self::Goodbye,
+            KIND_COMMAND => {
+                let text = reader.read_string()?;
+                if text.len() > MAXIMUM_COMMAND_LENGTH {
+                    return Err(DecodeError::Invalid("a command is too long").into());
+                }
+                Self::Command {
+                    text: text.to_owned(),
+                }
+            }
             unknown => return Err(ProtocolError::UnknownMessageKind(unknown)),
         };
         reader.finish()?;
@@ -82,7 +103,6 @@ impl ClientMessage {
 
 #[cfg(test)]
 mod tests {
-    use binary_codec::DecodeError;
     use proptest::prelude::*;
     use voxel_space::BrickCoordinate;
 
@@ -99,6 +119,7 @@ mod tests {
                 game: id("voxunami_cave:game"),
             },
             ClientMessage::SetInterest {
+                level: LevelIndex::new(2),
                 region: BrickBox::around(BrickCoordinate::new(-3, 0, 12), 4),
             },
             ClientMessage::GameMessage {
@@ -110,6 +131,12 @@ mod tests {
                 payload: Vec::new(),
             },
             ClientMessage::Goodbye,
+            ClientMessage::Command {
+                text: "/level go nether".to_owned(),
+            },
+            ClientMessage::Command {
+                text: String::new(),
+            },
         ]
     }
 
@@ -134,6 +161,7 @@ mod tests {
         );
         assert_eq!(
             ClientMessage::SetInterest {
+                level: LevelIndex::new(3),
                 region: BrickBox::new(
                     BrickCoordinate::new(-1, 0, 2),
                     BrickCoordinate::new(3, 4, 5)
@@ -141,7 +169,14 @@ mod tests {
                 .unwrap()
             }
             .encode(),
-            [2, 1, 0, 4, 6, 8, 10]
+            [2, 3, 1, 0, 4, 6, 8, 10]
+        );
+        assert_eq!(
+            ClientMessage::Command {
+                text: "/x".to_owned()
+            }
+            .encode(),
+            [5, 2, b'/', b'x']
         );
         assert_eq!(
             ClientMessage::GameMessage {
@@ -167,7 +202,25 @@ mod tests {
             Err(ProtocolError::Malformed(DecodeError::TrailingBytes(1)))
         );
         // A box whose corners are the wrong way round.
-        assert!(ClientMessage::decode(&[2, 6, 0, 0, 0, 0, 0]).is_err());
+        assert!(ClientMessage::decode(&[2, 0, 6, 0, 0, 0, 0, 0]).is_err());
+        // A level number too large for a level, and a command that is too long or not text.
+        assert!(
+            ClientMessage::decode(&[2, 0xFF, 0xFF, 0xFF, 0xFF, 0x1F, 0, 0, 0, 0, 0, 0]).is_err()
+        );
+        let longest = ClientMessage::Command {
+            text: "a".repeat(MAXIMUM_COMMAND_LENGTH),
+        };
+        assert_eq!(ClientMessage::decode(&longest.encode()), Ok(longest));
+        let too_long = ClientMessage::Command {
+            text: "a".repeat(MAXIMUM_COMMAND_LENGTH + 1),
+        };
+        assert_eq!(
+            ClientMessage::decode(&too_long.encode()),
+            Err(ProtocolError::Malformed(DecodeError::Invalid(
+                "a command is too long"
+            )))
+        );
+        assert!(ClientMessage::decode(&[5, 1, 0xFF]).is_err());
         for message in samples() {
             let frame = message.encode();
             for length in 0..frame.len() {

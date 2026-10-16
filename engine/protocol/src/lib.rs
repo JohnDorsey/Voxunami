@@ -10,13 +10,18 @@
 //! 1. The client sends [`ClientMessage::Hello`]; the server answers with [`ServerMessage::Welcome`],
 //!    which describes the world: its seed, registry tables, channels and terrain generators. Clients
 //!    generate terrain themselves, so a world description holds no terrain.
-//! 2. The client says which bricks it wants to watch ([`ClientMessage::SetInterest`]). The server
+//! 2. The client says which bricks of which level it wants to watch ([`ClientMessage::SetInterest`]).
+//!    A world has several levels, each with its own grid, named in messages by a
+//!    [`LevelIndex`](voxel_space::LevelIndex). The server
 //!    answers with [`ServerMessage::InterestChanged`] (the region now watched, and which terrain
 //!    generator produced each part of it), then the contents of every edited brick in the newly
 //!    watched part. Unedited terrain is not sent: the client generates it.
 //! 3. Every server tick, the server sends the changes inside the watched region (edited bricks,
 //!    [`ServerMessage::VoxelEdits`]), the games' own messages ([`ServerMessage::GameMessage`]), and
 //!    finally [`ServerMessage::TickCompleted`]. The client's view is consistent at those boundaries.
+//!
+//! A client can also send text commands ([`ClientMessage::Command`]), which the game's server logic
+//! answers with [`ServerMessage::CommandReply`].
 //!
 //! Games and plugins define their own messages (entities, chat, inventory) and carry them as
 //! [`GameMessage`](ServerMessage::GameMessage)s: an identifier saying whose message it is, and
@@ -38,4 +43,7 @@ pub use types::{ClientId, Tick};
 
 /// Bumped whenever a message changes in a way older programs cannot read. A recording stores the
 /// version it was made with, so replaying needs a program that understands it.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// The most bytes of text a command may have; a longer one is a protocol violation.
+pub const MAXIMUM_COMMAND_LENGTH: usize = 1024;

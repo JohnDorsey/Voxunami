@@ -8,7 +8,7 @@ use game_shell::GameContent;
 use namespaced_id::NamespacedId;
 use terrain::{TerrainGenerator, WorldTerrain};
 use voxel_grid::{ChannelDefinition, ChannelIndex, Grid, GridLayout};
-use world_storage::{LoadContext, WorldData};
+use world_storage::{LevelData, LoadContext, WorldData};
 
 use crate::landscape::NumberedHills;
 use crate::material::Material;
@@ -23,6 +23,11 @@ fn identifier(text: &str) -> NamespacedId {
 
 pub fn game_id() -> NamespacedId {
     identifier("voxunami_2048:game")
+}
+
+/// The level players start in, and the only one a new world has.
+pub fn landscape_id() -> NamespacedId {
+    identifier("voxunami_2048:landscape")
 }
 
 pub fn block_registry_kind() -> NamespacedId {
@@ -169,7 +174,11 @@ impl GameContent for Content2048 {
             .expect("the generator was just registered");
         let terrain = WorldTerrain::new(generators, default, ASSIGNMENT_CUBE_LEVEL)
             .expect("the generator is available");
-        WorldData::new(seed, terrain, Grid::new(self.layout()))
+        WorldData::new(
+            seed,
+            landscape_id(),
+            LevelData::new(terrain, Grid::new(self.layout())),
+        )
     }
 
     fn load_context(&mut self, seed: u64) -> LoadContext<'_> {
@@ -182,6 +191,7 @@ impl GameContent for Content2048 {
             generators,
             fallback_default_generator: numbered_hills_generator_identifier(),
             assignment_cube_level: ASSIGNMENT_CUBE_LEVEL,
+            legacy_level: landscape_id(),
         }
     }
 
@@ -266,7 +276,7 @@ mod tests {
     fn a_new_world_changes_nothing_and_generates_numbered_hills() {
         let content = Content2048::new();
         let world = content.new_world(5);
-        assert_eq!(world.overrides.brick_count(), 0);
+        assert_eq!(world.main().overrides.brick_count(), 0);
         assert_eq!(world.world_seed, 5);
         assert_ne!(
             content.new_world(5).save(&content.registries()).unwrap(),

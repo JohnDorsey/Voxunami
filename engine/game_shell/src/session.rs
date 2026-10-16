@@ -6,11 +6,14 @@ use std::time::{Duration, Instant};
 
 use client::{Client, ClientError, ClientEvent, Handshake, HandshakeProgress};
 use namespaced_id::NamespacedId;
-use player_presence::{PlayerPose, decode_players, encode_pose, players_kind, pose_kind};
+use player_presence::{
+    PlayerPose, PlayerState, decode_level_change, decode_players, encode_pose, level_kind,
+    players_kind, pose_kind,
+};
 use protocol::ClientId;
 use renderer::Camera;
 use transport::Connection;
-use voxel_space::{BrickBox, BrickCoordinate};
+use voxel_space::{BrickBox, BrickCoordinate, LevelIndex};
 use world_view::{MeshUpdate, RayHit, ViewSettings, WorldMesher, cast_ray};
 
 use crate::definition::{GameContent, GameDefinition};
@@ -42,10 +45,16 @@ pub struct Session<C: Connection, G: GameDefinition> {
     pub camera: Camera,
     /// What the game keeps on the client between messages and clicks.
     pub state: G::ClientState,
-    players: BTreeMap<ClientId, PlayerPose>,
+    players: BTreeMap<ClientId, PlayerState>,
     mode: Mode,
     view_radius_bricks: i64,
-    watched_center: Option<BrickCoordinate>,
+    /// The level the player is in, and so the one they ask to watch.
+    level: LevelIndex,
+    /// Where and in which level the server was last asked to send what the player sees.
+    watched_center: Option<(LevelIndex, BrickCoordinate)>,
+    /// The level the meshes are of: the one the server last confirmed watching.
+    meshed_level: Option<LevelIndex>,
+    command_replies: Vec<String>,
     last_pose_sent: Option<PlayerPose>,
 }
 
@@ -96,9 +105,31 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             players: BTreeMap::new(),
             mode,
             view_radius_bricks,
+            level: LevelIndex::MAIN,
             watched_center: None,
+            meshed_level: None,
+            command_replies: Vec::new(),
             last_pose_sent: None,
         })
+    }
+
+    /// The level the player is in: while playing, the one they asked for, which the view follows
+    /// once the server has confirmed it; while replaying, the one the recording watches.
+    pub fn level(&self) -> LevelIndex {
+        match self.mode {
+            Mode::Playing => self.level,
+            Mode::Replaying => self
+                .client
+                .world()
+                .watched()
+                .map_or(LevelIndex::MAIN, |(level, _)| level),
+        }
+    }
+
+    /// Moves the player's view to another level of the world. The picture changes when the server
+    /// has sent the new level's bricks.
+    pub fn change_level(&mut self, level: LevelIndex) {
+        self.level = level;
     }
 
     pub fn mode(&self) -> Mode {
@@ -117,18 +148,20 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         &self.mesher
     }
 
-    /// Where every player is, as far as the server has said.
-    pub fn players(&self) -> &BTreeMap<ClientId, PlayerPose> {
+    /// Where every player is, and in which level, as far as the server has said.
+    pub fn players(&self) -> &BTreeMap<ClientId, PlayerState> {
         &self.players
     }
 
-    /// Every player but this one, as the server last said where they are.
+    /// Every player in the same level as this one but this one, as the server last said where they
+    /// are.
     pub fn other_players(&self) -> impl Iterator<Item = (ClientId, &PlayerPose)> {
         let own = self.client.world().server_info().client;
+        let level = self.level();
         self.players
             .iter()
-            .filter(move |(client, _)| **client != own)
-            .map(|(client, pose)| (*client, pose))
+            .filter(move |(client, state)| **client != own && state.level == level)
+            .map(|(client, state)| (*client, &state.pose))
     }
 
     /// Applies the next complete tick the server has sent, if any. Returns whether there was one.
@@ -138,7 +171,17 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         };
         for event in update.events {
             match event {
-                ClientEvent::BrickChanged { brick } => self.mesher.brick_changed(brick),
+                ClientEvent::BrickChanged { brick, .. } => self.mesher.brick_changed(brick),
+                ClientEvent::CommandReply { text } => self.command_replies.push(text),
+                ClientEvent::GameMessage { kind, payload } if kind == level_kind() => {
+                    // The server moved the player. A recording shows the level by what it watches.
+                    if self.mode == Mode::Playing
+                        && let Ok(id) = decode_level_change(&payload)
+                        && let Some(level) = self.client.world().world().level_index(&id)
+                    {
+                        self.change_level(level);
+                    }
+                }
                 ClientEvent::GameMessage { kind, payload } if kind == players_kind() => {
                     // A message this client cannot read is dropped; the next snapshot replaces it.
                     if let Ok(players) = decode_players(&payload) {
@@ -157,6 +200,20 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         Ok(true)
     }
 
+    /// Sends the server a line of text as a command; its answer arrives with a later tick (see
+    /// [`Session::take_command_replies`]). A replay asks for nothing, so it sends nothing.
+    pub fn send_command(&mut self, text: &str) {
+        if self.mode != Mode::Playing {
+            return;
+        }
+        let _ = self.client.send_command(text);
+    }
+
+    /// The answers to commands that have arrived since this was last called, oldest first.
+    pub fn take_command_replies(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.command_replies)
+    }
+
     /// Applies every tick that has arrived. Returns how many.
     pub fn advance(&mut self) -> Result<usize, ClientError> {
         let mut ticks = 0;
@@ -168,10 +225,10 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
 
     fn follow_recorded_player(&mut self) {
         let own = self.client.world().server_info().client;
-        if let Some(pose) = self.players.get(&own) {
-            self.camera.position = pose.position;
-            self.camera.yaw = pose.yaw;
-            self.camera.pitch = pose.pitch;
+        if let Some(state) = self.players.get(&own) {
+            self.camera.position = state.pose.position;
+            self.camera.yaw = state.pose.yaw;
+            self.camera.pitch = state.pose.pitch;
         }
     }
 
@@ -179,17 +236,26 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     /// the renderer must change.
     pub fn update_view(&mut self) -> Vec<MeshUpdate> {
         let center = self.camera.position.brick();
-        if self.mode == Mode::Playing && self.watched_center != Some(center) {
+        if self.mode == Mode::Playing && self.watched_center != Some((self.level, center)) {
             let region = BrickBox::around(
                 center,
                 (self.view_radius_bricks + WATCH_MARGIN_BRICKS) as u32,
             );
             // A closed connection shows up in the next `advance`, which reports it.
-            let _ = self.client.watch(region);
-            self.watched_center = Some(center);
+            let _ = self.client.watch(self.level, region);
+            self.watched_center = Some((self.level, center));
         }
-        let world = self.client.world().world();
-        self.mesher.update(world, center)
+        let Some((level, data)) = self.client.world().watched_level() else {
+            return Vec::new();
+        };
+        let mut updates = Vec::new();
+        if self.meshed_level != Some(level) {
+            // Another level's bricks have nothing to do with the ones the meshes are of.
+            updates.extend(self.mesher.reset());
+            self.meshed_level = Some(level);
+        }
+        updates.extend(self.mesher.update(data, center));
+        updates
     }
 
     /// Runs until the world around the camera is fully loaded and meshed, returning every mesh
@@ -208,8 +274,14 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                 self.advance()?;
             }
             let updates = self.update_view();
-            let loaded =
-                self.mode == Mode::Replaying || self.client.world().watched_region().is_some();
+            let loaded = match self.mode {
+                Mode::Replaying => true,
+                Mode::Playing => self
+                    .client
+                    .world()
+                    .watched()
+                    .is_some_and(|(level, _)| level == self.level),
+            };
             if updates.is_empty() && loaded && self.mesher.pending_jobs() == 0 {
                 quiet_rounds += 1;
             } else {
