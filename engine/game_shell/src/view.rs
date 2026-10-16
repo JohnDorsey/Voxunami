@@ -1,10 +1,12 @@
 //! Glue between a session and the renderer.
 
-use renderer::{Atmosphere, Camera, VoxelRenderer};
+use renderer::{Atmosphere, Avatar, Camera, VoxelRenderer};
+use transport::Connection;
 use voxel_space::{BrickCoordinate, WorldPosition};
 use world_view::MeshUpdate;
 
-use crate::definition::GameContent;
+use crate::definition::{GameContent, GameDefinition};
+use crate::session::Session;
 
 /// Palette and fog suited to the view distance: the world fades into the sky just before it ends.
 pub fn configure_renderer(
@@ -28,6 +30,21 @@ pub fn apply_updates(renderer: &mut VoxelRenderer, updates: Vec<MeshUpdate>) {
             MeshUpdate::Remove(coordinate) => renderer.remove_brick(coordinate),
         }
     }
+}
+
+/// Draws the other players of a session: each as an avatar where their eyes are, in a colour of their own.
+pub fn show_other_players<C: Connection, G: GameDefinition>(
+    renderer: &mut VoxelRenderer,
+    session: &Session<C, G>,
+) {
+    let avatars: Vec<Avatar> = session
+        .other_players()
+        .map(|(client, pose)| Avatar {
+            position: pose.position,
+            color: client.get(),
+        })
+        .collect();
+    renderer.set_avatars(&avatars);
 }
 
 /// A camera at a position given in voxels, with angles in degrees.

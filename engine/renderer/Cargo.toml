@@ -11,13 +11,13 @@ bytemuck = { version = "1.25.2", features = ["derive"] }
 glam = "0.34.1"
 pollster = "1.0.1"
 thiserror.workspace = true
+voxel_grid.workspace = true
 voxel_meshing.workspace = true
 voxel_space.workspace = true
 wgpu = "30.0.1"
 
 [dev-dependencies]
 png = "0.18.1"
-voxel_grid.workspace = true
 
 [lints]
 workspace = true

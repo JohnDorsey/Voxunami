@@ -261,6 +261,58 @@ fn collect_leaves<'tree, V>(
     }
 }
 
+/// The levels given do not describe a tiling of the whole space; see [`tile_from_levels`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum TilingError {
+    #[error("the levels end before the whole space is covered")]
+    Incomplete,
+    #[error("a cube is larger than the space left for it")]
+    TooLarge,
+    #[error("there are more levels than the cubes that cover the space")]
+    Excess,
+}
+
+/// The leaf cubes of a tree, given only their levels in Morton order, as [`RegionOctree::leaves`]
+/// lists them. Leaves tile the whole space, so each one's place follows from the levels before it.
+pub fn tile_from_levels(levels: &[u8]) -> Result<Vec<BrickCube>, TilingError> {
+    fn tile(
+        levels: &mut std::slice::Iter<'_, u8>,
+        level: u8,
+        origin_offset: [u64; 3],
+        cubes: &mut Vec<BrickCube>,
+    ) -> Result<(), TilingError> {
+        let next = *levels.as_slice().first().ok_or(TilingError::Incomplete)?;
+        if next > level {
+            return Err(TilingError::TooLarge);
+        }
+        if next == level {
+            levels.next();
+            let origin = BrickCoordinate::new(
+                from_unsigned(origin_offset[0]),
+                from_unsigned(origin_offset[1]),
+                from_unsigned(origin_offset[2]),
+            );
+            cubes.push(BrickCube { origin, level });
+            return Ok(());
+        }
+        let half = 1u64 << (level - 1);
+        for index in 0..8 {
+            let child_origin = std::array::from_fn(|axis| {
+                origin_offset[axis] + if index >> axis & 1 == 1 { half } else { 0 }
+            });
+            tile(levels, level - 1, child_origin, cubes)?;
+        }
+        Ok(())
+    }
+    let mut remaining = levels.iter();
+    let mut cubes = Vec::new();
+    tile(&mut remaining, ROOT_LEVEL, [0; 3], &mut cubes)?;
+    if remaining.next().is_some() {
+        return Err(TilingError::Excess);
+    }
+    Ok(cubes)
+}
+
 const _: () = assert!(BRICK_COORDINATE_MAXIMUM - BRICK_COORDINATE_MINIMUM + 1 == 1 << ROOT_LEVEL);
 
 #[cfg(test)]
@@ -505,6 +557,66 @@ mod tests {
         assert!(!around_negative.contains(brick(0, -9, 0)));
         assert!(!around_negative.contains(brick(-1, -17, 0)));
         assert!(!around_negative.contains(brick(-9, -9, 0)));
+    }
+
+    #[test]
+    fn levels_alone_give_back_the_leaf_cubes() {
+        let mut tree = RegionOctree::new('a');
+        tree.set_cube(cube(0, 0, 0, 4), 'b');
+        tree.set_cube(cube(-16, 0, 8, 2), 'c');
+        tree.set_cube(cube(-3, 7, 1, 0), 'd');
+        let leaves = tree.leaves();
+        let levels: Vec<u8> = leaves.iter().map(|(leaf, _)| leaf.level()).collect();
+        let cubes: Vec<BrickCube> = leaves.iter().map(|(leaf, _)| *leaf).collect();
+        assert_eq!(tile_from_levels(&levels), Ok(cubes));
+        assert_eq!(
+            tile_from_levels(&[ROOT_LEVEL]),
+            Ok(vec![BrickCube::containing(brick(0, 0, 0), ROOT_LEVEL)])
+        );
+    }
+
+    #[test]
+    fn levels_that_do_not_tile_the_space_are_refused() {
+        let mut tree = RegionOctree::new('a');
+        tree.set_cube(cube(0, 0, 0, 4), 'b');
+        let levels: Vec<u8> = tree.leaves().iter().map(|(leaf, _)| leaf.level()).collect();
+        assert_eq!(tile_from_levels(&[]), Err(TilingError::Incomplete));
+        assert_eq!(
+            tile_from_levels(&levels[..levels.len() - 1]),
+            Err(TilingError::Incomplete)
+        );
+        let mut too_many = levels.clone();
+        too_many.push(0);
+        assert_eq!(tile_from_levels(&too_many), Err(TilingError::Excess));
+        assert_eq!(
+            tile_from_levels(&[ROOT_LEVEL + 1]),
+            Err(TilingError::TooLarge)
+        );
+        // A cube bigger than the space left in its parent.
+        let mut too_big = levels;
+        too_big[1] = 20;
+        assert_eq!(tile_from_levels(&too_big), Err(TilingError::TooLarge));
+        // Only the root cube can be a lone level 56; the next level cannot appear after it.
+        assert_eq!(
+            tile_from_levels(&[ROOT_LEVEL, ROOT_LEVEL]),
+            Err(TilingError::Excess)
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn the_levels_of_any_tree_give_back_its_cubes(
+            assignments in proptest::collection::vec((-20i64..20, -20i64..20, -20i64..20, 0u8..5, 0u8..3), 0..12),
+        ) {
+            let mut tree = RegionOctree::new(0u8);
+            for (x, y, z, level, value) in assignments {
+                tree.set_cube(BrickCube::containing(brick(x, y, z), level), value);
+            }
+            let leaves = tree.leaves();
+            let levels: Vec<u8> = leaves.iter().map(|(leaf, _)| leaf.level()).collect();
+            let cubes: Vec<BrickCube> = leaves.iter().map(|(leaf, _)| *leaf).collect();
+            prop_assert_eq!(tile_from_levels(&levels), Ok(cubes));
+        }
     }
 
     #[test]

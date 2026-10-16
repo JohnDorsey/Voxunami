@@ -160,12 +160,21 @@ fn players_see_where_each_other_are_until_they_leave() {
         ));
     }
 
+    // Each draws the other, and never itself.
+    let others: Vec<_> = first.other_players().collect();
+    assert_eq!(others.len(), 1);
+    assert_eq!(others[0].1.position, second.camera.position);
+    let others: Vec<_> = second.other_players().collect();
+    assert_eq!(others.len(), 1);
+    assert_eq!(others[0].1.position, first.camera.position);
+
     second.say_goodbye();
     drop(second);
     rig.step();
     rig.step();
     first.advance().unwrap();
     assert_eq!(first.players().len(), 1);
+    assert_eq!(first.other_players().count(), 0);
 }
 
 #[test]

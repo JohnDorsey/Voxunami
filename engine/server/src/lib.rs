@@ -11,6 +11,7 @@
 
 mod config;
 mod game_logic;
+mod generated_cache;
 mod server;
 mod server_world;
 #[cfg(feature = "test-support")]

@@ -25,6 +25,7 @@ thiserror.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 server = { workspace = true, features = ["test-support"] }
+voxel_grid = { workspace = true, features = ["test-support"] }
 world_storage = { workspace = true, features = ["test-support"] }
 
 [lints]

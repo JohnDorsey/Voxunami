@@ -13,7 +13,7 @@ use crate::files::{open_recording, open_world, record_connection, recorded_game,
 use crate::host::{build_server, connect_to};
 use crate::options::{PlayOptions, ReplayOptions};
 use crate::session::{Mode, Session};
-use crate::view::{apply_updates, camera_at, configure_renderer};
+use crate::view::{apply_updates, camera_at, configure_renderer, show_other_players};
 
 pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
     let view = &options.view;
@@ -149,6 +149,7 @@ fn render_outputs<C: Connection, G: GameDefinition>(
     view: &crate::options::ViewOptions,
     benchmark: bool,
 ) -> Result<(), String> {
+    show_other_players(renderer, session);
     let mut camera = session.camera;
     if let Some(path) = &view.screenshot {
         renderer.set_crosshair(session.mode() == Mode::Playing);

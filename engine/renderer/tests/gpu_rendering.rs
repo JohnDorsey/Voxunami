@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use glam::Vec3;
-use renderer::{Atmosphere, Camera, GraphicsContext, RenderStatistics, VoxelRenderer};
+use renderer::{Atmosphere, Avatar, Camera, GraphicsContext, RenderStatistics, VoxelRenderer};
 use voxel_grid::ChannelStorage;
 use voxel_meshing::{BrickNeighbourhood, mesh_brick};
 use voxel_space::{BRICK_VOXEL_COUNT, BrickCoordinate, LocalVoxelIndex, WorldPosition};
@@ -248,6 +248,110 @@ fn a_cube_is_drawn_in_its_material_colour_with_sky_around_it() {
                 pixel(&image, x, y)
             );
         }
+    }
+}
+
+fn is_blue(pixel: [u8; 4]) -> bool {
+    pixel[2] > pixel[0].saturating_add(60) && pixel[2] > pixel[1].saturating_add(30)
+}
+
+fn avatar_at(brick: BrickCoordinate, offset: [f32; 3], color: u32) -> Avatar {
+    Avatar {
+        position: WorldPosition::new(brick, offset),
+        color,
+    }
+}
+
+#[test]
+fn an_avatar_is_drawn_where_the_player_is_in_its_own_colour_and_only_while_it_is_set() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+
+        renderer.set_avatars(&[avatar_at(ORIGIN_BRICK, [16.5, 16.5, 16.5], 0)]);
+        let red = render(&mut renderer, &camera);
+        save_image("avatar", &name, &red);
+        assert!(is_red(pixel(&red, SIZE / 2, SIZE / 2)), "{name}");
+        assert!(is_sky(pixel(&red, 3, 3)), "{name}: sky around it");
+        let (_, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+        assert_eq!(statistics.avatars_drawn, 1);
+
+        // The eyes are in the head: the body is the voxel below them.
+        let below = camera_at(ORIGIN_BRICK, [16.5, 15.5, 22.0]);
+        assert!(is_red(pixel(
+            &render(&mut renderer, &below),
+            SIZE / 2,
+            SIZE / 2
+        )));
+        let above = camera_at(ORIGIN_BRICK, [16.5, 17.5, 22.0]);
+        assert!(is_sky(pixel(
+            &render(&mut renderer, &above),
+            SIZE / 2,
+            SIZE / 2
+        )));
+
+        // The colour is the player's: 1 is blue, and numbers wrap around.
+        renderer.set_avatars(&[avatar_at(ORIGIN_BRICK, [16.5, 16.5, 16.5], 1)]);
+        assert!(is_blue(pixel(
+            &render(&mut renderer, &camera),
+            SIZE / 2,
+            SIZE / 2
+        )));
+        renderer.set_avatars(&[avatar_at(ORIGIN_BRICK, [16.5, 16.5, 16.5], 16)]);
+        assert_eq!(render(&mut renderer, &camera), red, "colour 16 is colour 0");
+
+        // Behind the camera, or gone, it is not there.
+        renderer.set_avatars(&[avatar_at(ORIGIN_BRICK, [16.5, 16.5, 28.5], 0)]);
+        let (behind, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+        assert_eq!(statistics.avatars_drawn, 0);
+        assert!(is_sky(pixel(&behind, SIZE / 2, SIZE / 2)));
+        renderer.set_avatars(&[]);
+        assert!(is_sky(pixel(
+            &render(&mut renderer, &camera),
+            SIZE / 2,
+            SIZE / 2
+        )));
+    }
+}
+
+#[test]
+fn an_avatar_is_placed_exactly_across_bricks_and_far_from_the_origin() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        // The avatar is 6 voxels ahead, in the brick before the camera's.
+        let camera = camera_at(BrickCoordinate::new(1000, -3, 7), [16.5, 16.5, 5.0]);
+        renderer.set_avatars(&[avatar_at(
+            BrickCoordinate::new(1000, -3, 6),
+            [16.5, 16.5, 31.0],
+            1,
+        )]);
+        let image = render(&mut renderer, &camera);
+        assert!(is_blue(pixel(&image, SIZE / 2, SIZE / 2)), "{name}");
+        assert!(is_sky(pixel(&image, 3, 3)), "{name}");
+    }
+}
+
+#[test]
+fn avatars_hide_behind_blocks_and_blocks_hide_behind_avatars() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        place_voxels(&mut renderer, ORIGIN_BRICK, &CUBE);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+        // Behind the cube, as seen from the camera.
+        renderer.set_avatars(&[avatar_at(ORIGIN_BRICK, [16.5, 16.5, 10.5], 1)]);
+        assert!(
+            is_red(pixel(&render(&mut renderer, &camera), SIZE / 2, SIZE / 2)),
+            "{name}"
+        );
+        // In front of it.
+        renderer.set_avatars(&[avatar_at(ORIGIN_BRICK, [16.5, 16.5, 19.5], 1)]);
+        assert!(
+            is_blue(pixel(&render(&mut renderer, &camera), SIZE / 2, SIZE / 2)),
+            "{name}"
+        );
     }
 }
 

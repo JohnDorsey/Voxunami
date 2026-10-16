@@ -4,6 +4,8 @@
 //! vertex shader, bricks outside the view are culled before any GPU work, and distance fog hides
 //! the edge of the loaded world so a short view distance looks intentional.
 //!
+//! Besides bricks it draws avatars: a small figure for each other player, in one of a fixed set of colours.
+//!
 //! Placement is camera-relative. Each brick's offset from the camera is computed from exact
 //! integer brick coordinates, so images are identical wherever in the world the scene is.
 
@@ -16,4 +18,4 @@ pub use camera::{Camera, Frustum};
 pub use graphics_context::{
     AdapterPreference, GraphicsContext, GraphicsError, describe, new_instance,
 };
-pub use voxel_renderer::{Atmosphere, RenderStatistics, VoxelRenderer};
+pub use voxel_renderer::{AVATAR_COLOR_COUNT, Atmosphere, Avatar, RenderStatistics, VoxelRenderer};

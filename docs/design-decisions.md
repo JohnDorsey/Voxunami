@@ -57,6 +57,18 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   source value for that block is part of building the lighting system.
 - Light that reaches 255 blocks crosses many bricks, so updates need the phased-tick rule's brick-boundary handling.
 
+## Decided (rules for lattice simulation and physics)
+- Tick phases (confirmed by the owner): each tick reads a frozen snapshot of the previous tick and produces the next one.
+  A brick update never writes to a neighbour; cross-brick effects are queued and applied together in a fixed order.
+  Lattice rules (heat, fluid flow) lose nothing; chain reactions within one tick (instant wire propagation, cascading
+  updates) must be rewritten, for example by solving a connected wire network as one graph. Safety net: a
+  partition-invariance test that shifts a scene by 1-31 voxels and requires identical results. Entities (such as 2048's
+  moving blocks) are not lattice cells and are processed one at a time in a fixed order; see "Decided (2048)".
+- Physics (confirmed by the owner): Rapier (rapier3d 0.36.1) behind a Voxunami adapter crate, with
+  `enhanced-determinism`, single-threaded stepping on the server, a local floating-origin frame, large merged voxel
+  colliders for terrain, and gravity, buoyancy and drag applied as per-body forces. Evidence and caveats are in
+  `docs/physics-spike.md`. Not built yet.
+
 ## Decided (2048)
 - Voxunami 2048 is infinite: a landscape of rolling hills in which every solid voxel is a numbered block (a power of
   two, half of them 2s, a quarter 4s, and so on up to 64s; material in cubes of 8 voxels: 70% stone, 20% ice, 10% spring
@@ -72,6 +84,10 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   push a row; only the momentum materials will transfer motion); a push has a range (48 steps for the ices, since an
   infinite world may have nothing in the way) and every tick of a motion, bounce included, uses up a step; pushing a
   block that is already moving gives it the new direction and the full range; blocks of 2^20 do not merge.
+- Planned (owner): blocks will push chains of blocks, eventually. Merging will be chosen by the tool the player uses, not
+  fixed by the blocks: the 2048 tool merges equal numbers into their double, an add tool and a subtract tool combine
+  numbers by those operations, and there may be others. So the merge rule will move out of `NumberedBlock` into tools
+  that the push message names.
 - Moving blocks are entities, not lattice cells, so they do not need the phased-tick rule: they act one at a time in the
   order they started moving, each seeing what the earlier ones did that tick (`voxunami_2048::motion`). That order
   decides what happens when two blocks meet in the same tick, and is the same on every machine. Which blocks are moving
@@ -88,16 +104,7 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - Generator version assignment: the first time a region is generated it is assigned the world's current default
   version, in whole aligned cubes of a per-game size (larger cubes mean fewer boundary nodes). Released versions are
   frozen; a missing generator plugin loses only unmodified terrain.
-- Tick phases: each tick reads a frozen snapshot of the previous tick and produces the next one. A brick update never
-  writes to a neighbour; cross-brick effects are queued and applied together in a fixed order. Lattice rules (heat,
-  fluid flow) lose nothing; chain reactions within one tick (instant wire propagation, cascading updates) must be
-  rewritten, for example by solving a connected wire network as one graph. Safety net: a partition-invariance test
-  that shifts a scene by 1-31 voxels and requires identical results. Awaiting the owner's decision. (2048's moving
-  blocks are entities and do not need it; see "Decided (2048)".)
 - Entity gravity direction is server-authoritative replicated state, computed from coarse LOD mass, smoothed per entity.
-- Physics: Rapier (rapier3d 0.36.1) behind a Voxunami adapter crate, with `enhanced-determinism`, single-threaded stepping
-  on the server, a local floating-origin frame, large merged voxel colliders for terrain, and gravity, buoyancy and
-  drag applied as per-body forces. Evidence and caveats are in `docs/physics-spike.md`. Awaiting the owner's confirmation.
 - Network stream (`docs/protocol-and-replay.md`): clients tell the server a box of bricks to watch; the server sends
   which generator made each part and every *edited* brick in it, then each tick the changes inside it. Terrain nobody
   has edited is never sent. A brick's first edit is sent as the whole brick, later edits as change lists with a digest of
@@ -151,6 +158,17 @@ Phase 1d (saving):
 - `terrain`: `WorldTerrain` exposes its configuration and can restore saved assignments.
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
+
+Phase 5 (what the earlier phases left):
+- Other players are drawn: `renderer::Avatar` (a head over a body in one of 16 colours, taken from the last 16 palette
+  values, so games have 240), `Session::other_players` (everyone but this player) and `view::show_other_players`.
+  Avatars go through the same pipeline as bricks and are placed exactly like them, so they are as precise far from the
+  origin. They do not turn to face anywhere, and they are one voxel wide.
+- The server keeps the last 128 generated bricks (`generated_cache`), so game logic reading voxels of terrain nobody has
+  edited no longer regenerates a brick per read. A generated brick never changes once its region has a generator.
+- `engine:generators` is version 2: one number per leaf, with positions implied by the tiling
+  (`region_octree::tile_from_levels`). A world with no edits went from about 40 KB to 3.3 KB at view radius 8. Version 1
+  files still load and are saved as version 2.
 
 Phase 4 (infinite 2048, replacing the 4 x 4 x 4 board of Phase 2):
 - `games/voxunami_2048` is now: `material` (stone, ice, spring ice and what each does when pushed), `numbered_block` (a
@@ -264,15 +282,12 @@ continuous channels need quantization or sparse activity.
   stone, ice and spring ice exist. Materials that pass momentum on, other tools (a line push, an undo), and players
   being in the way of blocks are not built. The play controls were never tried with a real mouse and keyboard.
 - The game is a fly camera: no gravity, collision or physics yet (the Rapier adapter comes with structures), other
-  players are told about but not drawn, and there is no inventory. A world file with no edits is 40 KB at view radius 8,
-  almost all of it the generator-assignment tree (see the compact wire format item below).
-- Phased-tick rule: accept or modify (see Proposed).
+  players are drawn as a plain pillar that does not face where they look, and there is no inventory.
 - Network scale: a spatial index over watched regions (an edit currently scans all clients); passwords or at least a
   shared secret, and encryption, before play over the internet; resending single bricks to repair a client that fell out of sync; replay keyframes for seeking; interest with a
   level of detail. See "Known limits" in `docs/protocol-and-replay.md`.
-- Generated terrain on the server is regenerated on every read of an unedited brick; a cache is needed before real games.
-  Moving blocks in 2048 read a voxel or two per step, so a block coasting through untouched bricks regenerates each
-  untouched brick it enters about twice: once to look at it and once to make it editable.
+- The server's cache of generated bricks is 128 bricks, chosen without measuring; it matters when logic reads many
+  different bricks every tick (large moving structures, simulation across a wide area).
 - Which replicated entity state (players, structures) is common to all games; it travels as game messages until a second
   game shows what to promote.
 - Active-voxel budget per tick for Game 4; set empirically once simulation exists.
@@ -281,7 +296,6 @@ continuous channels need quantization or sparse activity.
 - How "sky light" is computed from open space.
 - Terrain performance: skip sampling known-uniform columns, reuse planar noise across a column, and design caves so
   bounds can classify more bricks.
-- Compact wire format for the assignment tree (the in-memory tree lists 7 siblings per level around an isolated cube).
 - Determinism is verified only for x86-64 and rustc 1.99.0 (Windows and Linux); other architectures and compiler
   versions are untested.
 
@@ -304,6 +318,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 2 Second game (Voxunami 2048) and the shared shell. **Done.**
 - 3 The network: TCP, hosting, joining, dedicated servers. **Done.**
 - 4 Infinite 2048: numbered landscape, pushing, coasting, merging. **Done.**
+- 5 Other players drawn, server brick cache, compact generator tree. **Done.**
 - 1f Launcher and first game crate: `world_view`, the `base_blocks` plugin, Voxunami Cave, the launcher; the old viewer
   retired. **Done.**
 The physics spike is done (`docs/physics-spike.md`); building the physics adapter belongs with the structures work.

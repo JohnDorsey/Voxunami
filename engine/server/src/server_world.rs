@@ -7,6 +7,8 @@ use voxel_grid::{Brick, ChannelIndex};
 use voxel_space::{BrickCoordinate, VoxelCoordinate};
 use world_storage::{BrickSource, WorldData};
 
+use crate::generated_cache::GeneratedBrickCache;
+
 /// Who receives a game message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Audience {
@@ -49,6 +51,7 @@ pub struct ServerWorld {
     data: WorldData,
     tick: Tick,
     clients: BTreeSet<ClientId>,
+    generated: GeneratedBrickCache,
     pub(crate) edits: BTreeMap<BrickCoordinate, BrickEdits>,
     pub(crate) outgoing: Vec<OutgoingGameMessage>,
 }
@@ -59,6 +62,7 @@ impl ServerWorld {
             data,
             tick: Tick::ZERO,
             clients: BTreeSet::new(),
+            generated: GeneratedBrickCache::default(),
             edits: BTreeMap::new(),
             outgoing: Vec::new(),
         }
@@ -122,7 +126,7 @@ impl ServerWorld {
         let (coordinate, local) = at.split();
         let created = self.data.overrides.brick(coordinate).is_none();
         if created {
-            let mut generated = self.generated_brick(coordinate)?;
+            let mut generated = Brick::clone(&*self.generated_brick(coordinate)?);
             if !generated.set(channel, local, value) {
                 return Ok(false);
             }
@@ -161,17 +165,108 @@ impl ServerWorld {
     }
 
     /// The generated terrain of a brick, assigning a generator to its region first if it has none.
+    /// Recently generated bricks are remembered.
     fn generated_brick(
         &mut self,
         coordinate: BrickCoordinate,
-    ) -> Result<Brick, TerrainUnavailable> {
+    ) -> Result<Arc<Brick>, TerrainUnavailable> {
+        if let Some(remembered) = self.generated.get(coordinate) {
+            return Ok(Arc::clone(remembered));
+        }
         self.data.terrain.assign_unassigned(coordinate);
         match self.data.effective_brick(coordinate) {
-            BrickSource::Generated(brick) => Ok(brick),
+            BrickSource::Generated(brick) => {
+                let brick = Arc::new(brick);
+                self.generated.insert(coordinate, Arc::clone(&brick));
+                Ok(brick)
+            }
             BrickSource::MissingGenerator(generator) => Err(TerrainUnavailable { generator }),
             BrickSource::Edited(_) | BrickSource::Unassigned => {
                 unreachable!("the brick has no edits and was just assigned a generator")
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use terrain::{TerrainGenerator, WorldTerrain};
+    use voxel_grid::{Grid, GridLayout};
+    use world_storage::test_support::{Game, Plugin, id};
+
+    use super::*;
+
+    /// A generator that counts how many bricks it is asked for.
+    #[derive(Debug)]
+    struct Counting {
+        inner: Arc<dyn TerrainGenerator>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl TerrainGenerator for Counting {
+        fn generate_brick(&self, layout: &GridLayout, coordinate: BrickCoordinate) -> Brick {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.inner.generate_brick(layout, coordinate)
+        }
+    }
+
+    fn counting_world() -> (ServerWorld, ChannelIndex, Arc<AtomicUsize>) {
+        let game = Game::new(&[Plugin::BaseBlocks]);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut generators = terrain_registry();
+        let flat = game.generator_registry();
+        let inner = Arc::clone(
+            flat.entry(flat.runtime_id(&id("base_terrain:flat_v1")).unwrap())
+                .unwrap()
+                .content()
+                .unwrap(),
+        );
+        let counting: Arc<dyn TerrainGenerator> = Arc::new(Counting {
+            inner,
+            calls: Arc::clone(&calls),
+        });
+        let default = generators
+            .register(id("base_terrain:flat_v1"), counting)
+            .unwrap();
+        let terrain = WorldTerrain::new(generators, default, 3).unwrap();
+        let layout = Arc::new(GridLayout::new(game.channel_definitions()).unwrap());
+        let channel = layout.channel_index(&id("core:block")).unwrap();
+        let data = WorldData::new(1, terrain, Grid::new(layout));
+        (ServerWorld::new(data), channel, calls)
+    }
+
+    fn terrain_registry() -> content_registry::Registry<Arc<dyn TerrainGenerator>> {
+        content_registry::Registry::new()
+    }
+
+    #[test]
+    fn reading_terrain_nobody_has_edited_generates_each_brick_once() {
+        let (mut world, channel, calls) = counting_world();
+        for x in 0..32 {
+            world.voxel(channel, VoxelCoordinate::new(x, 2, 3)).unwrap();
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        world
+            .voxel(channel, VoxelCoordinate::new(40, 2, 3))
+            .unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn editing_after_reading_uses_the_remembered_brick_and_changes_only_what_was_set() {
+        let (mut world, channel, calls) = counting_world();
+        let at = VoxelCoordinate::new(5, 5, 5);
+        let neighbour = VoxelCoordinate::new(6, 5, 5);
+        let before = world.voxel(channel, neighbour).unwrap();
+        let original = world.voxel(channel, at).unwrap();
+        assert!(world.set_voxel(channel, at, original + 1).unwrap());
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(world.voxel(channel, at).unwrap(), original + 1);
+        assert_eq!(world.voxel(channel, neighbour).unwrap(), before);
+        // The remembered brick is not changed by the edit: setting the original value back is
+        // a change again only if the edit really happened.
+        assert!(world.set_voxel(channel, at, original).unwrap());
     }
 }

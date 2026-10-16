@@ -178,7 +178,7 @@ fn the_standard_session_makes_the_same_recording_on_every_platform() {
 }
 
 const PINNED_RECORDING_LENGTH: usize = 84_704;
-const PINNED_RECORDING_CHECKSUM: u32 = 3_834_092_583;
+const PINNED_RECORDING_CHECKSUM: u32 = 182_984_571;
 
 #[test]
 fn identical_sessions_make_byte_identical_recordings() {

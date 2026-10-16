@@ -16,7 +16,7 @@ per section: identifier | section version (varint) | payload length (varint)
 Sections have distinct identifiers. The checksum covers the identifier and version as well as the payload, so any
 single damaged byte anywhere in a section is detected. Unknown sections are carried along untouched.
 
-## Engine sections (all version 1)
+## Engine sections (all version 1, except `engine:generators`, which is version 2)
 
 Everything else in the file refers to content by *file id*: an index into a registry table below.
 
@@ -25,7 +25,7 @@ Everything else in the file refers to content by *file id*: an index into a regi
 | `engine:header` | world seed (`u64`), engine version text |
 | `engine:registries` | count, then per registry kind: identifier, entry count, the entries' identifiers in file-id order |
 | `engine:channels` | count, then per channel: identifier, default value (`u32`), value kind (`0` number, or `1` + the registry kind its ids come from) |
-| `engine:generators` | default terrain generator (identifier), assignment cube level (`u8`), leaf count, then per leaf of the generator-assignment octree: origin x, y, z (zigzag), level (`u8`), generator file id plus one (`0` = unassigned) |
+| `engine:generators` | default terrain generator (identifier), assignment cube level (`u8`), leaf count, then per leaf of the generator-assignment octree, in Morton order: one varint, (generator file id plus one, `0` = unassigned) times 64 plus the cube's level. The leaves tile the whole space, so each leaf's place follows from the levels before it. A leaf count of 0 means no assignments are given (a description of a world's shape). Version 1, which this program still reads, gave each leaf's origin x, y, z (zigzag) and level (`u8`) before its generator number, about ten times the size. |
 | `engine:override_bricks` | count, then per brick in strictly increasing coordinate order: x, y, z (zigzag), length-prefixed brick bytes |
 
 The generator table is the registry kind `engine:terrain_generator`.

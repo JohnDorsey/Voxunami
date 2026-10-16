@@ -122,6 +122,15 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         &self.players
     }
 
+    /// Every player but this one, as the server last said where they are.
+    pub fn other_players(&self) -> impl Iterator<Item = (ClientId, &PlayerPose)> {
+        let own = self.client.world().server_info().client;
+        self.players
+            .iter()
+            .filter(move |(client, _)| **client != own)
+            .map(|(client, pose)| (*client, pose))
+    }
+
     /// Applies the next complete tick the server has sent, if any. Returns whether there was one.
     pub fn advance_one_tick(&mut self) -> Result<bool, ClientError> {
         let Some(update) = self.client.poll_tick()? else {

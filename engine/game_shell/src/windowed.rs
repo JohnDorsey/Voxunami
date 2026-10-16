@@ -21,7 +21,7 @@ use crate::files::{open_recording, open_world, record_connection, recorded_game,
 use crate::host::{Autosave, HostSettings, ServerThread, connect_to, listen_on};
 use crate::options::{PlayOptions, ReplayOptions, ViewOptions};
 use crate::session::{Mode, Session};
-use crate::view::{apply_updates, camera_at, configure_renderer};
+use crate::view::{apply_updates, camera_at, configure_renderer, show_other_players};
 
 const MOVEMENT_SPEED: f32 = 24.0; // voxels per second
 const SPRINT_MULTIPLIER: f32 = 5.0;
@@ -323,6 +323,7 @@ impl<G: GameDefinition> Viewer<G> {
             .map_err(|error| error.to_string())?;
         let updates = self.session.update_view();
         apply_updates(&mut self.renderer, updates);
+        show_other_players(&mut self.renderer, &self.session);
 
         let (frame, reconfigure) = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => (frame, false),

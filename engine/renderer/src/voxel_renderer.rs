@@ -3,8 +3,9 @@ use std::num::NonZeroU64;
 
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
-use voxel_meshing::PackedQuad;
-use voxel_space::{BrickCoordinate, WorldPosition};
+use voxel_grid::ChannelStorage;
+use voxel_meshing::{BrickNeighbourhood, PackedQuad, mesh_brick};
+use voxel_space::{BRICK_VOXEL_COUNT, BrickCoordinate, LocalVoxelIndex, WorldPosition};
 use wgpu::util::DeviceExt;
 
 use crate::camera::{Camera, Frustum};
@@ -17,6 +18,64 @@ pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth3
 const BRICK_BOUNDING_RADIUS: f32 = 27.72;
 const BRICK_CENTER_OFFSET: f32 = 16.0;
 const PLACEMENT_SIZE: u64 = 16;
+
+/// How many different avatar colours there are. They take the last palette values, so games can
+/// use the values below `MAXIMUM_GAME_MATERIALS`.
+pub const AVATAR_COLOR_COUNT: usize = 16;
+const MAXIMUM_GAME_MATERIALS: usize = PALETTE_SIZE - AVATAR_COLOR_COUNT;
+/// sRGB, chosen to be told apart from each other and from the usual terrain colours.
+const AVATAR_COLORS: [[f32; 3]; AVATAR_COLOR_COUNT] = [
+    [1.00, 0.20, 0.20],
+    [0.20, 0.45, 1.00],
+    [1.00, 0.85, 0.10],
+    [0.75, 0.25, 0.95],
+    [1.00, 0.55, 0.05],
+    [0.10, 0.90, 0.90],
+    [1.00, 0.45, 0.75],
+    [0.95, 0.95, 0.95],
+    [0.10, 0.10, 0.12],
+    [0.55, 0.95, 0.15],
+    [0.55, 0.30, 0.10],
+    [0.30, 0.30, 0.95],
+    [0.90, 0.10, 0.50],
+    [0.20, 0.65, 0.55],
+    [0.65, 0.65, 0.20],
+    [0.50, 0.50, 0.60],
+];
+/// An avatar's mesh is a voxel model in a brick; this local voxel is where the player's eyes are.
+const AVATAR_EYE_VOXEL: u8 = 16;
+/// Radius of a sphere around an avatar, for culling.
+const AVATAR_BOUNDING_RADIUS: f32 = 2.0;
+
+/// Another player, drawn where their eyes are: a head over a body, in a colour of their own.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Avatar {
+    /// Where the player's eyes are.
+    pub position: WorldPosition,
+    /// Which of the [`AVATAR_COLOR_COUNT`] colours; larger numbers wrap around.
+    pub color: u32,
+}
+
+/// The mesh of an avatar of one colour: two voxels, the head with the eyes in it over the body.
+fn avatar_quads(color: usize) -> Vec<PackedQuad> {
+    let material = (MAXIMUM_GAME_MATERIALS + color) as u32;
+    let mut values = vec![0u32; BRICK_VOXEL_COUNT];
+    for y in [AVATAR_EYE_VOXEL - 1, AVATAR_EYE_VOXEL] {
+        let at = LocalVoxelIndex::new(AVATAR_EYE_VOXEL, y, AVATAR_EYE_VOXEL);
+        values[at.index()] = material;
+    }
+    let storage = ChannelStorage::from_values(&values);
+    mesh_brick(
+        &BrickNeighbourhood {
+            center: &storage,
+            neighbours: [None; 6],
+        },
+        |value| value != 0,
+    )
+    .into_iter()
+    .map(|quad| quad.pack())
+    .collect()
+}
 
 /// Colours are given in sRGB, as in an image editor; the renderer converts them.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -47,6 +106,7 @@ pub struct RenderStatistics {
     pub bricks_drawn: usize,
     pub bricks_culled: usize,
     pub quads_drawn: usize,
+    pub avatars_drawn: usize,
 }
 
 #[repr(C)]
@@ -90,6 +150,8 @@ pub struct VoxelRenderer {
     placements: PlacementBuffer,
     placement_stride: u64,
     bricks: HashMap<BrickCoordinate, GpuBrick>,
+    avatar_meshes: Vec<GpuBrick>,
+    avatars: Vec<Avatar>,
     palette: Box<[[f32; 4]; PALETTE_SIZE]>,
     atmosphere: Atmosphere,
     depth: Option<SizedTarget>,
@@ -242,6 +304,8 @@ impl VoxelRenderer {
             placements,
             placement_stride,
             bricks: HashMap::new(),
+            avatar_meshes: Vec::new(),
+            avatars: Vec::new(),
             palette: Box::new([[1.0, 0.0, 1.0, 1.0]; PALETTE_SIZE]),
             atmosphere: Atmosphere::default(),
             depth: None,
@@ -250,7 +314,28 @@ impl VoxelRenderer {
             crosshair_enabled: false,
         };
         renderer.set_palette(&[]);
+        renderer.avatar_meshes = (0..AVATAR_COLOR_COUNT)
+            .map(|color| renderer.gpu_brick(&avatar_quads(color)))
+            .collect();
         renderer
+    }
+
+    fn gpu_brick(&self, quads: &[PackedQuad]) -> GpuBrick {
+        let words: Vec<u32> = quads
+            .iter()
+            .flat_map(|quad| [quad.geometry, quad.material])
+            .collect();
+        let buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("quads"),
+                contents: bytemuck::cast_slice(&words),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        GpuBrick {
+            quads: buffer,
+            quad_count: quads.len() as u32,
+        }
     }
 
     fn create_placement_buffer(
@@ -290,17 +375,30 @@ impl VoxelRenderer {
     }
 
     /// Sets the colour of material values `0..colors.len()` (sRGB). Larger values draw magenta, which
-    /// is also how content from a missing plugin shows up.
+    /// is also how content from a missing plugin shows up. The last [`AVATAR_COLOR_COUNT`] values
+    /// are the avatars' colours, so at most 240 materials can be drawn.
     pub fn set_palette(&mut self, colors: &[[f32; 3]]) {
         assert!(
-            colors.len() <= PALETTE_SIZE,
-            "at most {PALETTE_SIZE} materials can be drawn"
+            colors.len() <= MAXIMUM_GAME_MATERIALS,
+            "at most {MAXIMUM_GAME_MATERIALS} materials can be drawn"
         );
         self.palette.fill([1.0, 0.0, 1.0, 1.0]);
         for (slot, color) in self.palette.iter_mut().zip(colors) {
             let [red, green, blue] = srgb_to_linear_color(*color);
             *slot = [red, green, blue, 1.0];
         }
+        for (slot, color) in self.palette[MAXIMUM_GAME_MATERIALS..]
+            .iter_mut()
+            .zip(AVATAR_COLORS)
+        {
+            let [red, green, blue] = srgb_to_linear_color(color);
+            *slot = [red, green, blue, 1.0];
+        }
+    }
+
+    /// Sets which avatars are drawn from now on, replacing the previous ones.
+    pub fn set_avatars(&mut self, avatars: &[Avatar]) {
+        self.avatars = avatars.to_vec();
     }
 
     pub fn set_atmosphere(&mut self, atmosphere: Atmosphere) {
@@ -313,24 +411,8 @@ impl VoxelRenderer {
             self.bricks.remove(&coordinate);
             return;
         }
-        let words: Vec<u32> = quads
-            .iter()
-            .flat_map(|quad| [quad.geometry, quad.material])
-            .collect();
-        let buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("brick quads"),
-                contents: bytemuck::cast_slice(&words),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-        self.bricks.insert(
-            coordinate,
-            GpuBrick {
-                quads: buffer,
-                quad_count: quads.len() as u32,
-            },
-        );
+        let brick = self.gpu_brick(quads);
+        self.bricks.insert(coordinate, brick);
     }
 
     pub fn remove_brick(&mut self, coordinate: BrickCoordinate) {
@@ -377,7 +459,20 @@ impl VoxelRenderer {
             }
         }
         visible.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // Avatars are placed like bricks: by where their model's corner is relative to the camera.
+        let eye = Vec3::splat(f32::from(AVATAR_EYE_VOXEL) + 0.5);
+        let visible_avatars: Vec<(usize, Vec3)> = self
+            .avatars
+            .iter()
+            .filter_map(|avatar| {
+                let relative = Vec3::from_array(avatar.position.relative_to(camera.position));
+                frustum
+                    .intersects_sphere(relative, AVATAR_BOUNDING_RADIUS)
+                    .then_some((avatar.color as usize % AVATAR_COLOR_COUNT, relative - eye))
+            })
+            .collect();
         let statistics = RenderStatistics {
+            avatars_drawn: visible_avatars.len(),
             bricks_drawn: visible.len(),
             bricks_culled: self.bricks.len() - visible.len(),
             quads_drawn: visible
@@ -386,7 +481,12 @@ impl VoxelRenderer {
                 .sum(),
         };
 
-        self.write_placements(visible.iter().map(|(_, _, corner)| *corner));
+        let corners: Vec<Vec3> = visible
+            .iter()
+            .map(|(_, _, corner)| *corner)
+            .chain(visible_avatars.iter().map(|(_, corner)| *corner))
+            .collect();
+        self.write_placements(&corners);
         self.write_frame_uniform(view_projection);
         self.crosshair.set_screen_size(&self.queue, size);
 
@@ -441,6 +541,16 @@ impl VoxelRenderer {
                 );
                 pass.set_vertex_buffer(0, brick.quads.slice(..));
                 pass.draw(0..6, 0..brick.quad_count);
+            }
+            for (index, (color, _)) in visible_avatars.iter().enumerate() {
+                let mesh = &self.avatar_meshes[*color];
+                pass.set_bind_group(
+                    1,
+                    &self.placements.bind_group,
+                    &[((visible.len() + index) as u64 * self.placement_stride) as u32],
+                );
+                pass.set_vertex_buffer(0, mesh.quads.slice(..));
+                pass.draw(0..6, 0..mesh.quad_count);
             }
             if self.crosshair_enabled {
                 self.crosshair.draw(&mut pass);
@@ -609,7 +719,7 @@ impl VoxelRenderer {
         });
     }
 
-    fn write_placements(&mut self, corners: impl ExactSizeIterator<Item = Vec3>) {
+    fn write_placements(&mut self, corners: &[Vec3]) {
         if corners.len() > self.placements.capacity {
             let capacity = corners.len().next_power_of_two();
             self.placements = Self::create_placement_buffer(
@@ -621,7 +731,7 @@ impl VoxelRenderer {
         }
         let stride = self.placement_stride as usize;
         let mut bytes = vec![0u8; corners.len() * stride];
-        for (index, corner) in corners.enumerate() {
+        for (index, corner) in corners.iter().enumerate() {
             let placement = [corner.x, corner.y, corner.z, 0.0];
             bytes[index * stride..index * stride + PLACEMENT_SIZE as usize]
                 .copy_from_slice(bytemuck::cast_slice(&placement));

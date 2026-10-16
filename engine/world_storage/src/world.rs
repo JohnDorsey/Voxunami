@@ -200,6 +200,14 @@ impl WorldData {
         }
     }
 
+    fn generators_section(record: &sections::GeneratorsRecord) -> Section {
+        Section {
+            identifier: sections::generators_id(),
+            version: sections::GENERATORS_VERSION,
+            payload: sections::encode_generators(record),
+        }
+    }
+
     /// Header, registries, channels and generators, with the given assignment leaves.
     fn engine_sections(
         &self,
@@ -272,10 +280,7 @@ impl WorldData {
                 sections::channels_id(),
                 sections::encode_channels(&channel_records),
             ),
-            Self::section(
-                sections::generators_id(),
-                sections::encode_generators(&generators),
-            ),
+            Self::generators_section(&generators),
         ])
     }
 }
@@ -421,7 +426,12 @@ impl ParsedWorld {
                 opaque_sections.push(section);
                 continue;
             }
-            if section.version != sections::SUPPORTED_VERSION {
+            let readable = if section.identifier == sections::generators_id() {
+                sections::reads_generators_version(section.version)
+            } else {
+                section.version == sections::SUPPORTED_VERSION
+            };
+            if !readable {
                 return Err(LoadError::UnsupportedEngineSection {
                     section: section.identifier,
                     version: section.version,
@@ -439,7 +449,8 @@ impl ParsedWorld {
             } else if section.identifier == sections::channels_id() {
                 channels = sections::decode_channels(payload).map_err(wrap)?;
             } else if section.identifier == sections::generators_id() {
-                generators = Some(sections::decode_generators(payload).map_err(wrap)?);
+                generators =
+                    Some(sections::decode_generators(payload, section.version).map_err(wrap)?);
             } else {
                 bricks = sections::decode_override_bricks(payload).map_err(wrap)?;
             }
