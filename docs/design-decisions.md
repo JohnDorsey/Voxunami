@@ -94,7 +94,37 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   is saved with the world (the section `voxunami_2048:progress`), so saving mid-motion loses nothing. The phased-tick rule
   stays proposed for lattice rules (light, fluids, heat), which are the first thing that needs it.
 
+## Future goals (owner, 2026-10-16; none built)
+- Blocks that let flood fill (light, and later other fills) through some sides but not others, like a slab or a stair.
+  Needs a block shape in the block definition (which faces are open, plus a collision shape), used by the mesher, lighting
+  and physics. Open: "Voxels are strictly cubic" is read as the grid being cubic; a block may fill only part of its cell.
+- Shaders written in GLSL or HLSL. (Not checked here: wgpu's shader translator, naga, reads WGSL, SPIR-V and GLSL, and I
+  believe not HLSL directly, which would need compiling to SPIR-V first.) Cosmetic and client-side only, so they cannot
+  affect simulation; they need a defined interface, validation and limits, and do not exist in the planned offline
+  path-traced replay renderer.
+- Fire spread in Cave and other randomly ticked events such as coral growth: each tick the server samples positions in the
+  active region with a deterministic random number from (seed, tick, position). Needs flammability and similar block
+  properties, an active-region definition and a per-tick budget. (Coral needs water, which Cave does not have yet.)
+- Motorized hinges and pistons to move constructions that are off the main grid: sub-grids with transforms, driven by
+  Rapier revolute and prismatic joints with motors. The physics spike showed a motor-driven hinge identical on Windows and
+  Linux. Needs sub-grids in the stream, a model matrix per grid in the renderer, and raycasts in a grid's own space.
+- Multiple levels, first reached by commands and later through portals. A level id has to run through the protocol, the
+  save format and the server, and there must be a command channel. Portals that show another level need rendering two
+  worlds in one picture.
+
 ## Proposed
+- Order of features, to let real uses shape the engine and the plugin API before either is frozen (proposed 2026-10-16;
+  the guide is: do first what is expensive to change later, what is most uncertain, and what gives a second user to a
+  shared piece). 1. Levels: a level id through the protocol, save format and server, with one level existing; then a text
+  command channel. 2. Block shapes in block definitions (open faces, collision shape, translucency, light), with a spike
+  on how light reaches the 8-byte quad. 3. 2048 tools: chain pushing and tool-chosen merging. 4. Lighting with
+  directional flood fill: the first lattice rule, under the phased-tick rule and its partition-invariance test.
+  5. Random ticks and fire in Cave: the second lattice rule; only then extract the common lattice-rule shape
+  (neighbourhood snapshot in, edits out, deterministic random numbers, active region, budget). 6. Cave gravity and
+  collision on Rapier. 7. Flatworms (movable earlier or later; it needs no physics). 8. Mod stages 1 to 5 (see below),
+  started once step 5 shows what a block definition and a rule hook carry. 9. Sub-grids with hinges and pistons, and Sculpt.
+  10. Mod hooks: lattice rules first, then physics (engine-provided motor and piston parts that mods configure rather than
+  implement). 11. Portals, user shaders, assets and an SDK. Level awareness must be in the mod API from its first version.
 - Mods for players (proposed 2026-10-16; today plugins are compile-time crates, see "Decided"). One host API, two loaders:
   the contract is a versioned table of C-callable functions the host hands to a mod, plus a few functions the mod exports
   (register content, generate a brick, later: tick and message hooks). A native-library loader (C ABI, for mods the owner
