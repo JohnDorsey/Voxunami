@@ -95,6 +95,26 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   stays proposed for lattice rules (light, fluids, heat), which are the first thing that needs it.
 
 ## Proposed
+- Mods for players (proposed 2026-10-16; today plugins are compile-time crates, see "Decided"). One host API, two loaders:
+  the contract is a versioned table of C-callable functions the host hands to a mod, plus a few functions the mod exports
+  (register content, generate a brick, later: tick and message hooks). A native-library loader (C ABI, for mods the owner
+  trusts: first-party add-ons, server-admin installs) and a WASM loader (sandboxed, one file for every platform, for mods
+  players download) sit behind that one contract, so a mod written in C can be built either way. Native code cannot be
+  sandboxed and cannot be forced to give the same floating-point results on every machine, so only the WASM loader is
+  for untrusted mods and for anything clients must reproduce, such as terrain generators. Bulk calls only (whole bricks),
+  never per-voxel calls across the boundary. Staged, each stage ending with something that runs and is tested:
+  1. Settle the in-tree plugin API with the games we have (more of 2048's materials and Cave's rules into plugins), so the
+     contract is shaped by real uses. 2. Data-driven mods (a folder or zip with a manifest: blocks, colours, materials):
+     no code runs, and it forces the manifest, mods folder, ids, versions and missing-mod behaviour. 3. Dogfood the API:
+     run `base_blocks`' generator through it; the pinned digests must match the native output exactly. 4. Spike both
+     loaders as throwaway prototypes and measure boundary cost, generator speed against native, and identical results on
+     Windows and Linux; choose from the numbers. 5. One narrow code mod type, terrain generators, with tests that
+     hostile mods (endless loop, huge memory, wild writes, crash) are stopped. 6. Multiplayer: the handshake lists the
+     mods a world needs by id and hash, and mismatches are refused clearly; downloading comes later. 7. Server-side
+     logic hooks with CPU and memory budgets, on top of the phased-tick rule. 8. Assets, an SDK, templates and an example
+     mod; only then promise compatibility. The API is labelled experimental until others have written real mods. A mod
+     cannot add GPU code, change the engine's internals (save container, network protocol, renderer, physics), touch the OS,
+     or depend on wall-clock time or unseeded randomness.
 - Rust, wgpu, mesh-based GPU-driven rendering, nested clipmap LOD shells.
 - Everything with voxels is a `Grid`: sparse, chunked, with a rigid transform. Terrain is the infinite root grid
   (procedural base plus saved overrides); structures, creatures and tiles are finite grids.
