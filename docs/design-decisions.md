@@ -446,7 +446,10 @@ continuous channels need quantization or sparse activity.
 
 ## Open
 - Keyboard controls in a window (reported by the owner, 2026-10-16): in both games the keys type into the title bar instead
-  of moving the player. Not yet investigated.
+  of moving the player. Not reproduced: with real key events sent to the real window (Windows 10, RTX 3090, built from
+  this code), pressing W and A left the title as it was, and holding W for two seconds changed the picture (the camera
+  moved). The title only shows typed text after `/` or Enter has opened the command line, so the owner's keyboard
+  probably sent one of those (or an input method is involved); the exact keys and layout are needed.
 - 2048 shows numbers by colour only (the renderer draws no text; the title names the block you look at), and only
   stone, ice and spring ice exist. Materials that pass momentum on, other tools (a line push, an undo), and players
   being in the way of blocks are not built. The play controls were never tried with a real mouse and keyboard.
