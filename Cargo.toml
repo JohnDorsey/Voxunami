@@ -15,6 +15,7 @@ binary_codec = { path = "engine/binary_codec" }
 client = { path = "engine/client" }
 content_registry = { path = "engine/content_registry" }
 game_shell = { path = "engine/game_shell" }
+lattice = { path = "engine/lattice" }
 end_to_end_tests = { path = "engine/end_to_end_tests" }
 namespaced_id = { path = "engine/namespaced_id" }
 player_presence = { path = "engine/player_presence" }

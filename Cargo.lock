@@ -911,6 +911,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
+name = "lattice"
+version = "0.0.0"
+dependencies = [
+ "binary_codec",
+ "namespaced_id",
+ "proptest",
+ "terrain",
+ "voxel_space",
+ "world_storage",
+]
+
+[[package]]
 name = "launcher"
 version = "0.0.0"
 dependencies = [
@@ -2354,6 +2366,7 @@ dependencies = [
  "client",
  "content_registry",
  "game_shell",
+ "lattice",
  "namespaced_id",
  "proptest",
  "protocol",

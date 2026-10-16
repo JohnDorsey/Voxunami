@@ -57,6 +57,14 @@ impl PoseBook {
         );
     }
 
+    /// Every player who has reported a pose, in the order of their ids, with the pose and the level
+    /// they are in.
+    pub fn players(&self) -> impl Iterator<Item = (ClientId, &PlayerPose, LevelIndex)> + '_ {
+        self.poses
+            .iter()
+            .map(|(&client, pose)| (client, pose, self.level_of(client)))
+    }
+
     pub fn len(&self) -> usize {
         self.poses.len()
     }

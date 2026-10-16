@@ -17,6 +17,9 @@ pub struct BlockDefinition {
     pub see_through: bool,
     /// The light the block gives off, from 0 (none) to 255.
     pub emission: u8,
+    /// How readily the block catches fire next to a fire, from 0 (it does not) to 255. A game's
+    /// fire rule decides what the number means; the table only carries it.
+    pub flammability: u8,
     shapes: Vec<Shape>,
     state_colors: Vec<[f32; 3]>,
 }
@@ -28,6 +31,7 @@ impl BlockDefinition {
             color,
             see_through: false,
             emission: 0,
+            flammability: 0,
             shapes: vec![Shape::full()],
             state_colors: Vec::new(),
         }
@@ -39,6 +43,7 @@ impl BlockDefinition {
             color: [0.0; 3],
             see_through: true,
             emission: 0,
+            flammability: 0,
             shapes: vec![Shape::empty()],
             state_colors: Vec::new(),
         }
@@ -67,6 +72,11 @@ impl BlockDefinition {
 
     pub fn with_emission(mut self, emission: u8) -> Self {
         self.emission = emission;
+        self
+    }
+
+    pub fn with_flammability(mut self, flammability: u8) -> Self {
+        self.flammability = flammability;
         self
     }
 
@@ -99,7 +109,7 @@ mod tests {
     #[test]
     fn a_cube_is_opaque_whole_and_has_one_state_and_air_is_empty_and_see_through() {
         let cube = BlockDefinition::cube([0.2, 0.3, 0.4]);
-        assert!(!cube.see_through && cube.emission == 0);
+        assert!(!cube.see_through && cube.emission == 0 && cube.flammability == 0);
         assert_eq!(cube.state_count(), 1);
         assert!(cube.shapes()[0].is_full());
         let air = BlockDefinition::air();
@@ -116,8 +126,10 @@ mod tests {
                 Shape::half(FaceDirection::PositiveY),
             ])
             .with_emission(200)
+            .with_flammability(90)
             .with_see_through(true);
         assert_eq!(slabs.state_count(), 3);
+        assert_eq!(slabs.flammability, 90);
         assert!(slabs.shapes()[1].covers_face(FaceDirection::NegativeY));
         assert_eq!((slabs.emission, slabs.see_through), (200, true));
     }

@@ -12,6 +12,7 @@ binary_codec.workspace = true
 block_models.workspace = true
 content_registry.workspace = true
 game_shell.workspace = true
+lattice.workspace = true
 namespaced_id.workspace = true
 protocol.workspace = true
 server.workspace = true

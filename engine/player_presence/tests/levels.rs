@@ -184,6 +184,14 @@ fn players_start_in_the_main_level_and_the_snapshot_says_which_level_each_is_in(
     assert_eq!(rig.level_of(2), LevelIndex::new(1));
     assert_eq!(rig.level_of(1), LevelIndex::MAIN);
     assert_eq!(levels_told(&first.received()), Some(vec![(1, 0), (2, 1)]));
+
+    // The book lists the players who have said where they are, with their levels, in id order.
+    let book = rig.book.lock().unwrap();
+    let listed: Vec<_> = book
+        .players()
+        .map(|(client, _, level)| (client.get(), level))
+        .collect();
+    assert_eq!(listed, [(1, LevelIndex::MAIN), (2, LevelIndex::new(1))]);
 }
 
 #[test]

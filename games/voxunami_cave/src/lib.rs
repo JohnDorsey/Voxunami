@@ -11,8 +11,8 @@
 //! Window, camera, singleplayer server, screenshots, recording and replay are the shell's.
 
 pub mod content;
+pub mod fire;
 pub mod game;
-pub mod light_state;
 pub mod lighting;
 pub mod logic;
 pub mod messages;

@@ -21,6 +21,7 @@ impl ModelId {
 struct Entry {
     color: [f32; 3],
     emission: u8,
+    flammability: u8,
     first_model: u32,
     state_count: u32,
     /// Where this block's state colours start in the palette, and how many there are (0 if the
@@ -63,6 +64,7 @@ impl BlockTable {
                 entries.push(Entry {
                     color: MISSING_BLOCK_COLOR,
                     emission: 0,
+                    flammability: 0,
                     first_model: u32::MAX,
                     state_count: 1,
                     first_state_material: 0,
@@ -77,6 +79,7 @@ impl BlockTable {
             entries.push(Entry {
                 color: definition.color,
                 emission: definition.emission,
+                flammability: definition.flammability,
                 first_model,
                 state_count: definition.state_count() as u32,
                 first_state_material: (definitions.len() + state_palette.len()) as u32,
@@ -213,6 +216,13 @@ impl BlockTable {
             .map_or(MISSING_BLOCK_COLOR, |entry| entry.color)
     }
 
+    /// How readily a block catches fire, 0 to 255; an unknown block does not.
+    pub fn flammability(&self, block: u32) -> u8 {
+        self.entries
+            .get(block as usize)
+            .map_or(0, |entry| entry.flammability)
+    }
+
     /// The light a block gives off, 0 to 255.
     pub fn emission(&self, block: u32) -> u8 {
         self.entries
@@ -264,7 +274,8 @@ mod tests {
         ]);
         let glass = BlockDefinition::cube([0.7, 0.9, 1.0])
             .with_see_through(true)
-            .with_emission(40);
+            .with_emission(40)
+            .with_flammability(7);
         BlockTable::from_definitions(&[Some(&air), Some(&stone), Some(&glass), None])
     }
 
@@ -359,6 +370,11 @@ mod tests {
             [[0.0; 3], [0.5; 3], [0.7, 0.9, 1.0], MISSING_BLOCK_COLOR]
         );
         assert_eq!((table.emission(1), table.emission(2)), (0, 40));
+        assert_eq!(
+            [0, 1, 2, 3, 9999].map(|block| table.flammability(block)),
+            [0, 0, 7, 0, 0],
+            "only the glass is flammable here, and unknown blocks are not"
+        );
     }
 
     #[test]

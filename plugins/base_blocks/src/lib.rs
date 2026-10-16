@@ -1,5 +1,5 @@
-//! Plugin: the first blocks (air, stone, dirt, grass, lamp) and the rolling hills terrain made of
-//! them.
+//! Plugin: the first blocks (air, stone, dirt, grass, lamp, wood, fire) and the rolling hills
+//! terrain made of them.
 //!
 //! The solid blocks come in several shapes, chosen by the voxel's *state* (the channel
 //! `base_blocks:block_state`): a whole cube, slabs, and stairs, so shapes do not take block types
@@ -46,6 +46,28 @@ pub fn light_channel_identifier() -> NamespacedId {
 /// also how many voxels away a lamp lights things.
 pub const LAMP_EMISSION: u8 = 64;
 
+/// How readily grass and wood catch fire next to a fire: out of 1024 each tick, for each fire
+/// beside them (see the fire rule in Voxunami Cave). Grass goes up fast, wood slowly.
+pub const GRASS_FLAMMABILITY: u8 = 100;
+pub const WOOD_FLAMMABILITY: u8 = 40;
+
+/// How many steps a fire burns through before it goes out: its state is its age, counting up from
+/// 0, and a fire of this age is gone. (The rule that ages it is the game's.)
+pub const FIRE_LIFETIME: u32 = 12;
+
+/// How much light a fire gives off.
+pub const FIRE_EMISSION: u8 = 40;
+
+/// The colours of a fire as it ages, hottest first, one for each age.
+fn fire_colors() -> Vec<[f32; 3]> {
+    (0..FIRE_LIFETIME)
+        .map(|age| {
+            let heat = 1.0 - age as f32 / FIRE_LIFETIME as f32;
+            [0.95, 0.25 + 0.65 * heat, 0.05 + 0.2 * heat]
+        })
+        .collect()
+}
+
 /// The terrain generator version this plugin provides.
 pub fn rolling_hills_generator_identifier() -> NamespacedId {
     identifier("base_blocks:rolling_hills_v1")
@@ -91,6 +113,11 @@ pub struct BaseBlocks {
     pub grass: u32,
     /// A solid block that gives off light. Not part of the terrain.
     pub lamp: u32,
+    /// A solid block that burns.
+    pub wood: u32,
+    /// Flames: a low, lit, non-solid-looking block that spreads to what burns and goes out. Its state
+    /// is its age, which any number can be (see [`FIRE_LIFETIME`]).
+    pub fire: u32,
 }
 
 impl Default for BaseBlocks {
@@ -112,10 +139,24 @@ impl BaseBlocks {
         let air = register("air", BlockDefinition::air());
         let stone = register("stone", solid([0.50, 0.50, 0.53]));
         let dirt = register("dirt", solid([0.45, 0.30, 0.18]));
-        let grass = register("grass", solid([0.30, 0.62, 0.20]));
+        let grass = register(
+            "grass",
+            solid([0.30, 0.62, 0.20]).with_flammability(GRASS_FLAMMABILITY),
+        );
         let lamp = register(
             "lamp",
             BlockDefinition::cube([1.0, 0.92, 0.65]).with_emission(LAMP_EMISSION),
+        );
+        let wood = register(
+            "wood",
+            solid([0.55, 0.38, 0.20]).with_flammability(WOOD_FLAMMABILITY),
+        );
+        let fire = register(
+            "fire",
+            BlockDefinition::cube([0.95, 0.5, 0.1])
+                .with_shapes(vec![Shape::half(FaceDirection::NegativeY)])
+                .with_emission(FIRE_EMISSION)
+                .with_state_colors(fire_colors()),
         );
         Self {
             blocks,
@@ -124,6 +165,8 @@ impl BaseBlocks {
             dirt,
             grass,
             lamp,
+            wood,
+            fire,
         }
     }
 
@@ -205,11 +248,13 @@ mod tests {
                 blocks.stone,
                 blocks.dirt,
                 blocks.grass,
-                blocks.lamp
+                blocks.lamp,
+                blocks.wood,
+                blocks.fire
             ),
-            (0, 1, 2, 3, 4)
+            (0, 1, 2, 3, 4, 5, 6)
         );
-        let names: Vec<String> = (0..5)
+        let names: Vec<String> = (0..7)
             .map(|raw| blocks.blocks.identifier_of_raw(raw).unwrap().to_string())
             .collect();
         assert_eq!(
@@ -219,7 +264,9 @@ mod tests {
                 "base_blocks:stone",
                 "base_blocks:dirt",
                 "base_blocks:grass",
-                "base_blocks:lamp"
+                "base_blocks:lamp",
+                "base_blocks:wood",
+                "base_blocks:fire"
             ]
         );
         assert_eq!(blocks.light_channel().default_value, 0);
@@ -240,7 +287,12 @@ mod tests {
         let table = BaseBlocks::new().block_table();
         assert_eq!(table.state_count(0), 1);
         assert_eq!(table.state_count(4), 1);
-        for block in 1..4 {
+        assert_eq!(
+            table.state_count(6),
+            1,
+            "a fire has one shape, and ages are not shapes"
+        );
+        for block in [1, 2, 3, 5] {
             assert_eq!(table.state_count(block), SHAPE_NAMES.len() as u32);
         }
         assert_eq!(standard_shapes().len(), SHAPE_NAMES.len());
@@ -266,14 +318,22 @@ mod tests {
     fn the_table_has_the_blocks_colours_air_is_see_through_and_missing_blocks_are_magenta_cubes() {
         let mut blocks = BaseBlocks::new();
         let table = blocks.block_table();
-        assert_eq!(table.palette().len(), 5);
+        // The blocks, then the colours a fire is drawn in as it ages.
+        assert_eq!(table.palette().len(), 7 + FIRE_LIFETIME as usize);
         assert_eq!(table.color(3), [0.30, 0.62, 0.20]);
         // Only the lamp gives off light, and it is a whole opaque block.
         assert_eq!(
-            (0..5)
+            (0..7)
                 .map(|block| table.emission(block))
                 .collect::<Vec<_>>(),
-            [0, 0, 0, 0, LAMP_EMISSION]
+            [0, 0, 0, 0, LAMP_EMISSION, 0, FIRE_EMISSION]
+        );
+        assert_eq!(
+            (0..7)
+                .map(|block| table.flammability(block))
+                .collect::<Vec<_>>(),
+            [0, 0, 0, GRASS_FLAMMABILITY, 0, WOOD_FLAMMABILITY, 0],
+            "grass and wood burn, and fire does not burn"
         );
         assert!(table.is_opaque_cube(table.model_of(4, 0)));
         assert!(!table.is_solid(table.model_of(0, 0)));
@@ -281,10 +341,10 @@ mod tests {
         let missing = blocks
             .blocks
             .register_missing(identifier("elsewhere:marble"));
-        assert_eq!(missing.raw(), 5);
+        assert_eq!(missing.raw(), 7);
         let table = blocks.block_table();
-        assert_eq!(table.palette()[5], MISSING_BLOCK_COLOR);
-        assert!(table.is_opaque_cube(table.model_of(5, 0)));
+        assert_eq!(table.palette()[7], MISSING_BLOCK_COLOR);
+        assert!(table.is_opaque_cube(table.model_of(7, 0)));
     }
 
     #[test]

@@ -797,8 +797,12 @@ fn a_world_saved_while_light_is_still_spreading_carries_on_as_if_it_never_stoppe
         content, server, ..
     } = interrupted;
     let world = server.into_world();
-    let saved = voxunami_cave::light_state::read_pending(world.opaque_sections())
-        .expect("the game saved its light");
+    let saved = lattice::ActiveVoxels::from_sections(
+        world.opaque_sections(),
+        &voxunami_cave::lighting::section_id(),
+        |name| world.level_index(name),
+    )
+    .expect("the game saved its light");
     assert!(!saved.is_empty(), "the light was still spreading");
     let bytes = world.save(&content.registries()).unwrap();
 
@@ -814,10 +818,240 @@ fn a_world_saved_while_light_is_still_spreading_carries_on_as_if_it_never_stoppe
         control.server.world().main().overrides.content_digest(),
         "the light came out the same"
     );
+    let settled = resumed.server.into_world();
     assert!(
-        voxunami_cave::light_state::read_pending(resumed.server.into_world().opaque_sections())
-            .unwrap()
-            .is_empty(),
+        lattice::ActiveVoxels::from_sections(
+            settled.opaque_sections(),
+            &voxunami_cave::lighting::section_id(),
+            |name| settled.level_index(name),
+        )
+        .unwrap()
+        .is_empty(),
         "and it settled"
     );
+}
+
+/// How many fires the server's world holds in the bricks changed since generation.
+fn fires_in(rig: &Rig) -> usize {
+    let channel = rig.content.block_channel();
+    rig.server
+        .world()
+        .main()
+        .overrides
+        .bricks()
+        .map(|(_, brick)| {
+            voxel_space::LocalVoxelIndex::all()
+                .filter(|&local| brick.get(channel, local) == rig.content.blocks.fire)
+                .count()
+        })
+        .sum()
+}
+
+/// The block the server's world has at a voxel of the main level, edited or generated.
+fn server_block(rig: &Rig, voxel: VoxelCoordinate) -> u32 {
+    let (brick, local) = voxel.split();
+    match rig.server.world().main().effective_brick(brick) {
+        world_storage::BrickSource::Edited(brick) => brick.get(rig.content.block_channel(), local),
+        world_storage::BrickSource::Generated(brick) => {
+            brick.get(rig.content.block_channel(), local)
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_fire_a_player_lights_gives_light_burns_the_grass_it_stands_on_and_goes_out_for_everyone() {
+    let mut rig = Rig::new();
+    let mut builder = player_above_ground(&mut rig);
+    let mut onlooker = rig.join([20.5, 110.0, 20.5], 0.0, 0.0);
+    rig.settle(&mut [&mut builder, &mut onlooker]);
+    let hit = builder.target().unwrap();
+    let (grass, spot) = (hit.voxel, hit.previous);
+    assert_eq!(server_block(&rig, grass), rig.content.blocks.grass);
+    let fire = rig.content.blocks.fire;
+
+    place_block(&mut builder, "base_blocks:fire");
+    // Also fires in the grass either side of it, so that the grass in the middle is next to five fires
+    // and burns whatever the chance does (one fire might, rarely, go out without lighting it).
+    for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+        let beside = VoxelCoordinate::new(grass.x() + dx, grass.y(), grass.z() + dz);
+        request_block(&mut builder, beside, "base_blocks:fire");
+    }
+    run_ticks(&mut rig, 3);
+    assert_eq!(server_block(&rig, spot), fire);
+    assert!(
+        server_light(&rig, above(spot, 1)) >= u32::from(base_blocks::FIRE_EMISSION) - 3,
+        "flames give light"
+    );
+
+    run_ticks(&mut rig, 600);
+    rig.settle(&mut [&mut builder, &mut onlooker]);
+    // The fire spread to the grass it stood on and the grass around it, and every flame has gone
+    // out, leaving air where the grass was.
+    assert_eq!(fires_in(&rig), 0);
+    assert_eq!(server_block(&rig, spot), rig.content.blocks.air);
+    assert_eq!(server_block(&rig, grass), rig.content.blocks.air);
+    for (name, player) in [("builder", &builder), ("onlooker", &onlooker)] {
+        for voxel in [spot, grass] {
+            assert_eq!(
+                player.mesher().material_at(voxel),
+                Some(rig.content.blocks.air),
+                "{name}"
+            );
+        }
+    }
+    // And the light of the flames went out with them.
+    assert_eq!(server_light(&rig, above(spot, 1)), 0);
+}
+
+#[test]
+fn fires_burn_only_near_players_and_are_frozen_where_nobody_is() {
+    let mut rig = Rig::new();
+    let mut builder = player_above_ground(&mut rig);
+    let spot = builder.target().unwrap().previous;
+    place_block(&mut builder, "base_blocks:fire");
+    run_ticks(&mut rig, 2);
+    builder.say_goodbye();
+    run_ticks(&mut rig, 2);
+    let before = server_block(&rig, spot);
+    assert_eq!(before, rig.content.blocks.fire);
+    let state_of = |rig: &Rig| {
+        rig.server
+            .world()
+            .main()
+            .overrides
+            .get(rig.content.state_channel(), spot)
+    };
+    let age = state_of(&rig);
+    // (How many fires there are by now depends on chance and on how many ticks the setting up took:
+    // the fire may have spread to the grass in the two ticks the builder was there.)
+    let fires = fires_in(&rig);
+    assert!(fires >= 1);
+
+    // Nobody is near: nothing ages or spreads, however long it is left.
+    run_ticks(&mut rig, 300);
+    assert_eq!(server_block(&rig, spot), rig.content.blocks.fire);
+    assert_eq!(state_of(&rig), age);
+    assert_eq!(fires_in(&rig), fires);
+
+    // Someone comes within range, and it burns.
+    let position = position_of(&builder.camera);
+    let mut visitor = rig.join(
+        [
+            position.brick().x() as f64 * 32.0 + f64::from(position.offset()[0]),
+            position.brick().y() as f64 * 32.0 + f64::from(position.offset()[1]),
+            position.brick().z() as f64 * 32.0 + f64::from(position.offset()[2]),
+        ],
+        0.0,
+        0.0,
+    );
+    rig.settle(&mut [&mut visitor]);
+    run_ticks(&mut rig, 600);
+    assert_eq!(fires_in(&rig), 0);
+}
+
+/// A position in voxels, as a player is joined at, taken from a camera.
+fn voxels_of(camera: &renderer::Camera) -> [f64; 3] {
+    let position = position_of(camera);
+    [
+        position.brick().x() as f64 * 32.0 + f64::from(position.offset()[0]),
+        position.brick().y() as f64 * 32.0 + f64::from(position.offset()[1]),
+        position.brick().z() as f64 * 32.0 + f64::from(position.offset()[2]),
+    ]
+}
+
+#[test]
+fn a_fire_is_frozen_unless_a_player_in_its_level_is_within_range() {
+    let (mut rig, second) = two_level_rig();
+    let mut builder = player_above_ground(&mut rig);
+    let spot = builder.target().unwrap().previous;
+    let here = voxels_of(&builder.camera);
+    place_block(&mut builder, "base_blocks:fire");
+    run_ticks(&mut rig, 2);
+    builder.say_goodbye();
+    run_ticks(&mut rig, 2);
+    let age = |rig: &Rig| {
+        rig.server
+            .world()
+            .main()
+            .overrides
+            .get(rig.content.state_channel(), spot)
+    };
+    let frozen_at = age(&rig);
+
+    // A player well beyond the range of a fire, in the same level, does not wake it.
+    let far = voxunami_cave::logic::FIRE_RANGE + 40.0;
+    let mut distant = rig.join([here[0] + far, here[1], here[2]], 0.0, 0.0);
+    rig.settle(&mut [&mut distant]);
+    run_ticks(&mut rig, 200);
+    assert_eq!(server_block(&rig, spot), rig.content.blocks.fire);
+    assert_eq!(age(&rig), frozen_at, "nothing aged");
+
+    // Nor does a player right on top of it, in another level.
+    distant.say_goodbye();
+    run_ticks(&mut rig, 2);
+    // (They join out of range and move into place only once they are in the cellar.)
+    let mut elsewhere = rig.join([here[0] + far, here[1], here[2]], 0.0, 0.0);
+    rig.settle(&mut [&mut elsewhere]);
+    elsewhere.send_command("/level go cellar");
+    rig.settle(&mut [&mut elsewhere]);
+    assert_eq!(elsewhere.level(), second);
+    elsewhere.camera = camera_at(here, 0.0, 0.0, VIEW_RADIUS);
+    rig.settle(&mut [&mut elsewhere]);
+    run_ticks(&mut rig, 200);
+    assert_eq!(age(&rig), frozen_at, "nothing aged");
+
+    // A player just inside the range, in its level, does.
+    elsewhere.send_command("/level go overworld");
+    rig.settle(&mut [&mut elsewhere]);
+    run_ticks(&mut rig, 200);
+    assert!(age(&rig) > frozen_at || server_block(&rig, spot) != rig.content.blocks.fire);
+}
+
+#[test]
+fn a_world_saved_while_it_burns_keeps_the_fire_and_it_goes_on_burning_when_loaded() {
+    let mut rig = Rig::new();
+    let mut builder = player_above_ground(&mut rig);
+    let spot = builder.target().unwrap().previous;
+    place_block(&mut builder, "base_blocks:fire");
+    run_ticks(&mut rig, 6);
+    let position = position_of(&builder.camera);
+    let Rig {
+        content, server, ..
+    } = rig;
+    let world = server.into_world();
+    let saved = voxunami_cave::fire::Fire::read_section(world.opaque_sections(), |name| {
+        world.level_index(name)
+    })
+    .expect("the game saved its fires");
+    assert!(saved.0 >= 6, "the rule's clock was saved: {}", saved.0);
+    assert!(
+        saved.1.contains(world_main(), spot),
+        "and the fire that was burning"
+    );
+    let bytes = world.save(&content.registries()).unwrap();
+
+    let mut content = CaveContent::new();
+    let parsed = world_storage::ParsedWorld::parse(&bytes).unwrap();
+    let seed = parsed.world_seed();
+    let (loaded, report) = parsed.load(content.load_context(seed)).unwrap();
+    assert!(report.extra_channels.is_empty() && report.missing_content.is_empty());
+    let mut resumed = Rig::with_world(content, loaded);
+    assert_eq!(server_block(&resumed, spot), resumed.content.blocks.fire);
+    let mut visitor = resumed.join(
+        [
+            position.brick().x() as f64 * 32.0 + f64::from(position.offset()[0]),
+            position.brick().y() as f64 * 32.0 + f64::from(position.offset()[1]),
+            position.brick().z() as f64 * 32.0 + f64::from(position.offset()[2]),
+        ],
+        0.0,
+        0.0,
+    );
+    resumed.settle(&mut [&mut visitor]);
+    run_ticks(&mut resumed, 600);
+    assert_eq!(fires_in(&resumed), 0, "it burned out after being loaded");
+}
+
+fn world_main() -> voxel_space::LevelIndex {
+    voxel_space::LevelIndex::MAIN
 }

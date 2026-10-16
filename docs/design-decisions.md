@@ -84,6 +84,17 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   updates) must be rewritten, for example by solving a connected wire network as one graph. Safety net: a
   partition-invariance test that shifts a scene by 1-31 voxels and requires identical results. Entities (such as 2048's
   moving blocks) are not lattice cells and are processed one at a time in a fixed order; see "Decided (2048)".
+- The shape two rules have in common (built after the second, as planned: light and fire; the `lattice` crate and
+  Phases 13 and 14). A rule keeps its voxels still to be looked at in `lattice::ActiveVoxels` (ordered by level then
+  position, savable by level name). A tick takes them, works out what each does from the world as it stands, and only then
+  writes: so the order and the bricks never matter, and what was written wakes the voxels around it for the next tick. Chance
+  is `lattice::voxel_random(seed, clock, level, voxel, purpose)`, pinned against an independent computation, with the
+  rule's own clock saved with the world (a server's tick starts again at 0 on every start, so it cannot make a saved
+  world carry on exactly). Limits on work are per rule: light takes a budget of voxels per tick (the rest wait in order),
+  fire looks only at fires within range of a player in their level (the rest are frozen). Not extracted, because two rules do
+  not show what is common: a trait for a rule, since light writes one channel and fire writes two and wakes differently.
+  What still has no home is the sampling of random voxels in an active region (for coral and growing grass, which are not
+  made of blocks that tick themselves); fire did not need it.
 - Physics (confirmed by the owner): Rapier (rapier3d 0.36.1) behind a Voxunami adapter crate, with
   `enhanced-determinism`, single-threaded stepping on the server, a local floating-origin frame, large merged voxel
   colliders for terrain, and gravity, buoyancy and drag applied as per-body forces. Evidence and caveats are in
@@ -135,7 +146,8 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   believe not HLSL directly, which would need compiling to SPIR-V first.) Cosmetic and client-side only, so they cannot
   affect simulation; they need a defined interface, validation and limits, and do not exist in the planned offline
   path-traced replay renderer.
-- Fire spread in Cave and other randomly ticked events such as coral growth: each tick the server samples positions in the
+- Fire spread in Cave (built differently: Phase 13, fires tick themselves) and other randomly ticked events such as coral
+  growth, which need what fire did not: each tick the server samples positions in the
   active region with a deterministic random number from (seed, tick, position). Needs flammability and similar block
   properties, an active-region definition and a per-tick budget. (Coral needs water, which Cave does not have yet.)
 - Motorized hinges and pistons to move constructions that are off the main grid: sub-grids with transforms, driven by
@@ -155,7 +167,8 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   directional flood fill: the first lattice rule, under the phased-tick rule and its partition-invariance test (block
   light, the rule and its tests: done, Phases 11 and 12; sky light with directions: not).
   5. Random ticks and fire in Cave: the second lattice rule; only then extract the common lattice-rule shape
-  (neighbourhood snapshot in, edits out, deterministic random numbers, active region, budget). 6. Cave gravity and
+  (neighbourhood snapshot in, edits out, deterministic random numbers, active region, budget; done: Phases 13 and
+  14, see "Decided (rules for lattice simulation and physics)"). 6. Cave gravity and
   collision on Rapier. 7. Flatworms (movable earlier or later; it needs no physics). 8. Mod stages 1 to 5 (see below),
   started once step 5 shows what a block definition and a rule hook carry. 9. Sub-grids with hinges and pistons, and Sculpt.
   10. Mod hooks: lattice rules first, then physics (engine-provided motor and piston parts that mods configure rather than
@@ -243,6 +256,31 @@ Phase 1d (saving):
 - `terrain`: `WorldTerrain` exposes its configuration and can restore saved assignments.
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
+
+Phase 13 (fire, Voxunami Cave; the second lattice rule):
+- Blocks: `wood` (burns slowly), `fire`, and `grass` now burns fast. `BlockDefinition::flammability` (0 to 255, carried by
+  `BlockTable::flammability`) says how readily a block catches fire; the rule decides what the number means. A fire is a
+  low half-height block of 40 light, drawn in a colour for each age (the state is its age, an unbounded number, like 2048's
+  numbers). Keys 5 and 6 place wood and fire; a placed fire is looked at from the next tick.
+- The rule (`games/voxunami_cave/src/fire.rs`, tested on plain maps like the light): each tick a fire in range ages with
+  chance 1 in 4 (so about 48 ticks in all, twelve ages) and goes out leaving air; and for each of its six neighbours that
+  burns, sets it alight with chance flammability in 1024 (grass 100, wood 40): the block becomes a new fire of age 0. All of
+  it from the world as it stood, so fire moves at most one voxel a tick and two fires lighting one block agree. Tested: the
+  mean lifetime, the rates of ignition over 300 seeds, the one-voxel-a-tick rule, freezing out of range and in other levels,
+  that every fire in any random scene goes out and stone is never touched, that a saved rule carries on exactly, and
+  twelve deliberate breakages of the rule and its integration (all caught).
+- In the game (`logic.rs`): fires burn when a player of their level is within `FIRE_RANGE` (64 voxels) of them; the fires and
+  the rule's clock are saved (`voxunami_cave:fire`), and a world saved while burning keeps burning when loaded (tested).
+  Changes made by fire wake the light rule in the same tick, so flames light the air as they burn.
+- Limits, so they are not forgotten: fire does not leap across air or burn upward, there is no rain or water to put it out,
+  a burnt block is simply gone (no charring, no ash), flames are drawn as an opaque orange slab, and the burn rates were
+  chosen without trying them in play.
+
+Phase 14 (what the two rules share, and a budget for the light):
+- New engine crate `lattice`: `ActiveVoxels` and `voxel_random` (see "Decided (rules for lattice simulation and physics)").
+  The light's pending voxels moved onto `ActiveVoxels` (the saved form is unchanged), and `Lighting::step_within` takes a
+  budget (Cave uses 20 000 voxels a tick), tested to settle to the same light however small the budget.
+- `PoseBook::players` lists the players with their poses and levels, for rules that act near players.
 
 Phase 11 (the light rule, Voxunami Cave; the first lattice rule):
 - `games/voxunami_cave/src/lighting.rs`: `Lighting` is the rule and the set of voxels it has yet to look at; `LightWorld`
@@ -482,8 +520,8 @@ continuous channels need quantization or sparse activity.
 
 ## Open
 - Light (Phase 12): cost is one lamp's 64 ticks of spreading averaged 15 ms a tick in a release build (with two clients
-  watching; measured once, not repeated), and a tick is 50 ms, so a few lamps placed at once would overrun it. A budget of
-  voxels looked at per tick, carrying the rest over in the same fixed order, is the lever and is not built. The sky light
+  watching; measured once, not repeated), and a tick is 50 ms, so a few lamps placed at once would overrun it. The budget
+  of 20 000 voxels a tick (Phase 14) is a guess, not tuned, and its streaming cost to clients is not measured. The sky light
   with its six directions, how block and sky light combine, and a daylight cycle (replacing the placeholder ambient light)
   are not built either, and the glow of a lamp could not be judged by eye here.
 - Keyboard controls in a window (reported by the owner, 2026-10-16): in both games the keys type into the title bar instead
@@ -545,6 +583,8 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 10 Chain pushing in 2048: stone pushes a row of up to 12 blocks. **Done.**
 - 11 The light rule (first lattice rule), tested against a search from the sources. **Done.**
 - 12 Block light in Cave: lamp block, light channel, streaming, ambient light in the renderer. **Done.**
+- 13 Fire in Cave (the second lattice rule). **Done.**
+- 14 The `lattice` crate (active voxels, voxel chance) and a budget for the light. **Done.**
 - 1f Launcher and first game crate: `world_view`, the `base_blocks` plugin, Voxunami Cave, the launcher; the old viewer
   retired. **Done.**
 The physics spike is done (`docs/physics-spike.md`); building the physics adapter belongs with the structures work.

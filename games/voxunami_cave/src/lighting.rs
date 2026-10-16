@@ -20,12 +20,22 @@
 //! light through that it should not. No block of the game has one.
 //!
 //! The rule only looks at voxels that may have changed: the ones next to a change, and the ones
-//! next to a change that was just written. When nothing is pending the light is settled.
-
-use std::collections::BTreeSet;
+//! next to a change that was just written. When nothing is pending the light is settled. A step can
+//! be given a budget of voxels to look at; the voxels over it wait, in their fixed order, for the next
+//! step, so that a great deal of light changing at once (many lamps) takes a few ticks longer
+//! instead of one tick too long. The light it settles to is the same.
 
 use block_models::BlockTable;
+use lattice::ActiveVoxels;
+use namespaced_id::NamespacedId;
 use voxel_space::{FaceDirection, LevelIndex, VoxelCoordinate};
+
+/// The identifier of the section the voxels still to be looked at are saved in.
+pub fn section_id() -> NamespacedId {
+    "voxunami_cave:light"
+        .parse()
+        .expect("constant identifier is valid")
+}
 
 /// The voxel next to `at` on `face`, if it is within the world's range.
 fn step_to(at: VoxelCoordinate, face: FaceDirection) -> Option<VoxelCoordinate> {
@@ -51,7 +61,7 @@ pub trait LightWorld {
 pub struct Lighting {
     table: BlockTable,
     /// Voxels whose light may be out of date, in a fixed order.
-    pending: BTreeSet<(LevelIndex, VoxelCoordinate)>,
+    pending: ActiveVoxels,
 }
 
 impl Lighting {
@@ -60,25 +70,19 @@ impl Lighting {
     pub fn new(table: BlockTable) -> Self {
         Self {
             table,
-            pending: BTreeSet::new(),
+            pending: ActiveVoxels::new(),
         }
     }
 
     /// Light that carries on from voxels that were still to be looked at, as when a world is
     /// loaded.
-    pub fn with_pending(
-        table: BlockTable,
-        pending: impl IntoIterator<Item = (LevelIndex, VoxelCoordinate)>,
-    ) -> Self {
-        Self {
-            table,
-            pending: pending.into_iter().collect(),
-        }
+    pub fn with_pending(table: BlockTable, pending: ActiveVoxels) -> Self {
+        Self { table, pending }
     }
 
     /// The voxels still to be looked at, in the order they will be.
-    pub fn pending(&self) -> impl ExactSizeIterator<Item = (LevelIndex, VoxelCoordinate)> + '_ {
-        self.pending.iter().copied()
+    pub fn pending(&self) -> &ActiveVoxels {
+        &self.pending
     }
 
     /// Whether every voxel's light is what the rule says it should be.
@@ -89,19 +93,25 @@ impl Lighting {
     /// Tells the rule that the block or state at a voxel was changed from outside (a block was
     /// placed or broken), so that the voxel and its neighbours are looked at on the next step.
     pub fn voxel_changed(&mut self, level: LevelIndex, at: VoxelCoordinate) {
-        self.pending.insert((level, at));
-        for face in FaceDirection::ALL {
-            if let Some(neighbour) = step_to(at, face) {
-                self.pending.insert((level, neighbour));
-            }
-        }
+        self.pending.insert_with_neighbours(level, at);
     }
 
     /// One tick: works out the light of every voxel that is pending from the world as it is now,
     /// then writes the ones that changed, and so has the voxels around them to look at next time.
     /// Returns how many voxels changed.
     pub fn step(&mut self, world: &mut impl LightWorld) -> usize {
-        let looked_at = std::mem::take(&mut self.pending);
+        self.step_within(world, usize::MAX)
+    }
+
+    /// One tick, looking at no more than `budget` of the pending voxels, in their fixed order; the
+    /// rest stay pending for the next step.
+    pub fn step_within(&mut self, world: &mut impl LightWorld, budget: usize) -> usize {
+        let mut looked_at = self.pending.take();
+        if looked_at.len() > budget {
+            for (level, at) in looked_at.split_off(budget) {
+                self.pending.insert(level, at);
+            }
+        }
         let changes: Vec<_> = looked_at
             .into_iter()
             .filter_map(|(level, at)| {
@@ -409,6 +419,43 @@ mod tests {
     }
 
     #[test]
+    fn a_step_with_a_budget_looks_at_no_more_voxels_than_it_and_the_rest_wait_their_turn() {
+        let mut lighting = Lighting::new(table());
+        let mut world = Box3::default();
+        world.place(at(4, 4, 4), LAMP, 0, &mut lighting);
+        assert_eq!(lighting.pending().len(), 7);
+        // Three of the seven are looked at, and the four others are still waiting.
+        lighting.step_within(&mut world, 3);
+        assert!(lighting.pending().len() >= 4);
+        // The voxels wait in their fixed order: the first ones go first.
+        let mut unlimited = Lighting::new(table());
+        let mut other = Box3::default();
+        other.place(at(4, 4, 4), LAMP, 0, &mut unlimited);
+        let order: Vec<_> = unlimited.pending().iter().collect();
+        let mut with_budget = Lighting::new(table());
+        let mut third = Box3::default();
+        third.place(at(4, 4, 4), LAMP, 0, &mut with_budget);
+        with_budget.step_within(&mut third, 1);
+        // Only the first voxel (the lowest) was looked at: the six others are still pending.
+        let waiting: Vec<_> = with_budget.pending().iter().collect();
+        assert!(order[1..].iter().all(|voxel| waiting.contains(voxel)));
+        // However small the budget, the light settles to what it would have been.
+        for budget in [1, 2, 5, 40] {
+            let mut lighting = Lighting::new(table());
+            let mut world = Box3::default();
+            world.place(at(4, 4, 4), LAMP, 0, &mut lighting);
+            for _ in 0..20_000 {
+                lighting.step_within(&mut world, budget);
+                if lighting.is_settled() {
+                    break;
+                }
+            }
+            assert!(lighting.is_settled(), "budget {budget}");
+            assert_eq!(world.lit(), reference(&world, &table()), "budget {budget}");
+        }
+    }
+
+    #[test]
     fn light_spreads_one_voxel_a_tick() {
         let mut lighting = Lighting::new(table());
         let mut world = Box3::default();
@@ -589,7 +636,7 @@ mod tests {
                 for _ in 0..ticks {
                     lighting.step(&mut world);
                 }
-                let pending: Vec<_> = lighting.pending().collect();
+                let pending = lighting.pending().clone();
                 assert!(!pending.is_empty());
                 lighting = Lighting::with_pending(table(), pending);
             }
@@ -629,6 +676,23 @@ mod tests {
             let mut world = Box3::default();
             build(&scene, [0; 3], &mut lighting, &mut world);
             settle(&mut lighting, &mut world);
+            prop_assert_eq!(world.lit(), reference(&world, &table()));
+        }
+
+        /// Whatever the scene and however small the budget of voxels looked at in a tick, the light
+        /// settles to what the search from the sources finds.
+        #[test]
+        fn a_budget_only_makes_the_light_slower(scene in scene(), budget in 1usize..60) {
+            let mut lighting = Lighting::new(table());
+            let mut world = Box3::default();
+            build(&scene, [0; 3], &mut lighting, &mut world);
+            for _ in 0..50_000 {
+                lighting.step_within(&mut world, budget);
+                if lighting.is_settled() {
+                    break;
+                }
+            }
+            prop_assert!(lighting.is_settled());
             prop_assert_eq!(world.lit(), reference(&world, &table()));
         }
 

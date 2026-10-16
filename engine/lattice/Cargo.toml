@@ -1,0 +1,20 @@
+[package]
+name = "lattice"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "What rules that act on voxels tick by tick share: the voxels still to be looked at, in a fixed order and savable, and deterministic random numbers for a voxel at a tick."
+
+[dependencies]
+binary_codec.workspace = true
+namespaced_id.workspace = true
+terrain.workspace = true
+voxel_space.workspace = true
+world_storage.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

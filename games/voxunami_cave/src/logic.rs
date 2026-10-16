@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use block_models::BlockTable;
 use game_shell::PoseBook;
+use lattice::ActiveVoxels;
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, Tick};
 use server::{GameLogic, ServerWorld};
@@ -13,12 +14,19 @@ use voxel_space::{LevelIndex, VoxelCoordinate};
 use world_storage::{Section, WorldData};
 
 use crate::content::CaveContent;
-use crate::light_state::{self, PendingVoxel};
-use crate::lighting::{LightWorld, Lighting};
+use crate::fire::{Fire, FireWorld};
+use crate::lighting::{self, LightWorld, Lighting};
 use crate::messages::{decode_set_block, set_block_kind};
 
 /// How far from a player, in voxels, a block can be changed.
 pub const REACH: f64 = 10.0;
+
+/// How many voxels the light rule looks at in a tick at most. A lamp's light is some thousands of
+/// voxels a tick as it spreads; more than this at once (many lamps) takes a few ticks longer.
+pub const LIGHT_VOXELS_PER_TICK: usize = 20_000;
+
+/// How far from a player, in voxels, fires burn: farther away they are frozen.
+pub const FIRE_RANGE: f64 = 64.0;
 
 /// The server's world as the light rule sees it. Terrain this server cannot generate has nothing
 /// to read, and lets no light through.
@@ -50,6 +58,33 @@ impl LightWorld for WorldLight<'_> {
     }
 }
 
+/// The server's world as the fire rule sees it.
+struct WorldFire<'a> {
+    world: &'a mut ServerWorld,
+    block_channel: ChannelIndex,
+    state_channel: ChannelIndex,
+}
+
+impl FireWorld for WorldFire<'_> {
+    fn block_and_state(&mut self, level: LevelIndex, at: VoxelCoordinate) -> Option<(u32, u32)> {
+        let block = self.world.voxel(level, self.block_channel, at).ok()?;
+        let state = self.world.voxel(level, self.state_channel, at).ok()?;
+        Some((block, state))
+    }
+
+    fn set_block_and_state(
+        &mut self,
+        level: LevelIndex,
+        at: VoxelCoordinate,
+        block: u32,
+        state: u32,
+    ) {
+        // The voxel was just read, so the level and the terrain there are available.
+        let _ = self.world.set_voxel(level, self.state_channel, at, state);
+        let _ = self.world.set_voxel(level, self.block_channel, at, block);
+    }
+}
+
 #[derive(Debug)]
 pub struct CaveLogic {
     block_ids: HashMap<NamespacedId, u32>,
@@ -61,6 +96,8 @@ pub struct CaveLogic {
     /// The world's levels by identifier, in index order, for naming them in the saved light.
     level_ids: Vec<NamespacedId>,
     lighting: Lighting,
+    fire: Fire,
+    fire_block: u32,
     poses: PoseBook,
 }
 
@@ -70,16 +107,21 @@ impl CaveLogic {
     pub fn new(content: &CaveContent, world: &WorldData) -> Self {
         let level_ids: Vec<NamespacedId> = world.levels().map(|(_, id, _)| id.clone()).collect();
         // Voxels in a level this world no longer has are not looked at.
-        let pending = light_state::read_pending(world.opaque_sections())
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|(level, voxel)| Some((world.level_index(&level)?, voxel)));
+        let pending = ActiveVoxels::from_sections(
+            world.opaque_sections(),
+            &lighting::section_id(),
+            |level| world.level_index(level),
+        )
+        .unwrap_or_default();
         let block_ids = content
             .blocks
             .blocks
             .iter()
             .map(|(id, entry)| (entry.identifier().clone(), id.raw()))
             .collect();
+        let (fire_clock, fire_active) =
+            Fire::read_section(world.opaque_sections(), |level| world.level_index(level))
+                .unwrap_or_default();
         Self {
             block_ids,
             table: content.blocks.block_table(),
@@ -88,6 +130,15 @@ impl CaveLogic {
             light_channel: content.light_channel(),
             level_ids,
             lighting: Lighting::with_pending(content.blocks.block_table(), pending),
+            fire: Fire::new(
+                content.blocks.block_table(),
+                content.blocks.fire,
+                content.blocks.air,
+                world.world_seed,
+                fire_clock,
+                fire_active,
+            ),
+            fire_block: content.blocks.fire,
             poses: PoseBook::new(),
         }
     }
@@ -117,6 +168,9 @@ impl CaveLogic {
         {
             let _ = world.set_voxel(level, self.block_channel, at, raw);
             self.lighting.voxel_changed(level, at);
+            if raw == self.fire_block {
+                self.fire.ignite(level, at);
+            }
         }
     }
 }
@@ -154,22 +208,40 @@ impl GameLogic for CaveLogic {
 
     fn tick(&mut self, _tick: Tick, world: &mut ServerWorld) {
         self.poses.tell_everyone(world);
-        self.lighting.step(&mut WorldLight {
-            world,
-            block_channel: self.block_channel,
-            state_channel: self.state_channel,
-            light_channel: self.light_channel,
-        });
+        // Fires near a player burn; what they change is looked at by the light in the same tick.
+        let poses = &self.poses;
+        let changed = self.fire.step(
+            &mut WorldFire {
+                world,
+                block_channel: self.block_channel,
+                state_channel: self.state_channel,
+            },
+            |level, at| {
+                poses.players().any(|(_, pose, player_level)| {
+                    player_level == level && pose.distance_to_voxel(at) <= FIRE_RANGE
+                })
+            },
+        );
+        for (level, at) in changed {
+            self.lighting.voxel_changed(level, at);
+        }
+        self.lighting.step_within(
+            &mut WorldLight {
+                world,
+                block_channel: self.block_channel,
+                state_channel: self.state_channel,
+                light_channel: self.light_channel,
+            },
+            LIGHT_VOXELS_PER_TICK,
+        );
     }
 
     fn save_sections(&self) -> Vec<Section> {
-        let pending: Vec<PendingVoxel> = self
-            .lighting
-            .pending()
-            .filter_map(|(level, voxel)| {
-                Some((self.level_ids.get(level.get() as usize)?.clone(), voxel))
-            })
-            .collect();
-        vec![light_state::section(&pending)]
+        vec![
+            self.lighting
+                .pending()
+                .to_section(&lighting::section_id(), &self.level_ids),
+            self.fire.to_section(&self.level_ids),
+        ]
     }
 }

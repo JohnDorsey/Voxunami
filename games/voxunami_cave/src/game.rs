@@ -12,11 +12,13 @@ use crate::logic::{CaveLogic, REACH};
 use crate::messages::{SetBlock, encode_set_block, set_block_kind};
 
 /// The blocks a player can place, in the order the number keys choose them.
-pub const PLACEABLE_BLOCKS: [&str; 4] = [
+pub const PLACEABLE_BLOCKS: [&str; 6] = [
     "base_blocks:stone",
     "base_blocks:dirt",
     "base_blocks:grass",
     "base_blocks:lamp",
+    "base_blocks:wood",
+    "base_blocks:fire",
 ];
 
 /// What the cave client remembers.
@@ -101,7 +103,7 @@ impl GameDefinition for Cave {
     }
 
     fn controls() -> &'static str {
-        "Left click breaks the block you look at; right click places the selected block;\n1, 2, 3, 4 select stone, dirt, grass, lamp; R cycles whole block, slabs and stairs."
+        "Left click breaks the block you look at; right click places the selected block;\n1 to 6 select stone, dirt, grass, lamp, wood, fire (which burns grass and wood); R cycles whole block, slabs and stairs."
     }
 
     fn default_seed() -> u64 {
@@ -144,6 +146,8 @@ impl GameDefinition for Cave {
             KeyCode::Digit2 => session.state.selected_block = 1,
             KeyCode::Digit3 => session.state.selected_block = 2,
             KeyCode::Digit4 => session.state.selected_block = 3,
+            KeyCode::Digit5 => session.state.selected_block = 4,
+            KeyCode::Digit6 => session.state.selected_block = 5,
             KeyCode::KeyR => {
                 session.state.selected_shape =
                     (session.state.selected_shape + 1) % SHAPE_NAMES.len() as u32;
