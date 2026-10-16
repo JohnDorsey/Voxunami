@@ -89,6 +89,7 @@ impl Logic2048 {
                 level: world.level_index(&saved.level)?,
                 position: saved.position,
                 direction: saved.direction,
+                tool: saved.tool,
                 steps_left: saved.steps_left,
             })
         });
@@ -116,10 +117,13 @@ impl Logic2048 {
             block_channel: self.block_channel,
             number_channel: self.number_channel,
         };
-        if self
-            .movers
-            .push_block(&mut field, level, request.voxel, request.direction)
-        {
+        if self.movers.push_block(
+            &mut field,
+            level,
+            request.voxel,
+            request.direction,
+            request.tool,
+        ) {
             self.progress.pushes += 1;
             self.progress_changed = true;
         }
@@ -198,6 +202,7 @@ impl GameLogic for Logic2048 {
                     level: self.level_ids.get(mover.level.get() as usize)?.clone(),
                     position: mover.position,
                     direction: mover.direction,
+                    tool: mover.tool,
                     steps_left: mover.steps_left,
                 })
             })

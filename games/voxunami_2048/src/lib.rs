@@ -10,6 +10,7 @@
 //! Everything is made of voxels, so it is streamed, saved, recorded and replayed like any world.
 //!
 //! - [`material`] and [`numbered_block`]: what blocks are, and what their materials do when pushed.
+//! - [`tool`]: the tools that push blocks, and the way each combines the blocks it meets.
 //! - [`motion`]: the rules of moving and merging blocks.
 //! - [`landscape`]: the ground.
 //! - [`content`]: the blocks as the world stores them, and how worlds are made and loaded.
@@ -24,6 +25,7 @@ pub mod material;
 pub mod messages;
 pub mod motion;
 pub mod numbered_block;
+pub mod tool;
 
 pub use content::game_id;
 pub use game::Game2048;

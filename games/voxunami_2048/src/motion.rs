@@ -3,8 +3,9 @@
 //! A push makes a [`Mover`] of a block. Every tick each mover takes one step along its direction:
 //!
 //! - into an empty voxel: the block moves there;
-//! - into a block with an equal number: the two merge into one block of the next number, which
-//!   stays where the struck block was, and the motion ends;
+//! - into a block that the pushing tool combines with (see [`Tool::combine`]): the moving block is
+//!   gone and the struck one stays where it was with the number the tool made of the two, or both
+//!   are gone, and the motion ends;
 //! - into any other block, or into something that is not a numbered block at all (terrain this
 //!   program cannot read, the edge of the world): the motion ends, or for a material that bounces,
 //!   the block turns around.
@@ -25,6 +26,7 @@
 use voxel_space::{FaceDirection, LevelIndex, VoxelCoordinate};
 
 use crate::numbered_block::NumberedBlock;
+use crate::tool::{Combination, Tool};
 
 /// What is at a voxel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +52,8 @@ pub struct Mover {
     pub level: LevelIndex,
     pub position: VoxelCoordinate,
     pub direction: FaceDirection,
+    /// The tool that pushed the block, which decides what it does to the blocks it meets.
+    pub tool: Tool,
     /// How many more steps the block takes at most; always at least 1 for a block in motion.
     pub steps_left: u32,
 }
@@ -88,15 +92,16 @@ impl Movers {
         self.movers.is_empty()
     }
 
-    /// Pushes the block at `position` of `level` toward `direction`, with the full range of its
-    /// material. A block that is already moving is pushed anew, keeping its place in the order.
-    /// Returns whether there was a block to push.
+    /// Pushes the block at `position` of `level` toward `direction` with `tool`, for the full range
+    /// of its material. A block that is already moving is pushed anew (with the new direction and
+    /// tool), keeping its place in the order. Returns whether there was a block to push.
     pub fn push_block(
         &mut self,
         field: &mut impl BlockField,
         level: LevelIndex,
         position: VoxelCoordinate,
         direction: FaceDirection,
+        tool: Tool,
     ) -> bool {
         let Occupant::Block(block) = field.occupant(level, position) else {
             return false;
@@ -105,6 +110,7 @@ impl Movers {
             level,
             position,
             direction,
+            tool,
             steps_left: block.material.motion().range,
         };
         match self
@@ -119,7 +125,7 @@ impl Movers {
     }
 
     /// Takes one step with every mover. Returns the blocks the merges of this tick made, in the
-    /// order they happened.
+    /// order they happened (a merge that made both blocks vanish made none).
     pub fn advance(&mut self, field: &mut impl BlockField) -> Vec<NumberedBlock> {
         let mut merges = Vec::new();
         let mut still_moving = Vec::with_capacity(self.movers.len());
@@ -154,11 +160,21 @@ fn step(mover: &mut Mover, field: &mut impl BlockField, merges: &mut Vec<Numbere
             field.place(mover.level, target, Some(block));
             mover.position = target;
         }
-        Some((target, Occupant::Block(struck))) if block.merges_with(struck) => {
-            let merged = block.merged_into(struck);
+        Some((target, Occupant::Block(struck)))
+            if mover
+                .tool
+                .combine(block.number(), struck.number())
+                .is_some() =>
+        {
             field.place(mover.level, mover.position, None);
-            field.place(mover.level, target, Some(merged));
-            merges.push(merged);
+            match mover.tool.combine(block.number(), struck.number()) {
+                Some(Combination::Becomes(number)) => {
+                    let made = NumberedBlock::new(struck.material, number);
+                    field.place(mover.level, target, Some(made));
+                    merges.push(made);
+                }
+                _ => field.place(mover.level, target, None),
+            }
             return false;
         }
         _ if block.material.motion().bounces => mover.direction = mover.direction.opposite(),
@@ -266,7 +282,8 @@ mod tests {
             &mut field,
             LevelIndex::MAIN,
             at(0, 0, 0),
-            FaceDirection::PositiveZ
+            FaceDirection::PositiveZ,
+            Tool::Double
         ));
         assert_eq!(movers.len(), 1);
         let (ticks, merges) = run_to_rest(&mut movers, &mut field);
@@ -285,6 +302,7 @@ mod tests {
             LevelIndex::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
+            Tool::Double,
         );
         let (ticks, merges) = run_to_rest(&mut movers, &mut field);
         assert_eq!((ticks, merges.len()), (1, 0));
@@ -301,6 +319,7 @@ mod tests {
             LevelIndex::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
+            Tool::Double,
         );
         let (_, merges) = run_to_rest(&mut movers, &mut field);
         // The struck block stays, so the result is ice.
@@ -319,6 +338,7 @@ mod tests {
             LevelIndex::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
+            Tool::Double,
         );
         for expected in 1..=4 {
             movers.advance(&mut field);
@@ -349,6 +369,7 @@ mod tests {
             LevelIndex::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
+            Tool::Double,
         );
         let (ticks, merges) = run_to_rest(&mut movers, &mut field);
         assert_eq!(ticks, 3);
@@ -366,6 +387,7 @@ mod tests {
             LevelIndex::MAIN,
             at(0, 0, 0),
             FaceDirection::NegativeY,
+            Tool::Double,
         );
         for _ in 0..COASTING_RANGE - 1 {
             movers.advance(&mut field);
@@ -387,6 +409,7 @@ mod tests {
             LevelIndex::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
+            Tool::Double,
         );
         for _ in 0..4 {
             movers.advance(&mut field);
@@ -414,6 +437,7 @@ mod tests {
             LevelIndex::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
+            Tool::Double,
         );
         movers.advance(&mut field);
         assert_eq!(movers.as_slice()[0].direction, FaceDirection::NegativeX);
@@ -426,6 +450,7 @@ mod tests {
             LevelIndex::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
+            Tool::Double,
         );
         let (_, merges) = run_to_rest(&mut movers, &mut field);
         assert_eq!(merges, [ice(3)]);
@@ -443,6 +468,7 @@ mod tests {
             LevelIndex::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
+            Tool::Double,
         );
         run_to_rest(&mut movers, &mut field);
         assert_eq!(field.at(2, 0, 0), Some(ice(1)));
@@ -455,6 +481,7 @@ mod tests {
             LevelIndex::MAIN,
             at(edge, 0, 0),
             FaceDirection::PositiveX,
+            Tool::Double,
         );
         let (ticks, _) = run_to_rest(&mut movers, &mut field);
         assert_eq!(ticks, 1);
@@ -470,13 +497,15 @@ mod tests {
             &mut field,
             LevelIndex::MAIN,
             at(0, 0, 0),
-            FaceDirection::PositiveX
+            FaceDirection::PositiveX,
+            Tool::Double
         ));
         assert!(!movers.push_block(
             &mut field,
             LevelIndex::MAIN,
             at(1, 1, 1),
-            FaceDirection::PositiveX
+            FaceDirection::PositiveX,
+            Tool::Double
         ));
         assert!(movers.is_empty());
     }
@@ -490,6 +519,7 @@ mod tests {
             LevelIndex::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
+            Tool::Double,
         );
         movers.advance(&mut field);
         movers.advance(&mut field);
@@ -498,7 +528,8 @@ mod tests {
             &mut field,
             LevelIndex::MAIN,
             at(2, 0, 0),
-            FaceDirection::PositiveY
+            FaceDirection::PositiveY,
+            Tool::Double
         ));
         assert_eq!(movers.len(), 1);
         assert_eq!(movers.as_slice()[0].steps_left, COASTING_RANGE);
@@ -517,12 +548,14 @@ mod tests {
             LevelIndex::MAIN,
             at(1, 0, 0),
             FaceDirection::PositiveX,
+            Tool::Double,
         );
         movers.push_block(
             &mut field,
             LevelIndex::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
+            Tool::Double,
         );
         for _ in 0..3 {
             movers.advance(&mut field);
@@ -539,12 +572,14 @@ mod tests {
             LevelIndex::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
+            Tool::Double,
         );
         movers.push_block(
             &mut field,
             LevelIndex::MAIN,
             at(1, 0, 0),
             FaceDirection::PositiveX,
+            Tool::Double,
         );
         movers.advance(&mut field);
         assert_eq!(field.at(0, 0, 0), Some(ice(1)));
@@ -561,12 +596,14 @@ mod tests {
             LevelIndex::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
+            Tool::Double,
         );
         movers.push_block(
             &mut field,
             LevelIndex::MAIN,
             at(1, 0, 0),
             FaceDirection::PositiveY,
+            Tool::Double,
         );
         let merges = movers.advance(&mut field);
         assert_eq!(merges, [ice(2)]);
@@ -579,6 +616,7 @@ mod tests {
                 position: at(1, 1, 0),
                 direction: FaceDirection::PositiveY,
                 steps_left: COASTING_RANGE - 1,
+                tool: Tool::Double,
             }]
         );
     }
@@ -592,6 +630,7 @@ mod tests {
             LevelIndex::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
+            Tool::Double,
         );
         field.place(LevelIndex::MAIN, at(0, 0, 0), None);
         assert!(movers.advance(&mut field).is_empty());
@@ -605,6 +644,7 @@ mod tests {
             level: LevelIndex::MAIN,
             position: at(0, 0, 0),
             direction: FaceDirection::PositiveX,
+            tool: Tool::Double,
             steps_left,
         };
         let movers = Movers::from_saved([mover(0), mover(5)]);
@@ -620,7 +660,13 @@ mod tests {
         field.blocks.insert((second, at(0, 0, 0)), ice(1));
         field.blocks.insert((second, at(3, 0, 0)), stone(1));
         let mut movers = Movers::new();
-        assert!(movers.push_block(&mut field, second, at(0, 0, 0), FaceDirection::PositiveX));
+        assert!(movers.push_block(
+            &mut field,
+            second,
+            at(0, 0, 0),
+            FaceDirection::PositiveX,
+            Tool::Double
+        ));
         let (ticks, merges) = run_to_rest(&mut movers, &mut field);
         assert_eq!(
             (ticks, merges.len()),
@@ -639,8 +685,15 @@ mod tests {
             LevelIndex::MAIN,
             at(0, 0, 0),
             FaceDirection::NegativeY,
+            Tool::Double,
         );
-        assert!(movers.push_block(&mut field, second, at(0, 0, 0), FaceDirection::NegativeY));
+        assert!(movers.push_block(
+            &mut field,
+            second,
+            at(0, 0, 0),
+            FaceDirection::NegativeY,
+            Tool::Double
+        ));
         assert_eq!(
             movers.len(),
             2,
@@ -652,18 +705,225 @@ mod tests {
         assert_eq!(field.blocks.get(&(second, at(0, 0, 0))), None);
     }
 
+    fn block(material: Material, number: u32) -> NumberedBlock {
+        NumberedBlock::new(material, number)
+    }
+
+    /// Pushes the block at the origin toward +x with `tool` and runs until everything rests.
+    fn push_origin_block(field: &mut TestField, tool: Tool) -> Vec<NumberedBlock> {
+        let mut movers = Movers::new();
+        assert!(movers.push_block(
+            field,
+            LevelIndex::MAIN,
+            at(0, 0, 0),
+            FaceDirection::PositiveX,
+            tool
+        ));
+        run_to_rest(&mut movers, field).1
+    }
+
+    #[test]
+    fn the_add_tool_merges_blocks_of_any_numbers_into_one_in_the_material_of_the_struck_block() {
+        let mut field = TestField::with(&[
+            ((0, 0, 0), block(Material::Stone, 3)),
+            ((1, 0, 0), block(Material::Ice, 4)),
+        ]);
+        let merges = push_origin_block(&mut field, Tool::Add);
+        assert_eq!(merges, [block(Material::Ice, 7)]);
+        assert_eq!(field.blocks.len(), 1);
+        assert_eq!(field.at(1, 0, 0), Some(block(Material::Ice, 7)));
+
+        // A coasting block adds itself to the first block it meets.
+        let mut field = TestField::with(&[
+            ((0, 0, 0), block(Material::Ice, 5)),
+            ((4, 0, 0), block(Material::Stone, 64)),
+        ]);
+        let merges = push_origin_block(&mut field, Tool::Add);
+        assert_eq!(merges, [block(Material::Stone, 69)]);
+        assert_eq!(field.blocks.len(), 1);
+        assert_eq!(field.at(4, 0, 0), Some(block(Material::Stone, 69)));
+    }
+
+    #[test]
+    fn the_subtract_tool_leaves_the_difference_in_the_struck_block_or_nothing_at_all() {
+        let mut field = TestField::with(&[
+            ((0, 0, 0), block(Material::Stone, 3)),
+            ((1, 0, 0), block(Material::Ice, 10)),
+        ]);
+        assert_eq!(
+            push_origin_block(&mut field, Tool::Subtract),
+            [block(Material::Ice, 7)]
+        );
+        assert_eq!(field.blocks.len(), 1);
+
+        // The other way round the difference is the same.
+        let mut field = TestField::with(&[
+            ((0, 0, 0), block(Material::Stone, 10)),
+            ((1, 0, 0), block(Material::Ice, 3)),
+        ]);
+        assert_eq!(
+            push_origin_block(&mut field, Tool::Subtract),
+            [block(Material::Ice, 7)]
+        );
+
+        // Equal numbers cancel: both blocks are gone and no block was made.
+        let mut field = TestField::with(&[
+            ((0, 0, 0), block(Material::Stone, 6)),
+            ((1, 0, 0), block(Material::SpringIce, 6)),
+            ((9, 9, 9), block(Material::Stone, 1)),
+        ]);
+        assert_eq!(push_origin_block(&mut field, Tool::Subtract), []);
+        assert_eq!(field.blocks.len(), 1);
+        assert_eq!(field.at(9, 9, 9), Some(block(Material::Stone, 1)));
+    }
+
+    #[test]
+    fn a_block_that_cancels_with_one_in_motion_takes_it_out_of_the_motion_too() {
+        let mut field = TestField::with(&[
+            ((0, 0, 0), block(Material::Ice, 4)),
+            ((1, 0, 0), block(Material::Ice, 4)),
+        ]);
+        let mut movers = Movers::new();
+        movers.push_block(
+            &mut field,
+            LevelIndex::MAIN,
+            at(0, 0, 0),
+            FaceDirection::PositiveX,
+            Tool::Subtract,
+        );
+        movers.push_block(
+            &mut field,
+            LevelIndex::MAIN,
+            at(1, 0, 0),
+            FaceDirection::PositiveY,
+            Tool::Double,
+        );
+        assert_eq!(movers.advance(&mut field), []);
+        assert!(field.blocks.is_empty());
+        assert!(
+            movers.is_empty(),
+            "the second mover's block is gone with it"
+        );
+    }
+
+    #[test]
+    fn what_the_tool_does_not_combine_is_met_like_any_other_block_and_the_tool_stays_with_the_block()
+     {
+        // The same scene, a 2 coasting into a 3: only the add and subtract tools combine them.
+        let scene = [
+            ((0, 0, 0), block(Material::Ice, 2)),
+            ((3, 0, 0), block(Material::Stone, 3)),
+        ];
+        let mut field = TestField::with(&scene);
+        assert_eq!(push_origin_block(&mut field, Tool::Double), []);
+        assert_eq!(field.at(2, 0, 0), Some(block(Material::Ice, 2)));
+        assert_eq!(field.at(3, 0, 0), Some(block(Material::Stone, 3)));
+        let mut field = TestField::with(&scene);
+        assert_eq!(
+            push_origin_block(&mut field, Tool::Add),
+            [block(Material::Stone, 5)]
+        );
+        let mut field = TestField::with(&scene);
+        assert_eq!(
+            push_origin_block(&mut field, Tool::Subtract),
+            [block(Material::Stone, 1)]
+        );
+
+        // Spring ice that a tool cannot combine bounces, as before.
+        let mut field = TestField::with(&[
+            ((0, 0, 0), block(Material::SpringIce, 2)),
+            ((1, 0, 0), block(Material::Stone, 3)),
+        ]);
+        let mut movers = Movers::new();
+        movers.push_block(
+            &mut field,
+            LevelIndex::MAIN,
+            at(0, 0, 0),
+            FaceDirection::PositiveX,
+            Tool::Double,
+        );
+        movers.advance(&mut field);
+        assert_eq!(movers.as_slice()[0].direction, FaceDirection::NegativeX);
+        assert_eq!(movers.as_slice()[0].tool, Tool::Double);
+    }
+
+    #[test]
+    fn a_result_that_does_not_fit_is_not_a_merge() {
+        let mut field = TestField::with(&[
+            ((0, 0, 0), block(Material::Stone, u32::MAX)),
+            ((1, 0, 0), block(Material::Stone, 1)),
+        ]);
+        assert_eq!(push_origin_block(&mut field, Tool::Add), []);
+        assert_eq!(field.at(0, 0, 0), Some(block(Material::Stone, u32::MAX)));
+        assert_eq!(field.at(1, 0, 0), Some(block(Material::Stone, 1)));
+    }
+
+    #[test]
+    fn pushing_a_moving_block_again_gives_it_the_new_tool() {
+        let mut field = TestField::with(&[((0, 0, 0), ice(1))]);
+        let mut movers = Movers::new();
+        for tool in [Tool::Add, Tool::Subtract] {
+            movers.push_block(
+                &mut field,
+                LevelIndex::MAIN,
+                at(0, 0, 0),
+                FaceDirection::PositiveX,
+                tool,
+            );
+            assert_eq!(movers.len(), 1);
+            assert_eq!(movers.as_slice()[0].tool, tool);
+        }
+    }
+
+    fn tool_strategy() -> impl Strategy<Value = Tool> {
+        (0..Tool::ALL.len()).prop_map(|index| Tool::ALL[index])
+    }
+
     fn material_strategy() -> impl Strategy<Value = Material> {
         (0..Material::ALL.len()).prop_map(|index| Material::ALL[index])
     }
 
     proptest! {
-        /// Whatever is pushed, in any arrangement: merging keeps the total of all the numbers,
-        /// each merge removes exactly one block, every mover is a block, and all motion ends.
+        /// With the subtract tool, merging takes numbers away and removes blocks: the total never
+        /// grows, no block is ever numbered zero, every mover is a block, and all motion ends.
+        #[test]
+        fn subtracting_never_grows_the_total_and_always_comes_to_rest(
+            blocks in proptest::collection::vec(
+                (0i64..5, 0i64..5, 0i64..5, material_strategy(), 1u32..=9), 0..60),
+            pushes in proptest::collection::vec((0i64..5, 0i64..5, 0i64..5, 0u8..6), 0..10),
+        ) {
+            let mut field = TestField::default();
+            for (x, y, z, material, number) in blocks {
+                field.blocks.insert((LevelIndex::MAIN, at(x, y, z)), NumberedBlock::new(material, number));
+            }
+            let mut movers = Movers::new();
+            for (x, y, z, direction) in pushes {
+                let direction = FaceDirection::from_index(direction).unwrap();
+                movers.push_block(&mut field, LevelIndex::MAIN, at(x, y, z), direction, Tool::Subtract);
+            }
+            let (mut total, mut count) = (field.total_value(), field.blocks.len());
+            for _ in 0..COASTING_RANGE {
+                movers.advance(&mut field);
+                prop_assert!(field.total_value() <= total);
+                prop_assert!(field.blocks.len() <= count);
+                (total, count) = (field.total_value(), field.blocks.len());
+                for mover in movers.as_slice() {
+                    prop_assert!(field.blocks.contains_key(&(mover.level, mover.position)));
+                    prop_assert_eq!(mover.tool, Tool::Subtract);
+                }
+            }
+            prop_assert!(movers.is_empty());
+        }
+
+        /// Whatever is pushed, in any arrangement: merging with the double or add tool keeps the
+        /// total of all the numbers, each merge removes exactly one block, every mover is a block,
+        /// and all motion ends.
         #[test]
         fn pushes_conserve_value_and_always_come_to_rest(
             blocks in proptest::collection::vec(
                 (0i64..5, 0i64..5, 0i64..5, material_strategy(), 1u8..=3), 0..60),
             pushes in proptest::collection::vec((0i64..5, 0i64..5, 0i64..5, 0u8..6), 0..10),
+            tool in tool_strategy().prop_filter("the total is kept", |tool| *tool != Tool::Subtract),
         ) {
             let mut field = TestField::default();
             for (x, y, z, material, exponent) in blocks {
@@ -673,7 +933,7 @@ mod tests {
             let mut movers = Movers::new();
             for (x, y, z, direction) in pushes {
                 let direction = FaceDirection::from_index(direction).unwrap();
-                movers.push_block(&mut field, LevelIndex::MAIN, at(x, y, z), direction);
+                movers.push_block(&mut field, LevelIndex::MAIN, at(x, y, z), direction, tool);
             }
             let mut merge_count = 0;
             for _ in 0..COASTING_RANGE {

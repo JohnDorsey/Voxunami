@@ -100,17 +100,18 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - What happens to a pushed block depends on its material. Stone takes one step and does not coast. Ice coasts, one step
   per tick, until it meets another block, and does not push it: it stops. Spring ice is ice that bounces back the way it
   came. Later materials will pass momentum on (deterministic, identical on every platform, integer ratio speeds).
-- A moving block that meets a block with an equal number (whatever either is made of) merges with it: the block that was
-  struck becomes the next number, keeping its own material, and stays where it was. The score is the sum of the numbers of
-  the blocks merging has made.
+- What a moving block does to a block it meets is decided by the tool that pushed it (built: Phase 9). The double tool
+  merges equal numbers (whatever either is made of) into their double; the add tool adds any two numbers; the subtract tool
+  leaves the difference, and equal numbers cancel and both blocks vanish. The block that was struck stays where it was,
+  keeping its own material, with the new number. A result that does not fit in 32 bits is not a merge. The score is the
+  sum of the numbers of the blocks merging has made (a cancellation makes none).
 - Assumptions made while building it, easy to change: blocks never push other blocks (the owner's words allow stone to
   push a row; only the momentum materials will transfer motion); a push has a range (48 steps for the ices, since an
   infinite world may have nothing in the way) and every tick of a motion, bounce included, uses up a step; pushing a
   block that is already moving gives it the new direction and the full range; blocks of 2^20 do not merge.
-- Planned (owner): blocks will push chains of blocks, eventually. Merging will be chosen by the tool the player uses, not
-  fixed by the blocks: the 2048 tool merges equal numbers into their double, an add tool and a subtract tool combine
-  numbers by those operations, and there may be others. So the merge rule will move out of `NumberedBlock` into tools
-  that the push message names.
+- Planned (owner): blocks will push chains of blocks, eventually. There may be tools beyond the three.
+- A player chooses the tool with the keys 1, 2, 3 (double, add, subtract); the push message names it, a moving block keeps
+  the tool that pushed it (it is saved with the block), and pushing a block already in motion gives it the new tool.
 - Moving blocks are entities, not lattice cells, so they do not need the phased-tick rule: they act one at a time in the
   order they started moving, each seeing what the earlier ones did that tick (`voxunami_2048::motion`). That order
   decides what happens when two blocks meet in the same tick, and is the same on every machine. Which blocks are moving
@@ -232,6 +233,15 @@ Phase 1d (saving):
 - `terrain`: `WorldTerrain` exposes its configuration and can restore saved assignments.
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
+
+Phase 9 (tools choose how blocks combine, Voxunami 2048):
+- `tool::Tool` (`Double`, `Add`, `Subtract`) and `Tool::combine(moving, struck)`, which says whether two numbers combine
+  and into what (`Combination::Becomes(number)` or `Vanish`). The merge rule left `NumberedBlock`. A `Mover` has a tool;
+  `Movers::push_block` takes one; a push request carries it (one more byte); a saved mover carries it (saved section
+  version 4; older versions read as the double tool).
+- The client has the chosen tool in its state and shows it in the title. Property tests: with double or add the total of
+  all numbers is kept; with subtract it never grows and no block is ever numbered 0.
+- Not built: chain pushing (next), more tools.
 
 Phase 8 (numbers as block states, Voxunami 2048):
 - A voxel of 2048 is a material's block (`voxunami_2048:stone`, `ice`, `spring_ice`; air is `voxunami_2048:air`) and, in
@@ -468,6 +478,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 6 Levels (protocol 2, file format, server, client, session) and a text command channel with `/level`. **Done.**
 - 7 Block states and shapes in block definitions, detailed quads, light in the quad (with its spike). **Done.**
 - 8 Numbers as block states in 2048 (colours by state in the engine, generator v2). **Done.**
+- 9 Tools in 2048: the push names a tool, and the tool decides how blocks combine. **Done.**
 - 1f Launcher and first game crate: `world_view`, the `base_blocks` plugin, Voxunami Cave, the launcher; the old viewer
   retired. **Done.**
 The physics spike is done (`docs/physics-spike.md`); building the physics adapter belongs with the structures work.

@@ -6,6 +6,8 @@ use namespaced_id::NamespacedId;
 use voxel_space::{FaceDirection, VoxelCoordinate};
 use world_storage::Section;
 
+use crate::tool::Tool;
+
 fn kind(text: &str) -> NamespacedId {
     text.parse().expect("constant identifier is valid")
 }
@@ -20,11 +22,13 @@ pub fn progress_kind() -> NamespacedId {
     kind("voxunami_2048:progress")
 }
 
-/// A request to push the block at `voxel` toward `direction`. Pulling is pushing toward the puller.
+/// A request to push the block at `voxel` toward `direction` with `tool`, which decides what the
+/// block does to the blocks it meets. Pulling is pushing toward the puller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PushRequest {
     pub voxel: VoxelCoordinate,
     pub direction: FaceDirection,
+    pub tool: Tool,
 }
 
 fn write_voxel(writer: &mut ByteWriter, voxel: VoxelCoordinate) {
@@ -46,10 +50,15 @@ fn read_direction(reader: &mut ByteReader<'_>) -> Result<FaceDirection, DecodeEr
     FaceDirection::from_index(reader.read_u8()?).ok_or(DecodeError::Invalid("no such direction"))
 }
 
+fn read_tool(reader: &mut ByteReader<'_>) -> Result<Tool, DecodeError> {
+    Tool::from_index(reader.read_u8()?).ok_or(DecodeError::Invalid("no such tool"))
+}
+
 pub fn encode_push(request: &PushRequest) -> Vec<u8> {
     let mut writer = ByteWriter::new();
     write_voxel(&mut writer, request.voxel);
     writer.write_u8(request.direction.index());
+    writer.write_u8(request.tool.index());
     writer.into_bytes()
 }
 
@@ -58,6 +67,7 @@ pub fn decode_push(payload: &[u8]) -> Result<PushRequest, DecodeError> {
     let request = PushRequest {
         voxel: read_voxel(&mut reader)?,
         direction: read_direction(&mut reader)?,
+        tool: read_tool(&mut reader)?,
     };
     reader.finish()?;
     Ok(request)
@@ -131,6 +141,7 @@ pub struct SavedMover {
     pub level: NamespacedId,
     pub position: VoxelCoordinate,
     pub direction: FaceDirection,
+    pub tool: Tool,
     pub steps_left: u32,
 }
 
@@ -144,8 +155,9 @@ pub struct SavedState {
 
 /// The version of the saved state this program writes. Version 1, from before worlds had levels,
 /// did not say which level a moving block was in; versions 1 and 2 kept the largest merge as the
-/// exponent of a power of two. Both are still read.
-const SAVED_STATE_VERSION: u32 = 3;
+/// exponent of a power of two; versions before 4 did not say which tool pushed a moving block, and
+/// those blocks were pushed with the doubling tool, the only one there was. All are still read.
+const SAVED_STATE_VERSION: u32 = 4;
 
 pub fn saved_state_section_id() -> NamespacedId {
     kind("voxunami_2048:progress")
@@ -159,6 +171,7 @@ pub fn saved_state_section(state: &SavedState) -> Section {
         writer.write_identifier(&mover.level);
         write_voxel(&mut writer, mover.position);
         writer.write_u8(mover.direction.index());
+        writer.write_u8(mover.tool.index());
         writer.write_varint(u64::from(mover.steps_left));
     }
     Section {
@@ -179,9 +192,13 @@ fn read_saved_state_payload(
     } else {
         read_progress(&mut reader)?
     };
-    // A moving block takes at least three bytes of position, one of direction, one of steps, and
-    // from version 2 a level's name of at least three.
-    let count = reader.read_count(if version == 1 { 5 } else { 8 })?;
+    // A moving block takes at least three bytes of position, one of direction, one of steps, from
+    // version 2 a level's name of at least three, and from version 4 one of its tool.
+    let count = reader.read_count(match version {
+        1 => 5,
+        2 | 3 => 8,
+        _ => 9,
+    })?;
     let mut movers = Vec::with_capacity(count);
     for _ in 0..count {
         let level = if version == 1 {
@@ -193,6 +210,11 @@ fn read_saved_state_payload(
             level,
             position: read_voxel(&mut reader)?,
             direction: read_direction(&mut reader)?,
+            tool: if version >= 4 {
+                read_tool(&mut reader)?
+            } else {
+                Tool::Double
+            },
             steps_left: u32::try_from(reader.read_varint()?)
                 .map_err(|_| DecodeError::Invalid("a block has too many steps left"))?,
         });
@@ -227,22 +249,27 @@ mod tests {
             level: level("landscape"),
             position: VoxelCoordinate::new(x, -40, 7),
             direction,
+            tool: Tool::Subtract,
             steps_left,
         }
     }
 
     #[test]
-    fn a_push_names_a_voxel_and_a_direction_and_nothing_else_is_accepted() {
+    fn a_push_names_a_voxel_a_direction_and_a_tool_and_nothing_else_is_accepted() {
         for direction in FaceDirection::ALL {
-            let request = PushRequest {
-                voxel: VoxelCoordinate::new(-5, 100, 7_000_000_000),
-                direction,
-            };
-            assert_eq!(decode_push(&encode_push(&request)), Ok(request));
+            for tool in Tool::ALL {
+                let request = PushRequest {
+                    voxel: VoxelCoordinate::new(-5, 100, 7_000_000_000),
+                    direction,
+                    tool,
+                };
+                assert_eq!(decode_push(&encode_push(&request)), Ok(request));
+            }
         }
         let good = encode_push(&PushRequest {
             voxel: VoxelCoordinate::ORIGIN,
             direction: FaceDirection::PositiveY,
+            tool: Tool::Add,
         });
         for length in 0..good.len() {
             assert!(decode_push(&good[..length]).is_err(), "{length}");
@@ -250,14 +277,19 @@ mod tests {
         let mut trailing = good.clone();
         trailing.push(0);
         assert!(decode_push(&trailing).is_err());
-        let mut bad_direction = good;
-        *bad_direction.last_mut().unwrap() = 6;
+        let mut bad_direction = good.clone();
+        let length = bad_direction.len();
+        bad_direction[length - 2] = 6;
         assert!(decode_push(&bad_direction).is_err());
+        let mut bad_tool = good;
+        *bad_tool.last_mut().unwrap() = 3;
+        assert!(decode_push(&bad_tool).is_err());
         // A coordinate beyond the world's edge.
         let mut writer = ByteWriter::new();
         writer.write_signed_varint(i64::MAX);
         writer.write_signed_varint(0);
         writer.write_signed_varint(0);
+        writer.write_u8(0);
         writer.write_u8(0);
         assert!(decode_push(&writer.into_bytes()).is_err());
     }
@@ -342,9 +374,34 @@ mod tests {
                 level: level("old"),
                 position: VoxelCoordinate::new(5, 6, 7),
                 direction: FaceDirection::NegativeX,
+                tool: Tool::Double,
                 steps_left: 9,
             }]
         );
+    }
+
+    #[test]
+    fn a_version_3_saved_state_has_movers_with_no_tool_and_they_were_pushed_with_the_doubling_one()
+    {
+        let mut writer = ByteWriter::new();
+        writer.write_varint(40); // score
+        writer.write_varint(3); // pushes
+        writer.write_varint(2048); // largest merge, as a number
+        writer.write_varint(1); // one mover
+        writer.write_identifier(&level("landscape"));
+        write_voxel(&mut writer, VoxelCoordinate::new(5, 6, 7));
+        writer.write_u8(FaceDirection::NegativeX.index());
+        writer.write_varint(9);
+        let section = Section {
+            identifier: saved_state_section_id(),
+            version: 3,
+            payload: writer.into_bytes(),
+        };
+        let state = read_saved_state(&[section], &level("old")).unwrap();
+        assert_eq!(state.progress.largest_merge, 2048);
+        assert_eq!(state.movers.len(), 1);
+        assert_eq!(state.movers[0].tool, Tool::Double);
+        assert_eq!(state.movers[0].steps_left, 9);
     }
 
     #[test]
@@ -398,11 +455,14 @@ mod tests {
         });
         let length = good.payload.len();
         let mut bad_direction = good.clone();
-        bad_direction.payload[length - 2] = 9;
+        bad_direction.payload[length - 3] = 9;
         assert_eq!(
             read_saved_state(&[bad_direction], &level("landscape")),
             None
         );
+        let mut bad_tool = good.clone();
+        bad_tool.payload[length - 2] = 7;
+        assert_eq!(read_saved_state(&[bad_tool], &level("landscape")), None);
         let mut too_many = good.payload[..length - 1].to_vec();
         too_many.extend([0xFF, 0xFF, 0xFF, 0xFF, 0x1F]); // 2^33 - 1 steps
         assert_eq!(

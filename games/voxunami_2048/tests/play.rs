@@ -6,11 +6,11 @@ use std::collections::BTreeMap;
 
 use block_models::BlockDefinition;
 use content_registry::{IdentifierRegistry, Registry};
-use game_shell::GameContent;
 use game_shell::files::{open_recording, record_connection};
 use game_shell::host::build_server;
 use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
+use game_shell::{GameContent, GameDefinition, KeyCode};
 use proptest::prelude::*;
 use server::Server;
 use transport::Connection;
@@ -25,6 +25,7 @@ use voxunami_2048::messages::{
     Progress, PushRequest, encode_push, push_kind, read_saved_state, saved_state_section_id,
 };
 use voxunami_2048::numbered_block::NumberedBlock;
+use voxunami_2048::tool::Tool;
 use world_storage::WorldData;
 
 const SEED: u64 = 2048;
@@ -219,7 +220,23 @@ impl Rig {
 }
 
 fn send_push(player: &mut Player, voxel: VoxelCoordinate, direction: FaceDirection) {
-    player.send_game_message(push_kind(), encode_push(&PushRequest { voxel, direction }));
+    send_push_with(player, voxel, direction, Tool::Double);
+}
+
+fn send_push_with(
+    player: &mut Player,
+    voxel: VoxelCoordinate,
+    direction: FaceDirection,
+    tool: Tool,
+) {
+    player.send_game_message(
+        push_kind(),
+        encode_push(&PushRequest {
+            voxel,
+            direction,
+            tool,
+        }),
+    );
 }
 
 #[test]
@@ -837,4 +854,164 @@ fn a_saved_state_from_before_levels_had_moving_blocks_without_a_level_and_they_g
     let mut rig = Rig::with_world(content, world);
     rig.step(40);
     assert_eq!(rig.blocks(), blocks_of(&[(at(10, SKY, 10 - 30), ice(1))]));
+}
+
+fn numbered(material: Material, number: u32) -> NumberedBlock {
+    NumberedBlock::new(material, number)
+}
+
+/// A coasting ice block of 3 meets a stone block of 5, after the player has pressed `key` to choose
+/// a tool and pushed. Returns the blocks left and how the game stands.
+fn ice_meets_stone_with_the_tool_of(key: KeyCode) -> (Blocks, Progress) {
+    let wall = at(10, SKY, 3);
+    let mut rig = Rig::with_blocks(&[
+        (at(10, SKY, 10), numbered(Material::Ice, 3)),
+        (wall, numbered(Material::Stone, 5)),
+    ]);
+    let mut player = rig.join_looking(at(10, SKY, 10), FaceDirection::NegativeZ);
+    rig.settle(&mut [&mut player]);
+    Game2048::key_pressed(&mut player, key);
+    push_with_tool(&mut player);
+    rig.step(12);
+    rig.settle(&mut [&mut player]);
+    assert_air_has_no_number(&rig.server.world().main().overrides, &rig.content);
+    assert_eq!(blocks_seen_by(&player, &rig.content), rig.blocks());
+    (rig.blocks(), player.state.progress)
+}
+
+#[test]
+fn the_tool_the_player_chose_decides_how_the_blocks_they_push_combine() {
+    let wall = at(10, SKY, 3);
+    // The double tool, which is the one a player starts with, does not combine a 3 and a 5.
+    let (blocks, progress) = ice_meets_stone_with_the_tool_of(KeyCode::Digit1);
+    assert_eq!(
+        blocks,
+        blocks_of(&[
+            (at(10, SKY, 4), numbered(Material::Ice, 3)),
+            (wall, numbered(Material::Stone, 5))
+        ])
+    );
+    assert_eq!(
+        progress,
+        Progress {
+            pushes: 1,
+            ..Progress::default()
+        }
+    );
+
+    // The add tool makes 8 of them, in the stone that stayed.
+    let (blocks, progress) = ice_meets_stone_with_the_tool_of(KeyCode::Digit2);
+    assert_eq!(blocks, blocks_of(&[(wall, numbered(Material::Stone, 8))]));
+    assert_eq!(
+        progress,
+        Progress {
+            score: 8,
+            pushes: 1,
+            largest_merge: 8
+        }
+    );
+
+    // The subtract tool leaves the difference.
+    let (blocks, progress) = ice_meets_stone_with_the_tool_of(KeyCode::Digit3);
+    assert_eq!(blocks, blocks_of(&[(wall, numbered(Material::Stone, 2))]));
+    assert_eq!(
+        progress,
+        Progress {
+            score: 2,
+            pushes: 1,
+            largest_merge: 2
+        }
+    );
+}
+
+#[test]
+fn equal_numbers_cancel_with_the_subtract_tool_and_score_nothing() {
+    let mut rig = Rig::with_blocks(&[
+        (at(10, SKY, 10), numbered(Material::Ice, 7)),
+        (at(10, SKY, 6), numbered(Material::Stone, 7)),
+        (at(30, SKY, 30), stone(1)),
+    ]);
+    let mut player = rig.join_looking(at(10, SKY, 10), FaceDirection::NegativeZ);
+    rig.settle(&mut [&mut player]);
+    Game2048::key_pressed(&mut player, KeyCode::Digit3);
+    push_with_tool(&mut player);
+    rig.step(10);
+    rig.settle(&mut [&mut player]);
+    let expected = blocks_of(&[(at(30, SKY, 30), stone(1))]);
+    assert_eq!(rig.blocks(), expected);
+    assert_eq!(blocks_seen_by(&player, &rig.content), expected);
+    assert_air_has_no_number(&rig.server.world().main().overrides, &rig.content);
+    assert_eq!(
+        player.state.progress,
+        Progress {
+            pushes: 1,
+            ..Progress::default()
+        }
+    );
+}
+
+#[test]
+fn the_chosen_tool_is_shown_and_keys_that_are_not_tools_leave_it_alone() {
+    let mut rig = Rig::with_blocks(&[(at(10, SKY, 10), stone(1))]);
+    let mut player = rig.join_looking(at(10, SKY, 10), FaceDirection::NegativeZ);
+    rig.settle(&mut [&mut player]);
+    assert!(Game2048::status_text(&player).starts_with("tool double | "));
+    Game2048::key_pressed(&mut player, KeyCode::Digit2);
+    assert!(Game2048::status_text(&player).starts_with("tool add | "));
+    Game2048::key_pressed(&mut player, KeyCode::KeyR);
+    Game2048::key_pressed(&mut player, KeyCode::Digit9);
+    assert!(Game2048::status_text(&player).starts_with("tool add | "));
+    Game2048::key_pressed(&mut player, KeyCode::Digit3);
+    assert!(Game2048::status_text(&player).starts_with("tool subtract | "));
+    Game2048::key_pressed(&mut player, KeyCode::Digit1);
+    assert!(Game2048::status_text(&player).starts_with("tool double | "));
+    assert!(Game2048::status_text(&player).contains("looking at stone 2"));
+}
+
+#[test]
+fn a_block_moving_with_a_tool_when_the_world_is_saved_still_has_that_tool_when_it_is_loaded() {
+    let scene = [
+        (at(10, SKY, 10), numbered(Material::Ice, 9)),
+        (at(10, SKY, 3), numbered(Material::Stone, 4)),
+    ];
+    let start = |rig: &mut Rig| {
+        let mut player = rig.join_looking(at(10, SKY, 10), FaceDirection::NegativeZ);
+        rig.settle(&mut [&mut player]);
+        send_push_with(
+            &mut player,
+            at(10, SKY, 10),
+            FaceDirection::NegativeZ,
+            Tool::Subtract,
+        );
+        rig.step(1);
+        player.say_goodbye();
+        rig.step(1);
+    };
+    let mut control = Rig::with_blocks(&scene);
+    start(&mut control);
+    control.step(20);
+    // 9 coasting into 4 leaves 5 in the stone that stayed.
+    assert_eq!(
+        control.blocks(),
+        blocks_of(&[(at(10, SKY, 3), numbered(Material::Stone, 5))])
+    );
+
+    let mut interrupted = Rig::with_blocks(&scene);
+    start(&mut interrupted);
+    interrupted.step(2);
+    let Rig {
+        content, server, ..
+    } = interrupted;
+    let world = server.into_world();
+    let saved = read_saved_state(world.opaque_sections(), &landscape_id()).unwrap();
+    assert_eq!(saved.movers.len(), 1);
+    assert_eq!(saved.movers[0].tool, Tool::Subtract);
+    let bytes = world.save(&content.registries()).unwrap();
+    let mut content = Content2048::new();
+    let parsed = world_storage::ParsedWorld::parse(&bytes).unwrap();
+    let seed = parsed.world_seed();
+    let (loaded, _) = parsed.load(content.load_context(seed)).unwrap();
+    let mut resumed = Rig::with_world(content, loaded);
+    resumed.step(18);
+    assert_eq!(resumed.blocks(), control.blocks());
 }

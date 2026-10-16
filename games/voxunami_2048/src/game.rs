@@ -1,7 +1,7 @@
 //! Voxunami 2048 as the shell runs it: what the player's clicks do.
 
 use game_shell::session::Session;
-use game_shell::{CameraStart, GameDefinition};
+use game_shell::{CameraStart, GameDefinition, KeyCode};
 use namespaced_id::NamespacedId;
 use server::GameLogic;
 use transport::Connection;
@@ -14,11 +14,14 @@ use crate::messages::{
     Progress, PushRequest, decode_progress, encode_push, progress_kind, push_kind,
 };
 use crate::numbered_block::NumberedBlock;
+use crate::tool::Tool;
 
-/// What the 2048 client remembers: how the game has gone, as the server last said.
+/// What the 2048 client remembers: how the game has gone, as the server last said, and the tool
+/// the player has chosen.
 #[derive(Debug, Default)]
 pub struct ClientState2048 {
     pub progress: Progress,
+    pub tool: Tool,
 }
 
 #[derive(Debug)]
@@ -34,7 +37,7 @@ pub fn direction_between(from: VoxelCoordinate, to: VoxelCoordinate) -> Option<F
         .find(|direction| direction.offset() == step)
 }
 
-/// Asks the server to push the block under the crosshair away from the player.
+/// Asks the server to push the block under the crosshair away from the player, with the chosen tool.
 pub fn push_with_tool<C: Connection>(session: &mut Session2048<C>) {
     if let Some(hit) = session.target()
         && let Some(direction) = direction_between(hit.previous, hit.voxel)
@@ -43,7 +46,7 @@ pub fn push_with_tool<C: Connection>(session: &mut Session2048<C>) {
     }
 }
 
-/// Asks the server to pull the block under the crosshair toward the player.
+/// Asks the server to pull the block under the crosshair toward the player, with the chosen tool.
 pub fn pull_with_tool<C: Connection>(session: &mut Session2048<C>) {
     if let Some(hit) = session.target()
         && let Some(direction) = direction_between(hit.voxel, hit.previous)
@@ -57,7 +60,15 @@ fn request_push<C: Connection>(
     voxel: VoxelCoordinate,
     direction: FaceDirection,
 ) {
-    session.send_game_message(push_kind(), encode_push(&PushRequest { voxel, direction }));
+    let tool = session.state.tool;
+    session.send_game_message(
+        push_kind(),
+        encode_push(&PushRequest {
+            voxel,
+            direction,
+            tool,
+        }),
+    );
 }
 
 /// What a block is, in words: "spring ice 8".
@@ -90,7 +101,7 @@ impl GameDefinition for Game2048 {
     }
 
     fn controls() -> &'static str {
-        "Left click pushes the block you look at away from you; right click pulls it toward you.\nStone moves one step; ice coasts until it meets another block; spring ice bounces back off blocks it cannot merge with.\nA block that meets an equal number merges with it into the double; the title shows the block you look at."
+        "Left click pushes the block you look at away from you; right click pulls it toward you.\nStone moves one step; ice coasts until it meets another block; spring ice bounces back off blocks it cannot merge with.\n1, 2, 3 choose the tool: double merges equal numbers into their double, add adds any two numbers, subtract takes the smaller from the larger (equal numbers cancel).\nThe title shows the tool and the block you look at."
     }
 
     fn default_seed() -> u64 {
@@ -125,6 +136,15 @@ impl GameDefinition for Game2048 {
         }
     }
 
+    fn key_pressed<C: Connection>(session: &mut Session2048<C>, key: KeyCode) {
+        match key {
+            KeyCode::Digit1 => session.state.tool = Tool::Double,
+            KeyCode::Digit2 => session.state.tool = Tool::Add,
+            KeyCode::Digit3 => session.state.tool = Tool::Subtract,
+            _ => {}
+        }
+    }
+
     fn primary_action<C: Connection>(session: &mut Session2048<C>) {
         push_with_tool(session);
     }
@@ -147,8 +167,10 @@ impl GameDefinition for Game2048 {
             })
             .map_or_else(|| "nothing".to_owned(), describe);
         format!(
-            "score {} | pushes {} | largest merge {largest} | looking at {looking_at}",
-            progress.score, progress.pushes
+            "tool {} | score {} | pushes {} | largest merge {largest} | looking at {looking_at}",
+            session.state.tool.name(),
+            progress.score,
+            progress.pushes
         )
     }
 }

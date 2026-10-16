@@ -44,19 +44,6 @@ impl NumberedBlock {
         let material = Material::from_block_id(block_id)?;
         (state > 0).then(|| Self::new(material, state))
     }
-
-    /// Whether this block and `other` merge when they meet: their numbers are equal (whatever they
-    /// are made of) and the double of the number still fits.
-    pub fn merges_with(self, other: Self) -> bool {
-        self.number == other.number && self.number.checked_mul(2).is_some()
-    }
-
-    /// What this block and `target`, which it merges with, become: a block of the double number that
-    /// is made of whatever `target` is made of, since `target` is the one that stays.
-    pub fn merged_into(self, target: Self) -> Self {
-        debug_assert!(self.merges_with(target));
-        Self::new(target.material, target.number * 2)
-    }
 }
 
 #[cfg(test)]
@@ -91,27 +78,6 @@ mod tests {
             None,
             "a numbered block of zero is not made by any rule"
         );
-    }
-
-    #[test]
-    fn equal_numbers_merge_into_the_double_in_the_material_of_the_one_that_stays() {
-        let moving = NumberedBlock::new(Material::Ice, 12);
-        let staying = NumberedBlock::new(Material::Stone, 12);
-        assert!(moving.merges_with(staying) && staying.merges_with(moving));
-        let merged = moving.merged_into(staying);
-        assert_eq!(merged, NumberedBlock::new(Material::Stone, 24));
-        assert!(!moving.merges_with(NumberedBlock::new(Material::Ice, 13)));
-    }
-
-    #[test]
-    fn there_is_no_largest_power_of_two_below_what_the_state_holds() {
-        // 2^30 merges into 2^31, and numbers that are not powers of two merge too.
-        let big = NumberedBlock::new(Material::Stone, 1 << 30);
-        assert_eq!(big.merged_into(big).number(), 1 << 31);
-        let odd = NumberedBlock::new(Material::Ice, 3_000_000_001);
-        assert!(!odd.merges_with(odd), "the double would not fit in 32 bits");
-        let fits = NumberedBlock::new(Material::Ice, 2_147_483_647);
-        assert_eq!(fits.merged_into(fits).number(), 4_294_967_294);
     }
 
     #[test]
