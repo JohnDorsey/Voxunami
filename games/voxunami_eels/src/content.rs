@@ -141,6 +141,7 @@ impl ContentEels {
             block_channel: block_channel_identifier(),
             state_channel: Some(slot_channel_identifier()),
             light_channel: None,
+            scaled_lights: Vec::new(),
             generators: Arc::new(|_seed, layout| {
                 let block_channel = layout
                     .channel_index(&block_channel_identifier())

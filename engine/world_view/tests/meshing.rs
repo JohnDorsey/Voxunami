@@ -63,11 +63,7 @@ impl Scene {
                 view_radius_bricks: radius,
                 worker_count: 3,
             },
-            ViewChannels {
-                blocks: self.material,
-                states: None,
-                light: None,
-            },
+            ViewChannels::new(self.material, None, None),
             Arc::new(BlockTable::of_cubes(&opaque)),
         )
     }

@@ -263,6 +263,58 @@ Phase 1d (saving):
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
 
+Phase 19 (a spike: block light at four scales at once in Voxunami Cave; owner's request, 2026-10-16; not a decision about how Cave is lit):
+- What it is: `games/voxunami_cave/src/multiscale_light.rs`, the light rule with the cell size as a parameter. At scale k the world
+  is a grid of cells 2^k voxels along each side (1, 2, 4, 8), each holding a level 0 to 15 at its first voxel, in a channel per
+  scale (`voxunami_cave:light_scale_0` to `_3`). A cell is *blocked* when more than half its voxels are whole blocks that let no
+  light through (or cannot be read); a blocked cell holds none but gives its source, as a lamp does. A cell's *source* is the
+  emission of its voxels added up, divided by a unit that grows with volume (4, 32, 256, 2048), rounded up, at most 15: so one lamp
+  of 64 is 15 for a voxel, 2 for a cell of 2 and 1 beyond, and it takes eight lamps to fill a cell of 2. Otherwise a cell holds
+  its source or one less than its brightest face-neighbour. One cell a tick at every scale, so scale 3 spreads 8 voxels a tick.
+  Each scale has a pending set of cells (`lattice::ActiveVoxels`, unchanged) and its own budget (20 000, 5 000, 1 200, 300 cells a
+  tick: a cell of 8 reads 512 voxels).
+- Drawing: the client draws each voxel as bright as the brightest light that reaches it, `level * 17` for each scale and the
+  plain light channel. `world_view` got `ScaledLight` and `combined_light` (made in the mesh worker from the brick's channels, with
+  a shortcut for bricks whose light is the same everywhere, which is nearly all of them); the mesher, the quad format and the
+  shader are unchanged. `PackageSpec::scaled_lights` declares them (at most 4).
+- Switching: `/light` says which, `/light classic` and `/light multiscale` change it. A switch clears every light (the classic channel and
+  the four scales, in edited bricks, which is the only place light is) and has the new light look at every emitting block in
+  the edited bricks. The choice and each scale's pending cells are saved (`voxunami_cave:light_model`, `light_scale_k`). Classic is
+  the default, and its rule and numbers are untouched. Every Cave world's layout now has the four channels; a world from before
+  loads with them empty and the classic light (tested).
+- Tested: the rule against an independent search from the sources, at every scale, over random edits in two rounds (proptest);
+  wall thickness, glass, lamps taken away, the same levels under a small budget, one-cell-a-tick; through server and sessions
+  (switching both ways, levels seen by every player, faces drawn in steps of 17, saving and loading); the drawing in `world_view`.
+  Mutation experiments: 14 of 14 caught after one more test.
+- What it showed (measured in a release build unless said; all of it from one scene, so take the numbers as orders of magnitude):
+  - Cost: with one lamp in the air the multiscale light took 0.12 ms a tick on average over 150 ticks, the classic 7.3 ms; with
+    20 lamps 0.25 ms against 9.8 ms. This is mostly reach, not cleverness: 16 levels is a reach of 15 cells at scale 0 and the
+    classic lamp reaches 64 with 256 levels. The coarse scales cost very little (a few hundred cells each). A cell's contents
+    cost E^3 reads, which the budgets keep in check; nothing is cached between ticks.
+  - The look: faces are lit in steps of 17 and the coarse scales show as blocks of light 2, 4 and 8 voxels across. In the one scene
+    drawn (a cluster of eight lamps and two single lamps over a hill, in daylight ambient) the lit slope is brighter and
+    stepped; I did not try it at night, and nothing has been tuned.
+  - Ground: a coarse cell that is half ground is blocked, so light at scales 1 to 3 does not live next to the ground
+    (a lamp on the ground at an odd height has its cell of 2 blocked: it holds none, and still gives 2 to the cell above). Thin
+    walls leak at coarse scales (a wall one voxel thick is half of a cell of 2, which is not blocked). These are properties of "more
+    than half" and could be changed (a different threshold, or per-face openness of a cell), not of the idea.
+  - Speed: coarse light spreads fast in metres (scale 3: 8 voxels a tick, 160 m/s at 20 Hz). Probably wants a slower rule for
+    large scales, or to be treated as always settled.
+- What the contract needed, and what it did not (the point of the spike): the channel list in the spec already allowed any number of
+  channels; the view contract needed a list of scaled lights (added); the rule shape held (per-scale pending sets on
+  `ActiveVoxels`, evaluate from the snapshot, write, wake neighbours) with no change to `lattice`; the budget had to become per
+  scale. What was missing: a way to find every emitting block or every lit voxel without scanning every edited brick (switching
+  does this scan, which is fine at this size and not at a large world's); a way for a game to ask the engine for coarse-cell
+  aggregates (the rule reads E^3 voxels by hand); and a place for the choice of rule that is not a command (a world setting).
+- Costs not measured: the four channels make every edited brick bigger on the wire and in the file (a lit scale channel is
+  paletted, a few bits a voxel; unlit ones are free), and the Cave integration tests took about 20 percent longer with the
+  channels declared in the debug profile (about 28 s to 34 s), and a further 20 percent with the drawing code (to 41 s), although
+  in a release build loading and meshing a view of radius 12 took the same time with and without it (4.6 s). Why the debug
+  profile feels it, I did not find out.
+- Not done: smoothing between cells (trilinear, in the shader, would remove the blocks), colours, sky light at coarse scales
+  (the natural user: the sun is a source of a huge cell count), light across levels, tuning of units and thresholds, and any
+  choice about which of the two lights the game keeps.
+
 Phase 18 (mod stage 1, first step: the plugin contract, from what three games repeat):
 - Finding: the three games hand-wrote nearly the same `GameContent` (a block registry, channels, one terrain generator
   made from the seed, a level name, how the view reads the channels); Cave got part of it from the `base_blocks` plugin,
@@ -689,6 +741,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 16 Cave gravity and collision: the server moves the players (`/fly`, `/tp`). **Done.**
 - 17 Voxunami Eels (3D Tron) and the shell hooks it needed. **Done.**
 - 18 Mod stage 1, first step: a game's content as one declared package (`ContentPackage`). **Done.**
+- 19 Multiscale light spike in Cave: four scales of 16-level flood fill (cells of 1, 2, 4, 8), switched with `/light`. **Done (a spike).**
 - 1f Launcher and first game crate: `world_view`, the `base_blocks` plugin, Voxunami Cave, the launcher; the old viewer
   retired. **Done.**
 The physics spike is done (`docs/physics-spike.md`); the adapter for rigid structures belongs with the structures work.

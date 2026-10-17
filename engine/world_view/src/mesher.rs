@@ -16,9 +16,11 @@ use std::thread::JoinHandle;
 
 use block_models::BlockTable;
 use terrain::TerrainGenerator;
-use voxel_grid::{Brick, ChannelIndex, GridLayout};
+use voxel_grid::{Brick, ChannelIndex, ChannelStorage, GridLayout};
 use voxel_meshing::{BrickChannels, BrickNeighbourhood, PackedBrickMesh, mesh_brick};
-use voxel_space::{BrickCoordinate, FaceDirection, VoxelCoordinate};
+use voxel_space::{
+    BRICK_VOXEL_COUNT, BrickCoordinate, FaceDirection, LocalVoxelIndex, VoxelCoordinate,
+};
 use world_storage::LevelData;
 
 /// How far to keep bricks loaded around the viewer, and how much work to run at once.
@@ -27,6 +29,22 @@ pub struct ViewSettings {
     /// Bricks within this distance (in brick units, as a sphere) are meshed.
     pub view_radius_bricks: i64,
     pub worker_count: usize,
+}
+
+/// The most scales of light a game can have besides its plain light channel.
+pub const MAXIMUM_LIGHT_SCALES: usize = 4;
+
+/// Light kept in cells larger than a voxel: a channel that holds a level at the first voxel (the
+/// anchor) of each cube of 2^`cell_edge_log2` voxels along each side, which lights every voxel of
+/// the cube. A voxel is drawn as bright as the brightest light that reaches it, of the plain light
+/// channel and of every scale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScaledLight {
+    pub channel: ChannelIndex,
+    /// The cells are this many voxels wide, as a power of two, from 0 (one voxel) to 5 (a brick).
+    pub cell_edge_log2: u8,
+    /// How bright, from 0 to 255, each level of the channel is.
+    pub brightness_per_level: u8,
 }
 
 /// The channels of a world's bricks that say what to draw.
@@ -38,6 +56,65 @@ pub struct ViewChannels {
     pub states: Option<ChannelIndex>,
     /// How bright each voxel is, for games with lighting.
     pub light: Option<ChannelIndex>,
+    /// Lights kept in larger cells, besides `light`.
+    pub scaled_light: [Option<ScaledLight>; MAXIMUM_LIGHT_SCALES],
+}
+
+impl ViewChannels {
+    /// Channels for a game with no scaled light.
+    pub fn new(
+        blocks: ChannelIndex,
+        states: Option<ChannelIndex>,
+        light: Option<ChannelIndex>,
+    ) -> Self {
+        Self {
+            blocks,
+            states,
+            light,
+            scaled_light: [None; MAXIMUM_LIGHT_SCALES],
+        }
+    }
+
+    fn has_scaled_light(&self) -> bool {
+        self.scaled_light.iter().any(Option::is_some)
+    }
+}
+
+/// How bright each voxel of a brick is when the game has scaled light: the brightest of the plain
+/// light channel and each scale's level in the voxel's cell. `None` for a game without scaled
+/// light, whose light channel is drawn as it is.
+pub fn combined_light(brick: &Brick, channels: &ViewChannels) -> Option<ChannelStorage> {
+    if !channels.has_scaled_light() {
+        return None;
+    }
+    let base = channels.light.map(|light| brick.channel(light));
+    // Most bricks hold no light in any channel, or the same everywhere: one value, with no scan.
+    let uniform = |storage: &ChannelStorage| storage.uniform_value();
+    let uniforms = base.map_or(Some(0), uniform).and_then(|base| {
+        channels
+            .scaled_light
+            .iter()
+            .flatten()
+            .try_fold(base.min(255), |brightest, scale| {
+                let level = uniform(brick.channel(scale.channel))?;
+                Some(brightest.max((level * u32::from(scale.brightness_per_level)).min(255)))
+            })
+    });
+    if let Some(brightest) = uniforms {
+        return Some(ChannelStorage::uniform(brightest));
+    }
+    let mut values = vec![0u32; BRICK_VOXEL_COUNT];
+    for local in LocalVoxelIndex::all() {
+        let mut brightest = base.map_or(0, |base| base.get(local).min(255));
+        for scale in channels.scaled_light.iter().flatten() {
+            let mask = !((1u8 << scale.cell_edge_log2) - 1);
+            let anchor = LocalVoxelIndex::new(local.x() & mask, local.y() & mask, local.z() & mask);
+            let level = brick.channel(scale.channel).get(anchor);
+            brightest = brightest.max((level * u32::from(scale.brightness_per_level)).min(255));
+        }
+        values[local.index()] = brightest;
+    }
+    Some(ChannelStorage::from_values(&values))
 }
 
 /// A change the renderer must apply.
@@ -87,11 +164,15 @@ enum JobResult {
 }
 
 /// The channels of a brick that meshing looks at.
-fn brick_channels(brick: &Brick, channels: ViewChannels) -> BrickChannels<'_> {
+fn brick_channels<'a>(
+    brick: &'a Brick,
+    combined_light: Option<&'a ChannelStorage>,
+    channels: ViewChannels,
+) -> BrickChannels<'a> {
     BrickChannels {
         blocks: brick.channel(channels.blocks),
         states: channels.states.map(|states| brick.channel(states)),
-        light: channels.light.map(|light| brick.channel(light)),
+        light: combined_light.or_else(|| channels.light.map(|light| brick.channel(light))),
     }
 }
 
@@ -191,10 +272,24 @@ impl WorldMesher {
                                 version,
                                 snapshot,
                             } => {
+                                // Games with scaled light draw the brightest light of each voxel.
+                                let center_light = combined_light(&snapshot.center, &channels);
+                                let neighbour_light: [Option<ChannelStorage>; 6] =
+                                    std::array::from_fn(|face| {
+                                        combined_light(&snapshot.neighbours[face], &channels)
+                                    });
                                 let neighbourhood = BrickNeighbourhood {
-                                    center: brick_channels(&snapshot.center, channels),
+                                    center: brick_channels(
+                                        &snapshot.center,
+                                        center_light.as_ref(),
+                                        channels,
+                                    ),
                                     neighbours: std::array::from_fn(|face| {
-                                        Some(brick_channels(&snapshot.neighbours[face], channels))
+                                        Some(brick_channels(
+                                            &snapshot.neighbours[face],
+                                            neighbour_light[face].as_ref(),
+                                            channels,
+                                        ))
                                     }),
                                 };
                                 JobResult::Meshed {

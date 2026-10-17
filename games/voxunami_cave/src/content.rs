@@ -8,11 +8,13 @@ use base_blocks::{
 };
 use block_models::BlockTable;
 use content_registry::IdentifierRegistry;
-use game_shell::{ContentPackage, GameContent, PackageSpec};
+use game_shell::{ContentPackage, GameContent, PackageSpec, ScaledLightSpec};
 use namespaced_id::NamespacedId;
-use voxel_grid::ChannelIndex;
+use voxel_grid::{ChannelDefinition, ChannelIndex};
 use world_storage::{LoadContext, WorldData};
 use world_view::ViewChannels;
+
+use crate::multiscale_light;
 
 /// How bright, from 0 to 255, a face is that no light reaches. There is no sky light yet, so this
 /// stands in for the light of the day: bright enough to play by, dim enough that lamps show.
@@ -61,10 +63,24 @@ impl CaveContent {
                 ids.block_channel(),
                 ids.state_channel(),
                 ids.light_channel(),
+                // The levels of the light of each scale, kept at the first voxel of each cell (a
+                // world has either these or the light channel lit, see `LightModel`).
+                ChannelDefinition::number(multiscale_light::channel_identifier(0), 0),
+                ChannelDefinition::number(multiscale_light::channel_identifier(1), 0),
+                ChannelDefinition::number(multiscale_light::channel_identifier(2), 0),
+                ChannelDefinition::number(multiscale_light::channel_identifier(3), 0),
             ],
             block_channel: block_channel_identifier(),
             state_channel: Some(state_channel_identifier()),
             light_channel: Some(light_channel_identifier()),
+            scaled_lights: (0..multiscale_light::SCALES)
+                .map(|scale| ScaledLightSpec {
+                    channel: multiscale_light::channel_identifier(scale),
+                    cell_edge_log2: scale as u8,
+                    // 15 levels of 17 are 255.
+                    brightness_per_level: 17,
+                })
+                .collect(),
             generators: Arc::new(move |seed, layout| {
                 let block_channel = layout
                     .channel_index(&block_channel_identifier())
@@ -94,6 +110,12 @@ impl CaveContent {
     /// The channel holding the block light of each voxel.
     pub fn light_channel(&self) -> ChannelIndex {
         self.package.channel(&light_channel_identifier())
+    }
+
+    /// The channel holding the levels of the light of a scale (see [`crate::multiscale_light`]).
+    pub fn scale_channel(&self, scale: usize) -> ChannelIndex {
+        self.package
+            .channel(&multiscale_light::channel_identifier(scale))
     }
 }
 

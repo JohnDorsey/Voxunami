@@ -9,5 +9,8 @@
 mod mesher;
 mod ray;
 
-pub use mesher::{MeshUpdate, ViewChannels, ViewSettings, WorldMesher};
+pub use mesher::{
+    MAXIMUM_LIGHT_SCALES, MeshUpdate, ScaledLight, ViewChannels, ViewSettings, WorldMesher,
+    combined_light,
+};
 pub use ray::{RayHit, cast_ray};

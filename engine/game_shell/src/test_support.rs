@@ -30,6 +30,7 @@ impl GameContent for ExampleContent {
                 .expect("the fixture has a block channel"),
             states: None,
             light: None,
+            scaled_light: [None; world_view::MAXIMUM_LIGHT_SCALES],
         }
     }
 
