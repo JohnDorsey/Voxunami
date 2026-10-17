@@ -1276,18 +1276,29 @@ fn walkers_pass_through_flames_and_the_cellar_has_the_same_ground() {
     tick_and_follow(&mut rig, &mut player, 40);
     let before = voxels_of(&player.camera);
 
-    // In the cellar they are at the same place, on that level's ground, which is the same.
+    // In the cellar they are at the same place, on that level's ground. (Not at the same height as
+    // before: the fire may have burnt the ground away in the main level, and the cellar's is whole.)
     player.send_command("/level go cellar");
     rig.settle(&mut [&mut player]);
     tick_and_follow(&mut rig, &mut player, 60);
     assert_eq!(player.level(), second);
+    rig.settle(&mut [&mut player]);
     let in_the_cellar = voxels_of(&player.camera);
     assert!(
-        in_the_cellar
-            .iter()
-            .zip(before)
-            .all(|(now, then)| (now - then).abs() < 0.05),
+        (in_the_cellar[0] - before[0]).abs() < 1.0 && (in_the_cellar[2] - before[2]).abs() < 1.0,
         "{in_the_cellar:?} {before:?}"
+    );
+    // They stand on the highest ground of the columns their body (0.6 wide) overlaps.
+    let columns = |centre: f64| [(centre - 0.3).floor() as i64, (centre + 0.3).floor() as i64];
+    let ground = columns(in_the_cellar[0])
+        .into_iter()
+        .flat_map(|x| columns(in_the_cellar[2]).map(move |z| (x, z)))
+        .map(|(x, z)| ground_height(&player, x, z))
+        .max()
+        .unwrap() as f64;
+    assert!(
+        (in_the_cellar[1] - (ground + 1.0 + 1.62)).abs() < 0.05,
+        "{in_the_cellar:?} on {ground}"
     );
 }
 

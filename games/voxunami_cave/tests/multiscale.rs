@@ -32,11 +32,11 @@ fn above(voxel: VoxelCoordinate, height: i64) -> VoxelCoordinate {
 }
 
 /// The level of the cell of 2 that holds a lamp placed at `spot`, on the ground. A lamp is a source of
-/// 64 / 32 = 2 there, but a cell of 2 that holds the ground as well as the lamp (when the lamp is at an
-/// odd height, the cell is the ground below it and its own layer) is more than half solid, and is
-/// blocked: it holds no light, though it still gives its 2 to the cells next to it.
+/// 15 there, but a cell of 2 that holds the ground as well as the lamp (when the lamp is at an odd
+/// height, the cell is the ground below it and its own layer) is more than half solid, and is
+/// blocked: it holds no light, though it still gives its 15 to the cells next to it.
 fn lamp_cell_level(spot: VoxelCoordinate) -> u32 {
-    if spot.y().rem_euclid(2) == 1 { 0 } else { 2 }
+    if spot.y().rem_euclid(2) == 1 { 0 } else { 15 }
 }
 
 /// A voxel in the cell of 2 above the cell that holds `spot`.
@@ -156,47 +156,39 @@ fn a_lamp_lights_four_scales_of_cells_and_every_player_sees_the_levels() {
             );
         }
     }
-    // Scale 1: 2 in the cell that holds the lamp (unless that cell is half ground), 1 in the cell
-    // above it, none beyond.
+    // Scale 1: 15 in the cell that holds the lamp (unless that cell is half ground), 14 in the cell
+    // above it, one less for each cell further.
     assert_eq!(server_level(&rig, 1, spot), lamp_cell_level(spot));
-    assert_eq!(server_level(&rig, 1, cell_above_lamp(spot)), 1);
-    assert_eq!(server_level(&rig, 1, above(cell_above_lamp(spot), 2)), 0);
-    // Scales 2 and 3: a faint 1 in the one cell, which a cell of 4 or of 8 is likely to share with
-    // the ground (more than half of it stone or dirt would make it a blocked cell holding none).
-    for scale in 2..SCALES {
-        assert!(server_level(&rig, scale, spot) <= 1, "scale {scale}");
-        assert_eq!(
-            server_level(&rig, scale, above(spot, 16)),
-            0,
+    assert_eq!(server_level(&rig, 1, cell_above_lamp(spot)), 14);
+    assert_eq!(server_level(&rig, 1, above(cell_above_lamp(spot), 6)), 11);
+    // Scales 2 and 3: 15 in the cell with the lamp, or none if more than half of the cell is ground,
+    // and next to it, over it, one less. The cell over a cell of 4 or of 8 is 14, or 13 if the lamp's
+    // own cell is blocked and the cell over it is half ground too (a hill).
+    for (scale, width) in [(2, 4), (3, 8)] {
+        assert!(
+            [0, 15].contains(&server_level(&rig, scale, spot)),
             "scale {scale}"
         );
+        let over = server_level(&rig, scale, above(spot, width));
+        assert!((13..=15).contains(&over), "scale {scale}: {over}");
     }
     // And the classic light is not lit at all.
     assert_eq!(server_classic_light(&rig, above(spot, 1)), 0);
 }
 
 #[test]
-fn what_is_drawn_is_the_brightest_of_the_scales_in_steps_of_seventeen() {
+fn what_is_drawn_is_the_scales_blended_so_it_is_not_in_steps_of_seventeen() {
     let mut rig = Rig::new();
     let mut builder = player_above_ground(&mut rig);
     reply_to(&mut rig, &mut builder, "/light multiscale");
     place_block(&mut builder, "base_blocks:lamp");
     ticks(&mut rig, 40);
     let lights = quad_lights(&mut rig, &mut builder);
-    // Every face is a whole number of levels of 17 (nothing is lit by the classic light), the faces
-    // by the lamp are as bright as 14 levels, and far from it none is lit.
-    assert!(lights.iter().all(|&light| light % 17 == 0), "{:?}", {
-        let mut odd: Vec<_> = lights.iter().filter(|&&l| l % 17 != 0).collect();
-        odd.dedup();
-        odd
-    });
-    assert!(lights.iter().any(|&light| light >= 14 * 17));
-    assert!(lights.contains(&0));
-    assert!(
-        lights
-            .iter()
-            .any(|&light| (3 * 17..10 * 17).contains(&light))
-    );
+    // The scales are blended, so faces are not whole numbers of levels of 17; faces by the lamp are as
+    // bright as can be, and faces far from it are dimmer.
+    assert!(lights.iter().any(|&light| light % 17 != 0));
+    assert!(lights.iter().any(|&light| light >= 250));
+    assert!(lights.iter().any(|&light| light < 200));
 }
 
 #[test]
@@ -254,7 +246,8 @@ fn taking_the_lamp_away_puts_the_multiscale_light_out() {
     ticks(&mut rig, 40);
     assert_eq!(server_level(&rig, 0, above(spot, 1)), 14);
     request_block(&mut builder, spot, "base_blocks:air");
-    ticks(&mut rig, 60);
+    // Coarse light that loses its source dies out a level a tick and has a lot of cells to do it in.
+    ticks(&mut rig, 400);
     for scale in 0..SCALES {
         assert_eq!(server_level(&rig, scale, spot), 0, "scale {scale}");
         assert_eq!(
@@ -372,7 +365,7 @@ fn a_world_saved_before_the_scales_existed_loads_and_its_lamps_light_up_in_multi
     assert_eq!(server_level(&rig, 0, above(lamp, 1)), 14);
     assert_eq!(server_level(&rig, 0, above(lamp, 3)), 12);
     assert_eq!(seen_level(&rig, &player, 0, above(lamp, 3)), 12);
-    assert_eq!(server_level(&rig, 1, lamp), 2);
+    assert_eq!(server_level(&rig, 1, lamp), 15);
     // And one the player places now.
     let new_lamp = above(lamp, 6);
     request_block(&mut player, new_lamp, "base_blocks:lamp");

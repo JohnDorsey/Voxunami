@@ -285,13 +285,17 @@ Phase 19 (a spike: block light at four scales at once in Voxunami Cave; owner's 
   is a grid of cells 2^k voxels along each side (1, 2, 4, 8), each holding a level 0 to 15 at its first voxel, in a channel per
   scale (`voxunami_cave:light_scale_0` to `_3`). A cell is *blocked* when more than half its voxels are whole blocks that let no
   light through (or cannot be read); a blocked cell holds none but gives its source, as a lamp does. A cell's *source* is the
-  emission of its voxels added up, divided by a unit that grows with volume (4, 32, 256, 2048), rounded up, at most 15: so one lamp
-  of 64 is 15 for a voxel, 2 for a cell of 2 and 1 beyond, and it takes eight lamps to fill a cell of 2. Otherwise a cell holds
+  brightest light any voxel in it gives off, the same at every scale: a block's emission divided by 4, rounded up, at most 15
+  (so a lamp of 64 is 15 at all four scales, a fire of 40 is 10). (Phase 19 first added the emission up and divided it by
+  a unit that grew with volume, so a lamp was 15, 2, 1, 1; changed on 2026-10-17 at the owner's request.) Otherwise a cell holds
   its source or one less than its brightest face-neighbour. One cell a tick at every scale, so scale 3 spreads 8 voxels a tick.
-  Each scale has a pending set of cells (`lattice::ActiveVoxels`, unchanged) and its own budget (20 000, 5 000, 1 200, 300 cells a
-  tick: a cell of 8 reads 512 voxels).
-- Drawing: the client draws each voxel as bright as the brightest light that reaches it, `level * 17` for each scale and the
-  plain light channel. `world_view` got `ScaledLight` and `combined_light` (made in the mesh worker from the brick's channels, with
+  Each scale has a pending set of cells (`lattice::ActiveVoxels`, unchanged) and its own budget (15 000, 3 000, 600, 100
+  cells a tick: a cell of 8 reads 512 voxels the first time it is looked into). What is in a cell is kept from tick to tick and
+  forgotten when a block in it changes.
+- Drawing: the client draws each voxel with the lights that reach it blended, `level * 17` for each scale and the plain light
+  channel: what is missing from full brightness is the product of what each leaves missing (screen blending, as the renderer
+  does ambient light), so lights add up and never pass full (`world_view::blend_brightness`; it was the brightest of them until
+  2026-10-17). Two lights of half brightness are three quarters, and a very dim light beside a bright one rounds away. `world_view` got `ScaledLight` and `combined_light` (made in the mesh worker from the brick's channels, with
   a shortcut for bricks whose light is the same everywhere, which is nearly all of them); the mesher, the quad format and the
   shader are unchanged. `PackageSpec::scaled_lights` declares them (at most 4).
 - Switching: `/light` says which, `/light classic` and `/light multiscale` change it. A switch clears every light (the classic channel and
@@ -304,11 +308,17 @@ Phase 19 (a spike: block light at four scales at once in Voxunami Cave; owner's 
   (switching both ways, levels seen by every player, faces drawn in steps of 17, saving and loading); the drawing in `world_view`.
   Mutation experiments: 14 of 14 caught after one more test.
 - What it showed (measured in a release build unless said; all of it from one scene, so take the numbers as orders of magnitude):
-  - Cost: with one lamp in the air the multiscale light took 0.12 ms a tick on average over 150 ticks, the classic 7.3 ms; with
-    20 lamps 0.25 ms against 9.8 ms. This is mostly reach, not cleverness: 16 levels is a reach of 15 cells at scale 0 and the
-    classic lamp reaches 64 with 256 levels. The coarse scales cost very little (a few hundred cells each). A cell's contents
-    cost E^3 reads, which the budgets keep in check; nothing is cached between ticks.
-  - The look: faces are lit in steps of 17 and the coarse scales show as blocks of light 2, 4 and 8 voxels across. In the one scene
+  - Cost: with a lamp worth 1 at the coarse scales (the first rule) the multiscale light took 0.12 ms a tick on average and the
+    classic 7.3 ms; that was mostly reach, not cleverness (15 cells against 64). With a lamp worth 15 at every scale (the
+    rule now) coarse light fills a sphere of about 15 cells at each scale, and cost became comparable to classic (release, one
+    lamp in the air, 300 ticks: classic 3.7 ms a tick on average and 34 ms worst; multiscale 4.3 ms and 78 ms worst, over the 50 ms
+    tick, because a cell of 8 reads 512 voxels each time). Keeping what is in a cell between ticks and cutting the coarse
+    budgets brought it to about 3.8 ms and 41 ms worst for one lamp, and 4.8 ms and 46 ms for twenty. The coarse scales now
+    fill slowly (100 cells a tick at scale 3 is some seconds for its whole sphere); a lamp taken away takes hundreds of ticks to
+    be fully out at scale 3 (the test waits 400).
+  - The look: with the first rule (and the brightest light drawn) faces were lit in steps of 17 and the coarse scales showed as
+    blocks of light 2, 4 and 8 voxels across; blending and lamps at 15 everywhere should make the coarse light much brighter and
+    broader, and I have not looked at it in the window since. In the one scene
     drawn (a cluster of eight lamps and two single lamps over a hill, in daylight ambient) the lit slope is brighter and
     stepped; I did not try it at night, and nothing has been tuned.
   - Ground: a coarse cell that is half ground is blocked, so light at scales 1 to 3 does not live next to the ground

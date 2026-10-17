@@ -33,7 +33,7 @@ pub const LIGHT_VOXELS_PER_TICK: usize = 20_000;
 
 /// How many cells the multiscale light looks at in a tick at most, at each scale. A cell of 8 costs 512
 /// voxel reads to look at, and 8 times fewer cells fit in a given reach, so the budgets fall.
-pub const MULTISCALE_CELLS_PER_TICK: [usize; SCALES] = [20_000, 5_000, 1_200, 300];
+pub const MULTISCALE_CELLS_PER_TICK: [usize; SCALES] = [15_000, 3_000, 600, 100];
 
 /// How far from a player, in voxels, fires burn: farther away they are frozen.
 pub const FIRE_RANGE: f64 = 64.0;

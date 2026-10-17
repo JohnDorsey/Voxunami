@@ -13,10 +13,10 @@
 //!   as a lamp does. So a wall one voxel thick stops light at scale 0, and does not at scale 1,
 //!   where it is half of a cell: coarse light leaks through thin walls and does not enter
 //!   caves narrower than the cell.
-//! - A cell's *source* is the light of what is in it: the emission of its voxels added up and divided
-//!   by a unit that grows with the cell's volume ([`SOURCE_UNIT`]), rounded up, at most 15. One lamp
-//!   is a bright source for a voxel, a faint one for a cell of 8: it takes a lot of lamps, or a
-//!   lava lake, to light a coarse cell fully.
+//! - A cell's *source* is the brightest light given off by any voxel in it, the same at every scale:
+//!   a block's emission divided by [`EMISSION_PER_LEVEL`], rounded up, at most 15. A lamp (64) is 15
+//!   at every scale, a fire (40) is 10, and a cell is as bright as the brightest thing in it, however
+//!   big the cell.
 //! - Otherwise a cell holds its source, or one less than the brightest neighbouring cell (of the six
 //!   that share a face), if that is more. Light travels one cell a tick, so coarse light spreads
 //!   faster in metres: at scale 3, 8 voxels a tick.
@@ -38,10 +38,14 @@ pub const SCALES: usize = 4;
 /// The brightest a cell's light can be.
 pub const MAXIMUM_LEVEL: u8 = 15;
 
-/// What a cell's emission is divided by to give the level of its source, by scale: four times the
-/// volume of the cell, so that one lamp of 64 is 15 at scale 0 (16, at most 15), 2 at scale 1, and
-/// 1 beyond.
-pub const SOURCE_UNIT: [u32; SCALES] = [4, 32, 256, 2048];
+/// What a block's emission is divided by to give the level of the light it gives off, at every scale.
+pub const EMISSION_PER_LEVEL: u8 = 4;
+
+/// The level of the light a block of this emission gives off: 15 for a lamp (64), 10 for a fire (40),
+/// at most 15, and 0 for a block that gives off none.
+pub fn emission_level(emission: u8) -> u8 {
+    emission.div_ceil(EMISSION_PER_LEVEL).min(MAXIMUM_LEVEL)
+}
 
 /// Which light a world has. Switching clears the light of the other (see `CaveLogic`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,6 +160,8 @@ pub struct MultiScaleLighting {
     table: BlockTable,
     /// Cells (by anchor) whose light may be out of date, at each scale, in a fixed order.
     pending: [ActiveVoxels; SCALES],
+    /// What is in the cells looked into so far; a cell is forgotten when a block in it changes.
+    contents_known: HashMap<CellKey, Contents>,
 }
 
 impl MultiScaleLighting {
@@ -165,12 +171,17 @@ impl MultiScaleLighting {
         Self {
             table,
             pending: std::array::from_fn(|_| ActiveVoxels::new()),
+            contents_known: HashMap::new(),
         }
     }
 
     /// Light that carries on from cells that were still to be looked at, as when a world is loaded.
     pub fn with_pending(table: BlockTable, pending: [ActiveVoxels; SCALES]) -> Self {
-        Self { table, pending }
+        Self {
+            table,
+            pending,
+            contents_known: HashMap::new(),
+        }
     }
 
     /// The cells (their anchors) still to be looked at, at a scale.
@@ -187,6 +198,8 @@ impl MultiScaleLighting {
     /// hold it, at every scale, and their neighbours are looked at on the next step.
     pub fn voxel_changed(&mut self, level: LevelIndex, at: VoxelCoordinate) {
         for scale in 0..SCALES {
+            self.contents_known
+                .remove(&(scale, level, anchor_of(scale, at)));
             self.cell_changed(scale, level, anchor_of(scale, at));
         }
     }
@@ -215,8 +228,9 @@ impl MultiScaleLighting {
         world: &mut impl ScaledLightWorld,
         budgets: [usize; SCALES],
     ) -> usize {
-        // What is in a cell does not change during the evaluation, so it is worked out once.
-        let mut memo: HashMap<CellKey, Contents> = HashMap::new();
+        // What is in a cell changes only when a block in it does (see `voxel_changed`), so it is kept
+        // from one tick to the next: a cell of 8 costs 512 reads to look into.
+        let mut memo = std::mem::take(&mut self.contents_known);
         let mut changed_in_all = 0;
         for (scale, &budget) in budgets.iter().enumerate() {
             let mut looked_at = self.pending[scale].take();
@@ -238,6 +252,7 @@ impl MultiScaleLighting {
             }
             changed_in_all += changes.len();
         }
+        self.contents_known = memo;
         changed_in_all
     }
 
@@ -254,7 +269,7 @@ impl MultiScaleLighting {
             return known;
         }
         let width = 1i64 << scale;
-        let (mut opaque, mut emission) = (0u32, 0u32);
+        let (mut opaque, mut source) = (0u32, 0u8);
         for dx in 0..width {
             for dy in 0..width {
                 for dz in 0..width {
@@ -273,16 +288,13 @@ impl MultiScaleLighting {
                             {
                                 opaque += 1;
                             }
-                            emission += u32::from(self.table.emission(block));
+                            source = source.max(emission_level(self.table.emission(block)));
                         }
                     }
                 }
             }
         }
         let volume = (width * width * width) as u32;
-        let source = emission
-            .div_ceil(SOURCE_UNIT[scale])
-            .min(u32::from(MAXIMUM_LEVEL)) as u8;
         let contents = Contents {
             blocked: opaque * 2 > volume,
             source,
@@ -449,7 +461,7 @@ mod tests {
             for cy in 0..cells {
                 for cz in 0..cells {
                     let anchor = at(cx * width, cy * width, cz * width);
-                    let (mut opaque, mut emission) = (0i64, 0u32);
+                    let (mut opaque, mut level) = (0i64, 0u8);
                     for dx in 0..width {
                         for dy in 0..width {
                             for dz in 0..width {
@@ -463,11 +475,10 @@ mod tests {
                                     .iter()
                                     .any(|&face| table.connections(model).is_open(face));
                                 opaque += i64::from(closed);
-                                emission += u32::from(table.emission(block));
+                                level = level.max(emission_level(table.emission(block)));
                             }
                         }
                     }
-                    let level = emission.div_ceil(SOURCE_UNIT[scale]).min(15) as u8;
                     blocked.insert(anchor, opaque * 2 > width * width * width);
                     source.insert(anchor, level);
                 }
@@ -546,7 +557,7 @@ mod tests {
     }
 
     #[test]
-    fn one_lamp_lights_one_voxel_brightly_a_cell_of_two_faintly_and_larger_cells_barely() {
+    fn one_lamp_is_a_source_of_15_at_every_scale() {
         let mut world = Box3::default();
         let mut lighting = MultiScaleLighting::new(table());
         world.place(at(8, 8, 8), LAMP, &mut lighting);
@@ -557,13 +568,31 @@ mod tests {
         assert_eq!(world.level_at(0, 9, 8, 8), 14);
         assert_eq!(world.level_at(0, 10, 8, 8), 13);
         assert_eq!(world.level_at(0, 15, 8, 8), 8);
-        // Scale 1: 64 / 32 is 2 in the cell with the lamp, then 1 in the cells next to it.
-        assert_eq!(world.level_at(1, 8, 8, 8), 2);
-        assert_eq!(world.level_at(1, 10, 8, 8), 1);
-        assert_eq!(world.level_at(1, 12, 8, 8), 0);
-        // Scales 2 and 3: 64 is under a unit, rounded up to 1: only the cell itself.
-        assert_eq!(world.lit(2), [(at(8, 8, 8), 1)]);
-        assert_eq!(world.lit(3), [(at(8, 8, 8), 1)]);
+        // Scales 1 to 3: the cell with the lamp in it is not blocked, so it holds 15, and the cells
+        // beyond it one less for each cell.
+        assert_eq!(world.level_at(1, 8, 8, 8), 15);
+        assert_eq!(world.level_at(1, 10, 8, 8), 14);
+        assert_eq!(world.level_at(1, 14, 8, 8), 12);
+        assert_eq!(world.level_at(1, 6, 8, 8), 14);
+        // At scale 3 the box is eight cells (2 by 2 by 2) and the lamp is in the one at (8, 8, 8): a level
+        // less for each cell between, 15 minus the number of cells away.
+        let mut expected = Vec::new();
+        for (x, y, z) in [
+            (0, 0, 0),
+            (0, 0, 8),
+            (0, 8, 0),
+            (0, 8, 8),
+            (8, 0, 0),
+            (8, 0, 8),
+            (8, 8, 0),
+            (8, 8, 8),
+        ] {
+            let cells_away = (8 - x) / 8 + (8 - y) / 8 + (8 - z) / 8;
+            expected.push((at(x, y, z), 15 - cells_away as u8));
+        }
+        assert_eq!(world.lit(3), expected);
+        // The same lamp is 15 at every scale, so none of them is dimmer.
+        assert!((0..SCALES).all(|scale| world.level_at(scale, 9 - (9 % (1 << scale)), 8, 8) >= 14));
     }
 
     #[test]
@@ -574,8 +603,8 @@ mod tests {
         let mut lighting = MultiScaleLighting::new(table());
         world.place(at(8, 8, 8), LAMP, &mut lighting);
         lighting.step(&mut world);
-        assert_eq!(world.level_at(1, 8, 8, 8), 2, "the source of the cell");
-        assert_eq!(world.level_at(1, 10, 8, 8), 1, "given at once to the next");
+        assert_eq!(world.level_at(1, 8, 8, 8), 15, "the source of the cell");
+        assert_eq!(world.level_at(1, 10, 8, 8), 14, "given at once to the next");
     }
 
     #[test]
@@ -586,13 +615,13 @@ mod tests {
             world.place(at(8 + dx, 8 + dy, 8 + dz), LAMP, &mut lighting);
         }
         settle(&mut lighting, &mut world);
-        // At scale 1 the cell is all lamps, so blocked and holding none, but it gives 15: 8 lamps of
-        // 64 are 512, over the unit 32, capped at 15.
+        // At scale 1 the cell is all lamps, so blocked and holding none, but it gives 15.
         assert_eq!(world.level_at(1, 8, 8, 8), 0);
         assert_eq!(world.level_at(1, 10, 8, 8), 14);
         assert_eq!(world.level_at(1, 6, 8, 8), 14);
-        // At scale 3 the lamps are 512 over 2048: a quarter, rounded up to 1.
-        assert_eq!(world.level_at(3, 8, 8, 8), 1);
+        // At scale 3 they are a small part of the cell, which is not blocked: it holds 15, as many
+        // lamps as one.
+        assert_eq!(world.level_at(3, 8, 8, 8), 15);
     }
 
     #[test]

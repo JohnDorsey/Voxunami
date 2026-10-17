@@ -80,39 +80,48 @@ impl ViewChannels {
     }
 }
 
-/// How bright each voxel of a brick is when the game has scaled light: the brightest of the plain
-/// light channel and each scale's level in the voxel's cell. `None` for a game without scaled
-/// light, whose light channel is drawn as it is.
+/// Lights of different scales blended: each as a fraction of full brightness, and what is missing from
+/// full brightness is the product of what is missing from each, as the renderer blends ambient light
+/// with a face's light (like screen blending in an image editor). So lights add up, two of half
+/// brightness are three quarters, and none goes beyond full. `lights` are 0 to 255.
+pub fn blend_brightness(lights: impl IntoIterator<Item = u32>) -> u32 {
+    let missing = lights.into_iter().fold(255, |missing, light| {
+        (missing * (255 - light.min(255)) + 127) / 255
+    });
+    255 - missing
+}
+
+/// How bright each voxel of a brick is when the game has scaled light: the plain light channel and
+/// each scale's level in the voxel's cell, blended (see [`blend_brightness`]). `None` for a game
+/// without scaled light, whose light channel is drawn as it is.
 pub fn combined_light(brick: &Brick, channels: &ViewChannels) -> Option<ChannelStorage> {
     if !channels.has_scaled_light() {
         return None;
     }
     let base = channels.light.map(|light| brick.channel(light));
+    let brightness =
+        |level: u32, scale: &ScaledLight| level * u32::from(scale.brightness_per_level);
     // Most bricks hold no light in any channel, or the same everywhere: one value, with no scan.
     let uniform = |storage: &ChannelStorage| storage.uniform_value();
-    let uniforms = base.map_or(Some(0), uniform).and_then(|base| {
-        channels
-            .scaled_light
-            .iter()
-            .flatten()
-            .try_fold(base.min(255), |brightest, scale| {
-                let level = uniform(brick.channel(scale.channel))?;
-                Some(brightest.max((level * u32::from(scale.brightness_per_level)).min(255)))
-            })
-    });
-    if let Some(brightest) = uniforms {
-        return Some(ChannelStorage::uniform(brightest));
+    let uniform_lights: Option<Vec<u32>> = std::iter::once(base.map_or(Some(0), uniform))
+        .chain(channels.scaled_light.iter().flatten().map(|scale| {
+            uniform(brick.channel(scale.channel)).map(|level| brightness(level, scale))
+        }))
+        .collect();
+    if let Some(lights) = uniform_lights {
+        return Some(ChannelStorage::uniform(blend_brightness(lights)));
     }
     let mut values = vec![0u32; BRICK_VOXEL_COUNT];
     for local in LocalVoxelIndex::all() {
-        let mut brightest = base.map_or(0, |base| base.get(local).min(255));
-        for scale in channels.scaled_light.iter().flatten() {
-            let mask = !((1u8 << scale.cell_edge_log2) - 1);
-            let anchor = LocalVoxelIndex::new(local.x() & mask, local.y() & mask, local.z() & mask);
-            let level = brick.channel(scale.channel).get(anchor);
-            brightest = brightest.max((level * u32::from(scale.brightness_per_level)).min(255));
-        }
-        values[local.index()] = brightest;
+        let lights = std::iter::once(base.map_or(0, |base| base.get(local))).chain(
+            channels.scaled_light.iter().flatten().map(|scale| {
+                let mask = !((1u8 << scale.cell_edge_log2) - 1);
+                let anchor =
+                    LocalVoxelIndex::new(local.x() & mask, local.y() & mask, local.z() & mask);
+                brightness(brick.channel(scale.channel).get(anchor), scale)
+            }),
+        );
+        values[local.index()] = blend_brightness(lights);
     }
     Some(ChannelStorage::from_values(&values))
 }
