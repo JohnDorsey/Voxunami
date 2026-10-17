@@ -31,6 +31,8 @@ pub struct ScaledLightSpec {
     pub channel: NamespacedId,
     pub cell_edge_log2: u8,
     pub brightness_per_level: u8,
+    /// Which bits of the channel are the level.
+    pub level_mask: u32,
 }
 
 /// What a game declares about its world.
@@ -127,6 +129,7 @@ impl GameContent for ContentPackage {
                 channel: self.channel(&scaled.channel),
                 cell_edge_log2: scaled.cell_edge_log2,
                 brightness_per_level: scaled.brightness_per_level,
+                level_mask: scaled.level_mask,
             });
         }
         view

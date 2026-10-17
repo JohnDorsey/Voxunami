@@ -83,19 +83,17 @@ impl ScaledLightWorld for WorldScaledLight<'_> {
         Some((block, state))
     }
 
-    fn level(&mut self, scale: usize, level: LevelIndex, anchor: VoxelCoordinate) -> u8 {
+    fn word(&mut self, scale: usize, level: LevelIndex, anchor: VoxelCoordinate) -> u32 {
         self.world
             .voxel(level, self.scale_channels[scale], anchor)
-            .map_or(0, |value| {
-                value.min(u32::from(multiscale_light::MAXIMUM_LEVEL)) as u8
-            })
+            .unwrap_or(0)
     }
 
-    fn set_level(&mut self, scale: usize, level: LevelIndex, anchor: VoxelCoordinate, value: u8) {
+    fn set_word(&mut self, scale: usize, level: LevelIndex, anchor: VoxelCoordinate, value: u32) {
         // The cell's anchor was just read, so the level and the terrain there are available.
         let _ = self
             .world
-            .set_voxel(level, self.scale_channels[scale], anchor, u32::from(value));
+            .set_voxel(level, self.scale_channels[scale], anchor, value);
     }
 }
 

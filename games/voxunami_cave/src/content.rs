@@ -80,6 +80,7 @@ impl CaveContent {
                     cell_edge_log2: scale as u8,
                     // 15 levels of 17 are 255.
                     brightness_per_level: 17,
+                    level_mask: multiscale_light::LEVEL_MASK,
                 })
                 .collect(),
             generators: Arc::new(move |seed, layout| {

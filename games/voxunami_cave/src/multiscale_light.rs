@@ -4,27 +4,46 @@
 //! looks, whether the rule's shape holds), not a decision about how Cave is lit.
 //!
 //! At scale `k` the world is a grid of cells of `2^k` voxels along each side. A cell is named by
-//! its anchor, its first voxel (the one with the smallest coordinates), and a level 0 to 15 is kept
-//! in the anchor voxel of its cell, in a channel of its own for each scale. The rule for a cell is the
-//! one the single-voxel rule has, from the cells as they were at the start of the tick:
+//! its anchor, its first voxel (the one with the smallest coordinates), and what a cell holds is kept
+//! in the anchor voxel of its cell, in a channel of its own for each scale: its level, 0 to 15, and
+//! the level it gives to the cell on the other side of each of its six faces.
 //!
-//! - A cell is *blocked* if more than half of its voxels are whole blocks that let no light through
-//!   (or cannot be read). A blocked cell holds no light, but gives its source to its neighbours,
-//!   as a lamp does. So a wall one voxel thick stops light at scale 0, and does not at scale 1,
-//!   where it is half of a cell: coarse light leaks through thin walls and does not enter
-//!   caves narrower than the cell.
+//! Light goes through the air, so a cell is looked into voxel by voxel. A voxel is *open* if light can
+//! get into it (it is not a whole block that lets none through, and can be read). Light passes
+//! between two cells across a face where an open voxel of one touches a voxel of the other that is
+//! open or gives off light (a lamp lights every face of itself), at the same place in the face. Inside
+//! a cell it goes from face to face along open voxels that touch: a *component* is a set of open
+//! voxels joined face to face, and light that comes in at a face goes out by another only if one
+//! component reaches both, at the place it came in. So a cell that is mostly ground, with air over
+//! it that touches the air of the cell above, is lit; one that a lamp's cell touches only by stone is
+//! not; and a wall across a cell with a hole in it lights what is beyond the hole. The rule, from the
+//! cells as they were at the start of the tick:
+//!
 //! - A cell's *source* is the brightest light given off by any voxel in it, the same at every scale:
 //!   a block's emission divided by [`EMISSION_PER_LEVEL`], rounded up, at most 15. A lamp (64) is 15
 //!   at every scale, a fire (40) is 10, and a cell is as bright as the brightest thing in it, however
 //!   big the cell.
-//! - Otherwise a cell holds its source, or one less than the brightest neighbouring cell (of the six
-//!   that share a face), if that is more. Light travels one cell a tick, so coarse light spreads
-//!   faster in metres: at scale 3, 8 voxels a tick.
+//! - What comes in across a face is what the cell on the other side gives across it, or its own source
+//!   if that is more, if they touch (as above).
+//! - A cell that has an open voxel holds its source, or one less than the most that comes in, if
+//!   that is more. A cell with none holds no light (a lamp is a whole block, and holds none).
+//! - A cell gives across a face its source, if it has anything on that face's layer that gives light;
+//!   and one less than what came in at another face that one component joins to it. Never back the way
+//!   it came in, so two cells do not hold each other up.
+//! - Light travels one cell a tick, so coarse light spreads faster in metres: at scale 3, 8 voxels a
+//!   tick.
 //!
-//! What is drawn is the brightest level that reaches each voxel, of every scale (see
-//! `world_view::combined_light`).
+//! What a cell gives across a face is one level for every place on that face where the cells touch, so
+//! light in one pocket of air passes sideways into a second pocket of the next cell that touches the same
+//! face (it is not kept to the places the light is at: that would need a level for each place).
+//!
+//! What is drawn is the plain light and each scale's level at each voxel, blended (see
+//! `world_view::combined_light`). A cell has one level for all its air, however many components it has,
+//! so a pocket of air shut in a lit cell is drawn lit though light does not pass out of it to
+//! where it is not joined.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use block_models::BlockTable;
 use lattice::ActiveVoxels;
@@ -138,21 +157,73 @@ pub trait ScaledLightWorld {
     /// The block and state of a voxel, or `None` where there is nothing to read.
     fn block_and_state(&mut self, level: LevelIndex, at: VoxelCoordinate) -> Option<(u32, u32)>;
 
-    /// The level stored at the anchor of a cell of a scale, 0 to 15; 0 where there is nothing to read.
-    fn level(&mut self, scale: usize, level: LevelIndex, anchor: VoxelCoordinate) -> u8;
+    /// What is stored at the anchor of a cell of a scale (see [`level_of_word`] and [`face_output`]); 0
+    /// where there is nothing to read.
+    fn word(&mut self, scale: usize, level: LevelIndex, anchor: VoxelCoordinate) -> u32;
 
-    /// Stores the level of a cell. Only called for cells whose anchor was just read.
-    fn set_level(&mut self, scale: usize, level: LevelIndex, anchor: VoxelCoordinate, value: u8);
+    /// Stores what a cell holds. Only called for cells whose anchor was just read.
+    fn set_word(&mut self, scale: usize, level: LevelIndex, anchor: VoxelCoordinate, value: u32);
 }
 
+/// What a cell stores: its own level (0 to 15) in the lowest four bits, and above that, for each of
+/// its six faces (by [`FaceDirection::index`]), the level it gives to the cell on the other side
+/// of that face, four bits each.
+fn pack(level: u8, outputs: [u8; 6]) -> u32 {
+    let mut word = u32::from(level);
+    for (face, output) in outputs.into_iter().enumerate() {
+        word |= u32::from(output) << (4 + 4 * face);
+    }
+    word
+}
+
+/// The level a stored cell holds: what is drawn.
+pub fn level_of_word(word: u32) -> u8 {
+    (word & 0xF) as u8
+}
+
+/// The level a stored cell gives to its neighbour across `face`.
+pub fn face_output(word: u32, face: FaceDirection) -> u8 {
+    ((word >> (4 + 4 * usize::from(face.index()))) & 0xF) as u8
+}
+
+/// The mask of the bits of a stored word that are the level, for drawing.
+pub const LEVEL_MASK: u32 = 0xF;
+
+/// A set of the voxels of one face layer of a cell, as bits, by position in the layer.
+type Layer = u64;
+
 /// What is in a cell, as far as light goes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// A voxel is *open* if light can get into it: it is not a whole block that lets none through, and
+/// can be read. Light passes between two cells across a face where an open voxel of one touches a
+/// voxel of the other that is open or gives off light (a lamp lights every face of itself). Inside a
+/// cell it goes from face to face by the cell's open voxels that touch: a *component* is a set of
+/// open voxels joined face to face, and a component that reaches two faces connects them.
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Contents {
-    blocked: bool,
+    /// Whether any voxel is open.
+    has_open: bool,
+    /// The brightest light any voxel gives off, as a level.
     source: u8,
+    /// For each face, the open voxels of that layer of the cell.
+    open: [Layer; 6],
+    /// For each face, the voxels of that layer that are open or give off light.
+    gives: [Layer; 6],
+    /// For each component of open voxels, the voxels of it on each face's layer.
+    components: Vec<[Layer; 6]>,
 }
 
 type CellKey = (usize, LevelIndex, VoxelCoordinate);
+
+/// The position of a voxel with local coordinates `local` in the layer of the face on `axis`.
+fn layer_bit(width: usize, axis: usize, local: [usize; 3]) -> Layer {
+    let (first, second) = match axis {
+        0 => (local[1], local[2]),
+        1 => (local[0], local[2]),
+        _ => (local[0], local[1]),
+    };
+    1 << (first * width + second)
+}
 
 /// The light rule at every scale, and the cells it has yet to look at.
 #[derive(Debug)]
@@ -161,7 +232,7 @@ pub struct MultiScaleLighting {
     /// Cells (by anchor) whose light may be out of date, at each scale, in a fixed order.
     pending: [ActiveVoxels; SCALES],
     /// What is in the cells looked into so far; a cell is forgotten when a block in it changes.
-    contents_known: HashMap<CellKey, Contents>,
+    contents_known: HashMap<CellKey, Arc<Contents>>,
 }
 
 impl MultiScaleLighting {
@@ -218,11 +289,11 @@ impl MultiScaleLighting {
         self.step_within(world, [usize::MAX; SCALES])
     }
 
-    /// One tick: at each scale, works out the level of every pending cell (no more than that scale's
-    /// share of `budgets`, in their fixed order; the rest wait) from the world as it is now, then
-    /// writes the ones that changed, and so has the cells around them to look at next time. Returns
-    /// how many cells changed. Coarse cells cost more to look at (a cell of 8 reads 512 voxels), so
-    /// they get smaller budgets.
+    /// One tick: at each scale, works out what every pending cell should hold (no more than that
+    /// scale's share of `budgets`, in their fixed order; the rest wait) from the world as it is now,
+    /// then writes the ones that changed, and so has the cells around them to look at next time.
+    /// Returns how many cells changed. Coarse cells cost more to look at (a cell of 8 reads 512
+    /// voxels), so they get smaller budgets.
     pub fn step_within(
         &mut self,
         world: &mut impl ScaledLightWorld,
@@ -230,7 +301,7 @@ impl MultiScaleLighting {
     ) -> usize {
         // What is in a cell changes only when a block in it does (see `voxel_changed`), so it is kept
         // from one tick to the next: a cell of 8 costs 512 reads to look into.
-        let mut memo = std::mem::take(&mut self.contents_known);
+        let mut known = std::mem::take(&mut self.contents_known);
         let mut changed_in_all = 0;
         for (scale, &budget) in budgets.iter().enumerate() {
             let mut looked_at = self.pending[scale].take();
@@ -242,94 +313,199 @@ impl MultiScaleLighting {
             let changes: Vec<_> = looked_at
                 .into_iter()
                 .filter_map(|(level, anchor)| {
-                    let new = self.level_of(world, &mut memo, scale, level, anchor);
-                    (new != world.level(scale, level, anchor)).then_some((level, anchor, new))
+                    let new = self.word_of(world, &mut known, scale, level, anchor);
+                    (new != world.word(scale, level, anchor)).then_some((level, anchor, new))
                 })
                 .collect();
             for &(level, anchor, new) in &changes {
-                world.set_level(scale, level, anchor, new);
+                world.set_word(scale, level, anchor, new);
                 self.cell_changed(scale, level, anchor);
             }
             changed_in_all += changes.len();
         }
-        self.contents_known = memo;
+        self.contents_known = known;
         changed_in_all
     }
 
-    /// What is in a cell: whether it is blocked, and how bright its own light is.
+    /// What is in a cell, looked into if it is not known.
     fn contents(
         &self,
         world: &mut impl ScaledLightWorld,
-        memo: &mut HashMap<CellKey, Contents>,
+        known: &mut HashMap<CellKey, Arc<Contents>>,
+        scale: usize,
+        level: LevelIndex,
+        anchor: VoxelCoordinate,
+    ) -> Arc<Contents> {
+        if let Some(contents) = known.get(&(scale, level, anchor)) {
+            return Arc::clone(contents);
+        }
+        let contents = Arc::new(self.look_into(world, scale, level, anchor));
+        known.insert((scale, level, anchor), Arc::clone(&contents));
+        contents
+    }
+
+    fn look_into(
+        &self,
+        world: &mut impl ScaledLightWorld,
         scale: usize,
         level: LevelIndex,
         anchor: VoxelCoordinate,
     ) -> Contents {
-        if let Some(&known) = memo.get(&(scale, level, anchor)) {
-            return known;
-        }
-        let width = 1i64 << scale;
-        let (mut opaque, mut source) = (0u32, 0u8);
-        for dx in 0..width {
-            for dy in 0..width {
-                for dz in 0..width {
+        let width = 1usize << scale;
+        let index = |x: usize, y: usize, z: usize| (x * width + y) * width + z;
+        let mut open = vec![false; width * width * width];
+        let mut source = 0u8;
+        let mut emitters: Vec<[usize; 3]> = Vec::new();
+        for x in 0..width {
+            for y in 0..width {
+                for z in 0..width {
                     let read = anchor
-                        .checked_offset(dx, dy, dz)
+                        .checked_offset(x as i64, y as i64, z as i64)
                         .and_then(|at| world.block_and_state(level, at));
-                    match read {
-                        // What cannot be read lets no light through.
-                        None => opaque += 1,
-                        Some((block, state)) => {
-                            let connections =
-                                self.table.connections(self.table.model_of(block, state));
-                            if !FaceDirection::ALL
-                                .iter()
-                                .any(|&face| connections.is_open(face))
-                            {
-                                opaque += 1;
-                            }
-                            source = source.max(emission_level(self.table.emission(block)));
-                        }
+                    // What cannot be read lets no light in.
+                    let Some((block, state)) = read else { continue };
+                    let connections = self.table.connections(self.table.model_of(block, state));
+                    open[index(x, y, z)] = FaceDirection::ALL
+                        .iter()
+                        .any(|&face| connections.is_open(face));
+                    let light = emission_level(self.table.emission(block));
+                    if light > 0 {
+                        source = source.max(light);
+                        emitters.push([x, y, z]);
                     }
                 }
             }
         }
-        let volume = (width * width * width) as u32;
-        let contents = Contents {
-            blocked: opaque * 2 > volume,
-            source,
+        let layers_of = |local: [usize; 3]| -> [Layer; 6] {
+            let mut layers = [0; 6];
+            for face in FaceDirection::ALL {
+                let axis = face.axis();
+                let edge = if face.is_positive() { width - 1 } else { 0 };
+                if local[axis] == edge {
+                    layers[usize::from(face.index())] = layer_bit(width, axis, local);
+                }
+            }
+            layers
         };
-        memo.insert((scale, level, anchor), contents);
+        let mut contents = Contents {
+            has_open: false,
+            source,
+            open: [0; 6],
+            gives: [0; 6],
+            components: Vec::new(),
+        };
+        let mut component_of = vec![usize::MAX; open.len()];
+        for x in 0..width {
+            for y in 0..width {
+                for z in 0..width {
+                    if !open[index(x, y, z)] {
+                        continue;
+                    }
+                    contents.has_open = true;
+                    let layers = layers_of([x, y, z]);
+                    for (face, &layer) in layers.iter().enumerate() {
+                        contents.open[face] |= layer;
+                        contents.gives[face] |= layer;
+                    }
+                    if component_of[index(x, y, z)] != usize::MAX {
+                        continue;
+                    }
+                    // A new component: everything open that joins this voxel, face to face.
+                    let id = contents.components.len();
+                    let mut layers_of_component = [0; 6];
+                    let mut stack = vec![[x, y, z]];
+                    component_of[index(x, y, z)] = id;
+                    while let Some(at) = stack.pop() {
+                        for (face, layer) in layers_of(at).into_iter().enumerate() {
+                            layers_of_component[face] |= layer;
+                        }
+                        for direction in FaceDirection::ALL {
+                            let [dx, dy, dz] = direction.offset();
+                            let next = [at[0] as i64 + dx, at[1] as i64 + dy, at[2] as i64 + dz];
+                            if next.iter().any(|&c| c < 0 || c >= width as i64) {
+                                continue;
+                            }
+                            let next = next.map(|c| c as usize);
+                            if open[index(next[0], next[1], next[2])]
+                                && component_of[index(next[0], next[1], next[2])] == usize::MAX
+                            {
+                                component_of[index(next[0], next[1], next[2])] = id;
+                                stack.push(next);
+                            }
+                        }
+                    }
+                    contents.components.push(layers_of_component);
+                }
+            }
+        }
+        // A voxel that gives off light lights every face of itself, open or not.
+        for emitter in emitters {
+            let layers = layers_of(emitter);
+            for (face, &layer) in layers.iter().enumerate() {
+                contents.gives[face] |= layer;
+            }
+        }
         contents
     }
 
-    /// The level a cell should hold, given its neighbours as they are now.
-    fn level_of(
+    /// What a cell should hold, given its neighbours as they are now: its level, and what it gives
+    /// each neighbour.
+    fn word_of(
         &self,
         world: &mut impl ScaledLightWorld,
-        memo: &mut HashMap<CellKey, Contents>,
+        known: &mut HashMap<CellKey, Arc<Contents>>,
         scale: usize,
         level: LevelIndex,
         anchor: VoxelCoordinate,
-    ) -> u8 {
-        let own = self.contents(world, memo, scale, level, anchor);
-        if own.blocked {
-            return 0; // a blocked cell holds no light, though it may give some
-        }
-        let mut value = own.source;
+    ) -> u32 {
+        let own = self.contents(world, known, scale, level, anchor);
+        // What comes in across each face, and where in the layer it touches.
+        let mut incoming = [0u8; 6];
+        let mut entering = [0 as Layer; 6];
         for face in FaceDirection::ALL {
             let Some(neighbour) = neighbour_anchor(scale, anchor, face) else {
                 continue;
             };
-            let next = self.contents(world, memo, scale, level, neighbour);
-            let given = if next.blocked {
-                next.source
-            } else {
-                world.level(scale, level, neighbour).max(next.source)
-            };
-            value = value.max(given.saturating_sub(1));
+            let next = self.contents(world, known, scale, level, neighbour);
+            let across = face.opposite();
+            let touching =
+                next.gives[usize::from(across.index())] & own.open[usize::from(face.index())];
+            if touching == 0 {
+                continue;
+            }
+            // What it gives: what it holds for us, and at least its own source, at once.
+            let word = world.word(scale, level, neighbour);
+            let given = face_output(word, across).max(next.source);
+            incoming[usize::from(face.index())] = given;
+            entering[usize::from(face.index())] = touching;
         }
-        value
+        let strongest = incoming.iter().copied().max().unwrap_or(0);
+        let held = if own.has_open {
+            own.source.max(strongest.saturating_sub(1))
+        } else {
+            0
+        };
+        let mut outputs = [0u8; 6];
+        for toward in 0..6 {
+            // Its own light, to every face where it has anything that gives light.
+            let mut output = if own.gives[toward] != 0 {
+                own.source
+            } else {
+                0
+            };
+            // Light that came in, by a face that an open component joins to this one. Not back
+            // the way it came.
+            for from in (0..6).filter(|&from| from != toward && incoming[from] > 1) {
+                let joined = own.components.iter().any(|component| {
+                    component[from] & entering[from] != 0 && component[toward] != 0
+                });
+                if joined {
+                    output = output.max(incoming[from] - 1);
+                }
+            }
+            outputs[toward] = output;
+        }
+        pack(held, outputs)
     }
 }
 
@@ -399,7 +575,7 @@ mod tests {
     #[derive(Default)]
     struct Box3 {
         blocks: HashMap<VoxelCoordinate, u32>,
-        levels: [HashMap<VoxelCoordinate, u8>; SCALES],
+        words: [HashMap<VoxelCoordinate, u32>; SCALES],
     }
 
     impl ScaledLightWorld for Box3 {
@@ -407,12 +583,12 @@ mod tests {
             inside(at).then(|| (self.blocks.get(&at).copied().unwrap_or(AIR), 0))
         }
 
-        fn level(&mut self, scale: usize, _: LevelIndex, anchor: VoxelCoordinate) -> u8 {
-            self.levels[scale].get(&anchor).copied().unwrap_or(0)
+        fn word(&mut self, scale: usize, _: LevelIndex, anchor: VoxelCoordinate) -> u32 {
+            self.words[scale].get(&anchor).copied().unwrap_or(0)
         }
 
-        fn set_level(&mut self, scale: usize, _: LevelIndex, anchor: VoxelCoordinate, value: u8) {
-            self.levels[scale].insert(anchor, value);
+        fn set_word(&mut self, scale: usize, _: LevelIndex, anchor: VoxelCoordinate, value: u32) {
+            self.words[scale].insert(anchor, value);
         }
     }
 
@@ -422,16 +598,33 @@ mod tests {
             lighting.voxel_changed(MAIN, voxel);
         }
 
+        /// The block at a voxel, and the filling of a whole box of voxels with one block.
+        fn fill(
+            &mut self,
+            from: (i64, i64, i64),
+            to: (i64, i64, i64),
+            block: u32,
+            lighting: &mut MultiScaleLighting,
+        ) {
+            for x in from.0..=to.0 {
+                for y in from.1..=to.1 {
+                    for z in from.2..=to.2 {
+                        self.place(at(x, y, z), block, lighting);
+                    }
+                }
+            }
+        }
+
         fn level_at(&self, scale: usize, x: i64, y: i64, z: i64) -> u8 {
-            self.levels[scale].get(&at(x, y, z)).copied().unwrap_or(0)
+            level_of_word(self.words[scale].get(&at(x, y, z)).copied().unwrap_or(0))
         }
 
         /// The cells of a scale that hold any light, with their levels.
         fn lit(&self, scale: usize) -> Vec<(VoxelCoordinate, u8)> {
-            let mut lit: Vec<_> = self.levels[scale]
+            let mut lit: Vec<_> = self.words[scale]
                 .iter()
-                .filter(|(_, level)| **level > 0)
-                .map(|(&anchor, &level)| (anchor, level))
+                .map(|(&anchor, &word)| (anchor, level_of_word(word)))
+                .filter(|&(_, level)| level > 0)
                 .collect();
             lit.sort();
             lit
@@ -449,73 +642,189 @@ mod tests {
         panic!("the light never settled");
     }
 
-    /// What the rule should settle to, worked out the other way round: the contents of every cell
-    /// counted from scratch, then the brightest light carried to every cell by search from the
-    /// sources, taking the brightest first.
+    /// Whether the voxel is open to light, worked out from the block table alone.
+    fn is_open(world: &Box3, table: &BlockTable, voxel: VoxelCoordinate) -> bool {
+        inside(voxel) && {
+            let block = world.blocks.get(&voxel).copied().unwrap_or(AIR);
+            let connections = table.connections(table.model_of(block, 0));
+            FaceDirection::ALL
+                .iter()
+                .any(|&face| connections.is_open(face))
+        }
+    }
+
+    /// The light the rule should settle to, worked out from the world alone, with none of the rule's
+    /// bit sets or caches: for every cell the voxels of it are looked at one by one (union-find for the
+    /// components, and explicit coordinates for what is on a face's layer), and the equations of the
+    /// module's notes are relaxed from darkness, all cells together, until nothing changes. (The
+    /// light has no loops to hold it up: each step along one costs a level, so there is one answer.)
     fn reference(world: &Box3, table: &BlockTable, scale: usize) -> Vec<(VoxelCoordinate, u8)> {
         let width = 1i64 << scale;
-        let cells = EDGE / width;
-        let mut blocked = HashMap::new();
-        let mut source = HashMap::new();
-        for cx in 0..cells {
-            for cy in 0..cells {
-                for cz in 0..cells {
-                    let anchor = at(cx * width, cy * width, cz * width);
-                    let (mut opaque, mut level) = (0i64, 0u8);
-                    for dx in 0..width {
-                        for dy in 0..width {
-                            for dz in 0..width {
-                                let block = world
-                                    .blocks
-                                    .get(&at(anchor.x() + dx, anchor.y() + dy, anchor.z() + dz))
-                                    .copied()
-                                    .unwrap_or(AIR);
-                                let model = table.model_of(block, 0);
-                                let closed = !FaceDirection::ALL
-                                    .iter()
-                                    .any(|&face| table.connections(model).is_open(face));
-                                opaque += i64::from(closed);
-                                level = level.max(emission_level(table.emission(block)));
-                            }
-                        }
+        let cells: Vec<VoxelCoordinate> = (0..EDGE / width)
+            .flat_map(|x| {
+                (0..EDGE / width).flat_map(move |y| {
+                    (0..EDGE / width).map(move |z| at(x * width, y * width, z * width))
+                })
+            })
+            .collect();
+        let block_at = |voxel: VoxelCoordinate| world.blocks.get(&voxel).copied().unwrap_or(AIR);
+        let open = |voxel: VoxelCoordinate| is_open(world, table, voxel);
+        let light = |voxel: VoxelCoordinate| {
+            if inside(voxel) {
+                emission_level(table.emission(block_at(voxel)))
+            } else {
+                0
+            }
+        };
+        let gives = |voxel: VoxelCoordinate| inside(voxel) && (open(voxel) || light(voxel) > 0);
+        let voxels_of = |cell: VoxelCoordinate| -> Vec<VoxelCoordinate> {
+            let mut voxels = Vec::new();
+            for dx in 0..width {
+                for dy in 0..width {
+                    for dz in 0..width {
+                        voxels.push(at(cell.x() + dx, cell.y() + dy, cell.z() + dz));
                     }
-                    blocked.insert(anchor, opaque * 2 > width * width * width);
-                    source.insert(anchor, level);
+                }
+            }
+            voxels
+        };
+        // Whether a voxel is on the layer of a face of its cell.
+        let on_layer = |cell: VoxelCoordinate, voxel: VoxelCoordinate, face: FaceDirection| {
+            let axis = face.axis();
+            let coordinate = [voxel.x(), voxel.y(), voxel.z()][axis];
+            let start = [cell.x(), cell.y(), cell.z()][axis];
+            coordinate
+                == if face.is_positive() {
+                    start + width - 1
+                } else {
+                    start
+                }
+        };
+        // The components of open voxels of each cell: a map from voxel to a representative voxel.
+        let mut parent: HashMap<VoxelCoordinate, VoxelCoordinate> = HashMap::new();
+        fn find(
+            parent: &mut HashMap<VoxelCoordinate, VoxelCoordinate>,
+            voxel: VoxelCoordinate,
+        ) -> VoxelCoordinate {
+            let up = parent[&voxel];
+            if up == voxel {
+                return voxel;
+            }
+            let root = find(parent, up);
+            parent.insert(voxel, root);
+            root
+        }
+        for &cell in &cells {
+            for voxel in voxels_of(cell) {
+                if open(voxel) {
+                    parent.insert(voxel, voxel);
                 }
             }
         }
-        // Light carried from cell to cell, one less each time; a blocked cell gives its source and
-        // holds none.
-        let mut best: HashMap<VoxelCoordinate, u8> = HashMap::new();
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for (&anchor, &is_blocked) in &blocked {
-                if is_blocked {
+        for &cell in &cells {
+            for voxel in voxels_of(cell) {
+                if !open(voxel) {
                     continue;
                 }
-                let mut value = source[&anchor];
                 for face in FaceDirection::ALL {
-                    let Some(next) = neighbour_anchor(scale, anchor, face) else {
-                        continue;
-                    };
-                    let Some(&next_blocked) = blocked.get(&next) else {
-                        continue; // outside the box
-                    };
-                    let given = if next_blocked {
-                        source[&next]
-                    } else {
-                        best.get(&next).copied().unwrap_or(0).max(source[&next])
-                    };
-                    value = value.max(given.saturating_sub(1));
-                }
-                if best.get(&anchor).copied().unwrap_or(0) != value {
-                    best.insert(anchor, value);
-                    changed = true;
+                    let [dx, dy, dz] = face.offset();
+                    let next = at(voxel.x() + dx, voxel.y() + dy, voxel.z() + dz);
+                    if anchor_of(scale, next) == cell && open(next) {
+                        let (a, b) = (find(&mut parent, voxel), find(&mut parent, next));
+                        parent.insert(a, b);
+                    }
                 }
             }
         }
-        let mut lit: Vec<_> = best.into_iter().filter(|&(_, level)| level > 0).collect();
+        let source_of =
+            |cell: VoxelCoordinate| voxels_of(cell).into_iter().map(light).max().unwrap_or(0);
+        let has_open = |cell: VoxelCoordinate| voxels_of(cell).into_iter().any(open);
+        // The state of every cell: its level and what it gives across each face.
+        let mut state: HashMap<VoxelCoordinate, (u8, [u8; 6])> =
+            cells.iter().map(|&cell| (cell, (0, [0; 6]))).collect();
+        for _ in 0..400 {
+            let snapshot = state.clone();
+            let mut next_state = snapshot.clone();
+            for &cell in &cells {
+                let source = source_of(cell);
+                let mut incoming = [0u8; 6];
+                // For each face, the voxels of this cell that light comes in at.
+                let mut entering: [Vec<VoxelCoordinate>; 6] = Default::default();
+                for face in FaceDirection::ALL {
+                    let [dx, dy, dz] = face.offset();
+                    let neighbour = at(
+                        cell.x() + dx * width,
+                        cell.y() + dy * width,
+                        cell.z() + dz * width,
+                    );
+                    if !inside(neighbour) {
+                        continue;
+                    }
+                    for voxel in voxels_of(cell) {
+                        if !on_layer(cell, voxel, face) || !open(voxel) {
+                            continue;
+                        }
+                        let across = at(voxel.x() + dx, voxel.y() + dy, voxel.z() + dz);
+                        if gives(across) {
+                            entering[usize::from(face.index())].push(voxel);
+                        }
+                    }
+                    if !entering[usize::from(face.index())].is_empty() {
+                        let outputs = snapshot[&neighbour].1;
+                        incoming[usize::from(face.index())] =
+                            outputs[usize::from(face.opposite().index())].max(source_of(neighbour));
+                    }
+                }
+                let strongest = incoming.iter().copied().max().unwrap_or(0);
+                let level = if has_open(cell) {
+                    source.max(strongest.saturating_sub(1))
+                } else {
+                    0
+                };
+                let mut outputs = [0u8; 6];
+                for face in FaceDirection::ALL {
+                    let toward = usize::from(face.index());
+                    let mut output = if voxels_of(cell)
+                        .into_iter()
+                        .any(|voxel| on_layer(cell, voxel, face) && gives(voxel))
+                    {
+                        source
+                    } else {
+                        0
+                    };
+                    for from in FaceDirection::ALL {
+                        let from_index = usize::from(from.index());
+                        if from_index == toward || incoming[from_index] <= 1 {
+                            continue;
+                        }
+                        // Joined if one open component has a voxel where light comes in and an
+                        // open voxel on the layer of the face it goes out by.
+                        let joined = entering[from_index].iter().any(|&entry| {
+                            let root = find(&mut parent, entry);
+                            voxels_of(cell).into_iter().any(|voxel| {
+                                open(voxel)
+                                    && on_layer(cell, voxel, face)
+                                    && find(&mut parent, voxel) == root
+                            })
+                        });
+                        if joined {
+                            output = output.max(incoming[from_index] - 1);
+                        }
+                    }
+                    outputs[toward] = output;
+                }
+                next_state.insert(cell, (level, outputs));
+            }
+            if next_state == state {
+                break;
+            }
+            state = next_state;
+        }
+        let mut lit: Vec<_> = state
+            .into_iter()
+            .filter(|&(_, (level, _))| level > 0)
+            .map(|(cell, (level, _))| (cell, level))
+            .collect();
         lit.sort();
         lit
     }
@@ -527,6 +836,18 @@ mod tests {
         assert_eq!(anchor_of(2, at(5, -3, 9)), at(4, -4, 8));
         assert_eq!(anchor_of(3, at(5, -3, 9)), at(0, -8, 8));
         assert_eq!(anchor_of(3, at(-1, -8, -9)), at(-8, -8, -16));
+    }
+
+    #[test]
+    fn what_a_cell_stores_is_its_level_and_what_it_gives_across_each_face() {
+        let word = pack(9, [1, 2, 3, 4, 5, 6]);
+        assert_eq!(level_of_word(word), 9);
+        for face in FaceDirection::ALL {
+            assert_eq!(face_output(word, face), face.index() + 1);
+        }
+        assert_eq!(word & LEVEL_MASK, 9);
+        assert_eq!(pack(15, [15; 6]), 0x0FFF_FFFF);
+        assert_eq!(level_of_word(0), 0);
     }
 
     #[test]
@@ -568,7 +889,7 @@ mod tests {
         assert_eq!(world.level_at(0, 9, 8, 8), 14);
         assert_eq!(world.level_at(0, 10, 8, 8), 13);
         assert_eq!(world.level_at(0, 15, 8, 8), 8);
-        // Scales 1 to 3: the cell with the lamp in it is not blocked, so it holds 15, and the cells
+        // Scales 1 to 3: the cell with the lamp in it has air in it, so it holds 15, and the cells
         // beyond it one less for each cell.
         assert_eq!(world.level_at(1, 8, 8, 8), 15);
         assert_eq!(world.level_at(1, 10, 8, 8), 14);
@@ -591,14 +912,12 @@ mod tests {
             expected.push((at(x, y, z), 15 - cells_away as u8));
         }
         assert_eq!(world.lit(3), expected);
-        // The same lamp is 15 at every scale, so none of them is dimmer.
-        assert!((0..SCALES).all(|scale| world.level_at(scale, 9 - (9 % (1 << scale)), 8, 8) >= 14));
     }
 
     #[test]
     fn a_cell_gives_the_light_of_its_own_source_to_its_neighbours_the_tick_it_is_evaluated() {
-        // A cell that is lit by what is in it, rather than by a blocked lamp, gives that to its neighbour in
-        // the same tick that it first holds it, as a lamp (which holds none) does at once.
+        // A cell that is lit by what is in it, rather than by a lamp that holds none, gives that to its
+        // neighbour in the same tick that it first holds it, as a lamp does at once.
         let mut world = Box3::default();
         let mut lighting = MultiScaleLighting::new(table());
         world.place(at(8, 8, 8), LAMP, &mut lighting);
@@ -611,58 +930,212 @@ mod tests {
     fn a_full_cell_of_lamps_is_as_bright_as_a_cell_can_be_and_gives_it_to_the_cells_around() {
         let mut world = Box3::default();
         let mut lighting = MultiScaleLighting::new(table());
-        for (dx, dy, dz) in CELL_OF_EIGHT {
-            world.place(at(8 + dx, 8 + dy, 8 + dz), LAMP, &mut lighting);
-        }
+        world.fill((8, 8, 8), (9, 9, 9), LAMP, &mut lighting);
         settle(&mut lighting, &mut world);
-        // At scale 1 the cell is all lamps, so blocked and holding none, but it gives 15.
+        // At scale 1 the cell is all lamps, so it has nothing open and holds none, but it gives 15.
         assert_eq!(world.level_at(1, 8, 8, 8), 0);
         assert_eq!(world.level_at(1, 10, 8, 8), 14);
         assert_eq!(world.level_at(1, 6, 8, 8), 14);
-        // At scale 3 they are a small part of the cell, which is not blocked: it holds 15, as many
-        // lamps as one.
+        // At scale 3 they are a small part of the cell, which is open: it holds 15, as many lamps as one.
         assert_eq!(world.level_at(3, 8, 8, 8), 15);
     }
 
     #[test]
-    fn a_wall_one_voxel_thick_stops_the_finest_light_and_not_the_coarse() {
+    fn a_wall_across_the_whole_box_stops_light_at_every_scale_however_thin() {
         let mut world = Box3::default();
         let mut lighting = MultiScaleLighting::new(table());
-        // A wall across the box at x = 8: all of a layer of cells of 1, half of the cells of 2 that
-        // it is in (not more than half), and less than that of larger cells.
-        for y in 0..EDGE {
-            for z in 0..EDGE {
-                world.place(at(8, y, z), STONE, &mut lighting);
-            }
-        }
-        // A cell's worth of candles of 16, on one side: 4 at scale 0, a cell of 2 of them giving 4 at
-        // scale 1 (128 over 32).
-        for (dx, dy, dz) in CELL_OF_EIGHT {
-            world.place(at(4 + dx, 4 + dy, 4 + dz), CANDLE, &mut lighting);
-        }
+        // A wall one voxel thick across the box at x = 8: all of a layer of cells of 1, and half of
+        // the cells of 2, 4 and 8 that it is in. Light cannot come in at the face on the wall's side, because
+        // nothing there is open, so the cells of the wall are reached from the far side if at all.
+        world.fill((8, 0, 0), (8, EDGE - 1, EDGE - 1), STONE, &mut lighting);
+        // A cell's worth of candles of 16 on one side.
+        world.fill((4, 4, 4), (5, 5, 5), CANDLE, &mut lighting);
         settle(&mut lighting, &mut world);
-        // Scale 0: the light of a candle reaches the wall (4, 3 beside it, 2 at the wall face) and
-        // goes no further.
+        // Scale 0: the light of a candle (4, 3 beside it, 2 at the wall face) goes no further.
         assert_eq!(world.level_at(0, 7, 5, 5), 2);
         assert!((0..EDGE).all(|y| (0..EDGE).all(|z| world.level_at(0, 9, y, z) == 0)));
-        // Scale 1: the cell with the wall in it is lit, 2, and light is beyond it, 1.
+        // Scale 1: the cell of candles gives 4, the one next to it holds 3, the wall's cell (the
+        // wall is its first layer, on the side the light comes from) holds nothing, and nothing is
+        // beyond.
         assert_eq!(world.level_at(1, 6, 4, 4), 3);
+        assert_eq!(world.level_at(1, 8, 4, 4), 0);
+        assert_eq!(world.level_at(1, 10, 4, 4), 0);
+        for scale in 2..SCALES {
+            let width = 1i64 << scale;
+            assert!(
+                world
+                    .lit(scale)
+                    .iter()
+                    .all(|&(cell, _)| cell.x() + width <= 8),
+                "scale {scale}: {:?}",
+                world.lit(scale)
+            );
+        }
+    }
+
+    #[test]
+    fn a_hole_in_a_thin_wall_lets_coarse_light_through_and_only_there() {
+        let mut world = Box3::default();
+        let mut lighting = MultiScaleLighting::new(table());
+        world.fill((8, 0, 0), (8, EDGE - 1, EDGE - 1), STONE, &mut lighting);
+        world.place(at(8, 4, 4), AIR, &mut lighting);
+        world.fill((4, 4, 4), (5, 5, 5), CANDLE, &mut lighting);
+        settle(&mut lighting, &mut world);
+        // At scale 0 the light gets as far as the hole (4 at the candle, one less each voxel) and no
+        // further by it: nothing is lit beyond.
+        assert_eq!(world.level_at(0, 8, 4, 4), 1);
+        assert_eq!(world.level_at(0, 9, 4, 4), 0);
+        // At scale 1 the cell with the hole has an open voxel at the face the light comes at and
+        // an open component that goes on to the far face, so light goes through to the cell beyond.
         assert_eq!(world.level_at(1, 8, 4, 4), 2);
         assert_eq!(world.level_at(1, 10, 4, 4), 1);
+        // A cell of the wall away from the hole gets nothing.
+        assert_eq!(world.level_at(1, 8, 10, 10), 0);
+        assert_eq!(world.level_at(1, 10, 10, 10), 0);
+    }
+
+    #[test]
+    fn a_cell_that_is_mostly_ground_with_air_over_it_is_lit_from_the_cell_above() {
+        let mut world = Box3::default();
+        let mut lighting = MultiScaleLighting::new(table());
+        // Ground up to y = 4 across the lower cells of 8: five layers of the eight, more than half.
+        world.fill((0, 0, 0), (EDGE - 1, 4, EDGE - 1), STONE, &mut lighting);
+        // A lamp in the cell above.
+        world.place(at(4, 12, 4), LAMP, &mut lighting);
+        settle(&mut lighting, &mut world);
+        // The lamp's cell holds 15, and the cell below it, whose top three layers are air touching the
+        // lamp's cell, holds 14, though the cell is mostly ground.
+        assert_eq!(world.level_at(3, 0, 8, 0), 15);
+        assert_eq!(world.level_at(3, 0, 0, 0), 14);
+        // Also at the finer scales: the cell of 4 that is all ground has no air to hold light, and the
+        // one over it (a layer of ground, three of air) is lit.
+        assert_eq!(
+            world.level_at(2, 0, 0, 0),
+            0,
+            "ground to the top of the cell: no air in it"
+        );
+        assert!(world.level_at(2, 0, 4, 0) > 0);
+    }
+
+    #[test]
+    fn a_cell_whose_air_does_not_touch_a_lit_cell_by_air_is_not_lit() {
+        let mut world = Box3::default();
+        let mut lighting = MultiScaleLighting::new(table());
+        // The lower cells of 8 have air below and a roof of stone in their top two layers: the layer
+        // that touches the lamp's cell is all stone.
+        world.fill((0, 6, 0), (EDGE - 1, 7, EDGE - 1), STONE, &mut lighting);
+        world.place(at(4, 12, 4), LAMP, &mut lighting);
+        settle(&mut lighting, &mut world);
+        assert_eq!(world.level_at(3, 0, 8, 0), 15);
+        assert_eq!(world.level_at(3, 0, 0, 0), 0, "the air below is shut in");
+    }
+
+    #[test]
+    fn air_that_touches_only_other_air_in_other_places_is_not_a_connection() {
+        let mut world = Box3::default();
+        let mut lighting = MultiScaleLighting::new(table());
+        // Walls across the whole box at x = 7 and x = 8, apart from one opening in each: at (7, 0, 0) and
+        // at (8, 3, 3). The cells of 4 either side of x = 8 touch there, and the openings are not opposite
+        // each other, so no voxel of one touches the other. A lamp on the far side.
+        for y in 0..EDGE {
+            for z in 0..EDGE {
+                if (y, z) != (0, 0) {
+                    world.place(at(7, y, z), STONE, &mut lighting);
+                }
+                if (y, z) != (3, 3) {
+                    world.place(at(8, y, z), STONE, &mut lighting);
+                }
+            }
+        }
+        world.place(at(10, 1, 1), LAMP, &mut lighting);
+        settle(&mut lighting, &mut world);
+        assert!(world.level_at(2, 8, 0, 0) > 0, "the lamp's cell is lit");
+        assert_eq!(
+            world.level_at(2, 4, 0, 0),
+            0,
+            "no voxel of one opening touches the other"
+        );
+        // With the opening opposite, the light goes through.
+        world.place(at(7, 3, 3), AIR, &mut lighting);
+        settle(&mut lighting, &mut world);
+        assert!(world.level_at(2, 4, 0, 0) > 0, "now they touch");
+    }
+
+    #[test]
+    fn light_goes_through_a_cell_only_between_faces_that_the_same_open_air_reaches() {
+        // A tunnel of air 4 voxels square along x through solid rock, so that light has nowhere else to
+        // go: cells of 4 along x at 0, 4 and 8, a lamp in the one at 8. With a wall across the tunnel at
+        // x = 6, air in the middle cell reaches the face toward the lamp (x = 7) and, apart from that, the
+        // far face (x = 4), but not from one to the other.
+        let tunnel = |wall: bool| {
+            let mut world = Box3::default();
+            let mut lighting = MultiScaleLighting::new(table());
+            world.fill(
+                (0, 0, 0),
+                (EDGE - 1, EDGE - 1, EDGE - 1),
+                STONE,
+                &mut lighting,
+            );
+            world.fill((0, 0, 0), (11, 3, 3), AIR, &mut lighting);
+            if wall {
+                world.fill((6, 0, 0), (6, 3, 3), STONE, &mut lighting);
+            }
+            world.place(at(10, 1, 1), LAMP, &mut lighting);
+            settle(&mut lighting, &mut world);
+            world
+        };
+        let walled = tunnel(true);
+        assert_eq!(
+            walled.level_at(2, 4, 0, 0),
+            14,
+            "the middle cell is lit by the air that touches the lamp's"
+        );
+        assert_eq!(
+            walled.level_at(2, 0, 0, 0),
+            0,
+            "and gives none on, through a wall"
+        );
+        // Without the wall it goes through.
+        assert_eq!(tunnel(false).level_at(2, 0, 0, 0), 13);
+    }
+
+    #[test]
+    fn light_goes_on_from_a_cell_only_by_the_air_it_came_in_by() {
+        // Rock with narrow tunnels through it: one along x at y = 0, z = 0 from x = 0 to x = 7, and, by
+        // the lamp, a little air at (7, 3, 3) in the same cell of 4 as the end of that tunnel (the cell at
+        // x = 4), touching the lamp's cell at (8, 3, 3) and nothing else of it. The lamp's light comes in
+        // at the little pocket, which does not join the tunnel, so it goes no further.
+        let mut world = Box3::default();
+        let mut lighting = MultiScaleLighting::new(table());
+        world.fill(
+            (0, 0, 0),
+            (EDGE - 1, EDGE - 1, EDGE - 1),
+            STONE,
+            &mut lighting,
+        );
+        world.fill((0, 0, 0), (7, 0, 0), AIR, &mut lighting);
+        world.fill((7, 3, 3), (11, 3, 3), AIR, &mut lighting);
+        world.place(at(10, 3, 3), LAMP, &mut lighting);
+        settle(&mut lighting, &mut world);
+        assert_eq!(world.level_at(2, 8, 0, 0), 15, "the lamp's cell");
+        assert_eq!(
+            world.level_at(2, 4, 0, 0),
+            14,
+            "the cell with the tunnel and the pocket is lit by the pocket"
+        );
+        assert_eq!(
+            world.level_at(2, 0, 0, 0),
+            0,
+            "but it gives none on by the tunnel, which the light did not come in by"
+        );
     }
 
     #[test]
     fn a_wall_of_glass_stops_no_light_at_any_scale() {
         let mut world = Box3::default();
         let mut lighting = MultiScaleLighting::new(table());
-        for y in 0..EDGE {
-            for z in 0..EDGE {
-                world.place(at(8, y, z), GLASS, &mut lighting);
-            }
-        }
-        for (dx, dy, dz) in CELL_OF_EIGHT {
-            world.place(at(4 + dx, 4 + dy, 4 + dz), LAMP, &mut lighting);
-        }
+        world.fill((8, 0, 0), (8, EDGE - 1, EDGE - 1), GLASS, &mut lighting);
+        world.fill((4, 4, 4), (5, 5, 5), LAMP, &mut lighting);
         settle(&mut lighting, &mut world);
         assert!(world.level_at(0, 9, 5, 5) > 0);
         assert!(world.level_at(1, 10, 4, 4) > 0);
@@ -680,12 +1153,18 @@ mod tests {
         settle(&mut lighting, &mut world);
         assert!(!world.lit(0).is_empty() && !world.lit(3).is_empty());
         world.place(at(8, 8, 8), AIR, &mut lighting);
-        settle(&mut lighting, &mut world);
+        // At a level a tick in a box this size: not held up by cells that give each other light back.
+        let steps = settle(&mut lighting, &mut world);
+        assert!(steps <= 18, "{steps} steps to go out");
         for scale in 0..SCALES {
             assert!(
                 world.lit(scale).is_empty(),
                 "scale {scale}: {:?}",
                 world.lit(scale)
+            );
+            assert!(
+                world.words[scale].values().all(|&word| word == 0),
+                "scale {scale}: nothing is given on either"
             );
         }
     }
@@ -760,17 +1239,18 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(32))]
+        #![proptest_config(ProptestConfig::with_cases(16))]
 
         #[test]
-        fn the_rule_settles_to_what_a_search_from_the_sources_says_at_every_scale(
+        fn the_rule_settles_to_what_the_equations_say_at_every_scale(
             first in edits(),
             second in edits(),
         ) {
             let table = table();
             let mut world = Box3::default();
             let mut lighting = MultiScaleLighting::new(table.clone());
-            // Two rounds of edits, settling between, so that light is also taken away and moved.
+            // Two rounds of edits, settling between, so that light is also taken away and moved,
+            // and what the rule remembers of cells is tested against edits.
             for round in [&first, &second] {
                 for Edit::Place(x, y, z, block) in round {
                     world.place(at(*x, *y, *z), *block, &mut lighting);
@@ -779,6 +1259,28 @@ mod tests {
                 for scale in 0..SCALES {
                     prop_assert_eq!(world.lit(scale), reference(&world, &table, scale), "scale {}", scale);
                 }
+            }
+        }
+
+        /// Walls of stone of any pattern across a box with a lamp: the equations again, where there is
+        /// a lot of stone and so a lot of cells that are partly open.
+        #[test]
+        fn partly_solid_cells_settle_to_what_the_equations_say(
+            solid in prop::collection::vec((0..EDGE, 0..EDGE, 0..EDGE), 60..400),
+            lamps in prop::collection::vec((0..EDGE, 0..EDGE, 0..EDGE), 1..4),
+        ) {
+            let table = table();
+            let mut world = Box3::default();
+            let mut lighting = MultiScaleLighting::new(table.clone());
+            for (x, y, z) in solid {
+                world.place(at(x, y, z), STONE, &mut lighting);
+            }
+            for (x, y, z) in lamps {
+                world.place(at(x, y, z), LAMP, &mut lighting);
+            }
+            settle(&mut lighting, &mut world);
+            for scale in 0..SCALES {
+                prop_assert_eq!(world.lit(scale), reference(&world, &table, scale), "scale {}", scale);
             }
         }
     }

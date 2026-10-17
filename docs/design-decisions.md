@@ -282,13 +282,19 @@ Phase 20 (a dark Cave and the window's own commands; owner's request, 2026-10-17
 
 Phase 19 (a spike: block light at four scales at once in Voxunami Cave; owner's request, 2026-10-16; not a decision about how Cave is lit):
 - What it is: `games/voxunami_cave/src/multiscale_light.rs`, the light rule with the cell size as a parameter. At scale k the world
-  is a grid of cells 2^k voxels along each side (1, 2, 4, 8), each holding a level 0 to 15 at its first voxel, in a channel per
-  scale (`voxunami_cave:light_scale_0` to `_3`). A cell is *blocked* when more than half its voxels are whole blocks that let no
-  light through (or cannot be read); a blocked cell holds none but gives its source, as a lamp does. A cell's *source* is the
+  is a grid of cells 2^k voxels along each side (1, 2, 4, 8), each holding at its first voxel a word in a channel per
+  scale (`voxunami_cave:light_scale_0` to `_3`): its level, 0 to 15, in the low four bits, and above them, for each of its six
+  faces, the level it gives the cell across that face (28 bits; drawing uses the low four, `LEVEL_MASK`). Light goes through the
+  *air* (changed 2026-10-17, replacing "a cell is blocked when more than half of it is solid", which left the air of a mostly solid
+  cell dark under a lit cell): a voxel is open if light can get into it; light passes between two cells across a face where an
+  open voxel of one touches an open voxel (or a lamp) of the other at the same place in the face, and inside a cell it goes from
+  the face it came in by to another only if one connected component of open voxels reaches both, at the place it came in. A cell
+  with no open voxel holds none and still gives its source, as a lamp does. A cell's *source* is the
   brightest light any voxel in it gives off, the same at every scale: a block's emission divided by 4, rounded up, at most 15
   (so a lamp of 64 is 15 at all four scales, a fire of 40 is 10). (Phase 19 first added the emission up and divided it by
   a unit that grew with volume, so a lamp was 15, 2, 1, 1; changed on 2026-10-17 at the owner's request.) Otherwise a cell holds
-  its source or one less than its brightest face-neighbour. One cell a tick at every scale, so scale 3 spreads 8 voxels a tick.
+  its source or one less than the most that comes in, and gives across a face one less than what came in at another face that one
+  component joins to it (never back the way it came in). One cell a tick at every scale, so scale 3 spreads 8 voxels a tick.
   Each scale has a pending set of cells (`lattice::ActiveVoxels`, unchanged) and its own budget (15 000, 3 000, 600, 100
   cells a tick: a cell of 8 reads 512 voxels the first time it is looked into). What is in a cell is kept from tick to tick and
   forgotten when a block in it changes.
@@ -315,16 +321,25 @@ Phase 19 (a spike: block light at four scales at once in Voxunami Cave; owner's 
     tick, because a cell of 8 reads 512 voxels each time). Keeping what is in a cell between ticks and cutting the coarse
     budgets brought it to about 3.8 ms and 41 ms worst for one lamp, and 4.8 ms and 46 ms for twenty. The coarse scales now
     fill slowly (100 cells a tick at scale 3 is some seconds for its whole sphere); a lamp taken away takes hundreds of ticks to
-    be fully out at scale 3 (the test waits 400).
+    be fully out at scale 3. With the connectivity rule (each cell keeps what it gives each neighbour, so more words change)
+    the numbers are, measured on an open box: with no budget every scale fills and goes dark in 15 to 16 ticks; with the
+    game's budgets (15 000, 3 000, 600, 100) scale 3 filled in 259 ticks and went dark in 558 (scales 1 and 2: 15 and 36,
+    16 and 68). Cost of those budgets with a lamp worth 15 everywhere: worst tick 40 ms with one lamp and 50 ms with twenty (the
+    tick is 50), mean 6.2 and 8.4 ms against classic's 3.7 and 4.9. Halving the budgets did not lower the worst tick much and
+    made scale 3 slower, so they stayed. Tuning budgets by cells is the wrong unit, and
+    nearest-the-change-first ordering of the pending cells would spend them better (neither done).
   - The look: with the first rule (and the brightest light drawn) faces were lit in steps of 17 and the coarse scales showed as
     blocks of light 2, 4 and 8 voxels across; blending and lamps at 15 everywhere should make the coarse light much brighter and
     broader, and I have not looked at it in the window since. In the one scene
     drawn (a cluster of eight lamps and two single lamps over a hill, in daylight ambient) the lit slope is brighter and
     stepped; I did not try it at night, and nothing has been tuned.
-  - Ground: a coarse cell that is half ground is blocked, so light at scales 1 to 3 does not live next to the ground
-    (a lamp on the ground at an odd height has its cell of 2 blocked: it holds none, and still gives 2 to the cell above). Thin
-    walls leak at coarse scales (a wall one voxel thick is half of a cell of 2, which is not blocked). These are properties of "more
-    than half" and could be changed (a different threshold, or per-face openness of a cell), not of the idea.
+  - Ground: with the first rule a coarse cell that was half ground was blocked, so the air in it stayed dark under a lit
+    cell (reported by the owner, 2026-10-17) and thin walls leaked at coarse scales. With the connectivity rule above a mostly solid
+    cell is lit from the air that touches the lit cell's air, a wall across the whole box stops light at every scale however thin,
+    and a hole in it lets light through at every scale. What is left of the idea's weaknesses: a cell gives one level across a face
+    for every place on it where cells touch, so light in one pocket of air passes sideways into a second pocket of the next
+    cell that touches the same face (a level for each place would need more than a word); a cell has one level for all its air,
+    so a pocket shut in a lit cell is drawn lit; and what comes in is judged on the air of a whole face, not the air beyond it.
   - Speed: coarse light spreads fast in metres (scale 3: 8 voxels a tick, 160 m/s at 20 Hz). Probably wants a slower rule for
     large scales, or to be treated as always settled.
 - What the contract needed, and what it did not (the point of the spike): the channel list in the spec already allowed any number of

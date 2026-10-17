@@ -9,7 +9,7 @@ use game_shell::files::{open_world, save_world};
 use voxel_space::VoxelCoordinate;
 use voxunami_cave::content::CaveContent;
 use voxunami_cave::game::{place_block, request_block};
-use voxunami_cave::multiscale_light::{SCALES, anchor_of};
+use voxunami_cave::multiscale_light::{LEVEL_MASK, SCALES, anchor_of};
 
 fn player_above_ground(rig: &mut Rig) -> Player {
     let mut player = rig.join([16.5, 110.0, 16.5], 0.0, 0.0);
@@ -31,12 +31,10 @@ fn above(voxel: VoxelCoordinate, height: i64) -> VoxelCoordinate {
     VoxelCoordinate::new(voxel.x(), voxel.y() + height, voxel.z())
 }
 
-/// The level of the cell of 2 that holds a lamp placed at `spot`, on the ground. A lamp is a source of
-/// 15 there, but a cell of 2 that holds the ground as well as the lamp (when the lamp is at an odd
-/// height, the cell is the ground below it and its own layer) is more than half solid, and is
-/// blocked: it holds no light, though it still gives its 15 to the cells next to it.
-fn lamp_cell_level(spot: VoxelCoordinate) -> u32 {
-    if spot.y().rem_euclid(2) == 1 { 0 } else { 15 }
+/// The level of the cell of 2 that holds a lamp placed at `spot`, on the ground: 15, as the cell has
+/// air in it as well as the lamp and the ground (a cell with nothing open in it would hold none).
+fn lamp_cell_level(_spot: VoxelCoordinate) -> u32 {
+    15
 }
 
 /// A voxel in the cell of 2 above the cell that holds `spot`.
@@ -58,6 +56,7 @@ fn server_level(rig: &Rig, scale: usize, voxel: VoxelCoordinate) -> u32 {
         .main()
         .overrides
         .get(rig.content.scale_channel(scale), anchor_of(scale, voxel))
+        & LEVEL_MASK
 }
 
 fn seen_level(rig: &Rig, player: &Player, scale: usize, voxel: VoxelCoordinate) -> u32 {
@@ -68,6 +67,7 @@ fn seen_level(rig: &Rig, player: &Player, scale: usize, voxel: VoxelCoordinate) 
         .main()
         .overrides
         .get(rig.content.scale_channel(scale), anchor_of(scale, voxel))
+        & LEVEL_MASK
 }
 
 fn server_classic_light(rig: &Rig, voxel: VoxelCoordinate) -> u32 {
@@ -247,7 +247,7 @@ fn taking_the_lamp_away_puts_the_multiscale_light_out() {
     assert_eq!(server_level(&rig, 0, above(spot, 1)), 14);
     request_block(&mut builder, spot, "base_blocks:air");
     // Coarse light that loses its source dies out a level a tick and has a lot of cells to do it in.
-    ticks(&mut rig, 400);
+    ticks(&mut rig, 1500);
     for scale in 0..SCALES {
         assert_eq!(server_level(&rig, scale, spot), 0, "scale {scale}");
         assert_eq!(

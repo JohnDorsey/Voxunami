@@ -52,6 +52,7 @@ fn view(fixture: &Fixture, edge_logs: &[u8]) -> ViewChannels {
             channel,
             cell_edge_log2: edge_log,
             brightness_per_level: 17,
+            level_mask: u32::MAX,
         });
     }
     view
@@ -181,4 +182,23 @@ fn a_brick_whose_channels_are_each_the_same_everywhere_is_the_same_everywhere() 
     assert_eq!(by_voxel.get(voxel(20, 20, 20)), 83);
     assert_eq!(by_voxel.get(voxel(3, 3, 3)), 94);
     assert_eq!(by_voxel.get(voxel(4, 0, 0)), 83);
+}
+
+#[test]
+fn only_the_bits_of_the_level_are_light() {
+    let fixture = fixture();
+    let mut brick = Brick::new(&fixture.layout);
+    // A cell that holds a level of 3 and, above it, what the game keeps there besides.
+    brick.set(fixture.scales[0], voxel(0, 0, 0), 0xABC0_0003);
+    let mut channels = view(&fixture, &[0]);
+    channels.scaled_light[0].as_mut().unwrap().level_mask = 0xF;
+    let light = combined_light(&brick, &channels).unwrap();
+    assert_eq!(light.get(voxel(0, 0, 0)), 51);
+    assert_eq!(light.get(voxel(1, 0, 0)), 0);
+    // A uniform channel is the same.
+    *brick.channel_mut(fixture.scales[0]) = voxel_grid::ChannelStorage::uniform(0xFFFF_FFF2);
+    assert_eq!(
+        combined_light(&brick, &channels).unwrap().uniform_value(),
+        Some(34)
+    );
 }

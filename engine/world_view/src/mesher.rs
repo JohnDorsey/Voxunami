@@ -45,6 +45,8 @@ pub struct ScaledLight {
     pub cell_edge_log2: u8,
     /// How bright, from 0 to 255, each level of the channel is.
     pub brightness_per_level: u8,
+    /// Which bits of what the channel holds are the level (the others are the game's, and are not drawn).
+    pub level_mask: u32,
 }
 
 /// The channels of a world's bricks that say what to draw.
@@ -99,8 +101,9 @@ pub fn combined_light(brick: &Brick, channels: &ViewChannels) -> Option<ChannelS
         return None;
     }
     let base = channels.light.map(|light| brick.channel(light));
-    let brightness =
-        |level: u32, scale: &ScaledLight| level * u32::from(scale.brightness_per_level);
+    let brightness = |word: u32, scale: &ScaledLight| {
+        (word & scale.level_mask) * u32::from(scale.brightness_per_level)
+    };
     // Most bricks hold no light in any channel, or the same everywhere: one value, with no scan.
     let uniform = |storage: &ChannelStorage| storage.uniform_value();
     let uniform_lights: Option<Vec<u32>> = std::iter::once(base.map_or(Some(0), uniform))
