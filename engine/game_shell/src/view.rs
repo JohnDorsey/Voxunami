@@ -54,6 +54,28 @@ pub fn show_other_players<C: Connection, G: GameDefinition>(
     renderer.set_avatars(&avatars);
 }
 
+/// The voxel a position is in, as its three coordinates in binary: `x 0b1011 y 0b110 z -0b101`. A
+/// negative coordinate is its size in binary with a minus sign (not in two's complement).
+pub fn binary_voxel_coordinates(position: WorldPosition) -> String {
+    let brick = position.brick();
+    let offset = position.offset();
+    let coordinates = [
+        brick.x() * 32 + offset[0].floor() as i64,
+        brick.y() * 32 + offset[1].floor() as i64,
+        brick.z() * 32 + offset[2].floor() as i64,
+    ];
+    let binary = |value: i64| {
+        let sign = if value < 0 { "-" } else { "" };
+        format!("{sign}0b{:b}", value.unsigned_abs())
+    };
+    format!(
+        "x {} y {} z {}",
+        binary(coordinates[0]),
+        binary(coordinates[1]),
+        binary(coordinates[2])
+    )
+}
+
 /// A camera at a position given in voxels, with angles in degrees.
 pub fn camera_at(
     position: [f64; 3],
@@ -90,5 +112,22 @@ mod tests {
         assert!((camera.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
         assert!((camera.pitch + std::f32::consts::FRAC_PI_6).abs() < 1e-6);
         assert_eq!(camera.far_plane, 768.0);
+    }
+
+    #[test]
+    fn coordinates_are_the_voxel_the_position_is_in_in_binary() {
+        let binary = |position: [f64; 3]| {
+            binary_voxel_coordinates(camera_at(position, 0.0, 0.0, 12).position)
+        };
+        assert_eq!(binary([0.0, 0.0, 0.0]), "x 0b0 y 0b0 z 0b0");
+        assert_eq!(binary([11.9, 6.0, 5.5]), "x 0b1011 y 0b110 z 0b101");
+        // Across bricks: 32 + 5 = 100101, 110 = 0b1101110.
+        assert_eq!(
+            binary([37.2, 110.0, 64.0]),
+            "x 0b100101 y 0b1101110 z 0b1000000"
+        );
+        // The voxel is the one below, so -0.5 is voxel -1 and -1.0 is too.
+        assert_eq!(binary([-0.5, -1.0, -32.0]), "x -0b1 y -0b1 z -0b100000");
+        assert_eq!(binary([-1.5, -2.0, -33.0]), "x -0b10 y -0b10 z -0b100001");
     }
 }

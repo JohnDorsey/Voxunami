@@ -25,7 +25,10 @@ use crate::following::{PoseFollower, turned_toward};
 use crate::host::{Autosave, HostSettings, ServerThread, connect_to, listen_on};
 use crate::options::{PlayOptions, ReplayOptions, ViewOptions};
 use crate::session::{Mode, Session};
-use crate::view::{apply_updates, atmosphere, camera_at, configure_renderer, show_other_players};
+use crate::view::{
+    apply_updates, atmosphere, binary_voxel_coordinates, camera_at, configure_renderer,
+    show_other_players,
+};
 
 const MOVEMENT_SPEED: f32 = 24.0; // voxels per second
 const SPRINT_MULTIPLIER: f32 = 5.0;
@@ -450,8 +453,9 @@ impl<G: GameDefinition> Viewer<G> {
             .map(|(text, _)| text.as_str());
         let mode = match self.session.mode() {
             Mode::Playing => format!(
-                "players {} | {}{}",
+                "players {} | {} | {}{}",
                 self.session.players().len().max(1),
+                binary_voxel_coordinates(self.session.camera.position),
                 G::status_text(&self.session),
                 match (&typing, reply) {
                     (Some(line), _) => format!(" | {line}"),
