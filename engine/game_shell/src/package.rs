@@ -16,7 +16,7 @@ use namespaced_id::NamespacedId;
 use terrain::{TerrainGenerator, WorldTerrain};
 use voxel_grid::{ChannelDefinition, ChannelIndex, Grid, GridLayout};
 use world_storage::{LevelData, LoadContext, WorldData};
-use world_view::{MAXIMUM_LIGHT_SCALES, ScaledLight, ViewChannels};
+use world_view::{LevelFormat, MAXIMUM_LIGHT_SCALES, ScaledLight, ViewChannels};
 
 use crate::definition::GameContent;
 
@@ -30,9 +30,9 @@ pub type GeneratorFactory =
 pub struct ScaledLightSpec {
     pub channel: NamespacedId,
     pub cell_edge_log2: u8,
-    pub brightness_per_level: u8,
-    /// Which bits of the channel are the level.
-    pub level_mask: u32,
+    /// How bright the channel is at its greatest level (a weight; see `world_view::ScaledLight`).
+    pub full_brightness: u16,
+    pub format: LevelFormat,
 }
 
 /// What a game declares about its world.
@@ -128,8 +128,8 @@ impl GameContent for ContentPackage {
             *slot = Some(ScaledLight {
                 channel: self.channel(&scaled.channel),
                 cell_edge_log2: scaled.cell_edge_log2,
-                brightness_per_level: scaled.brightness_per_level,
-                level_mask: scaled.level_mask,
+                full_brightness: scaled.full_brightness,
+                format: scaled.format,
             });
         }
         view

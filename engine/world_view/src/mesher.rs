@@ -32,21 +32,60 @@ pub struct ViewSettings {
 }
 
 /// The most scales of light a game can have besides its plain light channel.
-pub const MAXIMUM_LIGHT_SCALES: usize = 4;
+pub const MAXIMUM_LIGHT_SCALES: usize = 6;
 
-/// Light kept in cells larger than a voxel: a channel that holds a level at the first voxel (the
-/// anchor) of each cube of 2^`cell_edge_log2` voxels along each side, which lights every voxel of
-/// the cube. A voxel is drawn as bright as the brightest light that reaches it, of the plain light
-/// channel and of every scale.
+/// How a channel of scaled light holds its level in a word: `field_count` fields of `field_bits`
+/// bits each from the lowest bit (a cell's level is the greatest of them), and above them a code
+/// of `code_bits` bits at `code_shift` which says how many levels there are: a field holds up to
+/// `2^field_bits - 1`, and the greatest level a cell can have is that shifted right by the code. So
+/// a game can have several numbers of levels, and a word says which it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LevelFormat {
+    pub field_bits: u8,
+    pub field_count: u8,
+    pub code_shift: u8,
+    pub code_bits: u8,
+}
+
+impl LevelFormat {
+    /// The level a word holds and the greatest level it could (which is 0 only for a word with
+    /// no room for a level).
+    pub fn decode(self, word: u32) -> (u32, u32) {
+        let field_mask = (1u32 << self.field_bits) - 1;
+        let level = (0..u32::from(self.field_count))
+            .map(|field| (word >> (field * u32::from(self.field_bits))) & field_mask)
+            .max()
+            .unwrap_or(0);
+        let code = (word >> self.code_shift) & ((1u32 << self.code_bits) - 1);
+        (level, field_mask >> code)
+    }
+}
+
+/// Light kept in cells larger than a voxel: a channel that holds a word (see [`LevelFormat`]) at the
+/// first voxel (the anchor) of each cube of 2^`cell_edge_log2` voxels along each side, which lights
+/// every voxel of the cube. A voxel is drawn with the light of the plain light channel and of every
+/// scale blended (see [`blend_brightness`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScaledLight {
     pub channel: ChannelIndex,
     /// The cells are this many voxels wide, as a power of two, from 0 (one voxel) to 5 (a brick).
     pub cell_edge_log2: u8,
-    /// How bright, from 0 to 255, each level of the channel is.
-    pub brightness_per_level: u8,
-    /// Which bits of what the channel holds are the level (the others are the game's, and are not drawn).
-    pub level_mask: u32,
+    /// How bright the channel is at its greatest level, as a weight: 255 is full brightness, and a
+    /// channel with a larger weight reaches full brightness at a lower level. Brightness is
+    /// proportional to level (and never more than 255).
+    pub full_brightness: u16,
+    pub format: LevelFormat,
+}
+
+impl ScaledLight {
+    /// How bright, from 0 to 255, a channel that holds `word` is.
+    pub fn brightness(&self, word: u32) -> u32 {
+        let (level, greatest) = self.format.decode(word);
+        if greatest == 0 {
+            return 0;
+        }
+        (level * u32::from(self.full_brightness) / greatest).min(255)
+    }
 }
 
 /// The channels of a world's bricks that say what to draw.
@@ -101,16 +140,14 @@ pub fn combined_light(brick: &Brick, channels: &ViewChannels) -> Option<ChannelS
         return None;
     }
     let base = channels.light.map(|light| brick.channel(light));
-    let brightness = |word: u32, scale: &ScaledLight| {
-        (word & scale.level_mask) * u32::from(scale.brightness_per_level)
-    };
     // Most bricks hold no light in any channel, or the same everywhere: one value, with no scan.
     let uniform = |storage: &ChannelStorage| storage.uniform_value();
-    let uniform_lights: Option<Vec<u32>> = std::iter::once(base.map_or(Some(0), uniform))
-        .chain(channels.scaled_light.iter().flatten().map(|scale| {
-            uniform(brick.channel(scale.channel)).map(|level| brightness(level, scale))
-        }))
-        .collect();
+    let uniform_lights: Option<Vec<u32>> =
+        std::iter::once(base.map_or(Some(0), uniform))
+            .chain(channels.scaled_light.iter().flatten().map(|scale| {
+                uniform(brick.channel(scale.channel)).map(|word| scale.brightness(word))
+            }))
+            .collect();
     if let Some(lights) = uniform_lights {
         return Some(ChannelStorage::uniform(blend_brightness(lights)));
     }
@@ -121,7 +158,7 @@ pub fn combined_light(brick: &Brick, channels: &ViewChannels) -> Option<ChannelS
                 let mask = !((1u8 << scale.cell_edge_log2) - 1);
                 let anchor =
                     LocalVoxelIndex::new(local.x() & mask, local.y() & mask, local.z() & mask);
-                brightness(brick.channel(scale.channel).get(anchor), scale)
+                scale.brightness(brick.channel(scale.channel).get(anchor))
             }),
         );
         values[local.index()] = blend_brightness(lights);

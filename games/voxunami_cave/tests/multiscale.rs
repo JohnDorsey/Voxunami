@@ -9,7 +9,10 @@ use game_shell::files::{open_world, save_world};
 use voxel_space::VoxelCoordinate;
 use voxunami_cave::content::CaveContent;
 use voxunami_cave::game::{place_block, request_block};
-use voxunami_cave::multiscale_light::{LEVEL_MASK, SCALES, anchor_of};
+use voxunami_cave::multiscale_light::{LightScheme, anchor_of, level_of_word};
+
+/// The scales of the default scheme, 16 levels with cells up to 8.
+const SCALES: usize = 4;
 
 fn player_above_ground(rig: &mut Rig) -> Player {
     let mut player = rig.join([16.5, 110.0, 16.5], 0.0, 0.0);
@@ -56,7 +59,7 @@ fn server_level(rig: &Rig, scale: usize, voxel: VoxelCoordinate) -> u32 {
         .main()
         .overrides
         .get(rig.content.scale_channel(scale), anchor_of(scale, voxel))
-        & LEVEL_MASK
+        .pipe_level()
 }
 
 fn seen_level(rig: &Rig, player: &Player, scale: usize, voxel: VoxelCoordinate) -> u32 {
@@ -67,7 +70,18 @@ fn seen_level(rig: &Rig, player: &Player, scale: usize, voxel: VoxelCoordinate) 
         .main()
         .overrides
         .get(rig.content.scale_channel(scale), anchor_of(scale, voxel))
-        & LEVEL_MASK
+        .pipe_level()
+}
+
+/// What a cell holds, as a level.
+trait Word {
+    fn pipe_level(self) -> u32;
+}
+
+impl Word for u32 {
+    fn pipe_level(self) -> u32 {
+        u32::from(level_of_word(self))
+    }
 }
 
 fn server_classic_light(rig: &Rig, voxel: VoxelCoordinate) -> u32 {
@@ -98,34 +112,49 @@ fn quad_lights(rig: &mut Rig, player: &mut Player) -> Vec<u8> {
         .collect()
 }
 
+const USAGE: &str = "usage: /light, /light classic, /light multiscale [32|16|8|4]";
+
 #[test]
 fn the_light_command_says_which_light_there_is_and_changes_it() {
     let mut rig = Rig::new();
     let mut player = player_above_ground(&mut rig);
+    let mut say = |command: &str| reply_to(&mut rig, &mut player, command);
+    assert_eq!(say("/light"), ["the light is classic"]);
+    assert_eq!(say("/light classic"), ["the light is already classic"]);
     assert_eq!(
-        reply_to(&mut rig, &mut player, "/light"),
-        ["the light is classic"]
+        say("/light multiscale"),
+        ["the light is now multiscale (16 levels, cells up to 8)"]
     );
     assert_eq!(
-        reply_to(&mut rig, &mut player, "/light classic"),
-        ["the light is already classic"]
+        say("/light"),
+        ["the light is multiscale (16 levels, cells up to 8)"]
     );
     assert_eq!(
-        reply_to(&mut rig, &mut player, "/light multiscale"),
-        ["the light is now multiscale"]
+        say("/light multiscale 16"),
+        ["the light is already multiscale (16 levels, cells up to 8)"]
     );
-    assert_eq!(
-        reply_to(&mut rig, &mut player, "/light"),
-        ["the light is multiscale"]
-    );
-    assert_eq!(
-        reply_to(&mut rig, &mut player, "/light sideways"),
-        ["usage: /light, /light classic, /light multiscale"]
-    );
-    assert_eq!(
-        reply_to(&mut rig, &mut player, "/light multiscale classic"),
-        ["usage: /light, /light classic, /light multiscale"]
-    );
+    // The other schemes, by their number of levels.
+    for (levels, name) in [
+        (32, "32 levels, cells up to 4"),
+        (8, "8 levels, cells up to 16"),
+        (4, "4 levels, cells up to 32"),
+    ] {
+        assert_eq!(
+            say(&format!("/light multiscale {levels}")),
+            [format!("the light is now multiscale ({name})")]
+        );
+        assert_eq!(say("/light"), [format!("the light is multiscale ({name})")]);
+    }
+    assert_eq!(say("/light classic"), ["the light is now classic"]);
+    for bad in [
+        "/light sideways",
+        "/light multiscale classic",
+        "/light multiscale 5",
+        "/light multiscale 16 8",
+        "/light classic 8",
+    ] {
+        assert_eq!(say(bad), [USAGE], "{bad}");
+    }
 }
 
 #[test]
@@ -290,7 +319,7 @@ fn a_world_saved_with_the_multiscale_light_keeps_it_and_its_levels() {
     later.take_command_replies();
     assert_eq!(
         reply_to(&mut rig, &mut later, "/light"),
-        ["the light is multiscale"]
+        ["the light is multiscale (16 levels, cells up to 8)"]
     );
     assert_eq!(
         server_level(&rig, 0, above(spot, 1)),
@@ -357,7 +386,7 @@ fn a_world_saved_before_the_scales_existed_loads_and_its_lamps_light_up_in_multi
     );
     assert_eq!(
         reply_to(&mut rig, &mut player, "/light multiscale"),
-        ["the light is now multiscale"]
+        ["the light is now multiscale (16 levels, cells up to 8)"]
     );
     ticks(&mut rig, 40);
     rig.settle(&mut [&mut player]);
@@ -373,4 +402,103 @@ fn a_world_saved_before_the_scales_existed_loads_and_its_lamps_light_up_in_multi
     rig.settle(&mut [&mut player]);
     assert_eq!(server_level(&rig, 0, above(new_lamp, 1)), 14);
     assert_eq!(seen_level(&rig, &player, 0, above(new_lamp, 1)), 14);
+}
+
+#[test]
+fn every_scheme_lights_its_scales_with_its_own_greatest_level_and_leaves_the_others_dark() {
+    for scheme in LightScheme::ALL {
+        let mut rig = Rig::new();
+        let mut builder = player_above_ground(&mut rig);
+        reply_to(
+            &mut rig,
+            &mut builder,
+            &format!("/light multiscale {}", scheme.levels()),
+        );
+        let spot = builder.target().unwrap().previous;
+        place_block(&mut builder, "base_blocks:lamp");
+        ticks(&mut rig, 300);
+        rig.settle(&mut [&mut builder]);
+        let greatest = u32::from(scheme.maximum_level());
+        // The voxel over the lamp holds one less than the greatest, as the cell next to a lamp does.
+        assert_eq!(
+            server_level_in(&rig, 0, above(spot, 1)),
+            greatest - 1,
+            "{scheme:?}"
+        );
+        assert_eq!(
+            seen_level_in(&rig, &builder, 0, above(spot, 1)),
+            greatest - 1,
+            "{scheme:?}, seen"
+        );
+        // The cell with the lamp at each of the scheme's scales holds the greatest level (or none, if
+        // it is a cell of nothing but ground, which a cell with the lamp in it is not), and no scale
+        // beyond the scheme's has anything.
+        for scale in 0..scheme.scales() {
+            let level = server_level_in(&rig, scale, spot);
+            assert!(
+                [0, greatest].contains(&level) && level != 0,
+                "{scheme:?} scale {scale}: {level}"
+            );
+        }
+        for scale in scheme.scales()..6 {
+            let anything = rig
+                .server
+                .world()
+                .main()
+                .overrides
+                .bricks()
+                .any(|(_, brick)| {
+                    voxel_space::LocalVoxelIndex::all()
+                        .any(|local| brick.get(rig.content.scale_channel(scale), local) != 0)
+                });
+            assert!(!anything, "{scheme:?} scale {scale} holds light");
+        }
+    }
+}
+
+/// What a cell holds at a scale, in a world of any scheme, as a level.
+fn server_level_in(rig: &Rig, scale: usize, voxel: VoxelCoordinate) -> u32 {
+    server_level(rig, scale, voxel)
+}
+
+fn seen_level_in(rig: &Rig, player: &Player, scale: usize, voxel: VoxelCoordinate) -> u32 {
+    seen_level(rig, player, scale, voxel)
+}
+
+#[test]
+fn a_world_saved_with_a_scheme_keeps_it_when_loaded() {
+    let directory =
+        std::env::temp_dir().join(format!("voxunami_cave_scheme_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("world.voxunami");
+    let mut rig = Rig::new();
+    let mut builder = player_above_ground(&mut rig);
+    reply_to(&mut rig, &mut builder, "/light multiscale 8");
+    let spot = builder.target().unwrap().previous;
+    place_block(&mut builder, "base_blocks:lamp");
+    ticks(&mut rig, 100);
+    builder.say_goodbye();
+    rig.step();
+    let Rig {
+        content, server, ..
+    } = rig;
+    let mut world = server.into_world();
+    save_world(&content, &mut world, &path).unwrap();
+
+    let mut content = CaveContent::new();
+    let loaded = open_world(&mut content, Some(&path), 1).unwrap();
+    let mut rig = Rig::with_world(content, loaded);
+    let mut later = rig.join([16.5, 110.0, 16.5], 0.0, 0.0);
+    rig.settle(&mut [&mut later]);
+    later.take_command_replies();
+    assert_eq!(
+        reply_to(&mut rig, &mut later, "/light"),
+        ["the light is multiscale (8 levels, cells up to 16)"]
+    );
+    assert_eq!(
+        server_level(&rig, 0, above(spot, 1)),
+        6,
+        "the levels were saved"
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
 }

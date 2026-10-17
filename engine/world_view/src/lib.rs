@@ -10,7 +10,7 @@ mod mesher;
 mod ray;
 
 pub use mesher::{
-    MAXIMUM_LIGHT_SCALES, MeshUpdate, ScaledLight, ViewChannels, ViewSettings, WorldMesher,
-    blend_brightness, combined_light,
+    LevelFormat, MAXIMUM_LIGHT_SCALES, MeshUpdate, ScaledLight, ViewChannels, ViewSettings,
+    WorldMesher, blend_brightness, combined_light,
 };
 pub use ray::{RayHit, cast_ray};

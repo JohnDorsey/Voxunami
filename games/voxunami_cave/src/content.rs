@@ -70,17 +70,18 @@ impl CaveContent {
                 ChannelDefinition::number(multiscale_light::channel_identifier(1), 0),
                 ChannelDefinition::number(multiscale_light::channel_identifier(2), 0),
                 ChannelDefinition::number(multiscale_light::channel_identifier(3), 0),
+                ChannelDefinition::number(multiscale_light::channel_identifier(4), 0),
+                ChannelDefinition::number(multiscale_light::channel_identifier(5), 0),
             ],
             block_channel: block_channel_identifier(),
             state_channel: Some(state_channel_identifier()),
             light_channel: Some(light_channel_identifier()),
-            scaled_lights: (0..multiscale_light::SCALES)
+            scaled_lights: (0..multiscale_light::MAXIMUM_SCALES)
                 .map(|scale| ScaledLightSpec {
                     channel: multiscale_light::channel_identifier(scale),
                     cell_edge_log2: scale as u8,
-                    // 15 levels of 17 are 255.
-                    brightness_per_level: 17,
-                    level_mask: multiscale_light::LEVEL_MASK,
+                    full_brightness: multiscale_light::FULL_BRIGHTNESS[scale],
+                    format: multiscale_light::LEVEL_FORMAT,
                 })
                 .collect(),
             generators: Arc::new(move |seed, layout| {

@@ -263,6 +263,60 @@ Phase 1d (saving):
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
 
+Phase 21 (multiscale light schemes and weights; owner's request, 2026-10-17; still a spike):
+- Weights: each scale now has its own weight in drawing (`multiscale_light::FULL_BRIGHTNESS`, 382, 255, 178, 128, 89, 64 for cells of
+  1 to 32; 255 is full brightness and a channel's brightness is its level over its greatest level times its weight, at most 255). Fine
+  cells count for more and coarse for less, instead of 17 a level for all, to give the dark end of the scale smaller steps (the coarse
+  channels' steps are what a lamp's far glow is made of) and the bright end larger ones (the finest channel reaches full
+  brightness at two thirds of its levels). Not judged by eye beyond the pictures below.
+- Schemes (`LightScheme`, chosen with `/light multiscale 32|16|8|4`, 16 if not said, saved with the world): 32 levels with cells of 1, 2, 4;
+  16 with 1 to 8 (the earlier spike); 8 with 1 to 16; 4 with 1 to 32. A lamp is the greatest level at every scale (an emission of 60 or
+  more; a fire of 40 is two thirds). A cell's word is now six five-bit fields (what it gives across each face; its level is the greatest) and,
+  in the top two bits, which scheme (so the client knows how many levels there are with no message: `world_view::LevelFormat`,
+  `ScaledLight::brightness`); a cell that gives no light is 0. The level is no longer stored (the rule never read it), so a lamp's own
+  cell, a whole block, now draws as lit (it gives light to every side), where before it held none. The layout has six scale channels
+  (`light_scale_0` to `_5`; a scheme uses its first 3 to 6). Budgets are by voxels looked at, not cells (`default_budgets`: about 150 000
+  voxels a scale a tick, so 9 375 cells at scale 0 and 2 at 32), which fixes the worst case of cells of 32 reading 32 768 voxels.
+- Tested: the rule against the independent reference in every scheme (a second property test over boxes of 32 for the schemes with cells
+  to 16 and 32), scheme codes, packing and decoding agree between the game and `world_view`, emission levels, budgets, saving a scheme,
+  the command, and each scheme on the server. Mutation experiments: 8 of 9 broke a test (one only after adding a test, for a lamp shut in a cell); the 9th, the check that skips
+  a face with nothing touching is also made later in the same function and is the one that changes nothing.
+- Scene for comparing them (`games/voxunami_cave/tests/multiscale_modes.rs`, ignored tests, run with
+  `cargo test --release -p voxunami_cave --test multiscale_modes -- --ignored --nocapture`): a platform 96 voxels square in the sky,
+  flat on one side of a lamp (x below 48) and hills up to 14 voxels on the other, lamp 2 voxels above the flat ground. The terrain is two
+  triangle waves, the same for every scheme.
+- Rule benchmark (release; the rule alone on that scene with the game's budgets; reads are of a plain function, so milliseconds understate
+  the server, where a voxel read costs more):
+
+  | scheme | fill: ticks | fill: ms | cells written | voxels read | empty: ticks | empty: ms | no budget: ticks |
+  |---|---|---|---|---|---|---|---|
+  | 32 levels, cells to 4 | 156 | 774 | 92 552 | 2.77 M | 506 | 1 494 | 31 |
+  | 16 levels, cells to 8 | 133 | 327 | 12 923 | 3.0 M | 264 | 100 | 15 |
+  | 8 levels, cells to 16 | 103 | 254 | 1 576 | 3.4 M | 147 | 10 | 7 |
+  | 4 levels, cells to 32 | 96 | 296 | 139 | 4.8 M | 96 | 3 | 3 |
+
+- Server benchmark (release; the real server on the scene with a player; `ms` per tick; the tick is 50 ms):
+
+  | light | the switching tick | mean, next 400 ticks | 95th | worst | over 10 ms | over 50 ms |
+  |---|---|---|---|---|---|---|
+  | classic | 12.7 | 2.44 | 19.7 | 34.3 | 33 | 0 |
+  | 32 levels, cells to 4 | 7.1 | 9.08 | 34.4 | 66.5 | 131 | 7 |
+  | 16 levels, cells to 8 | 8.7 | 4.08 | 17.0 | 49.3 | 83 | 0 |
+  | 8 levels, cells to 16 | 22.7 | 1.63 | 8.8 | 37.0 | 15 | 0 |
+  | 4 levels, cells to 32 | 59.6 | 1.25 | 9.8 | 47.7 | 20 | 0 |
+
+  (The median is 0 for all: most ticks have nothing to do. The switching tick reads every edited brick, here a platform of about 20 bricks,
+  and so grows with the world.) What it says: the 32-level scheme costs about twice 16 per tick, overruns the tick seven times in 400, and
+  fills and empties slowest in ticks (a sphere of 31 cells at the finest scale),; 16 is about classic's cost; 8 and 4 are cheaper than classic in ticks, with a switching tick that is
+  slow because cells of 16 and 32 are costly to look into the first time (the 4-level switch reads whole cells of 32). The mean cost
+  of fill is dominated by the finest scale in every scheme, so the number of levels, not the number of scales, drives the cost.
+- Pictures (`docs/multiscale-modes/montage.png`: classic, then 32, 16, 8, 4 levels; from straight above, no ambient light, no fog; the lamp is
+  the pale square, flat ground on the left): the schemes agree on the far shape of the glow; the fewer the levels the bigger and plainer
+  the steps, and in 8 and 4 the cells of 16 and 32 show as flat squares; the 4-level scheme shows a dark band at the back of the hills (cells
+  that are mostly hill are not connected to the lamp's air by a face that touches). Classic is much dimmer at the same distance
+  (255 levels over 64 voxels, so the lamp is 255 only at the lamp, where multiscale is full over a whole cell). Mean brightness of the
+  ground, 0 to 255: classic 27, 32 levels 91, 16 levels 80, 8 levels 66, 4 levels 53; measured from the pictures, not a luminance unit.
+
 Phase 20 (a dark Cave and the window's own commands; owner's request, 2026-10-17):
 - There are no sky light channels yet (the plan, with six directions, is in "Voxunami Cave lighting"), so "sky light zero"
   is the one stand-in there was: `AMBIENT_LIGHT`, the brightness of a face no light reaches, was 160 (a lit day) and is
@@ -784,6 +838,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 16 Cave gravity and collision: the server moves the players (`/fly`, `/tp`). **Done.**
 - 17 Voxunami Eels (3D Tron) and the shell hooks it needed. **Done.**
 - 18 Mod stage 1, first step: a game's content as one declared package (`ContentPackage`). **Done.**
+- 21 Multiscale light schemes (32/16/8/4 levels, cells to 4/8/16/32) and per-scale weights, benchmarked. **Done (a spike).**
 - 20 Cave's sky is dark until there is sky light, and the window's own commands start with a period. **Done.**
 - 19 Multiscale light spike in Cave: four scales of 16-level flood fill (cells of 1, 2, 4, 8), switched with `/light`. **Done (a spike).**
 - 1f Launcher and first game crate: `world_view`, the `base_blocks` plugin, Voxunami Cave, the launcher; the old viewer

@@ -22,7 +22,9 @@ use crate::messages::{
     spawn_kind,
 };
 use crate::movement::Movement;
-use crate::multiscale_light::{self, LightModel, MultiScaleLighting, SCALES, ScaledLightWorld};
+use crate::multiscale_light::{
+    self, LightModel, LightScheme, MAXIMUM_SCALES, MultiScaleLighting, ScaledLightWorld,
+};
 
 /// How far from a player, in voxels, a block can be changed.
 pub const REACH: f64 = 10.0;
@@ -30,10 +32,6 @@ pub const REACH: f64 = 10.0;
 /// How many voxels the light rule looks at in a tick at most. A lamp's light is some thousands of
 /// voxels a tick as it spreads; more than this at once (many lamps) takes a few ticks longer.
 pub const LIGHT_VOXELS_PER_TICK: usize = 20_000;
-
-/// How many cells the multiscale light looks at in a tick at most, at each scale. A cell of 8 costs 512
-/// voxel reads to look at, and 8 times fewer cells fit in a given reach, so the budgets fall.
-pub const MULTISCALE_CELLS_PER_TICK: [usize; SCALES] = [15_000, 3_000, 600, 100];
 
 /// How far from a player, in voxels, fires burn: farther away they are frozen.
 pub const FIRE_RANGE: f64 = 64.0;
@@ -73,7 +71,7 @@ struct WorldScaledLight<'a> {
     world: &'a mut ServerWorld,
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
-    scale_channels: [ChannelIndex; SCALES],
+    scale_channels: &'a [ChannelIndex],
 }
 
 impl ScaledLightWorld for WorldScaledLight<'_> {
@@ -137,7 +135,7 @@ pub struct CaveLogic {
     lighting: Lighting,
     /// Which of the two lights the world has.
     light_model: LightModel,
-    scale_channels: [ChannelIndex; SCALES],
+    scale_channels: Vec<ChannelIndex>,
     multiscale: MultiScaleLighting,
     fire: Fire,
     fire_block: u32,
@@ -150,35 +148,33 @@ impl CaveLogic {
     fn light_changed(&mut self, level: LevelIndex, at: VoxelCoordinate) {
         match self.light_model {
             LightModel::Classic => self.lighting.voxel_changed(level, at),
-            LightModel::MultiScale => self.multiscale.voxel_changed(level, at),
+            LightModel::MultiScale(_) => self.multiscale.voxel_changed(level, at),
         }
     }
 
-    /// `/light` says which light the world has; `/light classic` and `/light multiscale` change it.
-    /// Changing clears every light there is, and has the new one look at every lamp and fire in the
-    /// world, so it spreads from them again.
+    /// `/light` says which light the world has; `/light classic` and `/light multiscale [32|16|8|4]`
+    /// (the number of levels, 16 if not said) change it. Changing clears every light there is, and
+    /// has the new one look at every lamp and fire in the world, so it spreads from them again.
     fn light_command(&mut self, arguments: &[&str], world: &mut ServerWorld) -> String {
-        if arguments.len() > 1 {
-            return "usage: /light, /light classic, /light multiscale".to_owned();
-        }
-        let Some(&name) = arguments.first() else {
+        const USAGE: &str = "usage: /light, /light classic, /light multiscale [32|16|8|4]";
+        if arguments.is_empty() {
             return format!("the light is {}", self.light_model.name());
-        };
-        let Some(model) = LightModel::from_name(name) else {
-            return "usage: /light, /light classic, /light multiscale".to_owned();
+        }
+        let Some(model) = LightModel::from_arguments(arguments) else {
+            return USAGE.to_owned();
         };
         if model == self.light_model {
-            return format!("the light is already {name}");
+            return format!("the light is already {}", model.name());
         }
         self.change_light_model(model, world);
-        format!("the light is now {name}")
+        format!("the light is now {}", model.name())
     }
 
     fn change_light_model(&mut self, model: LightModel, world: &mut ServerWorld) {
         // Light is only in edited bricks (generated terrain has no lamps), so those are all to clear,
         // and all that can hold a lamp.
         let mut channels = vec![self.light_channel];
-        channels.extend(self.scale_channels);
+        channels.extend(self.scale_channels.iter().copied());
         let mut emitters = Vec::new();
         let mut lit = Vec::new();
         for (level, _, data) in world.data().levels() {
@@ -200,7 +196,11 @@ impl CaveLogic {
             let _ = world.set_voxel(level, channel, voxel, 0);
         }
         self.lighting = Lighting::new(self.table.clone());
-        self.multiscale = MultiScaleLighting::new(self.table.clone());
+        let scheme = match model {
+            LightModel::MultiScale(scheme) => scheme,
+            LightModel::Classic => LightScheme::LEVELS_16,
+        };
+        self.multiscale = MultiScaleLighting::new(self.table.clone(), scheme);
         self.light_model = model;
         for (level, voxel) in emitters {
             self.light_changed(level, voxel);
@@ -223,6 +223,11 @@ impl CaveLogic {
         let block_ids = (0..blocks.entry_count() as u32)
             .filter_map(|raw| Some((blocks.identifier_of_raw(raw)?.clone(), raw)))
             .collect();
+        let light_model = LightModel::read_section(world.opaque_sections());
+        let scheme = match light_model {
+            LightModel::MultiScale(scheme) => scheme,
+            LightModel::Classic => LightScheme::LEVELS_16,
+        };
         let (fire_clock, fire_active) =
             Fire::read_section(world.opaque_sections(), |level| world.level_index(level))
                 .unwrap_or_default();
@@ -234,18 +239,23 @@ impl CaveLogic {
             light_channel: content.light_channel(),
             level_ids,
             lighting: Lighting::with_pending(content.block_table(), pending),
-            light_model: LightModel::read_section(world.opaque_sections()),
-            scale_channels: std::array::from_fn(|scale| content.scale_channel(scale)),
+            light_model,
+            scale_channels: (0..MAXIMUM_SCALES)
+                .map(|scale| content.scale_channel(scale))
+                .collect(),
             multiscale: MultiScaleLighting::with_pending(
                 content.block_table(),
-                std::array::from_fn(|scale| {
-                    ActiveVoxels::from_sections(
-                        world.opaque_sections(),
-                        &multiscale_light::section_id(scale),
-                        |level| world.level_index(level),
-                    )
-                    .unwrap_or_default()
-                }),
+                scheme,
+                (0..scheme.scales())
+                    .map(|scale| {
+                        ActiveVoxels::from_sections(
+                            world.opaque_sections(),
+                            &multiscale_light::section_id(scale),
+                            |level| world.level_index(level),
+                        )
+                        .unwrap_or_default()
+                    })
+                    .collect(),
             ),
             fire: Fire::new(
                 content.block_table(),
@@ -440,15 +450,15 @@ impl GameLogic for CaveLogic {
                     LIGHT_VOXELS_PER_TICK,
                 );
             }
-            LightModel::MultiScale => {
+            LightModel::MultiScale(scheme) => {
                 self.multiscale.step_within(
                     &mut WorldScaledLight {
                         world,
                         block_channel: self.block_channel,
                         state_channel: self.state_channel,
-                        scale_channels: self.scale_channels,
+                        scale_channels: &self.scale_channels,
                     },
-                    MULTISCALE_CELLS_PER_TICK,
+                    &multiscale_light::default_budgets(scheme),
                 );
             }
         }
@@ -462,7 +472,7 @@ impl GameLogic for CaveLogic {
             self.fire.to_section(&self.level_ids),
             self.light_model.to_section(),
         ];
-        for scale in 0..SCALES {
+        for scale in 0..self.multiscale.scheme().scales() {
             sections.push(
                 self.multiscale
                     .pending(scale)
