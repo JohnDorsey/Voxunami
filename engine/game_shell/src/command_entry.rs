@@ -1,20 +1,28 @@
-//! The line a player types a command on: opened with `/`, edited with the keyboard, sent
-//! with Enter, dropped with Escape. It only holds the text; the window decides when keys go to it.
+//! The line a player types a command on: opened with `/` (a command for the server) or `.` (one for the
+//! window, see [`crate::client_commands`]), edited with the keyboard, sent with Enter, dropped with
+//! Escape. It only holds the text; the window decides when keys go to it.
 
 use protocol::MAXIMUM_COMMAND_LENGTH;
 
-/// Whether a key press opens the command line: the key that types a slash, and nothing else, so a
-/// player who presses Enter (as one does when a game starts, or to confirm) does not find every
-/// key typing into the title bar. Only a press the player makes counts: not one the system repeats
-/// for a key held down, not one it makes up on gaining focus, and not one of a key the window
-/// already knows is down.
+/// What a key press opens the command line with: `/` or `.` if the key types that, and nothing for
+/// any other key, so a player who presses Enter (as one does when a game starts, or to confirm) does
+/// not find every key typing into the title bar. Only a press the player makes counts: not one the
+/// system repeats for a key held down, not one it makes up on gaining focus, and not one of a key
+/// the window already knows is down.
 pub fn opens_a_command(
     text: Option<&str>,
     repeated: bool,
     synthetic: bool,
     already_down: bool,
-) -> bool {
-    !repeated && !synthetic && !already_down && text == Some("/")
+) -> Option<&'static str> {
+    if repeated || synthetic || already_down {
+        return None;
+    }
+    match text {
+        Some("/") => Some("/"),
+        Some(".") => Some("."),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Default)]
@@ -78,17 +86,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_a_fresh_press_of_slash_opens_a_command() {
-        assert!(opens_a_command(Some("/"), false, false, false));
+    fn only_a_fresh_press_of_slash_or_period_opens_a_command_with_it() {
+        assert_eq!(opens_a_command(Some("/"), false, false, false), Some("/"));
+        assert_eq!(opens_a_command(Some("."), false, false, false), Some("."));
         // Enter, and the keys that move the player or choose things, do not.
-        assert!(!opens_a_command(None, false, false, false));
-        assert!(!opens_a_command(Some("\r"), false, false, false));
-        assert!(!opens_a_command(Some("w"), false, false, false));
-        assert!(!opens_a_command(Some("1"), false, false, false));
+        assert_eq!(opens_a_command(None, false, false, false), None);
+        assert_eq!(opens_a_command(Some("\r"), false, false, false), None);
+        assert_eq!(opens_a_command(Some("w"), false, false, false), None);
+        assert_eq!(opens_a_command(Some("1"), false, false, false), None);
+        assert_eq!(opens_a_command(Some(","), false, false, false), None);
+        assert_eq!(opens_a_command(Some("./"), false, false, false), None);
         // A held key repeating, a press made up on gaining focus, and a key already down do not.
-        assert!(!opens_a_command(Some("/"), true, false, false));
-        assert!(!opens_a_command(Some("/"), false, true, false));
-        assert!(!opens_a_command(Some("/"), false, false, true));
+        for first in ["/", "."] {
+            assert_eq!(opens_a_command(Some(first), true, false, false), None);
+            assert_eq!(opens_a_command(Some(first), false, true, false), None);
+            assert_eq!(opens_a_command(Some(first), false, false, true), None);
+        }
     }
 
     #[test]

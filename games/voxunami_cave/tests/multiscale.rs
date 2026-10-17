@@ -310,21 +310,74 @@ fn a_world_saved_with_the_multiscale_light_keeps_it_and_its_levels() {
 }
 
 #[test]
-fn a_world_made_before_the_scales_existed_loads_with_the_classic_light_and_empty_scales() {
-    // The old layout had no channels for the scales and no saved choice.
+fn a_world_saved_before_the_scales_existed_loads_and_its_lamps_light_up_in_multiscale() {
+    // The old layout had the block, state and light channels and none for the scales, and no saved
+    // choice of light.
     let content = CaveContent::new();
-    let world = content.new_world(3);
-    let bytes = world.save(&content.registries()).unwrap();
+    let old_layout = std::sync::Arc::new(
+        voxel_grid::GridLayout::new(vec![
+            content.blocks.block_channel(),
+            content.blocks.state_channel(),
+            content.blocks.light_channel(),
+        ])
+        .unwrap(),
+    );
+    let generators = content
+        .blocks
+        .terrain_generators(5, content.block_channel());
+    let default = generators
+        .runtime_id(&base_blocks::rolling_hills_generator_identifier())
+        .unwrap();
+    let mut old_world = world_storage::WorldData::new(
+        5,
+        voxunami_cave::content::overworld_id(),
+        world_storage::LevelData::new(
+            terrain::WorldTerrain::new(
+                generators,
+                default,
+                voxunami_cave::content::ASSIGNMENT_CUBE_LEVEL,
+            )
+            .unwrap(),
+            voxel_grid::Grid::new(old_layout),
+        ),
+    );
+    // A lamp placed by a player of the old version, high in the air where nothing else is.
+    let lamp = VoxelCoordinate::new(40, 150, 40);
+    old_world
+        .main_mut()
+        .overrides
+        .set(content.block_channel(), lamp, content.blocks.lamp);
+    let bytes = old_world.save(&content.registries()).unwrap();
+
     let mut later = CaveContent::new();
     let parsed = world_storage::ParsedWorld::parse(&bytes).unwrap();
     let seed = parsed.world_seed();
-    let (loaded, _) = parsed.load(later.load_context(seed)).unwrap();
+    let (loaded, report) = parsed.load(later.load_context(seed)).unwrap();
+    assert!(report.missing_content.is_empty());
     let mut rig = Rig::with_world(later, loaded);
-    let mut player = rig.join([16.5, 110.0, 16.5], 0.0, 0.0);
+    let mut player = rig.join([40.5, 152.0, 40.5], 0.0, 0.0);
     rig.settle(&mut [&mut player]);
     player.take_command_replies();
     assert_eq!(
         reply_to(&mut rig, &mut player, "/light"),
         ["the light is classic"]
     );
+    assert_eq!(
+        reply_to(&mut rig, &mut player, "/light multiscale"),
+        ["the light is now multiscale"]
+    );
+    ticks(&mut rig, 40);
+    rig.settle(&mut [&mut player]);
+    // The lamp that was already in the world gives light at the scales, and the player sees it.
+    assert_eq!(server_level(&rig, 0, above(lamp, 1)), 14);
+    assert_eq!(server_level(&rig, 0, above(lamp, 3)), 12);
+    assert_eq!(seen_level(&rig, &player, 0, above(lamp, 3)), 12);
+    assert_eq!(server_level(&rig, 1, lamp), 2);
+    // And one the player places now.
+    let new_lamp = above(lamp, 6);
+    request_block(&mut player, new_lamp, "base_blocks:lamp");
+    ticks(&mut rig, 40);
+    rig.settle(&mut [&mut player]);
+    assert_eq!(server_level(&rig, 0, above(new_lamp, 1)), 14);
+    assert_eq!(seen_level(&rig, &player, 0, above(new_lamp, 1)), 14);
 }

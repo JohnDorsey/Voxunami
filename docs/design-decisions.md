@@ -263,6 +263,23 @@ Phase 1d (saving):
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
 
+Phase 20 (a dark Cave and the window's own commands; owner's request, 2026-10-17):
+- There are no sky light channels yet (the plan, with six directions, is in "Voxunami Cave lighting"), so "sky light zero"
+  is the one stand-in there was: `AMBIENT_LIGHT`, the brightness of a face no light reaches, was 160 (a lit day) and is
+  now 0, until sky light is calculated. Cave is black where no lamp or fire reaches, and the sky and fog colours are unchanged.
+  2048 and Eels have no light channel, so every face is fully lit and ambient light does nothing for them.
+- Commands the window runs itself start with a period; those for the server start with a slash, and the server never sees
+  a line that starts with a period (`client_commands.rs`; the command line opens on either key, and in a replay only on the
+  period). `.ambient` shows how bright a face no light reaches is drawn, `.ambient 0-255` sets it (0 is black; about 20 to 40 is
+  dark like Minecraft's caves) and `.ambient default` returns to the game's own; `.help` lists them. A player's setting is their
+  own: not sent, not recorded, not saved, gone when the window closes. A game cannot add client commands yet.
+- The report that lamps gave no light with multiscale light on: not reproduced as a failure. In the real window (release build,
+  commands typed, a lamp placed with the mouse) lamp light appears with multiscale light on, and tests cover lamps placed
+  before and after switching and in a world file saved before the scales existed. Under the old ambient 160 it is faint: a face
+  1 voxel from a lamp is 55 percent brighter, 7 voxels away 28 percent, 12 away 12 percent, and the 16-level light reaches only
+  15 voxels (classic reaches 64). Now that unlit faces are black it is clear. If it is still not seen, the steps to reproduce are
+  what is missing.
+
 Phase 19 (a spike: block light at four scales at once in Voxunami Cave; owner's request, 2026-10-16; not a decision about how Cave is lit):
 - What it is: `games/voxunami_cave/src/multiscale_light.rs`, the light rule with the cell size as a parameter. At scale k the world
   is a grid of cells 2^k voxels along each side (1, 2, 4, 8), each holding a level 0 to 15 at its first voxel, in a channel per
@@ -455,8 +472,9 @@ Phase 12 (light in Voxunami Cave):
   the light of the voxel in front of each face (Phase 7), so faces beside a lamp are drawn bright. Key 4 selects the lamp.
 - The renderer has `Atmosphere::ambient_light` (and `GameContent::ambient_light`, default 0, so other games and the
   renderer tests are unchanged): the brightness of a face no light reaches, combined with a face's light like a screen blend
-  (`1 - (1 - ambient)(1 - light)`). Cave uses 160 of 255 as a placeholder for day light until there is sky light, so the
-  whole of Cave is now dimmer than it was (the lamp's light is only 64 of 255 at its brightest, so its glow is subtle).
+  (`1 - (1 - ambient)(1 - light)`). Cave used 160 of 255 as a placeholder for day light until there is sky light, so the
+  whole of Cave was dimmer than it had been (the lamp's light is only 64 of 255 at its brightest, so its glow was subtle).
+  Since Phase 20 it is 0: see there.
 - Worlds saved before the light channel existed load with every voxel unlit (tested).
 
 Phase 10 (chain pushing, Voxunami 2048):
@@ -741,6 +759,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 16 Cave gravity and collision: the server moves the players (`/fly`, `/tp`). **Done.**
 - 17 Voxunami Eels (3D Tron) and the shell hooks it needed. **Done.**
 - 18 Mod stage 1, first step: a game's content as one declared package (`ContentPackage`). **Done.**
+- 20 Cave's sky is dark until there is sky light, and the window's own commands start with a period. **Done.**
 - 19 Multiscale light spike in Cave: four scales of 16-level flood fill (cells of 1, 2, 4, 8), switched with `/light`. **Done (a spike).**
 - 1f Launcher and first game crate: `world_view`, the `base_blocks` plugin, Voxunami Cave, the launcher; the old viewer
   retired. **Done.**

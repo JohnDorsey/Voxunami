@@ -16,9 +16,10 @@ use world_view::ViewChannels;
 
 use crate::multiscale_light;
 
-/// How bright, from 0 to 255, a face is that no light reaches. There is no sky light yet, so this
-/// stands in for the light of the day: bright enough to play by, dim enough that lamps show.
-pub const AMBIENT_LIGHT: u8 = 160;
+/// How bright, from 0 to 255, a face is that no light reaches. There is no sky light yet (it was
+/// stood in for by 160, a lit day), so the world is as dark as its lamps leave it, until sky light
+/// is calculated. A player can change how it is drawn with the window's `.ambient` command.
+pub const AMBIENT_LIGHT: u8 = 0;
 
 /// Terrain generators are assigned to cubes of 8 bricks (256 voxels) per side.
 pub const ASSIGNMENT_CUBE_LEVEL: u8 = 3;
@@ -221,6 +222,12 @@ mod tests {
         assert_eq!(overrides.get(later.state_channel(), edited), 0);
         // Saving it again writes the channel it now has.
         assert_ne!(loaded.save(&later.registries()).unwrap(), bytes);
+    }
+
+    #[test]
+    fn faces_no_light_reaches_are_black_until_there_is_sky_light() {
+        assert_eq!(AMBIENT_LIGHT, 0);
+        assert_eq!(CaveContent::new().ambient_light(), 0);
     }
 
     #[test]

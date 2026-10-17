@@ -15,13 +15,18 @@ pub fn configure_renderer(
     view_radius_bricks: i64,
 ) {
     renderer.set_palette(&content.block_table().palette());
+    renderer.set_atmosphere(atmosphere(view_radius_bricks, content.ambient_light()));
+}
+
+/// The sky and fog for a view of this radius, with faces no light reaches drawn at `ambient_light`.
+pub fn atmosphere(view_radius_bricks: i64, ambient_light: u8) -> Atmosphere {
     let reach = (view_radius_bricks * 32) as f32;
-    renderer.set_atmosphere(Atmosphere {
+    Atmosphere {
         fog_start: reach * 0.6,
         fog_end: reach - 16.0,
-        ambient_light: content.ambient_light(),
+        ambient_light,
         ..Atmosphere::default()
-    });
+    }
 }
 
 pub fn apply_updates(renderer: &mut VoxelRenderer, updates: Vec<MeshUpdate>) {

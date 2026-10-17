@@ -7,7 +7,7 @@ mod common;
 use common::{PlayerExt, Rig, VIEW_RADIUS, above_ground};
 use game_shell::files::{open_recording, record_connection};
 use game_shell::session::{Mode, Session};
-use game_shell::view::{apply_updates, camera_at, configure_renderer};
+use game_shell::view::{apply_updates, atmosphere, camera_at, configure_renderer};
 use renderer::{GraphicsContext, VoxelRenderer};
 use transport::Connection;
 use voxunami_cave::game::{Cave, break_block, place_block_with_state};
@@ -27,6 +27,12 @@ fn contexts() -> Vec<GraphicsContext> {
     contexts
 }
 
+/// These pictures are of terrain and blocks, which the game itself draws black where no light reaches
+/// (there is no sky light yet), so they are drawn as a player who has set `.ambient` to a lit day would see them.
+fn daylight(renderer: &mut VoxelRenderer) {
+    renderer.set_atmosphere(atmosphere(VIEW_RADIUS, 160));
+}
+
 fn renderer_for(
     context: &GraphicsContext,
     session: &common::Player,
@@ -34,6 +40,7 @@ fn renderer_for(
 ) -> VoxelRenderer {
     let mut renderer = VoxelRenderer::new(context, wgpu::TextureFormat::Rgba8UnormSrgb);
     configure_renderer(&mut renderer, session.content(), VIEW_RADIUS);
+    daylight(&mut renderer);
     apply_updates(&mut renderer, updates);
     renderer
 }
@@ -111,6 +118,7 @@ fn an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw() 
             // The live picture, from the meshes the live session produced.
             let mut renderer = VoxelRenderer::new(&context, wgpu::TextureFormat::Rgba8UnormSrgb);
             configure_renderer(&mut renderer, replay.content(), VIEW_RADIUS);
+            daylight(&mut renderer);
             apply_updates(&mut renderer, final_updates.clone());
             renderer
         };

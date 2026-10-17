@@ -17,14 +17,15 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
+use crate::client_commands::{self, ClientSettings, is_client_command};
 use crate::command_entry::{CommandEntry, opens_a_command};
-use crate::definition::GameDefinition;
+use crate::definition::{GameContent, GameDefinition};
 use crate::files::{open_recording, open_world, record_connection, recorded_game, save_world};
 use crate::following::{PoseFollower, turned_toward};
 use crate::host::{Autosave, HostSettings, ServerThread, connect_to, listen_on};
 use crate::options::{PlayOptions, ReplayOptions, ViewOptions};
 use crate::session::{Mode, Session};
-use crate::view::{apply_updates, camera_at, configure_renderer, show_other_players};
+use crate::view::{apply_updates, atmosphere, camera_at, configure_renderer, show_other_players};
 
 const MOVEMENT_SPEED: f32 = 24.0; // voxels per second
 const SPRINT_MULTIPLIER: f32 = 5.0;
@@ -156,6 +157,10 @@ struct Viewer<G: GameDefinition> {
     entry: CommandEntry,
     /// The latest answer to a command, and when it came.
     reply: Option<(String, Instant)>,
+    /// What the commands that start with a period change, and how far the view reaches (which the
+    /// fog depends on).
+    settings: ClientSettings,
+    view_radius: i64,
     started: Instant,
     last_frame: Instant,
     last_pose_sent: Instant,
@@ -225,6 +230,7 @@ impl<G: GameDefinition> Viewer<G> {
         configure_renderer(&mut renderer, session.content(), view.view_radius);
         renderer.set_crosshair(session.mode() == Mode::Playing && G::shows_crosshair());
         let now = Instant::now();
+        let settings = ClientSettings::new(session.content().ambient_light());
         Ok(Self {
             window,
             surface,
@@ -236,6 +242,8 @@ impl<G: GameDefinition> Viewer<G> {
             mouse_captured: false,
             entry: CommandEntry::default(),
             reply: None,
+            settings,
+            view_radius: view.view_radius,
             started: now,
             last_frame: now,
             last_pose_sent: now,
@@ -250,6 +258,20 @@ impl<G: GameDefinition> Viewer<G> {
             ticks_played: 0,
             recording_ended: false,
         })
+    }
+
+    /// Runs what was typed on the command line: a line that starts with a period is the window's own
+    /// command and goes no further; any other is the server's.
+    fn run_command(&mut self, text: &str, now: Instant) {
+        if is_client_command(text) {
+            let reply = client_commands::run(text, &mut self.settings);
+            self.renderer
+                .set_atmosphere(atmosphere(self.view_radius, self.settings.ambient_light));
+            println!("{reply}");
+            self.reply = Some((reply, now));
+        } else {
+            self.session.send_command(text);
+        }
     }
 
     fn set_mouse_captured(&mut self, captured: bool) {
@@ -505,7 +527,7 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                             KeyCode::Escape => viewer.entry.cancel(),
                             KeyCode::Enter | KeyCode::NumpadEnter => {
                                 if let Some(text) = viewer.entry.submit() {
-                                    viewer.session.send_command(&text);
+                                    viewer.run_command(&text, Instant::now());
                                 }
                             }
                             KeyCode::Backspace => viewer.entry.backspace(),
@@ -516,17 +538,20 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                             }
                         },
                         ElementState::Pressed => {
-                            let opens_a_command = viewer.session.mode() == Mode::Playing
-                                && opens_a_command(
-                                    event.text.as_deref(),
-                                    event.repeat,
-                                    false,
-                                    viewer.keys.contains(&code),
-                                );
-                            if opens_a_command {
+                            // A recording takes no commands for the server, but the window's own work.
+                            let opened_with = opens_a_command(
+                                event.text.as_deref(),
+                                event.repeat,
+                                false,
+                                viewer.keys.contains(&code),
+                            )
+                            .filter(|&first| {
+                                viewer.session.mode() == Mode::Playing || first == "."
+                            });
+                            if let Some(first) = opened_with {
                                 // Typing is not moving: let go of every key.
                                 viewer.keys.clear();
-                                viewer.entry.begin("/");
+                                viewer.entry.begin(first);
                                 println!("command line open: Enter sends it, Esc drops it");
                             } else if code == KeyCode::Escape {
                                 viewer.set_mouse_captured(false);

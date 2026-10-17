@@ -7,6 +7,7 @@
 //! playing recordings back. Everything a player sees arrives as server messages, which is what
 //! makes recording and replay work for every game.
 
+pub mod client_commands;
 mod command_entry;
 mod definition;
 pub mod files;
