@@ -3,8 +3,8 @@
 Written 2026-10-17 by the assistant, at the owner's request: compare Voxunami's engine, plugin and game structure, and the planned
 plugin API, with games that have excellent modding support (Hytale especially); say where it is weak, what to do, and what is not
 worth doing. The owner has no players and no saved worlds, so every change, however disruptive, is on the table before the first
-official release. The decisions that came out of it are in `docs/design-decisions.md` ("Plugin shape revisions", "Open", Build plan
-phases 23 to 27). This file holds the reasoning behind them and is not itself a decision.
+official release. The decisions that came out of it are in `docs/plan.md` ("Plugin shape revisions", "Open", Build plan
+phases 23 to 32). This file holds the reasoning behind them and is not itself a decision.
 
 ## 0. How to read this
 
@@ -30,9 +30,9 @@ now" to "small, local, can wait".
 
 ## 2. The five revisions
 
-| # | Revision | Phase | Where in `docs/design-decisions.md` |
+| # | Revision | Phase | Where in `docs/plan.md` |
 |---|---|---|---|
-| 1 | Registrar and a few events | 23 | Proposed, "Plugin shape revisions" item 1; Build plan 23 |
+| 1 | Registrar and a few events | 23 | `plan.md`, Proposed, "Plugin shape revisions" item 1; Build plan 23 |
 | 2 | Property bags on block definitions | 24 | same, item 2; Build plan 24 |
 | 3 | Content package at the handshake | 28 | same, item 3; Build plan 26 |
 | 4 | Declared messages and a command registry | 25 | same, item 4; Build plan 25 |
@@ -40,7 +40,7 @@ now" to "small, local, can wait".
 
 The order is by dependency: the registrar is what the others register into; property bags are what the package and the data format
 carry; declared messages and commands need the registrar; the schema is generated from what is registered. Open questions the five
-do not settle are listed under "Open" in the same file.
+do not settle are listed under "Open" in `plan.md`.
 
 ### 2.1 Property bags: what they are and how they are usually built
 
@@ -228,7 +228,7 @@ option C [memory].
    server cost; loses the per-scale channels' own streaming.
 
 **Recommendation (confidence: high on B, medium on 2).** B for fields; option 2 for light when the spike stops being a spike. Until
-then the leak is recorded under "Open" as spike debt.
+then the leak is recorded under "Open" in `plan.md` as spike debt.
 **Two people:** do the small version of B (typed handles and columns with load-time validation), because it also removes the
 engine leak; skip tag merging, canonical hashing and schema generation.
 
@@ -472,7 +472,7 @@ If modders do arrive, the order changes: 3, then 5 and the patch design, then WA
 2. **Phase 24** (properties). **Gate:** the same, plus a test that moving `emission` and `flammability` changed no behaviour.
 3. **Phase 25** (messages and commands). **Gate:** the round-trip test is generated for every declared message.
 4. **Phase 26** (client interface, light hook), then **Phase 27** (entities and items, with the protocol messages and the save
-   section reserved before 1.0). Whether the first release ships textures stays open (see "Open").
+   section reserved before 1.0). Whether the first release ships textures stays open (see "Open" in `plan.md`).
 5. **Phases 28 and 29** (content package; JSON packs, schema, patches), then **Phase 30** (server-driven UI). They need only
    definitions that serialize, so they do not have to wait for WASM.
 6. Last: **Phase 31** (palette in a storage buffer) and **Phase 32** (the loaders).

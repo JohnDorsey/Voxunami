@@ -73,7 +73,7 @@ because its 16 levels survive rounding to any of those.)
 
 - Light inside caves, light from the sky, and changing light (edits that move light and re-mesh neighbours). The fields
   here are fixed and made up; real flood fill will make the interior of caves look more like `flood16` than like `uniform`.
-- GPU drawing time with more quads. Earlier numbers in `design-decisions.md` ("Measured") put 1.4 M quads at radius 12 at
+- GPU drawing time with more quads. Earlier numbers in `build-log.md` ("Measured") put 1.4 M quads at radius 12 at
   6.9 ms on the integrated GPU; the growth here is proportional, so a 25 to 60 percent increase is a visible but not
   dangerous cost. Not re-measured with light.
 - The alternatives. I believe, from reading the vertex shader and the mesher, but did not measure:

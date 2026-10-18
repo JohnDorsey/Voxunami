@@ -4,7 +4,9 @@
 
 A voxel game engine plus several games in one monorepo, with a shared launcher.
 Games: Voxunami Cave (Minecraft-like), Voxunami 2048, Voxunami Eels (Tron-like), Voxunami Sculpt (tiny voxels).
-Read `docs/design-decisions.md` before architectural work; update it when a decision changes.
+Read `docs/design-decisions.md` before architectural work; update it when a decision changes. The build plan, proposals and open
+questions are in `docs/plan.md`, owner wishes that are not scheduled in `docs/future-goals.md`, and what each phase built (with
+measurements) in `docs/build-log.md`: grep it, do not read it whole.
 Layout: `engine/*` libraries, `plugins/*` content, `games/*` games, `launcher/` starts them.
 Run a game: `cargo run --release -p launcher -- cave` (`--help` lists options; `replay FILE` watches a recording;
 `serve cave` runs a dedicated server; `cave --join HOST` joins one).
