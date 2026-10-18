@@ -77,6 +77,7 @@ impl CaveContent {
             block_channel: block_channel_identifier(),
             state_channel: Some(state_channel_identifier()),
             light_channel: Some(light_channel_identifier()),
+            properties: base_blocks::property_declarations(),
             generators: Arc::new(move |seed, layout| {
                 let block_channel = layout
                     .channel_index(&block_channel_identifier())

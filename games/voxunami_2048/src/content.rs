@@ -137,6 +137,7 @@ impl Content2048 {
             block_channel: block_channel_identifier(),
             state_channel: Some(number_channel_identifier()),
             light_channel: None,
+            properties: Vec::new(),
             generators: Arc::new(|seed, layout| {
                 let channel = |id: &NamespacedId| {
                     layout

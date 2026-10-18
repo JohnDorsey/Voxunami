@@ -10,7 +10,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use block_models::{BlockDefinition, BlockTable};
+use block_models::{BlockDefinition, BlockTable, PropertyDeclaration, PropertySchema};
 use content_registry::{IdentifierRegistry, Registry};
 use namespaced_id::NamespacedId;
 use terrain::{TerrainGenerator, WorldTerrain};
@@ -38,6 +38,8 @@ pub struct PackageSpec {
     pub block_channel: NamespacedId,
     pub state_channel: Option<NamespacedId>,
     pub light_channel: Option<NamespacedId>,
+    /// The properties of blocks that the game's plugins declare, besides the engine's.
+    pub properties: Vec<PropertyDeclaration>,
     pub generators: GeneratorFactory,
     /// The generator new regions are given, and the one used if a world's own is missing.
     pub default_generator: NamespacedId,
@@ -122,7 +124,14 @@ impl GameContent for ContentPackage {
             .iter()
             .map(|(_, entry)| entry.content())
             .collect();
-        BlockTable::from_definitions(&definitions)
+        let mut schema = PropertySchema::new();
+        for declaration in &self.spec.properties {
+            schema.declare(declaration.clone()).unwrap_or_else(|error| {
+                panic!("the package's properties are inconsistent: {error}")
+            });
+        }
+        BlockTable::try_from_definitions(&schema, &definitions)
+            .unwrap_or_else(|error| panic!("the package's blocks cannot be used: {error}"))
     }
 
     fn new_world(&self, seed: u64) -> WorldData {
@@ -197,6 +206,7 @@ mod tests {
                 block_channel: id("test_game:block"),
                 state_channel: Some(id("test_game:state")),
                 light_channel: None,
+                properties: Vec::new(),
                 generators: Arc::new(|_seed, _layout| {
                     let mut generators: Registry<Arc<dyn TerrainGenerator>> = Registry::new();
                     generators

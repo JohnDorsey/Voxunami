@@ -10,7 +10,9 @@
 
 use std::sync::Arc;
 
-use block_models::{BlockDefinition, BlockTable, Shape};
+use block_models::{
+    BlockDefinition, BlockTable, PropertyDeclaration, PropertyKey, PropertySchema, Shape,
+};
 use content_registry::{Registry, RuntimeId};
 use namespaced_id::NamespacedId;
 use terrain::{RollingHillsSettings, TerrainGenerator, TerrainMaterials, rolling_hills};
@@ -40,6 +42,49 @@ pub fn state_channel_identifier() -> NamespacedId {
 /// (air, and the empty parts of blocks) and 0 in the others.
 pub fn light_channel_identifier() -> NamespacedId {
     identifier("base_blocks:block_light")
+}
+
+/// The light a block gives off, 0 (none) to 255. The light rules scale it to their own levels.
+pub const EMISSION: PropertyKey<u8> = PropertyKey::new(
+    "base_blocks:emission",
+    0,
+    "the light a block gives off, 0 (none) to 255",
+);
+
+/// How readily a block catches fire next to a fire, 0 (it does not) to 255. The fire rule decides what the
+/// number means.
+pub const FLAMMABILITY: PropertyKey<u8> = PropertyKey::new(
+    "base_blocks:flammability",
+    0,
+    "how readily a block catches fire next to a fire, 0 (it does not) to 255",
+);
+
+/// Whether bodies move through a block as if it were not there (flames), though it can still be seen and
+/// aimed at.
+pub const PASSABLE: PropertyKey<bool> = PropertyKey::new(
+    "base_blocks:passable",
+    false,
+    "whether bodies move through the block as if it were not there",
+);
+
+/// The properties this plugin declares, for a game to add to its package.
+pub fn property_declarations() -> Vec<PropertyDeclaration> {
+    vec![
+        EMISSION.declaration(),
+        FLAMMABILITY.declaration(),
+        PASSABLE.declaration(),
+    ]
+}
+
+/// The engine's properties and this plugin's.
+pub fn property_schema() -> PropertySchema {
+    let mut schema = PropertySchema::new();
+    for declaration in property_declarations() {
+        schema
+            .declare(declaration)
+            .expect("the plugin's properties are distinct from the engine's");
+    }
+    schema
 }
 
 /// How much light a lamp gives off. Light loses one level for every voxel it spreads, so this is
@@ -204,22 +249,30 @@ impl BaseBlocks {
         let dirt = register("dirt", solid([0.45, 0.30, 0.18]));
         let grass = register(
             "grass",
-            solid([0.30, 0.62, 0.20]).with_flammability(GRASS_FLAMMABILITY),
+            solid([0.30, 0.62, 0.20])
+                .with_flammability(GRASS_FLAMMABILITY)
+                .with_property(&FLAMMABILITY, GRASS_FLAMMABILITY),
         );
         let lamp = register(
             "lamp",
-            BlockDefinition::cube([1.0, 0.92, 0.65]).with_emission(LAMP_EMISSION),
+            BlockDefinition::cube([1.0, 0.92, 0.65])
+                .with_emission(LAMP_EMISSION)
+                .with_property(&EMISSION, LAMP_EMISSION),
         );
         let wood = register(
             "wood",
-            solid([0.55, 0.38, 0.20]).with_flammability(WOOD_FLAMMABILITY),
+            solid([0.55, 0.38, 0.20])
+                .with_flammability(WOOD_FLAMMABILITY)
+                .with_property(&FLAMMABILITY, WOOD_FLAMMABILITY),
         );
         let fire = register(
             "fire",
             BlockDefinition::cube([0.95, 0.5, 0.1])
                 .with_shapes(vec![Shape::half(FaceDirection::NegativeY)])
                 .with_passable(true)
+                .with_property(&PASSABLE, true)
                 .with_emission(FIRE_EMISSION)
+                .with_property(&EMISSION, FIRE_EMISSION)
                 .with_state_colors(fire_colors()),
         );
         Self {
@@ -254,7 +307,8 @@ impl BaseBlocks {
             .iter()
             .map(|(_, entry)| entry.content())
             .collect();
-        BlockTable::from_definitions(&definitions)
+        BlockTable::try_from_definitions(&property_schema(), &definitions)
+            .expect("the base blocks' properties are declared")
     }
 
     pub fn block_id(&self, identifier: &NamespacedId) -> Option<RuntimeId<BlockDefinition>> {
@@ -384,6 +438,40 @@ mod tests {
         let table = blocks.block_table();
         assert_eq!(table.palette()[7], MISSING_BLOCK_COLOR);
         assert!(table.is_opaque_cube(table.model_of(7, 0)));
+    }
+
+    #[test]
+    fn the_properties_say_what_the_fields_still_say_for_every_block_and_state() {
+        let blocks = BaseBlocks::new();
+        let table = blocks.block_table();
+        let emission = table.handle(&EMISSION).unwrap();
+        let flammability = table.handle(&FLAMMABILITY).unwrap();
+        let passable = table.handle(&PASSABLE).unwrap();
+        for block in 0..7 {
+            for state in 0..table.state_count(block) {
+                assert_eq!(table.get_of(emission, block, state), table.emission(block));
+                assert_eq!(
+                    table.get_of(flammability, block, state),
+                    table.flammability(block)
+                );
+                assert_eq!(
+                    table.get_of(passable, block, state),
+                    table.is_passable(block)
+                );
+            }
+        }
+        // And the plugin's keys are declared once, beside the engine's.
+        let declared: Vec<String> = property_schema().iter().map(|d| d.id.to_string()).collect();
+        assert_eq!(
+            declared,
+            [
+                "base_blocks:emission",
+                "base_blocks:flammability",
+                "base_blocks:passable",
+                "engine:density",
+                "engine:placeable_on_moving_grids"
+            ]
+        );
     }
 
     #[test]
