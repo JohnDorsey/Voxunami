@@ -211,6 +211,8 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                 ClientEvent::WatchedRegionChanged { .. } => {}
             }
         }
+        self.mesher
+            .set_channels(G::view_channels(&self.content, &self.state));
         if self.mode == Mode::Replaying {
             self.follow_recorded_player();
         } else if G::server_moves_players() {

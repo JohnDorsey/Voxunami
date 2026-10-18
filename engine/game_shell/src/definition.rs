@@ -131,6 +131,13 @@ pub trait GameDefinition: Sized + 'static {
     /// The server's rules, built from the world it will serve (which holds any saved game state).
     fn new_logic(content: &Self::Content, world: &WorldData) -> Box<dyn GameLogic>;
 
+    /// What the view draws from, as the client's state says: a game whose lights depend on what the
+    /// server told it (see [`GameDefinition::handle_game_message`]) changes the content's channels
+    /// here. The view is looked at again whenever this changes. The default is the content's own.
+    fn view_channels(content: &Self::Content, _state: &Self::ClientState) -> ViewChannels {
+        content.view_channels()
+    }
+
     /// A game message from the server that is not about where players are.
     fn handle_game_message(_state: &mut Self::ClientState, _kind: &NamespacedId, _payload: &[u8]) {}
 

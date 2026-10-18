@@ -1,15 +1,20 @@
-//! A spike: block light flooded at several scales at once, in cells of 1, 2, 4 ... voxels along each
-//! side. It is the light rule of [`crate::lighting`] with the cell size as a parameter, to see what
-//! light at several scales in one world is like (what it costs, how it looks, whether the rule's
-//! shape holds), not a decision about how Cave is lit. A [`LightScheme`] says how many levels the
-//! light has and how large the cells get: 32 levels with cells up to 4 voxels, 16 up to 8, 8 up to 16,
-//! 4 up to 32 (the same reach, 31 cells at the finest scale or 3 at the coarsest, so the schemes trade
-//! the number of levels against how many scales there are).
+//! A spike: block light flooded at several scales at once, in cells of several widths (1, 2, 4 ... or
+//! any others) voxels along each side. It is the light rule of [`crate::lighting`] with the cell size
+//! as a parameter, to see what light at several scales in one world is like (what it costs, how it
+//! looks, whether the rule's shape holds), not a decision about how Cave is lit. A [`LightScheme`]
+//! says how many levels the light has and how wide the cells of each scale are: the four presets are
+//! 32 levels with cells up to 4 voxels, 16 up to 8, 8 up to 16, 4 up to 32 (the same reach, 31 cells at
+//! the finest scale or 3 at the coarsest, so the schemes trade the number of levels against how many
+//! scales there are), and `/light multiscale LEVELS WIDTH...` asks for any widths from 1 to 32.
 //!
-//! At scale `k` the world is a grid of cells of `2^k` voxels along each side. A cell is named by
+//! At each scale the world is a grid of cubic cells of the scale's width along each side, laid from
+//! the world's origin (a cell starts where a coordinate is a multiple of the width). A cell is named by
 //! its anchor, its first voxel (the one with the smallest coordinates), and what a cell holds is kept
 //! in the anchor voxel of its cell, in a channel of its own for each scale: the level it gives to the
-//! cell on the other side of each of its six faces (a cell's own level is the greatest of them).
+//! cell on the other side of each of its six faces (a cell's own level is the greatest of them). A
+//! cell that is part in more than one brick (a width that is not a divisor of 32, or the cell is not
+//! at a multiple of 32) has its word kept in each brick, at the first voxel of the cell in that brick
+//! (see [`word_homes`]), so that a brick can be drawn from what it holds.
 //!
 //! Light goes through the air, so a cell is looked into voxel by voxel. A voxel is *open* if light can
 //! get into it (it is not a whole block that lets none through, and can be read). Light passes
@@ -49,24 +54,31 @@ use voxel_space::{FaceDirection, LevelIndex, VoxelCoordinate};
 use world_storage::Section;
 use world_view::LevelFormat;
 
-/// The most scales any scheme has: cells of 1, 2, 4, 8, 16 and 32.
-pub const MAXIMUM_SCALES: usize = 6;
+/// The most scales any scheme has.
+pub const MAXIMUM_SCALES: usize = 7;
 
-/// How many levels a light has and how big its cells get.
+/// The widest a cell can be, in voxels: a brick.
+pub const MAXIMUM_CELL_WIDTH: u16 = 32;
+
+/// How many levels a light has, and how wide the cells of each of its scales are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LightScheme {
+    /// The number of levels is `32 >> code`.
     code: u8,
+    /// The widths of the scales, finest first; only the first `scales` are meaningful.
+    widths: [u16; MAXIMUM_SCALES],
+    scales: u8,
 }
 
 impl LightScheme {
     /// 32 levels, cells of 1, 2 and 4 voxels.
-    pub const LEVELS_32: Self = Self { code: 0 };
+    pub const LEVELS_32: Self = Self::preset(0, &[1, 2, 4]);
     /// 16 levels, cells of 1, 2, 4 and 8 voxels.
-    pub const LEVELS_16: Self = Self { code: 1 };
+    pub const LEVELS_16: Self = Self::preset(1, &[1, 2, 4, 8]);
     /// 8 levels, cells of 1 to 16 voxels.
-    pub const LEVELS_8: Self = Self { code: 2 };
+    pub const LEVELS_8: Self = Self::preset(2, &[1, 2, 4, 8, 16]);
     /// 4 levels, cells of 1 to 32 voxels.
-    pub const LEVELS_4: Self = Self { code: 3 };
+    pub const LEVELS_4: Self = Self::preset(3, &[1, 2, 4, 8, 16, 32]);
 
     pub const ALL: [Self; 4] = [
         Self::LEVELS_32,
@@ -75,18 +87,46 @@ impl LightScheme {
         Self::LEVELS_4,
     ];
 
-    /// The scheme with this many levels (32, 16, 8 or 4).
+    const fn preset(code: u8, widths: &[u16]) -> Self {
+        let mut stored = [0; MAXIMUM_SCALES];
+        let mut scale = 0;
+        while scale < widths.len() {
+            stored[scale] = widths[scale];
+            scale += 1;
+        }
+        Self {
+            code,
+            widths: stored,
+            scales: widths.len() as u8,
+        }
+    }
+
+    /// A scheme of this many levels (32, 16, 8 or 4) with cells of these widths, from the finest: at
+    /// least one and at most [`MAXIMUM_SCALES`], each from 1 to [`MAXIMUM_CELL_WIDTH`] and wider than
+    /// the one before.
+    pub fn new(levels: u32, widths: &[u16]) -> Option<Self> {
+        let code = (0..4u8).find(|&code| 32 >> code == levels)?;
+        let valid = (1..=MAXIMUM_SCALES).contains(&widths.len())
+            && widths
+                .iter()
+                .all(|width| (1..=MAXIMUM_CELL_WIDTH).contains(width))
+            && widths.windows(2).all(|pair| pair[0] < pair[1]);
+        valid.then(|| Self::preset(code, widths))
+    }
+
+    /// The preset with this many levels (32, 16, 8 or 4).
     pub fn from_levels(levels: u32) -> Option<Self> {
         Self::ALL
             .into_iter()
             .find(|scheme| scheme.levels() == levels)
     }
 
-    /// The scheme a code (as kept in a world and in a cell's word) stands for.
+    /// The preset a code (as kept in a world saved before widths were chosen) stands for.
     pub fn from_code(code: u8) -> Option<Self> {
         Self::ALL.into_iter().find(|scheme| scheme.code == code)
     }
 
+    /// Which number of levels it is, as kept in a cell's word: 0 to 3 for 32, 16, 8 and 4.
     pub fn code(self) -> u8 {
         self.code
     }
@@ -103,20 +143,28 @@ impl LightScheme {
 
     /// How many scales there are.
     pub fn scales(self) -> usize {
-        3 + usize::from(self.code)
+        usize::from(self.scales)
+    }
+
+    /// The widths of the cells of every scale, finest first.
+    pub fn widths(&self) -> &[u16] {
+        &self.widths[..self.scales()]
+    }
+
+    /// The width of the cells of a scale, in voxels.
+    pub fn width(self, scale: usize) -> i64 {
+        assert!(scale < self.scales(), "the scheme has no scale {scale}");
+        i64::from(self.widths[scale])
     }
 
     /// The width of the biggest cells, in voxels.
     pub fn largest_cell(self) -> i64 {
-        1 << (self.scales() - 1)
+        self.width(self.scales() - 1)
     }
 
     pub fn name(self) -> String {
-        format!(
-            "{} levels, cells up to {}",
-            self.levels(),
-            self.largest_cell()
-        )
+        let widths: Vec<String> = self.widths().iter().map(u16::to_string).collect();
+        format!("{} levels, cells {}", self.levels(), widths.join(", "))
     }
 }
 
@@ -129,11 +177,27 @@ pub const LEVEL_FORMAT: LevelFormat = LevelFormat {
     code_bits: 2,
 };
 
-/// The weights of the scales in drawing, from the finest: how bright each channel is at its greatest
-/// level, where 255 is full brightness (and a channel with more reaches full brightness before its
-/// greatest level). Fine cells count for more than coarse: light that is nearby is told apart by fine
-/// cells, and the coarse ones, many cells wide, are a faint glow behind.
-pub const FULL_BRIGHTNESS: [u16; MAXIMUM_SCALES] = [382, 255, 178, 128, 89, 64];
+/// The weights of the scales in drawing at cells of 1, 2, 4, 8, 16 and 32 voxels: how bright each
+/// channel is at its greatest level, where 255 is full brightness (and a channel with more reaches
+/// full brightness before its greatest level). Fine cells count for more than coarse: light that is
+/// nearby is told apart by fine cells, and the coarse ones, many cells wide, are a faint glow behind.
+const FULL_BRIGHTNESS_AT_POWERS_OF_TWO: [u16; 6] = [382, 255, 178, 128, 89, 64];
+
+/// The weight of the cells of a width, from 1 to [`MAXIMUM_CELL_WIDTH`]: the weights of the powers of
+/// two, and a straight line between them for widths between.
+pub fn full_brightness(width: u16) -> u16 {
+    assert!((1..=MAXIMUM_CELL_WIDTH).contains(&width));
+    let below = 1u16 << width.ilog2();
+    let index = below.ilog2() as usize;
+    if width == below {
+        return FULL_BRIGHTNESS_AT_POWERS_OF_TWO[index];
+    }
+    let (from, to) = (
+        FULL_BRIGHTNESS_AT_POWERS_OF_TWO[index],
+        FULL_BRIGHTNESS_AT_POWERS_OF_TWO[index + 1],
+    );
+    from - (from - to) * (width - below) / below
+}
 
 /// What a block's emission is divided by, as a share of the greatest level: an emission of 60 or more
 /// is the greatest level.
@@ -153,7 +217,8 @@ pub fn default_budgets(scheme: LightScheme) -> Vec<usize> {
     const VOXELS_PER_SCALE_AND_TICK: i64 = 150_000;
     (0..scheme.scales())
         .map(|scale| {
-            let volume = 1i64 << (3 * scale);
+            let width = scheme.width(scale);
+            let volume = width * width * width;
             (VOXELS_PER_SCALE_AND_TICK / (2 * volume + 14)).max(1) as usize
         })
         .collect()
@@ -176,13 +241,20 @@ impl LightModel {
         }
     }
 
-    /// The model a command asks for: `classic`, `multiscale` (16 levels) or `multiscale 32|16|8|4`.
+    /// The model a command asks for: `classic`, `multiscale` (16 levels), `multiscale 32|16|8|4` (the
+    /// preset with that many levels) or `multiscale LEVELS WIDTH...` (any widths; see
+    /// [`LightScheme::new`]).
     pub fn from_arguments(arguments: &[&str]) -> Option<Self> {
         match arguments {
             ["classic"] => Some(Self::Classic),
             ["multiscale"] => Some(Self::MultiScale(LightScheme::LEVELS_16)),
             ["multiscale", levels] => {
                 LightScheme::from_levels(levels.parse().ok()?).map(Self::MultiScale)
+            }
+            ["multiscale", levels, widths @ ..] => {
+                let widths: Option<Vec<u16>> =
+                    widths.iter().map(|width| width.parse().ok()).collect();
+                LightScheme::new(levels.parse().ok()?, &widths?).map(Self::MultiScale)
             }
             _ => None,
         }
@@ -201,13 +273,18 @@ impl LightModel {
             version: 1,
             payload: match self {
                 Self::Classic => vec![0],
-                Self::MultiScale(scheme) => vec![1, scheme.code()],
+                Self::MultiScale(scheme) => {
+                    let mut payload = vec![2, scheme.code()];
+                    payload.extend(scheme.widths().iter().map(|&width| width as u8));
+                    payload
+                }
             },
         }
     }
 
     /// The choice saved in a world's sections: classic if there is none, or one this program cannot
-    /// read. (A world saved before the schemes existed says multiscale alone: 16 levels.)
+    /// read. (A world saved before the schemes existed says multiscale alone: 16 levels; one saved
+    /// before widths were chosen says the code of a preset.)
     pub fn read_section(sections: &[Section]) -> Self {
         sections
             .iter()
@@ -216,6 +293,10 @@ impl LightModel {
                 [0] => Some(Self::Classic),
                 [1] => Some(Self::MultiScale(LightScheme::LEVELS_16)),
                 [1, code] => LightScheme::from_code(code).map(Self::MultiScale),
+                [2, code, ref widths @ ..] => {
+                    let widths: Vec<u16> = widths.iter().map(|&width| u16::from(width)).collect();
+                    LightScheme::new(32 >> u32::from(code).min(31), &widths).map(Self::MultiScale)
+                }
                 _ => None,
             })
             .unwrap_or(Self::Classic)
@@ -236,21 +317,50 @@ pub fn channel_identifier(scale: usize) -> NamespacedId {
         .expect("constant identifier is valid")
 }
 
-/// The anchor of the cell of a scale that holds a voxel.
-pub fn anchor_of(scale: usize, voxel: VoxelCoordinate) -> VoxelCoordinate {
-    let mask = !((1i64 << scale) - 1);
-    VoxelCoordinate::new(voxel.x() & mask, voxel.y() & mask, voxel.z() & mask)
+/// The anchor of the cell, of cells of this width, that holds a voxel.
+pub fn anchor_of(width: i64, voxel: VoxelCoordinate) -> VoxelCoordinate {
+    let start = |coordinate: i64| coordinate.div_euclid(width) * width;
+    VoxelCoordinate::new(start(voxel.x()), start(voxel.y()), start(voxel.z()))
 }
 
-/// The anchor of the cell next to a cell on `face`, if it is within the world's range.
+/// The anchor of the cell next to a cell of this width on `face`, if it is within the world's range.
 fn neighbour_anchor(
-    scale: usize,
+    width: i64,
     anchor: VoxelCoordinate,
     face: FaceDirection,
 ) -> Option<VoxelCoordinate> {
     let [dx, dy, dz] = face.offset();
-    let width = 1i64 << scale;
     anchor.checked_offset(dx * width, dy * width, dz * width)
+}
+
+/// The voxels where the word of a cell is kept, the first of which is the anchor: for each brick the
+/// cell is in, the first voxel of the cell in that brick (the anchor, or the brick's own edge where
+/// the cell began in the brick before). A brick is drawn from the words in it alone, so a cell that
+/// is in several bricks has its word in each. Voxels outside the world's range are left out.
+pub fn word_homes(width: i64, anchor: VoxelCoordinate) -> Vec<VoxelCoordinate> {
+    let edge = voxel_space::BRICK_EDGE_LENGTH as i64;
+    let along = |first: i64| -> Vec<i64> {
+        let last = first.saturating_add(width - 1);
+        let mut starts = vec![first];
+        let mut boundary = (first.div_euclid(edge) + 1) * edge;
+        while boundary <= last {
+            starts.push(boundary);
+            boundary += edge;
+        }
+        starts
+    };
+    let (xs, ys, zs) = (along(anchor.x()), along(anchor.y()), along(anchor.z()));
+    let mut homes = Vec::with_capacity(xs.len() * ys.len() * zs.len());
+    for &x in &xs {
+        for &y in &ys {
+            for &z in &zs {
+                if let Ok(home) = VoxelCoordinate::try_new(x, y, z) {
+                    homes.push(home);
+                }
+            }
+        }
+    }
+    homes
 }
 
 /// The voxels of a world, as far as light needs to know.
@@ -420,16 +530,16 @@ impl MultiScaleLighting {
     /// hold it, at every scale, and their neighbours are looked at on the next step.
     pub fn voxel_changed(&mut self, level: LevelIndex, at: VoxelCoordinate) {
         for scale in 0..self.scheme.scales() {
-            self.contents_known
-                .remove(&(scale, level, anchor_of(scale, at)));
-            self.cell_changed(scale, level, anchor_of(scale, at));
+            let anchor = anchor_of(self.scheme.width(scale), at);
+            self.contents_known.remove(&(scale, level, anchor));
+            self.cell_changed(scale, level, anchor);
         }
     }
 
     fn cell_changed(&mut self, scale: usize, level: LevelIndex, anchor: VoxelCoordinate) {
         self.pending[scale].insert(level, anchor);
         for face in FaceDirection::ALL {
-            if let Some(neighbour) = neighbour_anchor(scale, anchor, face) {
+            if let Some(neighbour) = neighbour_anchor(self.scheme.width(scale), anchor, face) {
                 self.pending[scale].insert(level, neighbour);
             }
         }
@@ -502,7 +612,7 @@ impl MultiScaleLighting {
         level: LevelIndex,
         anchor: VoxelCoordinate,
     ) -> Contents {
-        let width = 1usize << scale;
+        let width = self.scheme.width(scale) as usize;
         let words = words_for(width);
         let index = |x: usize, y: usize, z: usize| (x * width + y) * width + z;
         let mut open = vec![false; width * width * width];
@@ -614,7 +724,7 @@ impl MultiScaleLighting {
         let mut incoming = [0u8; 6];
         let mut entering: [Layer; 6] = std::array::from_fn(|_| vec![0; own.words]);
         for face in FaceDirection::ALL {
-            let Some(neighbour) = neighbour_anchor(scale, anchor, face) else {
+            let Some(neighbour) = neighbour_anchor(self.scheme.width(scale), anchor, face) else {
                 continue;
             };
             let next = self.contents(world, known, scale, level, neighbour);
@@ -830,11 +940,13 @@ mod tests {
         scheme: LightScheme,
         scale: usize,
     ) -> Vec<(VoxelCoordinate, u8)> {
-        let width = 1i64 << scale;
-        let cells: Vec<VoxelCoordinate> = (0..world.edge / width)
+        let width = scheme.width(scale);
+        // The cells that have any of the box in them; a voxel outside the box is shut.
+        let across = (world.edge + width - 1) / width;
+        let cells: Vec<VoxelCoordinate> = (0..across)
             .flat_map(|x| {
-                (0..world.edge / width).flat_map(move |y| {
-                    (0..world.edge / width).map(move |z| at(x * width, y * width, z * width))
+                (0..across).flat_map(move |y| {
+                    (0..across).map(move |z| at(x * width, y * width, z * width))
                 })
             })
             .collect();
@@ -901,7 +1013,7 @@ mod tests {
                 for face in FaceDirection::ALL {
                     let [dx, dy, dz] = face.offset();
                     let next = at(voxel.x() + dx, voxel.y() + dy, voxel.z() + dz);
-                    if anchor_of(scale, next) == cell && open(next) {
+                    if anchor_of(width, next) == cell && open(next) {
                         let (a, b) = (find(&mut parent, voxel), find(&mut parent, next));
                         parent.insert(a, b);
                     }
@@ -996,11 +1108,58 @@ mod tests {
 
     #[test]
     fn a_cell_is_named_by_its_first_voxel_even_where_coordinates_are_negative() {
-        assert_eq!(anchor_of(0, at(5, -3, 9)), at(5, -3, 9));
-        assert_eq!(anchor_of(1, at(5, -3, 9)), at(4, -4, 8));
+        assert_eq!(anchor_of(1, at(5, -3, 9)), at(5, -3, 9));
         assert_eq!(anchor_of(2, at(5, -3, 9)), at(4, -4, 8));
-        assert_eq!(anchor_of(3, at(5, -3, 9)), at(0, -8, 8));
-        assert_eq!(anchor_of(3, at(-1, -8, -9)), at(-8, -8, -16));
+        assert_eq!(anchor_of(4, at(5, -3, 9)), at(4, -4, 8));
+        assert_eq!(anchor_of(8, at(5, -3, 9)), at(0, -8, 8));
+        assert_eq!(anchor_of(8, at(-1, -8, -9)), at(-8, -8, -16));
+        // Widths that are not powers of two: cells from the origin all the same.
+        assert_eq!(anchor_of(3, at(5, -3, 9)), at(3, -3, 9));
+        assert_eq!(anchor_of(5, at(-1, -8, -9)), at(-5, -10, -10));
+        assert_eq!(anchor_of(17, at(33, 16, -1)), at(17, 0, -17));
+    }
+
+    #[test]
+    fn a_cells_word_is_kept_in_every_brick_the_cell_is_in_at_its_first_voxel_there() {
+        // Cells of 5 that start at 0, 5, ... 30: the last goes on into the next brick, where its first
+        // voxel is the brick's own edge.
+        assert_eq!(word_homes(5, at(30, 0, 0)), [at(30, 0, 0), at(32, 0, 0)]);
+        // A cell in one brick has one home, its anchor, whatever the width.
+        assert_eq!(word_homes(5, at(10, 5, 0)), [at(10, 5, 0)]);
+        assert_eq!(word_homes(4, at(28, 0, 0)), [at(28, 0, 0)]);
+        assert_eq!(word_homes(1, at(31, 31, 31)), [at(31, 31, 31)]);
+        // Along more than one axis: every brick the cell touches, first the anchor.
+        let corner = word_homes(17, at(51, 51, 0));
+        assert_eq!(corner.len(), 4);
+        assert_eq!(corner[0], at(51, 51, 0));
+        let mut sorted = corner.clone();
+        sorted.sort();
+        assert_eq!(
+            sorted,
+            [at(51, 51, 0), at(51, 64, 0), at(64, 51, 0), at(64, 64, 0)]
+        );
+        // Cells before the origin, and a cell as wide as a brick that is not at its edge.
+        assert_eq!(word_homes(5, at(-5, 0, 0)), [at(-5, 0, 0)]);
+        assert_eq!(word_homes(5, at(-35, 0, 0)), [at(-35, 0, 0), at(-32, 0, 0)]);
+        assert_eq!(word_homes(32, at(32, 0, 0)), [at(32, 0, 0)]);
+        assert_eq!(word_homes(23, at(23, 0, 0)), [at(23, 0, 0), at(32, 0, 0)]);
+        // Every voxel of a cell is in a brick that has the word at its first voxel of the cell there.
+        for width in [3, 5, 7, 11, 17, 23, 32] {
+            for anchor_x in [-70, -33, -1, 0, 30, 61] {
+                let anchor = anchor_of(width, at(anchor_x, 0, 0));
+                let homes = word_homes(width, anchor);
+                for offset in 0..width {
+                    let voxel_x = anchor.x() + offset;
+                    let brick_start = voxel_x.div_euclid(32) * 32;
+                    let home = at(anchor.x().max(brick_start), 0, 0);
+                    assert!(
+                        homes.contains(&home),
+                        "width {width} cell at {} voxel {voxel_x}: {homes:?}",
+                        anchor.x()
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -1060,16 +1219,58 @@ mod tests {
             assert_eq!(LightScheme::from_levels(scheme.levels()), Some(scheme));
             assert!(scheme.scales() <= MAXIMUM_SCALES);
             assert_eq!(
-                scheme.name(),
-                format!(
-                    "{} levels, cells up to {}",
-                    scheme.levels(),
-                    scheme.largest_cell()
-                )
+                scheme.widths().last().map(|&width| i64::from(width)),
+                Some(scheme.largest_cell())
             );
         }
         assert_eq!(LightScheme::from_levels(5), None);
         assert_eq!(LightScheme::from_code(4), None);
+        assert_eq!(
+            LightScheme::LEVELS_8.widths(),
+            [1, 2, 4, 8, 16],
+            "the presets are powers of two"
+        );
+        assert_eq!(
+            LightScheme::LEVELS_8.name(),
+            "8 levels, cells 1, 2, 4, 8, 16"
+        );
+    }
+
+    #[test]
+    fn a_scheme_can_have_any_widths_that_grow_and_fit_in_a_brick() {
+        let custom = LightScheme::new(8, &[2, 5, 11, 17]).unwrap();
+        assert_eq!(custom.levels(), 8);
+        assert_eq!(custom.maximum_level(), 7);
+        assert_eq!(custom.scales(), 4);
+        assert_eq!(custom.widths(), [2, 5, 11, 17]);
+        assert_eq!(custom.width(2), 11);
+        assert_eq!(custom.largest_cell(), 17);
+        assert_eq!(custom.name(), "8 levels, cells 2, 5, 11, 17");
+        // The presets are the schemes with their widths.
+        assert_eq!(
+            LightScheme::new(16, &[1, 2, 4, 8]),
+            Some(LightScheme::LEVELS_16)
+        );
+        // Seven scales at most, widths 1 to 32, each wider than the one before, and a known number of
+        // levels.
+        assert!(LightScheme::new(4, &[1, 3, 5, 7, 11, 17, 23]).is_some());
+        assert!(LightScheme::new(4, &[1, 2, 3, 4, 5, 6, 7, 8]).is_none());
+        for (levels, widths) in [
+            (8, &[][..]),
+            (8, &[0, 2][..]),
+            (8, &[1, 33][..]),
+            (8, &[3, 3][..]),
+            (8, &[5, 3][..]),
+            (7, &[1, 2][..]),
+            (64, &[1, 2][..]),
+        ] {
+            assert_eq!(
+                LightScheme::new(levels, widths),
+                None,
+                "{levels} {widths:?}"
+            );
+        }
+        assert!(LightScheme::new(8, &[1, 32]).is_some());
     }
 
     #[test]
@@ -1089,17 +1290,25 @@ mod tests {
     }
 
     #[test]
-    fn fine_scales_weigh_more_than_coarse_ones_and_the_finest_reaches_full_brightness_early() {
+    fn wider_cells_weigh_less_and_the_finest_reaches_full_brightness_early() {
+        let weights: Vec<u16> = (1..=MAXIMUM_CELL_WIDTH).map(full_brightness).collect();
         assert!(
-            FULL_BRIGHTNESS.windows(2).all(|pair| pair[0] > pair[1]),
-            "{FULL_BRIGHTNESS:?}"
+            weights.windows(2).all(|pair| pair[0] > pair[1]),
+            "{weights:?}"
         );
-        // The finest is over 255: it is as bright as can be before its greatest level. The coarsest is a
+        // The finest is over 255: it is as bright as can be before its greatest level. The widest is a
         // faint glow even at its greatest.
-        assert!(FULL_BRIGHTNESS[0] > 255);
-        assert!(FULL_BRIGHTNESS[MAXIMUM_SCALES - 1] < 128);
-        // Weights come with every scale a scheme can have.
-        assert_eq!(FULL_BRIGHTNESS.len(), MAXIMUM_SCALES);
+        assert!(weights[0] > 255);
+        assert!(weights[usize::from(MAXIMUM_CELL_WIDTH) - 1] < 128);
+        // The powers of two are the table; widths between are on a line between them.
+        let powers: Vec<u16> = [1, 2, 4, 8, 16, 32]
+            .into_iter()
+            .map(full_brightness)
+            .collect();
+        assert_eq!(powers, [382, 255, 178, 128, 89, 64]);
+        assert_eq!(full_brightness(3), 217);
+        assert_eq!(full_brightness(5), 166);
+        assert_eq!(full_brightness(24), 89 - 25 * 8 / 16);
     }
 
     #[test]
@@ -1136,19 +1345,42 @@ mod tests {
             arguments("multiscale 4"),
             Some(LightModel::MultiScale(LightScheme::LEVELS_4))
         );
+        assert_eq!(
+            arguments("multiscale 8 1 3 7 17"),
+            Some(LightModel::MultiScale(
+                LightScheme::new(8, &[1, 3, 7, 17]).unwrap()
+            ))
+        );
+        // One width after the levels is a scheme of one scale.
+        assert_eq!(
+            arguments("multiscale 8 8"),
+            Some(LightModel::MultiScale(LightScheme::new(8, &[8]).unwrap()))
+        );
         for bad in [
             "",
             "multiscale 5",
             "multiscale x",
             "classic 8",
-            "multiscale 8 8",
+            "multiscale 8 0",
+            "multiscale 8 5 3",
+            "multiscale 8 1 33",
+            "multiscale 8 1 x",
+            "multiscale 5 1 2",
             "sideways",
         ] {
             assert_eq!(arguments(bad), None, "{bad:?}");
         }
-        for model in std::iter::once(LightModel::Classic)
-            .chain(LightScheme::ALL.into_iter().map(LightModel::MultiScale))
-        {
+        let customs = [
+            LightScheme::new(8, &[1, 3, 7, 17]).unwrap(),
+            LightScheme::new(4, &[1, 3, 5, 7, 11, 17, 23]).unwrap(),
+            LightScheme::new(32, &[2]).unwrap(),
+        ];
+        for model in std::iter::once(LightModel::Classic).chain(
+            LightScheme::ALL
+                .into_iter()
+                .chain(customs)
+                .map(LightModel::MultiScale),
+        ) {
             assert_eq!(LightModel::read_section(&[model.to_section()]), model);
         }
         // Nothing saved, something unreadable, and a world saved before schemes (multiscale alone).
@@ -1170,9 +1402,19 @@ mod tests {
             LightModel::read_section(&[saved(vec![1])]),
             LightModel::MultiScale(LightScheme::LEVELS_16)
         );
+        // A world saved with a preset's code and no widths.
+        assert_eq!(
+            LightModel::read_section(&[saved(vec![1, 2])]),
+            LightModel::MultiScale(LightScheme::LEVELS_8)
+        );
+        // Widths that are not a scheme are unreadable.
+        assert_eq!(
+            LightModel::read_section(&[saved(vec![2, 2, 5, 3])]),
+            LightModel::Classic
+        );
         assert_eq!(
             LightModel::MultiScale(LightScheme::LEVELS_8).name(),
-            "multiscale (8 levels, cells up to 16)"
+            "multiscale (8 levels, cells 1, 2, 4, 8, 16)"
         );
     }
 
@@ -1181,8 +1423,8 @@ mod tests {
         let mut lighting = MultiScaleLighting::new(table(), SCHEME);
         lighting.voxel_changed(MAIN, at(-1, 9, 5));
         for scale in 0..SCALES {
-            let width = 1i64 << scale;
-            let anchor = anchor_of(scale, at(-1, 9, 5));
+            let width = SCHEME.width(scale);
+            let anchor = anchor_of(width, at(-1, 9, 5));
             let mut expected = vec![anchor];
             for face in FaceDirection::ALL {
                 let [dx, dy, dz] = face.offset();
@@ -1647,8 +1889,8 @@ mod tests {
             settle(&mut lighting, &mut world);
             let greatest = scheme.maximum_level();
             for scale in 0..scheme.scales() {
-                let width = 1i64 << scale;
-                let cell = anchor_of(scale, at(middle, middle, middle));
+                let width = scheme.width(scale);
+                let cell = anchor_of(width, at(middle, middle, middle));
                 assert_eq!(
                     world.level_at(scale, cell.x(), cell.y(), cell.z()),
                     greatest,
@@ -1681,6 +1923,85 @@ mod tests {
             settle(&mut lighting, &mut world);
             for scale in 0..scheme.scales() {
                 assert!(world.lit(scale).is_empty(), "{scheme:?} scale {scale}");
+            }
+        }
+    }
+
+    /// Schemes whose widths are not powers of two, so that cells are cut by the box and by each other
+    /// at odd places.
+    fn custom_schemes() -> Vec<LightScheme> {
+        vec![
+            LightScheme::new(8, &[1, 3, 7, 17]).unwrap(),
+            LightScheme::new(8, &[1, 5, 17]).unwrap(),
+            LightScheme::new(8, &[2, 5, 11, 17]).unwrap(),
+            LightScheme::new(4, &[1, 3, 5, 7, 11, 17, 23]).unwrap(),
+        ]
+    }
+
+    #[test]
+    fn in_a_custom_scheme_a_lamp_is_the_greatest_level_at_every_scale_and_light_dies_out() {
+        for scheme in custom_schemes() {
+            let mut world = box_for(scheme);
+            let mut lighting = MultiScaleLighting::new(table(), scheme);
+            let middle = world.edge / 2;
+            world.place(at(middle, middle, middle), LAMP, &mut lighting);
+            settle(&mut lighting, &mut world);
+            for scale in 0..scheme.scales() {
+                let cell = anchor_of(scheme.width(scale), at(middle, middle, middle));
+                assert_eq!(
+                    world.level_at(scale, cell.x(), cell.y(), cell.z()),
+                    scheme.maximum_level(),
+                    "{} scale {scale}",
+                    scheme.name()
+                );
+            }
+            world.place(at(middle, middle, middle), AIR, &mut lighting);
+            settle(&mut lighting, &mut world);
+            for scale in 0..scheme.scales() {
+                assert!(
+                    world.lit(scale).is_empty(),
+                    "{} scale {scale}",
+                    scheme.name()
+                );
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(6))]
+
+        /// The equations again for schemes whose widths are not powers of two.
+        #[test]
+        fn custom_widths_settle_to_what_the_equations_say(
+            scheme_index in 0usize..4,
+            solid in prop::collection::vec((0..32i64, 0..32i64, 0..32i64), 30..200),
+            lamps in prop::collection::vec((0..32i64, 0..32i64, 0..32i64), 1..3),
+        ) {
+            let scheme = custom_schemes()[scheme_index];
+            let table = table();
+            let mut world = box_for(scheme);
+            let edge = world.edge;
+            let mut lighting = MultiScaleLighting::new(table.clone(), scheme);
+            for (x, y, z) in solid {
+                world.place(at(x % edge, y % edge, z % edge), STONE, &mut lighting);
+            }
+            for (x, y, z) in lamps {
+                world.place(at(x % edge, y % edge, z % edge), LAMP, &mut lighting);
+            }
+            settle(&mut lighting, &mut world);
+            for scale in 0..scheme.scales() {
+                // The finest scales of a large box are left to the small boxes: the reference looks at
+                // every cell.
+                if edge > 16 && scheme.width(scale) < 3 {
+                    continue;
+                }
+                prop_assert_eq!(
+                    world.lit(scale),
+                    reference(&world, &table, scheme, scale),
+                    "{} scale {}",
+                    scheme.name(),
+                    scale
+                );
             }
         }
     }

@@ -263,8 +263,65 @@ Phase 1d (saving):
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
 
+Phase 22 (cells of any width; owner's request, 2026-10-17; still a spike):
+- A `LightScheme` is now a number of levels (32, 16, 8 or 4) and the widths of its scales: one to seven, each 1 to 32, each wider than the one
+  before. The four presets are the old schemes (powers of two); `/light multiscale LEVELS WIDTH...` asks for any other, such as
+  `/light multiscale 8 1 3 7 17`, and `/light multiscale 16` is still the preset. A scheme's name lists its widths (`8 levels, cells 1, 3, 7, 17`).
+  Saved with the world as `[2, levels code, widths...]`; the earlier `[1]` and `[1, code]` are still read. Seven scale channels now
+  (`light_scale_0` to `_6`).
+- Cells are laid from the world's origin, so a width that is not a divisor of 32 has cells that are part in one brick and part in the next
+  (and a cell at 17 to 33 is part in two bricks even though 17 is less than 32). The rule is unchanged: it reads and writes a cell's word at
+  its anchor, the first voxel (`anchor_of(width, voxel)`, floor division, so negative coordinates are right). A brick is drawn from
+  what it holds alone, so the server also keeps a copy of the word in every other brick the cell is in, at the first voxel of the cell there
+  (`word_homes`; up to 8 copies, 2 for each axis, for a cell of at most 32); `world_view::combined_light` reads it there. Copies
+  cost a write each and are changes the clients are sent like any other. If a brick cannot be written (terrain the server cannot generate)
+  its copy is not made and it draws that cell dark (believed from the code; not tested).
+- The client learns the scheme from the server, because the widths are not in the word: `voxunami_cave:light_scheme` goes to a player
+  when they join and to everyone when `/light` changes it (so it is in recordings, and a replay draws the same). The shell has a hook for
+  it, `GameDefinition::view_channels(content, client_state)` (default: the content's own), called after every tick's messages, and
+  `WorldMesher::set_channels` meshes every brick again when it changes. `PackageSpec.scaled_lights` and `ScaledLightSpec` are gone: what the
+  scales are belongs to Cave's client state, not to a package. The view radius, the mesher's jobs and the channels a job draws from are
+  one thing: each job carries the channels it was made with.
+- Weights for widths between the powers of two are on a straight line between those of the neighbouring powers (`full_brightness`; width 3
+  is 217, 5 is 166, 17 is 88, 23 is 79), so the weights of the presets are what they were.
+- Tested: `word_homes` (every voxel of a cell is in a brick that has the word at the first voxel of the cell there, for negative and positive
+  bricks and widths to 32), the rule against the reference for four schemes with odd widths (the reference now cuts cells to the box), a lamp
+  being the greatest level at every scale in them and going out, the scheme message (every malformed payload refused), the command and
+  saving; in the full server and a client, a lamp in a cell across the edge of a brick has its word in both bricks on the server and on the
+  client and is drawn blended. A mutation experiment (the server writing only the anchor's copy) breaks that test. `world_view` tests
+  for cells whose first voxel is in the brick before, bricks before the origin, and cells wider than a brick.
+- Four configurations on the Phase 21 scene (release, this machine; the rule alone, with the game's budgets):
+
+  | scheme | budgets | fill: ticks | fill: ms | cells written | voxels read | cells lit by scale | empty: ticks | no budget: ticks |
+  |---|---|---|---|---|---|---|---|---|
+  | 8 levels, cells 1, 3, 7, 17 | 9375, 2205, 214, 15 | 174 | 310 | 1 494 | 4.3 M | 328, 278, 227, 375 | 256 | 7 |
+  | 8 levels, cells 1, 5, 17 | 9375, 568, 15 | 174 | 299 | 1 243 | 4.2 M | 328, 276, 375 | 256 | 7 |
+  | 8 levels, cells 2, 5, 11, 17 | 5000, 568, 56, 15 | 174 | 396 | 1 489 | 5.1 M | 282, 276, 229, 375 | 256 | 7 |
+  | 4 levels, cells 1, 3, 5, 7, 11, 17, 23 | 9375, 2205, 568, 214, 56, 15, 6 | 20 | 165 | 156 | 2.4 M | 25, 24, 24, 19, 19, 24, 19 | 21 | 3 |
+
+  | light (the real server) | the switching tick | mean, next 400 ticks | 95th | worst | over 10 ms | over 50 ms |
+  |---|---|---|---|---|---|---|
+  | classic | 17.2 | 2.75 | 21.8 | 40.2 | 40 | 0 |
+  | 8 levels, cells 1, 3, 7, 17 | 26.1 | 3.95 | 17.3 | 53.4 | 71 | 1 |
+  | 8 levels, cells 1, 5, 17 | 23.4 | 3.92 | 17.7 | 46.9 | 71 | 0 |
+  | 8 levels, cells 2, 5, 11, 17 | 26.4 | 4.45 | 20.4 | 53.4 | 78 | 1 |
+  | 4 levels, cells 1, 3, 5, 7, 11, 17, 23 | 60.5 | 0.67 | 0.0 | 54.7 | 9 | 1 |
+
+  What it says (measured: the numbers; believed from the code and pictures: the reasons). The three 8-level schemes cost about the same
+  as each other, a little more than classic per tick (one tick over 50 ms in 400 for two of them), and fill in 174 ticks, slower than the
+  preset 8-level scheme (103), which also had cells of 16 and 32; why was not investigated. The 4-level scheme with seven scales is cheapest
+  per tick (3 levels is only 3 cells of reach, 156 cells in all) but its switching tick is the slowest (60 ms: it reads whole cells
+  of 23, 12 167 voxels each, once). Cost follows the finest scale and the number of levels, as in Phase 21, not how many scales there are.
+- Pictures (`docs/multiscale-modes/montage_custom.png`: classic, then the four; same view and no ambient light or fog as Phase 21).
+  Mean ground brightness measured from the pictures the same way as before (classic 26.5, which matches the 27 of Phase 21):
+  8 levels with 1, 3, 7, 17: 61.5; with 1, 5, 17: 56.2; with 2, 5, 11, 17: 70.3; 4 levels with seven scales: 42.3. Cells of 17 show as flat dark
+  squares far from the lamp, on a grid of 17 from the origin (it does not line up with the lamp or the platform, which is the point of
+  the experiment); with 1, 5 and 17 the middle step is wide and the glow is plainer; the scheme that starts at cells of 2 has the
+  brightest ground (why was not investigated: its finest weight is the lower, 255); 4 levels leaves the far parts black, as only three cells
+  of each scale are reached.
+
 Phase 21 (multiscale light schemes and weights; owner's request, 2026-10-17; still a spike):
-- Weights: each scale now has its own weight in drawing (`multiscale_light::FULL_BRIGHTNESS`, 382, 255, 178, 128, 89, 64 for cells of
+- Weights: each scale now has its own weight in drawing (`multiscale_light::full_brightness`; 382, 255, 178, 128, 89, 64 for cells of
   1 to 32; 255 is full brightness and a channel's brightness is its level over its greatest level times its weight, at most 255). Fine
   cells count for more and coarse for less, instead of 17 a level for all, to give the dark end of the scale smaller steps (the coarse
   channels' steps are what a lamp's far glow is made of) and the bright end larger ones (the finest channel reaches full
@@ -838,6 +895,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 16 Cave gravity and collision: the server moves the players (`/fly`, `/tp`). **Done.**
 - 17 Voxunami Eels (3D Tron) and the shell hooks it needed. **Done.**
 - 18 Mod stage 1, first step: a game's content as one declared package (`ContentPackage`). **Done.**
+- 22 Multiscale light cells of any width (1 to 32), a hook for the client's view, four odd-width schemes benchmarked. **Done (a spike).**
 - 21 Multiscale light schemes (32/16/8/4 levels, cells to 4/8/16/32) and per-scale weights, benchmarked. **Done (a spike).**
 - 20 Cave's sky is dark until there is sky light, and the window's own commands start with a period. **Done.**
 - 19 Multiscale light spike in Cave: four scales of 16-level flood fill (cells of 1, 2, 4, 8), switched with `/light`. **Done (a spike).**

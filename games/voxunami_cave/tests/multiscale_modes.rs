@@ -1,15 +1,15 @@
-//! The schemes of the multiscale light (32 levels with cells up to 4 voxels, 16 up to 8, 8 up to 16, 4 up
-//! up to 32) compared on terrain that is the same for all of them: a platform in the sky that is flat on
-//! one side of a lamp and hilly on the other. The cheap test checks the terrain; the others are
-//! benchmarks and picture makers, and are ignored unless asked for:
+//! Schemes of the multiscale light compared on terrain that is the same for all of them: a platform in
+//! the sky that is flat on one side of a lamp and hilly on the other. The cheap test checks the terrain;
+//! the others are benchmarks and picture makers, and are ignored unless asked for:
 //!
 //! ```text
 //! cargo test --release -p voxunami_cave --test multiscale_modes -- --ignored --nocapture
 //! ```
 //!
-//! They print tables, and write `OUTPUT_DIRECTORY/mode_*.rgba` (raw pictures, 1280 by 720) for
-//! whoever wants to look. Set `MULTISCALE_OUTPUT` to say where (a directory); otherwise the pictures
-//! are not written.
+//! `MULTISCALE_SET` says which schemes: `presets` (the default: 32 levels with cells up to 4 voxels, 16
+//! up to 8, 8 up to 16, 4 up to 32) or `custom` (see [`custom_schemes`]). The tests print tables, and
+//! write `OUTPUT_DIRECTORY/mode_*.rgba` (raw pictures, 1280 by 720) for whoever wants to look. Set
+//! `MULTISCALE_OUTPUT` to say where (a directory); otherwise the pictures are not written.
 
 mod common;
 
@@ -24,8 +24,42 @@ use renderer::{GraphicsContext, VoxelRenderer};
 use voxel_space::{LevelIndex, VoxelCoordinate};
 use voxunami_cave::content::CaveContent;
 use voxunami_cave::multiscale_light::{
-    LightScheme, MultiScaleLighting, ScaledLightWorld, default_budgets, gives_light, level_of_word,
+    LightScheme, MAXIMUM_SCALES, MultiScaleLighting, ScaledLightWorld, default_budgets,
+    gives_light, level_of_word,
 };
+
+/// Schemes whose cells are not all powers of two.
+fn custom_schemes() -> Vec<LightScheme> {
+    [
+        (8, &[1, 3, 7, 17][..]),
+        (8, &[1, 5, 17]),
+        (8, &[2, 5, 11, 17]),
+        (4, &[1, 3, 5, 7, 11, 17, 23]),
+    ]
+    .into_iter()
+    .map(|(levels, widths)| LightScheme::new(levels, widths).unwrap())
+    .collect()
+}
+
+/// The schemes to compare, as `MULTISCALE_SET` says.
+fn schemes() -> Vec<LightScheme> {
+    match std::env::var("MULTISCALE_SET").as_deref() {
+        Ok("custom") => custom_schemes(),
+        _ => LightScheme::ALL.to_vec(),
+    }
+}
+
+/// The command that asks for a scheme, with its widths.
+fn command_for(scheme: LightScheme) -> String {
+    let widths: Vec<String> = scheme.widths().iter().map(u16::to_string).collect();
+    format!("/light multiscale {} {}", scheme.levels(), widths.join(" "))
+}
+
+/// What names a scheme's picture: its levels and widths.
+fn file_label(scheme: LightScheme) -> String {
+    let widths: Vec<String> = scheme.widths().iter().map(u16::to_string).collect();
+    format!("{}_levels_cells_{}", scheme.levels(), widths.join("_"))
+}
 
 /// Where the platform's ground starts, and how high the flat side of it is.
 const BASE: i64 = 296;
@@ -128,7 +162,7 @@ fn the_terrain_is_flat_on_one_side_of_the_lamp_and_hilly_on_the_other() {
 struct Scene<'a> {
     content: &'a CaveContent,
     lamp_present: bool,
-    words: [HashMap<VoxelCoordinate, u32>; 6],
+    words: [HashMap<VoxelCoordinate, u32>; MAXIMUM_SCALES],
     reads: u64,
     writes: u64,
 }
@@ -170,7 +204,7 @@ fn rule_benchmark() {
         "\n| scheme | budgets | fill: ticks | fill: ms | fill: cells written | fill: voxels read | cells lit (by scale) | empty: ticks | empty: ms | unlimited: ticks |"
     );
     println!("|---|---|---|---|---|---|---|---|---|---|");
-    for scheme in LightScheme::ALL {
+    for scheme in schemes() {
         let budgets = default_budgets(scheme);
         let run = |budgets: &[usize]| {
             let mut scene = Scene {
@@ -247,10 +281,10 @@ fn server_benchmark() {
     );
     println!("|---|---|---|---|---|---|---|---|");
     let mut models = vec![("classic".to_owned(), "/light classic".to_owned())];
-    for scheme in LightScheme::ALL {
+    for scheme in schemes() {
         models.push((
             format!("multiscale, {}", scheme.name()),
-            format!("/light multiscale {}", scheme.levels()),
+            command_for(scheme),
         ));
     }
     for (name, command) in models {
@@ -307,16 +341,19 @@ fn pictures() {
         return;
     };
     let mut models = vec![("classic".to_owned(), "/light classic".to_owned(), 90)];
-    for scheme in LightScheme::ALL {
+    for scheme in schemes() {
         let ticks = match scheme {
             LightScheme::LEVELS_4 => 600,
-            _ => 900,
+            _ if LightScheme::ALL.contains(&scheme) => 900,
+            _ => 1500,
         };
-        models.push((
-            format!("{}_levels", scheme.levels()),
-            format!("/light multiscale {}", scheme.levels()),
-            ticks,
-        ));
+        // The presets keep the names their pictures had.
+        let label = if LightScheme::ALL.contains(&scheme) {
+            format!("{}_levels", scheme.levels())
+        } else {
+            file_label(scheme)
+        };
+        models.push((label, command_for(scheme), ticks));
     }
     for (name, command, ticks) in models {
         let content = CaveContent::new();

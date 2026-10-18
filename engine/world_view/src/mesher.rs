@@ -32,7 +32,7 @@ pub struct ViewSettings {
 }
 
 /// The most scales of light a game can have besides its plain light channel.
-pub const MAXIMUM_LIGHT_SCALES: usize = 6;
+pub const MAXIMUM_LIGHT_SCALES: usize = 7;
 
 /// How a channel of scaled light holds its level in a word: `field_count` fields of `field_bits`
 /// bits each from the lowest bit (a cell's level is the greatest of them), and above them a code
@@ -61,15 +61,18 @@ impl LevelFormat {
     }
 }
 
-/// Light kept in cells larger than a voxel: a channel that holds a word (see [`LevelFormat`]) at the
-/// first voxel (the anchor) of each cube of 2^`cell_edge_log2` voxels along each side, which lights
-/// every voxel of the cube. A voxel is drawn with the light of the plain light channel and of every
-/// scale blended (see [`blend_brightness`]).
+/// Light kept in cells larger than a voxel: cubes of `cell_width` voxels along each side, laid from the
+/// world's origin (a cell starts where a coordinate is a multiple of the width). A channel holds a
+/// word (see [`LevelFormat`]) for each cell, which lights every voxel of the cell. A cell may be in
+/// more than one brick (a width that is not a divisor of 32, or one over 32), so the word is kept in each
+/// brick it is in, at the first voxel of the cell in that brick (the one with the smallest
+/// coordinates), where a brick can find it without looking at another. A voxel is drawn with the light
+/// of the plain light channel and of every scale blended (see [`blend_brightness`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScaledLight {
     pub channel: ChannelIndex,
-    /// The cells are this many voxels wide, as a power of two, from 0 (one voxel) to 5 (a brick).
-    pub cell_edge_log2: u8,
+    /// The cells are this many voxels wide.
+    pub cell_width: u16,
     /// How bright the channel is at its greatest level, as a weight: 255 is full brightness, and a
     /// channel with a larger weight reaches full brightness at a lower level. Brightness is
     /// proportional to level (and never more than 255).
@@ -135,7 +138,11 @@ pub fn blend_brightness(lights: impl IntoIterator<Item = u32>) -> u32 {
 /// How bright each voxel of a brick is when the game has scaled light: the plain light channel and
 /// each scale's level in the voxel's cell, blended (see [`blend_brightness`]). `None` for a game
 /// without scaled light, whose light channel is drawn as it is.
-pub fn combined_light(brick: &Brick, channels: &ViewChannels) -> Option<ChannelStorage> {
+pub fn combined_light(
+    brick: &Brick,
+    coordinate: BrickCoordinate,
+    channels: &ViewChannels,
+) -> Option<ChannelStorage> {
     if !channels.has_scaled_light() {
         return None;
     }
@@ -151,13 +158,37 @@ pub fn combined_light(brick: &Brick, channels: &ViewChannels) -> Option<ChannelS
     if let Some(lights) = uniform_lights {
         return Some(ChannelStorage::uniform(blend_brightness(lights)));
     }
+    // Where a voxel's cell starts in this brick, for each scale, along each axis: the start of the cell,
+    // or the brick's edge if the cell began in the brick before.
+    let origin = [
+        coordinate.x() * 32,
+        coordinate.y() * 32,
+        coordinate.z() * 32,
+    ];
+    let corners: Vec<(&ScaledLight, [[u8; 32]; 3])> = channels
+        .scaled_light
+        .iter()
+        .flatten()
+        .map(|scale| {
+            let width = i64::from(scale.cell_width);
+            let table = std::array::from_fn(|axis| {
+                std::array::from_fn(|local| {
+                    let at = origin[axis] + local as i64;
+                    (at.div_euclid(width) * width - origin[axis]).max(0) as u8
+                })
+            });
+            (scale, table)
+        })
+        .collect();
     let mut values = vec![0u32; BRICK_VOXEL_COUNT];
     for local in LocalVoxelIndex::all() {
         let lights = std::iter::once(base.map_or(0, |base| base.get(local))).chain(
-            channels.scaled_light.iter().flatten().map(|scale| {
-                let mask = !((1u8 << scale.cell_edge_log2) - 1);
-                let anchor =
-                    LocalVoxelIndex::new(local.x() & mask, local.y() & mask, local.z() & mask);
+            corners.iter().map(|(scale, corner)| {
+                let anchor = LocalVoxelIndex::new(
+                    corner[0][usize::from(local.x())],
+                    corner[1][usize::from(local.y())],
+                    corner[2][usize::from(local.z())],
+                );
                 scale.brightness(brick.channel(scale.channel).get(anchor))
             }),
         );
@@ -195,6 +226,9 @@ enum Job {
         coordinate: BrickCoordinate,
         version: u64,
         snapshot: Box<NeighbourhoodSnapshot>,
+        /// What to draw from, as it is when the job is made: a game can change it (see
+        /// [`WorldMesher::set_channels`]).
+        channels: ViewChannels,
     },
 }
 
@@ -320,12 +354,22 @@ impl WorldMesher {
                                 coordinate,
                                 version,
                                 snapshot,
+                                channels,
                             } => {
-                                // Games with scaled light draw the brightest light of each voxel.
-                                let center_light = combined_light(&snapshot.center, &channels);
+                                // Games with scaled light draw the lights of every scale blended.
+                                let center_light =
+                                    combined_light(&snapshot.center, coordinate, &channels);
                                 let neighbour_light: [Option<ChannelStorage>; 6] =
                                     std::array::from_fn(|face| {
-                                        combined_light(&snapshot.neighbours[face], &channels)
+                                        let neighbour =
+                                            coordinate.neighbour(FaceDirection::ALL[face]);
+                                        neighbour.and_then(|neighbour| {
+                                            combined_light(
+                                                &snapshot.neighbours[face],
+                                                neighbour,
+                                                &channels,
+                                            )
+                                        })
                                     });
                                 let neighbourhood = BrickNeighbourhood {
                                     center: brick_channels(
@@ -433,6 +477,21 @@ impl WorldMesher {
             *self.versions.entry(affected).or_insert(0) += 1;
             self.meshed.remove(&affected);
         }
+    }
+
+    /// Changes what is drawn from (as when a game changes the scales of its light): every brick is
+    /// meshed again, and what is on the screen stays until its new mesh is ready.
+    pub fn set_channels(&mut self, channels: ViewChannels) {
+        if channels == self.channels {
+            return;
+        }
+        self.channels = channels;
+        let loaded: Vec<BrickCoordinate> = self.bricks.keys().copied().collect();
+        for coordinate in loaded {
+            *self.versions.entry(coordinate).or_insert(0) += 1;
+        }
+        self.meshed.clear();
+        self.meshing.clear();
     }
 
     /// Forgets every brick and all work in progress, as when the viewer moves to another level whose
@@ -562,6 +621,7 @@ impl WorldMesher {
                         coordinate,
                         version,
                         snapshot: Box::new(snapshot),
+                        channels: self.channels,
                     })
                     .expect("workers are running");
                 scheduled += 1;

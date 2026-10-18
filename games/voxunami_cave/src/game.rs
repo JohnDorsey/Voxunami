@@ -3,7 +3,7 @@
 use base_blocks::{SHAPE_NAMES, shape_name};
 use std::collections::HashSet;
 
-use game_shell::{CameraStart, GameDefinition, KeyCode, PlayerPose};
+use game_shell::{CameraStart, GameContent, GameDefinition, KeyCode, PlayerPose};
 use namespaced_id::NamespacedId;
 use physics::MoveInput;
 use renderer::Camera;
@@ -11,13 +11,15 @@ use server::GameLogic;
 use transport::Connection;
 use voxel_space::WorldPosition;
 use world_storage::WorldData;
+use world_view::{ScaledLight, ViewChannels};
 
 use crate::content::{CaveContent, game_id};
 use crate::logic::{CaveLogic, REACH};
 use crate::messages::{
-    MoveRequest, SetBlock, encode_move_request, encode_set_block, encode_spawn, move_input_kind,
-    set_block_kind, spawn_kind,
+    MoveRequest, SetBlock, decode_light_scheme, encode_move_request, encode_set_block,
+    encode_spawn, light_scheme_kind, move_input_kind, set_block_kind, spawn_kind,
 };
+use crate::multiscale_light::{LEVEL_FORMAT, LightScheme, full_brightness};
 
 /// The blocks a player can place, in the order the number keys choose them.
 pub const PLACEABLE_BLOCKS: [&str; 6] = [
@@ -35,6 +37,8 @@ pub struct CaveClientState {
     pub selected_block: usize,
     /// The state, which is the shape, that placed blocks get (see [`SHAPE_NAMES`]).
     pub selected_shape: u32,
+    /// How the world's multiscale light is cut into cells, if it has that light (the server says).
+    pub light_scheme: Option<LightScheme>,
 }
 
 #[derive(Debug)]
@@ -173,6 +177,36 @@ Window commands (start with a period): .ambient 0-255 sets how bright a face is 
 
     fn new_logic(content: &CaveContent, world: &WorldData) -> Box<dyn GameLogic> {
         Box::new(CaveLogic::new(content, world))
+    }
+
+    fn view_channels(content: &CaveContent, state: &CaveClientState) -> ViewChannels {
+        let mut channels = content.view_channels();
+        if let Some(scheme) = state.light_scheme {
+            for (scale, slot) in channels
+                .scaled_light
+                .iter_mut()
+                .enumerate()
+                .take(scheme.scales())
+            {
+                let width = scheme.widths()[scale];
+                *slot = Some(ScaledLight {
+                    channel: content.scale_channel(scale),
+                    cell_width: width,
+                    full_brightness: full_brightness(width),
+                    format: LEVEL_FORMAT,
+                });
+            }
+        }
+        channels
+    }
+
+    fn handle_game_message(state: &mut CaveClientState, kind: &NamespacedId, payload: &[u8]) {
+        // A message this client cannot read leaves the light as it was drawn.
+        if *kind == light_scheme_kind()
+            && let Ok(scheme) = decode_light_scheme(payload)
+        {
+            state.light_scheme = scheme;
+        }
     }
 
     fn primary_action<C: Connection>(session: &mut CaveSession<C>) {

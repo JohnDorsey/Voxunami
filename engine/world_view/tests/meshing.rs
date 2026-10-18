@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use block_models::BlockTable;
 use content_registry::Registry;
@@ -516,8 +516,15 @@ fn bricks_generated_for_a_level_before_a_reset_never_reach_the_next_levels_pictu
         // is queued behind it; the first level's results then arrive while the second's are awaited.
         mesher.update(scene.world.main(), brick(0, 0, 0));
         mesher.reset();
-        mesher.update(scene.world.level(second).unwrap(), brick(0, 0, 0));
-        std::thread::sleep(Duration::from_millis(120));
+        // Wait for the second level's brick to be drawn (however slow the machine), rather than a fixed time.
+        let waited = Instant::now();
+        while mesher.material_at(VoxelCoordinate::new(3, 20, 3)).is_none()
+            && waited.elapsed() < Duration::from_secs(10)
+        {
+            mesher.update(scene.world.level(second).unwrap(), brick(0, 0, 0));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(60));
         mesher.update(scene.world.level(second).unwrap(), brick(0, 0, 0));
         // High above the flat ground but deep inside the cliffs: whose terrain the brick holds.
         assert_eq!(

@@ -9,7 +9,7 @@ use lattice::ActiveVoxels;
 use namespaced_id::NamespacedId;
 use player_presence::pose_kind;
 use protocol::{ClientId, Tick};
-use server::{CommandLine, GameLogic, ServerWorld};
+use server::{Audience, CommandLine, GameLogic, ServerWorld};
 use voxel_grid::ChannelIndex;
 use voxel_space::{LevelIndex, VoxelCoordinate, WorldPosition};
 use world_storage::{Section, WorldData};
@@ -18,8 +18,8 @@ use crate::content::CaveContent;
 use crate::fire::{Fire, FireWorld};
 use crate::lighting::{self, LightWorld, Lighting};
 use crate::messages::{
-    decode_move_request, decode_set_block, decode_spawn, move_input_kind, set_block_kind,
-    spawn_kind,
+    decode_move_request, decode_set_block, decode_spawn, encode_light_scheme, light_scheme_kind,
+    move_input_kind, set_block_kind, spawn_kind,
 };
 use crate::movement::Movement;
 use crate::multiscale_light::{
@@ -72,6 +72,7 @@ struct WorldScaledLight<'a> {
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
     scale_channels: &'a [ChannelIndex],
+    scheme: LightScheme,
 }
 
 impl ScaledLightWorld for WorldScaledLight<'_> {
@@ -88,10 +89,14 @@ impl ScaledLightWorld for WorldScaledLight<'_> {
     }
 
     fn set_word(&mut self, scale: usize, level: LevelIndex, anchor: VoxelCoordinate, value: u32) {
-        // The cell's anchor was just read, so the level and the terrain there are available.
-        let _ = self
-            .world
-            .set_voxel(level, self.scale_channels[scale], anchor, value);
+        // The cell's anchor was just read, so the level and the terrain there are available. A
+        // cell in more than one brick has its word in each (see `word_homes`); a brick that cannot be
+        // written is not drawn from it either.
+        for home in multiscale_light::word_homes(self.scheme.width(scale), anchor) {
+            let _ = self
+                .world
+                .set_voxel(level, self.scale_channels[scale], home, value);
+        }
     }
 }
 
@@ -144,6 +149,14 @@ pub struct CaveLogic {
 }
 
 impl CaveLogic {
+    /// The scheme of the multiscale light, if that is the world's light.
+    fn scheme_in_use(&self) -> Option<LightScheme> {
+        match self.light_model {
+            LightModel::Classic => None,
+            LightModel::MultiScale(scheme) => Some(scheme),
+        }
+    }
+
     /// Tells whichever light the world has that a voxel changed.
     fn light_changed(&mut self, level: LevelIndex, at: VoxelCoordinate) {
         match self.light_model {
@@ -152,11 +165,12 @@ impl CaveLogic {
         }
     }
 
-    /// `/light` says which light the world has; `/light classic` and `/light multiscale [32|16|8|4]`
-    /// (the number of levels, 16 if not said) change it. Changing clears every light there is, and
-    /// has the new one look at every lamp and fire in the world, so it spreads from them again.
+    /// `/light` says which light the world has; `/light classic`, `/light multiscale [32|16|8|4]`
+    /// (the number of levels, 16 if not said) and `/light multiscale LEVELS WIDTH...` (the widths of
+    /// the cells, finest first) change it. Changing clears every light there is, and has the new one
+    /// look at every lamp and fire in the world, so it spreads from them again.
     fn light_command(&mut self, arguments: &[&str], world: &mut ServerWorld) -> String {
-        const USAGE: &str = "usage: /light, /light classic, /light multiscale [32|16|8|4]";
+        const USAGE: &str = "usage: /light, /light classic, /light multiscale [32|16|8|4], /light multiscale LEVELS WIDTH... (widths 1 to 32, growing)";
         if arguments.is_empty() {
             return format!("the light is {}", self.light_model.name());
         }
@@ -202,6 +216,11 @@ impl CaveLogic {
         };
         self.multiscale = MultiScaleLighting::new(self.table.clone(), scheme);
         self.light_model = model;
+        world.send(
+            Audience::Everyone,
+            light_scheme_kind(),
+            encode_light_scheme(self.scheme_in_use()),
+        );
         for (level, voxel) in emitters {
             self.light_changed(level, voxel);
         }
@@ -345,7 +364,14 @@ impl CaveLogic {
 }
 
 impl GameLogic for CaveLogic {
-    fn client_joined(&mut self, _client: ClientId, _world: &mut ServerWorld) {}
+    fn client_joined(&mut self, client: ClientId, world: &mut ServerWorld) {
+        // The view needs to know how the light is cut into cells to draw it.
+        world.send(
+            Audience::Client(client),
+            light_scheme_kind(),
+            encode_light_scheme(self.scheme_in_use()),
+        );
+    }
 
     fn client_left(&mut self, client: ClientId, _world: &mut ServerWorld) {
         self.movement.remove(client);
@@ -457,6 +483,7 @@ impl GameLogic for CaveLogic {
                         block_channel: self.block_channel,
                         state_channel: self.state_channel,
                         scale_channels: &self.scale_channels,
+                        scheme,
                     },
                     &multiscale_light::default_budgets(scheme),
                 );

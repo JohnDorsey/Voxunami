@@ -10,6 +10,8 @@ use physics::MoveInput;
 use player_presence::{PlayerPose, decode_pose, encode_pose};
 use voxel_space::VoxelCoordinate;
 
+use crate::multiscale_light::LightScheme;
+
 /// Client to server: a player joins, at this pose. Only the first one from a player counts; after it
 /// the server says where the player is (see [`crate::movement`]).
 pub fn spawn_kind() -> NamespacedId {
@@ -130,6 +132,49 @@ pub fn decode_set_block(payload: &[u8]) -> Result<SetBlock, DecodeError> {
     Ok(SetBlock { at, block, state })
 }
 
+/// Server to client: how the world's light is cut into cells, which the view needs to draw it. Sent
+/// to a player who joins and to everyone when it changes.
+pub fn light_scheme_kind() -> NamespacedId {
+    "voxunami_cave:light_scheme"
+        .parse()
+        .expect("constant identifier is valid")
+}
+
+/// The scheme of a world's multiscale light, or none for a world with the classic light.
+pub fn encode_light_scheme(scheme: Option<LightScheme>) -> Vec<u8> {
+    let mut writer = ByteWriter::new();
+    match scheme {
+        None => writer.write_u8(0),
+        Some(scheme) => {
+            writer.write_u8(scheme.scales() as u8);
+            writer.write_u8(scheme.code());
+            for &width in scheme.widths() {
+                writer.write_u8(width as u8);
+            }
+        }
+    }
+    writer.into_bytes()
+}
+
+pub fn decode_light_scheme(payload: &[u8]) -> Result<Option<LightScheme>, DecodeError> {
+    let mut reader = ByteReader::new(payload);
+    let scales = usize::from(reader.read_u8()?);
+    if scales == 0 {
+        reader.finish()?;
+        return Ok(None);
+    }
+    let code = reader.read_u8()?;
+    let widths: Vec<u16> = reader
+        .read_raw(scales)?
+        .iter()
+        .map(|&width| u16::from(width))
+        .collect();
+    reader.finish()?;
+    LightScheme::new(32u32.checked_shr(u32::from(code)).unwrap_or(0), &widths)
+        .map(Some)
+        .ok_or(DecodeError::Invalid("the light scheme is not one"))
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
@@ -181,6 +226,41 @@ mod tests {
             infinite[angle_at..angle_at + 4]
                 .copy_from_slice(&f32::INFINITY.to_bits().to_le_bytes());
             assert!(decode_move_request(&infinite).is_err(), "{angle_at}");
+        }
+    }
+
+    #[test]
+    fn a_light_scheme_survives_encoding_and_nothing_malformed_is_accepted() {
+        let schemes = [
+            None,
+            Some(LightScheme::LEVELS_32),
+            Some(LightScheme::LEVELS_4),
+            Some(LightScheme::new(8, &[1, 3, 7, 17]).unwrap()),
+            Some(LightScheme::new(4, &[1, 3, 5, 7, 11, 17, 23]).unwrap()),
+        ];
+        for scheme in schemes {
+            assert_eq!(
+                decode_light_scheme(&encode_light_scheme(scheme)),
+                Ok(scheme)
+            );
+        }
+        let good = encode_light_scheme(Some(LightScheme::new(8, &[2, 5]).unwrap()));
+        for length in 0..good.len() {
+            assert!(decode_light_scheme(&good[..length]).is_err(), "{length}");
+        }
+        let mut trailing = good.clone();
+        trailing.push(0);
+        assert!(decode_light_scheme(&trailing).is_err());
+        assert!(decode_light_scheme(&[0, 0]).is_err(), "none, with more");
+        // Not a scheme: a level code that does not exist, widths out of order, a width past a brick.
+        for bad in [
+            vec![2, 4, 1, 2],
+            vec![2, 2, 5, 3],
+            vec![2, 2, 1, 33],
+            vec![8, 2, 1, 2, 3, 4, 5, 6, 7, 8],
+            vec![2, 255, 1, 2],
+        ] {
+            assert!(decode_light_scheme(&bad).is_err(), "{bad:?}");
         }
     }
 

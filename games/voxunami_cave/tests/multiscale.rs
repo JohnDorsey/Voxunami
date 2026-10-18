@@ -9,7 +9,7 @@ use game_shell::files::{open_world, save_world};
 use voxel_space::VoxelCoordinate;
 use voxunami_cave::content::CaveContent;
 use voxunami_cave::game::{place_block, request_block};
-use voxunami_cave::multiscale_light::{LightScheme, anchor_of, level_of_word};
+use voxunami_cave::multiscale_light::{LightScheme, anchor_of, level_of_word, word_homes};
 
 /// The scales of the default scheme, 16 levels with cells up to 8.
 const SCALES: usize = 4;
@@ -58,7 +58,10 @@ fn server_level(rig: &Rig, scale: usize, voxel: VoxelCoordinate) -> u32 {
         .world()
         .main()
         .overrides
-        .get(rig.content.scale_channel(scale), anchor_of(scale, voxel))
+        .get(
+            rig.content.scale_channel(scale),
+            anchor_of(1 << scale, voxel),
+        )
         .pipe_level()
 }
 
@@ -69,7 +72,10 @@ fn seen_level(rig: &Rig, player: &Player, scale: usize, voxel: VoxelCoordinate) 
         .world()
         .main()
         .overrides
-        .get(rig.content.scale_channel(scale), anchor_of(scale, voxel))
+        .get(
+            rig.content.scale_channel(scale),
+            anchor_of(1 << scale, voxel),
+        )
         .pipe_level()
 }
 
@@ -112,7 +118,7 @@ fn quad_lights(rig: &mut Rig, player: &mut Player) -> Vec<u8> {
         .collect()
 }
 
-const USAGE: &str = "usage: /light, /light classic, /light multiscale [32|16|8|4]";
+const USAGE: &str = "usage: /light, /light classic, /light multiscale [32|16|8|4], /light multiscale LEVELS WIDTH... (widths 1 to 32, growing)";
 
 #[test]
 fn the_light_command_says_which_light_there_is_and_changes_it() {
@@ -123,21 +129,21 @@ fn the_light_command_says_which_light_there_is_and_changes_it() {
     assert_eq!(say("/light classic"), ["the light is already classic"]);
     assert_eq!(
         say("/light multiscale"),
-        ["the light is now multiscale (16 levels, cells up to 8)"]
+        ["the light is now multiscale (16 levels, cells 1, 2, 4, 8)"]
     );
     assert_eq!(
         say("/light"),
-        ["the light is multiscale (16 levels, cells up to 8)"]
+        ["the light is multiscale (16 levels, cells 1, 2, 4, 8)"]
     );
     assert_eq!(
         say("/light multiscale 16"),
-        ["the light is already multiscale (16 levels, cells up to 8)"]
+        ["the light is already multiscale (16 levels, cells 1, 2, 4, 8)"]
     );
     // The other schemes, by their number of levels.
     for (levels, name) in [
-        (32, "32 levels, cells up to 4"),
-        (8, "8 levels, cells up to 16"),
-        (4, "4 levels, cells up to 32"),
+        (32, "32 levels, cells 1, 2, 4"),
+        (8, "8 levels, cells 1, 2, 4, 8, 16"),
+        (4, "4 levels, cells 1, 2, 4, 8, 16, 32"),
     ] {
         assert_eq!(
             say(&format!("/light multiscale {levels}")),
@@ -150,7 +156,7 @@ fn the_light_command_says_which_light_there_is_and_changes_it() {
         "/light sideways",
         "/light multiscale classic",
         "/light multiscale 5",
-        "/light multiscale 16 8",
+        "/light multiscale 16 8 4",
         "/light classic 8",
     ] {
         assert_eq!(say(bad), [USAGE], "{bad}");
@@ -218,6 +224,69 @@ fn what_is_drawn_is_the_scales_blended_so_it_is_not_in_steps_of_seventeen() {
     assert!(lights.iter().any(|&light| light % 17 != 0));
     assert!(lights.iter().any(|&light| light >= 250));
     assert!(lights.iter().any(|&light| light < 200));
+}
+
+#[test]
+fn cells_of_any_width_hold_their_light_in_every_brick_they_are_in_and_the_player_draws_from_it() {
+    let mut rig = Rig::new();
+    let mut builder = player_above_ground(&mut rig);
+    assert_eq!(
+        reply_to(&mut rig, &mut builder, "/light multiscale 8 1 5 17"),
+        ["the light is now multiscale (8 levels, cells 1, 5, 17)"]
+    );
+    let scheme = LightScheme::new(8, &[1, 5, 17]).unwrap();
+    assert_eq!(
+        builder.state.light_scheme,
+        Some(scheme),
+        "the player is told how the light is cut"
+    );
+    // A lamp in the cell of 17 that goes from x = 17 to 33, across the edge of the first brick.
+    let spot = builder.target().unwrap().previous;
+    let lamp = VoxelCoordinate::new(20, spot.y(), spot.z());
+    request_block(&mut builder, lamp, "base_blocks:lamp");
+    ticks(&mut rig, 60);
+
+    let word_at = |channel, home| {
+        rig.server
+            .world()
+            .main()
+            .overrides
+            .get(rig.content.scale_channel(channel), home)
+    };
+    let cells = [(1, 5), (2, 17)].map(|(scale, width)| {
+        let anchor = anchor_of(width, lamp);
+        (scale, word_homes(width, anchor), word_at(scale, anchor))
+    });
+    for (scale, homes, word) in &cells {
+        assert_eq!(level_of_word(*word), 7, "scale {scale}: the lamp's cell");
+        for &home in homes {
+            assert_eq!(word_at(*scale, home), *word, "scale {scale} home {home:?}");
+        }
+    }
+    assert!(
+        cells[1].1.len() >= 2,
+        "the cell is in two bricks: {:?}",
+        cells[1].1
+    );
+
+    // The player's view is drawn from them: blended, not in steps of 36 (255 over 7 levels).
+    let lights = quad_lights(&mut rig, &mut builder);
+    assert!(lights.iter().any(|&light| light >= 250), "by the lamp");
+    assert!(lights.iter().any(|&light| light < 200), "far from it");
+    assert!(lights.iter().any(|&light| light % 17 != 0));
+    // And the player has the word in each brick, so that each can be drawn.
+    for (scale, homes, word) in &cells {
+        for &home in homes {
+            let seen = builder
+                .client()
+                .world()
+                .world()
+                .main()
+                .overrides
+                .get(rig.content.scale_channel(*scale), home);
+            assert_eq!(seen, *word, "the player has scale {scale} at {home:?}");
+        }
+    }
 }
 
 #[test]
@@ -319,7 +388,7 @@ fn a_world_saved_with_the_multiscale_light_keeps_it_and_its_levels() {
     later.take_command_replies();
     assert_eq!(
         reply_to(&mut rig, &mut later, "/light"),
-        ["the light is multiscale (16 levels, cells up to 8)"]
+        ["the light is multiscale (16 levels, cells 1, 2, 4, 8)"]
     );
     assert_eq!(
         server_level(&rig, 0, above(spot, 1)),
@@ -386,7 +455,7 @@ fn a_world_saved_before_the_scales_existed_loads_and_its_lamps_light_up_in_multi
     );
     assert_eq!(
         reply_to(&mut rig, &mut player, "/light multiscale"),
-        ["the light is now multiscale (16 levels, cells up to 8)"]
+        ["the light is now multiscale (16 levels, cells 1, 2, 4, 8)"]
     );
     ticks(&mut rig, 40);
     rig.settle(&mut [&mut player]);
@@ -493,7 +562,7 @@ fn a_world_saved_with_a_scheme_keeps_it_when_loaded() {
     later.take_command_replies();
     assert_eq!(
         reply_to(&mut rig, &mut later, "/light"),
-        ["the light is multiscale (8 levels, cells up to 16)"]
+        ["the light is multiscale (8 levels, cells 1, 2, 4, 8, 16)"]
     );
     assert_eq!(
         server_level(&rig, 0, above(spot, 1)),

@@ -16,7 +16,7 @@ use namespaced_id::NamespacedId;
 use terrain::{TerrainGenerator, WorldTerrain};
 use voxel_grid::{ChannelDefinition, ChannelIndex, Grid, GridLayout};
 use world_storage::{LevelData, LoadContext, WorldData};
-use world_view::{LevelFormat, MAXIMUM_LIGHT_SCALES, ScaledLight, ViewChannels};
+use world_view::ViewChannels;
 
 use crate::definition::GameContent;
 
@@ -24,16 +24,6 @@ use crate::definition::GameContent;
 /// channels a generator writes.
 pub type GeneratorFactory =
     Arc<dyn Fn(u64, &GridLayout) -> Registry<Arc<dyn TerrainGenerator>> + Send + Sync>;
-
-/// A light kept in cells larger than a voxel (see [`world_view::ScaledLight`]).
-#[derive(Clone, Debug)]
-pub struct ScaledLightSpec {
-    pub channel: NamespacedId,
-    pub cell_edge_log2: u8,
-    /// How bright the channel is at its greatest level (a weight; see `world_view::ScaledLight`).
-    pub full_brightness: u16,
-    pub format: LevelFormat,
-}
 
 /// What a game declares about its world.
 #[derive(Clone)]
@@ -48,9 +38,6 @@ pub struct PackageSpec {
     pub block_channel: NamespacedId,
     pub state_channel: Option<NamespacedId>,
     pub light_channel: Option<NamespacedId>,
-    /// Lights kept in larger cells, drawn together with the light channel (at most
-    /// [`MAXIMUM_LIGHT_SCALES`]).
-    pub scaled_lights: Vec<ScaledLightSpec>,
     pub generators: GeneratorFactory,
     /// The generator new regions are given, and the one used if a world's own is missing.
     pub default_generator: NamespacedId,
@@ -118,21 +105,11 @@ impl ContentPackage {
 
 impl GameContent for ContentPackage {
     fn view_channels(&self) -> ViewChannels {
-        let mut view = ViewChannels::new(
+        ViewChannels::new(
             self.block_channel(),
             self.spec.state_channel.as_ref().map(|id| self.channel(id)),
             self.spec.light_channel.as_ref().map(|id| self.channel(id)),
-        );
-        assert!(self.spec.scaled_lights.len() <= MAXIMUM_LIGHT_SCALES);
-        for (slot, scaled) in view.scaled_light.iter_mut().zip(&self.spec.scaled_lights) {
-            *slot = Some(ScaledLight {
-                channel: self.channel(&scaled.channel),
-                cell_edge_log2: scaled.cell_edge_log2,
-                full_brightness: scaled.full_brightness,
-                format: scaled.format,
-            });
-        }
-        view
+        )
     }
 
     fn ambient_light(&self) -> u8 {
@@ -220,7 +197,6 @@ mod tests {
                 block_channel: id("test_game:block"),
                 state_channel: Some(id("test_game:state")),
                 light_channel: None,
-                scaled_lights: Vec::new(),
                 generators: Arc::new(|_seed, _layout| {
                     let mut generators: Registry<Arc<dyn TerrainGenerator>> = Registry::new();
                     generators
