@@ -214,7 +214,9 @@ dependencies = [
 name = "block_models"
 version = "0.0.0"
 dependencies = [
+ "namespaced_id",
  "proptest",
+ "thiserror 2.0.21",
  "voxel_space",
 ]
 

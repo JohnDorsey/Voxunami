@@ -12,9 +12,14 @@
 //! for what passes and what is solid. The grid stays cubic; only what a block fills of its cell varies.
 
 mod definition;
+mod property;
 mod shape;
 mod table;
 
 pub use definition::BlockDefinition;
+pub use property::{
+    PropertyDeclaration, PropertyError, PropertyHandle, PropertyKey, PropertyKind, PropertySchema,
+    PropertyType, engine,
+};
 pub use shape::{FaceConnections, SUBDIVISIONS, Shape, ShapeBox, SubRect, face_axes};
 pub use table::{BlockTable, MISSING_BLOCK_COLOR, ModelId};

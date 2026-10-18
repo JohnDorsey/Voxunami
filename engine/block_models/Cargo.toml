@@ -7,6 +7,8 @@ publish.workspace = true
 description = "What blocks look like and how they fill their cell: shapes, appearance, light, and the table that answers for every block and state."
 
 [dependencies]
+namespaced_id.workspace = true
+thiserror.workspace = true
 voxel_space.workspace = true
 
 [dev-dependencies]

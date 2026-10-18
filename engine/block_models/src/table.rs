@@ -1,6 +1,12 @@
+use std::marker::PhantomData;
+
 use voxel_space::FaceDirection;
 
 use crate::definition::BlockDefinition;
+use crate::property::{
+    Column, PropertyError, PropertyHandle, PropertyKey, PropertySchema, PropertyType, check_value,
+    key_id,
+};
 use crate::shape::{FaceConnections, Shape};
 
 /// The colour of a block this program has no definition for (content from a plugin that is not
@@ -52,11 +58,26 @@ pub struct BlockTable {
     unknown: ModelId,
     /// The colours after the blocks' own: every block's state colours, in block order.
     state_palette: Vec<[f32; 3]>,
+    /// The properties, a column for each, with a value for every model.
+    columns: Vec<Column>,
 }
 
 impl BlockTable {
-    /// A table of these blocks, in id order. `None` is a block whose definition is not available.
+    /// A table of these blocks, in id order, with only the engine's properties declared. `None` is a block
+    /// whose definition is not available. Panics if a definition sets a property that is not declared
+    /// (see [`BlockTable::try_from_definitions`]).
     pub fn from_definitions(definitions: &[Option<&BlockDefinition>]) -> Self {
+        Self::try_from_definitions(&PropertySchema::new(), definitions)
+            .unwrap_or_else(|error| panic!("the block definitions cannot be used: {error}"))
+    }
+
+    /// A table of these blocks, in id order, with the properties `schema` declares. `None` is a block whose
+    /// definition is not available. An error if a definition sets a property the schema does not declare, a
+    /// value it does not take, or a state its block does not have.
+    pub fn try_from_definitions(
+        schema: &PropertySchema,
+        definitions: &[Option<&BlockDefinition>],
+    ) -> Result<Self, PropertyError> {
         let mut models = Vec::new();
         let mut entries = Vec::with_capacity(definitions.len());
         let mut state_palette = Vec::new();
@@ -98,12 +119,96 @@ impl BlockTable {
                 entry.first_model = unknown.0;
             }
         }
-        Self {
+        // The properties: a column for each declared key, the default everywhere (so for unknown blocks),
+        // then what each definition sets, for each of its states.
+        let mut columns: Vec<Column> = schema
+            .iter()
+            .map(|declaration| Column {
+                id: declaration.id.clone(),
+                kind: declaration.kind,
+                values: vec![declaration.default; models.len()],
+            })
+            .collect();
+        for (block, definition) in definitions.iter().enumerate() {
+            let Some(definition) = definition else {
+                continue;
+            };
+            let entry = &entries[block];
+            for (key, set) in definition.properties() {
+                let declaration = schema
+                    .get(key)
+                    .ok_or_else(|| PropertyError::Undeclared(key.clone()))?;
+                let column = columns
+                    .iter_mut()
+                    .find(|column| column.id == *key)
+                    .expect("every declared key has a column");
+                for value in set.every_state.iter().chain(set.by_state.values()) {
+                    check_value(declaration, *value)?;
+                }
+                if let Some(&state) = set
+                    .by_state
+                    .keys()
+                    .find(|&&state| state >= entry.state_count)
+                {
+                    return Err(PropertyError::NoSuchState {
+                        key: key.clone(),
+                        block: block as u32,
+                        state,
+                        states: entry.state_count,
+                    });
+                }
+                for state in 0..entry.state_count {
+                    if let Some(&value) = set.by_state.get(&state).or(set.every_state.as_ref()) {
+                        column.values[(entry.first_model + state) as usize] = value;
+                    }
+                }
+            }
+        }
+        Ok(Self {
             entries,
             models,
             unknown,
             state_palette,
+            columns,
+        })
+    }
+
+    /// Finds a property's column, to read through [`BlockTable::get`]. An error if the table's schema does
+    /// not declare the key, or declares it as another kind than `T`.
+    pub fn handle<T: PropertyType>(
+        &self,
+        key: &PropertyKey<T>,
+    ) -> Result<PropertyHandle<T>, PropertyError> {
+        let id = key_id(key.id());
+        let (position, column) = self
+            .columns
+            .iter()
+            .enumerate()
+            .find(|(_, column)| column.id == id)
+            .ok_or_else(|| PropertyError::Undeclared(id.clone()))?;
+        if column.kind != T::KIND {
+            return Err(PropertyError::WrongKind {
+                key: id,
+                declared: column.kind,
+                asked: T::KIND,
+            });
         }
+        Ok(PropertyHandle {
+            column: position as u32,
+            marker: PhantomData,
+        })
+    }
+
+    /// A property of a block in a state, by its model (see [`BlockTable::model_of`]): an array index. The
+    /// handle must be from this table.
+    pub fn get<T: PropertyType>(&self, handle: PropertyHandle<T>, model: ModelId) -> T {
+        T::from_value(self.columns[handle.column as usize].values[model.0 as usize])
+    }
+
+    /// A property of a block in a state, for a caller that has the block and state and not the model: the key's
+    /// default for an unknown block, and the state 0 value for a state the block does not have.
+    pub fn get_of<T: PropertyType>(&self, handle: PropertyHandle<T>, block: u32, state: u32) -> T {
+        self.get(handle, self.model_of(block, state))
     }
 
     /// A table of whole cubes, one per flag: opaque where the flag is set, and air where it is not.

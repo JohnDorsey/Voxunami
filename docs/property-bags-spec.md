@@ -1,6 +1,6 @@
 # Phase 24 specification: property bags on block definitions
 
-**Status: proposed 2026-10-18 for the owner's review. Nothing here is built.** It makes concrete revision 2 of `plan.md` ("Plugin shape
+**Status: accepted 2026-10-18 with one change by the owner: properties are per state, not only per block (section 2). Being built.** It makes concrete revision 2 of `plan.md` ("Plugin shape
 revisions") and requirement 5 of "Requirements pulled forward". The Rust is a sketch of shape and size. Read with `plugin-architecture-review.md`
 section 2.1 (what property bags are and how they are built).
 
@@ -27,11 +27,15 @@ pub enum PropertyKind { Bool, Integer { minimum: i64, maximum: i64 } }
 pub struct PropertySchema { .. }                       // the declared keys; the engine's own are always in it
 pub struct PropertyHandle<T> { column: u32, .. }       // Copy; resolved once from a table
 
-impl BlockDefinition { pub fn with_property<T: PropertyType>(self, key: &PropertyKey<T>, value: T) -> Self; }
+impl BlockDefinition {
+    pub fn with_property<T: PropertyType>(self, key: &PropertyKey<T>, value: T) -> Self;                       // every state
+    pub fn with_state_property<T: PropertyType>(self, state: u32, key: &PropertyKey<T>, value: T) -> Self;     // one state, over the above
+}
 impl BlockTable {
     pub fn try_from_definitions(schema: &PropertySchema, definitions: &[Option<&BlockDefinition>]) -> Result<Self, PropertyError>;
     pub fn handle<T: PropertyType>(&self, key: &PropertyKey<T>) -> Result<PropertyHandle<T>, PropertyError>;
-    pub fn get<T: PropertyType>(&self, handle: PropertyHandle<T>, block: u32) -> T;   // an array index; an unknown block has the default
+    pub fn get<T: PropertyType>(&self, handle: PropertyHandle<T>, model: ModelId) -> T;   // an array index by the block-and-state's model
+    pub fn get_of<T: PropertyType>(&self, handle: PropertyHandle<T>, block: u32, state: u32) -> T;   // via `model_of`; unknown block: the default
 }
 ```
 
@@ -42,8 +46,10 @@ impl BlockTable {
   panics with that message.
 - **Canonical form:** definitions keep their properties in a `BTreeMap` by key and values are integers, so a definition has one byte form (the
   content package of Phase 28 hashes it).
-- **Per block, not per state:** a property is the same for every state of a block (as emission is today). Per-state properties are a later
-  extension if a game needs them.
+- **Per state (owner's decision):** a definition sets a property for every state, and may override it for a state (a lit and an unlit lamp, an open
+  and a shut door). The table already has one *model* for each block and state, so a column is indexed by model: the value of a state is its override,
+  else the block's, else the key's default. A state the block does not have reads as its state 0, as the model does. Rules that read emission
+  already have the block and the state in hand (the light reads both from the world), so they read by model.
 - **Per-voxel data is not this:** that is a channel. Properties are definitions, are never saved in worlds, and are rebuilt from content.
 
 ## 3. Who declares what (the dependency rule: games -> plugins -> engine)
@@ -86,9 +92,8 @@ same table.
 - **24c** Cave's rules, movement and the light plugin read through handles; the golden sessions and the benchmark after each rule.
 - **24d** Remove the old fields and accessors; `PackageSpec.properties`; documentation; gates; commit.
 
-## 7. Questions for the owner
+## 7. Questions for the owner, answered
 
-1. **Who owns `passable`:** I put it in `base_blocks` with emission and flammability, since base_blocks' blocks set them and Cave's rules read them; the
-   alternative is `voxunami_cave:passable`, which would make `base_blocks` depend on a game (not allowed). Is `base_blocks:passable` right?
-2. **Kinds for now:** bool and integers only. OK?
-3. **Per block or per state:** per block, as today. Does any block you plan (a lit and unlit lamp, a door open and shut) want different properties by state?
+1. `passable` is owned by `base_blocks` (`base_blocks:passable`), as proposed (the owner continued without objecting).
+2. Kinds for now: bool and integers.
+3. Per block or per state: **per state** (the owner).

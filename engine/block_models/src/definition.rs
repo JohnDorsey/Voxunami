@@ -1,3 +1,4 @@
+use crate::property::{PropertyKey, PropertyType, SetProperties, key_id};
 use crate::shape::Shape;
 
 /// What a type of block is like: how it looks, how it fills its cell, and how it treats light.
@@ -25,6 +26,7 @@ pub struct BlockDefinition {
     pub passable: bool,
     shapes: Vec<Shape>,
     state_colors: Vec<[f32; 3]>,
+    properties: SetProperties,
 }
 
 impl BlockDefinition {
@@ -38,6 +40,7 @@ impl BlockDefinition {
             passable: false,
             shapes: vec![Shape::full()],
             state_colors: Vec::new(),
+            properties: SetProperties::new(),
         }
     }
 
@@ -51,6 +54,7 @@ impl BlockDefinition {
             passable: false,
             shapes: vec![Shape::empty()],
             state_colors: Vec::new(),
+            properties: SetProperties::new(),
         }
     }
 
@@ -73,6 +77,37 @@ impl BlockDefinition {
         assert!(!colors.is_empty(), "a list of state colours has a colour");
         self.state_colors = colors;
         self
+    }
+
+    /// The same block with `value` for the property `key`, in every state (see [`crate::PropertyKey`]). The
+    /// key must be declared by the schema of the table the definition goes in, or the table is refused.
+    pub fn with_property<T: PropertyType>(mut self, key: &PropertyKey<T>, value: T) -> Self {
+        self.properties
+            .entry(key_id(key.id()))
+            .or_default()
+            .every_state = Some(value.to_value());
+        self
+    }
+
+    /// The same block with `value` for the property `key` in one state, instead of what every state has
+    /// (a lit lamp and an unlit one, a door open and shut). A state the block does not have is refused
+    /// when the table is built.
+    pub fn with_state_property<T: PropertyType>(
+        mut self,
+        state: u32,
+        key: &PropertyKey<T>,
+        value: T,
+    ) -> Self {
+        self.properties
+            .entry(key_id(key.id()))
+            .or_default()
+            .by_state
+            .insert(state, value.to_value());
+        self
+    }
+
+    pub(crate) fn properties(&self) -> &SetProperties {
+        &self.properties
     }
 
     pub fn with_emission(mut self, emission: u8) -> Self {
