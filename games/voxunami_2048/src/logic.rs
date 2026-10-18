@@ -2,15 +2,18 @@
 //! ones that meet, keeps score, and tells everyone how the game stands.
 //!
 //! The blocks are only in the world's voxels: the server never keeps a second copy. What the
-//! voxels do not show (the score, and which blocks are in motion) is saved with the world through
-//! [`GameLogic::save_sections`].
+//! voxels do not show (the score, and which blocks are in motion) is saved with the world as a plugin's
+//! saved state.
 //!
 //! A player pushes blocks of the level they are in, and blocks move within their level.
 
-use game_shell::PoseBook;
+use std::sync::{Arc, Mutex, MutexGuard};
+
 use namespaced_id::NamespacedId;
-use protocol::{ClientId, Tick};
-use server::{Audience, GameLogic, ServerWorld};
+use player_presence::{PoseBook, SharedPoseBook};
+use plugin_host::{HandlerSpec, Phase, PlayerJoined, Plugin, Registrar, SaveScope, SystemSpec};
+use protocol::ClientId;
+use server::{Audience, ServerWorld};
 use voxel_grid::ChannelIndex;
 use voxel_space::{LevelIndex, VoxelCoordinate};
 use world_storage::{Section, WorldData};
@@ -74,13 +77,12 @@ pub struct Logic2048 {
     level_ids: Vec<NamespacedId>,
     progress: Progress,
     movers: Movers,
-    poses: PoseBook,
     progress_changed: bool,
 }
 
 impl Logic2048 {
     /// The rules for the game in `world`, continuing from the state saved with it, if any.
-    pub fn new(content: &Content2048, world: &WorldData) -> Self {
+    fn new(block_channel: ChannelIndex, number_channel: ChannelIndex, world: &WorldData) -> Self {
         let level_ids: Vec<NamespacedId> = world.levels().map(|(_, id, _)| id.clone()).collect();
         let saved = read_saved_state(world.opaque_sections(), &landscape_id()).unwrap_or_default();
         // A block saved in a level this world no longer has is not moving any more.
@@ -94,24 +96,29 @@ impl Logic2048 {
             })
         });
         Self {
-            block_channel: content.block_channel(),
-            number_channel: content.number_channel(),
+            block_channel,
+            number_channel,
             level_ids,
             progress: saved.progress,
             movers: Movers::from_saved(movers),
-            poses: PoseBook::new(),
             progress_changed: false,
         }
     }
 
-    fn push(&mut self, client: ClientId, request: PushRequest, world: &mut ServerWorld) {
-        let Some(pose) = self.poses.pose_of(client) else {
+    fn push(
+        &mut self,
+        client: ClientId,
+        request: PushRequest,
+        world: &mut ServerWorld,
+        poses: &PoseBook,
+    ) {
+        let Some(pose) = poses.pose_of(client) else {
             return; // a player who has not said where they are
         };
         if pose.distance_to_voxel(request.voxel) > REACH {
             return;
         }
-        let level = self.poses.level_of(client);
+        let level = poses.level_of(client);
         let mut field = WorldField {
             world,
             block_channel: self.block_channel,
@@ -130,8 +137,9 @@ impl Logic2048 {
     }
 }
 
-impl GameLogic for Logic2048 {
-    fn client_joined(&mut self, client: ClientId, world: &mut ServerWorld) {
+impl Logic2048 {
+    /// Tells a client who has just joined how the game stands.
+    fn welcome(&self, client: ClientId, world: &mut ServerWorld) {
         world.send(
             Audience::Client(client),
             progress_kind(),
@@ -139,36 +147,9 @@ impl GameLogic for Logic2048 {
         );
     }
 
-    fn client_left(&mut self, client: ClientId, _world: &mut ServerWorld) {
-        self.poses.client_left(client);
-    }
-
-    fn message_received(
-        &mut self,
-        client: ClientId,
-        kind: &NamespacedId,
-        payload: &[u8],
-        world: &mut ServerWorld,
-    ) {
-        if self.poses.handle_message(client, kind, payload) {
-            return;
-        }
-        if *kind == push_kind()
-            && let Ok(request) = decode_push(payload)
-        {
-            self.push(client, request, world);
-        }
-        // Anything else is another game's, or malformed: ignored.
-    }
-
-    fn command_received(&mut self, client: ClientId, command: &str, world: &mut ServerWorld) {
-        if !self.poses.handle_command(client, command, world) {
-            world.reply(client, "unknown command; try /level");
-        }
-    }
-
-    fn tick(&mut self, _tick: Tick, world: &mut ServerWorld) {
-        self.poses.tell_everyone(world);
+    /// One tick of the blocks in motion: moves them, merges equal ones that meet, keeps score, and
+    /// tells everyone if the score changed.
+    fn advance(&mut self, world: &mut ServerWorld) {
         let mut field = WorldField {
             world,
             block_channel: self.block_channel,
@@ -192,7 +173,7 @@ impl GameLogic for Logic2048 {
         }
     }
 
-    fn save_sections(&self) -> Vec<Section> {
+    fn saved_sections(&self) -> Vec<Section> {
         let movers = self
             .movers
             .as_slice()
@@ -212,4 +193,76 @@ impl GameLogic for Logic2048 {
             movers,
         })]
     }
+}
+
+/// The rules of 2048 as a plugin: the push message, the blocks in motion, the score, and the state
+/// saved with the world. It uses the record of where players are (to know how far one is from a block
+/// and which level they are in), which the game gives it.
+#[derive(Debug)]
+pub struct Plugin2048 {
+    block_channel: ChannelIndex,
+    number_channel: ChannelIndex,
+    players: SharedPoseBook,
+}
+
+impl Plugin2048 {
+    pub fn new(content: &Content2048, players: SharedPoseBook) -> Self {
+        Self {
+            block_channel: content.block_channel(),
+            number_channel: content.number_channel(),
+            players,
+        }
+    }
+}
+
+impl Plugin for Plugin2048 {
+    fn id(&self) -> NamespacedId {
+        "voxunami_2048:rules"
+            .parse()
+            .expect("constant identifier is valid")
+    }
+
+    fn depends_on(&self) -> Vec<NamespacedId> {
+        vec![
+            "player_presence:players"
+                .parse()
+                .expect("constant identifier is valid"),
+        ]
+    }
+
+    fn register(&self, registrar: &mut Registrar<'_>) {
+        let state = Arc::new(Mutex::new(Logic2048::new(
+            self.block_channel,
+            self.number_channel,
+            registrar.world(),
+        )));
+        let rules = Arc::clone(&state);
+        let players = Arc::clone(&self.players);
+        registrar.message(push_kind(), move |context, client, payload| {
+            if let Ok(request) = decode_push(payload) {
+                let book = player_presence::lock(&players);
+                lock_rules(&rules).push(client, request, context.world(), &book);
+            }
+        });
+        let rules = Arc::clone(&state);
+        registrar.on::<PlayerJoined>(
+            HandlerSpec::new("voxunami_2048:tell_the_newcomer_the_score"),
+            move |event, context| lock_rules(&rules).welcome(event.client, context.world()),
+        );
+        let rules = Arc::clone(&state);
+        registrar.system(
+            SystemSpec::new("voxunami_2048:motion", Phase::Rules),
+            move |context| lock_rules(&rules).advance(context.world()),
+        );
+        let rules = Arc::clone(&state);
+        registrar.save_section(SaveScope::Global, move || {
+            lock_rules(&rules).saved_sections()
+        });
+    }
+}
+
+fn lock_rules(rules: &Mutex<Logic2048>) -> MutexGuard<'_, Logic2048> {
+    rules
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }

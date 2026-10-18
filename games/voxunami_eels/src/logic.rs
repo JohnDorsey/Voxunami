@@ -5,17 +5,21 @@
 //! the scores) is the match's, kept in memory: a world that is saved and loaded starts a fresh
 //! match, and the first round clears whatever bodies the file held.
 //!
-//! The server moves every player, so what a player says about where they are is not listened to.
+//! The server moves every player, so what a player says about where they are is not listened to (the game
+//! gives its players plugin that setting).
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, MutexGuard};
 
-use game_shell::PoseBook;
 use namespaced_id::NamespacedId;
-use protocol::{ClientId, Tick};
-use server::{Audience, GameLogic, ServerWorld};
+use player_presence::{PoseBook, SharedPoseBook};
+use plugin_host::{
+    HandlerSpec, Phase as TickPhase, PlayerJoined, PlayerLeft, Plugin, Registrar, SystemSpec,
+};
+use protocol::ClientId;
+use server::{Audience, ServerWorld};
 use voxel_grid::ChannelIndex;
 use voxel_space::{BrickCoordinate, LevelIndex, LocalVoxelIndex, VoxelCoordinate};
-use world_storage::WorldData;
 
 use crate::arena::{ARENA_EDGE, Cell, is_inside};
 use crate::content::{ContentEels, blocks};
@@ -106,20 +110,18 @@ pub struct LogicEels {
     game: Match,
     /// The colour each player has, for as long as they are here.
     slots: BTreeMap<ClientId, u8>,
-    poses: PoseBook,
     /// The standings as last sent, so that only changes are.
     announced: Vec<u8>,
 }
 
 impl LogicEels {
-    /// The rules for the game in `world`. There is no saved state: see the module's notes.
-    pub fn new(content: &ContentEels, _world: &WorldData) -> Self {
+    /// The rules of the game. There is no saved state: see the module's notes.
+    fn new(block_channel: ChannelIndex, slot_channel: ChannelIndex) -> Self {
         Self {
-            block_channel: content.block_channel(),
-            slot_channel: content.slot_channel(),
+            block_channel,
+            slot_channel,
             game: Match::new(),
             slots: BTreeMap::new(),
-            poses: PoseBook::new(),
             announced: Vec::new(),
         }
     }
@@ -165,13 +167,14 @@ impl LogicEels {
     }
 }
 
-impl GameLogic for LogicEels {
-    fn client_joined(&mut self, client: ClientId, world: &mut ServerWorld) {
+impl LogicEels {
+    /// A client joined: an eel and a colour if one is free, and the standings, at once.
+    fn joined(&mut self, client: ClientId, world: &mut ServerWorld, poses: &mut PoseBook) {
         if let Some(slot) = self.free_slot() {
             self.slots.insert(client, slot);
             self.game.join(slot);
         }
-        self.poses.set_pose(client, spectator_pose());
+        poses.set_pose(client, spectator_pose());
         // A newcomer is told how things stand at once; everyone else hears of them with the rest.
         world.send(
             Audience::Client(client),
@@ -180,7 +183,7 @@ impl GameLogic for LogicEels {
         );
     }
 
-    fn client_left(&mut self, client: ClientId, world: &mut ServerWorld) {
+    fn left(&mut self, client: ClientId, world: &mut ServerWorld) {
         if let Some(slot) = self.slots.remove(&client) {
             let mut arena = WorldArena {
                 world,
@@ -189,26 +192,18 @@ impl GameLogic for LogicEels {
             };
             self.game.leave(slot, &mut arena);
         }
-        self.poses.client_left(client);
     }
 
-    fn message_received(
-        &mut self,
-        client: ClientId,
-        kind: &NamespacedId,
-        payload: &[u8],
-        _world: &mut ServerWorld,
-    ) {
-        if *kind == steer_kind()
-            && let Ok(steer) = decode_steer(payload)
+    fn steer(&mut self, client: ClientId, payload: &[u8]) {
+        if let Ok(steer) = decode_steer(payload)
             && let Some(&slot) = self.slots.get(&client)
         {
             self.game.steer(slot, steer);
         }
-        // Anything else is another game's, a pose (which nobody is believed about), or malformed.
     }
 
-    fn tick(&mut self, _tick: Tick, world: &mut ServerWorld) {
+    /// One tick of the round, and every player's pose after it.
+    fn swim(&mut self, world: &mut ServerWorld, poses: &mut PoseBook) {
         let mut arena = WorldArena {
             world,
             block_channel: self.block_channel,
@@ -222,9 +217,90 @@ impl GameLogic for LogicEels {
                 .get(&client)
                 .and_then(|&slot| self.game.eel(slot))
                 .map_or_else(spectator_pose, |eel| eel_pose(eel, fraction));
-            self.poses.set_pose(client, pose);
+            poses.set_pose(client, pose);
         }
-        self.poses.tell_everyone(world);
-        self.announce(world);
+    }
+}
+
+/// The rules of Eels as a plugin: eels and colours for the players who join, steering, the round,
+/// and the standings. The server moves every player (their camera is the eel's), so it uses the record of
+/// where players are that the game gives it, and does not believe what players say about it.
+#[derive(Debug)]
+pub struct PluginEels {
+    block_channel: ChannelIndex,
+    slot_channel: ChannelIndex,
+    players: SharedPoseBook,
+}
+
+impl PluginEels {
+    pub fn new(content: &ContentEels, players: SharedPoseBook) -> Self {
+        Self {
+            block_channel: content.block_channel(),
+            slot_channel: content.slot_channel(),
+            players,
+        }
+    }
+}
+
+fn lock_rules(rules: &Mutex<LogicEels>) -> MutexGuard<'_, LogicEels> {
+    rules
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+impl Plugin for PluginEels {
+    fn id(&self) -> NamespacedId {
+        "voxunami_eels:rules"
+            .parse()
+            .expect("constant identifier is valid")
+    }
+
+    fn depends_on(&self) -> Vec<NamespacedId> {
+        vec![
+            "player_presence:players"
+                .parse()
+                .expect("constant identifier is valid"),
+        ]
+    }
+
+    fn register(&self, registrar: &mut Registrar<'_>) {
+        let state = Arc::new(Mutex::new(LogicEels::new(
+            self.block_channel,
+            self.slot_channel,
+        )));
+        let rules = Arc::clone(&state);
+        let players = Arc::clone(&self.players);
+        registrar.on::<PlayerJoined>(
+            HandlerSpec::new("voxunami_eels:give_the_newcomer_an_eel"),
+            move |event, context| {
+                let mut book = player_presence::lock(&players);
+                lock_rules(&rules).joined(event.client, context.world(), &mut book);
+            },
+        );
+        let rules = Arc::clone(&state);
+        registrar.on::<PlayerLeft>(
+            HandlerSpec::new("voxunami_eels:take_the_eel_away"),
+            move |event, context| lock_rules(&rules).left(event.client, context.world()),
+        );
+        let rules = Arc::clone(&state);
+        registrar.message(steer_kind(), move |_, client, payload| {
+            lock_rules(&rules).steer(client, payload);
+        });
+        // The eels swim, and the players' poses follow them, before the poses are announced (the
+        // players plugin does that in the `Settle` phase); the standings follow the announcement.
+        let rules = Arc::clone(&state);
+        let players = Arc::clone(&self.players);
+        registrar.system(
+            SystemSpec::new("voxunami_eels:swim", TickPhase::Physics),
+            move |context| {
+                let mut book = player_presence::lock(&players);
+                lock_rules(&rules).swim(context.world(), &mut book);
+            },
+        );
+        let rules = Arc::clone(&state);
+        registrar.system(
+            SystemSpec::new("voxunami_eels:standings", TickPhase::Rules),
+            move |context| lock_rules(&rules).announce(context.world()),
+        );
     }
 }

@@ -12,6 +12,8 @@ block_models.workspace = true
 content_registry.workspace = true
 game_shell.workspace = true
 namespaced_id.workspace = true
+player_presence.workspace = true
+plugin_host.workspace = true
 protocol.workspace = true
 server.workspace = true
 terrain.workspace = true
@@ -23,7 +25,6 @@ world_view.workspace = true
 
 [dev-dependencies]
 client.workspace = true
-player_presence.workspace = true
 proptest.workspace = true
 renderer.workspace = true
 replay.workspace = true

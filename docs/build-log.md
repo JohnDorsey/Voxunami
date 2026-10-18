@@ -47,6 +47,14 @@ Phase 1d (saving):
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
 
+Phase 23c (2048 and Eels as plugins; owner's request, 2026-10-18):
+- `player_presence::PlayersPlugin` (the shared record of where players are: pose messages if the game believes them, `/level`, forgetting those who
+  leave, announcing poses in `Settle`), `voxunami_2048:rules` and `voxunami_eels:rules`. Each game's `new_logic` builds a `PluginHost`.
+  `PoseBook::level_command` was split from `handle_command` for it.
+- Held fixed: the golden sessions and all existing tests pass unmodified on both platforms; moving Eels' `swim` system to a later phase fails its golden
+  session. Four new tests for the players plugin (belief in reported poses, one announcement per change, announcement in the tick that moved a
+  player, `/level`, forgetting, the unknown-command reply). Eels now answers `/level`.
+
 Phase 23b (the registrar and the plugin host; owner's request, 2026-10-18):
 - New engine crate `plugin_host`: `Plugin`, `Registrar`, `PluginHost` (the server's `GameLogic`), phases (`Decide`, `Controllers`, `Physics`,
   `Settle`, `Rules`), systems and handlers ordered by declared `after`/`before` with ties by plugin and name, events delivered first in first out,

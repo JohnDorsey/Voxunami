@@ -239,7 +239,18 @@ designed here and not built.
   - an unknown command is answered `unknown command; try /a, /b X` listing the registered usages by command name; 23d decides what Cave's
     golden session needs (its text and order differ today).
   - the order of plugins in the list does not matter (dependencies first, otherwise by identifier), and a test shuffles three busy plugins.
-- **23c** Convert 2048, then Eels.
+- **23c** (done) Convert 2048, then Eels. As built:
+  - `player_presence::PlayersPlugin` (id `player_presence:players`) owns the shared `PoseBook` (`SharedPoseBook`, an `Arc<Mutex<..>>` the game takes
+    from the plugin with `book()` and hands to the plugins that use it; they declare `depends_on` it). `PlayersPlugin::new(accept_reported_poses)`
+    registers the pose message only for a game that believes what players say; always the `/level` command (usage `/level`), a handler for
+    `PlayerLeft`, and a `Settle` system that announces poses. Sharing between plugins is by handles the game creates, not a lookup in the registrar.
+  - 2048: `Plugin2048` (`voxunami_2048:rules`): the push message, a `PlayerJoined` handler (the score), the `motion` system in `Rules` (after the
+    announcement, as before), and the saved state. `Logic2048` is now only the state they share. Eels: `PluginEels` (`voxunami_eels:rules`): handlers for
+    joining and leaving, the steer message, `swim` in `Physics` (the round ticks and each player's pose follows it) so that the announcement in
+    `Settle` comes after it, and `standings` in `Rules` after the announcement, as before.
+  - Behaviour held: both golden sessions and every existing test pass unmodified, on Windows and Linux. One change: Eels now answers `/level`, as
+    every game with the players plugin does (it had no commands; it has one level).
+  - `GameDefinition::new_logic` still returns a boxed `GameLogic`; each game builds a `PluginHost` there. 23e replaces it with a plugin list.
 - **23d** Convert Cave one plugin at a time: players, block editing, movement, fire, light; the goldens after each.
 - **23e** Shuffle test, mutation experiments (`PROPTEST_DISABLE_FAILURE_PERSISTENCE=1`), documentation, `GameDefinition::new_logic`
   replaced by a plugin list.

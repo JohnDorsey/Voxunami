@@ -9,6 +9,7 @@ description = "Where players are and which way they look: the messages for it, a
 [dependencies]
 binary_codec.workspace = true
 namespaced_id.workspace = true
+plugin_host.workspace = true
 protocol.workspace = true
 server.workspace = true
 voxel_space.workspace = true

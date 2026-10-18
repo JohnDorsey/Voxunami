@@ -116,6 +116,12 @@ impl PoseBook {
         if line.name != "level" {
             return false;
         }
+        self.level_command(client, &line.arguments, world);
+        true
+    }
+
+    /// The `/level` command, given the words after its name: see [`PoseBook::handle_command`].
+    pub fn level_command(&mut self, client: ClientId, arguments: &[&str], world: &mut ServerWorld) {
         let here = self.level_of(client);
         let name_of = |world: &ServerWorld, level: LevelIndex| {
             world
@@ -123,7 +129,7 @@ impl PoseBook {
                 .level_id(level)
                 .map_or_else(|| level.to_string(), ToString::to_string)
         };
-        match line.arguments[..] {
+        match arguments {
             [] => {
                 let text = format!("you are in {}", name_of(world, here));
                 world.reply(client, &text);
@@ -156,7 +162,6 @@ impl PoseBook {
             },
             _ => world.reply(client, "usage: /level, /level list, /level go NAME"),
         }
-        true
     }
 
     pub fn client_left(&mut self, client: ClientId) {

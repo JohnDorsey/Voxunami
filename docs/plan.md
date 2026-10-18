@@ -55,7 +55,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 24 (planned) Property bags on block definitions, with tags; `emission`, `flammability` and `passable` leave the engine (revision 2).
 - 23 (in progress) The registrar and events; Cave's light, fire and movement become plugins (revision 1). Specified in
   `plugin-api-spec.md` (steps 23a to 23e). Step 1, done: golden sessions for the three games that lock the recorded stream and the
-  saved world bit for bit, on Windows and Linux. Steps 23a (grid addressing) and 23b (the registrar, in the new `plugin_host` crate) are done. Next: 23c, convert 2048 then Eels.
+  saved world bit for bit, on Windows and Linux. Steps 23a (grid addressing), 23b (the registrar, in the new `plugin_host` crate) and 23c (2048 and Eels converted) are done. Next: 23d, Cave one plugin at a time.
 - 22 Multiscale light cells of any width (1 to 32), a hook for the client's view, four odd-width schemes benchmarked. **Done (a spike).**
 - 21 Multiscale light schemes (32/16/8/4 levels, cells to 4/8/16/32) and per-scale weights, benchmarked. **Done (a spike).**
 - 20 Cave's sky is dark until there is sky light, and the window's own commands start with a period. **Done.**
