@@ -1,15 +1,18 @@
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use namespaced_id::NamespacedId;
 use protocol::ClientId;
 use voxel_grid::ChannelIndex;
 use world_storage::Section;
 
+use crate::command::{Arguments, CommandSpec};
 use crate::context::{Context, MindContext};
 use crate::event::Verdict;
-use crate::spec::{CommandSpec, SaveScope, SystemSpec};
+use crate::spec::{SaveScope, SystemSpec};
 
 pub(crate) enum Runner {
     Normal(Box<dyn FnMut(&mut Context<'_>) + Send>),
@@ -34,11 +37,14 @@ pub(crate) struct HandlerEntry {
     pub run: RefCell<HandlerFn>,
 }
 
-pub(crate) type MessageFn = Box<dyn FnMut(&mut Context<'_>, ClientId, &[u8]) + Send>;
-pub(crate) type CommandFn = Box<dyn FnMut(&mut Context<'_>, ClientId, &[&str]) + Send>;
+/// Decodes a payload and hands it to the handler; false when the payload does not decode.
+pub(crate) type MessageFn = Box<dyn FnMut(&mut Context<'_>, ClientId, &[u8]) -> bool + Send>;
+pub(crate) type CommandFn = Box<dyn FnMut(&mut Context<'_>, ClientId, &Arguments<'_>) + Send>;
 
+/// A declared message kind: who handles it (nobody, when the plugin only sends it) and how to test its codec.
 pub(crate) struct MessageEntry {
-    pub run: RefCell<MessageFn>,
+    pub run: Option<RefCell<MessageFn>>,
+    pub check: fn() -> Result<(), String>,
 }
 
 pub(crate) struct CommandEntry {
@@ -59,6 +65,8 @@ pub(crate) struct Registry {
     /// The handlers of each event kind, in the order they run.
     pub handlers: BTreeMap<(TypeId, HandlerKind), Vec<HandlerEntry>>,
     pub messages: BTreeMap<NamespacedId, MessageEntry>,
+    /// How many payloads of handled kinds did not decode and were ignored.
+    pub malformed_messages: Arc<AtomicU64>,
     pub commands: BTreeMap<String, CommandEntry>,
     pub saves: Vec<SaveEntry>,
     /// The channels some handler asked to hear of.

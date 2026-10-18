@@ -2,12 +2,14 @@ use std::any::TypeId;
 use std::cell::RefCell;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use namespaced_id::NamespacedId;
-use protocol::ClientId;
+use protocol::{ClientId, Message, check_message};
 use voxel_grid::ChannelIndex;
 use world_storage::{Section, WorldData};
 
+use crate::command::{Arguments, CommandSpec};
 use crate::context::{Context, MindContext};
 use crate::error::RegistrationError;
 use crate::event::{ChannelsChanged, Event, PlayerJoined, PlayerLeft, Verdict};
@@ -15,7 +17,7 @@ use crate::order::{Node, order, reachable};
 use crate::registry::{
     CommandEntry, HandlerEntry, HandlerKind, MessageEntry, Registry, Runner, SaveEntry, SystemEntry,
 };
-use crate::spec::{CommandSpec, HandlerSpec, Phase, SaveScope, SystemSpec};
+use crate::spec::{HandlerSpec, Phase, SaveScope, SystemSpec};
 
 /// A unit of a game's server: what it adds to the rules, and nothing it should not touch. In-tree
 /// Rust today; the same shape is what a mod loader will fill in.
@@ -218,17 +220,36 @@ impl<'a> Registrar<'a> {
         });
     }
 
-    /// The handler of a client-to-server message kind. A kind has one handler. A message of a kind
-    /// nobody handles is ignored.
-    pub fn message(
+    /// The handler of a client-to-server message. A kind has one handler, and it is declared by this
+    /// call (see [`Registrar::declares_message`]). A payload that does not decode is ignored, and
+    /// counted; a message of a kind nobody handles is ignored.
+    pub fn message<M: Message>(
         &mut self,
-        kind: NamespacedId,
-        run: impl FnMut(&mut Context<'_>, ClientId, &[u8]) + Send + 'static,
+        mut run: impl FnMut(&mut Context<'_>, ClientId, M) + Send + 'static,
     ) {
+        self.declare::<M>(Some(RefCell::new(Box::new(
+            move |context, client, payload| match M::decode(payload) {
+                Ok(message) => {
+                    run(context, client, message);
+                    true
+                }
+                Err(_) => false,
+            },
+        ))));
+    }
+
+    /// Declares a message kind this plugin only sends. Every message kind is declared once, so that
+    /// [`PluginHost::check_messages`](crate::PluginHost::check_messages) tests its codec.
+    pub fn declares_message<M: Message>(&mut self) {
+        self.declare::<M>(None);
+    }
+
+    fn declare<M: Message>(&mut self, run: Option<RefCell<crate::registry::MessageFn>>) {
         let entry = MessageEntry {
-            run: RefCell::new(Box::new(run)),
+            run,
+            check: check_message::<M>,
         };
-        match self.builder.messages.entry(kind) {
+        match self.builder.messages.entry(M::kind()) {
             Entry::Occupied(taken) => {
                 let kind = taken.key().clone();
                 self.builder
@@ -241,13 +262,14 @@ impl<'a> Registrar<'a> {
         }
     }
 
-    /// A server command. The handler is given the arguments after the name.
+    /// A server command. The host checks a call against the spec's arguments and answers a malformed
+    /// one itself; the handler is given the checked arguments. `help` is the host's own command.
     pub fn command(
         &mut self,
         spec: CommandSpec,
-        run: impl FnMut(&mut Context<'_>, ClientId, &[&str]) + Send + 'static,
+        run: impl FnMut(&mut Context<'_>, ClientId, &Arguments<'_>) + Send + 'static,
     ) {
-        if self.builder.commands.contains_key(spec.name) {
+        if spec.name == crate::host::HELP_COMMAND || self.builder.commands.contains_key(spec.name) {
             self.builder
                 .errors
                 .push(RegistrationError::DuplicateCommand(spec.name.to_owned()));
@@ -505,6 +527,7 @@ pub(crate) fn finish(builder: Builder) -> Result<Registry, RegistrationError> {
         run_order,
         handlers: ordered_handlers,
         messages,
+        malformed_messages: Arc::default(),
         commands,
         saves,
         watched,

@@ -5,7 +5,8 @@ use game_shell::host::build_server;
 use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
 use game_shell::{GameContent, GameDefinition, KeyCode};
-use player_presence::PlayerPose;
+use player_presence::{PlayerPose, PoseReport};
+use protocol::Message;
 use server::Server;
 use transport::Connection;
 use transport::loopback::LoopbackConnector;
@@ -410,10 +411,7 @@ fn a_player_cannot_move_their_camera_by_saying_where_it_is() {
         yaw: 1.0,
         pitch: 0.3,
     };
-    player.send_game_message(
-        player_presence::pose_kind(),
-        player_presence::encode_pose(&far),
-    );
+    player.send_game_message(PoseReport::kind(), PoseReport(far).encode());
     rig.tick(&mut [&mut player], 3);
     // Nothing but the eel's own movement (the countdown has the eel still).
     assert_eq!(voxels_of(&player.camera), before);

@@ -14,12 +14,10 @@ use world_view::{ScaledLight, ViewChannels};
 
 use crate::content::{CaveContent, game_id};
 use crate::logic::REACH;
-use crate::messages::{
-    MoveRequest, SetBlock, decode_light_scheme, encode_move_request, encode_set_block,
-    encode_spawn, light_scheme_kind, move_input_kind, set_block_kind, spawn_kind,
-};
+use crate::messages::{LightSchemeChanged, MoveRequest, SetBlock, Spawn};
 use crate::multiscale_light::{LEVEL_FORMAT, LightScheme, full_brightness};
 use crate::plugins::cave_plugins;
+use protocol::Message;
 
 /// The blocks a player can place, in the order the number keys choose them.
 pub const PLACEABLE_BLOCKS: [&str; 6] = [
@@ -68,7 +66,7 @@ pub fn request_block_with_state<C: Connection>(
         block: block.parse().expect("block names are valid identifiers"),
         state,
     };
-    session.send_game_message(set_block_kind(), encode_set_block(&request));
+    session.send_game_message(SetBlock::kind(), request.encode());
 }
 
 /// Breaks the block under the crosshair, if there is one.
@@ -147,7 +145,7 @@ Window commands (start with a period): .ambient 0-255 sets how bright a face is 
             yaw: 0.0,
             pitch: 0.0,
         };
-        Some((spawn_kind(), encode_spawn(&pose)))
+        Some((Spawn::kind(), Spawn(pose).encode()))
     }
 
     fn movement_message(
@@ -168,7 +166,7 @@ Window commands (start with a period): .ambient 0-255 sets how bright a face is 
             },
             pitch: camera.pitch,
         };
-        Some((move_input_kind(), encode_move_request(&request)))
+        Some((MoveRequest::kind(), request.encode()))
     }
 
     fn new_content() -> CaveContent {
@@ -202,8 +200,8 @@ Window commands (start with a period): .ambient 0-255 sets how bright a face is 
 
     fn handle_game_message(state: &mut CaveClientState, kind: &NamespacedId, payload: &[u8]) {
         // A message this client cannot read leaves the light as it was drawn.
-        if *kind == light_scheme_kind()
-            && let Ok(scheme) = decode_light_scheme(payload)
+        if *kind == LightSchemeChanged::kind()
+            && let Ok(LightSchemeChanged(scheme)) = LightSchemeChanged::decode(payload)
         {
             state.light_scheme = scheme;
         }

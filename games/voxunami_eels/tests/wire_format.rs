@@ -1,8 +1,8 @@
 //! The bytes of the messages of Eels, pinned: converting them to declared messages must not move one.
 
-use protocol::ClientId;
+use protocol::{ClientId, Message};
 use voxunami_eels::eel::Steer;
-use voxunami_eels::messages::{Player, Standings, encode_standings, encode_steer};
+use voxunami_eels::messages::{Player, Standings};
 use voxunami_eels::round::Phase;
 
 #[test]
@@ -41,29 +41,26 @@ fn the_messages_of_eels_have_their_pinned_bytes() {
     ];
     let mut pins: Vec<(String, Vec<u8>, &str)> = steers
         .iter()
-        .map(|&(steer, pinned)| (format!("{steer:?}"), encode_steer(steer), pinned))
+        .map(|&(steer, pinned)| (format!("{steer:?}"), steer.encode(), pinned))
         .collect();
     pins.push((
         "a finished round".into(),
-        encode_standings(&over),
+        over.encode(),
         "0346030201000000000103090000000200ac02",
     ));
     pins.push((
         "a countdown".into(),
-        encode_standings(&countdown),
+        countdown.encode(),
         "0190030201000000000103090000000200ac02",
     ));
-    pins.push((
-        "no one".into(),
-        encode_standings(&Standings::default()),
-        "0000",
-    ));
+    pins.push(("no one".into(), Standings::default().encode(), "0000"));
     pins.push((
         "a running round".into(),
-        encode_standings(&Standings {
+        Standings {
             phase: Phase::Running,
             players: Vec::new(),
-        }),
+        }
+        .encode(),
         "0200",
     ));
     let wrong: Vec<String> = pins

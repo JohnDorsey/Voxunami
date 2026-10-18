@@ -7,35 +7,44 @@
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
 use physics::MoveInput;
-use player_presence::{PlayerPose, decode_pose, encode_pose};
+use player_presence::{PlayerPose, PoseReport};
+use protocol::Message;
 use voxel_space::VoxelCoordinate;
 
 use crate::multiscale_light::LightScheme;
 
+fn kind(text: &str) -> NamespacedId {
+    text.parse().expect("constant identifier is valid")
+}
+
 /// Client to server: a player joins, at this pose. Only the first one from a player counts; after it
 /// the server says where the player is (see [`crate::movement`]).
-pub fn spawn_kind() -> NamespacedId {
-    "voxunami_cave:spawn_at"
-        .parse()
-        .expect("constant identifier is valid")
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spawn(pub PlayerPose);
+
+impl Message for Spawn {
+    fn kind() -> NamespacedId {
+        kind("voxunami_cave:spawn_at")
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        PoseReport(self.0).encode()
+    }
+
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        PoseReport::decode(payload).map(|PoseReport(pose)| Self(pose))
+    }
+
+    fn samples() -> Vec<Self> {
+        PoseReport::samples()
+            .into_iter()
+            .map(|PoseReport(pose)| Self(pose))
+            .collect()
+    }
 }
 
-pub fn encode_spawn(pose: &PlayerPose) -> Vec<u8> {
-    encode_pose(pose)
-}
-
-pub fn decode_spawn(payload: &[u8]) -> Result<PlayerPose, DecodeError> {
-    decode_pose(payload)
-}
-
-/// Client to server: what the player asks of their body, and which way they face.
-pub fn move_input_kind() -> NamespacedId {
-    "voxunami_cave:move_input"
-        .parse()
-        .expect("constant identifier is valid")
-}
-
-/// What a player asks of their body (the keys held), and which way they look up or down.
+/// What a player asks of their body (the keys held), and which way they look up or down. Client to
+/// server.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MoveRequest {
     pub input: MoveInput,
@@ -46,60 +55,79 @@ pub struct MoveRequest {
 const JUMP_FLAG: u8 = 1;
 const SPRINT_FLAG: u8 = 2;
 
-pub fn encode_move_request(request: &MoveRequest) -> Vec<u8> {
-    let input = &request.input;
-    let mut writer = ByteWriter::new();
-    for direction in [input.forward, input.strafe, input.vertical] {
-        writer.write_u8(direction as u8);
+impl Message for MoveRequest {
+    fn kind() -> NamespacedId {
+        kind("voxunami_cave:move_input")
     }
-    writer.write_u8(
-        if input.jump { JUMP_FLAG } else { 0 } | if input.sprint { SPRINT_FLAG } else { 0 },
-    );
-    writer.write_u32(input.yaw.to_bits());
-    writer.write_u32(request.pitch.to_bits());
-    writer.into_bytes()
-}
 
-pub fn decode_move_request(payload: &[u8]) -> Result<MoveRequest, DecodeError> {
-    let mut reader = ByteReader::new(payload);
-    let mut directions = [0i8; 3];
-    for direction in &mut directions {
-        *direction = reader.read_u8()? as i8;
-        if !(-1..=1).contains(direction) {
-            return Err(DecodeError::Invalid("a direction is not -1, 0 or 1"));
+    fn encode(&self) -> Vec<u8> {
+        let input = &self.input;
+        let mut writer = ByteWriter::new();
+        for direction in [input.forward, input.strafe, input.vertical] {
+            writer.write_u8(direction as u8);
         }
+        writer.write_u8(
+            if input.jump { JUMP_FLAG } else { 0 } | if input.sprint { SPRINT_FLAG } else { 0 },
+        );
+        writer.write_u32(input.yaw.to_bits());
+        writer.write_u32(self.pitch.to_bits());
+        writer.into_bytes()
     }
-    let flags = reader.read_u8()?;
-    if flags & !(JUMP_FLAG | SPRINT_FLAG) != 0 {
-        return Err(DecodeError::Invalid("unknown movement flags"));
+
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        let mut reader = ByteReader::new(payload);
+        let mut directions = [0i8; 3];
+        for direction in &mut directions {
+            *direction = reader.read_u8()? as i8;
+            if !(-1..=1).contains(direction) {
+                return Err(DecodeError::Invalid("a direction is not -1, 0 or 1"));
+            }
+        }
+        let flags = reader.read_u8()?;
+        if flags & !(JUMP_FLAG | SPRINT_FLAG) != 0 {
+            return Err(DecodeError::Invalid("unknown movement flags"));
+        }
+        let yaw = f32::from_bits(reader.read_u32()?);
+        let pitch = f32::from_bits(reader.read_u32()?);
+        if !yaw.is_finite() || !pitch.is_finite() {
+            return Err(DecodeError::Invalid("an angle is not a number"));
+        }
+        reader.finish()?;
+        Ok(Self {
+            input: MoveInput {
+                forward: directions[0],
+                strafe: directions[1],
+                vertical: directions[2],
+                jump: flags & JUMP_FLAG != 0,
+                sprint: flags & SPRINT_FLAG != 0,
+                yaw,
+            },
+            pitch,
+        })
     }
-    let yaw = f32::from_bits(reader.read_u32()?);
-    let pitch = f32::from_bits(reader.read_u32()?);
-    if !yaw.is_finite() || !pitch.is_finite() {
-        return Err(DecodeError::Invalid("an angle is not a number"));
+
+    fn samples() -> Vec<Self> {
+        let mut samples = Vec::new();
+        for direction in -1..=1 {
+            for (jump, sprint) in [(false, false), (true, false), (false, true), (true, true)] {
+                samples.push(Self {
+                    input: MoveInput {
+                        forward: direction,
+                        strafe: -direction,
+                        vertical: 1 - direction.abs(),
+                        jump,
+                        sprint,
+                        yaw: -2.5,
+                    },
+                    pitch: 0.75,
+                });
+            }
+        }
+        samples
     }
-    reader.finish()?;
-    Ok(MoveRequest {
-        input: MoveInput {
-            forward: directions[0],
-            strafe: directions[1],
-            vertical: directions[2],
-            jump: flags & JUMP_FLAG != 0,
-            sprint: flags & SPRINT_FLAG != 0,
-            yaw,
-        },
-        pitch,
-    })
 }
 
-/// Client to server: replace one voxel with a block.
-pub fn set_block_kind() -> NamespacedId {
-    "voxunami_cave:set_block"
-        .parse()
-        .expect("constant identifier is valid")
-}
-
-/// A request to put `block`, in `state`, at `at`.
+/// Client to server: replace one voxel with a block. A request to put `block`, in `state`, at `at`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SetBlock {
     pub at: VoxelCoordinate,
@@ -107,72 +135,113 @@ pub struct SetBlock {
     pub state: u32,
 }
 
-pub fn encode_set_block(request: &SetBlock) -> Vec<u8> {
-    let mut writer = ByteWriter::new();
-    for component in [request.at.x(), request.at.y(), request.at.z()] {
-        writer.write_signed_varint(component);
+impl Message for SetBlock {
+    fn kind() -> NamespacedId {
+        kind("voxunami_cave:set_block")
     }
-    writer.write_identifier(&request.block);
-    writer.write_varint(u64::from(request.state));
-    writer.into_bytes()
+
+    fn encode(&self) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        for component in [self.at.x(), self.at.y(), self.at.z()] {
+            writer.write_signed_varint(component);
+        }
+        writer.write_identifier(&self.block);
+        writer.write_varint(u64::from(self.state));
+        writer.into_bytes()
+    }
+
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        let mut reader = ByteReader::new(payload);
+        let at = VoxelCoordinate::try_new(
+            reader.read_signed_varint()?,
+            reader.read_signed_varint()?,
+            reader.read_signed_varint()?,
+        )
+        .map_err(|_| DecodeError::Invalid("a voxel coordinate is out of range"))?;
+        let block = reader.read_identifier()?;
+        let state = u32::try_from(reader.read_varint()?)
+            .map_err(|_| DecodeError::Invalid("a block state is out of range"))?;
+        reader.finish()?;
+        Ok(Self { at, block, state })
+    }
+
+    fn samples() -> Vec<Self> {
+        let lamp: NamespacedId = kind("base_blocks:lamp");
+        vec![
+            Self {
+                at: VoxelCoordinate::new(-40, 200, 5),
+                block: lamp.clone(),
+                state: 3,
+            },
+            Self {
+                at: VoxelCoordinate::ORIGIN,
+                block: kind("a:b"),
+                state: 0,
+            },
+            Self {
+                at: VoxelCoordinate::new(-5, 100, 7),
+                block: lamp,
+                state: u32::MAX,
+            },
+        ]
+    }
 }
 
-pub fn decode_set_block(payload: &[u8]) -> Result<SetBlock, DecodeError> {
-    let mut reader = ByteReader::new(payload);
-    let at = VoxelCoordinate::try_new(
-        reader.read_signed_varint()?,
-        reader.read_signed_varint()?,
-        reader.read_signed_varint()?,
-    )
-    .map_err(|_| DecodeError::Invalid("a voxel coordinate is out of range"))?;
-    let block = reader.read_identifier()?;
-    let state = u32::try_from(reader.read_varint()?)
-        .map_err(|_| DecodeError::Invalid("a block state is out of range"))?;
-    reader.finish()?;
-    Ok(SetBlock { at, block, state })
-}
+/// Server to client: how the world's light is cut into cells, which the view needs to draw it, or
+/// none for a world with the classic light. Sent to a player who joins and to everyone when it
+/// changes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LightSchemeChanged(pub Option<LightScheme>);
 
-/// Server to client: how the world's light is cut into cells, which the view needs to draw it. Sent
-/// to a player who joins and to everyone when it changes.
-pub fn light_scheme_kind() -> NamespacedId {
-    "voxunami_cave:light_scheme"
-        .parse()
-        .expect("constant identifier is valid")
-}
+impl Message for LightSchemeChanged {
+    fn kind() -> NamespacedId {
+        kind("voxunami_cave:light_scheme")
+    }
 
-/// The scheme of a world's multiscale light, or none for a world with the classic light.
-pub fn encode_light_scheme(scheme: Option<LightScheme>) -> Vec<u8> {
-    let mut writer = ByteWriter::new();
-    match scheme {
-        None => writer.write_u8(0),
-        Some(scheme) => {
-            writer.write_u8(scheme.scales() as u8);
-            writer.write_u8(scheme.code());
-            for &width in scheme.widths() {
-                writer.write_u8(width as u8);
+    fn encode(&self) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        match self.0 {
+            None => writer.write_u8(0),
+            Some(scheme) => {
+                writer.write_u8(scheme.scales() as u8);
+                writer.write_u8(scheme.code());
+                for &width in scheme.widths() {
+                    writer.write_u8(width as u8);
+                }
             }
         }
+        writer.into_bytes()
     }
-    writer.into_bytes()
-}
 
-pub fn decode_light_scheme(payload: &[u8]) -> Result<Option<LightScheme>, DecodeError> {
-    let mut reader = ByteReader::new(payload);
-    let scales = usize::from(reader.read_u8()?);
-    if scales == 0 {
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        let mut reader = ByteReader::new(payload);
+        let scales = usize::from(reader.read_u8()?);
+        if scales == 0 {
+            reader.finish()?;
+            return Ok(Self(None));
+        }
+        let code = reader.read_u8()?;
+        let widths: Vec<u16> = reader
+            .read_raw(scales)?
+            .iter()
+            .map(|&width| u16::from(width))
+            .collect();
         reader.finish()?;
-        return Ok(None);
+        LightScheme::new(32u32.checked_shr(u32::from(code)).unwrap_or(0), &widths)
+            .map(|scheme| Self(Some(scheme)))
+            .ok_or(DecodeError::Invalid("the light scheme is not one"))
     }
-    let code = reader.read_u8()?;
-    let widths: Vec<u16> = reader
-        .read_raw(scales)?
-        .iter()
-        .map(|&width| u16::from(width))
-        .collect();
-    reader.finish()?;
-    LightScheme::new(32u32.checked_shr(u32::from(code)).unwrap_or(0), &widths)
-        .map(Some)
-        .ok_or(DecodeError::Invalid("the light scheme is not one"))
+
+    fn samples() -> Vec<Self> {
+        vec![
+            Self(None),
+            Self(Some(LightScheme::LEVELS_32)),
+            Self(Some(LightScheme::LEVELS_16)),
+            Self(Some(LightScheme::LEVELS_8)),
+            Self(Some(LightScheme::LEVELS_4)),
+            Self(Some(LightScheme::new(8, &[1, 3, 7, 17]).expect("a scheme"))),
+        ]
+    }
 }
 
 #[cfg(test)]
@@ -196,37 +265,43 @@ mod tests {
                     },
                     pitch: 0.75,
                 };
-                assert_eq!(
-                    decode_move_request(&encode_move_request(&request)),
-                    Ok(request)
-                );
+                assert_eq!(MoveRequest::decode(&request.encode()), Ok(request));
             }
         }
-        let good = encode_move_request(&MoveRequest {
+        let good = (MoveRequest {
             input: MoveInput::default(),
             pitch: 0.0,
-        });
+        })
+        .encode();
         for length in 0..good.len() {
-            assert!(decode_move_request(&good[..length]).is_err(), "{length}");
+            assert!(MoveRequest::decode(&good[..length]).is_err(), "{length}");
         }
         let mut trailing = good.clone();
         trailing.push(0);
-        assert!(decode_move_request(&trailing).is_err());
+        assert!(MoveRequest::decode(&trailing).is_err());
         let mut bad_direction = good.clone();
         bad_direction[1] = 2;
-        assert!(decode_move_request(&bad_direction).is_err());
+        assert!(MoveRequest::decode(&bad_direction).is_err());
         let mut bad_flags = good.clone();
         bad_flags[3] = 4;
-        assert!(decode_move_request(&bad_flags).is_err());
+        assert!(MoveRequest::decode(&bad_flags).is_err());
         for angle_at in [4, 8] {
             let mut not_a_number = good.clone();
             not_a_number[angle_at..angle_at + 4].copy_from_slice(&f32::NAN.to_bits().to_le_bytes());
-            assert!(decode_move_request(&not_a_number).is_err(), "{angle_at}");
+            assert!(MoveRequest::decode(&not_a_number).is_err(), "{angle_at}");
             let mut infinite = good.clone();
             infinite[angle_at..angle_at + 4]
                 .copy_from_slice(&f32::INFINITY.to_bits().to_le_bytes());
-            assert!(decode_move_request(&infinite).is_err(), "{angle_at}");
+            assert!(MoveRequest::decode(&infinite).is_err(), "{angle_at}");
         }
+    }
+
+    #[test]
+    fn the_declared_messages_pass_the_generated_check() {
+        assert_eq!(protocol::check_message::<Spawn>(), Ok(()));
+        assert_eq!(protocol::check_message::<MoveRequest>(), Ok(()));
+        assert_eq!(protocol::check_message::<SetBlock>(), Ok(()));
+        assert_eq!(protocol::check_message::<LightSchemeChanged>(), Ok(()));
     }
 
     #[test]
@@ -240,18 +315,24 @@ mod tests {
         ];
         for scheme in schemes {
             assert_eq!(
-                decode_light_scheme(&encode_light_scheme(scheme)),
-                Ok(scheme)
+                LightSchemeChanged::decode(&LightSchemeChanged(scheme).encode()),
+                Ok(LightSchemeChanged(scheme))
             );
         }
-        let good = encode_light_scheme(Some(LightScheme::new(8, &[2, 5]).unwrap()));
+        let good = LightSchemeChanged(Some(LightScheme::new(8, &[2, 5]).unwrap())).encode();
         for length in 0..good.len() {
-            assert!(decode_light_scheme(&good[..length]).is_err(), "{length}");
+            assert!(
+                LightSchemeChanged::decode(&good[..length]).is_err(),
+                "{length}"
+            );
         }
         let mut trailing = good.clone();
         trailing.push(0);
-        assert!(decode_light_scheme(&trailing).is_err());
-        assert!(decode_light_scheme(&[0, 0]).is_err(), "none, with more");
+        assert!(LightSchemeChanged::decode(&trailing).is_err());
+        assert!(
+            LightSchemeChanged::decode(&[0, 0]).is_err(),
+            "none, with more"
+        );
         // Not a scheme: a level code that does not exist, widths out of order, a width past a brick.
         for bad in [
             vec![2, 4, 1, 2],
@@ -260,7 +341,7 @@ mod tests {
             vec![8, 2, 1, 2, 3, 4, 5, 6, 7, 8],
             vec![2, 255, 1, 2],
         ] {
-            assert!(decode_light_scheme(&bad).is_err(), "{bad:?}");
+            assert!(LightSchemeChanged::decode(&bad).is_err(), "{bad:?}");
         }
     }
 
@@ -272,8 +353,8 @@ mod tests {
             yaw: 0.5,
             pitch: -0.25,
         };
-        assert_eq!(decode_spawn(&encode_spawn(&pose)), Ok(pose));
-        assert!(decode_spawn(&[1, 2, 3]).is_err());
+        assert_eq!(Spawn::decode(&Spawn(pose).encode()), Ok(Spawn(pose)));
+        assert!(Spawn::decode(&[1, 2, 3]).is_err());
     }
 
     #[test]
@@ -283,7 +364,7 @@ mod tests {
             block: "base_blocks:stone".parse().unwrap(),
             state: 5,
         };
-        assert_eq!(decode_set_block(&encode_set_block(&request)), Ok(request));
+        assert_eq!(SetBlock::decode(&request.encode()), Ok(request));
     }
 
     #[test]
@@ -295,7 +376,7 @@ mod tests {
         };
         for state in [0, 1, 127, 128, 70_000, u32::MAX] {
             let request = request(state);
-            assert_eq!(decode_set_block(&encode_set_block(&request)), Ok(request));
+            assert_eq!(SetBlock::decode(&request.encode()), Ok(request));
         }
         let mut oversized = ByteWriter::new();
         for _ in 0..3 {
@@ -303,30 +384,31 @@ mod tests {
         }
         oversized.write_identifier(&"a:b".parse().unwrap());
         oversized.write_varint(u64::from(u32::MAX) + 1);
-        assert!(decode_set_block(&oversized.into_bytes()).is_err());
+        assert!(SetBlock::decode(&oversized.into_bytes()).is_err());
     }
 
     #[test]
     fn damaged_requests_are_errors_not_panics() {
-        let good = encode_set_block(&SetBlock {
+        let good = (SetBlock {
             at: VoxelCoordinate::ORIGIN,
             block: "a:b".parse().unwrap(),
             state: 300,
-        });
+        })
+        .encode();
         for length in 0..good.len() {
-            assert!(decode_set_block(&good[..length]).is_err(), "{length}");
+            assert!(SetBlock::decode(&good[..length]).is_err(), "{length}");
         }
         let mut trailing = good;
         trailing.push(0);
-        assert!(decode_set_block(&trailing).is_err());
+        assert!(SetBlock::decode(&trailing).is_err());
     }
 
     proptest! {
         #[test]
         fn decoding_arbitrary_bytes_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..80)) {
-            let _ = decode_set_block(&bytes);
-            let _ = decode_move_request(&bytes);
-            let _ = decode_spawn(&bytes);
+            let _ = SetBlock::decode(&bytes);
+            let _ = MoveRequest::decode(&bytes);
+            let _ = Spawn::decode(&bytes);
         }
     }
 }

@@ -216,9 +216,11 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
     }
 }
 
-/// Stream hash, stream length, saved-world hash.
+/// Stream hash, stream length, saved-world hash. The stream changed once in Phase 25c, and only in
+/// the reply to the unknown command `/nonsense`, which now lists `/help` and the commands' arguments
+/// (49 bytes longer; checked by restoring the old text, which gave the old hash); the saved world did not.
 const PINNED: (u64, usize, u64) = (
-    13_671_793_627_762_328_938,
-    7_179_705,
+    18_071_979_313_132_942_964,
+    7_179_754,
     12_857_685_528_707_532_367,
 );

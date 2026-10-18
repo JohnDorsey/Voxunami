@@ -1,9 +1,11 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use namespaced_id::NamespacedId;
-use plugin_host::{CommandSpec, HandlerSpec, Phase, PlayerLeft, Plugin, Registrar, SystemSpec};
+use plugin_host::{
+    Argument, CommandSpec, HandlerSpec, Phase, PlayerLeft, Plugin, Registrar, SystemSpec,
+};
 
-use crate::messages::pose_kind;
+use crate::messages::{LevelChange, Players, PoseReport};
 use crate::pose_book::PoseBook;
 
 /// The record of where players are, shared by the plugins of a game that need it (a rule that asks
@@ -52,19 +54,21 @@ impl Plugin for PlayersPlugin {
     fn register(&self, registrar: &mut Registrar<'_>) {
         if self.accept_reported_poses {
             let book = Arc::clone(&self.book);
-            registrar.message(pose_kind(), move |_, client, payload| {
-                lock(&book).handle_message(client, &pose_kind(), payload);
+            registrar.message(move |_, client, PoseReport(pose)| {
+                lock(&book).set_pose(client, pose);
             });
         }
+        registrar.declares_message::<Players>();
+        registrar.declares_message::<LevelChange>();
         let book = Arc::clone(&self.book);
         registrar.command(
-            CommandSpec {
-                name: "level",
-                usage: "/level",
-                summary: "which level you are in; /level list; /level go NAME",
-            },
+            CommandSpec::new(
+                "level",
+                "which level you are in; /level list; /level go NAME",
+            )
+            .argument(Argument::rest("subcommand").optional()),
             move |context, client, arguments| {
-                lock(&book).level_command(client, arguments, context.world());
+                lock(&book).level_command(client, arguments.rest(0), context.world());
             },
         );
         let book = Arc::clone(&self.book);

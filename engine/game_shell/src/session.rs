@@ -8,11 +8,8 @@ use std::time::{Duration, Instant};
 use block_models::BlockTable;
 use client::{Client, ClientError, ClientEvent, Handshake, HandshakeProgress};
 use namespaced_id::NamespacedId;
-use player_presence::{
-    PlayerPose, PlayerState, decode_level_change, decode_players, encode_pose, level_kind,
-    players_kind, pose_kind,
-};
-use protocol::ClientId;
+use player_presence::{LevelChange, PlayerPose, PlayerState, Players, PoseReport};
+use protocol::{ClientId, Message};
 use renderer::Camera;
 use transport::Connection;
 use voxel_space::{BrickBox, BrickCoordinate, LevelIndex, WorldPosition};
@@ -190,18 +187,18 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             match event {
                 ClientEvent::BrickChanged { brick, .. } => self.mesher.brick_changed(brick),
                 ClientEvent::CommandReply { text } => self.command_replies.push(text),
-                ClientEvent::GameMessage { kind, payload } if kind == level_kind() => {
+                ClientEvent::GameMessage { kind, payload } if kind == LevelChange::kind() => {
                     // The server moved the player. A recording shows the level by what it watches.
                     if self.mode == Mode::Playing
-                        && let Ok(id) = decode_level_change(&payload)
+                        && let Ok(LevelChange(id)) = LevelChange::decode(&payload)
                         && let Some(level) = self.client.world().world().level_index(&id)
                     {
                         self.change_level(level);
                     }
                 }
-                ClientEvent::GameMessage { kind, payload } if kind == players_kind() => {
+                ClientEvent::GameMessage { kind, payload } if kind == Players::kind() => {
                     // A message this client cannot read is dropped; the next snapshot replaces it.
-                    if let Ok(players) = decode_players(&payload) {
+                    if let Ok(Players(players)) = Players::decode(&payload) {
                         self.players = players.into_iter().collect();
                     }
                 }
@@ -369,7 +366,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         if self.last_pose_sent != Some(pose) {
             let _ = self
                 .client
-                .send_game_message(pose_kind(), encode_pose(&pose));
+                .send_game_message(PoseReport::kind(), PoseReport(pose).encode());
             self.last_pose_sent = Some(pose);
         }
     }

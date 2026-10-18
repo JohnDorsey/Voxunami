@@ -2,14 +2,16 @@
 //! `world_storage::test_support`.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
 use plugin_host::{
-    CASCADE_LIMIT, CommandSpec, Event, HandlerSpec, Phase, PlayerJoined, PlayerLeft, Plugin,
-    PluginHost, Registrar, RegistrationError, SaveScope, SystemSpec, Verdict,
+    Argument, CASCADE_LIMIT, CommandSpec, Event, HandlerSpec, Phase, PlayerJoined, PlayerLeft,
+    Plugin, PluginHost, Registrar, RegistrationError, SaveScope, SystemSpec, Verdict,
 };
-use protocol::{ClientMessage, PROTOCOL_VERSION, ServerMessage};
+use protocol::{ClientMessage, Message, PROTOCOL_VERSION, ServerMessage};
 use server::{GameLogic, GridView, Server, ServerConfig};
 use transport::Connection;
 use transport::loopback::{LoopbackConnection, loopback_listener};
@@ -17,6 +19,99 @@ use voxel_grid::ChannelIndex;
 use voxel_space::{GridId, VoxelCoordinate};
 use world_storage::Section;
 use world_storage::test_support::{Game, Plugin as FixturePlugin, id, sample_world};
+
+/// A message kind whose payload is any bytes at all.
+macro_rules! bytes_message {
+    ($name:ident, $kind:expr) => {
+        #[derive(Debug, PartialEq)]
+        struct $name(Vec<u8>);
+
+        impl Message for $name {
+            fn kind() -> NamespacedId {
+                id($kind)
+            }
+            fn encode(&self) -> Vec<u8> {
+                self.0.clone()
+            }
+            fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+                Ok(Self(payload.to_vec()))
+            }
+            fn samples() -> Vec<Self> {
+                vec![Self(vec![1, 2, 3])]
+            }
+        }
+    };
+}
+
+bytes_message!(Kind, "test:kind");
+bytes_message!(Hello, "test:hello");
+bytes_message!(Walk, "test:walk");
+
+/// A message that is exactly one number.
+#[derive(Debug, PartialEq)]
+struct Number(u32);
+
+impl Message for Number {
+    fn kind() -> NamespacedId {
+        id("test:number")
+    }
+    fn encode(&self) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        writer.write_u32(self.0);
+        writer.into_bytes()
+    }
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        let mut reader = ByteReader::new(payload);
+        let number = reader.read_u32()?;
+        reader.finish()?;
+        Ok(Self(number))
+    }
+    fn samples() -> Vec<Self> {
+        vec![Self(0), Self(u32::MAX)]
+    }
+}
+
+/// A message that is exactly one yes or no.
+#[derive(Debug, PartialEq)]
+struct Flag(bool);
+
+impl Message for Flag {
+    fn kind() -> NamespacedId {
+        id("test:flag")
+    }
+    fn encode(&self) -> Vec<u8> {
+        vec![u8::from(self.0)]
+    }
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        match payload {
+            [0] => Ok(Self(false)),
+            [1] => Ok(Self(true)),
+            _ => Err(DecodeError::Invalid("not a flag")),
+        }
+    }
+    fn samples() -> Vec<Self> {
+        vec![Self(false), Self(true)]
+    }
+}
+
+/// A message whose decoder takes whatever follows the number.
+#[derive(Debug, PartialEq)]
+struct Sloppy(u32);
+
+impl Message for Sloppy {
+    fn kind() -> NamespacedId {
+        id("test:sloppy")
+    }
+    fn encode(&self) -> Vec<u8> {
+        self.0.to_le_bytes().to_vec()
+    }
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        Ok(Self(ByteReader::new(payload).read_u32()?))
+    }
+    fn samples() -> Vec<Self> {
+        vec![Self(7)]
+    }
+}
 
 type Log = Arc<Mutex<Vec<String>>>;
 
@@ -82,6 +177,9 @@ struct Rig {
     server: Server,
     connector: transport::loopback::LoopbackConnector,
     block: ChannelIndex,
+    malformed: Arc<AtomicU64>,
+    declared: Vec<NamespacedId>,
+    checked: Result<(), Vec<String>>,
 }
 
 struct Client {
@@ -117,6 +215,11 @@ fn build(
     let block = layout.channel_index(&id("core:block")).unwrap();
     let temperature = layout.channel_index(&id("core:temperature")).unwrap();
     let host = PluginHost::new(make(block, temperature), &world)?;
+    let (malformed, declared, checked) = (
+        host.malformed_messages_counter(),
+        host.declared_messages(),
+        host.check_messages(),
+    );
     let (listener, connector) = loopback_listener();
     let server = Server::new(
         ServerConfig::new(id("test_game:game")),
@@ -130,6 +233,9 @@ fn build(
         server,
         connector,
         block,
+        malformed,
+        declared,
+        checked,
     })
 }
 
@@ -350,20 +456,13 @@ fn plugins_that_cannot_be_registered_are_refused_with_the_reason() {
         matches!(cycle, Some(RegistrationError::DependencyCycle(ref names)) if names.len() == 2)
     );
     // A message with two handlers, and a command registered twice.
-    let message = |registrar: &mut Registrar<'_>| registrar.message(id("test:kind"), |_, _, _| {});
+    let message = |registrar: &mut Registrar<'_>| registrar.message::<Kind>(|_, _, _| {});
     assert_eq!(
         registration_error(vec![plugin("test:a", message), plugin("test:b", message)]),
         Some(RegistrationError::DuplicateMessage(id("test:kind")))
     );
     let command = |registrar: &mut Registrar<'_>| {
-        registrar.command(
-            CommandSpec {
-                name: "go",
-                usage: "/go",
-                summary: "goes",
-            },
-            |_, _, _| {},
-        );
+        registrar.command(CommandSpec::new("go", "goes"), |_, _, _| {});
     };
     assert_eq!(
         registration_error(vec![plugin("test:a", command), plugin("test:b", command)]),
@@ -830,7 +929,7 @@ fn a_message_reaches_its_handler_with_the_client_and_the_payload_and_unknown_kin
         let log = Arc::clone(&log);
         vec![plugin("test:p", move |registrar| {
             let log = Arc::clone(&log);
-            registrar.message(id("test:hello"), move |_, client, payload| {
+            registrar.message(move |_, client, Hello(payload)| {
                 note(&log, format!("{client:?} {payload:?}"));
             });
         })]
@@ -859,24 +958,24 @@ fn a_command_gets_its_arguments_and_an_unknown_one_is_answered_with_the_usages()
         vec![plugin("test:p", move |registrar| {
             let log = Arc::clone(&log);
             registrar.command(
-                CommandSpec {
-                    name: "tp",
-                    usage: "/tp X Y Z",
-                    summary: "teleports",
-                },
+                CommandSpec::new("tp", "teleports")
+                    .argument(Argument::number("x"))
+                    .argument(Argument::number("y"))
+                    .argument(Argument::number("z")),
                 move |context, client, arguments| {
-                    note(&log, format!("tp {arguments:?}"));
+                    note(
+                        &log,
+                        format!(
+                            "tp {} {} {}",
+                            arguments.number(0),
+                            arguments.number(1),
+                            arguments.number(2)
+                        ),
+                    );
                     context.reply(client, "teleported");
                 },
             );
-            registrar.command(
-                CommandSpec {
-                    name: "fly",
-                    usage: "/fly",
-                    summary: "flies",
-                },
-                |_, _, _| {},
-            );
+            registrar.command(CommandSpec::new("fly", "flies"), |_, _, _| {});
         })]
     })
     .unwrap();
@@ -887,14 +986,14 @@ fn a_command_gets_its_arguments_and_an_unknown_one_is_answered_with_the_usages()
         });
     }
     rig.server.step();
-    assert_eq!(lines(&log), ["tp [\"1\", \"2\", \"3\"]"]);
+    assert_eq!(lines(&log), ["tp 1 2 3"]);
     assert_eq!(
         client.replies(),
         [
             "teleported",
-            "unknown command; try /fly, /tp X Y Z",
-            "unknown command; try /fly, /tp X Y Z",
-            "unknown command; try /fly, /tp X Y Z",
+            "unknown command; try /fly, /help [COMMAND], /tp X Y Z",
+            "unknown command; try /fly, /help [COMMAND], /tp X Y Z",
+            "unknown command; try /fly, /help [COMMAND], /tp X Y Z",
         ]
     );
 }
@@ -947,7 +1046,7 @@ fn what_a_mind_asks_for_goes_through_the_handler_a_players_message_would() {
         vec![plugin("test:p", move |registrar| {
             let handler_log = Arc::clone(&handler_log);
             // The handler is the one validated path: it writes the world, as a message from a client may.
-            registrar.message(id("test:walk"), move |context, client, payload| {
+            registrar.message(move |context, client, Walk(payload)| {
                 note(
                     &handler_log,
                     format!("walk {} for {}", payload[0], client.get()),
@@ -1070,4 +1169,203 @@ fn a_plugin_is_given_the_world_it_starts_from() {
     )
     .unwrap();
     assert_eq!(*seen.lock().unwrap(), Some(seed));
+}
+
+// ---------------------------------------------------------------- declared messages
+
+#[test]
+fn a_payload_that_does_not_decode_is_ignored_and_counted_and_a_good_one_is_delivered() {
+    let log = new_log();
+    let mut rig = build(|_, _| {
+        let log = Arc::clone(&log);
+        vec![plugin("test:p", move |registrar| {
+            let log = Arc::clone(&log);
+            registrar.message(move |_, client, Number(number)| {
+                note(&log, format!("{} sent {number}", client.get()));
+            });
+        })]
+    })
+    .unwrap();
+    let mut client = rig.join();
+    for payload in [vec![1, 0, 0, 0], vec![1, 0, 0], vec![1, 0, 0, 0, 0], vec![]] {
+        client.send(&ClientMessage::GameMessage {
+            kind: Number::kind(),
+            payload,
+        });
+    }
+    // Another game's kind is not malformed, just not heard.
+    client.send(&ClientMessage::GameMessage {
+        kind: id("test:other"),
+        payload: vec![9],
+    });
+    rig.server.step();
+    assert_eq!(lines(&log).len(), 1, "{:?}", lines(&log));
+    assert!(lines(&log)[0].ends_with("sent 1"));
+    assert_eq!(rig.malformed.load(Ordering::Relaxed), 3);
+}
+
+#[test]
+fn every_declared_message_is_tested_and_the_error_names_the_one_that_fails() {
+    let good = build(|_, _| {
+        vec![plugin("test:p", |registrar| {
+            registrar.message::<Number>(|_, _, _| {});
+            registrar.declares_message::<Flag>();
+        })]
+    })
+    .unwrap();
+    assert_eq!(good.declared, [Flag::kind(), Number::kind()]);
+    assert_eq!(good.checked, Ok(()));
+
+    let flawed = build(|_, _| {
+        vec![plugin("test:p", |registrar| {
+            registrar.message::<Number>(|_, _, _| {});
+            registrar.declares_message::<Sloppy>();
+        })]
+    })
+    .unwrap();
+    let errors = flawed.checked.unwrap_err();
+    assert_eq!(errors.len(), 1);
+    assert!(
+        errors[0].contains("test:sloppy") && errors[0].contains("trailing byte"),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn a_kind_the_server_only_sends_has_no_handler_and_cannot_be_declared_twice() {
+    fn sends_only(registrar: &mut Registrar<'_>) {
+        registrar.declares_message::<Kind>();
+    }
+    fn handles(registrar: &mut Registrar<'_>) {
+        registrar.message::<Kind>(|_, _, _| {});
+    }
+    let registrations: [[fn(&mut Registrar<'_>); 2]; 2] =
+        [[sends_only, sends_only], [sends_only, handles]];
+    for pair in registrations {
+        assert_eq!(
+            registration_error(vec![plugin("test:a", pair[0]), plugin("test:b", pair[1])]),
+            Some(RegistrationError::DuplicateMessage(Kind::kind()))
+        );
+    }
+    // A client sending it is ignored and is not counted as malformed.
+    let mut rig = build(|_, _| vec![plugin("test:p", sends_only)]).unwrap();
+    let mut client = rig.join();
+    client.send(&ClientMessage::GameMessage {
+        kind: Kind::kind(),
+        payload: vec![1],
+    });
+    rig.server.step();
+    assert_eq!(rig.malformed.load(Ordering::Relaxed), 0);
+}
+
+// ---------------------------------------------------------------- the command registry
+
+fn plugin_with_commands() -> Box<dyn Plugin> {
+    plugin("test:p", |registrar| {
+        registrar.command(
+            CommandSpec::new("give", "gives a block to a player")
+                .argument(Argument::identifier("block"))
+                .argument(Argument::integer("count").optional()),
+            |context, client, arguments| {
+                let count = if arguments.present(1) {
+                    arguments.integer(1)
+                } else {
+                    1
+                };
+                context.reply(
+                    client,
+                    &format!("gave {count} of {}", arguments.identifier(0)),
+                );
+            },
+        );
+        registrar.command(
+            CommandSpec::new("say", "says words").argument(Argument::rest("words")),
+            |context, client, arguments| {
+                context.reply(client, &arguments.rest(0).join("+"));
+            },
+        );
+    })
+}
+
+fn replies_to(rig: &mut Rig, commands: &[&str]) -> Vec<String> {
+    let mut client = rig.join();
+    for text in commands {
+        client.send(&ClientMessage::Command {
+            text: (*text).to_owned(),
+        });
+    }
+    rig.server.step();
+    client.replies()
+}
+
+#[test]
+fn the_host_checks_a_call_against_the_spec_and_answers_a_malformed_one_itself() {
+    let mut rig = build(|_, _| vec![plugin_with_commands()]).unwrap();
+    assert_eq!(
+        replies_to(
+            &mut rig,
+            &[
+                "/give base_blocks:lamp",
+                "/give base_blocks:lamp 5",
+                "/give",
+                "/give lamp",
+                "/give a:b 1.5",
+                "/give a:b 2 3",
+                "/say",
+                "/say a  b c",
+            ]
+        ),
+        [
+            "gave 1 of base_blocks:lamp",
+            "gave 5 of base_blocks:lamp",
+            "usage: /give BLOCK [COUNT]",
+            "usage: /give BLOCK [COUNT]; BLOCK must be an identifier like namespace:name",
+            "usage: /give BLOCK [COUNT]; COUNT must be a whole number",
+            "usage: /give BLOCK [COUNT]",
+            "usage: /say WORDS...",
+            "a+b+c",
+        ]
+    );
+}
+
+#[test]
+fn help_lists_every_command_or_explains_one() {
+    let mut rig = build(|_, _| vec![plugin_with_commands()]).unwrap();
+    assert_eq!(
+        replies_to(
+            &mut rig,
+            &[
+                "/help",
+                "/help say",
+                "help /give",
+                "/help nothing",
+                "/help a b"
+            ]
+        ),
+        [
+            "/give BLOCK [COUNT]: gives a block to a player",
+            "/help [COMMAND]: lists the commands; /help NAME says what one does",
+            "/say WORDS...: says words",
+            "/say WORDS...: says words",
+            "/give BLOCK [COUNT]: gives a block to a player",
+            "there is no command nothing; /help lists them",
+            "/help [COMMAND]: lists the commands; /help NAME says what one does",
+        ]
+    );
+}
+
+#[test]
+fn help_belongs_to_the_host_and_a_game_without_commands_has_none() {
+    let help = |registrar: &mut Registrar<'_>| {
+        registrar.command(CommandSpec::new("help", "my own"), |_, _, _| {});
+    };
+    assert_eq!(
+        registration_error(vec![plugin("test:a", help)]),
+        Some(RegistrationError::DuplicateCommand("help".to_owned()))
+    );
+    let mut rig = build(|_, _| vec![plugin("test:p", |_| {})]).unwrap();
+    assert_eq!(
+        replies_to(&mut rig, &["/help"]),
+        ["this game has no commands"]
+    );
 }

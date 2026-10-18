@@ -10,6 +10,7 @@
 //! the `after` and `before` they declare and, for ties, by plugin identifier then their own; never by
 //! hash order, thread timing or the order the plugins were listed. See `docs/plugin-api-spec.md`.
 
+mod command;
 mod context;
 mod error;
 mod event;
@@ -19,9 +20,10 @@ mod registrar;
 mod registry;
 mod spec;
 
+pub use command::{Argument, ArgumentKind, Arguments, CommandSpec};
 pub use context::{CheckedGrid, Context, Intent, MindContext};
 pub use error::RegistrationError;
 pub use event::{ChannelsChanged, Event, PlayerJoined, PlayerLeft, Verdict};
 pub use host::{CASCADE_LIMIT, PluginHost};
 pub use registrar::{Plugin, Registrar};
-pub use spec::{CommandSpec, DeterminismClass, HandlerSpec, Phase, SaveScope, SystemSpec};
+pub use spec::{DeterminismClass, HandlerSpec, Phase, SaveScope, SystemSpec};

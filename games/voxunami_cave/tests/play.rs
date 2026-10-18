@@ -2,6 +2,8 @@
 
 mod common;
 
+use protocol::Message;
+
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -515,7 +517,7 @@ fn commands_the_game_does_not_know_are_answered() {
     assert_eq!(
         player.take_command_replies(),
         [
-            "unknown command; try /fly, /level, /light, /tp X Y Z",
+            "unknown command; try /fly, /help [COMMAND], /level [SUBCOMMAND...], /light [SUBCOMMAND...], /tp X Y Z",
             "you are in voxunami_cave:overworld"
         ]
     );
@@ -1220,7 +1222,7 @@ fn flying_hovers_and_the_commands_for_it_and_for_teleporting_answer() {
             "you are flying",
             "teleported to 100.5 200 -50.25",
             "usage: /tp X Y Z",
-            "usage: /tp X Y Z, with numbers",
+            "usage: /tp X Y Z; X must be a number",
             "that is outside the world",
             "you are walking",
         ]
@@ -1244,14 +1246,17 @@ fn a_player_cannot_move_by_saying_where_they_are() {
         pitch: 0.0,
     };
     player.send_game_message(
-        player_presence::pose_kind(),
-        player_presence::encode_pose(&far),
+        player_presence::PoseReport::kind(),
+        player_presence::PoseReport(far).encode(),
     );
     player.send_game_message(
-        voxunami_cave::messages::spawn_kind(),
-        voxunami_cave::messages::encode_spawn(&far),
+        voxunami_cave::messages::Spawn::kind(),
+        voxunami_cave::messages::Spawn(far).encode(),
     );
-    player.send_game_message(voxunami_cave::messages::move_input_kind(), vec![9, 9, 9, 9]);
+    player.send_game_message(
+        voxunami_cave::messages::MoveRequest::kind(),
+        vec![9, 9, 9, 9],
+    );
     tick_and_follow(&mut rig, &mut player, 5);
     assert_eq!(voxels_of(&player.camera), before);
 }

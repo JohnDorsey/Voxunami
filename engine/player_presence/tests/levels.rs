@@ -4,11 +4,8 @@
 use std::sync::{Arc, Mutex};
 
 use namespaced_id::NamespacedId;
-use player_presence::{
-    PlayerPose, PoseBook, decode_level_change, decode_players, encode_pose, level_kind,
-    players_kind, pose_kind,
-};
-use protocol::{ClientId, ClientMessage, PROTOCOL_VERSION, ServerMessage};
+use player_presence::{LevelChange, PlayerPose, Players, PoseBook, PoseReport};
+use protocol::{ClientId, ClientMessage, Message, PROTOCOL_VERSION, ServerMessage};
 use server::test_support::ScriptedLogic;
 use server::{Server, ServerConfig};
 use transport::Connection;
@@ -42,8 +39,8 @@ impl Client {
             pitch: 0.0,
         };
         self.send(&ClientMessage::GameMessage {
-            kind: pose_kind(),
-            payload: encode_pose(&pose),
+            kind: PoseReport::kind(),
+            payload: PoseReport(pose).encode(),
         });
     }
 
@@ -146,9 +143,10 @@ impl Rig {
 /// The level of each player in the last snapshot of where everyone is.
 fn levels_told(messages: &[ServerMessage]) -> Option<Vec<(u32, u32)>> {
     messages.iter().rev().find_map(|message| match message {
-        ServerMessage::GameMessage { kind, payload } if *kind == players_kind() => Some(
-            decode_players(payload)
+        ServerMessage::GameMessage { kind, payload } if *kind == Players::kind() => Some(
+            Players::decode(payload)
                 .unwrap()
+                .0
                 .into_iter()
                 .map(|(client, state)| (client.get(), state.level.get()))
                 .collect(),
@@ -161,8 +159,8 @@ fn level_changes(messages: &[ServerMessage]) -> Vec<NamespacedId> {
     messages
         .iter()
         .filter_map(|message| match message {
-            ServerMessage::GameMessage { kind, payload } if *kind == level_kind() => {
-                Some(decode_level_change(payload).unwrap())
+            ServerMessage::GameMessage { kind, payload } if *kind == LevelChange::kind() => {
+                Some(LevelChange::decode(payload).unwrap().0)
             }
             _ => None,
         })

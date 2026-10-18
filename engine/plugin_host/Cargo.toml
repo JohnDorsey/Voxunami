@@ -16,6 +16,7 @@ world_storage.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+binary_codec.workspace = true
 protocol.workspace = true
 server = { workspace = true, features = ["test-support"] }
 transport.workspace = true

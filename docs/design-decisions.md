@@ -127,6 +127,17 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   plugins' declarations through `PackageSpec.properties`. Rules take a `PropertyHandle` once and read it by model.
 - Saved files are unchanged: properties come from definitions, not from the world.
 
+## Decided (declared messages and commands; built in Phase 25)
+- A game or plugin message is a type that implements `protocol::Message` (kind, encode, decode, samples), used by both the sending and the receiving
+  end. `Registrar::message::<M>` decodes for the handler (a payload that does not decode is ignored and counted, never disconnects the sender) and
+  `declares_message::<M>` lists a kind the plugin only sends. The host tests every declared message's codec on its samples (`check_messages`,
+  run when a game's server is built): it round-trips, encodes deterministically, refuses trailing bytes, and a cut-short payload is refused or is
+  itself a payload. The engine's own hot-path messages keep their compiled codecs. No code generation and no schema: the review judged it not
+  worth it at this size.
+- A command is a `CommandSpec` with a name, a summary and typed arguments (word, number, integer, identifier, rest). The host checks a call,
+  answers a malformed one (`usage: /tp X Y Z; Z must be a number`), generates the usage line, and provides `/help` itself. No permission level
+  until a command needs one.
+
 ## Decided (rules for lattice simulation and physics)
 - Tick phases (confirmed by the owner): each tick reads a frozen snapshot of the previous tick and produces the next one.
   A brick update never writes to a neighbour; cross-brick effects are queued and applied together in a fixed order.

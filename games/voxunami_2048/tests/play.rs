@@ -12,6 +12,7 @@ use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
 use game_shell::{GameContent, GameDefinition, KeyCode};
 use proptest::prelude::*;
+use protocol::Message;
 use server::Server;
 use transport::Connection;
 use transport::loopback::LoopbackConnector;
@@ -21,9 +22,7 @@ use voxunami_2048::content::{Content2048, block_registry_kind, landscape_id};
 use voxunami_2048::game::{Game2048, pull_with_tool, push_with_tool};
 use voxunami_2048::logic::REACH;
 use voxunami_2048::material::{COASTING_RANGE, Material};
-use voxunami_2048::messages::{
-    Progress, PushRequest, encode_push, push_kind, read_saved_state, saved_state_section_id,
-};
+use voxunami_2048::messages::{Progress, PushRequest, read_saved_state, saved_state_section_id};
 use voxunami_2048::numbered_block::NumberedBlock;
 use voxunami_2048::tool::Tool;
 use world_storage::WorldData;
@@ -230,12 +229,13 @@ fn send_push_with(
     tool: Tool,
 ) {
     player.send_game_message(
-        push_kind(),
-        encode_push(&PushRequest {
+        PushRequest::kind(),
+        PushRequest {
             voxel,
             direction,
             tool,
-        }),
+        }
+        .encode(),
     );
 }
 
@@ -406,8 +406,8 @@ fn pushes_that_are_out_of_reach_or_not_of_a_block_or_malformed_are_ignored() {
     rig.settle(&mut [&mut player]);
     send_push(&mut player, far, FaceDirection::PositiveX); // too far to reach
     send_push(&mut player, at(10, SKY, 12), FaceDirection::PositiveX); // empty air
-    player.send_game_message(push_kind(), vec![]);
-    player.send_game_message(push_kind(), vec![1, 2, 3, 4, 5, 6, 7]);
+    player.send_game_message(PushRequest::kind(), vec![]);
+    player.send_game_message(PushRequest::kind(), vec![1, 2, 3, 4, 5, 6, 7]);
     player.send_game_message("other_game:hello".parse().unwrap(), vec![1, 2, 3]);
     rig.step(3);
     rig.settle(&mut [&mut player]);

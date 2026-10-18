@@ -5,13 +5,13 @@ use game_shell::{CameraStart, GameDefinition, KeyCode};
 use namespaced_id::NamespacedId;
 use player_presence::PlayersPlugin;
 use plugin_host::Plugin;
-use protocol::ClientId;
+use protocol::{ClientId, Message};
 use transport::Connection;
 
 use crate::content::{ContentEels, SLOT_NAMES, game_id};
 use crate::eel::Steer;
 use crate::logic::PluginEels;
-use crate::messages::{Standings, decode_standings, encode_steer, standings_kind, steer_kind};
+use crate::messages::Standings;
 use crate::round::{MAXIMUM_EELS, Phase, TICKS_PER_SECOND};
 
 /// What the Eels client remembers: how the rounds stand, as the server last said.
@@ -39,7 +39,7 @@ pub fn steer_for(key: KeyCode) -> Option<Steer> {
 
 /// Asks the server to steer the player's eel.
 pub fn steer<C: Connection>(session: &mut SessionEels<C>, steer: Steer) {
-    session.send_game_message(steer_kind(), encode_steer(steer));
+    session.send_game_message(Steer::kind(), steer.encode());
 }
 
 /// The colour's name for a slot.
@@ -150,8 +150,8 @@ impl GameDefinition for Eels {
     }
 
     fn handle_game_message(state: &mut ClientStateEels, kind: &NamespacedId, payload: &[u8]) {
-        if *kind == standings_kind()
-            && let Ok(standings) = decode_standings(payload)
+        if *kind == Standings::kind()
+            && let Ok(standings) = Standings::decode(payload)
         {
             state.standings = standings;
         }

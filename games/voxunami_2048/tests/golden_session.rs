@@ -10,12 +10,13 @@ use game_shell::GameContent;
 use game_shell::files::record_connection;
 use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
+use protocol::Message;
 use transport::Connection;
 use voxel_space::{FaceDirection, VoxelCoordinate};
 use voxunami_2048::content::Content2048;
 use voxunami_2048::game::Game2048;
 use voxunami_2048::material::Material;
-use voxunami_2048::messages::{PushRequest, encode_push, push_kind};
+use voxunami_2048::messages::PushRequest;
 use voxunami_2048::numbered_block::NumberedBlock;
 use voxunami_2048::tool::Tool;
 
@@ -59,12 +60,13 @@ type Player = Session<Box<dyn Connection>, Game2048>;
 
 fn push(player: &mut Player, voxel: VoxelCoordinate, direction: FaceDirection, tool: Tool) {
     player.send_game_message(
-        push_kind(),
-        encode_push(&PushRequest {
+        PushRequest::kind(),
+        PushRequest {
             voxel,
             direction,
             tool,
-        }),
+        }
+        .encode(),
     );
 }
 

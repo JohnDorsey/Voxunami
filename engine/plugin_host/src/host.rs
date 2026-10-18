@@ -1,5 +1,7 @@
 use std::any::TypeId;
 use std::fmt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, Tick};
@@ -8,6 +10,7 @@ use voxel_grid::ChannelIndex;
 use voxel_space::{GridId, VoxelCoordinate};
 use world_storage::{Section, WorldData};
 
+use crate::command::{Argument, Arguments, CommandSpec};
 use crate::context::{Context, Intent, MindContext, Queue, Queued};
 use crate::error::RegistrationError;
 use crate::event::{ChannelsChanged, PlayerJoined, PlayerLeft};
@@ -75,12 +78,43 @@ impl PluginHost {
         self.queue.overflows
     }
 
-    /// The usage of every command, by name.
-    pub fn command_usages(&self) -> Vec<&'static str> {
-        self.registry
-            .commands
+    /// Tests the codec of every declared message kind on its samples
+    /// ([`protocol::check_message`]); the errors say which kind failed and how.
+    pub fn check_messages(&self) -> Result<(), Vec<String>> {
+        let errors: Vec<String> = self
+            .registry
+            .messages
             .values()
-            .map(|entry| entry.spec.usage)
+            .filter_map(|entry| (entry.check)().err())
+            .collect();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    /// How many payloads of kinds the plugins handle did not decode, and were ignored.
+    pub fn malformed_messages(&self) -> u64 {
+        self.registry.malformed_messages.load(Ordering::Relaxed)
+    }
+
+    /// The count of [`malformed_messages`](Self::malformed_messages) as a handle that outlives the
+    /// host's move into the server, for whatever reports on it.
+    pub fn malformed_messages_counter(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.registry.malformed_messages)
+    }
+
+    /// The kinds of every declared message, in order.
+    pub fn declared_messages(&self) -> Vec<NamespacedId> {
+        self.registry.messages.keys().cloned().collect()
+    }
+
+    /// The usage of every command, by name; `/help` is among them when there are any others.
+    pub fn command_usages(&self) -> Vec<String> {
+        command_list(&self.registry)
+            .iter()
+            .map(CommandSpec::usage)
             .collect()
     }
 
@@ -172,6 +206,49 @@ fn drain(registry: &Registry, queue: &mut Queue, world: &mut ServerWorld, tick: 
     }
 }
 
+/// The name of the command the host provides itself.
+pub(crate) const HELP_COMMAND: &str = "help";
+
+fn help_spec() -> CommandSpec {
+    CommandSpec::new(
+        HELP_COMMAND,
+        "lists the commands; /help NAME says what one does",
+    )
+    .argument(Argument::word("command").optional())
+}
+
+/// Every command, the host's own `/help` among them (when there are others), in order of name.
+fn command_list(registry: &Registry) -> Vec<CommandSpec> {
+    if registry.commands.is_empty() {
+        return Vec::new();
+    }
+    let mut specs: Vec<CommandSpec> = registry
+        .commands
+        .values()
+        .map(|entry| entry.spec.clone())
+        .collect();
+    specs.push(help_spec());
+    specs.sort_by_key(CommandSpec::name);
+    specs
+}
+
+/// The replies to `/help`: a line for every command, or for the one named.
+fn help(registry: &Registry, words: &[&str]) -> Vec<String> {
+    let specs = command_list(registry);
+    let describe = |spec: &CommandSpec| format!("{}: {}", spec.usage(), spec.summary());
+    match words {
+        [] => specs.iter().map(describe).collect(),
+        [wanted] => {
+            let wanted = wanted.strip_prefix('/').unwrap_or(wanted);
+            match specs.iter().find(|spec| spec.name() == wanted) {
+                Some(spec) => vec![describe(spec)],
+                None => vec![format!("there is no command {wanted}; /help lists them")],
+            }
+        }
+        _ => vec![describe(&help_spec())],
+    }
+}
+
 fn dispatch_message(
     registry: &Registry,
     queue: &mut Queue,
@@ -181,12 +258,15 @@ fn dispatch_message(
     kind: &NamespacedId,
     payload: &[u8],
 ) {
-    let Some(entry) = registry.messages.get(kind) else {
-        return; // another game's, or malformed: ignored
+    let Some(run) = registry
+        .messages
+        .get(kind)
+        .and_then(|entry| entry.run.as_ref())
+    else {
+        return; // another game's, or one the server only sends: ignored
     };
     {
-        let mut run = entry
-            .run
+        let mut run = run
             .try_borrow_mut()
             .expect("a message reached a handler that was still running");
         let mut context = Context {
@@ -197,7 +277,9 @@ fn dispatch_message(
             client: Some(client),
             declared: None,
         };
-        run(&mut context, client, payload);
+        if !run(&mut context, client, payload) {
+            registry.malformed_messages.fetch_add(1, Ordering::Relaxed);
+        }
     }
     drain(registry, queue, world, tick);
 }
@@ -267,13 +349,22 @@ impl GameLogic for PluginHost {
         let Self {
             registry, queue, ..
         } = self;
-        let known = CommandLine::parse(text)
-            .and_then(|line| registry.commands.get(line.name).map(|entry| (line, entry)));
+        let line = CommandLine::parse(text);
+        if let Some(line) = &line
+            && line.name == HELP_COMMAND
+            && !registry.commands.is_empty()
+        {
+            for reply in help(registry, &line.arguments) {
+                world.reply(client, &reply);
+            }
+            return;
+        }
+        let known =
+            line.and_then(|line| registry.commands.get(line.name).map(|entry| (line, entry)));
         let Some((line, entry)) = known else {
-            let usages: Vec<&str> = registry
-                .commands
-                .values()
-                .map(|entry| entry.spec.usage)
+            let usages: Vec<String> = command_list(registry)
+                .iter()
+                .map(CommandSpec::usage)
                 .collect();
             let reply = if usages.is_empty() {
                 "this game has no commands".to_owned()
@@ -282,6 +373,13 @@ impl GameLogic for PluginHost {
             };
             world.reply(client, &reply);
             return;
+        };
+        let arguments = match Arguments::parse(&entry.spec, &line.arguments) {
+            Ok(arguments) => arguments,
+            Err(reply) => {
+                world.reply(client, &reply);
+                return;
+            }
         };
         {
             let mut run = entry
@@ -296,7 +394,7 @@ impl GameLogic for PluginHost {
                 client: Some(client),
                 declared: None,
             };
-            run(&mut context, client, &line.arguments);
+            run(&mut context, client, &arguments);
         }
         drain(registry, queue, world, tick);
     }

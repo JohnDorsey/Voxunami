@@ -8,10 +8,10 @@ use game_shell::GameContent;
 use lattice::ActiveVoxels;
 use namespaced_id::NamespacedId;
 use plugin_host::{
-    CommandSpec, Context, HandlerSpec, Phase, PlayerJoined, Plugin, Registrar, SaveScope,
+    Argument, CommandSpec, Context, HandlerSpec, Phase, PlayerJoined, Plugin, Registrar, SaveScope,
     SystemSpec,
 };
-use protocol::ClientId;
+use protocol::{ClientId, Message};
 use server::{Audience, ServerWorld};
 use voxel_space::{GridId, LocalVoxelIndex, VoxelCoordinate};
 
@@ -19,7 +19,7 @@ use super::adapters::{CaveChannels, WorldLight, WorldScaledLight};
 use crate::content::CaveContent;
 use crate::lighting::{self, Lighting};
 use crate::logic::LIGHT_VOXELS_PER_TICK;
-use crate::messages::{encode_light_scheme, light_scheme_kind};
+use crate::messages::LightSchemeChanged;
 use crate::multiscale_light::{self, LightModel, LightScheme, MultiScaleLighting};
 
 /// Which light a world has, and the rule that spreads it.
@@ -108,8 +108,8 @@ impl LightState {
         self.light_model = model;
         context.send(
             Audience::Everyone,
-            light_scheme_kind(),
-            encode_light_scheme(self.scheme_in_use()),
+            LightSchemeChanged::kind(),
+            LightSchemeChanged(self.scheme_in_use()).encode(),
         );
         for (grid, voxel) in emitters {
             self.light_changed(grid, voxel);
@@ -120,8 +120,8 @@ impl LightState {
     fn welcome(&self, client: ClientId, world: &mut ServerWorld) {
         world.send(
             Audience::Client(client),
-            light_scheme_kind(),
-            encode_light_scheme(self.scheme_in_use()),
+            LightSchemeChanged::kind(),
+            LightSchemeChanged(self.scheme_in_use()).encode(),
         );
     }
 
@@ -198,6 +198,7 @@ impl Plugin for LightPlugin {
     }
 
     fn register(&self, registrar: &mut Registrar<'_>) {
+        registrar.declares_message::<LightSchemeChanged>();
         let world = registrar.world();
         let level_ids: Vec<NamespacedId> = world.levels().map(|(_, id, _)| id.clone()).collect();
         // Voxels in a level this world no longer has are not looked at.
@@ -257,13 +258,13 @@ impl Plugin for LightPlugin {
 
         let commanded = Arc::clone(&state);
         registrar.command(
-            CommandSpec {
-                name: "light",
-                usage: "/light",
-                summary: "which light the world has; /light classic; /light multiscale [LEVELS [WIDTH...]]",
-            },
+            CommandSpec::new(
+                "light",
+                "which light the world has; /light classic; /light multiscale [LEVELS [WIDTH...]]",
+            )
+            .argument(Argument::rest("subcommand").optional()),
             move |context, client, arguments| {
-                let reply = locked(&commanded).light_command(arguments, context);
+                let reply = locked(&commanded).light_command(arguments.rest(0), context);
                 context.reply(client, &reply);
             },
         );

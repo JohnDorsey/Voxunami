@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use namespaced_id::NamespacedId;
 use player_presence::{PoseBook, SharedPoseBook};
 use plugin_host::{HandlerSpec, Phase, PlayerJoined, Plugin, Registrar, SaveScope, SystemSpec};
-use protocol::ClientId;
+use protocol::{ClientId, Message};
 use server::{Audience, ServerWorld};
 use voxel_grid::ChannelIndex;
 use voxel_space::{LevelIndex, VoxelCoordinate};
@@ -20,8 +20,7 @@ use world_storage::{Section, WorldData};
 
 use crate::content::{Content2048, landscape_id};
 use crate::messages::{
-    Progress, PushRequest, SavedMover, SavedState, decode_push, encode_progress, progress_kind,
-    push_kind, read_saved_state, saved_state_section,
+    Progress, PushRequest, SavedMover, SavedState, read_saved_state, saved_state_section,
 };
 use crate::motion::{BlockField, Mover, Movers, Occupant};
 use crate::numbered_block::{AIR, NumberedBlock};
@@ -142,8 +141,8 @@ impl Logic2048 {
     fn welcome(&self, client: ClientId, world: &mut ServerWorld) {
         world.send(
             Audience::Client(client),
-            progress_kind(),
-            encode_progress(&self.progress),
+            Progress::kind(),
+            self.progress.encode(),
         );
     }
 
@@ -164,11 +163,7 @@ impl Logic2048 {
             self.progress_changed = true;
         }
         if self.progress_changed {
-            world.send(
-                Audience::Everyone,
-                progress_kind(),
-                encode_progress(&self.progress),
-            );
+            world.send(Audience::Everyone, Progress::kind(), self.progress.encode());
             self.progress_changed = false;
         }
     }
@@ -238,12 +233,11 @@ impl Plugin for Plugin2048 {
         )));
         let rules = Arc::clone(&state);
         let players = Arc::clone(&self.players);
-        registrar.message(push_kind(), move |context, client, payload| {
-            if let Ok(request) = decode_push(payload) {
-                let book = player_presence::lock(&players);
-                lock_rules(&rules).push(client, request, context.world(), &book);
-            }
+        registrar.message(move |context, client, request: PushRequest| {
+            let book = player_presence::lock(&players);
+            lock_rules(&rules).push(client, request, context.world(), &book);
         });
+        registrar.declares_message::<Progress>();
         let rules = Arc::clone(&state);
         registrar.on::<PlayerJoined>(
             HandlerSpec::new("voxunami_2048:tell_the_newcomer_the_score"),

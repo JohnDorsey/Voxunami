@@ -16,16 +16,15 @@ use player_presence::{PoseBook, SharedPoseBook};
 use plugin_host::{
     HandlerSpec, Phase as TickPhase, PlayerJoined, PlayerLeft, Plugin, Registrar, SystemSpec,
 };
-use protocol::ClientId;
+use protocol::{ClientId, Message};
 use server::{Audience, ServerWorld};
 use voxel_grid::ChannelIndex;
 use voxel_space::{BrickCoordinate, LevelIndex, LocalVoxelIndex, VoxelCoordinate};
 
 use crate::arena::{ARENA_EDGE, Cell, is_inside};
 use crate::content::{ContentEels, blocks};
-use crate::messages::{
-    Player, Standings, decode_steer, encode_standings, standings_kind, steer_kind,
-};
+use crate::eel::Steer;
+use crate::messages::{Player, Standings};
 use crate::round::{Arena, MAXIMUM_EELS, Match, Paint, Phase, TICKS_PER_SECOND};
 use crate::view::{eel_pose, spectator_pose};
 
@@ -159,9 +158,9 @@ impl LogicEels {
     }
 
     fn announce(&mut self, world: &mut ServerWorld) {
-        let bytes = encode_standings(&self.standings());
+        let bytes = self.standings().encode();
         if bytes != self.announced {
-            world.send(Audience::Everyone, standings_kind(), bytes.clone());
+            world.send(Audience::Everyone, Standings::kind(), bytes.clone());
             self.announced = bytes;
         }
     }
@@ -178,8 +177,8 @@ impl LogicEels {
         // A newcomer is told how things stand at once; everyone else hears of them with the rest.
         world.send(
             Audience::Client(client),
-            standings_kind(),
-            encode_standings(&self.standings()),
+            Standings::kind(),
+            self.standings().encode(),
         );
     }
 
@@ -194,10 +193,8 @@ impl LogicEels {
         }
     }
 
-    fn steer(&mut self, client: ClientId, payload: &[u8]) {
-        if let Ok(steer) = decode_steer(payload)
-            && let Some(&slot) = self.slots.get(&client)
-        {
+    fn steer(&mut self, client: ClientId, steer: Steer) {
+        if let Some(&slot) = self.slots.get(&client) {
             self.game.steer(slot, steer);
         }
     }
@@ -283,9 +280,10 @@ impl Plugin for PluginEels {
             move |event, context| lock_rules(&rules).left(event.client, context.world()),
         );
         let rules = Arc::clone(&state);
-        registrar.message(steer_kind(), move |_, client, payload| {
-            lock_rules(&rules).steer(client, payload);
+        registrar.message(move |_, client, steer: Steer| {
+            lock_rules(&rules).steer(client, steer);
         });
+        registrar.declares_message::<Standings>();
         // The eels swim, and the players' poses follow them, before the poses are announced (the
         // players plugin does that in the `Settle` phase); the standings follow the announcement.
         let rules = Arc::clone(&state);

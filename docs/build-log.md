@@ -627,6 +627,15 @@ Phase 24 (property bags on block definitions; specified in `property-bags-spec.m
   the multiscale benchmark did not regress (fill ms for 32/16/8/4 levels: 770-830, 327-336, 251-256, 336-343 before; about 650,
   294, 228, 290-304 after the rules read through handles).
 
+Phase 25 (declared messages and a command registry; specified in `messages-and-commands-spec.md`):
+- `protocol::Message` and `check_message`; the six client-to-server and the server-to-client kinds of the presence plugin, Cave, 2048 and Eels
+  are now types that implement it (the wire bytes are unchanged, pinned by `tests/wire_format.rs` in each crate before the conversion).
+  `PluginHost::check_messages` runs when any game's server is built; `malformed_messages` counts payloads that did not decode.
+- `plugin_host`: `CommandSpec::new(..).argument(..)`, `Arguments`, the host's `/help`; `/fly`, `/tp`, `/light` and `/level` converted.
+- Golden sessions: 2048 and Eels pass unmodified. Cave's stream hash changed once, only in the reply to the unknown command `/nonsense` (it now
+  lists `/help` and each command's arguments, 49 bytes longer); proved by restoring the old text, which gave the old hash. The saved world
+  is unchanged. Bad `/tp` numbers now answer `usage: /tp X Y Z; Z must be a number` instead of `..., with numbers`.
+
 ## Measured
 Storage (Ryzen 7600X, release, one thread, best of 7, counting allocator; the single-voxel `get` figures include
 loop and bounds overhead, so bulk decode will be faster):

@@ -2,7 +2,7 @@
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
-use protocol::ClientId;
+use protocol::{ClientId, Message};
 
 use crate::eel::Steer;
 use crate::round::{MAXIMUM_EELS, Phase};
@@ -12,25 +12,26 @@ fn kind(text: &str) -> NamespacedId {
 }
 
 /// Client to server: steer the player's eel.
-pub fn steer_kind() -> NamespacedId {
-    kind("voxunami_eels:steer")
-}
+impl Message for Steer {
+    fn kind() -> NamespacedId {
+        kind("voxunami_eels:steer")
+    }
 
-/// Server to everyone: who is playing, in which colour, and how the round stands.
-pub fn standings_kind() -> NamespacedId {
-    kind("voxunami_eels:standings")
-}
+    fn encode(&self) -> Vec<u8> {
+        vec![self.index()]
+    }
 
-pub fn encode_steer(steer: Steer) -> Vec<u8> {
-    vec![steer.index()]
-}
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        let mut reader = ByteReader::new(payload);
+        let steer =
+            Steer::from_index(reader.read_u8()?).ok_or(DecodeError::Invalid("no such steer"))?;
+        reader.finish()?;
+        Ok(steer)
+    }
 
-pub fn decode_steer(payload: &[u8]) -> Result<Steer, DecodeError> {
-    let mut reader = ByteReader::new(payload);
-    let steer =
-        Steer::from_index(reader.read_u8()?).ok_or(DecodeError::Invalid("no such steer"))?;
-    reader.finish()?;
-    Ok(steer)
+    fn samples() -> Vec<Self> {
+        Steer::ALL.to_vec()
+    }
 }
 
 /// One player in the standings.
@@ -102,46 +103,89 @@ fn read_phase(reader: &mut ByteReader<'_>) -> Result<Phase, DecodeError> {
     })
 }
 
-pub fn encode_standings(standings: &Standings) -> Vec<u8> {
-    let mut writer = ByteWriter::new();
-    write_phase(&mut writer, standings.phase);
-    writer.write_varint(standings.players.len() as u64);
-    for player in &standings.players {
-        writer.write_u32(player.client.get());
-        writer.write_u8(player.slot);
-        writer.write_u8(u8::from(player.alive));
-        writer.write_varint(u64::from(player.wins));
+impl Message for Standings {
+    fn kind() -> NamespacedId {
+        kind("voxunami_eels:standings")
     }
-    writer.into_bytes()
-}
 
-pub fn decode_standings(payload: &[u8]) -> Result<Standings, DecodeError> {
-    let mut reader = ByteReader::new(payload);
-    let phase = read_phase(&mut reader)?;
-    let count = reader.read_count(7)?;
-    let mut players = Vec::with_capacity(count.min(MAXIMUM_EELS));
-    for _ in 0..count {
-        let client = ClientId::new(reader.read_u32()?);
-        let slot = reader.read_u8()?;
-        if usize::from(slot) >= MAXIMUM_EELS {
-            return Err(DecodeError::Invalid("no such slot"));
+    fn encode(&self) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        write_phase(&mut writer, self.phase);
+        writer.write_varint(self.players.len() as u64);
+        for player in &self.players {
+            writer.write_u32(player.client.get());
+            writer.write_u8(player.slot);
+            writer.write_u8(u8::from(player.alive));
+            writer.write_varint(u64::from(player.wins));
         }
-        let alive = match reader.read_u8()? {
-            0 => false,
-            1 => true,
-            _ => return Err(DecodeError::Invalid("not a yes or a no")),
-        };
-        let wins = u32::try_from(reader.read_varint()?)
-            .map_err(|_| DecodeError::Invalid("too many wins"))?;
-        players.push(Player {
-            client,
-            slot,
-            alive,
-            wins,
-        });
+        writer.into_bytes()
     }
-    reader.finish()?;
-    Ok(Standings { phase, players })
+
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        let mut reader = ByteReader::new(payload);
+        let phase = read_phase(&mut reader)?;
+        let count = reader.read_count(7)?;
+        let mut players = Vec::with_capacity(count.min(MAXIMUM_EELS));
+        for _ in 0..count {
+            let client = ClientId::new(reader.read_u32()?);
+            let slot = reader.read_u8()?;
+            if usize::from(slot) >= MAXIMUM_EELS {
+                return Err(DecodeError::Invalid("no such slot"));
+            }
+            let alive = match reader.read_u8()? {
+                0 => false,
+                1 => true,
+                _ => return Err(DecodeError::Invalid("not a yes or a no")),
+            };
+            let wins = u32::try_from(reader.read_varint()?)
+                .map_err(|_| DecodeError::Invalid("too many wins"))?;
+            players.push(Player {
+                client,
+                slot,
+                alive,
+                wins,
+            });
+        }
+        reader.finish()?;
+        Ok(Self { phase, players })
+    }
+
+    fn samples() -> Vec<Self> {
+        let players = vec![
+            Player {
+                client: ClientId::new(1),
+                slot: 0,
+                alive: true,
+                wins: 3,
+            },
+            Player {
+                client: ClientId::new(900),
+                slot: 7,
+                alive: false,
+                wins: 100_000,
+            },
+        ];
+        let mut samples = vec![Self::default()];
+        for phase in [
+            Phase::Idle,
+            Phase::Countdown { ticks_left: 400 },
+            Phase::Running,
+            Phase::Over {
+                ticks_left: 0,
+                winner: None,
+            },
+            Phase::Over {
+                ticks_left: 70,
+                winner: Some(7),
+            },
+        ] {
+            samples.push(Self {
+                phase,
+                players: players.clone(),
+            });
+        }
+        samples
+    }
 }
 
 #[cfg(test)]
@@ -149,13 +193,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_declared_messages_pass_the_generated_check() {
+        assert_eq!(protocol::check_message::<Steer>(), Ok(()));
+        assert_eq!(protocol::check_message::<Standings>(), Ok(()));
+    }
+
+    #[test]
     fn every_steer_survives_encoding_and_nothing_else_is_accepted() {
         for steer in Steer::ALL {
-            assert_eq!(decode_steer(&encode_steer(steer)).unwrap(), steer);
+            assert_eq!(Steer::decode(&steer.encode()).unwrap(), steer);
         }
-        assert!(decode_steer(&[]).is_err());
-        assert!(decode_steer(&[9]).is_err());
-        assert!(decode_steer(&[0, 0]).is_err());
+        assert!(Steer::decode(&[]).is_err());
+        assert!(Steer::decode(&[9]).is_err());
+        assert!(Steer::decode(&[0, 0]).is_err());
     }
 
     fn sample() -> Standings {
@@ -197,29 +247,26 @@ mod tests {
             },
         ] {
             let standings = Standings { phase, ..sample() };
-            assert_eq!(
-                decode_standings(&encode_standings(&standings)).unwrap(),
-                standings
-            );
+            assert_eq!(Standings::decode(&standings.encode()).unwrap(), standings);
         }
         let empty = Standings::default();
-        assert_eq!(decode_standings(&encode_standings(&empty)).unwrap(), empty);
+        assert_eq!(Standings::decode(&empty.encode()).unwrap(), empty);
     }
 
     #[test]
     fn damaged_standings_are_errors_and_never_panics() {
-        let good = encode_standings(&sample());
+        let good = sample().encode();
         for length in 0..good.len() {
             assert!(
-                decode_standings(&good[..length]).is_err(),
+                Standings::decode(&good[..length]).is_err(),
                 "cut at {length}"
             );
         }
         let mut extra = good.clone();
         extra.push(0);
-        assert!(decode_standings(&extra).is_err());
+        assert!(Standings::decode(&extra).is_err());
         // A slot that does not exist, a phase that does not exist, a yes-or-no that is neither.
-        let mut bad_slot = encode_standings(&Standings {
+        let mut bad_slot = Standings {
             phase: Phase::Running,
             players: vec![Player {
                 client: ClientId::new(1),
@@ -227,12 +274,13 @@ mod tests {
                 alive: true,
                 wins: 0,
             }],
-        });
+        }
+        .encode();
         let slot_position = bad_slot.len() - 3;
         bad_slot[slot_position] = 8;
-        assert!(decode_standings(&bad_slot).is_err());
-        assert!(decode_standings(&[9, 0]).is_err());
-        let mut bad_flag = encode_standings(&Standings {
+        assert!(Standings::decode(&bad_slot).is_err());
+        assert!(Standings::decode(&[9, 0]).is_err());
+        let mut bad_flag = Standings {
             phase: Phase::Running,
             players: vec![Player {
                 client: ClientId::new(1),
@@ -240,12 +288,13 @@ mod tests {
                 alive: true,
                 wins: 0,
             }],
-        });
+        }
+        .encode();
         let flag_position = bad_flag.len() - 2;
         bad_flag[flag_position] = 2;
-        assert!(decode_standings(&bad_flag).is_err());
+        assert!(Standings::decode(&bad_flag).is_err());
         // A winner past the last slot.
-        assert!(decode_standings(&[3, 0, 9, 0]).is_err());
+        assert!(Standings::decode(&[3, 0, 9, 0]).is_err());
     }
 
     #[test]
@@ -259,8 +308,8 @@ mod tests {
                         >> 7) as u8
                 })
                 .collect();
-            let _ = decode_standings(&bytes);
-            let _ = decode_steer(&bytes);
+            let _ = Standings::decode(&bytes);
+            let _ = Steer::decode(&bytes);
         }
     }
 }

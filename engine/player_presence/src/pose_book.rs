@@ -1,14 +1,11 @@
 use std::collections::BTreeMap;
 
 use namespaced_id::NamespacedId;
-use protocol::ClientId;
+use protocol::{ClientId, Message};
 use server::{Audience, CommandLine, ServerWorld};
 use voxel_space::LevelIndex;
 
-use crate::messages::{
-    PlayerPose, PlayerState, decode_pose, encode_level_change, encode_players, level_kind,
-    players_kind, pose_kind,
-};
+use crate::messages::{LevelChange, PlayerPose, PlayerState, Players, PoseReport};
 
 /// The server's record of where every player is, and in which level. A game's logic owns one,
 /// hands it the messages, commands and departures, and calls [`PoseBook::tell_everyone`] once per
@@ -60,8 +57,8 @@ impl PoseBook {
         self.levels.insert(client, level);
         world.send(
             Audience::Client(client),
-            level_kind(),
-            encode_level_change(&id),
+            LevelChange::kind(),
+            LevelChange(id).encode(),
         );
     }
 
@@ -89,13 +86,11 @@ impl PoseBook {
         kind: &NamespacedId,
         payload: &[u8],
     ) -> bool {
-        if *kind != pose_kind() {
+        if *kind != PoseReport::kind() {
             return false;
         }
-        if let Ok(pose) = decode_pose(payload)
-            && self.poses.insert(client, pose) != Some(pose)
-        {
-            self.changed = true;
+        if let Ok(PoseReport(pose)) = PoseReport::decode(payload) {
+            self.set_pose(client, pose);
         }
         true
     }
@@ -189,7 +184,11 @@ impl PoseBook {
                 )
             })
             .collect();
-        world.send(Audience::Everyone, players_kind(), encode_players(&players));
+        world.send(
+            Audience::Everyone,
+            Players::kind(),
+            Players(players).encode(),
+        );
         self.changed = false;
     }
 }

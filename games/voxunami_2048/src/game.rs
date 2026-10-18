@@ -10,11 +10,10 @@ use voxel_space::{FaceDirection, VoxelCoordinate};
 
 use crate::content::{Content2048, game_id};
 use crate::logic::{Plugin2048, REACH};
-use crate::messages::{
-    Progress, PushRequest, decode_progress, encode_push, progress_kind, push_kind,
-};
+use crate::messages::{Progress, PushRequest};
 use crate::numbered_block::NumberedBlock;
 use crate::tool::Tool;
+use protocol::Message;
 
 /// What the 2048 client remembers: how the game has gone, as the server last said, and the tool
 /// the player has chosen.
@@ -62,12 +61,13 @@ fn request_push<C: Connection>(
 ) {
     let tool = session.state.tool;
     session.send_game_message(
-        push_kind(),
-        encode_push(&PushRequest {
+        PushRequest::kind(),
+        PushRequest {
             voxel,
             direction,
             tool,
-        }),
+        }
+        .encode(),
     );
 }
 
@@ -133,8 +133,8 @@ W A S D move, Space and Shift go up and down, Ctrl moves five times faster. Comm
     }
 
     fn handle_game_message(state: &mut ClientState2048, kind: &NamespacedId, payload: &[u8]) {
-        if *kind == progress_kind()
-            && let Ok(progress) = decode_progress(payload)
+        if *kind == Progress::kind()
+            && let Ok(progress) = Progress::decode(payload)
         {
             state.progress = progress;
         }

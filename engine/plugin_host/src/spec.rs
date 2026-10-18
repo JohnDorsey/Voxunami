@@ -123,14 +123,6 @@ impl HandlerSpec {
     }
 }
 
-/// A server command: `usage` is how it is typed (`/tp X Y Z`), `summary` says what it does.
-#[derive(Clone, Copy, Debug)]
-pub struct CommandSpec {
-    pub name: &'static str,
-    pub usage: &'static str,
-    pub summary: &'static str,
-}
-
 /// Whether saved plugin state is about the whole world or about one grid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SaveScope {

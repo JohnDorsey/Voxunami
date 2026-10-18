@@ -45,8 +45,8 @@ pub trait Plugin: Send + Sync {
 | `content` | an entry in a registry of any kind (blocks; event kinds) | blocks, event kinds | items, entity kinds, brain models (27, 37) |
 | `channel` | a per-voxel channel | as `PackageSpec.channels` today | |
 | `property` | a typed property key for block definitions | reserved (the verb exists, one test) | Phase 24 |
-| `command` | a server command: name, usage, handler | name and handler; `/help` generated | typed arguments (25) |
-| `message` | the handler for a client-to-server message kind | as `message_received` today | declared fields (25) |
+| `command` | a server command: name, summary, typed arguments, handler | built (Phase 25): the host checks the call, generates the usage and `/help` | a permission level, when a command needs restricting |
+| `message::<M>` and `declares_message::<M>` | a message type (`protocol::Message`) and its handler; or a kind the plugin only sends | built (Phase 25): decoded for the handler, malformed payloads counted, codec tested by `check_messages` | versioned messages |
 | `system` | a tick function | here | |
 | `on` | a handler for an event kind | here | |
 | `save_section` | a plugin's saved state | as `save_sections` today | per-grid scope (32) |

@@ -14,7 +14,7 @@ use voxel_space::{GridId, VoxelCoordinate};
 
 use crate::content::CaveContent;
 use crate::logic::REACH;
-use crate::messages::{decode_set_block, set_block_kind};
+use crate::messages::SetBlock;
 
 /// A player asks to put a block (in a state) at a voxel, within reach and of a block and state that
 /// exist. Handlers of this event may refuse, with a reason that the player is told.
@@ -84,10 +84,7 @@ impl Plugin for BlockEditingPlugin {
         let table = self.table.clone();
         let (block_channel, state_channel) = (self.block_channel, self.state_channel);
         let players = std::sync::Arc::clone(&self.players);
-        registrar.message(set_block_kind(), move |context, client, payload| {
-            let Ok(request) = decode_set_block(payload) else {
-                return; // malformed: ignored
-            };
+        registrar.message(move |context, client, request: SetBlock| {
             let (pose, level) = {
                 let book = lock(&players);
                 (book.pose_of(client).copied(), book.level_of(client))

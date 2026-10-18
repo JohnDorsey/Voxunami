@@ -51,8 +51,8 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
   `engine:entities` section reserved before 1.0.
 - 26 (planned) The client interface (HUD line, key actions, client commands) and the bulk light hook that takes the scaled-light
   concepts out of `world_view`; the multiscale light stops being a spike.
-- 25 (specified, awaiting review) Declared messages (a `Message` trait and a generated check, no codegen) and a command registry with `/help` (revision 4).
-  Specified in `messages-and-commands-spec.md` (steps 25a to 25d).
+- 25 Declared messages (a `Message` trait and a generated check, no codegen) and a command registry with `/help` (revision 4). **Done.** Specified in
+  `messages-and-commands-spec.md` (steps 25a to 25d).
 - 24 Property bags on block definitions, per state; `emission`, `flammability` and `passable` left the engine (revision 2). **Done.** Specified in
   `property-bags-spec.md` (steps 24a to 24d); the multiscale benchmark did not regress. A tag is a bool property; no separate tag type.
 - 23 The registrar and events; Cave's light, fire and movement become plugins, and 2048 and Eels too (revision 1). **Done.** Specified and
@@ -262,6 +262,11 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   (`--test-threads=1`) it failed 0 times in 30 on the commit before Phase 23 and 0 in 30 after Phase 23b, so nothing says Phase 23 caused
   it. My belief, not tested: it depends on how far the client's worker threads have got, which a loaded machine changes; the first flaky
   test above also reads client state. A fix would make such tests wait on a condition, as the `world_view` meshing test now does.
+- More occurrences of the flaky tests (2026-10-18, during Phases 24 and 25): `an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw`
+  (`games/voxunami_cave/tests/pictures.rs`, the replayed picture differed from the live one) failed in 2 of about 6 full parallel Windows runs and in
+  0 of 3 runs of `cargo test -p voxunami_cave` alone; `walkers_pass_through_flames_and_the_cellar_has_the_same_ground` failed once more in a full Linux
+  run and passed on the rerun. Both only under the load of a whole-workspace run, so the same belief applies (the result depends on how far the
+  client's worker threads have got); not tested. Also: `cargo test --workspace` stops at the first failing crate, so use `--no-fail-fast`.
 - Light (Phase 12): cost is one lamp's 64 ticks of spreading averaged 15 ms a tick in a release build (with two clients
   watching; measured once, not repeated), and a tick is 50 ms, so a few lamps placed at once would overrun it. The budget
   of 20 000 voxels a tick (Phase 14) is a guess, not tuned, and its streaming cost to clients is not measured. The sky light

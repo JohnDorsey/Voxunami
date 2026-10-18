@@ -42,10 +42,16 @@ fn tp_moves_the_player_and_explains_what_it_cannot_do() {
             "{wrong_count}"
         );
     }
-    for not_numbers in ["/tp a b c", "/tp 1 2 three", "/tp nan 1 1", "/tp 1 inf 1"] {
+    // (These said "usage: /tp X Y Z, with numbers" before the commands had a registry that checks them.)
+    for (not_numbers, which) in [
+        ("/tp a b c", "X"),
+        ("/tp 1 2 three", "Z"),
+        ("/tp nan 1 1", "X"),
+        ("/tp 1 inf 1", "Y"),
+    ] {
         assert_eq!(
             reply_to(&mut rig, &mut player, not_numbers),
-            ["usage: /tp X Y Z, with numbers"],
+            [format!("usage: /tp X Y Z; {which} must be a number")],
             "{not_numbers}"
         );
     }

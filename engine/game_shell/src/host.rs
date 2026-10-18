@@ -43,6 +43,10 @@ fn new_server<G: GameDefinition>(
     // the game that its tests find, not a condition to recover from.
     let logic = PluginHost::new(plugins, &world)
         .unwrap_or_else(|error| panic!("the plugins of {} cannot be registered: {error}", G::id()));
+    // Every message the plugins declare is tested on its samples before a client can send one.
+    if let Err(errors) = logic.check_messages() {
+        panic!("a message of {} does not round-trip: {errors:#?}", G::id());
+    }
     Server::new(
         server_config::<G>(view_radius_bricks),
         world,

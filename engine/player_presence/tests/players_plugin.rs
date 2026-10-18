@@ -1,12 +1,9 @@
 //! The players plugin, run by the plugin host on a real server with the pretend game of
 //! `world_storage::test_support`.
 
-use player_presence::{
-    PlayerPose, PlayersPlugin, SharedPoseBook, decode_players, encode_pose, lock, players_kind,
-    pose_kind,
-};
+use player_presence::{PlayerPose, Players, PlayersPlugin, PoseReport, SharedPoseBook, lock};
 use plugin_host::{Phase, Plugin, PluginHost, Registrar, SystemSpec};
-use protocol::{ClientId, ClientMessage, PROTOCOL_VERSION, ServerMessage};
+use protocol::{ClientId, ClientMessage, Message, PROTOCOL_VERSION, ServerMessage};
 use server::{Server, ServerConfig};
 use transport::Connection;
 use transport::loopback::{LoopbackConnection, loopback_listener};
@@ -90,8 +87,8 @@ fn the_client(rig: &Rig) -> ClientId {
 
 fn report(rig: &mut Rig, pose: &PlayerPose) {
     rig.client.send(&ClientMessage::GameMessage {
-        kind: pose_kind(),
-        payload: encode_pose(pose),
+        kind: PoseReport::kind(),
+        payload: PoseReport(*pose).encode(),
     });
     rig.server.step();
 }
@@ -118,7 +115,7 @@ fn a_pose_that_changed_is_announced_to_everyone_once_and_not_again_while_it_hold
     let announced = |messages: Vec<ServerMessage>| -> usize {
         messages
             .into_iter()
-            .filter(|message| matches!(message, ServerMessage::GameMessage { kind, .. } if *kind == players_kind()))
+            .filter(|message| matches!(message, ServerMessage::GameMessage { kind, .. } if *kind == Players::kind()))
             .count()
     };
     assert_eq!(announced(rig.client.received()), 1);
@@ -163,8 +160,8 @@ fn what_an_earlier_phase_moved_is_announced_in_the_same_tick() {
         .received()
         .into_iter()
         .filter_map(|message| match message {
-            ServerMessage::GameMessage { kind, payload } if kind == players_kind() => {
-                Some(decode_players(&payload).unwrap())
+            ServerMessage::GameMessage { kind, payload } if kind == Players::kind() => {
+                Some(Players::decode(&payload).unwrap().0)
             }
             _ => None,
         })
@@ -209,7 +206,10 @@ fn the_level_command_answers_and_a_player_who_leaves_is_forgotten() {
             _ => None,
         })
         .collect();
-    assert_eq!(replies, ["unknown command; try /level"]);
+    assert_eq!(
+        replies,
+        ["unknown command; try /help [COMMAND], /level [SUBCOMMAND...]"]
+    );
     // Leaving.
     rig.client.send(&ClientMessage::Goodbye);
     rig.server.step();

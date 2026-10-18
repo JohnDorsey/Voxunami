@@ -3,6 +3,7 @@
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
+use protocol::Message;
 use voxel_space::{FaceDirection, VoxelCoordinate};
 use world_storage::Section;
 
@@ -10,16 +11,6 @@ use crate::tool::Tool;
 
 fn kind(text: &str) -> NamespacedId {
     text.parse().expect("constant identifier is valid")
-}
-
-/// Client to server: push the block at a voxel.
-pub fn push_kind() -> NamespacedId {
-    kind("voxunami_2048:push_block")
-}
-
-/// Server to everyone: how the game has gone so far.
-pub fn progress_kind() -> NamespacedId {
-    kind("voxunami_2048:progress")
 }
 
 /// A request to push the block at `voxel` toward `direction` with `tool`, which decides what the
@@ -54,23 +45,48 @@ fn read_tool(reader: &mut ByteReader<'_>) -> Result<Tool, DecodeError> {
     Tool::from_index(reader.read_u8()?).ok_or(DecodeError::Invalid("no such tool"))
 }
 
-pub fn encode_push(request: &PushRequest) -> Vec<u8> {
-    let mut writer = ByteWriter::new();
-    write_voxel(&mut writer, request.voxel);
-    writer.write_u8(request.direction.index());
-    writer.write_u8(request.tool.index());
-    writer.into_bytes()
-}
+impl Message for PushRequest {
+    fn kind() -> NamespacedId {
+        kind("voxunami_2048:push_block")
+    }
 
-pub fn decode_push(payload: &[u8]) -> Result<PushRequest, DecodeError> {
-    let mut reader = ByteReader::new(payload);
-    let request = PushRequest {
-        voxel: read_voxel(&mut reader)?,
-        direction: read_direction(&mut reader)?,
-        tool: read_tool(&mut reader)?,
-    };
-    reader.finish()?;
-    Ok(request)
+    fn encode(&self) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        write_voxel(&mut writer, self.voxel);
+        writer.write_u8(self.direction.index());
+        writer.write_u8(self.tool.index());
+        writer.into_bytes()
+    }
+
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        let mut reader = ByteReader::new(payload);
+        let request = Self {
+            voxel: read_voxel(&mut reader)?,
+            direction: read_direction(&mut reader)?,
+            tool: read_tool(&mut reader)?,
+        };
+        reader.finish()?;
+        Ok(request)
+    }
+
+    fn samples() -> Vec<Self> {
+        let mut samples = vec![Self {
+            voxel: VoxelCoordinate::ORIGIN,
+            direction: FaceDirection::PositiveY,
+            tool: Tool::Add,
+        }];
+        for (direction, tool) in FaceDirection::ALL
+            .into_iter()
+            .zip(Tool::ALL.into_iter().cycle())
+        {
+            samples.push(Self {
+                voxel: VoxelCoordinate::new(-5, 100, 7_000_000_000),
+                direction,
+                tool,
+            });
+        }
+        samples
+    }
 }
 
 /// How the game has gone, for everyone who plays it.
@@ -121,17 +137,39 @@ fn read_progress_with_exponent(reader: &mut ByteReader<'_>) -> Result<Progress, 
     })
 }
 
-pub fn encode_progress(progress: &Progress) -> Vec<u8> {
-    let mut writer = ByteWriter::new();
-    write_progress(&mut writer, progress);
-    writer.into_bytes()
-}
+impl Message for Progress {
+    fn kind() -> NamespacedId {
+        kind("voxunami_2048:progress")
+    }
 
-pub fn decode_progress(payload: &[u8]) -> Result<Progress, DecodeError> {
-    let mut reader = ByteReader::new(payload);
-    let progress = read_progress(&mut reader)?;
-    reader.finish()?;
-    Ok(progress)
+    fn encode(&self) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        write_progress(&mut writer, self);
+        writer.into_bytes()
+    }
+
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        let mut reader = ByteReader::new(payload);
+        let progress = read_progress(&mut reader)?;
+        reader.finish()?;
+        Ok(progress)
+    }
+
+    fn samples() -> Vec<Self> {
+        vec![
+            Self::default(),
+            Self {
+                score: 123_456,
+                pushes: 99,
+                largest_merge: 4096,
+            },
+            Self {
+                score: u64::MAX,
+                pushes: u64::MAX,
+                largest_merge: u32::MAX,
+            },
+        ]
+    }
 }
 
 /// A block that was moving when the world was saved. The level is named by identifier, since level
@@ -263,27 +301,28 @@ mod tests {
                     direction,
                     tool,
                 };
-                assert_eq!(decode_push(&encode_push(&request)), Ok(request));
+                assert_eq!(PushRequest::decode(&request.encode()), Ok(request));
             }
         }
-        let good = encode_push(&PushRequest {
+        let good = PushRequest {
             voxel: VoxelCoordinate::ORIGIN,
             direction: FaceDirection::PositiveY,
             tool: Tool::Add,
-        });
+        }
+        .encode();
         for length in 0..good.len() {
-            assert!(decode_push(&good[..length]).is_err(), "{length}");
+            assert!(PushRequest::decode(&good[..length]).is_err(), "{length}");
         }
         let mut trailing = good.clone();
         trailing.push(0);
-        assert!(decode_push(&trailing).is_err());
+        assert!(PushRequest::decode(&trailing).is_err());
         let mut bad_direction = good.clone();
         let length = bad_direction.len();
         bad_direction[length - 2] = 6;
-        assert!(decode_push(&bad_direction).is_err());
+        assert!(PushRequest::decode(&bad_direction).is_err());
         let mut bad_tool = good;
         *bad_tool.last_mut().unwrap() = 3;
-        assert!(decode_push(&bad_tool).is_err());
+        assert!(PushRequest::decode(&bad_tool).is_err());
         // A coordinate beyond the world's edge.
         let mut writer = ByteWriter::new();
         writer.write_signed_varint(i64::MAX);
@@ -291,7 +330,13 @@ mod tests {
         writer.write_signed_varint(0);
         writer.write_u8(0);
         writer.write_u8(0);
-        assert!(decode_push(&writer.into_bytes()).is_err());
+        assert!(PushRequest::decode(&writer.into_bytes()).is_err());
+    }
+
+    #[test]
+    fn the_declared_messages_pass_the_generated_check() {
+        assert_eq!(protocol::check_message::<PushRequest>(), Ok(()));
+        assert_eq!(protocol::check_message::<Progress>(), Ok(()));
     }
 
     #[test]
@@ -301,19 +346,19 @@ mod tests {
             pushes: 300,
             largest_merge: 3_000_000_001,
         };
-        assert_eq!(decode_progress(&encode_progress(&progress)), Ok(progress));
-        let good = encode_progress(&progress);
+        assert_eq!(Progress::decode(&progress.encode()), Ok(progress));
+        let good = progress.encode();
         for length in 0..good.len() {
-            assert!(decode_progress(&good[..length]).is_err());
+            assert!(Progress::decode(&good[..length]).is_err());
         }
         let mut trailing = good.clone();
         trailing.push(0);
-        assert!(decode_progress(&trailing).is_err());
+        assert!(Progress::decode(&trailing).is_err());
         let mut too_large = ByteWriter::new();
         too_large.write_varint(1);
         too_large.write_varint(1);
         too_large.write_varint(u64::from(u32::MAX) + 1);
-        assert!(decode_progress(&too_large.into_bytes()).is_err());
+        assert!(Progress::decode(&too_large.into_bytes()).is_err());
     }
 
     #[test]
@@ -480,8 +525,8 @@ mod tests {
     proptest! {
         #[test]
         fn decoding_arbitrary_bytes_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..60)) {
-            let _ = decode_push(&bytes);
-            let _ = decode_progress(&bytes);
+            let _ = PushRequest::decode(&bytes);
+            let _ = Progress::decode(&bytes);
             let _ = read_saved_state(&[Section {
                 identifier: saved_state_section_id(),
                 version: 1,

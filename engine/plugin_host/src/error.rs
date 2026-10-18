@@ -18,7 +18,7 @@ pub enum RegistrationError {
     DuplicateSystem(NamespacedId),
     #[error("two handlers are called {0}")]
     DuplicateHandler(NamespacedId),
-    #[error("message kind {0} has two handlers")]
+    #[error("message kind {0} is declared twice")]
     DuplicateMessage(NamespacedId),
     #[error("the command {0} is registered twice")]
     DuplicateCommand(String),

@@ -1,7 +1,8 @@
 //! The bytes of the messages of 2048, pinned: converting them to declared messages must not move one.
 
+use protocol::Message;
 use voxel_space::{FaceDirection, VoxelCoordinate};
-use voxunami_2048::messages::{Progress, PushRequest, encode_progress, encode_push};
+use voxunami_2048::messages::{Progress, PushRequest};
 use voxunami_2048::tool::Tool;
 
 #[test]
@@ -17,13 +18,9 @@ fn the_messages_of_2048_have_their_pinned_bytes() {
         largest_merge: 4096,
     };
     let pins: [(&str, Vec<u8>, &str); 3] = [
-        ("a push", encode_push(&push), "0550d00f0002"),
-        ("some progress", encode_progress(&progress), "c0c407638020"),
-        (
-            "no progress",
-            encode_progress(&Progress::default()),
-            "000000",
-        ),
+        ("a push", push.encode(), "0550d00f0002"),
+        ("some progress", progress.encode(), "c0c407638020"),
+        ("no progress", Progress::default().encode(), "000000"),
     ];
     let wrong: Vec<String> = pins
         .iter()

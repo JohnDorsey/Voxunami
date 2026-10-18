@@ -3,10 +3,9 @@
 use namespaced_id::NamespacedId;
 use physics::MoveInput;
 use player_presence::PlayerPose;
+use protocol::Message;
 use voxel_space::{BrickCoordinate, VoxelCoordinate, WorldPosition};
-use voxunami_cave::messages::{
-    MoveRequest, SetBlock, encode_light_scheme, encode_move_request, encode_set_block, encode_spawn,
-};
+use voxunami_cave::messages::{LightSchemeChanged, MoveRequest, SetBlock, Spawn};
 use voxunami_cave::multiscale_light::LightScheme;
 
 #[test]
@@ -36,23 +35,23 @@ fn cave_messages_have_their_pinned_bytes() {
     let pins: [(&str, Vec<u8>, &str); 5] = [
         (
             "a spawn",
-            encode_spawn(&pose),
+            Spawn(pose).encode(),
             "06030e0000c03f85ebff41000000000000803e000080bf",
         ),
         (
             "a movement request",
-            encode_move_request(&request),
+            request.encode(),
             "01ff0001000020c00000403f",
         ),
         (
             "a block to set",
-            encode_set_block(&set_block),
+            set_block.encode(),
             "4f90030a10626173655f626c6f636b733a6c616d7003",
         ),
-        ("no light scheme", encode_light_scheme(None), "00"),
+        ("no light scheme", LightSchemeChanged(None).encode(), "00"),
         (
             "the 16 level scheme",
-            encode_light_scheme(Some(LightScheme::LEVELS_16)),
+            LightSchemeChanged(Some(LightScheme::LEVELS_16)).encode(),
             "040101020408",
         ),
     ];

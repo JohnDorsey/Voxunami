@@ -6,13 +6,15 @@ use block_models::BlockTable;
 use game_shell::GameContent;
 use namespaced_id::NamespacedId;
 use player_presence::{SharedPoseBook, lock};
-use plugin_host::{CommandSpec, HandlerSpec, Phase, PlayerLeft, Plugin, Registrar, SystemSpec};
+use plugin_host::{
+    Argument, Arguments, CommandSpec, HandlerSpec, Phase, PlayerLeft, Plugin, Registrar, SystemSpec,
+};
 use protocol::ClientId;
 use voxel_grid::ChannelIndex;
 use voxel_space::{VoxelCoordinate, WorldPosition};
 
 use crate::content::CaveContent;
-use crate::messages::{decode_move_request, decode_spawn, move_input_kind, spawn_kind};
+use crate::messages::{MoveRequest, Spawn};
 use crate::movement::Movement;
 
 /// Moves the players' bodies, on the server: a client says which keys are held and which way it
@@ -45,14 +47,8 @@ fn locked(movement: &Mutex<Movement>) -> MutexGuard<'_, Movement> {
 }
 
 /// `/tp X Y Z`: puts the player's eyes at a position, in voxels. Returns what to tell them.
-fn teleport(movement: &mut Movement, client: ClientId, arguments: &[&str]) -> String {
-    let [x, y, z] = arguments else {
-        return "usage: /tp X Y Z".to_owned();
-    };
-    let parsed = [x, y, z].map(|text| text.parse::<f64>().ok().filter(|value| value.is_finite()));
-    let [Some(x), Some(y), Some(z)] = parsed else {
-        return "usage: /tp X Y Z, with numbers".to_owned();
-    };
+fn teleport(movement: &mut Movement, client: ClientId, arguments: &Arguments<'_>) -> String {
+    let [x, y, z] = [0, 1, 2].map(|position| arguments.number(position));
     // The position must be somewhere in the world.
     let Ok(voxel) = VoxelCoordinate::try_new(x.floor() as i64, y.floor() as i64, z.floor() as i64)
     else {
@@ -99,30 +95,22 @@ impl Plugin for MovementPlugin {
         )));
 
         let (bodies, players) = (Arc::clone(&movement), Arc::clone(&self.players));
-        registrar.message(spawn_kind(), move |_, client, payload| {
+        registrar.message(move |_, client, Spawn(pose)| {
             let mut movement = locked(&bodies);
-            if !movement.has_body(client)
-                && let Ok(pose) = decode_spawn(payload)
-            {
+            if !movement.has_body(client) {
                 let mut book = lock(&players);
                 movement.spawn(client, pose, book.level_of(client));
                 book.set_pose(client, pose);
             }
         });
         let bodies = Arc::clone(&movement);
-        registrar.message(move_input_kind(), move |_, client, payload| {
-            if let Ok(request) = decode_move_request(payload) {
-                locked(&bodies).ask(client, request);
-            }
+        registrar.message(move |_, client, request: MoveRequest| {
+            locked(&bodies).ask(client, request);
         });
 
         let bodies = Arc::clone(&movement);
         registrar.command(
-            CommandSpec {
-                name: "fly",
-                usage: "/fly",
-                summary: "toggles flying and walking",
-            },
+            CommandSpec::new("fly", "toggles flying and walking"),
             move |context, client, _| {
                 let flying = locked(&bodies).toggle_flying(client);
                 context.reply(
@@ -137,11 +125,10 @@ impl Plugin for MovementPlugin {
         );
         let bodies = Arc::clone(&movement);
         registrar.command(
-            CommandSpec {
-                name: "tp",
-                usage: "/tp X Y Z",
-                summary: "puts your eyes at a position, in voxels",
-            },
+            CommandSpec::new("tp", "puts your eyes at a position, in voxels")
+                .argument(Argument::number("x"))
+                .argument(Argument::number("y"))
+                .argument(Argument::number("z")),
             move |context, client, arguments| {
                 let reply = teleport(&mut locked(&bodies), client, arguments);
                 context.reply(client, &reply);

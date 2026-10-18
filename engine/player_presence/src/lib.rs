@@ -12,9 +12,6 @@ mod messages;
 mod plugin;
 mod pose_book;
 
-pub use messages::{
-    PlayerPose, PlayerState, decode_level_change, decode_players, decode_pose, encode_level_change,
-    encode_players, encode_pose, level_kind, players_kind, pose_kind,
-};
+pub use messages::{LevelChange, PlayerPose, PlayerState, Players, PoseReport};
 pub use plugin::{PlayersPlugin, SharedPoseBook, lock};
 pub use pose_book::PoseBook;

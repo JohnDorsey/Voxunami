@@ -1,6 +1,6 @@
 # Phase 25 specification: declared messages and a command registry
 
-**Status: proposed 2026-10-18, awaiting the owner's review.** It makes concrete revision 4 of `plan.md` ("Plugin shape revisions") and the
+**Status: accepted 2026-10-18 with the default answers to the three questions (no permission level, `/help` in the host, malformed payloads dropped and counted). Built (25a to 25d).** It makes concrete revision 4 of `plan.md` ("Plugin shape revisions") and the
 recommendation of `plugin-architecture-review.md` W6: the command registry is worth it; for messages, a trait and a generated test, no code
 generation and no schema. Everything below about today's code was read from the code (verified); the design is my proposal (believed).
 

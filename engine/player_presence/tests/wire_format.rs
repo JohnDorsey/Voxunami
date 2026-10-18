@@ -1,8 +1,8 @@
 //! The bytes of the presence messages, pinned: converting them to declared messages must not move one.
 
 use namespaced_id::NamespacedId;
-use player_presence::{PlayerPose, PlayerState, encode_level_change, encode_players, encode_pose};
-use protocol::ClientId;
+use player_presence::{LevelChange, PlayerPose, PlayerState, Players, PoseReport};
+use protocol::{ClientId, Message};
 use voxel_space::{BrickCoordinate, LevelIndex, WorldPosition};
 
 fn pose(x: i64, offset: [f32; 3], yaw: f32, pitch: f32) -> PlayerPose {
@@ -37,20 +37,20 @@ fn the_presence_messages_have_their_pinned_bytes() {
     let pins: [(&str, Vec<u8>, &str); 4] = [
         (
             "a pose",
-            encode_pose(&first),
+            PoseReport(first).encode(),
             "06030e0000c03f85ebff41000000000000803e000080bf",
         ),
         (
             "a level change",
-            encode_level_change(&level),
+            LevelChange(level).encode(),
             "13746573745f636f6e74656e743a7365636f6e64",
         ),
         (
             "two players",
-            encode_players(&players),
+            Players(players.to_vec()).encode(),
             "02010000000006030e0000c03f85ebff41000000000000803e000080bf070000000211030e000000000000003f00008041000040c00000c03f",
         ),
-        ("no players", encode_players(&[]), "00"),
+        ("no players", Players(vec![]).encode(), "00"),
     ];
     let wrong: Vec<String> = pins
         .iter()
