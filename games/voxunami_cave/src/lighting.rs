@@ -25,7 +25,9 @@
 //! step, so that a great deal of light changing at once (many lamps) takes a few ticks longer
 //! instead of one tick too long. The light it settles to is the same.
 
-use block_models::BlockTable;
+use block_models::{BlockTable, PropertyHandle};
+
+use crate::block_properties;
 use lattice::ActiveVoxels;
 use namespaced_id::NamespacedId;
 use voxel_space::{FaceDirection, GridId, VoxelCoordinate};
@@ -60,6 +62,7 @@ pub trait LightWorld {
 #[derive(Debug)]
 pub struct Lighting {
     table: BlockTable,
+    emission: PropertyHandle<u8>,
     /// Voxels whose light may be out of date, in a fixed order.
     pending: ActiveVoxels,
 }
@@ -69,6 +72,7 @@ impl Lighting {
     /// settled.
     pub fn new(table: BlockTable) -> Self {
         Self {
+            emission: block_properties::emission(&table),
             table,
             pending: ActiveVoxels::new(),
         }
@@ -77,7 +81,11 @@ impl Lighting {
     /// Light that carries on from voxels that were still to be looked at, as when a world is
     /// loaded.
     pub fn with_pending(table: BlockTable, pending: ActiveVoxels) -> Self {
-        Self { table, pending }
+        Self {
+            emission: block_properties::emission(&table),
+            table,
+            pending,
+        }
     }
 
     /// The voxels still to be looked at, in the order they will be.
@@ -131,14 +139,15 @@ impl Lighting {
         let Some((block, state)) = world.block_and_state(grid, at) else {
             return 0;
         };
-        let connections = self.table.connections(self.table.model_of(block, state));
+        let model = self.table.model_of(block, state);
+        let connections = self.table.connections(model);
         if !FaceDirection::ALL
             .iter()
             .any(|&face| connections.is_open(face))
         {
             return 0; // a whole block holds no light, though it may give some
         }
-        let mut value = self.table.emission(block);
+        let mut value = self.table.get(self.emission, model);
         for face in FaceDirection::ALL {
             if !connections.is_open(face) {
                 continue;
@@ -150,10 +159,9 @@ impl Lighting {
             else {
                 continue;
             };
-            let neighbour_connections = self
-                .table
-                .connections(self.table.model_of(neighbour_block, neighbour_state));
-            let emission = self.table.emission(neighbour_block);
+            let neighbour_model = self.table.model_of(neighbour_block, neighbour_state);
+            let neighbour_connections = self.table.connections(neighbour_model);
+            let emission = self.table.get(self.emission, neighbour_model);
             if neighbour_connections.is_open(face.opposite()) || emission > 0 {
                 // A lamp lights every face of itself, and holds no light if it is a whole block.
                 let given = world.light(grid, neighbour).max(emission);
@@ -198,12 +206,13 @@ mod tests {
             Shape::half(FaceDirection::PositiveY),
             Shape::stair(FaceDirection::PositiveX),
         ]);
-        let lamp = BlockDefinition::cube([1.0; 3]).with_emission(20);
+        let lamp = BlockDefinition::cube([1.0; 3]).with_property(&base_blocks::EMISSION, 20);
         let glass_lamp = BlockDefinition::cube([1.0; 3])
             .with_see_through(true)
-            .with_emission(12);
-        let brightest_lamp = BlockDefinition::cube([1.0; 3]).with_emission(255);
-        BlockTable::from_definitions(&[
+            .with_property(&base_blocks::EMISSION, 12);
+        let brightest_lamp =
+            BlockDefinition::cube([1.0; 3]).with_property(&base_blocks::EMISSION, 255);
+        block_properties::test_table(&[
             Some(&air),
             Some(&stone),
             Some(&glass),
@@ -293,6 +302,7 @@ mod tests {
     /// The light the rule should settle to, worked out the other way round: from each source, a
     /// search that takes the brightest light to each voxel first.
     fn reference(world: &Box3, table: &BlockTable) -> Vec<(VoxelCoordinate, u8)> {
+        let emission = block_properties::emission(table);
         let model_at = |voxel: VoxelCoordinate| {
             inside(voxel).then(|| {
                 let (block, state) = world
@@ -307,9 +317,9 @@ mod tests {
         let mut queue = BinaryHeap::new();
         // What a voxel gives to the neighbour on `face` of it, and whether it lets light out that way.
         let gives = |voxel: VoxelCoordinate, face: FaceDirection, value: u8| -> Option<u8> {
-            let (block, model) = model_at(voxel)?;
-            let lets_out = table.connections(model).is_open(face) || table.emission(block) > 0;
-            lets_out.then_some(value.max(table.emission(block)))
+            let (_, model) = model_at(voxel)?;
+            let lets_out = table.connections(model).is_open(face) || table.get(emission, model) > 0;
+            lets_out.then_some(value.max(table.get(emission, model)))
         };
         let mut all = Vec::new();
         for x in 0..EDGE {
@@ -320,28 +330,28 @@ mod tests {
             }
         }
         for &voxel in &all {
-            let (block, model) = model_at(voxel).unwrap();
+            let (_, model) = model_at(voxel).unwrap();
             let passes = FaceDirection::ALL
                 .iter()
                 .any(|&face| table.connections(model).is_open(face));
             if passes
-                && table.emission(block) > 0
+                && table.get(emission, model) > 0
                 && best
                     .get(&voxel)
-                    .is_none_or(|&known| table.emission(block) > known)
+                    .is_none_or(|&known| table.get(emission, model) > known)
             {
-                best.insert(voxel, table.emission(block));
-                queue.push((table.emission(block), Reverse(voxel)));
+                best.insert(voxel, table.get(emission, model));
+                queue.push((table.get(emission, model), Reverse(voxel)));
             }
             // A whole lamp gives light to the voxels around it without holding any.
-            if !passes && table.emission(block) > 0 {
+            if !passes && table.get(emission, model) > 0 {
                 for face in FaceDirection::ALL {
                     if let Some(neighbour) = step_to(voxel, face)
                         && let Some((_, neighbour_model)) = model_at(neighbour)
                         && table.connections(neighbour_model).is_open(face.opposite())
-                        && table.emission(block) > 1
+                        && table.get(emission, model) > 1
                     {
-                        let value = table.emission(block) - 1;
+                        let value = table.get(emission, model) - 1;
                         if best.get(&neighbour).is_none_or(|&known| value > known) {
                             best.insert(neighbour, value);
                             queue.push((value, Reverse(neighbour)));

@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use block_models::BlockTable;
+use block_models::{BlockTable, PropertyHandle};
 use game_shell::GameContent;
 use lattice::ActiveVoxels;
 use namespaced_id::NamespacedId;
@@ -26,6 +26,7 @@ use crate::multiscale_light::{self, LightModel, LightScheme, MultiScaleLighting}
 #[derive(Debug)]
 struct LightState {
     table: BlockTable,
+    emission: PropertyHandle<u8>,
     channels: CaveChannels,
     /// The world's levels by identifier, in index order, for naming them in the saved light.
     level_ids: Vec<NamespacedId>,
@@ -82,11 +83,9 @@ impl LightState {
             for (brick, contents) in data.overrides.bricks() {
                 for local in LocalVoxelIndex::all() {
                     let voxel = brick.voxel_at(local);
-                    if self
-                        .table
-                        .emission(contents.get(self.channels.block, local))
-                        > 0
-                    {
+                    let block = contents.get(self.channels.block, local);
+                    let state = contents.get(self.channels.state, local);
+                    if self.table.get_of(self.emission, block, state) > 0 {
                         emitters.push((GridId::root(level), voxel));
                     }
                     for &channel in &channels {
@@ -228,6 +227,7 @@ impl Plugin for LightPlugin {
                 .collect(),
         );
         let state = Arc::new(Mutex::new(LightState {
+            emission: crate::block_properties::emission(&self.table),
             table: self.table.clone(),
             channels: self.channels.clone(),
             level_ids,

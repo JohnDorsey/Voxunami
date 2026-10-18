@@ -47,7 +47,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use block_models::BlockTable;
+use crate::block_properties;
+use block_models::{BlockTable, PropertyHandle};
 use lattice::ActiveVoxels;
 use namespaced_id::NamespacedId;
 use voxel_space::{FaceDirection, GridId, VoxelCoordinate};
@@ -477,6 +478,7 @@ fn layer_bit(width: usize, axis: usize, local: [usize; 3]) -> usize {
 #[derive(Debug)]
 pub struct MultiScaleLighting {
     table: BlockTable,
+    emission: PropertyHandle<u8>,
     scheme: LightScheme,
     /// Cells (by anchor) whose light may be out of date, at each scale, in a fixed order.
     pending: Vec<ActiveVoxels>,
@@ -489,6 +491,7 @@ impl MultiScaleLighting {
     /// settled.
     pub fn new(table: BlockTable, scheme: LightScheme) -> Self {
         Self {
+            emission: block_properties::emission(&table),
             table,
             scheme,
             pending: (0..scheme.scales()).map(|_| ActiveVoxels::new()).collect(),
@@ -505,6 +508,7 @@ impl MultiScaleLighting {
     ) -> Self {
         assert_eq!(pending.len(), scheme.scales());
         Self {
+            emission: block_properties::emission(&table),
             table,
             scheme,
             pending,
@@ -626,11 +630,12 @@ impl MultiScaleLighting {
                         .and_then(|at| world.block_and_state(grid, at));
                     // What cannot be read lets no light in.
                     let Some((block, state)) = read else { continue };
-                    let connections = self.table.connections(self.table.model_of(block, state));
+                    let model = self.table.model_of(block, state);
+                    let connections = self.table.connections(model);
                     open[index(x, y, z)] = FaceDirection::ALL
                         .iter()
                         .any(|&face| connections.is_open(face));
-                    let light = emission_level(self.table.emission(block), self.scheme);
+                    let light = emission_level(self.table.get(self.emission, model), self.scheme);
                     if light > 0 {
                         source = source.max(light);
                         emitters.push([x, y, z]);
@@ -796,9 +801,9 @@ mod tests {
         let air = BlockDefinition::air();
         let stone = BlockDefinition::cube([0.5; 3]);
         let glass = BlockDefinition::cube([0.7; 3]).with_see_through(true);
-        let lamp = BlockDefinition::cube([1.0; 3]).with_emission(64);
-        let candle = BlockDefinition::cube([1.0; 3]).with_emission(16);
-        BlockTable::from_definitions(&[
+        let lamp = BlockDefinition::cube([1.0; 3]).with_property(&base_blocks::EMISSION, 64);
+        let candle = BlockDefinition::cube([1.0; 3]).with_property(&base_blocks::EMISSION, 16);
+        block_properties::test_table(&[
             Some(&air),
             Some(&stone),
             Some(&glass),
@@ -950,11 +955,12 @@ mod tests {
                 })
             })
             .collect();
+        let emission = block_properties::emission(table);
         let block_at = |voxel: VoxelCoordinate| world.blocks.get(&voxel).copied().unwrap_or(AIR);
         let open = |voxel: VoxelCoordinate| is_open(world, table, voxel);
         let light = |voxel: VoxelCoordinate| {
             if world.contains(voxel) {
-                emission_level(table.emission(block_at(voxel)), scheme)
+                emission_level(table.get_of(emission, block_at(voxel), 0), scheme)
             } else {
                 0
             }
@@ -1276,9 +1282,13 @@ mod tests {
     #[test]
     fn a_lamp_is_the_greatest_level_in_every_scheme_and_a_fire_two_thirds_of_it() {
         let table = table();
+        let emission = block_properties::emission(&table);
         for scheme in LightScheme::ALL {
             let greatest = scheme.maximum_level();
-            assert_eq!(emission_level(table.emission(LAMP), scheme), greatest);
+            assert_eq!(
+                emission_level(table.get_of(emission, LAMP, 0), scheme),
+                greatest
+            );
             assert_eq!(emission_level(0, scheme), 0);
             assert_eq!(emission_level(255, scheme), greatest);
             // A candle (16) is about a quarter; a fire (40) two thirds, rounded up.

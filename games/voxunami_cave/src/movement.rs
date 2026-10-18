@@ -12,7 +12,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use block_models::BlockTable;
+use crate::block_properties;
+use block_models::{BlockTable, PropertyHandle};
 use game_shell::PlayerPose;
 use physics::{BrickHint, CharacterBody, CharacterSettings, Collision, CollisionSource, MoveInput};
 use protocol::ClientId;
@@ -29,6 +30,7 @@ pub const PHYSICS_STEPS_PER_TICK: u32 = 3;
 #[derive(Debug)]
 struct ModelCollisions {
     table: BlockTable,
+    passable: PropertyHandle<bool>,
     cache: HashMap<u32, Collision>,
 }
 
@@ -36,11 +38,12 @@ impl ModelCollisions {
     fn of(&mut self, block: u32, state: u32) -> Collision {
         let model = self.table.model_of(block, state);
         let table = &self.table;
+        let passable = self.passable;
         self.cache
             .entry(model.get())
             .or_insert_with(|| {
                 let shape = table.shape(model);
-                if table.is_passable(block) || shape.is_empty() {
+                if table.get(passable, model) || shape.is_empty() {
                     Collision::Empty
                 } else if shape.is_full() {
                     Collision::Full
@@ -138,6 +141,7 @@ impl Movement {
         Self {
             bodies: BTreeMap::new(),
             collisions: ModelCollisions {
+                passable: block_properties::passable(&table),
                 table,
                 cache: HashMap::new(),
             },

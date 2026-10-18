@@ -21,9 +21,10 @@
 //! starts again at 0 whenever a server starts: a world saved and loaded burns exactly as it would
 //! have burned if it had never stopped.
 
+use crate::block_properties;
 use base_blocks::FIRE_LIFETIME;
 use binary_codec::{ByteReader, ByteWriter};
-use block_models::BlockTable;
+use block_models::{BlockTable, PropertyHandle};
 use lattice::{ActiveVoxels, voxel_random};
 use namespaced_id::NamespacedId;
 use voxel_space::{FaceDirection, GridId, LevelIndex, VoxelCoordinate};
@@ -62,6 +63,7 @@ pub trait FireWorld {
 #[derive(Debug)]
 pub struct Fire {
     table: BlockTable,
+    flammability: PropertyHandle<u8>,
     fire_block: u32,
     air_block: u32,
     seed: u64,
@@ -82,6 +84,7 @@ impl Fire {
         active: ActiveVoxels,
     ) -> Self {
         Self {
+            flammability: block_properties::flammability(&table),
             table,
             fire_block,
             air_block,
@@ -189,10 +192,16 @@ impl Fire {
                 let Some(neighbour) = at.checked_offset(dx, dy, dz) else {
                     continue;
                 };
-                let Some((neighbour_block, _)) = world.block_and_state(grid, neighbour) else {
+                let Some((neighbour_block, neighbour_state)) =
+                    world.block_and_state(grid, neighbour)
+                else {
                     continue;
                 };
-                let flammability = u64::from(self.table.flammability(neighbour_block));
+                let flammability = u64::from(self.table.get_of(
+                    self.flammability,
+                    neighbour_block,
+                    neighbour_state,
+                ));
                 let roll = (chance >> (2 + CHANCE_BITS * index as u32)) & ((1 << CHANCE_BITS) - 1);
                 if roll < flammability {
                     writes.push(Write {
@@ -240,11 +249,13 @@ mod tests {
     fn table() -> BlockTable {
         let air = BlockDefinition::air();
         let stone = BlockDefinition::cube([0.5; 3]);
-        let grass = BlockDefinition::cube([0.3, 0.6, 0.2]).with_flammability(GRASS_FLAMMABILITY);
-        let wood = BlockDefinition::cube([0.5, 0.4, 0.2]).with_flammability(WOOD_FLAMMABILITY);
+        let grass = BlockDefinition::cube([0.3, 0.6, 0.2])
+            .with_property(&base_blocks::FLAMMABILITY, GRASS_FLAMMABILITY);
+        let wood = BlockDefinition::cube([0.5, 0.4, 0.2])
+            .with_property(&base_blocks::FLAMMABILITY, WOOD_FLAMMABILITY);
         let fire = BlockDefinition::cube([0.9, 0.5, 0.1])
             .with_shapes(vec![Shape::half(FaceDirection::NegativeY)]);
-        BlockTable::from_definitions(&[
+        block_properties::test_table(&[
             Some(&air),
             Some(&stone),
             Some(&grass),
