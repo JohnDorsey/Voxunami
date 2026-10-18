@@ -9,9 +9,9 @@ use lattice::ActiveVoxels;
 use namespaced_id::NamespacedId;
 use player_presence::pose_kind;
 use protocol::{ClientId, Tick};
-use server::{Audience, CommandLine, GameLogic, ServerWorld};
+use server::{Audience, CommandLine, GameLogic, GridView, ServerWorld};
 use voxel_grid::ChannelIndex;
-use voxel_space::{LevelIndex, VoxelCoordinate, WorldPosition};
+use voxel_space::{GridId, VoxelCoordinate, WorldPosition};
 use world_storage::{Section, WorldData};
 
 use crate::content::CaveContent;
@@ -36,6 +36,20 @@ pub const LIGHT_VOXELS_PER_TICK: usize = 20_000;
 /// How far from a player, in voxels, fires burn: farther away they are frozen.
 pub const FIRE_RANGE: f64 = 64.0;
 
+/// The block and state of a voxel of a grid, or `None` where there is nothing to read.
+fn block_and_state_of(
+    world: &mut ServerWorld,
+    block_channel: ChannelIndex,
+    state_channel: ChannelIndex,
+    grid: GridId,
+    at: VoxelCoordinate,
+) -> Option<(u32, u32)> {
+    let mut grid = world.grid(grid).ok()?;
+    let block = grid.get(block_channel, at).ok()?;
+    let state = grid.get(state_channel, at).ok()?;
+    Some((block, state))
+}
+
 /// The server's world as the light rule sees it. Terrain this server cannot generate has nothing
 /// to read, and lets no light through.
 struct WorldLight<'a> {
@@ -46,23 +60,23 @@ struct WorldLight<'a> {
 }
 
 impl LightWorld for WorldLight<'_> {
-    fn block_and_state(&mut self, level: LevelIndex, at: VoxelCoordinate) -> Option<(u32, u32)> {
-        let block = self.world.voxel(level, self.block_channel, at).ok()?;
-        let state = self.world.voxel(level, self.state_channel, at).ok()?;
-        Some((block, state))
+    fn block_and_state(&mut self, grid: GridId, at: VoxelCoordinate) -> Option<(u32, u32)> {
+        block_and_state_of(self.world, self.block_channel, self.state_channel, grid, at)
     }
 
-    fn light(&mut self, level: LevelIndex, at: VoxelCoordinate) -> u8 {
+    fn light(&mut self, grid: GridId, at: VoxelCoordinate) -> u8 {
         self.world
-            .voxel(level, self.light_channel, at)
+            .grid(grid)
+            .and_then(|mut grid| grid.get(self.light_channel, at))
             .map_or(0, |light| light.min(255) as u8)
     }
 
-    fn set_light(&mut self, level: LevelIndex, at: VoxelCoordinate, value: u8) {
-        // The voxel was just read, so the level and the terrain there are available.
+    fn set_light(&mut self, grid: GridId, at: VoxelCoordinate, value: u8) {
+        // The voxel was just read, so the grid and the terrain there are available.
         let _ = self
             .world
-            .set_voxel(level, self.light_channel, at, u32::from(value));
+            .grid(grid)
+            .and_then(|mut grid| grid.set(self.light_channel, at, u32::from(value)));
     }
 }
 
@@ -76,26 +90,26 @@ struct WorldScaledLight<'a> {
 }
 
 impl ScaledLightWorld for WorldScaledLight<'_> {
-    fn block_and_state(&mut self, level: LevelIndex, at: VoxelCoordinate) -> Option<(u32, u32)> {
-        let block = self.world.voxel(level, self.block_channel, at).ok()?;
-        let state = self.world.voxel(level, self.state_channel, at).ok()?;
-        Some((block, state))
+    fn block_and_state(&mut self, grid: GridId, at: VoxelCoordinate) -> Option<(u32, u32)> {
+        block_and_state_of(self.world, self.block_channel, self.state_channel, grid, at)
     }
 
-    fn word(&mut self, scale: usize, level: LevelIndex, anchor: VoxelCoordinate) -> u32 {
+    fn word(&mut self, scale: usize, grid: GridId, anchor: VoxelCoordinate) -> u32 {
         self.world
-            .voxel(level, self.scale_channels[scale], anchor)
+            .grid(grid)
+            .and_then(|mut grid| grid.get(self.scale_channels[scale], anchor))
             .unwrap_or(0)
     }
 
-    fn set_word(&mut self, scale: usize, level: LevelIndex, anchor: VoxelCoordinate, value: u32) {
-        // The cell's anchor was just read, so the level and the terrain there are available. A
+    fn set_word(&mut self, scale: usize, grid: GridId, anchor: VoxelCoordinate, value: u32) {
+        // The cell's anchor was just read, so the grid and the terrain there are available. A
         // cell in more than one brick has its word in each (see `word_homes`); a brick that cannot be
         // written is not drawn from it either.
+        let Ok(mut grid) = self.world.grid(grid) else {
+            return;
+        };
         for home in multiscale_light::word_homes(self.scheme.width(scale), anchor) {
-            let _ = self
-                .world
-                .set_voxel(level, self.scale_channels[scale], home, value);
+            let _ = grid.set(self.scale_channels[scale], home, value);
         }
     }
 }
@@ -108,22 +122,17 @@ struct WorldFire<'a> {
 }
 
 impl FireWorld for WorldFire<'_> {
-    fn block_and_state(&mut self, level: LevelIndex, at: VoxelCoordinate) -> Option<(u32, u32)> {
-        let block = self.world.voxel(level, self.block_channel, at).ok()?;
-        let state = self.world.voxel(level, self.state_channel, at).ok()?;
-        Some((block, state))
+    fn block_and_state(&mut self, grid: GridId, at: VoxelCoordinate) -> Option<(u32, u32)> {
+        block_and_state_of(self.world, self.block_channel, self.state_channel, grid, at)
     }
 
-    fn set_block_and_state(
-        &mut self,
-        level: LevelIndex,
-        at: VoxelCoordinate,
-        block: u32,
-        state: u32,
-    ) {
-        // The voxel was just read, so the level and the terrain there are available.
-        let _ = self.world.set_voxel(level, self.state_channel, at, state);
-        let _ = self.world.set_voxel(level, self.block_channel, at, block);
+    fn set_block_and_state(&mut self, grid: GridId, at: VoxelCoordinate, block: u32, state: u32) {
+        // The voxel was just read, so the grid and the terrain there are available.
+        let Ok(mut grid) = self.world.grid(grid) else {
+            return;
+        };
+        let _ = grid.set(self.state_channel, at, state);
+        let _ = grid.set(self.block_channel, at, block);
     }
 }
 
@@ -158,10 +167,10 @@ impl CaveLogic {
     }
 
     /// Tells whichever light the world has that a voxel changed.
-    fn light_changed(&mut self, level: LevelIndex, at: VoxelCoordinate) {
+    fn light_changed(&mut self, grid: GridId, at: VoxelCoordinate) {
         match self.light_model {
-            LightModel::Classic => self.lighting.voxel_changed(level, at),
-            LightModel::MultiScale(_) => self.multiscale.voxel_changed(level, at),
+            LightModel::Classic => self.lighting.voxel_changed(grid, at),
+            LightModel::MultiScale(_) => self.multiscale.voxel_changed(grid, at),
         }
     }
 
@@ -196,7 +205,7 @@ impl CaveLogic {
                 for local in voxel_space::LocalVoxelIndex::all() {
                     let voxel = brick.voxel_at(local);
                     if self.table.emission(contents.get(self.block_channel, local)) > 0 {
-                        emitters.push((level, voxel));
+                        emitters.push((GridId::root(level), voxel));
                     }
                     for &channel in &channels {
                         if contents.get(channel, local) != 0 {
@@ -221,8 +230,8 @@ impl CaveLogic {
             light_scheme_kind(),
             encode_light_scheme(self.scheme_in_use()),
         );
-        for (level, voxel) in emitters {
-            self.light_changed(level, voxel);
+        for (grid, voxel) in emitters {
+            self.light_changed(grid, voxel);
         }
     }
 
@@ -319,10 +328,10 @@ impl CaveLogic {
             .is_ok()
         {
             let _ = world.set_voxel(level, self.block_channel, at, raw);
-            self.light_changed(level, at);
+            self.light_changed(GridId::root(level), at);
             self.movement.brick_changed(level, at.split().0);
             if raw == self.fire_block {
-                self.fire.ignite(level, at);
+                self.fire.ignite(GridId::root(level), at);
             }
         }
     }
@@ -454,15 +463,18 @@ impl GameLogic for CaveLogic {
                 block_channel: self.block_channel,
                 state_channel: self.state_channel,
             },
-            |level, at| {
+            |grid, at| {
                 poses.players().any(|(_, pose, player_level)| {
-                    player_level == level && pose.distance_to_voxel(at) <= FIRE_RANGE
+                    Some(player_level) == grid.root_level()
+                        && pose.distance_to_voxel(at) <= FIRE_RANGE
                 })
             },
         );
-        for (level, at) in changed {
-            self.light_changed(level, at);
-            self.movement.brick_changed(level, at.split().0);
+        for (grid, at) in changed {
+            self.light_changed(grid, at);
+            if let Some(level) = grid.root_level() {
+                self.movement.brick_changed(level, at.split().0);
+            }
         }
         match self.light_model {
             LightModel::Classic => {

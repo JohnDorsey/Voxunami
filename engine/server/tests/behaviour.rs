@@ -5,11 +5,12 @@ use std::sync::{Arc, Mutex};
 
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, ClientMessage, PROTOCOL_VERSION, ServerMessage, Tick};
+use server::GridView;
 use server::test_support::{LogicEvent, ScriptedLogic};
 use server::{Audience, LeaveReason, Server, ServerConfig, StepReport};
 use transport::loopback::{LoopbackConnection, LoopbackConnector, loopback_listener};
 use transport::{Connection, ConnectionClosed};
-use voxel_space::{BrickBox, BrickCoordinate, LevelIndex, VoxelCoordinate};
+use voxel_space::{BrickBox, BrickCoordinate, GridId, LevelIndex, VoxelCoordinate};
 use world_storage::ParsedWorld;
 use world_storage::WorldData;
 use world_storage::test_support::{ALL_PLUGINS, Game, Plugin, brick, id, sample_world};
@@ -1458,5 +1459,65 @@ fn switching_levels_in_the_tick_of_an_edit_sends_each_brick_once_in_its_final_st
         edits_sent(&messages),
         [],
         "the bricks already carry the edit; sending it again would apply it twice"
+    );
+}
+
+#[test]
+fn a_grid_reads_and_writes_the_voxels_of_its_level_as_the_world_does_and_unknown_grids_are_errors()
+{
+    let outcome = Arc::new(Mutex::new(None));
+    let recorded = Arc::clone(&outcome);
+    let logic = ScriptedLogic::new().on_tick(move |_, world| {
+        let channel = world
+            .data()
+            .main()
+            .overrides
+            .layout()
+            .channel_index(&id("core:block"))
+            .unwrap();
+        let at = VoxelCoordinate::new(3, 40 * 32, 3);
+        let mut grid = world.grid(GridId::MAIN).unwrap();
+        let identity = grid.id();
+        let before = grid.get(channel, at);
+        let changed = grid.set(channel, at, 7);
+        let unchanged = grid.set(channel, at, 7);
+        let through_the_grid = grid.get(channel, at);
+        // The same voxel, asked of the world by level.
+        let through_the_world = world.voxel(LevelIndex::MAIN, channel, at);
+        let no_such_level = world.grid(GridId::root(LevelIndex::new(9))).err();
+        let not_a_root = world.grid(GridId::new(GridId::FIRST_ALLOCATED)).err();
+        *recorded.lock().unwrap() = Some((
+            identity,
+            before,
+            changed,
+            unchanged,
+            through_the_grid,
+            through_the_world,
+            no_such_level,
+            not_a_root,
+        ));
+    });
+    let game = Game::new(&[Plugin::BaseBlocks]);
+    let world = sample_world(&game);
+    let mut harness = Harness::with_logic(&game, world, ServerConfig::new(game_id()), logic);
+    harness.server.step();
+    let found = outcome.lock().unwrap().take().unwrap();
+    assert_eq!(found.0, GridId::MAIN);
+    assert_eq!(found.1, Ok(0));
+    assert_eq!(found.2, Ok(true));
+    assert_eq!(found.3, Ok(false), "setting what is there changes nothing");
+    assert_eq!(found.4, Ok(7));
+    assert_eq!(found.5, Ok(7));
+    assert_eq!(
+        found.6,
+        Some(server::AccessError::NoSuchGrid(GridId::root(
+            LevelIndex::new(9)
+        )))
+    );
+    assert_eq!(
+        found.7,
+        Some(server::AccessError::NoSuchGrid(GridId::new(
+            GridId::FIRST_ALLOCATED
+        )))
     );
 }

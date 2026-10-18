@@ -47,6 +47,15 @@ Phase 1d (saving):
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
 
+Phase 23a (grid addressing; owner's request, 2026-10-18; the first code step of `plugin-api-spec.md`):
+- `voxel_space::GridId` (the address a rule uses; a root grid's id is its level's index), `server::GridView` (`id`, `get`, `set`) and
+  `ServerWorld::grid`. `lattice::ActiveVoxels` and `voxel_random` are keyed by grid; Cave's light, multiscale light and fire rules and
+  their adapters take a grid where they took a level. Names in those files changed from `level` to `grid` where they meant the world's
+  level (a light level stays a level).
+- Held fixed, and checked: the three golden sessions pass unmodified (stream and saved world, Windows and Linux), the pinned `voxel_random`
+  numbers pass unmodified, and a new test writes a root grid's pending voxels by hand in the old by-level-name layout and compares the
+  bytes. A voxel of a non-root grid cannot be saved yet and panics, which a test pins.
+
 Phase 23, step 1 (locking behaviour before the plugin refactor; owner's request, 2026-10-18):
 - `games/*/tests/golden_session.rs`, one for each game: a scripted session (fixed tick counts, fixed coordinates; never `Rig::settle`, which
   steps the server a variable number of times while the client's workers finish, and never what the mesher has drawn) records the

@@ -2,17 +2,17 @@ use std::collections::BTreeSet;
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
-use voxel_space::{FaceDirection, LevelIndex, VoxelCoordinate};
+use voxel_space::{FaceDirection, GridId, LevelIndex, VoxelCoordinate};
 use world_storage::Section;
 
 /// The version of the saved form this program writes.
 const SAVED_VERSION: u32 = 1;
 
-/// The voxels a rule still has to look at, in a fixed order (by level, then by position), so that
+/// The voxels a rule still has to look at, in a fixed order (by grid, then by position), so that
 /// what a rule does with them never depends on how they got there.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ActiveVoxels {
-    voxels: BTreeSet<(LevelIndex, VoxelCoordinate)>,
+    voxels: BTreeSet<(GridId, VoxelCoordinate)>,
 }
 
 impl ActiveVoxels {
@@ -21,27 +21,27 @@ impl ActiveVoxels {
     }
 
     /// Adds a voxel; does nothing if it is there already.
-    pub fn insert(&mut self, level: LevelIndex, voxel: VoxelCoordinate) {
-        self.voxels.insert((level, voxel));
+    pub fn insert(&mut self, grid: GridId, voxel: VoxelCoordinate) {
+        self.voxels.insert((grid, voxel));
     }
 
     /// Adds a voxel and the six voxels around it: the ones whose next value may depend on it.
-    pub fn insert_with_neighbours(&mut self, level: LevelIndex, voxel: VoxelCoordinate) {
-        self.insert(level, voxel);
+    pub fn insert_with_neighbours(&mut self, grid: GridId, voxel: VoxelCoordinate) {
+        self.insert(grid, voxel);
         for face in FaceDirection::ALL {
             let [dx, dy, dz] = face.offset();
             if let Some(neighbour) = voxel.checked_offset(dx, dy, dz) {
-                self.insert(level, neighbour);
+                self.insert(grid, neighbour);
             }
         }
     }
 
-    pub fn remove(&mut self, level: LevelIndex, voxel: VoxelCoordinate) {
-        self.voxels.remove(&(level, voxel));
+    pub fn remove(&mut self, grid: GridId, voxel: VoxelCoordinate) {
+        self.voxels.remove(&(grid, voxel));
     }
 
-    pub fn contains(&self, level: LevelIndex, voxel: VoxelCoordinate) -> bool {
-        self.voxels.contains(&(level, voxel))
+    pub fn contains(&self, grid: GridId, voxel: VoxelCoordinate) -> bool {
+        self.voxels.contains(&(grid, voxel))
     }
 
     pub fn len(&self) -> usize {
@@ -53,23 +53,30 @@ impl ActiveVoxels {
     }
 
     /// The voxels, in their fixed order.
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = (LevelIndex, VoxelCoordinate)> + '_ {
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (GridId, VoxelCoordinate)> + '_ {
         self.voxels.iter().copied()
     }
 
     /// Empties the set and returns what was in it, in order: a rule takes the voxels it is going to
     /// look at this tick, and puts back (or adds) the ones it will look at next.
-    pub fn take(&mut self) -> Vec<(LevelIndex, VoxelCoordinate)> {
+    pub fn take(&mut self) -> Vec<(GridId, VoxelCoordinate)> {
         std::mem::take(&mut self.voxels).into_iter().collect()
     }
 
-    /// Writes these voxels. Levels are named by `level_ids`, in level order, since level numbers
-    /// belong to one running server; voxels of a level that is not listed are not written.
+    /// Writes these voxels. The root grid of a level is named by the level's identifier in
+    /// `level_ids`, in level order, since level numbers belong to one running server; voxels of a
+    /// level that is not listed are not written. Only root grids can be written until structures are
+    /// saved by id (Phase 32), so a voxel of any other grid is a mistake and panics.
     pub fn write_to(&self, writer: &mut ByteWriter, level_ids: &[NamespacedId]) {
         let named: Vec<(&NamespacedId, VoxelCoordinate)> = self
             .voxels
             .iter()
-            .filter_map(|&(level, voxel)| Some((level_ids.get(level.get() as usize)?, voxel)))
+            .filter_map(|&(grid, voxel)| {
+                let level = grid
+                    .root_level()
+                    .expect("only the root grids of levels can be saved, by the level's name");
+                Some((level_ids.get(level.get() as usize)?, voxel))
+            })
             .collect();
         // Each level that has voxels is named once, and the voxels refer to it by position.
         let mut levels: Vec<&NamespacedId> = Vec::new();
@@ -124,7 +131,7 @@ impl ActiveVoxels {
             .map_err(|_| DecodeError::Invalid("a voxel coordinate is out of range"))?;
             // A voxel of a level this world no longer has is not looked at.
             if let Some(level) = level_index(name) {
-                active.insert(level, voxel);
+                active.insert(GridId::root(level), voxel);
             }
         }
         Ok(active)
@@ -159,8 +166,8 @@ impl ActiveVoxels {
     }
 }
 
-impl FromIterator<(LevelIndex, VoxelCoordinate)> for ActiveVoxels {
-    fn from_iter<I: IntoIterator<Item = (LevelIndex, VoxelCoordinate)>>(iterator: I) -> Self {
+impl FromIterator<(GridId, VoxelCoordinate)> for ActiveVoxels {
+    fn from_iter<I: IntoIterator<Item = (GridId, VoxelCoordinate)>>(iterator: I) -> Self {
         Self {
             voxels: iterator.into_iter().collect(),
         }
@@ -192,11 +199,11 @@ mod tests {
             .map(|position| LevelIndex::new(position as u32))
     }
 
-    const MAIN: LevelIndex = LevelIndex::MAIN;
-    const SECOND: LevelIndex = LevelIndex::new(1);
+    const MAIN: GridId = GridId::MAIN;
+    const SECOND: GridId = GridId::root(LevelIndex::new(1));
 
     #[test]
-    fn voxels_are_kept_once_and_in_order_of_level_then_position() {
+    fn voxels_are_kept_once_and_in_order_of_grid_then_position() {
         let mut active = ActiveVoxels::new();
         assert!(active.is_empty());
         active.insert(SECOND, voxel(0, 0, 0));
@@ -283,9 +290,38 @@ mod tests {
         // ...and one the loading world lacks is not restored.
         let full = active.to_section(&identifier, &levels());
         let loaded = ActiveVoxels::from_sections(&[full], &identifier, |id| {
-            (*id == name("overworld")).then_some(MAIN)
+            (*id == name("overworld")).then_some(LevelIndex::MAIN)
         });
         assert_eq!(loaded, Some([(MAIN, voxel(1, 2, 3))].into_iter().collect()));
+    }
+
+    #[test]
+    fn the_saved_bytes_of_a_root_grid_are_what_they_were_when_voxels_were_keyed_by_level() {
+        // Written by hand, as the format was before grids: the levels that have voxels, named once,
+        // then each voxel, in their fixed order, by the position of its level in that list and its three coordinates.
+        let mut expected = ByteWriter::new();
+        expected.write_varint(1);
+        expected.write_identifier(&name("cellar"));
+        expected.write_varint(2);
+        for voxel in [(-1, 0, 70_000), (3, -4, 5)] {
+            expected.write_varint(0);
+            expected.write_signed_varint(voxel.0);
+            expected.write_signed_varint(voxel.1);
+            expected.write_signed_varint(voxel.2);
+        }
+        let active: ActiveVoxels = [(SECOND, voxel(3, -4, 5)), (SECOND, voxel(-1, 0, 70_000))]
+            .into_iter()
+            .collect();
+        let section = active.to_section(&name("pending"), &levels());
+        assert_eq!(section.payload, expected.into_bytes());
+    }
+
+    #[test]
+    #[should_panic(expected = "only the root grids of levels can be saved")]
+    fn a_voxel_of_a_grid_that_is_not_a_root_cannot_be_saved_yet() {
+        let mut active = ActiveVoxels::new();
+        active.insert(GridId::new(GridId::FIRST_ALLOCATED), voxel(1, 2, 3));
+        let _ = active.to_section(&name("pending"), &levels());
     }
 
     #[test]
@@ -355,7 +391,7 @@ mod tests {
             let identifier = name("pending");
             let active: ActiveVoxels = voxels
                 .into_iter()
-                .map(|(level, x, y, z)| (LevelIndex::new(level), voxel(x, y, z)))
+                .map(|(level, x, y, z)| (GridId::root(LevelIndex::new(level)), voxel(x, y, z)))
                 .collect();
             let section = active.to_section(&identifier, &levels());
             prop_assert_eq!(ActiveVoxels::from_sections(&[section], &identifier, index_of), Some(active));

@@ -21,7 +21,7 @@ use common::{Rig, VIEW_RADIUS};
 use game_shell::GameContent;
 use game_shell::view::{apply_updates, atmosphere, configure_renderer};
 use renderer::{GraphicsContext, VoxelRenderer};
-use voxel_space::{LevelIndex, VoxelCoordinate};
+use voxel_space::{GridId, VoxelCoordinate};
 use voxunami_cave::content::CaveContent;
 use voxunami_cave::multiscale_light::{
     LightScheme, MAXIMUM_SCALES, MultiScaleLighting, ScaledLightWorld, default_budgets,
@@ -168,7 +168,7 @@ struct Scene<'a> {
 }
 
 impl ScaledLightWorld for Scene<'_> {
-    fn block_and_state(&mut self, _: LevelIndex, at: VoxelCoordinate) -> Option<(u32, u32)> {
+    fn block_and_state(&mut self, _: GridId, at: VoxelCoordinate) -> Option<(u32, u32)> {
         self.reads += 1;
         let block = block_at(self.content, at);
         let block = if block == self.content.blocks.lamp && !self.lamp_present {
@@ -179,11 +179,11 @@ impl ScaledLightWorld for Scene<'_> {
         Some((block, 0))
     }
 
-    fn word(&mut self, scale: usize, _: LevelIndex, anchor: VoxelCoordinate) -> u32 {
+    fn word(&mut self, scale: usize, _: GridId, anchor: VoxelCoordinate) -> u32 {
         self.words[scale].get(&anchor).copied().unwrap_or(0)
     }
 
-    fn set_word(&mut self, scale: usize, _: LevelIndex, anchor: VoxelCoordinate, value: u32) {
+    fn set_word(&mut self, scale: usize, _: GridId, anchor: VoxelCoordinate, value: u32) {
         self.writes += 1;
         self.words[scale].insert(anchor, value);
     }
@@ -215,7 +215,7 @@ fn rule_benchmark() {
                 writes: 0,
             };
             let mut rule = MultiScaleLighting::new(table.clone(), scheme);
-            rule.voxel_changed(LevelIndex::MAIN, lamp_voxel());
+            rule.voxel_changed(GridId::MAIN, lamp_voxel());
             let started = Instant::now();
             let mut ticks = 0;
             while !rule.is_settled() && ticks < 20_000 {
@@ -234,7 +234,7 @@ fn rule_benchmark() {
             let fill = (ticks, fill_ms, scene.writes, scene.reads);
             // Take the lamp away.
             scene.lamp_present = false;
-            rule.voxel_changed(LevelIndex::MAIN, lamp_voxel());
+            rule.voxel_changed(GridId::MAIN, lamp_voxel());
             let started = Instant::now();
             let mut empty_ticks = 0;
             while !rule.is_settled() && empty_ticks < 20_000 {

@@ -50,7 +50,7 @@ use std::sync::Arc;
 use block_models::BlockTable;
 use lattice::ActiveVoxels;
 use namespaced_id::NamespacedId;
-use voxel_space::{FaceDirection, LevelIndex, VoxelCoordinate};
+use voxel_space::{FaceDirection, GridId, VoxelCoordinate};
 use world_storage::Section;
 use world_view::LevelFormat;
 
@@ -366,14 +366,14 @@ pub fn word_homes(width: i64, anchor: VoxelCoordinate) -> Vec<VoxelCoordinate> {
 /// The voxels of a world, as far as light needs to know.
 pub trait ScaledLightWorld {
     /// The block and state of a voxel, or `None` where there is nothing to read.
-    fn block_and_state(&mut self, level: LevelIndex, at: VoxelCoordinate) -> Option<(u32, u32)>;
+    fn block_and_state(&mut self, grid: GridId, at: VoxelCoordinate) -> Option<(u32, u32)>;
 
     /// What is stored at the anchor of a cell of a scale (see [`face_output`]); 0 where there is
     /// nothing to read.
-    fn word(&mut self, scale: usize, level: LevelIndex, anchor: VoxelCoordinate) -> u32;
+    fn word(&mut self, scale: usize, grid: GridId, anchor: VoxelCoordinate) -> u32;
 
     /// Stores what a cell holds. Only called for cells whose anchor was just read.
-    fn set_word(&mut self, scale: usize, level: LevelIndex, anchor: VoxelCoordinate, value: u32);
+    fn set_word(&mut self, scale: usize, grid: GridId, anchor: VoxelCoordinate, value: u32);
 }
 
 /// What a cell stores: for each of its six faces (by [`FaceDirection::index`]) the level it gives to
@@ -461,7 +461,7 @@ impl Contents {
     }
 }
 
-type CellKey = (usize, LevelIndex, VoxelCoordinate);
+type CellKey = (usize, GridId, VoxelCoordinate);
 
 /// The position of a voxel with local coordinates `local` in the layer of the face on `axis`.
 fn layer_bit(width: usize, axis: usize, local: [usize; 3]) -> usize {
@@ -528,19 +528,19 @@ impl MultiScaleLighting {
 
     /// Tells the rule that the block or state at a voxel changed from outside, so that the cells that
     /// hold it, at every scale, and their neighbours are looked at on the next step.
-    pub fn voxel_changed(&mut self, level: LevelIndex, at: VoxelCoordinate) {
+    pub fn voxel_changed(&mut self, grid: GridId, at: VoxelCoordinate) {
         for scale in 0..self.scheme.scales() {
             let anchor = anchor_of(self.scheme.width(scale), at);
-            self.contents_known.remove(&(scale, level, anchor));
-            self.cell_changed(scale, level, anchor);
+            self.contents_known.remove(&(scale, grid, anchor));
+            self.cell_changed(scale, grid, anchor);
         }
     }
 
-    fn cell_changed(&mut self, scale: usize, level: LevelIndex, anchor: VoxelCoordinate) {
-        self.pending[scale].insert(level, anchor);
+    fn cell_changed(&mut self, scale: usize, grid: GridId, anchor: VoxelCoordinate) {
+        self.pending[scale].insert(grid, anchor);
         for face in FaceDirection::ALL {
             if let Some(neighbour) = neighbour_anchor(self.scheme.width(scale), anchor, face) {
-                self.pending[scale].insert(level, neighbour);
+                self.pending[scale].insert(grid, neighbour);
             }
         }
     }
@@ -567,20 +567,20 @@ impl MultiScaleLighting {
         for (scale, &budget) in budgets.iter().enumerate().take(self.scheme.scales()) {
             let mut looked_at = self.pending[scale].take();
             if looked_at.len() > budget {
-                for (level, anchor) in looked_at.split_off(budget) {
-                    self.pending[scale].insert(level, anchor);
+                for (grid, anchor) in looked_at.split_off(budget) {
+                    self.pending[scale].insert(grid, anchor);
                 }
             }
             let changes: Vec<_> = looked_at
                 .into_iter()
-                .filter_map(|(level, anchor)| {
-                    let new = self.word_of(world, &mut known, scale, level, anchor);
-                    (new != world.word(scale, level, anchor)).then_some((level, anchor, new))
+                .filter_map(|(grid, anchor)| {
+                    let new = self.word_of(world, &mut known, scale, grid, anchor);
+                    (new != world.word(scale, grid, anchor)).then_some((grid, anchor, new))
                 })
                 .collect();
-            for &(level, anchor, new) in &changes {
-                world.set_word(scale, level, anchor, new);
-                self.cell_changed(scale, level, anchor);
+            for &(grid, anchor, new) in &changes {
+                world.set_word(scale, grid, anchor, new);
+                self.cell_changed(scale, grid, anchor);
             }
             changed_in_all += changes.len();
         }
@@ -594,14 +594,14 @@ impl MultiScaleLighting {
         world: &mut impl ScaledLightWorld,
         known: &mut HashMap<CellKey, Arc<Contents>>,
         scale: usize,
-        level: LevelIndex,
+        grid: GridId,
         anchor: VoxelCoordinate,
     ) -> Arc<Contents> {
-        if let Some(contents) = known.get(&(scale, level, anchor)) {
+        if let Some(contents) = known.get(&(scale, grid, anchor)) {
             return Arc::clone(contents);
         }
-        let contents = Arc::new(self.look_into(world, scale, level, anchor));
-        known.insert((scale, level, anchor), Arc::clone(&contents));
+        let contents = Arc::new(self.look_into(world, scale, grid, anchor));
+        known.insert((scale, grid, anchor), Arc::clone(&contents));
         contents
     }
 
@@ -609,7 +609,7 @@ impl MultiScaleLighting {
         &self,
         world: &mut impl ScaledLightWorld,
         scale: usize,
-        level: LevelIndex,
+        grid: GridId,
         anchor: VoxelCoordinate,
     ) -> Contents {
         let width = self.scheme.width(scale) as usize;
@@ -623,7 +623,7 @@ impl MultiScaleLighting {
                 for z in 0..width {
                     let read = anchor
                         .checked_offset(x as i64, y as i64, z as i64)
-                        .and_then(|at| world.block_and_state(level, at));
+                        .and_then(|at| world.block_and_state(grid, at));
                     // What cannot be read lets no light in.
                     let Some((block, state)) = read else { continue };
                     let connections = self.table.connections(self.table.model_of(block, state));
@@ -716,10 +716,10 @@ impl MultiScaleLighting {
         world: &mut impl ScaledLightWorld,
         known: &mut HashMap<CellKey, Arc<Contents>>,
         scale: usize,
-        level: LevelIndex,
+        grid: GridId,
         anchor: VoxelCoordinate,
     ) -> u32 {
-        let own = self.contents(world, known, scale, level, anchor);
+        let own = self.contents(world, known, scale, grid, anchor);
         // What comes in across each face, and where in the layer it touches.
         let mut incoming = [0u8; 6];
         let mut entering: [Layer; 6] = std::array::from_fn(|_| vec![0; own.words]);
@@ -727,7 +727,7 @@ impl MultiScaleLighting {
             let Some(neighbour) = neighbour_anchor(self.scheme.width(scale), anchor, face) else {
                 continue;
             };
-            let next = self.contents(world, known, scale, level, neighbour);
+            let next = self.contents(world, known, scale, grid, neighbour);
             let (here, across) = (
                 usize::from(face.index()),
                 usize::from(face.opposite().index()),
@@ -738,7 +738,7 @@ impl MultiScaleLighting {
                 continue;
             }
             // What it gives: what it holds for us, and at least its own source, at once.
-            let word = world.word(scale, level, neighbour);
+            let word = world.word(scale, grid, neighbour);
             incoming[here] = face_output(word, face.opposite()).max(next.source);
             entering[here] = touching;
         }
@@ -807,7 +807,7 @@ mod tests {
         ])
     }
 
-    const MAIN: LevelIndex = LevelIndex::MAIN;
+    const MAIN: GridId = GridId::MAIN;
 
     /// The offsets of the eight voxels of a cell of 2.
     const CELL_OF_EIGHT: [(i64, i64, i64); 8] = [
@@ -840,16 +840,16 @@ mod tests {
     }
 
     impl ScaledLightWorld for Box3 {
-        fn block_and_state(&mut self, _: LevelIndex, at: VoxelCoordinate) -> Option<(u32, u32)> {
+        fn block_and_state(&mut self, _: GridId, at: VoxelCoordinate) -> Option<(u32, u32)> {
             self.contains(at)
                 .then(|| (self.blocks.get(&at).copied().unwrap_or(AIR), 0))
         }
 
-        fn word(&mut self, scale: usize, _: LevelIndex, anchor: VoxelCoordinate) -> u32 {
+        fn word(&mut self, scale: usize, _: GridId, anchor: VoxelCoordinate) -> u32 {
             self.words[scale].get(&anchor).copied().unwrap_or(0)
         }
 
-        fn set_word(&mut self, scale: usize, _: LevelIndex, anchor: VoxelCoordinate, value: u32) {
+        fn set_word(&mut self, scale: usize, _: GridId, anchor: VoxelCoordinate, value: u32) {
             self.words[scale].insert(anchor, value);
         }
     }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, MAXIMUM_COMMAND_LENGTH, Tick, VoxelChange};
 use voxel_grid::{Brick, ChannelIndex};
-use voxel_space::{BrickCoordinate, LevelIndex, VoxelCoordinate};
+use voxel_space::{BrickCoordinate, GridId, LevelIndex, VoxelCoordinate};
 use world_storage::{BrickSource, WorldData};
 
 use crate::generated_cache::GeneratedBrickCache;
@@ -29,6 +29,8 @@ pub enum AccessError {
     TerrainUnavailable { generator: NamespacedId },
     #[error("the world has no {0}")]
     NoSuchLevel(LevelIndex),
+    #[error("the world has no {0}")]
+    NoSuchGrid(GridId),
 }
 
 /// What happened to one brick during the current tick.

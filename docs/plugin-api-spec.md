@@ -211,7 +211,13 @@ designed here and not built.
 
 ## 11. Steps, each ending with passing tests, clippy, rustfmt, the goldens on Windows and Linux, and a commit
 
-- **23a** Grid addressing: `GridId`, `GridView`, `ActiveVoxels` by grid; the rule traits take a grid. Cave is still one `CaveLogic`.
+- **23a** (done) Grid addressing: `GridId`, `GridView`, `ActiveVoxels` by grid; the rule traits take a grid. Cave is still one `CaveLogic`.
+  As built: `voxel_space::GridId` (a root grid's id is its level's index; allocated ids start at 2^32); `server::GridView` with `id`, `get`
+  and `set`, and `ServerWorld::grid(GridId)` (`NoSuchGrid` for an unknown or non-root grid); `lattice::ActiveVoxels` and `voxel_random`
+  keyed by `GridId` (the pinned random numbers and the saved bytes are unchanged, by tests); `LightWorld`, `FireWorld` and
+  `ScaledLightWorld` take a `GridId`, and Cave's adapters read and write through `ServerWorld::grid`. `read_region`, `gravity` and
+  `world_position` are not in the trait yet: each joins when its first user does. `Movement` and 2048's motion still use levels
+  (steps 23c and 23d).
 - **23b** The registrar, phases, ordering, events, the declared-channel checks, `PluginHost`; all the new tests above that do not need a
   converted game.
 - **23c** Convert 2048, then Eels.

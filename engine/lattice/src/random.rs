@@ -1,7 +1,7 @@
 use terrain::mix;
-use voxel_space::{LevelIndex, VoxelCoordinate};
+use voxel_space::{GridId, VoxelCoordinate};
 
-/// A 64-bit random number for a voxel of a level at a tick.
+/// A 64-bit random number for a voxel of a grid at a tick.
 ///
 /// It is a function of its arguments and nothing else, bit for bit the same on every machine: a
 /// rule that decides by chance whether something happens at a voxel asks for the number of that
@@ -11,14 +11,14 @@ use voxel_space::{LevelIndex, VoxelCoordinate};
 pub fn voxel_random(
     seed: u64,
     tick: u64,
-    level: LevelIndex,
+    grid: GridId,
     voxel: VoxelCoordinate,
     purpose: u64,
 ) -> u64 {
     let mut hash = mix(seed ^ purpose.rotate_left(32));
     for part in [
         tick,
-        u64::from(level.get()),
+        grid.get(),
         voxel.x() as u64,
         voxel.y() as u64,
         voxel.z() as u64,
@@ -40,7 +40,7 @@ mod tests {
     fn the_numbers_are_pinned_because_worlds_depend_on_them() {
         // What fire and any later chance does in a saved world depends on these exact numbers, so
         // they must never change: a different mix is a different function with a new name.
-        let main = LevelIndex::MAIN;
+        let main = GridId::MAIN;
         assert_eq!(voxel_random(0, 0, main, voxel(0, 0, 0), 0), PINNED[0]);
         assert_eq!(
             voxel_random(2024, 77, main, voxel(-3, 100, 5), 1),
@@ -50,7 +50,7 @@ mod tests {
             voxel_random(
                 u64::MAX,
                 u64::MAX,
-                LevelIndex::new(3),
+                GridId::new(3),
                 voxel(1 << 40, -7, 9),
                 99
             ),
@@ -67,12 +67,12 @@ mod tests {
 
     #[test]
     fn every_argument_changes_the_number() {
-        let main = LevelIndex::MAIN;
+        let main = GridId::MAIN;
         let base = voxel_random(5, 10, main, voxel(1, 2, 3), 0);
         let others = [
             voxel_random(6, 10, main, voxel(1, 2, 3), 0),
             voxel_random(5, 11, main, voxel(1, 2, 3), 0),
-            voxel_random(5, 10, LevelIndex::new(1), voxel(1, 2, 3), 0),
+            voxel_random(5, 10, GridId::new(1), voxel(1, 2, 3), 0),
             voxel_random(5, 10, main, voxel(2, 2, 3), 0),
             voxel_random(5, 10, main, voxel(1, 3, 3), 0),
             voxel_random(5, 10, main, voxel(1, 2, 4), 0),
@@ -96,8 +96,8 @@ mod tests {
         for index in 0..samples {
             let x = i64::from(index % 40) - 20;
             let tick = u64::from(index / 40);
-            let here = voxel_random(1, tick, LevelIndex::MAIN, voxel(x, 3, -9), 0);
-            let next = voxel_random(1, tick, LevelIndex::MAIN, voxel(x + 1, 3, -9), 0);
+            let here = voxel_random(1, tick, GridId::MAIN, voxel(x, 3, -9), 0);
+            let next = voxel_random(1, tick, GridId::MAIN, voxel(x + 1, 3, -9), 0);
             for (bit, count) in ones.iter_mut().enumerate() {
                 *count += ((here >> bit) & 1) as u32;
             }

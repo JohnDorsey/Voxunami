@@ -28,7 +28,7 @@
 use block_models::BlockTable;
 use lattice::ActiveVoxels;
 use namespaced_id::NamespacedId;
-use voxel_space::{FaceDirection, LevelIndex, VoxelCoordinate};
+use voxel_space::{FaceDirection, GridId, VoxelCoordinate};
 
 /// The identifier of the section the voxels still to be looked at are saved in.
 pub fn section_id() -> NamespacedId {
@@ -47,13 +47,13 @@ fn step_to(at: VoxelCoordinate, face: FaceDirection) -> Option<VoxelCoordinate> 
 pub trait LightWorld {
     /// The block and state of a voxel, or `None` where there is nothing to read (terrain this server
     /// cannot generate, the edge of the world), which lets no light in or out.
-    fn block_and_state(&mut self, level: LevelIndex, at: VoxelCoordinate) -> Option<(u32, u32)>;
+    fn block_and_state(&mut self, grid: GridId, at: VoxelCoordinate) -> Option<(u32, u32)>;
 
     /// The light stored in a voxel, 0 to 255; 0 where there is nothing to read.
-    fn light(&mut self, level: LevelIndex, at: VoxelCoordinate) -> u8;
+    fn light(&mut self, grid: GridId, at: VoxelCoordinate) -> u8;
 
     /// Stores the light of a voxel. Only called for voxels that were just read.
-    fn set_light(&mut self, level: LevelIndex, at: VoxelCoordinate, value: u8);
+    fn set_light(&mut self, grid: GridId, at: VoxelCoordinate, value: u8);
 }
 
 /// The light rule and the voxels it has yet to look at.
@@ -92,8 +92,8 @@ impl Lighting {
 
     /// Tells the rule that the block or state at a voxel was changed from outside (a block was
     /// placed or broken), so that the voxel and its neighbours are looked at on the next step.
-    pub fn voxel_changed(&mut self, level: LevelIndex, at: VoxelCoordinate) {
-        self.pending.insert_with_neighbours(level, at);
+    pub fn voxel_changed(&mut self, grid: GridId, at: VoxelCoordinate) {
+        self.pending.insert_with_neighbours(grid, at);
     }
 
     /// One tick: works out the light of every voxel that is pending from the world as it is now,
@@ -108,27 +108,27 @@ impl Lighting {
     pub fn step_within(&mut self, world: &mut impl LightWorld, budget: usize) -> usize {
         let mut looked_at = self.pending.take();
         if looked_at.len() > budget {
-            for (level, at) in looked_at.split_off(budget) {
-                self.pending.insert(level, at);
+            for (grid, at) in looked_at.split_off(budget) {
+                self.pending.insert(grid, at);
             }
         }
         let changes: Vec<_> = looked_at
             .into_iter()
-            .filter_map(|(level, at)| {
-                let new = self.light_of(world, level, at);
-                (new != world.light(level, at)).then_some((level, at, new))
+            .filter_map(|(grid, at)| {
+                let new = self.light_of(world, grid, at);
+                (new != world.light(grid, at)).then_some((grid, at, new))
             })
             .collect();
-        for &(level, at, new) in &changes {
-            world.set_light(level, at, new);
-            self.voxel_changed(level, at);
+        for &(grid, at, new) in &changes {
+            world.set_light(grid, at, new);
+            self.voxel_changed(grid, at);
         }
         changes.len()
     }
 
     /// The light a voxel should hold, given its neighbours as they are now.
-    fn light_of(&self, world: &mut impl LightWorld, level: LevelIndex, at: VoxelCoordinate) -> u8 {
-        let Some((block, state)) = world.block_and_state(level, at) else {
+    fn light_of(&self, world: &mut impl LightWorld, grid: GridId, at: VoxelCoordinate) -> u8 {
+        let Some((block, state)) = world.block_and_state(grid, at) else {
             return 0;
         };
         let connections = self.table.connections(self.table.model_of(block, state));
@@ -146,7 +146,7 @@ impl Lighting {
             let Some(neighbour) = step_to(at, face) else {
                 continue;
             };
-            let Some((neighbour_block, neighbour_state)) = world.block_and_state(level, neighbour)
+            let Some((neighbour_block, neighbour_state)) = world.block_and_state(grid, neighbour)
             else {
                 continue;
             };
@@ -156,7 +156,7 @@ impl Lighting {
             let emission = self.table.emission(neighbour_block);
             if neighbour_connections.is_open(face.opposite()) || emission > 0 {
                 // A lamp lights every face of itself, and holds no light if it is a whole block.
-                let given = world.light(level, neighbour).max(emission);
+                let given = world.light(grid, neighbour).max(emission);
                 value = value.max(given.saturating_sub(1));
             }
         }
@@ -218,8 +218,8 @@ mod tests {
     /// outside it there is nothing to read.
     #[derive(Default)]
     struct Box3 {
-        blocks: HashMap<(LevelIndex, VoxelCoordinate), (u32, u32)>,
-        light: HashMap<(LevelIndex, VoxelCoordinate), u8>,
+        blocks: HashMap<(GridId, VoxelCoordinate), (u32, u32)>,
+        light: HashMap<(GridId, VoxelCoordinate), u8>,
         reads: usize,
     }
 
@@ -230,21 +230,17 @@ mod tests {
     }
 
     impl LightWorld for Box3 {
-        fn block_and_state(
-            &mut self,
-            level: LevelIndex,
-            at: VoxelCoordinate,
-        ) -> Option<(u32, u32)> {
+        fn block_and_state(&mut self, grid: GridId, at: VoxelCoordinate) -> Option<(u32, u32)> {
             self.reads += 1;
-            inside(at).then(|| self.blocks.get(&(level, at)).copied().unwrap_or((AIR, 0)))
+            inside(at).then(|| self.blocks.get(&(grid, at)).copied().unwrap_or((AIR, 0)))
         }
 
-        fn light(&mut self, level: LevelIndex, at: VoxelCoordinate) -> u8 {
-            self.light.get(&(level, at)).copied().unwrap_or(0)
+        fn light(&mut self, grid: GridId, at: VoxelCoordinate) -> u8 {
+            self.light.get(&(grid, at)).copied().unwrap_or(0)
         }
 
-        fn set_light(&mut self, level: LevelIndex, at: VoxelCoordinate, value: u8) {
-            self.light.insert((level, at), value);
+        fn set_light(&mut self, grid: GridId, at: VoxelCoordinate, value: u8) {
+            self.light.insert((grid, at), value);
         }
     }
 
@@ -252,7 +248,7 @@ mod tests {
         VoxelCoordinate::new(x, y, z)
     }
 
-    const MAIN: LevelIndex = LevelIndex::MAIN;
+    const MAIN: GridId = GridId::MAIN;
 
     impl Box3 {
         fn place(
@@ -616,7 +612,7 @@ mod tests {
 
     #[test]
     fn levels_do_not_light_each_other() {
-        let second = LevelIndex::new(1);
+        let second = GridId::new(1);
         let mut lighting = Lighting::new(table());
         let mut world = Box3::default();
         world.blocks.insert((second, at(4, 4, 4)), (LAMP, 0));
@@ -774,23 +770,19 @@ mod tests {
     }
 
     impl LightWorld for ShiftedBox {
-        fn block_and_state(
-            &mut self,
-            level: LevelIndex,
-            at: VoxelCoordinate,
-        ) -> Option<(u32, u32)> {
+        fn block_and_state(&mut self, grid: GridId, at: VoxelCoordinate) -> Option<(u32, u32)> {
             let at = self.unshifted(at);
-            self.inner.block_and_state(level, at)
+            self.inner.block_and_state(grid, at)
         }
 
-        fn light(&mut self, level: LevelIndex, at: VoxelCoordinate) -> u8 {
+        fn light(&mut self, grid: GridId, at: VoxelCoordinate) -> u8 {
             let at = self.unshifted(at);
-            self.inner.light(level, at)
+            self.inner.light(grid, at)
         }
 
-        fn set_light(&mut self, level: LevelIndex, at: VoxelCoordinate, value: u8) {
+        fn set_light(&mut self, grid: GridId, at: VoxelCoordinate, value: u8) {
             let at = self.unshifted(at);
-            self.inner.set_light(level, at, value);
+            self.inner.set_light(grid, at, value);
         }
     }
 }

@@ -26,7 +26,7 @@ use binary_codec::{ByteReader, ByteWriter};
 use block_models::BlockTable;
 use lattice::{ActiveVoxels, voxel_random};
 use namespaced_id::NamespacedId;
-use voxel_space::{FaceDirection, LevelIndex, VoxelCoordinate};
+use voxel_space::{FaceDirection, GridId, LevelIndex, VoxelCoordinate};
 use world_storage::Section;
 
 /// Tells chance of this rule apart from chance made for anything else at the same voxel and tick.
@@ -52,16 +52,10 @@ const CHANCE_BITS: u32 = 10;
 /// The voxels of a world, as far as fire needs to know.
 pub trait FireWorld {
     /// The block and state of a voxel, or `None` where there is nothing to read.
-    fn block_and_state(&mut self, level: LevelIndex, at: VoxelCoordinate) -> Option<(u32, u32)>;
+    fn block_and_state(&mut self, grid: GridId, at: VoxelCoordinate) -> Option<(u32, u32)>;
 
     /// Puts a block in a state at a voxel. Only called for voxels that were just read.
-    fn set_block_and_state(
-        &mut self,
-        level: LevelIndex,
-        at: VoxelCoordinate,
-        block: u32,
-        state: u32,
-    );
+    fn set_block_and_state(&mut self, grid: GridId, at: VoxelCoordinate, block: u32, state: u32);
 }
 
 /// The fire rule and the fires it has to look at.
@@ -138,8 +132,8 @@ impl Fire {
 
     /// Tells the rule that a fire block is at a voxel that it did not light itself (a player
     /// placed it), so that it is looked at from the next tick.
-    pub fn ignite(&mut self, level: LevelIndex, at: VoxelCoordinate) {
-        self.active.insert(level, at);
+    pub fn ignite(&mut self, grid: GridId, at: VoxelCoordinate) {
+        self.active.insert(grid, at);
     }
 
     /// One tick of the rule. Looks at every fire for which `in_range` is true (and keeps the others as they
@@ -148,42 +142,42 @@ impl Fire {
     pub fn step(
         &mut self,
         world: &mut impl FireWorld,
-        in_range: impl Fn(LevelIndex, VoxelCoordinate) -> bool,
-    ) -> Vec<(LevelIndex, VoxelCoordinate)> {
+        in_range: impl Fn(GridId, VoxelCoordinate) -> bool,
+    ) -> Vec<(GridId, VoxelCoordinate)> {
         struct Write {
-            level: LevelIndex,
+            grid: GridId,
             at: VoxelCoordinate,
             block: u32,
             state: u32,
         }
         let mut writes = Vec::new();
         let mut burning = Vec::new();
-        for (level, at) in self.active.take() {
-            if !in_range(level, at) {
-                burning.push((level, at));
+        for (grid, at) in self.active.take() {
+            if !in_range(grid, at) {
+                burning.push((grid, at));
                 continue;
             }
-            let Some((block, state)) = world.block_and_state(level, at) else {
+            let Some((block, state)) = world.block_and_state(grid, at) else {
                 continue; // nothing there to burn
             };
             if block != self.fire_block {
                 continue; // put out, or burnt away, by something else
             }
-            let chance = voxel_random(self.seed, self.clock, level, at, PURPOSE);
+            let chance = voxel_random(self.seed, self.clock, grid, at, PURPOSE);
             let aged = chance & AGING_MASK == 0;
             let age = state + u32::from(aged);
             if age >= FIRE_LIFETIME {
                 writes.push(Write {
-                    level,
+                    grid,
                     at,
                     block: self.air_block,
                     state: 0,
                 });
             } else {
-                burning.push((level, at));
+                burning.push((grid, at));
                 if aged {
                     writes.push(Write {
-                        level,
+                        grid,
                         at,
                         block: self.fire_block,
                         state: age,
@@ -195,14 +189,14 @@ impl Fire {
                 let Some(neighbour) = at.checked_offset(dx, dy, dz) else {
                     continue;
                 };
-                let Some((neighbour_block, _)) = world.block_and_state(level, neighbour) else {
+                let Some((neighbour_block, _)) = world.block_and_state(grid, neighbour) else {
                     continue;
                 };
                 let flammability = u64::from(self.table.flammability(neighbour_block));
                 let roll = (chance >> (2 + CHANCE_BITS * index as u32)) & ((1 << CHANCE_BITS) - 1);
                 if roll < flammability {
                     writes.push(Write {
-                        level,
+                        grid,
                         at: neighbour,
                         block: self.fire_block,
                         state: 0,
@@ -213,11 +207,11 @@ impl Fire {
         // Nothing has been written yet: what each fire did above saw the world as it was.
         let mut changed = Vec::with_capacity(writes.len());
         for write in writes {
-            world.set_block_and_state(write.level, write.at, write.block, write.state);
+            world.set_block_and_state(write.grid, write.at, write.block, write.state);
             if write.block == self.fire_block && write.state == 0 {
-                burning.push((write.level, write.at));
+                burning.push((write.grid, write.at));
             }
-            changed.push((write.level, write.at));
+            changed.push((write.grid, write.at));
         }
         self.active = burning.into_iter().collect();
         self.clock += 1;
@@ -260,7 +254,7 @@ mod tests {
     }
 
     const EDGE: i64 = 7;
-    const MAIN: LevelIndex = LevelIndex::MAIN;
+    const MAIN: GridId = GridId::MAIN;
 
     fn at(x: i64, y: i64, z: i64) -> VoxelCoordinate {
         VoxelCoordinate::new(x, y, z)
@@ -270,31 +264,27 @@ mod tests {
     /// is nothing to read.
     #[derive(Clone, Default)]
     struct Box3 {
-        blocks: HashMap<(LevelIndex, VoxelCoordinate), (u32, u32)>,
+        blocks: HashMap<(GridId, VoxelCoordinate), (u32, u32)>,
         writes: usize,
     }
 
     impl FireWorld for Box3 {
-        fn block_and_state(
-            &mut self,
-            level: LevelIndex,
-            at: VoxelCoordinate,
-        ) -> Option<(u32, u32)> {
+        fn block_and_state(&mut self, grid: GridId, at: VoxelCoordinate) -> Option<(u32, u32)> {
             let inside = [at.x(), at.y(), at.z()]
                 .iter()
                 .all(|component| (0..EDGE).contains(component));
-            inside.then(|| self.blocks.get(&(level, at)).copied().unwrap_or((AIR, 0)))
+            inside.then(|| self.blocks.get(&(grid, at)).copied().unwrap_or((AIR, 0)))
         }
 
         fn set_block_and_state(
             &mut self,
-            level: LevelIndex,
+            grid: GridId,
             at: VoxelCoordinate,
             block: u32,
             state: u32,
         ) {
             self.writes += 1;
-            self.blocks.insert((level, at), (block, state));
+            self.blocks.insert((grid, at), (block, state));
         }
     }
 
@@ -318,7 +308,7 @@ mod tests {
         Fire::new(table(), FIRE, AIR, seed, 0, ActiveVoxels::new())
     }
 
-    fn everywhere(_: LevelIndex, _: VoxelCoordinate) -> bool {
+    fn everywhere(_: GridId, _: VoxelCoordinate) -> bool {
         true
     }
 
@@ -446,16 +436,16 @@ mod tests {
             for tick in 0..300 {
                 let before = world.clone();
                 let changed = fire.step(&mut world, everywhere);
-                for (level, voxel) in changed {
+                for (grid, voxel) in changed {
                     let was = before
                         .blocks
-                        .get(&(level, voxel))
+                        .get(&(grid, voxel))
                         .copied()
                         .unwrap_or((AIR, 0));
-                    let now = world.blocks[&(level, voxel)];
+                    let now = world.blocks[&(grid, voxel)];
                     if was.0 == GRASS {
                         assert_eq!(now, (FIRE, 0), "seed {seed} tick {tick}");
-                        assert!(fire.active().contains(level, voxel));
+                        assert!(fire.active().contains(grid, voxel));
                         ignitions += 1;
                     }
                 }
@@ -586,7 +576,7 @@ mod tests {
 
     #[test]
     fn levels_burn_apart() {
-        let second = LevelIndex::new(1);
+        let second = GridId::new(1);
         let mut fire = rule(5);
         let mut world = Box3::default();
         world.blocks.insert((MAIN, at(3, 3, 3)), (FIRE, 0));
@@ -601,7 +591,7 @@ mod tests {
     #[test]
     fn the_clock_counts_every_step_and_a_saved_rule_carries_on_exactly_as_if_it_never_stopped() {
         let levels = vec!["voxunami_cave:overworld".parse::<NamespacedId>().unwrap()];
-        let index_of = |name: &NamespacedId| (*name == levels[0]).then_some(MAIN);
+        let index_of = |name: &NamespacedId| (*name == levels[0]).then_some(LevelIndex::MAIN);
         let scene = |fire: &mut Fire| {
             let mut world = Box3::default();
             for x in 1..EDGE - 1 {
@@ -657,7 +647,7 @@ mod tests {
     #[test]
     fn a_saved_fire_that_is_newer_or_damaged_is_not_read() {
         let levels = vec!["voxunami_cave:overworld".parse::<NamespacedId>().unwrap()];
-        let index_of = |name: &NamespacedId| (*name == levels[0]).then_some(MAIN);
+        let index_of = |name: &NamespacedId| (*name == levels[0]).then_some(LevelIndex::MAIN);
         let mut fire = rule(1);
         fire.ignite(MAIN, at(1, 2, 3));
         let good = fire.to_section(&levels);

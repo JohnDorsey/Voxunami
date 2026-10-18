@@ -13,6 +13,7 @@ mod command_line;
 mod config;
 mod game_logic;
 mod generated_cache;
+mod grid_view;
 mod server;
 mod server_world;
 #[cfg(feature = "test-support")]
@@ -21,5 +22,6 @@ pub mod test_support;
 pub use command_line::CommandLine;
 pub use config::ServerConfig;
 pub use game_logic::GameLogic;
+pub use grid_view::{GridView, ServerGrid};
 pub use server::{LeaveReason, Server, ServerError, StepReport};
 pub use server_world::{AccessError, Audience, ServerWorld};

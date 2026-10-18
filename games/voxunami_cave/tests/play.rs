@@ -1026,7 +1026,9 @@ fn a_world_saved_while_it_burns_keeps_the_fire_and_it_goes_on_burning_when_loade
     .expect("the game saved its fires");
     assert!(saved.0 >= 6, "the rule's clock was saved: {}", saved.0);
     assert!(
-        saved.1.contains(world_main(), spot),
+        saved
+            .1
+            .contains(voxel_space::GridId::root(world_main()), spot),
         "and the fire that was burning"
     );
     let bytes = world.save(&content.registries()).unwrap();
