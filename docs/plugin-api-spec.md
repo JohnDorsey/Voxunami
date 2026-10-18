@@ -251,7 +251,22 @@ designed here and not built.
   - Behaviour held: both golden sessions and every existing test pass unmodified, on Windows and Linux. One change: Eels now answers `/level`, as
     every game with the players plugin does (it had no commands; it has one level).
   - `GameDefinition::new_logic` still returns a boxed `GameLogic`; each game builds a `PluginHost` there. 23e replaces it with a plugin list.
-- **23d** Convert Cave one plugin at a time: players, block editing, movement, fire, light; the goldens after each.
+- **23d** (done) Convert Cave: players, block editing, movement, fire, light (`games/voxunami_cave/src/plugins/`; `CaveLogic` is gone and `logic.rs` holds
+  only the shared numbers). As built:
+  - ids `voxunami_cave:block_editing`, `:movement`, `:fire`, `:light`, with `player_presence:players`; the game builds them with `cave_plugins(content)`.
+    The fire, light and movement plugins hear of changed blocks as `ChannelsChanged` on the block and state channels; `set_block` no longer calls them.
+    Fire notices any block that becomes fire, whoever wrote it; a test plugin that lights a fire in the air is noticed by fire and light.
+  - `voxunami_cave:block_edit_requested` (an ask event) lets a plugin the game does not know refuse an edit; the player is told why. A test pins it.
+  - the fire and light systems read and write through `Context::grid`, so what they declare is checked in debug builds, and the light system is
+    `after` the fire system (leaving that out is refused at start-up).
+  - behaviour held: the stream of the golden session is **bit-identical** to the one before the conversion (proved by temporarily restoring the old
+    unknown-command text, which gave the old stream hash); every existing test passes unmodified except for two deliberate changes below.
+  - deliberate changes: (1) the unknown-command reply is generated from the registered commands, by name: `unknown command; try /fly, /level, /light,
+    /tp X Y Z` (it was `/level, /fly, /tp X Y Z, /light`); (2) the host returns saved sections sorted by identifier, so the bytes of a saved world do
+    not depend on the order plugins were registered in (before, the light section came first and fire second; each section's bytes were compared and
+    are identical). The golden pins were re-taken for these two.
+  - one nuance: setting a voxel to the value it has is not a change, so a block edit that changes nothing no longer wakes the light, fire and bodies
+    (before, it did, uselessly).
 - **23e** Shuffle test, mutation experiments (`PROPTEST_DISABLE_FAILURE_PERSISTENCE=1`), documentation, `GameDefinition::new_logic`
   replaced by a plugin list.
 

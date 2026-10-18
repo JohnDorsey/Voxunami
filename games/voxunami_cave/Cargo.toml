@@ -14,6 +14,7 @@ content_registry.workspace = true
 game_shell.workspace = true
 lattice.workspace = true
 physics.workspace = true
+plugin_host.workspace = true
 player_presence.workspace = true
 renderer.workspace = true
 namespaced_id.workspace = true

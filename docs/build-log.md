@@ -47,6 +47,17 @@ Phase 1d (saving):
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
 
+Phase 23d (Cave as plugins; owner's request, 2026-10-18):
+- `CaveLogic` is split into `voxunami_cave:block_editing`, `:movement`, `:fire` and `:light` plus the shared players plugin, in
+  `games/voxunami_cave/src/plugins/`. They hear of one another's writes through `ChannelsChanged`; a block edit is asked about first
+  (`BlockEditRequested`).
+- The golden session's stream is bit-identical to the one before (checked by restoring the old unknown-command text for one run); two
+  deliberate changes re-pinned it: the unknown-command reply is generated and alphabetical, and the host sorts saved sections by identifier
+  (each section's bytes compared, identical; only their order in the file differed).
+- New tests: a plugin the game does not know refuses an edit and the player is told; a fire lit by another plugin is noticed by fire and light.
+  Six mutations of the wiring (fire no longer notices new fires, light no longer notices changed blocks, bodies no longer remake terrain, an edit
+  no longer writes its state, a refusal ignored, the light's order edge removed) are all caught.
+
 Phase 23c (2048 and Eels as plugins; owner's request, 2026-10-18):
 - `player_presence::PlayersPlugin` (the shared record of where players are: pose messages if the game believes them, `/level`, forgetting those who
   leave, announcing poses in `Settle`), `voxunami_2048:rules` and `voxunami_eels:rules`. Each game's `new_logic` builds a `PluginHost`.

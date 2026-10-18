@@ -356,11 +356,16 @@ impl GameLogic for PluginHost {
         queue.halted = false;
     }
 
+    /// What the plugins save, in the order of the sections' identifiers: the bytes of a saved world must
+    /// not depend on the order the plugins were listed or registered in.
     fn save_sections(&self) -> Vec<Section> {
-        self.registry
+        let mut sections: Vec<Section> = self
+            .registry
             .saves
             .iter()
             .flat_map(|entry| (entry.write)())
-            .collect()
+            .collect();
+        sections.sort_by(|first, second| first.identifier.cmp(&second.identifier));
+        sections
     }
 }

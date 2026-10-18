@@ -189,7 +189,7 @@ fn a_whole_session_gives_the_same_stream_and_the_same_saved_world_every_time_and
 
 /// Stream hash, stream length, saved-world hash.
 const PINNED: (u64, usize, u64) = (
-    3_637_206_239_031_565_968,
+    13_671_793_627_762_328_938,
     7_179_705,
-    10_029_698_651_976_780_965,
+    12_857_685_528_707_532_367,
 );

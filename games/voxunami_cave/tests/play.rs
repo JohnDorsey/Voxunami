@@ -515,7 +515,7 @@ fn commands_the_game_does_not_know_are_answered() {
     assert_eq!(
         player.take_command_replies(),
         [
-            "unknown command; try /level, /fly, /tp X Y Z, /light",
+            "unknown command; try /fly, /level, /light, /tp X Y Z",
             "you are in voxunami_cave:overworld"
         ]
     );

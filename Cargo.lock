@@ -2722,6 +2722,7 @@ dependencies = [
  "namespaced_id",
  "physics",
  "player_presence",
+ "plugin_host",
  "proptest",
  "protocol",
  "renderer",

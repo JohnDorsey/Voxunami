@@ -1018,6 +1018,37 @@ fn what_plugins_save_is_collected_with_its_scope() {
     let sections = host.save_sections();
     let names: Vec<String> = sections.iter().map(|s| s.identifier.to_string()).collect();
     assert_eq!(names, ["test:a_state", "test:b_state"]);
+    // In the order of their names, whatever order the plugins were registered in.
+    let reversed = PluginHost::new(
+        vec![
+            plugin("test:z", |registrar| {
+                registrar.save_section(SaveScope::Global, || {
+                    vec![Section {
+                        identifier: id("test:zz_state"),
+                        version: 1,
+                        payload: vec![],
+                    }]
+                });
+            }),
+            plugin("test:a", |registrar| {
+                registrar.save_section(SaveScope::Global, || {
+                    vec![Section {
+                        identifier: id("test:aa_state"),
+                        version: 1,
+                        payload: vec![],
+                    }]
+                });
+            }),
+        ],
+        &world,
+    )
+    .unwrap();
+    let names: Vec<String> = reversed
+        .save_sections()
+        .iter()
+        .map(|s| s.identifier.to_string())
+        .collect();
+    assert_eq!(names, ["test:aa_state", "test:zz_state"]);
     assert_eq!(
         host.saved_state_scopes(),
         [SaveScope::Global, SaveScope::PerGrid { movable: true }]

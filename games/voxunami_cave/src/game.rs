@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use game_shell::{CameraStart, GameContent, GameDefinition, KeyCode, PlayerPose};
 use namespaced_id::NamespacedId;
 use physics::MoveInput;
+use plugin_host::PluginHost;
 use renderer::Camera;
 use server::GameLogic;
 use transport::Connection;
@@ -14,12 +15,13 @@ use world_storage::WorldData;
 use world_view::{ScaledLight, ViewChannels};
 
 use crate::content::{CaveContent, game_id};
-use crate::logic::{CaveLogic, REACH};
+use crate::logic::REACH;
 use crate::messages::{
     MoveRequest, SetBlock, decode_light_scheme, encode_move_request, encode_set_block,
     encode_spawn, light_scheme_kind, move_input_kind, set_block_kind, spawn_kind,
 };
 use crate::multiscale_light::{LEVEL_FORMAT, LightScheme, full_brightness};
+use crate::plugins::cave_plugins;
 
 /// The blocks a player can place, in the order the number keys choose them.
 pub const PLACEABLE_BLOCKS: [&str; 6] = [
@@ -176,7 +178,9 @@ Window commands (start with a period): .ambient 0-255 sets how bright a face is 
     }
 
     fn new_logic(content: &CaveContent, world: &WorldData) -> Box<dyn GameLogic> {
-        Box::new(CaveLogic::new(content, world))
+        let host = PluginHost::new(cave_plugins(content), world)
+            .expect("the plugins of Cave are consistent");
+        Box::new(host)
     }
 
     fn view_channels(content: &CaveContent, state: &CaveClientState) -> ViewChannels {
