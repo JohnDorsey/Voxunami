@@ -63,6 +63,17 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - Build order: walking skeleton (Phase 1), then 2048, then Minecraft-core, then Tron, then the sculpting game.
 - Workflow: Claude commits and pushes finished phases (rule lifted by the owner after Phase 1f); each phase ends with
   passing checks.
+- Structures such as airships (owner, 2026-10-18; the feature is in `future-goals.md`, goal 2, and scheduled as Phase 32 in `plan.md`):
+  - Gravity aboard is the world's gravity, not a pull toward the ship's floor. A rule asking for gravity gets the world's, in the
+    grid's local axes, so it changes as the ship turns; a player aboard a ship rolled on its side falls toward the world's down.
+  - Ships may rotate fully (not only about the vertical axis).
+  - Ships have docking connectors with a configurable attraction force, as in Kerbal Space Program: an engine-provided part that a mod
+    configures.
+  - There is no hard limit on the size of a ship. Someday ships may be as large as small moons, with levels of detail used when the
+    whole ship is in view and for collisions. Limits are budgets (work per tick, as for every rule), not caps.
+  - A ship can be saved while in flight, as a grid, in a file of its own, not in the file that holds the terrain near it.
+  - Order of work: moving grids (Phase 32) come before the native and WASM loaders (Phase 33), because the loader ABI encodes the
+    coordinate model.
 
 ## Voxunami Cave lighting (decided; block light built in Phases 11 and 12, sky light not)
 - Built so far: one channel of block light, from lamps (see `build-log.md`, Phases 11 and 12). The rest of this section is the

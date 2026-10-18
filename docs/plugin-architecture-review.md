@@ -475,7 +475,7 @@ If modders do arrive, the order changes: 3, then 5 and the patch design, then WA
    section reserved before 1.0). Whether the first release ships textures stays open (see "Open" in `plan.md`).
 5. **Phases 28 and 29** (content package; JSON packs, schema, patches), then **Phase 30** (server-driven UI). They need only
    definitions that serialize, so they do not have to wait for WASM.
-6. Last: **Phase 31** (palette in a storage buffer) and **Phase 32** (the loaders).
+6. Last: **Phase 31** (palette in a storage buffer), **Phase 32** (moving grids) and **Phase 33** (the loaders, after 32).
 
 ## Sources
 

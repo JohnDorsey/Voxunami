@@ -34,12 +34,14 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 36 (far future) Tentacle locomotion: an octopus character and NPC on articulated sub-grids (goal 1).
 - 35 (far future) Airship features: command chair and third-person view, clicking parts for menus, drills, turrets, headlights (goal 2).
 - 34 (far future) Dynamic lights: lights carried by entities and grids and drawn by the renderer (headlights, a lit ship passing over ground).
-- 33 (far future) Moving grids (structures): grids in the stream with transforms, a matrix per grid in the renderer, Rapier bodies from
-  blocks (mass from `engine:density`), connectivity and splitting, players and entities simulated in their frame.
-  Phases 33 to 37 are not ordered against 31 and 32; I recommend 33 before 32, because the loader ABI encodes frames.
-- 32 (planned, last) The native and WASM loaders (mod stages 3 to 8): dogfood the API, spike and measure both loaders, generator mods,
-  hostile-mod tests, the mod list in the handshake, server-side hooks with budgets, assets and an SDK. The ABI is not frozen before
-  Phase 33 exists, because it encodes frames.
+- 33 (planned, after 32) The native and WASM loaders (mod stages 3 to 8): dogfood the API, spike and measure both loaders, generator
+  mods, hostile-mod tests, the mod list in the handshake, server-side hooks with budgets, assets and an SDK. The ABI is frozen only
+  after Phase 32, because it encodes frames. Phases 34 to 37 are not ordered against it.
+- 32 (planned) Moving grids (structures), with the owner's decisions of 2026-10-18 (`design-decisions.md`): grids in the stream with
+  transforms; a matrix per grid in the renderer; Rapier bodies from blocks (mass from `engine:density`), full rotation, world gravity
+  aboard; connectivity and splitting; docking connectors with a configurable attraction force; players and entities simulated in their
+  frame; levels of detail per grid for drawing, for collision (coarse colliders, aggregated mass) and for streaming; a grid saved in
+  flight as a file of its own.
 - 31 (planned, late) A wider material palette: the renderer's palette in a storage buffer (renderer-only; saves and protocol unchanged).
 - 30 (planned) Server-driven UI: a UI the server describes in the value vocabulary and the stream drives.
 - 29 (planned) Data-driven block packs (JSON), the generated JSON Schema, `check-pack`, and patches: tags by union, patch operations,
@@ -165,7 +167,7 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   - **Data-driven JSON blocks and packs (Phase 29)** with `check-pack`, and **server-driven UI (Phase 30)**: UI described by the server
     in the value vocabulary and driven by the stream, so replay holds.
   - **Wider palette (Phase 31):** the renderer's material palette moves to a storage buffer; a renderer-only change (see "Open").
-  - **Native and WASM loaders (Phase 32):** mod stages 3 to 8 as listed above: dogfood the API, spike both loaders and measure,
+  - **Native and WASM loaders (Phase 33):** mod stages 3 to 8 as listed above: dogfood the API, spike both loaders and measure,
     generator mods so generators can travel in the content package, hostile-mod tests, the mod list in the handshake, server-side
     hooks with budgets, assets and an SDK. The last phase, because it matters only with code from outside.
 - Requirements pulled forward from the far-future goals (proposed 2026-10-17; the goals and their difficulty are in `future-goals.md`: an
@@ -173,12 +175,13 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   neural networks). None of them is scheduled before the phases above, but each needs something to be true of the plugin API now,
   because it would break mods later; all are cheap while no world, mod or recording exists.
   1. **Rules see a grid, not the world (Phase 23).** What a rule or handler is given is a `GridView`: one grid and local voxel
-     coordinates. A grid is addressed by a `GridId` (a level and a grid in it; a level's terrain is its root grid), which replaces
+     coordinates. A grid is addressed by a `GridId` (a stable unique id; a level's terrain is its root grid), which replaces
      `(LevelIndex, VoxelCoordinate)` as the address in `ActiveVoxels`, in `ServerWorld` voxel access, in events (`BlocksChanged` says
      which grid) and in the saved pending-work sections. Only root grids exist until structures are built, so this is a type change
      now. A plugin has no way to read a neighbour in world coordinates, which is what lets a modded wire, piston or door work on a
      moving grid with no work by its author. Facts about the world come as services on the context in the grid's own terms
-     (`gravity()` as a local direction, `world_position(local)`, `sky_exposure(local)`), never as raw coordinates.
+     (`gravity()` is the world's gravity as a direction in the grid's local axes, so it changes as a ship turns; `world_position(local)`;
+     `sky_exposure(local)`), never as raw coordinates.
   2. **Named tick phases (Phase 23):** messages, decide (brains), pre-physics, physics, post-physics, rules, send; systems and handlers
      are ordered within a phase. Physics is an engine phase, single-threaded as decided, so a plugin's controller applies forces
      before it and reads contacts after it.
@@ -189,9 +192,10 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   4. **A `BlockUsed` event (Phase 23):** a player used a block (grid, local position, player, hit), beside the two ask-first events.
   5. **Engine-reserved properties (Phase 24):** the engine registers some keys in the same bag: `engine:density` (a block's mass, for
      bodies) and `engine:placeable_on_moving_grids` (bool, default true: the one thing a mod author sets for airships).
-  6. **A frame-invariance test (Phase 23, then required of every plugin rule):** the same rule on the same scene in a static grid and in
-     a grid that is translated, turned by multiples of 90 degrees and moving gives identical local results (the partition-invariance
-     idea applied to frames). It makes "works aboard an airship" a tested property.
+  6. **A frame-invariance test (Phase 23, then required of every plugin rule):** the same rule on the same scene in a moving grid, turned
+     by multiples of 90 degrees, and in a static grid whose local gravity is the same vector gives identical local results (the
+     partition-invariance idea applied to frames; gravity is the one input that depends on the turn, so the static grid is given
+     it). It makes "works aboard an airship" a tested property.
   7. **Client (Phase 26):** view modes (a server-set camera, a third-person orbit about an entity or grid) per control target, and
      picking that returns a grid and a local position.
   8. **Entities (Phase 27):** an entity's pose is a frame and a local pose, players included, the frame being the world or a grid (so
@@ -202,8 +206,18 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   9. **The API's size budget counts verbs, not kinds of content.** The verbs: content (into any registry: blocks, items, entity kinds,
      brain models), channel, property, command, message, system or handler, save section, client hook. A new kind of content is not a
      new verb.
-  Not changed by the goals: the content package, the schema, patches, the palette. One ordering consequence: the loader ABI (Phase 32)
-  encodes the coordinate model, so it must not be frozen before grids, frames and entities exist (Phases 27 and 33).
+  10. **A `GridId` is a stable unique id, not an index (Phase 23):** ships are made, split, merged, saved and loaded independently of any
+     level, and a ship file names its grid by it.
+  11. **Nothing in the API assumes a grid is small (Phase 23):** no call returns a whole grid or scans one densely; access is by region,
+     by active set, or by neighbourhood; so a grid the size of a moon, and levels of detail for drawing, collision and streaming, can
+     come later without changing a rule.
+  12. **Grid files (reserved in Phase 27, built in Phase 32):** a grid's saved form is a standalone file in the container format with its
+     own registry and channel tables, its pose and velocities, its pending rule work and its block data; a world file refers to it by
+     `GridId`; the world and its ships are saved at one tick so that they agree. Whether entities aboard are saved with the ship or
+     with the world is open (below).
+  Not changed by the goals: the content package, the schema, patches, the palette. One ordering consequence, accepted by the owner
+  2026-10-18: the loader ABI (Phase 33) encodes the coordinate model, so it is frozen only after grids, frames and entities exist
+  (Phases 27 and 32).
 
 ## Open
 - Plugin architecture (2026-10-17; `docs/plugin-architecture-review.md` has the options and sources; each item is now in the

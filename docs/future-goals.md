@@ -85,20 +85,38 @@ mods or gravity behave aboard rotating ships.
 **What cannot be automatic, and the default:**
 - *World effects*: weather, wind, the day, sky light, an explosion's radius. They come from the services above or are the plugin's job.
 - *Two grids side by side* (a ship docked at a pier): a rule never sees across grids, so a wire or piston does not cross. Default:
-  nothing crosses; an engine-provided connector block (a dock) is the way, decided when structures are built.
+  nothing crosses; the docking connector (decided 2026-10-18, below) is the way, and what crosses it is an open question.
 - *A minecart or any entity leaving a grid* (a rail that ends at the ship's edge): the entity is handed to the frame it ends up in; a
   rail that connects across the gap is a connector case.
 - *Placement that only makes sense on the ground* ("needs soil", "needs sunlight"): the single flag, `engine:placeable_on_moving_grids`,
   default true, as asked.
 - *Cost*: a ship with many active blocks adds work every tick; budgets are per grid, as for every rule.
 
-**A simplification worth deciding early:** if a ship may turn only about the vertical axis (with tilt for looks), its local "down" is the
-world's down and almost everything above gets easier (falling blocks, water, sky light, rails, walking). Full rotation (a spaceship)
-then becomes a later generalisation. The design says free structures rotate by any angle; an airship does not need that.
+**Decided by the owner, 2026-10-18** (recorded in `design-decisions.md`): gravity aboard is the world's, not a pull toward the floor;
+ships rotate fully (the yaw-only simplification I suggested is not taken); docking connectors have a configurable attraction force, as in
+Kerbal Space Program; there is no hard size limit, and ships may someday be as large as small moons, with levels of detail for viewing
+the whole ship and for collisions; a ship is saved in flight as a grid in a file of its own.
 
-**Owner decisions this needs:** gravity aboard (ship-relative is my recommendation: the interior then behaves like a building); yaw-only
-airships or full rotation; whether docking connectors exist; the size and active-block limit of a ship; whether a ship saved with a world
-is a grid in the file (yes, in my view; the format already says everything with voxels is a grid).
+**What those decisions cost, in my judgment:**
+- *World gravity aboard* makes the interior of a rolled ship a place where things fall toward a wall. It is consistent and needs no special
+  case, but it means a rule's `gravity()` is a local direction that changes every tick, rules that cache "down" are wrong, and a player
+  in the ship's frame feels a rotating gravity vector. Ships with interiors you can live in will usually be kept level by their pilots.
+- *Full rotation* removes the cheap simplification; the frame-invariance test therefore turns the grid (by multiples of 90 degrees) and
+  gives the static grid the matching local gravity.
+- *Docking connectors* are an engine-provided part (a pair of ports, an attraction force and a snap distance, a joint when they meet),
+  configured by mods, which also settles how two grids can ever touch. What crosses a docked connector (structure only, or crew,
+  power, items) is open.
+- *No size limit* is a promise about the API (nothing assumes a small grid; plan.md, requirement 11) and about work (budgets, not caps),
+  not about the first version. The parts that grow with size: collision (coarse colliders and aggregated mass for the whole ship, fine
+  colliders only near a contact), drawing (levels of detail per grid), streaming (interest per grid in its own coordinates), connectivity
+  after an edit (incremental or hierarchical, not a flood fill of the whole ship), and precision (each grid works relative to its own
+  origin). A moon-sized grid is a long way off; the first ships will be small.
+- *A ship in its own file* means a stable `GridId` (requirement 10) and a file format for a grid (requirement 12), and that a save writes
+  several files that must agree.
+
+**Still open:** what crosses a docked connector; whether a ship file is portable between worlds (a blueprint, as KSP craft files are);
+whether entities aboard are saved with the ship or with the world; whether a ship's own mass is a source of gravity (a moon-sized ship
+would be).
 
 ### 3. NPCs powered by local neural networks that can learn
 
@@ -147,7 +165,7 @@ Needed now, because it breaks mods later and costs little while there are no wor
 `BlockUsed` event; engine-reserved properties; a frame-invariance test; view modes and picking in grid terms; entity poses that carry a
 frame; control targets; block data; a brain slot; inventories; and counting the API's size in verbs, not kinds of content.
 Not changed: the content package, the schema, patches, the palette. Ordering: the loader ABI encodes the coordinate model, so it
-should not be frozen before grids, frames and entities exist. Phases 33 to 37 in the build plan are these goals as work.
+should not be frozen before grids, frames and entities exist. Phases 32 and 34 to 37 in the build plan are these goals as work (32 before the loaders, which are 33).
 
 Sources: [Valkyrien Skies FAQs](https://blog.curseforge.com/valkyrien-skies-mod-faqs/), [Valkyrien Skies on ModDex](https://moddex.gg/mod/valkyrien-skies),
 [The AI of Creatures](https://www.alanzucconi.com/2020/07/27/the-ai-of-creatures/), [Agents that learn (forum)](https://www.gamedev.net/forums/topic/344721-agents-that-learn/).
