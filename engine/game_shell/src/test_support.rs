@@ -3,8 +3,7 @@
 use block_models::BlockTable;
 use content_registry::IdentifierRegistry;
 use namespaced_id::NamespacedId;
-use server::GameLogic;
-use server::test_support::ScriptedLogic;
+use plugin_host::Plugin as ServerPlugin;
 use world_storage::test_support::{Game, Plugin, id};
 use world_storage::{LoadContext, WorldData};
 use world_view::ViewChannels;
@@ -101,7 +100,7 @@ impl GameDefinition for ExampleGame {
         }
     }
 
-    fn new_logic(_content: &ExampleContent, _world: &WorldData) -> Box<dyn GameLogic> {
-        Box::new(ScriptedLogic::new())
+    fn plugins(_content: &ExampleContent) -> Vec<Box<dyn ServerPlugin>> {
+        Vec::new()
     }
 }

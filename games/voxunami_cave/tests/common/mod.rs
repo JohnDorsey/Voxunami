@@ -37,6 +37,26 @@ impl Rig {
         }
     }
 
+    /// A server running these plugins (the game's own, perhaps in another order) for `world`.
+    pub fn with_plugins(
+        content: CaveContent,
+        world: world_storage::WorldData,
+        plugins: Vec<Box<dyn plugin_host::Plugin>>,
+    ) -> Self {
+        let (server, connector) = game_shell::host::build_server_with_plugins::<Cave>(
+            &content,
+            world,
+            VIEW_RADIUS,
+            plugins,
+        )
+        .unwrap();
+        Self {
+            content,
+            server,
+            connector,
+        }
+    }
+
     pub fn with_world(content: CaveContent, world: world_storage::WorldData) -> Self {
         let (server, connector) = build_server::<Cave>(&content, world, VIEW_RADIUS).unwrap();
         Self {

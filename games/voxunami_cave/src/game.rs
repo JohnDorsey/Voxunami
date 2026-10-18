@@ -6,12 +6,10 @@ use std::collections::HashSet;
 use game_shell::{CameraStart, GameContent, GameDefinition, KeyCode, PlayerPose};
 use namespaced_id::NamespacedId;
 use physics::MoveInput;
-use plugin_host::PluginHost;
+use plugin_host::Plugin;
 use renderer::Camera;
-use server::GameLogic;
 use transport::Connection;
 use voxel_space::WorldPosition;
-use world_storage::WorldData;
 use world_view::{ScaledLight, ViewChannels};
 
 use crate::content::{CaveContent, game_id};
@@ -177,10 +175,8 @@ Window commands (start with a period): .ambient 0-255 sets how bright a face is 
         CaveContent::new()
     }
 
-    fn new_logic(content: &CaveContent, world: &WorldData) -> Box<dyn GameLogic> {
-        let host = PluginHost::new(cave_plugins(content), world)
-            .expect("the plugins of Cave are consistent");
-        Box::new(host)
+    fn plugins(content: &CaveContent) -> Vec<Box<dyn Plugin>> {
+        cave_plugins(content)
     }
 
     fn view_channels(content: &CaveContent, state: &CaveClientState) -> ViewChannels {

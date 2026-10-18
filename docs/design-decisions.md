@@ -105,6 +105,18 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   uniform light. Rounding light to fewer bands in the mesher is the lever if a scene gets heavy (not built); a light
   texture is the later route to smooth shading and would not change storage or the protocol.
 
+## Decided (the plugin host; built in Phase 23)
+- A game's server rules are plugins run by `plugin_host::PluginHost` (the specification and its record are in `plugin-api-spec.md`). What a plugin
+  registers, and when: systems in the phases `Decide`, `Controllers`, `Physics`, `Settle` and `Rules`; handlers of events, delivered first in first
+  out right after the system or handler that caused them returns; handlers of client messages and commands; saved state.
+- **The order of the plugin list never changes the result.** Plugins are registered by dependency then identifier, systems and handlers are ordered
+  by the `after`/`before` they declare (ties by plugin identifier, then their own), saved sections are written sorted by identifier, and nothing
+  runs in parallel. Each game's golden session (its recorded stream and saved world, hashed and pinned) is run with the plugin list as listed, reversed and
+  rotated.
+- A system's reads and writes of channels are declared and checked (in debug builds); two systems that use one channel, one writing it, with no order between
+  them are refused when the host starts. A `Mind` system cannot write the world, only emit intents. A rule reads and writes one grid at a time, by `GridId`
+  and the grid's own coordinates.
+
 ## Decided (rules for lattice simulation and physics)
 - Tick phases (confirmed by the owner): each tick reads a frozen snapshot of the previous tick and produces the next one.
   A brick update never writes to a neighbour; cross-brick effects are queued and applied together in a fixed order.

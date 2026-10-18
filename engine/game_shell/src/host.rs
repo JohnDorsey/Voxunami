@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use plugin_host::{Plugin, PluginHost};
 use server::{Server, ServerConfig, ServerError};
 use transport::loopback::{LoopbackConnection, LoopbackConnector, loopback_listener};
 use transport::tcp::{TcpConnection, TcpServerListener};
@@ -36,13 +37,17 @@ fn new_server<G: GameDefinition>(
     world: WorldData,
     view_radius_bricks: i64,
     listener: Box<dyn Listener>,
+    plugins: Vec<Box<dyn Plugin>>,
 ) -> Result<Server, ServerError> {
-    let logic = G::new_logic(content, &world);
+    // A game's plugins are fixed when it is built, so a set that cannot be registered is a mistake in
+    // the game that its tests find, not a condition to recover from.
+    let logic = PluginHost::new(plugins, &world)
+        .unwrap_or_else(|error| panic!("the plugins of {} cannot be registered: {error}", G::id()));
     Server::new(
         server_config::<G>(view_radius_bricks),
         world,
         &content.registries(),
-        logic,
+        Box::new(logic),
         listener,
     )
 }
@@ -54,8 +59,25 @@ pub fn build_server<G: GameDefinition>(
     world: WorldData,
     view_radius_bricks: i64,
 ) -> Result<(Server, LoopbackConnector), ServerError> {
+    build_server_with_plugins::<G>(content, world, view_radius_bricks, G::plugins(content))
+}
+
+/// Like [`build_server`], with these plugins instead of the game's own list: tests use it to put the same
+/// plugins in another order (which must change nothing), or to add one.
+pub fn build_server_with_plugins<G: GameDefinition>(
+    content: &G::Content,
+    world: WorldData,
+    view_radius_bricks: i64,
+    plugins: Vec<Box<dyn Plugin>>,
+) -> Result<(Server, LoopbackConnector), ServerError> {
     let (listener, connector) = loopback_listener();
-    let server = new_server::<G>(content, world, view_radius_bricks, Box::new(listener))?;
+    let server = new_server::<G>(
+        content,
+        world,
+        view_radius_bricks,
+        Box::new(listener),
+        plugins,
+    )?;
     Ok((server, connector))
 }
 
@@ -144,11 +166,13 @@ impl<G: GameDefinition> ServerThread<G> {
         if let Some(network) = settings.network {
             listeners = listeners.with_boxed(network);
         }
+        let plugins = G::plugins(&content);
         let mut server = new_server::<G>(
             &content,
             world,
             settings.view_radius_bricks,
             Box::new(listeners),
+            plugins,
         )?;
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stop);

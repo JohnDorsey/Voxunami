@@ -1,8 +1,9 @@
 # Phase 23 specification: plugins, grids, phases and events
 
-**Status: proposed 2026-10-18 for the owner's review. Nothing in this document is built.** It turns the "Plugin shape revisions" and
-"Requirements pulled forward" in `plan.md` into a concrete API for Phase 23 and says how each game is converted. The Rust below is a
-*sketch* to show shape and size, not final signatures. Where the owner's answer changes something, the section says so.
+**Status: built (Phase 23, steps 23a to 23e), 2026-10-18.** It began as the proposal the owner reviewed; the steps in section 11 say what was built and
+where the code differs from the sketches, and those notes are the record. The Rust in sections 3 and 6 is a sketch of shape and size, not the
+final signatures (the code in `engine/plugin_host`, `engine/server/src/grid_view.rs` and `engine/voxel_space/src/grid_id.rs` is). Where an
+answer of the owner changed something, the section says so.
 
 Read with `plan.md` (the proposals), `plugin-architecture-review.md` (the reasons) and `design-decisions.md` (the rules that hold, above
 all the hard rules in `CLAUDE.md`: determinism, string ids in saves, the client's view only from the stream).
@@ -267,8 +268,11 @@ designed here and not built.
     are identical). The golden pins were re-taken for these two.
   - one nuance: setting a voxel to the value it has is not a change, so a block edit that changes nothing no longer wakes the light, fire and bodies
     (before, it did, uselessly).
-- **23e** Shuffle test, mutation experiments (`PROPTEST_DISABLE_FAILURE_PERSISTENCE=1`), documentation, `GameDefinition::new_logic`
-  replaced by a plugin list.
+- **23e** (done) Shuffle test, mutation experiments (`PROPTEST_DISABLE_FAILURE_PERSISTENCE=1`), documentation, `GameDefinition::new_logic`
+  replaced by a plugin list. As built: `GameDefinition::plugins(content)` returns the list (the shell builds the `PluginHost`);
+  `game_shell::host::build_server_with_plugins` takes another list or order. Each game's golden session now also runs with its plugins reversed
+  and rotated and must give the same numbers. Two guards make the order of the list irrelevant (plugins are registered by dependency then
+  identifier; saved sections are sorted by identifier); removing one leaves the shuffle test passing, removing both makes it fail.
 
 ## 12. Questions for the owner
 

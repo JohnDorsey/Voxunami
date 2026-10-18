@@ -4,11 +4,9 @@ use game_shell::session::Session;
 use game_shell::{CameraStart, GameDefinition, KeyCode};
 use namespaced_id::NamespacedId;
 use player_presence::PlayersPlugin;
-use plugin_host::PluginHost;
+use plugin_host::Plugin;
 use protocol::ClientId;
-use server::GameLogic;
 use transport::Connection;
-use world_storage::WorldData;
 
 use crate::content::{ContentEels, SLOT_NAMES, game_id};
 use crate::eel::Steer;
@@ -144,13 +142,11 @@ impl GameDefinition for Eels {
         ContentEels::new()
     }
 
-    fn new_logic(content: &ContentEels, world: &WorldData) -> Box<dyn GameLogic> {
+    fn plugins(content: &ContentEels) -> Vec<Box<dyn Plugin>> {
         // The server moves every player, so what they say about where they are is not believed.
         let players = PlayersPlugin::new(false);
         let rules = PluginEels::new(content, players.book());
-        let host = PluginHost::new(vec![Box::new(players), Box::new(rules)], world)
-            .expect("the plugins of Eels are consistent");
-        Box::new(host)
+        vec![Box::new(players), Box::new(rules)]
     }
 
     fn handle_game_message(state: &mut ClientStateEels, kind: &NamespacedId, payload: &[u8]) {

@@ -8,7 +8,6 @@
 
 use game_shell::GameContent;
 use game_shell::files::record_connection;
-use game_shell::host::build_server;
 use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
 use transport::Connection;
@@ -31,6 +30,19 @@ fn at(x: i64, y: i64, z: i64) -> VoxelCoordinate {
 
 fn block(material: Material, exponent: u8) -> NumberedBlock {
     NumberedBlock::new(material, 1 << exponent)
+}
+
+/// The same plugins in another order: 0 as listed, 1 reversed, 2 rotated. The order must change nothing.
+fn arranged(
+    mut plugins: Vec<Box<dyn plugin_host::Plugin>>,
+    arrangement: usize,
+) -> Vec<Box<dyn plugin_host::Plugin>> {
+    match arrangement {
+        0 => {}
+        1 => plugins.reverse(),
+        _ => plugins.rotate_left(1),
+    }
+    plugins
 }
 
 /// FNV-1a over bytes: simple, and the same everywhere.
@@ -63,7 +75,7 @@ fn ticks(server: &mut server::Server, player: &mut Player, count: usize) {
     }
 }
 
-fn session(name: &str) -> (u64, usize, u64) {
+fn session(name: &str, arrangement: usize) -> (u64, usize, u64) {
     let directory = std::env::temp_dir().join(format!(
         "voxunami_2048_golden_{}_{name}",
         std::process::id()
@@ -103,7 +115,16 @@ fn session(name: &str) -> (u64, usize, u64) {
             .overrides
             .set(content.number_channel(), voxel, numbered.state());
     }
-    let (mut server, connector) = build_server::<Game2048>(&content, world, VIEW_RADIUS).unwrap();
+    let (mut server, connector) = game_shell::host::build_server_with_plugins::<Game2048>(
+        &content,
+        world,
+        VIEW_RADIUS,
+        arranged(
+            <Game2048 as game_shell::GameDefinition>::plugins(&content),
+            arrangement,
+        ),
+    )
+    .unwrap();
     let occupied = |server: &server::Server| {
         blocks
             .iter()
@@ -200,8 +221,8 @@ fn session(name: &str) -> (u64, usize, u64) {
 #[test]
 fn a_whole_session_gives_the_same_stream_and_the_same_saved_world_every_time_and_on_every_machine()
 {
-    let first = session("first");
-    let second = session("second");
+    let first = session("first", 0);
+    let second = session("second", 0);
     assert_eq!(
         first, second,
         "the session differs between two runs in one process"
@@ -210,6 +231,17 @@ fn a_whole_session_gives_the_same_stream_and_the_same_saved_world_every_time_and
         first, PINNED,
         "stream hash, stream bytes, saved world hash: {first:?}"
     );
+}
+
+#[test]
+fn the_order_the_plugins_are_listed_in_changes_nothing() {
+    for arrangement in [1, 2] {
+        assert_eq!(
+            session("arranged", arrangement),
+            PINNED,
+            "arrangement {arrangement}"
+        );
+    }
 }
 
 /// Stream hash, stream length, saved-world hash.

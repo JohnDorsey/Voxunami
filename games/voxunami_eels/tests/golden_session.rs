@@ -8,7 +8,6 @@
 
 use game_shell::GameContent;
 use game_shell::files::record_connection;
-use game_shell::host::build_server;
 use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
 use transport::Connection;
@@ -20,6 +19,19 @@ use voxunami_eels::round::{COUNTDOWN_TICKS, OVER_TICKS, STEP_TICKS};
 const VIEW_RADIUS: i64 = 3;
 
 type Player = Session<Box<dyn Connection>, Eels>;
+
+/// The same plugins in another order: 0 as listed, 1 reversed, 2 rotated. The order must change nothing.
+fn arranged(
+    mut plugins: Vec<Box<dyn plugin_host::Plugin>>,
+    arrangement: usize,
+) -> Vec<Box<dyn plugin_host::Plugin>> {
+    match arrangement {
+        0 => {}
+        1 => plugins.reverse(),
+        _ => plugins.rotate_left(1),
+    }
+    plugins
+}
 
 /// FNV-1a over bytes: simple, and the same everywhere.
 fn hash(bytes: &[u8]) -> u64 {
@@ -40,7 +52,7 @@ fn ticks(server: &mut server::Server, players: &mut [&mut Player], count: u32) {
     }
 }
 
-fn session(name: &str) -> (u64, usize, u64) {
+fn session(name: &str, arrangement: usize) -> (u64, usize, u64) {
     let directory = std::env::temp_dir().join(format!(
         "voxunami_eels_golden_{}_{name}",
         std::process::id()
@@ -50,7 +62,16 @@ fn session(name: &str) -> (u64, usize, u64) {
 
     let content = ContentEels::new();
     let world = content.new_world(1);
-    let (mut server, connector) = build_server::<Eels>(&content, world, VIEW_RADIUS).unwrap();
+    let (mut server, connector) = game_shell::host::build_server_with_plugins::<Eels>(
+        &content,
+        world,
+        VIEW_RADIUS,
+        arranged(
+            <Eels as game_shell::GameDefinition>::plugins(&content),
+            arrangement,
+        ),
+    )
+    .unwrap();
     let start = camera_at([32.5, 40.0, 32.5], 0.0, 0.0, VIEW_RADIUS);
     let recorded = record_connection(connector.connect().unwrap(), &path).unwrap();
     let mut first =
@@ -111,8 +132,8 @@ fn session(name: &str) -> (u64, usize, u64) {
 #[test]
 fn a_whole_session_gives_the_same_stream_and_the_same_saved_world_every_time_and_on_every_machine()
 {
-    let first = session("first");
-    let second = session("second");
+    let first = session("first", 0);
+    let second = session("second", 0);
     assert_eq!(
         first, second,
         "the session differs between two runs in one process"
@@ -121,6 +142,17 @@ fn a_whole_session_gives_the_same_stream_and_the_same_saved_world_every_time_and
         first, PINNED,
         "stream hash, stream bytes, saved world hash: {first:?}"
     );
+}
+
+#[test]
+fn the_order_the_plugins_are_listed_in_changes_nothing() {
+    for arrangement in [1, 2] {
+        assert_eq!(
+            session("arranged", arrangement),
+            PINNED,
+            "arrangement {arrangement}"
+        );
+    }
 }
 
 /// Stream hash, stream length, saved-world hash.

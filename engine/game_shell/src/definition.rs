@@ -6,8 +6,8 @@ use std::fmt::Debug;
 use block_models::BlockTable;
 use content_registry::IdentifierRegistry;
 use namespaced_id::NamespacedId;
+use plugin_host::Plugin;
 use renderer::Camera;
-use server::GameLogic;
 use transport::Connection;
 use voxel_space::WorldPosition;
 use winit::keyboard::KeyCode;
@@ -128,8 +128,9 @@ pub trait GameDefinition: Sized + 'static {
     ) -> Option<(NamespacedId, Vec<u8>)> {
         None
     }
-    /// The server's rules, built from the world it will serve (which holds any saved game state).
-    fn new_logic(content: &Self::Content, world: &WorldData) -> Box<dyn GameLogic>;
+    /// The plugins that are the server's rules. Each is given the world the server starts from when it
+    /// is registered, and so finds any state it saved. The order of the list does not matter.
+    fn plugins(content: &Self::Content) -> Vec<Box<dyn Plugin>>;
 
     /// What the view draws from, as the client's state says: a game whose lights depend on what the
     /// server told it (see [`GameDefinition::handle_game_message`]) changes the content's channels

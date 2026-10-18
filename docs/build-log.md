@@ -47,6 +47,16 @@ Phase 1d (saving):
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
 
+Phase 23e (closing Phase 23; owner's request, 2026-10-18):
+- `GameDefinition::new_logic` is replaced by `GameDefinition::plugins(content)`; the shell builds the `PluginHost`
+  (`game_shell::host::build_server_with_plugins` takes a different list or order). The three golden sessions also run with their plugin
+  lists reversed and rotated, and must give the pinned numbers.
+- Checked that the shuffle test bites: removing the sorting of saved sections alone leaves it passing (plugins are also registered in
+  identifier order, so two mechanisms guard the same thing); removing both makes it fail on Cave.
+- Phase 23 as a whole: grid addressing (`GridId`, `GridView`), the plugin host with phases, ordered systems, events, asks, minds and
+  checked declarations, and every game converted, with no pinned number changed except the two deliberate ones of 23d. 84 test
+  binaries pass on Windows and on Linux.
+
 Phase 23d (Cave as plugins; owner's request, 2026-10-18):
 - `CaveLogic` is split into `voxunami_cave:block_editing`, `:movement`, `:fire` and `:light` plus the shared players plugin, in
   `games/voxunami_cave/src/plugins/`. They hear of one another's writes through `ChannelsChanged`; a block edit is asked about first

@@ -53,9 +53,9 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
   concepts out of `world_view`; the multiscale light stops being a spike.
 - 25 (planned) Declared messages (field lists, generated round-trip tests) and a command registry (revision 4).
 - 24 (planned) Property bags on block definitions, with tags; `emission`, `flammability` and `passable` leave the engine (revision 2).
-- 23 (in progress) The registrar and events; Cave's light, fire and movement become plugins (revision 1). Specified in
-  `plugin-api-spec.md` (steps 23a to 23e). Step 1, done: golden sessions for the three games that lock the recorded stream and the
-  saved world bit for bit, on Windows and Linux. Steps 23a (grid addressing), 23b (the registrar, in the new `plugin_host` crate), 23c (2048 and Eels converted) and 23d (Cave converted) are done. Next: 23e, the shuffle test across the games, the remaining mutation experiments, `GameDefinition::new_logic` replaced by a plugin list, and the documentation.
+- 23 The registrar and events; Cave's light, fire and movement become plugins, and 2048 and Eels too (revision 1). **Done.** Specified and
+  recorded in `plugin-api-spec.md` (steps 23a to 23e); the new crate is `plugin_host`. Golden sessions lock the recorded stream and the saved
+  world of each game bit for bit, on Windows and Linux, in any order of the plugin list.
 - 22 Multiscale light cells of any width (1 to 32), a hook for the client's view, four odd-width schemes benchmarked. **Done (a spike).**
 - 21 Multiscale light schemes (32/16/8/4 levels, cells to 4/8/16/32) and per-scale weights, benchmarked. **Done (a spike).**
 - 20 Cave's sky is dark until there is sky light, and the window's own commands start with a period. **Done.**

@@ -4,11 +4,9 @@ use game_shell::session::Session;
 use game_shell::{CameraStart, GameDefinition, KeyCode};
 use namespaced_id::NamespacedId;
 use player_presence::PlayersPlugin;
-use plugin_host::PluginHost;
-use server::GameLogic;
+use plugin_host::Plugin;
 use transport::Connection;
 use voxel_space::{FaceDirection, VoxelCoordinate};
-use world_storage::WorldData;
 
 use crate::content::{Content2048, game_id};
 use crate::logic::{Plugin2048, REACH};
@@ -127,13 +125,11 @@ W A S D move, Space and Shift go up and down, Ctrl moves five times faster. Comm
         Content2048::new()
     }
 
-    fn new_logic(content: &Content2048, world: &WorldData) -> Box<dyn GameLogic> {
+    fn plugins(content: &Content2048) -> Vec<Box<dyn Plugin>> {
         // This game believes what players say about where they are.
         let players = PlayersPlugin::new(true);
         let rules = Plugin2048::new(content, players.book());
-        let host = PluginHost::new(vec![Box::new(players), Box::new(rules)], world)
-            .expect("the plugins of 2048 are consistent");
-        Box::new(host)
+        vec![Box::new(players), Box::new(rules)]
     }
 
     fn handle_game_message(state: &mut ClientState2048, kind: &NamespacedId, payload: &[u8]) {

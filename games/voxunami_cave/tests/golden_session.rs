@@ -23,13 +23,28 @@ use game_shell::GameContent;
 use game_shell::KeyCode;
 use game_shell::files::record_connection;
 use voxel_space::VoxelCoordinate;
+use voxunami_cave::content::CaveContent;
 use voxunami_cave::game::request_block;
 use voxunami_cave::game::request_block_with_state;
+use voxunami_cave::plugins::cave_plugins;
 
 /// The height of the highest solid voxel in the column (16, 16) of the world of seed 2024. The
 /// terrain generator is frozen, so it does not change; `the_script_assumes_the_ground_it_is_built_on`
 /// checks it.
 const GROUND: i64 = 102;
+
+/// The same plugins in another order: 0 as listed, 1 reversed, 2 rotated. The order must change nothing.
+fn arranged(
+    mut plugins: Vec<Box<dyn plugin_host::Plugin>>,
+    arrangement: usize,
+) -> Vec<Box<dyn plugin_host::Plugin>> {
+    match arrangement {
+        0 => {}
+        1 => plugins.reverse(),
+        _ => plugins.rotate_left(1),
+    }
+    plugins
+}
 
 /// FNV-1a over bytes: simple, and the same everywhere.
 fn hash(bytes: &[u8]) -> u64 {
@@ -56,7 +71,7 @@ fn at(x: i64, y: i64, z: i64) -> VoxelCoordinate {
 
 /// Runs the session and returns the hash of the recorded stream, the number of bytes in it, and the
 /// hash of the saved world.
-fn session(name: &str) -> (u64, usize, u64) {
+fn session(name: &str, arrangement: usize) -> (u64, usize, u64) {
     let directory = std::env::temp_dir().join(format!(
         "voxunami_cave_golden_{}_{name}",
         std::process::id()
@@ -64,7 +79,10 @@ fn session(name: &str) -> (u64, usize, u64) {
     std::fs::create_dir_all(&directory).unwrap();
     let path: PathBuf = directory.join("session.voxreplay");
 
-    let mut rig = Rig::new();
+    let content = CaveContent::new();
+    let world = content.new_world(common::SEED);
+    let plugins = arranged(cave_plugins(&content), arrangement);
+    let mut rig = Rig::with_plugins(content, world, plugins);
     let connection = rig.connector.connect().unwrap();
     let recorded = record_connection(connection, &path).unwrap();
     let mut player = rig.join_with(recorded, [16.5, GROUND as f64 + 4.0, 16.5], 0.0, 0.0);
@@ -175,8 +193,8 @@ fn the_script_assumes_the_ground_it_is_built_on() {
 #[test]
 fn a_whole_session_gives_the_same_stream_and_the_same_saved_world_every_time_and_on_every_machine()
 {
-    let first = session("first");
-    let second = session("second");
+    let first = session("first", 0);
+    let second = session("second", 0);
     assert_eq!(
         first, second,
         "the session differs between two runs in one process"
@@ -185,6 +203,17 @@ fn a_whole_session_gives_the_same_stream_and_the_same_saved_world_every_time_and
         first, PINNED,
         "stream hash, stream bytes, saved world hash: {first:?}"
     );
+}
+
+#[test]
+fn the_order_the_plugins_are_listed_in_changes_nothing() {
+    for arrangement in [1, 2] {
+        assert_eq!(
+            session("arranged", arrangement),
+            PINNED,
+            "arrangement {arrangement}"
+        );
+    }
 }
 
 /// Stream hash, stream length, saved-world hash.
