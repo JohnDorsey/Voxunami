@@ -52,7 +52,8 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 26 (planned) The client interface (HUD line, key actions, client commands) and the bulk light hook that takes the scaled-light
   concepts out of `world_view`; the multiscale light stops being a spike.
 - 25 (planned) Declared messages (field lists, generated round-trip tests) and a command registry (revision 4).
-- 24 (planned) Property bags on block definitions, with tags; `emission`, `flammability` and `passable` leave the engine (revision 2).
+- 24 (specified, awaiting review) Property bags on block definitions, with tags; `emission`, `flammability` and `passable` leave the engine (revision 2).
+  Specified in `property-bags-spec.md` (steps 24a to 24d); the multiscale benchmark was measured before the change.
 - 23 The registrar and events; Cave's light, fire and movement become plugins, and 2048 and Eels too (revision 1). **Done.** Specified and
   recorded in `plugin-api-spec.md` (steps 23a to 23e); the new crate is `plugin_host`. Golden sessions lock the recorded stream and the saved
   world of each game bit for bit, on Windows and Linux, in any order of the plugin list.
