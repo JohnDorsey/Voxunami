@@ -18,7 +18,9 @@ The engine is **Voxunami**.
 Every game gets: multiplayer, replay recording to video, lossless save round-trip with missing plugins.
 
 ## Decided
-- Plugins are an internal modularity tool, not an end-user mod system.
+- Plugins are an internal modularity tool, not an end-user mod system. (Revised 2026-10-16 and 2026-10-17: mods for
+  players are now planned, see "Proposed", "Mods for players" and "Plugin shape revisions". Until they are built,
+  plugins are compile-time crates.)
 - Voxels are strictly cubic. Real-time rendering is rasterized; a path-traced offline renderer for replay export comes later.
 - The grid is always cubic (owner, 2026-10-16), apart from coarser levels of detail in the distance. A block may fill only
   part of its cell, using a block shape chosen by the block's *state*, so that shapes do not multiply the number of block
@@ -199,6 +201,78 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
      mod; only then promise compatibility. The API is labelled experimental until others have written real mods. A mod
      cannot add GPU code, change the engine's internals (save container, network protocol, renderer, physics), touch the OS,
      or depend on wall-clock time or unseeded randomness.
+- Plugin shape revisions (proposed 2026-10-17; the owner wants the first release shaped as well as it can be while there are
+  no players and no saved worlds to protect, especially the parts modders touch). They come from comparing this design with
+  Hytale, Minecraft (Java and Bedrock), Factorio, Luanti, Vintage Story, RimWorld, Starbound and Veloren. The eight weaknesses
+  they answer, the options weighed for each, what they leave open, and the sources are in
+  `docs/plugin-architecture-review.md`. Five changes, in the order they depend on each other, each small in API terms:
+  1. **A registrar and a few events (Phase 23).** A plugin is one function handed a `Registrar` (on the server and on every
+     client) and registers what it adds: blocks, channels, property keys, commands, message kinds, tick systems, event handlers,
+     save sections, and client hooks (a HUD line, key actions, client commands). That list is the API's size budget: an eighth
+     kind of thing needs a reason written here first. Events are few, named and batched: `BlocksChanged` carries a slice of
+     changes, never one call per voxel, so the later WASM boundary stays bulk-only; `PlayerJoined`, `PlayerLeft`, `LevelChanged`,
+     `WorldLoaded` and `WorldSaving`; and two "ask first" events, `BlockPlaceRequested` and `BlockBreakRequested`, whose handlers
+     may refuse. Order is part of the replay contract: every handler and system runs in one sequential order given by explicit
+     `after`/`before` and, for ties, plugin id (never hash order, never in parallel), so one stream gives one world on every
+     machine. Declared channel reads and writes are checked, not trusted and not scheduled: in tests and debug builds a system
+     that writes a channel it did not declare fails, and so do two systems that write one channel with no order between them (the
+     check Bevy calls ambiguity detection). Rules keep the shape of the lattice decisions above: snapshot in, edits out, budget;
+     a system that writes the world directly is marked exclusive, and the partition-invariance test stays. Whether the common
+     shape of the three rules (classic light, multiscale light, fire) is extracted as a `LatticeRule` kind is decided by
+     converting them, not in advance (the earlier decision was that two rules did not show it). Cave's light, fire and movement
+     become three plugins that talk through events (`set_block` stops calling them); 2048's and Eels' rules follow; and
+     `GameDefinition` shrinks to what only a game says (name, controls, camera, tick rate). Done the way Phase 18 was: tests
+     that pin the saved bytes, the generator digests and every existing Cave test come first and pass unmodified afterwards.
+  2. **Property bags on block definitions (Phase 24).** A block definition carries namespaced, typed properties that plugins
+     register, instead of fixed fields. `emission` and `flammability` (read only by Cave's rules) move to `base_blocks`' own
+     keys; `passable` goes with movement; the engine keeps only what it reads itself: colour, shapes, see-through, state colours.
+     A key has an identifier, a value kind (bool, integer with a range, the id of a registry entry, string; nothing a rule reads is
+     a float, which keeps simulation bit-identical), a default, a doc line, and whether only clients read it. A bool property is a
+     tag (set membership; packs merge tags by union). A table is built from definitions once into one column per key, indexed by
+     block id, read through a typed handle (a plain array index in the hot loops); an unknown key, a wrong type or a value out of
+     range is an error naming the file and the path. The same value-kind vocabulary serves message fields, command arguments and
+     configuration, so there is one small schema language, not three. Per-voxel data stays in channels (already a namespaced bag
+     per voxel); properties are the same for every voxel of a block.
+  3. **The server sends the content package at the handshake (Phase 28).** `Welcome` carries, or names by hash, the package: block
+     definitions with their properties and shapes now, assets and generator WASM later. A client needs no plugin installed and
+     builds its block table from the package; a recording carries it, so a replay plays with no plugins present; clients cache by
+     content hash (Minecraft's server resource packs do the same). Until WASM generators exist, terrain generators stay compiled in
+     (clients still regenerate terrain from the seed) and the package carries data only. For a generator that cannot be made
+     bit-identical, a *server-streamed* generator kind (its bricks are sent, nothing is regenerated by the client) is the escape
+     hatch, at the cost of bandwidth. Client code finds blocks by identifier on connecting, never by compiled-in ids.
+  4. **Messages and commands that are declared (Phase 25).** A plugin's message kinds are declared with a field list in the shared
+     value vocabulary, so both ends come from one definition, the round-trip test is generated, and unknown kinds stay ignorable;
+     the engine's own hot-path messages (brick edits) keep their hand-written compiled codecs. A command registry takes a name,
+     typed arguments, a usage line, a handler and a permission level, and `/help` and the unknown-command reply are generated from
+     it; the window's period-prefixed commands are registered the same way by client plugins. Not Brigadier-sized.
+  5. **A generated schema for the data format (Phase 29, with data-driven mods = mod stage 2).** A JSON Schema is generated from the
+     registered keys and kinds (never written by hand, so it cannot drift), so editors complete and check files, and
+     `voxunami check-pack` reports errors with file and path. How one mod changes another's blocks (patch and overlay order) is
+     designed in the same phase; see "Open".
+  How they map onto the mod stages above: stage 1 (settle the in-tree API) is revisions 1, 2 and 4; stage 2 (data-driven mods)
+  is 5 and the patch design; the handshake of stage 6 is 3, which needs only serializable definitions and so does not have to wait
+  for JSON loading. None of this adds a loader: the native and WASM loaders (stages 3 to 8) are the last phase, still decided from
+  measurements.
+- More improvements added to the plan (owner, 2026-10-17: do them all, put the palette widening and the WASM and native loaders
+  last; the review's "worth it" verdicts for a team of two are advice about order and size, not a reason to leave any out). Besides
+  the five revisions above:
+  - **Client interface (Phase 26):** plugins register a HUD line, key actions and period-prefixed client commands (pure functions of
+    the stream plus local state, so replay is unaffected); and the scaled-light leak is closed: a bulk client hook turns a brick's
+    channels into brightness, `ScaledLight`, `LevelFormat` and `MAXIMUM_LIGHT_SCALES` leave `world_view` for Cave, and the multiscale
+    light stops being a spike.
+  - **Entities and items (Phase 27):** server-owned entities (id, kind from a registry, pose, typed components from the property
+    machinery; large or articulated things are grids with a transform, as decided), items as registry content with stacks that carry
+    components, an inventory, and the protocol messages and the `engine:entities` save section, reserved before 1.0 so old recordings
+    never need a second decoder. No ECS.
+  - **Patches (inside Phase 29):** tags merge by union; other changes to a definition are patch operations by namespaced id (`set`,
+    `add`, `remove` on properties, and a JSON-Patch-style `test`); mods apply in dependency order, ties by id; a patch that does not
+    apply is a loud error naming file and path. No scripted data stage.
+  - **Data-driven JSON blocks and packs (Phase 29)** with `check-pack`, and **server-driven UI (Phase 30)**: UI described by the server
+    in the value vocabulary and driven by the stream, so replay holds.
+  - **Wider palette (Phase 31):** the renderer's material palette moves to a storage buffer; a renderer-only change (see "Open").
+  - **Native and WASM loaders (Phase 32):** mod stages 3 to 8 as listed above: dogfood the API, spike both loaders and measure,
+    generator mods so generators can travel in the content package, hostile-mod tests, the mod list in the handshake, server-side
+    hooks with budgets, assets and an SDK. The last phase, because it matters only with code from outside.
 - Rust, wgpu, mesh-based GPU-driven rendering, nested clipmap LOD shells.
 - Everything with voxels is a `Grid`: sparse, chunked, with a rigid transform. Terrain is the infinite root grid
   (procedural base plus saved overrides); structures, creatures and tiles are finite grids.
@@ -817,6 +891,19 @@ Implication: a continuous-valued channel stored densely costs 4 bytes per voxel 
 continuous channels need quantization or sparse activity.
 
 ## Open
+- Plugin architecture (2026-10-17; `docs/plugin-architecture-review.md` has the options and sources; each item is now in the
+  Build plan, and what stays open is the detail): (a) *Entities and items* (Phase 27): only players exist, and the protocol, the
+  replay stream and the save format have no entity messages; the design says creatures are finite grids, which is not built. What
+  an entity replicates, how an inventory is shaped, and what the first mob is are open. (b) *Patches* (Phase 29): the operations
+  and failure rules are written above; the policy for a patch to a property whose plugin is missing (ignore with a warning, or
+  refuse) is open. (c) *Materials* (Phase 31): the renderer draws at most 240 game materials (a 256-entry palette less 16 for
+  avatars); the packed quad has 24 bits for the material and saves hold block ids, so widening it is a renderer-only change; whether
+  the first release has textures is open, and a texture path (an array indexed by material and face, UVs from position) is a larger
+  decision than the palette. (d) *Scaled light in the engine* (Phase 26): `world_view` holds `ScaledLight`, `LevelFormat` and
+  `MAXIMUM_LIGHT_SCALES`, Cave's multiscale-light concepts, against the rule that the engine never knows a plugin (a spike's
+  shortcut, Phases 19 to 22); the hook that closes it is planned. (e) *Client interface* (Phases 26 and 30): the window title is
+  the HUD, plugins cannot add client commands or key actions, and there is no UI toolkit; the first two are planned in Phase 26,
+  the toolkit in Phase 30.
 - Light (Phase 12): cost is one lamp's 64 ticks of spreading averaged 15 ms a tick in a release build (with two clients
   watching; measured once, not repeated), and a tick is 50 ms, so a few lamps placed at once would overrun it. The budget
   of 20 000 voxels a tick (Phase 14) is a guess, not tuned, and its streaming cost to clients is not measured. The sky light
@@ -895,6 +982,20 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 16 Cave gravity and collision: the server moves the players (`/fly`, `/tp`). **Done.**
 - 17 Voxunami Eels (3D Tron) and the shell hooks it needed. **Done.**
 - 18 Mod stage 1, first step: a game's content as one declared package (`ContentPackage`). **Done.**
+- 32 (planned, last) The native and WASM loaders (mod stages 3 to 8): dogfood the API, spike and measure both loaders, generator mods,
+  hostile-mod tests, the mod list in the handshake, server-side hooks with budgets, assets and an SDK.
+- 31 (planned, late) A wider material palette: the renderer's palette in a storage buffer (renderer-only; saves and protocol unchanged).
+- 30 (planned) Server-driven UI: a UI the server describes in the value vocabulary and the stream drives.
+- 29 (planned) Data-driven block packs (JSON), the generated JSON Schema, `check-pack`, and patches: tags by union, patch operations,
+  dependency order, loud failures (revision 5; mod stage 2).
+- 28 (planned) The content package at the handshake, carried by recordings (revision 3).
+- 27 (planned) Entities and items: server-owned entities with typed components, inventories, the protocol messages and the
+  `engine:entities` section reserved before 1.0.
+- 26 (planned) The client interface (HUD line, key actions, client commands) and the bulk light hook that takes the scaled-light
+  concepts out of `world_view`; the multiscale light stops being a spike.
+- 25 (planned) Declared messages (field lists, generated round-trip tests) and a command registry (revision 4).
+- 24 (planned) Property bags on block definitions, with tags; `emission`, `flammability` and `passable` leave the engine (revision 2).
+- 23 (planned) The registrar and events; Cave's light, fire and movement become plugins (revision 1).
 - 22 Multiscale light cells of any width (1 to 32), a hook for the client's view, four odd-width schemes benchmarked. **Done (a spike).**
 - 21 Multiscale light schemes (32/16/8/4 levels, cells to 4/8/16/32) and per-scale weights, benchmarked. **Done (a spike).**
 - 20 Cave's sky is dark until there is sky light, and the window's own commands start with a period. **Done.**
