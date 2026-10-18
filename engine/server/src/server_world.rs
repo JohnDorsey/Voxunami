@@ -33,6 +33,14 @@ pub enum AccessError {
     NoSuchGrid(GridId),
 }
 
+/// A voxel whose value in a watched channel changed (see [`ServerWorld::watch_channels`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChannelChange {
+    pub grid: GridId,
+    pub channel: ChannelIndex,
+    pub voxel: VoxelCoordinate,
+}
+
 /// What happened to one brick during the current tick.
 #[derive(Debug)]
 pub(crate) struct BrickEdits {
@@ -60,6 +68,9 @@ pub struct ServerWorld {
     pub(crate) edits: BTreeMap<(LevelIndex, BrickCoordinate), BrickEdits>,
     pub(crate) outgoing: Vec<OutgoingGameMessage>,
     pub(crate) replies: Vec<(ClientId, String)>,
+    /// The channels whose changes are logged for whoever asks (see [`ServerWorld::take_changes`]).
+    watched: BTreeSet<ChannelIndex>,
+    changes: Vec<ChannelChange>,
 }
 
 impl ServerWorld {
@@ -72,7 +83,22 @@ impl ServerWorld {
             edits: BTreeMap::new(),
             outgoing: Vec::new(),
             replies: Vec::new(),
+            watched: BTreeSet::new(),
+            changes: Vec::new(),
         }
+    }
+
+    /// Says which channels to log changes of, in the order they happen. Nothing is logged for any
+    /// other channel, so a channel nobody asked about costs nothing. Replaces the earlier choice.
+    pub fn watch_channels(&mut self, channels: BTreeSet<ChannelIndex>) {
+        self.watched = channels;
+        self.changes.clear();
+    }
+
+    /// The changes made to watched channels since the last call, in order. Only changes that altered
+    /// a voxel are in it (setting a voxel to the value it has is not a change).
+    pub fn take_changes(&mut self) -> Vec<ChannelChange> {
+        std::mem::take(&mut self.changes)
     }
 
     pub fn data(&self) -> &WorldData {
@@ -201,6 +227,13 @@ impl ServerWorld {
             channel: u16::try_from(channel.get()).expect("channel positions fit in 16 bits"),
             value,
         });
+        if self.watched.contains(&channel) {
+            self.changes.push(ChannelChange {
+                grid: GridId::root(level),
+                channel,
+                voxel: at,
+            });
+        }
         Ok(true)
     }
 

@@ -1,0 +1,26 @@
+[package]
+name = "plugin_host"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Runs a game's server rules as plugins: registration, tick phases, events, and the order they run in."
+
+[dependencies]
+namespaced_id.workspace = true
+protocol.workspace = true
+server.workspace = true
+voxel_grid.workspace = true
+voxel_space.workspace = true
+world_storage.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+protocol.workspace = true
+server = { workspace = true, features = ["test-support"] }
+transport.workspace = true
+voxel_grid = { workspace = true, features = ["test-support"] }
+world_storage = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

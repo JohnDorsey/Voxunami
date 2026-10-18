@@ -47,6 +47,20 @@ Phase 1d (saving):
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
 
+Phase 23b (the registrar and the plugin host; owner's request, 2026-10-18):
+- New engine crate `plugin_host`: `Plugin`, `Registrar`, `PluginHost` (the server's `GameLogic`), phases (`Decide`, `Controllers`, `Physics`,
+  `Settle`, `Rules`), systems and handlers ordered by declared `after`/`before` with ties by plugin and name, events delivered first in first out,
+  `ask` events with a first-refusal-wins verdict, `Mind` systems that can only emit intents, declared reads and writes checked in debug builds,
+  and a start-up check that two systems using one channel (one writing) are ordered. `server` gained `ServerWorld::watch_channels` and
+  `take_changes`.
+- Tests: 25 (the order of a tick; independence of the plugin list's order; every registration error; fire-then-light in one tick; only watched
+  channels reported; FIFO delivery; the cascade limit; asks; declared channels; messages; commands; players; minds; saving), a `compile_fail`
+  doctest that a mind cannot write, and seven mutations of the host (ties, delivery, the ambiguity and declared checks, the limit, intents, ask
+  order) all caught.
+- Found while writing them: the spec said both that a handler's writes are delivered "before the next handler of the same event" and that
+  they join a FIFO queue; the code does the second (simpler: what a handler causes cannot run in the middle of the handlers of its own event), and the spec
+  now says so.
+
 Phase 23a (grid addressing; owner's request, 2026-10-18; the first code step of `plugin-api-spec.md`):
 - `voxel_space::GridId` (the address a rule uses; a root grid's id is its level's index), `server::GridView` (`id`, `get`, `set`) and
   `ServerWorld::grid`. `lattice::ActiveVoxels` and `voxel_random` are keyed by grid; Cave's light, multiscale light and fire rules and

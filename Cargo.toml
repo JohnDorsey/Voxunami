@@ -20,6 +20,7 @@ end_to_end_tests = { path = "engine/end_to_end_tests" }
 namespaced_id = { path = "engine/namespaced_id" }
 physics = { path = "engine/physics" }
 player_presence = { path = "engine/player_presence" }
+plugin_host = { path = "engine/plugin_host" }
 protocol = { path = "engine/protocol" }
 region_octree = { path = "engine/region_octree" }
 replay = { path = "engine/replay" }

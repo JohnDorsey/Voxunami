@@ -80,8 +80,11 @@ Order inside a phase is section 5.3. `Messages` and `Send` are the engine's and 
 
 ### 5.1 Delivery
 
-An event is delivered **synchronously, right after the system or handler that caused it returns**, to every subscribed handler in the
-global order (5.3). Events a handler causes are appended to a FIFO queue and delivered the same way, until the queue is empty. This
+The events a system, message handler or command handler causes (the events it sends, and one `ChannelsChanged` for each watched
+channel it wrote) are delivered **synchronously, right after it returns**, before the next system runs: each event to all of its
+handlers in the global order (5.3). What a handler itself sends or writes joins the back of a first-in first-out queue, so it is
+delivered after the other events already waiting, once every handler of the event being delivered has run; and so on until the queue
+is empty. (Breadth first: simpler to reason about than a handler's effects running in the middle of the handlers of its own event.) This
 reproduces today's behaviour exactly: fire's writes reach the light rule (and movement) *before* the light system runs in the same
 tick. A cascade longer than a fixed limit (proposed: 4 096 events or depth 64 in one tick) stops delivery for that tick and is reported;
 it is deterministic and a bug in a plugin.
@@ -218,8 +221,24 @@ designed here and not built.
   `ScaledLightWorld` take a `GridId`, and Cave's adapters read and write through `ServerWorld::grid`. `read_region`, `gravity` and
   `world_position` are not in the trait yet: each joins when its first user does. `Movement` and 2048's motion still use levels
   (steps 23c and 23d).
-- **23b** The registrar, phases, ordering, events, the declared-channel checks, `PluginHost`; all the new tests above that do not need a
-  converted game.
+- **23b** (done) The registrar, phases, ordering, events, the declared-channel checks, `PluginHost`; all the new tests above that do not need a
+  converted game. As built, in the new engine crate `plugin_host` (depends on `server`; 25 tests, seven mutations of the host all caught):
+  - the verbs that exist: `event`, `system` and `mind_system`, `on`, `on_channels`, `on_ask`, `message`, `command`, `save_section`. The
+    content-side verbs (`content`, `channel`, `property`) belong to assembling a `PackageSpec` and arrive with Phases 24 and 28; `client` with
+    Phase 26.
+  - events built: `ChannelsChanged` (per grid and channel; handlers name the channels they want with `on_channels`), `PlayerJoined`,
+    `PlayerLeft`. Not built: `BlocksChanged` as sugar (a plugin names the block and state channels, which it knows), `WorldLoaded` (a plugin is
+    handed the world when it registers) and `WorldSaving` (`GameLogic::save_sections` takes `&self`).
+  - `server::ServerWorld::watch_channels` and `take_changes` are the log behind `ChannelsChanged`: only watched channels cost anything.
+  - delivery is first in, first out (5.1 above): a handler's own events and writes wait behind the events already waiting.
+  - a `Mind` system gets a `MindContext` with the tick and `push_intent`, nothing else (a `compile_fail` doctest says so); its intents are
+    delivered to the message handler of their kind, as if a client had sent them.
+  - `Context::world()` is the whole server world, a transitional way to reach what is not a grid (sending, replying, voxels by level); rules use
+    `Context::grid()`, whose reads and writes are checked against the system's declarations in debug builds. 23d narrows `world()` where
+    it can.
+  - an unknown command is answered `unknown command; try /a, /b X` listing the registered usages by command name; 23d decides what Cave's
+    golden session needs (its text and order differ today).
+  - the order of plugins in the list does not matter (dependencies first, otherwise by identifier), and a test shuffles three busy plugins.
 - **23c** Convert 2048, then Eels.
 - **23d** Convert Cave one plugin at a time: players, block editing, movement, fire, light; the goldens after each.
 - **23e** Shuffle test, mutation experiments (`PROPTEST_DISABLE_FAILURE_PERSISTENCE=1`), documentation, `GameDefinition::new_logic`

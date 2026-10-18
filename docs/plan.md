@@ -55,7 +55,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 24 (planned) Property bags on block definitions, with tags; `emission`, `flammability` and `passable` leave the engine (revision 2).
 - 23 (in progress) The registrar and events; Cave's light, fire and movement become plugins (revision 1). Specified in
   `plugin-api-spec.md` (steps 23a to 23e). Step 1, done: golden sessions for the three games that lock the recorded stream and the
-  saved world bit for bit, on Windows and Linux. Step 23a (grid addressing) is done. Next: 23b, the registrar.
+  saved world bit for bit, on Windows and Linux. Steps 23a (grid addressing) and 23b (the registrar, in the new `plugin_host` crate) are done. Next: 23c, convert 2048 then Eels.
 - 22 Multiscale light cells of any width (1 to 32), a hook for the client's view, four odd-width schemes benchmarked. **Done (a spike).**
 - 21 Multiscale light schemes (32/16/8/4 levels, cells to 4/8/16/32) and per-scale weights, benchmarked. **Done (a spike).**
 - 20 Cave's sky is dark until there is sky light, and the window's own commands start with a period. **Done.**
@@ -255,6 +255,11 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   in 25 on Linux, the same on the commit before Phase 23a and after it, at its "flames do not hold them up or push them" check (the
   walker's position moved by more than 0.001 in two ticks after fires were placed). Not reproduced on Windows in the runs made. The cause
   is not known; a flaky test is a real bug until explained.
+- A second flaky test, unexplained (2026-10-18): `walkers_pass_through_flames_and_the_cellar_has_the_same_ground` failed once in a full
+  parallel Linux run, at its last check, which compares the player's height with a ground height read from the client's mesher. Run alone
+  (`--test-threads=1`) it failed 0 times in 30 on the commit before Phase 23 and 0 in 30 after Phase 23b, so nothing says Phase 23 caused
+  it. My belief, not tested: it depends on how far the client's worker threads have got, which a loaded machine changes; the first flaky
+  test above also reads client state. A fix would make such tests wait on a condition, as the `world_view` meshing test now does.
 - Light (Phase 12): cost is one lamp's 64 ticks of spreading averaged 15 ms a tick in a release build (with two clients
   watching; measured once, not repeated), and a tick is 50 ms, so a few lamps placed at once would overrun it. The budget
   of 20 000 voxels a tick (Phase 14) is a guess, not tuned, and its streaming cost to clients is not measured. The sky light

@@ -1785,6 +1785,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin_host"
+version = "0.0.0"
+dependencies = [
+ "namespaced_id",
+ "protocol",
+ "server",
+ "thiserror 2.0.21",
+ "transport",
+ "voxel_grid",
+ "voxel_space",
+ "world_storage",
+]
+
+[[package]]
 name = "png"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
