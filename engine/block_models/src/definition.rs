@@ -16,14 +16,6 @@ pub struct BlockDefinition {
     /// Whether the block lets what is behind it be seen and light through, so it hides nothing and
     /// holds light itself (like glass, and like air).
     pub see_through: bool,
-    /// The light the block gives off, from 0 (none) to 255.
-    pub emission: u8,
-    /// How readily the block catches fire next to a fire, from 0 (it does not) to 255. A game's
-    /// fire rule decides what the number means; the table only carries it.
-    pub flammability: u8,
-    /// Whether bodies move through the block as if it were not there (flames), though it can still
-    /// be seen and aimed at.
-    pub passable: bool,
     shapes: Vec<Shape>,
     state_colors: Vec<[f32; 3]>,
     properties: SetProperties,
@@ -35,9 +27,6 @@ impl BlockDefinition {
         Self {
             color,
             see_through: false,
-            emission: 0,
-            flammability: 0,
-            passable: false,
             shapes: vec![Shape::full()],
             state_colors: Vec::new(),
             properties: SetProperties::new(),
@@ -49,9 +38,6 @@ impl BlockDefinition {
         Self {
             color: [0.0; 3],
             see_through: true,
-            emission: 0,
-            flammability: 0,
-            passable: false,
             shapes: vec![Shape::empty()],
             state_colors: Vec::new(),
             properties: SetProperties::new(),
@@ -110,21 +96,6 @@ impl BlockDefinition {
         &self.properties
     }
 
-    pub fn with_emission(mut self, emission: u8) -> Self {
-        self.emission = emission;
-        self
-    }
-
-    pub fn with_flammability(mut self, flammability: u8) -> Self {
-        self.flammability = flammability;
-        self
-    }
-
-    pub fn with_passable(mut self, passable: bool) -> Self {
-        self.passable = passable;
-        self
-    }
-
     pub fn with_see_through(mut self, see_through: bool) -> Self {
         self.see_through = see_through;
         self
@@ -154,9 +125,7 @@ mod tests {
     #[test]
     fn a_cube_is_opaque_whole_and_has_one_state_and_air_is_empty_and_see_through() {
         let cube = BlockDefinition::cube([0.2, 0.3, 0.4]);
-        assert!(
-            !cube.see_through && cube.emission == 0 && cube.flammability == 0 && !cube.passable
-        );
+        assert!(!cube.see_through);
         assert_eq!(cube.state_count(), 1);
         assert!(cube.shapes()[0].is_full());
         let air = BlockDefinition::air();
@@ -172,15 +141,10 @@ mod tests {
                 Shape::half(FaceDirection::NegativeY),
                 Shape::half(FaceDirection::PositiveY),
             ])
-            .with_emission(200)
-            .with_flammability(90)
-            .with_passable(true)
             .with_see_through(true);
-        assert!(slabs.passable);
         assert_eq!(slabs.state_count(), 3);
-        assert_eq!(slabs.flammability, 90);
         assert!(slabs.shapes()[1].covers_face(FaceDirection::NegativeY));
-        assert_eq!((slabs.emission, slabs.see_through), (200, true));
+        assert!(slabs.see_through);
     }
 
     #[test]

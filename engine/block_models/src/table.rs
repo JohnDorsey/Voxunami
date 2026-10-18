@@ -26,9 +26,6 @@ impl ModelId {
 #[derive(Clone, Debug)]
 struct Entry {
     color: [f32; 3],
-    emission: u8,
-    flammability: u8,
-    passable: bool,
     first_model: u32,
     state_count: u32,
     /// Where this block's state colours start in the palette, and how many there are (0 if the
@@ -85,9 +82,6 @@ impl BlockTable {
             let Some(definition) = definition else {
                 entries.push(Entry {
                     color: MISSING_BLOCK_COLOR,
-                    emission: 0,
-                    flammability: 0,
-                    passable: false,
                     first_model: u32::MAX,
                     state_count: 1,
                     first_state_material: 0,
@@ -101,9 +95,6 @@ impl BlockTable {
             }
             entries.push(Entry {
                 color: definition.color,
-                emission: definition.emission,
-                flammability: definition.flammability,
-                passable: definition.passable,
                 first_model,
                 state_count: definition.state_count() as u32,
                 first_state_material: (definitions.len() + state_palette.len()) as u32,
@@ -324,28 +315,6 @@ impl BlockTable {
             .map_or(MISSING_BLOCK_COLOR, |entry| entry.color)
     }
 
-    /// Whether bodies move through a block as if it were not there. An unknown block is not
-    /// passable: it is a wall.
-    pub fn is_passable(&self, block: u32) -> bool {
-        self.entries
-            .get(block as usize)
-            .is_some_and(|entry| entry.passable)
-    }
-
-    /// How readily a block catches fire, 0 to 255; an unknown block does not.
-    pub fn flammability(&self, block: u32) -> u8 {
-        self.entries
-            .get(block as usize)
-            .map_or(0, |entry| entry.flammability)
-    }
-
-    /// The light a block gives off, 0 to 255.
-    pub fn emission(&self, block: u32) -> u8 {
-        self.entries
-            .get(block as usize)
-            .map_or(0, |entry| entry.emission)
-    }
-
     /// The renderer's palette: the colour of every block in id order, then the state colours of the
     /// blocks that have them. [`BlockTable::material_of`] gives positions in it.
     pub fn palette(&self) -> Vec<[f32; 3]> {
@@ -388,11 +357,7 @@ mod tests {
             Shape::half(DOWN),
             Shape::half(UP),
         ]);
-        let glass = BlockDefinition::cube([0.7, 0.9, 1.0])
-            .with_see_through(true)
-            .with_emission(40)
-            .with_flammability(7)
-            .with_passable(true);
+        let glass = BlockDefinition::cube([0.7, 0.9, 1.0]).with_see_through(true);
         BlockTable::from_definitions(&[Some(&air), Some(&stone), Some(&glass), None])
     }
 
@@ -475,27 +440,15 @@ mod tests {
             assert_eq!(table.state_count(block), 1);
             assert_eq!(table.model_of(block, 7), model);
         }
-        assert_eq!(table.emission(9999), 0);
     }
 
     #[test]
-    fn colours_and_emission_are_per_block() {
+    fn colours_are_per_block() {
         let table = table();
         assert_eq!(table.color(1), [0.5, 0.5, 0.5]);
         assert_eq!(
             table.palette(),
             [[0.0; 3], [0.5; 3], [0.7, 0.9, 1.0], MISSING_BLOCK_COLOR]
-        );
-        assert_eq!((table.emission(1), table.emission(2)), (0, 40));
-        assert_eq!(
-            [0, 1, 2, 3, 9999].map(|block| table.is_passable(block)),
-            [false, false, true, false, false],
-            "only the glass of this table is passable"
-        );
-        assert_eq!(
-            [0, 1, 2, 3, 9999].map(|block| table.flammability(block)),
-            [0, 0, 7, 0, 0],
-            "only the glass is flammable here, and unknown blocks are not"
         );
     }
 

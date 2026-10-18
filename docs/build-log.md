@@ -614,6 +614,19 @@ Phase 1e (the stream; protocol version 1, documented in `docs/protocol-and-repla
 - `end_to_end_tests`: a real server, clients and recorders together. Includes replay-equals-live and the check that
   every player sees what the server has in the region it watches.
 
+Phase 24 (property bags on block definitions; specified in `property-bags-spec.md`):
+- `block_models`: `PropertyKey<T>` (a const key with id, default and doc), `PropertySchema` (the declared keys, with the engine's
+  `engine:density` and `engine:placeable_on_moving_grids` always present), `BlockDefinition::with_property` (every state) and
+  `with_state_property` (one state), `BlockTable::try_from_definitions` (one column per key, indexed by model), `handle`, `get`,
+  `get_of`. A value resolves as state override, else the block's value, else the key's default; an unknown block has the default.
+- `base_blocks` declares `base_blocks:emission`, `base_blocks:flammability` and `base_blocks:passable`, and offers
+  `BlockPropertiesExt` (`with_emission` and so on) so its definitions read as before. `PackageSpec.properties` carries a game's
+  declarations. The `emission`, `flammability` and `passable` fields and accessors are gone from the engine.
+- Cave's lighting, fire, multiscale light, movement and light plugin hold `PropertyHandle`s and read by model.
+- Checked: all three golden sessions pass unmodified on Windows and Linux; 8 mutations of the property machinery are each caught;
+  the multiscale benchmark did not regress (fill ms for 32/16/8/4 levels: 770-830, 327-336, 251-256, 336-343 before; about 650,
+  294, 228, 290-304 after the rules read through handles).
+
 ## Measured
 Storage (Ryzen 7600X, release, one thread, best of 7, counting allocator; the single-voxel `get` figures include
 loop and bounds overhead, so bulk decode will be faster):

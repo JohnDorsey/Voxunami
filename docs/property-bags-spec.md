@@ -1,6 +1,6 @@
 # Phase 24 specification: property bags on block definitions
 
-**Status: accepted 2026-10-18 with one change by the owner: properties are per state, not only per block (section 2). Being built.** It makes concrete revision 2 of `plan.md` ("Plugin shape
+**Status: accepted 2026-10-18 with one change by the owner: properties are per state, not only per block (section 2). Built (24a to 24d).** It makes concrete revision 2 of `plan.md` ("Plugin shape
 revisions") and requirement 5 of "Requirements pulled forward". The Rust is a sketch of shape and size. Read with `plugin-architecture-review.md`
 section 2.1 (what property bags are and how they are built).
 

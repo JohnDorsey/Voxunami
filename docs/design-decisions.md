@@ -117,6 +117,16 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   them are refused when the host starts. A `Mind` system cannot write the world, only emit intents. A rule reads and writes one grid at a time, by `GridId`
   and the grid's own coordinates.
 
+## Decided (property bags on block definitions; built in Phase 24)
+- A block definition carries namespaced, typed properties; the table keeps one column per declared key, so a read in a hot rule is an index by
+  model. Properties are **per state**: a value can be set for every state of a block or overridden for one state (state, else block, else the
+  key's default). Kinds are bool and the integers (u8, u16, u32, i32), each range-checked when the table is built; a bad definition is an error
+  there, never a surprise in play.
+- The owner of a key declares it (dependency direction games to plugins to engine): `base_blocks:emission`, `base_blocks:flammability` and
+  `base_blocks:passable` are the base blocks plugin's; the engine reserves `engine:density` and `engine:placeable_on_moving_grids`. A game adds its
+  plugins' declarations through `PackageSpec.properties`. Rules take a `PropertyHandle` once and read it by model.
+- Saved files are unchanged: properties come from definitions, not from the world.
+
 ## Decided (rules for lattice simulation and physics)
 - Tick phases (confirmed by the owner): each tick reads a frozen snapshot of the previous tick and produces the next one.
   A brick update never writes to a neighbour; cross-brick effects are queued and applied together in a fixed order.

@@ -67,6 +67,30 @@ pub const PASSABLE: PropertyKey<bool> = PropertyKey::new(
     "whether bodies move through the block as if it were not there",
 );
 
+/// The properties of this plugin as builders on a definition, so that a block reads as what it is.
+pub trait BlockPropertiesExt {
+    /// The light the block gives off, 0 (none) to 255.
+    fn with_emission(self, emission: u8) -> Self;
+    /// How readily the block catches fire next to a fire, 0 (it does not) to 255.
+    fn with_flammability(self, flammability: u8) -> Self;
+    /// Whether bodies move through the block as if it were not there.
+    fn with_passable(self, passable: bool) -> Self;
+}
+
+impl BlockPropertiesExt for BlockDefinition {
+    fn with_emission(self, emission: u8) -> Self {
+        self.with_property(&EMISSION, emission)
+    }
+
+    fn with_flammability(self, flammability: u8) -> Self {
+        self.with_property(&FLAMMABILITY, flammability)
+    }
+
+    fn with_passable(self, passable: bool) -> Self {
+        self.with_property(&PASSABLE, passable)
+    }
+}
+
 /// The properties this plugin declares, for a game to add to its package.
 pub fn property_declarations() -> Vec<PropertyDeclaration> {
     vec![
@@ -249,30 +273,22 @@ impl BaseBlocks {
         let dirt = register("dirt", solid([0.45, 0.30, 0.18]));
         let grass = register(
             "grass",
-            solid([0.30, 0.62, 0.20])
-                .with_flammability(GRASS_FLAMMABILITY)
-                .with_property(&FLAMMABILITY, GRASS_FLAMMABILITY),
+            solid([0.30, 0.62, 0.20]).with_flammability(GRASS_FLAMMABILITY),
         );
         let lamp = register(
             "lamp",
-            BlockDefinition::cube([1.0, 0.92, 0.65])
-                .with_emission(LAMP_EMISSION)
-                .with_property(&EMISSION, LAMP_EMISSION),
+            BlockDefinition::cube([1.0, 0.92, 0.65]).with_emission(LAMP_EMISSION),
         );
         let wood = register(
             "wood",
-            solid([0.55, 0.38, 0.20])
-                .with_flammability(WOOD_FLAMMABILITY)
-                .with_property(&FLAMMABILITY, WOOD_FLAMMABILITY),
+            solid([0.55, 0.38, 0.20]).with_flammability(WOOD_FLAMMABILITY),
         );
         let fire = register(
             "fire",
             BlockDefinition::cube([0.95, 0.5, 0.1])
                 .with_shapes(vec![Shape::half(FaceDirection::NegativeY)])
                 .with_passable(true)
-                .with_property(&PASSABLE, true)
                 .with_emission(FIRE_EMISSION)
-                .with_property(&EMISSION, FIRE_EMISSION)
                 .with_state_colors(fire_colors()),
         );
         Self {
@@ -407,25 +423,29 @@ mod tests {
         // The blocks, then the colours a fire is drawn in as it ages.
         assert_eq!(table.palette().len(), 7 + FIRE_LIFETIME as usize);
         assert_eq!(table.color(3), [0.30, 0.62, 0.20]);
-        // Only the lamp gives off light, and it is a whole opaque block.
+        // Only the lamp and the fire give off light, only grass and wood burn, and bodies pass through flames and
+        // nothing else of the blocks.
+        let emission = table.handle(&EMISSION).unwrap();
+        let flammability = table.handle(&FLAMMABILITY).unwrap();
+        let passable = table.handle(&PASSABLE).unwrap();
         assert_eq!(
             (0..7)
-                .map(|block| table.emission(block))
+                .map(|block| table.get_of(emission, block, 0))
                 .collect::<Vec<_>>(),
             [0, 0, 0, 0, LAMP_EMISSION, 0, FIRE_EMISSION]
         );
         assert_eq!(
             (0..7)
-                .map(|block| table.flammability(block))
+                .map(|block| table.get_of(flammability, block, 0))
                 .collect::<Vec<_>>(),
             [0, 0, 0, GRASS_FLAMMABILITY, 0, WOOD_FLAMMABILITY, 0],
             "grass and wood burn, and fire does not burn"
         );
+        // The lamp is a whole opaque block.
         assert!(table.is_opaque_cube(table.model_of(4, 0)));
-        // Bodies pass through flames and nothing else of the blocks.
         assert_eq!(
             (0..7)
-                .map(|block| table.is_passable(block))
+                .map(|block| table.get_of(passable, block, 0))
                 .collect::<Vec<_>>(),
             [false, false, false, false, false, false, true]
         );
@@ -441,26 +461,8 @@ mod tests {
     }
 
     #[test]
-    fn the_properties_say_what_the_fields_still_say_for_every_block_and_state() {
-        let blocks = BaseBlocks::new();
-        let table = blocks.block_table();
-        let emission = table.handle(&EMISSION).unwrap();
-        let flammability = table.handle(&FLAMMABILITY).unwrap();
-        let passable = table.handle(&PASSABLE).unwrap();
-        for block in 0..7 {
-            for state in 0..table.state_count(block) {
-                assert_eq!(table.get_of(emission, block, state), table.emission(block));
-                assert_eq!(
-                    table.get_of(flammability, block, state),
-                    table.flammability(block)
-                );
-                assert_eq!(
-                    table.get_of(passable, block, state),
-                    table.is_passable(block)
-                );
-            }
-        }
-        // And the plugin's keys are declared once, beside the engine's.
+    fn the_plugins_properties_are_declared_once_beside_the_engines_and_an_unknown_block_has_none_of_them()
+     {
         let declared: Vec<String> = property_schema().iter().map(|d| d.id.to_string()).collect();
         assert_eq!(
             declared,
@@ -472,6 +474,12 @@ mod tests {
                 "engine:placeable_on_moving_grids"
             ]
         );
+        let table = BaseBlocks::new().block_table();
+        let emission = table.handle(&EMISSION).unwrap();
+        let passable = table.handle(&PASSABLE).unwrap();
+        // A block the table has no definition for: no light, and a wall.
+        assert_eq!(table.get_of(emission, 9999, 0), 0);
+        assert!(!table.get_of(passable, 9999, 0));
     }
 
     #[test]
