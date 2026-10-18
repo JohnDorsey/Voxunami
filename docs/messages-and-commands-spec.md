@@ -33,7 +33,7 @@ pub trait Message: Sized + PartialEq + Debug + 'static {
 - `Registrar::message::<M>(|context, client, message: M| ...)` replaces the byte-slice form: the host decodes, and a payload that does not decode
   is ignored in one place (and counted, for a later diagnostics hook). `Registrar::declares_message::<M>()` is for kinds the plugin only
   sends (server to client), so they are listed too.
-- **The generated check.** Each registration stores a type-erased checker. `PluginHost::check_messages()` (called by one test in each game) runs,
+- **The generated check.** `protocol::check_message::<M>()` is the check; each registration stores it type-erased. `PluginHost::check_messages()` (called by one test in each game) runs,
   for every declared message and sample: `decode(encode(m)) == m`; `encode` is deterministic; a truncated payload (every prefix) decodes to an
   error or to something that re-encodes to exactly that prefix, and never panics; trailing bytes are an error. It fails when a declared
   message has no samples or when two plugins declare the same kind. This is the gate: it runs for every message anyone ever declares.
@@ -46,10 +46,10 @@ pub trait Message: Sized + PartialEq + Debug + 'static {
 
 ```rust
 CommandSpec::new("tp", "puts your eyes at a position, in voxels")
-    .argument(Argument::integer("x")).argument(Argument::integer("y")).argument(Argument::integer("z"))
+    .argument(Argument::number("x")).argument(Argument::number("y")).argument(Argument::number("z"))
 ```
 
-- An `Argument` has a name and a kind: `Word`, `Integer`, `Identifier` (a `NamespacedId`), or `Rest` (the remaining text, last only), and may
+- An `Argument` has a name and a kind: `Word`, `Number` (a finite decimal; `/tp` takes `16.5`), `Integer`, `Identifier` (a `NamespacedId`), or `Rest` (the remaining text, last only), and may
   be optional. The usage line is generated (`/tp X Y Z`), and a call with the wrong count or an argument that does not parse is answered by the
   host with `usage: /tp X Y Z` (and, for a bad value, which argument), so handlers never parse strings. The handler receives `Arguments` with
   typed getters (`integer(0)`, `word(1)`).

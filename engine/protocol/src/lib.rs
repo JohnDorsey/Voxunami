@@ -30,12 +30,14 @@
 
 mod client_message;
 mod error;
+mod message;
 mod server_message;
 mod types;
 mod wire;
 
 pub use client_message::ClientMessage;
 pub use error::ProtocolError;
+pub use message::{Message, check_message};
 pub use server_message::{
     GeneratorAssignment, ServerMessage, VoxelChange, Welcome, is_tick_boundary,
 };
