@@ -71,7 +71,15 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
     configures.
   - There is no hard limit on the size of a ship. Someday ships may be as large as small moons, with levels of detail used when the
     whole ship is in view and for collisions. Limits are budgets (work per tick, as for every rule), not caps.
-  - A ship can be saved while in flight, as a grid, in a file of its own, not in the file that holds the terrain near it.
+  - A ship can be saved while in flight, as a grid, in a file of its own, not in the file that holds the terrain near it. A ship file
+    is portable: it can be loaded in a different world.
+  - Docking merges: when two ships dock they become one rigid body and one ship (one grid). Anything passes the join: crew, items,
+    fire, light, and the interaction of any blocks that interact with their neighbours, as if the two had been one from the start.
+    It is not only the connector blocks that join: any blocks that become adjacent are adjacent. If solid blocks flush with the ports
+    touch when the ships dock, they are welded, and the ships cannot undock until the player breaks the blocks that join them.
+  - A player who connects to a server and whose ship file cannot be found is asked what to do: spawn at the world spawn, spawn in
+    midair, or quit to the title screen.
+  - Undecided: whether a ship's own mass is a source of gravity.
   - Order of work: moving grids (Phase 32) come before the native and WASM loaders (Phase 33), because the loader ABI encodes the
     coordinate model.
 

@@ -103,20 +103,33 @@ the whole ship and for collisions; a ship is saved in flight as a grid in a file
   in the ship's frame feels a rotating gravity vector. Ships with interiors you can live in will usually be kept level by their pilots.
 - *Full rotation* removes the cheap simplification; the frame-invariance test therefore turns the grid (by multiples of 90 degrees) and
   gives the static grid the matching local gravity.
-- *Docking connectors* are an engine-provided part (a pair of ports, an attraction force and a snap distance, a joint when they meet),
-  configured by mods, which also settles how two grids can ever touch. What crosses a docked connector (structure only, or crew,
-  power, items) is open.
+- *Docking connectors* are an engine-provided part (a pair of ports, an attraction force and a snap distance), configured by mods.
+  Docking is a *merge* of two grids into one (decided 2026-10-18), so nothing needs to cross a boundary: after it there is one grid and
+  every rule sees one grid, as if it had been built whole. Three things follow. (1) Two grids can only merge on one lattice: their
+  relative turn must be a multiple of 90 degrees and their offset a whole number of voxels, so the connector's attraction must pull the
+  ships into that alignment (a snap) before the merge happens. (2) Merging and splitting are operations on grids that every plugin's
+  state must survive: persistent per-grid state is keyed by voxels or is a cache that can be rebuilt (the multiscale light's cells are
+  laid from a grid's origin, so a merge at an odd offset recomputes the cells it touches). (3) Undocking is a split: the connector pair
+  no longer joins the two halves, and if any other blocks still do (a weld) the undock is refused until they are broken.
 - *No size limit* is a promise about the API (nothing assumes a small grid; plan.md, requirement 11) and about work (budgets, not caps),
   not about the first version. The parts that grow with size: collision (coarse colliders and aggregated mass for the whole ship, fine
   colliders only near a contact), drawing (levels of detail per grid), streaming (interest per grid in its own coordinates), connectivity
   after an edit (incremental or hierarchical, not a flood fill of the whole ship), and precision (each grid works relative to its own
   origin). A moon-sized grid is a long way off; the first ships will be small.
-- *A ship in its own file* means a stable `GridId` (requirement 10) and a file format for a grid (requirement 12), and that a save writes
-  several files that must agree.
+- *A ship in its own file* means a `GridId` that is stable within a world (requirement 10) and a file format for a grid (requirement 12),
+  and that a save writes several files that must agree.
+- *Portable ship files* (decided): a ship file has two kinds of content. The ship itself (blocks, block data and the registry and channel
+  tables that make it readable anywhere) and, only when saved in flight, its flight state (pose, velocities, pending rule work). Loaded
+  into another world, or a second time into the same one, the flight state is dropped, the ship gets a fresh `GridId`, and a rule's
+  pending work is rebuilt by waking the voxels. Entities aboard are not in the ship file: they belong to the world. Items inside a
+  chest travel with the ship, as part of its block data, and ids from plugins the new world lacks are preserved unread.
+- *The missing-ship prompt* (decided): a player's saved pose aboard a ship is a frame and a local pose; if the ship's file is missing
+  when they connect, the server holds the player and asks them (spawn at the world spawn, spawn in midair, or quit to title). For
+  midair the world file keeps, for every entity whose frame is a grid, the world-space pose it had at the last save. This needs a
+  small prompt facility (a choice sent to one client, its answer returned, the entity held meanwhile).
 
-**Still open:** what crosses a docked connector; whether a ship file is portable between worlds (a blueprint, as KSP craft files are);
-whether entities aboard are saved with the ship or with the world; whether a ship's own mass is a source of gravity (a moon-sized ship
-would be).
+**Still open:** whether a ship's own mass is a source of gravity (a moon-sized ship would be); how forgiving docking is (how far from
+alignment the attraction can pull, and whether it turns the ship as well as moves it).
 
 ### 3. NPCs powered by local neural networks that can learn
 

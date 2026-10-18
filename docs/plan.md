@@ -53,7 +53,9 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
   concepts out of `world_view`; the multiscale light stops being a spike.
 - 25 (planned) Declared messages (field lists, generated round-trip tests) and a command registry (revision 4).
 - 24 (planned) Property bags on block definitions, with tags; `emission`, `flammability` and `passable` leave the engine (revision 2).
-- 23 (planned) The registrar and events; Cave's light, fire and movement become plugins (revision 1).
+- 23 (in progress) The registrar and events; Cave's light, fire and movement become plugins (revision 1). Specified in
+  `plugin-api-spec.md` (steps 23a to 23e). Step 1, done: golden sessions for the three games that lock the recorded stream and the
+  saved world bit for bit, on Windows and Linux. Next: the owner's review of the spec, then 23a.
 - 22 Multiscale light cells of any width (1 to 32), a hook for the client's view, four odd-width schemes benchmarked. **Done (a spike).**
 - 21 Multiscale light schemes (32/16/8/4 levels, cells to 4/8/16/32) and per-scale weights, benchmarked. **Done (a spike).**
 - 20 Cave's sky is dark until there is sky light, and the window's own commands start with a period. **Done.**
@@ -206,15 +208,31 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   9. **The API's size budget counts verbs, not kinds of content.** The verbs: content (into any registry: blocks, items, entity kinds,
      brain models), channel, property, command, message, system or handler, save section, client hook. A new kind of content is not a
      new verb.
-  10. **A `GridId` is a stable unique id, not an index (Phase 23):** ships are made, split, merged, saved and loaded independently of any
-     level, and a ship file names its grid by it.
+  10. **A `GridId` is a stable unique id within a world, not an index (Phase 23):** ships are made, split, merged, saved and loaded
+     independently of any level. Ids come from a counter saved with the world (so a replay and a reload agree). A ship file carries an
+     origin id of its own; loading it into another world, or twice into one, allocates a fresh `GridId`.
   11. **Nothing in the API assumes a grid is small (Phase 23):** no call returns a whole grid or scans one densely; access is by region,
      by active set, or by neighbourhood; so a grid the size of a moon, and levels of detail for drawing, collision and streaming, can
      come later without changing a rule.
   12. **Grid files (reserved in Phase 27, built in Phase 32):** a grid's saved form is a standalone file in the container format with its
-     own registry and channel tables, its pose and velocities, its pending rule work and its block data; a world file refers to it by
-     `GridId`; the world and its ships are saved at one tick so that they agree. Whether entities aboard are saved with the ship or
-     with the world is open (below).
+     own registry and channel tables and its block data, so it is portable to another world (decided 2026-10-18); sections that are
+     optional hold its flight state (pose, velocities, pending rule work), and a load into another world drops them. A world file refers
+     to a ship by `GridId`; the world and its ships are saved at one tick so that they agree. Entities aboard belong to the world, not
+     the ship file.
+  13. **Merge and split are grid operations (reserved in Phase 23, built in Phase 32):** docking merges two grids into one (decided
+     2026-10-18). `GridMerged { from, into, transform }` and `GridSplit { from, parts }` are events and stream messages; the transform is
+     lattice-aligned (a turn by a multiple of 90 degrees and a whole-voxel offset); ids of parts come from the saved counter; a
+     merged-away id leaves a tombstone naming its successor and the transform, so a saved reference to it still resolves; entities in
+     the frame are re-framed. Anything that blocks the merge or the split is the engine's to refuse, not a plugin's.
+  14. **Plugin state must survive a merge and a split (Phase 23):** persistent per-grid state is keyed by voxels (so it can be moved by
+     the transform) or is a cache the plugin can rebuild from the voxels; the registrar's save-section hook says which. The tests
+     of requirement 6 grow two: a scene built as two grids and merged settles to what it would have been built as one (merge
+     invariance), and the converse for a split.
+  15. **A prompt facility (Phase 27):** a choice sent to one client (a title and options) and its answer, with the entity held until
+     answered. First use: the missing-ship case (spawn at the world spawn, spawn in midair, quit to title). The UI of Phase 30 can
+     restyle it.
+  16. **A world-space fallback pose is saved with every entity whose frame is a grid (Phase 27's entity section),** for the midair choice
+     and for any grid that cannot be loaded.
   Not changed by the goals: the content package, the schema, patches, the palette. One ordering consequence, accepted by the owner
   2026-10-18: the loader ABI (Phase 33) encodes the coordinate model, so it is frozen only after grids, frames and entities exist
   (Phases 27 and 32).

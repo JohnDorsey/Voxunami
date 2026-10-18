@@ -47,6 +47,20 @@ Phase 1d (saving):
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
   sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
 
+Phase 23, step 1 (locking behaviour before the plugin refactor; owner's request, 2026-10-18):
+- `games/*/tests/golden_session.rs`, one for each game: a scripted session (fixed tick counts, fixed coordinates; never `Rig::settle`, which
+  steps the server a variable number of times while the client's workers finish, and never what the mesher has drawn) records the
+  stream of frames one player receives (a replay file) and saves the world; both are hashed (FNV-1a) and pinned. Cave drives block
+  placing and breaking, the classic light, fire (far from the lamp, whose light would hide the fire's), every multiscale scheme and
+  an odd-width one, commands, walking, flying and teleporting. Each also runs the session twice in one process and requires
+  equal results. The numbers are the same on Windows (release) and Linux (debug).
+- Found while writing them: a client only changes what it watches when `update_view` is called, so a first version whose player
+  teleported away recorded none of what happened there, and a mutation (the light no longer told of fire's writes) went unnoticed.
+  The tests call `update_view` each tick, and now fail on that mutation, on a light budget changed by one voxel, on a changed
+  coasting range in 2048 and on a changed round timing in Eels.
+- Sanity assertions in the scripts (the lamp's light spreads; a flame gives light where the lamp's does not reach; blocks moved in
+  2048) so that the numbers lock something.
+
 Phase 22 (cells of any width; owner's request, 2026-10-17; still a spike):
 - A `LightScheme` is now a number of levels (32, 16, 8 or 4) and the widths of its scales: one to seven, each 1 to 32, each wider than the one
   before. The four presets are the old schemes (powers of two); `/light multiscale LEVELS WIDTH...` asks for any other, such as
