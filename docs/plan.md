@@ -51,7 +51,8 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
   `engine:entities` section reserved before 1.0.
 - 26 (planned) The client interface (HUD line, key actions, client commands) and the bulk light hook that takes the scaled-light
   concepts out of `world_view`; the multiscale light stops being a spike.
-- 25 (planned) Declared messages (field lists, generated round-trip tests) and a command registry (revision 4).
+- 25 (specified, awaiting review) Declared messages (a `Message` trait and a generated check, no codegen) and a command registry with `/help` (revision 4).
+  Specified in `messages-and-commands-spec.md` (steps 25a to 25d).
 - 24 Property bags on block definitions, per state; `emission`, `flammability` and `passable` left the engine (revision 2). **Done.** Specified in
   `property-bags-spec.md` (steps 24a to 24d); the multiscale benchmark did not regress. A tag is a bool property; no separate tag type.
 - 23 The registrar and events; Cave's light, fire and movement become plugins, and 2048 and Eels too (revision 1). **Done.** Specified and
