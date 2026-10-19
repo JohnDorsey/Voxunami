@@ -8,6 +8,7 @@
 //! makes recording and replay work for every game.
 
 pub mod client_commands;
+pub mod client_plugin;
 mod command_entry;
 mod definition;
 pub mod files;

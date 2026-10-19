@@ -14,7 +14,7 @@ use voxel_space::VoxelCoordinate;
 use voxunami_eels::arena::ARENA_EDGE;
 use voxunami_eels::content::{ContentEels, blocks};
 use voxunami_eels::eel::Steer;
-use voxunami_eels::game::{Eels, steer};
+use voxunami_eels::game::{Eels, standings as standings_of, steer};
 use voxunami_eels::round::{
     COUNTDOWN_TICKS, OVER_TICKS, Phase, STEP_TICKS, TICKS_PER_SECOND, start_of,
 };
@@ -70,7 +70,7 @@ impl Rig {
     fn start_round(&mut self, players: &mut [&mut Player]) {
         self.tick(players, COUNTDOWN_TICKS + 3);
         for player in players.iter() {
-            assert_eq!(player.state.standings.phase, Phase::Running);
+            assert_eq!(standings_of(player).phase, Phase::Running);
         }
     }
 
@@ -134,7 +134,7 @@ fn a_player_joining_gets_a_colour_an_eel_and_a_countdown_then_swims_with_the_cam
     let mut rig = Rig::new();
     let mut player = rig.join();
     rig.load(&mut [&mut player]);
-    let standings = &player.state.standings;
+    let standings = &standings_of(&player);
     assert_eq!(standings.players.len(), 1);
     assert_eq!(
         (standings.players[0].slot, standings.players[0].alive),
@@ -252,10 +252,10 @@ fn steering_turns_the_eel_and_the_view_and_a_roll_changes_the_wall_it_leaves() {
         Some(blocks::AIR)
     );
     // The key presses are the controls: A turns left, and a key that is not one does nothing.
-    <Eels as GameDefinition>::key_pressed(&mut player, KeyCode::KeyX);
-    <Eels as GameDefinition>::key_pressed(&mut player, KeyCode::KeyA);
+    player.key_pressed(KeyCode::KeyX);
+    player.key_pressed(KeyCode::KeyA);
     rig.steps(&mut [&mut player], 2);
-    let status = <Eels as GameDefinition>::status_text(&player);
+    let status = player.hud_text();
     assert!(
         status.starts_with("red eel | wins 0 | swimming"),
         "{status}"
@@ -270,11 +270,11 @@ fn a_lone_eel_dies_on_the_wall_and_a_new_round_clears_the_arena_for_everyone() {
     let (head, _) = start_of(0);
     rig.steps(&mut [&mut player], (ARENA_EDGE - head[2]) as u32 + 2);
     assert!(matches!(
-        player.state.standings.phase,
+        standings_of(&player).phase,
         Phase::Over { winner: None, .. }
     ));
-    assert!(!player.state.standings.players[0].alive);
-    let status = <Eels as GameDefinition>::status_text(&player);
+    assert!(!standings_of(&player).players[0].alive);
+    let status = player.hud_text();
     assert!(
         status.contains("(out)") && status.contains("nobody wins"),
         "{status}"
@@ -286,9 +286,9 @@ fn a_lone_eel_dies_on_the_wall_and_a_new_round_clears_the_arena_for_everyone() {
     // Some seconds on, the arena is clear and the eel is back where it started.
     rig.tick(&mut [&mut player], OVER_TICKS + 2);
     rig.settle(&mut [&mut player]);
-    println!("DBG {:?}", player.state.standings);
+    println!("DBG {:?}", standings_of(&player));
     assert!(matches!(
-        player.state.standings.phase,
+        standings_of(&player).phase,
         Phase::Countdown { .. }
     ));
     assert_eq!(block_and_colour(&player, body).0, Some(blocks::AIR));
@@ -296,7 +296,7 @@ fn a_lone_eel_dies_on_the_wall_and_a_new_round_clears_the_arena_for_everyone() {
         block_and_colour(&player, [head[0], head[1], head[2]]).0,
         Some(blocks::HEAD)
     );
-    assert!(player.state.standings.players[0].alive);
+    assert!(standings_of(&player).players[0].alive);
 }
 
 #[test]
@@ -305,25 +305,20 @@ fn two_players_have_two_colours_see_each_others_bodies_and_the_survivor_wins() {
     let mut first = rig.join();
     let mut second = rig.join();
     rig.tick(&mut [&mut first, &mut second], 3);
-    let slots: Vec<u8> = first
-        .state
-        .standings
+    let slots: Vec<u8> = standings_of(&first)
         .players
         .iter()
         .map(|p| p.slot)
         .collect();
     assert_eq!(slots, [0, 1]);
-    assert_eq!(
-        first.state.standings.players,
-        second.state.standings.players
-    );
+    assert_eq!(standings_of(&first).players, standings_of(&second).players);
     // (A player is told about themselves by their own client id.)
     assert!(
-        <Eels as GameDefinition>::status_text(&first).starts_with("red eel"),
+        first.hud_text().starts_with("red eel"),
         "{}",
-        <Eels as GameDefinition>::status_text(&first)
+        first.hud_text()
     );
-    assert!(<Eels as GameDefinition>::status_text(&second).starts_with("orange eel"));
+    assert!(second.hud_text().starts_with("orange eel"));
 
     rig.start_round(&mut [&mut first, &mut second]);
     // The first eel heads for the nearest wall and dies there; the second swims on.
@@ -331,14 +326,14 @@ fn two_players_have_two_colours_see_each_others_bodies_and_the_survivor_wins() {
     steer(&mut first, Steer::Left);
     rig.steps(&mut [&mut first, &mut second], 15);
     assert!(matches!(
-        first.state.standings.phase,
+        standings_of(&first).phase,
         Phase::Over {
             winner: Some(1),
             ..
         }
     ));
-    assert_eq!(first.state.standings.players[1].wins, 1);
-    assert!(<Eels as GameDefinition>::status_text(&second).contains("orange eel wins the round"));
+    assert_eq!(standings_of(&first).players[1].wins, 1);
+    assert!(second.hud_text().contains("orange eel wins the round"));
     // Each sees the other's body, in the other's colour.
     rig.settle(&mut [&mut first, &mut second]);
     let (second_head, _) = start_of(1);
@@ -365,10 +360,10 @@ fn a_player_who_leaves_loses_their_eel_and_the_others_carry_on() {
     first.say_goodbye();
     drop(first);
     rig.tick(&mut [&mut second], 2);
-    assert_eq!(second.state.standings.players.len(), 1);
-    assert_eq!(second.state.standings.players[0].slot, 1);
+    assert_eq!(standings_of(&second).players.len(), 1);
+    assert_eq!(standings_of(&second).players[0].slot, 1);
     assert!(matches!(
-        second.state.standings.phase,
+        standings_of(&second).phase,
         Phase::Over {
             winner: Some(1),
             ..
@@ -377,9 +372,7 @@ fn a_player_who_leaves_loses_their_eel_and_the_others_carry_on() {
     // A newcomer takes the free colour, and the next round has both.
     let mut third = rig.join();
     rig.tick(&mut [&mut second, &mut third], OVER_TICKS + 3);
-    let mut slots: Vec<u8> = second
-        .state
-        .standings
+    let mut slots: Vec<u8> = standings_of(&second)
         .players
         .iter()
         .map(|p| p.slot)
@@ -387,13 +380,11 @@ fn a_player_who_leaves_loses_their_eel_and_the_others_carry_on() {
     slots.sort();
     assert_eq!(slots, [0, 1], "the newcomer took the free colour");
     assert!(matches!(
-        second.state.standings.phase,
+        standings_of(&second).phase,
         Phase::Countdown { .. }
     ));
     assert!(
-        second
-            .state
-            .standings
+        standings_of(&second)
             .players
             .iter()
             .all(|player| player.alive)
@@ -495,7 +486,7 @@ fn a_recording_replays_the_match_from_the_recorded_players_eel() {
         (final_camera.yaw, final_camera.pitch)
     );
     // The replay shows the match: the status line is the recorded player's.
-    let status = <Eels as GameDefinition>::status_text(&replay);
+    let status = replay.hud_text();
     assert!(status.starts_with("red eel"), "{status}");
     std::fs::remove_dir_all(&directory).unwrap();
 }

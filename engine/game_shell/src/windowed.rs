@@ -17,9 +17,10 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
 
-use crate::client_commands::{self, ClientSettings, is_client_command};
+use crate::client_commands::is_client_command;
+use crate::client_plugin::MouseButton as GameButton;
 use crate::command_entry::{CommandEntry, opens_a_command};
-use crate::definition::{GameContent, GameDefinition};
+use crate::definition::GameDefinition;
 use crate::files::{open_recording, open_world, record_connection, recorded_game, save_world};
 use crate::following::{PoseFollower, turned_toward};
 use crate::host::{Autosave, HostSettings, ServerThread, connect_to, listen_on};
@@ -160,9 +161,7 @@ struct Viewer<G: GameDefinition> {
     entry: CommandEntry,
     /// The latest answer to a command, and when it came.
     reply: Option<(String, Instant)>,
-    /// What the commands that start with a period change, and how far the view reaches (which the
-    /// fog depends on).
-    settings: ClientSettings,
+    /// How far the view reaches (which the fog depends on).
     view_radius: i64,
     started: Instant,
     last_frame: Instant,
@@ -233,7 +232,6 @@ impl<G: GameDefinition> Viewer<G> {
         configure_renderer(&mut renderer, session.content(), view.view_radius);
         renderer.set_crosshair(session.mode() == Mode::Playing && G::shows_crosshair());
         let now = Instant::now();
-        let settings = ClientSettings::new(session.content().ambient_light());
         Ok(Self {
             window,
             surface,
@@ -245,7 +243,6 @@ impl<G: GameDefinition> Viewer<G> {
             mouse_captured: false,
             entry: CommandEntry::default(),
             reply: None,
-            settings,
             view_radius: view.view_radius,
             started: now,
             last_frame: now,
@@ -267,9 +264,11 @@ impl<G: GameDefinition> Viewer<G> {
     /// command and goes no further; any other is the server's.
     fn run_command(&mut self, text: &str, now: Instant) {
         if is_client_command(text) {
-            let reply = client_commands::run(text, &mut self.settings);
-            self.renderer
-                .set_atmosphere(atmosphere(self.view_radius, self.settings.ambient_light));
+            let reply = self.session.client_command(text);
+            self.renderer.set_atmosphere(atmosphere(
+                self.view_radius,
+                self.session.settings().ambient_light,
+            ));
             println!("{reply}");
             self.reply = Some((reply, now));
         } else {
@@ -442,7 +441,7 @@ impl<G: GameDefinition> Viewer<G> {
         Ok(true)
     }
 
-    fn update_title(&self, since_last: Duration) {
+    fn update_title(&mut self, since_last: Duration) {
         let fps = f64::from(self.frames_since_title_update) / since_last.as_secs_f64();
         let statistics = self.last_statistics;
         let typing = self.entry.display();
@@ -456,7 +455,7 @@ impl<G: GameDefinition> Viewer<G> {
                 "players {} | {} | {}{}",
                 self.session.players().len().max(1),
                 binary_voxel_coordinates(self.session.camera.position),
-                G::status_text(&self.session),
+                self.session.hud_text(),
                 match (&typing, reply) {
                     (Some(line), _) => format!(" | {line}"),
                     (None, Some(text)) => format!(" | {text}"),
@@ -562,7 +561,7 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                                 viewer.keys.insert(code);
                             } else {
                                 if !viewer.keys.contains(&code) {
-                                    G::key_pressed(&mut viewer.session, code);
+                                    viewer.session.key_pressed(code);
                                 }
                                 viewer.keys.insert(code);
                             }
@@ -579,8 +578,8 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                 ..
             } => match (button, viewer.mouse_captured) {
                 (MouseButton::Left, false) => viewer.set_mouse_captured(true),
-                (MouseButton::Left, true) => G::primary_action(&mut viewer.session),
-                (MouseButton::Right, true) => G::secondary_action(&mut viewer.session),
+                (MouseButton::Left, true) => viewer.session.mouse_pressed(GameButton::Primary),
+                (MouseButton::Right, true) => viewer.session.mouse_pressed(GameButton::Secondary),
                 _ => {}
             },
             WindowEvent::Focused(focused) => {

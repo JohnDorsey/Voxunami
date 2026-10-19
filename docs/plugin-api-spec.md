@@ -50,7 +50,7 @@ pub trait Plugin: Send + Sync {
 | `system` | a tick function | here | |
 | `on` | a handler for an event kind | here | |
 | `save_section` | a plugin's saved state | as `save_sections` today | per-grid scope (32) |
-| `client` | a HUD line, a key action, a client command | not in this phase | Phase 26 |
+| `client` (a `ClientPlugin`, separate from the server plugin and sharing its identifier) | `on_message::<M>`, `view`, `hud_line`, `key`/`keys`, `mouse`, `command` | built (Phase 26): see `client-interface-spec.md` | rebinding by client commands; a UI toolkit (Phase 30) |
 
 A new *kind of content* is not a new verb. An event kind is content: engine kinds have ids like `engine:blocks_changed`, plugin kinds
 `voxunami_cave:block_edit_requested`.

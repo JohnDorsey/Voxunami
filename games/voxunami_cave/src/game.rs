@@ -1,24 +1,22 @@
 //! Voxunami Cave as the shell runs it: what the player's clicks and keys do.
 
-use base_blocks::{SHAPE_NAMES, shape_name};
 use std::collections::HashSet;
-use std::sync::Mutex;
 
-use game_shell::{CameraStart, GameContent, GameDefinition, KeyCode, PlayerPose};
+use game_shell::client_plugin::ClientPlugin;
+use game_shell::{CameraStart, GameDefinition, KeyCode, PlayerPose};
 use namespaced_id::NamespacedId;
 use physics::MoveInput;
 use plugin_host::Plugin;
 use renderer::Camera;
 use transport::Connection;
 use voxel_space::WorldPosition;
-use world_view::{BulkLight, ViewChannels};
 
+use crate::client::{ClientBlockEditing, ClientLight, ClientMovement, set_block_request};
 use crate::content::{CaveContent, game_id};
 use crate::logic::REACH;
-use crate::messages::{LightSchemeChanged, MoveRequest, SetBlock, Spawn};
-use crate::multiscale_light::{LEVEL_FORMAT, LightScheme, full_brightness};
+use crate::messages::{MoveRequest, SetBlock, Spawn};
+use crate::multiscale_light::LightScheme;
 use crate::plugins::cave_plugins;
-use crate::scaled_light::{MultiScaleView, ScaledLight};
 use protocol::Message;
 
 /// The blocks a player can place, in the order the number keys choose them.
@@ -30,19 +28,6 @@ pub const PLACEABLE_BLOCKS: [&str; 6] = [
     "base_blocks:wood",
     "base_blocks:fire",
 ];
-
-/// What the cave client remembers.
-#[derive(Debug, Default)]
-pub struct CaveClientState {
-    pub selected_block: usize,
-    /// The state, which is the shape, that placed blocks get (see [`SHAPE_NAMES`]).
-    pub selected_shape: u32,
-    /// How the world's multiscale light is cut into cells, if it has that light (the server says).
-    pub light_scheme: Option<LightScheme>,
-    /// The view's light for `light_scheme`, kept so that the view is meshed again only when the scheme
-    /// changes (the view compares hooks by identity).
-    light_hook: Mutex<Option<(LightScheme, BulkLight)>>,
-}
 
 #[derive(Debug)]
 pub struct Cave;
@@ -66,12 +51,10 @@ pub fn request_block_with_state<C: Connection>(
     block: &str,
     state: u32,
 ) {
-    let request = SetBlock {
-        at,
-        block: block.parse().expect("block names are valid identifiers"),
-        state,
-    };
-    session.send_game_message(SetBlock::kind(), request.encode());
+    session.send_game_message(
+        SetBlock::kind(),
+        set_block_request(at, block, state).encode(),
+    );
 }
 
 /// Breaks the block under the crosshair, if there is one.
@@ -97,9 +80,16 @@ pub fn place_block_with_state<C: Connection>(
     }
 }
 
+/// How the world's multiscale light is cut into cells in this session, if it has that light (the server
+/// says).
+pub fn light_scheme<C: Connection>(session: &CaveSession<C>) -> Option<LightScheme> {
+    session
+        .client_plugin::<ClientLight>()
+        .and_then(ClientLight::scheme)
+}
+
 impl GameDefinition for Cave {
     type Content = CaveContent;
-    type ClientState = CaveClientState;
 
     fn id() -> NamespacedId {
         game_id()
@@ -182,82 +172,11 @@ Window commands (start with a period): .ambient 0-255 sets how bright a face is 
         cave_plugins(content)
     }
 
-    fn view_channels(content: &CaveContent, state: &CaveClientState) -> ViewChannels {
-        let mut channels = content.view_channels();
-        if let Some(scheme) = state.light_scheme {
-            let mut kept = state
-                .light_hook
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let hook = match &*kept {
-                Some((kept_scheme, hook)) if *kept_scheme == scheme => hook.clone(),
-                _ => {
-                    let scales = (0..scheme.scales())
-                        .map(|scale| {
-                            let width = scheme.widths()[scale];
-                            ScaledLight {
-                                channel: content.scale_channel(scale),
-                                cell_width: width,
-                                full_brightness: full_brightness(width),
-                                format: LEVEL_FORMAT,
-                            }
-                        })
-                        .collect();
-                    let hook = BulkLight(std::sync::Arc::new(MultiScaleView {
-                        light: channels.light,
-                        scales,
-                    }));
-                    *kept = Some((scheme, hook.clone()));
-                    hook
-                }
-            };
-            channels.bulk_light = Some(hook);
-        }
-        channels
-    }
-
-    fn handle_game_message(state: &mut CaveClientState, kind: &NamespacedId, payload: &[u8]) {
-        // A message this client cannot read leaves the light as it was drawn.
-        if *kind == LightSchemeChanged::kind()
-            && let Ok(LightSchemeChanged(scheme)) = LightSchemeChanged::decode(payload)
-        {
-            state.light_scheme = scheme;
-        }
-    }
-
-    fn primary_action<C: Connection>(session: &mut CaveSession<C>) {
-        break_block(session);
-    }
-
-    fn secondary_action<C: Connection>(session: &mut CaveSession<C>) {
-        let block = PLACEABLE_BLOCKS[session.state.selected_block];
-        let state = session.state.selected_shape;
-        place_block_with_state(session, block, state);
-    }
-
-    fn key_pressed<C: Connection>(session: &mut CaveSession<C>, key: KeyCode) {
-        match key {
-            KeyCode::Digit1 => session.state.selected_block = 0,
-            KeyCode::Digit2 => session.state.selected_block = 1,
-            KeyCode::Digit3 => session.state.selected_block = 2,
-            KeyCode::Digit4 => session.state.selected_block = 3,
-            KeyCode::Digit5 => session.state.selected_block = 4,
-            KeyCode::Digit6 => session.state.selected_block = 5,
-            KeyCode::KeyF => session.send_command("/fly"),
-            KeyCode::KeyR => {
-                session.state.selected_shape =
-                    (session.state.selected_shape + 1) % SHAPE_NAMES.len() as u32;
-            }
-            _ => {}
-        }
-    }
-
-    fn status_text<C: Connection>(session: &CaveSession<C>) -> String {
-        let block = PLACEABLE_BLOCKS[session.state.selected_block];
-        format!(
-            "placing {} ({})",
-            block.split(':').next_back().unwrap_or_default(),
-            shape_name(session.state.selected_shape)
-        )
+    fn client_plugins(content: &CaveContent) -> Vec<Box<dyn ClientPlugin>> {
+        vec![
+            Box::new(ClientBlockEditing::default()),
+            Box::new(ClientLight::new(content)),
+            Box::new(ClientMovement),
+        ]
     }
 }

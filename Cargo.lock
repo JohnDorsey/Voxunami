@@ -695,6 +695,7 @@ dependencies = [
 name = "game_shell"
 version = "0.0.0"
 dependencies = [
+ "binary_codec",
  "block_models",
  "client",
  "content_registry",

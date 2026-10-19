@@ -97,6 +97,7 @@ pub struct CommandSpec {
     pub(crate) name: &'static str,
     pub(crate) summary: &'static str,
     pub(crate) arguments: Vec<Argument>,
+    prefix: char,
 }
 
 impl CommandSpec {
@@ -105,7 +106,15 @@ impl CommandSpec {
             name,
             summary,
             arguments: Vec::new(),
+            prefix: '/',
         }
+    }
+
+    /// The character a player types before the name: `/` for the server's commands (the default) and
+    /// `.` for the window's.
+    pub fn with_prefix(mut self, prefix: char) -> Self {
+        self.prefix = prefix;
+        self
     }
 
     /// Adds the next argument. A command is written by its plugin, so a mistake in its shape is a
@@ -136,9 +145,15 @@ impl CommandSpec {
         self.summary
     }
 
+    /// Checks the words typed after the command's name. The error is the reply to give the player: the
+    /// usage, and for a word that is not what its argument is, which one.
+    pub fn parse<'text>(&self, words: &[&'text str]) -> Result<Arguments<'text>, String> {
+        Arguments::parse(self, words)
+    }
+
     /// How the command is typed: `/tp X Y Z`, with optional arguments in brackets.
     pub fn usage(&self) -> String {
-        let mut usage = format!("/{}", self.name);
+        let mut usage = format!("{}{}", self.prefix, self.name);
         for argument in &self.arguments {
             usage.push(' ');
             usage.push_str(&argument.shown());

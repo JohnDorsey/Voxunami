@@ -18,6 +18,7 @@
 //! - [`messages`] and [`logic`]: the game's messages, and what the server does with them.
 //! - [`game`]: the game as the shell runs it.
 
+pub mod client;
 pub mod content;
 pub mod game;
 pub mod landscape;

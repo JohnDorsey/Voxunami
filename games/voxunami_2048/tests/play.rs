@@ -10,7 +10,7 @@ use game_shell::files::{open_recording, record_connection};
 use game_shell::host::build_server;
 use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
-use game_shell::{GameContent, GameDefinition, KeyCode};
+use game_shell::{GameContent, KeyCode};
 use proptest::prelude::*;
 use protocol::Message;
 use server::Server;
@@ -19,7 +19,7 @@ use transport::loopback::LoopbackConnector;
 use voxel_grid::Grid;
 use voxel_space::{FaceDirection, LocalVoxelIndex, VoxelCoordinate};
 use voxunami_2048::content::{Content2048, block_registry_kind, landscape_id};
-use voxunami_2048::game::{Game2048, pull_with_tool, push_with_tool};
+use voxunami_2048::game::{Game2048, progress as progress_of, pull_with_tool, push_with_tool};
 use voxunami_2048::logic::REACH;
 use voxunami_2048::material::{COASTING_RANGE, Material};
 use voxunami_2048::messages::{Progress, PushRequest, read_saved_state, saved_state_section_id};
@@ -267,7 +267,7 @@ fn the_tools_push_a_stone_block_away_and_pull_it_toward_the_player_from_every_si
             assert_air_has_no_number(&rig.server.world().main().overrides, &rig.content);
             assert_eq!(blocks_seen_by(&player, &rig.content), expected);
             assert_eq!(
-                player.state.progress,
+                progress_of(&player),
                 Progress {
                     pushes: 1,
                     ..Progress::default()
@@ -291,7 +291,7 @@ fn a_tool_click_on_nothing_does_nothing() {
     rig.step(3);
     rig.settle(&mut [&mut player]);
     assert_eq!(rig.blocks(), blocks_of(&[(at(10, SKY, 10), stone(2))]));
-    assert_eq!(player.state.progress, Progress::default());
+    assert_eq!(progress_of(&player), Progress::default());
 }
 
 #[test]
@@ -315,7 +315,7 @@ fn ice_coasts_one_step_a_tick_and_stops_beside_the_block_it_meets() {
     let expected = blocks_of(&[(at(10, SKY, 4), ice(1)), (wall, stone(2))]);
     assert_eq!(rig.blocks(), expected);
     assert_eq!(blocks_seen_by(&player, &rig.content), expected);
-    assert_eq!(player.state.progress.score, 0);
+    assert_eq!(progress_of(&player).score, 0);
 }
 
 #[test]
@@ -338,13 +338,13 @@ fn equal_blocks_that_meet_merge_and_everyone_hears_the_score() {
         pushes: 1,
         largest_merge: 8,
     };
-    assert_eq!(pusher.state.progress, progress);
-    assert_eq!(watcher.state.progress, progress);
+    assert_eq!(progress_of(&pusher), progress);
+    assert_eq!(progress_of(&watcher), progress);
 
     // Someone who joins later hears how the game stands.
     let mut late = rig.join([10.5, SKY as f64 + 0.5, 20.5], 0.0, 0.0);
     rig.settle(&mut [&mut late]);
-    assert_eq!(late.state.progress, progress);
+    assert_eq!(progress_of(&late), progress);
 }
 
 #[test]
@@ -367,7 +367,7 @@ fn the_score_adds_up_every_merge_and_remembers_the_largest_block_made() {
         blocks_of(&[(at(10, SKY, 8), stone(4)), (at(14, SKY, 5), stone(2))])
     );
     assert_eq!(
-        player.state.progress,
+        progress_of(&player),
         Progress {
             score: 16 + 4,
             pushes: 2,
@@ -415,7 +415,7 @@ fn pushes_that_are_out_of_reach_or_not_of_a_block_or_malformed_are_ignored() {
         rig.blocks(),
         blocks_of(&[(near, stone(2)), (far, stone(2))])
     );
-    assert_eq!(player.state.progress, Progress::default());
+    assert_eq!(progress_of(&player), Progress::default());
 
     // The same push, from within reach, works.
     send_push(&mut player, near, FaceDirection::PositiveX);
@@ -491,7 +491,7 @@ fn blocks_stop_at_content_the_game_does_not_know_and_never_overwrite_it() {
         rig.server.world().main().overrides.get(channel, unknown),
         marble
     );
-    assert_eq!(player.state.progress.pushes, 1);
+    assert_eq!(progress_of(&player).pushes, 1);
 }
 
 #[test]
@@ -578,7 +578,7 @@ proptest! {
         prop_assert_eq!(total_value(&blocks), starting_value);
         prop_assert_eq!(blocks_seen_by(&player, &rig.content), blocks.clone());
         prop_assert_eq!(blocks_seen_by(&watcher, &rig.content), blocks);
-        prop_assert_eq!(player.state.progress, watcher.state.progress);
+        prop_assert_eq!(progress_of(&player), progress_of(&watcher));
     }
 }
 
@@ -668,7 +668,7 @@ fn a_recording_of_a_game_replays_the_blocks_and_the_score() {
         blocks_seen_by(&replay, &rig.content),
         blocks_of(&[(at(10, SKY, 6), stone(3))])
     );
-    assert_eq!(replay.state.progress.score, 8);
+    assert_eq!(progress_of(&replay).score, 8);
     std::fs::remove_dir_all(&directory).unwrap();
 }
 
@@ -754,7 +754,7 @@ fn blocks_pushed_in_another_level_move_and_merge_there_and_the_score_is_shared()
         merged
     );
     assert_eq!(
-        player.state.progress,
+        progress_of(&player),
         Progress {
             score: 8,
             pushes: 1,
@@ -870,13 +870,13 @@ fn ice_meets_stone_with_the_tool_of(key: KeyCode) -> (Blocks, Progress) {
     ]);
     let mut player = rig.join_looking(at(10, SKY, 10), FaceDirection::NegativeZ);
     rig.settle(&mut [&mut player]);
-    Game2048::key_pressed(&mut player, key);
+    player.key_pressed(key);
     push_with_tool(&mut player);
     rig.step(12);
     rig.settle(&mut [&mut player]);
     assert_air_has_no_number(&rig.server.world().main().overrides, &rig.content);
     assert_eq!(blocks_seen_by(&player, &rig.content), rig.blocks());
-    (rig.blocks(), player.state.progress)
+    (rig.blocks(), progress_of(&player))
 }
 
 #[test]
@@ -933,7 +933,7 @@ fn equal_numbers_cancel_with_the_subtract_tool_and_score_nothing() {
     ]);
     let mut player = rig.join_looking(at(10, SKY, 10), FaceDirection::NegativeZ);
     rig.settle(&mut [&mut player]);
-    Game2048::key_pressed(&mut player, KeyCode::Digit3);
+    player.key_pressed(KeyCode::Digit3);
     push_with_tool(&mut player);
     rig.step(10);
     rig.settle(&mut [&mut player]);
@@ -942,7 +942,7 @@ fn equal_numbers_cancel_with_the_subtract_tool_and_score_nothing() {
     assert_eq!(blocks_seen_by(&player, &rig.content), expected);
     assert_air_has_no_number(&rig.server.world().main().overrides, &rig.content);
     assert_eq!(
-        player.state.progress,
+        progress_of(&player),
         Progress {
             pushes: 1,
             ..Progress::default()
@@ -955,17 +955,17 @@ fn the_chosen_tool_is_shown_and_keys_that_are_not_tools_leave_it_alone() {
     let mut rig = Rig::with_blocks(&[(at(10, SKY, 10), stone(1))]);
     let mut player = rig.join_looking(at(10, SKY, 10), FaceDirection::NegativeZ);
     rig.settle(&mut [&mut player]);
-    assert!(Game2048::status_text(&player).starts_with("tool double | "));
-    Game2048::key_pressed(&mut player, KeyCode::Digit2);
-    assert!(Game2048::status_text(&player).starts_with("tool add | "));
-    Game2048::key_pressed(&mut player, KeyCode::KeyR);
-    Game2048::key_pressed(&mut player, KeyCode::Digit9);
-    assert!(Game2048::status_text(&player).starts_with("tool add | "));
-    Game2048::key_pressed(&mut player, KeyCode::Digit3);
-    assert!(Game2048::status_text(&player).starts_with("tool subtract | "));
-    Game2048::key_pressed(&mut player, KeyCode::Digit1);
-    assert!(Game2048::status_text(&player).starts_with("tool double | "));
-    assert!(Game2048::status_text(&player).contains("looking at stone 2"));
+    assert!(player.hud_text().starts_with("tool double | "));
+    player.key_pressed(KeyCode::Digit2);
+    assert!(player.hud_text().starts_with("tool add | "));
+    player.key_pressed(KeyCode::KeyR);
+    player.key_pressed(KeyCode::Digit9);
+    assert!(player.hud_text().starts_with("tool add | "));
+    player.key_pressed(KeyCode::Digit3);
+    assert!(player.hud_text().starts_with("tool subtract | "));
+    player.key_pressed(KeyCode::Digit1);
+    assert!(player.hud_text().starts_with("tool double | "));
+    assert!(player.hud_text().contains("looking at stone 2"));
 }
 
 #[test]
@@ -1042,7 +1042,7 @@ fn a_stone_block_pushed_by_a_player_pushes_the_row_in_front_of_it_for_everyone_t
     assert_eq!(blocks_seen_by(&watcher, &rig.content), moved);
     assert_air_has_no_number(&rig.server.world().main().overrides, &rig.content);
     assert_eq!(
-        player.state.progress,
+        progress_of(&player),
         Progress {
             pushes: 1,
             ..Progress::default()

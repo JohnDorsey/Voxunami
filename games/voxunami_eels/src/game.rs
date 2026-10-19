@@ -1,5 +1,6 @@
 //! Voxunami Eels as the shell runs it: what the player's keys do, and what the title says.
 
+use game_shell::client_plugin::ClientPlugin;
 use game_shell::session::Session;
 use game_shell::{CameraStart, GameDefinition, KeyCode};
 use namespaced_id::NamespacedId;
@@ -8,33 +9,41 @@ use plugin_host::Plugin;
 use protocol::{ClientId, Message};
 use transport::Connection;
 
+use crate::client::ClientEels;
 use crate::content::{ContentEels, SLOT_NAMES, game_id};
 use crate::eel::Steer;
 use crate::logic::PluginEels;
 use crate::messages::Standings;
 use crate::round::{MAXIMUM_EELS, Phase, TICKS_PER_SECOND};
 
-/// What the Eels client remembers: how the rounds stand, as the server last said.
-#[derive(Debug, Default)]
-pub struct ClientStateEels {
-    pub standings: Standings,
-}
-
 #[derive(Debug)]
 pub struct Eels;
 
 pub type SessionEels<C> = Session<C, Eels>;
 
+/// The keys that steer each way, in the order the steers are listed.
+pub const STEER_KEYS: [(Steer, &[KeyCode]); 5] = [
+    (Steer::Left, &[KeyCode::KeyA, KeyCode::ArrowLeft]),
+    (Steer::Right, &[KeyCode::KeyD, KeyCode::ArrowRight]),
+    (Steer::Up, &[KeyCode::KeyW, KeyCode::ArrowUp]),
+    (Steer::Down, &[KeyCode::KeyS, KeyCode::ArrowDown]),
+    (Steer::Roll, &[KeyCode::Space, KeyCode::KeyQ, KeyCode::KeyE]),
+];
+
 /// What a key asks of the eel, if anything.
 pub fn steer_for(key: KeyCode) -> Option<Steer> {
-    match key {
-        KeyCode::KeyA | KeyCode::ArrowLeft => Some(Steer::Left),
-        KeyCode::KeyD | KeyCode::ArrowRight => Some(Steer::Right),
-        KeyCode::KeyW | KeyCode::ArrowUp => Some(Steer::Up),
-        KeyCode::KeyS | KeyCode::ArrowDown => Some(Steer::Down),
-        KeyCode::Space | KeyCode::KeyQ | KeyCode::KeyE => Some(Steer::Roll),
-        _ => None,
-    }
+    STEER_KEYS
+        .iter()
+        .find(|(_, keys)| keys.contains(&key))
+        .map(|(steer, _)| *steer)
+}
+
+/// How the rounds stand in this session, as the server last said.
+pub fn standings<C: Connection>(session: &SessionEels<C>) -> Standings {
+    session
+        .client_plugin::<ClientEels>()
+        .map(ClientEels::standings)
+        .unwrap_or_default()
 }
 
 /// Asks the server to steer the player's eel.
@@ -80,7 +89,6 @@ pub fn describe(standings: &Standings, own: ClientId) -> String {
 
 impl GameDefinition for Eels {
     type Content = ContentEels;
-    type ClientState = ClientStateEels;
 
     fn id() -> NamespacedId {
         game_id()
@@ -149,23 +157,8 @@ impl GameDefinition for Eels {
         vec![Box::new(players), Box::new(rules)]
     }
 
-    fn handle_game_message(state: &mut ClientStateEels, kind: &NamespacedId, payload: &[u8]) {
-        if *kind == Standings::kind()
-            && let Ok(standings) = Standings::decode(payload)
-        {
-            state.standings = standings;
-        }
-    }
-
-    fn key_pressed<C: Connection>(session: &mut SessionEels<C>, key: KeyCode) {
-        if let Some(asked) = steer_for(key) {
-            steer(session, asked);
-        }
-    }
-
-    fn status_text<C: Connection>(session: &SessionEels<C>) -> String {
-        let own = session.client().world().server_info().client;
-        describe(&session.state.standings, own)
+    fn client_plugins(_content: &ContentEels) -> Vec<Box<dyn ClientPlugin>> {
+        vec![Box::new(ClientEels::default())]
     }
 }
 

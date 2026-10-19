@@ -49,8 +49,8 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 28 (planned) The content package at the handshake, carried by recordings (revision 3).
 - 27 (planned) Entities and items: server-owned entities with typed components, inventories, the protocol messages and the
   `engine:entities` section reserved before 1.0.
-- 26 (accepted, being built) The client interface (client plugins: message handlers, view hook, HUD line, key and mouse actions, `.`-commands) and the bulk light
-  hook that takes the scaled-light concepts out of `world_view`. Specified in `client-interface-spec.md` (steps 26a to 26d).
+- 26 The client interface (client plugins: message handlers, view hook, HUD line, key and mouse actions, `.`-commands) and the bulk light
+  hook that took the scaled-light concepts out of `world_view`. **Done.** Specified in `client-interface-spec.md` (steps 26a to 26d).
 - 25 Declared messages (a `Message` trait and a generated check, no codegen) and a command registry with `/help` (revision 4). **Done.** Specified in
   `messages-and-commands-spec.md` (steps 25a to 25d).
 - 24 Property bags on block definitions, per state; `emission`, `flammability` and `passable` left the engine (revision 2). **Done.** Specified in
@@ -248,11 +248,10 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   refuse) is open. (c) *Materials* (Phase 31): the renderer draws at most 240 game materials (a 256-entry palette less 16 for
   avatars); the packed quad has 24 bits for the material and saves hold block ids, so widening it is a renderer-only change; whether
   the first release has textures is open, and a texture path (an array indexed by material and face, UVs from position) is a larger
-  decision than the palette. (d) *Scaled light in the engine* (Phase 26): `world_view` holds `ScaledLight`, `LevelFormat` and
-  `MAXIMUM_LIGHT_SCALES`, Cave's multiscale-light concepts, against the rule that the engine never knows a plugin (a spike's
-  shortcut, Phases 19 to 22); the hook that closes it is planned. (e) *Client interface* (Phases 26 and 30): the window title is
-  the HUD, plugins cannot add client commands or key actions, and there is no UI toolkit; the first two are planned in Phase 26,
-  the toolkit in Phase 30.
+  decision than the palette. (d) *Scaled light in the engine*: closed in Phase 26 (the `BrickLight` hook; Cave's concepts live in Cave). (e) *Client interface*
+  (Phases 26 and 30): plugins now register a HUD line, key and mouse actions and `.`-commands (Phase 26); the HUD is still the window
+  title and there is no UI toolkit (Phase 30). Rebinding actions with client commands is a later phase (the owner's decision: any
+  number of actions may share a key or button; they are keyed by action identifier so that rebinding can name them).
 - A flaky test, unexplained (measured 2026-10-18): `a_walker_standing_in_flames_falls_when_the_fire_burns_the_ground_away` fails about 1 run
   in 25 on Linux, the same on the commit before Phase 23a and after it, at its "flames do not hold them up or push them" check (the
   walker's position moved by more than 0.001 in two ticks after fires were placed). Not reproduced on Windows in the runs made. The cause

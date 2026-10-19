@@ -13,8 +13,13 @@ use protocol::{ClientId, Message};
 use renderer::Camera;
 use transport::Connection;
 use voxel_space::{BrickBox, BrickCoordinate, LevelIndex, WorldPosition};
+use winit::keyboard::KeyCode;
 use world_view::{MeshUpdate, RayHit, ViewSettings, WorldMesher, cast_ray};
 
+use crate::client_commands::ClientSettings;
+use crate::client_plugin::{
+    ClientContext, ClientHost, ClientPlugin, MouseButton, Outgoing, SessionView,
+};
 use crate::definition::{GameContent, GameDefinition};
 use crate::host::WATCH_MARGIN_BRICKS;
 
@@ -43,8 +48,11 @@ pub struct Session<C: Connection, G: GameDefinition> {
     block_table: Arc<BlockTable>,
     mesher: WorldMesher,
     pub camera: Camera,
-    /// What the game keeps on the client between messages and clicks.
-    pub state: G::ClientState,
+    /// The client halves of the game's plugins, and what they registered.
+    client_plugins: Vec<Box<dyn ClientPlugin>>,
+    client_host: ClientHost,
+    /// What the window's own commands change.
+    settings: ClientSettings,
     players: BTreeMap<ClientId, PlayerState>,
     mode: Mode,
     view_radius_bricks: i64,
@@ -87,6 +95,14 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         let (client, _report) = welcomed.finish(content.load_context(seed))?;
 
         let join = G::join_message(start.position);
+        let client_plugins = G::client_plugins(&content);
+        let client_host = ClientHost::new(&client_plugins).unwrap_or_else(|error| {
+            panic!(
+                "the client plugins of {} cannot be registered: {error}",
+                G::id()
+            )
+        });
+        let settings = ClientSettings::new(content.ambient_light());
         let block_table = Arc::new(content.block_table());
         let worker_count = std::thread::available_parallelism()
             .map_or(2, |count| count.get().saturating_sub(1).max(2));
@@ -104,7 +120,9 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             block_table,
             mesher,
             camera: start,
-            state: G::ClientState::default(),
+            client_plugins,
+            client_host,
+            settings,
             players: BTreeMap::new(),
             mode,
             view_radius_bricks,
@@ -203,13 +221,14 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                     }
                 }
                 ClientEvent::GameMessage { kind, payload } => {
-                    G::handle_game_message(&mut self.state, &kind, &payload);
+                    // A kind no client plugin handles is another game's, or a message only a server needs.
+                    self.client_host.message(&kind, &payload);
                 }
                 ClientEvent::WatchedRegionChanged { .. } => {}
             }
         }
         self.mesher
-            .set_channels(G::view_channels(&self.content, &self.state));
+            .set_channels(self.client_host.view(self.content.view_channels()));
         if self.mode == Mode::Replaying {
             self.follow_recorded_player();
         } else if G::server_moves_players() {
@@ -386,6 +405,84 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         }
         // A closed connection shows up in the next `advance`, which reports it.
         let _ = self.client.send_game_message(kind, payload);
+    }
+
+    /// The client half of a plugin, if the game has one of this type.
+    pub fn client_plugin<P: ClientPlugin>(&self) -> Option<&P> {
+        self.client_plugins
+            .iter()
+            .find_map(|plugin| (&**plugin as &dyn std::any::Any).downcast_ref::<P>())
+    }
+
+    /// What the window's own commands change.
+    pub fn settings(&self) -> &ClientSettings {
+        &self.settings
+    }
+
+    /// How many payloads of messages the client plugins handle did not decode, and were ignored.
+    pub fn malformed_messages(&self) -> u64 {
+        self.client_host.malformed_messages()
+    }
+
+    /// Runs `with` on the client host with a context made of the session, then sends what the hooks asked
+    /// for. A replay asks for nothing, so it sends nothing.
+    fn with_client_context<R>(
+        &mut self,
+        with: impl FnOnce(&mut ClientHost, &mut ClientContext<'_>) -> R,
+    ) -> R {
+        let target = self.target();
+        let target_content = target.and_then(|hit| {
+            Some((
+                self.mesher.material_at(hit.voxel)?,
+                self.mesher.state_at(hit.voxel)?,
+            ))
+        });
+        let tick = self.client.world().tick();
+        let own_client = self.client.world().server_info().client;
+        let mut context = ClientContext::new(SessionView {
+            camera: &self.camera,
+            block_table: &self.block_table,
+            players: &self.players,
+            settings: &mut self.settings,
+            target,
+            target_content,
+            tick,
+            mode: self.mode,
+            own_client,
+        });
+        let result = with(&mut self.client_host, &mut context);
+        let outgoing = context.into_outgoing();
+        for item in outgoing {
+            match item {
+                Outgoing::Command(text) => self.send_command(&text),
+                Outgoing::Message(kind, payload) => self.send_game_message(kind, payload),
+            }
+        }
+        result
+    }
+
+    /// A key other than the movement keys went down: runs the actions on it.
+    pub fn key_pressed(&mut self, key: KeyCode) {
+        if self.mode == Mode::Playing {
+            self.with_client_context(|host, context| host.press_key(key, context));
+        }
+    }
+
+    /// A mouse button went down while the mouse is captured: runs the actions on it.
+    pub fn mouse_pressed(&mut self, button: MouseButton) {
+        if self.mode == Mode::Playing {
+            self.with_client_context(|host, context| host.press_mouse(button, context));
+        }
+    }
+
+    /// Runs a line typed with a period (`.ambient 20`) and returns what to tell the player.
+    pub fn client_command(&mut self, line: &str) -> String {
+        self.with_client_context(|host, context| host.command(line, context))
+    }
+
+    /// The HUD lines of the client plugins, joined; shown in the window title.
+    pub fn hud_text(&mut self) -> String {
+        self.with_client_context(|host, context| host.hud(context))
     }
 
     /// Leaves the server politely.

@@ -17,6 +17,7 @@
 //! - [`game`]: the game as the shell runs it.
 
 pub mod arena;
+pub mod client;
 pub mod content;
 pub mod eel;
 pub mod game;

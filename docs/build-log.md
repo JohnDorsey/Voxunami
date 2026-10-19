@@ -636,6 +636,18 @@ Phase 25 (declared messages and a command registry; specified in `messages-and-c
   lists `/help` and each command's arguments, 49 bytes longer); proved by restoring the old text, which gave the old hash. The saved world
   is unchanged. Bad `/tp` numbers now answer `usage: /tp X Y Z; Z must be a number` instead of `..., with numbers`.
 
+Phase 26 (the client interface and the light hook; specified in `client-interface-spec.md`):
+- 26a: `world_view::BrickLight` and `BulkLight`; `ScaledLight`, `LevelFormat`, `blend_brightness` and `combined_light` with their tests moved to Cave's
+  `scaled_light` module unchanged. Cost of the hook: the per-brick time of a four-scale light was 2.5 to 2.8 ms before and 2.3 to 2.8 ms after (noise
+  is about 15%). New mesher tests cover a hook lighting a face that looks into another brick and a hook being the same or another one; five
+  mutations of the hook are caught.
+- 26b: `game_shell::client_plugin` (`ClientPlugin`, `ClientRegistrar`, `ClientContext`, `ActionSpec`, `MouseButton`), `Session::{key_pressed,
+  mouse_pressed, client_command, hud_text, client_plugin}`; `plugin_host::CommandSpec` takes a prefix and parses for the client too. Eleven
+  mutations of the client host are caught.
+- 26c: 2048 (`Client2048`), Eels (`ClientEels`) and Cave (`ClientLight`, `ClientBlockEditing`, `ClientMovement`) are client plugins; the golden
+  sessions pass unmodified (the server stream is unchanged). The tests read a plugin's state through `voxunami_2048::game::progress`,
+  `voxunami_eels::game::standings` and `voxunami_cave::game::light_scheme`.
+
 ## Measured
 Storage (Ryzen 7600X, release, one thread, best of 7, counting allocator; the single-voxel `get` figures include
 loop and bounds overhead, so bulk decode will be faster):

@@ -138,6 +138,21 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   answers a malformed one (`usage: /tp X Y Z; Z must be a number`), generates the usage line, and provides `/help` itself. No permission level
   until a command needs one.
 
+## Decided (the client interface; built in Phase 26)
+- The client half of a plugin is a separate `ClientPlugin` (same identifier as its server plugin) registering `on_message::<M>` (a server
+  message, typed), `view` (adjusts what is drawn), `hud_line`, `key`/`keys` and `mouse` (actions) and `command` (a `.`-command, with the same typed
+  arguments as server commands). State belongs to the plugin. `GameDefinition` no longer has `ClientState` or the six client hooks.
+- Hooks are pure functions of the server's stream and the plugin's state, so a replay is unaffected: `on_message`, `view` and `hud_line` run in a
+  replay, and actions and commands only while playing. A hook asks the server for something through its context (`send_command`, `send_message`),
+  never by touching the connection.
+- **Any number of actions may be bound to one key or mouse button; all run, in order of plugin identifier and then registration** (the owner's
+  decision). An action has its own unique identifier; a key or button is its default binding, so that rebinding by client commands (a later
+  phase) names actions. `.keys` lists them; `.ambient`, `.help` and `.keys` are the shell's own client commands, registered the same way.
+- The engine does not know Cave's light: `world_view` has a neutral `BrickLight` hook (compared by identity) that turns a brick's channels into
+  per-voxel brightness; the multiscale light (`ScaledLight`, `LevelFormat`, blending) is in Cave. Measured: the hook costs nothing visible
+  (the per-brick time of Cave's 4-scale light, 2.3 to 2.8 ms before and after).
+- HUD lines are joined into the window title until the UI toolkit of Phase 30.
+
 ## Decided (rules for lattice simulation and physics)
 - Tick phases (confirmed by the owner): each tick reads a frozen snapshot of the previous tick and produces the next one.
   A brick update never writes to a neighbour; cross-brick effects are queued and applied together in a fixed order.

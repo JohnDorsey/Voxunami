@@ -3,7 +3,8 @@
 //! `.` is the window's.
 //!
 //! They change how this player's window shows the world, not the world, so each player has their own
-//! and a recording does not hold them.
+//! and a recording does not hold them. The shell registers `.ambient` and `.help` here the way a client
+//! plugin registers its own commands (see [`crate::client_plugin`]).
 
 /// What the client commands change, and what a command can say about it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,43 +31,89 @@ pub fn is_client_command(line: &str) -> bool {
     line.starts_with('.')
 }
 
-const USAGE: &str = "client commands: .ambient [0-255|default], .help";
+use plugin_host::{Argument, CommandSpec};
 
-/// Runs a client command, changing `settings` as it says, and returns what to tell the player.
-/// `line` starts with the period.
-pub fn run(line: &str, settings: &mut ClientSettings) -> String {
-    let mut words = line.trim_start_matches('.').split_whitespace();
-    match (words.next(), words.next(), words.next()) {
-        (Some("help"), None, None) => format!(
-            "{USAGE}. .ambient sets how bright a face is that no light reaches: 0 is black, 255 is as bright as the light of a lamp, and about 20 to 40 is dark like a cave in a game that is not."
-        ),
-        (Some("ambient"), None, None) => format!(
-            "ambient light is {} of 255 (the game's own is {})",
-            settings.ambient_light, settings.default_ambient_light
-        ),
-        (Some("ambient"), Some("default"), None) => {
-            settings.ambient_light = settings.default_ambient_light;
-            format!(
-                "ambient light is {}, the game's own",
-                settings.ambient_light
-            )
-        }
-        (Some("ambient"), Some(value), None) => match value.parse::<u8>() {
-            Ok(value) => {
-                settings.ambient_light = value;
-                format!("ambient light is now {value} of 255")
+use crate::client_plugin::ClientRegistrar;
+
+/// The shell's own client commands.
+pub(crate) fn register(registrar: &mut ClientRegistrar<'_>) {
+    registrar.command(
+        CommandSpec::new(
+            "help",
+            "lists the client commands; .help NAME says what one does",
+        )
+        .with_prefix('.')
+        .argument(Argument::word("command").optional()),
+        // Answered by the host, which knows every command (see `ClientHost::command`).
+        |_, _| String::new(),
+    );
+    registrar.command(
+        CommandSpec::new("keys", "lists what the keys and mouse buttons do").with_prefix('.'),
+        // Answered by the host, which knows every action.
+        |_, _| String::new(),
+    );
+    registrar.command(
+        CommandSpec::new(
+            "ambient",
+            "sets how bright a face is that no light reaches: 0 is black, 255 is as bright as the light of a lamp, and about 20 to 40 is dark like a cave in a game that is not; .ambient default goes back to the game's own",
+        )
+        .with_prefix('.')
+        .argument(Argument::word("level").optional()),
+        |context, arguments| {
+            let settings = context.settings_mut();
+            if !arguments.present(0) {
+                return format!(
+                    "ambient light is {} of 255 (the game's own is {})",
+                    settings.ambient_light, settings.default_ambient_light
+                );
             }
-            Err(_) => "usage: .ambient [0-255|default]".to_owned(),
+            match arguments.word(0) {
+                "default" => {
+                    settings.ambient_light = settings.default_ambient_light;
+                    format!("ambient light is {}, the game's own", settings.ambient_light)
+                }
+                value => match value.parse::<u8>() {
+                    Ok(value) => {
+                        settings.ambient_light = value;
+                        format!("ambient light is now {value} of 255")
+                    }
+                    Err(_) => "usage: .ambient [0-255|default]".to_owned(),
+                },
+            }
         },
-        (Some("ambient"), _, _) => "usage: .ambient [0-255|default]".to_owned(),
-        (Some(other), ..) => format!("unknown client command .{other}; {USAGE}"),
-        (None, ..) => USAGE.to_owned(),
-    }
+    );
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use block_models::BlockTable;
+
     use super::*;
+    use crate::client_plugin::{ClientContext, ClientHost, SessionView};
+    use crate::session::Mode;
+    use crate::view::camera_at;
+
+    /// Runs a typed line the way the window does, against these settings.
+    fn run(line: &str, settings: &mut ClientSettings) -> String {
+        let camera = camera_at([0.0; 3], 0.0, 0.0, 3);
+        let table = BlockTable::of_cubes(&[false]);
+        let players = BTreeMap::new();
+        let mut host = ClientHost::new(&[]).expect("the shell's commands register");
+        let mut context = ClientContext::new(SessionView {
+            camera: &camera,
+            block_table: &table,
+            players: &players,
+            settings,
+            target: None,
+            target_content: None,
+            tick: protocol::Tick::ZERO,
+            mode: Mode::Playing,
+            own_client: protocol::ClientId::new(1),
+        });
+        host.command(line, &mut context)
+    }
 
     #[test]
     fn a_line_is_the_clients_if_it_starts_with_a_period_and_the_servers_otherwise() {
@@ -125,8 +172,6 @@ mod tests {
             ".ambient -1",
             ".ambient 1.5",
             ".ambient lots",
-            ".ambient 10 20",
-            ".ambient default 5",
         ] {
             assert_eq!(
                 run(bad, &mut settings),
@@ -138,16 +183,32 @@ mod tests {
     }
 
     #[test]
+    fn more_words_than_a_command_takes_is_answered_with_its_usage() {
+        let mut settings = ClientSettings::new(40);
+        for bad in [".ambient 10 20", ".ambient default 5"] {
+            assert_eq!(run(bad, &mut settings), "usage: .ambient [LEVEL]", "{bad}");
+            assert_eq!(settings.ambient_light, 40, "{bad}");
+        }
+    }
+
+    #[test]
     fn help_and_unknown_commands_say_what_there_is() {
         let mut settings = ClientSettings::new(0);
         assert!(run(".help", &mut settings).starts_with("client commands: .ambient"));
         assert_eq!(
             run(".dance", &mut settings),
-            "unknown client command .dance; client commands: .ambient [0-255|default], .help"
+            "unknown client command .dance; client commands: .ambient [LEVEL], .help [COMMAND], .keys"
         );
         assert_eq!(
             run(".", &mut settings),
-            "client commands: .ambient [0-255|default], .help"
+            "client commands: .ambient [LEVEL], .help [COMMAND], .keys"
+        );
+        assert!(
+            run(".help ambient", &mut settings).starts_with(".ambient [LEVEL]: sets how bright")
+        );
+        assert_eq!(
+            run(".help nothing", &mut settings),
+            "there is no client command .nothing; client commands: .ambient [LEVEL], .help [COMMAND], .keys"
         );
         // Spaces round the words do not matter.
         assert_eq!(

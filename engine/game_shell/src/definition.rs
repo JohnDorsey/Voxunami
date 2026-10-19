@@ -8,13 +8,12 @@ use content_registry::IdentifierRegistry;
 use namespaced_id::NamespacedId;
 use plugin_host::Plugin;
 use renderer::Camera;
-use transport::Connection;
 use voxel_space::WorldPosition;
 use winit::keyboard::KeyCode;
 use world_storage::{LoadContext, WorldData};
 use world_view::ViewChannels;
 
-use crate::session::Session;
+use crate::client_plugin::ClientPlugin;
 
 /// A game's plugins, as the shell needs them to show and build worlds. Both the server and every
 /// client have one.
@@ -60,8 +59,6 @@ pub struct CameraStart {
 /// replay. The game says what it is, how its server behaves, and what the player's inputs do.
 pub trait GameDefinition: Sized + 'static {
     type Content: GameContent + 'static;
-    /// What the client remembers between messages and clicks: a selected block, a score.
-    type ClientState: Default + Debug;
 
     /// The game's id, such as `voxunami_cave:game`. Servers and recordings carry it.
     fn id() -> NamespacedId;
@@ -132,27 +129,10 @@ pub trait GameDefinition: Sized + 'static {
     /// is registered, and so finds any state it saved. The order of the list does not matter.
     fn plugins(content: &Self::Content) -> Vec<Box<dyn Plugin>>;
 
-    /// What the view draws from, as the client's state says: a game whose lights depend on what the
-    /// server told it (see [`GameDefinition::handle_game_message`]) changes the content's channels
-    /// here. The view is looked at again whenever this changes. The default is the content's own.
-    fn view_channels(content: &Self::Content, _state: &Self::ClientState) -> ViewChannels {
-        content.view_channels()
-    }
-
-    /// A game message from the server that is not about where players are.
-    fn handle_game_message(_state: &mut Self::ClientState, _kind: &NamespacedId, _payload: &[u8]) {}
-
-    /// The left mouse button, while the mouse is captured.
-    fn primary_action<C: Connection>(_session: &mut Session<C, Self>) {}
-
-    /// The right mouse button, while the mouse is captured.
-    fn secondary_action<C: Connection>(_session: &mut Session<C, Self>) {}
-
-    /// A key other than the movement keys went down.
-    fn key_pressed<C: Connection>(_session: &mut Session<C, Self>, _key: KeyCode) {}
-
-    /// Shown in the window title while playing.
-    fn status_text<C: Connection>(_session: &Session<C, Self>) -> String {
-        String::new()
+    /// The client halves of the game's plugins: what the client does with the server's messages, what a
+    /// key, a mouse button or a typed `.`-command does, and what the HUD says. Made once for each
+    /// session. The order of the list does not matter.
+    fn client_plugins(_content: &Self::Content) -> Vec<Box<dyn ClientPlugin>> {
+        Vec::new()
     }
 }

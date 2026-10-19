@@ -1,0 +1,894 @@
+//! The client's side of a plugin: what it hears from the server, how it adjusts what is drawn, what it
+//! says in the HUD, and what a key, a mouse button or a typed `.`-command does.
+//!
+//! A [`ClientPlugin`] is separate from the server plugin it belongs to (they share an identifier, so
+//! that a mod can ship both). Its hooks are pure functions of the server's message stream and the
+//! plugin's own state, so that a recording played back shows the same HUD and the same picture: the
+//! hooks that heard the stream (`on_message`, `view`, `hud_line`) run in a replay, and the ones that
+//! ask for something (keys, mouse buttons, commands) only while playing.
+
+use std::any::Any;
+use std::collections::BTreeMap;
+
+use block_models::BlockTable;
+use namespaced_id::NamespacedId;
+use player_presence::PlayerState;
+use plugin_host::{Arguments, CommandSpec};
+use protocol::{ClientId, Message, Tick, check_message};
+use renderer::Camera;
+use winit::keyboard::KeyCode;
+use world_view::{RayHit, ViewChannels};
+
+use crate::client_commands::ClientSettings;
+use crate::session::Mode;
+
+/// The client half of a plugin.
+pub trait ClientPlugin: Any + Send + std::fmt::Debug {
+    /// The identifier, the same as the server plugin's it belongs to (such as `voxunami_cave:light`).
+    fn id(&self) -> NamespacedId;
+
+    /// Registers what the plugin hears, adjusts and answers.
+    fn register(&self, registrar: &mut ClientRegistrar<'_>);
+}
+
+/// The mouse buttons that do something in a game, while the mouse is captured.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseButton {
+    /// The left button.
+    Primary,
+    /// The right button.
+    Secondary,
+}
+
+/// What an action is: an identifier (unique among all the actions, so that a later phase can rebind it by
+/// that name) and a line saying what it does.
+#[derive(Clone, Debug)]
+pub struct ActionSpec {
+    id: NamespacedId,
+    summary: &'static str,
+}
+
+impl ActionSpec {
+    /// `id` is `plugin:name`, such as `voxunami_cave:break_block`.
+    pub fn new(id: &str, summary: &'static str) -> Self {
+        Self {
+            id: id.parse().unwrap_or_else(|error| {
+                panic!("the action identifier {id:?} is not valid: {error}")
+            }),
+            summary,
+        }
+    }
+
+    pub fn id(&self) -> &NamespacedId {
+        &self.id
+    }
+
+    pub fn summary(&self) -> &'static str {
+        self.summary
+    }
+}
+
+/// What the client does in answer to an action, after the hook has run.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Outgoing {
+    Command(String),
+    Message(NamespacedId, Vec<u8>),
+}
+
+/// What a hook can see of the player's session and ask of the server. A narrow view: it has no
+/// connection and no mesher.
+pub struct ClientContext<'a> {
+    view: SessionView<'a>,
+    outgoing: Vec<Outgoing>,
+}
+
+/// What a context shows of the session.
+pub(crate) struct SessionView<'a> {
+    pub camera: &'a Camera,
+    pub block_table: &'a BlockTable,
+    pub players: &'a BTreeMap<ClientId, PlayerState>,
+    pub settings: &'a mut ClientSettings,
+    pub target: Option<RayHit>,
+    /// The block and state in the targeted voxel.
+    pub target_content: Option<(u32, u32)>,
+    pub tick: Tick,
+    pub mode: Mode,
+    pub own_client: ClientId,
+}
+
+impl std::fmt::Debug for ClientContext<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ClientContext")
+            .field("tick", &self.view.tick)
+            .field("mode", &self.view.mode)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> ClientContext<'a> {
+    pub(crate) fn new(view: SessionView<'a>) -> Self {
+        Self {
+            view,
+            outgoing: Vec::new(),
+        }
+    }
+
+    pub(crate) fn into_outgoing(self) -> Vec<Outgoing> {
+        self.outgoing
+    }
+
+    /// Asks the server to run a command, as if the player had typed it (`/fly`).
+    pub fn send_command(&mut self, text: &str) {
+        self.outgoing.push(Outgoing::Command(text.to_owned()));
+    }
+
+    /// Sends the server a message of the game.
+    pub fn send_message<M: Message>(&mut self, message: &M) {
+        self.outgoing
+            .push(Outgoing::Message(M::kind(), message.encode()));
+    }
+
+    /// The solid voxel under the crosshair, within the game's reach.
+    pub fn target(&self) -> Option<RayHit> {
+        self.view.target
+    }
+
+    /// The block and its state in the voxel under the crosshair, as the picture has them.
+    pub fn target_block(&self) -> Option<(u32, u32)> {
+        self.view.target_content
+    }
+
+    pub fn camera(&self) -> &Camera {
+        self.view.camera
+    }
+
+    /// The last tick the picture is complete for.
+    pub fn tick(&self) -> Tick {
+        self.view.tick
+    }
+
+    pub fn block_table(&self) -> &BlockTable {
+        self.view.block_table
+    }
+
+    /// Where every player is, as far as the server has said.
+    pub fn players(&self) -> &BTreeMap<ClientId, PlayerState> {
+        self.view.players
+    }
+
+    /// This client's identifier on the server.
+    pub fn own_client(&self) -> ClientId {
+        self.view.own_client
+    }
+
+    pub fn mode(&self) -> Mode {
+        self.view.mode
+    }
+
+    /// What the window's own commands change (see `.ambient`).
+    pub fn settings(&self) -> &ClientSettings {
+        self.view.settings
+    }
+
+    pub fn settings_mut(&mut self) -> &mut ClientSettings {
+        self.view.settings
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ClientRegistrationError {
+    #[error("message kind {0} is handled twice")]
+    DuplicateMessage(NamespacedId),
+    #[error("the action {0} is registered twice")]
+    DuplicateAction(NamespacedId),
+    #[error("the client command .{0} is registered twice")]
+    DuplicateCommand(String),
+    #[error("a message does not round-trip: {0}")]
+    BadMessage(String),
+}
+
+type MessageHook = Box<dyn FnMut(&[u8]) -> bool + Send>;
+type ViewHook = Box<dyn FnMut(ViewChannels) -> ViewChannels + Send>;
+type HudHook = Box<dyn FnMut(&ClientContext<'_>) -> Option<String> + Send>;
+type ActionHook = Box<dyn FnMut(&mut ClientContext<'_>) + Send>;
+type CommandHook = Box<dyn FnMut(&mut ClientContext<'_>, &Arguments<'_>) -> String + Send>;
+
+struct KeyBinding {
+    keys: Vec<KeyCode>,
+    action: ActionSpec,
+    run: ActionHook,
+}
+
+struct MouseBinding {
+    button: MouseButton,
+    action: ActionSpec,
+    run: ActionHook,
+}
+
+struct CommandEntry {
+    spec: CommandSpec,
+    run: CommandHook,
+}
+
+/// Everything the client plugins registered, checked and put in order.
+#[derive(Default)]
+pub(crate) struct ClientHost {
+    messages: BTreeMap<NamespacedId, MessageHook>,
+    checks: Vec<fn() -> Result<(), String>>,
+    views: Vec<ViewHook>,
+    huds: Vec<HudHook>,
+    keys: Vec<KeyBinding>,
+    mice: Vec<MouseBinding>,
+    commands: BTreeMap<String, CommandEntry>,
+    actions: Vec<NamespacedId>,
+    malformed_messages: u64,
+    errors: Vec<ClientRegistrationError>,
+}
+
+impl std::fmt::Debug for ClientHost {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ClientHost")
+            .field("messages", &self.messages.len())
+            .field("commands", &self.commands.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// What a client plugin registers into.
+pub struct ClientRegistrar<'a> {
+    host: &'a mut ClientHost,
+}
+
+impl std::fmt::Debug for ClientRegistrar<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ClientRegistrar")
+            .finish_non_exhaustive()
+    }
+}
+
+impl ClientRegistrar<'_> {
+    /// Hears a message of the game from the server. A kind has one handler; a payload that does not decode
+    /// is ignored (and counted). Runs while playing and while replaying: it is the stream.
+    pub fn on_message<M: Message>(&mut self, mut run: impl FnMut(M) + Send + 'static) {
+        let hook: MessageHook = Box::new(move |payload| match M::decode(payload) {
+            Ok(message) => {
+                run(message);
+                true
+            }
+            Err(_) => false,
+        });
+        if self.host.messages.insert(M::kind(), hook).is_some() {
+            self.host
+                .errors
+                .push(ClientRegistrationError::DuplicateMessage(M::kind()));
+        }
+        self.host.checks.push(check_message::<M>);
+    }
+
+    /// Adjusts what the view draws from, given what the game and the plugins before this one made of it.
+    /// Called whenever the view is looked at; a hook that gives the view another light hook returns the
+    /// same one while nothing has changed (the view compares them by identity).
+    pub fn view(&mut self, run: impl FnMut(ViewChannels) -> ViewChannels + Send + 'static) {
+        self.host.views.push(Box::new(run));
+    }
+
+    /// A line of the HUD, or none. Runs every frame, while playing and replaying.
+    pub fn hud_line(
+        &mut self,
+        run: impl FnMut(&ClientContext<'_>) -> Option<String> + Send + 'static,
+    ) {
+        self.host.huds.push(Box::new(run));
+    }
+
+    /// An action that is by default on a key. Any number of actions may be on one key; they all run, in
+    /// order of plugin identifier and then registration. Runs while playing only.
+    pub fn key(
+        &mut self,
+        key: KeyCode,
+        action: ActionSpec,
+        run: impl FnMut(&mut ClientContext<'_>) + Send + 'static,
+    ) {
+        self.keys(&[key], action, run);
+    }
+
+    /// An action that is by default on any of several keys (such as `A` and the left arrow).
+    pub fn keys(
+        &mut self,
+        keys: &[KeyCode],
+        action: ActionSpec,
+        run: impl FnMut(&mut ClientContext<'_>) + Send + 'static,
+    ) {
+        self.claim(&action);
+        self.host.keys.push(KeyBinding {
+            keys: keys.to_vec(),
+            action,
+            run: Box::new(run),
+        });
+    }
+
+    /// An action that is by default on a mouse button, while the mouse is captured. As for keys.
+    pub fn mouse(
+        &mut self,
+        button: MouseButton,
+        action: ActionSpec,
+        run: impl FnMut(&mut ClientContext<'_>) + Send + 'static,
+    ) {
+        self.claim(&action);
+        self.host.mice.push(MouseBinding {
+            button,
+            action,
+            run: Box::new(run),
+        });
+    }
+
+    /// A command the player types with a period (`.ambient`). The host checks the call against the spec,
+    /// which should have been made `with_prefix('.')`; the handler answers with the line to show.
+    pub fn command(
+        &mut self,
+        spec: CommandSpec,
+        run: impl FnMut(&mut ClientContext<'_>, &Arguments<'_>) -> String + Send + 'static,
+    ) {
+        let name = spec.name().to_owned();
+        let entry = CommandEntry {
+            spec,
+            run: Box::new(run),
+        };
+        if self.host.commands.insert(name.clone(), entry).is_some() {
+            self.host
+                .errors
+                .push(ClientRegistrationError::DuplicateCommand(name));
+        }
+    }
+
+    fn claim(&mut self, action: &ActionSpec) {
+        if self.host.actions.contains(&action.id) {
+            self.host
+                .errors
+                .push(ClientRegistrationError::DuplicateAction(action.id.clone()));
+        } else {
+            self.host.actions.push(action.id.clone());
+        }
+    }
+}
+
+impl ClientHost {
+    /// Registers the shell's own client commands, then every plugin's, in order of plugin identifier.
+    pub(crate) fn new(plugins: &[Box<dyn ClientPlugin>]) -> Result<Self, ClientRegistrationError> {
+        let mut host = Self::default();
+        crate::client_commands::register(&mut ClientRegistrar { host: &mut host });
+        let mut order: Vec<usize> = (0..plugins.len()).collect();
+        order.sort_by_key(|&index| plugins[index].id());
+        for index in order {
+            plugins[index].register(&mut ClientRegistrar { host: &mut host });
+        }
+        if !host.errors.is_empty() {
+            return Err(host.errors.remove(0));
+        }
+        for check in &host.checks {
+            check().map_err(ClientRegistrationError::BadMessage)?;
+        }
+        Ok(host)
+    }
+
+    /// Hands a game message to the plugin that handles its kind. Returns whether one did.
+    pub(crate) fn message(&mut self, kind: &NamespacedId, payload: &[u8]) -> bool {
+        let Some(hook) = self.messages.get_mut(kind) else {
+            return false;
+        };
+        if !hook(payload) {
+            self.malformed_messages += 1;
+        }
+        true
+    }
+
+    /// How many payloads of handled kinds did not decode.
+    pub(crate) fn malformed_messages(&self) -> u64 {
+        self.malformed_messages
+    }
+
+    /// What the view draws from, after every plugin has had its say.
+    pub(crate) fn view(&mut self, base: ViewChannels) -> ViewChannels {
+        self.views
+            .iter_mut()
+            .fold(base, |channels, hook| hook(channels))
+    }
+
+    /// The HUD lines of the plugins, in order, joined by ` | `.
+    pub(crate) fn hud(&mut self, context: &ClientContext<'_>) -> String {
+        self.huds
+            .iter_mut()
+            .filter_map(|hook| hook(context))
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(" | ")
+    }
+
+    pub(crate) fn press_key(&mut self, key: KeyCode, context: &mut ClientContext<'_>) {
+        for binding in self
+            .keys
+            .iter_mut()
+            .filter(|binding| binding.keys.contains(&key))
+        {
+            (binding.run)(context);
+        }
+    }
+
+    pub(crate) fn press_mouse(&mut self, button: MouseButton, context: &mut ClientContext<'_>) {
+        for binding in self
+            .mice
+            .iter_mut()
+            .filter(|binding| binding.button == button)
+        {
+            (binding.run)(context);
+        }
+    }
+
+    /// What `.keys` says: each action, where it is by default and what it does, in the order they run.
+    fn bindings(&self) -> String {
+        let keys = self.keys.iter().map(|binding| {
+            let keys: Vec<String> = binding.keys.iter().map(|key| format!("{key:?}")).collect();
+            (keys.join("/"), &binding.action)
+        });
+        let mice = self.mice.iter().map(|binding| {
+            (
+                format!("{:?} mouse button", binding.button),
+                &binding.action,
+            )
+        });
+        let lines: Vec<String> = keys
+            .chain(mice)
+            .map(|(on, action)| format!("{on}: {} ({})", action.summary, action.id))
+            .collect();
+        if lines.is_empty() {
+            "this game has no actions on keys or mouse buttons".to_owned()
+        } else {
+            lines.join("; ")
+        }
+    }
+
+    /// Runs a typed line that starts with a period and returns what to tell the player.
+    pub(crate) fn command(&mut self, line: &str, context: &mut ClientContext<'_>) -> String {
+        let text = line.trim().trim_start_matches('.');
+        let mut words = text.split_whitespace();
+        let Some(name) = words.next() else {
+            return self.usages();
+        };
+        let words: Vec<&str> = words.collect();
+        let parsed = match self.commands.get(name) {
+            Some(entry) => entry.spec.parse(&words),
+            None => return format!("unknown client command .{name}; {}", self.usages()),
+        };
+        let arguments = match parsed {
+            Ok(arguments) => arguments,
+            Err(reply) => return reply,
+        };
+        if name == "help" {
+            return self.help(arguments.present(0).then(|| arguments.word(0)));
+        }
+        if name == "keys" {
+            return self.bindings();
+        }
+        let entry = self
+            .commands
+            .get_mut(name)
+            .expect("the command was just found");
+        (entry.run)(context, &arguments)
+    }
+
+    /// `client commands: .ambient [LEVEL], .help [COMMAND]`.
+    pub(crate) fn usages(&self) -> String {
+        let usages: Vec<String> = self
+            .commands
+            .values()
+            .map(|entry| entry.spec.usage())
+            .collect();
+        format!("client commands: {}", usages.join(", "))
+    }
+
+    /// What `.help` says: every command with its summary, or the one asked about.
+    pub(crate) fn help(&self, wanted: Option<&str>) -> String {
+        let describe =
+            |entry: &CommandEntry| format!("{}: {}", entry.spec.usage(), entry.spec.summary());
+        match wanted {
+            None => self.usages(),
+            Some(name) => {
+                let name = name.trim_start_matches('.');
+                match self.commands.get(name) {
+                    Some(entry) => describe(entry),
+                    None => format!("there is no client command .{name}; {}", self.usages()),
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use binary_codec::{ByteReader, ByteWriter, DecodeError};
+    use plugin_host::Argument;
+    use voxel_grid::{ChannelDefinition, ChannelIndex, GridLayout};
+
+    use super::*;
+    use crate::view::camera_at;
+
+    type Log = Arc<Mutex<Vec<String>>>;
+
+    fn note(log: &Log, text: impl Into<String>) {
+        log.lock().unwrap().push(text.into());
+    }
+
+    fn lines(log: &Log) -> Vec<String> {
+        log.lock().unwrap().clone()
+    }
+
+    fn id(text: &str) -> NamespacedId {
+        text.parse().unwrap()
+    }
+
+    /// A client plugin that is whatever a closure registers.
+    struct Scripted {
+        id: NamespacedId,
+        register: Box<dyn Fn(&mut ClientRegistrar<'_>) + Send>,
+    }
+
+    impl std::fmt::Debug for Scripted {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(formatter, "Scripted({})", self.id)
+        }
+    }
+
+    impl ClientPlugin for Scripted {
+        fn id(&self) -> NamespacedId {
+            self.id.clone()
+        }
+
+        fn register(&self, registrar: &mut ClientRegistrar<'_>) {
+            (self.register)(registrar);
+        }
+    }
+
+    fn plugin(
+        name: &str,
+        register: impl Fn(&mut ClientRegistrar<'_>) + Send + 'static,
+    ) -> Box<dyn ClientPlugin> {
+        Box::new(Scripted {
+            id: id(name),
+            register: Box::new(register),
+        })
+    }
+
+    /// A message that is exactly one number.
+    #[derive(Debug, PartialEq)]
+    struct Ping(u32);
+
+    impl Message for Ping {
+        fn kind() -> NamespacedId {
+            id("test:ping")
+        }
+        fn encode(&self) -> Vec<u8> {
+            let mut writer = ByteWriter::new();
+            writer.write_u32(self.0);
+            writer.into_bytes()
+        }
+        fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+            let mut reader = ByteReader::new(payload);
+            let number = reader.read_u32()?;
+            reader.finish()?;
+            Ok(Self(number))
+        }
+        fn samples() -> Vec<Self> {
+            vec![Self(0), Self(u32::MAX)]
+        }
+    }
+
+    /// A message whose decoder takes whatever follows the number.
+    #[derive(Debug, PartialEq)]
+    struct Sloppy(u32);
+
+    impl Message for Sloppy {
+        fn kind() -> NamespacedId {
+            id("test:sloppy")
+        }
+        fn encode(&self) -> Vec<u8> {
+            self.0.to_le_bytes().to_vec()
+        }
+        fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+            Ok(Self(ByteReader::new(payload).read_u32()?))
+        }
+        fn samples() -> Vec<Self> {
+            vec![Self(7)]
+        }
+    }
+
+    /// Runs `with` on a host made of these plugins, in a context of a player at rest, and returns what the
+    /// hooks asked the server for.
+    fn with_host<R>(
+        plugins: Vec<Box<dyn ClientPlugin>>,
+        with: impl FnOnce(&mut ClientHost, &mut ClientContext<'_>) -> R,
+    ) -> (R, Vec<Outgoing>) {
+        let camera = camera_at([0.0; 3], 0.0, 0.0, 3);
+        let table = BlockTable::of_cubes(&[false]);
+        let players = BTreeMap::new();
+        let mut settings = ClientSettings::new(0);
+        let mut host = ClientHost::new(&plugins).expect("the plugins register");
+        let mut context = ClientContext::new(SessionView {
+            camera: &camera,
+            block_table: &table,
+            players: &players,
+            settings: &mut settings,
+            target: None,
+            target_content: None,
+            tick: Tick::ZERO,
+            mode: Mode::Playing,
+            own_client: ClientId::new(1),
+        });
+        let result = with(&mut host, &mut context);
+        (result, context.into_outgoing())
+    }
+
+    fn registration_error(plugins: Vec<Box<dyn ClientPlugin>>) -> Option<ClientRegistrationError> {
+        ClientHost::new(&plugins).err()
+    }
+
+    #[test]
+    fn any_number_of_actions_may_be_on_one_key_and_all_run_in_order_of_plugin_then_registration() {
+        let log: Log = Arc::default();
+        let make = |name: &'static str, log: &Log| {
+            let log = Arc::clone(log);
+            plugin(name, move |registrar| {
+                for action in ["first", "second"] {
+                    let log = Arc::clone(&log);
+                    registrar.key(
+                        KeyCode::KeyF,
+                        ActionSpec::new(&format!("{name}_{action}"), "does something"),
+                        move |_| note(&log, format!("{name} {action}")),
+                    );
+                }
+            })
+        };
+        // Listed in the opposite order to their identifiers.
+        let mut plugins = vec![make("test_b:p", &log), make("test_a:p", &log)];
+        let other = Arc::clone(&log);
+        plugins.push(plugin("test_c:p", move |registrar| {
+            let other = Arc::clone(&other);
+            registrar.key(KeyCode::KeyG, ActionSpec::new("test_c:g", "g"), move |_| {
+                note(&other, "c on g");
+            });
+        }));
+        with_host(plugins, |host, context| {
+            host.press_key(KeyCode::KeyF, context);
+            host.press_key(KeyCode::KeyH, context);
+        });
+        assert_eq!(
+            lines(&log),
+            [
+                "test_a:p first",
+                "test_a:p second",
+                "test_b:p first",
+                "test_b:p second"
+            ]
+        );
+    }
+
+    #[test]
+    fn mouse_buttons_are_separate_from_keys_and_from_each_other() {
+        let log: Log = Arc::default();
+        let plugins = vec![plugin("test:p", {
+            let log = Arc::clone(&log);
+            move |registrar| {
+                for (button, action) in [
+                    (MouseButton::Primary, "test:left"),
+                    (MouseButton::Secondary, "test:right"),
+                ] {
+                    let log = Arc::clone(&log);
+                    registrar.mouse(button, ActionSpec::new(action, "clicks"), move |_| {
+                        note(&log, action);
+                    });
+                }
+            }
+        })];
+        with_host(plugins, |host, context| {
+            host.press_mouse(MouseButton::Secondary, context);
+            host.press_key(KeyCode::KeyF, context);
+            host.press_mouse(MouseButton::Primary, context);
+        });
+        assert_eq!(lines(&log), ["test:right", "test:left"]);
+    }
+
+    #[test]
+    fn two_actions_with_one_identifier_or_two_commands_with_one_name_are_refused() {
+        let action = |registrar: &mut ClientRegistrar<'_>| {
+            registrar.key(KeyCode::KeyF, ActionSpec::new("test:act", "acts"), |_| {});
+        };
+        assert_eq!(
+            registration_error(vec![plugin("test:a", action), plugin("test:b", action)]),
+            Some(ClientRegistrationError::DuplicateAction(id("test:act")))
+        );
+        let command = |registrar: &mut ClientRegistrar<'_>| {
+            registrar.command(CommandSpec::new("go", "goes").with_prefix('.'), |_, _| {
+                String::new()
+            });
+        };
+        assert_eq!(
+            registration_error(vec![plugin("test:a", command), plugin("test:b", command)]),
+            Some(ClientRegistrationError::DuplicateCommand("go".to_owned()))
+        );
+        // The shell's own commands are taken.
+        let ambient = |registrar: &mut ClientRegistrar<'_>| {
+            registrar.command(
+                CommandSpec::new("ambient", "mine").with_prefix('.'),
+                |_, _| String::new(),
+            );
+        };
+        assert_eq!(
+            registration_error(vec![plugin("test:a", ambient)]),
+            Some(ClientRegistrationError::DuplicateCommand(
+                "ambient".to_owned()
+            ))
+        );
+        let message = |registrar: &mut ClientRegistrar<'_>| registrar.on_message::<Ping>(|_| {});
+        assert_eq!(
+            registration_error(vec![plugin("test:a", message), plugin("test:b", message)]),
+            Some(ClientRegistrationError::DuplicateMessage(Ping::kind()))
+        );
+    }
+
+    #[test]
+    fn a_message_is_decoded_for_its_handler_and_a_payload_that_does_not_decode_is_counted() {
+        let log: Log = Arc::default();
+        let plugins = vec![plugin("test:p", {
+            let log = Arc::clone(&log);
+            move |registrar| {
+                let log = Arc::clone(&log);
+                registrar.on_message(move |Ping(number)| note(&log, format!("ping {number}")));
+            }
+        })];
+        with_host(plugins, |host, _| {
+            assert!(host.message(&Ping::kind(), &Ping(41).encode()));
+            assert!(host.message(&Ping::kind(), &[1, 2]));
+            assert!(host.message(&Ping::kind(), &[1, 0, 0, 0, 0]));
+            assert!(!host.message(&id("test:other"), &Ping(1).encode()));
+            assert_eq!(host.malformed_messages(), 2);
+        });
+        assert_eq!(lines(&log), ["ping 41"]);
+    }
+
+    #[test]
+    fn a_message_whose_codec_does_not_round_trip_is_refused_when_the_host_is_made() {
+        let error = registration_error(vec![plugin("test:p", |registrar| {
+            registrar.on_message::<Sloppy>(|_| {});
+        })]);
+        assert!(
+            matches!(&error, Some(ClientRegistrationError::BadMessage(text)) if text.contains("trailing byte")),
+            "{error:?}"
+        );
+    }
+
+    fn two_channels() -> (ChannelIndex, ChannelIndex) {
+        let layout = GridLayout::new(
+            ["blocks", "light"]
+                .iter()
+                .map(|name| ChannelDefinition::number(id(&format!("test:{name}")), 0))
+                .collect(),
+        )
+        .unwrap();
+        (
+            layout.channel_index(&id("test:blocks")).unwrap(),
+            layout.channel_index(&id("test:light")).unwrap(),
+        )
+    }
+
+    #[test]
+    fn the_view_is_what_each_plugin_made_of_what_the_one_before_made_in_order_of_plugin() {
+        let (blocks, light) = two_channels();
+        let plugins = vec![
+            plugin("test_b:p", |registrar| {
+                registrar.view(|mut channels| {
+                    channels.states = channels.light;
+                    channels
+                });
+            }),
+            plugin("test_a:p", move |registrar| {
+                registrar.view(move |mut channels| {
+                    channels.light = Some(light);
+                    channels
+                });
+            }),
+        ];
+        let base = ViewChannels::new(blocks, None, None);
+        let (made, _) = with_host(plugins, |host, _| host.view(base));
+        // test_a runs first and sets the light, then test_b copies the light to the states.
+        assert_eq!(made.light, Some(light));
+        assert_eq!(made.states, Some(light));
+    }
+
+    #[test]
+    fn hud_lines_are_joined_in_order_of_plugin_and_a_plugin_with_nothing_to_say_adds_nothing() {
+        let plugins = vec![
+            plugin("test_b:p", |registrar| {
+                registrar.hud_line(|context| Some(format!("tick {}", context.tick().get())));
+            }),
+            plugin("test_a:p", |registrar| {
+                registrar.hud_line(|_| Some("placing stone".to_owned()));
+                registrar.hud_line(|_| None);
+                registrar.hud_line(|_| Some(String::new()));
+            }),
+        ];
+        let (hud, _) = with_host(plugins, |host, context| host.hud(context));
+        assert_eq!(hud, "placing stone | tick 0");
+    }
+
+    #[test]
+    fn what_an_action_asks_of_the_server_is_collected_for_the_session_to_send() {
+        let plugins = vec![plugin("test:p", |registrar| {
+            registrar.key(
+                KeyCode::KeyF,
+                ActionSpec::new("test:fly", "flies"),
+                |context| {
+                    context.send_command("/fly");
+                    context.send_message(&Ping(5));
+                },
+            );
+        })];
+        let ((), outgoing) = with_host(plugins, |host, context| {
+            host.press_key(KeyCode::KeyF, context);
+        });
+        assert_eq!(
+            outgoing,
+            [
+                Outgoing::Command("/fly".to_owned()),
+                Outgoing::Message(Ping::kind(), Ping(5).encode())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_plugins_command_gets_typed_arguments_and_a_malformed_call_is_answered_with_the_usage() {
+        let plugins = vec![plugin("test:p", |registrar| {
+            registrar.command(
+                CommandSpec::new("pick", "picks a block")
+                    .with_prefix('.')
+                    .argument(Argument::integer("slot")),
+                |_, arguments| format!("picked {}", arguments.integer(0)),
+            );
+        })];
+        let (replies, _) = with_host(plugins, |host, context| {
+            [".pick 3", ".pick", ".pick x", ".pick 1 2", "pick 4"]
+                .map(|line| host.command(line, context))
+        });
+        assert_eq!(
+            replies,
+            [
+                "picked 3",
+                "usage: .pick SLOT",
+                "usage: .pick SLOT; SLOT must be a whole number",
+                "usage: .pick SLOT",
+                "picked 4"
+            ]
+        );
+    }
+
+    #[test]
+    fn keys_lists_every_action_with_where_it_is_and_what_it_does() {
+        let plugins = vec![plugin("test:p", |registrar| {
+            registrar.key(KeyCode::KeyF, ActionSpec::new("test:fly", "flies"), |_| {});
+            registrar.mouse(
+                MouseButton::Primary,
+                ActionSpec::new("test:hit", "hits"),
+                |_| {},
+            );
+        })];
+        let (keys, _) = with_host(plugins, |host, context| host.command(".keys", context));
+        assert_eq!(
+            keys,
+            "KeyF: flies (test:fly); Primary mouse button: hits (test:hit)"
+        );
+        let (none, _) = with_host(Vec::new(), |host, context| host.command(".keys", context));
+        assert_eq!(none, "this game has no actions on keys or mouse buttons");
+    }
+}

@@ -2,6 +2,8 @@
 
 mod common;
 
+use game_shell::client_plugin::MouseButton;
+
 use protocol::Message;
 
 use std::sync::{Arc, Mutex};
@@ -15,7 +17,7 @@ use game_shell::files::{open_world, record_connection, save_world};
 use game_shell::host::{HostSettings, ServerThread};
 use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
-use game_shell::{GameContent, GameDefinition, KeyCode};
+use game_shell::{GameContent, KeyCode};
 use transport::{Connection, ConnectionClosed};
 use voxel_space::VoxelCoordinate;
 use voxunami_cave::content::CaveContent;
@@ -612,11 +614,11 @@ fn the_shape_key_cycles_through_every_shape_and_placing_uses_the_one_chosen() {
     let mut rig = Rig::new();
     let mut player = player_above_ground(&mut rig);
     let hit = player.target().unwrap();
-    assert_eq!(Cave::status_text(&player), "placing stone (whole)");
+    assert_eq!(player.hud_text(), "placing stone (whole)");
 
-    Cave::key_pressed(&mut player, KeyCode::KeyR);
-    assert_eq!(Cave::status_text(&player), "placing stone (bottom slab)");
-    Cave::secondary_action(&mut player);
+    player.key_pressed(KeyCode::KeyR);
+    assert_eq!(player.hud_text(), "placing stone (bottom slab)");
+    player.mouse_pressed(MouseButton::Secondary);
     rig.settle(&mut [&mut player]);
     assert_eq!(
         server_block_and_state(&rig, hit.previous),
@@ -624,15 +626,15 @@ fn the_shape_key_cycles_through_every_shape_and_placing_uses_the_one_chosen() {
     );
 
     // Choosing another block keeps the shape; pressing the key enough times comes back to whole.
-    Cave::key_pressed(&mut player, KeyCode::Digit3);
-    assert_eq!(Cave::status_text(&player), "placing grass (bottom slab)");
-    Cave::key_pressed(&mut player, KeyCode::Digit4);
-    assert_eq!(Cave::status_text(&player), "placing lamp (bottom slab)");
-    Cave::key_pressed(&mut player, KeyCode::Digit3);
+    player.key_pressed(KeyCode::Digit3);
+    assert_eq!(player.hud_text(), "placing grass (bottom slab)");
+    player.key_pressed(KeyCode::Digit4);
+    assert_eq!(player.hud_text(), "placing lamp (bottom slab)");
+    player.key_pressed(KeyCode::Digit3);
     for _ in 1..base_blocks::SHAPE_NAMES.len() {
-        Cave::key_pressed(&mut player, KeyCode::KeyR);
+        player.key_pressed(KeyCode::KeyR);
     }
-    assert_eq!(Cave::status_text(&player), "placing grass (whole)");
+    assert_eq!(player.hud_text(), "placing grass (whole)");
 }
 
 /// Ticks the server `count` times.

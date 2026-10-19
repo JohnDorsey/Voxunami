@@ -8,7 +8,7 @@ use game_shell::GameContent;
 use game_shell::files::{open_world, save_world};
 use voxel_space::VoxelCoordinate;
 use voxunami_cave::content::CaveContent;
-use voxunami_cave::game::{place_block, request_block};
+use voxunami_cave::game::{light_scheme, place_block, request_block};
 use voxunami_cave::multiscale_light::{LightScheme, anchor_of, level_of_word, word_homes};
 
 /// The scales of the default scheme, 16 levels with cells up to 8.
@@ -236,7 +236,7 @@ fn cells_of_any_width_hold_their_light_in_every_brick_they_are_in_and_the_player
     );
     let scheme = LightScheme::new(8, &[1, 5, 17]).unwrap();
     assert_eq!(
-        builder.state.light_scheme,
+        light_scheme(&builder),
         Some(scheme),
         "the player is told how the light is cut"
     );

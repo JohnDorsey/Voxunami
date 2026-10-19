@@ -56,7 +56,6 @@ pub struct ExampleGame;
 
 impl GameDefinition for ExampleGame {
     type Content = ExampleContent;
-    type ClientState = ();
 
     fn id() -> NamespacedId {
         id("example:game")

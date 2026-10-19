@@ -1,27 +1,21 @@
 //! Voxunami 2048 as the shell runs it: what the player's clicks do.
 
+use game_shell::client_plugin::ClientPlugin;
 use game_shell::session::Session;
-use game_shell::{CameraStart, GameDefinition, KeyCode};
+use game_shell::{CameraStart, GameDefinition};
 use namespaced_id::NamespacedId;
 use player_presence::PlayersPlugin;
 use plugin_host::Plugin;
 use transport::Connection;
 use voxel_space::{FaceDirection, VoxelCoordinate};
+use world_view::RayHit;
 
+use crate::client::Client2048;
 use crate::content::{Content2048, game_id};
 use crate::logic::{Plugin2048, REACH};
 use crate::messages::{Progress, PushRequest};
-use crate::numbered_block::NumberedBlock;
 use crate::tool::Tool;
 use protocol::Message;
-
-/// What the 2048 client remembers: how the game has gone, as the server last said, and the tool
-/// the player has chosen.
-#[derive(Debug, Default)]
-pub struct ClientState2048 {
-    pub progress: Progress,
-    pub tool: Tool,
-}
 
 #[derive(Debug)]
 pub struct Game2048;
@@ -36,53 +30,54 @@ pub fn direction_between(from: VoxelCoordinate, to: VoxelCoordinate) -> Option<F
         .find(|direction| direction.offset() == step)
 }
 
+/// What a click on a block asks of the server: to push it away from the player (`pull` false) or toward
+/// them, with this tool. Nothing if there is no block under the crosshair.
+pub fn push_request(target: Option<RayHit>, tool: Tool, pull: bool) -> Option<PushRequest> {
+    let hit = target?;
+    let direction = if pull {
+        direction_between(hit.voxel, hit.previous)
+    } else {
+        direction_between(hit.previous, hit.voxel)
+    }?;
+    Some(PushRequest {
+        voxel: hit.voxel,
+        direction,
+        tool,
+    })
+}
+
+/// The tool the player has chosen in this session.
+pub fn chosen_tool<C: Connection>(session: &Session2048<C>) -> Tool {
+    session
+        .client_plugin::<Client2048>()
+        .map_or_else(Tool::default, Client2048::tool)
+}
+
+/// How the game has gone, as the server last said, in this session.
+pub fn progress<C: Connection>(session: &Session2048<C>) -> Progress {
+    session
+        .client_plugin::<Client2048>()
+        .map_or_else(Progress::default, Client2048::progress)
+}
+
+fn request_push<C: Connection>(session: &mut Session2048<C>, pull: bool) {
+    if let Some(request) = push_request(session.target(), chosen_tool(session), pull) {
+        session.send_game_message(PushRequest::kind(), request.encode());
+    }
+}
+
 /// Asks the server to push the block under the crosshair away from the player, with the chosen tool.
 pub fn push_with_tool<C: Connection>(session: &mut Session2048<C>) {
-    if let Some(hit) = session.target()
-        && let Some(direction) = direction_between(hit.previous, hit.voxel)
-    {
-        request_push(session, hit.voxel, direction);
-    }
+    request_push(session, false);
 }
 
 /// Asks the server to pull the block under the crosshair toward the player, with the chosen tool.
 pub fn pull_with_tool<C: Connection>(session: &mut Session2048<C>) {
-    if let Some(hit) = session.target()
-        && let Some(direction) = direction_between(hit.voxel, hit.previous)
-    {
-        request_push(session, hit.voxel, direction);
-    }
-}
-
-fn request_push<C: Connection>(
-    session: &mut Session2048<C>,
-    voxel: VoxelCoordinate,
-    direction: FaceDirection,
-) {
-    let tool = session.state.tool;
-    session.send_game_message(
-        PushRequest::kind(),
-        PushRequest {
-            voxel,
-            direction,
-            tool,
-        }
-        .encode(),
-    );
-}
-
-/// What a block is, in words: "spring ice 8".
-fn describe(block: NumberedBlock) -> String {
-    format!(
-        "{} {}",
-        block.material.name().replace('_', " "),
-        block.number()
-    )
+    request_push(session, true);
 }
 
 impl GameDefinition for Game2048 {
     type Content = Content2048;
-    type ClientState = ClientState2048;
 
     fn id() -> NamespacedId {
         game_id()
@@ -132,57 +127,14 @@ W A S D move, Space and Shift go up and down, Ctrl moves five times faster. Comm
         vec![Box::new(players), Box::new(rules)]
     }
 
-    fn handle_game_message(state: &mut ClientState2048, kind: &NamespacedId, payload: &[u8]) {
-        if *kind == Progress::kind()
-            && let Ok(progress) = Progress::decode(payload)
-        {
-            state.progress = progress;
-        }
-    }
-
-    fn key_pressed<C: Connection>(session: &mut Session2048<C>, key: KeyCode) {
-        match key {
-            KeyCode::Digit1 => session.state.tool = Tool::Double,
-            KeyCode::Digit2 => session.state.tool = Tool::Add,
-            KeyCode::Digit3 => session.state.tool = Tool::Subtract,
-            _ => {}
-        }
-    }
-
-    fn primary_action<C: Connection>(session: &mut Session2048<C>) {
-        push_with_tool(session);
-    }
-
-    fn secondary_action<C: Connection>(session: &mut Session2048<C>) {
-        pull_with_tool(session);
-    }
-
-    fn status_text<C: Connection>(session: &Session2048<C>) -> String {
-        let progress = &session.state.progress;
-        let largest = match progress.largest_merge {
-            0 => "-".to_owned(),
-            number => number.to_string(),
-        };
-        let looking_at = session
-            .target()
-            .and_then(|hit| {
-                let block = session.mesher().material_at(hit.voxel)?;
-                NumberedBlock::from_voxel(block, session.mesher().state_at(hit.voxel)?)
-            })
-            .map_or_else(|| "nothing".to_owned(), describe);
-        format!(
-            "tool {} | score {} | pushes {} | largest merge {largest} | looking at {looking_at}",
-            session.state.tool.name(),
-            progress.score,
-            progress.pushes
-        )
+    fn client_plugins(_content: &Content2048) -> Vec<Box<dyn ClientPlugin>> {
+        vec![Box::new(Client2048::default())]
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::material::Material;
 
     #[test]
     fn directions_between_neighbours_and_nothing_else() {
@@ -204,19 +156,6 @@ mod tests {
         assert_eq!(
             direction_between(origin, VoxelCoordinate::new(6, 6, 5)),
             None
-        );
-    }
-
-    #[test]
-    fn blocks_are_described_by_material_and_number() {
-        assert_eq!(describe(NumberedBlock::new(Material::Stone, 2)), "stone 2");
-        assert_eq!(
-            describe(NumberedBlock::new(Material::SpringIce, 32)),
-            "spring ice 32"
-        );
-        assert_eq!(
-            describe(NumberedBlock::new(Material::Ice, 3_000_000_001)),
-            "ice 3000000001"
         );
     }
 }

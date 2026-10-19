@@ -1,6 +1,6 @@
 # Phase 26 specification: the client interface and the light hook
 
-**Status: accepted 2026-10-18 with the default answers to questions 1, 2 and 4, and with question 3 decided differently by the owner (any number of actions per key or button, section 3). Being built.** It makes concrete the "client interface (Phase 26)" item of `plan.md` and
+**Status: accepted 2026-10-18 with the default answers to questions 1, 2 and 4, and with question 3 decided differently by the owner (any number of actions per key or button, section 3). Built (26a to 26d).** It makes concrete the "client interface (Phase 26)" item of `plan.md` and
 requirement 7 of "Requirements pulled forward". What I say about today's code was read from the code (verified); the design is my proposal
 (believed). Two independent parts: A closes a rule violation (the engine knows Cave's light), B gives plugins the client hooks.
 
