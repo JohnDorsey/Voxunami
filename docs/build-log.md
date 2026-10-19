@@ -658,6 +658,21 @@ Phase 27a to 27c (entities; specified in `entities-spec.md`):
 - 27c: protocol version 3 (messages 9 to 11), server replication with cached views, the client store, replay of entities, version policy.
   Cost with 1000 entities and 4 clients: 0.5, 0.7 and 1.4 ms a tick with none, a tenth and all moving. 13 mutations are caught.
 
+Phase 27f (players become entities):
+- `engine:hidden` (entities crate) and its filter in replication. The `player_presence` crate: the kind `player_presence:player` and its
+  components (key, connection, look), `Presence` replacing `PoseBook` (calls take the world; reads take `WorldData`), the plugin taking over a
+  saved entity at `PlayerJoined` and hiding it at `PlayerLeft`, `LevelChange` at a rejoin in another level. `Presence::players` is a Vec.
+- Clients: the session builds its players map from the player entities it was told of (a recording with the old `Players` message still uses it);
+  the three games' server code and Cave's movement (a returning player resumes where they were) changed to the new calls.
+- Behaviour that changed on purpose: a client knows only the players in the region it watches (Cave's level test said two, now one); a test that
+  steps a session without asking for its view never learns its own place (a window asks every frame), so the walking test asks once.
+- Goldens repinned once, with the cause in each file: the `Players` messages are gone, entity messages are in, the saved worlds hold their players,
+  and 2048's and Eels's scripts now ask for their view each tick, as Cave's did. Checked by what the streams hold (kinds and counts of entity
+  messages), since no old-code control gives the same stream.
+- Tests: 12 for presence and levels (entities, key kept home, hidden when away, rejoin resumes, another key does not, level before the first pose,
+  rejoin tells the level), the hidden flag, a Cave rejoin test, old-recording and wrong-kind tests. 20 mutations of this step are caught (three
+  survivors each needed a test: the look on later poses, the old-stream guard, the kind filter).
+
 Phase 27e (a keypair per install):
 - The `identity` crate: Ed25519 (`ed25519-dalek`), `Identity` (generate, load or create a key file, prove, hello, answer a challenge), `verify`
   (strict), `ChallengeSource` (operating system randomness, or a counter for tests). The key file is 32 raw bytes, mode 0600 on Unix, and is

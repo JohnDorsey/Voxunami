@@ -1,0 +1,359 @@
+use std::collections::BTreeMap;
+
+use entities::{ComponentBag, Entity, EntityError, EntityKindSpec, Hidden};
+use namespaced_id::NamespacedId;
+use protocol::{ClientId, EntityId, Message, PlayerKey};
+use server::{Audience, CommandLine, ServerWorld};
+use voxel_space::{EntityPose, GridId, LevelIndex, Orientation};
+use world_storage::WorldData;
+
+use crate::messages::{
+    LevelChange, PlayerClient, PlayerKeyComponent, PlayerLook, PlayerPose, PoseReport,
+};
+
+/// The kind of entity a player is.
+pub fn player_kind() -> NamespacedId {
+    "player_presence:player"
+        .parse()
+        .expect("constant identifier is valid")
+}
+
+/// What a player entity is made of. The game registers it (the `PlayersPlugin` does): the key stays on
+/// the server, the connection's number and the look angles are told to clients, and the hidden flag is how
+/// a player who is away stays in the world without being seen.
+pub fn player_kind_spec() -> EntityKindSpec {
+    EntityKindSpec::new(player_kind().as_str())
+        .component(PlayerKeyComponent(PlayerKey::new([0; 32])), false)
+        .component(PlayerClient(ClientId::new(0)), true)
+        .component(
+            PlayerLook {
+                yaw: 0.0,
+                pitch: 0.0,
+            },
+            true,
+        )
+        .component(Hidden(false), false)
+}
+
+/// Which entity is which connected player, and the calls that read and move players through them.
+///
+/// A player is an entity of the world (see [`player_kind`]); this holds only the table from connection
+/// to entity, and a level asked for before a player has an entity. A game's rules hold one (shared, see
+/// `SharedPresence`) and pass the world to each call.
+#[derive(Debug, Default)]
+pub struct Presence {
+    entities: BTreeMap<ClientId, EntityId>,
+    /// Only players who have asked to move before their first pose; everyone else is in the main level.
+    pending_levels: BTreeMap<ClientId, LevelIndex>,
+}
+
+impl Presence {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A player has connected: if the world holds the player entity of their key from before, they take it
+    /// over (it is shown again where it was); otherwise they get one when their first pose arrives.
+    pub fn client_joined(&mut self, client: ClientId, world: &mut ServerWorld) {
+        let Some(key) = world.player_key(client) else {
+            return;
+        };
+        let kind = player_kind();
+        let saved = world
+            .entities()
+            .iter()
+            .find(|entity| {
+                entity.kind == kind
+                    && entity.components.get::<PlayerKeyComponent>()
+                        == Ok(Some(PlayerKeyComponent(key)))
+            })
+            .map(|entity| entity.id);
+        let Some(id) = saved else {
+            return;
+        };
+        self.entities.insert(client, id);
+        update(world, id, |world, id| {
+            world.set_entity_component(id, &PlayerClient(client))?;
+            world.set_entity_component(id, &Hidden(false))
+        });
+        // A player who left in another level is back in it, and their client does not know.
+        let level = self.level_of(world.data(), client);
+        if level != LevelIndex::MAIN
+            && let Some(level_id) = world.data().level_id(level)
+        {
+            let level_id = level_id.clone();
+            world.send(
+                Audience::Client(client),
+                LevelChange::kind(),
+                LevelChange(level_id).encode(),
+            );
+        }
+    }
+
+    /// A player has gone: their entity stays in the world, and in the save, out of sight.
+    pub fn client_left(&mut self, client: ClientId, world: &mut ServerWorld) {
+        self.pending_levels.remove(&client);
+        if let Some(id) = self.entities.remove(&client) {
+            update(world, id, |world, id| {
+                world.set_entity_component(id, &Hidden(true))
+            });
+        }
+    }
+
+    /// The last pose the player reported, if they have one.
+    pub fn pose_of(&self, world: &WorldData, client: ClientId) -> Option<PlayerPose> {
+        let entity = world.entities().get(*self.entities.get(&client)?)?;
+        Some(player_pose(entity))
+    }
+
+    /// The level the player is in: the main level until they move.
+    pub fn level_of(&self, world: &WorldData, client: ClientId) -> LevelIndex {
+        self.entities
+            .get(&client)
+            .and_then(|id| world.entities().get(*id))
+            .and_then(|entity| entity.pose.grid.root_level())
+            .or_else(|| self.pending_levels.get(&client).copied())
+            .unwrap_or(LevelIndex::MAIN)
+    }
+
+    /// Puts a player at a pose, in the level they are in. For a game that moves players itself instead of
+    /// taking their word for where they are (see [`Presence::handle_message`]). The first pose a player
+    /// has makes their entity, unless they took over one that was saved.
+    pub fn set_pose(&mut self, world: &mut ServerWorld, client: ClientId, pose: PlayerPose) {
+        let level = self.level_of(world.data(), client);
+        let entity_pose = EntityPose::new(
+            GridId::root(level),
+            pose.position,
+            Orientation::from_yaw_pitch(pose.yaw, pose.pitch),
+        );
+        let look = PlayerLook {
+            yaw: pose.yaw,
+            pitch: pose.pitch,
+        };
+        match self.entities.get(&client).copied() {
+            Some(id) => {
+                let unchanged = world.entities().get(id).is_some_and(|entity| {
+                    entity.pose == entity_pose && player_pose(entity) == pose
+                });
+                if unchanged {
+                    return;
+                }
+                update(world, id, |world, id| {
+                    world.set_entity_pose(id, entity_pose)?;
+                    world.set_entity_component(id, &look)
+                });
+            }
+            None => {
+                let Some(key) = world.player_key(client) else {
+                    return; // not a connected client: nothing to make a player of
+                };
+                let mut components = ComponentBag::new();
+                components.set(&PlayerKeyComponent(key));
+                components.set(&PlayerClient(client));
+                components.set(&look);
+                match world.spawn_entity(&player_kind(), entity_pose, components) {
+                    Ok(id) => {
+                        self.pending_levels.remove(&client);
+                        self.entities.insert(client, id);
+                    }
+                    Err(error) => panic!("the player kind is not registered: {error}"),
+                }
+            }
+        }
+    }
+
+    /// Puts a player in a level and tells them so. A game calls this to move players itself (a portal, a
+    /// teleport); the `/level go` command is built on it.
+    pub fn move_to_level(&mut self, client: ClientId, level: LevelIndex, world: &mut ServerWorld) {
+        let Some(id) = world.data().level_id(level) else {
+            return; // not a level of this world: nowhere to go
+        };
+        let id = id.clone();
+        match self.entities.get(&client).copied() {
+            Some(entity) => {
+                let Some(mut pose) = world.entities().get(entity).map(|entity| entity.pose) else {
+                    return;
+                };
+                pose.grid = GridId::root(level);
+                update(world, entity, |world, entity| {
+                    world.set_entity_pose(entity, pose)
+                });
+            }
+            None => {
+                self.pending_levels.insert(client, level);
+            }
+        }
+        world.send(
+            Audience::Client(client),
+            LevelChange::kind(),
+            LevelChange(id).encode(),
+        );
+    }
+
+    /// Every connected player who has a pose, in the order of their connections, with the pose and the
+    /// level they are in.
+    pub fn players(&self, world: &WorldData) -> Vec<(ClientId, PlayerPose, LevelIndex)> {
+        self.entities
+            .iter()
+            .filter_map(|(&client, &id)| {
+                let entity = world.entities().get(id)?;
+                Some((
+                    client,
+                    player_pose(entity),
+                    entity.pose.grid.root_level().unwrap_or(LevelIndex::MAIN),
+                ))
+            })
+            .collect()
+    }
+
+    /// The entity that is this connection's player, if they have one.
+    pub fn entity_of(&self, client: ClientId) -> Option<EntityId> {
+        self.entities.get(&client).copied()
+    }
+
+    /// How many connected players have a pose.
+    pub fn len(&self) -> usize {
+        self.entities.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entities.is_empty()
+    }
+
+    /// Takes in a pose message. Returns whether the message was one (a malformed pose counts: it is
+    /// dropped), so a game can pass on what is not.
+    pub fn handle_message(
+        &mut self,
+        world: &mut ServerWorld,
+        client: ClientId,
+        kind: &NamespacedId,
+        payload: &[u8],
+    ) -> bool {
+        if *kind != PoseReport::kind() {
+            return false;
+        }
+        if let Ok(PoseReport(pose)) = PoseReport::decode(payload) {
+            self.set_pose(world, client, pose);
+        }
+        true
+    }
+
+    /// Takes in the `/level` command, which tells a player which level they are in and moves them:
+    /// `/level` (where am I), `/level list`, `/level go NAME`, where NAME is a level's identifier
+    /// or just the part after the colon. Replies to the player. Returns whether the command was
+    /// one, so a game can pass on what is not.
+    pub fn handle_command(
+        &mut self,
+        client: ClientId,
+        command: &str,
+        world: &mut ServerWorld,
+    ) -> bool {
+        let Some(line) = CommandLine::parse(command) else {
+            return false;
+        };
+        if line.name != "level" {
+            return false;
+        }
+        self.level_command(client, &line.arguments, world);
+        true
+    }
+
+    /// The `/level` command, given the words after its name: see [`Presence::handle_command`].
+    pub fn level_command(&mut self, client: ClientId, arguments: &[&str], world: &mut ServerWorld) {
+        let here = self.level_of(world.data(), client);
+        let name_of = |world: &ServerWorld, level: LevelIndex| {
+            world
+                .data()
+                .level_id(level)
+                .map_or_else(|| level.to_string(), ToString::to_string)
+        };
+        match arguments {
+            [] => {
+                let text = format!("you are in {}", name_of(world, here));
+                world.reply(client, &text);
+            }
+            ["list"] => {
+                let levels: Vec<String> = world
+                    .data()
+                    .levels()
+                    .map(|(level, id, _)| {
+                        if level == here {
+                            format!("{id} (you are here)")
+                        } else {
+                            id.to_string()
+                        }
+                    })
+                    .collect();
+                world.reply(client, &format!("levels: {}", levels.join(", ")));
+            }
+            ["go", wanted] => match find_level(world, wanted) {
+                Ok(level) if level == here => {
+                    let text = format!("you are already in {}", name_of(world, level));
+                    world.reply(client, &text);
+                }
+                Ok(level) => {
+                    self.move_to_level(client, level, world);
+                    let text = format!("you are now in {}", name_of(world, level));
+                    world.reply(client, &text);
+                }
+                Err(problem) => world.reply(client, &problem),
+            },
+            _ => world.reply(client, "usage: /level, /level list, /level go NAME"),
+        }
+    }
+}
+
+/// Runs an edit of a player's entity. The entity is one the table made or found, so an edit that fails is a
+/// mistake in the game's catalog (a kind without a component), which is loud.
+fn update(
+    world: &mut ServerWorld,
+    id: EntityId,
+    edit: impl FnOnce(&mut ServerWorld, EntityId) -> Result<(), EntityError>,
+) {
+    if let Err(error) = edit(world, id) {
+        panic!("a player entity cannot be updated: {error}");
+    }
+}
+
+/// A player entity's pose as the games think of it: where, and the angles the player reported.
+fn player_pose(entity: &Entity) -> PlayerPose {
+    let look = entity
+        .components
+        .get::<PlayerLook>()
+        .ok()
+        .flatten()
+        .unwrap_or(PlayerLook {
+            yaw: 0.0,
+            pitch: 0.0,
+        });
+    PlayerPose {
+        position: entity.pose.position,
+        yaw: look.yaw,
+        pitch: look.pitch,
+    }
+}
+
+/// The level a player asked for by name: an identifier, or the part after the colon if only one
+/// level has it.
+fn find_level(world: &ServerWorld, wanted: &str) -> Result<LevelIndex, String> {
+    if let Ok(id) = wanted.parse::<NamespacedId>()
+        && let Some(level) = world.level_index(&id)
+    {
+        return Ok(level);
+    }
+    let matching: Vec<LevelIndex> = world
+        .data()
+        .levels()
+        .filter(|(_, id, _)| id.name() == wanted)
+        .map(|(level, _, _)| level)
+        .collect();
+    match matching[..] {
+        [level] => Ok(level),
+        [] => Err(format!(
+            "there is no level {wanted}; /level list shows them"
+        )),
+        _ => Err(format!(
+            "{wanted} could mean several levels; use the whole name"
+        )),
+    }
+}

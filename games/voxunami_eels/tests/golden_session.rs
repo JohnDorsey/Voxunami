@@ -49,6 +49,9 @@ fn ticks(server: &mut server::Server, players: &mut [&mut Player], count: u32) {
         server.step();
         for player in players.iter_mut() {
             player.advance().unwrap();
+            // The players watch what is around where they are, as the window does every frame (and so are told
+            // of the players there).
+            let _ = player.update_view();
         }
     }
 }
@@ -175,8 +178,8 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// protocol version (4, was 3) and the challenge, and because a join takes a tick longer, so the game has run a tick more
 /// when the player arrives. Checked, not assumed: the old code with an idle server tick before each join, and this stream
 /// with the challenge taken out and the welcome's version set back to 3, give the same hash (and the saved world is the same).
-const PINNED: (u64, usize, u64) = (
-    18_145_714_062_413_624_097,
-    35_506,
-    7_844_908_670_161_894_155,
-);
+/// Phase 27f: players are entities. The stream no longer has the `Players` message (every player's pose, told to everyone every
+/// tick whatever they watched); it has the entity messages for the players in the region the client watches (so the scripts
+/// now ask for their view each tick, as a window does, which Cave's already did), and the saved world holds its players.
+/// Checked by what the stream holds, not by a control run: two players spawned, one despawned when the script has them leave, 265 changes of pose or look.
+const PINNED: (u64, usize, u64) = (4_850_972_369_860_158_502, 70_676, 8_773_268_700_699_771_296);

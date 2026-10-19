@@ -10,7 +10,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use namespaced_id::NamespacedId;
-use player_presence::{PoseBook, SharedPoseBook};
+use player_presence::{Presence, SharedPresence};
 use plugin_host::{HandlerSpec, Phase, PlayerJoined, Plugin, Registrar, SaveScope, SystemSpec};
 use protocol::{ClientId, Message};
 use server::{Audience, ServerWorld};
@@ -109,15 +109,15 @@ impl Logic2048 {
         client: ClientId,
         request: PushRequest,
         world: &mut ServerWorld,
-        poses: &PoseBook,
+        presence: &Presence,
     ) {
-        let Some(pose) = poses.pose_of(client) else {
+        let Some(pose) = presence.pose_of(world.data(), client) else {
             return; // a player who has not said where they are
         };
         if pose.distance_to_voxel(request.voxel) > REACH {
             return;
         }
-        let level = poses.level_of(client);
+        let level = presence.level_of(world.data(), client);
         let mut field = WorldField {
             world,
             block_channel: self.block_channel,
@@ -197,11 +197,11 @@ impl Logic2048 {
 pub struct Plugin2048 {
     block_channel: ChannelIndex,
     number_channel: ChannelIndex,
-    players: SharedPoseBook,
+    players: SharedPresence,
 }
 
 impl Plugin2048 {
-    pub fn new(content: &Content2048, players: SharedPoseBook) -> Self {
+    pub fn new(content: &Content2048, players: SharedPresence) -> Self {
         Self {
             block_channel: content.block_channel(),
             number_channel: content.number_channel(),
@@ -234,8 +234,8 @@ impl Plugin for Plugin2048 {
         let rules = Arc::clone(&state);
         let players = Arc::clone(&self.players);
         registrar.message(move |context, client, request: PushRequest| {
-            let book = player_presence::lock(&players);
-            lock_rules(&rules).push(client, request, context.world(), &book);
+            let presence = player_presence::lock(&players);
+            lock_rules(&rules).push(client, request, context.world(), &presence);
         });
         registrar.declares_message::<Progress>();
         let rules = Arc::clone(&state);

@@ -175,4 +175,4 @@ guarantees.
 - Only full-detail bricks are sent. Distant terrain (LOD) will need interest regions with a level of detail, and a new
   protocol version.
 - A recorder that wants to see the whole action (not one player's view) connects as a spectator with a large region.
-- Players and structures are not entities yet (Phase 27f and Phase 32); games still replicate players with game messages.
+- Players are entities since Phase 27f (a client knows those in the region it watches); structures will be in Phase 32. The `Players` game message of earlier versions is still read, never sent.

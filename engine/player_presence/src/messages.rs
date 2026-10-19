@@ -2,7 +2,7 @@
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
-use protocol::{ClientId, Message};
+use protocol::{ClientId, Message, PlayerKey};
 use voxel_space::{BRICK_EDGE_LENGTH, BrickCoordinate, LevelIndex, VoxelCoordinate, WorldPosition};
 
 fn kind(text: &str) -> NamespacedId {
@@ -147,7 +147,9 @@ impl Message for LevelChange {
     }
 }
 
-/// Server to everyone: every player's state, in client id order.
+/// Server to everyone: every player's state, in client id order. Sent before protocol version 4; since then
+/// players are entities (see `PlayerKeyComponent` and the rest below), and this is read only so that
+/// recordings made before still show their players.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Players(pub Vec<(ClientId, PlayerState)>);
 
@@ -203,6 +205,112 @@ impl Message for Players {
                     },
                 ),
             ]),
+        ]
+    }
+}
+
+/// A player entity's component: the public key of the install that plays it. Only the server has it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlayerKeyComponent(pub PlayerKey);
+
+impl Message for PlayerKeyComponent {
+    fn kind() -> NamespacedId {
+        kind("player_presence:key")
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        writer.write_raw(self.0.bytes());
+        writer.into_bytes()
+    }
+
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        let mut reader = ByteReader::new(payload);
+        let bytes: [u8; 32] = reader
+            .read_raw(32)?
+            .try_into()
+            .expect("read_raw gave 32 bytes");
+        reader.finish()?;
+        Ok(Self(PlayerKey::new(bytes)))
+    }
+
+    fn samples() -> Vec<Self> {
+        vec![
+            Self(PlayerKey::new([0; 32])),
+            Self(PlayerKey::new([0xA5; 32])),
+        ]
+    }
+}
+
+/// A player entity's component: the number of the connection that plays it, which is how a client tells
+/// which entity is which player. The number of the last connection if the player is away.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlayerClient(pub ClientId);
+
+impl Message for PlayerClient {
+    fn kind() -> NamespacedId {
+        kind("player_presence:client")
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        writer.write_u32(self.0.get());
+        writer.into_bytes()
+    }
+
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        let mut reader = ByteReader::new(payload);
+        let client = ClientId::new(reader.read_u32()?);
+        reader.finish()?;
+        Ok(Self(client))
+    }
+
+    fn samples() -> Vec<Self> {
+        vec![Self(ClientId::new(1)), Self(ClientId::new(70_000))]
+    }
+}
+
+/// A player entity's component: which way the player looks, as the angles they reported (the entity's
+/// orientation is the same turn as a quaternion; the angles are kept so that nothing recovers them from it).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayerLook {
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+impl Message for PlayerLook {
+    fn kind() -> NamespacedId {
+        kind("player_presence:look")
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        writer.write_u32(self.yaw.to_bits());
+        writer.write_u32(self.pitch.to_bits());
+        writer.into_bytes()
+    }
+
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        let mut reader = ByteReader::new(payload);
+        let yaw = f32::from_bits(reader.read_u32()?);
+        let pitch = f32::from_bits(reader.read_u32()?);
+        reader.finish()?;
+        if !yaw.is_finite() || !pitch.is_finite() {
+            return Err(DecodeError::Invalid("a view angle is not a number"));
+        }
+        Ok(Self { yaw, pitch })
+    }
+
+    fn samples() -> Vec<Self> {
+        vec![
+            Self {
+                yaw: 0.0,
+                pitch: 0.0,
+            },
+            Self {
+                yaw: -3.0,
+                pitch: 1.5,
+            },
         ]
     }
 }
@@ -271,6 +379,9 @@ mod tests {
         assert_eq!(protocol::check_message::<PoseReport>(), Ok(()));
         assert_eq!(protocol::check_message::<LevelChange>(), Ok(()));
         assert_eq!(protocol::check_message::<Players>(), Ok(()));
+        assert_eq!(protocol::check_message::<PlayerKeyComponent>(), Ok(()));
+        assert_eq!(protocol::check_message::<PlayerClient>(), Ok(()));
+        assert_eq!(protocol::check_message::<PlayerLook>(), Ok(()));
     }
 
     #[test]
@@ -340,6 +451,9 @@ mod tests {
             let _ = PoseReport::decode(&bytes);
             let _ = Players::decode(&bytes);
             let _ = LevelChange::decode(&bytes);
+            let _ = PlayerKeyComponent::decode(&bytes);
+            let _ = PlayerClient::decode(&bytes);
+            let _ = PlayerLook::decode(&bytes);
         }
     }
 }

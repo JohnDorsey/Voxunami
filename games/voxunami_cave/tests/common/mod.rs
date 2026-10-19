@@ -84,9 +84,22 @@ impl Rig {
         yaw: f32,
         pitch: f32,
     ) -> Player {
-        let start = camera_at(position, yaw, pitch, VIEW_RADIUS);
         self.joined += 1;
-        let identity = Identity::from_secret([self.joined; 32]);
+        self.join_as(connection, self.joined, position, yaw, pitch)
+    }
+
+    /// A player who is the install numbered `who` (the same number is the same player, as a key file is),
+    /// at `position` if the server has no earlier place for them.
+    pub fn join_as(
+        &mut self,
+        connection: Box<dyn Connection>,
+        who: u8,
+        position: [f64; 3],
+        yaw: f32,
+        pitch: f32,
+    ) -> Player {
+        let start = camera_at(position, yaw, pitch, VIEW_RADIUS);
+        let identity = Identity::from_secret([who; 32]);
         let server = &mut self.server;
         let mut player = Session::<_, Cave>::connect(
             connection,

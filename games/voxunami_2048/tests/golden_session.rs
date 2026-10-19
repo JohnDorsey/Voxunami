@@ -75,6 +75,9 @@ fn ticks(server: &mut server::Server, player: &mut Player, count: usize) {
     for _ in 0..count {
         server.step();
         player.advance().unwrap();
+        // The player watches what is around where they are, as the window does every frame (and so is told of
+        // the players there, themselves among them).
+        let _ = player.update_view();
     }
 }
 
@@ -260,4 +263,12 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// protocol version (4, was 3) and the challenge, and because a join takes a tick longer, so the game has run a tick more
 /// when the player arrives. Checked, not assumed: the old code with an idle server tick before each join, and this stream
 /// with the challenge taken out and the welcome's version set back to 3, give the same hash (and the saved world is the same).
-const PINNED: (u64, usize, u64) = (5_695_251_043_454_795_992, 4_036, 1_379_750_969_377_606_339);
+/// Phase 27f: players are entities. The stream no longer has the `Players` message (every player's pose, told to everyone every
+/// tick whatever they watched); it has the entity messages for the players in the region the client watches (so the scripts
+/// now ask for their view each tick, as a window does, which Cave's already did), and the saved world holds its players.
+/// Checked by what the stream holds, not by a control run: one player spawned once, three bricks, 55 edits, five scores.
+const PINNED: (u64, usize, u64) = (
+    8_248_868_001_711_795_589,
+    55_386,
+    12_477_630_180_508_358_221,
+);

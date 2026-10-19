@@ -23,12 +23,12 @@ pub use movement::MovementPlugin;
 pub fn cave_plugins(content: &CaveContent) -> Vec<Box<dyn Plugin>> {
     // The server moves the players, so what a client says about where it is is not believed.
     let players = PlayersPlugin::new(false);
-    let book = players.book();
+    let presence = players.presence();
     vec![
         Box::new(players),
-        Box::new(BlockEditingPlugin::new(content, book.clone())),
-        Box::new(MovementPlugin::new(content, book.clone())),
-        Box::new(FirePlugin::new(content, book)),
+        Box::new(BlockEditingPlugin::new(content, presence.clone())),
+        Box::new(MovementPlugin::new(content, presence.clone())),
+        Box::new(FirePlugin::new(content, presence)),
         Box::new(LightPlugin::new(content)),
     ]
 }

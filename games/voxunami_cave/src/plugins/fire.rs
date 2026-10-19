@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use game_shell::GameContent;
 use namespaced_id::NamespacedId;
-use player_presence::{SharedPoseBook, lock};
+use player_presence::{SharedPresence, lock};
 use plugin_host::{HandlerSpec, Phase, Plugin, Registrar, SaveScope, SystemSpec};
 use server::GridView;
 
@@ -22,11 +22,11 @@ pub struct FirePlugin {
     table: block_models::BlockTable,
     fire_block: u32,
     air_block: u32,
-    players: SharedPoseBook,
+    players: SharedPresence,
 }
 
 impl FirePlugin {
-    pub fn new(content: &CaveContent, players: SharedPoseBook) -> Self {
+    pub fn new(content: &CaveContent, players: SharedPresence) -> Self {
         Self {
             channels: CaveChannels::of(content),
             table: content.block_table(),
@@ -100,15 +100,15 @@ impl Plugin for FirePlugin {
             SystemSpec::new("voxunami_cave:burn", Phase::Rules)
                 .writes(&[self.channels.block, self.channels.state]),
             move |context| {
-                let book = lock(&players);
+                let players_now = lock(&players).players(context.world().data());
                 let _ = locked(&burner).step(
                     &mut WorldFire {
                         context,
                         channels: &channels,
                     },
                     |grid, at| {
-                        book.players().any(|(_, pose, player_level)| {
-                            Some(player_level) == grid.root_level()
+                        players_now.iter().any(|(_, pose, player_level)| {
+                            Some(*player_level) == grid.root_level()
                                 && pose.distance_to_voxel(at) <= FIRE_RANGE
                         })
                     },

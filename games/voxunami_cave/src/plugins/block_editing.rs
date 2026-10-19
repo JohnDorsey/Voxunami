@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use block_models::BlockTable;
 use game_shell::GameContent;
 use namespaced_id::NamespacedId;
-use player_presence::{SharedPoseBook, lock};
+use player_presence::{SharedPresence, lock};
 use plugin_host::{Event, Plugin, Registrar, Verdict};
 use protocol::ClientId;
 use server::GridView;
@@ -43,11 +43,11 @@ pub struct BlockEditingPlugin {
     table: BlockTable,
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
-    players: SharedPoseBook,
+    players: SharedPresence,
 }
 
 impl BlockEditingPlugin {
-    pub fn new(content: &CaveContent, players: SharedPoseBook) -> Self {
+    pub fn new(content: &CaveContent, players: SharedPresence) -> Self {
         let registries = content.registries();
         let blocks = registries[0].1;
         let block_ids = (0..blocks.entry_count() as u32)
@@ -86,8 +86,12 @@ impl Plugin for BlockEditingPlugin {
         let players = std::sync::Arc::clone(&self.players);
         registrar.message(move |context, client, request: SetBlock| {
             let (pose, level) = {
-                let book = lock(&players);
-                (book.pose_of(client).copied(), book.level_of(client))
+                let presence = lock(&players);
+                let world = context.world().data();
+                (
+                    presence.pose_of(world, client),
+                    presence.level_of(world, client),
+                )
             };
             let (Some(pose), Some(&raw)) = (pose, block_ids.get(&request.block)) else {
                 return; // a player who has not said where they are, or a block this server lacks

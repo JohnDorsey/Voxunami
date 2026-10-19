@@ -1,6 +1,6 @@
 # Phase 27 specification: entities, items and inventories
 
-**Status: accepted 2026-10-18 with the default answers to all five questions (pause after 27d; players become entities now with a persistent player key; Cave creative by default with `/gamemode survival` per world; no mob; orientation a quaternion). Being built (27a to 27e done: the keypair identity).** It makes concrete requirement 8, 15 and 16 of `plan.md` ("Requirements pulled
+**Status: accepted 2026-10-18 with the default answers to all five questions (pause after 27d; players become entities now with a persistent player key; Cave creative by default with `/gamemode survival` per world; no mob; orientation a quaternion). Being built (27a to 27f done: the keypair identity, players as entities).** It makes concrete requirement 8, 15 and 16 of `plan.md` ("Requirements pulled
 forward") and the "Entities and items (Phase 27)" improvement, after option B of `plugin-architecture-review.md` W7 (server-owned entities,
 typed components from the property machinery, no ECS). What I say about today's code was read from the code (verified); the design is
 my proposal (believed). It is the biggest phase so far, so section 4 splits it at a point where you can stop and look.
@@ -99,11 +99,20 @@ not secrecy.
 
 ### 2.7b Players become entities
 
-A player is an entity of kind `engine:player` whose components are the key, the inventory, the last pose and which level they are in. The server
-finds the saved player entity with the connecting key, or makes one; when the connection ends, the entity is kept in the save and stops being
-replicated (it is kept out of interest until the key connects again). `PoseBook` and the `Players` message are replaced by the entity store; the
-`PoseReport` the client sends stays (it is input). This touches all three games' presence, Cave's movement, and `session.rs`, and changes every
-golden stream (they are repinned once, for that reason, as in Phase 25).
+A player is an entity of kind `player_presence:player` (the crate that owns presence owns the kind, as it owns the `player_presence:pose`
+message). Its pose is the entity's pose: the root grid is the level, the orientation is the quaternion of the look angles. Components:
+`player_presence:key` (the public key; server only), `player_presence:client` (the connection's number, replicated, so a client can tell which
+entity is whom), `player_presence:look` (yaw and pitch exactly as reported, replicated, so games and avatars do not recover angles from a
+quaternion) and `engine:hidden` (an engine component: an entity that has it set is saved and kept but never replicated).
+
+The server finds the saved player entity with the connecting key and takes it over, or makes one when the first pose arrives (as today a
+player is not listed before they have one); when the connection ends the entity is set hidden and kept in the save. `PoseBook` is replaced
+by `Presence`, which holds only which entity is which client, and whose calls take the world (`pose_of`, `set_pose`, `level_of`, `players`,
+`move_to_level`, the `/level` command); games lock it as they locked the book. The `Players` message is no longer sent. Clients build the
+same map of players (`PlayerState`, by client) from the entities they are told of, so client plugins and games' views do not change; since
+entities are replicated by interest, a client now knows of the players in the region it watches, not all of them. A recording made before
+version 4 still shows its players: the session reads the old `Players` message when the stream's version is older. `PoseReport` stays (it is
+input). Saved worlds now hold their players: the golden sessions' saved-world hashes change as well as their streams, and are repinned once.
 
 ### 2.8 The prompt facility (requirement 15)
 

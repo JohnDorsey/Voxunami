@@ -42,6 +42,7 @@ pub struct ScriptedLogic {
     on_tick: Option<TickAction>,
     on_message: Option<MessageAction>,
     on_join: Option<ClientAction>,
+    on_leave: Option<ClientAction>,
     on_command: Option<CommandAction>,
     saved_sections: Vec<Section>,
     catalog: Arc<EntityCatalog>,
@@ -77,6 +78,15 @@ impl ScriptedLogic {
         action: impl FnMut(ClientId, &mut ServerWorld) + Send + 'static,
     ) -> Self {
         self.on_join = Some(Box::new(action));
+        self
+    }
+
+    /// Called when a client has left, with the world as it is after they are gone from it.
+    pub fn on_leave(
+        mut self,
+        action: impl FnMut(ClientId, &mut ServerWorld) + Send + 'static,
+    ) -> Self {
+        self.on_leave = Some(Box::new(action));
         self
     }
 
@@ -123,8 +133,11 @@ impl GameLogic for ScriptedLogic {
         }
     }
 
-    fn client_left(&mut self, client: ClientId, _world: &mut ServerWorld) {
+    fn client_left(&mut self, client: ClientId, world: &mut ServerWorld) {
         self.record(LogicEvent::Left(client));
+        if let Some(action) = &mut self.on_leave {
+            action(client, world);
+        }
     }
 
     fn message_received(

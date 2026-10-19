@@ -47,7 +47,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 29 (planned) Data-driven block packs (JSON), the generated JSON Schema, `check-pack`, and patches: tags by union, patch operations,
   dependency order, loud failures (revision 5; mod stage 2).
 - 28 (planned) The content package at the handshake, carried by recordings (revision 3).
-- 27 (accepted; 27a to 27e built; 27f players as entities) Entities and items: server-owned entities with typed components, inventories, the protocol messages and the
+- 27 (accepted; 27a to 27f built) Entities and items: server-owned entities with typed components, inventories, the protocol messages and the
   `engine:entities` section reserved before 1.0; players become entities; the prompt facility. Specified in `entities-spec.md` (steps 27a to 27h,
   with a pause after 27d). Control targets, the `Brain` slot and block data stay planned for the phases that first need them.
 - 26 The client interface (client plugins: message handlers, view hook, HUD line, key and mouse actions, `.`-commands) and the bulk light
@@ -271,6 +271,15 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   run and passed on the rerun. Both only under the load of a whole-workspace run, so the same belief applies (the result depends on how far the
   client's worker threads have got); not tested. `a_walker_standing_in_flames_falls_when_the_fire_burns_the_ground_away` failed once more in
   a full parallel Linux run (end of Phase 26) and 0 of 15 times alone (explained above). Also: `cargo test --workspace` stops at the first failing crate, so use `--no-fail-fast`.
+- The same flaky test again (2026-10-19, end of Phase 27f, full parallel Linux run), and now measured: 0 of 25 runs of the test alone with every core
+  busy, 1 of 8 runs of the whole `cargo test -p voxunami_cave --test play` binary with every core busy. The failure is the last check: the player's
+  eyes at 103.63 in the cellar where the client's mesher says the highest ground of their columns is voxel 102 (they should be at 104.62), so
+  the server's body stood one voxel lower than the client's picture of the ground. Looked at and ruled out: the body's level switch (it
+  teleports, so its terrain is the new level's) and the collision cache (keyed by block and state, not place). Still open: the number of ticks
+  `rig.settle` runs depends on how quiet the client is, so the tick at which the fire is placed and burns differs between runs, and either the
+  mesher's picture of the cellar or the columns the body overlaps (the test assumes a 0.6 wide body; the player stood 0.08 into a column) may
+  be what differs. Next step: print the server's own ground for those columns on failure. Predates Phase 27f (the same check failed in
+  full runs during Phases 23 to 26).
 - Light (Phase 12): cost is one lamp's 64 ticks of spreading averaged 15 ms a tick in a release build (with two clients
   watching; measured once, not repeated), and a tick is 50 ms, so a few lamps placed at once would overrun it. The budget
   of 20 000 voxels a tick (Phase 14) is a guess, not tuned, and its streaming cost to clients is not measured. The sky light

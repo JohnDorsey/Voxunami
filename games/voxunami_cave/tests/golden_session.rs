@@ -225,8 +225,12 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// protocol version (4, was 3) and the challenge, and because a join takes a tick longer, so the game has run a tick more
 /// when the player arrives. Checked, not assumed: the old code with an idle server tick before each join, and this stream
 /// with the challenge taken out and the welcome's version set back to 3, give the same hash and the same saved world (which did change, because the world is a tick older when the player is in it).
+/// Phase 27f: players are entities. The stream no longer has the `Players` message (every player's pose, told to everyone every
+/// tick whatever they watched); it has the entity messages for the players in the region the client watches (so the scripts
+/// now ask for their view each tick, as a window does, which Cave's already did), and the saved world holds its players.
+/// Checked by what the stream holds, not by a control run: one player spawned once and 120 changes as it moves.
 const PINNED: (u64, usize, u64) = (
-    3_421_832_739_022_450_086,
-    7_179_792,
-    5_520_753_660_668_519_004,
+    7_467_491_269_729_547_948,
+    7_177_754,
+    14_800_163_994_229_683_400,
 );

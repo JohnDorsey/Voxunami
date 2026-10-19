@@ -28,7 +28,7 @@ mod windowed;
 pub use definition::{CameraStart, GameContent, GameDefinition};
 pub use identity::Identity;
 pub use package::{ContentPackage, GeneratorFactory, PackageSpec};
-pub use player_presence::{PlayerPose, PoseBook};
+pub use player_presence::{PlayerPose, Presence};
 pub use winit::keyboard::KeyCode;
 
 use options::{Parsed, play_usage, replay_usage, serve_usage};

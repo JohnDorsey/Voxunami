@@ -153,7 +153,7 @@ impl GameDefinition for Eels {
     fn plugins(content: &ContentEels) -> Vec<Box<dyn Plugin>> {
         // The server moves every player, so what they say about where they are is not believed.
         let players = PlayersPlugin::new(false);
-        let rules = PluginEels::new(content, players.book());
+        let rules = PluginEels::new(content, players.presence());
         vec![Box::new(players), Box::new(rules)]
     }
 

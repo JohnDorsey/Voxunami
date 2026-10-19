@@ -38,7 +38,7 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   terrain from the world's seed and has no other way to learn a level's. The first level is the main level, where players
   start. Levels are named by identifier in files and in game messages, and by their position (`LevelIndex`) between a
   server and its clients. A world's levels are fixed while a server runs.
-- Which level a player is in is the server's to say (`player_presence::PoseBook`); players say only where they are in it. A
+- Which level a player is in is the server's to say (the root grid of their player entity, `player_presence::Presence`); players say only where they are in it. A
   player moves with the `/level go NAME` command, or a game moves them (a portal later) through the same message.
 - Platforms: Windows and Linux. Integrated-GPU target: 30 fps at 720p with reduced view distance on the dev
   machine's own AMD iGPU.
@@ -175,6 +175,16 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   prove nothing to anyone and use a throwaway identity. The golden sessions were repinned once for it; the cause was checked, not assumed (the
   old code with an idle tick before each join, against the new stream with the challenge removed and the version set back to 3, gives the same
   hashes in all three games).
+
+## Decided (players are entities; built in Phase 27f)
+- **A player is an entity** of kind `player_presence:player`, with the key (server only), the connection number and the look angles (told to
+  clients) and `engine:hidden`. Its pose is the player's pose; its level is the root grid. A player who leaves is hidden, not removed: it is
+  in the save, and its key finds it again (the player resumes where they were, and is told their level). Another key never takes it over.
+- **`engine:hidden`** is an engine component: replication skips a hidden entity (and despawns it for those who knew it); the world keeps it.
+- **Clients know the players they can see**, by the entity replication, not everyone: players in another level, or beyond the watched region,
+  are not known. `PoseBook` and the `Players` broadcast are gone; a recording from before protocol version 4 is still shown through the old message.
+- The look angles are kept as reported (a component) beside the orientation quaternion, so that nothing recovers angles from a quaternion.
+  The calls that read or move players take the world (`Presence`), a game holds it as it held the book.
 
 ## Decided (rules for lattice simulation and physics)
 - Tick phases (confirmed by the owner): each tick reads a frozen snapshot of the previous tick and produces the next one.

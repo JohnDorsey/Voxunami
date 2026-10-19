@@ -3,14 +3,17 @@
 
 use std::sync::{Arc, Mutex};
 
+use entities::EntityCatalog;
 use namespaced_id::NamespacedId;
-use player_presence::{LevelChange, PlayerPose, Players, PoseBook, PoseReport};
-use protocol::{ClientId, ClientMessage, Message, ServerMessage};
+use player_presence::{
+    LevelChange, PlayerClient, PlayerPose, PoseReport, Presence, player_kind_spec,
+};
+use protocol::{ClientId, ClientMessage, EntityId, Message, ServerMessage};
 use server::test_support::{ScriptedLogic, log_in};
 use server::{Server, ServerConfig};
 use transport::Connection;
 use transport::loopback::{LoopbackConnection, LoopbackConnector, loopback_listener};
-use voxel_space::{BrickCoordinate, LevelIndex, WorldPosition};
+use voxel_space::{BrickBox, BrickCoordinate, GridId, LevelIndex, WorldPosition};
 use world_storage::test_support::{ALL_PLUGINS, Game, id};
 
 fn game_id() -> NamespacedId {
@@ -24,6 +27,14 @@ struct Client {
 impl Client {
     fn send(&mut self, message: &ClientMessage) {
         self.connection.send(message.encode()).unwrap();
+    }
+
+    /// Asks to be told of what is in the bricks around the origin of this level.
+    fn watch(&mut self, level: LevelIndex) {
+        self.send(&ClientMessage::SetInterest {
+            level,
+            region: BrickBox::around(BrickCoordinate::ORIGIN, 1),
+        });
     }
 
     fn command(&mut self, text: &str) {
@@ -67,14 +78,14 @@ impl Client {
 struct Rig {
     server: Server,
     connector: LoopbackConnector,
-    book: Arc<Mutex<PoseBook>>,
+    presence: Arc<Mutex<Presence>>,
     /// How many clients have joined: each logs in as an identity of its own.
     joined: u8,
 }
 
 impl Rig {
     /// A server of a world with the levels `test_content:main`, `test_content:second` and
-    /// `other_game:second`, whose logic is a pose book and nothing else but the command `/ping`.
+    /// `other_game:second`, whose logic is the players' presence and nothing else but the command `/ping`.
     fn new() -> Self {
         let game = Game::new(&ALL_PLUGINS);
         let mut world = game.new_world();
@@ -83,30 +94,44 @@ impl Rig {
                 .add_level(id(name), game.new_level("base_terrain:flat_v1"))
                 .unwrap();
         }
-        let book = Arc::new(Mutex::new(PoseBook::new()));
+        let mut catalog = EntityCatalog::default();
+        catalog
+            .kinds
+            .register(player_kind_spec())
+            .expect("the player kind is new");
+        let presence = Arc::new(Mutex::new(Presence::new()));
         let logic = ScriptedLogic::new()
+            .with_entity_catalog(catalog)
+            .on_join({
+                let presence = Arc::clone(&presence);
+                move |client, world| presence.lock().unwrap().client_joined(client, world)
+            })
+            .on_leave({
+                let presence = Arc::clone(&presence);
+                move |client, world| presence.lock().unwrap().client_left(client, world)
+            })
             .on_message({
-                let book = Arc::clone(&book);
+                let presence = Arc::clone(&presence);
                 move |client, kind, payload, world| {
-                    let mut book = book.lock().unwrap();
+                    let mut presence = presence.lock().unwrap();
                     if *kind == id("test_game:teleport") {
-                        book.move_to_level(client, LevelIndex::new(u32::from(payload[0])), world);
+                        presence.move_to_level(
+                            client,
+                            LevelIndex::new(u32::from(payload[0])),
+                            world,
+                        );
                     } else {
-                        book.handle_message(client, kind, payload);
+                        presence.handle_message(world, client, kind, payload);
                     }
                 }
             })
             .on_command({
-                let book = Arc::clone(&book);
+                let presence = Arc::clone(&presence);
                 move |client, text, world| {
-                    if !book.lock().unwrap().handle_command(client, text, world) {
+                    if !presence.lock().unwrap().handle_command(client, text, world) {
                         world.reply(client, "not a level command");
                     }
                 }
-            })
-            .on_tick({
-                let book = Arc::clone(&book);
-                move |_, world| book.lock().unwrap().tell_everyone(world)
             });
         let (listener, connector) = loopback_listener();
         let server = Server::new(
@@ -120,7 +145,7 @@ impl Rig {
         Self {
             server,
             connector,
-            book,
+            presence,
             joined: 0,
         }
     }
@@ -141,23 +166,39 @@ impl Rig {
     }
 
     fn level_of(&self, client: u32) -> LevelIndex {
-        self.book.lock().unwrap().level_of(ClientId::new(client))
+        self.presence
+            .lock()
+            .unwrap()
+            .level_of(self.server.world(), ClientId::new(client))
     }
 }
 
-/// The level of each player in the last snapshot of where everyone is.
-fn levels_told(messages: &[ServerMessage]) -> Option<Vec<(u32, u32)>> {
-    messages.iter().rev().find_map(|message| match message {
-        ServerMessage::GameMessage { kind, payload } if *kind == Players::kind() => Some(
-            Players::decode(payload)
-                .unwrap()
-                .0
-                .into_iter()
-                .map(|(client, state)| (client.get(), state.level.get()))
-                .collect(),
-        ),
-        _ => None,
-    })
+/// The players among the entities these messages tell of as new: their connection and their grid.
+fn players_told(messages: &[ServerMessage]) -> Vec<(u32, GridId)> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            ServerMessage::EntitiesSpawned(spawned) => Some(spawned),
+            _ => None,
+        })
+        .flatten()
+        .map(|entity| {
+            let client = PlayerClient::decode(&entity.components[0].1).unwrap();
+            (client.0.get(), entity.pose.grid)
+        })
+        .collect()
+}
+
+/// The entities these messages tell of as gone.
+fn despawned(messages: &[ServerMessage]) -> Vec<EntityId> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            ServerMessage::EntitiesDespawned(ids) => Some(ids.clone()),
+            _ => None,
+        })
+        .flatten()
+        .collect()
 }
 
 fn level_changes(messages: &[ServerMessage]) -> Vec<NamespacedId> {
@@ -173,28 +214,98 @@ fn level_changes(messages: &[ServerMessage]) -> Vec<NamespacedId> {
 }
 
 #[test]
-fn players_start_in_the_main_level_and_the_snapshot_says_which_level_each_is_in() {
+fn players_start_in_the_main_level_and_are_told_of_by_the_entities_of_the_level_they_are_in() {
     let mut rig = Rig::new();
     let (mut first, mut second) = (rig.join(), rig.join());
     first.pose_at(1.0);
     second.pose_at(2.0);
     rig.server.step();
     assert_eq!(rig.level_of(1), LevelIndex::MAIN);
-    assert_eq!(levels_told(&first.received()), Some(vec![(1, 0), (2, 0)]));
+    first.watch(LevelIndex::MAIN);
+    rig.server.step();
+    assert_eq!(
+        players_told(&first.received()),
+        [(1, GridId::MAIN), (2, GridId::MAIN)]
+    );
 
+    // The second moves to another level: the first, who watches the main level, is told they are gone, and
+    // the entity's grid is the other level's root.
+    let second_entity = rig
+        .presence
+        .lock()
+        .unwrap()
+        .entity_of(ClientId::new(2))
+        .unwrap();
     second.command("/level go test_content:second");
     rig.server.step();
     assert_eq!(rig.level_of(2), LevelIndex::new(1));
     assert_eq!(rig.level_of(1), LevelIndex::MAIN);
-    assert_eq!(levels_told(&first.received()), Some(vec![(1, 0), (2, 1)]));
+    assert_eq!(despawned(&first.received()), [second_entity]);
+    assert_eq!(
+        rig.server
+            .world()
+            .entities()
+            .get(second_entity)
+            .unwrap()
+            .pose
+            .grid,
+        GridId::root(LevelIndex::new(1))
+    );
 
-    // The book lists the players who have said where they are, with their levels, in id order.
-    let book = rig.book.lock().unwrap();
-    let listed: Vec<_> = book
-        .players()
+    // The presence lists the players who have said where they are, with their levels, in id order.
+    let listed: Vec<_> = rig
+        .presence
+        .lock()
+        .unwrap()
+        .players(rig.server.world())
+        .into_iter()
         .map(|(client, _, level)| (client.get(), level))
         .collect();
     assert_eq!(listed, [(1, LevelIndex::MAIN), (2, LevelIndex::new(1))]);
+
+    // A player who arrives in that level is told of the one who is there.
+    let mut third = rig.join();
+    third.pose_at(3.0);
+    third.command("/level go test_content:second");
+    rig.server.step();
+    third.watch(LevelIndex::new(1));
+    rig.server.step();
+    assert_eq!(
+        players_told(&third.received()),
+        [
+            (2, GridId::root(LevelIndex::new(1))),
+            (3, GridId::root(LevelIndex::new(1)))
+        ]
+    );
+}
+
+#[test]
+fn a_level_asked_for_before_the_first_pose_is_where_the_first_pose_puts_the_player() {
+    let mut rig = Rig::new();
+    let mut player = rig.join();
+    player.command("/level go test_content:second");
+    rig.server.step();
+    assert_eq!(rig.level_of(1), LevelIndex::new(1));
+    assert!(
+        rig.presence
+            .lock()
+            .unwrap()
+            .entity_of(ClientId::new(1))
+            .is_none()
+    );
+    player.pose_at(5.0);
+    rig.server.step();
+    assert_eq!(rig.level_of(1), LevelIndex::new(1));
+    let entity = rig
+        .presence
+        .lock()
+        .unwrap()
+        .entity_of(ClientId::new(1))
+        .unwrap();
+    assert_eq!(
+        rig.server.world().entities().get(entity).unwrap().pose.grid,
+        GridId::root(LevelIndex::new(1))
+    );
 }
 
 #[test]
@@ -304,15 +415,55 @@ fn a_game_can_move_players_itself_but_only_to_levels_the_world_has() {
 }
 
 #[test]
-fn a_player_who_leaves_is_forgotten_by_the_book() {
+fn a_player_who_leaves_is_forgotten_by_the_table_and_their_entity_stays_hidden_in_its_level() {
     let mut rig = Rig::new();
     let mut player = rig.join();
     player.pose_at(1.0);
     player.command("/level go test_content:second");
     rig.server.step();
     assert_eq!(rig.level_of(1), LevelIndex::new(1));
-    assert_eq!(rig.book.lock().unwrap().len(), 1);
-    rig.book.lock().unwrap().client_left(ClientId::new(1));
+    assert_eq!(rig.presence.lock().unwrap().len(), 1);
+    let entity = rig
+        .presence
+        .lock()
+        .unwrap()
+        .entity_of(ClientId::new(1))
+        .unwrap();
+    player.send(&ClientMessage::Goodbye);
+    rig.server.step();
     assert_eq!(rig.level_of(1), LevelIndex::MAIN);
-    assert!(rig.book.lock().unwrap().is_empty());
+    assert!(rig.presence.lock().unwrap().is_empty());
+    let kept = rig.server.world().entities().get(entity).unwrap();
+    assert!(kept.is_hidden());
+    assert_eq!(kept.pose.grid, GridId::root(LevelIndex::new(1)));
+}
+
+#[test]
+fn a_player_who_comes_back_in_the_level_they_left_is_told_which_level_it_is() {
+    let mut rig = Rig::new();
+    let mut player = rig.join();
+    player.pose_at(1.0);
+    player.command("/level go test_content:second");
+    rig.server.step();
+    player.send(&ClientMessage::Goodbye);
+    rig.server.step();
+
+    // The same install (the same identity, the first this rig made) joins again.
+    let mut again = Client {
+        connection: rig.connector.connect().unwrap(),
+    };
+    log_in(&mut rig.server, &mut again.connection, &game_id(), 1);
+    assert_eq!(
+        level_changes(&again.received()),
+        [id("test_content:second")],
+        "told at once, before saying anything"
+    );
+    let new_client = rig.server.connected_clients().next().unwrap();
+    assert_eq!(
+        rig.presence
+            .lock()
+            .unwrap()
+            .level_of(rig.server.world(), new_client),
+        LevelIndex::new(1)
+    );
 }

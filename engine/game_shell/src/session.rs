@@ -9,7 +9,10 @@ use block_models::BlockTable;
 use client::{Client, ClientError, ClientEvent, Handshake, HandshakeProgress};
 use identity::Identity;
 use namespaced_id::NamespacedId;
-use player_presence::{LevelChange, PlayerPose, PlayerState, Players, PoseReport};
+use player_presence::{
+    LevelChange, PlayerClient, PlayerLook, PlayerPose, PlayerState, Players, PoseReport,
+    player_kind,
+};
 use protocol::{ClientId, Message};
 use renderer::Camera;
 use transport::Connection;
@@ -54,7 +57,11 @@ pub struct Session<C: Connection, G: GameDefinition> {
     client_host: ClientHost,
     /// What the window's own commands change.
     settings: ClientSettings,
+    /// The players the client knows of, by connection: those among the entities it was told of, or, in a
+    /// recording made before protocol version 4, those the old `Players` message listed.
     players: BTreeMap<ClientId, PlayerState>,
+    /// Whether the stream is one that lists players in `Players` messages instead of as entities.
+    players_listed_by_message: bool,
     mode: Mode,
     view_radius_bricks: i64,
     /// The level the player is in, and so the one they ask to watch.
@@ -127,6 +134,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             client_host,
             settings,
             players: BTreeMap::new(),
+            players_listed_by_message: false,
             mode,
             view_radius_bricks,
             level: LevelIndex::MAIN,
@@ -224,6 +232,8 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                 }
                 ClientEvent::GameMessage { kind, payload } if kind == Players::kind() => {
                     // A message this client cannot read is dropped; the next snapshot replaces it.
+                    // (Only streams from before protocol version 4 have it; later ones use entities.)
+                    self.players_listed_by_message = true;
                     if let Ok(Players(players)) = Players::decode(&payload) {
                         self.players = players.into_iter().collect();
                     }
@@ -232,8 +242,12 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                     // A kind no client plugin handles is another game's, or a message only a server needs.
                     self.client_host.message(&kind, &payload);
                 }
-                // The entities are read from the client's store when they are wanted.
-                ClientEvent::WatchedRegionChanged { .. } | ClientEvent::EntitiesChanged => {}
+                ClientEvent::EntitiesChanged => {
+                    if !self.players_listed_by_message {
+                        self.players = self.players_among_the_entities();
+                    }
+                }
+                ClientEvent::WatchedRegionChanged { .. } => {}
             }
         }
         self.mesher
@@ -244,6 +258,29 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             self.follow_own_pose();
         }
         Ok(true)
+    }
+
+    /// The players among the entities the client was told of: the ones whose entity says whose it is, where
+    /// it is and which way it looks.
+    fn players_among_the_entities(&self) -> BTreeMap<ClientId, PlayerState> {
+        let kind = player_kind();
+        self.client
+            .world()
+            .entities()
+            .iter()
+            .filter(|entity| entity.kind == kind)
+            .filter_map(|entity| {
+                let PlayerClient(client) = entity.component().ok()??;
+                let PlayerLook { yaw, pitch } = entity.component().ok()??;
+                let level = entity.pose.grid.root_level()?;
+                let pose = PlayerPose {
+                    position: entity.pose.position,
+                    yaw,
+                    pitch,
+                };
+                Some((client, PlayerState { pose, level }))
+            })
+            .collect()
     }
 
     /// Where the server last said this player is, if it has said.

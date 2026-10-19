@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use namespaced_id::NamespacedId;
-use player_presence::{PoseBook, SharedPoseBook};
+use player_presence::{Presence, SharedPresence};
 use plugin_host::{
     HandlerSpec, Phase as TickPhase, PlayerJoined, PlayerLeft, Plugin, Registrar, SystemSpec,
 };
@@ -168,12 +168,12 @@ impl LogicEels {
 
 impl LogicEels {
     /// A client joined: an eel and a colour if one is free, and the standings, at once.
-    fn joined(&mut self, client: ClientId, world: &mut ServerWorld, poses: &mut PoseBook) {
+    fn joined(&mut self, client: ClientId, world: &mut ServerWorld, presence: &mut Presence) {
         if let Some(slot) = self.free_slot() {
             self.slots.insert(client, slot);
             self.game.join(slot);
         }
-        poses.set_pose(client, spectator_pose());
+        presence.set_pose(world, client, spectator_pose());
         // A newcomer is told how things stand at once; everyone else hears of them with the rest.
         world.send(
             Audience::Client(client),
@@ -200,7 +200,7 @@ impl LogicEels {
     }
 
     /// One tick of the round, and every player's pose after it.
-    fn swim(&mut self, world: &mut ServerWorld, poses: &mut PoseBook) {
+    fn swim(&mut self, world: &mut ServerWorld, presence: &mut Presence) {
         let mut arena = WorldArena {
             world,
             block_channel: self.block_channel,
@@ -214,7 +214,7 @@ impl LogicEels {
                 .get(&client)
                 .and_then(|&slot| self.game.eel(slot))
                 .map_or_else(spectator_pose, |eel| eel_pose(eel, fraction));
-            poses.set_pose(client, pose);
+            presence.set_pose(world, client, pose);
         }
     }
 }
@@ -226,11 +226,11 @@ impl LogicEels {
 pub struct PluginEels {
     block_channel: ChannelIndex,
     slot_channel: ChannelIndex,
-    players: SharedPoseBook,
+    players: SharedPresence,
 }
 
 impl PluginEels {
-    pub fn new(content: &ContentEels, players: SharedPoseBook) -> Self {
+    pub fn new(content: &ContentEels, players: SharedPresence) -> Self {
         Self {
             block_channel: content.block_channel(),
             slot_channel: content.slot_channel(),
@@ -270,8 +270,8 @@ impl Plugin for PluginEels {
         registrar.on::<PlayerJoined>(
             HandlerSpec::new("voxunami_eels:give_the_newcomer_an_eel"),
             move |event, context| {
-                let mut book = player_presence::lock(&players);
-                lock_rules(&rules).joined(event.client, context.world(), &mut book);
+                let mut presence = player_presence::lock(&players);
+                lock_rules(&rules).joined(event.client, context.world(), &mut presence);
             },
         );
         let rules = Arc::clone(&state);
@@ -284,15 +284,14 @@ impl Plugin for PluginEels {
             lock_rules(&rules).steer(client, steer);
         });
         registrar.declares_message::<Standings>();
-        // The eels swim, and the players' poses follow them, before the poses are announced (the
-        // players plugin does that in the `Settle` phase); the standings follow the announcement.
+        // The eels swim, and the players' poses follow them; the standings follow in the `Rules` phase.
         let rules = Arc::clone(&state);
         let players = Arc::clone(&self.players);
         registrar.system(
             SystemSpec::new("voxunami_eels:swim", TickPhase::Physics),
             move |context| {
-                let mut book = player_presence::lock(&players);
-                lock_rules(&rules).swim(context.world(), &mut book);
+                let mut presence = player_presence::lock(&players);
+                lock_rules(&rules).swim(context.world(), &mut presence);
             },
         );
         let rules = Arc::clone(&state);

@@ -291,6 +291,211 @@ fn a_recording_replays_the_session_from_the_recorded_players_point_of_view() {
     std::fs::remove_dir_all(&directory).unwrap();
 }
 
+#[test]
+fn a_player_who_comes_back_is_where_they_were_and_not_where_they_say_they_start() {
+    let mut rig = Rig::new();
+    let mut player = rig.join([16.5, 110.0, 16.5], 0.0, 0.0);
+    rig.settle(&mut [&mut player]);
+    player.camera = above_ground(&player, 16, 16, 3.0);
+    player.teleport_to_camera();
+    rig.settle(&mut [&mut player]);
+    let there = voxels_of(&player.camera);
+    assert!((there[1] - 110.0).abs() > 1.0, "they moved: {there:?}");
+    player.say_goodbye();
+    rig.step();
+
+    // The same install joins again, saying it starts far away; the server puts it where it left.
+    let connection = rig.connector.connect().unwrap();
+    let mut again = rig.join_as(Box::new(connection), 1, [100.5, 110.0, 100.5], 0.0, 0.0);
+    rig.settle(&mut [&mut again]);
+    let now = voxels_of(&again.camera);
+    for axis in 0..3 {
+        assert!(
+            (now[axis] - there[axis]).abs() < 0.5,
+            "{now:?} is not where they left, {there:?}"
+        );
+    }
+
+    // Another install, saying the same, starts where it says.
+    let connection = rig.connector.connect().unwrap();
+    let mut other = rig.join_as(Box::new(connection), 2, [100.5, 110.0, 100.5], 0.0, 0.0);
+    rig.settle(&mut [&mut other, &mut again]);
+    let theirs = voxels_of(&other.camera);
+    assert!(
+        (theirs[0] - 100.5).abs() < 0.5 && (theirs[2] - 100.5).abs() < 0.5,
+        "{theirs:?}"
+    );
+}
+
+#[test]
+fn only_entities_of_the_player_kind_are_players_to_a_session() {
+    use player_presence::{PlayerClient, PlayerLook};
+    use protocol::ServerMessage;
+    use replay::{ReplayConnection, ReplayReader, ReplayWriter};
+
+    let directory =
+        std::env::temp_dir().join(format!("voxunami_cave_kinds_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("session.voxreplay");
+    let mut rig = Rig::new();
+    let recorded = record_connection(rig.connector.connect().unwrap(), &path).unwrap();
+    let mut player = rig.join_with(recorded, [16.5, 110.0, 16.5], 0.0, 0.0);
+    rig.settle(&mut [&mut player]);
+    let own = player.client().world().server_info().client;
+    drop(player);
+    let recording = std::fs::read(&path).unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+
+    // Next to the real player, an entity of another kind that carries the very components a player has.
+    let mut reader = ReplayReader::new(std::io::Cursor::new(recording)).unwrap();
+    let mut writer = ReplayWriter::new(Vec::new()).unwrap();
+    let mut impostor_told = false;
+    while let Some(frame) = reader.next_frame().unwrap() {
+        if matches!(
+            ServerMessage::decode(&frame).unwrap(),
+            ServerMessage::TickCompleted { .. }
+        ) && !impostor_told
+        {
+            impostor_told = true;
+            let impostor = ServerMessage::EntitiesSpawned(vec![protocol::EntityState {
+                id: protocol::EntityId::new(900),
+                kind: "test:rock".parse().unwrap(),
+                pose: voxel_space::EntityPose::new(
+                    voxel_space::GridId::MAIN,
+                    camera_at([16.5, 110.0, 16.5], 0.0, 0.0, VIEW_RADIUS).position,
+                    voxel_space::Orientation::IDENTITY,
+                ),
+                components: vec![
+                    (
+                        PlayerClient::kind(),
+                        PlayerClient(protocol::ClientId::new(77)).encode(),
+                    ),
+                    (
+                        PlayerLook::kind(),
+                        PlayerLook {
+                            yaw: 0.0,
+                            pitch: 0.0,
+                        }
+                        .encode(),
+                    ),
+                ],
+            }]);
+            writer.append(&impostor.encode()).unwrap();
+        }
+        writer.append(&frame).unwrap();
+    }
+    let connection: Box<dyn Connection> =
+        Box::new(ReplayConnection::new(std::io::Cursor::new(writer.into_inner())).unwrap());
+    let mut replay = Session::<_, Cave>::connect(
+        connection,
+        &Identity::generate(),
+        Mode::Replaying,
+        VIEW_RADIUS,
+        camera_at([0.0; 3], 0.0, 0.0, VIEW_RADIUS),
+        || {},
+    )
+    .unwrap();
+    while replay.advance_one_tick().is_ok() {}
+    assert_eq!(
+        replay.players().keys().copied().collect::<Vec<_>>(),
+        [own],
+        "the rock is not a player"
+    );
+}
+
+#[test]
+fn a_recording_made_before_players_were_entities_still_shows_its_players_from_the_old_message() {
+    use player_presence::{PlayerPose, PlayerState, Players};
+    use protocol::ServerMessage;
+    use replay::{ReplayConnection, ReplayReader, ReplayWriter};
+    use voxel_space::{BrickCoordinate, LevelIndex, WorldPosition};
+
+    // A real recording of a short session...
+    let directory =
+        std::env::temp_dir().join(format!("voxunami_cave_old_replay_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("session.voxreplay");
+    let mut rig = Rig::new();
+    let recorded = record_connection(rig.connector.connect().unwrap(), &path).unwrap();
+    let mut player = rig.join_with(recorded, [16.5, 110.0, 16.5], 0.0, 0.0);
+    rig.settle(&mut [&mut player]);
+    drop(player);
+    let recording = std::fs::read(&path).unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+
+    // ...made into one from before version 4: no entities, and before each tick completes the old message
+    // that says where everyone is. The recorded player is client 1.
+    let told = PlayerPose {
+        position: WorldPosition::new(BrickCoordinate::new(0, 3, 0), [4.0, 5.0, 6.0]),
+        yaw: 0.75,
+        pitch: -0.25,
+    };
+    let old_message = ServerMessage::GameMessage {
+        kind: Players::kind(),
+        payload: Players(vec![(
+            protocol::ClientId::new(1),
+            PlayerState {
+                pose: told,
+                level: LevelIndex::MAIN,
+            },
+        )])
+        .encode(),
+    }
+    .encode();
+    let rock = |number: u64| {
+        ServerMessage::EntitiesSpawned(vec![protocol::EntityState {
+            id: protocol::EntityId::new(900 + number),
+            kind: "test:rock".parse().unwrap(),
+            pose: voxel_space::EntityPose::new(
+                voxel_space::GridId::MAIN,
+                told.position,
+                voxel_space::Orientation::IDENTITY,
+            ),
+            components: Vec::new(),
+        }])
+        .encode()
+    };
+    let mut rocks = 0;
+    let mut reader = ReplayReader::new(std::io::Cursor::new(recording)).unwrap();
+    let mut writer = ReplayWriter::new(Vec::new()).unwrap();
+    while let Some(frame) = reader.next_frame().unwrap() {
+        match ServerMessage::decode(&frame).unwrap() {
+            ServerMessage::EntitiesSpawned(_)
+            | ServerMessage::EntitiesChanged(_)
+            | ServerMessage::EntitiesDespawned(_) => {}
+            ServerMessage::TickCompleted { .. } => {
+                writer.append(&old_message).unwrap();
+                // Version 3 had entities (not players) in the same stream as the old message, and a tick
+                // that told of one must not forget the players the message listed before it.
+                writer.append(&rock(rocks)).unwrap();
+                rocks += 1;
+                writer.append(&frame).unwrap();
+            }
+            _ => writer.append(&frame).unwrap(),
+        }
+    }
+    let old_recording = writer.into_inner();
+
+    let connection: Box<dyn Connection> =
+        Box::new(ReplayConnection::new(std::io::Cursor::new(old_recording)).unwrap());
+    let mut replay = Session::<_, Cave>::connect(
+        connection,
+        &Identity::generate(),
+        Mode::Replaying,
+        VIEW_RADIUS,
+        camera_at([0.0; 3], 0.0, 0.0, VIEW_RADIUS),
+        || {},
+    )
+    .unwrap();
+    while replay.advance_one_tick().is_ok() {}
+    assert_eq!(replay.players().len(), 1);
+    assert_eq!(replay.players()[&protocol::ClientId::new(1)].pose, told);
+    assert_eq!(
+        replay.camera.position, told.position,
+        "the replay is from the recorded player's point of view"
+    );
+}
+
 /// A connection that remembers what was sent through it.
 #[derive(Debug)]
 struct Spy {
@@ -442,8 +647,10 @@ fn a_player_can_go_to_another_level_and_what_they_do_there_stays_there() {
         Some(true)
     );
 
-    // Players in different levels do not see each other, though both are known to the server.
-    assert_eq!(mover.players().len(), 2);
+    // Players in different levels do not see each other: each knows only of the players in the level
+    // they watch, which is only themselves.
+    assert_eq!(mover.players().len(), 1);
+    assert_eq!(stayer.players().len(), 1);
     assert_eq!(mover.other_players().count(), 0);
     assert_eq!(stayer.other_players().count(), 0);
 
@@ -1101,6 +1308,8 @@ fn standing_walker(rig: &mut Rig) -> Player {
 fn a_walking_player_falls_and_stands_on_the_ground_and_stays_there() {
     let mut rig = Rig::new();
     let mut player = rig.join_walking([16.5, 130.0, 16.5], 0.0, 0.0);
+    // (The player's own place comes to them as an entity they watch, so the view is asked for, as every frame does.)
+    let _ = player.update_view();
     let start = voxels_of(&player.camera)[1];
     // They fall: after half a second they are several voxels lower.
     tick_and_follow(&mut rig, &mut player, 10);

@@ -123,7 +123,7 @@ W A S D move, Space and Shift go up and down, Ctrl moves five times faster. Comm
     fn plugins(content: &Content2048) -> Vec<Box<dyn Plugin>> {
         // This game believes what players say about where they are.
         let players = PlayersPlugin::new(true);
-        let rules = Plugin2048::new(content, players.book());
+        let rules = Plugin2048::new(content, players.presence());
         vec![Box::new(players), Box::new(rules)]
     }
 

@@ -1,17 +1,18 @@
 //! The players' bodies: spawning, walking and flying, `/fly` and `/tp`.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use block_models::BlockTable;
 use game_shell::GameContent;
 use namespaced_id::NamespacedId;
-use player_presence::{SharedPoseBook, lock};
+use player_presence::{SharedPresence, lock};
 use plugin_host::{
     Argument, Arguments, CommandSpec, HandlerSpec, Phase, PlayerLeft, Plugin, Registrar, SystemSpec,
 };
 use protocol::ClientId;
 use voxel_grid::ChannelIndex;
-use voxel_space::{VoxelCoordinate, WorldPosition};
+use voxel_space::{LevelIndex, VoxelCoordinate, WorldPosition};
 
 use crate::content::CaveContent;
 use crate::messages::{MoveRequest, Spawn};
@@ -25,11 +26,11 @@ pub struct MovementPlugin {
     state_channel: ChannelIndex,
     table: BlockTable,
     air: u32,
-    players: SharedPoseBook,
+    players: SharedPresence,
 }
 
 impl MovementPlugin {
-    pub fn new(content: &CaveContent, players: SharedPoseBook) -> Self {
+    pub fn new(content: &CaveContent, players: SharedPresence) -> Self {
         Self {
             block_channel: content.block_channel(),
             state_channel: content.state_channel(),
@@ -95,12 +96,15 @@ impl Plugin for MovementPlugin {
         )));
 
         let (bodies, players) = (Arc::clone(&movement), Arc::clone(&self.players));
-        registrar.message(move |_, client, Spawn(pose)| {
+        registrar.message(move |context, client, Spawn(pose)| {
             let mut movement = locked(&bodies);
             if !movement.has_body(client) {
-                let mut book = lock(&players);
-                movement.spawn(client, pose, book.level_of(client));
-                book.set_pose(client, pose);
+                let mut presence = lock(&players);
+                let world = context.world();
+                // A player who took over the entity their key had before resumes where they were.
+                let pose = presence.pose_of(world.data(), client).unwrap_or(pose);
+                movement.spawn(client, pose, presence.level_of(world.data(), client));
+                presence.set_pose(world, client, pose);
             }
         });
         let bodies = Arc::clone(&movement);
@@ -156,19 +160,23 @@ impl Plugin for MovementPlugin {
             },
         );
 
-        // The bodies move first, so that what the players do this tick is from where they are; their
-        // poses are announced after (the players plugin, in `Settle`).
+        // The bodies move first, so that what the players do this tick is from where they are; the
+        // entities that are the players move with them, and clients are told at the end of the tick.
         let (bodies, players) = (movement, Arc::clone(&self.players));
         registrar.system(
             SystemSpec::new("voxunami_cave:move_the_bodies", Phase::Physics),
             move |context| {
-                let moved = {
-                    let book = lock(&players);
-                    locked(&bodies).step(context.world(), |client| book.level_of(client))
-                };
-                let mut book = lock(&players);
+                let mut presence = lock(&players);
+                let levels: BTreeMap<ClientId, LevelIndex> = presence
+                    .players(context.world().data())
+                    .into_iter()
+                    .map(|(client, _, level)| (client, level))
+                    .collect();
+                let moved = locked(&bodies).step(context.world(), |client| {
+                    levels.get(&client).copied().unwrap_or(LevelIndex::MAIN)
+                });
                 for (client, pose) in moved {
-                    book.set_pose(client, pose);
+                    presence.set_pose(context.world(), client, pose);
                 }
             },
         );

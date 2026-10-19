@@ -71,7 +71,7 @@ After Phase 23 the engine still receives and sends exactly as now. What was one 
 | `Decide` | systems, class `Mind` allowed | empty (reserved for brains, Phase 37) |
 | `Controllers` | systems that turn input into forces | empty now |
 | `Physics` | systems; the engine will own this one | movement (it steps Rapier inside itself until structures need an engine-owned physics world, Phase 32) |
-| `Settle` | systems | players' poses announced (`PoseBook::tell_everyone`) |
+| `Settle` | systems | (players' poses are no longer announced here: they are entities, replicated at the end of every tick) |
 | `Rules` | systems | fire, then light |
 | `Send` | engine | unchanged |
 
@@ -176,7 +176,7 @@ plugin sections are preserved byte for byte, as now.
 
 | Plugin | Takes from `CaveLogic` | Systems and handlers |
 |---|---|---|
-| `player_presence:players` (the shared crate) | `PoseBook`: poses, levels, `/level`, pose announcements | `Settle` system: announce poses; message handler; `/level` command; `client_left` |
+| `player_presence:players` (the shared crate) | `Presence`: which entity is which player, poses, levels, `/level` | message handler; `/level` command; `PlayerJoined` (take over the saved entity) and `PlayerLeft` (hide it) handlers; registers the player kind |
 | `voxunami_cave:block_editing` | `set_block`: reach, state, terrain checks; the set-block message | message handler; emits `block_edit_requested`, then writes |
 | `voxunami_cave:movement` | `Movement`: bodies, `/fly`, `/tp`, spawn and input messages | `Physics` system; handler on `blocks_changed` (collider rebuild); `client_left` |
 | `voxunami_cave:fire` | `Fire`: the rule, its clock, `ignite` | `Rules` system; handler on `blocks_changed` that sees a fire block placed; save section |
@@ -241,10 +241,10 @@ designed here and not built.
     golden session needs (its text and order differ today).
   - the order of plugins in the list does not matter (dependencies first, otherwise by identifier), and a test shuffles three busy plugins.
 - **23c** (done) Convert 2048, then Eels. As built:
-  - `player_presence::PlayersPlugin` (id `player_presence:players`) owns the shared `PoseBook` (`SharedPoseBook`, an `Arc<Mutex<..>>` the game takes
-    from the plugin with `book()` and hands to the plugins that use it; they declare `depends_on` it). `PlayersPlugin::new(accept_reported_poses)`
-    registers the pose message only for a game that believes what players say; always the `/level` command (usage `/level`), a handler for
-    `PlayerLeft`, and a `Settle` system that announces poses. Sharing between plugins is by handles the game creates, not a lookup in the registrar.
+  - `player_presence::PlayersPlugin` (id `player_presence:players`) owns the shared `Presence` (`SharedPresence`, an `Arc<Mutex<..>>` the game takes
+    from the plugin with `presence()` and hands to the plugins that use it; they declare `depends_on` it). `PlayersPlugin::new(accept_reported_poses)`
+    registers the pose message only for a game that believes what players say; always the player kind, the `/level` command (usage `/level`), and
+    handlers for `PlayerJoined` and `PlayerLeft`. Sharing between plugins is by handles the game creates, not a lookup in the registrar.
   - 2048: `Plugin2048` (`voxunami_2048:rules`): the push message, a `PlayerJoined` handler (the score), the `motion` system in `Rules` (after the
     announcement, as before), and the saved state. `Logic2048` is now only the state they share. Eels: `PluginEels` (`voxunami_eels:rules`): handlers for
     joining and leaving, the steer message, `swim` in `Physics` (the round ticks and each player's pose follows it) so that the announcement in

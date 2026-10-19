@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 
 use binary_codec::{ByteReader, DecodeError};
-use entities::{ComponentBag, EntityCatalog, EntityKindSpec};
+use entities::{ComponentBag, EntityCatalog, EntityKindSpec, Hidden};
 use identity::{ChallengeSource, Identity};
 use namespaced_id::NamespacedId;
 use protocol::{
@@ -1681,7 +1681,8 @@ fn cow_catalog() -> EntityCatalog {
         .register(
             EntityKindSpec::new("test:cow")
                 .component(Health(10), true)
-                .component(Mood(0), false),
+                .component(Mood(0), false)
+                .component(Hidden(false), false),
         )
         .unwrap();
     catalog
@@ -2294,4 +2295,54 @@ fn a_client_that_says_hello_and_never_proves_is_dropped_in_time() {
     let reason = refused.expect("the client was dropped");
     assert!(reason.contains("no proof of identity"), "{reason}");
     assert_eq!(harness.server.connected_clients().count(), 0);
+}
+
+#[test]
+fn a_hidden_entity_is_told_to_nobody_and_showing_it_again_tells_those_who_can_see_it() {
+    let (_game, mut harness) = herd_harness(|tick, world| match tick.get() {
+        1 => {
+            world
+                .spawn_entity(&id("test:cow"), pose_in(0, 3.0), ComponentBag::new())
+                .unwrap();
+        }
+        // Hidden at once, shown at tick 6, hidden again at tick 8.
+        2 => world
+            .set_entity_component(EntityId::new(1), &Hidden(true))
+            .unwrap(),
+        6 => world
+            .set_entity_component(EntityId::new(1), &Hidden(false))
+            .unwrap(),
+        8 => world
+            .set_entity_component(EntityId::new(1), &Hidden(true))
+            .unwrap(),
+        _ => {}
+    });
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    client.received();
+    client.watch(BrickCoordinate::ORIGIN, 1);
+    // Tick 3 is the first the client sees the region in; the cow has been hidden since tick 2.
+    harness.server.step();
+    assert!(entity_messages(&client.received()).is_empty());
+    for _ in 4..6 {
+        harness.server.step();
+        assert!(entity_messages(&client.received()).is_empty());
+    }
+    harness.server.step(); // tick 6: shown
+    let told = client.received();
+    let [ServerMessage::EntitiesSpawned(spawned)] = entity_messages(&told)[..] else {
+        panic!("{told:?}");
+    };
+    assert_eq!(spawned[0].id, EntityId::new(1));
+    harness.server.step(); // tick 7: nothing
+    assert!(entity_messages(&client.received()).is_empty());
+    harness.server.step(); // tick 8: hidden again
+    let told = client.received();
+    assert!(
+        matches!(
+            entity_messages(&told)[..],
+            [ServerMessage::EntitiesDespawned(ids)] if ids == &[EntityId::new(1)]
+        ),
+        "{told:?}"
+    );
 }

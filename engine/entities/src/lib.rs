@@ -16,6 +16,7 @@
 mod catalog;
 mod component;
 mod error;
+mod hidden;
 mod inventory;
 mod item;
 mod kind;
@@ -27,6 +28,7 @@ pub mod test_support;
 pub use catalog::EntityCatalog;
 pub use component::ComponentBag;
 pub use error::EntityError;
+pub use hidden::Hidden;
 pub use inventory::{Inventory, MAXIMUM_SLOTS};
 pub use item::{ItemSpec, ItemStack, ItemTable};
 pub use kind::{ComponentDeclaration, EntityKindSpec, EntityKinds};

@@ -1957,6 +1957,7 @@ name = "player_presence"
 version = "0.0.0"
 dependencies = [
  "binary_codec",
+ "entities",
  "namespaced_id",
  "plugin_host",
  "proptest",

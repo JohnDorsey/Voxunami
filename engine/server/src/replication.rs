@@ -99,6 +99,10 @@ pub(crate) fn entity_messages(
         .unwrap_or_default();
     let mut now: KnownEntities = BTreeMap::new();
     for id in wanted {
+        // A hidden entity is in the world and the save, and in nobody's picture.
+        if world.entities().get(id).is_some_and(Entity::is_hidden) {
+            continue;
+        }
         if let Some(view) = cache.view(world, id) {
             now.insert(id, view);
         }
