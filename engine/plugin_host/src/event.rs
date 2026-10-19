@@ -1,7 +1,7 @@
 use std::any::Any;
 
 use namespaced_id::NamespacedId;
-use protocol::ClientId;
+use protocol::{ClientId, EntityId};
 use voxel_grid::ChannelIndex;
 use voxel_space::{GridId, VoxelCoordinate};
 
@@ -58,6 +58,32 @@ pub struct PlayerLeft {
 impl Event for PlayerLeft {
     fn id() -> NamespacedId {
         parse_id("engine:player_left")
+    }
+}
+
+/// An entity was made. Sent when it is made, so a handler runs with the entity in the world.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntitySpawned {
+    pub id: EntityId,
+    pub kind: NamespacedId,
+}
+
+impl Event for EntitySpawned {
+    fn id() -> NamespacedId {
+        parse_id("engine:entity_spawned")
+    }
+}
+
+/// An entity was removed. It is already gone from the world when a handler hears of it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntityDespawned {
+    pub id: EntityId,
+    pub kind: NamespacedId,
+}
+
+impl Event for EntityDespawned {
+    fn id() -> NamespacedId {
+        parse_id("engine:entity_despawned")
     }
 }
 

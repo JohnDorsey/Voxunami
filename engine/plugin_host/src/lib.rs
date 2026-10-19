@@ -23,7 +23,9 @@ mod spec;
 pub use command::{Argument, ArgumentKind, Arguments, CommandSpec};
 pub use context::{CheckedGrid, Context, Intent, MindContext};
 pub use error::RegistrationError;
-pub use event::{ChannelsChanged, Event, PlayerJoined, PlayerLeft, Verdict};
+pub use event::{
+    ChannelsChanged, EntityDespawned, EntitySpawned, Event, PlayerJoined, PlayerLeft, Verdict,
+};
 pub use host::{CASCADE_LIMIT, PluginHost};
 pub use registrar::{Plugin, Registrar};
 pub use spec::{DeterminismClass, HandlerSpec, Phase, SaveScope, SystemSpec};

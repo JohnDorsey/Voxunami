@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use binary_codec::DecodeError;
 use content_registry::{IdentifierRegistry, Registry};
+use entities::EntityStore;
 use namespaced_id::NamespacedId;
 use terrain::{GenerationOutcome, GeneratorId, TerrainGenerator, WorldTerrain, WorldTerrainError};
 use voxel_grid::{Brick, ChannelDefinition, ChannelValueKind, Grid, GridLayout, GridLayoutError};
@@ -41,6 +42,7 @@ pub struct WorldData {
     /// Registry tables of kinds nobody supplied a registry for; kept so their ids stay meaningful.
     unknown_registry_tables: BTreeMap<NamespacedId, Vec<NamespacedId>>,
     opaque_sections: Vec<Section>,
+    entities: EntityStore,
 }
 
 /// Where the voxels of a brick come from.
@@ -169,6 +171,7 @@ impl WorldData {
             levels: vec![(main_level, level)],
             unknown_registry_tables: BTreeMap::new(),
             opaque_sections: Vec::new(),
+            entities: EntityStore::new(),
         }
     }
 
@@ -255,6 +258,15 @@ impl WorldData {
     }
 
     /// Sections of plugins, in file order. Never interpreted here.
+    /// The entities of the world.
+    pub fn entities(&self) -> &EntityStore {
+        &self.entities
+    }
+
+    pub fn entities_mut(&mut self) -> &mut EntityStore {
+        &mut self.entities
+    }
+
     pub fn opaque_sections(&self) -> &[Section] {
         &self.opaque_sections
     }
@@ -914,6 +926,7 @@ impl ParsedWorld {
             levels,
             unknown_registry_tables,
             opaque_sections: self.opaque_sections,
+            entities: EntityStore::new(),
         };
         Ok((world, report, translator))
     }

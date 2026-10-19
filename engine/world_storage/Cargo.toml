@@ -13,6 +13,7 @@ test-support = []
 [dependencies]
 binary_codec.workspace = true
 content_registry.workspace = true
+entities.workspace = true
 namespaced_id.workspace = true
 region_octree.workspace = true
 terrain.workspace = true

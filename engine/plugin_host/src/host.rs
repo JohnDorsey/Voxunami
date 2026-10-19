@@ -10,6 +10,8 @@ use voxel_grid::ChannelIndex;
 use voxel_space::{GridId, VoxelCoordinate};
 use world_storage::{Section, WorldData};
 
+use entities::EntityCatalog;
+
 use crate::command::{Argument, Arguments, CommandSpec};
 use crate::context::{Context, Intent, MindContext, Queue, Queued};
 use crate::error::RegistrationError;
@@ -299,6 +301,10 @@ fn emit_and_drain<E: crate::event::Event>(
 }
 
 impl GameLogic for PluginHost {
+    fn entity_catalog(&self) -> Arc<EntityCatalog> {
+        Arc::clone(&self.registry.catalog)
+    }
+
     fn client_joined(&mut self, client: ClientId, world: &mut ServerWorld) {
         self.prepare(world);
         let tick = world.tick();

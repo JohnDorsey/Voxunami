@@ -6,17 +6,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
+use entities::{ComponentBag, EntityKindSpec, ItemSpec};
 use namespaced_id::NamespacedId;
 use plugin_host::{
-    Argument, CASCADE_LIMIT, CommandSpec, Event, HandlerSpec, Phase, PlayerJoined, PlayerLeft,
-    Plugin, PluginHost, Registrar, RegistrationError, SaveScope, SystemSpec, Verdict,
+    Argument, CASCADE_LIMIT, CommandSpec, EntityDespawned, EntitySpawned, Event, HandlerSpec,
+    Phase, PlayerJoined, PlayerLeft, Plugin, PluginHost, Registrar, RegistrationError, SaveScope,
+    SystemSpec, Verdict,
 };
-use protocol::{ClientMessage, Message, PROTOCOL_VERSION, ServerMessage};
+use protocol::{ClientMessage, EntityId, Message, PROTOCOL_VERSION, ServerMessage};
 use server::{GameLogic, GridView, Server, ServerConfig};
 use transport::Connection;
 use transport::loopback::{LoopbackConnection, loopback_listener};
 use voxel_grid::ChannelIndex;
-use voxel_space::{GridId, VoxelCoordinate};
+use voxel_space::{
+    BrickCoordinate, EntityPose, GridId, Orientation, VoxelCoordinate, WorldPosition,
+};
 use world_storage::Section;
 use world_storage::test_support::{Game, Plugin as FixturePlugin, id, sample_world};
 
@@ -1368,4 +1372,469 @@ fn help_belongs_to_the_host_and_a_game_without_commands_has_none() {
         replies_to(&mut rig, &["/help"]),
         ["this game has no commands"]
     );
+}
+
+// ---------------------------------------------------------------- entities
+
+/// A component that is one number.
+#[derive(Debug, PartialEq)]
+struct Health(u32);
+
+impl Message for Health {
+    fn kind() -> NamespacedId {
+        id("test:health")
+    }
+    fn encode(&self) -> Vec<u8> {
+        self.0.to_le_bytes().to_vec()
+    }
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        let mut reader = ByteReader::new(payload);
+        let value = reader.read_u32()?;
+        reader.finish()?;
+        Ok(Self(value))
+    }
+    fn samples() -> Vec<Self> {
+        vec![Self(0), Self(u32::MAX)]
+    }
+}
+
+/// A component of another sort, which the systems below use to be unordered without clashing.
+#[derive(Debug, PartialEq)]
+struct Mood(u8);
+
+impl Message for Mood {
+    fn kind() -> NamespacedId {
+        id("test:mood")
+    }
+    fn encode(&self) -> Vec<u8> {
+        vec![self.0]
+    }
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        match payload {
+            [value] => Ok(Self(*value)),
+            _ => Err(DecodeError::Invalid("a mood is one byte")),
+        }
+    }
+    fn samples() -> Vec<Self> {
+        vec![Self(0)]
+    }
+}
+
+fn cow() -> EntityKindSpec {
+    EntityKindSpec::new("test:cow")
+        .component(Health(10), true)
+        .component(Mood(0), false)
+}
+
+fn pose_at(x: f32) -> EntityPose {
+    EntityPose::new(
+        GridId::MAIN,
+        WorldPosition::new(BrickCoordinate::new(0, 0, 0), [x, 5.0, 5.0]),
+        Orientation::IDENTITY,
+    )
+}
+
+/// A plugin that declares the cow kind and has one system of this spec that runs `body`.
+fn herder(
+    name: &'static str,
+    spec: fn() -> SystemSpec,
+    body: impl FnMut(&mut plugin_host::Context<'_>) + Send + Sync + Clone + 'static,
+) -> Box<dyn Plugin> {
+    plugin(name, move |registrar| {
+        if name == "test:herd" {
+            registrar.entity_kind(cow());
+        }
+        registrar.system(spec(), body.clone());
+    })
+}
+
+#[test]
+fn plugins_declare_kinds_and_items_and_the_game_gets_them_all() {
+    let host = PluginHost::new(
+        vec![
+            plugin("test:a", |registrar| {
+                registrar.entity_kind(cow());
+                registrar.item(ItemSpec::new("test:stone", 64));
+            }),
+            plugin("test:b", |registrar| {
+                registrar.entity_kind(EntityKindSpec::new("test:pig"));
+                registrar.item(ItemSpec::new("test:wood", 16));
+            }),
+        ],
+        &sample_world(&game()),
+    )
+    .unwrap();
+    let catalog = GameLogic::entity_catalog(&host);
+    let kinds: Vec<String> = catalog.kinds.iter().map(|s| s.id().to_string()).collect();
+    let items: Vec<(String, u32)> = catalog
+        .items
+        .iter()
+        .map(|s| (s.id().to_string(), s.max_stack()))
+        .collect();
+    assert_eq!(kinds, ["test:cow", "test:pig"]);
+    assert_eq!(
+        items,
+        [("test:stone".to_owned(), 64), ("test:wood".to_owned(), 16)]
+    );
+}
+
+#[test]
+fn a_kind_or_an_item_declared_twice_is_refused() {
+    let kind = |registrar: &mut Registrar<'_>| registrar.entity_kind(cow());
+    assert_eq!(
+        registration_error(vec![plugin("test:a", kind), plugin("test:b", kind)]),
+        Some(RegistrationError::DuplicateEntityKind(id("test:cow")))
+    );
+    let item = |registrar: &mut Registrar<'_>| registrar.item(ItemSpec::new("test:stone", 64));
+    assert_eq!(
+        registration_error(vec![plugin("test:a", item), plugin("test:b", item)]),
+        Some(RegistrationError::DuplicateItem(id("test:stone")))
+    );
+}
+
+#[test]
+fn a_system_makes_and_removes_entities_and_handlers_hear_of_each_with_the_world_as_it_then_is() {
+    let log = new_log();
+    let mut rig = build(|_, _| {
+        let handler_log = Arc::clone(&log);
+        let system_log = Arc::clone(&log);
+        let herd = herder(
+            "test:herd",
+            || SystemSpec::new("test:herd_move", Phase::Rules).writes_entities(),
+            move |context| {
+                let tick = context.tick().get();
+                if tick == 1 {
+                    let id = context
+                        .spawn(&id("test:cow"), pose_at(3.0), ComponentBag::new())
+                        .unwrap();
+                    note(&system_log, format!("spawned {}", id.get()));
+                } else if tick == 3 {
+                    let gone = context.despawn(EntityId::new(1));
+                    note(&system_log, format!("despawned {}", gone.is_some()));
+                }
+            },
+        );
+        let listener = plugin("test:listener", move |registrar| {
+            let log = Arc::clone(&handler_log);
+            registrar.on::<EntitySpawned>(
+                HandlerSpec::new("test:heard_spawn"),
+                move |event, context| {
+                    note(
+                        &log,
+                        format!(
+                            "heard spawn {} {} present={}",
+                            event.id.get(),
+                            event.kind,
+                            context.entity(event.id).is_some()
+                        ),
+                    );
+                },
+            );
+            let log = Arc::clone(&handler_log);
+            registrar.on::<EntityDespawned>(
+                HandlerSpec::new("test:heard_despawn"),
+                move |event, context| {
+                    note(
+                        &log,
+                        format!(
+                            "heard despawn {} {} present={}",
+                            event.id.get(),
+                            event.kind,
+                            context.entity(event.id).is_some()
+                        ),
+                    );
+                },
+            );
+        });
+        vec![herd, listener]
+    })
+    .unwrap();
+    for _ in 0..4 {
+        rig.server.step();
+    }
+    assert_eq!(
+        lines(&log),
+        [
+            "spawned 1",
+            "heard spawn 1 test:cow present=true",
+            "despawned true",
+            "heard despawn 1 test:cow present=false",
+        ]
+    );
+    assert!(rig.server.world().entities().is_empty());
+}
+
+#[test]
+fn components_are_read_and_set_and_entities_are_found_through_the_context() {
+    let log = new_log();
+    let mut rig = build(|_, _| {
+        let system_log = Arc::clone(&log);
+        vec![herder(
+            "test:herd",
+            || {
+                SystemSpec::new("test:herd_check", Phase::Rules)
+                    .writes_entities()
+                    .writes_component::<Health>()
+                    .reads_component::<Mood>()
+            },
+            move |context| {
+                if context.tick().get() != 1 {
+                    return;
+                }
+                let near = context
+                    .spawn(&id("test:cow"), pose_at(3.0), ComponentBag::new())
+                    .unwrap();
+                let far = context
+                    .spawn(&id("test:cow"), pose_at(20.0), ComponentBag::new())
+                    .unwrap();
+                context.set_component(far, &Health(2)).unwrap();
+                note(
+                    &system_log,
+                    format!(
+                        "{:?} {:?} {:?}",
+                        context.component::<Health>(near).unwrap(),
+                        context.component::<Health>(far).unwrap(),
+                        context.component::<Mood>(near).unwrap()
+                    ),
+                );
+                let centre = pose_at(0.0).position;
+                note(
+                    &system_log,
+                    format!("{:?}", context.entities_near(GridId::MAIN, centre, 5.0)),
+                );
+                context.set_pose(near, pose_at(19.0)).unwrap();
+                note(
+                    &system_log,
+                    format!("{:?}", context.entities_near(GridId::MAIN, centre, 5.0)),
+                );
+            },
+        )]
+    })
+    .unwrap();
+    rig.server.step();
+    assert_eq!(
+        lines(&log),
+        [
+            "Some(Health(10)) Some(Health(2)) Some(Mood(0))",
+            "[EntityId(1)]",
+            "[]",
+        ]
+    );
+}
+
+#[test]
+fn a_system_that_uses_what_it_did_not_declare_about_entities_fails() {
+    // The check is made in debug builds, which is what tests normally are; a release build does not make it.
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    // (declares entities, declares the health component for writing, declares the mood for reading)
+    let try_system = |entities: bool, health: bool, mood: bool| {
+        let mut rig = build(|_, _| {
+            // A plain function cannot capture the flags, so each case has a spec of its own.
+            let spec: fn() -> SystemSpec = if entities && health && mood {
+                || {
+                    SystemSpec::new("test:s", Phase::Rules)
+                        .writes_entities()
+                        .writes_component::<Health>()
+                        .reads_component::<Mood>()
+                }
+            } else if !entities {
+                || SystemSpec::new("test:s", Phase::Rules).writes_component::<Health>()
+            } else if !health {
+                || SystemSpec::new("test:s", Phase::Rules).writes_entities()
+            } else {
+                || {
+                    SystemSpec::new("test:s", Phase::Rules)
+                        .writes_entities()
+                        .writes_component::<Health>()
+                }
+            };
+            vec![herder("test:herd", spec, |context| {
+                let id = context
+                    .spawn(&id("test:cow"), pose_at(1.0), ComponentBag::new())
+                    .unwrap();
+                context.set_component(id, &Health(1)).unwrap();
+                let _ = context.component::<Mood>(id);
+            })]
+        })
+        .unwrap();
+        catch_unwind(AssertUnwindSafe(|| {
+            rig.server.step();
+        }))
+        .is_ok()
+    };
+    assert!(try_system(true, true, true), "everything declared");
+    assert!(
+        !try_system(false, true, true),
+        "making an entity undeclared"
+    );
+    assert!(
+        !try_system(true, false, true),
+        "setting a component undeclared"
+    );
+    assert!(
+        !try_system(true, true, false),
+        "reading a component undeclared"
+    );
+}
+
+#[test]
+fn a_component_declared_only_for_reading_cannot_be_written() {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    let mut rig = build(|_, _| {
+        vec![herder(
+            "test:herd",
+            || {
+                SystemSpec::new("test:s", Phase::Rules)
+                    .writes_entities()
+                    .reads_component::<Health>()
+            },
+            |context| {
+                let cow = context
+                    .spawn(&id("test:cow"), pose_at(1.0), ComponentBag::new())
+                    .unwrap();
+                // Reading is declared, so this is fine; writing is not.
+                context.component::<Health>(cow).unwrap();
+                context.set_component(cow, &Health(1)).unwrap();
+            },
+        )]
+    })
+    .unwrap();
+    assert!(
+        catch_unwind(AssertUnwindSafe(|| {
+            rig.server.step();
+        }))
+        .is_err()
+    );
+}
+
+#[test]
+fn systems_that_use_one_component_with_no_order_between_them_are_refused() {
+    let writer = |name: &'static str| {
+        plugin(name, |registrar| {
+            registrar.system(
+                SystemSpec::new(&format!("{}_s", registrar.plugin_id()), Phase::Rules)
+                    .writes_component::<Health>(),
+                |_| {},
+            );
+        })
+    };
+    let reader = |name: &'static str| {
+        plugin(name, |registrar| {
+            registrar.system(
+                SystemSpec::new(&format!("{}_s", registrar.plugin_id()), Phase::Rules)
+                    .reads_component::<Health>(),
+                |_| {},
+            );
+        })
+    };
+    let conflict = |a, b| match registration_error(vec![a, b]) {
+        Some(RegistrationError::AmbiguousComponentOrder { component, .. }) => Some(component),
+        other => {
+            assert!(other.is_none(), "{other:?}");
+            None
+        }
+    };
+    assert_eq!(
+        conflict(writer("test:a"), reader("test:b")),
+        Some(id("test:health"))
+    );
+    assert_eq!(
+        conflict(writer("test:a"), writer("test:b")),
+        Some(id("test:health"))
+    );
+    assert_eq!(
+        conflict(reader("test:a"), reader("test:b")),
+        None,
+        "two readers do not clash"
+    );
+
+    // Entities as a whole are a resource too: making them and looking for them are ordered.
+    let maker = plugin("test:maker", |registrar| {
+        registrar.system(
+            SystemSpec::new("test:make", Phase::Rules).writes_entities(),
+            |_| {},
+        );
+    });
+    let finder = plugin("test:finder", |registrar| {
+        registrar.system(
+            SystemSpec::new("test:find", Phase::Rules).reads_entities(),
+            |_| {},
+        );
+    });
+    assert_eq!(conflict(maker, finder), Some(id("engine:entities")));
+
+    // Another component does not clash, and an order between the two settles it.
+    let mood_writer = plugin("test:c", |registrar| {
+        registrar.system(
+            SystemSpec::new("test:c_s", Phase::Rules).writes_component::<Mood>(),
+            |_| {},
+        );
+    });
+    assert_eq!(conflict(writer("test:a"), mood_writer), None);
+    let ordered_reader = plugin("test:d", |registrar| {
+        registrar.system(
+            SystemSpec::new("test:d_s", Phase::Rules)
+                .reads_component::<Health>()
+                .after("test:a_s"),
+            |_| {},
+        );
+    });
+    assert_eq!(conflict(writer("test:a"), ordered_reader), None);
+}
+
+#[test]
+fn the_order_the_plugins_are_listed_in_does_not_change_which_entity_gets_which_id() {
+    let kinds_by_id = |reverse: bool| {
+        let mut plugins = vec![
+            plugin("test:a", |registrar| {
+                registrar.entity_kind(EntityKindSpec::new("test:cow"));
+                registrar.system(
+                    SystemSpec::new("test:a_s", Phase::Rules).writes_entities(),
+                    |context| {
+                        if context.tick().get() == 1 {
+                            context
+                                .spawn(&id("test:cow"), pose_at(1.0), ComponentBag::new())
+                                .unwrap();
+                        }
+                    },
+                );
+            }),
+            plugin("test:b", |registrar| {
+                registrar.entity_kind(EntityKindSpec::new("test:pig"));
+                registrar.system(
+                    SystemSpec::new("test:b_s", Phase::Rules)
+                        .writes_entities()
+                        .after("test:a_s"),
+                    |context| {
+                        if context.tick().get() == 1 {
+                            context
+                                .spawn(&id("test:pig"), pose_at(2.0), ComponentBag::new())
+                                .unwrap();
+                        }
+                    },
+                );
+            }),
+        ];
+        if reverse {
+            plugins.reverse();
+        }
+        let mut rig = build(move |_, _| plugins).unwrap();
+        rig.server.step();
+        rig.server
+            .world()
+            .entities()
+            .iter()
+            .map(|entity| (entity.id.get(), entity.kind.to_string()))
+            .collect::<Vec<_>>()
+    };
+    let listed = kinds_by_id(false);
+    assert_eq!(
+        listed,
+        [(1, "test:cow".to_owned()), (2, "test:pig".to_owned())]
+    );
+    assert_eq!(kinds_by_id(true), listed);
 }

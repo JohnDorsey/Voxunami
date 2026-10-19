@@ -11,6 +11,7 @@ description = "The authoritative game server: owns the world, runs ticks, and st
 test-support = []
 
 [dependencies]
+entities.workspace = true
 content_registry.workspace = true
 namespaced_id.workspace = true
 protocol.workspace = true

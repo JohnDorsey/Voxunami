@@ -4,6 +4,7 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use entities::{EntityCatalog, EntityError, EntityKindSpec, ItemSpec};
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, Message, check_message};
 use voxel_grid::ChannelIndex;
@@ -12,7 +13,9 @@ use world_storage::{Section, WorldData};
 use crate::command::{Arguments, CommandSpec};
 use crate::context::{Context, MindContext};
 use crate::error::RegistrationError;
-use crate::event::{ChannelsChanged, Event, PlayerJoined, PlayerLeft, Verdict};
+use crate::event::{
+    ChannelsChanged, EntityDespawned, EntitySpawned, Event, PlayerJoined, PlayerLeft, Verdict,
+};
 use crate::order::{Node, order, reachable};
 use crate::registry::{
     CommandEntry, HandlerEntry, HandlerKind, MessageEntry, Registry, Runner, SaveEntry, SystemEntry,
@@ -58,6 +61,7 @@ pub(crate) struct Builder {
     handlers: Vec<PendingHandler>,
     messages: BTreeMap<NamespacedId, MessageEntry>,
     commands: BTreeMap<String, CommandEntry>,
+    catalog: EntityCatalog,
     saves: Vec<SaveEntry>,
     watched: BTreeSet<ChannelIndex>,
     errors: Vec<RegistrationError>,
@@ -71,6 +75,10 @@ impl Builder {
             .insert(TypeId::of::<PlayerJoined>(), PlayerJoined::id());
         self.events
             .insert(TypeId::of::<PlayerLeft>(), PlayerLeft::id());
+        self.events
+            .insert(TypeId::of::<EntitySpawned>(), EntitySpawned::id());
+        self.events
+            .insert(TypeId::of::<EntityDespawned>(), EntityDespawned::id());
     }
 }
 
@@ -124,6 +132,24 @@ impl<'a> Registrar<'a> {
             self.builder
                 .errors
                 .push(RegistrationError::DuplicateEvent(E::id()));
+        }
+    }
+
+    /// Declares a kind of entity: its identifier and the components its entities have.
+    pub fn entity_kind(&mut self, spec: EntityKindSpec) {
+        if let Err(EntityError::DuplicateKind(kind)) = self.builder.catalog.kinds.register(spec) {
+            self.builder
+                .errors
+                .push(RegistrationError::DuplicateEntityKind(kind));
+        }
+    }
+
+    /// Declares an item: its identifier and how many fit in a stack.
+    pub fn item(&mut self, spec: ItemSpec) {
+        if let Err(EntityError::DuplicateItem(item)) = self.builder.catalog.items.register(spec) {
+            self.builder
+                .errors
+                .push(RegistrationError::DuplicateItem(item));
         }
     }
 
@@ -336,6 +362,7 @@ pub(crate) fn finish(builder: Builder) -> Result<Registry, RegistrationError> {
         handlers,
         messages,
         commands,
+        catalog,
         saves,
         watched,
         mut errors,
@@ -444,6 +471,25 @@ pub(crate) fn finish(builder: Builder) -> Result<Registry, RegistrationError> {
                         channel,
                     });
                 }
+                let component_conflict = a
+                    .component_writes
+                    .iter()
+                    .find(|component| {
+                        b.component_writes.contains(component)
+                            || b.component_reads.contains(component)
+                    })
+                    .or_else(|| {
+                        b.component_writes
+                            .iter()
+                            .find(|component| a.component_reads.contains(component))
+                    });
+                if let Some(component) = component_conflict {
+                    return Err(RegistrationError::AmbiguousComponentOrder {
+                        first: a.id.clone(),
+                        second: b.id.clone(),
+                        component: component.clone(),
+                    });
+                }
             }
         }
         run_order[phase.index()] = sequence.into_iter().map(|local| members[local]).collect();
@@ -529,6 +575,7 @@ pub(crate) fn finish(builder: Builder) -> Result<Registry, RegistrationError> {
         messages,
         malformed_messages: Arc::default(),
         commands,
+        catalog: Arc::new(catalog),
         saves,
         watched,
     })

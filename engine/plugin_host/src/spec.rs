@@ -1,4 +1,5 @@
 use namespaced_id::NamespacedId;
+use protocol::Message;
 use voxel_grid::ChannelIndex;
 
 use crate::event::parse_id;
@@ -43,7 +44,14 @@ pub enum DeterminismClass {
     Mind,
 }
 
-/// What a system is: where it runs and which channels it uses.
+/// What stands for the existence and the poses of entities in the components a system declares: a
+/// system that makes, removes, moves or looks for entities uses this, besides the components it reads and
+/// writes.
+pub fn entities_resource() -> NamespacedId {
+    parse_id("engine:entities")
+}
+
+/// What a system is: where it runs and which channels and components it uses.
 #[derive(Clone, Debug)]
 pub struct SystemSpec {
     pub id: NamespacedId,
@@ -52,6 +60,9 @@ pub struct SystemSpec {
     pub before: Vec<NamespacedId>,
     pub reads: Vec<ChannelIndex>,
     pub writes: Vec<ChannelIndex>,
+    /// The components of entities it reads, by identifier (see [`entities_resource`]).
+    pub component_reads: Vec<NamespacedId>,
+    pub component_writes: Vec<NamespacedId>,
 }
 
 impl SystemSpec {
@@ -64,6 +75,8 @@ impl SystemSpec {
             before: Vec::new(),
             reads: Vec::new(),
             writes: Vec::new(),
+            component_reads: Vec::new(),
+            component_writes: Vec::new(),
         }
     }
 
@@ -89,6 +102,30 @@ impl SystemSpec {
     /// fails.
     pub fn writes(mut self, channels: &[ChannelIndex]) -> Self {
         self.writes.extend_from_slice(channels);
+        self
+    }
+
+    /// Reads this component of entities. In tests and debug builds a system that reads another fails.
+    pub fn reads_component<C: Message>(mut self) -> Self {
+        self.component_reads.push(C::kind());
+        self
+    }
+
+    /// Writes (and may read) this component of entities.
+    pub fn writes_component<C: Message>(mut self) -> Self {
+        self.component_writes.push(C::kind());
+        self
+    }
+
+    /// Looks for entities or reads their poses and kinds.
+    pub fn reads_entities(mut self) -> Self {
+        self.component_reads.push(entities_resource());
+        self
+    }
+
+    /// Makes, removes or moves entities (and may look for them).
+    pub fn writes_entities(mut self) -> Self {
+        self.component_writes.push(entities_resource());
         self
     }
 }

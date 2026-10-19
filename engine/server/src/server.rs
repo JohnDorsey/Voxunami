@@ -102,7 +102,7 @@ impl Server {
         let world_description = world.describe(registries)?;
         Ok(Self {
             config,
-            world: ServerWorld::new(world),
+            world: ServerWorld::new(world, logic.entity_catalog()),
             logic,
             listener,
             world_description,

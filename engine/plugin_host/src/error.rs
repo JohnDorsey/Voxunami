@@ -22,6 +22,10 @@ pub enum RegistrationError {
     DuplicateMessage(NamespacedId),
     #[error("the command {0} is registered twice")]
     DuplicateCommand(String),
+    #[error("the entity kind {0} is declared twice")]
+    DuplicateEntityKind(NamespacedId),
+    #[error("the item {0} is declared twice")]
+    DuplicateItem(NamespacedId),
     #[error(
         "{item} is ordered {relation} {target}, which is not registered (or is not of the same kind)"
     )]
@@ -45,6 +49,15 @@ pub enum RegistrationError {
         first: NamespacedId,
         second: NamespacedId,
         channel: ChannelIndex,
+    },
+    #[error(
+        "systems {first} and {second} both use the component {component} (at least one writes it) with no order between them"
+    )]
+    AmbiguousComponentOrder {
+        first: NamespacedId,
+        second: NamespacedId,
+        /// The identifier of the component, or `engine:entities` for the existence and poses of entities.
+        component: NamespacedId,
     },
     #[error("handler {handler} listens for event {event}, which no plugin defines")]
     UnknownEvent {

@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
+use entities::EntityCatalog;
 use namespaced_id::NamespacedId;
 use protocol::ClientId;
 use voxel_grid::ChannelIndex;
@@ -68,6 +69,8 @@ pub(crate) struct Registry {
     /// How many payloads of handled kinds did not decode and were ignored.
     pub malformed_messages: Arc<AtomicU64>,
     pub commands: BTreeMap<String, CommandEntry>,
+    /// The kinds of entity and the items the plugins declared.
+    pub catalog: Arc<EntityCatalog>,
     pub saves: Vec<SaveEntry>,
     /// The channels some handler asked to hear of.
     pub watched: BTreeSet<ChannelIndex>,

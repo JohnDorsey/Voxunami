@@ -1,10 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use entities::{ComponentBag, Entity, EntityCatalog, EntityError, EntityStore};
 use namespaced_id::NamespacedId;
-use protocol::{ClientId, MAXIMUM_COMMAND_LENGTH, Tick, VoxelChange};
+use protocol::{ClientId, EntityId, MAXIMUM_COMMAND_LENGTH, Message, Tick, VoxelChange};
 use voxel_grid::{Brick, ChannelIndex};
-use voxel_space::{BrickCoordinate, GridId, LevelIndex, VoxelCoordinate};
+use voxel_space::{
+    BrickCoordinate, EntityPose, GridId, LevelIndex, VoxelCoordinate, WorldPosition,
+};
 use world_storage::{BrickSource, WorldData};
 
 use crate::generated_cache::GeneratedBrickCache;
@@ -62,6 +65,8 @@ pub(crate) struct OutgoingGameMessage {
 #[derive(Debug)]
 pub struct ServerWorld {
     data: WorldData,
+    /// The kinds of entity and the items, from the game.
+    catalog: Arc<EntityCatalog>,
     tick: Tick,
     clients: BTreeSet<ClientId>,
     generated: GeneratedBrickCache,
@@ -74,9 +79,10 @@ pub struct ServerWorld {
 }
 
 impl ServerWorld {
-    pub(crate) fn new(data: WorldData) -> Self {
+    pub(crate) fn new(data: WorldData, catalog: Arc<EntityCatalog>) -> Self {
         Self {
             data,
+            catalog,
             tick: Tick::ZERO,
             clients: BTreeSet::new(),
             generated: GeneratedBrickCache::default(),
@@ -99,6 +105,60 @@ impl ServerWorld {
     /// a voxel are in it (setting a voxel to the value it has is not a change).
     pub fn take_changes(&mut self) -> Vec<ChannelChange> {
         std::mem::take(&mut self.changes)
+    }
+
+    /// The kinds of entity and the items the game has.
+    pub fn catalog(&self) -> &EntityCatalog {
+        &self.catalog
+    }
+
+    /// Every entity of the world, in order of identifier.
+    pub fn entities(&self) -> &EntityStore {
+        self.data.entities()
+    }
+
+    /// Makes an entity of `kind` at `pose` with the kind's components, those in `overrides` taking the place
+    /// of the defaults.
+    pub fn spawn_entity(
+        &mut self,
+        kind: &NamespacedId,
+        pose: EntityPose,
+        overrides: ComponentBag,
+    ) -> Result<EntityId, EntityError> {
+        self.data
+            .entities_mut()
+            .spawn(&self.catalog.kinds, kind, pose, overrides)
+    }
+
+    /// Removes an entity and returns it, if there was one.
+    pub fn despawn_entity(&mut self, id: EntityId) -> Option<Entity> {
+        self.data.entities_mut().despawn(id)
+    }
+
+    /// Sets a component of an entity that its kind declares.
+    pub fn set_entity_component<C: Message>(
+        &mut self,
+        id: EntityId,
+        value: &C,
+    ) -> Result<(), EntityError> {
+        self.data
+            .entities_mut()
+            .set_component(&self.catalog.kinds, id, value)
+    }
+
+    /// Moves an entity.
+    pub fn set_entity_pose(&mut self, id: EntityId, pose: EntityPose) -> Result<(), EntityError> {
+        self.data.entities_mut().set_pose(id, pose)
+    }
+
+    /// The entities of a grid within `radius` voxels of a position, in order of identifier.
+    pub fn entities_near(
+        &self,
+        grid: GridId,
+        position: WorldPosition,
+        radius: f32,
+    ) -> Vec<EntityId> {
+        self.data.entities().near(grid, position, radius)
     }
 
     pub fn data(&self) -> &WorldData {
@@ -349,7 +409,7 @@ mod tests {
         let level = counting_level(&game, &calls);
         let channel = block_channel(&level);
         let data = WorldData::new(1, main_level_id(), level);
-        (ServerWorld::new(data), channel, calls)
+        (ServerWorld::new(data, Arc::default()), channel, calls)
     }
 
     #[test]
@@ -396,7 +456,7 @@ mod tests {
         let nether = data
             .add_level(nether_id.clone(), counting_level(&game, &second_calls))
             .unwrap();
-        let mut world = ServerWorld::new(data);
+        let mut world = ServerWorld::new(data, Arc::default());
         assert_eq!(world.level_index(&nether_id), Some(nether));
         assert_eq!(world.level_index(&id("test_content:nowhere")), None);
 

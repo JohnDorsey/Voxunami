@@ -1806,6 +1806,7 @@ name = "plugin_host"
 version = "0.0.0"
 dependencies = [
  "binary_codec",
+ "entities",
  "namespaced_id",
  "protocol",
  "server",
@@ -2295,6 +2296,7 @@ name = "server"
 version = "0.0.0"
 dependencies = [
  "content_registry",
+ "entities",
  "namespaced_id",
  "proptest",
  "protocol",
@@ -3461,6 +3463,7 @@ dependencies = [
  "binary_codec",
  "content_registry",
  "crc32fast",
+ "entities",
  "namespaced_id",
  "proptest",
  "region_octree",

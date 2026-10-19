@@ -21,7 +21,7 @@ pub struct Entity {
 /// entities does not depend on the machine. Identifiers come from a counter, never reuse one, and
 /// are saved with the world (see [`EntityStore::next_id`]). A spatial index by brick answers "what is
 /// near here" without a scan of everything.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct EntityStore {
     entities: BTreeMap<EntityId, Entity>,
     next_id: u64,

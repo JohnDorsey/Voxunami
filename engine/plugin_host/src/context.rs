@@ -1,15 +1,16 @@
 use std::any::{Any, TypeId};
 use std::collections::VecDeque;
 
+use entities::{ComponentBag, Entity, EntityError};
 use namespaced_id::NamespacedId;
-use protocol::{ClientId, Tick};
+use protocol::{ClientId, EntityId, Message, Tick};
 use server::{AccessError, Audience, GridView, ServerGrid, ServerWorld};
 use voxel_grid::ChannelIndex;
-use voxel_space::{GridId, VoxelCoordinate};
+use voxel_space::{EntityPose, GridId, VoxelCoordinate, WorldPosition};
 
-use crate::event::{Event, Verdict};
+use crate::event::{EntityDespawned, EntitySpawned, Event, Verdict};
 use crate::registry::{HandlerKind, Registry};
-use crate::spec::SystemSpec;
+use crate::spec::{SystemSpec, entities_resource};
 
 /// An event waiting to be delivered.
 pub(crate) struct Queued {
@@ -68,6 +69,90 @@ impl<'a> Context<'a> {
             inner,
             declared: self.declared,
         })
+    }
+
+    /// Makes an entity of `kind` at `pose` with the kind's components, those in `components` taking the
+    /// place of its defaults. The handlers of [`EntitySpawned`] hear of it when this system or handler
+    /// returns.
+    pub fn spawn(
+        &mut self,
+        kind: &NamespacedId,
+        pose: EntityPose,
+        components: ComponentBag,
+    ) -> Result<EntityId, EntityError> {
+        self.check_component(&entities_resource(), true);
+        let id = self.world.spawn_entity(kind, pose, components)?;
+        self.emit(EntitySpawned {
+            id,
+            kind: kind.clone(),
+        });
+        Ok(id)
+    }
+
+    /// Removes an entity and returns it, if there was one. The handlers of [`EntityDespawned`] hear of it.
+    pub fn despawn(&mut self, id: EntityId) -> Option<Entity> {
+        self.check_component(&entities_resource(), true);
+        let entity = self.world.despawn_entity(id)?;
+        self.emit(EntityDespawned {
+            id,
+            kind: entity.kind.clone(),
+        });
+        Some(entity)
+    }
+
+    /// An entity, with its kind, pose and every component as bytes.
+    pub fn entity(&self, id: EntityId) -> Option<&Entity> {
+        self.check_component(&entities_resource(), false);
+        self.world.entities().get(id)
+    }
+
+    /// A component of an entity: `Ok(None)` if its kind has none of this type.
+    pub fn component<C: Message>(&self, id: EntityId) -> Result<Option<C>, EntityError> {
+        self.check_component(&C::kind(), false);
+        self.world.entities().component::<C>(id)
+    }
+
+    /// Sets a component the entity's kind declares.
+    pub fn set_component<C: Message>(
+        &mut self,
+        id: EntityId,
+        value: &C,
+    ) -> Result<(), EntityError> {
+        self.check_component(&C::kind(), true);
+        self.world.set_entity_component(id, value)
+    }
+
+    /// Moves an entity.
+    pub fn set_pose(&mut self, id: EntityId, pose: EntityPose) -> Result<(), EntityError> {
+        self.check_component(&entities_resource(), true);
+        self.world.set_entity_pose(id, pose)
+    }
+
+    /// The entities of a grid within `radius` voxels of a position, in order of identifier.
+    pub fn entities_near(
+        &self,
+        grid: GridId,
+        position: WorldPosition,
+        radius: f32,
+    ) -> Vec<EntityId> {
+        self.check_component(&entities_resource(), false);
+        self.world.entities_near(grid, position, radius)
+    }
+
+    /// In tests and debug builds a system that uses a component it did not declare panics.
+    fn check_component(&self, component: &NamespacedId, writing: bool) {
+        if !cfg!(debug_assertions) {
+            return;
+        }
+        let Some(spec) = self.declared else { return };
+        let allowed = spec.component_writes.contains(component)
+            || (!writing && spec.component_reads.contains(component));
+        assert!(
+            allowed,
+            "system {} {} the component {component}, which it did not declare",
+            spec.id,
+            if writing { "wrote" } else { "read" },
+        );
     }
 
     /// Queues a message for clients, delivered at the end of this tick.

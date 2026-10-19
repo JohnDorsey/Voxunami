@@ -1,5 +1,8 @@
 use std::fmt::Debug;
 
+use std::sync::Arc;
+
+use entities::EntityCatalog;
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, Tick};
 use world_storage::Section;
@@ -35,6 +38,12 @@ pub trait GameLogic: Debug + Send {
 
     /// Advances the game by one tick, after the tick's incoming messages.
     fn tick(&mut self, tick: Tick, world: &mut ServerWorld);
+
+    /// The kinds of entity and the items the game has, which the server needs to make entities, to tell
+    /// clients of them and to save them. Asked once, when the server is built. The default is none.
+    fn entity_catalog(&self) -> Arc<EntityCatalog> {
+        Arc::default()
+    }
 
     /// The game's own state that is not in the voxels (a score, a counter), as world file sections
     /// to save with the world. A game restores it from the world's plugin sections when it is built.
