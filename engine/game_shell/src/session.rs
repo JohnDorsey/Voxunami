@@ -171,6 +171,11 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         &self.content
     }
 
+    /// The entities the server has told this session of, in order of id.
+    pub fn entities(&self) -> &client::ClientEntities {
+        self.client.world().entities()
+    }
+
     pub fn mesher(&self) -> &WorldMesher {
         &self.mesher
     }
@@ -224,7 +229,8 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                     // A kind no client plugin handles is another game's, or a message only a server needs.
                     self.client_host.message(&kind, &payload);
                 }
-                ClientEvent::WatchedRegionChanged { .. } => {}
+                // The entities are read from the client's store when they are wanted.
+                ClientEvent::WatchedRegionChanged { .. } | ClientEvent::EntitiesChanged => {}
             }
         }
         self.mesher

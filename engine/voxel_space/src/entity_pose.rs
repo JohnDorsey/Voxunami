@@ -5,7 +5,7 @@ use crate::{GridId, Orientation, WorldPosition};
 /// The frame is the root grid of a level for anything in the world, and will be a ship's grid for a
 /// player aboard or a cart on a rail: the pose is always local to its frame, so it does not change as
 /// the frame moves.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EntityPose {
     pub grid: GridId,
     pub position: WorldPosition,

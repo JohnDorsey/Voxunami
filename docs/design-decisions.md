@@ -153,6 +153,16 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   (the per-brick time of Cave's 4-scale light, 2.3 to 2.8 ms before and after).
 - HUD lines are joined into the window title until the UI toolkit of Phase 30.
 
+## Decided (entities on the wire; built in Phase 27c)
+- **Protocol versions.** A version is bumped only when a change cannot be read by an older program, and a program reads every version back to
+  `OLDEST_READABLE_PROTOCOL_VERSION` (2 now): a recording must stay watchable. Version 3 only added messages (9 to 11, the entities), so
+  version 2 recordings play as they did. A live connection still needs the same version on both ends. The version is in the `Welcome`, so
+  changing it changes the stream hashes of the golden sessions and the pinned recording (and nothing else, shown by setting it back).
+- Entities are replicated by interest: those whose grid is the root grid of the watched level and whose brick is in the watched region.
+  The server sends the difference from what each client was last told (despawns, spawns, changes, in that order, in order of id), only the
+  components a kind marks replicated, and a client store (`ClientEntities`) is built from the stream alone, so a replay shows the same
+  entities.
+
 ## Decided (rules for lattice simulation and physics)
 - Tick phases (confirmed by the owner): each tick reads a frozen snapshot of the previous tick and produces the next one.
   A brick update never writes to a neighbour; cross-brick effects are queued and applied together in a fixed order.

@@ -1,4 +1,4 @@
-use protocol::{ProtocolError, Tick};
+use protocol::{EntityId, ProtocolError, Tick};
 use voxel_space::{BrickCoordinate, LevelIndex};
 use world_storage::{LoadError, TranslationError};
 
@@ -32,6 +32,10 @@ pub enum ClientError {
     OutOfSync(LevelIndex, BrickCoordinate),
     #[error("the server named {0}, which its world description does not have")]
     UnknownLevel(LevelIndex),
+    #[error("the server told this client of {0}, which it already knew")]
+    EntityAlreadyKnown(EntityId),
+    #[error("the server changed or removed {0}, which this client was not told of")]
+    UnknownEntity(EntityId),
 }
 
 impl From<LoadError> for ClientError {

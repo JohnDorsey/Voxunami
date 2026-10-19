@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use namespaced_id::NamespacedId;
 use protocol::{EntityId, Message};
-use voxel_space::{BRICK_EDGE_LENGTH, BrickCoordinate, EntityPose, GridId, WorldPosition};
+use voxel_space::{
+    BRICK_COORDINATE_MAXIMUM, BRICK_COORDINATE_MINIMUM, BRICK_EDGE_LENGTH, BrickBox,
+    BrickCoordinate, EntityPose, GridId, WorldPosition,
+};
 
 use crate::{ComponentBag, EntityError, EntityKinds};
 
@@ -26,6 +29,8 @@ pub struct EntityStore {
     entities: BTreeMap<EntityId, Entity>,
     next_id: u64,
     bricks: BTreeMap<(GridId, BrickCoordinate), BTreeSet<EntityId>>,
+    /// Entities made, removed or changed since [`EntityStore::take_changed`] was last called.
+    changed: BTreeSet<EntityId>,
 }
 
 impl Default for EntityStore {
@@ -41,6 +46,7 @@ impl EntityStore {
             entities: BTreeMap::new(),
             next_id: 1,
             bricks: BTreeMap::new(),
+            changed: BTreeSet::new(),
         }
     }
 
@@ -88,6 +94,7 @@ impl EntityStore {
         let id = EntityId::new(self.next_id);
         self.next_id = self.next_id.checked_add(1).expect("entity ids ran out");
         self.index(id, pose);
+        self.changed.insert(id);
         self.entities.insert(
             id,
             Entity {
@@ -104,6 +111,7 @@ impl EntityStore {
     pub fn despawn(&mut self, id: EntityId) -> Option<Entity> {
         let entity = self.entities.remove(&id)?;
         self.unindex(id, entity.pose);
+        self.changed.insert(id);
         Some(entity)
     }
 
@@ -150,6 +158,7 @@ impl EntityStore {
             });
         }
         entity.components.set(value);
+        self.changed.insert(id);
         Ok(())
     }
 
@@ -161,6 +170,7 @@ impl EntityStore {
             .get_mut(&id)
             .ok_or(EntityError::UnknownEntity(id))?;
         let old = std::mem::replace(&mut entity.pose, pose);
+        self.changed.insert(id);
         if (old.grid, old.position.brick()) != (pose.grid, pose.position.brick()) {
             self.unindex(id, old);
             self.index(id, pose);
@@ -214,6 +224,36 @@ impl EntityStore {
                 }
             }
         }
+        found.sort();
+        found
+    }
+
+    /// The entities made, removed or changed (a component set, a pose set) since this was last called,
+    /// in order of identifier. What replication uses to know what to look at again.
+    pub fn take_changed(&mut self) -> BTreeSet<EntityId> {
+        std::mem::take(&mut self.changed)
+    }
+
+    /// The entities of `grid` whose bricks are in `region`, in order of identifier. This is what a client
+    /// that watches the region is told of.
+    pub fn in_bricks(&self, grid: GridId, region: BrickBox) -> Vec<EntityId> {
+        // Bricks are ordered by x, then y, then z, so the x range of the region is one range of the map.
+        let first = BrickCoordinate::new(
+            region.min().x(),
+            BRICK_COORDINATE_MINIMUM,
+            BRICK_COORDINATE_MINIMUM,
+        );
+        let last = BrickCoordinate::new(
+            region.max().x(),
+            BRICK_COORDINATE_MAXIMUM,
+            BRICK_COORDINATE_MAXIMUM,
+        );
+        let mut found: Vec<EntityId> = self
+            .bricks
+            .range((grid, first)..=(grid, last))
+            .filter(|((_, brick), _)| region.contains(*brick))
+            .flat_map(|(_, ids)| ids.iter().copied())
+            .collect();
         found.sort();
         found
     }

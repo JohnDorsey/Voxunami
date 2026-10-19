@@ -14,6 +14,7 @@ use world_storage::{SaveError, WorldData};
 
 use crate::config::ServerConfig;
 use crate::game_logic::GameLogic;
+use crate::replication::{KnownEntities, ViewCache, entity_messages};
 use crate::server_world::{Audience, OutgoingGameMessage, ServerWorld};
 
 #[derive(Debug, thiserror::Error)]
@@ -52,6 +53,8 @@ enum Phase {
         watched: Option<(LevelIndex, BrickBox)>,
         /// The latest region it asked for, not yet answered.
         requested: Option<(LevelIndex, BrickBox)>,
+        /// The entities it has been told of, and as what.
+        known_entities: KnownEntities,
     },
 }
 
@@ -88,6 +91,8 @@ pub struct Server {
     world_description: Vec<u8>,
     sessions: BTreeMap<ClientId, Session>,
     next_client_id: u32,
+    /// What clients are told of each entity, kept until it changes.
+    entity_views: ViewCache,
 }
 
 impl Server {
@@ -108,6 +113,7 @@ impl Server {
             world_description,
             sessions: BTreeMap::new(),
             next_client_id: 1,
+            entity_views: ViewCache::default(),
         })
     }
 
@@ -317,6 +323,7 @@ impl Server {
         session.phase = Phase::Joined {
             watched: None,
             requested: None,
+            known_entities: KnownEntities::new(),
         };
         self.world.add_client(id);
         report.joined.push(id);
@@ -347,6 +354,8 @@ impl Server {
     }
 
     fn send_updates(&mut self, tick: Tick, report: &mut StepReport) {
+        let changed = self.world.data_mut().entities_mut().take_changed();
+        self.entity_views.invalidate(changed);
         let edited = self.edited_bricks();
         let ids: Vec<ClientId> = self
             .sessions
@@ -411,7 +420,10 @@ impl Server {
     /// Everything one client is sent for this tick, in order.
     fn frames_for(&mut self, id: ClientId, tick: Tick, edited: &[EditedBrick]) -> Vec<Vec<u8>> {
         let session = self.sessions.get_mut(&id).expect("the session exists");
-        let Phase::Joined { watched, requested } = &mut session.phase else {
+        let Phase::Joined {
+            watched, requested, ..
+        } = &mut session.phase
+        else {
             unreachable!("only joined clients are sent updates");
         };
         let previous = *watched;
@@ -467,6 +479,21 @@ impl Server {
                     .map(|entry| entry.update.clone()),
             );
         }
+        // Entities come after the voxels they stand in, and before the messages of the game.
+        let Phase::Joined { known_entities, .. } = &mut self
+            .sessions
+            .get_mut(&id)
+            .expect("the session exists")
+            .phase
+        else {
+            unreachable!("only joined clients are sent updates");
+        };
+        messages.extend(entity_messages(
+            &self.world,
+            &mut self.entity_views,
+            known_entities,
+            current,
+        ));
         for outgoing in &self.world.outgoing {
             if reaches(outgoing, id, current) {
                 messages.push(ServerMessage::GameMessage {

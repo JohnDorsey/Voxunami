@@ -648,6 +648,16 @@ Phase 26 (the client interface and the light hook; specified in `client-interfac
   sessions pass unmodified (the server stream is unchanged). The tests read a plugin's state through `voxunami_2048::game::progress`,
   `voxunami_eels::game::standings` and `voxunami_cave::game::light_scheme`.
 
+Phase 27a to 27c (entities; specified in `entities-spec.md`):
+- 27a: the `entities` crate (`EntityStore` with ids from a counter and a spatial index by brick, `ComponentBag`, `EntityKindSpec`, `ItemSpec`,
+  `ItemStack`, `Inventory`); `Orientation` and `EntityPose` in `voxel_space`; `EntityId` and the pose wire format in `protocol`. 16
+  mutations are caught.
+- 27b: the plugin API (`entity_kind`, `item`, `Context::{spawn, despawn, entity, component, set_component, set_pose, entities_near}`, the events
+  `EntitySpawned` and `EntityDespawned`, declared component access and its start-up ambiguity check); `WorldData` holds its entities, and
+  `ServerWorld` has the calls. 12 mutations are caught.
+- 27c: protocol version 3 (messages 9 to 11), server replication with cached views, the client store, replay of entities, version policy.
+  Cost with 1000 entities and 4 clients: 0.5, 0.7 and 1.4 ms a tick with none, a tenth and all moving. 13 mutations are caught.
+
 ## Measured
 Storage (Ryzen 7600X, release, one thread, best of 7, counting allocator; the single-voxel `get` figures include
 loop and bounds overhead, so bulk decode will be faster):

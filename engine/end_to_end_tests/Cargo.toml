@@ -7,6 +7,7 @@ publish.workspace = true
 description = "Scenarios that run a real server, clients and recorders together: the tests of the whole message stream."
 
 [dependencies]
+entities.workspace = true
 binary_codec.workspace = true
 client.workspace = true
 content_registry.workspace = true

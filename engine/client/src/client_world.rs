@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
 use namespaced_id::NamespacedId;
-use protocol::{PROTOCOL_VERSION, ServerMessage, Tick, Welcome};
+use protocol::{OLDEST_READABLE_PROTOCOL_VERSION, PROTOCOL_VERSION, ServerMessage, Tick, Welcome};
 use region_octree::BrickCube;
 use voxel_grid::Brick;
 use voxel_space::{BrickBox, BrickCoordinate, LevelIndex};
 use world_storage::{LevelData, LoadContext, LoadReport, ParsedWorld, SourceTranslator, WorldData};
 
+use crate::client_entities::{ClientEntities, ClientEntity};
 use crate::error::ClientError;
 
 /// What applying one message changed that a program showing the world needs to react to.
@@ -27,6 +28,8 @@ pub enum ClientEvent {
     },
     /// The server's answer to a command this client sent.
     CommandReply { text: String },
+    /// Entities appeared, changed or went away.
+    EntitiesChanged,
 }
 
 /// Facts about the connection, from the server's welcome.
@@ -54,6 +57,8 @@ pub struct ViewSummary {
     pub watched: Option<(LevelIndex, BrickBox)>,
     /// Every level of the world, in order.
     pub levels: Vec<LevelSummary>,
+    /// The entities the client has been told of, in order of id.
+    pub entities: Vec<ClientEntity>,
 }
 
 /// A client's picture of the world: terrain it generates itself where the server says which
@@ -70,6 +75,7 @@ pub struct ClientWorld {
     verifies_edit_digests: bool,
     tick: Tick,
     watched: Option<(LevelIndex, BrickBox)>,
+    entities: ClientEntities,
 }
 
 impl ClientWorld {
@@ -80,7 +86,10 @@ impl ClientWorld {
         welcome: Welcome,
         context: LoadContext<'_>,
     ) -> Result<(Self, LoadReport), ClientError> {
-        if welcome.protocol_version != PROTOCOL_VERSION {
+        // A recording made by an older program is read as it was made; a newer one is not understood.
+        if !(OLDEST_READABLE_PROTOCOL_VERSION..=PROTOCOL_VERSION)
+            .contains(&welcome.protocol_version)
+        {
             return Err(ClientError::UnsupportedProtocolVersion(
                 welcome.protocol_version,
             ));
@@ -100,6 +109,7 @@ impl ClientWorld {
                 verifies_edit_digests,
                 tick: welcome.tick,
                 watched: None,
+                entities: ClientEntities::default(),
             },
             report,
         ))
@@ -118,6 +128,11 @@ impl ClientWorld {
     /// The last tick this view is complete for.
     pub fn tick(&self) -> Tick {
         self.tick
+    }
+
+    /// The entities the server has told this client of.
+    pub fn entities(&self) -> &ClientEntities {
+        &self.entities
     }
 
     /// The level and region the server has told this client it watches.
@@ -141,6 +156,7 @@ impl ClientWorld {
         ViewSummary {
             tick: self.tick,
             watched: self.watched,
+            entities: self.entities.iter().cloned().collect(),
             levels: self
                 .world
                 .levels()
@@ -195,6 +211,18 @@ impl ClientWorld {
                 Ok(Some(ClientEvent::GameMessage { kind, payload }))
             }
             ServerMessage::CommandReply { text } => Ok(Some(ClientEvent::CommandReply { text })),
+            ServerMessage::EntitiesSpawned(entities) => {
+                self.entities.spawn(entities)?;
+                Ok(Some(ClientEvent::EntitiesChanged))
+            }
+            ServerMessage::EntitiesChanged(changes) => {
+                self.entities.change(changes)?;
+                Ok(Some(ClientEvent::EntitiesChanged))
+            }
+            ServerMessage::EntitiesDespawned(ids) => {
+                self.entities.despawn(ids)?;
+                Ok(Some(ClientEvent::EntitiesChanged))
+            }
             ServerMessage::InterestChanged {
                 level,
                 region,

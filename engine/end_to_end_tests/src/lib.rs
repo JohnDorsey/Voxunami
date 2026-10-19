@@ -9,18 +9,22 @@ use std::collections::HashMap;
 use std::io::{Cursor, Write};
 use std::sync::{Arc, Mutex};
 
-use binary_codec::{ByteReader, ByteWriter};
+use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use client::{Client, ClientError, Handshake, HandshakeProgress, TickUpdate, ViewSummary};
 use content_registry::IdentifierRegistry;
+use entities::{ComponentBag, EntityCatalog, EntityKindSpec};
 use namespaced_id::NamespacedId;
-use protocol::Tick;
+use protocol::{EntityId, Message, Tick};
 use replay::{RecordingConnection, ReplayConnection};
 use server::test_support::ScriptedLogic;
 use server::{Audience, Server, ServerConfig};
 use transport::Connection;
 use transport::loopback::{LoopbackConnection, LoopbackConnector, loopback_listener};
 use voxel_grid::Brick;
-use voxel_space::{BrickBox, BrickCoordinate, LevelIndex, VoxelCoordinate};
+use voxel_space::{
+    BrickBox, BrickCoordinate, EntityPose, GridId, LevelIndex, Orientation, VoxelCoordinate,
+    WorldPosition,
+};
 use world_storage::test_support::{ALL_PLUGINS, Game, Plugin, id};
 use world_storage::{BrickSource, LevelData, WorldData};
 
@@ -41,6 +45,46 @@ pub fn time_kind() -> NamespacedId {
     id("test_game:time")
 }
 
+/// How brightly a wisp glows: the one component of the pretend game's one kind of entity, which clients
+/// are told of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Glow(pub u32);
+
+impl Message for Glow {
+    fn kind() -> NamespacedId {
+        id("test_game:glow")
+    }
+    fn encode(&self) -> Vec<u8> {
+        self.0.to_le_bytes().to_vec()
+    }
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        let mut reader = ByteReader::new(payload);
+        let value = reader.read_u32()?;
+        reader.finish()?;
+        Ok(Self(value))
+    }
+    fn samples() -> Vec<Self> {
+        vec![Self(0), Self(u32::MAX)]
+    }
+}
+
+/// The kind of the pretend game's entities, when it has a herd (see [`Fixture::with_herd`]).
+pub fn wisp_kind() -> NamespacedId {
+    id("test_game:wisp")
+}
+
+/// Where a wisp is `step` ticks after it was made at `start`: it drifts along x, crossing bricks.
+fn wisp_pose(start: i64, step: u64) -> EntityPose {
+    EntityPose::new(
+        GridId::MAIN,
+        WorldPosition::new(
+            BrickCoordinate::new(start + (step * 3 / 32) as i64, 0, 0),
+            [(step * 3 % 32) as f32, 5.0, 5.0],
+        ),
+        Orientation::IDENTITY,
+    )
+}
+
 /// A running server with the pretend game, and a way for players to connect to it.
 #[derive(Debug)]
 pub struct Fixture {
@@ -57,7 +101,20 @@ impl Fixture {
         Self::with_world(game, world)
     }
 
+    /// A server for an empty world of the pretend game, with a herd of wisps: from tick 7 on, one is made
+    /// every 7th tick (up to six) in a brick that depends on the tick, each drifts along x every tick,
+    /// the oldest is removed every 11th tick, and every 3rd tick the glow of all of them is set.
+    pub fn with_herd() -> Self {
+        let game = Game::new(&ALL_PLUGINS);
+        let world = game.new_world();
+        Self::build(game, world, true)
+    }
+
     pub fn with_world(game: Game, world: WorldData) -> Self {
+        Self::build(game, world, false)
+    }
+
+    fn build(game: Game, world: WorldData, herd: bool) -> Self {
         let block_ids: HashMap<NamespacedId, u32> = (0..)
             .map_while(|raw| {
                 game.blocks
@@ -66,7 +123,17 @@ impl Fixture {
             })
             .collect();
         let (listener, connector) = loopback_listener();
+        let mut catalog = EntityCatalog::default();
+        if herd {
+            catalog
+                .kinds
+                .register(EntityKindSpec::new("test_game:wisp").component(Glow(1), true))
+                .expect("the kind is new");
+        }
+        // The tick on which each wisp was made, and where, by id.
+        let mut wisps: std::collections::BTreeMap<EntityId, (u64, i64)> = Default::default();
         let logic = ScriptedLogic::new()
+            .with_entity_catalog(catalog)
             .on_message(move |_, kind, payload, world| {
                 if *kind != place_block_kind() {
                     return;
@@ -106,6 +173,35 @@ impl Fixture {
                 let glass = game.raw_block("fancy_blocks:glass");
                 move |tick, world| {
                     let count = tick.get();
+                    if herd {
+                        if count % 7 == 0 && wisps.len() < 6 {
+                            let start = (count % 5) as i64 - 2;
+                            let id = world
+                                .spawn_entity(
+                                    &wisp_kind(),
+                                    wisp_pose(start, 0),
+                                    ComponentBag::new(),
+                                )
+                                .expect("the kind is declared");
+                            wisps.insert(id, (count, start));
+                        }
+                        for (&id, &(made, start)) in &wisps {
+                            world
+                                .set_entity_pose(id, wisp_pose(start, count - made))
+                                .expect("a wisp exists");
+                            if count % 3 == 0 {
+                                world
+                                    .set_entity_component(id, &Glow(count as u32))
+                                    .expect("a wisp has a glow");
+                            }
+                        }
+                        if count % 11 == 0
+                            && let Some((&oldest, _)) = wisps.iter().next()
+                        {
+                            world.despawn_entity(oldest);
+                            wisps.remove(&oldest);
+                        }
+                    }
                     if count % 5 == 0 {
                         let channel = world
                             .data()

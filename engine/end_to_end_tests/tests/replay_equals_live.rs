@@ -124,6 +124,9 @@ fn the_scenario_exercises_every_kind_of_message() {
             ServerMessage::TickCompleted { .. } => ticks += 1,
             ServerMessage::Disconnected { .. } => panic!("nobody was disconnected"),
             ServerMessage::CommandReply { .. } => panic!("nobody sent a command"),
+            ServerMessage::EntitiesSpawned(_)
+            | ServerMessage::EntitiesChanged(_)
+            | ServerMessage::EntitiesDespawned(_) => panic!("this scenario has no entities"),
         }
     }
     assert_eq!(welcomes, 1);
@@ -179,7 +182,9 @@ fn the_standard_session_makes_the_same_recording_on_every_platform() {
 }
 
 const PINNED_RECORDING_LENGTH: usize = 84_749;
-const PINNED_RECORDING_CHECKSUM: u32 = 1_435_984_007;
+// Phase 27c: the checksum changed once, for the protocol version in the welcome (3, was 2); the length did not, and
+// setting the version back to 2 gave the old checksum.
+const PINNED_RECORDING_CHECKSUM: u32 = 607_499_649;
 
 #[test]
 fn identical_sessions_make_byte_identical_recordings() {

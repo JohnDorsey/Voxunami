@@ -347,6 +347,8 @@ dependencies = [
 name = "client"
 version = "0.0.0"
 dependencies = [
+ "binary_codec",
+ "entities",
  "namespaced_id",
  "protocol",
  "region_octree",
@@ -569,6 +571,7 @@ dependencies = [
  "client",
  "content_registry",
  "crc32fast",
+ "entities",
  "namespaced_id",
  "proptest",
  "protocol",
@@ -2295,6 +2298,7 @@ dependencies = [
 name = "server"
 version = "0.0.0"
 dependencies = [
+ "binary_codec",
  "content_registry",
  "entities",
  "namespaced_id",

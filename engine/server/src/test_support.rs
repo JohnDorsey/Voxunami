@@ -4,6 +4,7 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
+use entities::EntityCatalog;
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, Tick};
 use world_storage::Section;
@@ -41,6 +42,7 @@ pub struct ScriptedLogic {
     on_join: Option<ClientAction>,
     on_command: Option<CommandAction>,
     saved_sections: Vec<Section>,
+    catalog: Arc<EntityCatalog>,
 }
 
 impl fmt::Debug for ScriptedLogic {
@@ -89,6 +91,12 @@ impl ScriptedLogic {
     /// A section the logic saves with the world, as a game saves its own state.
     pub fn saving(mut self, section: Section) -> Self {
         self.saved_sections.push(section);
+        self
+    }
+
+    /// The kinds of entity and the items the logic has.
+    pub fn with_entity_catalog(mut self, catalog: EntityCatalog) -> Self {
+        self.catalog = Arc::new(catalog);
         self
     }
 
@@ -147,6 +155,10 @@ impl GameLogic for ScriptedLogic {
 
     fn save_sections(&self) -> Vec<Section> {
         self.saved_sections.clone()
+    }
+
+    fn entity_catalog(&self) -> Arc<EntityCatalog> {
+        Arc::clone(&self.catalog)
     }
 
     fn tick(&mut self, tick: Tick, world: &mut ServerWorld) {

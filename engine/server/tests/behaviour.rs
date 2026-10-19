@@ -3,14 +3,21 @@
 
 use std::sync::{Arc, Mutex};
 
+use binary_codec::{ByteReader, DecodeError};
+use entities::{ComponentBag, EntityCatalog, EntityKindSpec};
 use namespaced_id::NamespacedId;
-use protocol::{ClientId, ClientMessage, PROTOCOL_VERSION, ServerMessage, Tick};
+use protocol::{
+    ClientId, ClientMessage, EntityChange, EntityId, Message, PROTOCOL_VERSION, ServerMessage, Tick,
+};
 use server::GridView;
 use server::test_support::{LogicEvent, ScriptedLogic};
 use server::{Audience, LeaveReason, Server, ServerConfig, StepReport};
 use transport::loopback::{LoopbackConnection, LoopbackConnector, loopback_listener};
 use transport::{Connection, ConnectionClosed};
-use voxel_space::{BrickBox, BrickCoordinate, GridId, LevelIndex, VoxelCoordinate};
+use voxel_space::{
+    BrickBox, BrickCoordinate, EntityPose, GridId, LevelIndex, Orientation, VoxelCoordinate,
+    WorldPosition,
+};
 use world_storage::ParsedWorld;
 use world_storage::WorldData;
 use world_storage::test_support::{ALL_PLUGINS, Game, Plugin, brick, id, sample_world};
@@ -1520,4 +1527,482 @@ fn a_grid_reads_and_writes_the_voxels_of_its_level_as_the_world_does_and_unknown
             GridId::FIRST_ALLOCATED
         )))
     );
+}
+
+// ---------------------------------------------------------------- entities
+
+/// A component clients are told of.
+#[derive(Debug, PartialEq)]
+struct Health(u32);
+
+impl Message for Health {
+    fn kind() -> NamespacedId {
+        id("test:health")
+    }
+    fn encode(&self) -> Vec<u8> {
+        self.0.to_le_bytes().to_vec()
+    }
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        let mut reader = ByteReader::new(payload);
+        let value = reader.read_u32()?;
+        reader.finish()?;
+        Ok(Self(value))
+    }
+    fn samples() -> Vec<Self> {
+        vec![Self(0)]
+    }
+}
+
+/// A component only the server knows of.
+#[derive(Debug, PartialEq)]
+struct Mood(u8);
+
+impl Message for Mood {
+    fn kind() -> NamespacedId {
+        id("test:mood")
+    }
+    fn encode(&self) -> Vec<u8> {
+        vec![self.0]
+    }
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        match payload {
+            [value] => Ok(Self(*value)),
+            _ => Err(DecodeError::Invalid("a mood is one byte")),
+        }
+    }
+    fn samples() -> Vec<Self> {
+        vec![Self(0)]
+    }
+}
+
+fn cow_catalog() -> EntityCatalog {
+    let mut catalog = EntityCatalog::default();
+    catalog
+        .kinds
+        .register(
+            EntityKindSpec::new("test:cow")
+                .component(Health(10), true)
+                .component(Mood(0), false),
+        )
+        .unwrap();
+    catalog
+}
+
+fn pose_in(brick_x: i64, offset_x: f32) -> EntityPose {
+    EntityPose::new(
+        GridId::MAIN,
+        WorldPosition::new(BrickCoordinate::new(brick_x, 0, 0), [offset_x, 5.0, 5.0]),
+        Orientation::IDENTITY,
+    )
+}
+
+/// A server with the cow kind whose game does `act` at each tick.
+fn herd_harness(
+    act: impl FnMut(Tick, &mut server::ServerWorld) + Send + 'static,
+) -> (Game, Harness) {
+    let game = Game::new(&ALL_PLUGINS);
+    let logic = ScriptedLogic::new()
+        .with_entity_catalog(cow_catalog())
+        .on_tick(act);
+    let harness = Harness::with_logic(&game, game.new_world(), ServerConfig::new(game_id()), logic);
+    (game, harness)
+}
+
+fn entity_messages(messages: &[ServerMessage]) -> Vec<&ServerMessage> {
+    messages
+        .iter()
+        .filter(|message| {
+            matches!(
+                message,
+                ServerMessage::EntitiesSpawned(_)
+                    | ServerMessage::EntitiesChanged(_)
+                    | ServerMessage::EntitiesDespawned(_)
+            )
+        })
+        .collect()
+}
+
+fn health_bytes(value: u32) -> (NamespacedId, Vec<u8>) {
+    (id("test:health"), Health(value).encode())
+}
+
+#[test]
+fn a_client_is_told_of_the_entities_in_the_region_it_watches_and_only_what_its_kind_replicates() {
+    let (_game, mut harness) = herd_harness(|tick, world| {
+        if tick.get() == 1 {
+            world
+                .spawn_entity(&id("test:cow"), pose_in(0, 3.0), ComponentBag::new())
+                .unwrap();
+            // Far from anyone's region.
+            world
+                .spawn_entity(&id("test:cow"), pose_in(40, 3.0), ComponentBag::new())
+                .unwrap();
+        }
+    });
+    let mut client = harness.connect();
+    client.hello();
+    harness.server.step();
+    client.received();
+    client.watch(BrickCoordinate::ORIGIN, 2);
+    harness.server.step();
+    let messages = client.received();
+    let told = entity_messages(&messages);
+    assert_eq!(told.len(), 1, "{told:?}");
+    let ServerMessage::EntitiesSpawned(spawned) = told[0] else {
+        panic!("{told:?}");
+    };
+    assert_eq!(spawned.len(), 1);
+    assert_eq!(spawned[0].id, EntityId::new(1));
+    assert_eq!(spawned[0].kind, id("test:cow"));
+    assert_eq!(spawned[0].pose, pose_in(0, 3.0));
+    // The health is told, the mood is not.
+    assert_eq!(spawned[0].components, [health_bytes(10)]);
+    // Quiet ticks say nothing more of it.
+    harness.server.step();
+    harness.server.step();
+    assert!(entity_messages(&client.received()).is_empty());
+}
+
+#[test]
+fn what_changed_is_what_is_sent_and_a_change_to_what_is_not_replicated_is_not() {
+    let (_game, mut harness) = herd_harness(|tick, world| match tick.get() {
+        1 => {
+            world
+                .spawn_entity(&id("test:cow"), pose_in(0, 3.0), ComponentBag::new())
+                .unwrap();
+        }
+        3 => world
+            .set_entity_pose(EntityId::new(1), pose_in(0, 4.0))
+            .unwrap(),
+        4 => world
+            .set_entity_component(EntityId::new(1), &Health(7))
+            .unwrap(),
+        5 => world
+            .set_entity_component(EntityId::new(1), &Mood(3))
+            .unwrap(),
+        6 => world
+            .set_entity_component(EntityId::new(1), &Health(7))
+            .unwrap(),
+        _ => {}
+    });
+    let mut client = harness.connect();
+    client.hello();
+    harness.server.step();
+    client.watch(BrickCoordinate::ORIGIN, 1);
+    harness.server.step();
+    client.received();
+    let mut per_tick = Vec::new();
+    for _ in 3..=6 {
+        harness.server.step();
+        per_tick.push(client.received());
+    }
+    let changes = |index: usize| -> Vec<EntityChange> {
+        entity_messages(&per_tick[index])
+            .into_iter()
+            .flat_map(|message| match message {
+                ServerMessage::EntitiesChanged(changes) => changes.clone(),
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    };
+    // Tick 3: only the pose.
+    assert_eq!(
+        changes(0),
+        [EntityChange {
+            id: EntityId::new(1),
+            pose: Some(pose_in(0, 4.0)),
+            components: Vec::new()
+        }]
+    );
+    // Tick 4: only the health.
+    assert_eq!(
+        changes(1),
+        [EntityChange {
+            id: EntityId::new(1),
+            pose: None,
+            components: vec![health_bytes(7)]
+        }]
+    );
+    // Tick 5: a mood nobody is told of; tick 6: the health set to what it already is. Nothing is sent.
+    assert!(entity_messages(&per_tick[2]).is_empty());
+    assert!(entity_messages(&per_tick[3]).is_empty());
+}
+
+#[test]
+fn an_entity_that_leaves_the_region_is_despawned_and_one_that_comes_in_is_spawned() {
+    let (_game, mut harness) = herd_harness(|tick, world| match tick.get() {
+        1 => {
+            world
+                .spawn_entity(&id("test:cow"), pose_in(0, 3.0), ComponentBag::new())
+                .unwrap();
+        }
+        3 => world
+            .set_entity_pose(EntityId::new(1), pose_in(40, 3.0))
+            .unwrap(),
+        5 => world
+            .set_entity_pose(EntityId::new(1), pose_in(1, 3.0))
+            .unwrap(),
+        7 => {
+            world.despawn_entity(EntityId::new(1));
+        }
+        _ => {}
+    });
+    let mut client = harness.connect();
+    client.hello();
+    harness.server.step();
+    client.watch(BrickCoordinate::ORIGIN, 1);
+    harness.server.step();
+    client.received();
+    let mut kinds = Vec::new();
+    for _ in 3..=7 {
+        harness.server.step();
+        for message in client.received() {
+            kinds.push(match message {
+                ServerMessage::EntitiesSpawned(entities) => {
+                    format!(
+                        "spawned {:?}",
+                        entities.iter().map(|e| e.id.get()).collect::<Vec<_>>()
+                    )
+                }
+                ServerMessage::EntitiesChanged(_) => "changed".to_owned(),
+                ServerMessage::EntitiesDespawned(ids) => {
+                    format!(
+                        "despawned {:?}",
+                        ids.iter().map(|i| i.get()).collect::<Vec<_>>()
+                    )
+                }
+                _ => continue,
+            });
+        }
+    }
+    assert_eq!(
+        kinds,
+        [
+            "despawned [1]", // tick 3: it walked away
+            "spawned [1]",   // tick 5: and came back
+            "despawned [1]", // tick 7: and was removed
+        ]
+    );
+}
+
+#[test]
+fn every_client_is_told_what_it_watches_and_a_late_one_is_told_everything() {
+    let (_game, mut harness) = herd_harness(|tick, world| {
+        if tick.get() == 1 {
+            for brick_x in [0, 0, 6] {
+                world
+                    .spawn_entity(&id("test:cow"), pose_in(brick_x, 3.0), ComponentBag::new())
+                    .unwrap();
+            }
+        }
+    });
+    let mut near = harness.connect();
+    let mut far = harness.connect();
+    near.hello();
+    far.hello();
+    harness.server.step();
+    near.watch(BrickCoordinate::ORIGIN, 1);
+    far.watch(BrickCoordinate::new(6, 0, 0), 1);
+    harness.server.step();
+    let ids = |messages: Vec<ServerMessage>| -> Vec<u64> {
+        messages
+            .iter()
+            .filter_map(|message| match message {
+                ServerMessage::EntitiesSpawned(entities) => {
+                    Some(entities.iter().map(|e| e.id.get()).collect::<Vec<_>>())
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    };
+    assert_eq!(ids(near.received()), [1, 2]);
+    assert_eq!(ids(far.received()), [3]);
+    // Someone who joins later, watching both, is told of all three, in one message.
+    let mut late = harness.connect();
+    late.hello();
+    harness.server.step();
+    late.send(&ClientMessage::SetInterest {
+        level: LevelIndex::MAIN,
+        region: BrickBox::new(
+            BrickCoordinate::new(-1, -1, -1),
+            BrickCoordinate::new(7, 1, 1),
+        )
+        .unwrap(),
+    });
+    harness.server.step();
+    assert_eq!(ids(late.received()), [1, 2, 3]);
+}
+
+#[test]
+fn two_clients_watching_the_same_region_are_sent_the_same_bytes() {
+    let (_game, mut harness) = herd_harness(|tick, world| {
+        if tick.get() == 1 {
+            world
+                .spawn_entity(&id("test:cow"), pose_in(0, 3.0), ComponentBag::new())
+                .unwrap();
+        }
+    });
+    let mut first = harness.connect();
+    let mut second = harness.connect();
+    first.hello();
+    second.hello();
+    harness.server.step();
+    first.watch(BrickCoordinate::ORIGIN, 1);
+    second.watch(BrickCoordinate::ORIGIN, 1);
+    harness.server.step();
+    let entity_frames = |client: &mut TestClient| -> Vec<Vec<u8>> {
+        client
+            .raw_frames()
+            .into_iter()
+            .filter(|frame| matches!(frame.first(), Some(9..=11)))
+            .collect()
+    };
+    let (a, b) = (entity_frames(&mut first), entity_frames(&mut second));
+    assert_eq!(a.len(), 1);
+    assert_eq!(a, b);
+}
+
+#[test]
+fn entities_follow_the_voxel_edits_and_come_before_the_messages_of_the_game() {
+    let (_game, mut harness) = herd_harness(|tick, world| {
+        if tick.get() == 3 {
+            world
+                .spawn_entity(&id("test:cow"), pose_in(0, 3.0), ComponentBag::new())
+                .unwrap();
+            let channel = world
+                .data()
+                .main()
+                .overrides
+                .layout()
+                .channel_index(&id("core:block"))
+                .unwrap();
+            world
+                .set_voxel(LevelIndex::MAIN, channel, VoxelCoordinate::new(1, 1, 1), 1)
+                .unwrap();
+            world.send(Audience::Everyone, id("test_game:news"), vec![1]);
+        }
+    });
+    let mut client = harness.connect();
+    client.hello();
+    harness.server.step();
+    client.watch(BrickCoordinate::ORIGIN, 1);
+    harness.server.step();
+    client.received();
+    harness.server.step();
+    let order: Vec<&str> = client
+        .received()
+        .iter()
+        .map(|message| match message {
+            ServerMessage::BrickContents { .. } | ServerMessage::VoxelEdits { .. } => "voxels",
+            ServerMessage::EntitiesSpawned(_) => "entities",
+            ServerMessage::GameMessage { .. } => "game",
+            ServerMessage::TickCompleted { .. } => "end",
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(order, ["voxels", "entities", "game", "end"]);
+}
+
+#[test]
+fn an_entity_of_a_kind_the_game_does_not_have_is_kept_and_not_shown() {
+    // The world holds a cow, but the game that serves it knows no cows.
+    let game = Game::new(&ALL_PLUGINS);
+    let mut world = game.new_world();
+    {
+        let mut catalog = EntityCatalog::default();
+        catalog
+            .kinds
+            .register(EntityKindSpec::new("test:cow"))
+            .unwrap();
+        world
+            .entities_mut()
+            .spawn(
+                &catalog.kinds,
+                &id("test:cow"),
+                pose_in(0, 3.0),
+                ComponentBag::new(),
+            )
+            .unwrap();
+    }
+    let mut harness = Harness::new(&game, world, ServerConfig::new(game_id()));
+    let mut client = harness.connect();
+    client.hello();
+    harness.server.step();
+    client.watch(BrickCoordinate::ORIGIN, 1);
+    harness.server.step();
+    assert!(entity_messages(&client.received()).is_empty());
+    assert_eq!(harness.server.world().entities().len(), 1);
+}
+
+/// How much replicating entities costs: run with `--ignored --nocapture`.
+#[test]
+#[ignore = "a benchmark: run with --ignored --nocapture"]
+fn replication_benchmark() {
+    const ENTITIES: u64 = 1000;
+    const CLIENTS: usize = 4;
+    println!(
+        "\n| entities moving each tick | server ms per tick | bytes per tick per client | frames per tick per client |"
+    );
+    println!("|---|---|---|---|");
+    for moving_every in [0u64, 10, 1] {
+        let (_game, mut harness) = herd_harness(move |tick, world| {
+            if tick.get() == 1 {
+                for index in 0..ENTITIES {
+                    let brick_x = (index % 8) as i64 - 4;
+                    world
+                        .spawn_entity(
+                            &id("test:cow"),
+                            pose_in(brick_x, (index % 30) as f32),
+                            ComponentBag::new(),
+                        )
+                        .unwrap();
+                }
+            } else if moving_every > 0 {
+                for index in 0..ENTITIES {
+                    if (index + tick.get()) % moving_every == 0 {
+                        let brick_x = (index % 8) as i64 - 4;
+                        let offset = ((index + tick.get()) % 30) as f32;
+                        world
+                            .set_entity_pose(EntityId::new(index + 1), pose_in(brick_x, offset))
+                            .unwrap();
+                    }
+                }
+            }
+        });
+        let mut clients: Vec<TestClient> = (0..CLIENTS).map(|_| harness.connect()).collect();
+        for client in &mut clients {
+            client.hello();
+        }
+        harness.server.step();
+        for client in &mut clients {
+            client.watch(BrickCoordinate::ORIGIN, 4);
+        }
+        harness.server.step();
+        harness.server.step();
+        for client in &mut clients {
+            client.raw_frames();
+        }
+        let ticks = 100u32;
+        let start = std::time::Instant::now();
+        let mut bytes = 0usize;
+        let mut frames = 0usize;
+        for _ in 0..ticks {
+            harness.server.step();
+            for client in &mut clients {
+                let received = client.raw_frames();
+                frames += received.len();
+                bytes += received.iter().map(Vec::len).sum::<usize>();
+            }
+        }
+        let per_tick = start.elapsed().as_secs_f64() * 1000.0 / f64::from(ticks);
+        println!(
+            "| {} | {per_tick:.2} | {} | {} |",
+            100u64
+                .checked_div(moving_every)
+                .map_or_else(|| "none".to_owned(), |percent| format!("{percent}%")),
+            bytes / (ticks as usize * CLIENTS),
+            frames / (ticks as usize * CLIENTS)
+        );
+    }
 }

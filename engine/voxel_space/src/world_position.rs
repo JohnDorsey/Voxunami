@@ -14,6 +14,9 @@ pub struct WorldPosition {
     offset: [f32; 3],
 }
 
+// A position is always finite (the constructor insists), so it equals itself.
+impl Eq for WorldPosition {}
+
 impl WorldPosition {
     /// Carries whole bricks out of `offset`, so any finite offset is accepted. Panics if the
     /// offset is not finite or the position would leave the supported coordinate range.

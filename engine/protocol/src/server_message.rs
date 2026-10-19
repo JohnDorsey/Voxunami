@@ -4,14 +4,14 @@ use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
 use region_octree::BrickCube;
 use voxel_grid::Brick;
-use voxel_space::{BrickBox, BrickCoordinate, LevelIndex, LocalVoxelIndex};
+use voxel_space::{BrickBox, BrickCoordinate, EntityPose, LevelIndex, LocalVoxelIndex};
 
 use crate::MAXIMUM_COMMAND_LENGTH;
 use crate::error::ProtocolError;
-use crate::types::{ClientId, Tick};
+use crate::types::{ClientId, EntityId, Tick};
 use crate::wire::{
-    read_brick_box, read_brick_coordinate, read_level, write_brick_box, write_brick_coordinate,
-    write_level,
+    read_brick_box, read_brick_coordinate, read_entity_pose, read_level, write_brick_box,
+    write_brick_coordinate, write_entity_pose, write_level,
 };
 
 const KIND_WELCOME: u8 = 1;
@@ -22,6 +22,9 @@ const KIND_GAME_MESSAGE: u8 = 5;
 const KIND_TICK_COMPLETED: u8 = 6;
 const KIND_DISCONNECTED: u8 = 7;
 const KIND_COMMAND_REPLY: u8 = 8;
+const KIND_ENTITIES_SPAWNED: u8 = 9;
+const KIND_ENTITIES_CHANGED: u8 = 10;
+const KIND_ENTITIES_DESPAWNED: u8 = 11;
 
 /// The server's answer to `Hello`: everything a client needs to start interpreting the stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,6 +60,25 @@ pub struct VoxelChange {
     /// The channel's position in the world description's channel table.
     pub channel: u16,
     pub value: u32,
+}
+
+/// An entity a client has just been told of: what it is, where, and the components the server
+/// replicates (each as the bytes its codec made, by identifier).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntityState {
+    pub id: EntityId,
+    pub kind: NamespacedId,
+    pub pose: EntityPose,
+    pub components: Vec<(NamespacedId, Vec<u8>)>,
+}
+
+/// What changed about an entity a client already knows: its pose if that moved, and the replicated
+/// components whose bytes changed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntityChange {
+    pub id: EntityId,
+    pub pose: Option<EntityPose>,
+    pub components: Vec<(NamespacedId, Vec<u8>)>,
 }
 
 /// Sent from the server to a client.
@@ -100,6 +122,13 @@ pub enum ServerMessage {
     Disconnected { reason: String },
     /// The answer to a `Command` this client sent: at most [`MAXIMUM_COMMAND_LENGTH`] bytes of text.
     CommandReply { text: String },
+    /// Entities that came into the region the client watches (or were made in it), in order of id.
+    /// (Protocol version 3.)
+    EntitiesSpawned(Vec<EntityState>),
+    /// Entities the client knows that moved or whose replicated components changed, in order of id.
+    EntitiesChanged(Vec<EntityChange>),
+    /// Entities the client knew that left the region it watches or no longer exist, in order of id.
+    EntitiesDespawned(Vec<EntityId>),
 }
 
 /// Whether `frame` is a `TickCompleted` message. Recorders use it to know when a tick ends without
@@ -181,6 +210,38 @@ impl ServerMessage {
             Self::CommandReply { text } => {
                 writer.write_u8(KIND_COMMAND_REPLY);
                 writer.write_string(text);
+            }
+            Self::EntitiesSpawned(entities) => {
+                writer.write_u8(KIND_ENTITIES_SPAWNED);
+                writer.write_varint(entities.len() as u64);
+                for entity in entities {
+                    writer.write_varint(entity.id.get());
+                    writer.write_identifier(&entity.kind);
+                    write_entity_pose(&mut writer, &entity.pose);
+                    write_components(&mut writer, &entity.components);
+                }
+            }
+            Self::EntitiesChanged(changes) => {
+                writer.write_u8(KIND_ENTITIES_CHANGED);
+                writer.write_varint(changes.len() as u64);
+                for change in changes {
+                    writer.write_varint(change.id.get());
+                    match &change.pose {
+                        None => writer.write_u8(0),
+                        Some(pose) => {
+                            writer.write_u8(1);
+                            write_entity_pose(&mut writer, pose);
+                        }
+                    }
+                    write_components(&mut writer, &change.components);
+                }
+            }
+            Self::EntitiesDespawned(ids) => {
+                writer.write_u8(KIND_ENTITIES_DESPAWNED);
+                writer.write_varint(ids.len() as u64);
+                for id in ids {
+                    writer.write_varint(id.get());
+                }
             }
         }
         writer.into_bytes()
@@ -284,11 +345,85 @@ impl ServerMessage {
                     text: text.to_owned(),
                 }
             }
+            KIND_ENTITIES_SPAWNED => {
+                // An id, a kind, a pose (at least 33 bytes) and a component count.
+                let count = reader.read_count(40)?;
+                let mut entities = Vec::with_capacity(count);
+                for _ in 0..count {
+                    entities.push(EntityState {
+                        id: EntityId::new(reader.read_varint()?),
+                        kind: reader.read_identifier()?,
+                        pose: read_entity_pose(&mut reader)?,
+                        components: read_components(&mut reader)?,
+                    });
+                }
+                Self::EntitiesSpawned(entities)
+            }
+            KIND_ENTITIES_CHANGED => {
+                let count = reader.read_count(3)?;
+                let mut changes = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let id = EntityId::new(reader.read_varint()?);
+                    let pose = match reader.read_u8()? {
+                        0 => None,
+                        1 => Some(read_entity_pose(&mut reader)?),
+                        _ => {
+                            return Err(
+                                DecodeError::Invalid("a pose is neither there nor not").into()
+                            );
+                        }
+                    };
+                    changes.push(EntityChange {
+                        id,
+                        pose,
+                        components: read_components(&mut reader)?,
+                    });
+                }
+                Self::EntitiesChanged(changes)
+            }
+            KIND_ENTITIES_DESPAWNED => {
+                let count = reader.read_count(1)?;
+                let mut ids = Vec::with_capacity(count);
+                for _ in 0..count {
+                    ids.push(EntityId::new(reader.read_varint()?));
+                }
+                Self::EntitiesDespawned(ids)
+            }
             unknown => return Err(ProtocolError::UnknownMessageKind(unknown)),
         };
         reader.finish()?;
         Ok(message)
     }
+}
+
+/// A list of components: a count, then each identifier and its bytes. The identifiers are in order,
+/// once each, so there is one way to write any list.
+fn write_components(writer: &mut ByteWriter, components: &[(NamespacedId, Vec<u8>)]) {
+    writer.write_varint(components.len() as u64);
+    for (identifier, bytes) in components {
+        writer.write_identifier(identifier);
+        writer.write_bytes(bytes);
+    }
+}
+
+fn read_components(
+    reader: &mut ByteReader<'_>,
+) -> Result<Vec<(NamespacedId, Vec<u8>)>, DecodeError> {
+    let count = reader.read_count(5)?;
+    let mut components: Vec<(NamespacedId, Vec<u8>)> = Vec::with_capacity(count);
+    for _ in 0..count {
+        let identifier = reader.read_identifier()?;
+        if components
+            .last()
+            .is_some_and(|(last, _)| *last >= identifier)
+        {
+            return Err(DecodeError::Invalid(
+                "components are out of order or repeated",
+            ));
+        }
+        components.push((identifier, reader.read_bytes()?.to_vec()));
+    }
+    Ok(components)
 }
 
 #[cfg(test)]
@@ -377,7 +512,47 @@ mod tests {
             ServerMessage::CommandReply {
                 text: "you are in the nether".to_owned(),
             },
+            ServerMessage::EntitiesSpawned(vec![
+                EntityState {
+                    id: EntityId::new(1),
+                    kind: id("voxunami_cave:item"),
+                    pose: sample_pose(3),
+                    components: vec![
+                        (id("engine:item_stack"), vec![1, 2, 3]),
+                        (id("voxunami_cave:spin"), vec![]),
+                    ],
+                },
+                EntityState {
+                    id: EntityId::new(u64::MAX),
+                    kind: id("a:b"),
+                    pose: sample_pose(-9),
+                    components: Vec::new(),
+                },
+            ]),
+            ServerMessage::EntitiesSpawned(Vec::new()),
+            ServerMessage::EntitiesChanged(vec![
+                EntityChange {
+                    id: EntityId::new(2),
+                    pose: Some(sample_pose(0)),
+                    components: Vec::new(),
+                },
+                EntityChange {
+                    id: EntityId::new(7),
+                    pose: None,
+                    components: vec![(id("a:health"), vec![9, 0, 0, 0])],
+                },
+            ]),
+            ServerMessage::EntitiesDespawned(vec![EntityId::new(1), EntityId::new(300)]),
+            ServerMessage::EntitiesDespawned(Vec::new()),
         ]
+    }
+
+    fn sample_pose(brick_x: i64) -> EntityPose {
+        EntityPose::new(
+            voxel_space::GridId::root(LevelIndex::new(1)),
+            voxel_space::WorldPosition::new(BrickCoordinate::new(brick_x, 0, 1), [0.5, 31.0, 2.0]),
+            voxel_space::Orientation::from_yaw_pitch(0.5, -0.25),
+        )
     }
 
     #[test]
@@ -422,6 +597,19 @@ mod tests {
             }
             .encode(),
             [8, 2, b'o', b'k']
+        );
+        assert_eq!(
+            ServerMessage::EntitiesDespawned(vec![EntityId::new(1), EntityId::new(300)]).encode(),
+            [11, 2, 1, 0xAC, 0x02]
+        );
+        assert_eq!(
+            ServerMessage::EntitiesChanged(vec![EntityChange {
+                id: EntityId::new(5),
+                pose: None,
+                components: vec![(id("a:b"), vec![7])],
+            }])
+            .encode(),
+            [10, 1, 5, 0, 1, 3, b'a', b':', b'b', 1, 7]
         );
         assert_eq!(
             ServerMessage::VoxelEdits {

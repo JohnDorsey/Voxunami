@@ -1,4 +1,4 @@
-# The message stream and replays (protocol version 2)
+# The message stream and replays (protocol version 3)
 
 Implemented by `engine/protocol` (messages), `engine/transport` (carrying frames), `engine/server`, `engine/client`
 and `engine/replay`; scenarios that run them together are in `engine/end_to_end_tests`.
@@ -80,6 +80,14 @@ Server to client:
 | 6 | `TickCompleted` | tick (`u64`) |
 | 7 | `Disconnected` | reason (string) |
 | 8 | `CommandReply` | text (string, at most 1024 bytes): the answer to a command this client sent |
+| 9 | `EntitiesSpawned` | count, then per entity: id (varint), kind (identifier), pose, components (see below). Entities that came into the watched region, in order of id |
+| 10 | `EntitiesChanged` | count, then per entity: id, a byte (1 if a pose follows, else 0) and the pose, components. Only what changed |
+| 11 | `EntitiesDespawned` | count, then ids (varints): entities that left the watched region or no longer exist |
+
+A **pose** is the grid id (varint), the brick x, y, z (zigzag), the offset in the brick (three `f32`, each in [0, 32)) and the orientation
+(four `f32`, a unit quaternion within 1e-3). **Components** are a count, then each identifier and its bytes (a varint length, then the
+bytes the component's own codec made), in order of identifier and once each. Only the components the entity's kind says are replicated are
+sent. Messages 9 to 11 were added in version 3.
 
 Brick contents, channel numbers, content ids and generator ids use the *server's* numbering, which the world description's
 tables define. The client translates (`SourceTranslator`): enabling a plugin that shifts every id on one side changes
@@ -91,6 +99,15 @@ identifier saying whose message it is, and bytes only that game reads. The engin
 that lacks the plugin that sends one ignores it.
 
 ## What the server sends when
+
+- **Entities** (version 3): after the voxel edits of the tick and before the game's own messages, the difference between what this
+  client was last told and what is now, for the entities in the region it watches (those whose grid is the root grid of the watched level
+  and whose brick is in the box): first the despawns, then the spawns, then the changes. A client that moves its region is told of the
+  entities that left and came in by the same rule, and one that changes level is told the old level's entities are gone. An entity
+  whose kind the game lacks is kept in the world and never shown. A view of each entity is made once for all clients and kept until the
+  entity changes, so an entity that did not change costs a pointer comparison per client. Measured, 1000 entities and 4 clients: 0.5 ms a
+  tick when nothing moves (9 bytes a client), 0.7 ms with a tenth moving (3.6 KB a client), 1.4 ms with all moving (36 KB a client: 20 Hz is
+  about 700 KB/s per client; poses are sent whole, 33 bytes, not as deltas, which is the first thing to change if this matters).
 
 - **Newly watched part of a region** (the box minus the previously watched box, found without visiting the bricks both
   share): which generator made each assignment cube touching it, and the contents of every brick there that has ever
@@ -149,5 +166,4 @@ guarantees.
 - Only full-detail bricks are sent. Distant terrain (LOD) will need interest regions with a level of detail, and a new
   protocol version.
 - A recorder that wants to see the whole action (not one player's view) connects as a spectator with a large region.
-- Entities, players and structures are not engine concepts yet: games replicate them with game messages until a second
-  game shows what is common.
+- Players and structures are not entities yet (Phase 27e and Phase 32); games still replicate players with game messages.

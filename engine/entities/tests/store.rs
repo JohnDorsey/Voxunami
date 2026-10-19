@@ -7,7 +7,9 @@ use namespaced_id::NamespacedId;
 use proptest::prelude::*;
 use protocol::{EntityId, Message};
 use voxel_space::test_support::entity_pose;
-use voxel_space::{BrickCoordinate, EntityPose, GridId, LevelIndex, Orientation, WorldPosition};
+use voxel_space::{
+    BrickBox, BrickCoordinate, EntityPose, GridId, LevelIndex, Orientation, WorldPosition,
+};
 
 /// A component that is one number.
 #[derive(Debug, PartialEq)]
@@ -248,7 +250,50 @@ fn a_radius_that_reaches_more_bricks_than_there_are_entities_gives_the_same_answ
     assert_eq!(store.near(GridId::MAIN, centre, 200.0), [a, b]);
 }
 
+#[test]
+fn the_entities_in_a_region_are_those_of_its_bricks_in_that_grid() {
+    let mut store = EntityStore::new();
+    let inside = spawn(&mut store, pose_at(0, [1, 0, 0], [5.0; 3]));
+    let corner = spawn(&mut store, pose_at(0, [2, 1, 0], [5.0; 3]));
+    let _above = spawn(&mut store, pose_at(0, [1, 2, 0], [5.0; 3]));
+    let _beside = spawn(&mut store, pose_at(0, [3, 0, 0], [5.0; 3]));
+    let _other_level = spawn(&mut store, pose_at(1, [1, 0, 0], [5.0; 3]));
+    let region =
+        BrickBox::new(BrickCoordinate::new(0, 0, 0), BrickCoordinate::new(2, 1, 0)).unwrap();
+    assert_eq!(store.in_bricks(GridId::MAIN, region), [inside, corner]);
+    assert!(
+        store
+            .in_bricks(GridId::root(LevelIndex::new(5)), region)
+            .is_empty()
+    );
+}
+
 proptest! {
+    #[test]
+    fn the_entities_in_a_region_are_exactly_those_asked_one_by_one(
+        placed in proptest::collection::vec((0u32..2, -3i64..4, -3i64..4, -3i64..4), 0..40),
+        low in (-3i64..4, -3i64..4, -3i64..4),
+        size in (0i64..4, 0i64..4, 0i64..4),
+        grid in 0u32..2,
+    ) {
+        let mut store = EntityStore::new();
+        for (level, x, y, z) in placed {
+            spawn(&mut store, pose_at(level, [x, y, z], [1.0; 3]));
+        }
+        let region = BrickBox::new(
+            BrickCoordinate::new(low.0, low.1, low.2),
+            BrickCoordinate::new(low.0 + size.0, low.1 + size.1, low.2 + size.2),
+        )
+        .unwrap();
+        let grid = GridId::root(LevelIndex::new(grid));
+        let expected: Vec<EntityId> = store
+            .iter()
+            .filter(|entity| entity.pose.grid == grid && region.contains(entity.pose.position.brick()))
+            .map(|entity| entity.id)
+            .collect();
+        prop_assert_eq!(store.in_bricks(grid, region), expected);
+    }
+
     #[test]
     fn near_is_exactly_the_entities_asked_one_by_one(
         placed in proptest::collection::vec(

@@ -156,8 +156,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 }
 
 /// Stream hash, stream length, saved-world hash.
+/// Phase 27c: the stream hash changed once, for the protocol version in the welcome (3, was 2); the length and the
+/// saved world did not, and setting the version back to 2 gave the old hash.
 const PINNED: (u64, usize, u64) = (
-    16_102_118_019_284_220_051,
+    11_422_187_156_526_845_485,
     35_366,
     7_844_908_670_161_894_155,
 );
