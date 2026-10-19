@@ -1,6 +1,6 @@
 # Phase 26 specification: the client interface and the light hook
 
-**Status: proposed 2026-10-18, awaiting the owner's review.** It makes concrete the "client interface (Phase 26)" item of `plan.md` and
+**Status: accepted 2026-10-18 with the default answers to questions 1, 2 and 4, and with question 3 decided differently by the owner (any number of actions per key or button, section 3). Being built.** It makes concrete the "client interface (Phase 26)" item of `plan.md` and
 requirement 7 of "Requirements pulled forward". What I say about today's code was read from the code (verified); the design is my proposal
 (believed). Two independent parts: A closes a rule violation (the engine knows Cave's light), B gives plugins the client hooks.
 
@@ -67,8 +67,9 @@ Verbs of `ClientRegistrar` (the budget: five, not a toolkit):
 - **State is the plugin's own** (an `Arc<Mutex<..>>` shared by its hooks, the idiom of the server plugins). `GameDefinition::ClientState` and
   the six client hooks above leave `GameDefinition`; it keeps only what only a game says (names, controls, camera, tick rate, join and movement
   messages). Tests that read `player.state.x` read the plugin's state through the handle the game's client plugin exposes.
-- Two actions on one key, or two on one mouse button, are a start-up error (`RegistrationError`-style, naming both), not last-one-wins, so a
-  mod that clashes is found at once. Rebinding by the player is not in this phase.
+- **Any number of actions may be bound to one key or mouse button** (owner's decision): they all run, in order of plugin identifier and then
+  registration. A key or mouse registration is a *default binding* of an action that has its own identifier (unique: a duplicate action
+  identifier is a start-up error); rebinding by client commands comes in a later phase and will be keyed by the action identifier.
 - HUD lines are joined into the window title as `status_text` is now (the renderer cannot draw text; that is Phase 30's toolkit). The shape of
   the hook is what Phase 26 settles.
 
@@ -82,13 +83,7 @@ Verbs of `ClientRegistrar` (the budget: five, not a toolkit):
   unmodified (the server stream does not change).
 - **26d** Documentation (`plugin-api-spec.md` verbs, `design-decisions.md`, build log), gates on Windows and Linux, commit, push.
 
-## 5. Questions for the owner
+## 5. Questions for the owner, answered
 
-1. **Plugin-owned client state** (my recommendation, confidence medium-high) or keep a game-typed `ClientState` that all of a game's client hooks
-   share? The second is less churn (the tests keep `player.state.progress`) but two mods could not each keep their own client state, which the
-   mod stages want. I recommend the first and updating about 24 test lines.
-2. **A separate `ClientPlugin` trait** (recommended: a server plugin and its client half are different objects, as they will be different
-   WASM modules) or a second method on the existing `Plugin`?
-3. **Key conflicts are start-up errors** (recommended) or later registration wins?
-4. **HUD lines stay in the window title** until Phase 30 (recommended, there is no text renderer), or should Phase 26 include a minimal text
-   overlay? The latter is a renderer feature with a font, which I would rather design with the toolkit.
+1. Client state is the plugin's own (default). 2. A separate `ClientPlugin` trait (default). 3. Any number of actions per key or mouse button; rebinding
+by client commands later (the owner's). 4. HUD lines stay in the window title until Phase 30 (default).

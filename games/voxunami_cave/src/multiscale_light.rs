@@ -48,12 +48,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::block_properties;
+use crate::scaled_light::LevelFormat;
 use block_models::{BlockTable, PropertyHandle};
 use lattice::ActiveVoxels;
 use namespaced_id::NamespacedId;
 use voxel_space::{FaceDirection, GridId, VoxelCoordinate};
 use world_storage::Section;
-use world_view::LevelFormat;
 
 /// The most scales any scheme has.
 pub const MAXIMUM_SCALES: usize = 7;

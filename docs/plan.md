@@ -49,7 +49,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 28 (planned) The content package at the handshake, carried by recordings (revision 3).
 - 27 (planned) Entities and items: server-owned entities with typed components, inventories, the protocol messages and the
   `engine:entities` section reserved before 1.0.
-- 26 (specified, awaiting review) The client interface (client plugins: message handlers, view hook, HUD line, key and mouse actions, `.`-commands) and the bulk light
+- 26 (accepted, being built) The client interface (client plugins: message handlers, view hook, HUD line, key and mouse actions, `.`-commands) and the bulk light
   hook that takes the scaled-light concepts out of `world_view`. Specified in `client-interface-spec.md` (steps 26a to 26d).
 - 25 Declared messages (a `Message` trait and a generated check, no codegen) and a command registry with `/help` (revision 4). **Done.** Specified in
   `messages-and-commands-spec.md` (steps 25a to 25d).

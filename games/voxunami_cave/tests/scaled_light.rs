@@ -5,7 +5,9 @@ use std::sync::Arc;
 use voxel_grid::{Brick, ChannelDefinition, ChannelIndex, ChannelStorage, GridLayout};
 use voxel_space::BrickCoordinate;
 use voxel_space::LocalVoxelIndex;
-use world_view::{LevelFormat, ScaledLight, ViewChannels, blend_brightness, combined_light};
+use voxunami_cave::scaled_light::{
+    LevelFormat, MultiScaleView, ScaledLight, blend_brightness, combined_light,
+};
 
 /// Words as the game keeps them: six fields of five bits (the level is the greatest of them) and
 /// above them two bits that say how many levels there are (0: 32, 1: 16, 2: 8, 3: 4).
@@ -27,13 +29,12 @@ fn word(level: u32, code: u32) -> u32 {
 
 struct Fixture {
     layout: Arc<GridLayout>,
-    blocks: ChannelIndex,
     light: ChannelIndex,
     scales: [ChannelIndex; 3],
 }
 
 fn fixture() -> Fixture {
-    let names = ["blocks", "light", "scale_a", "scale_b", "scale_c"];
+    let names = ["light", "scale_a", "scale_b", "scale_c"];
     let layout = Arc::new(
         GridLayout::new(
             names
@@ -49,7 +50,6 @@ fn fixture() -> Fixture {
             .unwrap()
     };
     Fixture {
-        blocks: channel("blocks"),
         light: channel("light"),
         scales: [channel("scale_a"), channel("scale_b"), channel("scale_c")],
         layout,
@@ -62,21 +62,20 @@ fn voxel(x: u8, y: u8, z: u8) -> LocalVoxelIndex {
 
 /// The channels with scales of cells of the given edges (as powers of two), each as bright as `full`
 /// at its greatest level.
-fn view(fixture: &Fixture, scales: &[(u8, u16)]) -> ViewChannels {
-    let mut view = ViewChannels::new(fixture.blocks, None, Some(fixture.light));
-    for (slot, (&(edge_log, full), &channel)) in view
-        .scaled_light
-        .iter_mut()
-        .zip(scales.iter().zip(&fixture.scales))
-    {
-        *slot = Some(ScaledLight {
-            channel,
-            cell_width: 1 << edge_log,
-            full_brightness: full,
-            format: FORMAT,
-        });
+fn view(fixture: &Fixture, scales: &[(u8, u16)]) -> MultiScaleView {
+    MultiScaleView {
+        light: Some(fixture.light),
+        scales: scales
+            .iter()
+            .zip(&fixture.scales)
+            .map(|(&(edge_log, full), &channel)| ScaledLight {
+                channel,
+                cell_width: 1 << edge_log,
+                full_brightness: full,
+                format: FORMAT,
+            })
+            .collect(),
     }
-    view
 }
 
 #[test]
@@ -274,9 +273,9 @@ fn the_words_scheme_not_the_view_says_how_many_levels_there_are() {
 }
 
 /// The channels with one scale of cells of any width.
-fn one_scale(fixture: &Fixture, width: u16) -> ViewChannels {
+fn one_scale(fixture: &Fixture, width: u16) -> MultiScaleView {
     let mut view = view(fixture, &[]);
-    view.scaled_light[0] = Some(ScaledLight {
+    view.scales.push(ScaledLight {
         channel: fixture.scales[0],
         cell_width: width,
         full_brightness: 255,

@@ -9,12 +9,12 @@ use content_registry::Registry;
 use terrain::{TerrainGenerator, WorldTerrain};
 
 use region_octree::BrickCube;
-use voxel_grid::{Brick, ChannelIndex, Grid, GridLayout};
+use voxel_grid::{Brick, ChannelIndex, ChannelStorage, Grid, GridLayout};
 use voxel_meshing::{FULL_LIGHT, PackedBrickMesh, Quad};
 use voxel_space::{BrickBox, BrickCoordinate, FaceDirection, VoxelCoordinate};
 use world_storage::test_support::{Game, Plugin, brick, id};
 use world_storage::{LevelData, WorldData};
-use world_view::{MeshUpdate, ViewChannels, ViewSettings, WorldMesher};
+use world_view::{BrickLight, BulkLight, MeshUpdate, ViewChannels, ViewSettings, WorldMesher};
 
 struct Scene {
     game: Game,
@@ -55,6 +55,10 @@ impl Scene {
     }
 
     fn mesher(&self, radius: i64) -> WorldMesher {
+        self.mesher_seeing(radius, ViewChannels::new(self.material, None, None))
+    }
+
+    fn mesher_seeing(&self, radius: i64, channels: ViewChannels) -> WorldMesher {
         // Air is see-through; every other block of the fixtures is an opaque cube.
         let mut opaque = vec![true; 16];
         opaque[self.air as usize] = false;
@@ -63,9 +67,16 @@ impl Scene {
                 view_radius_bricks: radius,
                 worker_count: 3,
             },
-            ViewChannels::new(self.material, None, None),
+            channels,
             Arc::new(BlockTable::of_cubes(&opaque)),
         )
+    }
+
+    /// What the view draws from when a game's hook says how bright `lit` is and everything else is dark.
+    fn channels_lit_by(&self, hook: &Arc<LitBrick>) -> ViewChannels {
+        let mut channels = ViewChannels::new(self.material, None, None);
+        channels.bulk_light = Some(BulkLight(Arc::clone(hook) as Arc<dyn BrickLight>));
+        channels
     }
 
     fn edit(&mut self, at: [i64; 3], block: &str) -> BrickCoordinate {
@@ -539,4 +550,90 @@ fn bricks_generated_for_a_level_before_a_reset_never_reach_the_next_levels_pictu
     let mut expected = HashMap::new();
     apply(&mut expected, scene.mesher(3).settle(level, brick(0, 0, 0)));
     assert_eq!(live, expected);
+}
+
+/// A hook that lights one brick as bright as `brightness` and leaves the rest dark.
+#[derive(Debug)]
+struct LitBrick {
+    lit: BrickCoordinate,
+    brightness: u32,
+}
+
+impl BrickLight for LitBrick {
+    fn brightness(&self, _brick: &Brick, coordinate: BrickCoordinate) -> Option<ChannelStorage> {
+        Some(ChannelStorage::uniform(if coordinate == self.lit {
+            self.brightness
+        } else {
+            0
+        }))
+    }
+}
+
+#[test]
+fn the_brightness_a_hook_gives_is_what_a_face_looking_into_another_brick_is_drawn_with() {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 4);
+    let hook = Arc::new(LitBrick {
+        lit: brick(0, 0, 0),
+        brightness: 100,
+    });
+    let mut mesher = scene.mesher_seeing(3, scene.channels_lit_by(&hook));
+    // Dig out the top voxel at the +x edge of brick (0, 0, 0): the wall that brick (1, 0, 0) now has
+    // faces the hole, so it is lit by the air in brick (0, 0, 0), a neighbour's, not by its own.
+    scene.edit([31, 9, 5], "base_blocks:air");
+    let mut live = HashMap::new();
+    apply(&mut live, mesher.settle(scene.world.main(), brick(0, 0, 0)));
+
+    let wall = |coordinate: BrickCoordinate| {
+        unpacked(&live[&coordinate])
+            .into_iter()
+            .find(|quad| quad.face == FaceDirection::NegativeX && quad.origin == [0, 9, 5])
+            .map(|quad| quad.light)
+    };
+    assert_eq!(wall(brick(1, 0, 0)), Some(100), "the neighbour's air");
+    // And a top face is lit by the air above it, in its own brick: dark in brick (1, 0, 0), lit in (0, 0, 0).
+    let top_light = |coordinate: BrickCoordinate| {
+        unpacked(&live[&coordinate])
+            .into_iter()
+            .find(|quad| quad.face == FaceDirection::PositiveY)
+            .map(|quad| quad.light)
+    };
+    assert_eq!(top_light(brick(0, 0, 0)), Some(100));
+    assert_eq!(top_light(brick(1, 0, 0)), Some(0));
+}
+
+#[test]
+fn the_view_is_meshed_again_when_the_hook_is_another_one_and_not_when_it_is_the_same() {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 4);
+    let hook = Arc::new(LitBrick {
+        lit: brick(0, 0, 0),
+        brightness: 100,
+    });
+    let mut mesher = scene.mesher_seeing(2, scene.channels_lit_by(&hook));
+    let mut live = HashMap::new();
+    apply(&mut live, mesher.settle(scene.world.main(), brick(0, 0, 0)));
+    let light_of_origin = |live: &HashMap<BrickCoordinate, PackedBrickMesh>| {
+        unpacked(&live[&brick(0, 0, 0)])
+            .iter()
+            .map(|quad| quad.light)
+            .max()
+    };
+    assert_eq!(light_of_origin(&live), Some(100));
+
+    // The same hook again (a game asks for the view's channels whenever it may have changed): nothing to do.
+    mesher.set_channels(scene.channels_lit_by(&hook));
+    assert!(
+        mesher.settle(scene.world.main(), brick(0, 0, 0)).is_empty(),
+        "the same hook is not a change"
+    );
+
+    // Another hook that says something else: every brick is drawn again with it.
+    let brighter = Arc::new(LitBrick {
+        lit: brick(0, 0, 0),
+        brightness: 200,
+    });
+    mesher.set_channels(scene.channels_lit_by(&brighter));
+    apply(&mut live, mesher.settle(scene.world.main(), brick(0, 0, 0)));
+    assert_eq!(light_of_origin(&live), Some(200));
 }

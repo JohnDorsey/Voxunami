@@ -2,6 +2,7 @@
 
 use base_blocks::{SHAPE_NAMES, shape_name};
 use std::collections::HashSet;
+use std::sync::Mutex;
 
 use game_shell::{CameraStart, GameContent, GameDefinition, KeyCode, PlayerPose};
 use namespaced_id::NamespacedId;
@@ -10,13 +11,14 @@ use plugin_host::Plugin;
 use renderer::Camera;
 use transport::Connection;
 use voxel_space::WorldPosition;
-use world_view::{ScaledLight, ViewChannels};
+use world_view::{BulkLight, ViewChannels};
 
 use crate::content::{CaveContent, game_id};
 use crate::logic::REACH;
 use crate::messages::{LightSchemeChanged, MoveRequest, SetBlock, Spawn};
 use crate::multiscale_light::{LEVEL_FORMAT, LightScheme, full_brightness};
 use crate::plugins::cave_plugins;
+use crate::scaled_light::{MultiScaleView, ScaledLight};
 use protocol::Message;
 
 /// The blocks a player can place, in the order the number keys choose them.
@@ -37,6 +39,9 @@ pub struct CaveClientState {
     pub selected_shape: u32,
     /// How the world's multiscale light is cut into cells, if it has that light (the server says).
     pub light_scheme: Option<LightScheme>,
+    /// The view's light for `light_scheme`, kept so that the view is meshed again only when the scheme
+    /// changes (the view compares hooks by identity).
+    light_hook: Mutex<Option<(LightScheme, BulkLight)>>,
 }
 
 #[derive(Debug)]
@@ -180,20 +185,33 @@ Window commands (start with a period): .ambient 0-255 sets how bright a face is 
     fn view_channels(content: &CaveContent, state: &CaveClientState) -> ViewChannels {
         let mut channels = content.view_channels();
         if let Some(scheme) = state.light_scheme {
-            for (scale, slot) in channels
-                .scaled_light
-                .iter_mut()
-                .enumerate()
-                .take(scheme.scales())
-            {
-                let width = scheme.widths()[scale];
-                *slot = Some(ScaledLight {
-                    channel: content.scale_channel(scale),
-                    cell_width: width,
-                    full_brightness: full_brightness(width),
-                    format: LEVEL_FORMAT,
-                });
-            }
+            let mut kept = state
+                .light_hook
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let hook = match &*kept {
+                Some((kept_scheme, hook)) if *kept_scheme == scheme => hook.clone(),
+                _ => {
+                    let scales = (0..scheme.scales())
+                        .map(|scale| {
+                            let width = scheme.widths()[scale];
+                            ScaledLight {
+                                channel: content.scale_channel(scale),
+                                cell_width: width,
+                                full_brightness: full_brightness(width),
+                                format: LEVEL_FORMAT,
+                            }
+                        })
+                        .collect();
+                    let hook = BulkLight(std::sync::Arc::new(MultiScaleView {
+                        light: channels.light,
+                        scales,
+                    }));
+                    *kept = Some((scheme, hook.clone()));
+                    hook
+                }
+            };
+            channels.bulk_light = Some(hook);
         }
         channels
     }
