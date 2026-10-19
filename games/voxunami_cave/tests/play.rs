@@ -1391,14 +1391,27 @@ fn a_walker_standing_in_flames_falls_when_the_fire_burns_the_ground_away() {
         request_block(&mut player, at, "base_blocks:fire");
     }
     tick_and_follow(&mut rig, &mut player, 2);
+    // The fire burns grass by chance, from the tick it is on, and that tick is not the same in every run (the
+    // loading before this takes a different number of ticks on a busy machine), so the grass may already be
+    // gone. While it is there, the flames do not hold them up or push them; once it has burnt they have begun
+    // to fall (one tick of it is 0.05 voxel), and the flames still have not pushed them sideways or up.
     // (The ground is made again for the new blocks, which may settle them by a hair.)
-    assert!(
-        voxels_of(&player.camera)
-            .iter()
-            .zip(standing)
-            .all(|(now, then)| (now - then).abs() < 0.001),
-        "flames do not hold them up or push them"
-    );
+    let now = voxels_of(&player.camera);
+    let burnt = server_block(&rig, grass) != rig.content.blocks.grass;
+    let sideways = (now[0] - standing[0])
+        .abs()
+        .max((now[2] - standing[2]).abs());
+    if burnt {
+        assert!(
+            sideways < 0.001 && now[1] <= standing[1] + 0.001,
+            "the ground burnt and they fell, not up or sideways: stood at {standing:?}, then at {now:?}"
+        );
+    } else {
+        assert!(
+            sideways < 0.001 && (now[1] - standing[1]).abs() < 0.001,
+            "flames do not hold them up or push them: stood at {standing:?}, then at {now:?}"
+        );
+    }
     tick_and_follow(&mut rig, &mut player, 600);
     assert_eq!(server_block(&rig, grass), rig.content.blocks.air);
     let fallen = standing[1] - voxels_of(&player.camera)[1];

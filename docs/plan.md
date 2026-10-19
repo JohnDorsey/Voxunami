@@ -253,10 +253,13 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   (Phases 26 and 30): plugins now register a HUD line, key and mouse actions and `.`-commands (Phase 26); the HUD is still the window
   title and there is no UI toolkit (Phase 30). Rebinding actions with client commands is a later phase (the owner's decision: any
   number of actions may share a key or button; they are keyed by action identifier so that rebinding can name them).
-- A flaky test, unexplained (measured 2026-10-18): `a_walker_standing_in_flames_falls_when_the_fire_burns_the_ground_away` fails about 1 run
-  in 25 on Linux, the same on the commit before Phase 23a and after it, at its "flames do not hold them up or push them" check (the
-  walker's position moved by more than 0.001 in two ticks after fires were placed). Not reproduced on Windows in the runs made. The cause
-  is not known; a flaky test is a real bug until explained.
+- **Explained and fixed (2026-10-19):** `a_walker_standing_in_flames_falls_when_the_fire_burns_the_ground_away` failed about 1 full Linux run in 4 and
+  2 of 30 runs of Cave's play tests. The failure printed that the walker had dropped 0.0533 voxel (one tick of free fall) in the two ticks after
+  fire was placed, and that the grass under them was gone: the fire rule burns grass by chance from the tick number, the tick the test starts
+  its script on depends on how many rounds the loading before it took (a busy machine takes more), and a grass that burned inside the two-tick
+  window started the walker falling. Engine and physics are deterministic (both failures were bit-identical); the test raced the chance. The
+  assertion now says what is true in both cases: with the grass there they have not moved; with it burnt they have only fallen. 0 failures in 20
+  runs after.
 - A second flaky test, unexplained (2026-10-18): `walkers_pass_through_flames_and_the_cellar_has_the_same_ground` failed once in a full
   parallel Linux run, at its last check, which compares the player's height with a ground height read from the client's mesher. Run alone
   (`--test-threads=1`) it failed 0 times in 30 on the commit before Phase 23 and 0 in 30 after Phase 23b, so nothing says Phase 23 caused
@@ -267,7 +270,7 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   0 of 3 runs of `cargo test -p voxunami_cave` alone; `walkers_pass_through_flames_and_the_cellar_has_the_same_ground` failed once more in a full Linux
   run and passed on the rerun. Both only under the load of a whole-workspace run, so the same belief applies (the result depends on how far the
   client's worker threads have got); not tested. `a_walker_standing_in_flames_falls_when_the_fire_burns_the_ground_away` failed once more in
-  a full parallel Linux run (end of Phase 26) and 0 of 15 times alone. Also: `cargo test --workspace` stops at the first failing crate, so use `--no-fail-fast`.
+  a full parallel Linux run (end of Phase 26) and 0 of 15 times alone (explained above). Also: `cargo test --workspace` stops at the first failing crate, so use `--no-fail-fast`.
 - Light (Phase 12): cost is one lamp's 64 ticks of spreading averaged 15 ms a tick in a release build (with two clients
   watching; measured once, not repeated), and a tick is 50 ms, so a few lamps placed at once would overrun it. The budget
   of 20 000 voxels a tick (Phase 14) is a guess, not tuned, and its streaming cost to clients is not measured. The sky light
