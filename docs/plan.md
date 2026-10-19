@@ -271,15 +271,23 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   run and passed on the rerun. Both only under the load of a whole-workspace run, so the same belief applies (the result depends on how far the
   client's worker threads have got); not tested. `a_walker_standing_in_flames_falls_when_the_fire_burns_the_ground_away` failed once more in
   a full parallel Linux run (end of Phase 26) and 0 of 15 times alone (explained above). Also: `cargo test --workspace` stops at the first failing crate, so use `--no-fail-fast`.
-- The same flaky test again (2026-10-19, end of Phase 27f, full parallel Linux run), and now measured: 0 of 25 runs of the test alone with every core
-  busy, 1 of 8 runs of the whole `cargo test -p voxunami_cave --test play` binary with every core busy. The failure is the last check: the player's
-  eyes at 103.63 in the cellar where the client's mesher says the highest ground of their columns is voxel 102 (they should be at 104.62), so
-  the server's body stood one voxel lower than the client's picture of the ground. Looked at and ruled out: the body's level switch (it
-  teleports, so its terrain is the new level's) and the collision cache (keyed by block and state, not place). Still open: the number of ticks
-  `rig.settle` runs depends on how quiet the client is, so the tick at which the fire is placed and burns differs between runs, and either the
-  mesher's picture of the cellar or the columns the body overlaps (the test assumes a 0.6 wide body; the player stood 0.08 into a column) may
-  be what differs. Next step: print the server's own ground for those columns on failure. Predates Phase 27f (the same check failed in
-  full runs during Phases 23 to 26).
+- `walkers_pass_through_flames_and_the_cellar_has_the_same_ground`: EXPLAINED AND FIXED (2026-10-19). It failed in about 1 of 8 whole-file runs
+  under load, and about 1.7 percent of the time by a sweep of the tick the fire starts at. The chain, each link checked: (1) how many ticks
+  `rig.settle` runs depends on how busy the client's threads are, so the tick at which the test's fire is placed differs between runs; (2) fire
+  burns grass by chance from the tick, and when two or more grass columns burn in the walker's path they are a trench it cannot climb out of, so
+  it stops there; (3) `/level go cellar` teleports the body to the same eyes in a level whose ground is whole, so the body is one voxel inside
+  solid grass; (4) the physics did not resolve that: Rapier pushed the body some way sideways and left it still inside blocks (39 of 256 probe
+  teleports into hills), and a body put several voxels deep fell through the ground, because the colliders leave out boxes buried inside solid
+  terrain. The fix is in the physics: a body that is made or teleported is moved the shortest way out of terrain (see `design-decisions.md`).
+  Regression tests: `a_player_in_a_trench_sent_to_a_level_whose_ground_is_whole_ends_up_on_it_not_in_it` reproduces the original failure exactly
+  (eyes at [15.78, 103.63, 12.31] inside voxels (15, 102, 12) and (16, 102, 12)) without the fix and passes with it; the teleport probe in
+  Cave; and in `engine/physics/tests/walking.rs`, 16 new tests and 2 properties, of which 6 tests and both properties fail without the fix (the rest guard the policy). The original test now also fixes the server tick
+  its fire starts at, so that it is the same on every run. Not measured: Linux, where it was seen (WSL could not start when this was finished:
+  `HCS ERROR_NO_SYSTEM_RESOURCES`); measured instead on Windows, 10 whole-file runs with every core busy, all clean.
+  Left open, small: (a) a body put within a hair (under the controller's 0.01 skin) of two walls at once can be left standing a little above the
+  ground it falls beside (the controller counts the walls as support): it is not inside anything, and the properties do not assert on how a body
+  rests; (b) editing a block into a body that is already standing there is not cleared (only placing a body is); (c) the reply of `/tp`
+  reports the place asked for, not where the body is moved if that is inside terrain.
 - Light (Phase 12): cost is one lamp's 64 ticks of spreading averaged 15 ms a tick in a release build (with two clients
   watching; measured once, not repeated), and a tick is 50 ms, so a few lamps placed at once would overrun it. The budget
   of 20 000 voxels a tick (Phase 14) is a guess, not tuned, and its streaming cost to clients is not measured. The sky light

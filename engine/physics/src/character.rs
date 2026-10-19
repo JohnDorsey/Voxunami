@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
 use rapier3d::prelude::*;
-use voxel_space::{BRICK_EDGE_LENGTH, BrickCoordinate, WorldPosition};
+use voxel_space::{BRICK_EDGE_LENGTH, BrickCoordinate, VoxelCoordinate, WorldPosition};
 
-use crate::terrain::{CollisionSource, build_brick};
+use crate::terrain::{Collision, CollisionSource, build_brick};
 
 /// How far, in bricks, from its frame's origin a character may get before the frame is rebuilt
 /// around it. `f32` is exact enough far beyond this; the limit only keeps every number small.
@@ -13,6 +13,28 @@ const FRAME_RADIUS_BRICKS: i64 = 6;
 /// How many bricks around the one a character is in have colliders: one in every direction is
 /// enough to move well inside the middle one, since a body moves a small fraction of a brick a step.
 const TERRAIN_RADIUS_BRICKS: i64 = 1;
+
+/// How far, in voxels, a character that is put inside terrain is moved at most to find room, and how far
+/// at a time. An eighth is the finest a block's shape goes, so no ledge is stepped over. Two bricks is far
+/// enough for a character put some way into a hill, and keeps the search, which may have terrain
+/// generated for it, small.
+const MAXIMUM_CLEARANCE_DISTANCE: f32 = 64.0;
+const CLEARANCE_STEP: f32 = 0.125;
+
+/// The ways a character put inside terrain is moved, in the order tried at one distance: up first (onto
+/// the ground it was put into), then down, then sideways.
+const CLEARANCE_DIRECTIONS: [[f32; 3]; 6] = [
+    [0.0, 1.0, 0.0],
+    [0.0, -1.0, 0.0],
+    [1.0, 0.0, 0.0],
+    [-1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0],
+    [0.0, 0.0, -1.0],
+];
+
+/// How much smaller than the character the box is that is tested against the terrain when it is put
+/// somewhere: resting on the ground, or against a wall, with the controller's small gap, is not inside it.
+const CLEARANCE_MARGIN: f32 = 0.02;
 
 /// What a character is like. Lengths are in voxels (a voxel is a metre in Voxunami Cave) and times
 /// in seconds. The defaults are close to those of the games that taught people what walking in a
@@ -109,6 +131,9 @@ pub struct CharacterBody {
     ccd: CCDSolver,
     /// The colliders of each brick that has any, in the order they were made.
     loaded: HashMap<BrickCoordinate, Vec<ColliderHandle>>,
+    /// The character was put somewhere (made, or teleported) and has not been checked yet for being
+    /// inside the terrain; the next [`CharacterBody::update_terrain`] lifts it out if it is.
+    needs_clearance: bool,
 }
 
 impl std::fmt::Debug for CharacterBody {
@@ -169,6 +194,7 @@ impl CharacterBody {
             soft_bodies: SoftBodySet::new(),
             ccd: CCDSolver::new(),
             loaded: HashMap::new(),
+            needs_clearance: true,
         };
         body.place_eyes(eye);
         body
@@ -212,8 +238,10 @@ impl CharacterBody {
         }
     }
 
-    /// Puts the character with its eyes at a position, at rest and in the air.
+    /// Puts the character with its eyes at a position, at rest and in the air. If that is inside the
+    /// terrain, the next [`CharacterBody::update_terrain`] lifts it straight up onto the surface above.
     pub fn teleport(&mut self, eye: WorldPosition) {
+        self.needs_clearance = true;
         self.clear_terrain();
         self.origin = eye.brick();
         self.velocity = Vector::ZERO;
@@ -267,7 +295,90 @@ impl CharacterBody {
     /// Makes the colliders of the terrain around the character that are not made yet, and drops the
     /// ones that are far behind it. Call it before [`CharacterBody::step`] each tick; it does
     /// nothing, quickly, when the character has not moved to another brick.
+    ///
+    /// A character that was just put somewhere ([`CharacterBody::new`], [`CharacterBody::teleport`]) and
+    /// is inside the terrain is first moved the shortest way out of it (straight up, down or sideways: the
+    /// least distance, and up before the others at the same distance), so that it does not stay half in a
+    /// block, or fall through the ground, as the physics alone would leave it. If there is no room within
+    /// [`MAXIMUM_CLEARANCE_DISTANCE`] it stays where it was put.
     pub fn update_terrain(&mut self, source: &mut impl CollisionSource) {
+        if std::mem::take(&mut self.needs_clearance) {
+            self.move_out_of_terrain(source);
+        }
+        self.load_terrain_around_character(source);
+    }
+
+    fn move_out_of_terrain(&mut self, source: &mut impl CollisionSource) {
+        let put_at = self.center;
+        if !self.overlaps_terrain(put_at, source) {
+            return;
+        }
+        let mut distance = 0.0;
+        while distance < MAXIMUM_CLEARANCE_DISTANCE {
+            distance += CLEARANCE_STEP;
+            for direction in CLEARANCE_DIRECTIONS {
+                let candidate = put_at + Vector::from_array(direction) * distance;
+                if !self.overlaps_terrain(candidate, source) {
+                    self.center = candidate;
+                    return;
+                }
+            }
+        }
+        // No room near: where it was put is as good as anywhere (the center was never changed).
+    }
+
+    /// Whether the character's box, a little smaller than it is, with its middle at `center` (in the local
+    /// frame), reaches into the terrain. Asks the source, voxel by voxel: the colliders leave out boxes
+    /// buried inside solid terrain, so a character deep in the ground touches none of them. A place the
+    /// world does not have counts as solid, as the source's contract says.
+    fn overlaps_terrain(&self, center: Vector, source: &mut impl CollisionSource) -> bool {
+        let half = [
+            f64::from(self.settings.radius - CLEARANCE_MARGIN),
+            f64::from(self.settings.height / 2.0 - CLEARANCE_MARGIN),
+            f64::from(self.settings.radius - CLEARANCE_MARGIN),
+        ];
+        let edge = BRICK_EDGE_LENGTH as i64;
+        let origin = [self.origin.x(), self.origin.y(), self.origin.z()].map(|brick| brick * edge);
+        let center = center.to_array().map(f64::from);
+        let low = [0, 1, 2].map(|axis| (center[axis] - half[axis]).floor() as i64);
+        let high = [0, 1, 2].map(|axis| (center[axis] + half[axis]).floor() as i64);
+        for x in low[0]..=high[0] {
+            for y in low[1]..=high[1] {
+                for z in low[2]..=high[2] {
+                    let Ok(voxel) = VoxelCoordinate::try_new(
+                        origin[0].saturating_add(x),
+                        origin[1].saturating_add(y),
+                        origin[2].saturating_add(z),
+                    ) else {
+                        return true;
+                    };
+                    let cell = [x as f64, y as f64, z as f64];
+                    let reaches_in = |min: [f64; 3], max: [f64; 3]| {
+                        (0..3).all(|axis| {
+                            center[axis] + half[axis] > cell[axis] + min[axis]
+                                && center[axis] - half[axis] < cell[axis] + max[axis]
+                        })
+                    };
+                    let inside = match source.collision_at(voxel) {
+                        Collision::Empty => false,
+                        Collision::Full => reaches_in([0.0; 3], [1.0; 3]),
+                        Collision::Partial(parts) => parts.iter().any(|part| {
+                            reaches_in(
+                                part.min.map(|value| f64::from(value) / 8.0),
+                                part.max.map(|value| f64::from(value) / 8.0),
+                            )
+                        }),
+                    };
+                    if inside {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn load_terrain_around_character(&mut self, source: &mut impl CollisionSource) {
         let here = self.brick_of_center();
         // Far from the origin of the frame: build a new frame around the character.
         if (here.x() - self.origin.x()).abs() > FRAME_RADIUS_BRICKS

@@ -1493,6 +1493,15 @@ fn a_player_cannot_move_by_saying_where_they_are() {
 fn walkers_pass_through_flames_and_the_cellar_has_the_same_ground() {
     let (mut rig, second) = two_level_rig();
     let mut player = standing_walker(&mut rig);
+    // What the fire burns is a function of the server's tick, and how many ticks settling the view took
+    // depends on how busy the machine was: so that this test is the same on every run, the tick is fixed.
+    let fire_tick = 1000;
+    let now = rig.server.tick().get();
+    assert!(
+        now <= fire_tick,
+        "settling took {now} ticks, more than the {fire_tick} this test fixes"
+    );
+    tick_and_follow(&mut rig, &mut player, (fire_tick - now) as usize);
     let standing = voxels_of(&player.camera);
     // Flames on the ground ahead of them do not stop them.
     let feet = (standing[1] - 1.62).round() as i64;
@@ -1523,18 +1532,140 @@ fn walkers_pass_through_flames_and_the_cellar_has_the_same_ground() {
         (in_the_cellar[0] - before[0]).abs() < 1.0 && (in_the_cellar[2] - before[2]).abs() < 1.0,
         "{in_the_cellar:?} {before:?}"
     );
-    // They stand on the highest ground of the columns their body (0.6 wide) overlaps.
-    let columns = |centre: f64| [(centre - 0.3).floor() as i64, (centre + 0.3).floor() as i64];
-    let ground = columns(in_the_cellar[0])
-        .into_iter()
-        .flat_map(|x| columns(in_the_cellar[2]).map(move |z| (x, z)))
-        .map(|(x, z)| ground_height(&player, x, z))
-        .max()
-        .unwrap() as f64;
+    assert_standing(&player, "in the cellar");
+}
+
+/// Whether anything solid is where the player's body is (0.6 by 1.8, the feet 1.62 below the eyes), by more than
+/// a hair, as the player's picture of the terrain shows it.
+fn is_inside_solid(player: &Player) -> Vec<(i64, i64, i64)> {
+    let eyes = voxels_of(&player.camera);
+    let feet = eyes[1] - 1.62;
+    let inside = |centre: f64| (centre - 0.28).floor() as i64..=(centre + 0.28).floor() as i64;
+    let mut solid = Vec::new();
+    for x in inside(eyes[0]) {
+        for z in inside(eyes[2]) {
+            for y in (feet + 0.02).floor() as i64..=(feet + 1.78).floor() as i64 {
+                if player.mesher().is_opaque_at(VoxelCoordinate::new(x, y, z)) == Some(true) {
+                    solid.push((x, y, z));
+                }
+            }
+        }
+    }
+    solid
+}
+
+/// The player is not inside anything solid and stands on ground, as the player's picture of the terrain shows it:
+/// the feet are at the top of some column the body overlaps, or is within the controller's skin of (0.3 and a
+/// hair each way), and not lower than the top of any column it overlaps by more than the hair the physics
+/// lets a body into a block (0.02, so 0.28 each way).
+fn assert_standing(player: &Player, label: &str) {
+    let eyes = voxels_of(&player.camera);
+    assert_eq!(is_inside_solid(player), [], "{label}: eyes at {eyes:?}");
+    let tops = |reach: f64| -> Vec<f64> {
+        let columns = |centre: f64| {
+            [
+                (centre - reach).floor() as i64,
+                (centre + reach).floor() as i64,
+            ]
+        };
+        columns(eyes[0])
+            .into_iter()
+            .flat_map(|x| columns(eyes[2]).map(move |z| (x, z)))
+            .map(|(x, z)| ground_height(player, x, z) as f64 + 1.0)
+            .collect()
+    };
+    let feet = eyes[1] - 1.62;
+    let highest = tops(0.28).into_iter().fold(f64::MIN, f64::max);
     assert!(
-        (in_the_cellar[1] - (ground + 1.0 + 1.62)).abs() < 0.05,
-        "{in_the_cellar:?} on {ground}"
+        feet > highest - 0.05,
+        "{label}: sunk into ground that reaches {highest}: eyes at {eyes:?}"
     );
+    assert!(
+        tops(0.311).iter().any(|top| (feet - top).abs() < 0.05),
+        "{label}: standing on nothing: eyes at {eyes:?}, column tops {:?}",
+        tops(0.311)
+    );
+}
+
+#[test]
+fn a_player_teleported_into_the_terrain_is_moved_out_of_it_and_never_left_inside_it() {
+    // Positions on the hills where, one voxel inside the tallest column the body overlaps, the physics used to
+    // push the body some way sideways and leave it half in a block.
+    let mut rig = Rig::new();
+    let mut player = standing_walker(&mut rig);
+    let columns = |centre: f64| {
+        [
+            (centre - 0.28).floor() as i64,
+            (centre + 0.28).floor() as i64,
+        ]
+    };
+    for (x, z) in [
+        (10.20, 6.10),
+        (11.68, 6.51),
+        (12.79, 6.92),
+        (13.53, 8.56),
+        (15.38, 8.56),
+        (10.94, 9.38),
+        (10.57, 11.43),
+        (15.38, 11.84),
+        (15.75, 12.25),
+        (12.79, 12.25),
+    ] {
+        let tallest = columns(x)
+            .into_iter()
+            .flat_map(|cx| columns(z).map(move |cz| (cx, cz)))
+            .map(|(cx, cz)| ground_height(&player, cx, cz))
+            .max()
+            .unwrap() as f64;
+        // The feet one voxel inside the highest ground the body overlaps.
+        player.send_command(&format!("/tp {x} {} {z}", tallest + 1.62));
+        tick_and_follow(&mut rig, &mut player, 5);
+        rig.settle(&mut [&mut player]);
+        tick_and_follow(&mut rig, &mut player, 30);
+        let eyes = voxels_of(&player.camera);
+        assert_standing(&player, &format!("({x}, {z})"));
+        // The shortest way out is sideways, off a taller column, or up onto it: never far.
+        assert!(
+            (eyes[0] - x).abs() < 1.0
+                && (eyes[2] - z).abs() < 1.0
+                && eyes[1] < tallest + 1.62 + 1.0,
+            "({x}, {z}): moved far: eyes at {eyes:?}"
+        );
+    }
+}
+
+#[test]
+fn a_player_in_a_trench_sent_to_a_level_whose_ground_is_whole_ends_up_on_it_not_in_it() {
+    let (mut rig, second) = two_level_rig();
+    let mut player = standing_walker(&mut rig);
+    // Two columns of the ground dug out ahead of them: a trench they walk into and cannot climb out of (as
+    // the fire digs one, by chance, in the test of walking through flames).
+    for z in [13, 12] {
+        let ground = ground_height(&player, 16, z);
+        request_block(
+            &mut player,
+            VoxelCoordinate::new(16, ground, z),
+            "base_blocks:air",
+        );
+    }
+    tick_and_follow(&mut rig, &mut player, 3);
+    player.hold(&[KeyCode::KeyW]);
+    tick_and_follow(&mut rig, &mut player, 40);
+    player.hold(&[]);
+    tick_and_follow(&mut rig, &mut player, 40);
+    let in_the_trench = voxels_of(&player.camera);
+    assert!(
+        (12.0..12.7).contains(&in_the_trench[2]),
+        "the walker stopped at the end of the trench: {in_the_trench:?}"
+    );
+
+    // The cellar has its ground whole there, a voxel above their feet: they must end up on it, not in it.
+    player.send_command("/level go cellar");
+    rig.settle(&mut [&mut player]);
+    tick_and_follow(&mut rig, &mut player, 60);
+    assert_eq!(player.level(), second);
+    rig.settle(&mut [&mut player]);
+    assert_standing(&player, "in the cellar");
 }
 
 /// A position, bit for bit, as a number.

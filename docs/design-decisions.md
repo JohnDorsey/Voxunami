@@ -176,6 +176,17 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   old code with an idle tick before each join, against the new stream with the challenge removed and the version set back to 3, gives the same
   hashes in all three games).
 
+## Decided (a body put inside terrain is moved out of it; found in Phase 27f by a flaky test)
+- **`CharacterBody::new` and `teleport` clear the body at the next `update_terrain`**: if its box (a hair smaller than the body, 0.02 each
+  way) reaches into terrain, as the collision source says voxel by voxel, it is moved the *shortest* way out: up, down, or sideways along an
+  axis, in steps of an eighth of a voxel up to 64 voxels, up first at equal distance. Not "straight up": that launches a player through a roof
+  or over a wall. If there is no room within 64 it stays where it was put. A voxel the world does not have counts as solid.
+- **Why it is explicit**: the physics alone did not resolve it. Rapier's depenetration pushed a body some way sideways and left it inside
+  blocks, and the brick colliders omit boxes buried in solid terrain, so a body deep in the ground touched nothing and fell through it.
+- A body that is not inside anything is never moved (teleporting to where it already stands changes nothing, to the bit).
+- Cost: only on placement, and only when inside terrain; a failed search is about a millisecond plus the generation of the bricks it looks at,
+  which is why the limit is two bricks and not more.
+
 ## Decided (players are entities; built in Phase 27f)
 - **A player is an entity** of kind `player_presence:player`, with the key (server only), the connection number and the look angles (told to
   clients) and `engine:hidden`. Its pose is the player's pose; its level is the root grid. A player who leaves is hidden, not removed: it is

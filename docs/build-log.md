@@ -658,6 +658,25 @@ Phase 27a to 27c (entities; specified in `entities-spec.md`):
 - 27c: protocol version 3 (messages 9 to 11), server replication with cached views, the client store, replay of entities, version policy.
   Cost with 1000 entities and 4 clients: 0.5, 0.7 and 1.4 ms a tick with none, a tenth and all moving. 13 mutations are caught.
 
+Fix of a flaky test (after Phase 27f): a body put inside terrain is moved out of it.
+- Cause found by instrumenting and sweeping, not guessed: three explanations were tested and ruled out first (a body embedded after the level
+  switch and then lifted, a sliver overlap with a taller column, a stale collision cache). The chain and the evidence are in `docs/plan.md`.
+- `engine/physics`: `CharacterBody` clears a body that was made or teleported (`move_out_of_terrain`), see `design-decisions.md`. 33 tests in
+  `walking.rs` (16 new: 6 of them fail without the fix, the other 10 guard the policy and fail under wrong versions of it) and 2 properties (random scenes and random hills, put anywhere, any depth) that fail
+  without it (the body falls through the floor to y = -64, or is left inside the hills). The pinned scripted run did not change.
+- Two independent reviews (one of the physics code, one of the root cause and the tests) found, and I fixed: "straight up" launching players
+  through ceilings and walls (now the shortest way), a panic at the top of the world (now solid), a footprint formula in the test that had a
+  failure window of its own (now two-part: not inside what it overlaps by more than 0.02, standing on what it overlaps or is within the
+  controller's skin of), a scenario test that did not fail without the fix (replaced), and load-dependent tick counts in the original test (the
+  tick is fixed). 15 mutations of the new code: all caught, by the physics tests, the Cave tests, or both; the properties alone leave two
+  mutants (the margin, only the middle column) to the Cave test.
+- A side-room rule (keep the controller's 0.01 skin from walls when choosing where to put the body) was tried and made things worse, by
+  rejecting the good place straight up beside a taller wall; reverted. A property that asserted how a body *rests* failed on rare corners of
+  the controller; it now asserts what clearing can promise (not inside, above the floor, not carried off).
+- Measured: before, 39 of 256 probe teleports left the body inside terrain; after, 0. Sweep of 160 tick offsets: 11 failures before, 0 after.
+  Whole-file runs of the Cave play binary on Windows with every core busy: 10 of 10 clean (38 tests each, 53 to 81 s a run). Linux was not
+  run (WSL could not start, `HCS ERROR_NO_SYSTEM_RESOURCES`).
+
 Phase 27f (players become entities):
 - `engine:hidden` (entities crate) and its filter in replication. The `player_presence` crate: the kind `player_presence:player` and its
   components (key, connection, look), `Presence` replacing `PoseBook` (calls take the world; reads take `WorldData`), the plugin taking over a
