@@ -5,11 +5,13 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use entities::EntityCatalog;
+use identity::Identity;
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, Tick};
+use transport::Connection;
 use world_storage::Section;
 
-use crate::{GameLogic, ServerWorld};
+use crate::{GameLogic, Server, ServerWorld};
 
 /// What the server told the game logic.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,4 +169,35 @@ impl GameLogic for ScriptedLogic {
             action(tick, world);
         }
     }
+}
+
+/// The identity of the `ordinal`-th test client: the same every run, and different for each ordinal.
+pub fn test_identity(ordinal: u8) -> Identity {
+    Identity::from_secret([ordinal; 32])
+}
+
+/// Logs a test client in as `test_identity(ordinal)`: it says hello, the server steps and challenges it, it
+/// answers, and the server steps and welcomes it. What the server sent from the welcome on is left to read.
+pub fn log_in(
+    server: &mut Server,
+    connection: &mut impl Connection,
+    game: &NamespacedId,
+    ordinal: u8,
+) {
+    let identity = test_identity(ordinal);
+    connection
+        .send(identity.hello(game).encode())
+        .expect("the server is listening");
+    server.step();
+    let frame = connection
+        .receive()
+        .expect("the server is listening")
+        .expect("the server challenged the client");
+    let proof = identity
+        .answer(game, &frame)
+        .expect("the first thing the server sends is its challenge");
+    connection
+        .send(proof.encode())
+        .expect("the server is listening");
+    server.step();
 }

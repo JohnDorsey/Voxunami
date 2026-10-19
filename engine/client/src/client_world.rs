@@ -193,6 +193,9 @@ impl ClientWorld {
     pub fn apply(&mut self, message: ServerMessage) -> Result<Option<ClientEvent>, ClientError> {
         match message {
             ServerMessage::Welcome(_) => Err(ClientError::UnexpectedMessage("a second welcome")),
+            ServerMessage::Challenge { .. } => Err(ClientError::UnexpectedMessage(
+                "a challenge after the welcome",
+            )),
             ServerMessage::Disconnected { reason } => {
                 Err(ClientError::DisconnectedByServer(reason))
             }

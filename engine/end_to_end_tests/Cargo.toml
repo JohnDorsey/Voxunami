@@ -8,6 +8,7 @@ description = "Scenarios that run a real server, clients and recorders together:
 
 [dependencies]
 entities.workspace = true
+identity.workspace = true
 binary_codec.workspace = true
 client.workspace = true
 content_registry.workspace = true

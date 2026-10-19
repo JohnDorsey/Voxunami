@@ -1,4 +1,4 @@
-# The message stream and replays (protocol version 3)
+# The message stream and replays (protocol version 4)
 
 Implemented by `engine/protocol` (messages), `engine/transport` (carrying frames), `engine/server`, `engine/client`
 and `engine/replay`; scenarios that run them together are in `engine/end_to_end_tests`.
@@ -37,23 +37,30 @@ since a recording is just the frames a client received.
 
 ## The conversation
 
-1. The client sends `Hello` (protocol version, game id). The server refuses another version or game with
-   `Disconnected` and closes the connection. A client that never says hello is dropped after a number of *ticks*
-   (`ServerConfig::handshake_timeout_ticks`); the server never reads a clock.
-2. The server answers `Welcome`: protocol version, game id, the id it gave the client, ticks per second, the last tick
+1. The client sends `Hello` (protocol version, game id, its public key). The server refuses another version or game, or a
+   key that is already playing, with `Disconnected` and closes the connection. A client that never says hello, or never
+   proves who it is, is dropped after a number of *ticks* (`ServerConfig::handshake_timeout_ticks`); the server never
+   reads a clock.
+2. The server answers `Challenge`: 32 bytes it has not used before. The client answers `Prove`: its signature (Ed25519,
+   checked strictly) of a text made of a fixed prefix, the game id, the challenge and the public key, so a proof is good
+   for one login to one game. A wrong proof is refused with a reason. A real server draws challenges from the operating
+   system's randomness; a test server, or one whose only clients are in its own process, counts them, so streams repeat. Each
+   key is one player and one connection at a time; there are no accounts (`entities-spec.md` section 2.7). Joining takes two
+   server ticks: the challenge is sent in the tick after the hello and the welcome in the tick after the proof.
+3. The server answers `Welcome`: protocol version, game id, the id it gave the client, ticks per second, the last tick
    completed before the client joined, and a *world description*: a world file (`WorldData::describe`) with seed,
    registry tables, channel layout and, for each level, its name and generator setup, but no assignments, bricks or
    plugin sections. Levels are numbered by their order in it. The client loads
    it like a save (placeholders for content it lacks) and keeps the translator for everything that follows.
-3. The client sends `SetInterest` with a level and a box of bricks. The server answers, at the end of its next tick, with
+4. The client sends `SetInterest` with a level and a box of bricks. The server answers, at the end of its next tick, with
    `InterestChanged` then `BrickContents` for each *edited* brick in the newly watched part. A client watches one box of
    one level at a time; asking for the same box of another level makes all of it new, and the client forgets what it held
    of the first. Unedited terrain is never
    sent: the client generates it from the seed, using the generator the assignments name.
-4. Every tick, each joined client is sent, in this order: the interest change and bricks gained (if it asked), the edits
+5. Every tick, each joined client is sent, in this order: the interest change and bricks gained (if it asked), the edits
    inside what it already watched, the game messages meant for it, and `TickCompleted`. The client applies a tick's
    messages together, when its `TickCompleted` arrives, so its view is never half a tick.
-5. `Goodbye` (or just closing) ends it. Ticks are numbered consecutively in each stream; the client treats a gap as an
+6. `Goodbye` (or just closing) ends it. Ticks are numbered consecutively in each stream; the client treats a gap as an
    error.
 
 ## Messages
@@ -62,11 +69,12 @@ Client to server (first byte is the kind):
 
 | Kind | Message | Body |
 |---|---|---|
-| 1 | `Hello` | protocol version (`u32`), game (identifier) |
+| 1 | `Hello` | protocol version (`u32`), game (identifier), public key (32 bytes) |
 | 2 | `SetInterest` | level (varint), box: min x, y, z then max x, y, z (zigzag) |
 | 3 | `GameMessage` | kind (identifier), payload (bytes) |
 | 4 | `Goodbye` | none |
 | 5 | `Command` | text (string, at most 1024 bytes): a line the player typed, such as `/level go cellar` |
+| 6 | `Prove` | signature (64 bytes) of the login text for the challenge the server sent |
 
 Server to client:
 
@@ -83,11 +91,12 @@ Server to client:
 | 9 | `EntitiesSpawned` | count, then per entity: id (varint), kind (identifier), pose, components (see below). Entities that came into the watched region, in order of id |
 | 10 | `EntitiesChanged` | count, then per entity: id, a byte (1 if a pose follows, else 0) and the pose, components. Only what changed |
 | 11 | `EntitiesDespawned` | count, then ids (varints): entities that left the watched region or no longer exist |
+| 12 | `Challenge` | nonce (32 bytes): what the client must sign to say it holds the private key of the key it announced |
 
 A **pose** is the grid id (varint), the brick x, y, z (zigzag), the offset in the brick (three `f32`, each in [0, 32)) and the orientation
 (four `f32`, a unit quaternion within 1e-3). **Components** are a count, then each identifier and its bytes (a varint length, then the
 bytes the component's own codec made), in order of identifier and once each. Only the components the entity's kind says are replicated are
-sent. Messages 9 to 11 were added in version 3.
+sent. Messages 9 to 11 were added in version 3; the public key in `Hello`, `Prove` and `Challenge` in version 4.
 
 Brick contents, channel numbers, content ids and generator ids use the *server's* numbering, which the world description's
 tables define. The client translates (`SourceTranslator`): enabling a plugin that shifts every id on one side changes
@@ -157,8 +166,8 @@ guarantees.
 ## Known limits and future work
 
 - Servers do not tell clients how much of the world they may watch (`maximum_watched_bricks`), so a client with a larger
-  view radius than its server expects is refused with a reason rather than adjusted. Passwords, encryption and
-  per-client bandwidth limits do not exist.
+  view radius than its server expects is refused with a reason rather than adjusted. Accounts, passwords, encryption
+  of the stream and per-client bandwidth limits do not exist (a player is a keypair; the stream is proof of who, not secret).
 - Seeking inside a replay means replaying from the start; periodic keyframes (a snapshot of the view) would fix that.
 - A client that finds itself out of sync can only reconnect; a request-and-resend for single bricks would repair it.
 - Finding who an edit concerns scans all clients each tick; a spatial index over watched regions takes this from dozens
@@ -166,4 +175,4 @@ guarantees.
 - Only full-detail bricks are sent. Distant terrain (LOD) will need interest regions with a level of detail, and a new
   protocol version.
 - A recorder that wants to see the whole action (not one player's view) connects as a spectator with a large region.
-- Players and structures are not entities yet (Phase 27e and Phase 32); games still replicate players with game messages.
+- Players and structures are not entities yet (Phase 27f and Phase 32); games still replicate players with game messages.

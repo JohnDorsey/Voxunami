@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use namespaced_id::NamespacedId;
 use player_presence::{LevelChange, PlayerPose, Players, PoseBook, PoseReport};
-use protocol::{ClientId, ClientMessage, Message, PROTOCOL_VERSION, ServerMessage};
-use server::test_support::ScriptedLogic;
+use protocol::{ClientId, ClientMessage, Message, ServerMessage};
+use server::test_support::{ScriptedLogic, log_in};
 use server::{Server, ServerConfig};
 use transport::Connection;
 use transport::loopback::{LoopbackConnection, LoopbackConnector, loopback_listener};
@@ -68,6 +68,8 @@ struct Rig {
     server: Server,
     connector: LoopbackConnector,
     book: Arc<Mutex<PoseBook>>,
+    /// How many clients have joined: each logs in as an identity of its own.
+    joined: u8,
 }
 
 impl Rig {
@@ -119,6 +121,7 @@ impl Rig {
             server,
             connector,
             book,
+            joined: 0,
         }
     }
 
@@ -126,11 +129,13 @@ impl Rig {
         let mut client = Client {
             connection: self.connector.connect().unwrap(),
         };
-        client.send(&ClientMessage::Hello {
-            protocol_version: PROTOCOL_VERSION,
-            game: game_id(),
-        });
-        self.server.step();
+        self.joined += 1;
+        log_in(
+            &mut self.server,
+            &mut client.connection,
+            &game_id(),
+            self.joined,
+        );
         client.received();
         client
     }

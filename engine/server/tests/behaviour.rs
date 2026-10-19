@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use binary_codec::{ByteReader, DecodeError};
 use entities::{ComponentBag, EntityCatalog, EntityKindSpec};
+use identity::{ChallengeSource, Identity};
 use namespaced_id::NamespacedId;
 use protocol::{
     ClientId, ClientMessage, EntityChange, EntityId, Message, PROTOCOL_VERSION, ServerMessage, Tick,
@@ -29,6 +30,7 @@ fn game_id() -> NamespacedId {
 /// A client of the server under test: it speaks the protocol and remembers nothing else.
 struct TestClient {
     connection: LoopbackConnection,
+    identity: Identity,
 }
 
 impl TestClient {
@@ -37,10 +39,22 @@ impl TestClient {
     }
 
     fn hello(&mut self) {
-        self.send(&ClientMessage::Hello {
-            protocol_version: PROTOCOL_VERSION,
-            game: game_id(),
-        });
+        self.send(&self.identity.hello(&game_id()));
+    }
+
+    /// Answers the server's challenge, which is the only thing it has sent since the hello. The server
+    /// welcomes the client in the tick after.
+    fn prove(&mut self) {
+        let frame = self
+            .connection
+            .receive()
+            .unwrap()
+            .expect("the server challenged the client");
+        let proof = self
+            .identity
+            .answer(&game_id(), &frame)
+            .expect("the first thing the server sends is its challenge");
+        self.send(&proof);
     }
 
     fn watch(&mut self, center: BrickCoordinate, radius: u32) {
@@ -79,6 +93,8 @@ struct Harness {
     server: Server,
     connector: LoopbackConnector,
     events: Arc<Mutex<Vec<LogicEvent>>>,
+    /// How many clients have connected: each gets an identity of its own.
+    connected: std::cell::Cell<u8>,
 }
 
 impl Harness {
@@ -116,7 +132,7 @@ impl Harness {
         let (listener, connector) = loopback_listener();
         let events = logic.events();
         let server = Server::new(
-            config,
+            config.with_counted_challenges(1),
             world,
             &game.registries(),
             Box::new(logic),
@@ -127,12 +143,36 @@ impl Harness {
             server,
             connector,
             events,
+            connected: std::cell::Cell::new(0),
+        }
+    }
+
+    /// Logs these clients in: the hello, a tick (in which the server challenges them), their proofs, and a tick
+    /// (in which it welcomes them). What the server sent them from the welcome on is still to be read.
+    fn log_in(&mut self, clients: &mut [&mut TestClient]) {
+        for client in clients.iter_mut() {
+            client.hello();
+        }
+        self.server.step();
+        for client in clients.iter_mut() {
+            client.prove();
+        }
+        self.server.step();
+    }
+
+    /// A client that says it is this identity, whoever it has connected as before.
+    fn connect_as(&self, identity: Identity) -> TestClient {
+        TestClient {
+            connection: self.connector.connect().unwrap(),
+            identity,
         }
     }
 
     fn connect(&self) -> TestClient {
+        self.connected.set(self.connected.get() + 1);
         TestClient {
             connection: self.connector.connect().unwrap(),
+            identity: Identity::from_secret([self.connected.get(); 32]),
         }
     }
 
@@ -152,13 +192,32 @@ fn block_of(game: &Game, name: &str) -> u8 {
 }
 
 #[test]
-fn a_joining_client_is_welcomed_with_a_description_it_can_load() {
+fn a_joining_client_is_challenged_then_welcomed_with_a_description_it_can_load() {
     let (_, mut harness) = default_harness();
     let mut client = harness.connect();
     client.hello();
+    // The first tick: the server has been told who the client says it is, and challenges it.
+    let challenged = harness.server.step();
+    assert_eq!(challenged.tick, Tick::new(1));
+    assert!(challenged.joined.is_empty(), "not before the proof");
+    assert_eq!(
+        client
+            .connection
+            .receive()
+            .unwrap()
+            .map(|frame| ServerMessage::decode(&frame).unwrap()),
+        Some(ServerMessage::Challenge {
+            nonce: ChallengeSource::counter(1).next_challenge()
+        })
+    );
+    assert_eq!(harness.logic_events(), [LogicEvent::Tick(Tick::new(1))]);
+    // (`prove` reads the challenge from the connection; send the proof by hand here.)
+    let proof = identity::Identity::from_secret([1; 32])
+        .prove(&game_id(), &ChallengeSource::counter(1).next_challenge());
+    client.send(&ClientMessage::Prove { signature: proof });
     let report = harness.server.step();
 
-    assert_eq!(report.tick, Tick::new(1));
+    assert_eq!(report.tick, Tick::new(2));
     assert_eq!(report.joined, [ClientId::new(1)]);
     assert!(report.left.is_empty());
     let messages = client.received();
@@ -169,15 +228,19 @@ fn a_joining_client_is_welcomed_with_a_description_it_can_load() {
     else {
         panic!("expected a welcome and a tick, got {messages:?}");
     };
-    assert_eq!(*tick, Tick::new(1));
+    assert_eq!(*tick, Tick::new(2));
     assert_eq!(welcome.protocol_version, PROTOCOL_VERSION);
     assert_eq!(welcome.game, game_id());
     assert_eq!(welcome.client, ClientId::new(1));
     assert_eq!(welcome.ticks_per_second, 20);
     assert_eq!(
         welcome.tick,
-        Tick::ZERO,
+        Tick::new(1),
         "the last tick completed before joining"
+    );
+    assert_eq!(
+        harness.server.player_key(ClientId::new(1)),
+        Some(Identity::from_secret([1; 32]).player_key())
     );
 
     let mut receiver = Game::new(&ALL_PLUGINS);
@@ -189,8 +252,9 @@ fn a_joining_client_is_welcomed_with_a_description_it_can_load() {
     assert_eq!(
         harness.logic_events(),
         [
+            LogicEvent::Tick(Tick::new(1)),
             LogicEvent::Joined(ClientId::new(1)),
-            LogicEvent::Tick(Tick::new(1))
+            LogicEvent::Tick(Tick::new(2))
         ]
     );
 }
@@ -202,6 +266,9 @@ fn clients_get_ids_in_the_order_they_connected_and_each_gets_its_own_stream() {
     let mut second = harness.connect();
     second.hello();
     first.hello();
+    harness.server.step();
+    second.prove();
+    first.prove();
     harness.server.step();
     let welcome_of = |messages: Vec<ServerMessage>| match &messages[0] {
         ServerMessage::Welcome(welcome) => welcome.client,
@@ -220,6 +287,7 @@ fn refusal_cases() -> Vec<(&'static str, Vec<Vec<u8>>, &'static str)> {
         ClientMessage::Hello {
             protocol_version,
             game: id(game),
+            player_key: Identity::from_secret([200; 32]).player_key(),
         }
         .encode()
     };
@@ -253,7 +321,20 @@ fn refusal_cases() -> Vec<(&'static str, Vec<Vec<u8>>, &'static str)> {
                 hello(PROTOCOL_VERSION, "test_game:game"),
                 hello(PROTOCOL_VERSION, "test_game:game"),
             ],
-            "already",
+            "must follow the challenge",
+        ),
+        (
+            "proof before hello",
+            vec![ClientMessage::Prove { signature: [0; 64] }.encode()],
+            "hello",
+        ),
+        (
+            "a proof that is not one",
+            vec![
+                hello(PROTOCOL_VERSION, "test_game:game"),
+                ClientMessage::Prove { signature: [7; 64] }.encode(),
+            ],
+            "not good",
         ),
     ]
 }
@@ -320,6 +401,8 @@ fn watching_a_region_tells_the_client_which_generator_made_each_part() {
     let mut client = harness.connect();
     client.hello();
     harness.server.step();
+    client.prove();
+    harness.server.step();
     client.received();
 
     client.watch(BrickCoordinate::ORIGIN, 1);
@@ -337,7 +420,7 @@ fn watching_a_region_tells_the_client_which_generator_made_each_part() {
         panic!("{messages:?}");
     };
     assert_eq!(*region, BrickBox::around(BrickCoordinate::ORIGIN, 1));
-    assert_eq!(*tick, Tick::new(2));
+    assert_eq!(*tick, Tick::new(3));
     // Bricks -1..=1 straddle the origin, so with cubes of 8 bricks the region touches 2 x 2 x 2 cubes.
     assert_eq!(assignments.len(), 8);
     let flat = harness
@@ -374,6 +457,8 @@ fn unedited_terrain_is_never_sent_and_edited_bricks_are_sent_when_they_come_into
     let mut harness = Harness::new(&game, world, ServerConfig::new(game_id()));
     let mut client = harness.connect();
     client.hello();
+    harness.server.step();
+    client.prove();
     harness.server.step();
     client.received();
 
@@ -454,7 +539,7 @@ fn the_contents_sent_are_exactly_the_servers_brick() {
     let expected = Arc::clone(world.main().overrides.brick(brick(0, 0, 0)).unwrap());
     let mut harness = Harness::new(&game, world, ServerConfig::new(game_id()));
     let mut client = harness.connect();
-    client.hello();
+    harness.log_in(&mut [&mut client]);
     client.watch(BrickCoordinate::ORIGIN, 0);
     harness.server.step();
     let contents = client
@@ -481,9 +566,7 @@ fn a_first_edit_sends_the_whole_brick_and_later_edits_send_only_changes() {
     let mut watcher = harness.connect();
     let mut elsewhere = harness.connect();
     let mut builder = harness.connect();
-    for client in [&mut watcher, &mut elsewhere, &mut builder] {
-        client.hello();
-    }
+    harness.log_in(&mut [&mut watcher, &mut elsewhere, &mut builder]);
     watcher.watch(BrickCoordinate::ORIGIN, 1);
     elsewhere.watch(brick(50, 0, 0), 1);
     harness.server.step();
@@ -574,7 +657,7 @@ fn a_brick_that_comes_into_view_in_the_tick_it_is_edited_is_sent_once() {
     let (game, mut harness) = default_harness();
     let marble = block_of(&game, "fancy_blocks:marble");
     let mut client = harness.connect();
-    client.hello();
+    harness.log_in(&mut [&mut client]);
     client.watch(brick(10, 0, 0), 0);
     harness.server.step();
     client.received();
@@ -582,6 +665,8 @@ fn a_brick_that_comes_into_view_in_the_tick_it_is_edited_is_sent_once() {
     // In the same tick: the client asks to watch brick (0, 0, 0), and someone edits it.
     let mut builder = harness.connect();
     builder.hello();
+    harness.server.step();
+    builder.prove();
     harness.server.step();
     client.received();
     client.watch(BrickCoordinate::ORIGIN, 0);
@@ -618,7 +703,7 @@ fn a_brick_that_comes_into_view_in_the_tick_it_is_edited_is_sent_once() {
 fn game_messages_reach_exactly_their_audience() {
     let game = Game::new(&ALL_PLUGINS);
     let logic = ScriptedLogic::new().on_tick(|tick, world| {
-        if tick == Tick::new(3) {
+        if tick == Tick::new(5) {
             world.send(Audience::Everyone, id("test_game:all"), vec![1]);
             world.send(
                 Audience::Client(ClientId::new(2)),
@@ -641,8 +726,7 @@ fn game_messages_reach_exactly_their_audience() {
         Harness::with_logic(&game, game.new_world(), ServerConfig::new(game_id()), logic);
     let mut first = harness.connect();
     let mut second = harness.connect();
-    first.hello();
-    second.hello();
+    harness.log_in(&mut [&mut first, &mut second]);
     first.watch(BrickCoordinate::ORIGIN, 0);
     second.watch(brick(9, 9, 9), 0);
     harness.server.step();
@@ -674,7 +758,7 @@ fn game_messages_reach_exactly_their_audience() {
 fn a_game_message_from_a_client_reaches_the_game_in_order() {
     let (_, mut harness) = default_harness();
     let mut client = harness.connect();
-    client.hello();
+    harness.log_in(&mut [&mut client]);
     for payload in [1u8, 2, 3] {
         client.send(&ClientMessage::GameMessage {
             kind: id("test_game:note"),
@@ -699,9 +783,7 @@ fn leaving_by_goodbye_or_by_closing_is_reported_to_the_game() {
     let mut polite = harness.connect();
     let mut abrupt = harness.connect();
     let mut staying = harness.connect();
-    for client in [&mut polite, &mut abrupt, &mut staying] {
-        client.hello();
-    }
+    harness.log_in(&mut [&mut polite, &mut abrupt, &mut staying]);
     harness.server.step();
     polite.send(&ClientMessage::Goodbye);
     drop(abrupt);
@@ -724,7 +806,7 @@ fn leaving_by_goodbye_or_by_closing_is_reported_to_the_game() {
     // The server keeps ticking and the remaining client keeps receiving.
     harness.server.step();
     let last = staying.received().pop().unwrap();
-    assert_eq!(last, ServerMessage::TickCompleted { tick: Tick::new(3) });
+    assert_eq!(last, ServerMessage::TickCompleted { tick: Tick::new(5) });
 }
 
 #[test]
@@ -734,7 +816,7 @@ fn watching_more_than_the_limit_is_refused_without_the_server_doing_the_work() {
     config.maximum_watched_bricks = 27;
     let mut harness = Harness::new(&game, game.new_world(), config);
     let mut client = harness.connect();
-    client.hello();
+    harness.log_in(&mut [&mut client]);
     client.watch(BrickCoordinate::ORIGIN, 1); // exactly 27 bricks: allowed
     assert!(harness.server.step().left.is_empty());
     client.watch(BrickCoordinate::ORIGIN, 2); // 125 bricks
@@ -744,7 +826,7 @@ fn watching_more_than_the_limit_is_refused_without_the_server_doing_the_work() {
     );
     // A request for everything must not hang or exhaust memory either.
     let mut greedy = harness.connect();
-    greedy.hello();
+    harness.log_in(&mut [&mut greedy]);
     greedy.send(&ClientMessage::SetInterest {
         level: LevelIndex::MAIN,
         region: BrickBox::around(BrickCoordinate::ORIGIN, u32::MAX),
@@ -757,12 +839,12 @@ fn watching_more_than_the_limit_is_refused_without_the_server_doing_the_work() {
 fn every_client_sees_each_tick_exactly_once_in_order_whether_or_not_it_watches_anything() {
     let (_, mut harness) = default_harness();
     let mut early = harness.connect();
-    early.hello();
+    harness.log_in(&mut [&mut early]);
     for _ in 0..3 {
         harness.server.step();
     }
     let mut late = harness.connect();
-    late.hello();
+    harness.log_in(&mut [&mut late]);
     for _ in 0..3 {
         harness.server.step();
     }
@@ -775,8 +857,9 @@ fn every_client_sees_each_tick_exactly_once_in_order_whether_or_not_it_watches_a
             })
             .collect()
     };
-    assert_eq!(ticks(early.received()), [1, 2, 3, 4, 5, 6]);
-    assert_eq!(ticks(late.received()), [4, 5, 6]);
+    // Each is sent every tick from the one it was welcomed in (the second tick of its login), once and in order.
+    assert_eq!(ticks(early.received()), [2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    assert_eq!(ticks(late.received()), [7, 8, 9, 10]);
 }
 
 #[test]
@@ -883,9 +966,7 @@ fn scenario_frames() -> Vec<Vec<Vec<u8>>> {
     ]
     .map(|name| block_of(&game, name));
     let mut clients = [harness.connect(), harness.connect(), harness.connect()];
-    for client in &mut clients {
-        client.hello();
-    }
+    harness.log_in(&mut clients.iter_mut().collect::<Vec<_>>());
     clients[0].watch(BrickCoordinate::ORIGIN, 2);
     clients[1].watch(brick(1, 0, 0), 1);
     for step in 0..12i8 {
@@ -916,7 +997,7 @@ fn a_region_that_moves_partly_sends_only_the_bricks_it_gains_and_shrinking_sends
     game.set_block(&mut world, [-40, 2, 3], "base_blocks:dirt"); // brick (-2, 0, 0)
     let mut harness = Harness::new(&game, world, ServerConfig::new(game_id()));
     let mut client = harness.connect();
-    client.hello();
+    harness.log_in(&mut [&mut client]);
     client.watch(BrickCoordinate::ORIGIN, 1); // x from -1 to 1
     harness.server.step();
     client.received();
@@ -963,8 +1044,7 @@ fn setting_a_voxel_to_the_value_it_already_has_edits_nothing() {
     let stone = block_of(&game, "base_blocks:stone"); // the terrain at this depth
     let mut client = harness.connect();
     let mut builder = harness.connect();
-    client.hello();
-    builder.hello();
+    harness.log_in(&mut [&mut client, &mut builder]);
     client.watch(BrickCoordinate::ORIGIN, 1);
     harness.server.step();
     client.received();
@@ -1017,6 +1097,8 @@ fn a_running_server_can_be_saved_with_its_games_state_and_keeps_running() {
     let mut client = harness.connect();
     client.hello();
     harness.server.step();
+    client.prove();
+    harness.server.step();
     let bytes = harness.server.save(&game.registries()).unwrap();
 
     let mut other = Game::new(&ALL_PLUGINS);
@@ -1025,7 +1107,7 @@ fn a_running_server_can_be_saved_with_its_games_state_and_keeps_running() {
     // Saving twice does not duplicate the section, and the server goes on serving.
     let again = harness.server.save(&game.registries()).unwrap();
     assert_eq!(again, bytes);
-    assert_eq!(harness.server.step().tick, Tick::new(2));
+    assert_eq!(harness.server.step().tick, Tick::new(3));
     assert_eq!(harness.server.connected_clients().count(), 1);
 }
 
@@ -1142,6 +1224,8 @@ fn the_welcome_describes_every_level_by_name() {
     let mut client = harness.connect();
     client.hello();
     harness.server.step();
+    client.prove();
+    harness.server.step();
     let Some(ServerMessage::Welcome(welcome)) = client.received().into_iter().next() else {
         panic!("a welcome comes first");
     };
@@ -1175,6 +1259,9 @@ fn clients_watching_different_levels_are_sent_only_that_levels_bricks_generators
     let (mut main_watcher, mut second_watcher) = (harness.connect(), harness.connect());
     main_watcher.hello();
     second_watcher.hello();
+    harness.server.step();
+    main_watcher.prove();
+    second_watcher.prove();
     harness.server.step();
     main_watcher.received();
     second_watcher.received();
@@ -1228,6 +1315,8 @@ fn moving_to_another_level_sends_the_whole_region_again_and_back_again() {
     let mut client = harness.connect();
     client.hello();
     harness.server.step();
+    client.prove();
+    harness.server.step();
     client.watch_level(LevelIndex::MAIN, brick(0, 0, 0), 1);
     harness.server.step();
     assert_eq!(
@@ -1270,6 +1359,8 @@ fn watching_a_level_the_world_does_not_have_is_refused_with_a_reason() {
     let mut client = harness.connect();
     client.hello();
     harness.server.step();
+    client.prove();
+    harness.server.step();
     client.received();
     client.watch_level(LevelIndex::new(5), brick(0, 0, 0), 1);
     let report = harness.server.step();
@@ -1302,9 +1393,7 @@ fn a_game_message_for_those_watching_a_brick_reaches_only_those_watching_that_le
     });
     let mut harness = Harness::with_logic(&game, world, ServerConfig::new(game_id()), logic);
     let (mut main_watcher, mut second_watcher) = (harness.connect(), harness.connect());
-    for client in [&mut main_watcher, &mut second_watcher] {
-        client.hello();
-    }
+    harness.log_in(&mut [&mut main_watcher, &mut second_watcher]);
     harness.server.step();
     main_watcher.watch_level(LevelIndex::MAIN, brick(0, 0, 0), 1);
     second_watcher.watch_level(second, brick(0, 0, 0), 1);
@@ -1340,6 +1429,9 @@ fn a_command_reaches_the_game_in_order_and_its_reply_goes_to_the_sender_after_th
     let (mut speaker, mut listener) = (harness.connect(), harness.connect());
     speaker.hello();
     listener.hello();
+    harness.server.step();
+    speaker.prove();
+    listener.prove();
     harness.server.step();
     speaker.received();
     listener.received();
@@ -1400,6 +1492,8 @@ fn a_game_with_no_commands_says_so_and_bad_commands_are_protocol_violations() {
     let mut client = harness.connect();
     client.hello();
     harness.server.step();
+    client.prove();
+    harness.server.step();
     client.received();
     client.command("/anything");
     harness.server.step();
@@ -1425,6 +1519,8 @@ fn a_game_with_no_commands_says_so_and_bad_commands_are_protocol_violations() {
     let mut rude = harness.connect();
     rude.hello();
     harness.server.step();
+    rude.prove();
+    harness.server.step();
     rude.received();
     rude.command(&"a".repeat(protocol::MAXIMUM_COMMAND_LENGTH + 1));
     let report = harness.server.step();
@@ -1446,6 +1542,9 @@ fn switching_levels_in_the_tick_of_an_edit_sends_each_brick_once_in_its_final_st
     let (mut switcher, mut editor) = (harness.connect(), harness.connect());
     switcher.hello();
     editor.hello();
+    harness.server.step();
+    switcher.prove();
+    editor.prove();
     harness.server.step();
     switcher.watch_level(LevelIndex::MAIN, brick(0, 0, 0), 1);
     harness.server.step();
@@ -1642,6 +1741,8 @@ fn a_client_is_told_of_the_entities_in_the_region_it_watches_and_only_what_its_k
     let mut client = harness.connect();
     client.hello();
     harness.server.step();
+    client.prove();
+    harness.server.step();
     client.received();
     client.watch(BrickCoordinate::ORIGIN, 2);
     harness.server.step();
@@ -1671,16 +1772,16 @@ fn what_changed_is_what_is_sent_and_a_change_to_what_is_not_replicated_is_not() 
                 .spawn_entity(&id("test:cow"), pose_in(0, 3.0), ComponentBag::new())
                 .unwrap();
         }
-        3 => world
+        4 => world
             .set_entity_pose(EntityId::new(1), pose_in(0, 4.0))
             .unwrap(),
-        4 => world
+        5 => world
             .set_entity_component(EntityId::new(1), &Health(7))
             .unwrap(),
-        5 => world
+        6 => world
             .set_entity_component(EntityId::new(1), &Mood(3))
             .unwrap(),
-        6 => world
+        7 => world
             .set_entity_component(EntityId::new(1), &Health(7))
             .unwrap(),
         _ => {}
@@ -1688,11 +1789,13 @@ fn what_changed_is_what_is_sent_and_a_change_to_what_is_not_replicated_is_not() 
     let mut client = harness.connect();
     client.hello();
     harness.server.step();
+    client.prove();
+    harness.server.step();
     client.watch(BrickCoordinate::ORIGIN, 1);
     harness.server.step();
     client.received();
     let mut per_tick = Vec::new();
-    for _ in 3..=6 {
+    for _ in 4..=7 {
         harness.server.step();
         per_tick.push(client.received());
     }
@@ -1736,13 +1839,13 @@ fn an_entity_that_leaves_the_region_is_despawned_and_one_that_comes_in_is_spawne
                 .spawn_entity(&id("test:cow"), pose_in(0, 3.0), ComponentBag::new())
                 .unwrap();
         }
-        3 => world
+        4 => world
             .set_entity_pose(EntityId::new(1), pose_in(40, 3.0))
             .unwrap(),
-        5 => world
+        6 => world
             .set_entity_pose(EntityId::new(1), pose_in(1, 3.0))
             .unwrap(),
-        7 => {
+        8 => {
             world.despawn_entity(EntityId::new(1));
         }
         _ => {}
@@ -1750,11 +1853,13 @@ fn an_entity_that_leaves_the_region_is_despawned_and_one_that_comes_in_is_spawne
     let mut client = harness.connect();
     client.hello();
     harness.server.step();
+    client.prove();
+    harness.server.step();
     client.watch(BrickCoordinate::ORIGIN, 1);
     harness.server.step();
     client.received();
     let mut kinds = Vec::new();
-    for _ in 3..=7 {
+    for _ in 4..=8 {
         harness.server.step();
         for message in client.received() {
             kinds.push(match message {
@@ -1778,9 +1883,9 @@ fn an_entity_that_leaves_the_region_is_despawned_and_one_that_comes_in_is_spawne
     assert_eq!(
         kinds,
         [
-            "despawned [1]", // tick 3: it walked away
-            "spawned [1]",   // tick 5: and came back
-            "despawned [1]", // tick 7: and was removed
+            "despawned [1]", // tick 4: it walked away
+            "spawned [1]",   // tick 6: and came back
+            "despawned [1]", // tick 8: and was removed
         ]
     );
 }
@@ -1800,6 +1905,9 @@ fn every_client_is_told_what_it_watches_and_a_late_one_is_told_everything() {
     let mut far = harness.connect();
     near.hello();
     far.hello();
+    harness.server.step();
+    near.prove();
+    far.prove();
     harness.server.step();
     near.watch(BrickCoordinate::ORIGIN, 1);
     far.watch(BrickCoordinate::new(6, 0, 0), 1);
@@ -1821,6 +1929,8 @@ fn every_client_is_told_what_it_watches_and_a_late_one_is_told_everything() {
     // Someone who joins later, watching both, is told of all three, in one message.
     let mut late = harness.connect();
     late.hello();
+    harness.server.step();
+    late.prove();
     harness.server.step();
     late.send(&ClientMessage::SetInterest {
         level: LevelIndex::MAIN,
@@ -1848,6 +1958,9 @@ fn two_clients_watching_the_same_region_are_sent_the_same_bytes() {
     first.hello();
     second.hello();
     harness.server.step();
+    first.prove();
+    second.prove();
+    harness.server.step();
     first.watch(BrickCoordinate::ORIGIN, 1);
     second.watch(BrickCoordinate::ORIGIN, 1);
     harness.server.step();
@@ -1866,7 +1979,7 @@ fn two_clients_watching_the_same_region_are_sent_the_same_bytes() {
 #[test]
 fn entities_follow_the_voxel_edits_and_come_before_the_messages_of_the_game() {
     let (_game, mut harness) = herd_harness(|tick, world| {
-        if tick.get() == 3 {
+        if tick.get() == 4 {
             world
                 .spawn_entity(&id("test:cow"), pose_in(0, 3.0), ComponentBag::new())
                 .unwrap();
@@ -1885,6 +1998,8 @@ fn entities_follow_the_voxel_edits_and_come_before_the_messages_of_the_game() {
     });
     let mut client = harness.connect();
     client.hello();
+    harness.server.step();
+    client.prove();
     harness.server.step();
     client.watch(BrickCoordinate::ORIGIN, 1);
     harness.server.step();
@@ -1929,6 +2044,8 @@ fn an_entity_of_a_kind_the_game_does_not_have_is_kept_and_not_shown() {
     let mut client = harness.connect();
     client.hello();
     harness.server.step();
+    client.prove();
+    harness.server.step();
     client.watch(BrickCoordinate::ORIGIN, 1);
     harness.server.step();
     assert!(entity_messages(&client.received()).is_empty());
@@ -1971,9 +2088,7 @@ fn replication_benchmark() {
             }
         });
         let mut clients: Vec<TestClient> = (0..CLIENTS).map(|_| harness.connect()).collect();
-        for client in &mut clients {
-            client.hello();
-        }
+        harness.log_in(&mut clients.iter_mut().collect::<Vec<_>>());
         harness.server.step();
         for client in &mut clients {
             client.watch(BrickCoordinate::ORIGIN, 4);
@@ -2034,6 +2149,8 @@ fn entities_made_in_play_are_in_the_saved_world_and_a_server_started_from_it_tel
     let mut client = harness.connect();
     client.hello();
     harness.server.step();
+    client.prove();
+    harness.server.step();
     client.watch(BrickCoordinate::ORIGIN, 1);
     harness.server.step();
     let told = client.received();
@@ -2046,4 +2163,135 @@ fn entities_made_in_play_are_in_the_saved_world_and_a_server_started_from_it_tel
     assert_eq!(spawned[0].id, EntityId::new(1));
     assert_eq!(spawned[0].pose, pose_in(0, 3.0));
     assert_eq!(spawned[0].components, [health_bytes(10)]);
+}
+
+// ---------------------------------------------------------------- who is playing
+
+#[test]
+fn an_identity_plays_once_at_a_time_and_can_play_again_after_leaving() {
+    let (_, mut harness) = default_harness();
+    let me = || Identity::from_secret([42; 32]);
+    let mut first = harness.connect_as(me());
+    harness.log_in(&mut [&mut first]);
+    assert_eq!(
+        harness.server.player_key(ClientId::new(1)),
+        Some(me().player_key())
+    );
+
+    // The same key again, while the first is playing: refused as soon as it says hello.
+    let mut copy = harness.connect_as(me());
+    copy.hello();
+    let report = harness.server.step();
+    let [(refused, LeaveReason::Refused(reason))] = &report.left[..] else {
+        panic!("{report:?}");
+    };
+    assert_eq!(*refused, ClientId::new(2));
+    assert!(reason.contains("already playing"), "{reason}");
+    assert_eq!(harness.server.connected_clients().count(), 1);
+
+    // Someone else is welcome, and so is the same key once its player has gone.
+    let mut other = harness.connect_as(Identity::from_secret([43; 32]));
+    harness.log_in(&mut [&mut other]);
+    first.send(&ClientMessage::Goodbye);
+    harness.server.step();
+    let mut again = harness.connect_as(me());
+    harness.log_in(&mut [&mut again]);
+    assert_eq!(
+        harness.server.player_key(ClientId::new(4)),
+        Some(me().player_key())
+    );
+    assert_eq!(harness.server.player_key(ClientId::new(1)), None);
+}
+
+#[test]
+fn two_clients_that_say_they_are_one_identity_at_once_cannot_both_be_challenged() {
+    let (_, mut harness) = default_harness();
+    let mut first = harness.connect_as(Identity::from_secret([5; 32]));
+    let mut second = harness.connect_as(Identity::from_secret([5; 32]));
+    first.hello();
+    harness.server.step();
+    second.hello();
+    let report = harness.server.step();
+    let [(refused, LeaveReason::Refused(reason))] = &report.left[..] else {
+        panic!("{report:?}");
+    };
+    assert_eq!(*refused, ClientId::new(2));
+    assert!(reason.contains("already playing"), "{reason}");
+    // The first is still waiting to prove itself, and can.
+    first.prove();
+    let report = harness.server.step();
+    assert_eq!(report.joined, [ClientId::new(1)]);
+}
+
+/// How a test client answers the server's challenge: from who it is and the challenge it was sent.
+type Proof = fn(&Identity, &[u8; 32]) -> ClientMessage;
+
+/// A client that says it is one identity, is challenged, and answers with `prove`; what the server did in the
+/// tick after.
+fn login_answered_with(prove: Proof) -> (StepReport, TestClient) {
+    let (_, mut harness) = default_harness();
+    let mut client = harness.connect_as(Identity::from_secret([9; 32]));
+    client.hello();
+    harness.server.step();
+    let frame = client.connection.receive().unwrap().unwrap();
+    let Ok(ServerMessage::Challenge { nonce }) = ServerMessage::decode(&frame) else {
+        panic!("the server challenges a client that has said hello");
+    };
+    client.send(&prove(&client.identity, &nonce));
+    (harness.server.step(), client)
+}
+
+#[test]
+fn a_proof_by_another_identity_or_for_another_game_or_of_another_challenge_is_not_good() {
+    let wrong: [(&str, Proof); 3] = [
+        ("another identity", |_, nonce| ClientMessage::Prove {
+            signature: Identity::from_secret([10; 32]).prove(&game_id(), nonce),
+        }),
+        ("another game", |identity, nonce| ClientMessage::Prove {
+            signature: identity.prove(&id("other_game:game"), nonce),
+        }),
+        ("another challenge", |identity, _| ClientMessage::Prove {
+            signature: identity.prove(&game_id(), &[0; 32]),
+        }),
+    ];
+    for (name, prove) in wrong {
+        let (report, mut client) = login_answered_with(prove);
+        let [(_, LeaveReason::Refused(reason))] = &report.left[..] else {
+            panic!("{name}: {report:?}");
+        };
+        assert!(reason.contains("not good"), "{name}: {reason}");
+        assert!(report.joined.is_empty(), "{name}");
+        let told = client.received();
+        assert!(
+            told.iter()
+                .any(|m| matches!(m, ServerMessage::Disconnected { .. })),
+            "{name}: {told:?}"
+        );
+    }
+    // And the right proof is the one thing that is good.
+    let (report, _) = login_answered_with(|identity, nonce| ClientMessage::Prove {
+        signature: identity.prove(&game_id(), nonce),
+    });
+    assert_eq!(report.joined, [ClientId::new(1)]);
+}
+
+#[test]
+fn a_client_that_says_hello_and_never_proves_is_dropped_in_time() {
+    let game = Game::new(&ALL_PLUGINS);
+    let mut config = ServerConfig::new(game_id());
+    config.handshake_timeout_ticks = 5;
+    let mut harness = Harness::new(&game, game.new_world(), config);
+    let mut client = harness.connect();
+    client.hello();
+    let mut refused = None;
+    for _ in 0..10 {
+        let report = harness.server.step();
+        if let [(_, LeaveReason::Refused(reason))] = &report.left[..] {
+            refused = Some(reason.clone());
+            break;
+        }
+    }
+    let reason = refused.expect("the client was dropped");
+    assert!(reason.contains("no proof of identity"), "{reason}");
+    assert_eq!(harness.server.connected_clients().count(), 0);
 }

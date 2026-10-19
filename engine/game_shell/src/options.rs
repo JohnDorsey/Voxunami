@@ -18,6 +18,8 @@ Usage: voxunami {command} [options]
   --record FILE                   record what you see, to watch later with `voxunami replay`
   --host [ADDRESS]                also let others join over the network (default port {port})
   --join ADDRESS                  join a game hosted elsewhere instead of starting one
+  --identity FILE                 the key that says who you are to servers (default: made once, in the
+                                  game data folder; keep it to stay the same player)
   --autosave SECONDS              save the world to --world this often while playing
   --view-radius BRICKS            how far to see, in 32-voxel bricks (default 12)
   --adapter discrete|integrated   which GPU to use (default: best available)
@@ -124,6 +126,8 @@ pub struct PlayOptions {
     pub host: Option<String>,
     /// Join a server here instead of running one.
     pub join: Option<String>,
+    /// Where the player's private key is kept: `None` for the file in the game data folder.
+    pub identity: Option<PathBuf>,
     pub autosave_seconds: Option<f32>,
     pub camera: [f64; 3],
     pub yaw_degrees: f32,
@@ -142,6 +146,7 @@ impl PlayOptions {
             record: None,
             host: None,
             join: None,
+            identity: None,
             autosave_seconds: None,
             camera: camera.position,
             yaw_degrees: camera.yaw_degrees,
@@ -237,6 +242,7 @@ pub fn parse_play<G: GameDefinition>(
             "--record" => options.record = Some(PathBuf::from(value(&flag)?)),
             "--host" => options.host = Some(complete_address(&value(&flag)?, "0.0.0.0")),
             "--join" => options.join = Some(complete_address(&value(&flag)?, "127.0.0.1")),
+            "--identity" => options.identity = Some(PathBuf::from(value(&flag)?)),
             "--autosave" => options.autosave_seconds = Some(parse_number(&flag, &value(&flag)?)?),
             "--camera" => {
                 let text = value(&flag)?;
@@ -408,7 +414,7 @@ mod tests {
         let parsed = play(
             "--adapter integrated --view-radius 8 --seed 7 --size 640x360 --camera 1.5,2,-3 \
              --yaw 90 --pitch -45 --screenshot out.png --benchmark --no-vsync --exit-after 2.5 \
-             --world w.voxunami --record r.voxreplay --host 4000 --autosave 30",
+             --world w.voxunami --record r.voxreplay --host 4000 --autosave 30 \n             --identity me.key",
         );
         assert_eq!(
             parsed,
@@ -427,6 +433,7 @@ mod tests {
                 record: Some(PathBuf::from("r.voxreplay")),
                 host: Some("0.0.0.0:4000".to_owned()),
                 join: None,
+                identity: Some(PathBuf::from("me.key")),
                 autosave_seconds: Some(30.0),
                 camera: [1.5, 2.0, -3.0],
                 yaw_degrees: 90.0,

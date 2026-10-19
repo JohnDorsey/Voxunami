@@ -47,7 +47,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 29 (planned) Data-driven block packs (JSON), the generated JSON Schema, `check-pack`, and patches: tags by union, patch operations,
   dependency order, loud failures (revision 5; mod stage 2).
 - 28 (planned) The content package at the handshake, carried by recordings (revision 3).
-- 27 (accepted; 27a to 27d built, pause for review before 27e) Entities and items: server-owned entities with typed components, inventories, the protocol messages and the
+- 27 (accepted; 27a to 27e built; 27f players as entities) Entities and items: server-owned entities with typed components, inventories, the protocol messages and the
   `engine:entities` section reserved before 1.0; players become entities; the prompt facility. Specified in `entities-spec.md` (steps 27a to 27h,
   with a pause after 27d). Control targets, the `Brain` slot and block data stay planned for the phases that first need them.
 - 26 The client interface (client plugins: message handlers, view hook, HUD line, key and mouse actions, `.`-commands) and the bulk light

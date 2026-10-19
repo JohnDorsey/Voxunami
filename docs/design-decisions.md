@@ -163,6 +163,19 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   components a kind marks replicated, and a client store (`ClientEntities`) is built from the stream alone, so a replay shows the same
   entities.
 
+## Decided (who a player is; built in Phase 27e, the owner's decision after review of 27d)
+- **A keypair per install, no accounts.** The player is an Ed25519 public key, made once and kept in a file in the game's data folder (`--identity
+  FILE` chooses another; the file is 32 secret bytes, never overwritten if it is not). There are no names, passwords or servers that know players.
+  A client proves it holds the private key: `Hello` carries the key, the server answers `Challenge` (32 bytes), the client sends `Prove` (a
+  signature of a text that names the game, the challenge and the key, so a proof is good for one login to one game). A key can play once at a
+  time. Nothing on the wire is encrypted: this is proof of who, not secrecy. Moving to another machine is copying the file.
+- **Challenges are random in real servers and counted where the only client is in the same process** (tests, the single-player host used by
+  tests and headless runs), so recorded sessions are byte-identical. A server anyone can reach over a network must never count them.
+- **A join takes two server ticks** (challenge, then welcome). A recording starts with the challenge, then the welcome; players of a replay
+  prove nothing to anyone and use a throwaway identity. The golden sessions were repinned once for it; the cause was checked, not assumed (the
+  old code with an idle tick before each join, against the new stream with the challenge removed and the version set back to 3, gives the same
+  hashes in all three games).
+
 ## Decided (rules for lattice simulation and physics)
 - Tick phases (confirmed by the owner): each tick reads a frozen snapshot of the previous tick and produces the next one.
   A brick update never writes to a neighbour; cross-brick effects are queued and applied together in a fixed order.

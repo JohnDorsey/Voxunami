@@ -286,7 +286,11 @@ fn players_in_different_levels_see_only_their_own_levels_edits_and_can_move_betw
             .overrides
             .sorted_brick_coordinates()
     };
-    assert_eq!(held(&here, LevelIndex::MAIN), [brick(0, 0, 0)]);
+    // The game places a block of its own every fifth tick, somewhere in the main level, so the main
+    // level may hold more than the player's brick; what it must not hold is anything from the second.
+    let in_main = held(&here, LevelIndex::MAIN);
+    assert!(in_main.contains(&brick(0, 0, 0)), "{in_main:?}");
+    assert!(!in_main.contains(&brick(1, 0, 0)), "{in_main:?}");
     assert_eq!(held(&here, SECOND), []);
     assert_eq!(held(&there, SECOND), [brick(1, 0, 0)]);
     assert_eq!(held(&there, LevelIndex::MAIN), []);

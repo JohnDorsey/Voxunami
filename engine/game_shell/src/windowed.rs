@@ -47,6 +47,7 @@ type GameSession<G> = Session<Box<dyn Connection>, G>;
 /// named.
 pub fn play<G: GameDefinition>(options: PlayOptions) -> Result<(), String> {
     let view = options.view.clone();
+    let identity = crate::player_identity::load(options.identity.as_deref())?;
     let (connection, host): (Box<dyn Connection>, Option<ServerThread<G>>) = match &options.join {
         Some(address) => (Box::new(connect_to(address)?), None),
         None => {
@@ -79,11 +80,17 @@ pub fn play<G: GameDefinition>(options: PlayOptions) -> Result<(), String> {
         options.pitch_degrees,
         view.view_radius,
     );
-    let session =
-        Session::<_, G>::connect(connection, Mode::Playing, view.view_radius, start, || {
+    let session = Session::<_, G>::connect(
+        connection,
+        &identity,
+        Mode::Playing,
+        view.view_radius,
+        start,
+        || {
             std::thread::sleep(Duration::from_millis(1));
-        })
-        .map_err(|error| error.to_string())?;
+        },
+    )
+    .map_err(|error| error.to_string())?;
 
     let (_session, failure) = run_window::<G>(session, &view)?;
     if let Some(host) = host {
@@ -108,9 +115,15 @@ pub fn replay<G: GameDefinition>(options: ReplayOptions) -> Result<(), String> {
     let view = options.view;
     let connection: Box<dyn Connection> = Box::new(open_recording(&options.file)?);
     let start = camera_at([0.0, 0.0, 0.0], 0.0, 0.0, view.view_radius);
-    let session =
-        Session::<_, G>::connect(connection, Mode::Replaying, view.view_radius, start, || {})
-            .map_err(|error| error.to_string())?;
+    let session = Session::<_, G>::connect(
+        connection,
+        &crate::player_identity::for_replay(),
+        Mode::Replaying,
+        view.view_radius,
+        start,
+        || {},
+    )
+    .map_err(|error| error.to_string())?;
     let (_, failure) = run_window::<G>(session, &view)?;
     failure.map_or(Ok(()), Err)
 }

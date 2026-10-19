@@ -13,6 +13,7 @@ use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use client::{Client, ClientError, Handshake, HandshakeProgress, TickUpdate, ViewSummary};
 use content_registry::IdentifierRegistry;
 use entities::{ComponentBag, EntityCatalog, EntityKindSpec};
+use identity::Identity;
 use namespaced_id::NamespacedId;
 use protocol::{EntityId, Message, Tick};
 use replay::{RecordingConnection, ReplayConnection};
@@ -91,6 +92,8 @@ pub struct Fixture {
     pub server: Server,
     pub game: Game,
     connector: LoopbackConnector,
+    /// How many players have joined: each gets an identity of its own, the same in every run.
+    joined: u8,
 }
 
 impl Fixture {
@@ -230,7 +233,7 @@ impl Fixture {
                 }
             });
         let server = Server::new(
-            ServerConfig::new(game_id()),
+            ServerConfig::new(game_id()).with_counted_challenges(1),
             world,
             &game.registries(),
             Box::new(logic),
@@ -241,6 +244,7 @@ impl Fixture {
             server,
             game,
             connector,
+            joined: 0,
         }
     }
 
@@ -264,13 +268,25 @@ impl Fixture {
         (self.complete_join(recording, plugins), buffer)
     }
 
+    /// Joins takes the server two ticks: it challenges the player's identity, and welcomes them once they
+    /// have proved it.
     fn complete_join<C: Connection>(&mut self, connection: C, plugins: &[Plugin]) -> Player<C> {
-        let handshake = Handshake::start(connection, game_id()).unwrap();
-        self.server.step();
-        let HandshakeProgress::Welcomed(welcomed) = handshake.poll().unwrap() else {
-            panic!("the server welcomed the client in the tick it stepped");
-        };
-        Player::finish(welcomed, plugins).unwrap()
+        self.joined += 1;
+        let identity = Identity::from_secret([self.joined; 32]);
+        let mut handshake = Handshake::start(connection, game_id(), &identity).unwrap();
+        for _ in 0..2 {
+            self.server.step();
+            handshake = match handshake.poll().unwrap() {
+                HandshakeProgress::Waiting(waiting) => waiting,
+                HandshakeProgress::Welcomed(welcomed) => {
+                    return Player::finish(welcomed, plugins).unwrap();
+                }
+            };
+        }
+        match handshake.poll().unwrap() {
+            HandshakeProgress::Welcomed(welcomed) => Player::finish(welcomed, plugins).unwrap(),
+            HandshakeProgress::Waiting(_) => panic!("the server welcomed the client in two ticks"),
+        }
     }
 
     /// Runs one server tick.
@@ -379,11 +395,14 @@ pub fn replay_player(
     plugins: &[Plugin],
 ) -> Result<Player<ReplayConnection<Cursor<Vec<u8>>>>, ClientError> {
     let connection = ReplayConnection::new(Cursor::new(recording)).expect("a valid recording");
-    let handshake = Handshake::start(connection, game_id())?;
-    let HandshakeProgress::Welcomed(welcomed) = handshake.poll()? else {
-        panic!("the recording starts with the welcome");
-    };
-    Player::finish(welcomed, plugins)
+    // A replay asks for nothing, so who it says it is does not matter.
+    let mut handshake = Handshake::start(connection, game_id(), &Identity::from_secret([0; 32]))?;
+    loop {
+        handshake = match handshake.poll()? {
+            HandshakeProgress::Waiting(waiting) => waiting,
+            HandshakeProgress::Welcomed(welcomed) => return Player::finish(welcomed, plugins),
+        };
+    }
 }
 
 /// The brick as the world shows it: the edited brick if there is one, else the generated one. `None`

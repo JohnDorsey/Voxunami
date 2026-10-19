@@ -7,6 +7,7 @@
 //! Windows and on Linux, where it must agree to the bit.
 
 use game_shell::GameContent;
+use game_shell::Identity;
 use game_shell::files::record_connection;
 use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
@@ -144,11 +145,17 @@ fn session(name: &str, arrangement: usize) -> (u64, usize, u64) {
     let connection = connector.connect().unwrap();
     let recorded = record_connection(connection, &path).unwrap();
     let start = camera_at([30.5, SKY as f64 + 2.0, 12.5], 0.0, 0.0, VIEW_RADIUS);
-    let mut player =
-        Session::<_, Game2048>::connect(recorded, Mode::Playing, VIEW_RADIUS, start, || {
+    let mut player = Session::<_, Game2048>::connect(
+        recorded,
+        &Identity::from_secret([1; 32]),
+        Mode::Playing,
+        VIEW_RADIUS,
+        start,
+        || {
             server.step();
-        })
-        .unwrap();
+        },
+    )
+    .unwrap();
     player.send_pose();
     ticks(&mut server, &mut player, 5);
 
@@ -249,4 +256,8 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// Stream hash, stream length, saved-world hash.
 /// Phase 27c: the stream hash changed once, for the protocol version in the welcome (3, was 2); the length and the
 /// saved world did not, and setting the version back to 2 gave the old hash.
-const PINNED: (u64, usize, u64) = (13_024_319_572_287_709_212, 3_998, 1_379_750_969_377_606_339);
+/// Phase 27e: the stream hash changed once, and the length by 38 bytes (the challenge frame: kind, 32 bytes, framing) for the
+/// protocol version (4, was 3) and the challenge, and because a join takes a tick longer, so the game has run a tick more
+/// when the player arrives. Checked, not assumed: the old code with an idle server tick before each join, and this stream
+/// with the challenge taken out and the welcome's version set back to 3, give the same hash (and the saved world is the same).
+const PINNED: (u64, usize, u64) = (5_695_251_043_454_795_992, 4_036, 1_379_750_969_377_606_339);

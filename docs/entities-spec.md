@@ -1,6 +1,6 @@
 # Phase 27 specification: entities, items and inventories
 
-**Status: accepted 2026-10-18 with the default answers to all five questions (pause after 27d; players become entities now with a persistent player key; Cave creative by default with `/gamemode survival` per world; no mob; orientation a quaternion). Being built (27a to 27d done; the pause for review is here).** It makes concrete requirement 8, 15 and 16 of `plan.md` ("Requirements pulled
+**Status: accepted 2026-10-18 with the default answers to all five questions (pause after 27d; players become entities now with a persistent player key; Cave creative by default with `/gamemode survival` per world; no mob; orientation a quaternion). Being built (27a to 27e done: the keypair identity).** It makes concrete requirement 8, 15 and 16 of `plan.md` ("Requirements pulled
 forward") and the "Entities and items (Phase 27)" improvement, after option B of `plugin-architecture-review.md` W7 (server-owned entities,
 typed components from the property machinery, no ECS). What I say about today's code was read from the code (verified); the design is
 my proposal (believed). It is the biggest phase so far, so section 4 splits it at a point where you can stop and look.
@@ -77,15 +77,33 @@ does not know, are kept byte for byte and are neither simulated nor replicated. 
   colour), drawn through the renderer's avatar path generalised from "a figure per player" to "a box per entity". Real models come with the
   toolkit (Phase 30) and the octopus (Phase 35).
 
-### 2.7 Players become entities
+### 2.7 A player's identity: a keypair per install, no accounts (the owner's decision after review of 27d)
 
-A player is an entity of kind `engine:player` whose components are the inventory, the last pose and which level they are in. For this to
-persist, a player needs an identity that outlives a connection: `Hello` gains a **player key** (a random 128-bit number the client generates once
-and keeps in its configuration; there are no accounts). The server finds the saved player entity with that key, or makes one; when the
-connection ends, the entity is kept in the save and stops being replicated. `PoseBook` and the `Players` message are replaced by the entity
-store; the `PoseReport` the client sends stays (it is input). This touches all three games' presence, Cave's movement, and `session.rs`, and
-changes every golden stream (they are repinned once, for that reason, as in Phase 25). A key can be copied, so this is not security; it
-is the minimum that lets an inventory exist.
+Each install of the game has an **Ed25519 keypair**, made the first time it is needed and kept in a file on that machine (`identity` in the
+game's data directory; `--identity FILE` chooses another); the public key is the player's identity. There are no accounts and no names. To
+connect, the client proves it holds the private key, so that someone who sees the public key, or a recording of a connection, cannot be that
+player:
+
+1. the client sends `Hello` (now with its public key, and so protocol version 4);
+2. the server answers `Challenge` with 32 bytes it has not used before;
+3. the client sends `Prove`: its signature of those bytes (with the game's identifier and its own key, so that the signature is good for one
+   login to one game and nothing else);
+4. the server verifies it, then sends `Welcome` as before. A wrong proof is refused with a reason. A key that is already connected is refused
+   (one player, one connection), so a copy of a key file cannot take over a session in progress.
+
+This makes a join take two server ticks instead of one. The server tells the game each client's key (`ServerWorld::player_key(client)`). In tests
+the challenges come from a counter, so streams stay byte-identical; a real server draws them from the operating system's randomness.
+Moving a player to another machine is copying the key file; losing it loses the player (the entity stays in the world, unclaimed). The file
+is not encrypted: it is as safe as the rest of the player's home directory. Nothing is encrypted on the wire either; this is proof of who,
+not secrecy.
+
+### 2.7b Players become entities
+
+A player is an entity of kind `engine:player` whose components are the key, the inventory, the last pose and which level they are in. The server
+finds the saved player entity with the connecting key, or makes one; when the connection ends, the entity is kept in the save and stops being
+replicated (it is kept out of interest until the key connects again). `PoseBook` and the `Players` message are replaced by the entity store; the
+`PoseReport` the client sends stays (it is input). This touches all three games' presence, Cave's movement, and `session.rs`, and changes every
+golden stream (they are repinned once, for that reason, as in Phase 25).
 
 ### 2.8 The prompt facility (requirement 15)
 
@@ -116,12 +134,15 @@ each is a small addition on top of this layer, so building them now would be des
 - **27c** Protocol version 3 and the replication: server diffing, the client store, a replay test (live equals replay), and the benchmark.
 - **27d** `engine:entities`: the section, the counter, dormant preservation, and tests that a world with entities, saved and loaded, is the
   same world, and that a missing plugin's entities survive byte for byte. **Pause for review here.**
-- **27e** Players become entities (the player key, the entity store replacing `PoseBook` and `Players`) in all three games; goldens repinned once.
-- **27f** Items, stacks, inventories and Cave's drops, pickup and hotbar; the appearance verb and the box drawing.
-- **27g** The prompt facility.
-- **27h** Documentation (`plugin-api-spec.md`, `design-decisions.md`, `protocol-and-replay.md`, build log), gates on Windows and Linux.
+- **27e** A keypair per install: the `identity` crate (generate, keep in a file, sign, verify), `Hello` with the public key, `Challenge` and `Prove`,
+  protocol version 4, the server's refusal of a wrong proof or a key already connected, `ServerWorld::player_key`; the tests that join by hand
+  take two steps; goldens repinned once if the stream changes (it does: the challenge is in it).
+- **27f** Players become entities (the entity store replacing `PoseBook` and `Players`) in all three games; goldens repinned once.
+- **27g** Items, stacks, inventories and Cave's drops, pickup and hotbar; the appearance verb and the box drawing.
+- **27h** The prompt facility.
+- **27i** Documentation (`plugin-api-spec.md`, `design-decisions.md`, `protocol-and-replay.md`, build log), gates on Windows and Linux.
 
 ## 5. Questions for the owner, answered
 
-All five defaults: pause for review after 27d; players become entities now with the persistent key; Cave creative by default, survival per
+All five defaults: pause for review after 27d; players become entities now, with an identity that outlives a connection (the owner then chose a keypair per install and no accounts, section 2.7); Cave creative by default, survival per
 world by `/gamemode`; no mob in this phase; orientation is a quaternion.

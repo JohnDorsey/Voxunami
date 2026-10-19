@@ -7,6 +7,7 @@ use client::{ClientError, ClientEvent, Handshake, HandshakeProgress};
 use end_to_end_tests::{
     Fixture, Player, SharedBuffer, differences_from_server, game_id, replay_player,
 };
+use identity::Identity;
 use protocol::ServerMessage;
 use replay::{RecordingConnection, ReplayConnection, ReplayEnd, ReplayReader};
 use transport::loopback::LoopbackConnection;
@@ -67,9 +68,13 @@ fn play_to_the_end<R: std::io::Read + Send>(player: &mut Player<ReplayConnection
 fn player_from<R: std::io::Read + Send>(
     connection: ReplayConnection<R>,
 ) -> Player<ReplayConnection<R>> {
-    let handshake = Handshake::start(connection, game_id()).unwrap();
-    let HandshakeProgress::Welcomed(welcomed) = handshake.poll().unwrap() else {
-        panic!("the recording starts with the welcome");
+    let mut handshake = Handshake::start(connection, game_id(), &Identity::generate()).unwrap();
+    // The recording starts with the challenge, which the handshake answers to nobody, then the welcome.
+    let welcomed = loop {
+        handshake = match handshake.poll().unwrap() {
+            HandshakeProgress::Waiting(waiting) => waiting,
+            HandshakeProgress::Welcomed(welcomed) => break welcomed,
+        };
     };
     let mut game = Game::new(&ALL_PLUGINS);
     let (client, _) = welcomed.finish(game.load_context()).unwrap();
@@ -112,10 +117,18 @@ fn the_scenario_exercises_every_kind_of_message() {
     // Guards the test above against passing because nothing happened.
     let session = play_session(Fixture::new(), 60);
     let mut reader = ReplayReader::new(Cursor::new(session.recording.contents())).unwrap();
-    let (mut welcomes, mut regions, mut contents, mut edits, mut game_messages, mut ticks) =
-        (0, 0, 0, 0, 0, 0);
+    let (
+        mut challenges,
+        mut welcomes,
+        mut regions,
+        mut contents,
+        mut edits,
+        mut game_messages,
+        mut ticks,
+    ) = (0, 0, 0, 0, 0, 0, 0);
     while let Some(frame) = reader.next_frame().unwrap() {
         match ServerMessage::decode(&frame).unwrap() {
+            ServerMessage::Challenge { .. } => challenges += 1,
             ServerMessage::Welcome(_) => welcomes += 1,
             ServerMessage::InterestChanged { .. } => regions += 1,
             ServerMessage::BrickContents { .. } => contents += 1,
@@ -129,6 +142,7 @@ fn the_scenario_exercises_every_kind_of_message() {
             | ServerMessage::EntitiesDespawned(_) => panic!("this scenario has no entities"),
         }
     }
+    assert_eq!(challenges, 1, "the server challenged the recorded player");
     assert_eq!(welcomes, 1);
     assert_eq!(regions, 3, "the initial region and two moves");
     assert!(contents >= 4, "{contents} brick contents");
@@ -137,8 +151,8 @@ fn the_scenario_exercises_every_kind_of_message() {
         "{edits} edit messages: later edits to known bricks"
     );
     assert!(game_messages >= 6, "{game_messages} game messages");
-    // One tick for each player joining, then the sixty played.
-    assert_eq!(ticks, 62);
+    // The tick in which the first player is welcomed, the two it takes the second, then the sixty played.
+    assert_eq!(ticks, 63);
     let events: Vec<&ClientEvent> = session
         .alice
         .updates
@@ -181,10 +195,12 @@ fn the_standard_session_makes_the_same_recording_on_every_platform() {
     );
 }
 
-const PINNED_RECORDING_LENGTH: usize = 84_749;
+const PINNED_RECORDING_LENGTH: usize = 84_806;
 // Phase 27c: the checksum changed once, for the protocol version in the welcome (3, was 2); the length did not, and
 // setting the version back to 2 gave the old checksum.
-const PINNED_RECORDING_CHECKSUM: u32 = 607_499_649;
+// Phase 27e: both changed: the challenge is in the stream, the welcome says version 4, and joins take longer, so the game's own
+// edits (by tick number) land elsewhere. Not checked against the old code the way the three games' golden sessions were.
+const PINNED_RECORDING_CHECKSUM: u32 = 859_090_869;
 
 #[test]
 fn identical_sessions_make_byte_identical_recordings() {

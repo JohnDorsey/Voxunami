@@ -658,6 +658,23 @@ Phase 27a to 27c (entities; specified in `entities-spec.md`):
 - 27c: protocol version 3 (messages 9 to 11), server replication with cached views, the client store, replay of entities, version policy.
   Cost with 1000 entities and 4 clients: 0.5, 0.7 and 1.4 ms a tick with none, a tenth and all moving. 13 mutations are caught.
 
+Phase 27e (a keypair per install):
+- The `identity` crate: Ed25519 (`ed25519-dalek`), `Identity` (generate, load or create a key file, prove, hello, answer a challenge), `verify`
+  (strict), `ChallengeSource` (operating system randomness, or a counter for tests). The key file is 32 raw bytes, mode 0600 on Unix, and is
+  never overwritten if it exists with another length. Default path: the game data folder; `--identity FILE` overrides it.
+- Protocol version 4: `Hello` carries the public key, `Prove` (client kind 6) and `Challenge` (server kind 12). The server refuses a wrong
+  proof (another key, another game, another challenge), a key that is already playing (also while only challenged), and a client that does not
+  prove in time. `ServerWorld::player_key(client)` tells the game who each client is. A join takes two ticks.
+- Tests: the server's behaviour tests join by `log_in` (two ticks); `server::test_support::{log_in, test_identity}` is shared by the other
+  crates' rigs; each rig gives its players different identities. New tests: identity once at a time (and again after leaving), two claims of
+  one key, three kinds of wrong proof and the right one, no proof in time, a replay session sends only the hello and the proof.
+- Goldens repinned once: stream +38 bytes (the challenge frame), welcome version 4, the game one tick older when the player arrives (Cave's saved
+  world changes with it; 2048 and Eels do not). Verified in all three games by running the old code with an idle tick before each join: its
+  stream and saved-world hashes equal the new ones's with the challenge taken out and the version set back to 3. The pinned recording of the
+  engine's end-to-end test (84,749 bytes to 84,806) was repinned for the same causes, not checked that way. `following_the_server`'s level test
+  had relied on the game's own tick-timed block not landing in the player's region; it now says what it means (the main level holds the
+  player's brick and nothing of the second level).
+
 Phase 27d (entities in the world file):
 - `engine:entities` (see `world-file-format.md`): the counter, the entities by id, a reserved byte for the fallback pose of Phase 32. A world
   with none saves as before (the golden sessions' saved-world hashes did not move). Dormant entities need no special case: an entity is a kind

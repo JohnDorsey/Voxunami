@@ -2,9 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use content_registry::IdentifierRegistry;
+use identity::ChallengeSource;
 use namespaced_id::NamespacedId;
 use protocol::{
-    ClientId, ClientMessage, GeneratorAssignment, PROTOCOL_VERSION, ServerMessage, Tick, Welcome,
+    ClientId, ClientMessage, GeneratorAssignment, PROTOCOL_VERSION, PlayerKey, ServerMessage, Tick,
+    Welcome,
 };
 use region_octree::BrickCube;
 use transport::{Connection, ConnectionClosed, Listener};
@@ -48,6 +50,12 @@ enum Phase {
     AwaitingHello {
         ticks_waited: u32,
     },
+    /// The client has said who it is, and has been challenged to prove it.
+    AwaitingProof {
+        ticks_waited: u32,
+        key: PlayerKey,
+        challenge: [u8; 32],
+    },
     Joined {
         /// The region of a level the client has been told it watches.
         watched: Option<(LevelIndex, BrickBox)>,
@@ -56,6 +64,14 @@ enum Phase {
         /// The entities it has been told of, and as what.
         known_entities: KnownEntities,
     },
+}
+
+/// Where a session is, without what it carries.
+#[derive(Clone, Copy)]
+enum Stage {
+    Hello,
+    Proof,
+    Joined,
 }
 
 #[derive(Debug)]
@@ -93,6 +109,8 @@ pub struct Server {
     next_client_id: u32,
     /// What clients are told of each entity, kept until it changes.
     entity_views: ViewCache,
+    /// Where the challenges players prove their identity against come from.
+    challenges: ChallengeSource,
 }
 
 impl Server {
@@ -105,6 +123,9 @@ impl Server {
         listener: Box<dyn Listener>,
     ) -> Result<Self, ServerError> {
         let world_description = world.describe(registries)?;
+        let challenges = config
+            .challenge_seed
+            .map_or_else(ChallengeSource::random, ChallengeSource::counter);
         Ok(Self {
             config,
             world: ServerWorld::new(world, logic.entity_catalog()),
@@ -114,6 +135,7 @@ impl Server {
             sessions: BTreeMap::new(),
             next_client_id: 1,
             entity_views: ViewCache::default(),
+            challenges,
         })
     }
 
@@ -124,6 +146,11 @@ impl Server {
     /// The last tick completed.
     pub fn tick(&self) -> Tick {
         self.world.tick()
+    }
+
+    /// Who a joined client proved to be: the public key of its identity.
+    pub fn player_key(&self, client: ClientId) -> Option<PlayerKey> {
+        self.world.player_key(client)
     }
 
     pub fn connected_clients(&self) -> impl Iterator<Item = ClientId> + '_ {
@@ -215,13 +242,18 @@ impl Server {
         }
         let limit = self.config.handshake_timeout_ticks;
         let session = self.sessions.get_mut(&id).expect("the session exists");
-        if let Phase::AwaitingHello { ticks_waited } = &mut session.phase {
-            *ticks_waited += 1;
-            if *ticks_waited > limit {
-                return Some(self.refuse(id, "no hello arrived in time".to_owned()));
+        let late = match &mut session.phase {
+            Phase::AwaitingHello { ticks_waited } => {
+                *ticks_waited += 1;
+                (*ticks_waited > limit).then_some("no hello arrived in time")
             }
-        }
-        None
+            Phase::AwaitingProof { ticks_waited, .. } => {
+                *ticks_waited += 1;
+                (*ticks_waited > limit).then_some("no proof of identity arrived in time")
+            }
+            Phase::Joined { .. } => None,
+        };
+        late.map(|reason| self.refuse(id, reason.to_owned()))
     }
 
     fn handle_frame(
@@ -234,24 +266,35 @@ impl Server {
             Ok(message) => message,
             Err(error) => return Some(self.refuse(id, format!("malformed message: {error}"))),
         };
-        let joined = matches!(
-            self.sessions.get(&id).expect("the session exists").phase,
-            Phase::Joined { .. }
-        );
-        match (joined, message) {
+        let stage = match self.sessions.get(&id).expect("the session exists").phase {
+            Phase::AwaitingHello { .. } => Stage::Hello,
+            Phase::AwaitingProof { .. } => Stage::Proof,
+            Phase::Joined { .. } => Stage::Joined,
+        };
+        match (stage, message) {
             (_, ClientMessage::Goodbye) => Some(LeaveReason::Goodbye),
             (
-                false,
+                Stage::Hello,
                 ClientMessage::Hello {
                     protocol_version,
                     game,
+                    player_key,
                 },
-            ) => self.welcome(id, protocol_version, &game, report),
-            (false, _) => Some(self.refuse(id, "the first message must be hello".to_owned())),
-            (true, ClientMessage::Hello { .. }) => {
+            ) => self.challenge(id, protocol_version, &game, player_key),
+            (Stage::Hello, _) => {
+                Some(self.refuse(id, "the first message must be hello".to_owned()))
+            }
+            (Stage::Proof, ClientMessage::Prove { signature }) => {
+                self.welcome(id, &signature, report)
+            }
+            (Stage::Proof, _) => Some(self.refuse(
+                id,
+                "the proof of identity must follow the challenge".to_owned(),
+            )),
+            (Stage::Joined, ClientMessage::Hello { .. } | ClientMessage::Prove { .. }) => {
                 Some(self.refuse(id, "hello was already sent".to_owned()))
             }
-            (true, ClientMessage::SetInterest { level, region }) => {
+            (Stage::Joined, ClientMessage::SetInterest { level, region }) => {
                 if self.world.data().level(level).is_none() {
                     return Some(self.refuse(id, format!("the world has no {level}")));
                 }
@@ -275,24 +318,26 @@ impl Server {
                 }
                 None
             }
-            (true, ClientMessage::GameMessage { kind, payload }) => {
+            (Stage::Joined, ClientMessage::GameMessage { kind, payload }) => {
                 self.logic
                     .message_received(id, &kind, &payload, &mut self.world);
                 None
             }
-            (true, ClientMessage::Command { text }) => {
+            (Stage::Joined, ClientMessage::Command { text }) => {
                 self.logic.command_received(id, &text, &mut self.world);
                 None
             }
         }
     }
 
-    fn welcome(
+    /// The hello has arrived: checks the version and the game, and that nobody is playing as this key, and
+    /// sends the challenge the client must sign.
+    fn challenge(
         &mut self,
         id: ClientId,
         protocol_version: u32,
         game: &NamespacedId,
-        report: &mut StepReport,
+        key: PlayerKey,
     ) -> Option<LeaveReason> {
         if protocol_version != PROTOCOL_VERSION {
             return Some(self.refuse(
@@ -307,6 +352,49 @@ impl Server {
                 id,
                 format!("this server runs {}, not {game}", self.config.game),
             ));
+        }
+        let taken = self.sessions.iter().any(|(other, session)| {
+            *other != id
+                && match &session.phase {
+                    Phase::AwaitingHello { .. } => false,
+                    Phase::AwaitingProof { key: other_key, .. } => *other_key == key,
+                    Phase::Joined { .. } => self.world.player_key(*other) == Some(key),
+                }
+        });
+        if taken {
+            return Some(self.refuse(id, "this identity is already playing".to_owned()));
+        }
+        let challenge = self.challenges.next_challenge();
+        let session = self.sessions.get_mut(&id).expect("the session exists");
+        if session
+            .connection
+            .send(ServerMessage::Challenge { nonce: challenge }.encode())
+            .is_err()
+        {
+            return Some(LeaveReason::ConnectionClosed);
+        }
+        session.phase = Phase::AwaitingProof {
+            ticks_waited: 0,
+            key,
+            challenge,
+        };
+        None
+    }
+
+    /// The proof has arrived: if it is good, welcomes the client and lets the game know it has joined.
+    fn welcome(
+        &mut self,
+        id: ClientId,
+        signature: &[u8; 64],
+        report: &mut StepReport,
+    ) -> Option<LeaveReason> {
+        let Phase::AwaitingProof { key, challenge, .. } =
+            self.sessions.get(&id).expect("the session exists").phase
+        else {
+            unreachable!("only a client that was challenged is asked for its proof");
+        };
+        if !identity::verify(&key, &self.config.game, &challenge, signature) {
+            return Some(self.refuse(id, "the proof of identity was not good".to_owned()));
         }
         let welcome = ServerMessage::Welcome(Welcome {
             protocol_version: PROTOCOL_VERSION,
@@ -325,7 +413,7 @@ impl Server {
             requested: None,
             known_entities: KnownEntities::new(),
         };
-        self.world.add_client(id);
+        self.world.add_client(id, key);
         report.joined.push(id);
         self.logic.client_joined(id, &mut self.world);
         None

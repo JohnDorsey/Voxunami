@@ -221,8 +221,12 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// (49 bytes longer; checked by restoring the old text, which gave the old hash); the saved world did not.
 /// Phase 27c: the stream hash changed once, for the protocol version in the welcome (3, was 2); the length and the
 /// saved world did not, and setting the version back to 2 gave the old hash.
+/// Phase 27e: the stream hash changed once, and the length by 38 bytes (the challenge frame: kind, 32 bytes, framing) for the
+/// protocol version (4, was 3) and the challenge, and because a join takes a tick longer, so the game has run a tick more
+/// when the player arrives. Checked, not assumed: the old code with an idle server tick before each join, and this stream
+/// with the challenge taken out and the welcome's version set back to 3, give the same hash and the same saved world (which did change, because the world is a tick older when the player is in it).
 const PINNED: (u64, usize, u64) = (
-    17_068_655_820_255_770_246,
-    7_179_754,
-    12_857_685_528_707_532_367,
+    3_421_832_739_022_450_086,
+    7_179_792,
+    5_520_753_660_668_519_004,
 );

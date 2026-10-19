@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use entities::{ComponentBag, Entity, EntityCatalog, EntityError, EntityStore};
 use namespaced_id::NamespacedId;
-use protocol::{ClientId, EntityId, MAXIMUM_COMMAND_LENGTH, Message, Tick, VoxelChange};
+use protocol::{ClientId, EntityId, MAXIMUM_COMMAND_LENGTH, Message, PlayerKey, Tick, VoxelChange};
 use voxel_grid::{Brick, ChannelIndex};
 use voxel_space::{
     BrickCoordinate, EntityPose, GridId, LevelIndex, VoxelCoordinate, WorldPosition,
@@ -68,7 +68,7 @@ pub struct ServerWorld {
     /// The kinds of entity and the items, from the game.
     catalog: Arc<EntityCatalog>,
     tick: Tick,
-    clients: BTreeSet<ClientId>,
+    clients: BTreeMap<ClientId, PlayerKey>,
     generated: GeneratedBrickCache,
     pub(crate) edits: BTreeMap<(LevelIndex, BrickCoordinate), BrickEdits>,
     pub(crate) outgoing: Vec<OutgoingGameMessage>,
@@ -84,7 +84,7 @@ impl ServerWorld {
             data,
             catalog,
             tick: Tick::ZERO,
-            clients: BTreeSet::new(),
+            clients: BTreeMap::new(),
             generated: GeneratedBrickCache::default(),
             edits: BTreeMap::new(),
             outgoing: Vec::new(),
@@ -189,15 +189,20 @@ impl ServerWorld {
 
     /// The clients that have joined, in the order they did.
     pub fn clients(&self) -> impl Iterator<Item = ClientId> + '_ {
-        self.clients.iter().copied()
+        self.clients.keys().copied()
     }
 
-    pub(crate) fn add_client(&mut self, client: ClientId) {
-        self.clients.insert(client);
+    pub(crate) fn add_client(&mut self, client: ClientId, key: PlayerKey) {
+        self.clients.insert(client, key);
     }
 
     pub(crate) fn remove_client(&mut self, client: ClientId) {
         self.clients.remove(&client);
+    }
+
+    /// The identity of a connected client: the public key it proved it holds the private key of.
+    pub fn player_key(&self, client: ClientId) -> Option<PlayerKey> {
+        self.clients.get(&client).copied()
     }
 
     /// The value of a voxel, from the edited brick if there is one, else from the terrain generator.

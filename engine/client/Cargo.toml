@@ -8,6 +8,7 @@ description = "A client's view of a world, built only from the messages a server
 
 [dependencies]
 binary_codec.workspace = true
+identity.workspace = true
 entities.workspace = true
 namespaced_id.workspace = true
 protocol.workspace = true

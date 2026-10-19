@@ -164,18 +164,28 @@ fn identical_sessions_make_byte_identical_recordings() {
     );
 }
 
-/// The recording with the protocol version in its welcome (the first frame) changed.
+/// The recording with the protocol version in its welcome changed.
 fn with_welcome_version(recording: &[u8], version: u32) -> Vec<u8> {
     let mut reader = ReplayReader::new(Cursor::new(recording.to_vec())).unwrap();
     let mut frames = Vec::new();
     while let Some(frame) = reader.next_frame().unwrap() {
         frames.push(frame);
     }
-    let ServerMessage::Welcome(mut welcome) = ServerMessage::decode(&frames[0]).unwrap() else {
-        panic!("a recording starts with the welcome");
+    // The challenge comes first since version 4; the welcome is the first frame that is not one.
+    let first = frames
+        .iter()
+        .position(|frame| {
+            !matches!(
+                ServerMessage::decode(frame),
+                Ok(ServerMessage::Challenge { .. })
+            )
+        })
+        .unwrap();
+    let ServerMessage::Welcome(mut welcome) = ServerMessage::decode(&frames[first]).unwrap() else {
+        panic!("a recording starts with the challenge and the welcome");
     };
     welcome.protocol_version = version;
-    frames[0] = ServerMessage::Welcome(welcome).encode();
+    frames[first] = ServerMessage::Welcome(welcome).encode();
     let mut writer = ReplayWriter::new(Vec::new()).unwrap();
     for frame in &frames {
         writer.append(frame).unwrap();

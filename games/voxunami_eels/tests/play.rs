@@ -1,5 +1,6 @@
 //! Voxunami Eels, played through its server and sessions, without a window.
 
+use game_shell::Identity;
 use game_shell::files::record_connection;
 use game_shell::host::build_server;
 use game_shell::session::{Mode, Session};
@@ -27,6 +28,8 @@ struct Rig {
     content: ContentEels,
     server: Server,
     connector: LoopbackConnector,
+    /// How many players have joined: each is an identity of its own.
+    joined: u8,
 }
 
 impl Rig {
@@ -38,6 +41,7 @@ impl Rig {
             content,
             server,
             connector,
+            joined: 0,
         }
     }
 
@@ -48,10 +52,19 @@ impl Rig {
 
     fn join_with(&mut self, connection: Box<dyn Connection>) -> Player {
         let start = camera_at([32.5, 40.0, 32.5], 0.0, 0.0, VIEW_RADIUS);
+        self.joined += 1;
+        let identity = Identity::from_secret([self.joined; 32]);
         let server = &mut self.server;
-        Session::<_, Eels>::connect(connection, Mode::Playing, VIEW_RADIUS, start, || {
-            server.step();
-        })
+        Session::<_, Eels>::connect(
+            connection,
+            &identity,
+            Mode::Playing,
+            VIEW_RADIUS,
+            start,
+            || {
+                server.step();
+            },
+        )
         .unwrap()
     }
 
@@ -430,6 +443,7 @@ fn a_world_saved_with_bodies_in_it_loads_and_the_first_round_clears_them() {
         content,
         server,
         connector,
+        joined: 0,
     };
     let mut again = later.join();
     later.tick(&mut [&mut again], 3);
@@ -464,6 +478,7 @@ fn a_recording_replays_the_match_from_the_recorded_players_eel() {
         Box::new(game_shell::files::open_recording(&path).unwrap());
     let mut replay = Session::<_, Eels>::connect(
         connection,
+        &Identity::generate(),
         Mode::Replaying,
         VIEW_RADIUS,
         camera_at([0.0; 3], 0.0, 0.0, VIEW_RADIUS),

@@ -1,3 +1,4 @@
+use identity::Identity;
 use namespaced_id::NamespacedId;
 use protocol::{ClientMessage, PROTOCOL_VERSION, ServerMessage, Tick, Welcome};
 use transport::{Connection, ConnectionClosed};
@@ -7,14 +8,18 @@ use world_storage::{LoadContext, LoadReport};
 use crate::client_world::{ClientEvent, ClientWorld};
 use crate::error::ClientError;
 
-/// Connects to a server: sends the hello, then waits for the welcome.
+/// Connects to a server: sends the hello, answers the server's challenge with a proof that this
+/// install holds the private key of the identity it said it is, then waits for the welcome.
 ///
 /// Connecting happens in steps because the program must build its terrain generators from the
 /// world's seed, which only the welcome carries: [`Handshake::start`], then [`Handshake::poll`]
-/// until the welcome arrives, then [`Welcomed::finish`] with the program's content.
+/// until the welcome arrives (the server's challenge, which `poll` answers, comes first, so a join
+/// takes the server two ticks), then [`Welcomed::finish`] with the program's content.
 #[derive(Debug)]
 pub struct Handshake<C: Connection> {
     connection: C,
+    game: NamespacedId,
+    identity: Identity,
 }
 
 /// The outcome of polling a handshake.
@@ -26,22 +31,32 @@ pub enum HandshakeProgress<C: Connection> {
 }
 
 impl<C: Connection> Handshake<C> {
-    /// Sends the hello for `game`.
-    pub fn start(mut connection: C, game: NamespacedId) -> Result<Self, ClientError> {
+    /// Sends the hello for `game`, saying who this player is.
+    pub fn start(
+        mut connection: C,
+        game: NamespacedId,
+        identity: &Identity,
+    ) -> Result<Self, ClientError> {
         connection
             .send(
                 ClientMessage::Hello {
                     protocol_version: PROTOCOL_VERSION,
-                    game,
+                    game: game.clone(),
+                    player_key: identity.player_key(),
                 }
                 .encode(),
             )
             .map_err(|ConnectionClosed| ClientError::ConnectionClosed)?;
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            game,
+            identity: identity.clone(),
+        })
     }
 
-    /// Checks whether the welcome has arrived. A refusal from the server is an error carrying its
-    /// reason.
+    /// Takes in the next message from the server: answers its challenge, or checks whether the welcome
+    /// has arrived. A refusal from the server is an error carrying its reason. (A recording made before
+    /// there were challenges starts with the welcome, which is accepted as it is.)
     pub fn poll(mut self) -> Result<HandshakeProgress<C>, ClientError> {
         let Some(frame) = self
             .connection
@@ -51,6 +66,13 @@ impl<C: Connection> Handshake<C> {
             return Ok(HandshakeProgress::Waiting(self));
         };
         match ServerMessage::decode(&frame)? {
+            ServerMessage::Challenge { nonce } => {
+                let signature = self.identity.prove(&self.game, &nonce);
+                self.connection
+                    .send(ClientMessage::Prove { signature }.encode())
+                    .map_err(|ConnectionClosed| ClientError::ConnectionClosed)?;
+                Ok(HandshakeProgress::Waiting(self))
+            }
             ServerMessage::Welcome(welcome) => Ok(HandshakeProgress::Welcomed(Welcomed {
                 connection: self.connection,
                 welcome,
@@ -59,7 +81,7 @@ impl<C: Connection> Handshake<C> {
                 Err(ClientError::DisconnectedByServer(reason))
             }
             _ => Err(ClientError::UnexpectedMessage(
-                "anything but a welcome as the first message",
+                "anything but a challenge or a welcome while connecting",
             )),
         }
     }

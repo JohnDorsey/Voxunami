@@ -27,6 +27,7 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
         );
     }
     // Either a server in this process, which this function ticks, or one somewhere else.
+    let identity = crate::player_identity::load(options.identity.as_deref())?;
     let mut content = G::new_content();
     let mut local = None;
     let connection: Box<dyn Connection> = match &options.join {
@@ -57,6 +58,7 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
     );
     let mut session = Session::<_, G>::connect(
         connection,
+        &identity,
         Mode::Playing,
         view.view_radius,
         start,
@@ -105,9 +107,15 @@ pub fn replay<G: GameDefinition>(options: &ReplayOptions) -> Result<(), String> 
     }
     let connection: Box<dyn Connection> = Box::new(open_recording(&options.file)?);
     let start = camera_at([0.0, 0.0, 0.0], 0.0, 0.0, view.view_radius);
-    let mut session =
-        Session::<_, G>::connect(connection, Mode::Replaying, view.view_radius, start, || {})
-            .map_err(|error| error.to_string())?;
+    let mut session = Session::<_, G>::connect(
+        connection,
+        &crate::player_identity::for_replay(),
+        Mode::Replaying,
+        view.view_radius,
+        start,
+        || {},
+    )
+    .map_err(|error| error.to_string())?;
     let context = GraphicsContext::headless(view.adapter).map_err(|error| error.to_string())?;
     println!("graphics adapter: {}", describe(&context.adapter));
 

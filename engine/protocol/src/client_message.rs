@@ -4,6 +4,7 @@ use voxel_space::{BrickBox, LevelIndex};
 
 use crate::MAXIMUM_COMMAND_LENGTH;
 use crate::error::ProtocolError;
+use crate::types::PlayerKey;
 use crate::wire::{read_brick_box, read_level, write_brick_box, write_level};
 
 const KIND_HELLO: u8 = 1;
@@ -11,6 +12,7 @@ const KIND_SET_INTEREST: u8 = 2;
 const KIND_GAME_MESSAGE: u8 = 3;
 const KIND_GOODBYE: u8 = 4;
 const KIND_COMMAND: u8 = 5;
+const KIND_PROVE: u8 = 6;
 
 /// Sent from a client to the server.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,7 +23,13 @@ pub enum ClientMessage {
         /// Which game the client is running, such as `voxunami_cave:game`. A server refuses clients
         /// of another game.
         game: NamespacedId,
+        /// Who the player is. The server answers with a [`ServerMessage::Challenge`](crate::ServerMessage::Challenge)
+        /// and does not go on until the player has proved they hold the private key.
+        player_key: PlayerKey,
     },
+    /// The answer to a challenge: the signature, by the key in the `Hello`, of the login the challenge
+    /// names (see the `identity` crate for what is signed).
+    Prove { signature: [u8; 64] },
     /// The region of bricks of one level the client wants to watch. The server sends what is in it,
     /// and keeps the client up to date on it, until the next `SetInterest`.
     SetInterest { level: LevelIndex, region: BrickBox },
@@ -45,10 +53,16 @@ impl ClientMessage {
             Self::Hello {
                 protocol_version,
                 game,
+                player_key,
             } => {
                 writer.write_u8(KIND_HELLO);
                 writer.write_u32(*protocol_version);
                 writer.write_identifier(game);
+                writer.write_raw(player_key.bytes());
+            }
+            Self::Prove { signature } => {
+                writer.write_u8(KIND_PROVE);
+                writer.write_raw(signature);
             }
             Self::SetInterest { level, region } => {
                 writer.write_u8(KIND_SET_INTEREST);
@@ -75,6 +89,12 @@ impl ClientMessage {
             KIND_HELLO => Self::Hello {
                 protocol_version: reader.read_u32()?,
                 game: reader.read_identifier()?,
+                player_key: PlayerKey::new(
+                    reader.read_raw(32)?.try_into().expect("32 bytes were read"),
+                ),
+            },
+            KIND_PROVE => Self::Prove {
+                signature: reader.read_raw(64)?.try_into().expect("64 bytes were read"),
             },
             KIND_SET_INTEREST => Self::SetInterest {
                 level: read_level(&mut reader)?,
@@ -117,6 +137,10 @@ mod tests {
             ClientMessage::Hello {
                 protocol_version: 7,
                 game: id("voxunami_cave:game"),
+                player_key: PlayerKey::new([9; 32]),
+            },
+            ClientMessage::Prove {
+                signature: [200; 64],
             },
             ClientMessage::SetInterest {
                 level: LevelIndex::new(2),
@@ -151,14 +175,20 @@ mod tests {
     fn the_wire_layout_is_pinned() {
         // Changing this layout needs a new protocol version.
         assert_eq!(ClientMessage::Goodbye.encode(), [4]);
+        let mut hello = vec![1, 1, 0, 0, 0, 3, b'a', b':', b'b'];
+        hello.extend([7; 32]);
         assert_eq!(
             ClientMessage::Hello {
                 protocol_version: 1,
-                game: id("a:b")
+                game: id("a:b"),
+                player_key: PlayerKey::new([7; 32]),
             }
             .encode(),
-            [1, 1, 0, 0, 0, 3, b'a', b':', b'b']
+            hello
         );
+        let mut prove = vec![6];
+        prove.extend([5; 64]);
+        assert_eq!(ClientMessage::Prove { signature: [5; 64] }.encode(), prove);
         assert_eq!(
             ClientMessage::SetInterest {
                 level: LevelIndex::new(3),

@@ -25,6 +25,7 @@ const KIND_COMMAND_REPLY: u8 = 8;
 const KIND_ENTITIES_SPAWNED: u8 = 9;
 const KIND_ENTITIES_CHANGED: u8 = 10;
 const KIND_ENTITIES_DESPAWNED: u8 = 11;
+const KIND_CHALLENGE: u8 = 12;
 
 /// The server's answer to `Hello`: everything a client needs to start interpreting the stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -129,6 +130,9 @@ pub enum ServerMessage {
     EntitiesChanged(Vec<EntityChange>),
     /// Entities the client knew that left the region it watches or no longer exist, in order of id.
     EntitiesDespawned(Vec<EntityId>),
+    /// The answer to `Hello`: bytes the server has not used before, which the client signs to prove it holds the
+    /// private key of the key it said it is. `Welcome` follows once it has. (Protocol version 4.)
+    Challenge { nonce: [u8; 32] },
 }
 
 /// Whether `frame` is a `TickCompleted` message. Recorders use it to know when a tick ends without
@@ -235,6 +239,10 @@ impl ServerMessage {
                     }
                     write_components(&mut writer, &change.components);
                 }
+            }
+            Self::Challenge { nonce } => {
+                writer.write_u8(KIND_CHALLENGE);
+                writer.write_raw(nonce);
             }
             Self::EntitiesDespawned(ids) => {
                 writer.write_u8(KIND_ENTITIES_DESPAWNED);
@@ -381,6 +389,9 @@ impl ServerMessage {
                 }
                 Self::EntitiesChanged(changes)
             }
+            KIND_CHALLENGE => Self::Challenge {
+                nonce: reader.read_raw(32)?.try_into().expect("32 bytes were read"),
+            },
             KIND_ENTITIES_DESPAWNED => {
                 let count = reader.read_count(1)?;
                 let mut ids = Vec::with_capacity(count);
@@ -544,6 +555,7 @@ mod tests {
             ]),
             ServerMessage::EntitiesDespawned(vec![EntityId::new(1), EntityId::new(300)]),
             ServerMessage::EntitiesDespawned(Vec::new()),
+            ServerMessage::Challenge { nonce: [77; 32] },
         ]
     }
 
@@ -597,6 +609,12 @@ mod tests {
             }
             .encode(),
             [8, 2, b'o', b'k']
+        );
+        let mut challenge = vec![12];
+        challenge.extend([3; 32]);
+        assert_eq!(
+            ServerMessage::Challenge { nonce: [3; 32] }.encode(),
+            challenge
         );
         assert_eq!(
             ServerMessage::EntitiesDespawned(vec![EntityId::new(1), EntityId::new(300)]).encode(),

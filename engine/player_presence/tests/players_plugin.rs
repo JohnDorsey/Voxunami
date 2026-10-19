@@ -3,7 +3,8 @@
 
 use player_presence::{PlayerPose, Players, PlayersPlugin, PoseReport, SharedPoseBook, lock};
 use plugin_host::{Phase, Plugin, PluginHost, Registrar, SystemSpec};
-use protocol::{ClientId, ClientMessage, Message, PROTOCOL_VERSION, ServerMessage};
+use protocol::{ClientId, ClientMessage, Message, ServerMessage};
+use server::test_support::log_in;
 use server::{Server, ServerConfig};
 use transport::Connection;
 use transport::loopback::{LoopbackConnection, loopback_listener};
@@ -66,11 +67,12 @@ fn rig(
     let mut client = Client {
         connection: connector.connect().unwrap(),
     };
-    client.send(&ClientMessage::Hello {
-        protocol_version: PROTOCOL_VERSION,
-        game: id("test_game:game"),
-    });
-    server.step();
+    log_in(
+        &mut server,
+        &mut client.connection,
+        &id("test_game:game"),
+        1,
+    );
     Rig {
         server,
         client,

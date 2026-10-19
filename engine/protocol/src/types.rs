@@ -70,3 +70,34 @@ impl fmt::Display for EntityId {
         write!(formatter, "entity {}", self.0)
     }
 }
+
+/// A player's identity: the public key of the keypair their install holds (see the `identity` crate).
+/// A server knows a player by it, so it is the same on every connection and in every world.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PlayerKey([u8; 32]);
+
+impl PlayerKey {
+    pub const fn new(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub const fn bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl fmt::Display for PlayerKey {
+    /// The key as 64 hexadecimal digits.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in self.0 {
+            write!(formatter, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for PlayerKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "PlayerKey({self})")
+    }
+}

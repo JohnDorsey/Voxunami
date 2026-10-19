@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use client::{Client, ClientError, ClientEvent, Handshake, HandshakeProgress};
+use identity::Identity;
 use protocol::{
     ClientId, ClientMessage, GeneratorAssignment, PROTOCOL_VERSION, ServerMessage, Tick,
     VoxelChange, Welcome,
@@ -18,6 +19,10 @@ use world_storage::test_support::{ALL_PLUGINS, Game, Plugin, brick, id};
 
 fn game_id() -> namespaced_id::NamespacedId {
     id("test_game:game")
+}
+
+fn identity() -> Identity {
+    Identity::from_secret([3; 32])
 }
 
 fn welcome(game: &Game, tick: u64) -> ServerMessage {
@@ -53,13 +58,14 @@ impl Rig {
         // The server side always runs the full game; the client may have fewer plugins.
         let server_game = Game::new(&ALL_PLUGINS);
         let (client_end, mut server) = loopback_pair();
-        let handshake = Handshake::start(client_end, game_id()).unwrap();
+        let handshake = Handshake::start(client_end, game_id(), &identity()).unwrap();
         let hello = ClientMessage::decode(&server.receive().unwrap().unwrap()).unwrap();
         assert_eq!(
             hello,
             ClientMessage::Hello {
                 protocol_version: PROTOCOL_VERSION,
-                game: game_id()
+                game: game_id(),
+                player_key: identity().player_key(),
             }
         );
         server.send(welcome(&server_game, 4).encode()).unwrap();
@@ -116,7 +122,7 @@ fn assignment_everywhere(generator: u32) -> GeneratorAssignment {
 fn connecting_sends_hello_waits_for_the_welcome_and_loads_the_world() {
     let game = Game::new(&ALL_PLUGINS);
     let (client_end, mut server) = loopback_pair();
-    let handshake = Handshake::start(client_end, game_id()).unwrap();
+    let handshake = Handshake::start(client_end, game_id(), &identity()).unwrap();
     // Nothing from the server yet: still waiting.
     let handshake = match handshake.poll().unwrap() {
         HandshakeProgress::Waiting(handshake) => handshake,
@@ -147,7 +153,7 @@ fn a_refusal_a_wrong_first_message_and_a_wrong_version_fail_the_handshake() {
     let game = Game::new(&ALL_PLUGINS);
     let outcome = |frame: Vec<u8>| {
         let (client_end, mut server) = loopback_pair();
-        let handshake = Handshake::start(client_end, game_id()).unwrap();
+        let handshake = Handshake::start(client_end, game_id(), &identity()).unwrap();
         server.send(frame).unwrap();
         handshake.poll().expect_err("the handshake fails")
     };
@@ -167,7 +173,7 @@ fn a_refusal_a_wrong_first_message_and_a_wrong_version_fail_the_handshake() {
     };
     stale.protocol_version = PROTOCOL_VERSION + 1;
     let (client_end, mut server) = loopback_pair();
-    let handshake = Handshake::start(client_end, game_id()).unwrap();
+    let handshake = Handshake::start(client_end, game_id(), &identity()).unwrap();
     server.send(ServerMessage::Welcome(stale).encode()).unwrap();
     let HandshakeProgress::Welcomed(welcomed) = handshake.poll().unwrap() else {
         panic!("welcomed")
@@ -186,7 +192,7 @@ fn a_refusal_a_wrong_first_message_and_a_wrong_version_fail_the_handshake() {
     };
     broken.world_description = vec![1, 2, 3];
     let (client_end, mut server) = loopback_pair();
-    let handshake = Handshake::start(client_end, game_id()).unwrap();
+    let handshake = Handshake::start(client_end, game_id(), &identity()).unwrap();
     server
         .send(ServerMessage::Welcome(broken).encode())
         .unwrap();
@@ -197,7 +203,7 @@ fn a_refusal_a_wrong_first_message_and_a_wrong_version_fail_the_handshake() {
 
     // The server vanishing mid-handshake.
     let (client_end, server) = loopback_pair();
-    let handshake = Handshake::start(client_end, game_id()).unwrap();
+    let handshake = Handshake::start(client_end, game_id(), &identity()).unwrap();
     drop(server);
     assert!(matches!(
         handshake.poll().err().unwrap(),
@@ -731,7 +737,7 @@ impl Rig {
             )
             .unwrap();
         let (client_end, mut server) = loopback_pair();
-        let handshake = Handshake::start(client_end, game_id()).unwrap();
+        let handshake = Handshake::start(client_end, game_id(), &identity()).unwrap();
         server.receive().unwrap().unwrap();
         server
             .send(

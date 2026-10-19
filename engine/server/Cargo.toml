@@ -12,6 +12,7 @@ test-support = []
 
 [dependencies]
 binary_codec.workspace = true
+identity.workspace = true
 entities.workspace = true
 content_registry.workspace = true
 namespaced_id.workspace = true

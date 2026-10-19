@@ -5,6 +5,7 @@
 mod common;
 
 use common::{PlayerExt, Rig, VIEW_RADIUS, above_ground};
+use game_shell::Identity;
 use game_shell::files::{open_recording, record_connection};
 use game_shell::session::{Mode, Session};
 use game_shell::view::{apply_updates, atmosphere, camera_at, configure_renderer};
@@ -103,6 +104,7 @@ fn an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw() 
     let connection: Box<dyn Connection> = Box::new(open_recording(&path).unwrap());
     let mut replay = Session::<_, Cave>::connect(
         connection,
+        &Identity::generate(),
         Mode::Replaying,
         VIEW_RADIUS,
         camera_at([0.0; 3], 0.0, 0.0, VIEW_RADIUS),

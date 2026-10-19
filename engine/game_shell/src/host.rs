@@ -24,8 +24,17 @@ pub const WATCH_MARGIN_BRICKS: i64 = 2;
 /// The port servers listen on, and clients connect to, unless told otherwise.
 pub const DEFAULT_PORT: u16 = 24816;
 
-fn server_config<G: GameDefinition>(view_radius_bricks: i64) -> ServerConfig {
+/// `counted_challenges` is for servers whose only clients are in this process: their challenges come from a
+/// counter, so that a session is the same every time. Anyone who can reach a server over a network must
+/// get challenges they cannot predict.
+fn server_config<G: GameDefinition>(
+    view_radius_bricks: i64,
+    counted_challenges: bool,
+) -> ServerConfig {
     let mut config = ServerConfig::new(G::id());
+    if counted_challenges {
+        config = config.with_counted_challenges(1);
+    }
     config.ticks_per_second = G::ticks_per_second();
     let edge = (2 * (view_radius_bricks + WATCH_MARGIN_BRICKS) + 1) as u64;
     config.maximum_watched_bricks = edge * edge * edge;
@@ -38,6 +47,7 @@ fn new_server<G: GameDefinition>(
     view_radius_bricks: i64,
     listener: Box<dyn Listener>,
     plugins: Vec<Box<dyn Plugin>>,
+    counted_challenges: bool,
 ) -> Result<Server, ServerError> {
     // A game's plugins are fixed when it is built, so a set that cannot be registered is a mistake in
     // the game that its tests find, not a condition to recover from.
@@ -48,7 +58,7 @@ fn new_server<G: GameDefinition>(
         panic!("a message of {} does not round-trip: {errors:#?}", G::id());
     }
     Server::new(
-        server_config::<G>(view_radius_bricks),
+        server_config::<G>(view_radius_bricks, counted_challenges),
         world,
         &content.registries(),
         Box::new(logic),
@@ -81,6 +91,7 @@ pub fn build_server_with_plugins<G: GameDefinition>(
         view_radius_bricks,
         Box::new(listener),
         plugins,
+        true,
     )?;
     Ok((server, connector))
 }
@@ -177,6 +188,7 @@ impl<G: GameDefinition> ServerThread<G> {
             settings.view_radius_bricks,
             Box::new(listeners),
             plugins,
+            false,
         )?;
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stop);

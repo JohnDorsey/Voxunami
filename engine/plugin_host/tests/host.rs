@@ -13,7 +13,8 @@ use plugin_host::{
     Phase, PlayerJoined, PlayerLeft, Plugin, PluginHost, Registrar, RegistrationError, SaveScope,
     SystemSpec, Verdict,
 };
-use protocol::{ClientMessage, EntityId, Message, PROTOCOL_VERSION, ServerMessage};
+use protocol::{ClientMessage, EntityId, Message, ServerMessage};
+use server::test_support::log_in;
 use server::{GameLogic, GridView, Server, ServerConfig};
 use transport::Connection;
 use transport::loopback::{LoopbackConnection, loopback_listener};
@@ -184,6 +185,8 @@ struct Rig {
     malformed: Arc<AtomicU64>,
     declared: Vec<NamespacedId>,
     checked: Result<(), Vec<String>>,
+    /// How many clients have joined: each logs in as an identity of its own.
+    joined: u8,
 }
 
 struct Client {
@@ -240,6 +243,7 @@ fn build(
         malformed,
         declared,
         checked,
+        joined: 0,
     })
 }
 
@@ -248,11 +252,13 @@ impl Rig {
         let mut client = Client {
             connection: self.connector.connect().unwrap(),
         };
-        client.send(&ClientMessage::Hello {
-            protocol_version: PROTOCOL_VERSION,
-            game: id("test_game:game"),
-        });
-        self.server.step();
+        self.joined += 1;
+        log_in(
+            &mut self.server,
+            &mut client.connection,
+            &id("test_game:game"),
+            self.joined,
+        );
         client
     }
 

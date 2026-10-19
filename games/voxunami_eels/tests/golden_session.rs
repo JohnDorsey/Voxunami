@@ -7,6 +7,7 @@
 //! and on Linux, where it must agree to the bit.
 
 use game_shell::GameContent;
+use game_shell::Identity;
 use game_shell::files::record_connection;
 use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
@@ -74,17 +75,29 @@ fn session(name: &str, arrangement: usize) -> (u64, usize, u64) {
     .unwrap();
     let start = camera_at([32.5, 40.0, 32.5], 0.0, 0.0, VIEW_RADIUS);
     let recorded = record_connection(connector.connect().unwrap(), &path).unwrap();
-    let mut first =
-        Session::<_, Eels>::connect(recorded, Mode::Playing, VIEW_RADIUS, start, || {
+    let mut first = Session::<_, Eels>::connect(
+        recorded,
+        &Identity::from_secret([1; 32]),
+        Mode::Playing,
+        VIEW_RADIUS,
+        start,
+        || {
             server.step();
-        })
-        .unwrap();
+        },
+    )
+    .unwrap();
     let second_connection: Box<dyn Connection> = Box::new(connector.connect().unwrap());
-    let mut second =
-        Session::<_, Eels>::connect(second_connection, Mode::Playing, VIEW_RADIUS, start, || {
+    let mut second = Session::<_, Eels>::connect(
+        second_connection,
+        &Identity::from_secret([2; 32]),
+        Mode::Playing,
+        VIEW_RADIUS,
+        start,
+        || {
             server.step();
-        })
-        .unwrap();
+        },
+    )
+    .unwrap();
 
     // The countdown, then both swim; each steers about and rolls; one runs into a wall; a new round.
     ticks(
@@ -158,8 +171,12 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// Stream hash, stream length, saved-world hash.
 /// Phase 27c: the stream hash changed once, for the protocol version in the welcome (3, was 2); the length and the
 /// saved world did not, and setting the version back to 2 gave the old hash.
+/// Phase 27e: the stream hash changed once, and the length by 38 bytes (the challenge frame: kind, 32 bytes, framing) for the
+/// protocol version (4, was 3) and the challenge, and because a join takes a tick longer, so the game has run a tick more
+/// when the player arrives. Checked, not assumed: the old code with an idle server tick before each join, and this stream
+/// with the challenge taken out and the welcome's version set back to 3, give the same hash (and the saved world is the same).
 const PINNED: (u64, usize, u64) = (
-    11_422_187_156_526_845_485,
-    35_366,
+    18_145_714_062_413_624_097,
+    35_506,
     7_844_908_670_161_894_155,
 );

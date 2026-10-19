@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use block_models::BlockDefinition;
 use content_registry::{IdentifierRegistry, Registry};
+use game_shell::Identity;
 use game_shell::files::{open_recording, record_connection};
 use game_shell::host::build_server;
 use game_shell::session::{Mode, Session};
@@ -128,6 +129,8 @@ struct Rig {
     content: Content2048,
     server: Server,
     connector: LoopbackConnector,
+    /// How many players have joined: each is an identity of its own.
+    joined: u8,
 }
 
 impl Rig {
@@ -147,6 +150,7 @@ impl Rig {
             content,
             server,
             connector,
+            joined: 0,
         }
     }
 
@@ -163,10 +167,19 @@ impl Rig {
         pitch_degrees: f32,
     ) -> Player {
         let start = camera_at(position, yaw_degrees, pitch_degrees, VIEW_RADIUS);
+        self.joined += 1;
+        let identity = Identity::from_secret([self.joined; 32]);
         let server = &mut self.server;
-        Session::<_, Game2048>::connect(connection, Mode::Playing, VIEW_RADIUS, start, || {
-            server.step();
-        })
+        Session::<_, Game2048>::connect(
+            connection,
+            &identity,
+            Mode::Playing,
+            VIEW_RADIUS,
+            start,
+            || {
+                server.step();
+            },
+        )
         .unwrap()
     }
 
@@ -656,6 +669,7 @@ fn a_recording_of_a_game_replays_the_blocks_and_the_score() {
     let connection: Box<dyn Connection> = Box::new(open_recording(&path).unwrap());
     let mut replay = Session::<_, Game2048>::connect(
         connection,
+        &Identity::generate(),
         Mode::Replaying,
         VIEW_RADIUS,
         camera_at([0.0; 3], 0.0, 0.0, VIEW_RADIUS),

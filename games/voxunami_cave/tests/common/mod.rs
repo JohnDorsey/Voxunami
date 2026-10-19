@@ -5,7 +5,7 @@
 use game_shell::host::build_server;
 use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
-use game_shell::{GameContent, KeyCode};
+use game_shell::{GameContent, Identity, KeyCode};
 use renderer::Camera;
 use server::Server;
 use transport::Connection;
@@ -23,6 +23,8 @@ pub struct Rig {
     pub content: CaveContent,
     pub server: Server,
     pub connector: LoopbackConnector,
+    /// How many players have joined: each is an identity of its own.
+    pub joined: u8,
 }
 
 impl Rig {
@@ -34,6 +36,7 @@ impl Rig {
             content,
             server,
             connector,
+            joined: 0,
         }
     }
 
@@ -54,6 +57,7 @@ impl Rig {
             content,
             server,
             connector,
+            joined: 0,
         }
     }
 
@@ -63,6 +67,7 @@ impl Rig {
             content,
             server,
             connector,
+            joined: 0,
         }
     }
 
@@ -80,12 +85,20 @@ impl Rig {
         pitch: f32,
     ) -> Player {
         let start = camera_at(position, yaw, pitch, VIEW_RADIUS);
+        self.joined += 1;
+        let identity = Identity::from_secret([self.joined; 32]);
         let server = &mut self.server;
-        let mut player =
-            Session::<_, Cave>::connect(connection, Mode::Playing, VIEW_RADIUS, start, || {
+        let mut player = Session::<_, Cave>::connect(
+            connection,
+            &identity,
+            Mode::Playing,
+            VIEW_RADIUS,
+            start,
+            || {
                 server.step();
-            })
-            .unwrap();
+            },
+        )
+        .unwrap();
         // Players of these tests fly, so that they stay where they are put (the server moves them;
         // the tests of walking join with `join_walking`).
         player.send_command("/fly");
@@ -96,10 +109,19 @@ impl Rig {
     pub fn join_walking(&mut self, position: [f64; 3], yaw: f32, pitch: f32) -> Player {
         let connection: Box<dyn Connection> = Box::new(self.connector.connect().unwrap());
         let start = camera_at(position, yaw, pitch, VIEW_RADIUS);
+        self.joined += 1;
+        let identity = Identity::from_secret([self.joined; 32]);
         let server = &mut self.server;
-        Session::<_, Cave>::connect(connection, Mode::Playing, VIEW_RADIUS, start, || {
-            server.step();
-        })
+        Session::<_, Cave>::connect(
+            connection,
+            &identity,
+            Mode::Playing,
+            VIEW_RADIUS,
+            start,
+            || {
+                server.step();
+            },
+        )
         .unwrap()
     }
 

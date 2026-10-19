@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use block_models::BlockTable;
 use client::{Client, ClientError, ClientEvent, Handshake, HandshakeProgress};
+use identity::Identity;
 use namespaced_id::NamespacedId;
 use player_presence::{LevelChange, PlayerPose, PlayerState, Players, PoseReport};
 use protocol::{ClientId, Message};
@@ -69,16 +70,18 @@ pub struct Session<C: Connection, G: GameDefinition> {
 }
 
 impl<C: Connection, G: GameDefinition> Session<C, G> {
-    /// Connects and builds the player's picture of the world. `wait` is called between attempts to
-    /// hear the server's welcome, and is where a program that ticks its own server steps it.
+    /// Connects and builds the player's picture of the world, proving to the server that the player is
+    /// `identity`. `wait` is called between attempts to hear the server's welcome, and is where a program
+    /// that ticks its own server steps it.
     pub fn connect(
         connection: C,
+        identity: &Identity,
         mode: Mode,
         view_radius_bricks: i64,
         start: Camera,
         mut wait: impl FnMut(),
     ) -> Result<Self, SessionError> {
-        let mut handshake = Handshake::start(connection, G::id())?;
+        let mut handshake = Handshake::start(connection, G::id(), identity)?;
         let deadline = Instant::now() + Duration::from_secs(15);
         let welcomed = loop {
             match handshake.poll()? {

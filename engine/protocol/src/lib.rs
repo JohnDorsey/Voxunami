@@ -44,11 +44,11 @@ pub use server_message::{
     EntityChange, EntityState, GeneratorAssignment, ServerMessage, VoxelChange, Welcome,
     is_tick_boundary,
 };
-pub use types::{ClientId, EntityId, Tick};
+pub use types::{ClientId, EntityId, PlayerKey, Tick};
 
 /// Bumped whenever a message changes in a way older programs cannot read. A recording stores the
 /// version it was made with, so replaying needs a program that understands it.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// The oldest protocol version this program can still read. Version 3 only added messages (those about
 /// entities), so a recording made at version 2 plays as it did: a recording must stay watchable, which is

@@ -16,6 +16,7 @@ client = { path = "engine/client" }
 content_registry = { path = "engine/content_registry" }
 entities = { path = "engine/entities" }
 game_shell = { path = "engine/game_shell" }
+identity = { path = "engine/identity" }
 lattice = { path = "engine/lattice" }
 end_to_end_tests = { path = "engine/end_to_end_tests" }
 namespaced_id = { path = "engine/namespaced_id" }

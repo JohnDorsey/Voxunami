@@ -2,9 +2,10 @@
 
 mod common;
 
+use game_shell::Identity;
 use game_shell::client_plugin::MouseButton;
 
-use protocol::Message;
+use protocol::{ClientMessage, Message};
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -261,6 +262,7 @@ fn a_recording_replays_the_session_from_the_recorded_players_point_of_view() {
         Box::new(game_shell::files::open_recording(&path).unwrap());
     let mut replay = Session::<_, Cave>::connect(
         connection,
+        &Identity::generate(),
         Mode::Replaying,
         VIEW_RADIUS,
         camera_at([0.0; 3], 0.0, 0.0, VIEW_RADIUS),
@@ -319,6 +321,7 @@ fn a_session_that_is_watching_a_replay_asks_the_server_for_nothing() {
     let server = &mut rig.server;
     let mut watcher = Session::<_, Cave>::connect(
         Box::new(spy) as Box<dyn Connection>,
+        &Identity::from_secret([50; 32]),
         Mode::Replaying,
         VIEW_RADIUS,
         player.camera,
@@ -328,7 +331,19 @@ fn a_session_that_is_watching_a_replay_asks_the_server_for_nothing() {
     )
     .unwrap();
     let after_hello = sent.lock().unwrap().len();
-    assert_eq!(after_hello, 1, "only the hello");
+    let kinds: Vec<_> = sent
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|frame| ClientMessage::decode(frame).unwrap())
+        .collect();
+    assert!(
+        matches!(
+            &kinds[..],
+            [ClientMessage::Hello { .. }, ClientMessage::Prove { .. }]
+        ),
+        "only the hello and the proof of who it is: {kinds:?}"
+    );
 
     // Whatever the watcher's camera is doing, it moves, aims and clicks without telling anyone.
     watcher.camera = player.camera;
@@ -356,6 +371,7 @@ fn the_integrated_server_ticks_by_itself_and_hands_back_the_world() {
     let start = camera_at([16.5, 110.0, 16.5], 0.0, 0.0, VIEW_RADIUS);
     let mut player = Session::<_, Cave>::connect(
         Box::new(connection) as Box<dyn transport::Connection>,
+        &Identity::from_secret([60; 32]),
         Mode::Playing,
         VIEW_RADIUS,
         start,
@@ -490,6 +506,7 @@ fn a_recording_follows_the_recorded_player_into_another_level() {
         Box::new(game_shell::files::open_recording(&path).unwrap());
     let mut replay = Session::<_, Cave>::connect(
         connection,
+        &Identity::generate(),
         Mode::Replaying,
         VIEW_RADIUS,
         camera_at([0.0; 3], 0.0, 0.0, VIEW_RADIUS),

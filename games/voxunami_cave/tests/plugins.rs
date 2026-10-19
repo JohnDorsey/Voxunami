@@ -40,6 +40,7 @@ fn rig_with(others: Vec<Box<dyn Plugin>>) -> Rig {
         content,
         server,
         connector,
+        joined: 0,
     }
 }
 

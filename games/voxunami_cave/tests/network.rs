@@ -6,18 +6,19 @@ use std::io::Write;
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use common::{Player, PlayerExt, VIEW_RADIUS, above_ground, ground_height};
 use game_shell::GameContent;
+use game_shell::Identity;
 use game_shell::files::{open_recording, open_world, record_connection};
 use game_shell::host::{HostSettings, ServerThread};
 use game_shell::options::ServeOptions;
 use game_shell::serve::serve_until;
 use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
-use protocol::{ClientMessage, PROTOCOL_VERSION, ServerMessage};
+use protocol::{ClientMessage, ServerMessage};
 use transport::Connection;
 use transport::tcp::{TcpConnection, TcpServerListener};
 use voxel_space::{BrickBox, BrickCoordinate, LevelIndex};
@@ -80,11 +81,22 @@ impl Drop for DedicatedServer {
     }
 }
 
+/// How many players have joined servers in this file's tests: each is an identity of its own.
+static JOINED: AtomicU8 = AtomicU8::new(0);
+
 fn join(connection: Box<dyn Connection>, position: [f64; 3]) -> Player {
     let start = camera_at(position, 0.0, 0.0, VIEW_RADIUS);
-    Session::<_, Cave>::connect(connection, Mode::Playing, VIEW_RADIUS, start, || {
-        std::thread::sleep(Duration::from_millis(1));
-    })
+    let identity = Identity::from_secret([JOINED.fetch_add(1, Ordering::Relaxed); 32]);
+    Session::<_, Cave>::connect(
+        connection,
+        &identity,
+        Mode::Playing,
+        VIEW_RADIUS,
+        start,
+        || {
+            std::thread::sleep(Duration::from_millis(1));
+        },
+    )
     .unwrap()
 }
 
@@ -258,6 +270,7 @@ fn a_recording_made_over_the_network_replays_the_same_view() {
     let connection: Box<dyn Connection> = Box::new(open_recording(&path).unwrap());
     let mut replay = Session::<_, Cave>::connect(
         connection,
+        &Identity::generate(),
         Mode::Replaying,
         VIEW_RADIUS,
         camera_at([0.0; 3], 0.0, 0.0, VIEW_RADIUS),
@@ -317,15 +330,19 @@ fn joining_a_server_that_is_not_there_is_an_error_not_a_hang() {
 fn a_player_who_asks_to_watch_more_than_the_server_allows_is_refused_with_a_reason() {
     let server = DedicatedServer::start(None, 60.0);
     let mut connection = server.connect();
-    connection
-        .send(
-            ClientMessage::Hello {
-                protocol_version: PROTOCOL_VERSION,
-                game: voxunami_cave::game_id(),
-            }
-            .encode(),
-        )
-        .unwrap();
+    let identity = Identity::from_secret([200; 32]);
+    let game = voxunami_cave::game_id();
+    connection.send(identity.hello(&game).encode()).unwrap();
+    let challenge = loop {
+        if let Some(frame) = connection.receive().unwrap() {
+            break frame;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let proof = identity
+        .answer(&game, &challenge)
+        .expect("the server answers a hello with a challenge");
+    connection.send(proof.encode()).unwrap();
     connection
         .send(
             ClientMessage::SetInterest {
