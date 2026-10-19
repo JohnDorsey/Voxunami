@@ -265,7 +265,8 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   (`games/voxunami_cave/tests/pictures.rs`, the replayed picture differed from the live one) failed in 2 of about 6 full parallel Windows runs and in
   0 of 3 runs of `cargo test -p voxunami_cave` alone; `walkers_pass_through_flames_and_the_cellar_has_the_same_ground` failed once more in a full Linux
   run and passed on the rerun. Both only under the load of a whole-workspace run, so the same belief applies (the result depends on how far the
-  client's worker threads have got); not tested. Also: `cargo test --workspace` stops at the first failing crate, so use `--no-fail-fast`.
+  client's worker threads have got); not tested. `a_walker_standing_in_flames_falls_when_the_fire_burns_the_ground_away` failed once more in
+  a full parallel Linux run (end of Phase 26) and 0 of 15 times alone. Also: `cargo test --workspace` stops at the first failing crate, so use `--no-fail-fast`.
 - Light (Phase 12): cost is one lamp's 64 ticks of spreading averaged 15 ms a tick in a release build (with two clients
   watching; measured once, not repeated), and a tick is 50 ms, so a few lamps placed at once would overrun it. The budget
   of 20 000 voxels a tick (Phase 14) is a guess, not tuned, and its streaming cost to clients is not measured. The sky light
