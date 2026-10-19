@@ -18,6 +18,11 @@
 //! - `engine:levels`: the world's levels in order, the first being the main level where players start.
 //!   Per level: its identifier, its generator setup (as the payload of `engine:generators`, version 2) and
 //!   its edited bricks (as the payload of `engine:override_bricks`).
+//! - `engine:entities`: the entity counter, then every entity in order of id: its id, kind, pose, a byte reserved for
+//!   a world-space fallback pose (0 now; an entity in a grid that is not a root grid will have one), and its
+//!   components by identifier as the bytes their codecs made. Written only when the world has entities or has
+//!   had any (so a world without them is byte for byte what it was before entities), and not in a world
+//!   description. Entities of kinds nobody has, and components nobody knows, are kept as they are.
 //! - `engine:override_bricks`: the bricks that replace generated terrain, sorted by coordinate. (Files
 //!   written before levels existed; newer files keep them inside `engine:levels`.)
 
@@ -27,6 +32,8 @@ use voxel_grid::{Brick, ChannelValueKind};
 use voxel_space::BrickCoordinate;
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
+use entities::{ComponentBag, Entity, EntityError, EntityStore};
+use protocol::{EntityId, read_entity_pose, write_entity_pose};
 
 pub const SUPPORTED_VERSION: u32 = 1;
 
@@ -55,6 +62,61 @@ pub fn override_bricks_id() -> NamespacedId {
 }
 pub fn levels_id() -> NamespacedId {
     engine_id("levels")
+}
+pub fn entities_id() -> NamespacedId {
+    engine_id("entities")
+}
+
+/// Whether a world's entities are worth a section: it has some, or has had some (the counter says so).
+pub fn entities_are_saved(store: &EntityStore) -> bool {
+    !store.is_empty() || store.next_id() != 1
+}
+
+pub fn encode_entities(store: &EntityStore) -> Vec<u8> {
+    let mut writer = ByteWriter::new();
+    writer.write_varint(store.next_id());
+    writer.write_varint(store.len() as u64);
+    for entity in store.iter() {
+        writer.write_varint(entity.id.get());
+        writer.write_identifier(&entity.kind);
+        write_entity_pose(&mut writer, &entity.pose);
+        // Reserved for the world-space pose of an entity in a grid that is not a root grid.
+        writer.write_u8(0);
+        entity.components.write(&mut writer);
+    }
+    writer.into_bytes()
+}
+
+pub fn decode_entities(payload: &[u8]) -> Result<EntityStore, DecodeError> {
+    let mut reader = ByteReader::new(payload);
+    let next_id = reader.read_varint()?;
+    // An id, a kind, a pose, the reserved byte and a component count.
+    let count = reader.read_count(40)?;
+    let mut entities = Vec::with_capacity(count);
+    for _ in 0..count {
+        let id = EntityId::new(reader.read_varint()?);
+        let kind = reader.read_identifier()?;
+        let pose = read_entity_pose(&mut reader)?;
+        if reader.read_u8()? != 0 {
+            return Err(DecodeError::Invalid(
+                "an entity has a world-space pose, which this program cannot keep",
+            ));
+        }
+        let components = ComponentBag::read(&mut reader)?;
+        entities.push(Entity {
+            id,
+            kind,
+            pose,
+            components,
+        });
+    }
+    reader.finish()?;
+    EntityStore::restore(next_id, entities).map_err(|error| {
+        DecodeError::Invalid(match error {
+            EntityError::UnorderedEntities => "the entities are not in order of id, each once",
+            _ => "an entity id is not below the saved counter",
+        })
+    })
 }
 
 /// The registry kind that holds terrain generator versions.

@@ -398,7 +398,7 @@ impl WorldData {
                     .collect(),
             })
             .collect();
-        Ok(vec![
+        let mut written = vec![
             Self::section(
                 sections::header_id(),
                 sections::encode_header(&Header {
@@ -420,7 +420,16 @@ impl WorldData {
                 sections::encode_channels(&channel_records),
             ),
             Self::section(sections::levels_id(), sections::encode_levels(&to_write)),
-        ])
+        ];
+        // Entities are contents: a description does not have them, and a world that never had any does not
+        // write the section, so it saves as it did before entities existed.
+        if with_contents && sections::entities_are_saved(&self.entities) {
+            written.push(Self::section(
+                sections::entities_id(),
+                sections::encode_entities(&self.entities),
+            ));
+        }
+        Ok(written)
     }
 }
 
@@ -566,6 +575,7 @@ pub struct ParsedWorld {
     registries: Vec<RegistryTable>,
     channels: Vec<ChannelRecord>,
     levels: ParsedLevels,
+    entities: EntityStore,
     opaque_sections: Vec<Section>,
 }
 
@@ -577,6 +587,7 @@ impl ParsedWorld {
         let mut listed_levels = None;
         let mut legacy_generators = None;
         let mut legacy_bricks = None;
+        let mut entities = EntityStore::new();
         let mut opaque_sections = Vec::new();
         for section in read_container(bytes)? {
             let known = [
@@ -586,6 +597,7 @@ impl ParsedWorld {
                 sections::levels_id(),
                 sections::generators_id(),
                 sections::override_bricks_id(),
+                sections::entities_id(),
             ]
             .contains(&section.identifier);
             if !known {
@@ -616,6 +628,8 @@ impl ParsedWorld {
                 channels = sections::decode_channels(payload).map_err(wrap)?;
             } else if section.identifier == sections::levels_id() {
                 listed_levels = Some(sections::decode_levels(payload).map_err(wrap)?);
+            } else if section.identifier == sections::entities_id() {
+                entities = sections::decode_entities(payload).map_err(wrap)?;
             } else if section.identifier == sections::generators_id() {
                 legacy_generators =
                     Some(sections::decode_generators(payload, section.version).map_err(wrap)?);
@@ -640,6 +654,7 @@ impl ParsedWorld {
             registries,
             channels,
             levels,
+            entities,
             opaque_sections,
         })
     }
@@ -926,7 +941,7 @@ impl ParsedWorld {
             levels,
             unknown_registry_tables,
             opaque_sections: self.opaque_sections,
-            entities: EntityStore::new(),
+            entities: self.entities,
         };
         Ok((world, report, translator))
     }

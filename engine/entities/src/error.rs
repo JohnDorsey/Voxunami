@@ -27,6 +27,10 @@ pub enum EntityError {
     },
     #[error("{0} is not a root grid, and until structures exist only root grids hold entities")]
     NotARootGrid(GridId),
+    #[error("the entities of a save are not in order of id, each once")]
+    UnorderedEntities,
+    #[error("{id} is not below the saved counter, {next_id}")]
+    IdBeyondCounter { id: EntityId, next_id: u64 },
     #[error("an item stack must hold at least one item")]
     EmptyStack,
     #[error("an inventory has no slot {slot}; it has {slots}")]

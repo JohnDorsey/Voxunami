@@ -1,6 +1,6 @@
 # Phase 27 specification: entities, items and inventories
 
-**Status: accepted 2026-10-18 with the default answers to all five questions (pause after 27d; players become entities now with a persistent player key; Cave creative by default with `/gamemode survival` per world; no mob; orientation a quaternion). Being built (27a to 27c done).** It makes concrete requirement 8, 15 and 16 of `plan.md` ("Requirements pulled
+**Status: accepted 2026-10-18 with the default answers to all five questions (pause after 27d; players become entities now with a persistent player key; Cave creative by default with `/gamemode survival` per world; no mob; orientation a quaternion). Being built (27a to 27d done; the pause for review is here).** It makes concrete requirement 8, 15 and 16 of `plan.md` ("Requirements pulled
 forward") and the "Entities and items (Phase 27)" improvement, after option B of `plugin-architecture-review.md` W7 (server-owned entities,
 typed components from the property machinery, no ECS). What I say about today's code was read from the code (verified); the design is
 my proposal (believed). It is the biggest phase so far, so section 4 splits it at a point where you can stop and look.

@@ -50,6 +50,30 @@ impl EntityStore {
         }
     }
 
+    /// A store with these entities and this counter, as a save kept them. The entities must be in strictly
+    /// increasing order of id, each below the counter, so that an id is never given twice. Nothing is
+    /// checked against a kind: an entity of a kind nobody has is kept like any other.
+    pub fn restore(next_id: u64, entities: Vec<Entity>) -> Result<Self, EntityError> {
+        let mut store = Self::new();
+        store.next_id = next_id.max(1);
+        let mut previous: Option<EntityId> = None;
+        for entity in entities {
+            if previous.is_some_and(|last| last >= entity.id) {
+                return Err(EntityError::UnorderedEntities);
+            }
+            if entity.id.get() >= next_id {
+                return Err(EntityError::IdBeyondCounter {
+                    id: entity.id,
+                    next_id,
+                });
+            }
+            previous = Some(entity.id);
+            store.index(entity.id, entity.pose);
+            store.entities.insert(entity.id, entity);
+        }
+        Ok(store)
+    }
+
     /// The identifier the next entity will get: what a save keeps.
     pub fn next_id(&self) -> u64 {
         self.next_id

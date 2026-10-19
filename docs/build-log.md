@@ -658,6 +658,12 @@ Phase 27a to 27c (entities; specified in `entities-spec.md`):
 - 27c: protocol version 3 (messages 9 to 11), server replication with cached views, the client store, replay of entities, version policy.
   Cost with 1000 entities and 4 clients: 0.5, 0.7 and 1.4 ms a tick with none, a tenth and all moving. 13 mutations are caught.
 
+Phase 27d (entities in the world file):
+- `engine:entities` (see `world-file-format.md`): the counter, the entities by id, a reserved byte for the fallback pose of Phase 32. A world
+  with none saves as before (the golden sessions' saved-world hashes did not move). Dormant entities need no special case: an entity is a kind
+  identifier and bytes, so one whose plugin is missing is loaded, kept and saved as it was, and is not shown to clients. 9 mutations are caught.
+- Server: a world saved in play and reloaded tells joining clients of its entities, and the counter keeps ids unique.
+
 ## Measured
 Storage (Ryzen 7600X, release, one thread, best of 7, counting allocator; the single-voxel `get` figures include
 loop and bounds overhead, so bulk decode will be faster):

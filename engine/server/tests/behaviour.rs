@@ -2006,3 +2006,44 @@ fn replication_benchmark() {
         );
     }
 }
+
+#[test]
+fn entities_made_in_play_are_in_the_saved_world_and_a_server_started_from_it_tells_clients_of_them()
+{
+    let (game, mut harness) = herd_harness(|tick, world| {
+        if tick.get() == 1 {
+            world
+                .spawn_entity(&id("test:cow"), pose_in(0, 3.0), ComponentBag::new())
+                .unwrap();
+            let second = world
+                .spawn_entity(&id("test:cow"), pose_in(1, 4.0), ComponentBag::new())
+                .unwrap();
+            world.despawn_entity(second);
+        }
+    });
+    harness.server.step();
+    let saved = harness.server.save(&game.registries()).unwrap();
+
+    // A new server, started from the file, with the same kinds, knows the entity and the counter.
+    let mut reloaded = Game::new(&ALL_PLUGINS);
+    let (world, _) = reloaded.load(&saved).unwrap();
+    assert_eq!(world.entities().len(), 1);
+    assert_eq!(world.entities().next_id(), 3);
+    let logic = ScriptedLogic::new().with_entity_catalog(cow_catalog());
+    let mut harness = Harness::with_logic(&reloaded, world, ServerConfig::new(game_id()), logic);
+    let mut client = harness.connect();
+    client.hello();
+    harness.server.step();
+    client.watch(BrickCoordinate::ORIGIN, 1);
+    harness.server.step();
+    let told = client.received();
+    let told = entity_messages(&told);
+    assert_eq!(told.len(), 1);
+    let ServerMessage::EntitiesSpawned(spawned) = told[0] else {
+        panic!("{told:?}");
+    };
+    assert_eq!(spawned.len(), 1);
+    assert_eq!(spawned[0].id, EntityId::new(1));
+    assert_eq!(spawned[0].pose, pose_in(0, 3.0));
+    assert_eq!(spawned[0].components, [health_bytes(10)]);
+}

@@ -3470,6 +3470,7 @@ dependencies = [
  "entities",
  "namespaced_id",
  "proptest",
+ "protocol",
  "region_octree",
  "terrain",
  "thiserror 2.0.21",
