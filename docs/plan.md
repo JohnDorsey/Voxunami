@@ -286,8 +286,9 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   `HCS ERROR_NO_SYSTEM_RESOURCES`); measured instead on Windows, 10 whole-file runs with every core busy, all clean.
   Left open, small: (a) a body put within a hair (under the controller's 0.01 skin) of two walls at once can be left standing a little above the
   ground it falls beside (the controller counts the walls as support): it is not inside anything, and the properties do not assert on how a body
-  rests; (b) editing a block into a body that is already standing there is not cleared (only placing a body is); (c) the reply of `/tp`
-  reports the place asked for, not where the body is moved if that is inside terrain.
+  rests; (b) editing a block into a body that is already standing there is not cleared (only placing a body is).
+  (The `/tp` reply used to name the place asked for even when the body was moved out of terrain; it now clears the body during the
+  command and says where the eyes are: `teleported to X Y Z (moved from X Y Z, which is inside the terrain)`.)
 - Light (Phase 12): cost is one lamp's 64 ticks of spreading averaged 15 ms a tick in a release build (with two clients
   watching; measured once, not repeated), and a tick is 50 ms, so a few lamps placed at once would overrun it. The budget
   of 20 000 voxels a tick (Phase 14) is a guess, not tuned, and its streaming cost to clients is not measured. The sky light

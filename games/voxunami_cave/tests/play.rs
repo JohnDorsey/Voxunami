@@ -1635,6 +1635,58 @@ fn a_player_teleported_into_the_terrain_is_moved_out_of_it_and_never_left_inside
 }
 
 #[test]
+fn tp_into_the_ground_says_where_the_player_was_moved_to_and_that_is_where_they_are() {
+    let mut rig = Rig::new();
+    let mut player = standing_walker(&mut rig);
+    let ground = ground_height(&player, 16, 16) as f64;
+    // The feet one voxel inside the ground; and then somewhere in the open, which is not moved.
+    player.take_command_replies();
+    player.send_command(&format!("/tp 16.5 {} 16.5", ground + 1.62));
+    tick_and_follow(&mut rig, &mut player, 3);
+    let replies = player.take_command_replies();
+    let [reply] = &replies[..] else {
+        panic!("{replies:?}");
+    };
+    let numbers: Vec<f64> = reply
+        .strip_prefix("teleported to ")
+        .unwrap_or_else(|| panic!("{reply}"))
+        .split([' ', '(', ','])
+        .filter_map(|word| word.parse().ok())
+        .collect();
+    // Where they are now, then (after "moved from") where they asked to be.
+    let [now_x, now_y, now_z, asked_x, asked_y, asked_z] = numbers[..] else {
+        panic!("{reply}");
+    };
+    assert!(
+        reply.contains(&format!("moved from 16.5 {} 16.5", ground + 1.62)),
+        "{reply}"
+    );
+    assert_eq!([asked_x, asked_z], [16.5, 16.5]);
+    assert!((asked_y - (ground + 1.62)).abs() < 1e-9);
+    assert!(
+        now_y > asked_y + 0.5,
+        "moved out of the ground, up: {reply}"
+    );
+    // And that is where the player is.
+    let eyes = voxels_of(&player.camera);
+    assert!(
+        (eyes[0] - now_x).abs() < 0.02
+            && (eyes[1] - now_y).abs() < 0.02
+            && (eyes[2] - now_z).abs() < 0.02,
+        "told {reply}, but eyes at {eyes:?}"
+    );
+    assert_standing(&player, "after the teleport");
+
+    // In the open, the reply is the one it always was.
+    player.send_command(&format!("/tp 16.5 {} 16.5", ground + 20.0));
+    tick_and_follow(&mut rig, &mut player, 1);
+    assert_eq!(
+        player.take_command_replies(),
+        [format!("teleported to 16.5 {} 16.5", ground + 20.0)]
+    );
+}
+
+#[test]
 fn a_player_in_a_trench_sent_to_a_level_whose_ground_is_whole_ends_up_on_it_not_in_it() {
     let (mut rig, second) = two_level_rig();
     let mut player = standing_walker(&mut rig);

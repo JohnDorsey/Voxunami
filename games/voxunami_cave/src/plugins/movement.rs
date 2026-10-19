@@ -11,6 +11,7 @@ use plugin_host::{
     Argument, Arguments, CommandSpec, HandlerSpec, Phase, PlayerLeft, Plugin, Registrar, SystemSpec,
 };
 use protocol::ClientId;
+use server::ServerWorld;
 use voxel_grid::ChannelIndex;
 use voxel_space::{LevelIndex, VoxelCoordinate, WorldPosition};
 
@@ -47,8 +48,26 @@ fn locked(movement: &Mutex<Movement>) -> MutexGuard<'_, Movement> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// `/tp X Y Z`: puts the player's eyes at a position, in voxels. Returns what to tell them.
-fn teleport(movement: &mut Movement, client: ClientId, arguments: &Arguments<'_>) -> String {
+/// A position as plain numbers, in voxels.
+fn voxels(position: WorldPosition) -> [f64; 3] {
+    let brick = position.brick();
+    let offset = position.offset();
+    [
+        brick.x() as f64 * 32.0 + f64::from(offset[0]),
+        brick.y() as f64 * 32.0 + f64::from(offset[1]),
+        brick.z() as f64 * 32.0 + f64::from(offset[2]),
+    ]
+}
+
+/// `/tp X Y Z`: puts the player's eyes at a position, in voxels. Returns what to tell them: where they are, which
+/// is not the place asked for if that is inside the terrain (they are moved out of it, the shortest way).
+fn teleport(
+    movement: &mut Movement,
+    world: &mut ServerWorld,
+    level: LevelIndex,
+    client: ClientId,
+    arguments: &Arguments<'_>,
+) -> String {
     let [x, y, z] = [0, 1, 2].map(|position| arguments.number(position));
     // The position must be somewhere in the world.
     let Ok(voxel) = VoxelCoordinate::try_new(x.floor() as i64, y.floor() as i64, z.floor() as i64)
@@ -65,10 +84,21 @@ fn teleport(movement: &mut Movement, client: ClientId, arguments: &Arguments<'_>
             f32::from(local.z()) + fraction(z),
         ],
     );
-    if movement.teleport(client, position) {
-        format!("teleported to {x} {y} {z}")
+    let Some(now) = movement.teleport(world, level, client, position) else {
+        return "you have not joined yet".to_owned();
+    };
+    let [now_x, now_y, now_z] = voxels(now);
+    // (The position is made of an `f32` offset in a brick, so a place that was not moved is the one asked for,
+    // to within what an `f32` holds.)
+    let moved = [now_x - x, now_y - y, now_z - z]
+        .iter()
+        .any(|difference| difference.abs() > 1.0e-3);
+    if moved {
+        format!(
+            "teleported to {now_x} {now_y} {now_z} (moved from {x} {y} {z}, which is inside the terrain)"
+        )
     } else {
-        "you have not joined yet".to_owned()
+        format!("teleported to {x} {y} {z}")
     }
 }
 
@@ -127,14 +157,21 @@ impl Plugin for MovementPlugin {
                 );
             },
         );
-        let bodies = Arc::clone(&movement);
+        let (bodies, players) = (Arc::clone(&movement), Arc::clone(&self.players));
         registrar.command(
             CommandSpec::new("tp", "puts your eyes at a position, in voxels")
                 .argument(Argument::number("x"))
                 .argument(Argument::number("y"))
                 .argument(Argument::number("z")),
             move |context, client, arguments| {
-                let reply = teleport(&mut locked(&bodies), client, arguments);
+                let level = lock(&players).level_of(context.world().data(), client);
+                let reply = teleport(
+                    &mut locked(&bodies),
+                    context.world(),
+                    level,
+                    client,
+                    arguments,
+                );
                 context.reply(client, &reply);
             },
         );

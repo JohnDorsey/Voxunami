@@ -184,13 +184,29 @@ impl Movement {
         }
     }
 
-    /// Puts a player's eyes at a position, at rest. Returns whether they have a body.
-    pub fn teleport(&mut self, client: ClientId, position: WorldPosition) -> bool {
-        let Some(player) = self.bodies.get_mut(&client) else {
-            return false;
-        };
+    /// Puts a player's eyes at a position in `level`, at rest. If that is inside the terrain they are moved
+    /// out of it at once (the shortest way, see `CharacterBody::teleport`), so that what they are told is where
+    /// they are. Returns where their eyes are, or `None` if they have no body.
+    pub fn teleport(
+        &mut self,
+        world: &mut ServerWorld,
+        level: LevelIndex,
+        client: ClientId,
+        position: WorldPosition,
+    ) -> Option<WorldPosition> {
+        let player = self.bodies.get_mut(&client)?;
+        player.level = level;
         player.body.teleport(position);
-        true
+        let mut terrain = Terrain {
+            world,
+            level,
+            block_channel: self.block_channel,
+            state_channel: self.state_channel,
+            air: self.air,
+            collisions: &mut self.collisions,
+        };
+        player.body.update_terrain(&mut terrain);
+        Some(player.body.eye_position())
     }
 
     /// Starts or stops a player flying. Returns whether they are flying now, or `None` if they have
