@@ -48,3 +48,25 @@ impl fmt::Display for ClientId {
         write!(formatter, "client {}", self.0)
     }
 }
+
+/// Identifies one entity of a world for as long as the world lives. Ids come from a counter that is
+/// saved with the world and are never reused, so a recording, a reload and a second machine agree on
+/// which entity an id means.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EntityId(u64);
+
+impl EntityId {
+    pub const fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for EntityId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "entity {}", self.0)
+    }
+}

@@ -1,6 +1,6 @@
 # Phase 27 specification: entities, items and inventories
 
-**Status: proposed 2026-10-18, awaiting the owner's review.** It makes concrete requirement 8, 15 and 16 of `plan.md` ("Requirements pulled
+**Status: accepted 2026-10-18 with the default answers to all five questions (pause after 27d; players become entities now with a persistent player key; Cave creative by default with `/gamemode survival` per world; no mob; orientation a quaternion). Being built.** It makes concrete requirement 8, 15 and 16 of `plan.md` ("Requirements pulled
 forward") and the "Entities and items (Phase 27)" improvement, after option B of `plugin-architecture-review.md` W7 (server-owned entities,
 typed components from the property machinery, no ECS). What I say about today's code was read from the code (verified); the design is
 my proposal (believed). It is the biggest phase so far, so section 4 splits it at a point where you can stop and look.
@@ -121,16 +121,7 @@ each is a small addition on top of this layer, so building them now would be des
 - **27g** The prompt facility.
 - **27h** Documentation (`plugin-api-spec.md`, `design-decisions.md`, `protocol-and-replay.md`, build log), gates on Windows and Linux.
 
-## 5. Questions for the owner
+## 5. Questions for the owner, answered
 
-1. **Stop for review after 27d?** The engine layer (model, API, replication, save) is useful and reviewable on its own; 27e to 27h build on it. I
-   recommend a pause there (confidence: high). If you would rather I run straight through, say so.
-2. **Players as entities now, with a persistent player key** (section 2.7), or keep presence as it is and give inventories to something
-   else? I recommend now: an inventory with no owner that outlives a connection is the only alternative, and a second way to hold a player later
-   would be a rewrite (confidence: medium-high).
-3. **Cave's rules about items.** Keep Cave creative by default (infinite blocks, breaking drops nothing), with survival (drops, pickup,
-   inventory, placing consumes) chosen per world by `/gamemode`? That keeps the existing tests and feel. Or make survival the default?
-   I recommend creative by default (confidence: medium).
-4. **No mob in this phase.** Items exercise everything the layer needs. A first mob (it needs a `Brain` or a hand-written rule) comes when you want
-   one. Agree?
-5. **Orientation as a quaternion** (full rotation was decided for ships) rather than yaw and pitch: agree?
+All five defaults: pause for review after 27d; players become entities now with the persistent key; Cave creative by default, survival per
+world by `/gamemode`; no mob in this phase; orientation is a quaternion.

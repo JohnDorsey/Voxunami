@@ -10,11 +10,13 @@
 
 mod brick_box;
 mod coordinates;
+mod entity_pose;
 mod face_direction;
 mod grid_id;
 mod level_index;
 mod level_of_detail;
 mod local_voxel_index;
+mod orientation;
 mod voxel_box;
 mod world_position;
 
@@ -23,11 +25,13 @@ pub mod test_support;
 
 pub use brick_box::BrickBox;
 pub use coordinates::{BrickCoordinate, CoordinateOutOfRange, VoxelCoordinate};
+pub use entity_pose::EntityPose;
 pub use face_direction::FaceDirection;
 pub use grid_id::GridId;
 pub use level_index::LevelIndex;
 pub use level_of_detail::LevelOfDetail;
 pub use local_voxel_index::LocalVoxelIndex;
+pub use orientation::Orientation;
 pub use voxel_box::VoxelBox;
 pub use world_position::WorldPosition;
 

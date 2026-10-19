@@ -11,6 +11,7 @@ description = "Integer coordinates for voxels and the fixed-size bricks that gro
 test-support = ["dep:proptest"]
 
 [dependencies]
+libm = "0.2"
 thiserror.workspace = true
 proptest = { workspace = true, optional = true }
 

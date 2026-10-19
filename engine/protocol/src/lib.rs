@@ -35,13 +35,15 @@ mod server_message;
 mod types;
 mod wire;
 
+pub use wire::{read_entity_pose, write_entity_pose};
+
 pub use client_message::ClientMessage;
 pub use error::ProtocolError;
 pub use message::{Message, check_message};
 pub use server_message::{
     GeneratorAssignment, ServerMessage, VoxelChange, Welcome, is_tick_boundary,
 };
-pub use types::{ClientId, Tick};
+pub use types::{ClientId, EntityId, Tick};
 
 /// Bumped whenever a message changes in a way older programs cannot read. A recording stores the
 /// version it was made with, so replaying needs a program that understands it.

@@ -1,0 +1,245 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use namespaced_id::NamespacedId;
+use protocol::{EntityId, Message};
+use voxel_space::{BRICK_EDGE_LENGTH, BrickCoordinate, EntityPose, GridId, WorldPosition};
+
+use crate::{ComponentBag, EntityError, EntityKinds};
+
+/// A thing in the world that is not a voxel: it has an identity, a kind, a pose, and typed components.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Entity {
+    pub id: EntityId,
+    pub kind: NamespacedId,
+    pub pose: EntityPose,
+    pub components: ComponentBag,
+}
+
+/// Every entity of a world, by identifier.
+///
+/// Iteration is always in order of identifier, never of memory or hash, so what a rule does with
+/// entities does not depend on the machine. Identifiers come from a counter, never reuse one, and
+/// are saved with the world (see [`EntityStore::next_id`]). A spatial index by brick answers "what is
+/// near here" without a scan of everything.
+#[derive(Debug)]
+pub struct EntityStore {
+    entities: BTreeMap<EntityId, Entity>,
+    next_id: u64,
+    bricks: BTreeMap<(GridId, BrickCoordinate), BTreeSet<EntityId>>,
+}
+
+impl Default for EntityStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl EntityStore {
+    /// An empty store. Identifiers start at 1, so that 0 can mean "none" where a number is needed.
+    pub fn new() -> Self {
+        Self {
+            entities: BTreeMap::new(),
+            next_id: 1,
+            bricks: BTreeMap::new(),
+        }
+    }
+
+    /// The identifier the next entity will get: what a save keeps.
+    pub fn next_id(&self) -> u64 {
+        self.next_id
+    }
+
+    pub fn len(&self) -> usize {
+        self.entities.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entities.is_empty()
+    }
+
+    /// Makes an entity of `kind` at `pose` with the kind's components, those in `overrides` taking
+    /// the place of the kind's defaults. Until structures exist a pose must be in a root grid.
+    pub fn spawn(
+        &mut self,
+        kinds: &EntityKinds,
+        kind: &NamespacedId,
+        pose: EntityPose,
+        overrides: ComponentBag,
+    ) -> Result<EntityId, EntityError> {
+        let spec = kinds
+            .get(kind)
+            .ok_or_else(|| EntityError::UnknownKind(kind.clone()))?;
+        Self::check_frame(pose.grid)?;
+        for (component, _) in overrides.iter() {
+            if spec.declaration(component).is_none() {
+                return Err(EntityError::UndeclaredComponent {
+                    kind: kind.clone(),
+                    component: component.clone(),
+                });
+            }
+        }
+        let mut components = ComponentBag::new();
+        for declaration in spec.components() {
+            let bytes = overrides
+                .raw(&declaration.id)
+                .unwrap_or(&declaration.default);
+            components.set_raw(declaration.id.clone(), bytes.to_vec());
+        }
+        let id = EntityId::new(self.next_id);
+        self.next_id = self.next_id.checked_add(1).expect("entity ids ran out");
+        self.index(id, pose);
+        self.entities.insert(
+            id,
+            Entity {
+                id,
+                kind: kind.clone(),
+                pose,
+                components,
+            },
+        );
+        Ok(id)
+    }
+
+    /// Removes an entity and returns it, if there was one. Its identifier is not used again.
+    pub fn despawn(&mut self, id: EntityId) -> Option<Entity> {
+        let entity = self.entities.remove(&id)?;
+        self.unindex(id, entity.pose);
+        Some(entity)
+    }
+
+    pub fn get(&self, id: EntityId) -> Option<&Entity> {
+        self.entities.get(&id)
+    }
+
+    /// Every entity, in order of identifier.
+    pub fn iter(&self) -> impl Iterator<Item = &Entity> {
+        self.entities.values()
+    }
+
+    /// A component of an entity: `Ok(None)` if the entity does not have one of this type (a kind
+    /// without it), an error if there is no such entity or its bytes are not this type.
+    pub fn component<C: Message>(&self, id: EntityId) -> Result<Option<C>, EntityError> {
+        let entity = self.get(id).ok_or(EntityError::UnknownEntity(id))?;
+        entity
+            .components
+            .get::<C>()
+            .map_err(|error| EntityError::UndecodableComponent {
+                component: C::kind(),
+                reason: error.to_string(),
+            })
+    }
+
+    /// Sets a component the entity's kind declares.
+    pub fn set_component<C: Message>(
+        &mut self,
+        kinds: &EntityKinds,
+        id: EntityId,
+        value: &C,
+    ) -> Result<(), EntityError> {
+        let entity = self
+            .entities
+            .get_mut(&id)
+            .ok_or(EntityError::UnknownEntity(id))?;
+        let declared = kinds
+            .get(&entity.kind)
+            .is_some_and(|spec| spec.declaration(&C::kind()).is_some());
+        if !declared {
+            return Err(EntityError::UndeclaredComponent {
+                kind: entity.kind.clone(),
+                component: C::kind(),
+            });
+        }
+        entity.components.set(value);
+        Ok(())
+    }
+
+    /// Moves an entity. Until structures exist the new pose must be in a root grid.
+    pub fn set_pose(&mut self, id: EntityId, pose: EntityPose) -> Result<(), EntityError> {
+        Self::check_frame(pose.grid)?;
+        let entity = self
+            .entities
+            .get_mut(&id)
+            .ok_or(EntityError::UnknownEntity(id))?;
+        let old = std::mem::replace(&mut entity.pose, pose);
+        if (old.grid, old.position.brick()) != (pose.grid, pose.position.brick()) {
+            self.unindex(id, old);
+            self.index(id, pose);
+        }
+        Ok(())
+    }
+
+    /// The entities of `grid` within `radius` voxels of `position`, in order of identifier.
+    pub fn near(&self, grid: GridId, position: WorldPosition, radius: f32) -> Vec<EntityId> {
+        if !radius.is_finite() || radius < 0.0 {
+            return Vec::new();
+        }
+        let edge = BRICK_EDGE_LENGTH as f32;
+        let offset = position.offset();
+        let reach = |axis: usize| {
+            (
+                ((offset[axis] - radius) / edge).floor() as i64,
+                ((offset[axis] + radius) / edge).floor() as i64,
+            )
+        };
+        let (x, y, z) = (reach(0), reach(1), reach(2));
+        let cells = [x, y, z]
+            .iter()
+            .map(|(low, high)| u128::try_from(high - low + 1).unwrap_or(0))
+            .product::<u128>();
+        let within = |entity: &Entity| {
+            let to = entity.pose.position.relative_to(position);
+            to[0] * to[0] + to[1] * to[1] + to[2] * to[2] <= radius * radius
+        };
+        let mut found: Vec<EntityId> = Vec::new();
+        if cells > self.entities.len() as u128 {
+            // A radius reaching more bricks than there are entities: asking each entity is cheaper.
+            found.extend(
+                self.entities
+                    .values()
+                    .filter(|entity| entity.pose.grid == grid && within(entity))
+                    .map(|entity| entity.id),
+            );
+        } else {
+            for dx in x.0..=x.1 {
+                for dy in y.0..=y.1 {
+                    for dz in z.0..=z.1 {
+                        let Some(brick) = position.brick().checked_offset(dx, dy, dz) else {
+                            continue;
+                        };
+                        let Some(ids) = self.bricks.get(&(grid, brick)) else {
+                            continue;
+                        };
+                        found.extend(ids.iter().filter(|id| within(&self.entities[id])));
+                    }
+                }
+            }
+        }
+        found.sort();
+        found
+    }
+
+    fn check_frame(grid: GridId) -> Result<(), EntityError> {
+        if grid.root_level().is_some() {
+            Ok(())
+        } else {
+            Err(EntityError::NotARootGrid(grid))
+        }
+    }
+
+    fn index(&mut self, id: EntityId, pose: EntityPose) {
+        self.bricks
+            .entry((pose.grid, pose.position.brick()))
+            .or_default()
+            .insert(id);
+    }
+
+    fn unindex(&mut self, id: EntityId, pose: EntityPose) {
+        let key = (pose.grid, pose.position.brick());
+        if let Some(ids) = self.bricks.get_mut(&key) {
+            ids.remove(&id);
+            if ids.is_empty() {
+                self.bricks.remove(&key);
+            }
+        }
+    }
+}
