@@ -113,18 +113,65 @@ impl BlockDefinition {
     /// The same block with `value` for the property named `key`, in every state, for data that names properties
     /// by text (a pack); the table the definition goes in checks the key and the value.
     pub fn with_property_value(mut self, key: NamespacedId, value: i64) -> Self {
-        self.properties.entry(key).or_default().every_state = Some(value);
+        self.set_property_value(key, None, value);
         self
     }
 
     /// The same, in one state only.
     pub fn with_state_property_value(mut self, state: u32, key: NamespacedId, value: i64) -> Self {
-        self.properties
-            .entry(key)
-            .or_default()
-            .by_state
-            .insert(state, value);
+        self.set_property_value(key, Some(state), value);
         self
+    }
+
+    /// Sets a property in one state, or (with `None`) in every state, leaving what other states were given alone.
+    pub fn set_property_value(&mut self, key: NamespacedId, state: Option<u32>, value: i64) {
+        let set = self.properties.entry(key).or_default();
+        match state {
+            Some(state) => {
+                set.by_state.insert(state, value);
+            }
+            None => set.every_state = Some(value),
+        }
+    }
+
+    /// What a property is in a state (or, with `None`, in every state that has no value of its own): what the block
+    /// sets, else `default`.
+    pub fn property_value(&self, key: &NamespacedId, state: Option<u32>, default: i64) -> i64 {
+        let Some(set) = self.properties.get(key) else {
+            return default;
+        };
+        state
+            .and_then(|state| set.by_state.get(&state).copied())
+            .or(set.every_state)
+            .unwrap_or(default)
+    }
+
+    /// Takes a property back to what the table says by default: in one state only (that state's own value goes), or,
+    /// with `None`, in every state, as if the block had never set it. Returns whether the block had set anything there.
+    pub fn remove_property_value(&mut self, key: &NamespacedId, state: Option<u32>) -> bool {
+        match state {
+            Some(state) => {
+                let Some(set) = self.properties.get_mut(key) else {
+                    return false;
+                };
+                let removed = set.by_state.remove(&state).is_some();
+                if set.every_state.is_none() && set.by_state.is_empty() {
+                    self.properties.remove(key);
+                }
+                removed
+            }
+            None => self.properties.remove(key).is_some(),
+        }
+    }
+
+    /// A new state after the last, with this shape.
+    pub fn add_state(&mut self, shape: Shape) {
+        self.shapes.push(shape);
+    }
+
+    /// Replaces the colours that states are drawn in; none means every state has [`BlockDefinition::color`].
+    pub fn set_state_colors(&mut self, colors: Vec<[f32; 3]>) {
+        self.state_colors = colors;
     }
 
     pub(crate) fn properties(&self) -> &SetProperties {
@@ -189,6 +236,56 @@ mod tests {
         let coloured = plain.with_state_colors(vec![[0.2; 3], [0.3; 3]]);
         assert_eq!(coloured.state_colors(), [[0.2; 3], [0.3; 3]]);
         assert_eq!(coloured.state_count(), 1, "colours are not shapes");
+    }
+
+    #[test]
+    fn a_property_is_read_set_and_removed_by_name_and_state() {
+        let key: NamespacedId = "test:glow".parse().unwrap();
+        let mut block = BlockDefinition::cube([0.0; 3]).with_shapes(vec![
+            Shape::full(),
+            Shape::empty(),
+            Shape::full(),
+        ]);
+        assert_eq!(
+            block.property_value(&key, None, 7),
+            7,
+            "the default where nothing is set"
+        );
+        block.set_property_value(key.clone(), None, 3);
+        block.set_property_value(key.clone(), Some(1), 9);
+        assert_eq!(block.property_value(&key, None, 7), 3);
+        assert_eq!(
+            block.property_value(&key, Some(0), 7),
+            3,
+            "a state without its own value has the block's"
+        );
+        assert_eq!(block.property_value(&key, Some(1), 7), 9);
+        // Setting for every state leaves a state's own value alone.
+        block.set_property_value(key.clone(), None, 4);
+        assert_eq!(block.property_value(&key, Some(1), 7), 9);
+        // Removing one state's value gives it back the block's; removing the block's removes everything.
+        assert!(block.remove_property_value(&key, Some(1)));
+        assert_eq!(block.property_value(&key, Some(1), 7), 4);
+        assert!(
+            !block.remove_property_value(&key, Some(1)),
+            "there was nothing left to remove"
+        );
+        block.set_property_value(key.clone(), Some(2), 5);
+        assert!(block.remove_property_value(&key, None));
+        assert_eq!(block.property_value(&key, Some(2), 7), 7);
+        assert!(!block.remove_property_value(&key, None));
+    }
+
+    #[test]
+    fn a_state_can_be_added_and_state_colours_replaced_or_cleared() {
+        let mut block = BlockDefinition::cube([0.5; 3]);
+        block.add_state(Shape::empty());
+        assert_eq!(block.state_count(), 2);
+        assert!(block.shapes()[1].is_empty());
+        block.set_state_colors(vec![[0.1; 3], [0.2; 3]]);
+        assert_eq!(block.state_colors(), [[0.1; 3], [0.2; 3]]);
+        block.set_state_colors(Vec::new());
+        assert!(block.state_colors().is_empty());
     }
 
     #[test]
