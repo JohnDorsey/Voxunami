@@ -42,6 +42,7 @@ world_view = { path = "engine/world_view" }
 world_storage = { path = "engine/world_storage" }
 
 # External crates
+font8x8 = { version = "0.3", default-features = false }
 proptest = "1"
 rustc-hash = "2"
 jsonschema = { version = "0.59", default-features = false }

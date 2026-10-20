@@ -8,6 +8,7 @@ description = "A small user interface a server can describe: the tree, its limit
 
 [dependencies]
 binary_codec.workspace = true
+font8x8.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

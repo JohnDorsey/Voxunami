@@ -10,7 +10,8 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use block_models::{BlockDefinition, BlockTable, Shape};
 use glam::Vec3;
 use renderer::{
-    Atmosphere, Avatar, Camera, EntityBox, GraphicsContext, RenderStatistics, VoxelRenderer,
+    Atmosphere, Avatar, Camera, EntityBox, GraphicsContext, OverlayRect, RenderStatistics,
+    VoxelRenderer,
 };
 use voxel_grid::ChannelStorage;
 use voxel_meshing::{BrickChannels, BrickNeighbourhood, mesh_brick};
@@ -974,5 +975,178 @@ fn a_box_is_placed_exactly_across_bricks_and_hides_behind_blocks() {
         let hidden = render(&mut renderer, &camera);
         assert!(is_green(pixel(&hidden, SIZE / 2, SIZE / 2)), "{name}");
         assert_eq!(red_pixels(&hidden), 0, "{name}");
+    }
+}
+
+// ---- the overlay: rectangles in pixels over the picture ----
+
+/// A picture of what is set, taken after a few frames. The integrated AMD GPU of the development machine drops about one in a
+/// thousand one-pixel rectangles in its first four or so frames (measured: 1 to 7 of 2000, on Vulkan and on DX12, never on
+/// the NVIDIA card, and never after the fourth frame whatever was drawn), so pictures that are compared to the pixel are
+/// taken once it has settled.
+fn settled(renderer: &mut VoxelRenderer, camera: &Camera) -> Vec<u8> {
+    for _ in 0..5 {
+        render(renderer, camera);
+    }
+    render(renderer, camera)
+}
+
+fn overlay_rect(x: i32, y: i32, width: i32, height: i32, color: [u8; 4]) -> OverlayRect {
+    OverlayRect {
+        x,
+        y,
+        width,
+        height,
+        color,
+    }
+}
+
+fn pixels_where(image: &[u8], test: impl Fn([u8; 4]) -> bool) -> usize {
+    (0..SIZE)
+        .flat_map(|y| (0..SIZE).map(move |x| (x, y)))
+        .filter(|(x, y)| test(pixel(image, *x, *y)))
+        .count()
+}
+
+#[test]
+fn an_overlay_rectangle_covers_exactly_the_pixels_it_names_and_only_while_it_is_set() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+        let white = [255, 255, 255, 255];
+
+        renderer.set_overlay(&[overlay_rect(10, 20, 30, 5, white)]);
+        assert_eq!(renderer.overlay_rect_count(), 1);
+        let image = settled(&mut renderer, &camera);
+        save_image("overlay_rectangle", &name, &image);
+        for (x, y) in [(10, 20), (39, 20), (10, 24), (39, 24), (25, 22)] {
+            assert_eq!(pixel(&image, x, y), white, "{name}: ({x}, {y}) is inside");
+        }
+        for (x, y) in [(9, 20), (40, 20), (10, 19), (10, 25), (39, 25), (0, 0)] {
+            assert!(is_sky(pixel(&image, x, y)), "{name}: ({x}, {y}) is outside");
+        }
+        assert_eq!(
+            pixels_where(&image, |p| p == white),
+            150,
+            "{name}: 30 by 5 pixels"
+        );
+
+        // Gone when the overlay is emptied; a rectangle with no size is not counted or drawn.
+        renderer.set_overlay(&[
+            overlay_rect(10, 20, 0, 5, white),
+            overlay_rect(1, 1, 5, 0, white),
+        ]);
+        assert_eq!(renderer.overlay_rect_count(), 0);
+        assert_eq!(
+            pixels_where(&settled(&mut renderer, &camera), |p| p == white),
+            0
+        );
+        renderer.set_overlay(&[]);
+        assert!(is_sky(pixel(&settled(&mut renderer, &camera), 12, 21)));
+    }
+}
+
+#[test]
+fn overlay_rectangles_are_in_the_colour_given_blend_by_alpha_and_later_ones_are_over_earlier_ones()
+{
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+        renderer.set_overlay(&[
+            overlay_rect(0, 0, 32, 32, [200, 30, 30, 255]),
+            overlay_rect(16, 0, 16, 32, [30, 30, 200, 255]),
+            // Half black over the middle, across the two.
+            overlay_rect(8, 8, 16, 16, [0, 0, 0, 128]),
+        ]);
+        let image = settled(&mut renderer, &camera);
+        save_image("overlay_blend", &name, &image);
+        assert!(
+            close_to(pixel(&image, 2, 2), [200, 30, 30], 1),
+            "{name}: the first colour"
+        );
+        assert!(
+            close_to(pixel(&image, 28, 28), [30, 30, 200], 1),
+            "{name}: the second is over it"
+        );
+        // Half black over each: darker than either, and not black. (Blending in linear light, so about 0.74 of the
+        // sRGB value, not 0.5.)
+        let over_red = pixel(&image, 10, 10);
+        assert!(
+            over_red[0] < 200 && over_red[0] > 100,
+            "{name}: {over_red:?}"
+        );
+        let over_blue = pixel(&image, 20, 20);
+        assert!(
+            over_blue[2] < 200 && over_blue[2] > 100,
+            "{name}: {over_blue:?}"
+        );
+        // Outside everything: sky.
+        assert!(is_sky(pixel(&image, 50, 50)), "{name}");
+    }
+}
+
+#[test]
+fn an_overlay_rectangle_partly_or_wholly_off_the_picture_is_clipped_and_many_of_them_all_draw() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+        let white = [255, 255, 255, 255];
+        renderer.set_overlay(&[
+            overlay_rect(-10, -10, 20, 20, white),
+            overlay_rect(60, 60, 20, 20, white),
+            overlay_rect(500, 500, 5, 5, white),
+        ]);
+        let image = settled(&mut renderer, &camera);
+        // 10 by 10 in the top left, 4 by 4 in the bottom right.
+        assert_eq!(pixels_where(&image, |p| p == white), 100 + 16, "{name}");
+
+        // More rectangles than the buffer starts with: one pixel each, along the rows.
+        let many: Vec<OverlayRect> = (0..2000)
+            .map(|index| overlay_rect(index % 64, index / 64, 1, 1, white))
+            .collect();
+        renderer.set_overlay(&many);
+        let image = settled(&mut renderer, &camera);
+        assert_eq!(pixels_where(&image, |p| p == white), 2000, "{name}");
+    }
+}
+
+#[test]
+fn overlay_pixels_are_counted_from_the_top_left_in_a_picture_that_is_not_square() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+        let white = [255, 255, 255, 255];
+        // In the bottom right corner of a picture 96 wide and 48 tall, and a pixel at each of the other corners.
+        renderer.set_overlay(&[
+            overlay_rect(86, 43, 10, 5, white),
+            overlay_rect(0, 0, 1, 1, white),
+            overlay_rect(95, 0, 1, 1, white),
+            overlay_rect(0, 47, 1, 1, white),
+        ]);
+        for _ in 0..5 {
+            let _ = renderer.render_to_rgba(&camera, 96, 48);
+        }
+        let (image, _) = renderer.render_to_rgba(&camera, 96, 48);
+        let at = |x: usize, y: usize| {
+            let start = (y * 96 + x) * 4;
+            [
+                image[start],
+                image[start + 1],
+                image[start + 2],
+                image[start + 3],
+            ]
+        };
+        for (x, y) in [(86, 43), (95, 47), (0, 0), (95, 0), (0, 47), (90, 45)] {
+            assert_eq!(at(x, y), white, "{name}: ({x}, {y})");
+        }
+        let white_pixels = (0..48)
+            .flat_map(|y| (0..96).map(move |x| (x, y)))
+            .filter(|(x, y)| at(*x, *y) == white)
+            .count();
+        assert_eq!(white_pixels, 50 + 3, "{name}");
     }
 }

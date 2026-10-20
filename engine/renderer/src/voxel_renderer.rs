@@ -14,6 +14,7 @@ use wgpu::util::DeviceExt;
 use crate::camera::{Camera, Frustum};
 use crate::crosshair::Crosshair;
 use crate::graphics_context::GraphicsContext;
+use crate::overlay::{Overlay, OverlayRect};
 
 const PALETTE_SIZE: usize = 256;
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -241,6 +242,7 @@ pub struct VoxelRenderer {
     offscreen: Option<SizedTarget>,
     crosshair: Crosshair,
     crosshair_enabled: bool,
+    overlay: Overlay,
 }
 
 impl std::fmt::Debug for VoxelRenderer {
@@ -256,7 +258,7 @@ impl std::fmt::Debug for VoxelRenderer {
 
 // sRGB to linear needs a power function; this is client-side cosmetics, not simulation.
 #[allow(clippy::disallowed_methods)]
-fn srgb_to_linear(value: f32) -> f32 {
+pub(crate) fn srgb_to_linear(value: f32) -> f32 {
     if value <= 0.04045 {
         value / 12.92
     } else {
@@ -393,6 +395,7 @@ impl VoxelRenderer {
             Self::create_placement_buffer(&device, &placement_layout, placement_stride, 64);
 
         let crosshair = Crosshair::new(&device, color_format);
+        let device_for_overlay = device.clone();
         let mut renderer = Self {
             device,
             queue,
@@ -415,6 +418,7 @@ impl VoxelRenderer {
             offscreen: None,
             crosshair,
             crosshair_enabled: false,
+            overlay: Overlay::new(&device_for_overlay, color_format),
         };
         renderer.set_palette(&[]);
         renderer.avatar_meshes = (0..AVATAR_COLOR_COUNT)
@@ -480,6 +484,17 @@ impl VoxelRenderer {
             bind_group,
             capacity,
         }
+    }
+
+    /// Sets the rectangles drawn over every picture from now on, after the crosshair, in order, later over earlier (see
+    /// [`OverlayRect`]); none draws nothing. The user interface is drawn with these.
+    pub fn set_overlay(&mut self, rects: &[OverlayRect]) {
+        self.overlay.set(&self.device, rects);
+    }
+
+    /// How many rectangles of the overlay are drawn (those with a size).
+    pub fn overlay_rect_count(&self) -> usize {
+        self.overlay.count()
     }
 
     /// Draws a crosshair at the centre of every picture, for aiming. Off by default.
@@ -628,6 +643,7 @@ impl VoxelRenderer {
         self.write_placements(&corners);
         self.write_frame_uniform(view_projection);
         self.crosshair.set_screen_size(&self.queue, size);
+        self.overlay.set_screen_size(&self.queue, size);
 
         let depth_view = &self
             .depth
@@ -746,6 +762,7 @@ impl VoxelRenderer {
             if self.crosshair_enabled {
                 self.crosshair.draw(&mut pass);
             }
+            self.overlay.draw(&mut pass);
         }
         self.queue.submit([encoder.finish()]);
         statistics

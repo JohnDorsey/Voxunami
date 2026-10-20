@@ -12,12 +12,14 @@
 mod camera;
 mod crosshair;
 mod graphics_context;
+mod overlay;
 mod voxel_renderer;
 
 pub use camera::{Camera, Frustum};
 pub use graphics_context::{
     AdapterPreference, GraphicsContext, GraphicsError, describe, new_instance,
 };
+pub use overlay::OverlayRect;
 pub use voxel_renderer::{
     AVATAR_COLOR_COUNT, Atmosphere, Avatar, EntityBox, MAXIMUM_GAME_MATERIALS, RenderStatistics,
     VoxelRenderer,
