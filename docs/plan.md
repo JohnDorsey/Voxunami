@@ -44,8 +44,8 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
   flight as a file of its own.
 - 31 (planned, late) A wider material palette: the renderer's palette in a storage buffer (renderer-only; saves and protocol unchanged).
 - 30 (planned) Server-driven UI: a UI the server describes in the value vocabulary and the stream drives.
-- 29 (planned) Data-driven block packs (JSON), the generated JSON Schema, `check-pack`, and patches: tags by union, patch operations,
-  dependency order, loud failures (revision 5; mod stage 2).
+- 29 (specified in `data-packs-spec.md`, waiting for the owner's answers) Data-driven block packs (JSON), the generated JSON Schema, `check-pack`, and
+  patches: tags by union, patch operations, dependency order, loud failures (revision 5; mod stage 2).
 - 28 (built; `content-package-spec.md`) The content package at the handshake, carried by recordings (revision 3). Phase 29 is next.
 - 27 (built, 27a to 27i; Phase 28 is next) Entities and items: server-owned entities with typed components, inventories, the protocol messages and the
   `engine:entities` section reserved before 1.0; players become entities; the prompt facility. Specified in `entities-spec.md` (steps 27a to 27h,
