@@ -2,11 +2,10 @@
 
 use namespaced_id::NamespacedId;
 use player_presence::{
-    LevelChange, PlayerClient, PlayerKeyComponent, PlayerLook, PlayerPose, PlayerState, Players,
-    PoseReport,
+    LevelChange, PlayerClient, PlayerKeyComponent, PlayerLook, PlayerPose, PoseReport,
 };
 use protocol::{ClientId, Message, PlayerKey};
-use voxel_space::{BrickCoordinate, LevelIndex, WorldPosition};
+use voxel_space::{BrickCoordinate, WorldPosition};
 
 fn pose(x: i64, offset: [f32; 3], yaw: f32, pitch: f32) -> PlayerPose {
     PlayerPose {
@@ -19,25 +18,8 @@ fn pose(x: i64, offset: [f32; 3], yaw: f32, pitch: f32) -> PlayerPose {
 #[test]
 fn the_presence_messages_have_their_pinned_bytes() {
     let first = pose(3, [1.5, 31.99, 0.0], 0.25, -1.0);
-    let second = pose(-9, [0.0, 0.5, 16.0], -3.0, 1.5);
     let level: NamespacedId = "test_content:second".parse().unwrap();
-    let players = [
-        (
-            ClientId::new(1),
-            PlayerState {
-                pose: first,
-                level: LevelIndex::MAIN,
-            },
-        ),
-        (
-            ClientId::new(7),
-            PlayerState {
-                pose: second,
-                level: LevelIndex::new(2),
-            },
-        ),
-    ];
-    let pins: [(&str, Vec<u8>, &str); 7] = [
+    let pins: [(&str, Vec<u8>, &str); 5] = [
         (
             "a pose",
             PoseReport(first).encode(),
@@ -48,12 +30,6 @@ fn the_presence_messages_have_their_pinned_bytes() {
             LevelChange(level).encode(),
             "13746573745f636f6e74656e743a7365636f6e64",
         ),
-        (
-            "two players",
-            Players(players.to_vec()).encode(),
-            "02010000000006030e0000c03f85ebff41000000000000803e000080bf070000000211030e000000000000003f00008041000040c00000c03f",
-        ),
-        ("no players", Players(vec![]).encode(), "00"),
         (
             "a player's connection",
             PlayerClient(ClientId::new(7)).encode(),

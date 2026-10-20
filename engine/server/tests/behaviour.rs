@@ -283,7 +283,7 @@ fn the_package_in_the_config_is_in_every_welcome_unread_and_without_one_the_welc
                     _ => None,
                 })
                 .collect();
-            assert_eq!(welcomes, [expected.clone()]);
+            assert_eq!(welcomes, std::slice::from_ref(&expected));
         }
     }
 }

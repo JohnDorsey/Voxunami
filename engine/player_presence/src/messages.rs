@@ -147,68 +147,6 @@ impl Message for LevelChange {
     }
 }
 
-/// Server to everyone: every player's state, in client id order. Sent before protocol version 4; since then
-/// players are entities (see `PlayerKeyComponent` and the rest below), and this is read only so that
-/// recordings made before still show their players.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Players(pub Vec<(ClientId, PlayerState)>);
-
-impl Message for Players {
-    fn kind() -> NamespacedId {
-        kind("player_presence:players")
-    }
-
-    fn encode(&self) -> Vec<u8> {
-        let mut writer = ByteWriter::new();
-        writer.write_varint(self.0.len() as u64);
-        for (client, state) in &self.0 {
-            writer.write_u32(client.get());
-            writer.write_varint(u64::from(state.level.get()));
-            write_pose(&mut writer, &state.pose);
-        }
-        writer.into_bytes()
-    }
-
-    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
-        let mut reader = ByteReader::new(payload);
-        let count = reader.read_count(4 + 1 + 3 + 20)?;
-        let mut players = Vec::with_capacity(count);
-        for _ in 0..count {
-            let client = ClientId::new(reader.read_u32()?);
-            let level = u32::try_from(reader.read_varint()?)
-                .map(LevelIndex::new)
-                .map_err(|_| DecodeError::Invalid("a level number is too large"))?;
-            let pose = read_pose(&mut reader)?;
-            players.push((client, PlayerState { pose, level }));
-        }
-        reader.finish()?;
-        Ok(Self(players))
-    }
-
-    fn samples() -> Vec<Self> {
-        let [first, second] = <[_; 2]>::try_from(PoseReport::samples()).expect("two samples");
-        vec![
-            Self(Vec::new()),
-            Self(vec![
-                (
-                    ClientId::new(1),
-                    PlayerState {
-                        pose: first.0,
-                        level: LevelIndex::MAIN,
-                    },
-                ),
-                (
-                    ClientId::new(7),
-                    PlayerState {
-                        pose: second.0,
-                        level: LevelIndex::new(300),
-                    },
-                ),
-            ]),
-        ]
-    }
-}
-
 /// A player entity's component: the public key of the install that plays it. Only the server has it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlayerKeyComponent(pub PlayerKey);
@@ -330,33 +268,11 @@ mod tests {
     }
 
     #[test]
-    fn poses_and_player_lists_survive_encoding() {
+    fn poses_survive_encoding() {
         let first = pose(3, [1.5, 31.99, 0.0], 0.25, -1.0);
         assert_eq!(
             PoseReport::decode(&PoseReport(first).encode()),
             Ok(PoseReport(first))
-        );
-        let players = vec![
-            (
-                ClientId::new(1),
-                PlayerState {
-                    pose: first,
-                    level: LevelIndex::MAIN,
-                },
-            ),
-            (
-                ClientId::new(4),
-                PlayerState {
-                    pose: pose(-9, [0.0; 3], 3.0, 0.5),
-                    level: LevelIndex::new(300),
-                },
-            ),
-        ];
-        let players = Players(players);
-        assert_eq!(Players::decode(&players.encode()), Ok(players));
-        assert_eq!(
-            Players::decode(&Players(vec![]).encode()),
-            Ok(Players(vec![]))
         );
     }
 
@@ -378,7 +294,6 @@ mod tests {
     fn the_declared_messages_pass_the_generated_check() {
         assert_eq!(protocol::check_message::<PoseReport>(), Ok(()));
         assert_eq!(protocol::check_message::<LevelChange>(), Ok(()));
-        assert_eq!(protocol::check_message::<Players>(), Ok(()));
         assert_eq!(protocol::check_message::<PlayerKeyComponent>(), Ok(()));
         assert_eq!(protocol::check_message::<PlayerClient>(), Ok(()));
         assert_eq!(protocol::check_message::<PlayerLook>(), Ok(()));
@@ -449,7 +364,6 @@ mod tests {
         #[test]
         fn decoding_arbitrary_bytes_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..80)) {
             let _ = PoseReport::decode(&bytes);
-            let _ = Players::decode(&bytes);
             let _ = LevelChange::decode(&bytes);
             let _ = PlayerKeyComponent::decode(&bytes);
             let _ = PlayerClient::decode(&bytes);

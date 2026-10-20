@@ -1,6 +1,8 @@
 # Phase 28: the content package at the handshake
 
-Status: proposed, waiting for the owner's answers to section 5. Nothing is built.
+Status: built (28a to 28d). The owner answered section 5: inline now, the server wins, no support for old recordings (none exist and nothing is
+released, so the old-stream code was deleted instead of kept), blocks only. One change from the design below: the package has no hash, since nothing
+would read it (see `design-decisions.md`).
 
 ## 1. What is wrong today
 
@@ -33,8 +35,7 @@ by identifier, so the translation to the server's numbering that the description
 package always wins over local definitions. `GameContent::block_table`, `view_channels` and `ambient_light` stay as the *server's* source of
 the package, and leave the client's path (a client no longer calls them).
 
-**Old recordings.** A recording of protocol 4 or earlier has no package; the session builds from the local content as today (the same
-shape as the `Players` message fallback in 27f).
+**Old recordings.** None are read: a program plays only its own protocol version.
 
 **Hash.** The package has a SHA-256 over its bytes (`sha2` is already in the tree through `ed25519-dalek`), computed by both ends and
 carried in `Welcome` so that caching by hash can be added later without another version bump. Caching is *not* built now (question 1).

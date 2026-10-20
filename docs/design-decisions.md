@@ -154,10 +154,10 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - HUD lines are joined into the window title until the UI toolkit of Phase 30.
 
 ## Decided (entities on the wire; built in Phase 27c)
-- **Protocol versions.** A version is bumped only when a change cannot be read by an older program, and a program reads every version back to
-  `OLDEST_READABLE_PROTOCOL_VERSION` (2 now): a recording must stay watchable. Version 3 only added messages (9 to 11, the entities), so
-  version 2 recordings play as they did. A live connection still needs the same version on both ends. The version is in the `Welcome`, so
-  changing it changes the stream hashes of the golden sessions and the pinned recording (and nothing else, shown by setting it back).
+- **Protocol versions.** (Revised in Phase 28.) A version is bumped whenever a message changes, and a program reads only its own version: no
+  recording has been made and nothing is released, so nothing older is kept readable (the `OLDEST_READABLE_PROTOCOL_VERSION` constant, the
+  old `Players` message and the session's fallback for it are gone). Once there is a release, keeping recordings watchable becomes a decision
+  to take again. The version is in the `Welcome`, so changing it changes the stream hashes of the golden sessions and the pinned recording.
 - Entities are replicated by interest: those whose grid is the root grid of the watched level and whose brick is in the watched region.
   The server sends the difference from what each client was last told (despawns, spawns, changes, in that order, in order of id), only the
   components a kind marks replicated, and a client store (`ClientEntities`) is built from the stream alone, so a replay shows the same
@@ -193,9 +193,30 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   in the save, and its key finds it again (the player resumes where they were, and is told their level). Another key never takes it over.
 - **`engine:hidden`** is an engine component: replication skips a hidden entity (and despawns it for those who knew it); the world keeps it.
 - **Clients know the players they can see**, by the entity replication, not everyone: players in another level, or beyond the watched region,
-  are not known. `PoseBook` and the `Players` broadcast are gone; a recording from before protocol version 4 is still shown through the old message.
+  are not known. `PoseBook` and the `Players` broadcast are gone (the message itself was deleted in Phase 28).
 - The look angles are kept as reported (a component) beside the orientation quaternion, so that nothing recovers angles from a quaternion.
   The calls that read or move players take the world (`Presence`), a game holds it as it held the book.
+
+## Decided (the content package at the handshake; built in Phase 28)
+
+- **The server says what the world looks like.** `Welcome` carries the game's *package data* (`game_shell::PackageData`): the property schema, every
+  block's definition (colour, see-through, the boxes of each state's shape, state colours, the properties it sets), the channels the view reads
+  and the ambient light. A client builds its block table from it, matching blocks to its own numbering by identifier, so a client and a server
+  that disagree about a block draw it the server's way (the server wins, silently), a block the server has no definition for is drawn as unknown,
+  and a recording carries the package, so a replay does not depend on what is installed. Terrain generators and client plugins are still compiled
+  in (they cannot travel until generators can be sandboxed code).
+- **Inline, not cached.** The package is in every welcome (a few KB for Cave: 1,345 bytes). Caching by hash needs a request message, a cache and a
+  way for recordings to embed what was fetched, and saves nothing until packages hold assets; it is built in the phase that adds assets. No hash
+  is sent now either: nothing would read it.
+- **One spelling.** The byte form is canonical (maps in key order, counts and numbers as varints, colours as `f32` bits), and decoding refuses
+  anything the encoder would not write (out-of-order or repeated keys, empty boxes, non-finite colours, a default outside its range), so a
+  damaged or hostile package is a connection error naming the cause and never a panic. The codec for definitions lives in `block_models`, the
+  package around them in `game_shell`.
+- **`GameContent` has one source for this**: `package_data()`. `block_table()` and `ambient_light()` are derived from it for the server side;
+  clients no longer call them (they take the table, the channels and the ambient light from the welcome). Server code that reads the table keeps
+  using `GameContent::block_table`.
+- **A package that does not fit what the client loaded** is a loud error (`NoBlockRegistry`, `NoChannel`, a property the schema lacks), not a
+  silent fallback to the client's own definitions.
 
 ## Decided (asking a player a question; built in Phase 27h)
 

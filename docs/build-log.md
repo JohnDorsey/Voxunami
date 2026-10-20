@@ -658,6 +658,23 @@ Phase 27a to 27c (entities; specified in `entities-spec.md`):
 - 27c: protocol version 3 (messages 9 to 11), server replication with cached views, the client store, replay of entities, version policy.
   Cost with 1000 entities and 4 clients: 0.5, 0.7 and 1.4 ms a tick with none, a tenth and all moving. 13 mutations are caught.
 
+Phase 28 (the content package at the handshake):
+- 28a: canonical byte form for `BlockDefinition` and `PropertySchema` (`block_models::codec`) and for `PackageData` (`game_shell`): round trips,
+  refusals with their reasons, cut-short and trailing-byte checks, and three properties (any definition round-trips and has one spelling; arbitrary
+  bytes are an error or have one spelling). 11 mutations of the codec are all caught.
+- 28b: protocol version 5, `Welcome.package`, `ServerConfig::with_package`; `GameContent::package_data()` (the three games and the shell's example
+  game); the server sends it. Support for streams of other versions was deleted (the `OLDEST_READABLE_PROTOCOL_VERSION` constant, the `Players`
+  message, the session's fallback for it, the tests of both).
+- 28c: the session decodes the package, builds its block table in its own numbering by identifier, finds the view channels by name in its layout
+  and takes the ambient light from it; `configure_renderer` takes a table and an ambient level, not a game. Tests with servers whose package is not
+  the client's own: the server's colours and ambient light win, blocks match by identifier whatever order they are listed in, a block with no
+  definition is unknown, and a package with an unknown channel, registry or property, or damaged bytes, is a `SessionError` naming why. 8 mutations
+  of the session and package code are caught.
+- Goldens repinned once, cause in each file: the stream grows by the package and its two byte length (2048: 2,611 + 2, 55,415 to 58,028; Cave:
+  1,345 + 2, 7,181,819 to 7,183,166; Eels: 648 + 2, 70,732 to 71,382); saved-world hashes did not change; the end-to-end recording (empty package)
+  grew by 1 byte.
+- The plugin test rig of Cave duplicated `build_server_with_plugins` and sent no package; it uses `Rig::with_plugins` now.
+
 Phase 27i (documentation and gates):
 - `plugin-api-spec.md` gained section 13 (entity kinds, items, the `Context` calls, the prompt, the three new events); the other documents were
   updated by the steps that changed them. Gates for all of Phase 27 on both systems: `cargo fmt --check`, clippy with `-D warnings`, and the whole

@@ -136,7 +136,7 @@ by `Presence`, which holds only which entity is which client, and whose calls ta
 `move_to_level`, the `/level` command); games lock it as they locked the book. The `Players` message is no longer sent. Clients build the
 same map of players (`PlayerState`, by client) from the entities they are told of, so client plugins and games' views do not change; since
 entities are replicated by interest, a client now knows of the players in the region it watches, not all of them. A recording made before
-version 4 still shows its players: the session reads the old `Players` message when the stream's version is older. `PoseReport` stays (it is
+version 4 showed its players through the old message (Phase 28 deleted the message and that fallback with the other old-stream support). `PoseReport` stays (it is
 input). Saved worlds now hold their players: the golden sessions' saved-world hashes change as well as their streams, and are repinned once.
 
 ### 2.8 The prompt facility (requirement 15)

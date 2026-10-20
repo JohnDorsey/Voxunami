@@ -10,8 +10,7 @@ use client::{Client, ClientError, ClientEvent, Handshake, HandshakeProgress};
 use identity::Identity;
 use namespaced_id::NamespacedId;
 use player_presence::{
-    LevelChange, PlayerClient, PlayerLook, PlayerPose, PlayerState, Players, PoseReport,
-    player_kind,
+    LevelChange, PlayerClient, PlayerLook, PlayerPose, PlayerState, PoseReport, player_kind,
 };
 use plugin_host::{Prompt, PromptClosed};
 use protocol::{ClientId, Message};
@@ -65,11 +64,8 @@ pub struct Session<C: Connection, G: GameDefinition> {
     client_host: ClientHost,
     /// What the window's own commands change.
     settings: ClientSettings,
-    /// The players the client knows of, by connection: those among the entities it was told of, or, in a
-    /// recording made before protocol version 4, those the old `Players` message listed.
+    /// The players the client knows of, by connection: those among the entities it was told of.
     players: BTreeMap<ClientId, PlayerState>,
-    /// Whether the stream is one that lists players in `Players` messages instead of as entities.
-    players_listed_by_message: bool,
     /// The questions the server has asked and not closed, the oldest first.
     prompts: Vec<Prompt>,
     mode: Mode,
@@ -161,7 +157,6 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             client_host,
             settings,
             players: BTreeMap::new(),
-            players_listed_by_message: false,
             prompts: Vec::new(),
             mode,
             view_radius_bricks,
@@ -274,22 +269,12 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                         self.prompts.retain(|waiting| waiting.id != id);
                     }
                 }
-                ClientEvent::GameMessage { kind, payload } if kind == Players::kind() => {
-                    // A message this client cannot read is dropped; the next snapshot replaces it.
-                    // (Only streams from before protocol version 4 have it; later ones use entities.)
-                    self.players_listed_by_message = true;
-                    if let Ok(Players(players)) = Players::decode(&payload) {
-                        self.players = players.into_iter().collect();
-                    }
-                }
                 ClientEvent::GameMessage { kind, payload } => {
                     // A kind no client plugin handles is another game's, or a message only a server needs.
                     self.client_host.message(&kind, &payload);
                 }
                 ClientEvent::EntitiesChanged => {
-                    if !self.players_listed_by_message {
-                        self.players = self.players_among_the_entities();
-                    }
+                    self.players = self.players_among_the_entities();
                 }
                 ClientEvent::WatchedRegionChanged { .. } => {}
             }
