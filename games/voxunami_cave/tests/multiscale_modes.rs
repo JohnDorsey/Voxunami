@@ -374,7 +374,12 @@ fn pictures() {
         let updates = player.settle(|| {}).unwrap();
         player.camera.look_by(0.0, -std::f32::consts::FRAC_PI_2);
         let mut renderer = VoxelRenderer::new(context, wgpu::TextureFormat::Rgba8UnormSrgb);
-        configure_renderer(&mut renderer, player.content(), VIEW_RADIUS);
+        configure_renderer(
+            &mut renderer,
+            player.block_table(),
+            player.package().ambient_light,
+            VIEW_RADIUS,
+        );
         // No fog: it would hide the terrain, which is black where no light reaches.
         let mut clear = atmosphere(VIEW_RADIUS, 0);
         clear.fog_start = 1.0e6;

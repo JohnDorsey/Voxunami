@@ -14,6 +14,7 @@ use world_storage::{LoadContext, WorldData};
 use world_view::ViewChannels;
 
 use crate::client_plugin::ClientPlugin;
+use crate::package_data::PackageData;
 
 /// A game's plugins, as the shell needs them to show and build worlds. Both the server and every
 /// client have one.
@@ -22,16 +23,27 @@ pub trait GameContent: Debug + Send {
     /// the game has them, the state of the block (its shape) and the voxel's light.
     fn view_channels(&self) -> ViewChannels;
 
+    /// What a client needs to show this game's world, which the server sends in its welcome: how
+    /// every block looks, which channels the view reads, how bright unlit faces are. Made after the
+    /// world is loaded, so that blocks from plugins that are not loaded are in it as unknown.
+    fn package_data(&self) -> PackageData;
+
     /// How bright a face is that no light reaches, from 0 (black) to 255; see
     /// `renderer::Atmosphere::ambient_light`. Games with no light channel have light everywhere
-    /// and are not affected. The default is 0.
+    /// and are not affected.
     fn ambient_light(&self) -> u8 {
-        0
+        self.package_data().ambient_light
     }
 
     /// What every block and state looks like and how it fills its cell, by block id. Built after
     /// the world is loaded, so that blocks from plugins that are not loaded are in it as unknown.
-    fn block_table(&self) -> BlockTable;
+    /// Panics if the game's own definitions cannot make a table, which is a mistake the game's tests
+    /// find.
+    fn block_table(&self) -> BlockTable {
+        self.package_data()
+            .block_table()
+            .unwrap_or_else(|error| panic!("the game's blocks cannot be used: {error}"))
+    }
 
     /// A new world with this seed.
     fn new_world(&self, seed: u64) -> WorldData;

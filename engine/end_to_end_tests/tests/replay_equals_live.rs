@@ -195,12 +195,13 @@ fn the_standard_session_makes_the_same_recording_on_every_platform() {
     );
 }
 
-const PINNED_RECORDING_LENGTH: usize = 84_806;
+const PINNED_RECORDING_LENGTH: usize = 84_807;
 // Phase 27c: the checksum changed once, for the protocol version in the welcome (3, was 2); the length did not, and
 // setting the version back to 2 gave the old checksum.
 // Phase 27e: both changed: the challenge is in the stream, the welcome says version 4, and joins take longer, so the game's own
 // edits (by tick number) land elsewhere. Not checked against the old code the way the three games' golden sessions were.
-const PINNED_RECORDING_CHECKSUM: u32 = 859_090_869;
+// Phase 28: the welcome has a package (here empty: one byte for its length) and the version is 5: 84,806 to 84,807 bytes.
+const PINNED_RECORDING_CHECKSUM: u32 = 4_187_928_838;
 
 #[test]
 fn identical_sessions_make_byte_identical_recordings() {

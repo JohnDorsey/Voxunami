@@ -1,21 +1,23 @@
 //! Glue between a session and the renderer.
 
+use block_models::BlockTable;
 use renderer::{Atmosphere, Avatar, Camera, VoxelRenderer};
 use transport::Connection;
 use voxel_space::{BrickCoordinate, WorldPosition};
 use world_view::MeshUpdate;
 
-use crate::definition::{GameContent, GameDefinition};
+use crate::definition::GameDefinition;
 use crate::session::Session;
 
 /// Palette and fog suited to the view distance: the world fades into the sky just before it ends.
 pub fn configure_renderer(
     renderer: &mut VoxelRenderer,
-    content: &impl GameContent,
+    block_table: &BlockTable,
+    ambient_light: u8,
     view_radius_bricks: i64,
 ) {
-    renderer.set_palette(&content.block_table().palette());
-    renderer.set_atmosphere(atmosphere(view_radius_bricks, content.ambient_light()));
+    renderer.set_palette(&block_table.palette());
+    renderer.set_atmosphere(atmosphere(view_radius_bricks, ambient_light));
 }
 
 /// The sky and fog for a view of this radius, with faces no light reaches drawn at `ambient_light`.

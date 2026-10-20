@@ -5,13 +5,11 @@ mod common;
 
 use common::{Rig, SEED};
 use game_shell::GameContent;
-use game_shell::host::WATCH_MARGIN_BRICKS;
 use namespaced_id::NamespacedId;
-use plugin_host::{HandlerSpec, Phase, Plugin, PluginHost, Registrar, SystemSpec, Verdict};
-use server::{GridView, Server, ServerConfig};
-use transport::loopback::loopback_listener;
+use plugin_host::{HandlerSpec, Phase, Plugin, Registrar, SystemSpec, Verdict};
+use server::GridView;
 use voxel_space::{GridId, VoxelCoordinate};
-use voxunami_cave::content::{CaveContent, game_id};
+use voxunami_cave::content::CaveContent;
 use voxunami_cave::game::request_block;
 use voxunami_cave::plugins::{BlockEditRequested, cave_plugins};
 
@@ -23,25 +21,7 @@ fn rig_with(others: Vec<Box<dyn Plugin>>) -> Rig {
     let world = content.new_world(SEED);
     let mut plugins = cave_plugins(&content);
     plugins.extend(others);
-    let host = PluginHost::new(plugins, &world).unwrap();
-    let (listener, connector) = loopback_listener();
-    let mut config = ServerConfig::new(game_id());
-    let edge = (2 * (common::VIEW_RADIUS + WATCH_MARGIN_BRICKS) + 1) as u64;
-    config.maximum_watched_bricks = edge * edge * edge;
-    let server = Server::new(
-        config,
-        world,
-        &content.registries(),
-        Box::new(host),
-        Box::new(listener),
-    )
-    .unwrap();
-    Rig {
-        content,
-        server,
-        connector,
-        joined: 0,
-    }
+    Rig::with_plugins(content, world, plugins)
 }
 
 struct Scripted {

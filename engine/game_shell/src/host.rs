@@ -28,10 +28,11 @@ pub const DEFAULT_PORT: u16 = 24816;
 /// counter, so that a session is the same every time. Anyone who can reach a server over a network must
 /// get challenges they cannot predict.
 fn server_config<G: GameDefinition>(
+    package: Vec<u8>,
     view_radius_bricks: i64,
     counted_challenges: bool,
 ) -> ServerConfig {
-    let mut config = ServerConfig::new(G::id());
+    let mut config = ServerConfig::new(G::id()).with_package(package);
     if counted_challenges {
         config = config.with_counted_challenges(1);
     }
@@ -58,7 +59,11 @@ fn new_server<G: GameDefinition>(
         panic!("a message of {} does not round-trip: {errors:#?}", G::id());
     }
     Server::new(
-        server_config::<G>(view_radius_bricks, counted_challenges),
+        server_config::<G>(
+            content.package_data().encode(),
+            view_radius_bricks,
+            counted_challenges,
+        ),
         world,
         &content.registries(),
         Box::new(logic),

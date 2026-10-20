@@ -403,6 +403,7 @@ impl Server {
             ticks_per_second: self.config.ticks_per_second,
             tick: Tick::new(self.world.tick().get() - 1),
             world_description: self.world_description.clone(),
+            package: self.config.package.clone(),
         });
         let session = self.sessions.get_mut(&id).expect("the session exists");
         if session.connection.send(welcome.encode()).is_err() {

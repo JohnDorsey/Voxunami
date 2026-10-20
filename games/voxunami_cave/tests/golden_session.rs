@@ -283,8 +283,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// +85 bytes, 7,177,754 to 7,177,839 (checked before the script below was added). The script then grew an items
 /// segment: two stones built, broken in survival, falling, joining into a stack of 2, and collected (asserted), and
 /// the world is left in survival, so it saves its game mode: 7,177,839 to 7,181,819.
+/// Phase 28: the welcome carries the package data (how every block looks, the view channels), and the protocol version is 5. The
+/// package is 1,345 bytes and its length takes 2 more: 7,181,819 to 7,183,166, the saved world is the same. The hash changes with the bytes.
 const PINNED: (u64, usize, u64) = (
-    12_899_088_743_139_439_443,
-    7_181_819,
+    14_275_075_405_839_568_165,
+    7_183_166,
     15_753_024_505_422_231_765,
 );

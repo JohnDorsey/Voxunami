@@ -140,6 +140,7 @@ mod tests {
             ticks_per_second: 20,
             tick: Tick::ZERO,
             world_description: Vec::new(),
+            package: Vec::new(),
         });
         let path =
             std::env::temp_dir().join(format!("launcher_test_{}_{name}", std::process::id()));

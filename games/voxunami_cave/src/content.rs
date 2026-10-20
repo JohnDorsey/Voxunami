@@ -6,9 +6,8 @@ use base_blocks::{
     BaseBlockIds, BaseBlocks, block_channel_identifier, block_registry_kind,
     light_channel_identifier, rolling_hills_generator_identifier, state_channel_identifier,
 };
-use block_models::BlockTable;
 use content_registry::IdentifierRegistry;
-use game_shell::{ContentPackage, GameContent, PackageSpec};
+use game_shell::{ContentPackage, GameContent, PackageData, PackageSpec};
 use namespaced_id::NamespacedId;
 use voxel_grid::{ChannelDefinition, ChannelIndex};
 use world_storage::{LoadContext, WorldData};
@@ -121,12 +120,8 @@ impl GameContent for CaveContent {
         self.package.view_channels()
     }
 
-    fn ambient_light(&self) -> u8 {
-        self.package.ambient_light()
-    }
-
-    fn block_table(&self) -> BlockTable {
-        self.package.block_table()
+    fn package_data(&self) -> PackageData {
+        self.package.package_data()
     }
 
     /// A new world with this seed: rolling hills everywhere, nothing edited.

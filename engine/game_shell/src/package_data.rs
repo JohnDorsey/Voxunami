@@ -5,11 +5,27 @@
 //!
 //! The byte form is canonical (see `block_models`' codec): the same data is the same bytes.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use block_models::{BlockDefinition, BlockTable, PropertyError, PropertySchema};
+use content_registry::IdentifierRegistry;
 use namespaced_id::NamespacedId;
+use voxel_grid::GridLayout;
+use world_view::ViewChannels;
+
+/// Why the data a server sent cannot be used.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum PackageError {
+    #[error("the package is damaged: {0}")]
+    Damaged(#[from] DecodeError),
+    #[error("the package's blocks cannot be used: {0}")]
+    Blocks(#[from] PropertyError),
+    #[error("the package names the channel {0}, which the world does not have")]
+    NoChannel(NamespacedId),
+    #[error("the package is for the block registry {0}, which this game does not have")]
+    NoBlockRegistry(NamespacedId),
+}
 
 /// The least bytes a block (an identifier and a presence flag) takes, for `read_count`.
 const BLOCK_BYTES: usize = 3;
@@ -43,6 +59,41 @@ impl PackageData {
             .map(|(_, definition)| definition.as_ref())
             .collect();
         BlockTable::try_from_definitions(&self.properties, &definitions)
+    }
+
+    /// The same table, with the blocks numbered as `numbering` has them (a client numbers content its own
+    /// way and learns the server's numbering only to translate it). A block the package has no definition
+    /// for, because the server lacks its plugin or does not know it, is unknown.
+    pub fn block_table_numbered_by(
+        &self,
+        numbering: &dyn IdentifierRegistry,
+    ) -> Result<BlockTable, PropertyError> {
+        let definitions: HashMap<&NamespacedId, &BlockDefinition> = self
+            .blocks
+            .iter()
+            .filter_map(|(identifier, definition)| Some((identifier, definition.as_ref()?)))
+            .collect();
+        let numbered: Vec<Option<&BlockDefinition>> = (0..numbering.entry_count() as u32)
+            .map(|raw| {
+                let identifier = numbering.identifier_of_raw(raw)?;
+                definitions.get(identifier).copied()
+            })
+            .collect();
+        BlockTable::try_from_definitions(&self.properties, &numbered)
+    }
+
+    /// The channels the view reads, found by name in `layout`.
+    pub fn view_channels(&self, layout: &GridLayout) -> Result<ViewChannels, PackageError> {
+        let find = |identifier: &NamespacedId| {
+            layout
+                .channel_index(identifier)
+                .ok_or_else(|| PackageError::NoChannel(identifier.clone()))
+        };
+        Ok(ViewChannels::new(
+            find(&self.block_channel)?,
+            self.state_channel.as_ref().map(find).transpose()?,
+            self.light_channel.as_ref().map(find).transpose()?,
+        ))
     }
 
     pub fn encode(&self) -> Vec<u8> {
@@ -185,6 +236,37 @@ mod tests {
         assert_eq!(
             package.block_table().unwrap_err(),
             PropertyError::Undeclared(id("engine:density"))
+        );
+    }
+
+    #[test]
+    fn the_view_channels_are_found_by_name_in_the_layout_whatever_order_it_has_them_in() {
+        use voxel_grid::{ChannelDefinition, GridLayout};
+        let layout = GridLayout::new(vec![
+            ChannelDefinition::number(id("test_game:light"), 0),
+            ChannelDefinition::number(id("test_game:state"), 0),
+            ChannelDefinition::content(id("test_game:block"), 0, id("test_game:block")),
+        ])
+        .unwrap();
+        let channels = sample().view_channels(&layout).unwrap();
+        assert_eq!(
+            (
+                channels.blocks.get(),
+                channels.states.map(|c| c.get()),
+                channels.light.map(|c| c.get())
+            ),
+            (2, Some(1), Some(0))
+        );
+        let mut bare = sample();
+        bare.state_channel = None;
+        bare.light_channel = None;
+        let channels = bare.view_channels(&layout).unwrap();
+        assert_eq!((channels.states, channels.light), (None, None));
+        let mut missing = sample();
+        missing.state_channel = Some(id("test_game:nothing"));
+        assert_eq!(
+            missing.view_channels(&layout),
+            Err(PackageError::NoChannel(id("test_game:nothing")))
         );
     }
 

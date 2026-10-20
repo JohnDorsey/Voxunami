@@ -43,6 +43,9 @@ pub struct Welcome {
     /// client learns the numbering every brick and edit below uses, and which level each level
     /// number names (they are numbered in the file's order).
     pub world_description: Vec<u8>,
+    /// What a client needs to show the world, which the protocol does not read: the game's package data (how every
+    /// block looks, which channels the view reads). Sent in every welcome, so a recording carries it.
+    pub package: Vec<u8>,
 }
 
 /// Which terrain generator produced the bricks of one aligned cube.
@@ -153,6 +156,7 @@ impl ServerMessage {
                 writer.write_u32(welcome.ticks_per_second);
                 writer.write_u64(welcome.tick.get());
                 writer.write_bytes(&welcome.world_description);
+                writer.write_bytes(&welcome.package);
             }
             Self::InterestChanged {
                 level,
@@ -265,6 +269,7 @@ impl ServerMessage {
                 ticks_per_second: reader.read_u32()?,
                 tick: Tick::new(reader.read_u64()?),
                 world_description: reader.read_bytes()?.to_vec(),
+                package: reader.read_bytes()?.to_vec(),
             }),
             KIND_INTEREST_CHANGED => {
                 let level = read_level(&mut reader)?;
@@ -468,6 +473,7 @@ mod tests {
                 ticks_per_second: 20,
                 tick: Tick::new(12_345),
                 world_description: vec![5; 40],
+                package: vec![6; 25],
             }),
             ServerMessage::InterestChanged {
                 level: LevelIndex::new(1),

@@ -260,6 +260,35 @@ fn a_joining_client_is_challenged_then_welcomed_with_a_description_it_can_load()
 }
 
 #[test]
+fn the_package_in_the_config_is_in_every_welcome_unread_and_without_one_the_welcome_has_none() {
+    let game = Game::new(&ALL_PLUGINS);
+    let package = vec![9, 8, 7, 6];
+    for (config, expected) in [
+        (
+            ServerConfig::new(game_id()).with_package(package.clone()),
+            package,
+        ),
+        (ServerConfig::new(game_id()), Vec::new()),
+    ] {
+        let mut harness = Harness::new(&game, game.new_world(), config);
+        let mut first = harness.connect();
+        let mut second = harness.connect();
+        harness.log_in(&mut [&mut first, &mut second]);
+        for client in [&mut first, &mut second] {
+            let welcomes: Vec<Vec<u8>> = client
+                .received()
+                .into_iter()
+                .filter_map(|message| match message {
+                    ServerMessage::Welcome(welcome) => Some(welcome.package),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(welcomes, [expected.clone()]);
+        }
+    }
+}
+
+#[test]
 fn clients_get_ids_in_the_order_they_connected_and_each_gets_its_own_stream() {
     let (_, mut harness) = default_harness();
     let mut first = harness.connect();

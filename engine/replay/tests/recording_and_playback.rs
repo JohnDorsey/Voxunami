@@ -225,6 +225,7 @@ fn a_recording_names_its_game_in_the_welcome_it_starts_with() {
         ticks_per_second: 20,
         tick: Tick::ZERO,
         world_description: vec![1, 2, 3],
+        package: vec![4, 5],
     });
     let directory =
         std::env::temp_dir().join(format!("voxunami_replay_test_{}", std::process::id()));
@@ -238,6 +239,7 @@ fn a_recording_names_its_game_in_the_welcome_it_starts_with() {
     let found = replay::read_welcome(&good).unwrap();
     assert_eq!(found.game.as_str(), "some_game:game");
     assert_eq!(found.world_description, [1, 2, 3]);
+    assert_eq!(found.package, [4, 5]);
 
     for (name, frames) in [
         ("empty.voxreplay", vec![]),

@@ -10,7 +10,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use block_models::{BlockDefinition, BlockTable, PropertyDeclaration, PropertySchema};
+use block_models::{BlockDefinition, PropertyDeclaration, PropertySchema};
 use content_registry::{IdentifierRegistry, Registry};
 use namespaced_id::NamespacedId;
 use terrain::{TerrainGenerator, WorldTerrain};
@@ -19,6 +19,7 @@ use world_storage::{LevelData, LoadContext, WorldData};
 use world_view::ViewChannels;
 
 use crate::definition::GameContent;
+use crate::package_data::PackageData;
 
 /// Makes a game's terrain generators for a world seed. The layout is the world's, for finding the
 /// channels a generator writes.
@@ -114,24 +115,28 @@ impl GameContent for ContentPackage {
         )
     }
 
-    fn ambient_light(&self) -> u8 {
-        self.spec.ambient_light
-    }
-
-    fn block_table(&self) -> BlockTable {
-        let definitions: Vec<Option<&BlockDefinition>> = self
-            .blocks
-            .iter()
-            .map(|(_, entry)| entry.content())
-            .collect();
-        let mut schema = PropertySchema::new();
+    fn package_data(&self) -> PackageData {
+        let mut properties = PropertySchema::new();
         for declaration in &self.spec.properties {
-            schema.declare(declaration.clone()).unwrap_or_else(|error| {
-                panic!("the package's properties are inconsistent: {error}")
-            });
+            properties
+                .declare(declaration.clone())
+                .unwrap_or_else(|error| {
+                    panic!("the package's properties are inconsistent: {error}")
+                });
         }
-        BlockTable::try_from_definitions(&schema, &definitions)
-            .unwrap_or_else(|error| panic!("the package's blocks cannot be used: {error}"))
+        PackageData {
+            properties,
+            block_registry: self.spec.block_registry_kind.clone(),
+            blocks: self
+                .blocks
+                .iter()
+                .map(|(_, entry)| (entry.identifier().clone(), entry.content().cloned()))
+                .collect(),
+            block_channel: self.spec.block_channel.clone(),
+            state_channel: self.spec.state_channel.clone(),
+            light_channel: self.spec.light_channel.clone(),
+            ambient_light: self.spec.ambient_light,
+        }
     }
 
     fn new_world(&self, seed: u64) -> WorldData {

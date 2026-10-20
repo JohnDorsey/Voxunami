@@ -242,7 +242,12 @@ impl<G: GameDefinition> Viewer<G> {
         surface.configure(&context.device, &surface_configuration);
 
         let mut renderer = VoxelRenderer::new(&context, format);
-        configure_renderer(&mut renderer, session.content(), view.view_radius);
+        configure_renderer(
+            &mut renderer,
+            session.block_table(),
+            session.package().ambient_light,
+            view.view_radius,
+        );
         renderer.set_crosshair(session.mode() == Mode::Playing && G::shows_crosshair());
         let now = Instant::now();
         Ok(Self {

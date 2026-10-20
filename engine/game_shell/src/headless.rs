@@ -69,7 +69,12 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
     .map_err(|error| error.to_string())?;
 
     let mut renderer = VoxelRenderer::new(&context, wgpu::TextureFormat::Rgba8UnormSrgb);
-    configure_renderer(&mut renderer, session.content(), view.view_radius);
+    configure_renderer(
+        &mut renderer,
+        session.block_table(),
+        session.package().ambient_light,
+        view.view_radius,
+    );
 
     let started = Instant::now();
     session.send_pose();
@@ -146,7 +151,12 @@ pub fn replay<G: GameDefinition>(options: &ReplayOptions) -> Result<(), String> 
     );
 
     let mut renderer = VoxelRenderer::new(&context, wgpu::TextureFormat::Rgba8UnormSrgb);
-    configure_renderer(&mut renderer, session.content(), view.view_radius);
+    configure_renderer(
+        &mut renderer,
+        session.block_table(),
+        session.package().ambient_light,
+        view.view_radius,
+    );
     let updates = session.settle(|| {}).map_err(|error| error.to_string())?;
     apply_updates(&mut renderer, updates);
     render_outputs(&mut renderer, &session, view, false)

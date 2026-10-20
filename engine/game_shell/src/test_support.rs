@@ -1,6 +1,6 @@
 //! A minimal game for the shell's own tests, so they do not depend on any real game.
 
-use block_models::BlockTable;
+use block_models::{BlockDefinition, PropertySchema};
 use content_registry::IdentifierRegistry;
 use namespaced_id::NamespacedId;
 use plugin_host::Plugin as ServerPlugin;
@@ -9,6 +9,7 @@ use world_storage::{LoadContext, WorldData};
 use world_view::ViewChannels;
 
 use crate::definition::{CameraStart, GameContent, GameDefinition};
+use crate::package_data::PackageData;
 
 /// Flat ground of stone, dirt and grass, from the fixture game of `world_storage`.
 #[derive(Debug)]
@@ -33,8 +34,30 @@ impl GameContent for ExampleContent {
         }
     }
 
-    fn block_table(&self) -> BlockTable {
-        BlockTable::of_cubes(&[false, true, true, true])
+    fn package_data(&self) -> PackageData {
+        let registries = self.game.registries();
+        let (block_registry, blocks) = &registries[0];
+        // Air first, then whole opaque cubes.
+        let blocks = (0..blocks.entry_count() as u32)
+            .map(|raw| {
+                let identifier = blocks.identifier_of_raw(raw).expect("the id is in range");
+                let definition = if raw == 0 {
+                    BlockDefinition::air()
+                } else {
+                    BlockDefinition::cube([0.5; 3])
+                };
+                (identifier.clone(), Some(definition))
+            })
+            .collect();
+        PackageData {
+            properties: PropertySchema::new(),
+            block_registry: block_registry.clone(),
+            blocks,
+            block_channel: id("core:block"),
+            state_channel: None,
+            light_channel: None,
+            ambient_light: 0,
+        }
     }
 
     fn new_world(&self, _seed: u64) -> WorldData {

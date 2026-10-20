@@ -36,6 +36,7 @@ fn welcome(game: &Game, tick: u64) -> ServerMessage {
             .new_world()
             .describe(&game.registries())
             .expect("the fixture world can be described"),
+        package: Vec::new(),
     })
 }
 
@@ -748,6 +749,7 @@ impl Rig {
                     ticks_per_second: 20,
                     tick: Tick::new(4),
                     world_description: world.describe(&server_game.registries()).unwrap(),
+                    package: Vec::new(),
                 })
                 .encode(),
             )

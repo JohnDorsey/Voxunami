@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use namespaced_id::NamespacedId;
-use protocol::{OLDEST_READABLE_PROTOCOL_VERSION, PROTOCOL_VERSION, ServerMessage, Tick, Welcome};
+use protocol::{PROTOCOL_VERSION, ServerMessage, Tick, Welcome};
 use region_octree::BrickCube;
 use voxel_grid::Brick;
 use voxel_space::{BrickBox, BrickCoordinate, LevelIndex};
@@ -86,10 +86,8 @@ impl ClientWorld {
         welcome: Welcome,
         context: LoadContext<'_>,
     ) -> Result<(Self, LoadReport), ClientError> {
-        // A recording made by an older program is read as it was made; a newer one is not understood.
-        if !(OLDEST_READABLE_PROTOCOL_VERSION..=PROTOCOL_VERSION)
-            .contains(&welcome.protocol_version)
-        {
+        // A stream of another version, older or newer, is not understood.
+        if welcome.protocol_version != PROTOCOL_VERSION {
             return Err(ClientError::UnsupportedProtocolVersion(
                 welcome.protocol_version,
             ));

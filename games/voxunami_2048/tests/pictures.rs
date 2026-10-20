@@ -56,7 +56,7 @@ fn color_of_block_seen_from_the_front(context: &GraphicsContext, block: Numbered
         &table,
     );
     let mut renderer = VoxelRenderer::new(context, wgpu::TextureFormat::Rgba8UnormSrgb);
-    configure_renderer(&mut renderer, &content, VIEW_RADIUS);
+    configure_renderer(&mut renderer, &table, content.ambient_light(), VIEW_RADIUS);
     renderer.upload_brick(BrickCoordinate::new(0, 0, 0), &mesh.pack());
     // Looking along -z at the block from four voxels in front of its face.
     let camera = camera_at([16.5, 16.5, 21.0], 0.0, 0.0, VIEW_RADIUS);

@@ -40,7 +40,12 @@ fn renderer_for(
     updates: Vec<world_view::MeshUpdate>,
 ) -> VoxelRenderer {
     let mut renderer = VoxelRenderer::new(context, wgpu::TextureFormat::Rgba8UnormSrgb);
-    configure_renderer(&mut renderer, session.content(), VIEW_RADIUS);
+    configure_renderer(
+        &mut renderer,
+        session.block_table(),
+        session.package().ambient_light,
+        VIEW_RADIUS,
+    );
     daylight(&mut renderer);
     apply_updates(&mut renderer, updates);
     renderer
@@ -119,7 +124,12 @@ fn an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw() 
         let mut live_renderer = {
             // The live picture, from the meshes the live session produced.
             let mut renderer = VoxelRenderer::new(&context, wgpu::TextureFormat::Rgba8UnormSrgb);
-            configure_renderer(&mut renderer, replay.content(), VIEW_RADIUS);
+            configure_renderer(
+                &mut renderer,
+                replay.block_table(),
+                replay.package().ambient_light,
+                VIEW_RADIUS,
+            );
             daylight(&mut renderer);
             apply_updates(&mut renderer, final_updates.clone());
             renderer

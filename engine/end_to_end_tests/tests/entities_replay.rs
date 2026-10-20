@@ -194,9 +194,7 @@ fn with_welcome_version(recording: &[u8], version: u32) -> Vec<u8> {
 }
 
 #[test]
-fn a_recording_made_at_version_2_still_plays_and_other_versions_are_refused() {
-    // Version 3 added messages and changed none: an older recording is read as it was made. This one is
-    // a recording of a world with no entities whose welcome says it was made at version 2.
+fn a_recording_of_the_current_version_plays_and_one_of_any_other_is_refused() {
     let mut fixture = Fixture::new();
     let (mut alice, recording) = fixture.join_recorded(&ALL_PLUGINS);
     alice.watch(BrickBox::around(brick(0, 0, 0), 1));
@@ -204,14 +202,14 @@ fn a_recording_made_at_version_2_still_plays_and_other_versions_are_refused() {
         fixture.step();
         alice.catch_up().unwrap();
     }
-    let rewritten = with_welcome_version(&recording.contents(), 2);
+    let rewritten = with_welcome_version(&recording.contents(), protocol::PROTOCOL_VERSION);
     let mut replayed = replay_player(rewritten, &ALL_PLUGINS).unwrap();
     let _ = replayed.catch_up();
     assert_eq!(replayed.summaries, alice.summaries);
-    // A version nobody has made yet is refused, and so is one older than the oldest this reads.
+    // The one before and the one after are both refused: nothing is kept to read older streams.
     for refused in [
         protocol::PROTOCOL_VERSION + 1,
-        protocol::OLDEST_READABLE_PROTOCOL_VERSION - 1,
+        protocol::PROTOCOL_VERSION - 1,
     ] {
         let recording = with_welcome_version(&recording.contents(), refused);
         assert!(

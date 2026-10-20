@@ -19,7 +19,7 @@ use renderer::Camera;
 use transport::Connection;
 use voxel_space::{BrickBox, BrickCoordinate, LevelIndex, WorldPosition};
 use winit::keyboard::KeyCode;
-use world_view::{MeshUpdate, RayHit, ViewSettings, WorldMesher, cast_ray};
+use world_view::{MeshUpdate, RayHit, ViewChannels, ViewSettings, WorldMesher, cast_ray};
 
 use crate::client_commands::ClientSettings;
 use crate::client_plugin::{
@@ -27,11 +27,14 @@ use crate::client_plugin::{
 };
 use crate::definition::{GameContent, GameDefinition};
 use crate::host::WATCH_MARGIN_BRICKS;
+use crate::package_data::{PackageData, PackageError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
     #[error(transparent)]
     Client(#[from] ClientError),
+    #[error(transparent)]
+    Package(#[from] PackageError),
     #[error("the server did not answer in time")]
     NoWelcome,
     #[error("the world around the camera did not finish loading in time")]
@@ -50,7 +53,11 @@ pub enum Mode {
 pub struct Session<C: Connection, G: GameDefinition> {
     client: Client<C>,
     content: G::Content,
+    /// What the server said the world looks like, and the table made from it in this client's numbering.
+    package: PackageData,
     block_table: Arc<BlockTable>,
+    /// The channels the view reads, before the client plugins have their say.
+    view_channels: ViewChannels,
     mesher: WorldMesher,
     pub camera: Camera,
     /// The client halves of the game's plugins, and what they registered.
@@ -105,6 +112,8 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         };
         let mut content = G::new_content();
         let seed = welcomed.world_seed()?;
+        let package =
+            PackageData::decode(&welcomed.welcome().package).map_err(PackageError::from)?;
         let (client, _report) = welcomed.finish(content.load_context(seed))?;
 
         let join = G::join_message(start.position);
@@ -115,8 +124,21 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                 G::id()
             )
         });
-        let settings = ClientSettings::new(content.ambient_light());
-        let block_table = Arc::new(content.block_table());
+        // What blocks look like comes from the server, not from this program's copy of the game.
+        let registries = content.registries();
+        let numbering = registries
+            .iter()
+            .find(|(kind, _)| *kind == package.block_registry)
+            .map(|(_, registry)| *registry)
+            .ok_or_else(|| PackageError::NoBlockRegistry(package.block_registry.clone()))?;
+        let block_table = Arc::new(
+            package
+                .block_table_numbered_by(numbering)
+                .map_err(PackageError::from)?,
+        );
+        let view_channels =
+            package.view_channels(client.world().world().main().overrides.layout())?;
+        let settings = ClientSettings::new(package.ambient_light);
         let worker_count = std::thread::available_parallelism()
             .map_or(2, |count| count.get().saturating_sub(1).max(2));
         let mesher = WorldMesher::new(
@@ -124,13 +146,15 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                 view_radius_bricks,
                 worker_count,
             },
-            content.view_channels(),
+            view_channels.clone(),
             Arc::clone(&block_table),
         );
         let mut session = Self {
             client,
             content,
+            package,
             block_table,
+            view_channels,
             mesher,
             camera: start,
             client_plugins,
@@ -184,6 +208,11 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
 
     pub fn content(&self) -> &G::Content {
         &self.content
+    }
+
+    /// What the server said the world looks like.
+    pub fn package(&self) -> &PackageData {
+        &self.package
     }
 
     /// The entities the server has told this session of, in order of id.
@@ -266,7 +295,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             }
         }
         self.mesher
-            .set_channels(self.client_host.view(self.content.view_channels()));
+            .set_channels(self.client_host.view(self.view_channels.clone()));
         if self.mode == Mode::Replaying {
             self.follow_recorded_player();
         } else if G::server_moves_players() {
@@ -569,5 +598,177 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     /// Leaves the server politely.
     pub fn say_goodbye(&mut self) {
         let _ = self.client.say_goodbye();
+    }
+}
+
+/// What a session makes of the package a server sends, with servers whose package is not the client's own.
+#[cfg(test)]
+mod package_tests {
+    use block_models::{BlockDefinition, MISSING_BLOCK_COLOR, PropertySchema};
+    use plugin_host::PluginHost;
+    use server::{Server, ServerConfig};
+    use transport::Connection;
+    use transport::loopback::loopback_listener;
+    use world_storage::test_support::id;
+
+    use super::*;
+    use crate::package_data::PackageError;
+    use crate::test_support::{ExampleContent, ExampleGame};
+    use crate::view::camera_at;
+
+    fn content() -> ExampleContent {
+        ExampleGame::new_content()
+    }
+
+    /// A session joined to a server that sends `package`, and the server's own content.
+    fn joined_with(
+        package: &PackageData,
+    ) -> Result<Session<Box<dyn Connection>, ExampleGame>, SessionError> {
+        joined_with_bytes(package.encode())
+    }
+
+    fn joined_with_bytes(
+        package: Vec<u8>,
+    ) -> Result<Session<Box<dyn Connection>, ExampleGame>, SessionError> {
+        let served = content();
+        let world = served.new_world(7);
+        let (listener, connector) = loopback_listener();
+        let logic = PluginHost::new(Vec::new(), &world).unwrap();
+        let mut server = Server::new(
+            ServerConfig::new(ExampleGame::id())
+                .with_counted_challenges(1)
+                .with_package(package),
+            world,
+            &served.registries(),
+            Box::new(logic),
+            Box::new(listener),
+        )
+        .unwrap();
+        let connection: Box<dyn Connection> = Box::new(connector.connect().unwrap());
+        Session::<_, ExampleGame>::connect(
+            connection,
+            &Identity::from_secret([1; 32]),
+            Mode::Playing,
+            3,
+            camera_at([16.0, 110.0, 16.0], 0.0, 0.0, 3),
+            || {
+                server.step();
+            },
+        )
+    }
+
+    /// The package the client's own copy of the game would make.
+    fn compiled_in() -> PackageData {
+        content().package_data()
+    }
+
+    fn raw(session: &Session<Box<dyn Connection>, ExampleGame>, block: &str) -> u32 {
+        session.content().game.raw_block(block)
+    }
+
+    #[test]
+    fn a_client_with_no_changes_of_its_own_draws_what_its_own_copy_of_the_game_says() {
+        let session = joined_with(&compiled_in()).unwrap();
+        assert_eq!(session.package(), &compiled_in());
+        let stone = raw(&session, "base_blocks:stone");
+        assert_eq!(session.block_table().color(stone), [0.5; 3]);
+    }
+
+    #[test]
+    fn what_the_server_says_blocks_look_like_wins_over_the_clients_own_copy() {
+        let mut package = compiled_in();
+        let stone = package
+            .blocks
+            .iter_mut()
+            .find(|(identifier, _)| *identifier == id("base_blocks:stone"))
+            .unwrap();
+        stone.1 = Some(BlockDefinition::cube([0.9, 0.1, 0.2]));
+        package.ambient_light = 77;
+        let session = joined_with(&package).unwrap();
+        let stone = raw(&session, "base_blocks:stone");
+        let dirt = raw(&session, "base_blocks:dirt");
+        assert_eq!(session.block_table().color(stone), [0.9, 0.1, 0.2]);
+        assert_eq!(session.block_table().color(dirt), [0.5; 3]);
+        assert_eq!(session.package().ambient_light, 77);
+        assert_eq!(session.settings().ambient_light, 77);
+    }
+
+    #[test]
+    fn blocks_are_matched_by_identifier_not_by_the_order_the_server_lists_them() {
+        let mut package = compiled_in();
+        // Different colours for each, listed in the opposite order.
+        for (index, (_, definition)) in package.blocks.iter_mut().enumerate() {
+            if index > 0 {
+                *definition = Some(BlockDefinition::cube([index as f32 / 10.0; 3]));
+            }
+        }
+        let expected: Vec<(NamespacedId, [f32; 3])> = package
+            .blocks
+            .iter()
+            .skip(1)
+            .map(|(identifier, definition)| {
+                (identifier.clone(), definition.as_ref().unwrap().color)
+            })
+            .collect();
+        package.blocks.reverse();
+        let session = joined_with(&package).unwrap();
+        for (identifier, color) in expected {
+            let block = session.content().game.raw_block(identifier.as_str());
+            assert_eq!(session.block_table().color(block), color, "{identifier}");
+        }
+    }
+
+    #[test]
+    fn a_block_the_server_has_no_definition_for_is_unknown_to_the_client() {
+        let mut package = compiled_in();
+        for (identifier, definition) in &mut package.blocks {
+            if *identifier == id("base_blocks:dirt") {
+                *definition = None;
+            }
+        }
+        let session = joined_with(&package).unwrap();
+        let dirt = raw(&session, "base_blocks:dirt");
+        let stone = raw(&session, "base_blocks:stone");
+        assert_eq!(session.block_table().color(dirt), MISSING_BLOCK_COLOR);
+        assert_eq!(session.block_table().color(stone), [0.5; 3]);
+    }
+
+    #[test]
+    fn a_package_that_cannot_be_used_is_an_error_naming_why_and_never_a_panic() {
+        let refused = |package: &PackageData| match joined_with(package) {
+            Err(SessionError::Package(error)) => error,
+            other => panic!("expected the package to be refused, got {other:?}"),
+        };
+
+        let mut no_channel = compiled_in();
+        no_channel.light_channel = Some(id("core:no_such_light"));
+        assert_eq!(
+            refused(&no_channel),
+            PackageError::NoChannel(id("core:no_such_light"))
+        );
+
+        let mut no_registry = compiled_in();
+        no_registry.block_registry = id("other:block");
+        assert_eq!(
+            refused(&no_registry),
+            PackageError::NoBlockRegistry(id("other:block"))
+        );
+
+        let mut undeclared = compiled_in();
+        undeclared.properties =
+            PropertySchema::decode(&mut binary_codec::ByteReader::new(&[0])).unwrap();
+        undeclared.blocks[1].1 =
+            Some(BlockDefinition::cube([0.5; 3]).with_property(&block_models::engine::DENSITY, 5));
+        assert!(matches!(refused(&undeclared), PackageError::Blocks(_)));
+
+        for damaged in [Vec::new(), vec![1, 2, 3], vec![0xFF; 40]] {
+            assert!(
+                matches!(
+                    joined_with_bytes(damaged),
+                    Err(SessionError::Package(PackageError::Damaged(_)))
+                ),
+                "damaged bytes are refused"
+            );
+        }
     }
 }

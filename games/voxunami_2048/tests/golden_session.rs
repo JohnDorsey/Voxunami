@@ -270,8 +270,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// Phase 27g: the player kind has an inventory component, nine empty slots told to clients: 28 bytes (a 17 byte
 /// identifier and 11 bytes of value) in each spawn of a player, and a different saved world (the players in it hold one). One spawn here: +28 bytes, and +1 for the frame that
 /// carries it, which is now over 127 bytes and so has a two byte length (117 bytes before, 145 now): 55,386 to 55,415.
+/// Phase 28: the welcome carries the package data (how every block looks, the view channels), and the protocol version is 5. The
+/// package is 2,611 bytes and its length takes 2 more: 55,415 to 58,028, the saved world is the same. The hash changes with the bytes.
 const PINNED: (u64, usize, u64) = (
-    8_212_265_114_561_609_541,
-    55_415,
+    6_541_140_943_592_152_726,
+    58_028,
     10_009_978_534_765_434_239,
 );

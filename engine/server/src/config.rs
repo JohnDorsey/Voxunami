@@ -16,6 +16,9 @@ pub struct ServerConfig {
     /// system's randomness, which a real server must use; `Some(seed)` for a counter, so that a test's
     /// stream is the same every time.
     pub challenge_seed: Option<u64>,
+    /// What every client is sent in its welcome besides the world's description: the game's package data, which the
+    /// server passes on without reading.
+    pub package: Vec<u8>,
 }
 
 impl ServerConfig {
@@ -28,7 +31,14 @@ impl ServerConfig {
             maximum_watched_bricks: 33 * 33 * 33,
             handshake_timeout_ticks: 200,
             challenge_seed: None,
+            package: Vec::new(),
         }
+    }
+
+    /// The same, sending clients this package data in their welcome.
+    pub fn with_package(mut self, package: Vec<u8>) -> Self {
+        self.package = package;
+        self
     }
 
     /// The same, with challenges from a counter: for tests, whose streams must not change from run to run.

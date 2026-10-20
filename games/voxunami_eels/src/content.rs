@@ -5,9 +5,9 @@
 
 use std::sync::Arc;
 
-use block_models::{BlockDefinition, BlockTable};
+use block_models::BlockDefinition;
 use content_registry::{IdentifierRegistry, Registry};
-use game_shell::{ContentPackage, GameContent, PackageSpec};
+use game_shell::{ContentPackage, GameContent, PackageData, PackageSpec};
 use namespaced_id::NamespacedId;
 use terrain::TerrainGenerator;
 use voxel_grid::{ChannelDefinition, ChannelIndex};
@@ -180,8 +180,8 @@ impl GameContent for ContentEels {
         self.package.view_channels()
     }
 
-    fn block_table(&self) -> BlockTable {
-        self.package.block_table()
+    fn package_data(&self) -> PackageData {
+        self.package.package_data()
     }
 
     /// A new world: the arena, with nobody's body in it yet. The seed changes nothing.

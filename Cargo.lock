@@ -229,6 +229,7 @@ dependencies = [
 name = "block_models"
 version = "0.0.0"
 dependencies = [
+ "binary_codec",
  "namespaced_id",
  "proptest",
  "thiserror 2.0.21",

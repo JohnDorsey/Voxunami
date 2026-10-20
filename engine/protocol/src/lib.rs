@@ -46,15 +46,9 @@ pub use server_message::{
 };
 pub use types::{ClientId, EntityId, PlayerKey, Tick};
 
-/// Bumped whenever a message changes in a way older programs cannot read. A recording stores the
-/// version it was made with, so replaying needs a program that understands it.
-pub const PROTOCOL_VERSION: u32 = 4;
-
-/// The oldest protocol version this program can still read. Version 3 only added messages (those about
-/// entities), so a recording made at version 2 plays as it did: a recording must stay watchable, which is
-/// why a version is bumped only for changes older programs cannot read and the newer ones read every
-/// version back to this one. A live connection still needs the same version on both ends.
-pub const OLDEST_READABLE_PROTOCOL_VERSION: u32 = 2;
+/// Bumped whenever a message changes. A recording stores the version it was made with, and a program
+/// plays only recordings of its own version (nothing is kept to read older ones before a first release).
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// The most bytes of text a command may have; a longer one is a protocol violation.
 pub const MAXIMUM_COMMAND_LENGTH: usize = 1024;
