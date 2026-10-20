@@ -9,7 +9,7 @@ use game_shell::Identity;
 use game_shell::files::{open_recording, record_connection};
 use game_shell::session::{Mode, Session};
 use game_shell::view::{apply_updates, atmosphere, camera_at, configure_renderer};
-use renderer::{GraphicsContext, VoxelRenderer};
+use renderer::{Camera, GraphicsContext, VoxelRenderer};
 use transport::Connection;
 use voxunami_cave::game::{Cave, break_block, place_block_with_state};
 
@@ -26,6 +26,22 @@ fn contexts() -> Vec<GraphicsContext> {
         eprintln!("no graphics adapter available; skipping GPU test");
     }
     contexts
+}
+
+/// A picture, once a frame after it repeats it exactly. The integrated AMD GPU of the development machine now and then leaves
+/// a few pixels out of a picture in its first frames (seen: 15 pixels of the first frame of a fresh renderer, on DX12, in the
+/// test that compares a live picture to a replayed one, which is the flake that was long unexplained), and never the NVIDIA card.
+/// Pictures that are compared to the pixel are taken once two frames in a row agree.
+fn settled(renderer: &mut VoxelRenderer, camera: &Camera) -> Vec<u8> {
+    let mut previous = renderer.render_to_rgba(camera, WIDTH, HEIGHT).0;
+    for _ in 0..30 {
+        let next = renderer.render_to_rgba(camera, WIDTH, HEIGHT).0;
+        if next == previous {
+            return next;
+        }
+        previous = next;
+    }
+    panic!("the picture never settled");
 }
 
 /// These pictures are of terrain and blocks, which the game itself draws black where no light reaches
@@ -134,19 +150,31 @@ fn an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw() 
             apply_updates(&mut renderer, final_updates.clone());
             renderer
         };
-        let (live_after, _) = live_renderer.render_to_rgba(&final_camera, WIDTH, HEIGHT);
+        let live_after = settled(&mut live_renderer, &final_camera);
 
         let mut replay_renderer = renderer_for(&context, &replay, replay_updates.clone());
-        let (replayed, statistics) = replay_renderer.render_to_rgba(&replay.camera, WIDTH, HEIGHT);
-        assert!(statistics.quads_drawn > 0);
+        let replayed = settled(&mut replay_renderer, &replay.camera);
         assert!(
-            replayed == live_after,
-            "the replayed picture differs from the live one"
+            replay_renderer
+                .render_to_rgba(&replay.camera, WIDTH, HEIGHT)
+                .1
+                .quads_drawn
+                > 0
+        );
+        let differing = replayed
+            .chunks(4)
+            .zip(live_after.chunks(4))
+            .filter(|(replayed, live)| replayed != live)
+            .count();
+        assert!(
+            differing == 0,
+            "{}: {differing} pixels of the replayed picture differ from the live one",
+            renderer::describe(&context.adapter)
         );
 
         // And breaking the block did change what is seen: the picture before it is different.
         let mut before_renderer = renderer_for(&context, &replay, before_updates.clone());
-        let (before, _) = before_renderer.render_to_rgba(&final_camera, WIDTH, HEIGHT);
+        let before = settled(&mut before_renderer, &final_camera);
         assert!(
             before != live_after,
             "breaking a block did not change the picture"
