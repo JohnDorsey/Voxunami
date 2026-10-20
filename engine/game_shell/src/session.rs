@@ -283,6 +283,24 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             .collect()
     }
 
+    /// The entities the plugins draw as boxes, as the renderer is told of them: those of the player's level
+    /// the server has told of, in order of identifier.
+    pub fn entity_boxes(&self) -> Vec<renderer::EntityBox> {
+        self.client
+            .world()
+            .entities()
+            .iter()
+            .filter_map(|entity| {
+                let appearance = self.client_host.appearance_of(entity)?;
+                Some(renderer::EntityBox {
+                    position: entity.pose.position.translated(appearance.centre_offset),
+                    size: appearance.size,
+                    material: appearance.material,
+                })
+            })
+            .collect()
+    }
+
     /// Where the server last said this player is, if it has said.
     pub fn own_server_position(&self) -> Option<WorldPosition> {
         let own = self.client.world().server_info().client;
@@ -489,6 +507,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             camera: &self.camera,
             block_table: &self.block_table,
             players: &self.players,
+            entities: self.client.world().entities(),
             settings: &mut self.settings,
             target,
             target_content,

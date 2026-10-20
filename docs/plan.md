@@ -47,7 +47,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 29 (planned) Data-driven block packs (JSON), the generated JSON Schema, `check-pack`, and patches: tags by union, patch operations,
   dependency order, loud failures (revision 5; mod stage 2).
 - 28 (planned) The content package at the handshake, carried by recordings (revision 3).
-- 27 (accepted; 27a to 27f built) Entities and items: server-owned entities with typed components, inventories, the protocol messages and the
+- 27 (accepted; 27a to 27g built; 27h the prompt facility is next) Entities and items: server-owned entities with typed components, inventories, the protocol messages and the
   `engine:entities` section reserved before 1.0; players become entities; the prompt facility. Specified in `entities-spec.md` (steps 27a to 27h,
   with a pause after 27d). Control targets, the `Brain` slot and block data stay planned for the phases that first need them.
 - 26 The client interface (client plugins: message handlers, view hook, HUD line, key and mouse actions, `.`-commands) and the bulk light
@@ -284,8 +284,8 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   Cave; and in `engine/physics/tests/walking.rs`, 16 new tests and 2 properties, of which 6 tests and both properties fail without the fix (the rest guard the policy). The original test no longer asserts the walker
   got more than 3 voxels into the flames (2 now: a burnt trench can stop it short, which is not the flames stopping it). A fix that
   fixed the tick the fire starts at was tried and removed: how long settling takes is unbounded under load (it exceeded 1000 ticks during a
-  cold Linux build), so any fixed tick is a new way to fail. Not measured: Linux, where it was seen (WSL could not start when this was finished:
-  `HCS ERROR_NO_SYSTEM_RESOURCES`); measured instead on Windows, 10 whole-file runs with every core busy, all clean.
+  cold Linux build), so any fixed tick is a new way to fail. Measured on Windows, 10 whole-file runs with every core busy, all clean, and on Linux, 8 whole-file runs with every
+  core busy, all clean (the condition that failed about 1 in 8 before).
   Left open, small: (a) a body put within a hair (under the controller's 0.01 skin) of two walls at once can be left standing a little above the
   ground it falls beside (the controller counts the walls as support): it is not inside anything, and the properties do not assert on how a body
   rests; (b) editing a block into a body that is already standing there is not cleared (only placing a body is).

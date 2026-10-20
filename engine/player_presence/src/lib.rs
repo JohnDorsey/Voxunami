@@ -23,4 +23,4 @@ pub use messages::{
     PoseReport,
 };
 pub use plugin::{PlayersPlugin, SharedPresence, lock};
-pub use presence::{Presence, player_kind, player_kind_spec};
+pub use presence::{PLAYER_INVENTORY_SLOTS, Presence, player_kind, player_kind_spec};

@@ -35,11 +35,46 @@ impl Event for BlockEditRequested {
     }
 }
 
+/// A player has broken a block (put air where one was). Sent after the change; `block` is what was there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockBroken {
+    pub client: ClientId,
+    pub grid: GridId,
+    pub voxel: VoxelCoordinate,
+    pub block: u32,
+}
+
+impl Event for BlockBroken {
+    fn id() -> NamespacedId {
+        "voxunami_cave:block_broken"
+            .parse()
+            .expect("constant identifier is valid")
+    }
+}
+
+/// A player has put a block down. Sent after the change; `block` is the block that was put.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockPlaced {
+    pub client: ClientId,
+    pub grid: GridId,
+    pub voxel: VoxelCoordinate,
+    pub block: u32,
+}
+
+impl Event for BlockPlaced {
+    fn id() -> NamespacedId {
+        "voxunami_cave:block_placed"
+            .parse()
+            .expect("constant identifier is valid")
+    }
+}
+
 /// Lets players change the blocks within reach of them. What the change does to light, fire and
 /// bodies is theirs: they hear of it as a change to the block channels.
 #[derive(Debug)]
 pub struct BlockEditingPlugin {
     block_ids: HashMap<NamespacedId, u32>,
+    air: u32,
     table: BlockTable,
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
@@ -55,6 +90,7 @@ impl BlockEditingPlugin {
             .collect();
         Self {
             block_ids,
+            air: content.blocks.air,
             table: content.block_table(),
             block_channel: content.block_channel(),
             state_channel: content.state_channel(),
@@ -80,6 +116,9 @@ impl Plugin for BlockEditingPlugin {
 
     fn register(&self, registrar: &mut Registrar<'_>) {
         registrar.event::<BlockEditRequested>();
+        registrar.event::<BlockBroken>();
+        registrar.event::<BlockPlaced>();
+        let air = self.air;
         let block_ids = self.block_ids.clone();
         let table = self.table.clone();
         let (block_channel, state_channel) = (self.block_channel, self.state_channel);
@@ -118,8 +157,29 @@ impl Plugin for BlockEditingPlugin {
             let Ok(mut edited) = context.grid(grid) else {
                 return;
             };
-            if edited.set(state_channel, request.at, request.state).is_ok() {
-                let _ = edited.set(block_channel, request.at, raw);
+            let before = edited.get(block_channel, request.at).ok();
+            let changed = edited.set(state_channel, request.at, request.state).is_ok()
+                && edited.set(block_channel, request.at, raw).is_ok();
+            if !changed {
+                return;
+            }
+            // Those who care about breaking and placing hear of it once it has happened.
+            if raw == air {
+                if let Some(block) = before.filter(|block| *block != air) {
+                    context.emit(BlockBroken {
+                        client,
+                        grid,
+                        voxel: request.at,
+                        block,
+                    });
+                }
+            } else {
+                context.emit(BlockPlaced {
+                    client,
+                    grid,
+                    voxel: request.at,
+                    block: raw,
+                });
             }
         });
     }

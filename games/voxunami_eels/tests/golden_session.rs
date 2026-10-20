@@ -182,4 +182,6 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// tick whatever they watched); it has the entity messages for the players in the region the client watches (so the scripts
 /// now ask for their view each tick, as a window does, which Cave's already did), and the saved world holds its players.
 /// Checked by what the stream holds, not by a control run: two players spawned, one despawned when the script has them leave, 265 changes of pose or look.
-const PINNED: (u64, usize, u64) = (4_850_972_369_860_158_502, 70_676, 8_773_268_700_699_771_296);
+/// Phase 27g: the player kind has an inventory component, nine empty slots told to clients: 28 bytes (a 17 byte
+/// identifier and 11 bytes of value) in each spawn of a player, and a different saved world (the players in it hold one). Two spawns here: 2 x 28 = 56 bytes: 70,676 to 70,732.
+const PINNED: (u64, usize, u64) = (4_428_964_059_176_846_452, 70_732, 3_527_138_528_036_399_531);

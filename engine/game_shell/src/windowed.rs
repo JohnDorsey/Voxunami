@@ -28,7 +28,7 @@ use crate::options::{PlayOptions, ReplayOptions, ViewOptions};
 use crate::session::{Mode, Session};
 use crate::view::{
     apply_updates, atmosphere, binary_voxel_coordinates, camera_at, configure_renderer,
-    show_other_players,
+    show_entity_boxes, show_other_players,
 };
 
 const MOVEMENT_SPEED: f32 = 24.0; // voxels per second
@@ -417,6 +417,7 @@ impl<G: GameDefinition> Viewer<G> {
         let updates = self.session.update_view();
         apply_updates(&mut self.renderer, updates);
         show_other_players(&mut self.renderer, &self.session);
+        show_entity_boxes(&mut self.renderer, &self.session);
 
         let (frame, reconfigure) = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => (frame, false),

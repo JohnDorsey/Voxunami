@@ -4,18 +4,21 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use base_blocks::{SHAPE_NAMES, shape_name};
-use game_shell::KeyCode;
+use entities::{Inventory, ItemStack};
 use game_shell::client_plugin::{
-    ActionSpec, ClientContext, ClientPlugin, ClientRegistrar, MouseButton,
+    ActionSpec, Appearance, ClientContext, ClientPlugin, ClientRegistrar, MouseButton,
 };
+use game_shell::{GameContent, KeyCode};
 use namespaced_id::NamespacedId;
+use player_presence::{PlayerClient, player_kind};
 use voxel_grid::ChannelIndex;
 use voxel_space::VoxelCoordinate;
 use world_view::BulkLight;
 
 use crate::content::CaveContent;
 use crate::game::PLACEABLE_BLOCKS;
-use crate::messages::{LightSchemeChanged, SetBlock};
+use crate::items::{GameMode, dropped_item_kind, item_for_block};
+use crate::messages::{GameModeIs, LightSchemeChanged, SetBlock};
 use crate::multiscale_light::{LEVEL_FORMAT, LightScheme, MAXIMUM_SCALES, full_brightness};
 use crate::scaled_light::{MultiScaleView, ScaledLight};
 
@@ -117,10 +120,24 @@ struct Selection {
 }
 
 /// The client half of `voxunami_cave:block_editing`: which block and shape are selected, and what the
-/// mouse buttons do with them.
+/// mouse buttons do with them. In survival it also shows how many of the selected block the player has.
 #[derive(Clone, Debug, Default)]
 pub struct ClientBlockEditing {
     selection: Arc<Mutex<Selection>>,
+    /// The game mode the server last said the world is in.
+    mode: Arc<Mutex<GameMode>>,
+}
+
+/// How many of an item the player has, from the player entity the client has been told of, if it has.
+fn held(context: &ClientContext<'_>, item: &NamespacedId) -> Option<u64> {
+    let own = PlayerClient(context.own_client());
+    context
+        .entities()
+        .iter()
+        .filter(|entity| entity.kind == player_kind())
+        .find(|entity| entity.component::<PlayerClient>() == Ok(Some(own)))
+        .and_then(|entity| entity.component::<Inventory>().ok().flatten())
+        .map(|inventory| inventory.count_of(item))
 }
 
 impl ClientBlockEditing {
@@ -215,15 +232,61 @@ impl ClientPlugin for ClientBlockEditing {
             },
         );
 
-        let selection = Arc::clone(&self.selection);
-        registrar.hud_line(move |_| {
+        let mode = Arc::clone(&self.mode);
+        registrar.on_message::<GameModeIs>(move |GameModeIs(now)| *locked(&mode) = now);
+
+        let (selection, mode) = (Arc::clone(&self.selection), Arc::clone(&self.mode));
+        registrar.hud_line(move |context| {
             let selection = locked(&selection);
             let block = PLACEABLE_BLOCKS[selection.block];
-            Some(format!(
-                "placing {} ({})",
-                block.split(':').next_back().unwrap_or_default(),
-                shape_name(selection.shape)
-            ))
+            let name = block.split(':').next_back().unwrap_or_default();
+            let shape = shape_name(selection.shape);
+            Some(match *locked(&mode) {
+                GameMode::Creative => format!("placing {name} ({shape})"),
+                GameMode::Survival => {
+                    let have = held(context, &identifier(block)).unwrap_or(0);
+                    format!("placing {name} ({shape}), {have} in hand")
+                }
+            })
+        });
+    }
+}
+
+/// The client half of `voxunami_cave:items`: what an item lying on the ground looks like, which is a small box
+/// of the colour of the block it puts down.
+#[derive(Clone, Debug)]
+pub struct ClientItems {
+    /// The number of each block that can be placed, in this game's registry.
+    block_numbers: std::collections::HashMap<NamespacedId, u32>,
+}
+
+impl ClientItems {
+    pub fn new(content: &CaveContent) -> Self {
+        let registries = content.registries();
+        let blocks = registries[0].1;
+        let block_numbers = (0..blocks.entry_count() as u32)
+            .filter_map(|raw| Some((blocks.identifier_of_raw(raw)?.clone(), raw)))
+            .filter(|(name, _)| item_for_block(name).is_some())
+            .collect();
+        Self { block_numbers }
+    }
+}
+
+impl ClientPlugin for ClientItems {
+    fn id(&self) -> NamespacedId {
+        identifier("voxunami_cave:items")
+    }
+
+    fn register(&self, registrar: &mut ClientRegistrar<'_>) {
+        let numbers = self.block_numbers.clone();
+        registrar.entity_appearance(dropped_item_kind(), move |entity| {
+            let stack = entity.component::<ItemStack>().ok().flatten()?;
+            Some(Appearance {
+                // Half a voxel each way, standing on the floor of the voxel it is in.
+                size: [4, 4, 4],
+                material: *numbers.get(&stack.item)?,
+                centre_offset: [0.0, -0.25, 0.0],
+            })
         });
     }
 }

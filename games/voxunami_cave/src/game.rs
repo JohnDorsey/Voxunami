@@ -11,7 +11,9 @@ use renderer::Camera;
 use transport::Connection;
 use voxel_space::WorldPosition;
 
-use crate::client::{ClientBlockEditing, ClientLight, ClientMovement, set_block_request};
+use crate::client::{
+    ClientBlockEditing, ClientItems, ClientLight, ClientMovement, set_block_request,
+};
 use crate::content::{CaveContent, game_id};
 use crate::logic::REACH;
 use crate::messages::{MoveRequest, SetBlock, Spawn};
@@ -175,6 +177,7 @@ Window commands (start with a period): .ambient 0-255 sets how bright a face is 
     fn client_plugins(content: &CaveContent) -> Vec<Box<dyn ClientPlugin>> {
         vec![
             Box::new(ClientBlockEditing::default()),
+            Box::new(ClientItems::new(content)),
             Box::new(ClientLight::new(content)),
             Box::new(ClientMovement),
         ]

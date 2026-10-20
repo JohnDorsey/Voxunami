@@ -25,6 +25,7 @@ transport.workspace = true
 voxel_grid.workspace = true
 voxel_space.workspace = true
 world_storage.workspace = true
+entities.workspace = true
 world_view.workspace = true
 
 [dev-dependencies]

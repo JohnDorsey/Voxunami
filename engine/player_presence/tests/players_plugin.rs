@@ -1,9 +1,11 @@
 //! The players plugin, run by the plugin host on a real server with the pretend game of
 //! `world_storage::test_support`.
 
+use entities::Inventory;
+use namespaced_id::NamespacedId;
 use player_presence::{
-    PlayerClient, PlayerKeyComponent, PlayerLook, PlayerPose, PlayersPlugin, PoseReport,
-    SharedPresence, lock, player_kind,
+    PLAYER_INVENTORY_SLOTS, PlayerClient, PlayerKeyComponent, PlayerLook, PlayerPose,
+    PlayersPlugin, PoseReport, SharedPresence, lock, player_kind,
 };
 use plugin_host::{Phase, Plugin, PluginHost, Registrar, SystemSpec};
 use protocol::{ClientId, ClientMessage, EntityId, Message, ServerMessage};
@@ -164,18 +166,35 @@ fn a_player_is_an_entity_with_the_pose_the_look_and_the_connection_and_the_key_s
         .iter()
         .map(|(name, _)| name.clone())
         .collect();
-    assert_eq!(told_of, [PlayerClient::kind(), PlayerLook::kind(),]);
+    // (In order of identifier.)
     assert_eq!(
-        player.components[0].1,
+        told_of,
+        [Inventory::kind(), PlayerClient::kind(), PlayerLook::kind()]
+    );
+    let told = |name: NamespacedId| {
+        player
+            .components
+            .iter()
+            .find(|(candidate, _)| *candidate == name)
+            .map(|(_, bytes)| bytes.clone())
+            .unwrap()
+    };
+    assert_eq!(
+        told(PlayerClient::kind()),
         PlayerClient(the_client(&rig)).encode()
     );
     assert_eq!(
-        player.components[1].1,
+        told(PlayerLook::kind()),
         PlayerLook {
             yaw: 0.5,
             pitch: 0.0
         }
         .encode()
+    );
+    // An empty inventory with the slots a player has.
+    assert_eq!(
+        told(Inventory::kind()),
+        Inventory::new(PLAYER_INVENTORY_SLOTS).encode()
     );
     // The server keeps the key with the entity.
     let entity = rig
@@ -358,7 +377,12 @@ fn others_are_told_when_a_player_leaves_and_when_they_come_back() {
         .find(|client| lock(&rig.presence).entity_of(*client) == Some(player))
         .expect("the returning player has the saved entity");
     assert_eq!(
-        spawned[0].components[0].1,
+        spawned[0]
+            .components
+            .iter()
+            .find(|(name, _)| *name == PlayerClient::kind())
+            .map(|(_, bytes)| bytes.clone())
+            .unwrap(),
         PlayerClient(new_client).encode(),
         "told the connection it has now"
     );

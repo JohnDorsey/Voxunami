@@ -4,6 +4,7 @@
 //! content differently still agree. A block's state (which shape it has) is a number the block's
 //! own definition gives meaning to.
 
+use crate::items::GameMode;
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
 use physics::MoveInput;
@@ -187,6 +188,38 @@ impl Message for SetBlock {
     }
 }
 
+/// Server to client: the game mode of the world, which the client needs to show what a player has and what
+/// they can place. Sent to a player who joins and to everyone when it changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GameModeIs(pub GameMode);
+
+impl Message for GameModeIs {
+    fn kind() -> NamespacedId {
+        kind("voxunami_cave:game_mode_is")
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        vec![match self.0 {
+            GameMode::Creative => 0,
+            GameMode::Survival => 1,
+        }]
+    }
+
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        match payload {
+            [0] => Ok(Self(GameMode::Creative)),
+            [1] => Ok(Self(GameMode::Survival)),
+            [_] => Err(DecodeError::Invalid("a game mode is 0 or 1")),
+            [] => Err(DecodeError::UnexpectedEnd),
+            _ => Err(DecodeError::TrailingBytes(payload.len() - 1)),
+        }
+    }
+
+    fn samples() -> Vec<Self> {
+        vec![Self(GameMode::Creative), Self(GameMode::Survival)]
+    }
+}
+
 /// Server to client: how the world's light is cut into cells, which the view needs to draw it, or
 /// none for a world with the classic light. Sent to a player who joins and to everyone when it
 /// changes.
@@ -302,6 +335,7 @@ mod tests {
         assert_eq!(protocol::check_message::<MoveRequest>(), Ok(()));
         assert_eq!(protocol::check_message::<SetBlock>(), Ok(()));
         assert_eq!(protocol::check_message::<LightSchemeChanged>(), Ok(()));
+        assert_eq!(protocol::check_message::<GameModeIs>(), Ok(()));
     }
 
     #[test]

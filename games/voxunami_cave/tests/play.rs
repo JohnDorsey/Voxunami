@@ -743,7 +743,7 @@ fn commands_the_game_does_not_know_are_answered() {
     assert_eq!(
         player.take_command_replies(),
         [
-            "unknown command; try /fly, /help [COMMAND], /level [SUBCOMMAND...], /light [SUBCOMMAND...], /tp X Y Z",
+            "unknown command; try /fly, /gamemode [MODE...], /help [COMMAND], /level [SUBCOMMAND...], /light [SUBCOMMAND...], /tp X Y Z",
             "you are in voxunami_cave:overworld"
         ]
     );

@@ -1,6 +1,6 @@
 # Phase 27 specification: entities, items and inventories
 
-**Status: accepted 2026-10-18 with the default answers to all five questions (pause after 27d; players become entities now with a persistent player key; Cave creative by default with `/gamemode survival` per world; no mob; orientation a quaternion). Being built (27a to 27f done: the keypair identity, players as entities).** It makes concrete requirement 8, 15 and 16 of `plan.md` ("Requirements pulled
+**Status: accepted 2026-10-18 with the default answers to all five questions (pause after 27d; players become entities now with a persistent player key; Cave creative by default with `/gamemode survival` per world; no mob; orientation a quaternion). Being built (27a to 27g done: the keypair identity, players as entities, items and drops).** It makes concrete requirement 8, 15 and 16 of `plan.md` ("Requirements pulled
 forward") and the "Entities and items (Phase 27)" improvement, after option B of `plugin-architecture-review.md` W7 (server-owned entities,
 typed components from the property machinery, no ECS). What I say about today's code was read from the code (verified); the design is
 my proposal (believed). It is the biggest phase so far, so section 4 splits it at a point where you can stop and look.
@@ -76,6 +76,31 @@ does not know, are kept byte for byte and are neither simulated nor replicated. 
 - A client plugin gets one more verb, `entity_appearance(kind, |entity| Appearance)`, and an `Appearance` is a coloured box (size and a block's
   colour), drawn through the renderer's avatar path generalised from "a figure per player" to "a box per entity". Real models come with the
   toolkit (Phase 30) and the octopus (Phase 35).
+
+#### 2.6b What 27g decided (server half, built)
+
+- **An item has the identifier of the block it puts down** (`base_blocks:stone` the item and the block). Cave declares one for each of the six
+  placeable blocks, stack size 64; there is no property that maps item to block yet (it would say the same thing). A block nobody can place (air)
+  leaves no item.
+- **The player entity has an `Inventory` of nine slots** (replicated, so a client can show it); it is in the shared player kind, so all three games'
+  players have one, which only Cave uses.
+- **Game mode is a world setting**: `/gamemode [creative|survival]` (anyone may, until there are operators), saved as the section
+  `voxunami_cave:game_mode` (one byte), and not saved at all while the world is creative. Worlds start creative.
+- **Creative changes nothing**: no drops, nothing used up. **Survival**: a broken block leaves its item where it was; a block can be placed only by a
+  player who has the item ("you have no stone" otherwise), which is used up once it is placed. Players start with nothing.
+- **Items on the ground** are entities of kind `voxunami_cave:dropped_item` holding an `ItemStack` (replicated). Each tick, in the `Rules` phase after
+  the fire has burnt: those with nothing under them fall a voxel every fourth tick (they lie in the middle of a voxel; a voxel the world cannot read
+  holds them up; one below the world is gone); items of the same kind in one voxel join, to a stack of 64; and items within 3 voxels of a player's eyes
+  go into their inventory, as many as fit (what does not fit stays, with the count it has left). Nothing in it is trigonometry or a square root.
+- **Block editing announces what happened**: after a successful edit it sends `BlockBroken` (with the block that was there) or `BlockPlaced`; the
+  items plugin listens, and asks (`BlockEditRequested`) before a placement. Other plugins can listen to the same.
+- **The client**: the shell gets the verb `entity_appearance(kind, ...)` and `ClientContext::entities()`; the renderer draws `EntityBox`es (a
+  voxel-sized cell whose shape is a box of 2 to 8 eighths each way, in a block's palette value, drawn through the same pipelines as blocks that do
+  not fill their cell). An item on the ground is a half voxel box in its block's colour, standing on the floor of its voxel. Cave tells every
+  client the game mode (`voxunami_cave:game_mode_is`, on joining and on change), and in survival the screen says how many of the selected block the
+  player has.
+- Not done: dropping an item from the inventory, moving items between slots, chests; the hotbar keeps selecting by block and the server checks
+  the inventory. Items drawn as models come with the toolkit (Phase 30).
 
 ### 2.7 A player's identity: a keypair per install, no accounts (the owner's decision after review of 27d)
 

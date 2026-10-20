@@ -54,12 +54,14 @@ Verbs of `ClientRegistrar` (the budget: five, not a toolkit):
 | `on_message::<M>(\|ctx, message\| ...)` | a server message (the `Message` trait of Phase 25) | in play and in replay (it is the stream) |
 | `view(\|channels\| channels)` | adjusts what the view draws from (Cave's bulk light hook) | whenever the view is looked at |
 | `hud_line(\|ctx\| Option<String>)` | a line of status text | every frame, in play and replay |
+| `entity_appearance(kind, \|entity\| Option<Appearance>)` | how entities of a kind are drawn: a box (size in eighths of a voxel, a block's number for its colour, and an offset of its middle from the entity), until there are models (Phase 30, 35) | every frame, in play and replay |
 | `key(KeyCode, ActionSpec, \|ctx\| ...)` | a key action with an id and a summary | in play only |
 | `mouse(Button, ActionSpec, \|ctx\| ...)` | the primary or secondary mouse action | in play only |
 | `command(CommandSpec, \|ctx, arguments\| -> String)` | a `.`-command | in play only |
 
 - The **context** is a narrow, non-generic view of the session: `send_command(text)`, `send_message(&M)`, the voxel under the crosshair and the
-  block there (`target()`), the camera, the tick, and the block table. No access to the connection or the mesher. This keeps hooks pure functions
+  block there (`target()`), the camera, the tick, the block table, and the entities the client has been told of (`entities()`, with their
+  replicated components: a plugin can show the player's own inventory). No access to the connection or the mesher. This keeps hooks pure functions
   of the stream plus local state, so replay is unaffected (hooks that send are never run in replay).
 - **Commands reuse Phase 25's `CommandSpec` and `Arguments`**, with the usage prefix `.` instead of `/`, and `.help` is generated. `.ambient` becomes
   a built-in command registered by the shell by the same verb, so there is one command mechanism, not two. A name that two plugins register is a

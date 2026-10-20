@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 
-use block_models::BlockTable;
+use block_models::{BlockDefinition, BlockTable, Shape, ShapeBox};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 use voxel_grid::ChannelStorage;
@@ -57,6 +57,61 @@ pub struct Avatar {
     pub position: WorldPosition,
     /// Which of the [`AVATAR_COLOR_COUNT`] colours; larger numbers wrap around.
     pub color: u32,
+}
+
+/// Radius of a sphere around an entity's box, for culling.
+const ENTITY_BOX_BOUNDING_RADIUS: f32 = 1.0;
+
+/// An entity drawn as a box: a thing that is not a player, and has no model yet (an item on the ground).
+/// Boxes are placed like avatars, and made like blocks that do not fill their cell, so their sizes are in
+/// eighths of a voxel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EntityBox {
+    /// The middle of the box.
+    pub position: WorldPosition,
+    /// How big the box is along each axis, in eighths of a voxel. Each is made even and from 2 to 8, so that
+    /// the box can be centred on `position`.
+    pub size: [u8; 3],
+    /// The palette value it is drawn in (the same values the blocks of the world are drawn in); the values
+    /// the avatars use are not for boxes.
+    pub material: u32,
+}
+
+impl EntityBox {
+    /// What the box is made of, as the renderer remembers its mesh: the size made even and put from 2 to 8,
+    /// and the material put among the game's.
+    fn key(&self) -> (u32, [u8; 3]) {
+        let material = self.material.clamp(1, MAXIMUM_GAME_MATERIALS as u32 - 1);
+        (
+            material,
+            self.size.map(|size| size.clamp(1, 8).div_ceil(2) * 2),
+        )
+    }
+}
+
+/// The mesh of a box of one material and size: a voxel at the middle of a brick whose shape is a box.
+fn box_mesh(material: u32, size: [u8; 3]) -> PackedBrickMesh {
+    let mut values = vec![0u32; BRICK_VOXEL_COUNT];
+    let at = LocalVoxelIndex::new(AVATAR_EYE_VOXEL, AVATAR_EYE_VOXEL, AVATAR_EYE_VOXEL);
+    values[at.index()] = material;
+    let storage = ChannelStorage::from_values(&values);
+    let shape = Shape::from_boxes(&[ShapeBox {
+        min: size.map(|size| (8 - size) / 2),
+        max: size.map(|size| (8 + size) / 2),
+    }]);
+    let solid = BlockDefinition::cube([0.5; 3]).with_shapes(vec![shape]);
+    let air = BlockDefinition::air();
+    let definitions: Vec<Option<&BlockDefinition>> = (0..=material)
+        .map(|block| Some(if block == material { &solid } else { &air }))
+        .collect();
+    mesh_brick(
+        &BrickNeighbourhood {
+            center: BrickChannels::blocks_only(&storage),
+            neighbours: [None; 6],
+        },
+        &BlockTable::from_definitions(&definitions),
+    )
+    .pack()
 }
 
 /// The mesh of an avatar of one colour: two voxels, the head with the eyes in it over the body.
@@ -121,6 +176,7 @@ pub struct RenderStatistics {
     /// Of those, the detailed ones.
     pub detailed_quads_drawn: usize,
     pub avatars_drawn: usize,
+    pub entity_boxes_drawn: usize,
 }
 
 #[repr(C)]
@@ -176,6 +232,9 @@ pub struct VoxelRenderer {
     bricks: HashMap<BrickCoordinate, GpuBrick>,
     avatar_meshes: Vec<GpuBrick>,
     avatars: Vec<Avatar>,
+    entity_boxes: Vec<EntityBox>,
+    /// The meshes of the boxes there have been, by material and size, made when first asked for.
+    box_meshes: HashMap<(u32, [u8; 3]), GpuBrick>,
     palette: Box<[[f32; 4]; PALETTE_SIZE]>,
     atmosphere: Atmosphere,
     depth: Option<SizedTarget>,
@@ -348,6 +407,8 @@ impl VoxelRenderer {
             bricks: HashMap::new(),
             avatar_meshes: Vec::new(),
             avatars: Vec::new(),
+            entity_boxes: Vec::new(),
+            box_meshes: HashMap::new(),
             palette: Box::new([[1.0, 0.0, 1.0, 1.0]; PALETTE_SIZE]),
             atmosphere: Atmosphere::default(),
             depth: None,
@@ -453,6 +514,18 @@ impl VoxelRenderer {
         self.avatars = avatars.to_vec();
     }
 
+    /// Sets which boxes are drawn from now on, replacing the previous ones.
+    pub fn set_entity_boxes(&mut self, boxes: &[EntityBox]) {
+        for entity_box in boxes {
+            let (material, size) = entity_box.key();
+            if !self.box_meshes.contains_key(&(material, size)) {
+                let mesh = self.gpu_brick(&box_mesh(material, size));
+                self.box_meshes.insert((material, size), mesh);
+            }
+        }
+        self.entity_boxes = boxes.to_vec();
+    }
+
     pub fn set_atmosphere(&mut self, atmosphere: Atmosphere) {
         self.atmosphere = atmosphere;
     }
@@ -521,8 +594,19 @@ impl VoxelRenderer {
                     .then_some((avatar.color as usize % AVATAR_COLOR_COUNT, relative - eye))
             })
             .collect();
+        let visible_boxes: Vec<((u32, [u8; 3]), Vec3)> = self
+            .entity_boxes
+            .iter()
+            .filter_map(|entity_box| {
+                let relative = Vec3::from_array(entity_box.position.relative_to(camera.position));
+                frustum
+                    .intersects_sphere(relative, ENTITY_BOX_BOUNDING_RADIUS)
+                    .then_some((entity_box.key(), relative - eye))
+            })
+            .collect();
         let statistics = RenderStatistics {
             avatars_drawn: visible_avatars.len(),
+            entity_boxes_drawn: visible_boxes.len(),
             bricks_drawn: visible.len(),
             bricks_culled: self.bricks.len() - visible.len(),
             quads_drawn: visible
@@ -539,6 +623,7 @@ impl VoxelRenderer {
             .iter()
             .map(|(_, _, corner)| *corner)
             .chain(visible_avatars.iter().map(|(_, corner)| *corner))
+            .chain(visible_boxes.iter().map(|(_, corner)| *corner))
             .collect();
         self.write_placements(&corners);
         self.write_frame_uniform(view_projection);
@@ -627,6 +712,36 @@ impl VoxelRenderer {
                 );
                 pass.set_vertex_buffer(0, quads.slice(..));
                 pass.draw(0..6, 0..mesh.quad_count);
+            }
+            // Boxes: the faces that fill a cell, then the ones that do not (a box is all of the second kind unless
+            // it is a whole voxel).
+            let first_box = visible.len() + visible_avatars.len();
+            for (index, (key, _)) in visible_boxes.iter().enumerate() {
+                let mesh = &self.box_meshes[key];
+                let Some(quads) = &mesh.quads else {
+                    continue;
+                };
+                pass.set_bind_group(
+                    1,
+                    &self.placements.bind_group,
+                    &[((first_box + index) as u64 * self.placement_stride) as u32],
+                );
+                pass.set_vertex_buffer(0, quads.slice(..));
+                pass.draw(0..6, 0..mesh.quad_count);
+            }
+            pass.set_pipeline(&self.detailed_pipeline);
+            for (index, (key, _)) in visible_boxes.iter().enumerate() {
+                let mesh = &self.box_meshes[key];
+                let Some(detailed) = &mesh.detailed else {
+                    continue;
+                };
+                pass.set_bind_group(
+                    1,
+                    &self.placements.bind_group,
+                    &[((first_box + index) as u64 * self.placement_stride) as u32],
+                );
+                pass.set_vertex_buffer(0, detailed.slice(..));
+                pass.draw(0..6, 0..mesh.detailed_count);
             }
             if self.crosshair_enabled {
                 self.crosshair.draw(&mut pass);

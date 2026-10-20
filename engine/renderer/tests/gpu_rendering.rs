@@ -9,7 +9,9 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use block_models::{BlockDefinition, BlockTable, Shape};
 use glam::Vec3;
-use renderer::{Atmosphere, Avatar, Camera, GraphicsContext, RenderStatistics, VoxelRenderer};
+use renderer::{
+    Atmosphere, Avatar, Camera, EntityBox, GraphicsContext, RenderStatistics, VoxelRenderer,
+};
 use voxel_grid::ChannelStorage;
 use voxel_meshing::{BrickChannels, BrickNeighbourhood, mesh_brick};
 use voxel_space::{
@@ -875,5 +877,102 @@ fn a_face_is_as_bright_as_its_light_says() {
             "{name}: half light is {ratio} of full, in the light the colours stand for"
         );
         assert_eq!(brightness(dark), 0, "{name}: no light is black");
+    }
+}
+
+fn box_at(offset: [f32; 3], size: [u8; 3], material: u32) -> EntityBox {
+    EntityBox {
+        position: WorldPosition::new(ORIGIN_BRICK, offset),
+        size,
+        material,
+    }
+}
+
+/// How many pixels of the image are red.
+fn red_pixels(image: &[u8]) -> usize {
+    (0..SIZE)
+        .flat_map(|y| (0..SIZE).map(move |x| (x, y)))
+        .filter(|(x, y)| is_red(pixel(image, *x, *y)))
+        .count()
+}
+
+#[test]
+fn a_box_is_drawn_where_the_entity_is_in_its_own_size_and_material_and_only_while_it_is_set() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+
+        // Half a voxel each way, red.
+        renderer.set_entity_boxes(&[box_at([16.5, 16.5, 16.5], [4, 4, 4], RED)]);
+        let half = render(&mut renderer, &camera);
+        save_image("entity_box", &name, &half);
+        assert!(is_red(pixel(&half, SIZE / 2, SIZE / 2)), "{name}");
+        assert!(is_sky(pixel(&half, 3, 3)), "{name}: sky around it");
+        let (_, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+        assert_eq!(statistics.entity_boxes_drawn, 1);
+
+        // A whole voxel is bigger than half of one, and half as tall is smaller.
+        renderer.set_entity_boxes(&[box_at([16.5, 16.5, 16.5], [8, 8, 8], RED)]);
+        let whole = red_pixels(&render(&mut renderer, &camera));
+        renderer.set_entity_boxes(&[box_at([16.5, 16.5, 16.5], [4, 4, 4], RED)]);
+        let half_pixels = red_pixels(&half);
+        renderer.set_entity_boxes(&[box_at([16.5, 16.5, 16.5], [4, 2, 4], RED)]);
+        let flat = red_pixels(&render(&mut renderer, &camera));
+        assert!(
+            flat < half_pixels && half_pixels < whole,
+            "{name}: {flat} < {half_pixels} < {whole}"
+        );
+
+        // The material is the box's own.
+        renderer.set_entity_boxes(&[box_at([16.5, 16.5, 16.5], [4, 4, 4], GREEN)]);
+        assert!(is_green(pixel(
+            &render(&mut renderer, &camera),
+            SIZE / 2,
+            SIZE / 2
+        )));
+
+        // Where it is: lower, it is not at the middle of the picture.
+        renderer.set_entity_boxes(&[box_at([16.5, 12.5, 16.5], [4, 4, 4], RED)]);
+        let lower = render(&mut renderer, &camera);
+        assert!(is_sky(pixel(&lower, SIZE / 2, SIZE / 2)), "{name}");
+        assert!(red_pixels(&lower) > 0, "{name}: still in view, lower down");
+
+        // Behind the camera, or gone, it is not there.
+        renderer.set_entity_boxes(&[box_at([16.5, 16.5, 28.5], [4, 4, 4], RED)]);
+        let (behind, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+        assert_eq!(statistics.entity_boxes_drawn, 0);
+        assert!(is_sky(pixel(&behind, SIZE / 2, SIZE / 2)));
+        renderer.set_entity_boxes(&[]);
+        assert!(is_sky(pixel(
+            &render(&mut renderer, &camera),
+            SIZE / 2,
+            SIZE / 2
+        )));
+    }
+}
+
+#[test]
+fn a_box_is_placed_exactly_across_bricks_and_hides_behind_blocks() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        // The box is in the brick before the camera's, 6 voxels ahead.
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 2.0]);
+        renderer.set_entity_boxes(&[EntityBox {
+            position: WorldPosition::new(BrickCoordinate::new(0, 0, -1), [16.5, 16.5, 28.0]),
+            size: [4, 4, 4],
+            material: RED,
+        }]);
+        assert!(
+            is_red(pixel(&render(&mut renderer, &camera), SIZE / 2, SIZE / 2)),
+            "{name}: across the edge of a brick"
+        );
+
+        // A block in front of it hides it.
+        place_voxels(&mut renderer, ORIGIN_BRICK, &[([16, 16, 0], GREEN)]);
+        let hidden = render(&mut renderer, &camera);
+        assert!(is_green(pixel(&hidden, SIZE / 2, SIZE / 2)), "{name}");
+        assert_eq!(red_pixels(&hidden), 0, "{name}");
     }
 }

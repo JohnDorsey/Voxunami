@@ -155,6 +155,54 @@ fn session(name: &str, arrangement: usize) -> (u64, usize, u64) {
         ticks(&mut rig, &mut player, 2);
     }
 
+    // Items: two stones built in creative, then in survival broken from out of reach of picking up; the one
+    // above falls onto the other's place and they join, and a player who walks up to them has both.
+    request_block(&mut player, at(22, GROUND + 1, 16), "base_blocks:stone");
+    request_block(&mut player, at(22, GROUND + 2, 16), "base_blocks:stone");
+    ticks(&mut rig, &mut player, 5);
+    player.send_command("/gamemode survival");
+    ticks(&mut rig, &mut player, 3);
+    request_block(&mut player, at(22, GROUND + 2, 16), "base_blocks:air");
+    ticks(&mut rig, &mut player, 3);
+    request_block(&mut player, at(22, GROUND + 1, 16), "base_blocks:air");
+    ticks(&mut rig, &mut player, 20);
+    // (So that the number locks something: both are one stack on the ground, and nothing is held yet.)
+    let kind = voxunami_cave::items::dropped_item_kind();
+    let lying: Vec<_> = rig
+        .server
+        .world()
+        .entities()
+        .iter()
+        .filter(|entity| entity.kind == kind)
+        .map(|entity| {
+            entity
+                .components
+                .get::<entities::ItemStack>()
+                .unwrap()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        lying,
+        [entities::ItemStack::new(
+            "base_blocks:stone".parse().unwrap(),
+            2
+        )]
+    );
+    player.send_command(&format!("/tp 22.5 {} 16.5", GROUND + 3));
+    ticks(&mut rig, &mut player, 8);
+    let held = rig
+        .server
+        .world()
+        .entities()
+        .iter()
+        .find(|entity| entity.kind == player_presence::player_kind())
+        .and_then(|entity| entity.components.get::<entities::Inventory>().unwrap())
+        .expect("the player has an inventory");
+    assert_eq!(held.count_of(&"base_blocks:stone".parse().unwrap()), 2);
+    player.send_command(&format!("/tp 16.5 {} 16.5", GROUND + 4));
+    ticks(&mut rig, &mut player, 3);
+
     // Walking: falling, walking about and jumping, then flying again and teleporting.
     player.send_command("/fly");
     ticks(&mut rig, &mut player, 100);
@@ -229,8 +277,14 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// tick whatever they watched); it has the entity messages for the players in the region the client watches (so the scripts
 /// now ask for their view each tick, as a window does, which Cave's already did), and the saved world holds its players.
 /// Checked by what the stream holds, not by a control run: one player spawned once and 120 changes as it moves.
+/// Phase 27g: the player kind has an inventory component, nine empty slots told to clients: 28 bytes (a 17 byte
+/// identifier and 11 bytes of value) in each spawn of a player, and a different saved world (the players in it hold one). Besides that, the world
+/// description names the new entity kind (27 bytes) and the player is told the game mode when it joins (a 30 byte frame):
+/// +85 bytes, 7,177,754 to 7,177,839 (checked before the script below was added). The script then grew an items
+/// segment: two stones built, broken in survival, falling, joining into a stack of 2, and collected (asserted), and
+/// the world is left in survival, so it saves its game mode: 7,177,839 to 7,181,819.
 const PINNED: (u64, usize, u64) = (
-    7_467_491_269_729_547_948,
-    7_177_754,
-    14_800_163_994_229_683_400,
+    12_899_088_743_139_439_443,
+    7_181_819,
+    15_753_024_505_422_231_765,
 );

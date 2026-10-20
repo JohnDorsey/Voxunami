@@ -54,6 +54,14 @@ pub fn show_other_players<C: Connection, G: GameDefinition>(
     renderer.set_avatars(&avatars);
 }
 
+/// Draws the entities the game's plugins give an appearance, each as a box.
+pub fn show_entity_boxes<C: Connection, G: GameDefinition>(
+    renderer: &mut VoxelRenderer,
+    session: &Session<C, G>,
+) {
+    renderer.set_entity_boxes(&session.entity_boxes());
+}
+
 /// The voxel a position is in, as its three coordinates in binary: `x 0b1011 y 0b110 z -0b101`. A
 /// negative coordinate is its size in binary with a minus sign (not in two's complement).
 pub fn binary_voxel_coordinates(position: WorldPosition) -> String {

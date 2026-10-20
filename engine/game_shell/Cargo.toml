@@ -33,6 +33,7 @@ winit = "0.30.13"
 
 [dev-dependencies]
 binary_codec.workspace = true
+entities.workspace = true
 proptest.workspace = true
 server = { workspace = true, features = ["test-support"] }
 world_storage = { workspace = true, features = ["test-support"] }

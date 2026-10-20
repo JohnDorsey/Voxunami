@@ -658,6 +658,23 @@ Phase 27a to 27c (entities; specified in `entities-spec.md`):
 - 27c: protocol version 3 (messages 9 to 11), server replication with cached views, the client store, replay of entities, version policy.
   Cost with 1000 entities and 4 clients: 0.5, 0.7 and 1.4 ms a tick with none, a tenth and all moving. 13 mutations are caught.
 
+Phase 27g (items, inventories, drops, game modes, boxes):
+- Server: the player entity has a nine slot `Inventory` (replicated); Cave declares an item for each of its six placeable blocks, the kind
+  `voxunami_cave:dropped_item`, `/gamemode [creative|survival]` (saved per world, not saved while creative), and an items plugin: in survival a broken
+  block leaves its item, items fall a voxel every fourth tick and join and are picked up within 3 voxels, placing needs the item and uses it
+  up. Block editing now announces `BlockBroken` and `BlockPlaced`. `docs/entities-spec.md` 2.6b has the decisions.
+- Client: `ClientContext::entities()`; the verb `entity_appearance`; `EntityBox` in the renderer (22 renderer GPU tests pass on both adapters, 2 new);
+  Cave's client shows the survival count on the screen and draws items as boxes.
+- Tests: 12 item tests through a server and a session (creative changes nothing, drops, falling and joining independent of the tick phase,
+  pickup range, a full and a partly full inventory, placing, saving, the screen, the box), 6 unit tests of the pure parts, 2 of the verb, 2 of
+  the renderer, and the Cave golden grew an items script. 22 mutations of the new code: all caught but one that changes nothing (air announced
+  as broken: air has no item).
+- Goldens repinned once, with every size difference accounted for: the inventory is 28 bytes in each spawn of a player (+1 for 2048, whose frame
+  grew past 127 bytes), the world description names the new kind (27 bytes) and the newcomer is told the game mode (30 bytes): Cave +85, Eels +56,
+  2048 +29, before the Cave script gained the items segment.
+- A test of mine failed once on Linux: it guarded the idle ticks of a joining test with an assertion that settling took no more than a fixed
+  number of ticks. The number was not enough on a cold build. Tests that wait whole intervals and assert only settled states do not have this.
+
 Fix of a flaky test (after Phase 27f): a body put inside terrain is moved out of it.
 - Cause found by instrumenting and sweeping, not guessed: three explanations were tested and ruled out first (a body embedded after the level
   switch and then lifted, a sliver overlap with a taller column, a stale collision cache). The chain and the evidence are in `docs/plan.md`.

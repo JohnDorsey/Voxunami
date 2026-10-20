@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use entities::{ComponentBag, Entity, EntityError, EntityKindSpec, Hidden};
+use entities::{ComponentBag, Entity, EntityError, EntityKindSpec, Hidden, Inventory};
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, EntityId, Message, PlayerKey};
 use server::{Audience, CommandLine, ServerWorld};
@@ -18,9 +18,12 @@ pub fn player_kind() -> NamespacedId {
         .expect("constant identifier is valid")
 }
 
+/// How many slots a player's inventory has.
+pub const PLAYER_INVENTORY_SLOTS: usize = 9;
+
 /// What a player entity is made of. The game registers it (the `PlayersPlugin` does): the key stays on
-/// the server, the connection's number and the look angles are told to clients, and the hidden flag is how
-/// a player who is away stays in the world without being seen.
+/// the server, the connection's number, the look angles and the inventory are told to clients, and the hidden
+/// flag is how a player who is away stays in the world without being seen.
 pub fn player_kind_spec() -> EntityKindSpec {
     EntityKindSpec::new(player_kind().as_str())
         .component(PlayerKeyComponent(PlayerKey::new([0; 32])), false)
@@ -32,6 +35,7 @@ pub fn player_kind_spec() -> EntityKindSpec {
             },
             true,
         )
+        .component(Inventory::new(PLAYER_INVENTORY_SLOTS), true)
         .component(Hidden(false), false)
 }
 

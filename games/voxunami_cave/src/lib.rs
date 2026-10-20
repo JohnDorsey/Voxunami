@@ -15,6 +15,7 @@ pub mod client;
 pub mod content;
 pub mod fire;
 pub mod game;
+pub mod items;
 pub mod lighting;
 pub mod logic;
 pub mod messages;

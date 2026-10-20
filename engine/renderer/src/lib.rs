@@ -18,4 +18,6 @@ pub use camera::{Camera, Frustum};
 pub use graphics_context::{
     AdapterPreference, GraphicsContext, GraphicsError, describe, new_instance,
 };
-pub use voxel_renderer::{AVATAR_COLOR_COUNT, Atmosphere, Avatar, RenderStatistics, VoxelRenderer};
+pub use voxel_renderer::{
+    AVATAR_COLOR_COUNT, Atmosphere, Avatar, EntityBox, RenderStatistics, VoxelRenderer,
+};

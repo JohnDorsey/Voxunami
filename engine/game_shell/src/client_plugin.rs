@@ -11,6 +11,7 @@ use std::any::Any;
 use std::collections::BTreeMap;
 
 use block_models::BlockTable;
+use client::{ClientEntities, ClientEntity};
 use namespaced_id::NamespacedId;
 use player_presence::PlayerState;
 use plugin_host::{Arguments, CommandSpec};
@@ -87,6 +88,8 @@ pub(crate) struct SessionView<'a> {
     pub camera: &'a Camera,
     pub block_table: &'a BlockTable,
     pub players: &'a BTreeMap<ClientId, PlayerState>,
+    /// Every entity the client has been told of.
+    pub entities: &'a ClientEntities,
     pub settings: &'a mut ClientSettings,
     pub target: Option<RayHit>,
     /// The block and state in the targeted voxel.
@@ -157,6 +160,12 @@ impl<'a> ClientContext<'a> {
         self.view.players
     }
 
+    /// The entities the client has been told of: those in the region it watches (the players among them,
+    /// the one that is this player with their inventory).
+    pub fn entities(&self) -> &ClientEntities {
+        self.view.entities
+    }
+
     /// This client's identifier on the server.
     pub fn own_client(&self) -> ClientId {
         self.view.own_client
@@ -186,11 +195,25 @@ pub enum ClientRegistrationError {
     DuplicateCommand(String),
     #[error("a message does not round-trip: {0}")]
     BadMessage(String),
+    #[error("the entity kind {0} is given an appearance twice")]
+    DuplicateAppearance(NamespacedId),
+}
+
+/// How an entity is drawn until it has a model: as a box. The box is centred `centre_offset` voxels from the
+/// entity's position, so that a thing that rests on the ground can be drawn on it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Appearance {
+    /// How big the box is along each axis, in eighths of a voxel (each is made even and from 2 to 8).
+    pub size: [u8; 3],
+    /// The palette value it is drawn in: a block's number, to look like that block.
+    pub material: u32,
+    pub centre_offset: [f32; 3],
 }
 
 type MessageHook = Box<dyn FnMut(&[u8]) -> bool + Send>;
 type ViewHook = Box<dyn FnMut(ViewChannels) -> ViewChannels + Send>;
 type HudHook = Box<dyn FnMut(&ClientContext<'_>) -> Option<String> + Send>;
+type AppearanceHook = Box<dyn Fn(&ClientEntity) -> Option<Appearance> + Send>;
 type ActionHook = Box<dyn FnMut(&mut ClientContext<'_>) + Send>;
 type CommandHook = Box<dyn FnMut(&mut ClientContext<'_>, &Arguments<'_>) -> String + Send>;
 
@@ -218,6 +241,7 @@ pub(crate) struct ClientHost {
     checks: Vec<fn() -> Result<(), String>>,
     views: Vec<ViewHook>,
     huds: Vec<HudHook>,
+    appearances: BTreeMap<NamespacedId, AppearanceHook>,
     keys: Vec<KeyBinding>,
     mice: Vec<MouseBinding>,
     commands: BTreeMap<String, CommandEntry>,
@@ -273,6 +297,25 @@ impl ClientRegistrar<'_> {
     /// same one while nothing has changed (the view compares them by identity).
     pub fn view(&mut self, run: impl FnMut(ViewChannels) -> ViewChannels + Send + 'static) {
         self.host.views.push(Box::new(run));
+    }
+
+    /// How entities of a kind are drawn: a box, from what the client knows of the entity, or none to draw
+    /// nothing. Players are drawn by the shell and need none. A kind has one appearance.
+    pub fn entity_appearance(
+        &mut self,
+        kind: NamespacedId,
+        run: impl Fn(&ClientEntity) -> Option<Appearance> + Send + 'static,
+    ) {
+        if self
+            .host
+            .appearances
+            .insert(kind.clone(), Box::new(run))
+            .is_some()
+        {
+            self.host
+                .errors
+                .push(ClientRegistrationError::DuplicateAppearance(kind));
+        }
     }
 
     /// A line of the HUD, or none. Runs every frame, while playing and replaying.
@@ -371,6 +414,11 @@ impl ClientHost {
             check().map_err(ClientRegistrationError::BadMessage)?;
         }
         Ok(host)
+    }
+
+    /// How an entity is drawn, if the plugins say.
+    pub(crate) fn appearance_of(&self, entity: &ClientEntity) -> Option<Appearance> {
+        self.appearances.get(&entity.kind)?(entity)
     }
 
     /// Hands a game message to the plugin that handles its kind. Returns whether one did.
@@ -614,12 +662,14 @@ mod tests {
         let camera = camera_at([0.0; 3], 0.0, 0.0, 3);
         let table = BlockTable::of_cubes(&[false]);
         let players = BTreeMap::new();
+        let entities = ClientEntities::default();
         let mut settings = ClientSettings::new(0);
         let mut host = ClientHost::new(&plugins).expect("the plugins register");
         let mut context = ClientContext::new(SessionView {
             camera: &camera,
             block_table: &table,
             players: &players,
+            entities: &entities,
             settings: &mut settings,
             target: None,
             target_content: None,
@@ -890,5 +940,60 @@ mod tests {
         );
         let (none, _) = with_host(Vec::new(), |host, context| host.command(".keys", context));
         assert_eq!(none, "this game has no actions on keys or mouse buttons");
+    }
+
+    fn an_entity_of(kind: &str) -> ClientEntity {
+        ClientEntity {
+            id: protocol::EntityId::new(1),
+            kind: id(kind),
+            pose: voxel_space::EntityPose::new(
+                voxel_space::GridId::MAIN,
+                voxel_space::WorldPosition::new(voxel_space::BrickCoordinate::ORIGIN, [1.0; 3]),
+                voxel_space::Orientation::IDENTITY,
+            ),
+            components: entities::ComponentBag::new(),
+        }
+    }
+
+    #[test]
+    fn an_appearance_is_given_to_the_entities_of_its_kind_and_to_no_others() {
+        let plugins = vec![plugin("test:a", |registrar| {
+            registrar.entity_appearance(id("test:rock"), |entity| {
+                Some(Appearance {
+                    size: [4, 4, 4],
+                    material: entity.id.get() as u32 + 2,
+                    centre_offset: [0.0, -0.25, 0.0],
+                })
+            });
+            // One that says nothing for an entity it will not draw.
+            registrar.entity_appearance(id("test:hidden"), |_| None);
+        })];
+        let host = ClientHost::new(&plugins).unwrap();
+        assert_eq!(
+            host.appearance_of(&an_entity_of("test:rock")),
+            Some(Appearance {
+                size: [4, 4, 4],
+                material: 3,
+                centre_offset: [0.0, -0.25, 0.0],
+            })
+        );
+        assert_eq!(host.appearance_of(&an_entity_of("test:hidden")), None);
+        assert_eq!(host.appearance_of(&an_entity_of("test:other")), None);
+    }
+
+    #[test]
+    fn a_kind_is_given_an_appearance_once() {
+        let appearance = |registrar: &mut ClientRegistrar<'_>| {
+            registrar.entity_appearance(id("test:rock"), |_| None);
+        };
+        assert_eq!(
+            registration_error(vec![
+                plugin("test:a", appearance),
+                plugin("test:b", appearance)
+            ]),
+            Some(ClientRegistrationError::DuplicateAppearance(id(
+                "test:rock"
+            )))
+        );
     }
 }

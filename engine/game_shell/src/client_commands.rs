@@ -100,11 +100,13 @@ mod tests {
         let camera = camera_at([0.0; 3], 0.0, 0.0, 3);
         let table = BlockTable::of_cubes(&[false]);
         let players = BTreeMap::new();
+        let entities = client::ClientEntities::default();
         let mut host = ClientHost::new(&[]).expect("the shell's commands register");
         let mut context = ClientContext::new(SessionView {
             camera: &camera,
             block_table: &table,
             players: &players,
+            entities: &entities,
             settings,
             target: None,
             target_content: None,

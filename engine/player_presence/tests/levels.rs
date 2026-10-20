@@ -183,7 +183,12 @@ fn players_told(messages: &[ServerMessage]) -> Vec<(u32, GridId)> {
         })
         .flatten()
         .map(|entity| {
-            let client = PlayerClient::decode(&entity.components[0].1).unwrap();
+            let (_, bytes) = entity
+                .components
+                .iter()
+                .find(|(name, _)| *name == PlayerClient::kind())
+                .expect("a player is told whose it is");
+            let client = PlayerClient::decode(bytes).unwrap();
             (client.0.get(), entity.pose.grid)
         })
         .collect()

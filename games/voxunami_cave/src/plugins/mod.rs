@@ -6,6 +6,7 @@
 mod adapters;
 mod block_editing;
 mod fire;
+mod items;
 mod light;
 mod movement;
 
@@ -14,8 +15,9 @@ use plugin_host::Plugin;
 
 use crate::content::CaveContent;
 
-pub use block_editing::{BlockEditRequested, BlockEditingPlugin};
+pub use block_editing::{BlockBroken, BlockEditRequested, BlockEditingPlugin, BlockPlaced};
 pub use fire::FirePlugin;
+pub use items::ItemsPlugin;
 pub use light::LightPlugin;
 pub use movement::MovementPlugin;
 
@@ -27,6 +29,7 @@ pub fn cave_plugins(content: &CaveContent) -> Vec<Box<dyn Plugin>> {
     vec![
         Box::new(players),
         Box::new(BlockEditingPlugin::new(content, presence.clone())),
+        Box::new(ItemsPlugin::new(content, presence.clone())),
         Box::new(MovementPlugin::new(content, presence.clone())),
         Box::new(FirePlugin::new(content, presence)),
         Box::new(LightPlugin::new(content)),
