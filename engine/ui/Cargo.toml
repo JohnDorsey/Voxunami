@@ -1,0 +1,17 @@
+[package]
+name = "ui"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "A small user interface a server can describe: the tree, its limits, its byte form, and a layout that is whole pixels and the same everywhere."
+
+[dependencies]
+binary_codec.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

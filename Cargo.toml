@@ -31,6 +31,7 @@ renderer = { path = "engine/renderer" }
 server = { path = "engine/server" }
 terrain = { path = "engine/terrain" }
 transport = { path = "engine/transport" }
+ui = { path = "engine/ui" }
 voxel_grid = { path = "engine/voxel_grid" }
 voxel_meshing = { path = "engine/voxel_meshing" }
 voxel_space = { path = "engine/voxel_space" }
