@@ -43,7 +43,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
   frame; levels of detail per grid for drawing, for collision (coarse colliders, aggregated mass) and for streaming; a grid saved in
   flight as a file of its own.
 - 31 (planned, late) A wider material palette: the renderer's palette in a storage buffer (renderer-only; saves and protocol unchanged).
-- 30 (planned) Server-driven UI: a UI the server describes in the value vocabulary and the stream drives.
+- 30 (specified in `ui-spec.md`, waiting for the owner's answers) Server-driven UI: a UI the server describes in the value vocabulary and the stream drives.
 - 29 (built; `data-packs-spec.md`, `pack-format.md`) Data-driven block packs (JSON), the generated JSON Schema, `check-pack`, and patches: tags by
   union, patch operations, dependency order, loud failures (revision 5; mod stage 2). Phase 30 is next.
 - 28 (built; `content-package-spec.md`) The content package at the handshake, carried by recordings (revision 3). Phase 29 is next.
