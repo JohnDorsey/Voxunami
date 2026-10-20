@@ -1,5 +1,5 @@
 use voxel_grid::ChannelIndex;
-use voxel_space::{GridId, LevelIndex, VoxelCoordinate};
+use voxel_space::{GridId, VoxelCoordinate};
 
 use crate::server_world::{AccessError, ServerWorld};
 
@@ -26,27 +26,24 @@ pub trait GridView {
     ) -> Result<bool, AccessError>;
 }
 
-/// One grid of the server's world, as [`GridView`].
+/// One grid of the server's world, as [`GridView`]: the terrain of a level or a ship.
 #[derive(Debug)]
 pub struct ServerGrid<'a> {
     world: &'a mut ServerWorld,
     grid: GridId,
-    /// The level whose terrain this is. Only root grids exist until structures are built.
-    level: LevelIndex,
 }
 
 impl ServerWorld {
     /// A grid of this world, or an error if the world has no such grid.
     pub fn grid(&mut self, grid: GridId) -> Result<ServerGrid<'_>, AccessError> {
-        let level = grid.root_level().ok_or(AccessError::NoSuchGrid(grid))?;
-        if self.data().level(level).is_none() {
+        let exists = match grid.root_level() {
+            Some(level) => self.data().level(level).is_some(),
+            None => self.data().grids().get(grid).is_some(),
+        };
+        if !exists {
             return Err(AccessError::NoSuchGrid(grid));
         }
-        Ok(ServerGrid {
-            world: self,
-            grid,
-            level,
-        })
+        Ok(ServerGrid { world: self, grid })
     }
 }
 
@@ -56,7 +53,10 @@ impl GridView for ServerGrid<'_> {
     }
 
     fn get(&mut self, channel: ChannelIndex, at: VoxelCoordinate) -> Result<u32, AccessError> {
-        self.world.voxel(self.level, channel, at)
+        match self.grid.root_level() {
+            Some(level) => self.world.voxel(level, channel, at),
+            None => self.world.moving_voxel(self.grid, channel, at),
+        }
     }
 
     fn set(
@@ -65,6 +65,9 @@ impl GridView for ServerGrid<'_> {
         at: VoxelCoordinate,
         value: u32,
     ) -> Result<bool, AccessError> {
-        self.world.set_voxel(self.level, channel, at, value)
+        match self.grid.root_level() {
+            Some(level) => self.world.set_voxel(level, channel, at, value),
+            None => self.world.set_moving_voxel(self.grid, channel, at, value),
+        }
     }
 }

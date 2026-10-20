@@ -473,7 +473,9 @@ impl Server {
         self.world
             .edits
             .iter()
-            .map(|(&(level, brick), edits)| {
+            // Ships are not sent yet (Phase 32c).
+            .filter_map(|(&(grid, brick), edits)| Some((grid.root_level()?, brick, edits)))
+            .map(|(level, brick, edits)| {
                 let contents = Arc::clone(
                     self.world
                         .data()

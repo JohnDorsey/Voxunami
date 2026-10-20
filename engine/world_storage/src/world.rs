@@ -14,6 +14,7 @@ use crate::engine_sections::{
     self as sections, ChannelRecord, GeneratorsRecord, Header, LevelRecord, LevelToWrite,
     RegistryTable,
 };
+use crate::moving_grids::GridStore;
 use crate::translation::{SourceTranslator, TranslationError};
 
 /// One level of a world: the terrain recipe and the player-made changes to it.
@@ -43,6 +44,8 @@ pub struct WorldData {
     unknown_registry_tables: BTreeMap<NamespacedId, Vec<NamespacedId>>,
     opaque_sections: Vec<Section>,
     entities: EntityStore,
+    /// The ships. Not saved yet (Phase 32i): a world file has only the root grids of its levels.
+    grids: GridStore,
 }
 
 /// Where the voxels of a brick come from.
@@ -172,6 +175,7 @@ impl WorldData {
             unknown_registry_tables: BTreeMap::new(),
             opaque_sections: Vec::new(),
             entities: EntityStore::new(),
+            grids: GridStore::new(),
         }
     }
 
@@ -265,6 +269,15 @@ impl WorldData {
 
     pub fn entities_mut(&mut self) -> &mut EntityStore {
         &mut self.entities
+    }
+
+    /// The grids that are not the terrain of a level.
+    pub fn grids(&self) -> &GridStore {
+        &self.grids
+    }
+
+    pub fn grids_mut(&mut self) -> &mut GridStore {
+        &mut self.grids
     }
 
     pub fn opaque_sections(&self) -> &[Section] {
@@ -942,6 +955,7 @@ impl ParsedWorld {
             unknown_registry_tables,
             opaque_sections: self.opaque_sections,
             entities: self.entities,
+            grids: GridStore::new(),
         };
         Ok((world, report, translator))
     }

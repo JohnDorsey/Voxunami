@@ -65,16 +65,15 @@ impl ActiveVoxels {
 
     /// Writes these voxels. The root grid of a level is named by the level's identifier in
     /// `level_ids`, in level order, since level numbers belong to one running server; voxels of a
-    /// level that is not listed are not written. Only root grids can be written until structures are
-    /// saved by id (Phase 32), so a voxel of any other grid is a mistake and panics.
+    /// level that is not listed are not written. The voxels of any other grid (a ship) are not written either: they are saved with
+    /// the ship (Phase 32i).
     pub fn write_to(&self, writer: &mut ByteWriter, level_ids: &[NamespacedId]) {
         let named: Vec<(&NamespacedId, VoxelCoordinate)> = self
             .voxels
             .iter()
             .filter_map(|&(grid, voxel)| {
-                let level = grid
-                    .root_level()
-                    .expect("only the root grids of levels can be saved, by the level's name");
+                // The work pending in a ship is saved with the ship (Phase 32i), not in the sections of the levels.
+                let level = grid.root_level()?;
                 Some((level_ids.get(level.get() as usize)?, voxel))
             })
             .collect();
@@ -317,11 +316,21 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "only the root grids of levels can be saved")]
-    fn a_voxel_of_a_grid_that_is_not_a_root_cannot_be_saved_yet() {
+    fn the_voxels_of_a_ship_are_left_out_of_the_section_of_the_levels() {
         let mut active = ActiveVoxels::new();
         active.insert(GridId::new(GridId::FIRST_ALLOCATED), voxel(1, 2, 3));
-        let _ = active.to_section(&name("pending"), &levels());
+        let alone = active.to_section(&name("pending"), &levels());
+        assert_eq!(
+            alone.payload,
+            ActiveVoxels::new()
+                .to_section(&name("pending"), &levels())
+                .payload
+        );
+        active.insert(GridId::MAIN, voxel(4, 5, 6));
+        let with_terrain = active.to_section(&name("pending"), &levels());
+        let read =
+            ActiveVoxels::from_sections(&[with_terrain], &name("pending"), index_of).unwrap();
+        assert_eq!(read.len(), 1);
     }
 
     #[test]

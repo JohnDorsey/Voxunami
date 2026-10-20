@@ -666,6 +666,23 @@ Phase 32 (moving grids; `moving-grids-spec.md`):
   patterns checked against a separate Python calculation and equal on Windows and Linux. 21 mutations: 19 caught; 1 equivalent in practice (an exact tie between
   lattice turns); 1 redundant check (a range test that `checked_offset` already makes), which was deleted.
 
+Phase 32b (grids on the server):
+- `world_storage::{GridStore, MovingGrid}`: the ships of a world (a level, a `GridPose`, and a sparse `voxel_grid::Grid` of their own), ids from a counter that
+  only goes up from `GridId::FIRST_ALLOCATED`, `retire` (a split: every part a new id, none the original's) and `merge` (the result a new id), tombstones, and
+  `resolve` (follow a retired id through splits and merges to the live grids with the composed transform). `WorldData::grids()`.
+- `ServerWorld::grid` answers for ships; `ServerGrid` (the rule's `GridView`) reads and writes a ship's voxels in its own coordinates, records the edits under
+  the ship's id (`edits` is keyed by `GridId` now) and says which grid a watched channel change was in. `create_grid`, and `detach_blocks`: takes the blocks at
+  some voxels of the terrain out of it (every channel to its default) into a new ship that is where they were, its origin the lowest corner of their box.
+- `ActiveVoxels` leaves a ship's pending work out of the sections of the levels (it used to panic): it will be saved with the ship (32i).
+- The frame-invariance test (`tests/frames.rs`, plan requirement 6): Cave's light settles to the same light in the terrain of a level and in a ship at five
+  poses (turned in five of the 24 ways, bricks apart and a million bricks away). It runs through the real plugins, so it caught nothing wrong but pins that the
+  light plugin works on any grid by `GridId`.
+- Mutations: 16, all caught after two tests were strengthened (the order of a chain of transforms needs a turn that moves the x axis; a second channel must
+  travel with a detached block).
+- Limits recorded, each owned by a later step: edits of ships are not sent to clients (32c); a ship is not saved (32i; a world saved now drops its ships, and no
+  command can make one before 32h); entities cannot have a ship as their frame (the entity store still refuses, 32g); Cave's fire does not burn on a ship (its
+  range test is "a player is in this level", and the ship's simulation distance replaces it in 32i).
+
 Phase 31 (a wider material palette):
 - The palette moved from a 256-entry uniform array to a storage buffer of linear RGB (16 bytes a material, 16 MiB at the most), rebuilt by `set_palette` with a new
   bind group. The 16 avatar colours no longer take palette places: they are the last 16 values a quad can carry (0xFFFFF0 and up) and live in the frame uniform,

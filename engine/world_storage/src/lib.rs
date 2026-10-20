@@ -15,12 +15,14 @@
 pub mod container;
 pub mod engine_sections;
 pub mod file;
+mod moving_grids;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 mod translation;
 mod world;
 
 pub use container::{ContainerError, Section};
+pub use moving_grids::{GridStore, MovingGrid};
 pub use translation::{SourceTranslator, TranslationError};
 pub use voxel_space::LevelIndex;
 pub use world::{

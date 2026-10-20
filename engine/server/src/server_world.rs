@@ -4,11 +4,12 @@ use std::sync::Arc;
 use entities::{ComponentBag, Entity, EntityCatalog, EntityError, EntityStore};
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, EntityId, MAXIMUM_COMMAND_LENGTH, Message, PlayerKey, Tick, VoxelChange};
-use voxel_grid::{Brick, ChannelIndex};
+use voxel_grid::{Brick, ChannelIndex, Grid};
 use voxel_space::{
-    BrickCoordinate, EntityPose, GridId, LevelIndex, VoxelCoordinate, WorldPosition,
+    BrickCoordinate, EntityPose, GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate,
+    WorldPosition,
 };
-use world_storage::{BrickSource, WorldData};
+use world_storage::{BrickSource, MovingGrid, WorldData};
 
 use crate::generated_cache::GeneratedBrickCache;
 
@@ -34,6 +35,15 @@ pub enum AccessError {
     NoSuchLevel(LevelIndex),
     #[error("the world has no {0}")]
     NoSuchGrid(GridId),
+}
+
+/// Why a ship could not be made or removed.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum DetachError {
+    #[error("there are no voxels to make a ship of")]
+    NoVoxels,
+    #[error(transparent)]
+    Access(#[from] AccessError),
 }
 
 /// A voxel whose value in a watched channel changed (see [`ServerWorld::watch_channels`]).
@@ -70,7 +80,8 @@ pub struct ServerWorld {
     tick: Tick,
     clients: BTreeMap<ClientId, PlayerKey>,
     generated: GeneratedBrickCache,
-    pub(crate) edits: BTreeMap<(LevelIndex, BrickCoordinate), BrickEdits>,
+    /// The bricks changed this tick, by grid. Only the root grids' edits are sent to clients so far (Phase 32c sends the rest).
+    pub(crate) edits: BTreeMap<(GridId, BrickCoordinate), BrickEdits>,
     pub(crate) outgoing: Vec<OutgoingGameMessage>,
     pub(crate) replies: Vec<(ClientId, String)>,
     /// The channels whose changes are logged for whoever asks (see [`ServerWorld::take_changes`]).
@@ -283,8 +294,22 @@ impl ServerWorld {
         {
             return Ok(false);
         }
-        let entry = self.edits.entry((level, coordinate)).or_insert(BrickEdits {
-            created,
+        self.record_edit(GridId::root(level), created, channel, at, value);
+        Ok(true)
+    }
+
+    /// Notes that a voxel changed, for the clients that watch its brick and for whoever asked for the changes of its channel.
+    fn record_edit(
+        &mut self,
+        grid: GridId,
+        brick_created: bool,
+        channel: ChannelIndex,
+        at: VoxelCoordinate,
+        value: u32,
+    ) {
+        let (coordinate, local) = at.split();
+        let entry = self.edits.entry((grid, coordinate)).or_insert(BrickEdits {
+            created: brick_created,
             changes: Vec::new(),
         });
         entry.changes.push(VoxelChange {
@@ -294,12 +319,132 @@ impl ServerWorld {
         });
         if self.watched.contains(&channel) {
             self.changes.push(ChannelChange {
-                grid: GridId::root(level),
+                grid,
                 channel,
                 voxel: at,
             });
         }
+    }
+
+    /// The value of a voxel of a grid that is not the terrain of a level, in the grid's own coordinates.
+    pub(crate) fn moving_voxel(
+        &self,
+        grid: GridId,
+        channel: ChannelIndex,
+        at: VoxelCoordinate,
+    ) -> Result<u32, AccessError> {
+        let moving = self
+            .data
+            .grids()
+            .get(grid)
+            .ok_or(AccessError::NoSuchGrid(grid))?;
+        Ok(moving.voxels.get(channel, at))
+    }
+
+    pub(crate) fn set_moving_voxel(
+        &mut self,
+        grid: GridId,
+        channel: ChannelIndex,
+        at: VoxelCoordinate,
+        value: u32,
+    ) -> Result<bool, AccessError> {
+        let moving = self
+            .data
+            .grids_mut()
+            .get_mut(grid)
+            .ok_or(AccessError::NoSuchGrid(grid))?;
+        let created = moving.voxels.brick(at.split().0).is_none();
+        if !moving.voxels.set(channel, at, value) {
+            return Ok(false);
+        }
+        self.record_edit(grid, created, channel, at, value);
         Ok(true)
+    }
+
+    /// Makes a ship of the blocks at these voxels of a level's terrain: takes everything in them out of the terrain (every channel goes
+    /// to its default there) and puts it into a new grid, which is exactly where the voxels were and not turned. The grid's origin is the
+    /// lowest corner of the box around the voxels, so its coordinates are small however far from the origin of the world it is. Nothing
+    /// changes if any voxel cannot be read.
+    pub fn detach_blocks(
+        &mut self,
+        level: LevelIndex,
+        voxels: &[VoxelCoordinate],
+    ) -> Result<GridId, DetachError> {
+        if self.data.level(level).is_none() {
+            return Err(AccessError::NoSuchLevel(level).into());
+        }
+        let voxels: BTreeSet<VoxelCoordinate> = voxels.iter().copied().collect();
+        let Some(first) = voxels.first().copied() else {
+            return Err(DetachError::NoVoxels);
+        };
+        let layout = Arc::clone(
+            self.data
+                .level(level)
+                .expect("the level exists")
+                .overrides
+                .layout(),
+        );
+        let channels: Vec<ChannelIndex> = layout.channel_indices().collect();
+        let mut low = [first.x(), first.y(), first.z()];
+        for voxel in &voxels {
+            low = [
+                low[0].min(voxel.x()),
+                low[1].min(voxel.y()),
+                low[2].min(voxel.z()),
+            ];
+        }
+        // Read everything before changing anything.
+        let mut contents = Vec::with_capacity(voxels.len());
+        for &voxel in &voxels {
+            let mut values = Vec::with_capacity(channels.len());
+            for &channel in &channels {
+                values.push(self.voxel(level, channel, voxel)?);
+            }
+            contents.push((voxel, values));
+        }
+        let origin = VoxelCoordinate::new(low[0], low[1], low[2]);
+        let (origin_brick, origin_local) = origin.split();
+        let pose = GridPose::new(
+            WorldPosition::new(
+                origin_brick,
+                [
+                    origin_local.x() as f32,
+                    origin_local.y() as f32,
+                    origin_local.z() as f32,
+                ],
+            ),
+            Orientation::IDENTITY,
+        );
+        let grid = self.create_grid(level, pose)?;
+        for (voxel, values) in contents {
+            let moved =
+                VoxelCoordinate::new(voxel.x() - low[0], voxel.y() - low[1], voxel.z() - low[2]);
+            for (&channel, value) in channels.iter().zip(values) {
+                self.set_moving_voxel(grid, channel, moved, value)?;
+                self.set_voxel(level, channel, voxel, layout.default_value(channel))?;
+            }
+        }
+        Ok(grid)
+    }
+
+    /// Makes an empty ship in a level.
+    pub fn create_grid(
+        &mut self,
+        level: LevelIndex,
+        pose: GridPose,
+    ) -> Result<GridId, AccessError> {
+        let layout = Arc::clone(
+            self.data
+                .level(level)
+                .ok_or(AccessError::NoSuchLevel(level))?
+                .overrides
+                .layout(),
+        );
+        Ok(self.data.grids_mut().create(MovingGrid {
+            level,
+            pose,
+            voxels: Grid::new(layout),
+        }))
     }
 
     /// Queues a message from the game for clients, delivered at the end of this tick.
@@ -359,6 +504,9 @@ mod tests {
 
     use terrain::{TerrainGenerator, WorldTerrain};
     use voxel_grid::{Grid, GridLayout};
+    use voxel_space::voxel_in_other;
+
+    use crate::GridView;
     use world_storage::LevelData;
     use world_storage::test_support::{Game, Plugin, id, main_level_id};
 
@@ -478,7 +626,7 @@ mod tests {
         );
         assert_eq!(
             world.edits.keys().copied().collect::<Vec<_>>(),
-            [(nether, at.split().0)]
+            [(GridId::root(nether), at.split().0)]
         );
         assert_eq!(
             (
@@ -512,5 +660,183 @@ mod tests {
         let odd = format!("{}é", "a".repeat(MAXIMUM_COMMAND_LENGTH - 1));
         world.reply(client, &odd);
         assert_eq!(world.replies[2].1, "a".repeat(MAXIMUM_COMMAND_LENGTH - 1));
+    }
+
+    #[test]
+    fn a_ship_has_voxels_of_its_own_that_start_at_the_default_and_are_not_the_terrain() {
+        let (mut world, block, _) = counting_world();
+        let ship = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        assert_eq!(ship.root_level(), None);
+        let at = VoxelCoordinate::new(1, 2, 3);
+        let default = world.data().main().overrides.layout().default_value(block);
+        let terrain = world.voxel(LevelIndex::MAIN, block, at).unwrap();
+        assert_eq!(world.grid(ship).unwrap().get(block, at), Ok(default));
+
+        assert_eq!(world.grid(ship).unwrap().set(block, at, 7), Ok(true));
+        assert_eq!(world.grid(ship).unwrap().get(block, at), Ok(7));
+        assert_eq!(world.grid(ship).unwrap().set(block, at, 7), Ok(false));
+        // The terrain at the same coordinates is as it was, and nothing was generated for the ship.
+        assert_eq!(world.voxel(LevelIndex::MAIN, block, at).unwrap(), terrain);
+        assert_eq!(world.data().main().overrides.brick_count(), 0);
+
+        // One edit of one brick of the ship, which was made by it.
+        let edit = &world.edits[&(ship, at.split().0)];
+        assert!(edit.created);
+        assert_eq!(edit.changes.len(), 1);
+        assert_eq!(world.edits.len(), 1);
+    }
+
+    #[test]
+    fn the_changes_a_ship_makes_to_a_watched_channel_say_which_grid() {
+        let (mut world, block, _) = counting_world();
+        let ship = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        world.watch_channels(BTreeSet::from([block]));
+        let at = VoxelCoordinate::new(40, -3, 9);
+        world.grid(ship).unwrap().set(block, at, 2).unwrap();
+        world.set_voxel(LevelIndex::MAIN, block, at, 4).unwrap();
+        assert_eq!(
+            world.take_changes(),
+            [
+                ChannelChange {
+                    grid: ship,
+                    channel: block,
+                    voxel: at
+                },
+                ChannelChange {
+                    grid: GridId::MAIN,
+                    channel: block,
+                    voxel: at
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_grid_that_does_not_exist_is_an_error_and_so_is_a_ship_in_a_level_that_does_not() {
+        let (mut world, block, _) = counting_world();
+        let gone = GridId::new(GridId::FIRST_ALLOCATED + 9);
+        assert_eq!(world.grid(gone).err(), Some(AccessError::NoSuchGrid(gone)));
+        let nowhere = LevelIndex::new(7);
+        assert_eq!(
+            world.create_grid(nowhere, GridPose::identity()),
+            Err(AccessError::NoSuchLevel(nowhere))
+        );
+        let ship = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        world.data_mut().grids_mut().remove(ship);
+        assert!(world.grid(ship).is_err());
+        assert_eq!(
+            world.set_moving_voxel(ship, block, VoxelCoordinate::ORIGIN, 1),
+            Err(AccessError::NoSuchGrid(ship))
+        );
+    }
+
+    #[test]
+    fn detaching_blocks_moves_them_out_of_the_terrain_into_a_ship_exactly_where_they_were() {
+        let (mut world, block, _) = counting_world();
+        let level = LevelIndex::MAIN;
+        let default = world.data().main().overrides.layout().default_value(block);
+        // Across a brick boundary on every axis, with negative coordinates; given twice and out of order.
+        let voxels = [
+            VoxelCoordinate::new(2, 5, 40),
+            VoxelCoordinate::new(-1, 5, 31),
+            VoxelCoordinate::new(0, 6, 32),
+            VoxelCoordinate::new(-1, 5, 31),
+        ];
+        for (index, voxel) in voxels.iter().enumerate() {
+            world
+                .set_voxel(level, block, *voxel, 10 + index as u32)
+                .unwrap();
+        }
+        let bystander = VoxelCoordinate::new(1, 5, 31);
+        world.set_voxel(level, block, bystander, 99).unwrap();
+        // A second channel travels too.
+        let temperature = world
+            .data()
+            .main()
+            .overrides
+            .layout()
+            .channel_index(&id("core:temperature"))
+            .unwrap();
+        let normal = world
+            .data()
+            .main()
+            .overrides
+            .layout()
+            .default_value(temperature);
+        world.set_voxel(level, temperature, voxels[2], 33).unwrap();
+        world.edits.clear();
+
+        let ship = world.detach_blocks(level, &voxels).unwrap();
+
+        // The terrain there is empty now, the bystander is as it was, and the edits are the ordinary ones of the terrain.
+        for voxel in &voxels {
+            assert_eq!(world.voxel(level, block, *voxel).unwrap(), default);
+        }
+        assert_eq!(world.voxel(level, block, bystander).unwrap(), 99);
+        assert_eq!(world.voxel(level, temperature, voxels[2]).unwrap(), normal);
+        assert!(world.edits.keys().any(|(grid, _)| *grid == GridId::MAIN));
+        // The ship has the blocks where the box of the voxels starts at its own origin ...
+        let moving = world.data().grids().get(ship).unwrap();
+        assert_eq!(moving.level, level);
+        assert_eq!(moving.pose.orientation, Orientation::IDENTITY);
+        let (low_brick, low_local) = VoxelCoordinate::new(-1, 5, 31).split();
+        assert_eq!(
+            moving.pose.position,
+            WorldPosition::new(
+                low_brick,
+                [
+                    low_local.x() as f32,
+                    low_local.y() as f32,
+                    low_local.z() as f32
+                ]
+            )
+        );
+        let at = |x, y, z| moving.voxels.get(block, VoxelCoordinate::new(x, y, z));
+        assert_eq!(at(3, 0, 9), 10); // (2, 5, 40)
+        assert_eq!(at(0, 0, 0), 11 + 2); // (-1, 5, 31) was set last, by its second listing
+        assert_eq!(at(1, 1, 1), 12); // (0, 6, 32)
+        assert_eq!(
+            moving
+                .voxels
+                .get(temperature, VoxelCoordinate::new(1, 1, 1)),
+            33
+        );
+        assert_eq!(
+            moving.voxels.get(block, VoxelCoordinate::new(2, 0, 0)),
+            default
+        );
+        // ... and the ship's voxels are in the world exactly where they were, to the voxel.
+        for (voxel, ship_voxel) in [
+            (voxels[0], VoxelCoordinate::new(3, 0, 9)),
+            (voxels[2], VoxelCoordinate::new(1, 1, 1)),
+        ] {
+            assert_eq!(
+                voxel_in_other(&moving.pose, ship_voxel, &GridPose::identity()),
+                Some(voxel)
+            );
+        }
+    }
+
+    #[test]
+    fn detaching_nothing_or_from_a_level_that_is_not_there_is_refused_and_changes_nothing() {
+        let (mut world, block, _) = counting_world();
+        assert_eq!(
+            world.detach_blocks(LevelIndex::MAIN, &[]),
+            Err(DetachError::NoVoxels)
+        );
+        let nowhere = LevelIndex::new(3);
+        assert_eq!(
+            world.detach_blocks(nowhere, &[VoxelCoordinate::ORIGIN]),
+            Err(DetachError::Access(AccessError::NoSuchLevel(nowhere)))
+        );
+        assert!(world.data().grids().is_empty());
+        assert!(world.edits.is_empty());
+        let _ = block;
     }
 }
