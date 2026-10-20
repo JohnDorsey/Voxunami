@@ -6,13 +6,15 @@ use base_blocks::{
     BaseBlockIds, BaseBlocks, block_channel_identifier, block_registry_kind,
     light_channel_identifier, rolling_hills_generator_identifier, state_channel_identifier,
 };
-use content_registry::IdentifierRegistry;
+use block_models::BlockDefinition;
+use content_registry::{IdentifierRegistry, Registry};
 use game_shell::{ContentPackage, GameContent, PackErrors, PackageData, PackageSpec, RawPack};
 use namespaced_id::NamespacedId;
 use voxel_grid::{ChannelDefinition, ChannelIndex};
 use world_storage::{LoadContext, WorldData};
 use world_view::ViewChannels;
 
+use crate::items::{PLACEABLE, PLACEABLE_BY_DEFAULT};
 use crate::multiscale_light;
 
 /// How bright, from 0 to 255, a face is that no light reaches. There is no sky light yet (it was
@@ -42,6 +44,33 @@ pub struct CaveContent {
     /// The ids of the base blocks (the registry itself is in the package).
     pub blocks: BaseBlockIds,
     package: ContentPackage,
+}
+
+/// The blocks of a registry, with the flag that says a player can place a block set on the ones Cave says they can.
+fn mark_placeable(blocks: Registry<BlockDefinition>) -> Registry<BlockDefinition> {
+    let key: NamespacedId = PLACEABLE
+        .id()
+        .parse()
+        .expect("a property key is an identifier");
+    let mut marked = Registry::new();
+    for (_, entry) in blocks.iter() {
+        let identifier = entry.identifier().clone();
+        match entry.content() {
+            Some(definition) => {
+                let mut definition = definition.clone();
+                if PLACEABLE_BY_DEFAULT.contains(&identifier.as_str()) {
+                    definition.set_property_value(key.clone(), None, 1);
+                }
+                marked
+                    .register(identifier, definition)
+                    .expect("the blocks of a registry are distinct");
+            }
+            None => {
+                marked.register_missing(identifier);
+            }
+        }
+    }
+    marked
 }
 
 impl Default for CaveContent {
@@ -76,7 +105,11 @@ impl CaveContent {
             block_channel: block_channel_identifier(),
             state_channel: Some(state_channel_identifier()),
             light_channel: Some(light_channel_identifier()),
-            properties: base_blocks::property_declarations(),
+            properties: {
+                let mut properties = base_blocks::property_declarations();
+                properties.push(PLACEABLE.declaration());
+                properties
+            },
             generators: Arc::new(move |seed, layout| {
                 let block_channel = layout
                     .channel_index(&block_channel_identifier())
@@ -89,7 +122,7 @@ impl CaveContent {
         };
         Self {
             blocks: ids,
-            package: ContentPackage::new(base.into_registry(), spec),
+            package: ContentPackage::new(mark_placeable(base.into_registry()), spec),
         }
     }
 

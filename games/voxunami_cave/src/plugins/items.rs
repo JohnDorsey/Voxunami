@@ -28,7 +28,7 @@ use crate::content::CaveContent;
 use crate::items::{
     GameMode, LOWEST_DROP_VOXEL, PICKUP_RADIUS, STACK_SIZE, drop_pose, dropped_item_kind,
     dropped_item_kind_spec, falls_this_tick, game_mode_section, item_for_block, item_specs,
-    read_game_mode, voxel_of,
+    placeable_blocks, read_game_mode, voxel_of,
 };
 use crate::messages::GameModeIs;
 
@@ -50,6 +50,8 @@ fn slot_holding(inventory: &Inventory, item: &NamespacedId) -> Option<usize> {
 pub struct ItemsPlugin {
     /// The identifier of each block, by its number in this game's registry.
     block_names: HashMap<u32, NamespacedId>,
+    /// The blocks that can be placed, and so have items.
+    placeable: Arc<Vec<NamespacedId>>,
     air: u32,
     table: BlockTable,
     passable: PropertyHandle<bool>,
@@ -70,6 +72,7 @@ impl ItemsPlugin {
             air: content.blocks.air,
             passable: block_properties::passable(&table),
             table,
+            placeable: Arc::new(placeable_blocks(&content.package_data())),
             block_names,
             block_channel: content.block_channel(),
             state_channel: content.state_channel(),
@@ -99,10 +102,15 @@ impl Plugin for ItemsPlugin {
     }
 
     fn register(&self, registrar: &mut Registrar<'_>) {
-        for spec in item_specs() {
+        for spec in item_specs(&self.placeable) {
             registrar.item(spec);
         }
-        registrar.entity_kind(dropped_item_kind_spec());
+        let default_item = self.placeable.first().cloned().unwrap_or_else(|| {
+            "base_blocks:stone"
+                .parse()
+                .expect("constant identifier is valid")
+        });
+        registrar.entity_kind(dropped_item_kind_spec(&default_item));
         registrar.declares_message::<GameModeIs>();
         let mode = read_game_mode(registrar.world().opaque_sections()).unwrap_or_default();
         let rules = Arc::new(Mutex::new(Rules { mode }));
@@ -158,10 +166,11 @@ impl Plugin for ItemsPlugin {
         });
 
         // In survival, a block is placed only by a player who has the item.
-        let (shared, players, names, air) = (
+        let (shared, players, names, placeable, air) = (
             Arc::clone(&rules),
             Arc::clone(&self.players),
             self.block_names.clone(),
+            Arc::clone(&self.placeable),
             self.air,
         );
         registrar.on_ask(
@@ -170,7 +179,10 @@ impl Plugin for ItemsPlugin {
                 if locked(&shared).mode != GameMode::Survival || event.block == air {
                     return Verdict::Allow;
                 }
-                let Some(item) = names.get(&event.block).and_then(item_for_block) else {
+                let Some(item) = names
+                    .get(&event.block)
+                    .and_then(|block| item_for_block(block, &placeable))
+                else {
                     return Verdict::Allow;
                 };
                 let held = lock(&players)
@@ -186,10 +198,11 @@ impl Plugin for ItemsPlugin {
         );
 
         // ...and uses one up.
-        let (shared, players, names) = (
+        let (shared, players, names, placeable) = (
             Arc::clone(&rules),
             Arc::clone(&self.players),
             self.block_names.clone(),
+            Arc::clone(&self.placeable),
         );
         registrar.on::<BlockPlaced>(
             HandlerSpec::new("voxunami_cave:placing_uses_the_item_up"),
@@ -197,7 +210,10 @@ impl Plugin for ItemsPlugin {
                 if locked(&shared).mode != GameMode::Survival {
                     return;
                 }
-                let Some(item) = names.get(&event.block).and_then(item_for_block) else {
+                let Some(item) = names
+                    .get(&event.block)
+                    .and_then(|block| item_for_block(block, &placeable))
+                else {
                     return;
                 };
                 let Some(entity) = lock(&players).entity_of(event.client) else {
@@ -215,14 +231,21 @@ impl Plugin for ItemsPlugin {
         );
 
         // A broken block leaves its item where it was.
-        let (shared, names) = (Arc::clone(&rules), self.block_names.clone());
+        let (shared, names, placeable) = (
+            Arc::clone(&rules),
+            self.block_names.clone(),
+            Arc::clone(&self.placeable),
+        );
         registrar.on::<BlockBroken>(
             HandlerSpec::new("voxunami_cave:breaking_leaves_the_item"),
             move |event, context| {
                 if locked(&shared).mode != GameMode::Survival {
                     return;
                 }
-                let Some(item) = names.get(&event.block).and_then(item_for_block) else {
+                let Some(item) = names
+                    .get(&event.block)
+                    .and_then(|block| item_for_block(block, &placeable))
+                else {
                     return;
                 };
                 let mut components = ComponentBag::new();

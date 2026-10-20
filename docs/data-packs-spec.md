@@ -1,7 +1,19 @@
 # Phase 29: data packs (JSON blocks and patches), the generated schema, `check-pack`
 
-Status: proposed, waiting for the owner's answers to section 6. Nothing is built. Everything here is read from the plan
-(`plan.md`, revision 5 and "Patches") and from the code as it is after Phase 28; the choices are mine and marked as such.
+Status: built (29a to 29e). The owner answered section 6: serde_json (and a JSON Schema validator for tests only), a patch to a missing
+property is an error with `"optional": true` to skip it *and the skip is logged*, one block per file named by the file, a pack adds blocks only in its
+own namespace, and the placeable property is in. For writing a pack see `pack-format.md`. What changed from the design below while building:
+- Reading goes through `serde_json::Value` with a path-tracking walk of our own, not serde derive, so every problem in a file is reported (derive
+  stops at the first) and each names its JSON pointer. Only `serde_json` is a dependency of `data_packs`; `jsonschema` is a dev-dependency.
+- `add` takes `"shape"` (not `"state"`, which is the number of a state for property operations). A top-level `"$schema"` key is allowed in every file.
+  Whole numbers may be written `7.0` (JSON Schema's `integer` takes both).
+- `pack-schema` writes three files (`pack`, `block`, `patch`) into a directory. The commands take the game first, like `serve`:
+  `voxunami check-pack GAME DIR`, `voxunami pack-schema GAME DIR`.
+- A patch may touch only namespaces its pack names in `depends_on`, directly or through the packs it depends on (the rule that keeps load order
+  from mattering); a failed `test` is an error even in an optional patch; a pack's folder must be named as its id.
+- The materials limit (240) is checked where packs load and again where a client takes a package, because the renderer would panic.
+- `voxunami_cave:placeable` is a bool property; Cave sets it on its six blocks, derives its items and number keys (nine of them) from it, and a client
+  reads the list from the server's package.
 
 ## 1. What this is for
 

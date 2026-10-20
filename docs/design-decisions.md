@@ -197,6 +197,24 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - The look angles are kept as reported (a component) beside the orientation quaternion, so that nothing recovers angles from a quaternion.
   The calls that read or move players take the world (`Presence`), a game holds it as it held the book.
 
+## Decided (data packs; built in Phase 29)
+
+- **A pack is data, loaded by the server only.** A folder of JSON adds blocks and patches blocks; no code runs. A client needs no pack: it is sent
+  the result in the package (Phase 28), which is why packs needed nothing on the wire. A server that finds any problem in its packs does not start.
+- **Every problem is reported with its file and the path inside it, and all of them at once.** The reader walks a `serde_json::Value` itself (serde
+  derive would stop at the first error and loses the path); unknown keys are errors with a "did you mean" when one is near; a failed patch changes nothing.
+- **The loader is deterministic in what it is given, not in how it is listed:** packs in dependency order with ties by id, the files of a pack by
+  name, so numbering and results are the same on every machine and a property test shuffles the listing. A pack may only add blocks in its own namespace
+  (its id), and patch only namespaces it names as needs (directly or through its needs), so order cannot decide who wins.
+- **Optional patches are the only quiet failure,** and they are not quiet: a patch that names a block or property that is not there is an error unless it
+  says `"optional": true`, and then the skip is returned and printed as a warning. A `test` operation that fails is always an error.
+- **The schema is generated, never written:** `pack_schemas(&PropertySchema)` makes the three JSON Schemas from the declared keys, kinds, ranges, defaults
+  and docs and the shape names. A differential test keeps the schema and the loader agreeing on a corpus of files and on files damaged in one place;
+  what a schema cannot say (a box with no size, a state the block lacks, a name taken, a cycle, a failed test) is listed in the test with its reason.
+- **What a player can place is a property of the block** (`voxunami_cave:placeable`), set by Cave on its six blocks and by a pack on its own. Cave's items,
+  its drops and its number keys come from it; the client reads the list from the server's package, so a client with no pack has the same keys.
+- **A client refuses a package it cannot draw** (more colours than the renderer has) with an error instead of a panic, and the same check runs when packs load.
+
 ## Decided (the content package at the handshake; built in Phase 28)
 
 - **The server says what the world looks like.** `Welcome` carries the game's *package data* (`game_shell::PackageData`): the property schema, every

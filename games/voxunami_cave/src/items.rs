@@ -6,12 +6,12 @@
 //! beyond placing it in the middle of a voxel), and comes into the inventory of a player who gets close.
 //! In creative nothing is dropped or used up.
 
+use block_models::PropertyKey;
 use entities::{EntityKindSpec, ItemSpec, ItemStack};
+use game_shell::PackageData;
 use namespaced_id::NamespacedId;
 use voxel_space::{EntityPose, GridId, Orientation, VoxelCoordinate, WorldPosition};
 use world_storage::Section;
-
-use crate::game::PLACEABLE_BLOCKS;
 
 /// How many of an item fit in a stack.
 pub const STACK_SIZE: u32 = 64;
@@ -29,21 +29,42 @@ fn identifier(text: &str) -> NamespacedId {
     text.parse().expect("constant identifier is valid")
 }
 
+/// Whether a player can place a block, and so whether it has an item (a flag of the block's definition, which a data
+/// pack can set on its own blocks).
+pub const PLACEABLE: PropertyKey<bool> = PropertyKey::new(
+    "voxunami_cave:placeable",
+    false,
+    "whether a player can place the block, and so whether it has an item that puts it down and that breaking it leaves",
+);
+
+/// The blocks Cave itself says a player can place: it sets [`PLACEABLE`] on these when it makes its content.
+pub const PLACEABLE_BY_DEFAULT: [&str; 6] = [
+    "base_blocks:stone",
+    "base_blocks:dirt",
+    "base_blocks:grass",
+    "base_blocks:lamp",
+    "base_blocks:wood",
+    "base_blocks:fire",
+];
+
+/// The blocks a player can place, in the order of the blocks, which is the order the number keys choose them in. Read
+/// from what the server says blocks are, so a client has the same list as the server.
+pub fn placeable_blocks(package: &PackageData) -> Vec<NamespacedId> {
+    package.blocks_with(&PLACEABLE)
+}
+
 /// The items there are: one for each block that can be placed.
-pub fn item_specs() -> Vec<ItemSpec> {
-    PLACEABLE_BLOCKS
+pub fn item_specs(placeable: &[NamespacedId]) -> Vec<ItemSpec> {
+    placeable
         .iter()
-        .map(|block| ItemSpec::new(block, STACK_SIZE))
+        .map(|block| ItemSpec::new(block.as_str(), STACK_SIZE))
         .collect()
 }
 
 /// The item a block leaves when it is broken, which is also the item that puts the block down: `None` for a
 /// block no player can place.
-pub fn item_for_block(block: &NamespacedId) -> Option<NamespacedId> {
-    PLACEABLE_BLOCKS
-        .iter()
-        .any(|placeable| *placeable == block.as_str())
-        .then(|| block.clone())
+pub fn item_for_block(block: &NamespacedId, placeable: &[NamespacedId]) -> Option<NamespacedId> {
+    placeable.contains(block).then(|| block.clone())
 }
 
 /// The kind of entity an item lying on the ground is.
@@ -51,10 +72,11 @@ pub fn dropped_item_kind() -> NamespacedId {
     identifier("voxunami_cave:dropped_item")
 }
 
-/// What a dropped item is made of: the stack it holds, which clients are told (so that they can draw it).
-pub fn dropped_item_kind_spec() -> EntityKindSpec {
+/// What a dropped item is made of: the stack it holds, which clients are told (so that they can draw it). A kind's
+/// components have defaults; `default_item` is the item of the default stack.
+pub fn dropped_item_kind_spec(default_item: &NamespacedId) -> EntityKindSpec {
     EntityKindSpec::new(dropped_item_kind().as_str())
-        .component(ItemStack::new(identifier(PLACEABLE_BLOCKS[0]), 1), true)
+        .component(ItemStack::new(default_item.clone(), 1), true)
 }
 
 /// Whether an item on the ground falls in this tick.
@@ -158,17 +180,66 @@ pub fn read_game_mode(sections: &[Section]) -> Option<GameMode> {
 mod tests {
     use super::*;
 
+    use block_models::{BlockDefinition, PropertySchema};
+
+    fn package_with(blocks: Vec<(&str, Option<bool>)>) -> PackageData {
+        // Each block: its name, and whether it sets the flag (and to what); `None` sets nothing.
+        let mut properties = PropertySchema::new();
+        properties.declare(PLACEABLE.declaration()).unwrap();
+        PackageData {
+            properties,
+            block_registry: identifier("test:block"),
+            blocks: blocks
+                .into_iter()
+                .map(|(name, flag)| {
+                    let block = BlockDefinition::cube([0.0; 3]);
+                    let block = match flag {
+                        Some(flag) => block.with_property(&PLACEABLE, flag),
+                        None => block,
+                    };
+                    (identifier(name), Some(block))
+                })
+                .collect(),
+            block_channel: identifier("test:block"),
+            state_channel: None,
+            light_channel: None,
+            ambient_light: 0,
+        }
+    }
+
+    #[test]
+    fn the_placeable_blocks_are_those_whose_definitions_say_so_in_the_order_of_the_blocks() {
+        let package = package_with(vec![
+            ("a:air", None),
+            ("a:stone", Some(true)),
+            ("a:ghost", Some(false)),
+            ("b:marble", Some(true)),
+            ("b:plain", None),
+        ]);
+        assert_eq!(
+            placeable_blocks(&package),
+            [identifier("a:stone"), identifier("b:marble")]
+        );
+        // A block of a plugin the server lacks has no definition and cannot be placed.
+        let mut missing = package;
+        missing.blocks.push((identifier("gone:thing"), None));
+        assert_eq!(placeable_blocks(&missing).len(), 2);
+    }
+
     #[test]
     fn there_is_an_item_for_each_block_that_can_be_placed_and_for_no_other() {
-        let specs = item_specs();
-        assert_eq!(specs.len(), PLACEABLE_BLOCKS.len());
-        for block in PLACEABLE_BLOCKS {
-            let block = identifier(block);
-            assert_eq!(item_for_block(&block), Some(block.clone()));
-            assert!(specs.iter().any(|spec| *spec.id() == block));
+        let placeable = [identifier("a:stone"), identifier("b:marble")];
+        let specs = item_specs(&placeable);
+        assert_eq!(specs.len(), placeable.len());
+        for block in &placeable {
+            assert_eq!(item_for_block(block, &placeable), Some(block.clone()));
+            assert!(specs.iter().any(|spec| spec.id() == block));
         }
-        assert_eq!(item_for_block(&identifier("base_blocks:air")), None);
-        assert_eq!(item_for_block(&identifier("other_game:stone")), None);
+        assert_eq!(item_for_block(&identifier("a:air"), &placeable), None);
+        assert_eq!(
+            item_for_block(&identifier("other_game:stone"), &placeable),
+            None
+        );
         assert!(specs.iter().all(|spec| spec.max_stack() == STACK_SIZE));
     }
 
@@ -245,7 +316,7 @@ mod tests {
 
     #[test]
     fn the_dropped_item_kind_tells_clients_what_it_holds() {
-        let spec = dropped_item_kind_spec();
+        let spec = dropped_item_kind_spec(&identifier("a:stone"));
         assert_eq!(*spec.id(), dropped_item_kind());
         let [held] = spec.components() else {
             panic!("{:?}", spec.components());

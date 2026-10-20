@@ -6,11 +6,14 @@ mod common;
 
 use base_blocks::EMISSION;
 use common::{Player, Rig, SEED, VIEW_RADIUS, above_ground, ground_height};
+use entities::Inventory;
+use game_shell::client_plugin::MouseButton;
 use game_shell::files::{open_recording, record_connection};
 use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
-use game_shell::{GameContent, Identity, RawFile, RawPack};
+use game_shell::{GameContent, Identity, KeyCode, RawFile, RawPack};
 use namespaced_id::NamespacedId;
+use player_presence::player_kind;
 use transport::Connection;
 use voxel_space::VoxelCoordinate;
 use voxunami_cave::content::CaveContent;
@@ -243,4 +246,145 @@ fn a_world_saved_with_a_packs_block_loads_without_the_pack_and_saves_back_the_sa
         report.missing_content
     );
     assert_eq!(reloaded.save(&again.registries()).unwrap(), saved);
+}
+
+// ---- a pack's block that a player can place ----
+
+/// A pack whose block says it can be placed, which gives it an item and a place among the number keys.
+fn the_placeable_pack() -> Vec<RawPack> {
+    vec![RawPack {
+        folder: "my_pack".to_owned(),
+        manifest: r#"{ "id": "my_pack", "depends_on": ["base_blocks"] }"#.to_owned(),
+        blocks: vec![
+            file(
+                "ruby",
+                r#"{ "color": [0.8, 0.1, 0.2], "properties": { "voxunami_cave:placeable": true } }"#,
+            ),
+            file("marble", r#"{ "color": [0.9, 0.9, 0.95] }"#),
+        ],
+        patches: Vec::new(),
+    }]
+}
+
+fn rig_with_the_placeable_pack() -> Rig {
+    let mut content = CaveContent::new();
+    content.apply_packs(&the_placeable_pack()).unwrap();
+    let world = content.new_world(SEED);
+    Rig::with_world(content, world)
+}
+
+fn ticks(rig: &mut Rig, player: &mut Player, count: usize) {
+    for _ in 0..count {
+        rig.step();
+        player.advance().unwrap();
+        let _ = player.update_view();
+    }
+}
+
+fn held_of(rig: &Rig, item: &str) -> u64 {
+    rig.server
+        .world()
+        .entities()
+        .iter()
+        .find(|entity| entity.kind == player_kind())
+        .and_then(|entity| entity.components.get::<Inventory>().ok().flatten())
+        .map_or(0, |inventory| inventory.count_of(&id(item)))
+}
+
+#[test]
+fn cave_says_which_of_its_own_blocks_a_player_can_place_and_in_what_order() {
+    use voxunami_cave::items::{PLACEABLE_BY_DEFAULT, placeable_blocks};
+    let placeable = placeable_blocks(&CaveContent::new().package_data());
+    let expected: Vec<NamespacedId> = PLACEABLE_BY_DEFAULT.iter().map(|name| id(name)).collect();
+    assert_eq!(placeable, expected);
+    // With the pack, its block that says so follows them, and the one that does not say so is not there.
+    let mut with = CaveContent::new();
+    with.apply_packs(&the_placeable_pack()).unwrap();
+    let mut longer = expected;
+    longer.push(id("my_pack:ruby"));
+    assert_eq!(placeable_blocks(&with.package_data()), longer);
+}
+
+#[test]
+fn a_block_of_a_pack_that_can_be_placed_has_a_number_key_an_item_and_is_used_up_like_any_other() {
+    let mut rig = rig_with_the_placeable_pack();
+    let (mut player, at) = above_the_ground(&mut rig, None);
+    ticks(&mut rig, &mut player, 2);
+    let ruby = raw_in(&rig.content, "my_pack:ruby");
+
+    // The first key is stone, as it was; the seventh is the pack's block; a key past the end of the list is
+    // the first block again, never nothing or a crash.
+    assert!(
+        player.hud_text().contains("placing stone (whole)"),
+        "{}",
+        player.hud_text()
+    );
+    player.key_pressed(KeyCode::Digit7);
+    assert!(
+        player.hud_text().contains("placing ruby (whole)"),
+        "{}",
+        player.hud_text()
+    );
+    player.key_pressed(KeyCode::Digit9);
+    assert!(player.hud_text().contains("placing stone (whole)"));
+    player.key_pressed(KeyCode::Digit7);
+
+    // Creative: the mouse button places it.
+    player.mouse_pressed(MouseButton::Secondary);
+    rig.settle(&mut [&mut player]);
+    assert_eq!(player.mesher().material_at(at), Some(ruby));
+
+    // Survival: breaking it leaves its item, which comes into the inventory...
+    player.send_command("/gamemode survival");
+    ticks(&mut rig, &mut player, 2);
+    player.mouse_pressed(MouseButton::Primary);
+    ticks(&mut rig, &mut player, 16);
+    assert_eq!(
+        held_of(&rig, "my_pack:ruby"),
+        1,
+        "the block left an item and it was picked up"
+    );
+    assert!(
+        player
+            .hud_text()
+            .contains("placing ruby (whole), 1 in hand"),
+        "{}",
+        player.hud_text()
+    );
+
+    // ...and placing it uses it up.
+    player.mouse_pressed(MouseButton::Secondary);
+    ticks(&mut rig, &mut player, 4);
+    assert_eq!(held_of(&rig, "my_pack:ruby"), 0);
+    assert_eq!(player.mesher().material_at(at), Some(ruby));
+}
+
+#[test]
+fn a_block_of_a_pack_that_does_not_say_it_can_be_placed_leaves_no_item_when_it_is_broken() {
+    use voxunami_cave::items::dropped_item_kind;
+    let mut rig = rig_with_the_placeable_pack();
+    let (mut player, at) = above_the_ground(&mut rig, None);
+    ticks(&mut rig, &mut player, 2);
+    // Put one there by request (creative), then break it in survival.
+    request_block(&mut player, at, "my_pack:marble");
+    rig.settle(&mut [&mut player]);
+    let marble = raw_in(&rig.content, "my_pack:marble");
+    assert_eq!(player.mesher().material_at(at), Some(marble));
+    player.send_command("/gamemode survival");
+    ticks(&mut rig, &mut player, 2);
+    player.mouse_pressed(MouseButton::Primary);
+    ticks(&mut rig, &mut player, 8);
+    assert_ne!(
+        player.mesher().material_at(at),
+        Some(marble),
+        "it was broken"
+    );
+    let dropped = rig
+        .server
+        .world()
+        .entities()
+        .iter()
+        .filter(|entity| entity.kind == dropped_item_kind())
+        .count();
+    assert_eq!(dropped, 0, "nothing falls out of a block that has no item");
 }

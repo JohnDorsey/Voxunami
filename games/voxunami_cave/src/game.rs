@@ -21,16 +21,6 @@ use crate::multiscale_light::LightScheme;
 use crate::plugins::cave_plugins;
 use protocol::Message;
 
-/// The blocks a player can place, in the order the number keys choose them.
-pub const PLACEABLE_BLOCKS: [&str; 6] = [
-    "base_blocks:stone",
-    "base_blocks:dirt",
-    "base_blocks:grass",
-    "base_blocks:lamp",
-    "base_blocks:wood",
-    "base_blocks:fire",
-];
-
 #[derive(Debug)]
 pub struct Cave;
 

@@ -535,6 +535,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         let mut context = ClientContext::new(SessionView {
             camera: &self.camera,
             block_table: &self.block_table,
+            package: &self.package,
             players: &self.players,
             entities: self.client.world().entities(),
             prompts: &self.prompts,

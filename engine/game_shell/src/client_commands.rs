@@ -131,12 +131,14 @@ mod tests {
     ) -> (String, Vec<crate::client_plugin::Outgoing>) {
         let camera = camera_at([0.0; 3], 0.0, 0.0, 3);
         let table = BlockTable::of_cubes(&[false]);
+        let package = crate::package_data::PackageData::for_tests();
         let players = BTreeMap::new();
         let entities = client::ClientEntities::default();
         let mut host = ClientHost::new(&[]).expect("the shell's commands register");
         let mut context = ClientContext::new(SessionView {
             camera: &camera,
             block_table: &table,
+            package: &package,
             players: &players,
             entities: &entities,
             prompts,

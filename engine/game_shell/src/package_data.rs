@@ -64,6 +64,39 @@ pub struct PackageData {
 }
 
 impl PackageData {
+    /// A package with one block and nothing else to say, for tests of what only needs one to exist.
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> Self {
+        let id = |text: &str| text.parse().expect("a valid identifier");
+        Self {
+            properties: PropertySchema::new(),
+            block_registry: id("test:block"),
+            blocks: vec![(id("test:air"), Some(BlockDefinition::air()))],
+            block_channel: id("test:block"),
+            state_channel: None,
+            light_channel: None,
+            ambient_light: 0,
+        }
+    }
+
+    /// The blocks whose definitions give a true value for the property `key` (a flag a game reads, such as which blocks a player
+    /// can place), in the order of the blocks. A block with no definition is not among them.
+    pub fn blocks_with(&self, key: &block_models::PropertyKey<bool>) -> Vec<NamespacedId> {
+        let key: NamespacedId = key
+            .id()
+            .parse()
+            .expect("a property key is a valid identifier");
+        self.blocks
+            .iter()
+            .filter(|(_, definition)| {
+                definition
+                    .as_ref()
+                    .is_some_and(|definition| definition.property_value(&key, None, 0) != 0)
+            })
+            .map(|(identifier, _)| identifier.clone())
+            .collect()
+    }
+
     /// What every block and state looks like and how it fills its cell, by block number. An error if
     /// a definition sets a property the schema lacks, a value it does not take, or a state its block
     /// does not have.

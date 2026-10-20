@@ -285,8 +285,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// the world is left in survival, so it saves its game mode: 7,177,839 to 7,181,819.
 /// Phase 28: the welcome carries the package data (how every block looks, the view channels), and the protocol version is 5. The
 /// package is 1,345 bytes and its length takes 2 more: 7,181,819 to 7,183,166, the saved world is the same. The hash changes with the bytes.
+/// Phase 29: Cave declares the property `voxunami_cave:placeable` and sets it on the six blocks a player can place, so its package grows
+/// from 1,345 to 1,647 bytes (+302): 7,183,166 to 7,183,468; the saved world is the same.
 const PINNED: (u64, usize, u64) = (
-    14_275_075_405_839_568_165,
-    7_183_166,
+    6_515_587_032_642_353_546,
+    7_183_468,
     15_753_024_505_422_231_765,
 );

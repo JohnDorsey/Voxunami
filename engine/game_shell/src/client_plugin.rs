@@ -21,6 +21,7 @@ use winit::keyboard::KeyCode;
 use world_view::{RayHit, ViewChannels};
 
 use crate::client_commands::ClientSettings;
+use crate::package_data::PackageData;
 use crate::session::Mode;
 
 /// The client half of a plugin.
@@ -110,6 +111,8 @@ pub struct ClientContext<'a> {
 pub(crate) struct SessionView<'a> {
     pub camera: &'a Camera,
     pub block_table: &'a BlockTable,
+    /// What the server said the world looks like (the table above is made from it).
+    pub package: &'a PackageData,
     pub players: &'a BTreeMap<ClientId, PlayerState>,
     /// Every entity the client has been told of.
     pub entities: &'a ClientEntities,
@@ -178,6 +181,13 @@ impl<'a> ClientContext<'a> {
 
     pub fn block_table(&self) -> &BlockTable {
         self.view.block_table
+    }
+
+    /// The blocks the server's definitions give a true value for the property `key`, such as a flag a game
+    /// reads to know which blocks a player can place, in the order of the blocks. Read from the server's
+    /// package, so a block of a pack the client has never heard of is in it.
+    pub fn blocks_with(&self, key: &block_models::PropertyKey<bool>) -> Vec<NamespacedId> {
+        self.view.package.blocks_with(key)
     }
 
     /// Where every player is, as far as the server has said.
@@ -713,6 +723,7 @@ mod tests {
     ) -> (R, Vec<Outgoing>) {
         let camera = camera_at([0.0; 3], 0.0, 0.0, 3);
         let table = BlockTable::of_cubes(&[false]);
+        let package = PackageData::for_tests();
         let players = BTreeMap::new();
         let entities = ClientEntities::default();
         let mut settings = ClientSettings::new(0);
@@ -720,6 +731,7 @@ mod tests {
         let mut context = ClientContext::new(SessionView {
             camera: &camera,
             block_table: &table,
+            package: &package,
             players: &players,
             entities: &entities,
             prompts,
@@ -1092,5 +1104,40 @@ mod tests {
                 "test:rock"
             )))
         );
+    }
+
+    #[test]
+    fn a_plugin_can_ask_which_blocks_the_servers_definitions_give_a_flag_to() {
+        use block_models::{BlockDefinition, PropertyKey};
+        const FLAG: PropertyKey<bool> = PropertyKey::new("test:flagged", false, "a flag");
+        let mut package = PackageData::for_tests();
+        package.properties.declare(FLAG.declaration()).unwrap();
+        let plain = BlockDefinition::cube([0.0; 3]);
+        package.blocks = vec![
+            (id("a:one"), Some(plain.clone().with_property(&FLAG, true))),
+            (id("a:two"), Some(plain.clone())),
+            (id("b:three"), None),
+            (id("b:four"), Some(plain.clone().with_property(&FLAG, true))),
+            (id("b:five"), Some(plain.with_property(&FLAG, false))),
+        ];
+        let camera = camera_at([0.0; 3], 0.0, 0.0, 3);
+        let table = BlockTable::of_cubes(&[false]);
+        let (players, entities) = (BTreeMap::new(), ClientEntities::default());
+        let mut settings = ClientSettings::new(0);
+        let context = ClientContext::new(SessionView {
+            camera: &camera,
+            block_table: &table,
+            package: &package,
+            players: &players,
+            entities: &entities,
+            prompts: &[],
+            settings: &mut settings,
+            target: None,
+            target_content: None,
+            tick: Tick::ZERO,
+            mode: Mode::Playing,
+            own_client: ClientId::new(1),
+        });
+        assert_eq!(context.blocks_with(&FLAG), [id("a:one"), id("b:four")]);
     }
 }

@@ -658,6 +658,25 @@ Phase 27a to 27c (entities; specified in `entities-spec.md`):
 - 27c: protocol version 3 (messages 9 to 11), server replication with cached views, the client store, replay of entities, version policy.
   Cost with 1000 entities and 4 clients: 0.5, 0.7 and 1.4 ms a tick with none, a tenth and all moving. 13 mutations are caught.
 
+Phase 29 (data packs):
+- 29a: the `data_packs` crate reads `pack.json`, block files and patch files into the model, collecting every problem with its file and JSON pointer,
+  with "did you mean" for near misses (20 tests of exact messages; 17 reader mutations caught after two assertions were added for the survivors).
+  `block_models` gained named property setters (`set_property_value`, `property_value`, `remove_property_value`, `add_state`, `set_state_colors`).
+- 29b: the loader: dependency order (ties by id, cycles and missing needs refused), blocks in name order, patches in name order, `test`, `set`,
+  `remove`, `add`, `optional`, namespace rules, atomic patches; directory reading. 23 tests including a shuffle property; 19 mutations caught (four
+  survivors each got a test: patch file order, the default read by `test`, a failed patch leaving a trace for the next, bools given numbers).
+- 29c: the generated schemas and a differential test against `jsonschema` (a dev-dependency): a corpus of 75 files, and three properties that damage
+  a good file in one place; 11 mutations of schema and loader caught.
+- 29d: `GameContent::apply_packs`, `ContentPackage::apply_packs` (the game's blocks keep their numbers, placeholders keep their places, nothing changes on
+  an error), `--packs` for play, `--host` and `serve`, `voxunami check-pack GAME DIR` and `pack-schema GAME DIR`; the client refuses a package with more
+  colours than the renderer has. Cave tests: a client with no pack draws the pack's blocks and sees them placed, a recording carries them, a world saved
+  with them loads without the pack and saves back byte for byte, a dedicated server with `--packs` and one that will not start. 8 wiring mutations caught.
+- 29e: `voxunami_cave:placeable`: Cave's items, drops and nine number keys come from it; `ClientContext::blocks_with` reads the server's package. Tests:
+  a pack's placeable block has a key, an item and is used up; one that is not leaves no item. Cave's golden repinned once (the package grew by the
+  property: 1,345 to 1,647 bytes, +302 in the stream, saved world unchanged).
+- The first mutation run of the wiring hung for twenty minutes: a "does not start" test would have started a real server forever if the server had started.
+  It is told to stop already, so it fails instead.
+
 Phase 28 (the content package at the handshake):
 - 28a: canonical byte form for `BlockDefinition` and `PropertySchema` (`block_models::codec`) and for `PackageData` (`game_shell`): round trips,
   refusals with their reasons, cut-short and trailing-byte checks, and three properties (any definition round-trips and has one spelling; arbitrary

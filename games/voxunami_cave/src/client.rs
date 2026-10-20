@@ -16,8 +16,7 @@ use voxel_space::VoxelCoordinate;
 use world_view::BulkLight;
 
 use crate::content::CaveContent;
-use crate::game::PLACEABLE_BLOCKS;
-use crate::items::{GameMode, dropped_item_kind, item_for_block};
+use crate::items::{GameMode, PLACEABLE, dropped_item_kind};
 use crate::messages::{GameModeIs, LightSchemeChanged, SetBlock};
 use crate::multiscale_light::{LEVEL_FORMAT, LightScheme, MAXIMUM_SCALES, full_brightness};
 use crate::scaled_light::{MultiScaleView, ScaledLight};
@@ -141,7 +140,8 @@ fn held(context: &ClientContext<'_>, item: &NamespacedId) -> Option<u64> {
 }
 
 impl ClientBlockEditing {
-    /// The index in [`PLACEABLE_BLOCKS`] of the selected block.
+    /// The place in the list of blocks a player can place (in the order of the blocks) of the selected block: the
+    /// number key that chose it, less one.
     pub fn selected_block(&self) -> usize {
         locked(&self.selection).block
     }
@@ -152,15 +152,25 @@ impl ClientBlockEditing {
     }
 }
 
-/// The number key that selects each placeable block, in order.
-const SELECT_KEYS: [KeyCode; 6] = [
+/// The number key that selects each placeable block, in order. The server says which blocks a player can place
+/// (a data pack can add some), so a key that selects a block there is none for does nothing.
+const SELECT_KEYS: [KeyCode; 9] = [
     KeyCode::Digit1,
     KeyCode::Digit2,
     KeyCode::Digit3,
     KeyCode::Digit4,
     KeyCode::Digit5,
     KeyCode::Digit6,
+    KeyCode::Digit7,
+    KeyCode::Digit8,
+    KeyCode::Digit9,
 ];
+
+/// The block a selection means among the blocks that can be placed: the one it counts to, or the first if the list is
+/// shorter than it was (a selection never points past the end), or none if there is nothing to place.
+fn selected<'a>(placeable: &'a [NamespacedId], selection: &Selection) -> Option<&'a NamespacedId> {
+    placeable.get(selection.block).or_else(|| placeable.first())
+}
 
 /// Asks the server to break the block under the crosshair.
 fn break_target(context: &mut ClientContext<'_>) {
@@ -183,16 +193,12 @@ impl ClientPlugin for ClientBlockEditing {
 
     fn register(&self, registrar: &mut ClientRegistrar<'_>) {
         for (index, key) in SELECT_KEYS.into_iter().enumerate() {
-            let name = PLACEABLE_BLOCKS[index]
-                .split(':')
-                .next_back()
-                .unwrap_or_default();
             let selection = Arc::clone(&self.selection);
             registrar.key(
                 key,
                 ActionSpec::new(
-                    &format!("voxunami_cave:select_{name}"),
-                    "selects the block to place",
+                    &format!("voxunami_cave:select_block_{}", index + 1),
+                    "selects a block to place: its number is its place in the list of blocks you can place",
                 ),
                 move |_| locked(&selection).block = index,
             );
@@ -224,11 +230,14 @@ impl ClientPlugin for ClientBlockEditing {
                 "places the selected block against the face you look at",
             ),
             move |context| {
+                let placeable = context.blocks_with(&PLACEABLE);
                 let (block, shape) = {
                     let selection = locked(&selection);
-                    (PLACEABLE_BLOCKS[selection.block], selection.shape)
+                    (selected(&placeable, &selection).cloned(), selection.shape)
                 };
-                place_at_target(context, block, shape);
+                if let Some(block) = block {
+                    place_at_target(context, block.as_str(), shape);
+                }
             },
         );
 
@@ -237,14 +246,15 @@ impl ClientPlugin for ClientBlockEditing {
 
         let (selection, mode) = (Arc::clone(&self.selection), Arc::clone(&self.mode));
         registrar.hud_line(move |context| {
+            let placeable = context.blocks_with(&PLACEABLE);
             let selection = locked(&selection);
-            let block = PLACEABLE_BLOCKS[selection.block];
-            let name = block.split(':').next_back().unwrap_or_default();
+            let block = selected(&placeable, &selection)?;
+            let name = block.name();
             let shape = shape_name(selection.shape);
             Some(match *locked(&mode) {
                 GameMode::Creative => format!("placing {name} ({shape})"),
                 GameMode::Survival => {
-                    let have = held(context, &identifier(block)).unwrap_or(0);
+                    let have = held(context, block).unwrap_or(0);
                     format!("placing {name} ({shape}), {have} in hand")
                 }
             })
@@ -256,7 +266,8 @@ impl ClientPlugin for ClientBlockEditing {
 /// of the colour of the block it puts down.
 #[derive(Clone, Debug)]
 pub struct ClientItems {
-    /// The number of each block that can be placed, in this game's registry.
+    /// The number of each block, in this game's registry (which has a place for every block the server has). An item is
+    /// drawn as the block of its name, and one that is not the name of a block is not drawn.
     block_numbers: std::collections::HashMap<NamespacedId, u32>,
 }
 
@@ -266,7 +277,6 @@ impl ClientItems {
         let blocks = registries[0].1;
         let block_numbers = (0..blocks.entry_count() as u32)
             .filter_map(|raw| Some((blocks.identifier_of_raw(raw)?.clone(), raw)))
-            .filter(|(name, _)| item_for_block(name).is_some())
             .collect();
         Self { block_numbers }
     }
