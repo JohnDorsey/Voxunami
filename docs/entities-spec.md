@@ -188,7 +188,7 @@ each is a small addition on top of this layer, so building them now would be des
 - **27f** Players become entities (the entity store replacing `PoseBook` and `Players`) in all three games; goldens repinned once.
 - **27g** Items, stacks, inventories and Cave's drops, pickup and hotbar; the appearance verb and the box drawing.
 - **27h** The prompt facility (built).
-- **27i** Documentation (`plugin-api-spec.md`, `design-decisions.md`, `protocol-and-replay.md`, build log), gates on Windows and Linux.
+- **27i** Documentation (`plugin-api-spec.md`, `design-decisions.md`, `protocol-and-replay.md`, build log), gates on Windows and Linux (built).
 
 ## 5. Questions for the owner, answered
 

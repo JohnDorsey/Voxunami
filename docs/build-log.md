@@ -658,6 +658,11 @@ Phase 27a to 27c (entities; specified in `entities-spec.md`):
 - 27c: protocol version 3 (messages 9 to 11), server replication with cached views, the client store, replay of entities, version policy.
   Cost with 1000 entities and 4 clients: 0.5, 0.7 and 1.4 ms a tick with none, a tenth and all moving. 13 mutations are caught.
 
+Phase 27i (documentation and gates):
+- `plugin-api-spec.md` gained section 13 (entity kinds, items, the `Context` calls, the prompt, the three new events); the other documents were
+  updated by the steps that changed them. Gates for all of Phase 27 on both systems: `cargo fmt --check`, clippy with `-D warnings`, and the whole
+  workspace suite pass on Windows (with a GPU) and on Linux.
+
 Phase 27h (the prompt facility):
 - `plugin_host`: `Context::prompt` / `cancel_prompt`, the event `PromptAnswered`, the engine messages `engine:prompt`, `engine:prompt_answer` and
   `engine:prompt_closed`, limits (9 options, 200 bytes), numbering from 1 never reused, questions dropped when the player leaves, an invalid or

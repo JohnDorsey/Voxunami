@@ -92,7 +92,8 @@ it is deterministic and a bug in a plugin.
 
 ### 5.2 Which events
 
-Engine events (ids `engine:`): `blocks_changed`, `channels_changed`, `player_joined`, `player_left`, `world_loaded`, `world_saving`.
+Engine events (ids `engine:`): `blocks_changed`, `channels_changed`, `player_joined`, `player_left`, `world_loaded`, `world_saving`, and since
+Phase 27 `entity_spawned`, `entity_despawned` and `prompt_answered`.
 Plugin events are defined by the plugin that owns the meaning. Phase 23 defines none beyond what Cave needs.
 
 - **Changes.** `ChannelsChanged { grid, channel, voxels: Vec<VoxelCoordinate> }` is delivered per grid and channel written. A
@@ -283,3 +284,21 @@ designed here and not built.
    plugin added later does not see changes made before it subscribed (which is also true of any event).
 4. **Where plugins live:** a game's own plugins in the game's crate (the project's rule), shared ones in `plugins/` or the shared
    crate they belong to (`player_presence` for the players plugin). Is that right, or do you want one plugin crate per plugin?
+
+## 13. Entities, items and questions (added by Phase 27; the full design is `entities-spec.md`)
+
+Two registrar verbs and a set of `Context` calls, no new mechanism:
+
+| Registrar verb | Registers |
+|---|---|
+| `entity_kind(EntityKindSpec)` | a kind of entity: its identifier and its components (each has a default and a flag saying whether clients are told it) |
+| `item(ItemSpec)` | an item: its identifier and how many fit in a stack |
+
+| `Context` call | Does |
+|---|---|
+| `spawn`, `despawn`, `entity`, `component::<C>`, `set_component`, `set_pose`, `entities_near` | make, remove, read and change entities. Ids come from a saved counter, iteration is by id, so the simulation is deterministic. A system declares the components it touches (`reads_component`, `writes_component`, `reads_entities`, `writes_entities`); debug builds check the declaration and start-up refuses two unordered systems that conflict |
+| `prompt(client, title, options) -> Result<PromptId, PromptError>`, `cancel_prompt(client, id)` | ask one player a question (1 to 9 options) and withdraw it; the answer arrives as the event `PromptAnswered { client, prompt, choice }` (choice counted from 0). No time limit, not saved, dropped when the player leaves. While it waits, whatever the plugin was holding (an entity, say) stays held by the plugin |
+
+Events `EntitySpawned` and `EntityDespawned` tell other plugins of changes. Players are entities of the kind `player_presence:player`
+(key, connection, look, inventory), hidden from clients' entity lists; see `design-decisions.md` ("players are entities"). Entities whose
+plugin is missing are kept byte for byte when the world is saved and are never shown to clients.
