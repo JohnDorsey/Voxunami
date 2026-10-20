@@ -9,6 +9,7 @@ mod error;
 mod load;
 mod manifest;
 mod patch;
+mod schema;
 mod shape;
 mod walk;
 
@@ -18,4 +19,5 @@ pub use error::{PackError, PackErrors};
 pub use load::{Loaded, RawFile, RawPack, load_packs};
 pub use manifest::{PackManifest, read_manifest};
 pub use patch::{Operation, Patch, PatchValue, Place, PropertyValue, read_patch};
+pub use schema::{PackSchemas, pack_schemas};
 pub use shape::{FACE_NAMES, SHAPE_NAMES};

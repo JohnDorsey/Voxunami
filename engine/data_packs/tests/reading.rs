@@ -611,3 +611,48 @@ fn a_patch_needs_a_target_that_is_a_block_name_and_some_operations() {
         )]
     );
 }
+
+#[test]
+fn a_schema_name_at_the_top_of_any_file_is_allowed_and_means_nothing_to_the_block() {
+    let text = r#"{ "$schema": "../../block.schema.json", "color": [0, 0, 0] }"#;
+    assert_eq!(block(text).unwrap().1, BlockDefinition::cube([0.0; 3]));
+    assert!(
+        read_manifest(
+            "p/pack.json",
+            r#"{ "$schema": "../pack.schema.json", "id": "p" }"#
+        )
+        .is_ok()
+    );
+    assert!(
+        read_patch(
+            PATCH_FILE,
+            r#"{ "$schema": "x", "target": "a:b", "operations": [{ "op": "add", "shape": "full" }] }"#
+        )
+        .is_ok()
+    );
+    // Only at the top: inside a shape it is an unknown key like any other.
+    let inner = block_errors(
+        r#"{ "color": [0,0,0], "states": [{ "$schema": "x", "boxes": [[0,0,0,8,8,8]] }] }"#,
+    );
+    assert_eq!(inner.len(), 1);
+    assert!(
+        inner[0].contains("/states/0/$schema: unknown key"),
+        "{inner:?}"
+    );
+}
+
+#[test]
+fn whole_numbers_may_be_written_with_a_decimal_point_and_others_are_refused() {
+    let with = |value: &str| {
+        format!(r#"{{ "color": [0,0,0], "properties": {{ "test:glow": {value} }} }}"#)
+    };
+    let (_, written_plain) = block(&with("7")).unwrap();
+    let (_, written_float) = block(&with("7.0")).unwrap();
+    assert_eq!(written_plain, written_float);
+    assert_eq!(
+        block_errors(&with("7.5")),
+        [format!(
+            "{FILE}: /properties/test:glow: expected a whole number, found 7.5"
+        )]
+    );
+}

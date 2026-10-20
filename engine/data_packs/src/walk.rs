@@ -32,6 +32,10 @@ impl Path {
     pub(crate) fn index(&self, index: usize) -> Self {
         Self(format!("{}/{index}", self.0))
     }
+
+    fn is_root(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
 impl Walk {
@@ -89,6 +93,10 @@ impl Walk {
             return None;
         };
         for key in object.keys() {
+            // Editors read the schema a file names in `$schema`; it says nothing about the block.
+            if path.is_root() && key == "$schema" {
+                continue;
+            }
             if !allowed.contains(&key.as_str()) {
                 let hint = nearest(key, allowed)
                     .map(|near| format!(" (did you mean \"{near}\"?)"))
@@ -153,7 +161,7 @@ impl Walk {
         minimum: i64,
         maximum: i64,
     ) -> Option<i64> {
-        let Some(number) = value.as_i64() else {
+        let Some(number) = whole_number(value) else {
             self.fail(
                 path,
                 format!("expected a whole number, found {}", describe(value)),
@@ -200,6 +208,16 @@ impl Walk {
         }
         good.then_some(color)
     }
+}
+
+/// A JSON number that is a whole number, written as `3` or as `3.0` (JSON Schema's `integer` takes both).
+fn whole_number(value: &Value) -> Option<i64> {
+    value.as_i64().or_else(|| {
+        value
+            .as_f64()
+            .filter(|number| number.fract() == 0.0 && number.abs() < 9.0e15)
+            .map(|number| number as i64)
+    })
 }
 
 /// What a value is, for "found ...".
