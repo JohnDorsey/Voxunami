@@ -14,6 +14,7 @@ mod command;
 mod context;
 mod error;
 mod event;
+mod forms;
 mod host;
 mod order;
 mod prompt;
@@ -26,7 +27,10 @@ pub use context::{CheckedGrid, Context, Intent, MindContext};
 pub use error::RegistrationError;
 pub use event::{
     ChannelsChanged, EntityDespawned, EntitySpawned, Event, PlayerJoined, PlayerLeft,
-    PromptAnswered, Verdict,
+    PromptAnswered, UiResponded, Verdict,
+};
+pub use forms::{
+    FormError, FormId, MAXIMUM_FORMS_PER_PLAYER, UiAction, UiClose, UiResponse, UiShow,
 };
 pub use host::{CASCADE_LIMIT, PluginHost};
 pub use prompt::{

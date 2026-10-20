@@ -77,6 +77,22 @@ impl Event for PromptAnswered {
     }
 }
 
+/// A player did something with a form that was shown with [`crate::Context::show_ui`]: pressed one of its buttons (the form
+/// stays open until the plugin closes or changes it), or put a modal one away (it is closed). Sent only for a form that is
+/// open for that player, and only for a button it has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UiResponded {
+    pub client: ClientId,
+    pub form: crate::forms::FormId,
+    pub action: crate::forms::UiAction,
+}
+
+impl Event for UiResponded {
+    fn id() -> NamespacedId {
+        parse_id("engine:ui_responded")
+    }
+}
+
 /// An entity was made. Sent when it is made, so a handler runs with the entity in the world.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntitySpawned {

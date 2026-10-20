@@ -12,7 +12,7 @@ use namespaced_id::NamespacedId;
 use player_presence::{
     LevelChange, PlayerClient, PlayerLook, PlayerPose, PlayerState, PoseReport, player_kind,
 };
-use plugin_host::{Prompt, PromptClosed};
+use plugin_host::{FormId, Prompt, PromptClosed, UiAction, UiClose, UiResponse, UiShow};
 use protocol::{ClientId, Message};
 use renderer::Camera;
 use transport::Connection;
@@ -68,6 +68,8 @@ pub struct Session<C: Connection, G: GameDefinition> {
     players: BTreeMap<ClientId, PlayerState>,
     /// The questions the server has asked and not closed, the oldest first.
     prompts: Vec<Prompt>,
+    /// The forms the server has shown and not closed, in the order they were first shown: what the screen has besides the world.
+    forms: Vec<(FormId, ui::Ui)>,
     mode: Mode,
     view_radius_bricks: i64,
     /// The level the player is in, and so the one they ask to watch.
@@ -158,6 +160,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             settings,
             players: BTreeMap::new(),
             prompts: Vec::new(),
+            forms: Vec::new(),
             mode,
             view_radius_bricks,
             level: LevelIndex::MAIN,
@@ -203,6 +206,17 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
 
     pub fn content(&self) -> &G::Content {
         &self.content
+    }
+
+    /// The forms the server has shown and not closed, in the order they were first shown.
+    pub fn forms(&self) -> &[(FormId, ui::Ui)] {
+        &self.forms
+    }
+
+    /// Tells the server what the player did with a form. A replay sends nothing.
+    pub fn respond_to_form(&mut self, id: FormId, action: UiAction) {
+        use protocol::Message;
+        self.send_game_message(UiResponse::kind(), UiResponse { id, action }.encode());
     }
 
     /// What the server said the world looks like.
@@ -262,6 +276,20 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                     // A question the server asks. One that cannot be read is dropped (nothing can answer it).
                     if let Ok(prompt) = Prompt::decode(&payload) {
                         self.prompts.push(prompt);
+                    }
+                }
+                ClientEvent::GameMessage { kind, payload } if kind == UiShow::kind() => {
+                    // A form the server shows, or a new version of one it showed. One that cannot be read is dropped.
+                    if let Ok(UiShow { id, ui }) = UiShow::decode(&payload) {
+                        match self.forms.iter_mut().find(|(shown, _)| *shown == id) {
+                            Some(form) => form.1 = ui,
+                            None => self.forms.push((id, ui)),
+                        }
+                    }
+                }
+                ClientEvent::GameMessage { kind, payload } if kind == UiClose::kind() => {
+                    if let Ok(UiClose(id)) = UiClose::decode(&payload) {
+                        self.forms.retain(|(shown, _)| *shown != id);
                     }
                 }
                 ClientEvent::GameMessage { kind, payload } if kind == PromptClosed::kind() => {

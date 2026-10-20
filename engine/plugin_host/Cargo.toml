@@ -12,6 +12,7 @@ entities.workspace = true
 namespaced_id.workspace = true
 protocol.workspace = true
 server.workspace = true
+ui.workspace = true
 voxel_grid.workspace = true
 voxel_space.workspace = true
 world_storage.workspace = true

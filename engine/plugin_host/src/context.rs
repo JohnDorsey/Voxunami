@@ -29,6 +29,8 @@ pub(crate) struct Queue {
     pub overflows: u32,
     /// The questions that are waiting for an answer.
     pub prompts: crate::prompt::Prompts,
+    /// The forms that are open for players.
+    pub forms: crate::forms::Forms,
 }
 
 /// What a system, handler, message handler or command handler is given: the world, and the means to
@@ -208,6 +210,58 @@ impl<'a> Context<'a> {
             );
         }
         waiting
+    }
+
+    /// Shows a player an interface (see [`ui::Ui`]): a panel their client draws on the screen. A modal form takes their input
+    /// and has buttons, whose presses are heard as [`crate::UiResponded`]; one that is not modal is a panel such as a bar, with
+    /// no buttons. It stays until [`Context::close_ui`], until the player dismisses a modal one, or until they leave. Fails if
+    /// the interface is beyond the limits of [`ui::Ui::check`], the player has too many open, or is not here.
+    pub fn show_ui(
+        &mut self,
+        client: ClientId,
+        ui: &ui::Ui,
+    ) -> Result<crate::forms::FormId, crate::forms::FormError> {
+        if self.world.player_key(client).is_none() {
+            return Err(crate::forms::FormError::NotConnected);
+        }
+        let id = self.queue.forms.show(client, ui)?;
+        self.send_form(client, id, ui);
+        Ok(id)
+    }
+
+    /// Replaces what an open form shows, keeping its number (so the player's keyboard focus and a half-made choice are not
+    /// thrown away by a screen that changed under them). Fails if the form is not open for that player or the new
+    /// interface is not allowed.
+    pub fn update_ui(
+        &mut self,
+        client: ClientId,
+        id: crate::forms::FormId,
+        ui: &ui::Ui,
+    ) -> Result<(), crate::forms::FormError> {
+        self.queue.forms.update(client, id, ui)?;
+        self.send_form(client, id, ui);
+        Ok(())
+    }
+
+    /// Takes a form off a player's screen. Returns whether it was open.
+    pub fn close_ui(&mut self, client: ClientId, id: crate::forms::FormId) -> bool {
+        let open = self.queue.forms.close(client, id);
+        if open {
+            self.world.send(
+                Audience::Client(client),
+                crate::forms::UiClose::kind(),
+                crate::forms::UiClose(id).encode(),
+            );
+        }
+        open
+    }
+
+    fn send_form(&mut self, client: ClientId, id: crate::forms::FormId, ui: &ui::Ui) {
+        self.world.send(
+            Audience::Client(client),
+            crate::forms::UiShow::kind(),
+            crate::forms::UiShow { id, ui: ui.clone() }.encode(),
+        );
     }
 
     /// Sends an event. It is delivered when the current system or handler returns, after the events

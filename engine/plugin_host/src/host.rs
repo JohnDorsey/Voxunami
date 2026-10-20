@@ -15,7 +15,8 @@ use entities::EntityCatalog;
 use crate::command::{Argument, Arguments, CommandSpec};
 use crate::context::{Context, Intent, MindContext, Queue, Queued};
 use crate::error::RegistrationError;
-use crate::event::{ChannelsChanged, PlayerJoined, PlayerLeft, PromptAnswered};
+use crate::event::{ChannelsChanged, PlayerJoined, PlayerLeft, PromptAnswered, UiResponded};
+use crate::forms::{UiAction, UiClose, UiResponse};
 use crate::prompt::{PromptAnswer, PromptClosed};
 use crate::registrar::{Builder, Plugin, Registrar, finish, registration_order};
 use crate::registry::{HandlerKind, Registry, Runner};
@@ -266,6 +267,10 @@ fn dispatch_message(
         answer_prompt(registry, queue, world, tick, client, payload);
         return;
     }
+    if *kind == UiResponse::kind() {
+        respond_to_form(registry, queue, world, tick, client, payload);
+        return;
+    }
     let Some(run) = registry
         .messages
         .get(kind)
@@ -328,6 +333,44 @@ fn answer_prompt(
     );
 }
 
+/// A player does something with a form: if the form is open for them and the button is one it has (or the form is modal and
+/// they put it away), the plugins hear of it, and a form that was put away is closed on their screen too. Anything else
+/// is ignored (a message that cannot be read is counted, like any other).
+fn respond_to_form(
+    registry: &Registry,
+    queue: &mut Queue,
+    world: &mut ServerWorld,
+    tick: Tick,
+    client: ClientId,
+    payload: &[u8],
+) {
+    let Ok(response) = UiResponse::decode(payload) else {
+        registry.malformed_messages.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+    if !queue.forms.respond(client, response.id, response.action) {
+        return;
+    }
+    if response.action == UiAction::Dismissed {
+        world.send(
+            Audience::Client(client),
+            UiClose::kind(),
+            UiClose(response.id).encode(),
+        );
+    }
+    emit_and_drain(
+        registry,
+        queue,
+        world,
+        tick,
+        UiResponded {
+            client,
+            form: response.id,
+            action: response.action,
+        },
+    );
+}
+
 fn emit_and_drain<E: crate::event::Event>(
     registry: &Registry,
     queue: &mut Queue,
@@ -362,6 +405,7 @@ impl GameLogic for PluginHost {
     fn client_left(&mut self, client: ClientId, world: &mut ServerWorld) {
         self.prepare(world);
         self.queue.prompts.forget(client);
+        self.queue.forms.forget(client);
         let tick = world.tick();
         emit_and_drain(
             &self.registry,
