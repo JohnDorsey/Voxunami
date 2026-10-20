@@ -190,9 +190,7 @@ impl Default for PropertySchema {
 impl PropertySchema {
     /// A schema with the engine's properties and no others.
     pub fn new() -> Self {
-        let mut schema = Self {
-            declared: BTreeMap::new(),
-        };
+        let mut schema = Self::empty();
         for declaration in [
             engine::DENSITY.declaration(),
             engine::PLACEABLE_ON_MOVING_GRIDS.declaration(),
@@ -202,6 +200,13 @@ impl PropertySchema {
                 .expect("the engine's properties are distinct");
         }
         schema
+    }
+
+    /// A schema with no properties at all, not even the engine's: what a decoded one starts as.
+    pub(crate) fn empty() -> Self {
+        Self {
+            declared: BTreeMap::new(),
+        }
     }
 
     /// Adds a property. An error if the name is taken.

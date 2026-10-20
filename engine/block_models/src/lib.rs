@@ -11,6 +11,7 @@
 //! uses it to decide what to draw, the renderer for colours, and lighting and physics (built later)
 //! for what passes and what is solid. The grid stays cubic; only what a block fills of its cell varies.
 
+mod codec;
 mod definition;
 mod property;
 mod shape;

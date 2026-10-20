@@ -92,6 +92,23 @@ impl BlockDefinition {
         self
     }
 
+    /// A definition from its parts, as decoded; the caller has checked them.
+    pub(crate) fn from_parts(
+        color: [f32; 3],
+        see_through: bool,
+        shapes: Vec<Shape>,
+        state_colors: Vec<[f32; 3]>,
+        properties: SetProperties,
+    ) -> Self {
+        Self {
+            color,
+            see_through,
+            shapes,
+            state_colors,
+            properties,
+        }
+    }
+
     pub(crate) fn properties(&self) -> &SetProperties {
         &self.properties
     }

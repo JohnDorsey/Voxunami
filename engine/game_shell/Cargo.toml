@@ -7,6 +7,7 @@ publish.workspace = true
 description = "Everything a Voxunami game shares: window, camera, singleplayer server, screenshots, recording and replay. A game supplies its rules and what its clicks do."
 
 [dependencies]
+binary_codec.workspace = true
 block_models.workspace = true
 client.workspace = true
 content_registry.workspace = true
@@ -32,7 +33,6 @@ wgpu = "30.0.1"
 winit = "0.30.13"
 
 [dev-dependencies]
-binary_codec.workspace = true
 entities.workspace = true
 proptest.workspace = true
 server = { workspace = true, features = ["test-support"] }

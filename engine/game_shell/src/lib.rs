@@ -17,6 +17,7 @@ mod headless;
 pub mod host;
 pub mod options;
 pub mod package;
+mod package_data;
 mod player_identity;
 pub mod serve;
 pub mod session;
@@ -28,6 +29,7 @@ mod windowed;
 pub use definition::{CameraStart, GameContent, GameDefinition};
 pub use identity::Identity;
 pub use package::{ContentPackage, GeneratorFactory, PackageSpec};
+pub use package_data::PackageData;
 pub use player_presence::{PlayerPose, Presence};
 pub use winit::keyboard::KeyCode;
 
