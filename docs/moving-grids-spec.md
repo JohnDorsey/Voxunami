@@ -56,12 +56,12 @@ the origin id of requirement 10 (so a ship file loaded twice is two grids).
 
 - `local_to_world(pose, local position) -> WorldPosition`, `world_to_local`, the same for directions (gravity, velocity);
 - `voxel_in_other(from pose, voxel, to pose) -> Option<VoxelCoordinate>`: the voxel of the other grid containing the centre of this voxel,
-  rounding half toward negative infinity, `None` when the matrix is not invertible. **This is the one cross-grid conversion** the owner's
+  rounding a centre on a boundary toward negative infinity (the floor), `None` outside the coordinate range. **This is the one cross-grid conversion** the owner's
   wishes for fluids and current need (section 2.10); building it now costs a function and its tests, and merges use it too;
 - `lattice_alignment(from, to) -> Option<LatticeTransform>`: the turn (one of the 24 axis rotations) and whole-voxel offset that carries one
   grid onto the other's lattice, or `None`; docking's snap is "pull `lattice_alignment` toward `Some`" (section 2.7).
 
-Arithmetic is `+`, `-`, `*`, and `sqrt` (correctly rounded), never fused or transcendental; building a quaternion from angles goes through
+Positions are computed in `f64` from a brick and an offset. Exactness is for the lattice (`LatticeRotation`, `LatticeTransform`: integers, 24 turns); a pose's quaternion is `f32`, so a quarter turn is exact only to about `1e-7`, which is why `lattice_alignment` takes a tolerance and docking will snap a ship to the exact lattice turn. Arithmetic is `+`, `-`, `*`, `/` and `sqrt` (correctly rounded), never fused or transcendental; building a quaternion from angles goes through
 `libm`. A quaternion is re-normalised each step by a fixed formula.
 
 ### 2.3 Physics
@@ -196,7 +196,7 @@ as the ship turns.
     asked with the prompt facility, with these options: **move ship** (the engine's deterministic search for the nearest free pose within
     32 m, upward first), **accept damage to terrain** (the ship is placed; the terrain blocks it overlaps are destroyed), **accept damage to
     ship** (placed; the ship's blocks that overlap are destroyed), **spawn in terrain (glitchy)** (placed overlapping, nothing destroyed;
-    bodies resolve it however they do), **warp to world spawn** (the pilot goes to the level's spawn and the ship stays parked). The last two are
+    bodies resolve it however they do), **warp to world spawn (leave ship behind)** (the pilot goes to the level's spawn and the ship stays parked). The last two are
     my reading of the owner's wording. The ship is held parked until the answer. The options are a list in the code, so more can be added.
   - *Offline passengers (owner, 2026-10-20: they return aboard, even if the ship has moved):* a passenger who logged out aboard stays in the ship's frame as a hidden entity (players are hidden, not removed),
     so a parked ship keeps them, they return into the ship wherever it now is, and a split or a merge in the meantime re-frames them like everyone

@@ -658,6 +658,14 @@ Phase 27a to 27c (entities; specified in `entities-spec.md`):
 - 27c: protocol version 3 (messages 9 to 11), server replication with cached views, the client store, replay of entities, version policy.
   Cost with 1000 entities and 4 clients: 0.5, 0.7 and 1.4 ms a tick with none, a tenth and all moving. 13 mutations are caught.
 
+Phase 32 (moving grids; `moving-grids-spec.md`):
+- 32a frames (`voxel_space::{GridPose, voxel_in_other, lattice_alignment, LatticeRotation, LatticeTransform}`): a pose's conversions between a grid and the world
+  (positions in `f64` from a brick and an offset, directions), the 24 lattice turns and whole-voxel transforms as exact integers, `voxel_in_other` (the one
+  cross-grid conversion; a centre on a boundary is in the floor voxel), and `lattice_alignment` (whether two grids are on one lattice, and the transform).
+  16 unit tests and 5 properties (round trips, distances kept, composition, two grids on a lattice agree on every voxel in both directions); golden bit
+  patterns checked against a separate Python calculation and equal on Windows and Linux. 21 mutations: 19 caught; 1 equivalent in practice (an exact tie between
+  lattice turns); 1 redundant check (a range test that `checked_offset` already makes), which was deleted.
+
 Phase 31 (a wider material palette):
 - The palette moved from a 256-entry uniform array to a storage buffer of linear RGB (16 bytes a material, 16 MiB at the most), rebuilt by `set_palette` with a new
   bind group. The 16 avatar colours no longer take palette places: they are the last 16 values a quad can carry (0xFFFFF0 and up) and live in the frame uniform,
