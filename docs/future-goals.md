@@ -128,8 +128,8 @@ the whole ship and for collisions; a ship is saved in flight as a grid in a file
   midair the world file keeps, for every entity whose frame is a grid, the world-space pose it had at the last save. This needs a
   small prompt facility (a choice sent to one client, its answer returned, the entity held meanwhile).
 
-**Still open:** whether a ship's own mass is a source of gravity (a moon-sized ship would be); how forgiving docking is (how far from
-alignment the attraction can pull, and whether it turns the ship as well as moves it).
+**Still open:** how forgiving docking is (how far from alignment the attraction can pull, and whether it turns the ship as well as moves it).
+(Whether a ship's own mass is a source of gravity was answered on 2026-10-20: yes, for sufficiently huge ones; see "Ship goals" below.)
 
 ### 3. NPCs powered by local neural networks that can learn
 
@@ -182,3 +182,46 @@ should not be frozen before grids, frames and entities exist. Phases 32 and 34 t
 
 Sources: [Valkyrien Skies FAQs](https://blog.curseforge.com/valkyrien-skies-mod-faqs/), [Valkyrien Skies on ModDex](https://moddex.gg/mod/valkyrien-skies),
 [The AI of Creatures](https://www.alanzucconi.com/2020/07/27/the-ai-of-creatures/), [Agents that learn (forum)](https://www.gamedev.net/forums/topic/344721-agents-that-learn/).
+
+## Ship goals (owner, 2026-10-20)
+
+Five wishes that extend goal 2. None is scheduled as work beyond what `moving-grids-spec.md` (Phase 32) says it reserves for them; the
+cheap-now requirements are listed in `plan.md` under "Requirements pulled forward" (items 17 to 21). Each is stated as the owner put it,
+then what it needs and what I found in the code.
+
+1. **Ships are drawn with levels of detail when far away, just like terrain.**
+   *Found:* terrain has none yet. `plan.md` (Open, "Rendering at scale") says the view at radius 12 "needs LOD (coarser bricks far away)";
+   the renderer draws full bricks, one draw call each. So this goal is really "terrain LOD, built to serve grids too". *Needs:* a mesh is
+   addressed by (grid, brick, level) from the first moving grid, so that nothing assumes level 0; coarse levels come from the grid's own
+   octree (`region_octree`) in its own coordinates; the renderer draws any grid's bricks under that grid's matrix. Phase 32 reserves the
+   address and draws level 0; the coarse levels are built once, for terrain and grids together, in a later rendering phase.
+2. **Sufficiently huge ships have their own gravitational pull.**
+   *Found:* gravity today is one constant, `CharacterSettings::gravity` (32.0), pointing down; `design-decisions.md` already says "entity
+   gravity direction is server-authoritative replicated state, computed from coarse LOD mass", but nothing computes it. Plan item 1 of the
+   pulled-forward requirements says a rule asks `gravity()` with no position; a field that varies in space needs a position, so it should be
+   `gravity_at(local position)` before any plugin uses the version without. *Needs:* gravity as a field with sources (the world's own,
+   and any grid whose aggregate mass is above a configurable threshold, using the mass the physics already needs for its body), summed at a
+   point; every consumer (character, bodies, rules, fluids) asks the field. *Cost:* a handful of big sources, so it is cheap; the
+   interesting part is what a player aboard a huge ship feels (the sum of the world's pull and the ship's) and that two big ships pull
+   each other (a physics decision for later).
+3. **Fluids flow inside a moving grid; at its edge they may re-enter the world; the same for current on a channel.**
+   *Found:* there are no fluids yet (Cave has no water; Sculpt is where they are planned). Fluid rules are lattice rules per grid, so inside
+   a ship they already work in the ship's own axes, with the field's gravity expressed in those axes (that is requirement 1 and the
+   frame-invariance test). The new thing is crossing a boundary, which a rule must never see directly (a rule has a `GridView`, one grid).
+   *Needs, as I would plan it:* a rule can hand the engine an *outflow* (grid, local voxel, direction, channel, amount); the engine
+   converts the voxel with the grids' current transforms (`local_to_other`, nearest voxel, rounding that is deterministic) and delivers an
+   *inflow* to the receiving grid's rules as a message at the next tick boundary, in a fixed order, with a conservation rule (what is
+   delivered is subtracted at the source, and a refused inflow is returned, never created or lost). Water that falls out of the bottom of a
+   ship has two policies, per fluid and per server: stop at the edge (the owner's present lean) or continue into the nearest world voxel.
+   Electric current and a redstone-like signal use the same mailbox with a different channel and no amount. The mailbox is the one
+   cross-grid door; docking (a merge) remains the way grids become one lattice.
+4. **A ship may disappear when its pilot logs out and reappear when they log back in, like a Minecraft horse with its rider.**
+   *Depends on:* server setting and a setting on the command chair (block data). *Needs:* grids that can be unloaded and loaded while the
+   server runs (a ship file, already required), a pilot relation (the chair's control target), and rules for what is aboard when the pilot
+   leaves. My reading of the horse: it is saved with the player and put back at the player's position. See `moving-grids-spec.md`
+   section 2.8 for the policy and the open questions (passengers, a blocked arrival).
+5. **Simulation distance for ships is a server setting.**
+   *Found:* "frozen beyond simulation distance" is a stated principle (`design-decisions.md`) but I did not find a simulation distance in the
+   code: the server's limits are `maximum_watched_bricks` (what one client may watch) and the view radius; rules run on their active sets.
+   *Needs:* one server setting for how far from any player a ship is simulated (physics and rules); a ship farther away is frozen where it
+   is, or parked (unloaded and saved) after a delay. Defined in `moving-grids-spec.md` section 2.7.

@@ -79,7 +79,11 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
     touch when the ships dock, they are welded, and the ships cannot undock until the player breaks the blocks that join them.
   - A player who connects to a server and whose ship file cannot be found is asked what to do: spawn at the world spawn, spawn in
     midair, or quit to the title screen.
-  - Undecided: whether a ship's own mass is a source of gravity.
+  - Added by the owner, 2026-10-20 (`future-goals.md`, "Ship goals"; planned in `moving-grids-spec.md`): sufficiently huge ships have their own
+    gravitational pull; ships are drawn with levels of detail when far away, like terrain; fluids may flow inside a moving grid, and fluid or
+    current may cross a ship's edge to the nearest voxel of another grid (the shape is left open, and must be possible); a ship may disappear
+    when its pilot logs out and reappear when they log back in, depending on a server setting and the command chair's setting; simulation distance
+    for ships is a server setting.
   - Order of work: moving grids (Phase 32) come before the native and WASM loaders (Phase 33), because the loader ABI encodes the
     coordinate model.
 

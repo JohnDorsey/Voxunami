@@ -41,7 +41,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
   transforms; a matrix per grid in the renderer; Rapier bodies from blocks (mass from `engine:density`), full rotation, world gravity
   aboard; connectivity and splitting; docking connectors with a configurable attraction force; players and entities simulated in their
   frame; levels of detail per grid for drawing, for collision (coarse colliders, aggregated mass) and for streaming; a grid saved in
-  flight as a file of its own.
+  flight as a file of its own. Specified in `moving-grids-spec.md` (steps 32a to 32k, with a pause after 32h), waiting for the owner's answers.
 - 31 (built) A wider material palette: the renderer's palette in a storage buffer, 1,048,576 game materials instead of 240 (renderer-only; saves and protocol unchanged). Phase 32 (moving grids) is next.
 - 30 (built; `ui-spec.md`) Server-driven UI: a UI the server describes in the value vocabulary and the stream drives; the HUD, the command line, questions and Cave's hotbar are on the screen, not in the title. Phase 31 is next.
 - 29 (built; `data-packs-spec.md`, `pack-format.md`) Data-driven block packs (JSON), the generated JSON Schema, `check-pack`, and patches: tags by
@@ -236,6 +236,16 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
      restyle it.
   16. **A world-space fallback pose is saved with every entity whose frame is a grid (Phase 27's entity section),** for the midair choice
      and for any grid that cannot be loaded.
+  17. **Gravity is a field (Phase 32, owner 2026-10-20):** `gravity_at(local position)`, summed from sources, where a source is the level's own
+     and any ship above a configurable mass; replaces `gravity()` in requirement 1. Huge ships pull (the earlier "undecided" is now yes).
+  18. **One cross-grid conversion and one door (Phase 32 builds the conversion; the door waits for the first fluid):** `voxel_in_other(from, voxel, to)`
+     is a pure function; a mailbox of outflows and inflows (conserving, ordered, rate-limited) is the only way a rule affects another grid, for
+     fluids and for current on a channel (`future-goals.md`, "Ship goals" 3). Rules still never read another grid.
+  19. **Grids can be loaded and unloaded while the server runs (Phase 32):** parking for the simulation distance and for a ship that leaves with its
+     pilot; a grid's header says what to do when its pilot logs out (`stay` or `vanish`); a server setting can override it.
+  20. **Ship simulation distance and unload distance are server settings (Phase 32);** terrain should get the same shape later.
+  21. **Mesh keys are `(grid, brick)` and can grow a level of detail** (Phase 32 draws level 0): terrain's levels of detail, when built, serve
+     grids too (`future-goals.md`, "Ship goals" 1).
   Not changed by the goals: the content package, the schema, patches, the palette. One ordering consequence, accepted by the owner
   2026-10-18: the loader ABI (Phase 33) encodes the coordinate model, so it is frozen only after grids, frames and entities exist
   (Phases 27 and 32).
