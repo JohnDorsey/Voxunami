@@ -1,5 +1,6 @@
 use crate::property::{PropertyKey, PropertyType, SetProperties, key_id};
 use crate::shape::Shape;
+use namespaced_id::NamespacedId;
 
 /// What a type of block is like: how it looks, how it fills its cell, and how it treats light.
 ///
@@ -107,6 +108,23 @@ impl BlockDefinition {
             state_colors,
             properties,
         }
+    }
+
+    /// The same block with `value` for the property named `key`, in every state, for data that names properties
+    /// by text (a pack); the table the definition goes in checks the key and the value.
+    pub fn with_property_value(mut self, key: NamespacedId, value: i64) -> Self {
+        self.properties.entry(key).or_default().every_state = Some(value);
+        self
+    }
+
+    /// The same, in one state only.
+    pub fn with_state_property_value(mut self, state: u32, key: NamespacedId, value: i64) -> Self {
+        self.properties
+            .entry(key)
+            .or_default()
+            .by_state
+            .insert(state, value);
+        self
     }
 
     pub(crate) fn properties(&self) -> &SetProperties {

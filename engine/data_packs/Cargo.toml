@@ -1,0 +1,20 @@
+[package]
+name = "data_packs"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Packs of JSON that add blocks and patch others: the reader, the loader, the patch applier and the generated schema, with errors that name the file and the path in it."
+
+[dependencies]
+block_models.workspace = true
+namespaced_id.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+voxel_space.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
