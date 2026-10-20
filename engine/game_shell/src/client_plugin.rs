@@ -489,7 +489,16 @@ impl ClientHost {
             .fold(base, |channels, hook| hook(channels))
     }
 
-    /// The HUD lines of the plugins, in order, joined by ` | `.
+    /// The HUD lines of the plugins, in order.
+    pub(crate) fn hud_lines(&mut self, context: &ClientContext<'_>) -> Vec<String> {
+        self.huds
+            .iter_mut()
+            .filter_map(|hook| hook(context))
+            .filter(|line| !line.is_empty())
+            .collect()
+    }
+
+    /// The question the server is waiting for, if there is one, then the HUD lines of the plugins, joined by ` | `.
     pub(crate) fn hud(&mut self, context: &ClientContext<'_>) -> String {
         // The shell's own line comes first: a question must not be missed.
         let question = context
@@ -497,12 +506,7 @@ impl ClientHost {
             .map(|prompt| describe_prompt(prompt, context.prompts_waiting()));
         question
             .into_iter()
-            .chain(
-                self.huds
-                    .iter_mut()
-                    .filter_map(|hook| hook(context))
-                    .filter(|line| !line.is_empty()),
-            )
+            .chain(self.hud_lines(context))
             .collect::<Vec<_>>()
             .join(" | ")
     }

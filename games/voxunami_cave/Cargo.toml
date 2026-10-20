@@ -34,6 +34,7 @@ proptest.workspace = true
 wgpu = "30.0.1"
 replay.workspace = true
 client.workspace = true
+png = "0.18.1"
 
 [lints]
 workspace = true

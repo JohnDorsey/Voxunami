@@ -12,9 +12,11 @@ use crate::definition::GameDefinition;
 use crate::files::{open_recording, open_world, record_connection, recorded_game, save_world};
 use crate::host::{build_server, connect_to};
 use crate::options::{PlayOptions, ReplayOptions};
+use crate::screen::ScreenText;
 use crate::session::{Mode, Session};
 use crate::view::{
     apply_updates, camera_at, configure_renderer, show_entity_boxes, show_other_players,
+    show_screen,
 };
 
 pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
@@ -171,6 +173,14 @@ fn render_outputs<C: Connection, G: GameDefinition>(
 ) -> Result<(), String> {
     show_other_players(renderer, session);
     show_entity_boxes(renderer, session);
+    // What the server has put on the screen (forms, a question) is in a picture of the session; the window's own status and
+    // command line are not.
+    show_screen(
+        renderer,
+        &session.screen(&ScreenText::default()),
+        (view.width, view.height),
+        None,
+    );
     let mut camera = session.camera;
     if let Some(path) = &view.screenshot {
         renderer.set_crosshair(session.mode() == Mode::Playing && G::shows_crosshair());

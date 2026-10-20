@@ -25,10 +25,11 @@ use crate::files::{open_recording, open_world, record_connection, recorded_game,
 use crate::following::{PoseFollower, turned_toward};
 use crate::host::{Autosave, HostSettings, ServerThread, connect_to, listen_on};
 use crate::options::{PlayOptions, ReplayOptions, ViewOptions};
+use crate::screen::{Screen, ScreenKey, ScreenText, Source};
 use crate::session::{Mode, Session};
 use crate::view::{
     apply_updates, atmosphere, binary_voxel_coordinates, camera_at, configure_renderer,
-    show_entity_boxes, show_other_players,
+    show_entity_boxes, show_other_players, show_screen,
 };
 
 const MOVEMENT_SPEED: f32 = 24.0; // voxels per second
@@ -170,6 +171,13 @@ struct Viewer<G: GameDefinition> {
     session: GameSession<G>,
     keys: HashSet<KeyCode>,
     mouse_captured: bool,
+    /// Where the pointer is, in pixels of the window, for clicks on the screen's buttons.
+    cursor: (f64, f64),
+    /// Whether a shift key is down (for Tab backwards).
+    shift: bool,
+    /// Which interface has the player's input, if one does; and which of its buttons has the keyboard focus.
+    modal_source: Option<Source>,
+    focus: Option<u32>,
     /// The command being typed, if one is.
     entry: CommandEntry,
     /// The latest answer to a command, and when it came.
@@ -259,6 +267,10 @@ impl<G: GameDefinition> Viewer<G> {
             session,
             keys: HashSet::new(),
             mouse_captured: false,
+            cursor: (0.0, 0.0),
+            shift: false,
+            modal_source: None,
+            focus: None,
             entry: CommandEntry::default(),
             reply: None,
             view_radius: view.view_radius,
@@ -291,6 +303,89 @@ impl<G: GameDefinition> Viewer<G> {
             self.reply = Some((reply, now));
         } else {
             self.session.send_command(text);
+        }
+    }
+
+    /// What is on the screen besides the world: see [`crate::screen`].
+    fn screen(&mut self) -> Screen {
+        let mut status = Vec::new();
+        match self.session.mode() {
+            Mode::Playing => {
+                status.push(format!(
+                    "players {} | {}",
+                    self.session.players().len().max(1),
+                    binary_voxel_coordinates(self.session.camera.position)
+                ));
+                status.extend(self.session.hud_lines());
+            }
+            Mode::Replaying => status.push(format!(
+                "replay {}{}",
+                self.session.client().world().tick(),
+                if self.recording_ended { " (ended)" } else { "" }
+            )),
+        }
+        let reply = self
+            .reply
+            .as_ref()
+            .filter(|(_, when)| when.elapsed() < REPLY_SHOWN_FOR)
+            .map(|(text, _)| text.clone());
+        let text = ScreenText {
+            status,
+            typing: self.entry.display(),
+            reply,
+        };
+        self.session.screen(&text)
+    }
+
+    /// The window's size in pixels.
+    fn size(&self) -> (u32, u32) {
+        (
+            self.surface_configuration.width,
+            self.surface_configuration.height,
+        )
+    }
+
+    /// Notices that an interface that takes the player's input has appeared or gone, or been replaced by another: the mouse is let
+    /// go, the keys held are forgotten, a half typed command is dropped, and no button has the focus.
+    fn follow_the_modal(&mut self, screen: &Screen) {
+        let source = screen.modal().map(|index| screen.sources[index]);
+        if source == self.modal_source {
+            return;
+        }
+        if source.is_some() && self.session.mode() == Mode::Playing {
+            self.keys.clear();
+            self.entry.cancel();
+            self.set_mouse_captured(false);
+        }
+        self.focus = None;
+        self.modal_source = source;
+    }
+
+    /// Whether an interface has the player's input in a game being played (a recording takes none).
+    fn modal_has_the_input(&self) -> bool {
+        self.modal_source.is_some() && self.session.mode() == Mode::Playing
+    }
+
+    /// What the keyboard does to the interface that has the input.
+    fn press_on_the_screen(&mut self, key: ScreenKey) {
+        let screen = self.screen();
+        if let Some(action) = screen.key(&mut self.focus, key) {
+            self.session.apply_screen_action(action);
+        }
+    }
+
+    /// What a click on the left button does to the interface that has the input.
+    fn click_on_the_screen(&mut self) {
+        let screen = self.screen();
+        let size = self.size();
+        let laid = ui::layout(
+            &screen.uis,
+            (size.0 as i32, size.1 as i32),
+            ui::scale_for_height(size.1),
+            None,
+        );
+        if let Some(action) = screen.click(&laid, self.cursor.0 as i32, self.cursor.1 as i32) {
+            self.session.apply_screen_action(action);
         }
     }
 
@@ -424,6 +519,11 @@ impl<G: GameDefinition> Viewer<G> {
         show_other_players(&mut self.renderer, &self.session);
         show_entity_boxes(&mut self.renderer, &self.session);
 
+        let screen = self.screen();
+        self.follow_the_modal(&screen);
+        let size = self.size();
+        show_screen(&mut self.renderer, &screen, size, self.focus);
+
         let (frame, reconfigure) = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => (frame, false),
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => (frame, true),
@@ -463,33 +563,9 @@ impl<G: GameDefinition> Viewer<G> {
     fn update_title(&mut self, since_last: Duration) {
         let fps = f64::from(self.frames_since_title_update) / since_last.as_secs_f64();
         let statistics = self.last_statistics;
-        let typing = self.entry.display();
-        let reply = self
-            .reply
-            .as_ref()
-            .filter(|(_, when)| when.elapsed() < REPLY_SHOWN_FOR)
-            .map(|(text, _)| text.as_str());
-        let mode = match self.session.mode() {
-            Mode::Playing => format!(
-                "players {} | {} | {}{}",
-                self.session.players().len().max(1),
-                binary_voxel_coordinates(self.session.camera.position),
-                self.session.hud_text(),
-                match (&typing, reply) {
-                    (Some(line), _) => format!(" | {line}"),
-                    (None, Some(text)) => format!(" | {text}"),
-                    (None, None) => String::new(),
-                }
-            ),
-            Mode::Replaying => format!(
-                "replay {}{}",
-                self.session.client().world().tick(),
-                if self.recording_ended { " (ended)" } else { "" }
-            ),
-        };
-        // What the player is doing comes first: a narrow window cuts the end of its title off.
+        // What the player is doing is on the screen; the title has the game and how the drawing is going.
         self.window.set_title(&format!(
-            "{mode} | {} | {fps:.0} fps | drawn {}/{} bricks, {} quads | loading {} | {}",
+            "{} | {fps:.0} fps | drawn {}/{} bricks, {} quads | loading {} | {}",
             G::title(),
             statistics.bricks_drawn,
             statistics.bricks_drawn + statistics.bricks_culled,
@@ -498,6 +574,27 @@ impl<G: GameDefinition> Viewer<G> {
             describe(&self.context.adapter),
         ));
     }
+}
+
+/// What a key means to an interface that has the input, if anything.
+fn screen_key(code: KeyCode, shift: bool) -> Option<ScreenKey> {
+    Some(match code {
+        KeyCode::Tab if shift => ScreenKey::Previous,
+        KeyCode::Tab | KeyCode::ArrowDown | KeyCode::ArrowRight => ScreenKey::Next,
+        KeyCode::ArrowUp | KeyCode::ArrowLeft => ScreenKey::Previous,
+        KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => ScreenKey::Activate,
+        KeyCode::Escape => ScreenKey::Dismiss,
+        KeyCode::Digit1 | KeyCode::Numpad1 => ScreenKey::Number(1),
+        KeyCode::Digit2 | KeyCode::Numpad2 => ScreenKey::Number(2),
+        KeyCode::Digit3 | KeyCode::Numpad3 => ScreenKey::Number(3),
+        KeyCode::Digit4 | KeyCode::Numpad4 => ScreenKey::Number(4),
+        KeyCode::Digit5 | KeyCode::Numpad5 => ScreenKey::Number(5),
+        KeyCode::Digit6 | KeyCode::Numpad6 => ScreenKey::Number(6),
+        KeyCode::Digit7 | KeyCode::Numpad7 => ScreenKey::Number(7),
+        KeyCode::Digit8 | KeyCode::Numpad8 => ScreenKey::Number(8),
+        KeyCode::Digit9 | KeyCode::Numpad9 => ScreenKey::Number(9),
+        _ => return None,
+    })
 }
 
 impl<G: GameDefinition> ApplicationHandler for App<G> {
@@ -545,6 +642,15 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
                     match event.state {
+                        // An interface that takes the input takes every key: the world hears none.
+                        ElementState::Pressed if viewer.modal_has_the_input() => {
+                            if let Some(key) = screen_key(code, viewer.shift) {
+                                viewer.press_on_the_screen(key);
+                            }
+                            if code == KeyCode::Escape {
+                                viewer.set_mouse_captured(false);
+                            }
+                        }
                         ElementState::Pressed if viewer.entry.is_active() => match code {
                             KeyCode::Escape => viewer.entry.cancel(),
                             KeyCode::Enter | KeyCode::NumpadEnter => {
@@ -596,11 +702,18 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                 button,
                 ..
             } => match (button, viewer.mouse_captured) {
+                (MouseButton::Left, _) if viewer.modal_has_the_input() => {
+                    viewer.click_on_the_screen()
+                }
                 (MouseButton::Left, false) => viewer.set_mouse_captured(true),
                 (MouseButton::Left, true) => viewer.session.mouse_pressed(GameButton::Primary),
                 (MouseButton::Right, true) => viewer.session.mouse_pressed(GameButton::Secondary),
                 _ => {}
             },
+            WindowEvent::CursorMoved { position, .. } => viewer.cursor = (position.x, position.y),
+            WindowEvent::ModifiersChanged(modifiers) => {
+                viewer.shift = modifiers.state().shift_key()
+            }
             WindowEvent::Focused(focused) => {
                 // Keys held, and a command half typed, belong to the window that had the focus.
                 viewer.keys.clear();

@@ -1,7 +1,7 @@
 //! Glue between a session and the renderer.
 
 use block_models::BlockTable;
-use renderer::{Atmosphere, Avatar, Camera, VoxelRenderer};
+use renderer::{Atmosphere, Avatar, Camera, OverlayRect, VoxelRenderer};
 use transport::Connection;
 use voxel_space::{BrickCoordinate, WorldPosition};
 use world_view::MeshUpdate;
@@ -29,6 +29,35 @@ pub fn atmosphere(view_radius_bricks: i64, ambient_light: u8) -> Atmosphere {
         ambient_light,
         ..Atmosphere::default()
     }
+}
+
+/// Puts the screen over the next pictures: lays it out for a picture of `size` pixels (at the whole-number scale that suits its
+/// height), paints it as rectangles and gives them to the renderer. `focus` is the button that has the keyboard focus. Returns the
+/// layout, for finding what a click at a pixel is on.
+pub fn show_screen(
+    renderer: &mut VoxelRenderer,
+    screen: &crate::screen::Screen,
+    size: (u32, u32),
+    focus: Option<u32>,
+) -> ui::Layout {
+    let laid = ui::layout(
+        &screen.uis,
+        (size.0 as i32, size.1 as i32),
+        ui::scale_for_height(size.1),
+        focus,
+    );
+    let rectangles: Vec<OverlayRect> = ui::paint(&laid)
+        .into_iter()
+        .map(|painted| OverlayRect {
+            x: painted.area.x,
+            y: painted.area.y,
+            width: painted.area.width,
+            height: painted.area.height,
+            color: painted.color,
+        })
+        .collect();
+    renderer.set_overlay(&rectangles);
+    laid
 }
 
 pub fn apply_updates(renderer: &mut VoxelRenderer, updates: Vec<MeshUpdate>) {

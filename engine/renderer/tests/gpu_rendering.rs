@@ -980,15 +980,20 @@ fn a_box_is_placed_exactly_across_bricks_and_hides_behind_blocks() {
 
 // ---- the overlay: rectangles in pixels over the picture ----
 
-/// A picture of what is set, taken after a few frames. The integrated AMD GPU of the development machine drops about one in a
-/// thousand one-pixel rectangles in its first four or so frames (measured: 1 to 7 of 2000, on Vulkan and on DX12, never on
-/// the NVIDIA card, and never after the fourth frame whatever was drawn), so pictures that are compared to the pixel are
-/// taken once it has settled.
+/// A picture of what is set, once a frame after it repeats it exactly. The integrated AMD GPU of the development machine drops
+/// about one in a thousand one-pixel rectangles in its first few frames, and now and then a pixel or two of a thin rectangle
+/// later (measured: 1 to 7 of 2000 in the first four frames, on Vulkan and on DX12, and two pixels of a line of text in
+/// the sixth; never on the NVIDIA card), so pictures that are compared to the pixel are taken once two frames in a row agree.
 fn settled(renderer: &mut VoxelRenderer, camera: &Camera) -> Vec<u8> {
-    for _ in 0..5 {
-        render(renderer, camera);
+    let mut previous = render(renderer, camera);
+    for _ in 0..30 {
+        let next = render(renderer, camera);
+        if next == previous {
+            return next;
+        }
+        previous = next;
     }
-    render(renderer, camera)
+    panic!("the picture never settled");
 }
 
 fn overlay_rect(x: i32, y: i32, width: i32, height: i32, color: [u8; 4]) -> OverlayRect {

@@ -604,7 +604,43 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         self.with_client_context(|host, context| host.command(line, context))
     }
 
-    /// The HUD lines of the client plugins, joined; shown in the window title.
+    /// The HUD lines of the client plugins, one each (the question the server is waiting on is not among them: it is on the
+    /// screen as a panel).
+    pub fn hud_lines(&mut self) -> Vec<String> {
+        self.with_client_context(|host, context| host.hud_lines(context))
+    }
+
+    /// The questions the server is waiting for the player to answer, the oldest first.
+    pub fn questions(&self) -> &[Prompt] {
+        &self.prompts
+    }
+
+    /// What is on the screen besides the world: see [`crate::screen`]. `text` is what the window knows (where the player is,
+    /// what they are typing).
+    pub fn screen(&self, text: &crate::screen::ScreenText) -> crate::screen::Screen {
+        crate::screen::build(&self.prompts, &self.forms, text)
+    }
+
+    /// Does what the player's input on the screen asked: answers the question, or tells the server what they did with a
+    /// form. A replay sends nothing.
+    pub fn apply_screen_action(&mut self, action: crate::screen::ScreenAction) {
+        use crate::screen::ScreenAction;
+        match action {
+            ScreenAction::Answer { question, choice } => {
+                self.send_game_message(
+                    plugin_host::PromptAnswer::kind(),
+                    plugin_host::PromptAnswer {
+                        id: question,
+                        choice,
+                    }
+                    .encode(),
+                );
+            }
+            ScreenAction::Form { form, action } => self.respond_to_form(form, action),
+        }
+    }
+
+    /// The HUD lines of the client plugins, joined; the old place for them was the window title.
     pub fn hud_text(&mut self) -> String {
         self.with_client_context(|host, context| host.hud(context))
     }
