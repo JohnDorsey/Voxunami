@@ -83,7 +83,10 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
     gravitational pull; ships are drawn with levels of detail when far away, like terrain; fluids may flow inside a moving grid, and fluid or
     current may cross a ship's edge to the nearest voxel of another grid (the shape is left open, and must be possible); a ship may disappear
     when its pilot logs out and reappear when they log back in, depending on a server setting and the command chair's setting; simulation distance
-    for ships is a server setting.
+    for ships is a server setting. Also (same day): feeling the force of acceleration aboard is a future server option; fossilization (an
+    indestructible, immobile ship, operator commands only) is a future way to protect a ship at logout. Answers to the Phase 32 spec: unpiloted ships
+    stay simulated (they fall); every part of a split gets a new id and a merge gets a new id; a logged-out passenger returns aboard the ship wherever
+    it has gone; a blocked arrival asks the pilot (move ship, accept damage to terrain, accept damage to ship, spawn in terrain, warp to world spawn).
   - Order of work: moving grids (Phase 32) come before the native and WASM loaders (Phase 33), because the loader ABI encodes the
     coordinate model.
 

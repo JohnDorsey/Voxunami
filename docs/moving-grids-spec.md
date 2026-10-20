@@ -1,6 +1,6 @@
 # Phase 32: moving grids (ships)
 
-Status: proposed, waiting for the owner's answers to section 6. Nothing is built. Read from the plan (requirements 1 to 16, the owner's
+Status: the owner answered section 6 on 2026-10-20 (answers at its end, and applied in the text); nothing is built. Read from the plan (requirements 1 to 16, the owner's
 decisions of 2026-10-18 and 2026-10-20), `future-goals.md` (goal 2 and "Ship goals"), and from the code after Phase 31. The choices are
 mine and marked; what I checked in the code is marked **[code]**, what I believe from memory is marked **[memory]**.
 
@@ -46,7 +46,7 @@ State lives in a `GridStore` beside the levels in `WorldData` (the data the worl
 and *tombstones* (a merged-away id naming its successor and the transform, requirement 13). The rule API does not change: `ServerWorld::grid`
 answers for allocated grids too, and a rule sees exactly what it saw before: one grid, local coordinates, no world.
 
-A grid has a header: `on_pilot_logout` (`stay` or `vanish`, section 2.8), `held` (whether it moves when nobody pilots it, section 2.7), and
+A grid has a header: `on_pilot_logout` (`stay` or `vanish`, section 2.8), `held` (a ship that does not move, section 2.7; off by default), and
 the origin id of requirement 10 (so a ship file loaded twice is two grids).
 
 ### 2.2 Frames: one small pure module
@@ -128,7 +128,8 @@ as the ship turns.
   the ship as a body to collide with. I expect bugs here, and the steps (32h) put a scenario test for every transition: boarding at rest,
   boarding while the ship moves, jumping off, being on a ship that turns, a ship that is destroyed under a player, and the same under
   replay.
-- **No fictitious forces:** a ship that accelerates or spins does not push a person aboard sideways; only the direction of gravity changes
+- **No fictitious forces by default** (a server option to feel them is a goal, `future-goals.md`, "Ship goals" 6; the design leaves room: it would add the
+  ship's acceleration, and the centrifugal and Euler terms, to the gravity a character feels): a ship that accelerates or spins does not push a person aboard sideways; only the direction of gravity changes
   relative to them. A person standing in a ship that accelerates hard feels nothing, and a person in a ship that rolls slides toward the
   world's down. This is simple and deterministic; I think it is the right first version, and the thing most likely to feel wrong in flight
   (confidence: medium). It is also what the 2026-10-18 decision ("gravity aboard is the world's") implies.
@@ -143,8 +144,8 @@ as the ship turns.
   `/ship hold on|off` and `/ship pilot` (the sender flies it with the fly keys; a very small control target, the full mechanism comes with the
   chair) make it testable. These are Cave commands and tests, not engine features, so the engine API (`create_grid`,
   `remove_blocks_from_grid`, `apply_force`, `set_hold`) is what the phase delivers.
-- **Held:** a ship with no pilot is *held* (kinematic: it stays where it is) by default, unless held is turned off. An unpiloted free ship
-  falls under gravity, which for an airship with no thrust is a crash. Held is the safe default; free is a choice.
+- **Unpiloted ships stay simulated** (owner, 2026-10-20): movement physics and gravity continue with no pilot, so an unpiloted ship with no
+  lift falls. *Held* (kinematic: it stays where it is) is an option a command sets per ship (`/ship hold on|off`), off by default.
 - **Simulation distance (the owner's server setting):** `ShipSettings { simulation_distance, unload_distance }` in `ServerConfig`
   (`--ship-simulation-distance`, `--ship-unload-distance` for `serve`; the integrated server uses the defaults). A ship is *simulated* (its
   body steps, its rules run, its edits are accepted) while any player is within `simulation_distance` metres of its bounds; otherwise it is
@@ -156,14 +157,16 @@ as the ship turns.
   Terrain has no such setting today. I recommend giving terrain rules the same shape later; it is not in this phase.
 - **Splitting:** after an edit that removes a block, a ship is checked for connectivity (6-connected non-air blocks). The check floods from
   the removed block's neighbours at once and stops as soon as they have met; only a cut that really separates parts costs the whole
-  component, and that cost is spread over ticks with a budget (the ship is whole until the check finishes). The part with the most mass keeps
-  the id; the others get new ids from the counter. Each part continues with the velocity of its own centre of mass (linear plus angular
+  component, and that cost is spread over ticks with a budget (the ship is whole until the check finishes). Every part gets a new id from the counter, and
+  none keeps the original's (owner, 2026-10-20); the original id becomes a tombstone naming all the parts, so a saved reference to it can be
+  re-resolved (an entity or a pilot reference picks the part it ends up in). Each part continues with the velocity of its own centre of mass (linear plus angular
   times offset); entities aboard go to the part whose block they stand on, else the nearest by distance, then the event `GridSplit
   { from, parts }` is sent and recorded.
 - **Merging and docking:** two grids merge only if `lattice_alignment` says they are on one lattice. A docking connector (engine part: a
   pair of ports, an attraction force, a snap distance) pulls two ships together; within the snap distance, the engine moves them to exact
   alignment and merges them: the smaller grid's bricks are re-keyed into the larger by the lattice transform (no re-mesh needed beyond the
-  seams), the larger id lives on, the smaller becomes a tombstone, entities aboard are re-framed, `GridMerged { from, into, transform }` is sent.
+  seams), the merged ship gets a new id (owner, 2026-10-20) and both old ids become tombstones naming it, entities aboard (including logged-out
+  passengers) are re-framed, `GridMerged { from, into, transform }` is sent.
   Welding (solid blocks flush with the ports that touch when merged) follows the 2026-10-18 decision. Docking is the biggest single piece
   after 32h; section 4 puts it after a pause for review.
 
@@ -189,11 +192,15 @@ as the ship turns.
   and writes the same header field.
   - *Others aboard:* a ship with any other player aboard does not vanish (they would lose their floor); it stays, held, and the pilot's
     return finds it where it was.
-  - *Blocked arrival:* if the saved pose now overlaps terrain or another ship (something was built there meanwhile), the engine searches
-    deterministically for the nearest free pose within 32 m (upward first); if none is free the ship stays parked and the player is told
-    why, and may try again later. This is a guess; it is question 6.
-  - *Offline passengers:* a passenger who logged out aboard stays in the ship's frame as a hidden entity (players are hidden, not removed),
-    so a parked ship keeps them, and they return into it.
+  - *Blocked arrival (owner, 2026-10-20: ask the player):* if the saved pose now overlaps terrain or another ship, the returning pilot is
+    asked with the prompt facility, with these options: **move ship** (the engine's deterministic search for the nearest free pose within
+    32 m, upward first), **accept damage to terrain** (the ship is placed; the terrain blocks it overlaps are destroyed), **accept damage to
+    ship** (placed; the ship's blocks that overlap are destroyed), **spawn in terrain (glitchy)** (placed overlapping, nothing destroyed;
+    bodies resolve it however they do), **warp to world spawn** (the pilot goes to the level's spawn and the ship stays parked). The last two are
+    my reading of the owner's wording. The ship is held parked until the answer. The options are a list in the code, so more can be added.
+  - *Offline passengers (owner, 2026-10-20: they return aboard, even if the ship has moved):* a passenger who logged out aboard stays in the ship's frame as a hidden entity (players are hidden, not removed),
+    so a parked ship keeps them, they return into the ship wherever it now is, and a split or a merge in the meantime re-frames them like everyone
+    else aboard. A test covers: log out aboard, the ship moves, log in, still aboard at the same local place.
 
 ### 2.9 Gravity as a field (built now, because the API is what is costly to change)
 
@@ -243,7 +250,7 @@ Three things I can say about it, with their confidence:
   its own lamps; it receives no sky light and the sun does not light its interior through a window. Recorded as a limit, not a bug.
 - Merging a ship into the terrain (landing). `/ship create` is a one-way trip in this phase.
 - Terrain levels of detail, fluids, the mailbox, a simulation distance for terrain.
-- Fictitious forces aboard (2.6).
+- Fictitious forces aboard (2.6), and fossilization (a protected state for a ship whose pilot logs out, `future-goals.md`, "Ship goals" 7).
 
 ## 4. Steps (each ends with fmt, clippy, tests on Windows and Linux, mutations, docs, then commit and push)
 
@@ -281,25 +288,18 @@ The phase is large; I propose a pause for the owner after 32h, before docking.
 - **Protocol churn.** `GridId` in edits and actions touches client plugins and Cave; it is the right place to pay for it (nothing is released).
 - **Scope.** This is larger than any earlier phase; the pause after 32h and the order (safe, pure pieces first) are the control.
 
-## 6. Questions for the owner (my recommendation first)
+## 6. Questions for the owner, answered (2026-10-20)
 
-1. **One phase with a pause after 32h, or two phases?** One phase, stopping after 32h to look at ships in the game before saving, splitting
-   and docking are built (recommended). Or make 32i to 32k a Phase 32b; the numbering of later phases would not move (they are 33 and up).
-2. **How do ships exist before the command chair?** Cave commands `/ship create`, `/ship push`, `/ship hold`, `/ship pilot`, built on an
-   engine API (recommended, because the chair arrives in Phase 35 and the phase needs something to test with). The alternative is to build a
-   thruster block now, which pulls in properties and rules for thrust and is more than this phase should hold.
-3. **Unpiloted ships: held (frozen in place) or free (they fall)?** Held by default (recommended); free as a choice per ship. Without
-   thrust, a free airship crashes, so held is the safe default; the vanish policy exists partly to avoid leaving ships floating.
-4. **Gravity pull of huge ships:** build the field and a point-mass source now, off by default, with the threshold as a server setting
-   (recommended, medium confidence), or only the `gravity_at(local)` interface now and no ship sources until coarse levels of detail exist.
-   The interface change is the part that is costly later.
-5. **Rename `gravity()` to `gravity_at(local position)` in the plugin context now** (recommended; no plugin outside the repository exists).
-6. **A blocked arrival of a vanished ship:** search for the nearest free pose within 32 m, upward first; else stay parked and tell the
-   player (recommended). Or: always place the ship and push whatever overlaps out of the way (simpler, can hurt), or ask the player.
-7. **Ship simulation distance defaults:** 256 m to simulate and 1024 m to park, both server settings (recommended; I will adjust after the 32e
-   measurements). Say if you want a different shape, such as one setting in bricks or a time delay before parking.
-8. **Terrain level of detail first, or after ships?** After: ships are built drawing every visible brick, with a per-client budget, and a
-   rendering phase later builds levels of detail for terrain and grids together (recommended). Or build terrain LOD first, which delays
-   ships by a whole phase and gives ships distant drawing from the start.
-9. **No sky light on ships in this phase** (section 3): accepted as a stated limit (recommended), or make sky exposure a requirement
-   of this phase (it needs a world query across grids and so touches the rule boundary).
+1. One phase with a pause after 32h: **default.**
+2. Ships exist through Cave's `/ship` commands on an engine API: **approved.**
+3. Unpiloted ships: **not held. Their movement physics and gravity continue to be simulated** (held remains a per-ship option). This replaces my recommendation.
+4. Gravity field and point-mass source for huge ships, off by default: **default.**
+5. `gravity_at(local position)` replaces `gravity()`: **default.**
+6. A blocked arrival: **ask the player**, with the options in 2.8; fossilization (a ship made indestructible and immobile except by commands, with
+   `/ship fossilize` and `/ship defossilize` for operators only) is a later way to protect a ship (`future-goals.md`).
+7. Simulation distance defaults (256 m, 1024 m, server settings): **default.**
+8. Terrain levels of detail after ships: **default.**
+9. No sky light on ships in this phase: **default.**
+
+Also decided: a split gives every part a new id; a merge gives the result a new id; both leave tombstones. A passenger who logs out aboard and
+returns after the ship has moved is still aboard.

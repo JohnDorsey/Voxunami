@@ -225,3 +225,17 @@ then what it needs and what I found in the code.
    code: the server's limits are `maximum_watched_bricks` (what one client may watch) and the view radius; rules run on their active sets.
    *Needs:* one server setting for how far from any player a ship is simulated (physics and rules); a ship farther away is frozen where it
    is, or parked (unloaded and saved) after a delay. Defined in `moving-grids-spec.md` section 2.7.
+6. **Feeling the force of acceleration aboard a ship is a server option (owner, 2026-10-20).**
+   *Found:* the Phase 32 design has no fictitious forces: a ship that accelerates, turns or spins does not push a person aboard, only the
+   direction of gravity changes relative to them (`moving-grids-spec.md` 2.6). *Needs:* a server setting (off or on, possibly a strength) that adds
+   the inertial terms (minus the ship's linear acceleration, the centrifugal and Euler terms of its rotation) to the force a character
+   aboard feels, in the ship's frame. Characters aboard are already simulated in that frame, so it is one added vector per tick; the work is
+   in making it feel right (a hard turn throwing people against a wall, comfort settings) and in rules aboard: fluids would then slosh
+   if they were given the same vector, which is a separate choice.
+7. **Fossilization: another way to protect a ship whose pilot logs out (owner, 2026-10-20).**
+   Beside `stay` and `vanish`, a ship may be *fossilized*: depending on server settings it becomes indestructible and immobile by any
+   means except commands. `/ship fossilize` and `/ship defossilize` are subcommands of `/ship`, available only to operators, even to players in creative. *Needs:*
+   an operator permission on commands (none exists yet; I found no operator or permission concept in the code), a ship flag the physics treats as fixed and the
+   edit path refuses to change (including explosions and fire), a server setting that decides whether logout may fossilize and who may
+   undo it, and a visible marker. Fits `on_pilot_logout` as a third value.
+
