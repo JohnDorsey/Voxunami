@@ -18,6 +18,7 @@ Usage: voxunami {command} [options]
   --record FILE                   record what you see, to watch later with `voxunami replay`
   --host [ADDRESS]                also let others join over the network (default port {port})
   --join ADDRESS                  join a game hosted elsewhere instead of starting one
+  --packs DIRECTORY               load the data packs in this folder into the server this starts
   --identity FILE                 the key that says who you are to servers (default: made once, in the
                                   game data folder; keep it to stay the same player)
   --autosave SECONDS              save the world to --world this often while playing
@@ -59,6 +60,7 @@ Usage: voxunami serve {command} [options]
   --listen ADDRESS                where to accept players (default 0.0.0.0:{port})
   --seed NUMBER                   terrain seed of a new world (default {seed})
   --world FILE                    load this world if it exists, and save to it
+  --packs DIRECTORY               load the data packs in this folder
   --autosave SECONDS              save the world this often (default 60 with --world)
   --view-radius BRICKS            the view radius players are expected to use (default 12)
   --help                          show this text
@@ -128,6 +130,8 @@ pub struct PlayOptions {
     pub join: Option<String>,
     /// Where the player's private key is kept: `None` for the file in the game data folder.
     pub identity: Option<PathBuf>,
+    /// A directory of data packs for the server this runs.
+    pub packs: Option<PathBuf>,
     pub autosave_seconds: Option<f32>,
     pub camera: [f64; 3],
     pub yaw_degrees: f32,
@@ -147,6 +151,7 @@ impl PlayOptions {
             host: None,
             join: None,
             identity: None,
+            packs: None,
             autosave_seconds: None,
             camera: camera.position,
             yaw_degrees: camera.yaw_degrees,
@@ -243,6 +248,7 @@ pub fn parse_play<G: GameDefinition>(
             "--host" => options.host = Some(complete_address(&value(&flag)?, "0.0.0.0")),
             "--join" => options.join = Some(complete_address(&value(&flag)?, "127.0.0.1")),
             "--identity" => options.identity = Some(PathBuf::from(value(&flag)?)),
+            "--packs" => options.packs = Some(PathBuf::from(value(&flag)?)),
             "--autosave" => options.autosave_seconds = Some(parse_number(&flag, &value(&flag)?)?),
             "--camera" => {
                 let text = value(&flag)?;
@@ -265,9 +271,10 @@ pub fn parse_play<G: GameDefinition>(
     if options.join.is_some()
         && (options.host.is_some()
             || options.world_file.is_some()
+            || options.packs.is_some()
             || options.autosave_seconds.is_some())
     {
-        return Err("--join plays on someone else's server: it cannot be combined with --host, --world or --autosave".to_owned());
+        return Err("--join plays on someone else's server: it cannot be combined with --host, --world, --packs or --autosave".to_owned());
     }
     if options.autosave_seconds.is_some() && options.world_file.is_none() {
         return Err("--autosave needs --world to say where to save".to_owned());
@@ -287,6 +294,8 @@ pub struct ServeOptions {
     pub listen: String,
     pub seed: u64,
     pub world_file: Option<PathBuf>,
+    /// A directory of data packs.
+    pub packs: Option<PathBuf>,
     pub autosave_seconds: f32,
     pub view_radius: i64,
 }
@@ -298,6 +307,7 @@ pub fn parse_serve<G: GameDefinition>(
         listen: format!("0.0.0.0:{}", crate::host::DEFAULT_PORT),
         seed: G::default_seed(),
         world_file: None,
+        packs: None,
         autosave_seconds: 60.0,
         view_radius: ViewOptions::default().view_radius,
     };
@@ -313,6 +323,7 @@ pub fn parse_serve<G: GameDefinition>(
             "--listen" => options.listen = complete_address(&value(&flag)?, "0.0.0.0"),
             "--seed" => options.seed = parse_number(&flag, &value(&flag)?)?,
             "--world" => options.world_file = Some(PathBuf::from(value(&flag)?)),
+            "--packs" => options.packs = Some(PathBuf::from(value(&flag)?)),
             "--autosave" => {
                 options.autosave_seconds = parse_number(&flag, &value(&flag)?)?;
                 if options.autosave_seconds <= 0.0 {
@@ -414,7 +425,7 @@ mod tests {
         let parsed = play(
             "--adapter integrated --view-radius 8 --seed 7 --size 640x360 --camera 1.5,2,-3 \
              --yaw 90 --pitch -45 --screenshot out.png --benchmark --no-vsync --exit-after 2.5 \
-             --world w.voxunami --record r.voxreplay --host 4000 --autosave 30 \n             --identity me.key",
+             --world w.voxunami --record r.voxreplay --host 4000 --autosave 30 \n             --identity me.key --packs my_packs",
         );
         assert_eq!(
             parsed,
@@ -434,6 +445,7 @@ mod tests {
                 host: Some("0.0.0.0:4000".to_owned()),
                 join: None,
                 identity: Some(PathBuf::from("me.key")),
+                packs: Some(PathBuf::from("my_packs")),
                 autosave_seconds: Some(30.0),
                 camera: [1.5, 2.0, -3.0],
                 yaw_degrees: 90.0,
@@ -528,6 +540,7 @@ mod tests {
             "--join a --host b",
             "--join a --world w",
             "--join a --autosave 1",
+            "--join a --packs p",
         ] {
             assert!(error(combined).contains("--join"), "{combined}");
         }
@@ -545,10 +558,10 @@ mod tests {
         assert_eq!(defaults.listen, "0.0.0.0:24816");
         assert_eq!(defaults.seed, 2024);
         assert_eq!(defaults.autosave_seconds, 60.0);
-        let Parsed::Run(options) =
-            parse("--listen 9000 --seed 5 --world w.voxunami --autosave 10 --view-radius 6")
-                .unwrap()
-        else {
+        let Parsed::Run(options) = parse(
+            "--listen 9000 --seed 5 --world w.voxunami --packs mods --autosave 10 --view-radius 6",
+        )
+        .unwrap() else {
             panic!("expected options")
         };
         assert_eq!(
@@ -557,6 +570,7 @@ mod tests {
                 listen: "0.0.0.0:9000".to_owned(),
                 seed: 5,
                 world_file: Some(PathBuf::from("w.voxunami")),
+                packs: Some(PathBuf::from("mods")),
                 autosave_seconds: 10.0,
                 view_radius: 6,
             }

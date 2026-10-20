@@ -18,6 +18,7 @@ pub mod host;
 pub mod options;
 pub mod package;
 mod package_data;
+mod packs;
 mod player_identity;
 pub mod serve;
 pub mod session;
@@ -26,12 +27,15 @@ mod test_support;
 pub mod view;
 mod windowed;
 
+pub use data_packs::{PackErrors, RawFile, RawPack};
 pub use definition::{CameraStart, GameContent, GameDefinition};
 pub use identity::Identity;
 pub use package::{ContentPackage, GeneratorFactory, PackageSpec};
-pub use package_data::{PackageData, PackageError};
+pub use package_data::{PackageData, PackageError, check_materials};
 pub use player_presence::{PlayerPose, Presence};
 pub use winit::keyboard::KeyCode;
+
+pub use packs::{content_with_packs, run_check_packs, run_pack_schemas};
 
 use options::{Parsed, play_usage, replay_usage, serve_usage};
 

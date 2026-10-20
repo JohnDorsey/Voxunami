@@ -25,6 +25,21 @@ pub enum PackageError {
     NoChannel(NamespacedId),
     #[error("the package is for the block registry {0}, which this game does not have")]
     NoBlockRegistry(NamespacedId),
+    #[error("the blocks need {materials} colours and at most {limit} can be drawn")]
+    TooManyMaterials { materials: usize, limit: usize },
+}
+
+/// Whether the renderer can draw a table's colours (a block each, and the colours of states): it draws at most
+/// [`renderer::MAXIMUM_GAME_MATERIALS`], and a table of more would be a panic there.
+pub fn check_materials(table: &BlockTable) -> Result<(), PackageError> {
+    let materials = table.palette().len();
+    if materials > renderer::MAXIMUM_GAME_MATERIALS {
+        return Err(PackageError::TooManyMaterials {
+            materials,
+            limit: renderer::MAXIMUM_GAME_MATERIALS,
+        });
+    }
+    Ok(())
 }
 
 /// The least bytes a block (an identifier and a presence flag) takes, for `read_count`.

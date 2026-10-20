@@ -51,7 +51,7 @@ pub fn play<G: GameDefinition>(options: PlayOptions) -> Result<(), String> {
     let (connection, host): (Box<dyn Connection>, Option<ServerThread<G>>) = match &options.join {
         Some(address) => (Box::new(connect_to(address)?), None),
         None => {
-            let mut content = G::new_content();
+            let mut content = crate::packs::content_with_packs::<G>(options.packs.as_deref())?;
             let world = open_world(&mut content, options.world_file.as_deref(), options.seed)?;
             let mut settings = HostSettings::local(view.view_radius);
             if let Some(address) = &options.host {

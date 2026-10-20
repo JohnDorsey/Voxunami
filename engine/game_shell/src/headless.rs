@@ -30,7 +30,7 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
     }
     // Either a server in this process, which this function ticks, or one somewhere else.
     let identity = crate::player_identity::load(options.identity.as_deref())?;
-    let mut content = G::new_content();
+    let mut content = crate::packs::content_with_packs::<G>(options.packs.as_deref())?;
     let mut local = None;
     let connection: Box<dyn Connection> = match &options.join {
         Some(address) => Box::new(connect_to(address)?),

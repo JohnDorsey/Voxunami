@@ -43,3 +43,13 @@ pub fn run_serve(arguments: impl IntoIterator<Item = String>) -> Result<(), Stri
 pub fn run_replay(arguments: impl IntoIterator<Item = String>) -> Result<(), String> {
     game_shell::run_replay::<Eels>(arguments)
 }
+
+/// Checks data packs against the game. `arguments` are the command line after the game's name.
+pub fn run_check_packs(arguments: impl IntoIterator<Item = String>) -> Result<(), String> {
+    game_shell::run_check_packs::<Eels>(arguments)
+}
+
+/// Writes the JSON Schemas of the game's pack files. `arguments` are the command line after the game's name.
+pub fn run_pack_schemas(arguments: impl IntoIterator<Item = String>) -> Result<(), String> {
+    game_shell::run_pack_schemas::<Eels>(arguments)
+}

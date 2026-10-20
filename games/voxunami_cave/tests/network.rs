@@ -43,6 +43,14 @@ struct DedicatedServer {
 
 impl DedicatedServer {
     fn start(world_file: Option<PathBuf>, autosave_seconds: f32) -> Self {
+        Self::start_with_packs(world_file, autosave_seconds, None)
+    }
+
+    fn start_with_packs(
+        world_file: Option<PathBuf>,
+        autosave_seconds: f32,
+        packs: Option<PathBuf>,
+    ) -> Self {
         let listener = TcpServerListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_address().unwrap();
         let stop = Arc::new(AtomicBool::new(false));
@@ -51,6 +59,7 @@ impl DedicatedServer {
             listen: address.to_string(),
             seed: SEED,
             world_file,
+            packs,
             autosave_seconds,
             view_radius: VIEW_RADIUS,
         };
@@ -418,4 +427,62 @@ fn a_player_over_the_network_goes_to_another_level_with_a_command_and_changes_on
     let (world, _) = host.stop();
     assert_eq!(world.main().overrides.brick_count(), 0);
     assert_eq!(world.level(cellar).unwrap().overrides.brick_count(), 1);
+}
+
+#[test]
+fn a_dedicated_server_started_with_packs_gives_every_player_the_packs_blocks() {
+    let packs = scratch_directory("packs");
+    let pack = packs.join("my_pack");
+    std::fs::create_dir_all(pack.join("blocks")).unwrap();
+    std::fs::write(
+        pack.join("pack.json"),
+        r#"{ "id": "my_pack", "depends_on": ["base_blocks"] }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        pack.join("blocks").join("marble.json"),
+        r#"{ "color": [0.9, 0.9, 0.95] }"#,
+    )
+    .unwrap();
+
+    let server = DedicatedServer::start_with_packs(None, 60.0, Some(packs.clone()));
+    let mut player = join(server.connect(), [16.5, 110.0, 16.5]);
+    settle(&mut player);
+    // This program's own copy of Cave has never heard of marble; the server's package is what draws it.
+    let marble = player.content().registries()[0]
+        .1
+        .raw_id_of(&"my_pack:marble".parse().unwrap())
+        .expect("the player knows the block by name");
+    assert_eq!(player.block_table().color(marble), [0.9, 0.9, 0.95]);
+    server.stop();
+    std::fs::remove_dir_all(&packs).unwrap();
+}
+
+#[test]
+fn a_dedicated_server_does_not_start_when_its_packs_have_problems() {
+    let packs = scratch_directory("bad_packs");
+    std::fs::create_dir_all(packs.join("my_pack")).unwrap();
+    std::fs::write(
+        packs.join("my_pack").join("pack.json"),
+        r#"{ "id": "other" }"#,
+    )
+    .unwrap();
+    // Already told to stop: if the server did start, it would stop at once and this would fail, not hang.
+    let listener = TcpServerListener::bind("127.0.0.1:0").unwrap();
+    let options = ServeOptions {
+        listen: "127.0.0.1:0".to_owned(),
+        seed: SEED,
+        world_file: None,
+        packs: Some(packs.clone()),
+        autosave_seconds: 60.0,
+        view_radius: VIEW_RADIUS,
+    };
+    let error = serve_until::<Cave>(&options, listener, &AtomicBool::new(true)).unwrap_err();
+    assert!(
+        error.contains(
+            "my_pack/pack.json: /id: the folder is called \"my_pack\" but pack.json says \"other\""
+        ) && error.contains("nothing was loaded"),
+        "{error}"
+    );
+    std::fs::remove_dir_all(&packs).unwrap();
 }

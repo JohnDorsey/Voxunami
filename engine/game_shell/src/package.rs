@@ -19,7 +19,8 @@ use world_storage::{LevelData, LoadContext, WorldData};
 use world_view::ViewChannels;
 
 use crate::definition::GameContent;
-use crate::package_data::PackageData;
+use crate::package_data::{PackageData, check_materials};
+use data_packs::{PackErrors, RawPack, load_packs};
 
 /// Makes a game's terrain generators for a world seed. The layout is the world's, for finding the
 /// channels a generator writes.
@@ -104,6 +105,72 @@ impl ContentPackage {
     fn generators(&self, seed: u64) -> Registry<Arc<dyn TerrainGenerator>> {
         (self.spec.generators)(seed, &self.layout())
     }
+
+    /// Adds the blocks of data packs and applies their patches (see the `data_packs` crate). The game's own blocks
+    /// keep their numbers and the packs' blocks follow them. Returns what was skipped on purpose, one line each.
+    /// Nothing changes if there is an error: the packs are not loaded at all. Call it before a world is loaded,
+    /// so that its blocks are not taken for blocks of a plugin that is missing.
+    pub fn apply_packs(&mut self, packs: &[RawPack]) -> Result<Vec<String>, PackErrors> {
+        let package = self.package_data();
+        let base: Vec<(NamespacedId, BlockDefinition)> = package
+            .blocks
+            .iter()
+            .filter_map(|(identifier, definition)| Some((identifier.clone(), definition.clone()?)))
+            .collect();
+        let loaded = load_packs(packs, &base, &package.properties)?;
+
+        let mut blocks = Registry::new();
+        let changed: std::collections::HashMap<&NamespacedId, &BlockDefinition> = loaded
+            .blocks
+            .iter()
+            .map(|(identifier, definition)| (identifier, definition))
+            .collect();
+        for (_, entry) in self.blocks.iter() {
+            let identifier = entry.identifier().clone();
+            match (entry.content(), changed.get(&identifier)) {
+                (Some(_), Some(definition)) => {
+                    blocks
+                        .register(identifier, (*definition).clone())
+                        .expect("the blocks of a registry are distinct");
+                }
+                (Some(definition), None) => {
+                    blocks
+                        .register(identifier, definition.clone())
+                        .expect("the blocks of a registry are distinct");
+                }
+                (None, _) => {
+                    blocks.register_missing(identifier);
+                }
+            }
+        }
+        for (identifier, definition) in &loaded.blocks {
+            if blocks.runtime_id(identifier).is_none() {
+                blocks
+                    .register(identifier.clone(), definition.clone())
+                    .expect("the identifier was just found to be free");
+            }
+        }
+        let candidate = Self {
+            blocks,
+            spec: self.spec.clone(),
+        };
+        // The renderer cannot draw more colours than it has: say so now, not when a window opens.
+        let table = candidate
+            .package_data()
+            .block_table()
+            .map_err(|error| pack_problem(error.to_string()))?;
+        check_materials(&table).map_err(|error| pack_problem(error.to_string()))?;
+        *self = candidate;
+        Ok(loaded.warnings)
+    }
+}
+
+fn pack_problem(message: String) -> PackErrors {
+    PackErrors(vec![data_packs::PackError {
+        file: "the packs together".to_owned(),
+        path: String::new(),
+        message,
+    }])
 }
 
 impl GameContent for ContentPackage {
@@ -289,5 +356,154 @@ mod tests {
         let parsed = ParsedWorld::parse(&bytes).unwrap();
         let _ = parsed.load(content.load_context(7)).unwrap();
         assert_eq!(*seen.lock().unwrap(), [(7, 2), (7, 2)]);
+    }
+
+    // ---- data packs ----
+
+    use data_packs::RawFile;
+
+    fn pack(
+        folder: &str,
+        depends_on: &str,
+        blocks: &[(&str, &str)],
+        patches: &[(&str, &str)],
+    ) -> RawPack {
+        let files = |list: &[(&str, &str)]| {
+            list.iter()
+                .map(|(name, text)| RawFile {
+                    name: (*name).to_owned(),
+                    text: (*text).to_owned(),
+                })
+                .collect()
+        };
+        RawPack {
+            folder: folder.to_owned(),
+            manifest: format!(r#"{{ "id": "{folder}", "depends_on": [{depends_on}] }}"#),
+            blocks: files(blocks),
+            patches: files(patches),
+        }
+    }
+
+    fn block_names(content: &ContentPackage) -> Vec<String> {
+        content
+            .package_data()
+            .blocks
+            .iter()
+            .map(|(identifier, _)| identifier.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn packs_add_blocks_after_the_games_own_and_leave_their_numbers_alone() {
+        let mut content = package();
+        let before = content.package_data();
+        let warnings = content
+            .apply_packs(&[pack(
+                "my_pack",
+                "",
+                &[("marble", r#"{ "color": [0.9, 0.9, 1.0] }"#)],
+                &[],
+            )])
+            .unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(
+            block_names(&content),
+            ["test_game:air", "test_game:rock", "my_pack:marble"]
+        );
+        let after = content.package_data();
+        assert_eq!(after.blocks[..2], before.blocks[..]);
+        assert_eq!(
+            after.blocks[2].1,
+            Some(BlockDefinition::cube([0.9, 0.9, 1.0]))
+        );
+        // The table has the new block too (it is what a server's plugins and its clients see).
+        assert_eq!(content.block_table().block_count(), 3);
+    }
+
+    #[test]
+    fn a_pack_can_patch_the_games_blocks_and_what_it_skipped_on_purpose_is_returned() {
+        let mut content = package();
+        let patch = r#"{ "target": "test_game:rock", "operations": [
+            { "op": "set", "path": "color", "value": [1, 0, 0] } ] }"#;
+        let skipped = r#"{ "target": "test_game:ghost", "optional": true, "operations": [
+            { "op": "set", "path": "color", "value": [1, 0, 0] } ] }"#;
+        let warnings = content
+            .apply_packs(&[pack(
+                "my_pack",
+                r#""test_game""#,
+                &[],
+                &[("a_red", patch), ("b_skipped", skipped)],
+            )])
+            .unwrap();
+        assert_eq!(
+            warnings,
+            [
+                "my_pack/patches/b_skipped.json: skipped: there is no block test_game:ghost (is its pack or plugin loaded?)"
+            ]
+        );
+        assert_eq!(
+            content.package_data().blocks[1].1,
+            Some(BlockDefinition::cube([1.0, 0.0, 0.0]))
+        );
+    }
+
+    #[test]
+    fn packs_that_cannot_be_loaded_change_nothing() {
+        let mut content = package();
+        let before = content.package_data();
+        let errors = content
+            .apply_packs(&[pack(
+                "my_pack",
+                "",
+                &[("bad", r#"{ "colour": [0,0,0] }"#)],
+                &[],
+            )])
+            .unwrap_err();
+        assert!(
+            errors.to_string().contains("my_pack/blocks/bad.json"),
+            "{errors}"
+        );
+        assert_eq!(content.package_data(), before);
+    }
+
+    #[test]
+    fn packs_whose_blocks_need_more_colours_than_can_be_drawn_are_refused_and_change_nothing() {
+        let mut content = package();
+        let before = content.package_data();
+        // Two blocks of the game, one of the pack, and 250 colours for the states of one.
+        let colors = vec!["[0, 0, 0]"; 250].join(", ");
+        let heavy = format!(r#"{{ "color": [0,0,0], "state_colors": [{colors}] }}"#);
+        let errors = content
+            .apply_packs(&[pack("my_pack", "", &[("heavy", &heavy)], &[])])
+            .unwrap_err();
+        assert_eq!(
+            errors.to_string(),
+            "the packs together: the blocks need 253 colours and at most 240 can be drawn"
+        );
+        assert_eq!(content.package_data(), before);
+    }
+
+    #[test]
+    fn a_block_of_a_missing_plugin_keeps_its_place_when_packs_are_added() {
+        let mut content = package();
+        content.blocks.register_missing(id("gone_plugin:thing"));
+        content
+            .apply_packs(&[pack(
+                "my_pack",
+                "",
+                &[("marble", r#"{ "color": [0,0,0] }"#)],
+                &[],
+            )])
+            .unwrap();
+        assert_eq!(
+            block_names(&content),
+            [
+                "test_game:air",
+                "test_game:rock",
+                "gone_plugin:thing",
+                "my_pack:marble"
+            ]
+        );
+        assert_eq!(content.package_data().blocks[2].1, None);
     }
 }

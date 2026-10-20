@@ -238,6 +238,22 @@ fn patch() -> Value {
     })
 }
 
+impl PackSchemas {
+    /// The files to write for editors to read: each name with the schema's text.
+    pub fn files(&self) -> [(&'static str, String); 3] {
+        let text = |schema: &Value| {
+            let mut text = serde_json::to_string_pretty(schema).expect("a schema is JSON");
+            text.push('\n');
+            text
+        };
+        [
+            ("pack.schema.json", text(&self.manifest)),
+            ("block.schema.json", text(&self.block)),
+            ("patch.schema.json", text(&self.patch)),
+        ]
+    }
+}
+
 /// The schemas for a game that declares these properties.
 pub fn pack_schemas(schema: &PropertySchema) -> PackSchemas {
     PackSchemas {

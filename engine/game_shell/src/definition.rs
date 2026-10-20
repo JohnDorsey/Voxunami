@@ -15,6 +15,7 @@ use world_view::ViewChannels;
 
 use crate::client_plugin::ClientPlugin;
 use crate::package_data::PackageData;
+use data_packs::{PackErrors, RawPack};
 
 /// A game's plugins, as the shell needs them to show and build worlds. Both the server and every
 /// client have one.
@@ -43,6 +44,16 @@ pub trait GameContent: Debug + Send {
         self.package_data()
             .block_table()
             .unwrap_or_else(|error| panic!("the game's blocks cannot be used: {error}"))
+    }
+
+    /// Adds the blocks of data packs and applies their patches, before a world is loaded. Returns what was skipped on
+    /// purpose, one line each. A game that does not take packs says so.
+    fn apply_packs(&mut self, _packs: &[RawPack]) -> Result<Vec<String>, PackErrors> {
+        Err(PackErrors(vec![data_packs::PackError {
+            file: "--packs".to_owned(),
+            path: String::new(),
+            message: "this game does not take packs".to_owned(),
+        }]))
     }
 
     /// A new world with this seed.

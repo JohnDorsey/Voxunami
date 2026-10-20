@@ -26,7 +26,7 @@ use crate::client_plugin::{
 };
 use crate::definition::{GameContent, GameDefinition};
 use crate::host::WATCH_MARGIN_BRICKS;
-use crate::package_data::{PackageData, PackageError};
+use crate::package_data::{PackageData, PackageError, check_materials};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -127,11 +127,11 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             .find(|(kind, _)| *kind == package.block_registry)
             .map(|(_, registry)| *registry)
             .ok_or_else(|| PackageError::NoBlockRegistry(package.block_registry.clone()))?;
-        let block_table = Arc::new(
-            package
-                .block_table_numbered_by(numbering)
-                .map_err(PackageError::from)?,
-        );
+        let block_table = package
+            .block_table_numbered_by(numbering)
+            .map_err(PackageError::from)?;
+        check_materials(&block_table)?;
+        let block_table = Arc::new(block_table);
         let view_channels =
             package.view_channels(client.world().world().main().overrides.layout())?;
         let settings = ClientSettings::new(package.ambient_light);
@@ -745,6 +745,18 @@ mod package_tests {
         undeclared.blocks[1].1 =
             Some(BlockDefinition::cube([0.5; 3]).with_property(&block_models::engine::DENSITY, 5));
         assert!(matches!(refused(&undeclared), PackageError::Blocks(_)));
+
+        // More colours than the renderer can draw would be a panic when a window opens: refuse them here.
+        let mut too_many = compiled_in();
+        too_many.blocks[1].1 =
+            Some(BlockDefinition::cube([0.5; 3]).with_state_colors(vec![[0.1; 3]; 250]));
+        assert_eq!(
+            refused(&too_many),
+            PackageError::TooManyMaterials {
+                materials: 254,
+                limit: 240
+            }
+        );
 
         for damaged in [Vec::new(), vec![1, 2, 3], vec![0xFF; 40]] {
             assert!(

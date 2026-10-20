@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use block_models::BlockDefinition;
 use content_registry::{IdentifierRegistry, Registry};
-use game_shell::{ContentPackage, GameContent, PackageData, PackageSpec};
+use game_shell::{ContentPackage, GameContent, PackErrors, PackageData, PackageSpec, RawPack};
 use namespaced_id::NamespacedId;
 use terrain::TerrainGenerator;
 use voxel_grid::{ChannelDefinition, ChannelIndex};
@@ -182,6 +182,10 @@ impl GameContent for ContentEels {
 
     fn package_data(&self) -> PackageData {
         self.package.package_data()
+    }
+
+    fn apply_packs(&mut self, packs: &[RawPack]) -> Result<Vec<String>, PackErrors> {
+        self.package.apply_packs(packs)
     }
 
     /// A new world: the arena, with nobody's body in it yet. The seed changes nothing.

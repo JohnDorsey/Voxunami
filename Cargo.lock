@@ -933,6 +933,7 @@ dependencies = [
  "client",
  "content_registry",
  "ctrlc",
+ "data_packs",
  "entities",
  "glam 0.34.1",
  "identity",

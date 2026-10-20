@@ -25,7 +25,7 @@ const PLACEMENT_SIZE: u64 = 16;
 /// How many different avatar colours there are. They take the last palette values, so games can
 /// use the values below `MAXIMUM_GAME_MATERIALS`.
 pub const AVATAR_COLOR_COUNT: usize = 16;
-const MAXIMUM_GAME_MATERIALS: usize = PALETTE_SIZE - AVATAR_COLOR_COUNT;
+pub const MAXIMUM_GAME_MATERIALS: usize = PALETTE_SIZE - AVATAR_COLOR_COUNT;
 /// sRGB, chosen to be told apart from each other and from the usual terrain colours.
 const AVATAR_COLORS: [[f32; 3]; AVATAR_COLOR_COUNT] = [
     [1.00, 0.20, 0.20],
