@@ -281,8 +281,10 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   terrain. The fix is in the physics: a body that is made or teleported is moved the shortest way out of terrain (see `design-decisions.md`).
   Regression tests: `a_player_in_a_trench_sent_to_a_level_whose_ground_is_whole_ends_up_on_it_not_in_it` reproduces the original failure exactly
   (eyes at [15.78, 103.63, 12.31] inside voxels (15, 102, 12) and (16, 102, 12)) without the fix and passes with it; the teleport probe in
-  Cave; and in `engine/physics/tests/walking.rs`, 16 new tests and 2 properties, of which 6 tests and both properties fail without the fix (the rest guard the policy). The original test now also fixes the server tick
-  its fire starts at, so that it is the same on every run. Not measured: Linux, where it was seen (WSL could not start when this was finished:
+  Cave; and in `engine/physics/tests/walking.rs`, 16 new tests and 2 properties, of which 6 tests and both properties fail without the fix (the rest guard the policy). The original test no longer asserts the walker
+  got more than 3 voxels into the flames (2 now: a burnt trench can stop it short, which is not the flames stopping it). A fix that
+  fixed the tick the fire starts at was tried and removed: how long settling takes is unbounded under load (it exceeded 1000 ticks during a
+  cold Linux build), so any fixed tick is a new way to fail. Not measured: Linux, where it was seen (WSL could not start when this was finished:
   `HCS ERROR_NO_SYSTEM_RESOURCES`); measured instead on Windows, 10 whole-file runs with every core busy, all clean.
   Left open, small: (a) a body put within a hair (under the controller's 0.01 skin) of two walls at once can be left standing a little above the
   ground it falls beside (the controller counts the walls as support): it is not inside anything, and the properties do not assert on how a body

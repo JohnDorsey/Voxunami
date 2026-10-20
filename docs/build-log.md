@@ -667,8 +667,8 @@ Fix of a flaky test (after Phase 27f): a body put inside terrain is moved out of
 - Two independent reviews (one of the physics code, one of the root cause and the tests) found, and I fixed: "straight up" launching players
   through ceilings and walls (now the shortest way), a panic at the top of the world (now solid), a footprint formula in the test that had a
   failure window of its own (now two-part: not inside what it overlaps by more than 0.02, standing on what it overlaps or is within the
-  controller's skin of), a scenario test that did not fail without the fix (replaced), and load-dependent tick counts in the original test (the
-  tick is fixed). 15 mutations of the new code: all caught, by the physics tests, the Cave tests, or both; the properties alone leave two
+  controller's skin of), a scenario test that did not fail without the fix (replaced), and load-dependent tick counts in the original test (fixing the tick
+  was tried and removed: settling is unbounded under load, and the Linux cold build exceeded the fixed tick; the walk threshold is 2 now). 15 mutations of the new code: all caught, by the physics tests, the Cave tests, or both; the properties alone leave two
   mutants (the margin, only the middle column) to the Cave test.
 - A side-room rule (keep the controller's 0.01 skin from walls when choosing where to put the body) was tried and made things worse, by
   rejecting the good place straight up beside a taller wall; reverted. A property that asserted how a body *rests* failed on rare corners of
