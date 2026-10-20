@@ -111,7 +111,9 @@ same reason.
 identifier saying whose message it is, and bytes only that game reads. The engine never interprets them, and a client
 that lacks the plugin that sends one ignores it. The engine does read three of its own, in the `engine:` namespace (Phase 27h): `engine:prompt`
 (server to one client: an id, a title, up to 9 options), `engine:prompt_answer` (client to server: the id and the option, counted from 0) and
-`engine:prompt_closed` (server to that client: the question is over, answered or withdrawn). The server host reads the answer itself; no plugin
+`engine:prompt_closed` (server to that client: the question is over, answered or withdrawn), and, since Phase 30, `engine:ui_show` (server to one client: a form's number and the
+interface to draw, replacing the form with that number if there is one), `engine:ui_close` (the form is over) and `engine:ui_response` (client to server: the form's number and either a
+button pressed or `Dismissed`). The interface's byte form is the `ui` crate's (canonical; at most 6 deep and 200 parts). None of these changed the protocol version. The server host reads the answer itself; no plugin
 registers it.
 
 ## What the server sends when

@@ -197,6 +197,20 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - The look angles are kept as reported (a component) beside the orientation quaternion, so that nothing recovers angles from a quaternion.
   The calls that read or move players take the world (`Presence`), a game holds it as it held the book.
 
+## Decided (the user interface; built in Phase 30)
+
+- **One small interface model, three sources, one drawing path.** `ui` is a crate with no graphics: a tree (`Panel`, `Label`, `Button`, `Bar`, `Swatch`, `Space`), its
+  limits, a canonical byte form, and a layout in whole pixels at a whole-number scale (so a picture of it is the same on every machine). The renderer draws
+  flat rectangles (`set_overlay`); text is rectangles too. The shell's own screens, a client plugin's `overlay`, and the server's forms all end up in one list.
+- **The server describes forms in engine messages,** so every game's clients can draw them with no plugin and a recording shows them. A form belongs to
+  one player, has a number never reused, is not saved, and is dropped when the player leaves; only a button it has can be pressed, only by the player it was
+  shown to, and only a modal form can be put away. The plugin hears `UiResponded` and answers by updating, closing or doing something else.
+- **A modal interface has the player's input and the world has none:** the mouse is freed, held keys are forgotten, a half typed command is dropped,
+  clicks and keys (Tab, arrows, Enter, numbers, Escape) go to its buttons. A question the server asks (Phase 27h) is shown this way, and `.choose N` still works.
+- **Client plugins cannot take the input:** an overlay is always shown as a panel. A choice is the server's form.
+- **The title is for the game and the frame statistics;** what the player is doing (position, HUD, the command being typed, the reply) is on the screen.
+- **Pictures compared to the pixel are taken once two frames agree** because of a quirk of the development machine's integrated GPU (see `ui-spec.md`).
+
 ## Decided (data packs; built in Phase 29)
 
 - **A pack is data, loaded by the server only.** A folder of JSON adds blocks and patches blocks; no code runs. A client needs no pack: it is sent

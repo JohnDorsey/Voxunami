@@ -658,6 +658,21 @@ Phase 27a to 27c (entities; specified in `entities-spec.md`):
 - 27c: protocol version 3 (messages 9 to 11), server replication with cached views, the client store, replay of entities, version policy.
   Cost with 1000 entities and 4 clients: 0.5, 0.7 and 1.4 ms a tick with none, a tenth and all moving. 13 mutations are caught.
 
+Phase 30 (the user interface):
+- 30a: the `ui` crate: the tree and its limits, a canonical byte form with a decoder that refuses before it builds (a description nested 5,000 deep is refused
+  without recursing), layout in whole pixels at nine anchors with stacking, hit testing, keyboard focus. 21 tests, 3 properties; 17 mutations caught.
+- 30b: the renderer's overlay (`set_overlay`, `OverlayRect`; one instanced quad pipeline, alpha blended, after the crosshair) and `ui::paint` (text from
+  `font8x8` as rectangles). GPU tests on every adapter: exact pixels, blending, clipping, non-square pictures. A first design (one oversized triangle and a
+  discard) lost ten times as many pixels on the AMD GPU as plain quads; quads kept.
+- 30c: forms: the three messages, `Context::show_ui/update_ui/close_ui`, `UiResponded`, the session's open forms, replay. 8 integration tests, 9 unit tests,
+  2 Cave tests; 15 mutations, 14 caught (the survivor is memory hygiene, as for prompts).
+- 30d: the shell: `game_shell::screen` (build the list, map clicks and keys to actions, pure and tested), `view::show_screen`, the window draws the status,
+  the command line and its reply, forms and questions, and a modal takes the mouse and keys; `Session::screen/apply_screen_action/hud_lines`. 11 unit tests,
+  a GPU test of the pictures, a replay that draws exactly what was drawn live; 12 mutations caught. A look at a picture of everything: legible, stacked, dimmed.
+- 30e: the `overlay` client verb and `ClientContext::block_definition`; Cave's hotbar (swatches in the server's colours, the chosen one outlined, counts in
+  survival, a pack's placeable block among them) and an inventory panel on `E`. 11 mutations of the verb and the hotbar: 9 caught; the 2 that survive cannot be reached (a block with no definition is not on the hotbar, and a stack count never passes a u32).
+- The flake of the replay picture test is the AMD GPU leaving pixels out (found while pinning pictures); pictures are taken once two frames agree.
+
 Phase 29 (data packs):
 - 29a: the `data_packs` crate reads `pack.json`, block files and patch files into the model, collecting every problem with its file and JSON pointer,
   with "did you mean" for near misses (20 tests of exact messages; 17 reader mutations caught after two assertions were added for the survivors).

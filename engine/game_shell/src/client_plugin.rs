@@ -183,6 +183,17 @@ impl<'a> ClientContext<'a> {
         self.view.block_table
     }
 
+    /// The server's definition of a block, if it has one: what colour it is and so on. A block of a data pack the client has never
+    /// heard of is here, as is any block of the game.
+    pub fn block_definition(&self, block: &NamespacedId) -> Option<&block_models::BlockDefinition> {
+        self.view
+            .package
+            .blocks
+            .iter()
+            .find(|(identifier, _)| identifier == block)
+            .and_then(|(_, definition)| definition.as_ref())
+    }
+
     /// The blocks the server's definitions give a true value for the property `key`, such as a flag a game
     /// reads to know which blocks a player can place, in the order of the blocks. Read from the server's
     /// package, so a block of a pack the client has never heard of is in it.
@@ -258,6 +269,7 @@ pub struct Appearance {
 type MessageHook = Box<dyn FnMut(&[u8]) -> bool + Send>;
 type ViewHook = Box<dyn FnMut(ViewChannels) -> ViewChannels + Send>;
 type HudHook = Box<dyn FnMut(&ClientContext<'_>) -> Option<String> + Send>;
+type OverlayHook = Box<dyn FnMut(&ClientContext<'_>) -> Option<ui::Ui> + Send>;
 type AppearanceHook = Box<dyn Fn(&ClientEntity) -> Option<Appearance> + Send>;
 type ActionHook = Box<dyn FnMut(&mut ClientContext<'_>) + Send>;
 type CommandHook = Box<dyn FnMut(&mut ClientContext<'_>, &Arguments<'_>) -> String + Send>;
@@ -286,6 +298,7 @@ pub(crate) struct ClientHost {
     checks: Vec<fn() -> Result<(), String>>,
     views: Vec<ViewHook>,
     huds: Vec<HudHook>,
+    overlays: Vec<OverlayHook>,
     appearances: BTreeMap<NamespacedId, AppearanceHook>,
     keys: Vec<KeyBinding>,
     mice: Vec<MouseBinding>,
@@ -369,6 +382,18 @@ impl ClientRegistrar<'_> {
         run: impl FnMut(&ClientContext<'_>) -> Option<String> + Send + 'static,
     ) {
         self.host.huds.push(Box::new(run));
+    }
+
+    /// A panel on the screen, or none: an interface (see [`ui::Ui`]) built from what the client knows, such as the hotbar. Runs every
+    /// frame, while playing and replaying, so it must be a pure function of the stream and the plugin's own state, as a HUD
+    /// line is. It is shown as a panel of the screen, never a modal one: the player's input stays with the world, so
+    /// buttons in it do nothing (a server's form is how a plugin asks for a choice). One that is beyond the limits of an
+    /// interface is not shown.
+    pub fn overlay(
+        &mut self,
+        run: impl FnMut(&ClientContext<'_>) -> Option<ui::Ui> + Send + 'static,
+    ) {
+        self.host.overlays.push(Box::new(run));
     }
 
     /// An action that is by default on a key. Any number of actions may be on one key; they all run, in
@@ -487,6 +512,19 @@ impl ClientHost {
         self.views
             .iter_mut()
             .fold(base, |channels, hook| hook(channels))
+    }
+
+    /// The panels the plugins want on the screen, in order: those within the limits, made not modal.
+    pub(crate) fn overlays(&mut self, context: &ClientContext<'_>) -> Vec<ui::Ui> {
+        self.overlays
+            .iter_mut()
+            .filter_map(|hook| hook(context))
+            .map(|mut panel| {
+                panel.modal = false;
+                panel
+            })
+            .filter(|panel| panel.check().is_ok())
+            .collect()
     }
 
     /// The HUD lines of the plugins, in order.
@@ -940,6 +978,91 @@ mod tests {
         ];
         let (hud, _) = with_host(plugins, |host, context| host.hud(context));
         assert_eq!(hud, "placing stone | tick 0");
+    }
+
+    fn panel_of(text: &str, modal: bool) -> ui::Ui {
+        ui::Ui {
+            modal,
+            anchor: ui::Anchor::Bottom,
+            root: ui::Panel {
+                title: None,
+                color: ui::Color::BLACK,
+                direction: ui::Direction::Row,
+                children: vec![ui::Node::Label {
+                    text: text.to_owned(),
+                    color: ui::Color::WHITE,
+                }],
+            },
+        }
+    }
+
+    #[test]
+    fn the_panels_of_plugins_come_in_order_of_plugin_never_modal_and_those_beyond_the_limits_are_left_out()
+     {
+        let plugins = vec![
+            plugin("test_b:p", |registrar| {
+                registrar.overlay(|context| {
+                    Some(panel_of(&format!("tick {}", context.tick().get()), false))
+                });
+            }),
+            plugin("test_a:p", |registrar| {
+                // One that wants the input: it is shown, but does not take it. One with nothing to show. One too long to be one.
+                registrar.overlay(|_| Some(panel_of("first", true)));
+                registrar.overlay(|_| None);
+                registrar.overlay(|_| {
+                    Some(panel_of(
+                        &"x".repeat(ui::MAXIMUM_TEXT_CHARACTERS + 1),
+                        false,
+                    ))
+                });
+            }),
+        ];
+        let (panels, _) = with_host(plugins, |host, context| host.overlays(context));
+        assert_eq!(
+            panels,
+            [panel_of("first", false), panel_of("tick 0", false)]
+        );
+    }
+
+    #[test]
+    fn a_plugin_can_ask_what_colour_the_server_says_a_block_is() {
+        let mut package = PackageData::for_tests();
+        package.blocks = vec![
+            (
+                id("a:red"),
+                Some(block_models::BlockDefinition::cube([1.0, 0.0, 0.0])),
+            ),
+            (id("b:gone"), None),
+        ];
+        let camera = camera_at([0.0; 3], 0.0, 0.0, 3);
+        let table = BlockTable::of_cubes(&[false]);
+        let (players, entities) = (BTreeMap::new(), ClientEntities::default());
+        let mut settings = ClientSettings::new(0);
+        let context = ClientContext::new(SessionView {
+            camera: &camera,
+            block_table: &table,
+            package: &package,
+            players: &players,
+            entities: &entities,
+            prompts: &[],
+            settings: &mut settings,
+            target: None,
+            target_content: None,
+            tick: Tick::ZERO,
+            mode: Mode::Playing,
+            own_client: ClientId::new(1),
+        });
+        assert_eq!(
+            context
+                .block_definition(&id("a:red"))
+                .map(|definition| definition.color),
+            Some([1.0, 0.0, 0.0])
+        );
+        assert!(
+            context.block_definition(&id("b:gone")).is_none(),
+            "no definition"
+        );
+        assert!(context.block_definition(&id("c:unknown")).is_none());
     }
 
     fn question(id: u64, title: &str, options: &[&str]) -> Prompt {

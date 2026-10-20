@@ -34,6 +34,8 @@ pub struct ScreenText {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     Status,
+    /// A panel a client plugin asked for, by its place in the list.
+    Overlay(usize),
     Reply,
     Typing,
     Form(FormId),
@@ -117,9 +119,14 @@ fn question_ui(question: &Prompt, waiting: usize) -> Ui {
     }
 }
 
-/// Builds the screen: the status at the top left, what the server has shown (panels first, then modal forms), the command
-/// line and its reply at the bottom, and the question over everything.
-pub fn build(questions: &[Prompt], forms: &[(FormId, Ui)], text: &ScreenText) -> Screen {
+/// Builds the screen: the status at the top left, the panels of the client plugins, what the server has shown (panels first,
+/// then modal forms), the command line and its reply at the bottom, and the question over everything.
+pub fn build(
+    questions: &[Prompt],
+    forms: &[(FormId, Ui)],
+    overlays: &[Ui],
+    text: &ScreenText,
+) -> Screen {
     let mut screen = Screen::default();
     let mut add = |source: Source, ui: Ui| {
         screen.sources.push(source);
@@ -130,6 +137,9 @@ pub fn build(questions: &[Prompt], forms: &[(FormId, Ui)], text: &ScreenText) ->
             Source::Status,
             lines(Anchor::TopLeft, STATUS_COLOR, DIM_TEXT, &text.status),
         );
+    }
+    for (index, overlay) in overlays.iter().enumerate() {
+        add(Source::Overlay(index), overlay.clone());
     }
     // The command line sits closest to the bottom edge and the reply stacks above it.
     if let Some(typing) = &text.typing {
@@ -249,6 +259,14 @@ mod tests {
 
     use super::*;
 
+    fn build_without_overlays(
+        questions: &[Prompt],
+        forms: &[(FormId, Ui)],
+        text: &ScreenText,
+    ) -> Screen {
+        build(questions, forms, &[], text)
+    }
+
     fn question(id: u64, title: &str, options: &[&str]) -> Prompt {
         Prompt {
             id: Id::new(id),
@@ -286,8 +304,11 @@ mod tests {
 
     #[test]
     fn nothing_to_show_is_an_empty_screen_and_each_thing_has_its_place_in_the_order() {
-        assert_eq!(build(&[], &[], &ScreenText::default()), Screen::default());
-        let screen = build(
+        assert_eq!(
+            build_without_overlays(&[], &[], &ScreenText::default()),
+            Screen::default()
+        );
+        let screen = build_without_overlays(
             &[question(4, "Delete?", &["Keep", "Delete"])],
             &[
                 (FormId::new(2), menu(true, &[1])),
@@ -313,7 +334,7 @@ mod tests {
 
     #[test]
     fn a_question_is_a_modal_panel_with_a_numbered_button_for_each_option_and_says_how_many_wait() {
-        let one = build(
+        let one = build_without_overlays(
             &[question(7, "Delete the level?", &["Keep it", "Delete it"])],
             &[],
             &ScreenText::default(),
@@ -333,7 +354,7 @@ mod tests {
         assert_eq!(labels, [(0, "1) Keep it"), (1, "2) Delete it")]);
         assert_eq!(ui.root.children.len(), 2, "nothing else when none wait");
 
-        let three = build(
+        let three = build_without_overlays(
             &[
                 question(1, "", &["A"]),
                 question(2, "second", &["B"]),
@@ -362,7 +383,7 @@ mod tests {
     fn text_longer_than_an_interface_allows_is_cut_with_dots_so_that_what_is_built_is_always_allowed()
      {
         let long = "x".repeat(300);
-        let screen = build(
+        let screen = build_without_overlays(
             &[question(1, &long, &[&long])],
             &[],
             &text(&[&long], Some(&long), Some(&long)),
@@ -379,7 +400,7 @@ mod tests {
 
     #[test]
     fn a_click_presses_a_button_of_the_interface_that_has_the_input_and_of_no_other() {
-        let screen = build(
+        let screen = build_without_overlays(
             &[question(5, "Q", &["Yes", "No"])],
             &[(FormId::new(3), menu(true, &[10, 11]))],
             &ScreenText::default(),
@@ -409,7 +430,7 @@ mod tests {
 
     #[test]
     fn a_click_on_a_form_that_has_the_input_presses_its_button() {
-        let screen = build(
+        let screen = build_without_overlays(
             &[],
             &[(FormId::new(3), menu(true, &[10, 11]))],
             &ScreenText::default(),
@@ -424,7 +445,7 @@ mod tests {
             })
         );
         // Nothing modal: a click presses nothing, whatever is under it.
-        let free = build(
+        let free = build_without_overlays(
             &[],
             &[(FormId::new(3), menu(false, &[]))],
             &text(&["x"], None, None),
@@ -436,7 +457,7 @@ mod tests {
 
     #[test]
     fn the_keyboard_moves_the_focus_round_the_buttons_and_presses_the_one_that_has_it() {
-        let screen = build(
+        let screen = build_without_overlays(
             &[],
             &[(FormId::new(3), menu(true, &[10, 11, 12]))],
             &ScreenText::default(),
@@ -489,7 +510,7 @@ mod tests {
 
     #[test]
     fn a_question_has_to_be_answered_escape_does_not_put_it_away() {
-        let screen = build(
+        let screen = build_without_overlays(
             &[question(5, "Q", &["Yes", "No"])],
             &[],
             &ScreenText::default(),
@@ -507,7 +528,7 @@ mod tests {
 
     #[test]
     fn with_nothing_modal_no_key_does_anything() {
-        let screen = build(
+        let screen = build_without_overlays(
             &[],
             &[(FormId::new(1), menu(false, &[]))],
             &text(&["a"], None, None),
@@ -527,7 +548,8 @@ mod tests {
 
     #[test]
     fn the_status_is_at_the_top_left_and_the_command_line_at_the_bottom_with_the_reply_above_it() {
-        let screen = build(&[], &[], &text(&["players 1"], Some("/ho"), Some("ok")));
+        let screen =
+            build_without_overlays(&[], &[], &text(&["players 1"], Some("/ho"), Some("ok")));
         let laid = layout(&screen.uis, (800, 600), 1, None);
         let borders: Vec<ui::Rect> = laid
             .draws
@@ -546,5 +568,48 @@ mod tests {
             reply.y + reply.height < typing.y,
             "the reply is above what is typed"
         );
+    }
+
+    #[test]
+    fn the_panels_of_client_plugins_come_after_the_status_before_the_command_line_and_take_no_input()
+     {
+        let hotbar = Ui {
+            modal: false,
+            anchor: Anchor::Bottom,
+            root: Panel {
+                title: None,
+                color: Color::BLACK,
+                direction: Way::Row,
+                children: vec![Node::Button {
+                    id: 4,
+                    text: "a button that does nothing".to_owned(),
+                }],
+            },
+        };
+        let screen = build(
+            &[],
+            &[],
+            &[hotbar.clone(), hotbar],
+            &text(&["players 1"], Some("/x"), None),
+        );
+        assert_eq!(
+            screen.sources,
+            [
+                Source::Status,
+                Source::Overlay(0),
+                Source::Overlay(1),
+                Source::Typing
+            ]
+        );
+        // Nothing modal: clicks and keys reach none of them.
+        assert_eq!(screen.modal(), None);
+        let laid = layout(&screen.uis, (800, 600), 1, None);
+        let button = &laid.buttons[0];
+        assert_eq!(
+            screen.click(&laid, button.area.x + 1, button.area.y + 1),
+            None
+        );
+        let mut focus = None;
+        assert_eq!(screen.key(&mut focus, ScreenKey::Number(1)), None);
     }
 }

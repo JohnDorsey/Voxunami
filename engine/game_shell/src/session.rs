@@ -617,8 +617,9 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
 
     /// What is on the screen besides the world: see [`crate::screen`]. `text` is what the window knows (where the player is,
     /// what they are typing).
-    pub fn screen(&self, text: &crate::screen::ScreenText) -> crate::screen::Screen {
-        crate::screen::build(&self.prompts, &self.forms, text)
+    pub fn screen(&mut self, text: &crate::screen::ScreenText) -> crate::screen::Screen {
+        let overlays = self.with_client_context(|host, context| host.overlays(context));
+        crate::screen::build(&self.prompts, &self.forms, &overlays, text)
     }
 
     /// Does what the player's input on the screen asked: answers the question, or tells the server what they did with a

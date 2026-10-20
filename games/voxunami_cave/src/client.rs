@@ -11,6 +11,7 @@ use game_shell::client_plugin::{
 use game_shell::{GameContent, KeyCode};
 use namespaced_id::NamespacedId;
 use player_presence::{PlayerClient, player_kind};
+use ui::{Anchor, Color, Direction, Node, Panel, Ui};
 use voxel_grid::ChannelIndex;
 use voxel_space::VoxelCoordinate;
 use world_view::BulkLight;
@@ -125,10 +126,12 @@ pub struct ClientBlockEditing {
     selection: Arc<Mutex<Selection>>,
     /// The game mode the server last said the world is in.
     mode: Arc<Mutex<GameMode>>,
+    /// Whether the inventory panel is showing (the `E` key toggles it).
+    inventory_open: Arc<Mutex<bool>>,
 }
 
-/// How many of an item the player has, from the player entity the client has been told of, if it has.
-fn held(context: &ClientContext<'_>, item: &NamespacedId) -> Option<u64> {
+/// The inventory of this player, from the player entity the client has been told of, if it has.
+fn own_inventory(context: &ClientContext<'_>) -> Option<Inventory> {
     let own = PlayerClient(context.own_client());
     context
         .entities()
@@ -136,8 +139,29 @@ fn held(context: &ClientContext<'_>, item: &NamespacedId) -> Option<u64> {
         .filter(|entity| entity.kind == player_kind())
         .find(|entity| entity.component::<PlayerClient>() == Ok(Some(own)))
         .and_then(|entity| entity.component::<Inventory>().ok().flatten())
-        .map(|inventory| inventory.count_of(item))
 }
+
+/// How many of an item the player has, if the client has been told of their inventory.
+fn held(context: &ClientContext<'_>, item: &NamespacedId) -> Option<u64> {
+    own_inventory(context).map(|inventory| inventory.count_of(item))
+}
+
+/// How a block is coloured on the screen: the colour of its definition, from the server.
+fn swatch_color(context: &ClientContext<'_>, block: &NamespacedId) -> Color {
+    let [red, green, blue] = context
+        .block_definition(block)
+        .map_or([1.0, 0.0, 1.0], |definition| definition.color);
+    let byte = |component: f32| (component.clamp(0.0, 1.0) * 255.0).round() as u8;
+    Color([byte(red), byte(green), byte(blue)])
+}
+
+/// How many fits on a screen's swatch.
+fn count_shown(count: u64) -> u32 {
+    u32::try_from(count).unwrap_or(u32::MAX)
+}
+
+/// The most blocks the hotbar shows: one for each number key.
+const HOTBAR_SLOTS: usize = SELECT_KEYS.len();
 
 impl ClientBlockEditing {
     /// The place in the list of blocks a player can place (in the order of the blocks) of the selected block: the
@@ -243,6 +267,93 @@ impl ClientPlugin for ClientBlockEditing {
 
         let mode = Arc::clone(&self.mode);
         registrar.on_message::<GameModeIs>(move |GameModeIs(now)| *locked(&mode) = now);
+
+        // The hotbar: the blocks that can be placed as swatches along the bottom, the chosen one outlined, and in survival how
+        // many of each the player has.
+        let (selection, mode) = (Arc::clone(&self.selection), Arc::clone(&self.mode));
+        registrar.overlay(move |context| {
+            let placeable = context.blocks_with(&PLACEABLE);
+            let selection = locked(&selection);
+            let chosen = selected(&placeable, &selection)?;
+            let survival = *locked(&mode) == GameMode::Survival;
+            Some(Ui {
+                modal: false,
+                anchor: Anchor::Bottom,
+                root: Panel {
+                    title: None,
+                    color: Color([15, 15, 20]),
+                    direction: Direction::Row,
+                    children: placeable
+                        .iter()
+                        .take(HOTBAR_SLOTS)
+                        .map(|block| Node::Swatch {
+                            color: swatch_color(context, block),
+                            count: survival.then(|| count_shown(held(context, block).unwrap_or(0))),
+                            selected: block == chosen,
+                        })
+                        .collect(),
+                },
+            })
+        });
+
+        // The inventory, on `E`: what the player holds, a swatch and a name for each kind of item.
+        let open = Arc::clone(&self.inventory_open);
+        registrar.key(
+            KeyCode::KeyE,
+            ActionSpec::new(
+                "voxunami_cave:toggle_inventory",
+                "shows or hides what you are carrying",
+            ),
+            move |_| {
+                let mut open = locked(&open);
+                *open = !*open;
+            },
+        );
+        let open = Arc::clone(&self.inventory_open);
+        registrar.overlay(move |context| {
+            if !*locked(&open) {
+                return None;
+            }
+            let inventory = own_inventory(context);
+            let mut children: Vec<Node> = inventory
+                .iter()
+                .flat_map(|inventory| inventory.slots().iter().flatten())
+                .map(|stack| {
+                    Node::Panel(Panel {
+                        title: None,
+                        color: Color([25, 25, 35]),
+                        direction: Direction::Row,
+                        children: vec![
+                            Node::Swatch {
+                                color: swatch_color(context, &stack.item),
+                                count: Some(count_shown(u64::from(stack.count))),
+                                selected: false,
+                            },
+                            Node::Label {
+                                text: stack.item.name().replace('_', " "),
+                                color: Color::WHITE,
+                            },
+                        ],
+                    })
+                })
+                .collect();
+            if children.is_empty() {
+                children.push(Node::Label {
+                    text: "nothing".to_owned(),
+                    color: Color([180, 180, 180]),
+                });
+            }
+            Some(Ui {
+                modal: false,
+                anchor: Anchor::Right,
+                root: Panel {
+                    title: Some("Inventory".to_owned()),
+                    color: Color([15, 15, 20]),
+                    direction: Direction::Column,
+                    children,
+                },
+            })
+        });
 
         let (selection, mode) = (Arc::clone(&self.selection), Arc::clone(&self.mode));
         registrar.hud_line(move |context| {

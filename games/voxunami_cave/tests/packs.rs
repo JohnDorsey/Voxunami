@@ -388,3 +388,33 @@ fn a_block_of_a_pack_that_does_not_say_it_can_be_placed_leaves_no_item_when_it_i
         .count();
     assert_eq!(dropped, 0, "nothing falls out of a block that has no item");
 }
+
+#[test]
+fn the_hotbar_of_a_player_who_has_never_heard_of_a_pack_has_a_swatch_for_its_placeable_block_in_its_colour()
+ {
+    use game_shell::screen::{ScreenText, Source};
+    let mut rig = rig_with_the_placeable_pack();
+    let (mut player, _) = above_the_ground(&mut rig, None);
+    ticks(&mut rig, &mut player, 2);
+    let screen = player.screen(&ScreenText::default());
+    let index = screen
+        .sources
+        .iter()
+        .position(|source| matches!(source, Source::Overlay(0)))
+        .expect("the hotbar is on the screen");
+    let swatches: Vec<ui::Color> = screen.uis[index]
+        .root
+        .children
+        .iter()
+        .filter_map(|node| match node {
+            ui::Node::Swatch { color, .. } => Some(*color),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(swatches.len(), 7, "the six of the game and the pack's ruby");
+    assert_eq!(
+        swatches[6],
+        ui::Color([204, 26, 51]),
+        "ruby is [0.8, 0.1, 0.2]"
+    );
+}

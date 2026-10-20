@@ -43,7 +43,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
   frame; levels of detail per grid for drawing, for collision (coarse colliders, aggregated mass) and for streaming; a grid saved in
   flight as a file of its own.
 - 31 (planned, late) A wider material palette: the renderer's palette in a storage buffer (renderer-only; saves and protocol unchanged).
-- 30 (specified in `ui-spec.md`, waiting for the owner's answers) Server-driven UI: a UI the server describes in the value vocabulary and the stream drives.
+- 30 (built; `ui-spec.md`) Server-driven UI: a UI the server describes in the value vocabulary and the stream drives; the HUD, the command line, questions and Cave's hotbar are on the screen, not in the title. Phase 31 is next.
 - 29 (built; `data-packs-spec.md`, `pack-format.md`) Data-driven block packs (JSON), the generated JSON Schema, `check-pack`, and patches: tags by
   union, patch operations, dependency order, loud failures (revision 5; mod stage 2). Phase 30 is next.
 - 28 (built; `content-package-spec.md`) The content package at the handshake, carried by recordings (revision 3). Phase 29 is next.
@@ -265,6 +265,11 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   (`--test-threads=1`) it failed 0 times in 30 on the commit before Phase 23 and 0 in 30 after Phase 23b, so nothing says Phase 23 caused
   it. My belief, not tested: it depends on how far the client's worker threads have got, which a loaded machine changes; the first flaky
   test above also reads client state. A fix would make such tests wait on a condition, as the `world_view` meshing test now does.
+- **`an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw`: EXPLAINED AND FIXED (2026-10-21, Phase 30).** It compares a live picture with
+  a replayed one byte for byte, and on the integrated AMD GPU the first frames of a fresh renderer sometimes leave pixels out (measured: 15 pixels of a world
+  picture on DX12, in 1 run of about 40; 1 to 7 of 2000 one-pixel rectangles in the first four frames; 2 pixels of a line of text in the sixth), never
+  on the NVIDIA card. The belief below that it depended on client worker threads was wrong for this test. Pictures compared to the pixel are now
+  taken once a frame after them repeats them (`settled`); 30 runs afterwards were clean. The two walker tests are a different matter (explained below).
 - More occurrences of the flaky tests (2026-10-18, during Phases 24 and 25): `an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw`
   (`games/voxunami_cave/tests/pictures.rs`, the replayed picture differed from the live one) failed in 2 of about 6 full parallel Windows runs and in
   0 of 3 runs of `cargo test -p voxunami_cave` alone; `walkers_pass_through_flames_and_the_cellar_has_the_same_ground` failed once more in a full Linux

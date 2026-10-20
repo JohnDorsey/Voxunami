@@ -47,13 +47,14 @@ pub trait ClientPlugin: Send {
 }
 ```
 
-Verbs of `ClientRegistrar` (the budget: five, not a toolkit):
+Verbs of `ClientRegistrar` (the budget: six, not a toolkit; `overlay` joined in Phase 30):
 
 | Verb | What | Runs when |
 |---|---|---|
 | `on_message::<M>(\|ctx, message\| ...)` | a server message (the `Message` trait of Phase 25) | in play and in replay (it is the stream) |
 | `view(\|channels\| channels)` | adjusts what the view draws from (Cave's bulk light hook) | whenever the view is looked at |
-| `hud_line(\|ctx\| Option<String>)` | a line of status text | every frame, in play and replay |
+| `hud_line(\|ctx\| Option<String>)` | a line of status text, drawn in the status panel at the top left of the screen | every frame, in play and replay |
+| `overlay(\|ctx\| Option<ui::Ui>)` | a panel of the screen (the hotbar): a tree of panels, labels, bars and swatches; never modal, and buttons in it do nothing | every frame, in play and replay |
 | `entity_appearance(kind, \|entity\| Option<Appearance>)` | how entities of a kind are drawn: a box (size in eighths of a voxel, a block's number for its colour, and an offset of its middle from the entity), until there are models (Phase 30, 35) | every frame, in play and replay |
 | `key(KeyCode, ActionSpec, \|ctx\| ...)` | a key action with an id and a summary | in play only |
 | `mouse(Button, ActionSpec, \|ctx\| ...)` | the primary or secondary mouse action | in play only |

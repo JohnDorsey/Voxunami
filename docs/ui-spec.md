@@ -1,7 +1,22 @@
 # Phase 30: a user interface the server can describe
 
-Status: proposed, waiting for the owner's answers to section 6. Nothing is built. Read from the plan (revision 4 and the
-client-interface options in `plugin-architecture-review.md`) and from the code after Phase 29; the choices are mine and marked.
+Status: built (30a to 30f); the owner took all six defaults of section 6. What changed from the design below while building:
+- **No protocol version bump.** The three messages (`engine:ui_show`, `engine:ui_close`, and from the client `engine:ui_response`) are game messages
+  like the prompt's, so the wire format of the protocol did not change.
+- Server side: `Context::show_ui`, `update_ui` and `close_ui` (a form keeps its number when updated), and the event `UiResponded { client, form, action }`
+  (`UiAction::Pressed(button)` or `Dismissed`). A form that is not modal may not have buttons (the player could not reach them); at most 8 forms
+  are open for a player; limits are `ui::Ui::check` (depth 6, 200 parts, 80 letters of text, unique button identifiers, bars at most full and 40 wide).
+- Text is drawn as rectangles (one for each run of lit pixels of a letter, from `font8x8`), so there is no font texture and every edge is on a pixel
+  boundary. Unknown letters (all but ASCII) are a hollow box.
+- The client verb is `overlay(|ctx| Option<Ui>)`: shown as a panel of the screen, never modal (a plugin that wants a choice asks through the server's
+  form). `ClientContext::block_definition` and `blocks_with` give a plugin what the server's package says about blocks, so Cave's hotbar colours and
+  list come from the server.
+- Which interface has the input is `Screen::modal`: the last modal one, a question over forms. Escape puts a form away but not a question (it must be
+  answered). A replay shows forms and takes no input.
+- **A finding about the GPUs** (not about this design): the integrated AMD GPU of the development machine now and then leaves a few pixels out of a
+  picture, in its first frames and sometimes later (seen with thin rectangles and in a plain world picture, on Vulkan and on DX12, never on the NVIDIA
+  card). This was the cause of the flaky `an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw`. Pictures that are compared to the
+  pixel are now taken once two frames in a row agree.
 
 ## 1. What is wrong today
 

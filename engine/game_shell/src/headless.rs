@@ -93,7 +93,12 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
         renderer.total_quad_count(),
     );
 
-    render_outputs(&mut renderer, &session, &options.view, options.benchmark)?;
+    render_outputs(
+        &mut renderer,
+        &mut session,
+        &options.view,
+        options.benchmark,
+    )?;
 
     session.say_goodbye();
     step_server();
@@ -161,13 +166,13 @@ pub fn replay<G: GameDefinition>(options: &ReplayOptions) -> Result<(), String> 
     );
     let updates = session.settle(|| {}).map_err(|error| error.to_string())?;
     apply_updates(&mut renderer, updates);
-    render_outputs(&mut renderer, &session, view, false)
+    render_outputs(&mut renderer, &mut session, view, false)
 }
 
 /// Writes the screenshot and runs the benchmark, as asked.
 fn render_outputs<C: Connection, G: GameDefinition>(
     renderer: &mut VoxelRenderer,
-    session: &Session<C, G>,
+    session: &mut Session<C, G>,
     view: &crate::options::ViewOptions,
     benchmark: bool,
 ) -> Result<(), String> {

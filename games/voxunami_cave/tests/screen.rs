@@ -138,14 +138,26 @@ fn tick(rig: &mut Rig, player: &mut Player, count: usize) {
     }
 }
 
-fn screen_of<C: Connection>(session: &Session<C, Cave>) -> Screen {
-    session.screen(&ScreenText::default())
+/// The screen of a session without the panels of Cave's own client plugins (the hotbar is always up, and these tests are about what the
+/// server shows).
+fn without_overlays(screen: Screen) -> Screen {
+    let (sources, uis): (Vec<Source>, Vec<Ui>) = screen
+        .sources
+        .into_iter()
+        .zip(screen.uis)
+        .filter(|(source, _)| !matches!(source, Source::Overlay(_)))
+        .unzip();
+    Screen { uis, sources }
+}
+
+fn screen_of<C: Connection>(session: &mut Session<C, Cave>) -> Screen {
+    without_overlays(session.screen(&ScreenText::default()))
 }
 
 /// The picture of an empty sky with the session's screen over it: the image and the layout the buttons were placed by.
 fn picture<C: Connection>(
     context: &GraphicsContext,
-    session: &Session<C, Cave>,
+    session: &mut Session<C, Cave>,
 ) -> (Vec<u8>, ui::Layout) {
     let mut renderer = VoxelRenderer::new(context, wgpu::TextureFormat::Rgba8UnormSrgb);
     configure_renderer(
@@ -184,12 +196,12 @@ fn a_form_is_drawn_over_the_picture_dimming_it_with_its_buttons_where_the_layout
         let Setup { mut rig, .. } = setup();
         let mut player = rig.join([16.5, 110.0, 16.5], 0.0, 0.0);
         rig.settle(&mut [&mut player]);
-        let (plain, no_layout) = picture(&context, &player);
+        let (plain, no_layout) = picture(&context, &mut player);
         assert!(no_layout.draws.is_empty() && no_layout.buttons.is_empty());
 
         player.send_command("/menu");
         tick(&mut rig, &mut player, 2);
-        let (with_form, laid) = picture(&context, &player);
+        let (with_form, laid) = picture(&context, &mut player);
         // The corner is dimmed (the form is modal); the button is its own colour.
         assert!(
             pixel(&with_form, 0, 0)[2] < pixel(&plain, 0, 0)[2],
@@ -218,7 +230,7 @@ fn a_click_on_a_button_and_a_key_reach_the_plugin_and_a_form_the_server_closes_i
     player.send_command("/menu");
     tick(&mut rig, &mut player, 2);
 
-    let screen = screen_of(&player);
+    let screen = screen_of(&mut player);
     assert_eq!(screen.sources, [Source::Form(FormId::new(1))]);
     let laid = ui::layout(
         &screen.uis,
@@ -244,15 +256,19 @@ fn a_click_on_a_button_and_a_key_reach_the_plugin_and_a_form_the_server_closes_i
         heard.lock().unwrap().last().unwrap().action,
         UiAction::Dismissed
     );
-    assert_eq!(screen_of(&player), Screen::default(), "put away, and gone");
+    assert_eq!(
+        screen_of(&mut player),
+        Screen::default(),
+        "put away, and gone"
+    );
 
     // One the plugin closes goes too.
     player.send_command("/menu");
     tick(&mut rig, &mut player, 2);
-    assert_eq!(screen_of(&player).uis.len(), 1);
+    assert_eq!(screen_of(&mut player).uis.len(), 1);
     player.send_command("/shut");
     tick(&mut rig, &mut player, 2);
-    assert_eq!(screen_of(&player), Screen::default());
+    assert_eq!(screen_of(&mut player), Screen::default());
 }
 
 #[test]
@@ -264,7 +280,7 @@ fn a_question_is_a_modal_panel_that_a_number_key_or_a_click_answers_and_the_serv
     rig.settle(&mut [&mut player]);
     player.send_command("/ask");
     tick(&mut rig, &mut player, 2);
-    let screen = screen_of(&player);
+    let screen = screen_of(&mut player);
     assert!(matches!(screen.sources[..], [Source::Question(_)]));
     assert_eq!(screen.modal(), Some(0));
     // Escape does not put a question away.
@@ -275,12 +291,16 @@ fn a_question_is_a_modal_panel_that_a_number_key_or_a_click_answers_and_the_serv
     tick(&mut rig, &mut player, 2);
     let heard: Vec<usize> = answers.lock().unwrap().iter().map(|a| a.choice).collect();
     assert_eq!(heard, [1]);
-    assert_eq!(screen_of(&player), Screen::default(), "answered, and gone");
+    assert_eq!(
+        screen_of(&mut player),
+        Screen::default(),
+        "answered, and gone"
+    );
 
     // And by a click on the first.
     player.send_command("/ask");
     tick(&mut rig, &mut player, 2);
-    let screen = screen_of(&player);
+    let screen = screen_of(&mut player);
     let laid = ui::layout(
         &screen.uis,
         (WIDTH as i32, HEIGHT as i32),
@@ -313,13 +333,13 @@ fn a_replay_draws_the_form_exactly_as_it_was_drawn_live_and_stops_when_it_was_cl
     // What the live player saw with the form up.
     let live: Vec<Vec<u8>> = contexts()
         .iter()
-        .map(|context| picture(context, &player).0)
+        .map(|context| picture(context, &mut player).0)
         .collect();
     player.send_command("/shut");
     tick(&mut rig, &mut player, 3);
     let live_after: Vec<Vec<u8>> = contexts()
         .iter()
-        .map(|context| picture(context, &player).0)
+        .map(|context| picture(context, &mut player).0)
         .collect();
     drop(player);
 
@@ -341,7 +361,7 @@ fn a_replay_draws_the_form_exactly_as_it_was_drawn_live_and_stops_when_it_was_cl
             up = Some(
                 contexts()
                     .iter()
-                    .map(|context| picture(context, &replay).0)
+                    .map(|context| picture(context, &mut replay).0)
                     .collect::<Vec<_>>(),
             );
         } else if up.is_some() && !ended {
@@ -352,7 +372,7 @@ fn a_replay_draws_the_form_exactly_as_it_was_drawn_live_and_stops_when_it_was_cl
     let up = up.expect("the form was up");
     let after: Vec<Vec<u8>> = contexts()
         .iter()
-        .map(|context| picture(context, &replay).0)
+        .map(|context| picture(context, &mut replay).0)
         .collect();
     // Pictures of the same camera (the replay follows the recorded player) with and without the form: identical to live.
     for (index, _) in contexts().iter().enumerate() {
@@ -419,7 +439,7 @@ fn a_screen_with_everything_on_it_is_drawn_where_the_layout_says_and_can_be_look
             typing: Some("> /gamemode survival_".to_owned()),
             reply: Some("this world is now in survival mode".to_owned()),
         };
-        let screen = player.screen(&text);
+        let screen = without_overlays(player.screen(&text));
         assert_eq!(screen.sources.len(), 5, "{:?}", screen.sources);
         let mut renderer = VoxelRenderer::new(&context, wgpu::TextureFormat::Rgba8UnormSrgb);
         configure_renderer(
