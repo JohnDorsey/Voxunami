@@ -814,13 +814,15 @@ mod package_tests {
 
         // More colours than the renderer can draw would be a panic when a window opens: refuse them here.
         let mut too_many = compiled_in();
-        too_many.blocks[1].1 =
-            Some(BlockDefinition::cube([0.5; 3]).with_state_colors(vec![[0.1; 3]; 250]));
+        too_many.blocks[1].1 = Some(
+            BlockDefinition::cube([0.5; 3])
+                .with_state_colors(vec![[0.1; 3]; renderer::MAXIMUM_GAME_MATERIALS]),
+        );
         assert_eq!(
             refused(&too_many),
             PackageError::TooManyMaterials {
-                materials: 254,
-                limit: 240
+                materials: renderer::MAXIMUM_GAME_MATERIALS + 4,
+                limit: renderer::MAXIMUM_GAME_MATERIALS
             }
         );
 

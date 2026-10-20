@@ -42,7 +42,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
   aboard; connectivity and splitting; docking connectors with a configurable attraction force; players and entities simulated in their
   frame; levels of detail per grid for drawing, for collision (coarse colliders, aggregated mass) and for streaming; a grid saved in
   flight as a file of its own.
-- 31 (planned, late) A wider material palette: the renderer's palette in a storage buffer (renderer-only; saves and protocol unchanged).
+- 31 (built) A wider material palette: the renderer's palette in a storage buffer, 1,048,576 game materials instead of 240 (renderer-only; saves and protocol unchanged). Phase 32 (moving grids) is next.
 - 30 (built; `ui-spec.md`) Server-driven UI: a UI the server describes in the value vocabulary and the stream drives; the HUD, the command line, questions and Cave's hotbar are on the screen, not in the title. Phase 31 is next.
 - 29 (built; `data-packs-spec.md`, `pack-format.md`) Data-driven block packs (JSON), the generated JSON Schema, `check-pack`, and patches: tags by
   union, patch operations, dependency order, loud failures (revision 5; mod stage 2). Phase 30 is next.
@@ -246,8 +246,8 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   replay stream and the save format have no entity messages; the design says creatures are finite grids, which is not built. What
   an entity replicates, how an inventory is shaped, and what the first mob is are open. (b) *Patches* (Phase 29): the operations
   and failure rules are written above; the policy for a patch to a property whose plugin is missing (ignore with a warning, or
-  refuse) is open. (c) *Materials* (Phase 31): the renderer draws at most 240 game materials (a 256-entry palette less 16 for
-  avatars); the packed quad has 24 bits for the material and saves hold block ids, so widening it is a renderer-only change; whether
+  refuse) is open. (c) *Materials* (Phase 31): built in Phase 31: the renderer draws up to 1,048,576 game materials (it was 240: a 256-entry palette less 16 for
+  avatars); the packed quad has 24 bits for the material and saves hold block ids, so widening it was a renderer-only change; whether
   the first release has textures is open, and a texture path (an array indexed by material and face, UVs from position) is a larger
   decision than the palette. (d) *Scaled light in the engine*: closed in Phase 26 (the `BrickLight` hook; Cave's concepts live in Cave). (e) *Client interface*
   (Phases 26 and 30): plugins now register a HUD line, key and mouse actions and `.`-commands (Phase 26); the HUD is still the window

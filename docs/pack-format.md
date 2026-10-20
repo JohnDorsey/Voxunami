@@ -49,8 +49,8 @@ Only `color` is needed. A block is one whole cube unless `states` says more.
 - **`states`**: the shape of each state, state 0 first. A name (`full`, `empty`, `half:SIDE`, `stair:SIDE`, with SIDE one of
   `negative_x`, `positive_x`, `negative_y`, `positive_y`, `negative_z`, `positive_z`) or `{"boxes": [...]}`: boxes of six
   whole numbers from 0 to 8 (eighths of a voxel): min x, y, z, then max x, y, z, each min below its max.
-- **`state_colors`**: a colour for each state, repeating if there are fewer than states. Each colour takes one of the 240
-  colours the renderer has (a block takes one too), so keep the list short.
+- **`state_colors`**: a colour for each state, repeating if there are fewer than states. Each colour takes one of the
+  1,048,576 colours the renderer has (a block takes one too).
 - **`properties`**: what the game's rules read about the block. The names, kinds and ranges are the game's: `voxunami pack-schema`
   lists them with their documentation. Booleans are `true`/`false` and numbers are whole numbers inside the declared range.
 - **`state_properties`**: values that differ in one state, by the state's number.
@@ -127,6 +127,6 @@ the blocks come back when the pack is loaded again.
 
 ## Limits
 
-- At most 240 colours in all: every block takes one, and so does each state colour.
+- At most 1,048,576 colours in all: every block takes one, and so does each state colour.
 - A pack changes what blocks look like and the properties the game's rules read, so a block's *behaviour* is as rich as the
   properties the game gives (light, burning, walking through). New kinds of behaviour need code, which is later.

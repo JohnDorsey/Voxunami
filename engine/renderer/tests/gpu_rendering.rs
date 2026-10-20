@@ -1155,3 +1155,154 @@ fn overlay_pixels_are_counted_from_the_top_left_in_a_picture_that_is_not_square(
         assert_eq!(white_pixels, 50 + 3, "{name}");
     }
 }
+
+// ---- a wide palette: more materials than a byte, a short, or the old 240 ----
+
+/// A brick with one voxel of this material at the middle, meshed with a table that has an opaque cube for every value up to it.
+fn place_wide_cube(renderer: &mut VoxelRenderer, material: u32) {
+    let mut values = vec![0u32; BRICK_VOXEL_COUNT];
+    values[LocalVoxelIndex::new(16, 16, 16).index()] = material;
+    let storage = ChannelStorage::from_values(&values);
+    let mut opaque = vec![true; material as usize + 1];
+    opaque[0] = false;
+    let mesh = mesh_brick(
+        &BrickNeighbourhood {
+            center: BrickChannels::blocks_only(&storage),
+            neighbours: [None; 6],
+        },
+        &BlockTable::of_cubes(&opaque),
+    );
+    renderer.upload_brick(ORIGIN_BRICK, &mesh.pack());
+}
+
+/// A palette of this many colours in which each is different, and what the colour of one of them is.
+fn wide_palette(length: usize) -> Vec<[f32; 3]> {
+    (0..length)
+        .map(|index| {
+            [
+                (index % 251) as f32 / 251.0,
+                (index / 251 % 241) as f32 / 241.0,
+                (index / (251 * 241) % 7) as f32 / 7.0,
+            ]
+        })
+        .collect()
+}
+
+#[test]
+fn a_material_far_up_a_wide_palette_is_drawn_in_its_colour_exactly_as_the_same_colour_low_in_it() {
+    // The values around 255 and 256, beyond a short (65535), and the last of 300,000.
+    let materials = [1u32, 255, 256, 4095, 65_535, 65_536, 70_000, 299_999];
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let palette = wide_palette(300_000);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+        for material in materials {
+            let colour = palette[material as usize];
+            // The reference: that colour as material 1 of a palette of two.
+            let mut reference = new_renderer(&context);
+            reference.set_palette(&[[0.0; 3], colour]);
+            place_wide_cube(&mut reference, 1);
+            let expected = settled(&mut reference, &camera);
+            // The same colour at its own place in the wide palette.
+            let mut wide = new_renderer(&context);
+            wide.set_palette(&palette);
+            place_wide_cube(&mut wide, material);
+            let image = settled(&mut wide, &camera);
+            assert_eq!(
+                pixel(&image, SIZE / 2, SIZE / 2),
+                pixel(&expected, SIZE / 2, SIZE / 2),
+                "{name}: material {material}"
+            );
+            assert!(
+                !is_sky(pixel(&image, SIZE / 2, SIZE / 2)) || colour == [0.0; 3],
+                "{name}: material {material} was drawn"
+            );
+            // Not magenta, unless that is what the colour is.
+            if colour != [1.0, 0.0, 1.0] {
+                let centre = pixel(&image, SIZE / 2, SIZE / 2);
+                assert!(
+                    !(centre[0] > 100 && centre[1] < 40 && centre[2] > 100),
+                    "{name}: material {material} is magenta, {centre:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn materials_beyond_a_wide_palette_draw_magenta_up_to_the_last_value_before_the_avatars() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+        let mut reference = new_renderer(&context);
+        reference.set_palette(&[[0.0; 3], [1.0, 0.0, 1.0]]);
+        place_wide_cube(&mut reference, 1);
+        let magenta = settled(&mut reference, &camera);
+        let mut renderer = new_renderer(&context);
+        renderer.set_palette(&wide_palette(1000));
+        for material in [1000u32, 1001, 70_000] {
+            place_wide_cube(&mut renderer, material);
+            let image = settled(&mut renderer, &camera);
+            assert_eq!(
+                pixel(&image, SIZE / 2, SIZE / 2),
+                pixel(&magenta, SIZE / 2, SIZE / 2),
+                "{name}: material {material}, past the end of the palette"
+            );
+        }
+    }
+}
+
+#[test]
+fn avatars_and_boxes_are_drawn_in_their_own_colours_whatever_the_size_of_the_palette() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+        // The avatar of colour 1, as it is with a small palette.
+        let mut small = new_renderer(&context);
+        small.set_avatars(&[avatar_at(ORIGIN_BRICK, [16.5, 16.5, 16.5], 1)]);
+        let expected = settled(&mut small, &camera);
+        let mut wide = new_renderer(&context);
+        wide.set_palette(&wide_palette(500_000));
+        wide.set_avatars(&[avatar_at(ORIGIN_BRICK, [16.5, 16.5, 16.5], 1)]);
+        assert!(
+            settled(&mut wide, &camera) == expected,
+            "{name}: the avatar"
+        );
+
+        // A box of a high material is drawn in that colour (the same box of that colour low in a small palette).
+        let colour = [0.1, 0.9, 0.2];
+        let mut palette = vec![[0.0; 3]; 400_000];
+        palette[399_999] = colour;
+        let mut high = new_renderer(&context);
+        high.set_palette(&palette);
+        high.set_entity_boxes(&[box_at([16.5, 16.5, 16.5], [4, 4, 4], 399_999)]);
+        let mut low = new_renderer(&context);
+        low.set_palette(&[[0.0; 3], colour]);
+        low.set_entity_boxes(&[box_at([16.5, 16.5, 16.5], [4, 4, 4], 1)]);
+        assert!(
+            settled(&mut high, &camera) == settled(&mut low, &camera),
+            "{name}: the box"
+        );
+    }
+}
+
+#[test]
+fn a_palette_of_the_most_there_may_be_is_drawn_and_one_more_is_refused() {
+    for context in contexts() {
+        let mut renderer = new_renderer(&context);
+        let palette = wide_palette(renderer::MAXIMUM_GAME_MATERIALS);
+        renderer.set_palette(&palette);
+        place_wide_cube(&mut renderer, 1);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+        assert!(!is_sky(pixel(
+            &settled(&mut renderer, &camera),
+            SIZE / 2,
+            SIZE / 2
+        )));
+        let too_many = vec![[0.0; 3]; renderer::MAXIMUM_GAME_MATERIALS + 1];
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            renderer.set_palette(&too_many);
+        }));
+        assert!(refused.is_err(), "one more than the most was accepted");
+    }
+}

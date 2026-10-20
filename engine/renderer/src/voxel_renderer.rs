@@ -16,17 +16,23 @@ use crate::crosshair::Crosshair;
 use crate::graphics_context::GraphicsContext;
 use crate::overlay::{Overlay, OverlayRect};
 
-const PALETTE_SIZE: usize = 256;
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Radius of a sphere around a brick: half the diagonal of a 32-voxel cube.
 const BRICK_BOUNDING_RADIUS: f32 = 27.72;
 const BRICK_CENTER_OFFSET: f32 = 16.0;
 const PLACEMENT_SIZE: u64 = 16;
 
-/// How many different avatar colours there are. They take the last palette values, so games can
-/// use the values below `MAXIMUM_GAME_MATERIALS`.
+/// How many different avatar colours there are. Their material values are the last of all the values a quad can
+/// carry ([`AVATAR_MATERIAL_BASE`] and the 15 after it), which no game material can reach, so games have every
+/// value below [`MAXIMUM_GAME_MATERIALS`].
 pub const AVATAR_COLOR_COUNT: usize = 16;
-pub const MAXIMUM_GAME_MATERIALS: usize = PALETTE_SIZE - AVATAR_COLOR_COUNT;
+/// The material value of the first avatar colour. The shader knows it too (`AVATAR_BASE` in `voxel.wgsl`).
+pub(crate) const AVATAR_MATERIAL_BASE: u32 =
+    voxel_meshing::MAXIMUM_MATERIAL - AVATAR_COLOR_COUNT as u32 + 1;
+/// How many materials a game may have: a block and a colour for each state of each block that has colours. They are in a
+/// buffer of the GPU of 16 bytes each (16 MiB at most), so the number is a choice, not a limit of the picture's format
+/// (which has room for 16 million).
+pub const MAXIMUM_GAME_MATERIALS: usize = 1 << 20;
 /// sRGB, chosen to be told apart from each other and from the usual terrain colours.
 const AVATAR_COLORS: [[f32; 3]; AVATAR_COLOR_COUNT] = [
     [1.00, 0.20, 0.20],
@@ -94,7 +100,7 @@ impl EntityBox {
 fn box_mesh(material: u32, size: [u8; 3]) -> PackedBrickMesh {
     let mut values = vec![0u32; BRICK_VOXEL_COUNT];
     let at = LocalVoxelIndex::new(AVATAR_EYE_VOXEL, AVATAR_EYE_VOXEL, AVATAR_EYE_VOXEL);
-    values[at.index()] = material;
+    values[at.index()] = 1;
     let storage = ChannelStorage::from_values(&values);
     let shape = Shape::from_boxes(&[ShapeBox {
         min: size.map(|size| (8 - size) / 2),
@@ -102,39 +108,68 @@ fn box_mesh(material: u32, size: [u8; 3]) -> PackedBrickMesh {
     }]);
     let solid = BlockDefinition::cube([0.5; 3]).with_shapes(vec![shape]);
     let air = BlockDefinition::air();
-    let definitions: Vec<Option<&BlockDefinition>> = (0..=material)
-        .map(|block| Some(if block == material { &solid } else { &air }))
-        .collect();
-    mesh_brick(
-        &BrickNeighbourhood {
-            center: BrickChannels::blocks_only(&storage),
-            neighbours: [None; 6],
-        },
-        &BlockTable::from_definitions(&definitions),
+    let definitions: Vec<Option<&BlockDefinition>> = vec![Some(&air), Some(&solid)];
+    with_material(
+        mesh_brick(
+            &BrickNeighbourhood {
+                center: BrickChannels::blocks_only(&storage),
+                neighbours: [None; 6],
+            },
+            &BlockTable::from_definitions(&definitions),
+        )
+        .pack(),
+        material,
     )
-    .pack()
+}
+
+/// A palette as the shader reads it: linear RGB (sRGB in), and one magenta entry if there are none, since a buffer is not empty.
+fn linear_palette(colors: &[[f32; 3]]) -> Vec<[f32; 4]> {
+    let mut linear: Vec<[f32; 4]> = colors
+        .iter()
+        .map(|color| {
+            let [red, green, blue] = srgb_to_linear_color(*color);
+            [red, green, blue, 1.0]
+        })
+        .collect();
+    if linear.is_empty() {
+        linear.push([1.0, 0.0, 1.0, 1.0]);
+    }
+    linear
+}
+
+/// The same mesh with every quad given this material value, whatever it had. (A mesh is made with a small block number, not with
+/// a table that has a block for each of the million values there can be.)
+fn with_material(mut mesh: PackedBrickMesh, material: u32) -> PackedBrickMesh {
+    const MATERIAL_BITS: u32 = 0x00FF_FFFF;
+    for quad in &mut mesh.quads {
+        quad.material = quad.material & !MATERIAL_BITS | material;
+    }
+    for quad in &mut mesh.detailed {
+        quad.words[3] = quad.words[3] & !MATERIAL_BITS | material;
+    }
+    mesh
 }
 
 /// The mesh of an avatar of one colour: two voxels, the head with the eyes in it over the body.
 fn avatar_mesh(color: usize) -> PackedBrickMesh {
-    let material = (MAXIMUM_GAME_MATERIALS + color) as u32;
     let mut values = vec![0u32; BRICK_VOXEL_COUNT];
     for y in [AVATAR_EYE_VOXEL - 1, AVATAR_EYE_VOXEL] {
         let at = LocalVoxelIndex::new(AVATAR_EYE_VOXEL, y, AVATAR_EYE_VOXEL);
-        values[at.index()] = material;
+        values[at.index()] = 1;
     }
     let storage = ChannelStorage::from_values(&values);
-    // Every palette value is an opaque cube; air is the value that is not used.
-    let mut opaque = vec![true; PALETTE_SIZE];
-    opaque[0] = false;
-    mesh_brick(
-        &BrickNeighbourhood {
-            center: BrickChannels::blocks_only(&storage),
-            neighbours: [None; 6],
-        },
-        &BlockTable::of_cubes(&opaque),
+    // The mesh is made of block 1 (an opaque cube, air being 0) and given the avatar's material value.
+    with_material(
+        mesh_brick(
+            &BrickNeighbourhood {
+                center: BrickChannels::blocks_only(&storage),
+                neighbours: [None; 6],
+            },
+            &BlockTable::of_cubes(&[false, true]),
+        )
+        .pack(),
+        AVATAR_MATERIAL_BASE + color as u32,
     )
-    .pack()
 }
 
 /// Colours are given in sRGB, as in an image editor; the renderer converts them.
@@ -187,7 +222,8 @@ struct FrameUniform {
     fog_color: [f32; 4],
     fog_range: [f32; 4],
     sun_direction: [f32; 4],
-    palette: [[f32; 4]; PALETTE_SIZE],
+    /// Linear RGB of each avatar colour.
+    avatars: [[f32; 4]; AVATAR_COLOR_COUNT],
 }
 
 /// The meshes of a brick on the GPU: whole-voxel quads, and detailed ones if it has any.
@@ -225,7 +261,10 @@ pub struct VoxelRenderer {
     color_format: wgpu::TextureFormat,
     pipeline: wgpu::RenderPipeline,
     detailed_pipeline: wgpu::RenderPipeline,
+    frame_layout: wgpu::BindGroupLayout,
     frame_buffer: wgpu::Buffer,
+    /// Linear RGB of every game material, which the shader reads by material value.
+    palette_buffer: wgpu::Buffer,
     frame_bind_group: wgpu::BindGroup,
     placement_layout: wgpu::BindGroupLayout,
     placements: PlacementBuffer,
@@ -236,7 +275,6 @@ pub struct VoxelRenderer {
     entity_boxes: Vec<EntityBox>,
     /// The meshes of the boxes there have been, by material and size, made when first asked for.
     box_meshes: HashMap<(u32, [u8; 3]), GpuBrick>,
-    palette: Box<[[f32; 4]; PALETTE_SIZE]>,
     atmosphere: Atmosphere,
     depth: Option<SizedTarget>,
     offscreen: Option<SizedTarget>,
@@ -282,16 +320,28 @@ impl VoxelRenderer {
 
         let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("frame layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: NonZeroU64::new(size_of::<FrameUniform>() as u64),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: NonZeroU64::new(size_of::<FrameUniform>() as u64),
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: NonZeroU64::new(16),
+                    },
+                    count: None,
+                },
+            ],
         });
         let placement_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("placement layout"),
@@ -380,14 +430,9 @@ impl VoxelRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let frame_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("frame bind group"),
-            layout: &frame_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: frame_buffer.as_entire_binding(),
-            }],
-        });
+        let palette_buffer = Self::palette_buffer(&device, &[]);
+        let frame_bind_group =
+            Self::frame_bind_group(&device, &frame_layout, &frame_buffer, &palette_buffer);
 
         let alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment);
         let placement_stride = PLACEMENT_SIZE.next_multiple_of(alignment);
@@ -402,7 +447,9 @@ impl VoxelRenderer {
             color_format,
             pipeline,
             detailed_pipeline,
+            frame_layout,
             frame_buffer,
+            palette_buffer,
             frame_bind_group,
             placement_layout,
             placements,
@@ -412,7 +459,6 @@ impl VoxelRenderer {
             avatars: Vec::new(),
             entity_boxes: Vec::new(),
             box_meshes: HashMap::new(),
-            palette: Box::new([[1.0, 0.0, 1.0, 1.0]; PALETTE_SIZE]),
             atmosphere: Atmosphere::default(),
             depth: None,
             offscreen: None,
@@ -420,11 +466,43 @@ impl VoxelRenderer {
             crosshair_enabled: false,
             overlay: Overlay::new(&device_for_overlay, color_format),
         };
-        renderer.set_palette(&[]);
         renderer.avatar_meshes = (0..AVATAR_COLOR_COUNT)
             .map(|color| renderer.gpu_brick(&avatar_mesh(color)))
             .collect();
         renderer
+    }
+
+    /// The GPU's copy of a palette: linear RGB for each colour (sRGB in), and one magenta entry if there are none, since a buffer is
+    /// not empty.
+    fn palette_buffer(device: &wgpu::Device, colors: &[[f32; 3]]) -> wgpu::Buffer {
+        let linear = linear_palette(colors);
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("palette"),
+            contents: bytemuck::cast_slice(&linear),
+            usage: wgpu::BufferUsages::STORAGE,
+        })
+    }
+
+    fn frame_bind_group(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        frame_buffer: &wgpu::Buffer,
+        palette_buffer: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("frame bind group"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: frame_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: palette_buffer.as_entire_binding(),
+                },
+            ],
+        })
     }
 
     fn gpu_brick(&self, mesh: &PackedBrickMesh) -> GpuBrick {
@@ -502,26 +580,20 @@ impl VoxelRenderer {
         self.crosshair_enabled = enabled;
     }
 
-    /// Sets the colour of material values `0..colors.len()` (sRGB). Larger values draw magenta, which
-    /// is also how content from a missing plugin shows up. The last [`AVATAR_COLOR_COUNT`] values
-    /// are the avatars' colours, so at most 240 materials can be drawn.
+    /// Sets the colour of material values `0..colors.len()` (sRGB). Larger values draw magenta, which is also how content from a
+    /// missing plugin shows up. At most [`MAXIMUM_GAME_MATERIALS`] can be drawn.
     pub fn set_palette(&mut self, colors: &[[f32; 3]]) {
         assert!(
             colors.len() <= MAXIMUM_GAME_MATERIALS,
             "at most {MAXIMUM_GAME_MATERIALS} materials can be drawn"
         );
-        self.palette.fill([1.0, 0.0, 1.0, 1.0]);
-        for (slot, color) in self.palette.iter_mut().zip(colors) {
-            let [red, green, blue] = srgb_to_linear_color(*color);
-            *slot = [red, green, blue, 1.0];
-        }
-        for (slot, color) in self.palette[MAXIMUM_GAME_MATERIALS..]
-            .iter_mut()
-            .zip(AVATAR_COLORS)
-        {
-            let [red, green, blue] = srgb_to_linear_color(color);
-            *slot = [red, green, blue, 1.0];
-        }
+        self.palette_buffer = Self::palette_buffer(&self.device, colors);
+        self.frame_bind_group = Self::frame_bind_group(
+            &self.device,
+            &self.frame_layout,
+            &self.frame_buffer,
+            &self.palette_buffer,
+        );
     }
 
     /// Sets which avatars are drawn from now on, replacing the previous ones.
@@ -962,9 +1034,46 @@ impl VoxelRenderer {
                 0.0,
             ],
             sun_direction: [sun.x, sun.y, sun.z, 0.0],
-            palette: *self.palette,
+            avatars: AVATAR_COLORS.map(|color| {
+                let [red, green, blue] = srgb_to_linear_color(color);
+                [red, green, blue, 1.0]
+            }),
         };
         self.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_palette_the_shader_reads_is_linear_and_never_empty() {
+        assert_eq!(linear_palette(&[]), [[1.0, 0.0, 1.0, 1.0]]);
+        let [black, middle, white] = linear_palette(&[[0.0; 3], [0.5; 3], [1.0; 3]])[..] else {
+            panic!("three colours");
+        };
+        assert_eq!(black, [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(white, [1.0, 1.0, 1.0, 1.0]);
+        // Half in sRGB is about a fifth in linear light.
+        assert!((middle[0] - 0.2140).abs() < 0.001, "{middle:?}");
+        assert_eq!(middle[0], middle[2]);
+    }
+
+    #[test]
+    fn the_shader_and_the_renderer_agree_where_the_avatar_materials_start() {
+        let shader = include_str!("voxel.wgsl");
+        let declaration = format!("const AVATAR_BASE: u32 = 0x{AVATAR_MATERIAL_BASE:X}u;");
+        assert!(shader.contains(&declaration), "{declaration}");
+        assert_eq!(
+            AVATAR_MATERIAL_BASE as usize + AVATAR_COLOR_COUNT - 1,
+            voxel_meshing::MAXIMUM_MATERIAL as usize,
+            "the avatar colours are the last values a quad can carry"
+        );
+        assert!(
+            (MAXIMUM_GAME_MATERIALS as u32) <= AVATAR_MATERIAL_BASE,
+            "no game material is an avatar colour"
+        );
     }
 }

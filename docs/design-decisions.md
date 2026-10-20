@@ -197,6 +197,12 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - The look angles are kept as reported (a component) beside the orientation quaternion, so that nothing recovers angles from a quaternion.
   The calls that read or move players take the world (`Presence`), a game holds it as it held the book.
 
+## Decided (the material palette; built in Phase 31)
+
+- **The game's palette is a storage buffer, indexed by the quad's 24-bit material value,** so a game has 1,048,576 materials (a choice of the renderer, to bound the buffer at
+  16 MiB; the format has room for 16 million). Avatar colours are the last 16 values (`0xFFFFF0`..), kept in the frame uniform, so no game value is reserved.
+  A value past the palette draws magenta, as a block of a missing plugin does. Nothing outside the renderer changed.
+
 ## Decided (the user interface; built in Phase 30)
 
 - **One small interface model, three sources, one drawing path.** `ui` is a crate with no graphics: a tree (`Panel`, `Label`, `Button`, `Bar`, `Swatch`, `Space`), its

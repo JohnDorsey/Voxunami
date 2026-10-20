@@ -16,9 +16,12 @@ struct Frame {
     fog_range: vec4<f32>,
     // Unit vector pointing towards the sun.
     sun_direction: vec4<f32>,
-    // Linear RGB per material value; values beyond the palette draw magenta.
-    palette: array<vec4<f32>, 256>,
+    // Linear RGB of each avatar colour.
+    avatars: array<vec4<f32>, 16>,
 }
+
+// The material value of the first avatar colour: the last 16 values a quad can carry (see AVATAR_MATERIAL_BASE in the renderer).
+const AVATAR_BASE: u32 = 0xFFFFF0u;
 
 struct Placement {
     // Position of the brick's lowest corner relative to the camera, in voxels.
@@ -26,6 +29,8 @@ struct Placement {
 }
 
 @group(0) @binding(0) var<uniform> frame: Frame;
+// Linear RGB per game material value; values beyond the palette draw magenta.
+@group(0) @binding(1) var<storage, read> palette: array<vec4<f32>>;
 @group(1) @binding(0) var<uniform> placement: Placement;
 
 struct Instance {
@@ -91,8 +96,10 @@ fn finish(relative: vec3<f32>, face: u32, material: u32, light: u32) -> VertexOu
     let shade = (0.4 + 0.6 * max(dot(normal, frame.sun_direction.xyz), 0.0)) * lit;
 
     var base = vec3<f32>(1.0, 0.0, 1.0);
-    if (material < 256u) {
-        base = frame.palette[material].rgb;
+    if (material >= AVATAR_BASE) {
+        base = frame.avatars[material - AVATAR_BASE].rgb;
+    } else if (material < arrayLength(&palette)) {
+        base = palette[material].rgb;
     }
 
     var out: VertexOutput;

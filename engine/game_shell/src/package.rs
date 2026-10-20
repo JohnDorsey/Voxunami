@@ -470,15 +470,19 @@ mod tests {
     fn packs_whose_blocks_need_more_colours_than_can_be_drawn_are_refused_and_change_nothing() {
         let mut content = package();
         let before = content.package_data();
-        // Two blocks of the game, one of the pack, and 250 colours for the states of one.
-        let colors = vec!["[0, 0, 0]"; 250].join(", ");
+        // Two blocks of the game, one of the pack, and as many colours for the states of one as can be drawn.
+        let most = renderer::MAXIMUM_GAME_MATERIALS;
+        let colors = vec!["[0, 0, 0]"; most].join(", ");
         let heavy = format!(r#"{{ "color": [0,0,0], "state_colors": [{colors}] }}"#);
         let errors = content
             .apply_packs(&[pack("my_pack", "", &[("heavy", &heavy)], &[])])
             .unwrap_err();
         assert_eq!(
             errors.to_string(),
-            "the packs together: the blocks need 253 colours and at most 240 can be drawn"
+            format!(
+                "the packs together: the blocks need {} colours and at most {most} can be drawn",
+                most + 3
+            )
         );
         assert_eq!(content.package_data(), before);
     }

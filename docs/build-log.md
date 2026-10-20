@@ -658,6 +658,16 @@ Phase 27a to 27c (entities; specified in `entities-spec.md`):
 - 27c: protocol version 3 (messages 9 to 11), server replication with cached views, the client store, replay of entities, version policy.
   Cost with 1000 entities and 4 clients: 0.5, 0.7 and 1.4 ms a tick with none, a tenth and all moving. 13 mutations are caught.
 
+Phase 31 (a wider material palette):
+- The palette moved from a 256-entry uniform array to a storage buffer of linear RGB (16 bytes a material, 16 MiB at the most), rebuilt by `set_palette` with a new
+  bind group. The 16 avatar colours no longer take palette places: they are the last 16 values a quad can carry (0xFFFFF0 and up) and live in the frame uniform,
+  so every value below `MAXIMUM_GAME_MATERIALS` (1 << 20, a choice, not a format limit: the quad has room for 16 million) is a game's. A value past the palette
+  draws magenta (the shader checks `arrayLength`). Entity boxes and avatars are meshed once from a small block and given their material afterwards
+  (`with_material`), since a block table with a block for each value would be a million entries.
+- Tests: wide materials (255, 256, 65,535, 65,536, 70,000, 299,999) draw exactly as the same colour low in a small palette; values past the palette are magenta;
+  avatars and boxes are right with palettes of 500,000 and 400,000; the largest palette draws and one more panics; the shader's `AVATAR_BASE` agrees with the Rust one.
+- 11 mutations: 10 caught (after adding a unit test of the linear conversion); 1 equivalent (clearing 24 or 16 bits of a mesh's old material: it is always 1).
+
 Phase 30 (the user interface):
 - 30a: the `ui` crate: the tree and its limits, a canonical byte form with a decoder that refuses before it builds (a description nested 5,000 deep is refused
   without recursing), layout in whole pixels at nine anchors with stacking, hit testing, keyboard focus. 21 tests, 3 properties; 17 mutations caught.

@@ -11,7 +11,7 @@ own namespace, and the placeable property is in. For writing a pack see `pack-fo
   `voxunami check-pack GAME DIR`, `voxunami pack-schema GAME DIR`.
 - A patch may touch only namespaces its pack names in `depends_on`, directly or through the packs it depends on (the rule that keeps load order
   from mattering); a failed `test` is an error even in an optional patch; a pack's folder must be named as its id.
-- The materials limit (240) is checked where packs load and again where a client takes a package, because the renderer would panic.
+- The materials limit (1,048,576 since Phase 31; it was 240) is checked where packs load and again where a client takes a package, because the renderer would panic.
 - `voxunami_cave:placeable` is a bool property; Cave sets it on its six blocks, derives its items and number keys (nine of them) from it, and a client
   reads the list from the server's package.
 
@@ -94,8 +94,8 @@ union: two packs that both set a tag to true agree, and `remove` is how one take
   `serve` take `--packs DIR` (the directory holding pack folders; default none). Clients take nothing.
 - A new crate, `data_packs` (engine level: it knows block definitions and the schema, not any game), holds the model, the reader, the loader,
   the patch applier and the schema generator. The `launcher` gets the two subcommands.
-- Limits that exist today and that `check-pack` states instead of failing late: the renderer draws at most 240 materials (blocks plus state
-  colours, until Phase 31 widens the palette), and a block has at most as many states as the state channel holds.
+- Limits that exist today and that `check-pack` states instead of failing late: the renderer draws at most 1,048,576 materials (blocks plus state
+  colours; Phase 31 widened it from 240), and a block has at most as many states as the state channel holds.
 
 ## 6. Questions for the owner (my recommendation first)
 
