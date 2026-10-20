@@ -63,6 +63,9 @@ Verbs of `ClientRegistrar` (the budget: five, not a toolkit):
   block there (`target()`), the camera, the tick, the block table, and the entities the client has been told of (`entities()`, with their
   replicated components: a plugin can show the player's own inventory). No access to the connection or the mesher. This keeps hooks pure functions
   of the stream plus local state, so replay is unaffected (hooks that send are never run in replay).
+- **A question from the server** (Phase 27h): the session keeps the questions the stream has asked and not closed. The shell puts the oldest first
+  on the HUD line and registers `.choose N`, which sends the answer (a client plugin can read `prompt()` and `prompts_waiting()` to draw it its own
+  way). Hooks that send are still not run in replay, so a replay shows the question and its closing but nobody answers it.
 - **Commands reuse Phase 25's `CommandSpec` and `Arguments`**, with the usage prefix `.` instead of `/`, and `.help` is generated. `.ambient` becomes
   a built-in command registered by the shell by the same verb, so there is one command mechanism, not two. A name that two plugins register is a
   start-up error, like a duplicate server command.

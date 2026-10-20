@@ -658,6 +658,17 @@ Phase 27a to 27c (entities; specified in `entities-spec.md`):
 - 27c: protocol version 3 (messages 9 to 11), server replication with cached views, the client store, replay of entities, version policy.
   Cost with 1000 entities and 4 clients: 0.5, 0.7 and 1.4 ms a tick with none, a tenth and all moving. 13 mutations are caught.
 
+Phase 27h (the prompt facility):
+- `plugin_host`: `Context::prompt` / `cancel_prompt`, the event `PromptAnswered`, the engine messages `engine:prompt`, `engine:prompt_answer` and
+  `engine:prompt_closed`, limits (9 options, 200 bytes), numbering from 1 never reused, questions dropped when the player leaves, an invalid or
+  unreadable answer ignored (unreadable counted). `game_shell`: the session keeps the open questions from the stream, the shell's HUD line shows
+  the oldest first (with `[k more]`), the built-in `.choose N`, `ClientContext::prompt()` / `prompts_waiting()`.
+- Tests: 7 unit tests (limits, codec, state), 7 server integration tests with a fake asking plugin, client unit tests (HUD and `.choose`), and 2 Cave
+  session tests (the question on the HUD until `.choose 2` answers it and the plugin hears option 1; a replay shows it while asked and not after).
+- 19 mutations: 16 caught; one (the host dropping a leaver's questions) survives because it is unobservable (client ids are never reused, so
+  it only frees memory); one (a guard against a repeated question id the server never sends) was removed; one pattern did not match.
+- No golden moved: no golden session asks a question.
+
 Phase 27g (items, inventories, drops, game modes, boxes):
 - Server: the player entity has a nine slot `Inventory` (replicated); Cave declares an item for each of its six placeable blocks, the kind
   `voxunami_cave:dropped_item`, `/gamemode [creative|survival]` (saved per world, not saved while creative), and an items plugin: in survival a broken

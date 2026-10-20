@@ -14,7 +14,8 @@ use crate::command::{Arguments, CommandSpec};
 use crate::context::{Context, MindContext};
 use crate::error::RegistrationError;
 use crate::event::{
-    ChannelsChanged, EntityDespawned, EntitySpawned, Event, PlayerJoined, PlayerLeft, Verdict,
+    ChannelsChanged, EntityDespawned, EntitySpawned, Event, PlayerJoined, PlayerLeft,
+    PromptAnswered, Verdict,
 };
 use crate::order::{Node, order, reachable};
 use crate::registry::{
@@ -75,6 +76,8 @@ impl Builder {
             .insert(TypeId::of::<PlayerJoined>(), PlayerJoined::id());
         self.events
             .insert(TypeId::of::<PlayerLeft>(), PlayerLeft::id());
+        self.events
+            .insert(TypeId::of::<PromptAnswered>(), PromptAnswered::id());
         self.events
             .insert(TypeId::of::<EntitySpawned>(), EntitySpawned::id());
         self.events

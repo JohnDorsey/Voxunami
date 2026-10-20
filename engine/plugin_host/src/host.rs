@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use namespaced_id::NamespacedId;
-use protocol::{ClientId, Tick};
-use server::{CommandLine, GameLogic, ServerWorld};
+use protocol::{ClientId, Message, Tick};
+use server::{Audience, CommandLine, GameLogic, ServerWorld};
 use voxel_grid::ChannelIndex;
 use voxel_space::{GridId, VoxelCoordinate};
 use world_storage::{Section, WorldData};
@@ -15,7 +15,8 @@ use entities::EntityCatalog;
 use crate::command::{Argument, Arguments, CommandSpec};
 use crate::context::{Context, Intent, MindContext, Queue, Queued};
 use crate::error::RegistrationError;
-use crate::event::{ChannelsChanged, PlayerJoined, PlayerLeft};
+use crate::event::{ChannelsChanged, PlayerJoined, PlayerLeft, PromptAnswered};
+use crate::prompt::{PromptAnswer, PromptClosed};
 use crate::registrar::{Builder, Plugin, Registrar, finish, registration_order};
 use crate::registry::{HandlerKind, Registry, Runner};
 use crate::spec::Phase;
@@ -260,6 +261,11 @@ fn dispatch_message(
     kind: &NamespacedId,
     payload: &[u8],
 ) {
+    // The engine's own message: an answer to a question.
+    if *kind == PromptAnswer::kind() {
+        answer_prompt(registry, queue, world, tick, client, payload);
+        return;
+    }
     let Some(run) = registry
         .messages
         .get(kind)
@@ -284,6 +290,42 @@ fn dispatch_message(
         }
     }
     drain(registry, queue, world, tick);
+}
+
+/// A player answers a question: if it is one that was asked of them and the option is one it has, it is over,
+/// their client is told so, and the plugins hear the answer. Anything else is ignored (a message that cannot
+/// be read is counted, like any other).
+fn answer_prompt(
+    registry: &Registry,
+    queue: &mut Queue,
+    world: &mut ServerWorld,
+    tick: Tick,
+    client: ClientId,
+    payload: &[u8],
+) {
+    let Ok(answer) = PromptAnswer::decode(payload) else {
+        registry.malformed_messages.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+    if !queue.prompts.answer(client, answer.id, answer.choice) {
+        return;
+    }
+    world.send(
+        Audience::Client(client),
+        PromptClosed::kind(),
+        PromptClosed(answer.id).encode(),
+    );
+    emit_and_drain(
+        registry,
+        queue,
+        world,
+        tick,
+        PromptAnswered {
+            client,
+            prompt: answer.id,
+            choice: answer.choice as usize,
+        },
+    );
 }
 
 fn emit_and_drain<E: crate::event::Event>(
@@ -319,6 +361,7 @@ impl GameLogic for PluginHost {
 
     fn client_left(&mut self, client: ClientId, world: &mut ServerWorld) {
         self.prepare(world);
+        self.queue.prompts.forget(client);
         let tick = world.tick();
         emit_and_drain(
             &self.registry,

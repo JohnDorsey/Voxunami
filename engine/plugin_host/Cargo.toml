@@ -7,6 +7,7 @@ publish.workspace = true
 description = "Runs a game's server rules as plugins: registration, tick phases, events, and the order they run in."
 
 [dependencies]
+binary_codec.workspace = true
 entities.workspace = true
 namespaced_id.workspace = true
 protocol.workspace = true
@@ -17,7 +18,6 @@ world_storage.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-binary_codec.workspace = true
 protocol.workspace = true
 server = { workspace = true, features = ["test-support"] }
 transport.workspace = true

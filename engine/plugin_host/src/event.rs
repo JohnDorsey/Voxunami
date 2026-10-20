@@ -61,6 +61,22 @@ impl Event for PlayerLeft {
     }
 }
 
+/// A player answered a question that was asked with [`crate::Context::prompt`]: `choice` is the number of the
+/// option, counted from 0. Sent once for each question, only for an option the question has and only for the
+/// player it was asked of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PromptAnswered {
+    pub client: ClientId,
+    pub prompt: crate::prompt::PromptId,
+    pub choice: usize,
+}
+
+impl Event for PromptAnswered {
+    fn id() -> NamespacedId {
+        parse_id("engine:prompt_answered")
+    }
+}
+
 /// An entity was made. Sent when it is made, so a handler runs with the entity in the world.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntitySpawned {

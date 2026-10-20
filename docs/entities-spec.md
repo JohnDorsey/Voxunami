@@ -146,6 +146,20 @@ options) -> PromptId` and an event `PromptAnswered { client, prompt, choice }`; 
 client shell shows the options as the HUD line and answers with the built-in `.choose N`. First user: the missing-ship case of Phase 32; in
 this phase it is tested with a fake plugin. Phase 30 restyles it.
 
+Built in 27h, with these decisions:
+- A question has 1 to 9 options (`MAXIMUM_PROMPT_OPTIONS`) and text of at most 200 bytes
+  (`MAXIMUM_PROMPT_TEXT`, the title and each option). `Context::prompt` returns `Err(PromptError)` for no options, too many, too long, or a
+  player who is not connected; nothing is sent then.
+- Ids count from 1 across the server and are never reused, so a late answer to a finished question can never answer a newer one. A question
+  belongs to the player it was asked of: an answer from anyone else, for an option it does not have, or for a question already ended is
+  ignored (a message that cannot be read is counted with the other malformed messages).
+- There is no time limit. A question ends when it is answered, when the asker calls `Context::cancel_prompt(client, id)`, or when the player
+  leaves (their questions are dropped; a player who returns is not asked again, the plugin asks again if it still needs to).
+- A third engine message, `engine:prompt_closed`, tells the client a question is over, so the screen never shows an answered or withdrawn one
+  (and a replay closes it at the same tick). The three messages are in the stream, so a recording shows the question.
+- The client shows the oldest waiting question first on the HUD line (`Delete the level? 1) Keep it  2) Delete it  (.choose N)`, then `[k more]`
+  if others wait); `.choose N` answers it. `ClientContext::prompt()` and `prompts_waiting()` let a client plugin draw it differently.
+
 ### 2.9 Not in this phase (still planned, and why later)
 
 *Control targets* (a player's inputs going to an entity whose kind supplies the controller), the *`Brain` slot*, and *block data* (a chest's
@@ -173,7 +187,7 @@ each is a small addition on top of this layer, so building them now would be des
   take two steps; goldens repinned once if the stream changes (it does: the challenge is in it).
 - **27f** Players become entities (the entity store replacing `PoseBook` and `Players`) in all three games; goldens repinned once.
 - **27g** Items, stacks, inventories and Cave's drops, pickup and hotbar; the appearance verb and the box drawing.
-- **27h** The prompt facility.
+- **27h** The prompt facility (built).
 - **27i** Documentation (`plugin-api-spec.md`, `design-decisions.md`, `protocol-and-replay.md`, build log), gates on Windows and Linux.
 
 ## 5. Questions for the owner, answered

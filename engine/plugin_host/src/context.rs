@@ -27,6 +27,8 @@ pub(crate) struct Queue {
     /// delivered until the tick ends.
     pub halted: bool,
     pub overflows: u32,
+    /// The questions that are waiting for an answer.
+    pub prompts: crate::prompt::Prompts,
 }
 
 /// What a system, handler, message handler or command handler is given: the world, and the means to
@@ -163,6 +165,49 @@ impl<'a> Context<'a> {
     /// Queues text for one client as the answer to a command.
     pub fn reply(&mut self, client: ClientId, text: &str) {
         self.world.reply(client, text);
+    }
+
+    /// Asks a player a question: a title and 1 to 9 options (see [`crate::MAXIMUM_PROMPT_OPTIONS`]). The
+    /// player's client shows it and they answer with the number of an option; the handlers of
+    /// [`crate::PromptAnswered`] hear which. There is no time limit: the question ends when it is answered,
+    /// when [`Context::cancel_prompt`] is called, or when the player leaves. Fails if the question cannot be
+    /// asked or the player is not here.
+    pub fn prompt(
+        &mut self,
+        client: ClientId,
+        title: &str,
+        options: &[&str],
+    ) -> Result<crate::prompt::PromptId, crate::prompt::PromptError> {
+        crate::prompt::check(title, options)?;
+        if self.world.player_key(client).is_none() {
+            return Err(crate::prompt::PromptError::NotConnected);
+        }
+        let id = self.queue.prompts.ask(client, options.len());
+        let question = crate::prompt::Prompt {
+            id,
+            title: title.to_owned(),
+            options: options.iter().map(|option| (*option).to_owned()).collect(),
+        };
+        self.world.send(
+            Audience::Client(client),
+            crate::prompt::Prompt::kind(),
+            question.encode(),
+        );
+        Ok(id)
+    }
+
+    /// Withdraws a question that has not been answered, and tells the player's client to stop showing it.
+    /// Returns whether it was waiting.
+    pub fn cancel_prompt(&mut self, client: ClientId, id: crate::prompt::PromptId) -> bool {
+        let waiting = self.queue.prompts.cancel(client, id);
+        if waiting {
+            self.world.send(
+                Audience::Client(client),
+                crate::prompt::PromptClosed::kind(),
+                crate::prompt::PromptClosed(id).encode(),
+            );
+        }
+        waiting
     }
 
     /// Sends an event. It is delivered when the current system or handler returns, after the events

@@ -13,6 +13,7 @@ use player_presence::{
     LevelChange, PlayerClient, PlayerLook, PlayerPose, PlayerState, Players, PoseReport,
     player_kind,
 };
+use plugin_host::{Prompt, PromptClosed};
 use protocol::{ClientId, Message};
 use renderer::Camera;
 use transport::Connection;
@@ -62,6 +63,8 @@ pub struct Session<C: Connection, G: GameDefinition> {
     players: BTreeMap<ClientId, PlayerState>,
     /// Whether the stream is one that lists players in `Players` messages instead of as entities.
     players_listed_by_message: bool,
+    /// The questions the server has asked and not closed, the oldest first.
+    prompts: Vec<Prompt>,
     mode: Mode,
     view_radius_bricks: i64,
     /// The level the player is in, and so the one they ask to watch.
@@ -135,6 +138,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             settings,
             players: BTreeMap::new(),
             players_listed_by_message: false,
+            prompts: Vec::new(),
             mode,
             view_radius_bricks,
             level: LevelIndex::MAIN,
@@ -228,6 +232,17 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                         && let Some(level) = self.client.world().world().level_index(&id)
                     {
                         self.change_level(level);
+                    }
+                }
+                ClientEvent::GameMessage { kind, payload } if kind == Prompt::kind() => {
+                    // A question the server asks. One that cannot be read is dropped (nothing can answer it).
+                    if let Ok(prompt) = Prompt::decode(&payload) {
+                        self.prompts.push(prompt);
+                    }
+                }
+                ClientEvent::GameMessage { kind, payload } if kind == PromptClosed::kind() => {
+                    if let Ok(PromptClosed(id)) = PromptClosed::decode(&payload) {
+                        self.prompts.retain(|waiting| waiting.id != id);
                     }
                 }
                 ClientEvent::GameMessage { kind, payload } if kind == Players::kind() => {
@@ -508,6 +523,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             block_table: &self.block_table,
             players: &self.players,
             entities: self.client.world().entities(),
+            prompts: &self.prompts,
             settings: &mut self.settings,
             target,
             target_content,

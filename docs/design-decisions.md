@@ -197,6 +197,17 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - The look angles are kept as reported (a component) beside the orientation quaternion, so that nothing recovers angles from a quaternion.
   The calls that read or move players take the world (`Presence`), a game holds it as it held the book.
 
+## Decided (asking a player a question; built in Phase 27h)
+
+- Asking is an engine facility, not a game's: any plugin may ask any player a question with a title and 1 to 9 options (`Context::prompt`) and
+  hears the answer as the event `PromptAnswered`. The engine owns the numbering and the validity (a question is answered once, by its player, with an
+  option it has); the plugin owns what the question means and what to do while it waits (holding an entity, for instance).
+- Questions have no time limit and are not saved. A player leaving drops theirs; the plugin asks again if it still needs to. This keeps the
+  facility stateless across saves; a saved world never holds a question for a player who may never return.
+- Ids are never reused, and the client is told when a question is over (`engine:prompt_closed`), so neither a stale answer nor a stale screen can
+  happen. The shell shows the first question on the HUD line and answers with `.choose N`; the toolkit of Phase 30 restyles it without changing
+  the messages.
+
 ## Decided (rules for lattice simulation and physics)
 - Tick phases (confirmed by the owner): each tick reads a frozen snapshot of the previous tick and produces the next one.
   A brick update never writes to a neighbour; cross-brick effects are queued and applied together in a fixed order.

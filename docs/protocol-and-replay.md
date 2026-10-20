@@ -105,7 +105,10 @@ same reason.
 
 `GameMessage` is how games and plugins add their own messages in either direction (entities, chat, inventory): an
 identifier saying whose message it is, and bytes only that game reads. The engine never interprets them, and a client
-that lacks the plugin that sends one ignores it.
+that lacks the plugin that sends one ignores it. The engine does read three of its own, in the `engine:` namespace (Phase 27h): `engine:prompt`
+(server to one client: an id, a title, up to 9 options), `engine:prompt_answer` (client to server: the id and the option, counted from 0) and
+`engine:prompt_closed` (server to that client: the question is over, answered or withdrawn). The server host reads the answer itself; no plugin
+registers it.
 
 ## What the server sends when
 

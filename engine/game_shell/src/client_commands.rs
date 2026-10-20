@@ -82,6 +82,29 @@ pub(crate) fn register(registrar: &mut ClientRegistrar<'_>) {
             }
         },
     );
+    registrar.command(
+        CommandSpec::new(
+            "choose",
+            "answers the question the game is asking: .choose 1 is the first option",
+        )
+        .with_prefix('.')
+        .argument(Argument::word("option")),
+        |context, arguments| {
+            let Some(prompt) = context.prompt().cloned() else {
+                return "there is no question to answer".to_owned();
+            };
+            match arguments.word(0).parse::<usize>() {
+                Ok(number) if (1..=prompt.options.len()).contains(&number) => {
+                    context.send_message(&plugin_host::PromptAnswer {
+                        id: prompt.id,
+                        choice: (number - 1) as u32,
+                    });
+                    format!("you chose {}", prompt.options[number - 1])
+                }
+                _ => format!("choose a number from 1 to {}", prompt.options.len()),
+            }
+        },
+    );
 }
 
 #[cfg(test)]
@@ -97,6 +120,15 @@ mod tests {
 
     /// Runs a typed line the way the window does, against these settings.
     fn run(line: &str, settings: &mut ClientSettings) -> String {
+        run_with_questions(line, settings, &[]).0
+    }
+
+    /// The same, with these questions waiting, and what the line sent to the server.
+    fn run_with_questions(
+        line: &str,
+        settings: &mut ClientSettings,
+        prompts: &[plugin_host::Prompt],
+    ) -> (String, Vec<crate::client_plugin::Outgoing>) {
         let camera = camera_at([0.0; 3], 0.0, 0.0, 3);
         let table = BlockTable::of_cubes(&[false]);
         let players = BTreeMap::new();
@@ -107,6 +139,7 @@ mod tests {
             block_table: &table,
             players: &players,
             entities: &entities,
+            prompts,
             settings,
             target: None,
             target_content: None,
@@ -114,7 +147,66 @@ mod tests {
             mode: Mode::Playing,
             own_client: protocol::ClientId::new(1),
         });
-        host.command(line, &mut context)
+        let reply = host.command(line, &mut context);
+        (reply, context.into_outgoing())
+    }
+
+    fn asked() -> Vec<plugin_host::Prompt> {
+        vec![
+            plugin_host::Prompt {
+                id: plugin_host::PromptId::new(7),
+                title: "Delete the level?".to_owned(),
+                options: vec!["Keep it".to_owned(), "Delete it".to_owned()],
+            },
+            plugin_host::Prompt {
+                id: plugin_host::PromptId::new(8),
+                title: String::new(),
+                options: vec!["Yes".to_owned()],
+            },
+        ]
+    }
+
+    #[test]
+    fn choose_answers_the_oldest_question_with_the_option_numbered_from_one() {
+        use plugin_host::{PromptAnswer, PromptId};
+        let mut settings = ClientSettings::new(0);
+        let (reply, sent) = run_with_questions(".choose 2", &mut settings, &asked());
+        assert_eq!(reply, "you chose Delete it");
+        assert_eq!(
+            sent,
+            [crate::client_plugin::Outgoing::Message(
+                <PromptAnswer as protocol::Message>::kind(),
+                protocol::Message::encode(&PromptAnswer {
+                    id: PromptId::new(7),
+                    choice: 1
+                })
+            )]
+        );
+        let (reply, sent) = run_with_questions(".choose 1", &mut settings, &asked());
+        assert_eq!(reply, "you chose Keep it");
+        assert_eq!(sent.len(), 1);
+    }
+
+    #[test]
+    fn choose_says_what_is_wrong_and_sends_nothing_when_there_is_no_question_or_no_such_option() {
+        let mut settings = ClientSettings::new(0);
+        let (reply, sent) = run_with_questions(".choose 1", &mut settings, &[]);
+        assert_eq!(reply, "there is no question to answer");
+        assert!(sent.is_empty());
+        for wrong in [
+            ".choose 0",
+            ".choose 3",
+            ".choose -1",
+            ".choose two",
+            ".choose 1.5",
+        ] {
+            let (reply, sent) = run_with_questions(wrong, &mut settings, &asked());
+            assert_eq!(reply, "choose a number from 1 to 2", "{wrong}");
+            assert!(sent.is_empty(), "{wrong}");
+        }
+        let (reply, sent) = run_with_questions(".choose", &mut settings, &asked());
+        assert_eq!(reply, "usage: .choose OPTION");
+        assert!(sent.is_empty());
     }
 
     #[test]
@@ -199,18 +291,18 @@ mod tests {
         assert!(run(".help", &mut settings).starts_with("client commands: .ambient"));
         assert_eq!(
             run(".dance", &mut settings),
-            "unknown client command .dance; client commands: .ambient [LEVEL], .help [COMMAND], .keys"
+            "unknown client command .dance; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys"
         );
         assert_eq!(
             run(".", &mut settings),
-            "client commands: .ambient [LEVEL], .help [COMMAND], .keys"
+            "client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys"
         );
         assert!(
             run(".help ambient", &mut settings).starts_with(".ambient [LEVEL]: sets how bright")
         );
         assert_eq!(
             run(".help nothing", &mut settings),
-            "there is no client command .nothing; client commands: .ambient [LEVEL], .help [COMMAND], .keys"
+            "there is no client command .nothing; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys"
         );
         // Spaces round the words do not matter.
         assert_eq!(

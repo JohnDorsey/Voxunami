@@ -14,7 +14,7 @@ use block_models::BlockTable;
 use client::{ClientEntities, ClientEntity};
 use namespaced_id::NamespacedId;
 use player_presence::PlayerState;
-use plugin_host::{Arguments, CommandSpec};
+use plugin_host::{Arguments, CommandSpec, Prompt};
 use protocol::{ClientId, Message, Tick, check_message};
 use renderer::Camera;
 use winit::keyboard::KeyCode;
@@ -69,6 +69,29 @@ impl ActionSpec {
     }
 }
 
+/// A question as the screen shows it: `Delete the level? 1) Keep it  2) Delete it  (.choose N)`, and how many
+/// more are waiting after it.
+pub(crate) fn describe_prompt(prompt: &Prompt, waiting: usize) -> String {
+    let options = prompt
+        .options
+        .iter()
+        .enumerate()
+        .map(|(index, option)| format!("{}) {option}", index + 1))
+        .collect::<Vec<_>>()
+        .join("  ");
+    let title = if prompt.title.is_empty() {
+        String::new()
+    } else {
+        format!("{} ", prompt.title)
+    };
+    let more = if waiting > 1 {
+        format!(" [{} more]", waiting - 1)
+    } else {
+        String::new()
+    };
+    format!("{title}{options}  (.choose N){more}")
+}
+
 /// What the client does in answer to an action, after the hook has run.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Outgoing {
@@ -90,6 +113,8 @@ pub(crate) struct SessionView<'a> {
     pub players: &'a BTreeMap<ClientId, PlayerState>,
     /// Every entity the client has been told of.
     pub entities: &'a ClientEntities,
+    /// The questions the server is waiting for the player to answer, the oldest first.
+    pub prompts: &'a [Prompt],
     pub settings: &'a mut ClientSettings,
     pub target: Option<RayHit>,
     /// The block and state in the targeted voxel.
@@ -164,6 +189,16 @@ impl<'a> ClientContext<'a> {
     /// the one that is this player with their inventory).
     pub fn entities(&self) -> &ClientEntities {
         self.view.entities
+    }
+
+    /// The question the server is waiting for the player to answer (the oldest, if there are several).
+    pub fn prompt(&self) -> Option<&Prompt> {
+        self.view.prompts.first()
+    }
+
+    /// How many questions are waiting, the one shown among them.
+    pub fn prompts_waiting(&self) -> usize {
+        self.view.prompts.len()
     }
 
     /// This client's identifier on the server.
@@ -446,10 +481,18 @@ impl ClientHost {
 
     /// The HUD lines of the plugins, in order, joined by ` | `.
     pub(crate) fn hud(&mut self, context: &ClientContext<'_>) -> String {
-        self.huds
-            .iter_mut()
-            .filter_map(|hook| hook(context))
-            .filter(|line| !line.is_empty())
+        // The shell's own line comes first: a question must not be missed.
+        let question = context
+            .prompt()
+            .map(|prompt| describe_prompt(prompt, context.prompts_waiting()));
+        question
+            .into_iter()
+            .chain(
+                self.huds
+                    .iter_mut()
+                    .filter_map(|hook| hook(context))
+                    .filter(|line| !line.is_empty()),
+            )
             .collect::<Vec<_>>()
             .join(" | ")
     }
@@ -659,6 +702,15 @@ mod tests {
         plugins: Vec<Box<dyn ClientPlugin>>,
         with: impl FnOnce(&mut ClientHost, &mut ClientContext<'_>) -> R,
     ) -> (R, Vec<Outgoing>) {
+        with_host_asked(plugins, &[], with)
+    }
+
+    /// The same, with these questions waiting for the player.
+    fn with_host_asked<R>(
+        plugins: Vec<Box<dyn ClientPlugin>>,
+        prompts: &[Prompt],
+        with: impl FnOnce(&mut ClientHost, &mut ClientContext<'_>) -> R,
+    ) -> (R, Vec<Outgoing>) {
         let camera = camera_at([0.0; 3], 0.0, 0.0, 3);
         let table = BlockTable::of_cubes(&[false]);
         let players = BTreeMap::new();
@@ -670,6 +722,7 @@ mod tests {
             block_table: &table,
             players: &players,
             entities: &entities,
+            prompts,
             settings: &mut settings,
             target: None,
             target_content: None,
@@ -871,6 +924,50 @@ mod tests {
         ];
         let (hud, _) = with_host(plugins, |host, context| host.hud(context));
         assert_eq!(hud, "placing stone | tick 0");
+    }
+
+    fn question(id: u64, title: &str, options: &[&str]) -> Prompt {
+        Prompt {
+            id: plugin_host::PromptId::new(id),
+            title: title.to_owned(),
+            options: options.iter().map(|option| (*option).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn a_question_is_the_first_thing_on_the_screen_with_its_options_and_how_many_more_wait() {
+        let plugins = || {
+            vec![plugin("test:p", |registrar| {
+                registrar.hud_line(|_| Some("placing stone".to_owned()));
+            })]
+        };
+        let (none, _) = with_host_asked(plugins(), &[], |host, context| host.hud(context));
+        assert_eq!(none, "placing stone", "no question, no line of it");
+
+        let delete = question(1, "Delete the level?", &["Keep it", "Delete it"]);
+        let (one, _) =
+            with_host_asked(plugins(), std::slice::from_ref(&delete), |host, context| {
+                host.hud(context)
+            });
+        assert_eq!(
+            one,
+            "Delete the level? 1) Keep it  2) Delete it  (.choose N) | placing stone"
+        );
+
+        let other = question(2, "", &["Yes"]);
+        let (two, _) = with_host_asked(plugins(), &[delete, other], |host, context| {
+            host.hud(context)
+        });
+        assert_eq!(
+            two, "Delete the level? 1) Keep it  2) Delete it  (.choose N) [1 more] | placing stone",
+            "the oldest is shown"
+        );
+        let (untitled, _) = with_host_asked(
+            Vec::new(),
+            &[question(3, "", &["Yes", "No"])],
+            |host, context| host.hud(context),
+        );
+        assert_eq!(untitled, "1) Yes  2) No  (.choose N)");
     }
 
     #[test]

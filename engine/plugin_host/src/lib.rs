@@ -16,6 +16,7 @@ mod error;
 mod event;
 mod host;
 mod order;
+mod prompt;
 mod registrar;
 mod registry;
 mod spec;
@@ -24,8 +25,13 @@ pub use command::{Argument, ArgumentKind, Arguments, CommandSpec};
 pub use context::{CheckedGrid, Context, Intent, MindContext};
 pub use error::RegistrationError;
 pub use event::{
-    ChannelsChanged, EntityDespawned, EntitySpawned, Event, PlayerJoined, PlayerLeft, Verdict,
+    ChannelsChanged, EntityDespawned, EntitySpawned, Event, PlayerJoined, PlayerLeft,
+    PromptAnswered, Verdict,
 };
 pub use host::{CASCADE_LIMIT, PluginHost};
+pub use prompt::{
+    MAXIMUM_PROMPT_OPTIONS, MAXIMUM_PROMPT_TEXT, Prompt, PromptAnswer, PromptClosed, PromptError,
+    PromptId,
+};
 pub use registrar::{Plugin, Registrar};
 pub use spec::{DeterminismClass, HandlerSpec, Phase, SaveScope, SystemSpec};
