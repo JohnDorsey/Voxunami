@@ -151,11 +151,13 @@ who flies out of the ship's box leaves it.
 **Ships are colliders for a body in a level.** The blocks of the ships within two bricks of a player are colliders in the player's own Rapier
 world (`CharacterBody::update_foreign`), put each tick where the ship is and turned as it is, made again where the ship is edited
 (`foreign_brick_changed`). Standing on a moving ship's deck for the one tick before boarding, the body is not carried; what carries it is the boarding.
-The controller loses the whole of a slide along a wall of a ship that is turned about the vertical axis where the wall meets the floor (found
-in 32g by a test that walks along a turned wall); a slide that comes out as nothing is made again level and along the wall, for walls of ships
-only (a regression test sweeps six turns, both ways, steep and shallow). **The same failure happens, rarely, against terrain walls:** it was seen
-once in the pinned Cave session (a walker pressed diagonally against a wall stops dead). The fix is not applied to terrain because it would change
-the pinned sessions; it is a follow-up task.
+The controller loses the whole of a slide along a wall where the wall meets the floor (found in 32g by a test that walks along a turned ship's
+wall; the cause was found later, in 32h): the shape cast gives a wall a normal with a hair of slope (about 1e-5), so the slide along it has a hair
+of downward speed, the controller then meets the floor at once, takes the walker to be sliding down a slope it must not slide down, and a flat floor has
+no direction along it to keep, so nothing is moved. A slide that comes out as nothing is made again, level and along the wall, leaning a little away
+from it (the wall is within the controller's gap, and a slide that touches it again meets the same hair): for walls of ships and of terrain alike.
+(Regression tests: six turns of a ship's wall, both ways, steep and shallow; and a sweep of 144 walks at a terrain wall, of which 31 stood
+still before, and one of which stood still for a hundred steps in the pinned Cave session.)
 
 **Keeping clear (found by measuring; I had written that a ship that moves into a player "overlaps them and nothing yet pushes them out", which
 was a belief from reading the code and was wrong in both directions).** For a ship that moved slowly (4 voxels a second) the controller did

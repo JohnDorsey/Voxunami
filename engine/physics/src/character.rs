@@ -915,11 +915,13 @@ impl CharacterBody {
         let (sideways, wall) = self.move_through_terrain(dt, desired_across);
         let mut sideways = sideways.translation;
         if let Some(wall) = wall {
-            // The slide along the wall of a ship that is not along the axes of the frame, where the wall meets the floor, can come out as
-            // nothing: the two surfaces each take their turn at the part of the move that runs into them, and the controller gives up.
-            // When it moved the character hardly at all and the slide along the wall is something, the slide is made here, level and
-            // along the wall, and goes through the terrain the same way; it is taken if it gets the character most of the way. (Head
-            // on, or into a corner, the slide is nothing, or is stopped again, and nothing changes.)
+            // The slide along a wall, where the wall meets the floor, can come out as nothing: the shape cast gives the wall a normal with a
+            // hair of slope (a hundred-thousandth), so the slide has a hair of downward speed, and the controller takes the floor, which it
+            // meets at once, to be a slope the walker must not slide down and gives up. It happens to the wall of a ship that is not along
+            // the axes of the frame, and now and then to the wall of terrain that is. When it moved the character hardly at all and the
+            // slide along the wall is something, the slide is made here, level and along the wall (leaning a little away from it, so
+            // that the wall is not met again), and goes through the terrain the same way; it is taken if it gets the character most of
+            // the way. (Head on, or into a corner, the slide is nothing, or is stopped again, and nothing changes.)
             let slide = slide_along(desired_across, wall, self.up);
             if sideways.length() < 0.1 * slide.length() {
                 let (again, _) = self.move_through_terrain(dt, slide);
@@ -989,8 +991,8 @@ impl CharacterBody {
         }
     }
 
-    /// What the terrain lets the character do of a move, and the normal of the last upright surface (a wall) of a ship the move ran
-    /// into, if any; the character is not moved.
+    /// What the terrain lets the character do of a move, and the normal of the last upright surface (a wall) the move ran into, if any;
+    /// the character is not moved.
     fn move_through_terrain(
         &self,
         dt: f32,
@@ -1015,11 +1017,7 @@ impl CharacterBody {
             self.controller
                 .move_shape(dt, &query, &self.shape, &pose, desired, |collision| {
                     let normal = collision.hit.normal1;
-                    let of_a_ship = self
-                        .foreign
-                        .values()
-                        .any(|brick| brick.collider == Some(collision.handle));
-                    if of_a_ship && normal.dot(up).abs() < 0.5 {
+                    if normal.dot(up).abs() < 0.5 {
                         wall = Some(normal);
                     }
                 });
@@ -1093,14 +1091,20 @@ fn max_brick() -> BrickCoordinate {
     )
 }
 
-/// A move across the up with what runs into `wall` taken out: it goes along the wall, level. A move that does not run into it is as it was.
+/// How far from the wall, as a fraction of the slide, the slide made again leans: enough that the controller, which counts a surface
+/// within its gap of the character as touched, does not meet the wall again and take its slope's hair for a downward slide once more.
+const SLIDE_LEAN_FROM_WALL: f32 = 0.05;
+
+/// A move across the up with what runs into `wall` taken out: it goes along the wall, level, and leans a little away from it. A move that
+/// does not run into it is as it was.
 fn slide_along(across: Vector, wall: Vector, up: Vector) -> Vector {
     let level = (wall - up * wall.dot(up)).normalize_or_zero();
     let into = across.dot(level);
     if into >= 0.0 {
         across
     } else {
-        across - level * into
+        let along = across - level * into;
+        along + level * (SLIDE_LEAN_FROM_WALL * along.length())
     }
 }
 

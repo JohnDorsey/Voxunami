@@ -686,6 +686,20 @@ Phase 32h (Cave's ship commands and the first flight; the pause for the owner is
   flood-fill test and of the nearest-ship test were not enough, and were made to start from every block and to have two ships, before the run).
 - Limits: nothing turns a ship but a force off its middle; the thrust numbers are a guess; `/ship create all` is refused wherever the ground is joined.
 
+Phase 32h, a separate change (a walker slides along terrain walls; it found what the golden session of 32h had sat on):
+- Cause, found by tracing Cave's golden session (a walker stood still for 104 steps against a one-voxel hillside wall): the shape cast gives the wall a
+  normal with a hair of y (1.2e-5), the slide along it has a hair of downward speed (-3.3e-7), the controller then meets the floor at once (toi 0) and,
+  because the floor is a slope it must not slide down and a flat floor has no direction along it to keep, drops the whole slide. Not a
+  matter of the wall's height or turn: a plain one-block wall on a flat floor does it (31 of 144 walks at different slants and places stood still).
+- Fix: the retry made in 32g for ships (the slide made again, level and along the wall, when the first move got under a tenth of it) now applies to
+  every wall. Alone it left 3 of 144, because the slide made again touched the wall again (it is within the controller's gap) and met the same hair;
+  it now leans 5% of its length away from the wall. A sweep of 1440 walks (three frame heights, 60 slants, 8 places) has none that stands still.
+- Tests: `walking.rs` has the walk that stuck in the golden session's way (stood still 87 steps before) and the sweep (31 of 144 before). Mutations: 7,
+  6 caught (no lean; lean into the wall; the retry never made; never taken; walls of ships only, which is the old behaviour; every surface a wall);
+  1 survives, "the retry is always taken" (the only difference is that a retry that got less than half of the slide replaces a first move of under a
+  tenth of it, which I believe, from reading and not by proof, is never seen). `PINNED_SCRIPTED_RUN` and the foreign and oriented runs did not change.
+- The golden session changed, as it had to: the stream hash and its length (7,183,468 to 7,184,946 bytes); the saved world did not.
+
 Phase 32g (aboard: players in a ship's frame; boarding and leaving):
 - Entities in any frame: `EntityPose.grid` may be a ship (`voxel_space`: `Orientation::{compose, inverse}`, `GridPose::{place_in_world, place_in_grid}`;
   `entities`: the store takes any grid and has `in_grid`; `server`: `spawn_entity` and `set_entity_pose` refuse a ship that is not there
