@@ -666,6 +666,19 @@ Phase 32 (moving grids; `moving-grids-spec.md`):
   patterns checked against a separate Python calculation and equal on Windows and Linux. 21 mutations: 19 caught; 1 equivalent in practice (an exact tie between
   lattice turns); 1 redundant check (a range test that `checked_offset` already makes), which was deleted.
 
+Phase 32e, part 1 (bodies, in the physics crate; the server does not use them yet):
+- `physics::BodyWorld`: Rapier bodies made of voxels in one frame (a brick of the level is the origin, `recentre` moves it keeping everything where it is): `add_body`,
+  `set_brick` (a brick of a body from a `CollisionSource` in the body coordinates: whole cubes are the voxels of one `Voxels` collider edited in place, partial blocks are boxes),
+  `set_mass`, `set_state`, `set_kind` (dynamic or fixed), `apply_force` (for one step, at a place of the body or its centre), terrain bricks made with the same `build_brick`
+  the character uses, `step` (a tick in substeps, 3 by default, gravity 32 as the character has), `state` and `state_hash`. `MassMoments` sums mass, first and second moments of
+  voxels per brick in `f64` and gives the tensor of inertia about the centre of mass (Rapier diagonalises it).
+- Tests (19, with the 7 of the mass): a ship falls at g, rests on the ground to 0.02 of a voxel, sleeps; a force is for one step and its acceleration is force over mass; an
+  off-centre force turns it the right way; removing the blocks under a ship sinks it by them; a half block holds a ship up half a voxel down, also far along the ship; a ship lands on a
+  fixed one; terrain colliders hold or not as they exist, and a brick made again replaces the old; a turned ship falls without turning and rests on its lowest corner; far from the frame's
+  origin and after `recentre` it is where it was; errors change nothing. The pinned hash of a busy scene (three ships, forces, an edit) is the same on Windows and Linux.
+- 25 mutations: all real ones caught after three tests were added (a half block far along the ship, a removed body leaves nothing, a terrain brick made again replaces the old); three
+  mutants are equivalent (a speed Rapier already zeroes, a hint that only saves time, a far-corner check that makes the near one redundant), and two lines were removed as redundant.
+
 Phase 32d (ships drawn and aimed at):
 - Renderer: a placement is now an offset and the turn of the grid (64 bytes, in a stride that was already larger); the shader turns a quad's place and its
   normal (the sun stays in the world). Bricks of ships are kept by (grid, brick) beside the terrain's, with `set_grid_pose`, `upload_grid_brick`,

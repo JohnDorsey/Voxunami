@@ -10,6 +10,7 @@ description = "Bodies that move through voxel terrain: gravity, walking, jumping
 block_models.workspace = true
 libm = "0.2"
 rapier3d = { version = "=0.36.1", features = ["enhanced-determinism"] }
+thiserror.workspace = true
 voxel_space.workspace = true
 
 [dev-dependencies]

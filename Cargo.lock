@@ -2119,6 +2119,7 @@ dependencies = [
  "libm",
  "proptest",
  "rapier3d",
+ "thiserror 2.0.21",
  "voxel_space",
 ]
 

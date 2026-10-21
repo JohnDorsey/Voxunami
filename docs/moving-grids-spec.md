@@ -69,10 +69,11 @@ Positions are computed in `f64` from a brick and an offset. Exactness is for the
 A `BodyWorld` in the `physics` crate (one per level), stepped in the engine's physics phase, single-threaded, `enhanced-determinism` as in
 the spike:
 
-- A ship body is a dynamic Rapier body. Its collider is a compound of boxes made from the blocks' collision shapes
-  (`Shape`), merged greedily per brick (a brick of solid blocks is a few boxes, not 32768). Colliders are rebuilt for a brick when it
-  changes, never for the whole ship. **Mass** is the sum of `engine:density` of its blocks; the centre of mass and inertia come from the
-  same sum (Rapier computes them from per-collider density, so each box carries the blocks' mean density).
+- A ship body is a dynamic Rapier body. **Built (32e): its whole cubes are the voxels of one Rapier `Voxels` collider** (as `physics-spike.md` recommended: a sparse
+  chunked shape with its own BVH that handles the seams between voxels), edited in place a brick at a time (only the voxels that differ), and the blocks that fill part
+  of their cell are boxes, one compound per brick that has any. (The first draft of this section had a compound of merged boxes per brick, as terrain has; the spike's
+  collider is simpler and cheaper to edit.) **Mass** is the sum of `engine:density` of its blocks, kept as moments per brick (`MassMoments`, summed in brick order, in
+  `f64`), from which come the centre of mass and the tensor of inertia that Rapier is given as they are.
 - Terrain is collidable by ships through the terrain colliders the character already uses, built for the bricks near a ship's bounds only.
 - Two ships collide with each other. Ships and characters collide: a character in the world frame is a kinematic capsule against a ship's
   colliders.
@@ -81,9 +82,12 @@ the spike:
 - *Held* ships (section 2.7) are kinematic: they do not move, and everything collides with them.
 - A ship's pose is read back at the end of the physics phase and is the stream's truth for that tick.
 
-Size and cost: the colliders are the cost risk (merged compound colliders that change often). The step is to measure it (32f): a ship of
-10,000 blocks edited every tick. The no-hard-limit decision means the first version must degrade by budget, not by cap: when the rebuild
-queue is long, brick colliders are rebuilt over several ticks (the ship is briefly slightly wrong), logged.
+Size and cost, **measured in 32e** (`cargo run --release -p physics --example ship_cost`, this machine, one thread, a hull held in a hash set, so the scan of a brick is
+dearer than it will be from a brick): a ship of 10,164 blocks (one brick) is made in 1.5 ms and a tick of three steps awake costs 0.011 ms (0.24 ms at worst); one block
+edited every tick makes its brick again in 0.49 ms (0.58 ms at worst). A ship of 101,614 blocks (eight bricks): 15.5 ms to make, 0.024 ms a tick awake (0.45 at worst), 0.69 ms (0.91 at worst) to remake the brick
+of an edit. A hundred ships of 2,304 blocks dropped on the ground: 0.13 ms a tick on average, 4.6 ms at worst while they land, 0.008 ms once they sleep. So the cost
+is the scan of a brick when an edit lands (about half a millisecond), not the stepping; a ship edited in many bricks in a tick (an explosion) is that times the bricks, and
+the plan is a budget of bricks made again per tick (the rest are made over the next ticks), which is not built because nothing measured needs it yet.
 
 ### 2.4 The stream (protocol version 6)
 

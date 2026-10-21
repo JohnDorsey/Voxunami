@@ -16,8 +16,12 @@
 //! A character is moved by [`CharacterBody::step`] with the player's [`MoveInput`]: it walks, jumps,
 //! falls and slides along walls, or flies.
 
+mod bodies;
 mod character;
+mod mass;
 mod terrain;
 
+pub use bodies::{BodyError, BodyId, BodyKind, BodySettings, BodyState, BodyWorld};
 pub use character::{CharacterBody, CharacterSettings, MoveInput};
+pub use mass::{BodyMass, MassMoments};
 pub use terrain::{BrickHint, Collision, CollisionSource};
