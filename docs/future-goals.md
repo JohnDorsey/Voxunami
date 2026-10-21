@@ -239,3 +239,14 @@ then what it needs and what I found in the code.
    edit path refuses to change (including explosions and fire), a server setting that decides whether logout may fossilize and who may
    undo it, and a visible marker. Fits `on_pilot_logout` as a third value.
 
+
+## Levels (owner, 2026-10-20)
+
+- **A superflat level.** A level of flat ground in layers (as Minecraft's superflat world type: for example bedrock, stone, dirt, grass), for building,
+  for testing, and for ships, where the level's terrain is the same everywhere and so costs nothing to simulate or send.
+  *Found:* worlds already have several levels, each with its own generator versions (`design-decisions.md`), and a flat generator exists in the test
+  fixtures (`base_terrain:flat_v1` in `world_storage::test_support`), not as game content. *Needs:* a generator in the `engine::terrain` family that takes
+  its layers as data (block, thickness; the bottom layer going down for ever, nothing above the top), so that a data pack or a command can define a
+  level with it; a way to make the level (`add_level` cannot be called while a server runs, `plan.md` Open, so this wants levels created at world
+  creation or through the planned level commands); a released version of the generator is a file format and is never edited (a hard rule), so its layer
+  list is part of what the world records for the level. Cave could offer it as a world type at creation (`serve cave --level superflat`).
