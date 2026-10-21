@@ -586,6 +586,104 @@ fn bricks_known_to_be_empty_are_not_asked_about_voxel_by_voxel() {
     assert!(scene.asked < 27 * 32 * 32 * 32 / 2, "{}", scene.asked);
 }
 
+/// What one brick costs a source that is not told what is in it: every voxel is asked about.
+const A_BRICK: usize = 32 * 32 * 32;
+
+#[test]
+fn a_character_in_the_middle_of_a_brick_has_terrain_colliders_for_that_brick_and_not_the_bricks_around_it()
+ {
+    // (A player's complaint: a brick of natural terrain costs 10 to 25 ms to make colliders of, on the thread of the tick, and 27 of them were made when a
+    // walker crossed into a new brick.) A floor with its top at 41 in the brick that is from 32 to 63 high; the walker stands in the middle of it.
+    let mut scene = Scene::of(|voxel| voxel.y() <= 40);
+    let mut body = spawn(16.5, 43.0, 16.5);
+    run(&mut body, &mut scene, STILL, 60);
+    assert!(body.is_grounded());
+    // One brick, and the asking of the voxels beside it that the seams of its boxes need: not 27 bricks.
+    assert!(
+        scene.asked < 3 * A_BRICK,
+        "{} voxels asked about",
+        scene.asked
+    );
+}
+
+#[test]
+fn walking_across_the_bricks_of_a_floor_makes_the_colliders_of_a_brick_or_two_at_a_time() {
+    let mut scene = Scene::of(|voxel| voxel.y() <= 40);
+    let mut body = spawn(16.5, 43.0, 16.5);
+    run(&mut body, &mut scene, STILL, 60);
+    // East, sprinting, for 400 steps: 37 voxels, over the edge of the brick and a little into the next two.
+    let east = MoveInput {
+        yaw: -std::f32::consts::FRAC_PI_2,
+        sprint: true,
+        ..FORWARD
+    };
+    let mut most = 0;
+    for _ in 0..800 {
+        let before = scene.asked;
+        run(&mut body, &mut scene, east, 1);
+        most = most.max(scene.asked - before);
+    }
+    assert!(eye(&body)[0] > 60.0, "it walked: {:?}", eye(&body));
+    assert!(most < 3 * A_BRICK, "{most} voxels asked about in one step");
+}
+
+#[test]
+fn a_character_falling_fast_has_the_colliders_of_the_ground_before_it_is_close() {
+    // The floor's brick is from 32 to 63 high. Standing, a character wants it from 8 voxels away; falling at speed, from farther, by a quarter of a
+    // second of its speed, so that it does not arrive at ground that has no colliders yet.
+    let mut scene = Scene::with_floor(40);
+    let mut body = spawn(16.5, 400.0, 16.5);
+    run(&mut body, &mut scene, STILL, 1);
+    // (Stepping asks about the few voxels around the body; a brick of floor is asked about by thousands.)
+    let asked_before = scene.asked;
+    let mut steps = 0;
+    while scene.asked < asked_before + A_BRICK / 4 {
+        run(&mut body, &mut scene, STILL, 1);
+        steps += 1;
+        assert!(steps < 5000, "the ground was never asked about");
+    }
+    let speed = -body.velocity()[1];
+    let height_above_the_brick = (eye(&body)[1] - 64.0) as f32;
+    assert!(speed > 40.0, "it fell fast: {speed}");
+    assert!(
+        height_above_the_brick > 8.0 + 0.15 * speed,
+        "the ground was first asked about {height_above_the_brick} voxels above its brick, falling at {speed}"
+    );
+}
+
+#[test]
+fn terrain_a_character_walks_away_from_is_kept_for_a_while_so_that_walking_back_and_forth_makes_no_colliders_twice()
+ {
+    let mut scene = Scene::of(|voxel| voxel.y() <= 40);
+    let mut body = spawn(16.5, 43.0, 16.5);
+    run(&mut body, &mut scene, STILL, 60);
+    let walk_to =
+        |body: &mut CharacterBody, scene: &mut Scene, yaw: f32, until: &dyn Fn(f32) -> bool| {
+            let input = MoveInput { yaw, ..FORWARD };
+            for _ in 0..4000 {
+                if until(eye(body)[0] as f32) {
+                    break;
+                }
+                run(body, scene, input, 1);
+            }
+            run(body, scene, STILL, 60);
+        };
+    let east = -std::f32::consts::FRAC_PI_2;
+    walk_to(&mut body, &mut scene, east, &|x| x >= 27.0);
+    assert!(eye(&body)[0] >= 27.0, "it walked east: {:?}", eye(&body));
+    // Back to 20: the next brick east (from 32) is 12 voxels away, more than the 8 it was wanted from and less than the 24 it is kept to.
+    walk_to(&mut body, &mut scene, -east, &|x| x <= 20.0);
+    assert!(eye(&body)[0] <= 20.0, "it walked back: {:?}", eye(&body));
+    let asked_before = scene.asked;
+    walk_to(&mut body, &mut scene, east, &|x| x >= 27.0);
+    // (Stepping asks about the few voxels around the body; a brick of floor is asked about by thousands.)
+    let asked_again = scene.asked - asked_before;
+    assert!(
+        asked_again < A_BRICK / 4,
+        "the brick to the east was made again: {asked_again} voxels asked about"
+    );
+}
+
 /// A scripted run: falling, walking, jumping onto a block, climbing a slab, flying and walking into a
 /// wall. The hash of the state at the end must be the same on every machine.
 fn scripted_run() -> u64 {

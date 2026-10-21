@@ -682,10 +682,19 @@ Phase 32h, after the owner's first play (2026-10-21): a crash and lag spikes, bo
   Also `touches_open` in `build_brick` looks at the faces of a box and not at all its voxels (the same boxes, pinned by a new test taken before the change: 79 to 38 ms
   for one brick of ground), `ServerWorld::bricks_generated` counts the generator's runs (the deterministic way to test this), and two ship physics pins changed because
   fewer far colliders change the order of Rapier's solver (two ships to the bit, the third, which slides and spins, within 0.005 voxel; checked by printing the poses).
-- Not fixed, found while measuring: a walker has the same hitch (109 and 136 ms in 400 sprinting ticks, when they cross into new ground: the character loads the 27 bricks
-  around it); the 30 by 30 and 40 by 40 rafts still have single ticks of 70 to 80 ms; a ship has no continuous collision against terrain, so one falling at 250 voxels a
+- Not fixed, found while measuring (the walker's hitch, 109 and 136 ms in 400 sprinting ticks, was fixed next: see below); the 30 by 30 and 40 by 40 rafts still have single ticks of 70 to 80 ms; a ship has no continuous collision against terrain, so one falling at 250 voxels a
   second goes through a floor 3 thick (it does not at 138). Three mutants of the new lookahead survive (no distance ahead; no speed term; no hysteresis): they are safety margins
   that no scene can show, since the one that would, a faster fall, goes through the floor whatever the colliders.
+
+Phase 32h, the same fix for walkers (2026-10-21; the owner asked): a walker hitched when it walked into new ground because `CharacterBody` made colliders for the 27 bricks
+around the one it is in, 10 to 25 ms a brick on the tick's thread. It now has them for the terrain within 8 voxels of its centre and a quarter of a second of its speed, and
+lets them go 16 voxels farther out (the same three numbers as a ship's, in `character.rs`). Measured in Cave with natural terrain, 1500 ticks of a player sprinting from the
+start (release build, worst ticks of `ServerWorld::step`): 124 and 99 ms before, 0.1 ms after, and the walker ends at the same place to the last printed digit (it walks into a
+wall of the terrain 24 voxels on, so two brick edges were crossed, not many). In the physics tests `Scene` counts the voxels it is asked about: standing in the middle of a brick
+asks about fewer than 3 bricks' worth (974,145 voxels before), and sprinting across the edges of 3 bricks never asks for more than 3 bricks' worth in one step (324,676 before in
+one). No pinned hash changed (scripted run, oriented and foreign runs, golden session, Cave aboard and flight), because the tests stand on bricks the new rule loads too. Six
+mutants of the new code are caught (no distance ahead; a whole brick ahead; no speed term; let go at once; the frame origin forgotten; rounding toward zero), two of them only
+after tests were added for them (a character falling at speed has the floor's colliders before it is close; walking away and back makes none twice). Windows 1525 and Linux 1526 tests pass; fmt and clippy are clean.
 
 Phase 32h (Cave's ship commands and the first flight; the pause for the owner is after it):
 - `/ship create [all] | push X Y Z | hold on|off | pilot` (`games/voxunami_cave/src/ships.rs` for the rules, `plugins/ships.rs` for the command and the

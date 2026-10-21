@@ -13,9 +13,13 @@ use crate::terrain::{Collision, CollisionSource, build_brick};
 /// around it. `f32` is exact enough far beyond this; the limit only keeps every number small.
 const FRAME_RADIUS_BRICKS: i64 = 6;
 
-/// How many bricks around the one a character is in have colliders: one in every direction is
-/// enough to move well inside the middle one, since a body moves a small fraction of a brick a step.
-const TERRAIN_RADIUS_BRICKS: i64 = 1;
+/// How far from the character terrain has colliders, in voxels: a few, and the way it goes in a few steps. (A brick of natural terrain costs ten
+/// milliseconds or more to generate and make colliders of, on the thread of the tick, so the 27 bricks around the one a character is in, as it first
+/// had, stopped the game for a tenth of a second each time it walked into a new brick.) They are let go a little farther out, so that a
+/// character at the edge of the margin does not make and drop the same brick every step.
+const TERRAIN_LOOKAHEAD_VOXELS: f32 = 8.0;
+const TERRAIN_LOOKAHEAD_SECONDS: f32 = 0.25;
+const TERRAIN_KEEP_EXTRA_VOXELS: f32 = 16.0;
 
 /// The same for the bricks of a grid that is not the one the character's frame belongs to, counted in that grid's bricks.
 const FOREIGN_RADIUS_BRICKS: i64 = 1;
@@ -613,22 +617,47 @@ impl CharacterBody {
             self.origin = here;
             self.center = Vector::new(world.offset()[0], world.offset()[1], world.offset()[2]);
         }
-        let wanted: Vec<BrickCoordinate> = (-TERRAIN_RADIUS_BRICKS..=TERRAIN_RADIUS_BRICKS)
-            .flat_map(|dx| {
-                (-TERRAIN_RADIUS_BRICKS..=TERRAIN_RADIUS_BRICKS).flat_map(move |dy| {
-                    (-TERRAIN_RADIUS_BRICKS..=TERRAIN_RADIUS_BRICKS).map(move |dz| (dx, dy, dz))
+        // The bricks within the lookahead of the character (and, farther out, those that are kept): a box of bricks around the middle of the body.
+        let lookahead =
+            TERRAIN_LOOKAHEAD_VOXELS + TERRAIN_LOOKAHEAD_SECONDS * self.velocity.length();
+        let bricks_within = |distance: f32| {
+            let brick = |value: f32, origin: i64| {
+                origin.saturating_add((f64::from(value) / BRICK_EDGE_LENGTH as f64).floor() as i64)
+            };
+            let (low, high) = (
+                self.center - Vector::splat(distance),
+                self.center + Vector::splat(distance),
+            );
+            (
+                BrickCoordinate::new(
+                    brick(low.x, self.origin.x()),
+                    brick(low.y, self.origin.y()),
+                    brick(low.z, self.origin.z()),
+                ),
+                BrickCoordinate::new(
+                    brick(high.x, self.origin.x()),
+                    brick(high.y, self.origin.y()),
+                    brick(high.z, self.origin.z()),
+                ),
+            )
+        };
+        let (near_low, near_high) = bricks_within(lookahead);
+        let (kept_low, kept_high) = bricks_within(lookahead + TERRAIN_KEEP_EXTRA_VOXELS);
+        let wanted: Vec<BrickCoordinate> = (near_low.z()..=near_high.z())
+            .flat_map(|z| {
+                (near_low.y()..=near_high.y()).flat_map(move |y| {
+                    (near_low.x()..=near_high.x()).map(move |x| BrickCoordinate::new(x, y, z))
                 })
             })
-            .map(|(dx, dy, dz)| BrickCoordinate::new(here.x() + dx, here.y() + dy, here.z() + dz))
             .collect();
         let far: Vec<BrickCoordinate> = self
             .loaded
             .keys()
             .copied()
             .filter(|brick| {
-                (brick.x() - here.x()).abs() > TERRAIN_RADIUS_BRICKS + 1
-                    || (brick.y() - here.y()).abs() > TERRAIN_RADIUS_BRICKS + 1
-                    || (brick.z() - here.z()).abs() > TERRAIN_RADIUS_BRICKS + 1
+                !(kept_low.x()..=kept_high.x()).contains(&brick.x())
+                    || !(kept_low.y()..=kept_high.y()).contains(&brick.y())
+                    || !(kept_low.z()..=kept_high.z()).contains(&brick.z())
             })
             .collect();
         for brick in far {
