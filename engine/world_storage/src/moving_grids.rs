@@ -12,6 +12,12 @@ pub struct MovingGrid {
     /// The level this grid is in.
     pub level: LevelIndex,
     pub pose: GridPose,
+    /// How fast the origin of the ship moves, in voxels a second, and how fast it turns (an axis scaled by radians a second). Bodies
+    /// write them as they move the ship; a ship made anew has none.
+    pub linear_velocity: [f32; 3],
+    pub angular_velocity: [f32; 3],
+    /// A held ship does not move: gravity, forces and collisions leave it where it is, and everything else collides with it.
+    pub held: bool,
     /// The voxels. An absent brick is every channel at its default (nothing generates a ship).
     pub voxels: Grid,
 }
@@ -234,6 +240,9 @@ mod tests {
         MovingGrid {
             level: LevelIndex::MAIN,
             pose: GridPose::identity(),
+            linear_velocity: [0.0; 3],
+            angular_velocity: [0.0; 3],
+            held: false,
             voxels,
         }
     }

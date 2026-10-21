@@ -29,11 +29,13 @@ fn pose_at(voxel: [i64; 3], orientation: Orientation) -> GridPose {
     )
 }
 
-/// Makes a ship that is a cube of stone, three voxels along each edge, with its lowest corner at the ship's origin.
+/// Makes a ship that is a cube of stone, three voxels along each edge, with its lowest corner at the ship's origin, held where it is.
 fn make_a_cube(scene: &mut Scene, pose: GridPose) {
     let content = CaveContent::new();
     scene.run(move |world| {
         let grid = world.create_grid(LevelIndex::MAIN, pose).unwrap();
+        // Held: these tests are of what is seen, aimed at and edited, and a ship hung in the air would fall.
+        world.set_grid_held(grid, true).unwrap();
         let mut view = world.grid(grid).unwrap();
         for x in 0..3 {
             for y in 0..3 {

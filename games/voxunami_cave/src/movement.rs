@@ -10,95 +10,22 @@
 //! Terrain collision is what a block's shape says, except that flames and the like
 //! ([`BlockTable::is_passable`]) are not in the way, and terrain that cannot be read is a wall.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::block_properties;
-use block_models::{BlockTable, PropertyHandle};
+use block_models::BlockTable;
 use game_shell::PlayerPose;
-use physics::{BrickHint, CharacterBody, CharacterSettings, Collision, CollisionSource, MoveInput};
+use grid_bodies::collision::{BlockCollisions, WorldTerrain};
+use physics::{CharacterBody, CharacterSettings, MoveInput};
 use protocol::ClientId;
 use server::ServerWorld;
 use voxel_grid::ChannelIndex;
-use voxel_space::{BrickCoordinate, LevelIndex, VoxelCoordinate, WorldPosition};
+use voxel_space::{BrickCoordinate, LevelIndex, WorldPosition};
 
 use crate::messages::MoveRequest;
 
 /// Physics steps to a tick: the tick is 50 ms and a step a sixtieth of a second.
 pub const PHYSICS_STEPS_PER_TICK: u32 = 3;
-
-/// What each block's shape means to something moving through it, worked out once.
-#[derive(Debug)]
-struct ModelCollisions {
-    table: BlockTable,
-    passable: PropertyHandle<bool>,
-    cache: HashMap<u32, Collision>,
-}
-
-impl ModelCollisions {
-    fn of(&mut self, block: u32, state: u32) -> Collision {
-        let model = self.table.model_of(block, state);
-        let table = &self.table;
-        let passable = self.passable;
-        self.cache
-            .entry(model.get())
-            .or_insert_with(|| {
-                let shape = table.shape(model);
-                if table.get(passable, model) || shape.is_empty() {
-                    Collision::Empty
-                } else if shape.is_full() {
-                    Collision::Full
-                } else {
-                    Collision::Partial(shape.boxes().to_vec().into())
-                }
-            })
-            .clone()
-    }
-}
-
-/// One level of the server's world, as terrain for a body to move through.
-struct Terrain<'a> {
-    world: &'a mut ServerWorld,
-    level: LevelIndex,
-    block_channel: ChannelIndex,
-    state_channel: ChannelIndex,
-    air: u32,
-    collisions: &'a mut ModelCollisions,
-}
-
-impl CollisionSource for Terrain<'_> {
-    fn collision_at(&mut self, voxel: VoxelCoordinate) -> Collision {
-        let (Ok(block), Ok(state)) = (
-            self.world.voxel(self.level, self.block_channel, voxel),
-            self.world.voxel(self.level, self.state_channel, voxel),
-        ) else {
-            return Collision::Full; // terrain that cannot be read is a wall, not a void
-        };
-        self.collisions.of(block, state)
-    }
-
-    fn brick_hint(&mut self, brick: BrickCoordinate) -> BrickHint {
-        let Ok(Some(block)) = self
-            .world
-            .uniform_value(self.level, self.block_channel, brick)
-        else {
-            return BrickHint::Unknown;
-        };
-        if block == self.air {
-            return BrickHint::Empty;
-        }
-        match self
-            .world
-            .uniform_value(self.level, self.state_channel, brick)
-        {
-            Ok(Some(state)) => match self.collisions.of(block, state) {
-                Collision::Empty => BrickHint::Empty,
-                Collision::Full => BrickHint::Solid,
-                Collision::Partial(_) => BrickHint::Unknown,
-            },
-            _ => BrickHint::Unknown,
-        }
-    }
-}
 
 /// A player's body and what they last asked of it.
 struct PlayerBody {
@@ -114,7 +41,7 @@ struct PlayerBody {
 /// The players' bodies.
 pub struct Movement {
     bodies: BTreeMap<ClientId, PlayerBody>,
-    collisions: ModelCollisions,
+    collisions: BlockCollisions,
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
     air: u32,
@@ -140,11 +67,10 @@ impl Movement {
     ) -> Self {
         Self {
             bodies: BTreeMap::new(),
-            collisions: ModelCollisions {
-                passable: block_properties::passable(&table),
-                table,
-                cache: HashMap::new(),
-            },
+            collisions: BlockCollisions::new(
+                table.clone(),
+                Some(block_properties::passable(&table)),
+            ),
             block_channel,
             state_channel,
             air,
@@ -197,7 +123,7 @@ impl Movement {
         let player = self.bodies.get_mut(&client)?;
         player.level = level;
         player.body.teleport(position);
-        let mut terrain = Terrain {
+        let mut terrain = WorldTerrain {
             world,
             level,
             block_channel: self.block_channel,
@@ -247,7 +173,7 @@ impl Movement {
         let mut poses = Vec::with_capacity(self.bodies.len());
         for (&client, player) in &mut self.bodies {
             let level = level_of(client);
-            let mut terrain = Terrain {
+            let mut terrain = WorldTerrain {
                 world,
                 level,
                 block_channel: self.block_channel,

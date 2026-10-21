@@ -26,4 +26,4 @@ pub use config::ServerConfig;
 pub use game_logic::GameLogic;
 pub use grid_view::{GridView, ServerGrid};
 pub use server::{LeaveReason, Server, ServerError, StepReport};
-pub use server_world::{AccessError, Audience, ChannelChange, DetachError, ServerWorld};
+pub use server_world::{AccessError, Audience, ChannelChange, DetachError, GridForce, ServerWorld};

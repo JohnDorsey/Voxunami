@@ -46,6 +46,14 @@ pub enum DetachError {
     Access(#[from] AccessError),
 }
 
+/// A force asked of a ship (see [`ServerWorld::apply_grid_force`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GridForce {
+    pub grid: GridId,
+    pub force: [f32; 3],
+    pub at: Option<[f32; 3]>,
+}
+
 /// A voxel whose value in a watched channel changed (see [`ServerWorld::watch_channels`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChannelChange {
@@ -87,6 +95,8 @@ pub struct ServerWorld {
     /// The channels whose changes are logged for whoever asks (see [`ServerWorld::take_changes`]).
     watched: BTreeSet<ChannelIndex>,
     changes: Vec<ChannelChange>,
+    /// The forces asked of ships and not yet taken.
+    grid_forces: Vec<GridForce>,
 }
 
 impl ServerWorld {
@@ -102,6 +112,7 @@ impl ServerWorld {
             replies: Vec::new(),
             watched: BTreeSet::new(),
             changes: Vec::new(),
+            grid_forces: Vec::new(),
         }
     }
 
@@ -437,6 +448,54 @@ impl ServerWorld {
         Ok(())
     }
 
+    /// Pushes a ship with a force (kilograms times voxels per second per second) for the next step of the bodies only: as if applied at
+    /// a place on the ship in its own coordinates, or at its centre of mass if none is given. A force off the centre turns it too.
+    pub fn apply_grid_force(
+        &mut self,
+        grid: GridId,
+        force: [f32; 3],
+        at: Option<[f32; 3]>,
+    ) -> Result<(), AccessError> {
+        self.data
+            .grids()
+            .get(grid)
+            .ok_or(AccessError::NoSuchGrid(grid))?;
+        self.grid_forces.push(GridForce { grid, force, at });
+        Ok(())
+    }
+
+    /// The forces asked of ships since the last call, in the order asked. The bodies take them when they move the ships.
+    pub fn take_grid_forces(&mut self) -> Vec<GridForce> {
+        std::mem::take(&mut self.grid_forces)
+    }
+
+    /// Holds a ship still, or lets it move.
+    pub fn set_grid_held(&mut self, grid: GridId, held: bool) -> Result<(), AccessError> {
+        self.data
+            .grids_mut()
+            .get_mut(grid)
+            .ok_or(AccessError::NoSuchGrid(grid))?
+            .held = held;
+        Ok(())
+    }
+
+    /// Says how fast a ship is moving and turning (the bodies do this as they move it; a program that puts a ship somewhere says it too).
+    pub fn set_grid_velocity(
+        &mut self,
+        grid: GridId,
+        linear: [f32; 3],
+        angular: [f32; 3],
+    ) -> Result<(), AccessError> {
+        let ship = self
+            .data
+            .grids_mut()
+            .get_mut(grid)
+            .ok_or(AccessError::NoSuchGrid(grid))?;
+        ship.linear_velocity = linear;
+        ship.angular_velocity = angular;
+        Ok(())
+    }
+
     /// Removes a ship for good, as when it is destroyed, and returns it. Clients that watch it are told it is gone.
     pub fn remove_grid(&mut self, grid: GridId) -> Option<MovingGrid> {
         self.data.grids_mut().remove(grid)
@@ -458,6 +517,9 @@ impl ServerWorld {
         Ok(self.data.grids_mut().create(MovingGrid {
             level,
             pose,
+            linear_velocity: [0.0; 3],
+            angular_velocity: [0.0; 3],
+            held: false,
             voxels: Grid::new(layout),
         }))
     }
@@ -853,5 +915,58 @@ mod tests {
         assert!(world.data().grids().is_empty());
         assert!(world.edits.is_empty());
         let _ = block;
+    }
+
+    #[test]
+    fn forces_held_ships_and_speeds_are_for_ships_that_exist_and_forces_are_taken_once_in_order() {
+        let (mut world, _, _) = counting_world();
+        let ship = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        let gone = GridId::new(GridId::FIRST_ALLOCATED + 20);
+        assert_eq!(
+            world.apply_grid_force(gone, [1.0; 3], None),
+            Err(AccessError::NoSuchGrid(gone))
+        );
+        assert_eq!(
+            world.set_grid_held(gone, true),
+            Err(AccessError::NoSuchGrid(gone))
+        );
+        assert_eq!(
+            world.set_grid_velocity(gone, [1.0; 3], [2.0; 3]),
+            Err(AccessError::NoSuchGrid(gone))
+        );
+        assert_eq!(
+            world.set_grid_pose(gone, GridPose::identity()),
+            Err(AccessError::NoSuchGrid(gone))
+        );
+        world.apply_grid_force(ship, [1.0, 2.0, 3.0], None).unwrap();
+        world
+            .apply_grid_force(ship, [4.0, 5.0, 6.0], Some([7.0, 8.0, 9.0]))
+            .unwrap();
+        assert_eq!(
+            world.take_grid_forces(),
+            [
+                GridForce {
+                    grid: ship,
+                    force: [1.0, 2.0, 3.0],
+                    at: None
+                },
+                GridForce {
+                    grid: ship,
+                    force: [4.0, 5.0, 6.0],
+                    at: Some([7.0, 8.0, 9.0])
+                },
+            ]
+        );
+        assert!(world.take_grid_forces().is_empty());
+        world.set_grid_held(ship, true).unwrap();
+        world
+            .set_grid_velocity(ship, [1.0, 2.0, 3.0], [4.0, 5.0, 6.0])
+            .unwrap();
+        let moving = world.data().grids().get(ship).unwrap();
+        assert!(moving.held);
+        assert_eq!(moving.linear_velocity, [1.0, 2.0, 3.0]);
+        assert_eq!(moving.angular_velocity, [4.0, 5.0, 6.0]);
     }
 }

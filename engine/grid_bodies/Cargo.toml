@@ -1,0 +1,20 @@
+[package]
+name = "grid_bodies"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Ships as rigid bodies: the plugin that moves the grids of a world with gravity, forces and collisions."
+
+[dependencies]
+block_models.workspace = true
+namespaced_id.workspace = true
+physics.workspace = true
+plugin_host.workspace = true
+server.workspace = true
+voxel_grid.workspace = true
+voxel_space.workspace = true
+world_storage.workspace = true
+
+[lints]
+workspace = true

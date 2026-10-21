@@ -666,6 +666,23 @@ Phase 32 (moving grids; `moving-grids-spec.md`):
   patterns checked against a separate Python calculation and equal on Windows and Linux. 21 mutations: 19 caught; 1 equivalent in practice (an exact tie between
   lattice turns); 1 redundant check (a range test that `checked_offset` already makes), which was deleted.
 
+Phase 32e, part 2 (ships move in the server: the `grid_bodies` crate):
+- `grid_bodies::GridBodiesPlugin` (registered by Cave beside its other plugins; configured with the block table, channels, the game's passable property and `engine:density`): a system of
+  the Physics phase keeps one `BodyWorld` for each level that has ships in step with the server's world. A ship that appears gets a body and a collider made from all its bricks; blocks that change
+  (the `ChannelsChanged` event) make the colliders and the mass of their brick again; the terrain within a brick of a ship's bounds (two before it is let go) has colliders made from the world's blocks; forces
+  asked with `ServerWorld::apply_grid_force` are applied for the tick; the bodies are stepped; and ships that moved are given the pose and speeds the bodies came to (a sleeping ship is left alone, so it is not told
+  of again). A ship put somewhere by anything else (`set_grid_pose`) is simulated from there; a ship that is `held` is a fixed body; a ship that is gone loses its body.
+- `MovingGrid` has `linear_velocity`, `angular_velocity` and `held`; `ServerWorld` has `apply_grid_force`, `take_grid_forces`, `set_grid_held`, `set_grid_velocity`. Mass is `engine:density` (1000 kilograms a voxel
+  by default) times the share of the cell a block fills, summed by brick.
+- Cave's movement now uses `grid_bodies::collision` (the collision of a block, the terrain of a level as a source of collision) instead of its own copies; the walking tests and the golden sessions did not change.
+- Limits: a level has one frame, whose origin is the first ship's brick; a ship more than 500 bricks from it is not simulated (it stays where it is) until there are no ships left in the level, when the next sets the frame
+  (the simulation distance of 32i, and a frame for each place, will replace this); the velocities are not sent to clients (they see poses); the terrain colliders are made on the thread of the tick (a ship that has just fallen into new
+  ground makes up to 27 bricks' worth, which is the cost measured for the character too); Cave's terrain is bumpy, and a cube that lands on a slope rolls, which is the physics and not a fault (the tests land on a floor they make).
+- Tests, in Cave: a ship falls (the player is told each tick of exactly where it is), rests on the floor to 0.05 of a voxel, sleeps; the same push moves an 8,000 kg ship faster than a 27,000 kg one, in the proportion of the masses, and
+  the mass follows an edit; removing the blocks under a ship or the floor under it sinks it by that much; a held ship stays in the air until let go and a ship put somewhere carries on from there; a ship lands on a held one, and ships
+  can be removed; a ship far from the first is not simulated, and the next in an emptied level sets the frame; flames are not in the way; the bits of a busy scene (a turned ship, a pushed one, an edit) are the same twice and pinned. 22 mutations
+  of the plugin and its server calls: all caught but two memory and timing details (the terrain margin, and the terrain not being let go), which nothing observes.
+
 Phase 32e, part 1 (bodies, in the physics crate; the server does not use them yet):
 - `physics::BodyWorld`: Rapier bodies made of voxels in one frame (a brick of the level is the origin, `recentre` moves it keeping everything where it is): `add_body`,
   `set_brick` (a brick of a body from a `CollisionSource` in the body coordinates: whole cubes are the voxels of one `Voxels` collider edited in place, partial blocks are boxes),

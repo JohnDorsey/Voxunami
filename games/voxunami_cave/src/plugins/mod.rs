@@ -10,6 +10,9 @@ mod items;
 mod light;
 mod movement;
 
+use game_shell::GameContent;
+use grid_bodies::{GridBodiesConfig, GridBodiesPlugin};
+use physics::BodySettings;
 use player_presence::PlayersPlugin;
 use plugin_host::Plugin;
 
@@ -33,5 +36,22 @@ pub fn cave_plugins(content: &CaveContent) -> Vec<Box<dyn Plugin>> {
         Box::new(MovementPlugin::new(content, presence.clone())),
         Box::new(FirePlugin::new(content, presence)),
         Box::new(LightPlugin::new(content)),
+        Box::new(ships(content)),
     ]
+}
+
+/// The plugin that moves ships: they fall under the gravity players do, rest on the terrain, and are as heavy as the density of their blocks.
+fn ships(content: &CaveContent) -> GridBodiesPlugin {
+    let table = content.block_table();
+    GridBodiesPlugin::new(GridBodiesConfig {
+        block_channel: content.block_channel(),
+        state_channel: content.state_channel(),
+        air: content.blocks.air,
+        passable: Some(crate::block_properties::passable(&table)),
+        density: table
+            .handle(&block_models::engine::DENSITY)
+            .expect("the engine declares engine:density in every game"),
+        settings: BodySettings::default(),
+        table,
+    })
 }

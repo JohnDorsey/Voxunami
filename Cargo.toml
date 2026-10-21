@@ -17,6 +17,7 @@ content_registry = { path = "engine/content_registry" }
 data_packs = { path = "engine/data_packs" }
 entities = { path = "engine/entities" }
 game_shell = { path = "engine/game_shell" }
+grid_bodies = { path = "engine/grid_bodies" }
 identity = { path = "engine/identity" }
 lattice = { path = "engine/lattice" }
 end_to_end_tests = { path = "engine/end_to_end_tests" }
