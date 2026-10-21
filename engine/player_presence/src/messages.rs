@@ -3,7 +3,9 @@
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, Message, PlayerKey};
-use voxel_space::{BRICK_EDGE_LENGTH, BrickCoordinate, LevelIndex, VoxelCoordinate, WorldPosition};
+use voxel_space::{
+    BRICK_EDGE_LENGTH, BrickCoordinate, LevelIndex, Orientation, VoxelCoordinate, WorldPosition,
+};
 
 fn kind(text: &str) -> NamespacedId {
     text.parse().expect("constant identifier is valid")
@@ -17,15 +19,42 @@ pub struct PlayerPose {
     pub pitch: f32,
 }
 
-/// What the server knows of a player: where they are, and which level they are in. The server
-/// decides the level; players only say where they are in it.
+/// What a client knows of a player: where they are in the world (a player aboard a ship is where the ship puts them), which level
+/// they are in, and the turn of the frame their angles are measured in. The server decides the level and the frame; players only say
+/// which way they look.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlayerState {
     pub pose: PlayerPose,
     pub level: LevelIndex,
+    /// The turn, in the world, of the room the player's angles are measured in: none for a player standing in a level, and the ship's
+    /// turn and the player's own against it for one aboard a ship. Their view in the world is this and then their angles.
+    pub frame_rotation: Orientation,
 }
 
 impl PlayerPose {
+    /// The turn of the player's view in their frame, when their body's frame is turned by `frame_rotation` (a player in a room that has
+    /// turned, such as a ship) and they look at the angles they gave: the angles' turn first, then the frame's. A frame that is not
+    /// turned leaves the angles' own turn, to the bit.
+    pub fn view_orientation(&self, frame_rotation: Orientation) -> Orientation {
+        let angles = Orientation::from_yaw_pitch(self.yaw, self.pitch);
+        if frame_rotation == Orientation::IDENTITY {
+            angles
+        } else {
+            frame_rotation.compose(angles)
+        }
+    }
+
+    /// The turn of the body's frame, found from the turn of the view and the angles given: the undoing of
+    /// [`PlayerPose::view_orientation`]. A view that is just the angles' turn, to the bit, is a frame that is not turned.
+    pub fn frame_rotation_of(&self, view: Orientation) -> Orientation {
+        let angles = Orientation::from_yaw_pitch(self.yaw, self.pitch);
+        if view == angles {
+            Orientation::IDENTITY
+        } else {
+            view.compose(angles.inverse())
+        }
+    }
+
     /// The distance in voxels from the player to the centre of a voxel.
     pub fn distance_to_voxel(&self, voxel: VoxelCoordinate) -> f64 {
         let brick = self.position.brick();
@@ -58,19 +87,17 @@ impl PlayerPose {
     }
 }
 
-fn write_pose(writer: &mut ByteWriter, pose: &PlayerPose) {
-    let brick = pose.position.brick();
+fn write_position(writer: &mut ByteWriter, position: WorldPosition) {
+    let brick = position.brick();
     for component in [brick.x(), brick.y(), brick.z()] {
         writer.write_signed_varint(component);
     }
-    for component in pose.position.offset() {
+    for component in position.offset() {
         writer.write_u32(component.to_bits());
     }
-    writer.write_u32(pose.yaw.to_bits());
-    writer.write_u32(pose.pitch.to_bits());
 }
 
-fn read_pose(reader: &mut ByteReader<'_>) -> Result<PlayerPose, DecodeError> {
+fn read_position(reader: &mut ByteReader<'_>) -> Result<WorldPosition, DecodeError> {
     let brick = BrickCoordinate::try_new(
         reader.read_signed_varint()?,
         reader.read_signed_varint()?,
@@ -86,13 +113,24 @@ fn read_pose(reader: &mut ByteReader<'_>) -> Result<PlayerPose, DecodeError> {
             ));
         }
     }
+    Ok(WorldPosition::new(brick, offset))
+}
+
+fn write_pose(writer: &mut ByteWriter, pose: &PlayerPose) {
+    write_position(writer, pose.position);
+    writer.write_u32(pose.yaw.to_bits());
+    writer.write_u32(pose.pitch.to_bits());
+}
+
+fn read_pose(reader: &mut ByteReader<'_>) -> Result<PlayerPose, DecodeError> {
+    let position = read_position(reader)?;
     let yaw = f32::from_bits(reader.read_u32()?);
     let pitch = f32::from_bits(reader.read_u32()?);
     if !yaw.is_finite() || !pitch.is_finite() {
         return Err(DecodeError::Invalid("a view angle is not a number"));
     }
     Ok(PlayerPose {
-        position: WorldPosition::new(brick, offset),
+        position,
         yaw,
         pitch,
     })
@@ -132,6 +170,39 @@ impl Message for PoseReport {
             pose(3, [1.5, 31.99, 0.0], 0.25, -1.0),
             pose(-9, [0.0, 0.5, 16.0], -3.0, 1.5),
         ]
+    }
+}
+
+/// Server to a client: where the player is in the world, said to a player who has come back to the entity they left, so that their view
+/// goes there. A client watches the bricks around its camera, and a player may have left far from where their program starts the camera
+/// (aboard a ship that flew off, say): without this they would never be told of their own entity. The position is in the world, so a
+/// player who left aboard a ship is told where the ship has them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayerPlaced(pub WorldPosition);
+
+impl Message for PlayerPlaced {
+    fn kind() -> NamespacedId {
+        kind("player_presence:placed")
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        write_position(&mut writer, self.0);
+        writer.into_bytes()
+    }
+
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        let mut reader = ByteReader::new(payload);
+        let position = read_position(&mut reader)?;
+        reader.finish()?;
+        Ok(Self(position))
+    }
+
+    fn samples() -> Vec<Self> {
+        PoseReport::samples()
+            .into_iter()
+            .map(|PoseReport(pose)| Self(pose.position))
+            .collect()
     }
 }
 
@@ -284,6 +355,58 @@ mod tests {
     }
 
     #[test]
+    fn a_view_is_the_angles_turn_then_the_frames_and_a_plain_frame_leaves_the_angles_to_the_bit() {
+        let looking = pose(0, [1.0; 3], 0.5, -0.25);
+        assert_eq!(
+            looking.view_orientation(Orientation::IDENTITY),
+            Orientation::from_yaw_pitch(0.5, -0.25)
+        );
+        assert_eq!(
+            looking.frame_rotation_of(Orientation::from_yaw_pitch(0.5, -0.25)),
+            Orientation::IDENTITY
+        );
+        // A frame turned a quarter about x (up is now +z) and a player facing straight ahead (-z, in the frame): the view is the
+        // frame's turn, which takes -z to +y.
+        let quarter = std::f32::consts::FRAC_PI_2;
+        let frame = Orientation::from_yaw_pitch(0.0, quarter);
+        let ahead = pose(0, [1.0; 3], 0.0, 0.0);
+        let view = ahead.view_orientation(frame);
+        let [x, y, z, w] = view.components();
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        assert!(
+            (x - half).abs() < 1e-6 && y.abs() < 1e-6 && z.abs() < 1e-6 && (w - half).abs() < 1e-6,
+            "{view:?}"
+        );
+        // Looking left of ahead by a yaw of 0.5 in that frame is the angles first: the frame's turn after the yaw's.
+        let yawed = pose(0, [1.0; 3], 0.5, 0.0);
+        assert_eq!(
+            yawed.view_orientation(frame),
+            frame.compose(Orientation::from_yaw_pitch(0.5, 0.0))
+        );
+        assert_ne!(
+            yawed.view_orientation(frame),
+            Orientation::from_yaw_pitch(0.5, 0.0).compose(frame)
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn the_frame_is_found_again_from_the_view_whatever_the_angles(
+            yaw in -10.0f32..10.0,
+            pitch in -1.5f32..1.5,
+            frame_yaw in -10.0f32..10.0,
+            frame_pitch in -1.5f32..1.5,
+        ) {
+            let looking = pose(0, [1.0; 3], yaw, pitch);
+            let frame = Orientation::from_yaw_pitch(frame_yaw, frame_pitch);
+            let found = looking.frame_rotation_of(looking.view_orientation(frame));
+            let (before, after) = (frame.components(), found.components());
+            let same: f32 = (0..4).map(|axis| before[axis] * after[axis]).sum();
+            prop_assert!(same.abs() > 1.0 - 1e-5, "{before:?} vs {after:?}");
+        }
+    }
+
+    #[test]
     fn poses_survive_encoding() {
         let first = pose(3, [1.5, 31.99, 0.0], 0.25, -1.0);
         assert_eq!(
@@ -310,6 +433,7 @@ mod tests {
     fn the_declared_messages_pass_the_generated_check() {
         assert_eq!(protocol::check_message::<PoseReport>(), Ok(()));
         assert_eq!(protocol::check_message::<LevelChange>(), Ok(()));
+        assert_eq!(protocol::check_message::<PlayerPlaced>(), Ok(()));
         assert_eq!(protocol::check_message::<PlayerKeyComponent>(), Ok(()));
         assert_eq!(protocol::check_message::<PlayerClient>(), Ok(()));
         assert_eq!(protocol::check_message::<PlayerLook>(), Ok(()));

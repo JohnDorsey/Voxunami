@@ -3309,6 +3309,7 @@ dependencies = [
  "game_shell",
  "grid_bodies",
  "lattice",
+ "libm",
  "namespaced_id",
  "physics",
  "player_presence",

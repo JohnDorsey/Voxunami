@@ -88,7 +88,8 @@ impl EntityStore {
     }
 
     /// Makes an entity of `kind` at `pose` with the kind's components, those in `overrides` taking
-    /// the place of the kind's defaults. Until structures exist a pose must be in a root grid.
+    /// the place of the kind's defaults. The pose's grid is the frame the entity is in: a level's root grid, or a ship (the store does not
+    /// know which exist; the world checks that before it asks).
     pub fn spawn(
         &mut self,
         kinds: &EntityKinds,
@@ -99,7 +100,6 @@ impl EntityStore {
         let spec = kinds
             .get(kind)
             .ok_or_else(|| EntityError::UnknownKind(kind.clone()))?;
-        Self::check_frame(pose.grid)?;
         for (component, _) in overrides.iter() {
             if spec.declaration(component).is_none() {
                 return Err(EntityError::UndeclaredComponent {
@@ -186,9 +186,8 @@ impl EntityStore {
         Ok(())
     }
 
-    /// Moves an entity. Until structures exist the new pose must be in a root grid.
+    /// Moves an entity, to another place in its frame or into another frame (a level's root grid or a ship).
     pub fn set_pose(&mut self, id: EntityId, pose: EntityPose) -> Result<(), EntityError> {
-        Self::check_frame(pose.grid)?;
         let entity = self
             .entities
             .get_mut(&id)
@@ -282,12 +281,25 @@ impl EntityStore {
         found
     }
 
-    fn check_frame(grid: GridId) -> Result<(), EntityError> {
-        if grid.root_level().is_some() {
-            Ok(())
-        } else {
-            Err(EntityError::NotARootGrid(grid))
-        }
+    /// Every entity in the frame of `grid`, whatever brick it is in, in order of identifier. What is told of a ship to those who see it.
+    pub fn in_grid(&self, grid: GridId) -> Vec<EntityId> {
+        let first = BrickCoordinate::new(
+            BRICK_COORDINATE_MINIMUM,
+            BRICK_COORDINATE_MINIMUM,
+            BRICK_COORDINATE_MINIMUM,
+        );
+        let last = BrickCoordinate::new(
+            BRICK_COORDINATE_MAXIMUM,
+            BRICK_COORDINATE_MAXIMUM,
+            BRICK_COORDINATE_MAXIMUM,
+        );
+        let mut found: Vec<EntityId> = self
+            .bricks
+            .range((grid, first)..=(grid, last))
+            .flat_map(|(_, ids)| ids.iter().copied())
+            .collect();
+        found.sort();
+        found
     }
 
     fn index(&mut self, id: EntityId, pose: EntityPose) {

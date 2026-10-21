@@ -13,6 +13,7 @@ use namespaced_id::NamespacedId;
 use protocol::{EntityChange, EntityId, EntityState, ServerMessage, write_entity_pose};
 use voxel_space::{BrickBox, EntityPose, GridId, LevelIndex};
 
+use crate::grid_replication::KnownGrids;
 use crate::server_world::ServerWorld;
 
 /// What clients are told of one entity.
@@ -86,17 +87,22 @@ impl ViewCache {
 pub(crate) type KnownEntities = BTreeMap<EntityId, Arc<EntityView>>;
 
 /// The messages that bring a client's picture of the entities up to date with the world, for a client
-/// watching `watched`: those that left or are gone, then those that came in, then those that changed.
-/// `known` becomes what the client now knows.
+/// watching `watched` and holding `ships`: those that left or are gone, then those that came in, then those that changed.
+/// `known` becomes what the client now knows. A client is told of the entities in the region it watches, and of every
+/// entity aboard a ship it holds (a ship is in the picture whole, so whoever is aboard is too, wherever in the ship).
 pub(crate) fn entity_messages(
     world: &ServerWorld,
     cache: &mut ViewCache,
     known: &mut KnownEntities,
     watched: Option<(LevelIndex, BrickBox)>,
+    ships: &KnownGrids,
 ) -> Vec<ServerMessage> {
-    let wanted: Vec<EntityId> = watched
+    let mut wanted: Vec<EntityId> = watched
         .map(|(level, region)| world.entities().in_bricks(GridId::root(level), region))
         .unwrap_or_default();
+    for ship in ships.keys() {
+        wanted.extend(world.entities().in_grid(*ship));
+    }
     let mut now: KnownEntities = BTreeMap::new();
     for id in wanted {
         // A hidden entity is in the world and the save, and in nobody's picture.

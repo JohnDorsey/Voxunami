@@ -10,12 +10,18 @@ use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
 use game_shell::{GameContent, Identity, KeyCode};
 use namespaced_id::NamespacedId;
+use player_presence::{PlayerClient, player_kind};
 use plugin_host::{Phase, Plugin, Registrar, SystemSpec};
+use protocol::ClientId;
 use renderer::Camera;
-use server::{Server, ServerWorld};
+use server::{GridView, Server, ServerWorld};
 use transport::Connection;
 use transport::loopback::LoopbackConnector;
-use voxel_space::{VoxelCoordinate, WorldPosition};
+use voxel_space::{
+    BrickCoordinate, EntityPose, GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate,
+    WorldPosition,
+};
+use voxunami_cave::aboard::in_voxels;
 use voxunami_cave::content::CaveContent;
 use voxunami_cave::game::Cave;
 use voxunami_cave::plugins::cave_plugins;
@@ -126,10 +132,28 @@ impl Rig {
 
     /// A player who is walking: they fall, and stand on what is under them.
     pub fn join_walking(&mut self, position: [f64; 3], yaw: f32, pitch: f32) -> Player {
-        let connection: Box<dyn Connection> = Box::new(self.connector.connect().unwrap());
-        let start = camera_at(position, yaw, pitch, VIEW_RADIUS);
         self.joined += 1;
-        let identity = Identity::from_secret([self.joined; 32]);
+        self.join_walking_as(self.joined, position, yaw, pitch)
+    }
+
+    /// A walking player who is the install numbered `who` (the same number is the same player, as a key file is), at `position` if the
+    /// server has no earlier place for them.
+    pub fn join_walking_as(&mut self, who: u8, position: [f64; 3], yaw: f32, pitch: f32) -> Player {
+        let connection: Box<dyn Connection> = Box::new(self.connector.connect().unwrap());
+        self.join_walking_over(connection, who, position, yaw, pitch)
+    }
+
+    /// The same over a connection the test made (to record it, say).
+    pub fn join_walking_over(
+        &mut self,
+        connection: Box<dyn Connection>,
+        who: u8,
+        position: [f64; 3],
+        yaw: f32,
+        pitch: f32,
+    ) -> Player {
+        let start = camera_at(position, yaw, pitch, VIEW_RADIUS);
+        let identity = Identity::from_secret([who; 32]);
         let server = &mut self.server;
         Session::<_, Cave>::connect(
             connection,
@@ -252,6 +276,177 @@ impl Plugin for Script {
             },
         );
     }
+}
+
+/// The height of the top of the floor `flat_floor` makes.
+pub const FLOOR: f32 = 201.0;
+
+/// A flat floor of stone three voxels thick, from 0 to 64 along x and z, above the hills of the terrain: ground that is the same everywhere,
+/// since the terrain of Cave is bumpy and a ship on a slope rolls.
+pub fn flat_floor(scene: &mut Scene) {
+    let content = CaveContent::new();
+    scene.run(move |world| {
+        for x in 0..64 {
+            for z in 0..64 {
+                for y in 198..201 {
+                    world
+                        .set_voxel(
+                            LevelIndex::MAIN,
+                            content.block_channel(),
+                            VoxelCoordinate::new(x, y, z),
+                            content.blocks.stone,
+                        )
+                        .unwrap();
+                }
+            }
+        }
+    });
+}
+
+/// A deck of stone `length` along x, 8 along z and 2 thick, held, with its origin at `(x, height above the floor, 20)`: its top is
+/// `height + 2` above the floor.
+pub fn deck(scene: &mut Scene, x: f32, height: f32, length: i64) {
+    make_ship(
+        scene,
+        pose_at(x, FLOOR + height, 20.0),
+        true,
+        [length, 2, 8],
+        |_| true,
+    );
+}
+
+/// The entity of the player who joined `number`th (counting from 1).
+pub fn player_pose(scene: &Scene, number: u32) -> EntityPose {
+    let client = PlayerClient(ClientId::new(number));
+    scene
+        .rig
+        .server
+        .world()
+        .entities()
+        .iter()
+        .find(|entity| {
+            entity.kind == player_kind()
+                && entity.components.get::<PlayerClient>() == Ok(Some(client))
+        })
+        .expect("the player has an entity")
+        .pose
+}
+
+pub fn ship_pose(scene: &Scene, number: u64) -> GridPose {
+    scene
+        .rig
+        .server
+        .world()
+        .grids()
+        .get(ship_id(number))
+        .expect("the ship exists")
+        .pose
+}
+
+/// Where the player's eyes are in the world, as plain numbers.
+pub fn eyes_in_the_world(scene: &Scene, number: u32) -> [f64; 3] {
+    let pose = player_pose(scene, number);
+    match pose.grid.root_level() {
+        Some(_) => in_voxels(pose.position),
+        None => {
+            let ship = scene
+                .rig
+                .server
+                .world()
+                .grids()
+                .get(pose.grid)
+                .expect("the ship they are in exists");
+            in_voxels(ship.pose.local_to_world(pose.position).unwrap())
+        }
+    }
+}
+
+pub fn eyes_in_their_frame(scene: &Scene, number: u32) -> [f64; 3] {
+    in_voxels(player_pose(scene, number).position)
+}
+
+/// Lets the server tick `count` times, the player taking in what it says after each.
+pub fn tick_and_follow(scene: &mut Scene, player: &mut Player, count: usize) {
+    for _ in 0..count {
+        scene.rig.step();
+        player.advance().unwrap();
+    }
+}
+
+/// Runs `count` ticks, in each of which `act` is run in the server with the number of the tick (from 0).
+pub fn each_tick(
+    scene: &mut Scene,
+    player: &mut Player,
+    count: usize,
+    act: impl Fn(&mut server::ServerWorld, usize) + Clone + Send + 'static,
+) {
+    for tick in 0..count {
+        let act = act.clone();
+        scene.run(move |world| act(world, tick));
+        player.advance().unwrap();
+    }
+}
+
+/// A flat floor, and a deck of 30 along x and 8 along z held 3 above it (its top is 5 above the floor) from x = 5, z = 20.
+pub fn scene_with_a_deck() -> Scene {
+    let mut scene = Scene::new();
+    flat_floor(&mut scene);
+    deck(&mut scene, 5.0, 3.0, 30);
+    scene
+}
+
+/// A walker who falls onto the middle of the deck from 8 above it and is aboard it, standing still.
+pub fn walker_on_the_deck(scene: &mut Scene) -> Player {
+    let mut player = scene
+        .rig
+        .join_walking([20.0, FLOOR as f64 + 5.0 + 8.0, 24.0], 0.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    tick_and_follow(scene, &mut player, 60);
+    player
+}
+
+/// The id of the ship made `number`th (counting from 0) in a world with no ships before.
+pub fn ship_id(number: u64) -> GridId {
+    GridId::new(GridId::FIRST_ALLOCATED + number)
+}
+
+/// A pose in the main level, unturned, with the origin at this place in voxels.
+pub fn pose_at(x: f32, y: f32, z: f32) -> GridPose {
+    GridPose::new(
+        WorldPosition::new(BrickCoordinate::ORIGIN, [x, y, z]),
+        Orientation::IDENTITY,
+    )
+}
+
+/// Makes a ship of stone at `pose`, held still from the tick it is made in if `held`: the voxels of the box of `size` (from the ship's
+/// origin) that `solid` says are stone, set in order of x, then y, then z.
+pub fn make_ship(
+    scene: &mut Scene,
+    pose: GridPose,
+    held: bool,
+    size: [i64; 3],
+    solid: impl Fn([i64; 3]) -> bool + Send + 'static,
+) {
+    let content = CaveContent::new();
+    scene.run(move |world| {
+        let grid = world.create_grid(LevelIndex::MAIN, pose).unwrap();
+        world.set_grid_held(grid, held).unwrap();
+        let mut view = world.grid(grid).unwrap();
+        for x in 0..size[0] {
+            for y in 0..size[1] {
+                for z in 0..size[2] {
+                    if solid([x, y, z]) {
+                        view.set(
+                            content.block_channel(),
+                            VoxelCoordinate::new(x, y, z),
+                            content.blocks.stone,
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+        }
+    });
 }
 
 /// A server with Cave's plugins and a script, in which a test can do things to the world that no player can: make a ship, move it, remove

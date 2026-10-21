@@ -2,7 +2,7 @@
 
 use namespaced_id::NamespacedId;
 use player_presence::{
-    LevelChange, PlayerClient, PlayerKeyComponent, PlayerLook, PlayerPose, PoseReport,
+    LevelChange, PlayerClient, PlayerKeyComponent, PlayerLook, PlayerPlaced, PlayerPose, PoseReport,
 };
 use protocol::{ClientId, Message, PlayerKey};
 use voxel_space::{BrickCoordinate, WorldPosition};
@@ -19,7 +19,7 @@ fn pose(x: i64, offset: [f32; 3], yaw: f32, pitch: f32) -> PlayerPose {
 fn the_presence_messages_have_their_pinned_bytes() {
     let first = pose(3, [1.5, 31.99, 0.0], 0.25, -1.0);
     let level: NamespacedId = "test_content:second".parse().unwrap();
-    let pins: [(&str, Vec<u8>, &str); 5] = [
+    let pins: [(&str, Vec<u8>, &str); 6] = [
         (
             "a pose",
             PoseReport(first).encode(),
@@ -29,6 +29,11 @@ fn the_presence_messages_have_their_pinned_bytes() {
             "a level change",
             LevelChange(level).encode(),
             "13746573745f636f6e74656e743a7365636f6e64",
+        ),
+        (
+            "where a returning player is",
+            PlayerPlaced(first.position).encode(),
+            "06030e0000c03f85ebff4100000000",
         ),
         (
             "a player's connection",

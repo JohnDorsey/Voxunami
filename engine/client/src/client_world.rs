@@ -5,7 +5,9 @@ use protocol::{PROTOCOL_VERSION, ServerMessage, Tick, Welcome};
 use region_octree::BrickCube;
 use voxel_grid::Brick;
 use voxel_grid::Grid;
-use voxel_space::{BrickBox, BrickCoordinate, GridId, GridPose, LevelIndex};
+use voxel_space::{
+    BrickBox, BrickCoordinate, GridId, GridPose, LevelIndex, Orientation, WorldPosition,
+};
 use world_storage::{LevelData, LoadContext, LoadReport, ParsedWorld, SourceTranslator, WorldData};
 
 use crate::client_entities::{ClientEntities, ClientEntity};
@@ -154,6 +156,22 @@ impl ClientWorld {
     /// The ships the server has told this client of.
     pub fn grids(&self) -> &ClientGrids {
         &self.grids
+    }
+
+    /// Where an entity is in the world: its level, and its position and turn there. An entity aboard a ship is where the ship puts it.
+    /// `None` for one aboard a ship the client has not been told of (the ship is outside its picture), which has no place in the world
+    /// that the client knows.
+    pub fn entity_in_the_world(
+        &self,
+        entity: &ClientEntity,
+    ) -> Option<(LevelIndex, WorldPosition, Orientation)> {
+        let pose = entity.pose;
+        if let Some(level) = pose.grid.root_level() {
+            return Some((level, pose.position, pose.orientation));
+        }
+        let ship = self.grids.get(pose.grid)?;
+        let (position, orientation) = ship.pose.place_in_world(pose.position, pose.orientation)?;
+        Some((ship.level, position, orientation))
     }
 
     /// The level and region the server has told this client it watches.

@@ -58,7 +58,7 @@ enum Cell {
 }
 
 pub(crate) fn build_brick(
-    source: &mut impl CollisionSource,
+    source: &mut (impl CollisionSource + ?Sized),
     brick: BrickCoordinate,
     origin: BrickCoordinate,
 ) -> BrickColliders {

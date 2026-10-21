@@ -4,11 +4,11 @@ use entities::{ComponentBag, Entity, EntityError, EntityKindSpec, Hidden, Invent
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, EntityId, Message, PlayerKey};
 use server::{Audience, CommandLine, ServerWorld};
-use voxel_space::{EntityPose, GridId, LevelIndex, Orientation};
+use voxel_space::{EntityPose, GridId, LevelIndex, Orientation, WorldPosition};
 use world_storage::WorldData;
 
 use crate::messages::{
-    LevelChange, PlayerClient, PlayerKeyComponent, PlayerLook, PlayerPose, PoseReport,
+    LevelChange, PlayerClient, PlayerKeyComponent, PlayerLook, PlayerPlaced, PlayerPose, PoseReport,
 };
 
 /// The kind of entity a player is.
@@ -80,6 +80,15 @@ impl Presence {
             world.set_entity_component(id, &PlayerClient(client))?;
             world.set_entity_component(id, &Hidden(false))
         });
+        // The client watches the bricks around its camera, which starts where its program starts it; a player who left somewhere else is
+        // told where they are, in the world (aboard a ship, where the ship has them), so that the view goes there.
+        if let Some(position) = self.pose_of(world.data(), client).map(|pose| pose.position) {
+            world.send(
+                Audience::Client(client),
+                PlayerPlaced::kind(),
+                PlayerPlaced(position).encode(),
+            );
+        }
         // A player who left in another level is back in it, and their client does not know.
         let level = self.level_of(world.data(), client);
         if level != LevelIndex::MAIN
@@ -104,20 +113,43 @@ impl Presence {
         }
     }
 
-    /// The last pose the player reported, if they have one.
+    /// The last pose the player reported, if they have one: where they are in the world (a player aboard a ship is where the ship
+    /// puts them) and the angles they look at, as they gave them.
     pub fn pose_of(&self, world: &WorldData, client: ClientId) -> Option<PlayerPose> {
         let entity = world.entities().get(*self.entities.get(&client)?)?;
-        Some(player_pose(entity))
+        Some(placed_pose(world, entity))
     }
 
-    /// The level the player is in: the main level until they move.
+    /// The level the player is in: the main level until they move. A player aboard a ship is in the level the ship is in.
     pub fn level_of(&self, world: &WorldData, client: ClientId) -> LevelIndex {
         self.entities
             .get(&client)
             .and_then(|id| world.entities().get(*id))
-            .and_then(|entity| entity.pose.grid.root_level())
+            .map(|entity| world_placement(world, entity).0)
             .or_else(|| self.pending_levels.get(&client).copied())
             .unwrap_or(LevelIndex::MAIN)
+    }
+
+    /// The frame the player is in: the root grid of their level, or the ship they are aboard.
+    pub fn frame_of(&self, world: &WorldData, client: ClientId) -> Option<GridId> {
+        let entity = world.entities().get(*self.entities.get(&client)?)?;
+        Some(entity.pose.grid)
+    }
+
+    /// Where the player is in their own frame: the frame, the pose in it (the position in the frame's own coordinates, and the angles
+    /// the player gave), and the orientation of their view there, which is the turn of their body in the frame and then their
+    /// angles. For a player in a level that is their pose in the level.
+    pub fn local_pose_of(
+        &self,
+        world: &WorldData,
+        client: ClientId,
+    ) -> Option<(GridId, PlayerPose, Orientation)> {
+        let entity = world.entities().get(*self.entities.get(&client)?)?;
+        Some((
+            entity.pose.grid,
+            player_pose(entity),
+            entity.pose.orientation,
+        ))
     }
 
     /// Puts a player at a pose, in the level they are in. For a game that moves players itself instead of
@@ -125,11 +157,24 @@ impl Presence {
     /// has makes their entity, unless they took over one that was saved.
     pub fn set_pose(&mut self, world: &mut ServerWorld, client: ClientId, pose: PlayerPose) {
         let level = self.level_of(world.data(), client);
-        let entity_pose = EntityPose::new(
-            GridId::root(level),
-            pose.position,
-            Orientation::from_yaw_pitch(pose.yaw, pose.pitch),
-        );
+        let orientation = Orientation::from_yaw_pitch(pose.yaw, pose.pitch);
+        self.set_pose_in(world, client, GridId::root(level), pose, orientation)
+            .expect("a level's root grid is a frame");
+    }
+
+    /// Puts a player at a pose in a frame: the root grid of a level, or a ship (an error if there is no such ship, and nothing
+    /// changes). `pose` has the position in the frame's own coordinates and the angles the player gave; `orientation` is the turn of
+    /// their view in the frame (for a player standing upright in a level, the one the angles make). The first pose a player has makes
+    /// their entity, unless they took over one that was saved.
+    pub fn set_pose_in(
+        &mut self,
+        world: &mut ServerWorld,
+        client: ClientId,
+        frame: GridId,
+        pose: PlayerPose,
+        orientation: Orientation,
+    ) -> Result<(), EntityError> {
+        let entity_pose = EntityPose::new(frame, pose.position, orientation);
         let look = PlayerLook {
             yaw: pose.yaw,
             pitch: pose.pitch,
@@ -140,16 +185,14 @@ impl Presence {
                     entity.pose == entity_pose && player_pose(entity) == pose
                 });
                 if unchanged {
-                    return;
+                    return Ok(());
                 }
-                update(world, id, |world, id| {
-                    world.set_entity_pose(id, entity_pose)?;
-                    world.set_entity_component(id, &look)
-                });
+                world.set_entity_pose(id, entity_pose)?;
+                update(world, id, |world, id| world.set_entity_component(id, &look));
             }
             None => {
                 let Some(key) = world.player_key(client) else {
-                    return; // not a connected client: nothing to make a player of
+                    return Ok(()); // not a connected client: nothing to make a player of
                 };
                 let mut components = ComponentBag::new();
                 components.set(&PlayerKeyComponent(key));
@@ -160,10 +203,14 @@ impl Presence {
                         self.pending_levels.remove(&client);
                         self.entities.insert(client, id);
                     }
+                    Err(EntityError::NoSuchGrid(grid)) => {
+                        return Err(EntityError::NoSuchGrid(grid));
+                    }
                     Err(error) => panic!("the player kind is not registered: {error}"),
                 }
             }
         }
+        Ok(())
     }
 
     /// Puts a player in a level and tells them so. A game calls this to move players itself (a portal, a
@@ -175,10 +222,12 @@ impl Presence {
         let id = id.clone();
         match self.entities.get(&client).copied() {
             Some(entity) => {
-                let Some(mut pose) = world.entities().get(entity).map(|entity| entity.pose) else {
+                let Some(current) = world.entities().get(entity) else {
                     return;
                 };
-                pose.grid = GridId::root(level);
+                // A player aboard a ship leaves it: they are where they are in the world, in the other level.
+                let (_, position, orientation) = world_placement(world.data(), current);
+                let pose = EntityPose::new(GridId::root(level), position, orientation);
                 update(world, entity, |world, entity| {
                     world.set_entity_pose(entity, pose)
                 });
@@ -194,8 +243,8 @@ impl Presence {
         );
     }
 
-    /// Every connected player who has a pose, in the order of their connections, with the pose and the
-    /// level they are in.
+    /// Every connected player who has a pose, in the order of their connections, with the pose (where they are in the world: a
+    /// player aboard a ship is where the ship puts them) and the level they are in.
     pub fn players(&self, world: &WorldData) -> Vec<(ClientId, PlayerPose, LevelIndex)> {
         self.entities
             .iter()
@@ -203,8 +252,8 @@ impl Presence {
                 let entity = world.entities().get(id)?;
                 Some((
                     client,
-                    player_pose(entity),
-                    entity.pose.grid.root_level().unwrap_or(LevelIndex::MAIN),
+                    placed_pose(world, entity),
+                    world_placement(world, entity).0,
                 ))
             })
             .collect()
@@ -316,6 +365,33 @@ fn update(
 ) {
     if let Err(error) = edit(world, id) {
         panic!("a player entity cannot be updated: {error}");
+    }
+}
+
+/// Where an entity is in the world: the level it is in, and its position and orientation there. An entity in the frame of a ship is
+/// where the ship puts it. (One in the frame of a ship that is not there, which the world does not allow, is taken to be in the main
+/// level at the coordinates it has: nothing better is known.)
+fn world_placement(world: &WorldData, entity: &Entity) -> (LevelIndex, WorldPosition, Orientation) {
+    let pose = entity.pose;
+    if let Some(level) = pose.grid.root_level() {
+        return (level, pose.position, pose.orientation);
+    }
+    world
+        .grids()
+        .get(pose.grid)
+        .and_then(|ship| {
+            let (position, orientation) =
+                ship.pose.place_in_world(pose.position, pose.orientation)?;
+            Some((ship.level, position, orientation))
+        })
+        .unwrap_or((LevelIndex::MAIN, pose.position, pose.orientation))
+}
+
+/// A player entity's pose with its position in the world.
+fn placed_pose(world: &WorldData, entity: &Entity) -> PlayerPose {
+    PlayerPose {
+        position: world_placement(world, entity).1,
+        ..player_pose(entity)
     }
 }
 

@@ -200,3 +200,12 @@ client already had (a brick the ship did not have is sent whole, as for terrain;
 state and gets no edits). The server limits the bricks of ships in one client's picture (`ServerConfig::maximum_ship_bricks`); a ship that would take
 it over the limit is not sent, in order of id. A replay records all of this like any other message, so a recording shows a ship as it moved.
 
+**Entities aboard a ship (since Phase 32g).** An entity's pose names its frame (`grid`: a level's root grid, or a ship), and a client is told of every
+entity aboard each ship it holds, after the ship and its bricks, wherever in the ship the entity is (hidden ones excepted, as always); a ship that
+leaves the picture takes them with it (they are despawned for that client), and a ship that is taken away leaves them in the level at the world
+pose they had, as a change of pose of the same entity. A client finds where an entity is in the world from the ship's pose it holds
+(`ClientWorld::entity_in_the_world`), so a replay does the same with the recorded stream. The orientation of a player entity is the turn of the
+player's view in its frame (the body's frame, then the angles in `PlayerLook`); for a player in a level who was never aboard it is the angles' own, as before.
+The presence message `player_presence:placed` (server to one client, a world position: the brick as three zigzag varints and the offsets as three 32-bit floats, the position part of a pose) says
+where a returning player is, so that the client's view and the region it watches go there.
+

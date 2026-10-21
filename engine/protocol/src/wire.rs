@@ -113,7 +113,7 @@ pub fn read_grid_pose(reader: &mut ByteReader<'_>) -> Result<GridPose, DecodeErr
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
-    use voxel_space::test_support::entity_pose;
+    use voxel_space::test_support::{entity_pose, entity_pose_in_any_frame};
 
     use super::*;
 
@@ -133,6 +133,11 @@ mod tests {
     proptest! {
         #[test]
         fn a_pose_survives_encoding(pose in entity_pose()) {
+            prop_assert_eq!(decoded(&encoded(&pose)), Ok(pose));
+        }
+
+        #[test]
+        fn a_pose_in_the_frame_of_a_ship_survives_encoding(pose in entity_pose_in_any_frame()) {
             prop_assert_eq!(decoded(&encoded(&pose)), Ok(pose));
         }
 

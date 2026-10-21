@@ -169,6 +169,32 @@ impl GridPose {
         Self::turn_back(self.rotation_matrix(), direction.map(f64::from))
             .map(|component| component as f32)
     }
+
+    /// Where a thing placed at `position` in the grid and turned `orientation` there is in the world: its position, and its turn (the
+    /// grid's, then the thing's). `None` if the position is outside the supported range.
+    pub fn place_in_world(
+        &self,
+        position: WorldPosition,
+        orientation: Orientation,
+    ) -> Option<(WorldPosition, Orientation)> {
+        Some((
+            self.local_to_world(position)?,
+            self.orientation.compose(orientation),
+        ))
+    }
+
+    /// Where a thing placed at a position in the world and turned `orientation` there is in the grid: the inverse of
+    /// [`GridPose::place_in_world`].
+    pub fn place_in_grid(
+        &self,
+        position: WorldPosition,
+        orientation: Orientation,
+    ) -> Option<(WorldPosition, Orientation)> {
+        Some((
+            self.world_to_local(position)?,
+            self.orientation.inverse().compose(orientation),
+        ))
+    }
 }
 
 /// The voxel of the grid `to` that holds the centre of a voxel of the grid `from`, or `None` if that is outside the supported range.
@@ -209,11 +235,9 @@ pub fn lattice_alignment(
     tolerance: AlignmentTolerance,
 ) -> Option<LatticeTransform> {
     // The turn of `from` seen from `to`: the conjugate of `to`'s turn, then `from`'s.
-    let relative = multiply(
-        conjugate(to.orientation.components()),
-        from.orientation.components(),
-    );
-    let (rotation, closeness) = LatticeRotation::nearest(Orientation::from_components(relative)?);
+    let relative = to.orientation.inverse().compose(from.orientation);
+    let (rotation, closeness) =
+        LatticeRotation::nearest(Orientation::from_components(relative.components())?);
     if closeness < tolerance.minimum_closeness {
         return None;
     }
@@ -237,25 +261,6 @@ pub fn lattice_alignment(
         offset[axis] += (corner[axis] - 1) / 2;
     }
     Some(LatticeTransform { rotation, offset })
-}
-
-fn conjugate(q: [f32; 4]) -> [f32; 4] {
-    [0.0 - q[0], 0.0 - q[1], 0.0 - q[2], q[3]]
-}
-
-/// The product `a * b` of two quaternions `[x, y, z, w]`: as a turn, `b` first and then `a`, as for matrices. Computed in `f64`, normalised,
-/// and written as `f32`.
-fn multiply(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
-    let [ax, ay, az, aw] = a.map(f64::from);
-    let [bx, by, bz, bw] = b.map(f64::from);
-    let product = [
-        aw * bx + ax * bw + ay * bz - az * by,
-        aw * by - ax * bz + ay * bw + az * bx,
-        aw * bz + ax * by - ay * bx + az * bw,
-        aw * bw - ax * bx - ay * by - az * bz,
-    ];
-    let length = product.map(|c| c * c).iter().sum::<f64>().sqrt();
-    product.map(|component| (component / length) as f32)
 }
 
 #[cfg(test)]
@@ -523,6 +528,59 @@ mod tests {
             prop_assert_eq!(backward.apply(there), Some(voxel));
             prop_assert_eq!(voxel_in_other(&to, there, &from), Some(voxel));
             prop_assert_eq!(forward.inverse(), Some(backward));
+        }
+    }
+
+    #[test]
+    fn a_thing_placed_in_a_grid_is_in_the_world_where_the_grid_puts_it_and_turned_by_the_grid_then_itself()
+     {
+        // A grid a quarter turn about the vertical axis from the world, a thing in it tipped up a quarter turn: the thing faces -z
+        // in the grid, so the tip takes it to +y; the grid's turn about y leaves +y alone.
+        let quarter = std::f32::consts::FRAC_PI_2;
+        let grid = pose(
+            at(2, 0, 0, [1.0, 2.0, 3.0]),
+            Orientation::from_yaw_pitch(quarter, 0.0),
+        );
+        let tipped = Orientation::from_yaw_pitch(0.0, quarter);
+        let (position, orientation) = grid
+            .place_in_world(at(0, 0, 0, [4.0, 5.0, 6.0]), tipped)
+            .unwrap();
+        assert_eq!(
+            position,
+            grid.local_to_world(at(0, 0, 0, [4.0, 5.0, 6.0])).unwrap()
+        );
+        let facing = pose(at(0, 0, 0, [0.0; 3]), orientation).direction_to_world([0.0, 0.0, -1.0]);
+        assert!(
+            facing[0].abs() < 1e-6 && (facing[1] - 1.0).abs() < 1e-6 && facing[2].abs() < 1e-6,
+            "{facing:?}"
+        );
+        // The other way round (the thing turned in the world first, then the grid) is not the same turn: the yaw takes -z to -x, and
+        // the tip about the world's x axis leaves -x alone.
+        let other = tipped.compose(grid.orientation);
+        let facing = pose(at(0, 0, 0, [0.0; 3]), other).direction_to_world([0.0, 0.0, -1.0]);
+        assert!(
+            (facing[0] + 1.0).abs() < 1e-6 && facing[1].abs() < 1e-6 && facing[2].abs() < 1e-6,
+            "{facing:?}"
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn a_thing_survives_a_trip_into_the_world_and_back(
+            grid_turn in any_orientation(),
+            thing_turn in any_orientation(),
+            origin in prop::array::uniform3(-1000i64..1000),
+            local in prop::array::uniform3(-5000.0f32..5000.0),
+        ) {
+            let grid = pose(at(origin[0], origin[1], origin[2], [3.0, 9.0, 27.0]), grid_turn);
+            let local = at(0, 0, 0, local);
+            let (world, world_turn) = grid.place_in_world(local, thing_turn).unwrap();
+            let (back, back_turn) = grid.place_in_grid(world, world_turn).unwrap();
+            prop_assert!(close(back, local, 2e-3));
+            // The same turn, or its negative (a quaternion and its negative are one rotation).
+            let (before, after) = (thing_turn.components(), back_turn.components());
+            let same: f32 = (0..4).map(|axis| before[axis] * after[axis]).sum();
+            prop_assert!(same.abs() > 1.0 - 1e-5, "{before:?} vs {after:?}");
         }
     }
 

@@ -139,6 +139,11 @@ entities are replicated by interest, a client now knows of the players in the re
 version 4 showed its players through the old message (Phase 28 deleted the message and that fallback with the other old-stream support). `PoseReport` stays (it is
 input). Saved worlds now hold their players: the golden sessions' saved-world hashes change as well as their streams, and are repinned once.
 
+Since Phase 32g a player's entity may be in the frame of a ship (`moving-grids-spec.md`, 2.6): `pose_of`, `players` and `level_of` answer in the world, with a
+passenger where the ship puts them; `frame_of`, `local_pose_of` and `set_pose_in` give and set the pose in the frame; `move_to_level` takes a passenger
+off the ship where they are. `PlayerState` has the world pose, the level and the `frame_rotation` of the room the player's angles are measured in, and
+`player_presence:placed` tells a returning player where they are.
+
 ### 2.8 The prompt facility (requirement 15)
 
 Engine game messages `engine:prompt` (a title and options, to one client) and `engine:prompt_answer`; `Context::prompt(client, title,

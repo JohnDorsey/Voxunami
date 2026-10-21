@@ -5,7 +5,7 @@ use plugin_host::{
     Argument, CommandSpec, HandlerSpec, PlayerJoined, PlayerLeft, Plugin, Registrar,
 };
 
-use crate::messages::{LevelChange, PoseReport};
+use crate::messages::{LevelChange, PlayerPlaced, PoseReport};
 use crate::presence::{Presence, player_kind_spec};
 
 /// The record of which entity is which player, shared by the plugins of a game that need it (a rule that
@@ -63,6 +63,7 @@ impl Plugin for PlayersPlugin {
             });
         }
         registrar.declares_message::<LevelChange>();
+        registrar.declares_message::<PlayerPlaced>();
         let presence = Arc::clone(&self.presence);
         registrar.command(
             CommandSpec::new(

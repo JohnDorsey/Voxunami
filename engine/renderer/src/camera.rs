@@ -11,6 +11,10 @@ pub struct Camera {
     pub position: WorldPosition,
     pub yaw: f32,
     pub pitch: f32,
+    /// The turn of the frame `yaw` and `pitch` are measured in: the identity for a player standing in the world, and the turn of a
+    /// player's room for one aboard a ship that has turned, so that the camera looks where the angles point in that room. The angles are
+    /// still what the player's mouse turns.
+    pub frame_rotation: Quat,
     /// Vertical field of view in radians.
     pub vertical_field_of_view: f32,
     pub near_plane: f32,
@@ -27,14 +31,21 @@ impl Camera {
             position,
             yaw: 0.0,
             pitch: 0.0,
+            frame_rotation: Quat::IDENTITY,
             vertical_field_of_view: 70.0 * std::f32::consts::PI / 180.0,
             near_plane: 0.1,
             far_plane: 4096.0,
         }
     }
 
+    /// The turn of the view: the angles' turn, then the frame's. A camera in no frame is the angles' turn alone, to the bit.
     pub fn rotation(&self) -> Quat {
-        Quat::from_rotation_y(self.yaw) * Quat::from_rotation_x(self.pitch)
+        let angles = Quat::from_rotation_y(self.yaw) * Quat::from_rotation_x(self.pitch);
+        if self.frame_rotation == Quat::IDENTITY {
+            angles
+        } else {
+            self.frame_rotation * angles
+        }
     }
 
     pub fn forward(&self) -> Vec3 {
@@ -138,6 +149,39 @@ mod tests {
         assert!(close(camera.forward(), Vec3::NEG_Z));
         assert!(close(camera.right(), Vec3::X));
         assert!(close(camera.up(), Vec3::Y));
+    }
+
+    #[test]
+    fn a_frame_turns_where_the_angles_point_and_a_camera_in_no_frame_is_the_angles_alone_to_the_bit()
+     {
+        let mut camera = camera_at_origin();
+        camera.look_by(0.7, -0.3);
+        let alone = camera.rotation();
+        assert_eq!(
+            alone,
+            Quat::from_rotation_y(0.7) * Quat::from_rotation_x(-0.3)
+        );
+        // A frame tipped a quarter about x (up there is the room's back, +z): the room's ahead, -z, is the world's up, +y.
+        camera = camera_at_origin();
+        camera.frame_rotation = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
+        assert!(close(camera.forward(), Vec3::Y));
+        assert!(close(camera.up(), Vec3::Z));
+        assert!(close(camera.right(), Vec3::X));
+        // The angles are the room's: a quarter yaw in it turns toward the room's -x, which a tip about x leaves where it is.
+        camera.look_by(std::f32::consts::FRAC_PI_2, 0.0);
+        assert!(close(camera.forward(), Vec3::NEG_X));
+        // Moving by the camera's own axes goes along the turned view, and what is seen follows it too.
+        camera = camera_at_origin();
+        camera.frame_rotation = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
+        camera.move_relative(Vec3::NEG_Z * 40.0);
+        assert_eq!(camera.position.brick(), BrickCoordinate::new(0, 1, 0));
+        assert!((camera.position.offset()[1] - 8.0).abs() < 1e-3);
+        let clip = camera.view_projection(1.0) * Vec4::new(0.0, 10.0, 0.0, 1.0);
+        let ndc = clip.truncate() / clip.w;
+        assert!(
+            ndc.x.abs() < 1e-5 && ndc.y.abs() < 1e-5,
+            "straight up is ahead: {ndc:?}"
+        );
     }
 
     #[test]

@@ -86,6 +86,18 @@ fn wisp_pose(start: i64, step: u64) -> EntityPose {
     )
 }
 
+/// Where the wisp that rides the ship of [`Fixture::with_ship`] is in it at this tick: in the frame of the ship.
+pub fn rider_pose(ship: GridId, count: u64) -> EntityPose {
+    EntityPose::new(
+        ship,
+        WorldPosition::new(
+            BrickCoordinate::new(0, 0, 0),
+            [2.0 + (count % 7) as f32, 3.0, 2.0],
+        ),
+        Orientation::from_yaw_pitch(0.3, 0.0),
+    )
+}
+
 /// The ship of [`Fixture::with_ship`] at this tick.
 fn ship_at_tick(count: u64, world: &mut ServerWorld, marble: u32, glass: u32) {
     let ship = GridId::new(GridId::FIRST_ALLOCATED);
@@ -118,6 +130,16 @@ fn ship_at_tick(count: u64, world: &mut ServerWorld, marble: u32, glass: u32) {
             }
         }
         9..=49 => {
+            if count == 9 {
+                let rider = world
+                    .spawn_entity(&wisp_kind(), rider_pose(ship, 0), ComponentBag::new())
+                    .expect("the kind is declared");
+                assert_eq!(rider, EntityId::new(1));
+            } else if count.is_multiple_of(4) {
+                world
+                    .set_entity_pose(EntityId::new(1), rider_pose(ship, count))
+                    .expect("the rider is aboard");
+            }
             world.set_grid_pose(ship, pose(count)).unwrap();
             if count.is_multiple_of(6) {
                 let mut view = world.grid(ship).unwrap();
@@ -166,7 +188,8 @@ impl Fixture {
 
     /// A server for an empty world of the pretend game, with a ship: made on tick 8 with two bricks, turning a little more and moving
     /// one voxel along x every tick, edited every 6th tick (a voxel of a brick it has, and every 12th tick one in a new brick), and
-    /// removed on tick 50.
+    /// removed on tick 50. A wisp rides it from tick 9 (entity 1), moving about in it every 4th tick; when the ship goes the wisp is in the
+    /// level where the ship had it.
     pub fn with_ship() -> Self {
         let game = Game::new(&ALL_PLUGINS);
         let world = game.new_world();
@@ -187,7 +210,7 @@ impl Fixture {
             .collect();
         let (listener, connector) = loopback_listener();
         let mut catalog = EntityCatalog::default();
-        if herd {
+        if herd || ship {
             catalog
                 .kinds
                 .register(EntityKindSpec::new("test_game:wisp").component(Glow(1), true))

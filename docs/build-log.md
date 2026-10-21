@@ -666,6 +666,57 @@ Phase 32 (moving grids; `moving-grids-spec.md`):
   patterns checked against a separate Python calculation and equal on Windows and Linux. 21 mutations: 19 caught; 1 equivalent in practice (an exact tie between
   lattice turns); 1 redundant check (a range test that `checked_offset` already makes), which was deleted.
 
+Phase 32g (aboard: players in a ship's frame; boarding and leaving):
+- Entities in any frame: `EntityPose.grid` may be a ship (`voxel_space`: `Orientation::{compose, inverse}`, `GridPose::{place_in_world, place_in_grid}`;
+  `entities`: the store takes any grid and has `in_grid`; `server`: `spawn_entity` and `set_entity_pose` refuse a ship that is not there
+  (`EntityError::NoSuchGrid`), `remove_grid` puts what was aboard in the level at its world pose in the same call, and replication tells a client of
+  the entities aboard each ship it knows, with the ship, and takes them with it when the ship leaves the picture). A world is saved with the passengers
+  in the level where their ship has them (ships are saved in 32i); a file with an entity in a ship's frame is refused. `MovingGrid::{brick_extent,
+  velocity_at}`; a ship that sleeps has no speed on record.
+- Presence: `pose_of`, `players`, `level_of` answer in the world, `frame_of`, `local_pose_of`, `set_pose_in` serve what moves players;
+  `PlayerPose::{view_orientation, frame_rotation_of}`; one new presence message, `player_presence:placed` (a returning player is told where they are;
+  this also fixed a latent fault for players who logged out far from the start).
+- Physics (`CharacterBody`): a frame with an up (against a gravity vector: `step_with_gravity`), a facing that is carried along as up turns, and a box that
+  stands in it; `reframe`; ships near a character are colliders that stand where the ships are (`update_foreign`, `foreign_brick_changed`); a slide
+  along a ship's wall that comes out as nothing is made again; `keep_clear`. With up `+y` every operation is what it always was: the pinned scripted
+  runs and the golden sessions did not change.
+- `grid_bodies`: `BlockCollisions` (cached, shared with Cave), `ShipHull::solid_at`. Cave: `aboard` (the two rules), `movement` (a body in a level or aboard
+  a ship, made to agree with the player's record each tick), the system after the ships move; `/tp` writes the record at once. Renderer and shell:
+  `Camera.frame_rotation`; the client follows a passenger's pose in the world and the turn of their room.
+- **Found by measuring, and fixed (all with regression tests):** (1) a ship that fell on a standing walker pressed them into the floor and they fell down
+  through the terrain and the world (eyes at 202.6 to 94.6): the controller slides a character out of an overlap along one collider's surface with no
+  regard to what is behind it, and the colliders of terrain leave out boxes buried in solid terrain; a ship at 60 a second left a walker half in the
+  floor, and a block built over a walker's head made the controller shake them 0.45 into the floor and out again every step. Each tick, after the
+  ships' colliders are in place, `keep_clear` moves a character that something has moved into out the shortest way (at most 8 voxels; if there is no room
+  it stays). (2) The walker so lifted onto the falling box was thrown ten voxels up at the speed the box had: boarding now drops the speed relative to the
+  ship that points away from it. (3) (earlier) the controller lost the whole of a slide along a turned ship's wall: made again, for ships only.
+  Two of my statements in the spec were wrong and are corrected there: that nothing pushes a player out of a ship that moves into them (a slow ship did,
+  a fast one or one falling did the harm above), and that the controller leaves a body it cannot push out.
+- Tests (100 new, and 2 groups of properties; the whole workspace passes on Windows, 1492 tests, and on Linux, 1493, one of which is Linux only): frames and the turn (non-commutative `compose`, round trips); the store and server (entities in a ship's frame, a
+  ship removed under passengers, replication, the save and its refusal); presence and the wire (pinned bytes); the oriented controller (a room turned a
+  quarter or over: the same room turned; the facing carried, gradually and in one step; a body put into a block of a turned frame leaves by the first way in
+  its own order); foreign grids (standing on, walking into and along a turned wall, edits, a ship that moves, a ship far away looked at by hint only, a
+  pinned run, ships that fall on, sail into and jump over a character: a pinned run); Cave `aboard.rs` (29 scenarios: landing on a ship that is still, moving,
+  fast, turned and moving; the moving ship carrying the walker exactly; a jump; walking off the edge, over a hole; leaving with the ship's speed in the
+  world's axes; a cabin turned on its side and over; gravity of the world's strength; logout and return aboard; `/tp`; two players; the view not turned by
+  boarding, leaving or the ship being taken away; a scripted run pinned), the picture of a replay of a walker on a turning ship equal to the live one to the
+  pixel, and an end-to-end replay with a rider wisp. The pinned values (the aboard run, the foreign runs, the ship physics hashes) are equal on Windows and Linux.
+- Mutations: 73 experiments over the new code (frames, store, server, replication, save, presence, the controller's frame, foreign colliders, keeping clear,
+  the rules, boarding, leaving, the client): 63 caught at first; of the 10 survivors 8 were gaps in my tests (the sign of a turn crossed with an arm in two
+  of three components; the facing carried the wrong way, hidden by the projection that follows when the steps are small and found only in one big step; the
+  box for other grids taken at full size, or not turned with the character; the order of the ways out in a turned frame; boarding a turned ship that moves;
+  keeping clear aboard, which a block over the head shows and a block at the feet does not, since the controller gets out of that by itself; and a ship taken
+  from under a walker, which shows nothing unless the ship has turned since they boarded) and each got a test that now catches it (checked by running the
+  mutants again). The other 2 survive every suite I ran them against (all of physics, and the aboard, play, golden, ship and picture tests of Cave); I
+  believe, from reading the code and not by proof, that they change nothing anyone can see: taking away the speed toward the ship at boarding as well (the
+  controller stops that speed in the next step anyway, and the two differ by less than the controller's gap of a hundredth of a voxel for one step), and
+  counting any collider as another grid's (terrain colliders and the voxels agree wherever the colliders are up to date, which the edits of the same tick
+  see to).
+- Cost (median of 1000 server ticks, Windows): 21 microseconds with a ship and no player; 50 to 60 with a walker near the ship, under it or aboard it; 75 on
+  hills far from it; 250 with eight aboard. The check for being inside something changed none of these by more than the run to run difference (about 5).
+- Limits (see `moving-grids-spec.md` 2.6 and `plan.md`, Open): a body aboard does not see terrain or other ships; a wall that jumps over a standing walker
+  in a tick passes them without touching; nothing is hurt by being pressed; boarding and leaving are looked at once a tick (the first text said three).
+
 Phase 32f (gravity as a field):
 - `voxel_space::gravity_at(settings, pulls, position)`: the level's constant plus, for each body of at least the threshold mass, `G m r / (r^2 + s^2)^(3/2)` toward its centre of mass (softened, so finite and zero at the centre).
   `ServerConfig::gravity` and `ServerWorld::set_gravity_settings`; `MovingGrid` has `mass` and `centre_of_mass` (the bodies write them); `ServerWorld::gravity_at` and `gravity_in`; `Context::gravity_at`.

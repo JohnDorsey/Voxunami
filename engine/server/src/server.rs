@@ -605,6 +605,7 @@ impl Server {
             &mut self.entity_views,
             known_entities,
             current,
+            known_grids,
         ));
         for outgoing in &self.world.outgoing {
             if reaches(outgoing, id, current) {

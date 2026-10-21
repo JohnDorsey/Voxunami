@@ -10,6 +10,7 @@
 //!
 //! Window, camera, singleplayer server, screenshots, recording and replay are the shell's.
 
+pub mod aboard;
 mod block_properties;
 pub mod client;
 pub mod content;

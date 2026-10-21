@@ -6,7 +6,7 @@ use entities::{ComponentBag, EntityError, EntityKindSpec, EntityKinds, EntitySto
 use namespaced_id::NamespacedId;
 use proptest::prelude::*;
 use protocol::{EntityId, Message};
-use voxel_space::test_support::entity_pose;
+use voxel_space::test_support::entity_pose_in_any_frame;
 use voxel_space::{
     BrickBox, BrickCoordinate, EntityPose, GridId, LevelIndex, Orientation, WorldPosition,
 };
@@ -136,27 +136,111 @@ fn what_the_kind_does_not_declare_is_refused_naming_both() {
     );
 }
 
+/// A pose in the frame of a ship (an allocated grid), at a brick and an offset of its own coordinates.
+fn pose_aboard(ship: GridId, brick: [i64; 3], offset: [f32; 3]) -> EntityPose {
+    EntityPose::new(
+        ship,
+        WorldPosition::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), offset),
+        Orientation::IDENTITY,
+    )
+}
+
 #[test]
-fn until_structures_exist_only_root_grids_hold_entities() {
+fn an_entity_can_be_in_the_frame_of_a_ship_and_is_found_there_and_not_in_the_level() {
     let mut store = EntityStore::new();
     let ship = GridId::new(GridId::FIRST_ALLOCATED);
-    let mut pose = pose_at(0, [0, 0, 0], [0.0; 3]);
-    pose.grid = ship;
+    let other_ship = GridId::new(GridId::FIRST_ALLOCATED + 1);
+    // The same brick and offset in the level, in the ship and in another ship: three places.
+    let on_ground = spawn(&mut store, pose_at(0, [1, 0, 0], [5.0, 5.0, 5.0]));
+    let aboard = store
+        .spawn(
+            &kinds(),
+            &id("test:cow"),
+            pose_aboard(ship, [1, 0, 0], [5.0, 5.0, 5.0]),
+            ComponentBag::new(),
+        )
+        .unwrap();
+    let elsewhere = store
+        .spawn(
+            &kinds(),
+            &id("test:cow"),
+            pose_aboard(other_ship, [1, 0, 0], [5.0, 5.0, 5.0]),
+            ComponentBag::new(),
+        )
+        .unwrap();
+    assert_eq!(store.get(aboard).unwrap().pose.grid, ship);
+    let there = WorldPosition::new(BrickCoordinate::new(1, 0, 0), [5.0, 5.0, 5.0]);
+    assert_eq!(store.near(GridId::MAIN, there, 1.0), [on_ground]);
+    assert_eq!(store.near(ship, there, 1.0), [aboard]);
+    assert_eq!(store.near(other_ship, there, 1.0), [elsewhere]);
+    let region =
+        BrickBox::new(BrickCoordinate::new(0, 0, 0), BrickCoordinate::new(2, 0, 0)).unwrap();
+    assert_eq!(store.in_bricks(ship, region), [aboard]);
+    assert_eq!(store.in_bricks(GridId::MAIN, region), [on_ground]);
+}
+
+#[test]
+fn an_entity_moves_between_the_level_and_a_ship_and_the_index_follows() {
+    let mut store = EntityStore::new();
+    let ship = GridId::new(GridId::FIRST_ALLOCATED);
+    let cow = spawn(&mut store, pose_at(0, [0, 0, 0], [5.0, 5.0, 5.0]));
+    let there = WorldPosition::new(BrickCoordinate::new(0, 0, 0), [5.0, 5.0, 5.0]);
+    assert_eq!(store.near(GridId::MAIN, there, 1.0), [cow]);
+    // Boards: the same coordinates mean another place.
+    store
+        .set_pose(cow, pose_aboard(ship, [0, 0, 0], [5.0, 5.0, 5.0]))
+        .unwrap();
+    assert!(store.near(GridId::MAIN, there, 1.0).is_empty());
+    assert_eq!(store.near(ship, there, 1.0), [cow]);
+    // Moves within the ship, into another brick of it.
+    store
+        .set_pose(cow, pose_aboard(ship, [0, 1, 0], [5.0, 5.0, 5.0]))
+        .unwrap();
+    assert!(store.near(ship, there, 1.0).is_empty());
     assert_eq!(
-        store.spawn(&kinds(), &id("test:cow"), pose, ComponentBag::new()),
-        Err(EntityError::NotARootGrid(ship))
+        store.near(
+            ship,
+            WorldPosition::new(BrickCoordinate::new(0, 1, 0), [5.0, 5.0, 5.0]),
+            1.0
+        ),
+        [cow]
     );
-    let cow = spawn(&mut store, pose_at(0, [0, 0, 0], [0.0; 3]));
-    assert_eq!(
-        store.set_pose(cow, pose),
-        Err(EntityError::NotARootGrid(ship))
-    );
-    assert_eq!(store.len(), 1, "nothing was added");
-    assert_eq!(
-        store.get(cow).unwrap().pose.grid,
-        GridId::MAIN,
-        "and nothing moved"
-    );
+    // Leaves.
+    store
+        .set_pose(cow, pose_at(0, [0, 0, 0], [5.0, 5.0, 5.0]))
+        .unwrap();
+    assert_eq!(store.near(GridId::MAIN, there, 1.0), [cow]);
+    assert!(store.in_grid(ship).is_empty());
+    // A despawned entity is gone from the index of its ship too.
+    store
+        .set_pose(cow, pose_aboard(ship, [0, 0, 0], [5.0, 5.0, 5.0]))
+        .unwrap();
+    store.despawn(cow);
+    assert!(store.in_grid(ship).is_empty());
+}
+
+#[test]
+fn the_entities_of_a_grid_are_all_of_them_in_order_of_id_whatever_their_bricks() {
+    let mut store = EntityStore::new();
+    let ship = GridId::new(GridId::FIRST_ALLOCATED);
+    let mut aboard = Vec::new();
+    // Far apart in every direction, and some in the level.
+    for brick in [[40, -3, 7], [-9, 0, 0], [0, 0, 0], [0, 60, -60]] {
+        aboard.push(
+            store
+                .spawn(
+                    &kinds(),
+                    &id("test:cow"),
+                    pose_aboard(ship, brick, [1.0, 2.0, 3.0]),
+                    ComponentBag::new(),
+                )
+                .unwrap(),
+        );
+        spawn(&mut store, pose_at(0, brick, [1.0, 2.0, 3.0]));
+    }
+    assert_eq!(store.in_grid(ship), aboard);
+    assert_eq!(store.in_grid(GridId::new(GridId::FIRST_ALLOCATED + 5)), []);
+    assert_eq!(store.in_grid(GridId::MAIN).len(), 4);
 }
 
 #[test]
@@ -326,7 +410,7 @@ proptest! {
 
     #[test]
     fn whatever_is_done_to_the_store_the_index_agrees_with_the_entities(
-        steps in proptest::collection::vec((0u8..3, entity_pose(), 0usize..8), 0..40),
+        steps in proptest::collection::vec((0u8..3, entity_pose_in_any_frame(), 0usize..8), 0..40),
     ) {
         let mut store = EntityStore::new();
         let mut live: Vec<EntityId> = Vec::new();

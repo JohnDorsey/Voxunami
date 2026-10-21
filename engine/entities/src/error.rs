@@ -25,8 +25,10 @@ pub enum EntityError {
         component: NamespacedId,
         reason: String,
     },
-    #[error("{0} is not a root grid, and until structures exist only root grids hold entities")]
-    NotARootGrid(GridId),
+    #[error(
+        "{0} is a ship that does not exist, and an entity cannot be in the frame of what is not there"
+    )]
+    NoSuchGrid(GridId),
     #[error("the entities of a save are not in order of id, each once")]
     UnorderedEntities,
     #[error("{id} is not below the saved counter, {next_id}")]

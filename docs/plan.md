@@ -41,7 +41,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
   transforms; a matrix per grid in the renderer; Rapier bodies from blocks (mass from `engine:density`), full rotation, world gravity
   aboard; connectivity and splitting; docking connectors with a configurable attraction force; players and entities simulated in their
   frame; levels of detail per grid for drawing, for collision (coarse colliders, aggregated mass) and for streaming; a grid saved in
-  flight as a file of its own. Specified in `moving-grids-spec.md` (steps 32a to 32k, with a pause after 32h), answered 2026-10-20; 32a (frames), 32b (grids on the server), 32c (protocol and replay), 32d (renderer and picking) and 32e (bodies) and 32f (the gravity field) built, 32g (aboard) next.
+  flight as a file of its own. Specified in `moving-grids-spec.md` (steps 32a to 32k, with a pause after 32h), answered 2026-10-20; 32a (frames), 32b (grids on the server), 32c (protocol and replay), 32d (renderer and picking) and 32e (bodies), 32f (the gravity field) and 32g (aboard) built, 32h (Cave's ship commands and the first flight; the pause for the owner) next.
 - 31 (built) A wider material palette: the renderer's palette in a storage buffer, 1,048,576 game materials instead of 240 (renderer-only; saves and protocol unchanged). Phase 32 (moving grids) is next.
 - 30 (built; `ui-spec.md`) Server-driven UI: a UI the server describes in the value vocabulary and the stream drives; the HUD, the command line, questions and Cave's hotbar are on the screen, not in the title. Phase 31 is next.
 - 29 (built; `data-packs-spec.md`, `pack-format.md`) Data-driven block packs (JSON), the generated JSON Schema, `check-pack`, and patches: tags by
@@ -251,6 +251,15 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   (Phases 27 and 32).
 
 ## Open
+- **Left open by Phase 32g (aboard; 2026-10-21), for the owner's review after 32h:** (a) boarding and leaving are looked at once a tick and
+  need no count (the first text said three ticks; the two conditions cannot hold together, so nothing flaps; yours to overrule); (b) a player
+  leaving a ship keeps its speed and the air control (14 a second a second) pulls it toward the keys, which gives about a metre of carry from a
+  ship at 6 a second: if you want the momentum kept in the air, the air control is what changes; (c) a body aboard does not see terrain or other
+  ships, so the leave rule is what keeps it from walking through a cliff that touches the hull, and a ship that stops dead throws no one forward
+  (no fictitious forces, as decided; the goal in `future-goals.md`, "Ship goals" 6, adds them); (d) the controller sometimes loses a slide
+  along a wall (seen once in the pinned Cave session against terrain, and found with turned ship walls, where it is made again for ships only):
+  fixing it for terrain would change the pinned sessions, so it is a follow-up; (e) `/tp` far from the start does not tell the client where it
+  is (returning players now are told); (f) nothing is hurt by being pushed or pressed: a ship that falls on a player lifts them onto itself.
 - Plugin architecture (2026-10-17; `docs/plugin-architecture-review.md` has the options and sources; each item is now in the
   Build plan, and what stays open is the detail): (a) *Entities and items* (Phase 27): only players exist, and the protocol, the
   replay stream and the save format have no entity messages; the design says creatures are finite grids, which is not built. What

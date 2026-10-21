@@ -142,16 +142,26 @@ impl ServerWorld {
     }
 
     /// Makes an entity of `kind` at `pose` with the kind's components, those in `overrides` taking the place
-    /// of the defaults.
+    /// of the defaults. The pose's grid is the frame the entity is in: a level's root grid, or a ship that exists.
     pub fn spawn_entity(
         &mut self,
         kind: &NamespacedId,
         pose: EntityPose,
         overrides: ComponentBag,
     ) -> Result<EntityId, EntityError> {
+        self.check_frame(pose.grid)?;
         self.data
             .entities_mut()
             .spawn(&self.catalog.kinds, kind, pose, overrides)
+    }
+
+    /// An entity can be in the frame of a level or of a ship that is there, and of nothing else.
+    fn check_frame(&self, grid: GridId) -> Result<(), EntityError> {
+        if grid.root_level().is_some() || self.data.grids().get(grid).is_some() {
+            Ok(())
+        } else {
+            Err(EntityError::NoSuchGrid(grid))
+        }
     }
 
     /// Removes an entity and returns it, if there was one.
@@ -170,8 +180,9 @@ impl ServerWorld {
             .set_component(&self.catalog.kinds, id, value)
     }
 
-    /// Moves an entity.
+    /// Moves an entity, to another place in its frame or into another (a ship that exists, or a level).
     pub fn set_entity_pose(&mut self, id: EntityId, pose: EntityPose) -> Result<(), EntityError> {
+        self.check_frame(pose.grid)?;
         self.data.entities_mut().set_pose(id, pose)
     }
 
@@ -545,11 +556,17 @@ impl ServerWorld {
 
     /// Holds a ship still, or lets it move.
     pub fn set_grid_held(&mut self, grid: GridId, held: bool) -> Result<(), AccessError> {
-        self.data
+        let ship = self
+            .data
             .grids_mut()
             .get_mut(grid)
-            .ok_or(AccessError::NoSuchGrid(grid))?
-            .held = held;
+            .ok_or(AccessError::NoSuchGrid(grid))?;
+        if held && !ship.held {
+            // A ship that stops being moved by the simulation has stopped: whoever moves it after that says how fast.
+            ship.linear_velocity = [0.0; 3];
+            ship.angular_velocity = [0.0; 3];
+        }
+        ship.held = held;
         Ok(())
     }
 
@@ -570,9 +587,26 @@ impl ServerWorld {
         Ok(())
     }
 
-    /// Removes a ship for good, as when it is destroyed, and returns it. Clients that watch it are told it is gone.
+    /// Removes a ship for good, as when it is destroyed, and returns it. Clients that watch it are told it is gone. What was aboard it
+    /// (every entity whose frame it was, those of players who are away too) is put in the level the ship was in, where it was in the
+    /// world and turned as it was, so it does not lose its place with the ship.
     pub fn remove_grid(&mut self, grid: GridId) -> Option<MovingGrid> {
-        self.data.grids_mut().remove(grid)
+        let ship = self.data.grids_mut().remove(grid)?;
+        for id in self.data.entities().in_grid(grid) {
+            let Some(aboard) = self.data.entities().get(id).map(|entity| entity.pose) else {
+                continue;
+            };
+            // A place the world cannot hold is replaced by the ship's own, unturned: nothing is left in a frame that is gone.
+            let (position, orientation) = ship
+                .pose
+                .place_in_world(aboard.position, aboard.orientation)
+                .unwrap_or((ship.pose.position, ship.pose.orientation));
+            let _ = self.data.entities_mut().set_pose(
+                id,
+                EntityPose::new(GridId::root(ship.level), position, orientation),
+            );
+        }
+        Some(ship)
     }
 
     /// Makes an empty ship in a level.
@@ -1036,14 +1070,31 @@ mod tests {
             ]
         );
         assert!(world.take_grid_forces().is_empty());
+        // A ship that is moving and is then held has stopped: nothing is left on record of how fast it went.
+        world
+            .set_grid_velocity(ship, [7.0, 8.0, 9.0], [1.0, 1.0, 1.0])
+            .unwrap();
         world.set_grid_held(ship, true).unwrap();
+        let held = world.data().grids().get(ship).unwrap();
+        assert!(held.held);
+        assert_eq!(
+            (held.linear_velocity, held.angular_velocity),
+            ([0.0; 3], [0.0; 3])
+        );
+        // Whoever then moves a held ship says how fast (it is kinematic: it goes where it is put), and holding it again changes nothing.
         world
             .set_grid_velocity(ship, [1.0, 2.0, 3.0], [4.0, 5.0, 6.0])
             .unwrap();
+        world.set_grid_held(ship, true).unwrap();
         let moving = world.data().grids().get(ship).unwrap();
         assert!(moving.held);
         assert_eq!(moving.linear_velocity, [1.0, 2.0, 3.0]);
         assert_eq!(moving.angular_velocity, [4.0, 5.0, 6.0]);
+        // Let go, it is a ship like any other, and whatever speed it had is the speed it goes on with.
+        world.set_grid_held(ship, false).unwrap();
+        let free = world.data().grids().get(ship).unwrap();
+        assert!(!free.held);
+        assert_eq!(free.linear_velocity, [1.0, 2.0, 3.0]);
     }
 
     fn at(x: f32, y: f32, z: f32) -> WorldPosition {
@@ -1164,5 +1215,157 @@ mod tests {
             world.set_grid_mass(gone, 1.0, [0.0; 3]),
             Err(AccessError::NoSuchGrid(gone))
         );
+    }
+
+    /// A world whose entity catalog has one kind, with no components.
+    fn world_with_a_walker() -> (ServerWorld, NamespacedId) {
+        let (world, _, _) = counting_world();
+        let mut kinds = entities::EntityKinds::new();
+        kinds
+            .register(entities::EntityKindSpec::new("test:walker"))
+            .unwrap();
+        let catalog = Arc::new(EntityCatalog {
+            kinds,
+            items: Default::default(),
+        });
+        (
+            ServerWorld::new(world.into_data(), catalog),
+            id("test:walker"),
+        )
+    }
+
+    fn aboard(ship: GridId, brick: [i64; 3], offset: [f32; 3], turn: Orientation) -> EntityPose {
+        EntityPose::new(
+            ship,
+            WorldPosition::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), offset),
+            turn,
+        )
+    }
+
+    #[test]
+    fn an_entity_can_be_in_the_frame_of_a_ship_that_is_there_and_of_nothing_else() {
+        let (mut world, walker) = world_with_a_walker();
+        let missing = GridId::new(GridId::FIRST_ALLOCATED + 3);
+        let nowhere = aboard(missing, [0, 0, 0], [1.0; 3], Orientation::IDENTITY);
+        assert_eq!(
+            world.spawn_entity(&walker, nowhere, ComponentBag::new()),
+            Err(EntityError::NoSuchGrid(missing))
+        );
+        assert!(world.entities().is_empty(), "nothing was made");
+        let ship = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        let on_deck = aboard(ship, [0, 0, 0], [1.0; 3], Orientation::IDENTITY);
+        let entity = world
+            .spawn_entity(&walker, on_deck, ComponentBag::new())
+            .unwrap();
+        assert_eq!(world.entities().get(entity).unwrap().pose.grid, ship);
+        // Moving it into a frame that is not there changes nothing; into the level, or another ship that is there, works.
+        assert_eq!(
+            world.set_entity_pose(entity, nowhere),
+            Err(EntityError::NoSuchGrid(missing))
+        );
+        assert_eq!(world.entities().get(entity).unwrap().pose, on_deck);
+        let level = EntityPose::new(
+            GridId::MAIN,
+            WorldPosition::new(BrickCoordinate::ORIGIN, [3.0; 3]),
+            Orientation::IDENTITY,
+        );
+        world.set_entity_pose(entity, level).unwrap();
+        assert_eq!(world.entities().get(entity).unwrap().pose, level);
+    }
+
+    #[test]
+    fn removing_a_ship_puts_what_was_aboard_in_the_level_where_it_was_and_turned_as_it_was() {
+        let (mut world, walker) = world_with_a_walker();
+        let quarter = std::f32::consts::FRAC_PI_2;
+        let pose = GridPose::new(
+            WorldPosition::new(BrickCoordinate::new(2, 0, 0), [1.0, 2.0, 3.0]),
+            Orientation::from_yaw_pitch(quarter, 0.0),
+        );
+        let ship = world.create_grid(LevelIndex::MAIN, pose).unwrap();
+        let other_ship = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        let tipped = Orientation::from_yaw_pitch(0.0, quarter);
+        let passenger = world
+            .spawn_entity(
+                &walker,
+                aboard(ship, [0, 0, 0], [10.0, 0.0, 0.0], tipped),
+                ComponentBag::new(),
+            )
+            .unwrap();
+        // One whose coordinates are far from the ship's origin, and one hidden in the ship: all are aboard.
+        let far = world
+            .spawn_entity(
+                &walker,
+                aboard(ship, [-3, 4, 1], [5.0; 3], Orientation::IDENTITY),
+                ComponentBag::new(),
+            )
+            .unwrap();
+        let bystander = world
+            .spawn_entity(
+                &walker,
+                aboard(other_ship, [0, 0, 0], [10.0, 0.0, 0.0], tipped),
+                ComponentBag::new(),
+            )
+            .unwrap();
+        let on_ground = world
+            .spawn_entity(
+                &walker,
+                EntityPose::new(
+                    GridId::MAIN,
+                    WorldPosition::new(BrickCoordinate::ORIGIN, [4.0; 3]),
+                    tipped,
+                ),
+                ComponentBag::new(),
+            )
+            .unwrap();
+        let before_bystander = world.entities().get(bystander).unwrap().pose;
+        let before_ground = world.entities().get(on_ground).unwrap().pose;
+        let expected = |local: EntityPose| {
+            let (position, orientation) = pose
+                .place_in_world(local.position, local.orientation)
+                .unwrap();
+            EntityPose::new(GridId::MAIN, position, orientation)
+        };
+        let expected_passenger = expected(world.entities().get(passenger).unwrap().pose);
+        let expected_far = expected(world.entities().get(far).unwrap().pose);
+        world.data_mut().entities_mut().take_changed();
+
+        assert!(world.remove_grid(ship).is_some());
+
+        assert_eq!(
+            world.entities().get(passenger).unwrap().pose,
+            expected_passenger
+        );
+        assert_eq!(world.entities().get(far).unwrap().pose, expected_far);
+        // The numbers, worked out by hand: the ship is turned a quarter about the vertical axis, so 10 along its x is 10 along the
+        // world's -z from its origin, which is at (2 bricks, 1, 2, 3).
+        let placed = world.entities().get(passenger).unwrap().pose;
+        assert_eq!(placed.grid, GridId::MAIN);
+        assert_eq!(placed.position.brick(), BrickCoordinate::new(2, 0, -1));
+        let offset = placed.position.offset();
+        assert!(
+            (offset[0] - 1.0).abs() < 1e-4
+                && (offset[1] - 2.0).abs() < 1e-4
+                && (offset[2] - 25.0).abs() < 1e-4,
+            "{offset:?}"
+        );
+        // Turned as the ship was and then as it was in the ship: a tip about the ship's x is a tip about the world's -z.
+        assert_ne!(placed.orientation, tipped);
+        // Nothing else moved, and what moved is on the list of what changed.
+        assert_eq!(
+            world.entities().get(bystander).unwrap().pose,
+            before_bystander
+        );
+        assert_eq!(world.entities().get(on_ground).unwrap().pose, before_ground);
+        assert_eq!(
+            world.data_mut().entities_mut().take_changed(),
+            BTreeSet::from([passenger, far])
+        );
+        assert!(world.entities().in_grid(ship).is_empty());
+        // A ship that is not there takes nothing with it.
+        assert!(world.remove_grid(ship).is_none());
     }
 }

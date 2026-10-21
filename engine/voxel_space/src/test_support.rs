@@ -70,7 +70,7 @@ pub fn world_position() -> impl Strategy<Value = crate::WorldPosition> {
         .prop_map(|(voxel, x, y, z)| crate::WorldPosition::new(voxel.split().0, [x, y, z]))
 }
 
-/// A pose in a root grid of one of the first few levels (until structures exist only root grids do).
+/// A pose in a root grid of one of the first few levels (what a saved world holds until ships are saved too).
 pub fn entity_pose() -> impl Strategy<Value = crate::EntityPose> {
     (0u32..4, world_position(), orientation()).prop_map(|(level, position, orientation)| {
         crate::EntityPose::new(
@@ -79,4 +79,19 @@ pub fn entity_pose() -> impl Strategy<Value = crate::EntityPose> {
             orientation,
         )
     })
+}
+
+/// A pose in the frame of a root grid or of one of the first few ships: where an entity can be in a running world.
+pub fn entity_pose_in_any_frame() -> impl Strategy<Value = crate::EntityPose> {
+    (
+        prop_oneof![
+            3 => (0u32..4).prop_map(|level| crate::GridId::root(crate::LevelIndex::new(level))),
+            2 => (0u64..3).prop_map(|ship| crate::GridId::new(crate::GridId::FIRST_ALLOCATED + ship)),
+        ],
+        world_position(),
+        orientation(),
+    )
+        .prop_map(|(grid, position, orientation)| {
+            crate::EntityPose::new(grid, position, orientation)
+        })
 }

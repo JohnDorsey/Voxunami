@@ -204,6 +204,40 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - The look angles are kept as reported (a component) beside the orientation quaternion, so that nothing recovers angles from a quaternion.
   The calls that read or move players take the world (`Presence`), a game holds it as it held the book.
 
+## Decided (players aboard ships; built in Phase 32g; the choices are mine unless marked, the owner's to overrule)
+
+- **A player's record is the truth about which frame they are in and where; the body is made to agree with it.** A player is an entity whose
+  `grid` is a level's root grid or a ship (owner, 2026-10-18: "a character's pose is `(frame, local)`"). Everything that asks where a player is
+  (`Presence::pose_of`, `players`, `level_of`) answers in the world, so a rule never has to know about frames; what moves players uses
+  `local_pose_of` and `set_pose_in`. Taking a ship away (`remove_grid`) puts what was aboard in the level, in the same call.
+- **Aboard is simulated in the ship's own coordinates, with the world's gravity turned into them** (owner, 2026-10-18/20): exact carry, no
+  fictitious forces. The body's box and controller stand in whatever up the field gives; the way a character faces is carried along as up turns
+  (parallel transport by the shortest turn), so a ship that yaws turns the player's view with it and a ship that pitches or rolls does not tip it.
+- **Boarding and leaving are geometric rules looked at once a tick, not counted** (changed from the 3-tick hysteresis of the first text; the owner's
+  to overrule): aboard when on the ground with a block of a ship a tenth below the feet; left when in the air with nothing of the ship under
+  along gravity within the ship's box, or the body's middle a voxel outside it. The two conditions cannot hold together, so nothing flaps.
+  Boarding takes away the part of the speed relative to the ship that points away from it: a body that stands on something is not moving off it
+  (a walker that a falling ship has lifted onto itself was thrown ten voxels up at the speed the ship had, before this was added).
+- **A character is never left inside what it can touch: every tick, one that something has moved into is moved out the shortest way**
+  (`CharacterBody::keep_clear`, after the terrain and the ships' colliders are in place and before the steps; up before the others at one
+  distance, in steps of an eighth, at most 8 voxels, else it stays). Found by measuring in 32g: the controller slides a character out of an
+  overlap along one collider's surface, with no regard to what is behind it, and the colliders of terrain leave out boxes buried in solid
+  terrain, so a ship that fell on a walker pressed them into the floor and they fell down through the world (eyes at 202.6 to 94.6); a ship
+  that went faster than about a voxel a tick, or a wall thinner than the walker, left them half in the ground; and a block built over a
+  walker's head made the controller shake them 0.45 into the floor and out again every step. The same rule moves a character out of a block
+  built where it stands, for terrain and for a ship's blocks. It looks at the voxels for terrain (exact, and sees what is buried) and at the ships' colliders
+  for ships, with a box 0.02 smaller on every side so that standing on something, or against it, is not inside it. A wall thin enough to jump
+  over a walker in a tick (more than a voxel a tick for one a voxel thick) passes them without touching, which harms no one.
+- **The view is the player's own angles in the room the body's frame says** (`PlayerPose::view_orientation`): the entity's orientation is the turn
+  of that room and then the angles, so the angles are never converted when a player boards or leaves, and the stream of a player who never
+  boards is byte for byte what it was. The camera has a `frame_rotation` and looks at its angles in it.
+- **A ship that sleeps has no speed on record, and one that is held has none until whoever moves it says how fast** (`set_grid_held(true)` stops it):
+  what a player who steps onto it inherits is its recorded speed at the place (`MovingGrid::velocity_at`).
+- **A world is saved with passengers in the level where their ship has them** until ships are saved (32i); a file that puts an entity in a
+  ship's frame is refused. (The reserved byte for a world-space fallback pose stays 0.)
+- **A player who comes back is told where they are** (`player_presence:placed`, in the world), because a client watches around its camera and a
+  returning player may be anywhere. (Not yet done for `/tp`; a follow-up.)
+
 ## Decided (the material palette; built in Phase 31)
 
 - **The game's palette is a storage buffer, indexed by the quad's 24-bit material value,** so a game has 1,048,576 materials (a choice of the renderer, to bound the buffer at

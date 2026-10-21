@@ -549,7 +549,17 @@ impl Bodies {
         for level in self.levels.values_mut() {
             for (id, record) in &mut level.ships {
                 let body = BodyId(id.get());
-                if record.kind == BodyKind::Fixed || level.bodies.is_asleep(body) {
+                if record.kind == BodyKind::Fixed {
+                    continue;
+                }
+                if level.bodies.is_asleep(body) {
+                    // A body asleep has no speed, whatever it was last written with: that is what someone who steps onto it should find.
+                    let (pose, linear, angular) = record.written;
+                    if (linear != [0.0; 3] || angular != [0.0; 3])
+                        && world.set_grid_velocity(*id, [0.0; 3], [0.0; 3]).is_ok()
+                    {
+                        record.written = (pose, [0.0; 3], [0.0; 3]);
+                    }
                     continue;
                 }
                 let Some(state) = level.bodies.state(body) else {

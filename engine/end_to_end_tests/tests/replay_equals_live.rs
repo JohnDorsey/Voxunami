@@ -418,3 +418,53 @@ fn a_replay_follows_the_recorded_player_between_levels() {
         Vec::<String>::new()
     );
 }
+
+#[test]
+fn a_wisp_that_rides_the_ship_is_in_the_world_where_the_ship_puts_it_in_every_view_of_a_replay_and_where_it_was_when_the_ship_goes()
+ {
+    let session = play_session(Fixture::with_ship(), 60);
+    let mut replayed = replay_player(session.recording.contents(), &ALL_PLUGINS).unwrap();
+    let rider = protocol::EntityId::new(1);
+    let ship = voxel_space::GridId::new(voxel_space::GridId::FIRST_ALLOCATED);
+    let (mut aboard_views, mut last_world_position) = (0, None);
+    let mut first_view_after = None;
+    // (A replay ends by closing the connection, after its last tick.)
+    while let Ok(Some(_)) = replayed.client.poll_tick() {
+        let world = replayed.client.world();
+        let Some(entity) = world.entities().get(rider) else {
+            continue;
+        };
+        let (level, position, _) = world
+            .entity_in_the_world(entity)
+            .expect("the ship it rides is in the picture");
+        assert_eq!(level, voxel_space::LevelIndex::MAIN);
+        if entity.pose.grid == ship {
+            // Aboard: its distance from the ship's origin is its distance in the ship, whatever the ship has done, and it is not where
+            // its coordinates in the ship would put it if they were the world's.
+            let ship_pose = world.grids().get(ship).unwrap().pose;
+            let from_the_origin = position.relative_to(ship_pose.position);
+            let there = entity
+                .pose
+                .position
+                .relative_to(voxel_space::WorldPosition::new(
+                    voxel_space::BrickCoordinate::ORIGIN,
+                    [0.0; 3],
+                ));
+            let length =
+                |vector: [f32; 3]| vector.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+            assert!((length(from_the_origin) - length(there)).abs() < 1e-3);
+            aboard_views += 1;
+            last_world_position = Some(position);
+        } else {
+            first_view_after.get_or_insert(position);
+        }
+    }
+    assert!(aboard_views >= 20, "{aboard_views} views had it aboard");
+    // The ship went, the wisp stayed, in the level, where the ship had it.
+    let (before, after) = (last_world_position.unwrap(), first_view_after.unwrap());
+    let moved = after.relative_to(before);
+    assert!(
+        moved.iter().all(|axis| axis.abs() < 1e-3),
+        "{before:?} then {after:?}"
+    );
+}

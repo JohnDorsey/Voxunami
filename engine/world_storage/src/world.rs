@@ -7,7 +7,7 @@ use entities::EntityStore;
 use namespaced_id::NamespacedId;
 use terrain::{GenerationOutcome, GeneratorId, TerrainGenerator, WorldTerrain, WorldTerrainError};
 use voxel_grid::{Brick, ChannelDefinition, ChannelValueKind, Grid, GridLayout, GridLayoutError};
-use voxel_space::{BrickCoordinate, LevelIndex};
+use voxel_space::{BrickCoordinate, EntityPose, GridId, LevelIndex};
 
 use crate::container::{ContainerError, Section, read_container, write_container};
 use crate::engine_sections::{
@@ -261,7 +261,6 @@ impl WorldData {
             .sum()
     }
 
-    /// Sections of plugins, in file order. Never interpreted here.
     /// The entities of the world.
     pub fn entities(&self) -> &EntityStore {
         &self.entities
@@ -280,6 +279,40 @@ impl WorldData {
         &mut self.grids
     }
 
+    /// The entities as a file holds them until ships are saved too (Phase 32i): one aboard a ship is in the level the ship is in, where
+    /// the ship has it, turned as it is in the world. The running world is not changed.
+    fn entities_in_the_levels(&self) -> std::borrow::Cow<'_, EntityStore> {
+        let aboard: Vec<_> = self
+            .entities
+            .iter()
+            .filter(|entity| entity.pose.grid.root_level().is_none())
+            .map(|entity| (entity.id, entity.pose))
+            .collect();
+        if aboard.is_empty() {
+            return std::borrow::Cow::Borrowed(&self.entities);
+        }
+        let mut store = self.entities.clone();
+        for (id, pose) in aboard {
+            let placed = self.grids.get(pose.grid).and_then(|ship| {
+                let (position, orientation) =
+                    ship.pose.place_in_world(pose.position, pose.orientation)?;
+                Some(EntityPose::new(
+                    GridId::root(ship.level),
+                    position,
+                    orientation,
+                ))
+            });
+            // A ship that is not there, or a place the world cannot hold: the main level, at the coordinates it has, is all that is known.
+            let placed = placed
+                .unwrap_or_else(|| EntityPose::new(GridId::MAIN, pose.position, pose.orientation));
+            store
+                .set_pose(id, placed)
+                .expect("an entity that is in the store can be moved in it");
+        }
+        std::borrow::Cow::Owned(store)
+    }
+
+    /// Sections of plugins, in file order. Never interpreted here.
     pub fn opaque_sections(&self) -> &[Section] {
         &self.opaque_sections
     }
@@ -439,7 +472,7 @@ impl WorldData {
         if with_contents && sections::entities_are_saved(&self.entities) {
             written.push(Self::section(
                 sections::entities_id(),
-                sections::encode_entities(&self.entities),
+                sections::encode_entities(&self.entities_in_the_levels()),
             ));
         }
         Ok(written)

@@ -10,7 +10,8 @@ use client::{Client, ClientError, ClientEvent, Handshake, HandshakeProgress};
 use identity::Identity;
 use namespaced_id::NamespacedId;
 use player_presence::{
-    LevelChange, PlayerClient, PlayerLook, PlayerPose, PlayerState, PoseReport, player_kind,
+    LevelChange, PlayerClient, PlayerLook, PlayerPlaced, PlayerPose, PlayerState, PoseReport,
+    player_kind,
 };
 use plugin_host::{FormId, Prompt, PromptClosed, UiAction, UiClose, UiResponse, UiShow};
 use protocol::{ClientId, Message};
@@ -18,7 +19,8 @@ use renderer::Camera;
 use transport::Connection;
 use voxel_grid::Grid;
 use voxel_space::{
-    BrickBox, BrickCoordinate, GridId, GridPose, LevelIndex, VoxelCoordinate, WorldPosition,
+    BrickBox, BrickCoordinate, GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate,
+    WorldPosition,
 };
 use winit::keyboard::KeyCode;
 use world_view::{
@@ -93,6 +95,11 @@ pub struct Session<C: Connection, G: GameDefinition> {
     last_pose_sent: Option<PlayerPose>,
     /// What a server that moves the player was last told they are asking of their body.
     last_movement_sent: Option<(NamespacedId, Vec<u8>)>,
+}
+
+/// A turn as the camera holds it.
+fn frame_of(turn: Orientation) -> glam::Quat {
+    glam::Quat::from_array(turn.components())
 }
 
 impl<C: Connection, G: GameDefinition> Session<C, G> {
@@ -273,6 +280,8 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         let Some(update) = self.client.poll_tick()? else {
             return Ok(false);
         };
+        // The players are among the entities and, aboard a ship, where the ship puts them: they are made again when either changed.
+        let mut players_changed = false;
         for event in update.events {
             match event {
                 ClientEvent::BrickChanged { grid, brick } if grid.root_level().is_some() => {
@@ -282,7 +291,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                     self.grid_mesher.brick_changed(grid, brick);
                 }
                 // Where ships are and which are gone is read from the client's picture when the view is updated.
-                ClientEvent::GridsChanged => {}
+                ClientEvent::GridsChanged => players_changed = true,
                 ClientEvent::CommandReply { text } => self.command_replies.push(text),
                 ClientEvent::GameMessage { kind, payload } if kind == LevelChange::kind() => {
                     // The server moved the player. A recording shows the level by what it watches.
@@ -291,6 +300,15 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                         && let Some(level) = self.client.world().world().level_index(&id)
                     {
                         self.change_level(level);
+                    }
+                }
+                ClientEvent::GameMessage { kind, payload } if kind == PlayerPlaced::kind() => {
+                    // The server says where the player is (they came back to somewhere other than where their program starts the view):
+                    // the view goes there, and watches around it. A recording shows where the recorded player was by their entity.
+                    if self.mode == Mode::Playing
+                        && let Ok(PlayerPlaced(position)) = PlayerPlaced::decode(&payload)
+                    {
+                        self.camera.position = position;
                     }
                 }
                 ClientEvent::GameMessage { kind, payload } if kind == Prompt::kind() => {
@@ -322,11 +340,12 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                     // A kind no client plugin handles is another game's, or a message only a server needs.
                     self.client_host.message(&kind, &payload);
                 }
-                ClientEvent::EntitiesChanged => {
-                    self.players = self.players_among_the_entities();
-                }
+                ClientEvent::EntitiesChanged => players_changed = true,
                 ClientEvent::WatchedRegionChanged { .. } => {}
             }
+        }
+        if players_changed {
+            self.players = self.players_among_the_entities();
         }
         let channels = self.client_host.view(self.view_channels.clone());
         self.mesher.set_channels(channels.clone());
@@ -351,13 +370,23 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             .filter_map(|entity| {
                 let PlayerClient(client) = entity.component().ok()??;
                 let PlayerLook { yaw, pitch } = entity.component().ok()??;
-                let level = entity.pose.grid.root_level()?;
+                // Where they are in the world: aboard a ship, where the ship puts them (a ship the client has not been told of puts
+                // them nowhere it knows, and they are left out).
+                let (level, position, orientation) =
+                    self.client.world().entity_in_the_world(entity)?;
                 let pose = PlayerPose {
-                    position: entity.pose.position,
+                    position,
                     yaw,
                     pitch,
                 };
-                Some((client, PlayerState { pose, level }))
+                Some((
+                    client,
+                    PlayerState {
+                        pose,
+                        level,
+                        frame_rotation: pose.frame_rotation_of(orientation),
+                    },
+                ))
             })
             .collect()
     }
@@ -371,8 +400,10 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             .iter()
             .filter_map(|entity| {
                 let appearance = self.client_host.appearance_of(entity)?;
+                // (Aboard a ship an entity is where the ship puts it; the box stays upright in the world.)
+                let (_, position, _) = self.client.world().entity_in_the_world(entity)?;
                 Some(renderer::EntityBox {
-                    position: entity.pose.position.translated(appearance.centre_offset),
+                    position: position.translated(appearance.centre_offset),
                     size: appearance.size,
                     material: appearance.material,
                 })
@@ -392,14 +423,16 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         self.players.get(&own).map(|state| state.pose)
     }
 
-    /// In a game where the server moves players, the camera is where the server says the player is
-    /// (the way they face is their own, unless the server sets the view too).
+    /// In a game where the server moves players, the camera is where the server says the player is, in the room the server says their
+    /// angles are measured in (the way they face is their own, unless the server sets the view too).
     fn follow_own_pose(&mut self) {
-        if let Some(pose) = self.own_server_pose() {
-            self.camera.position = pose.position;
+        let own = self.client.world().server_info().client;
+        if let Some(state) = self.players.get(&own) {
+            self.camera.position = state.pose.position;
+            self.camera.frame_rotation = frame_of(state.frame_rotation);
             if G::server_sets_view() {
-                self.camera.yaw = pose.yaw;
-                self.camera.pitch = pose.pitch;
+                self.camera.yaw = state.pose.yaw;
+                self.camera.pitch = state.pose.pitch;
             }
         }
     }
@@ -431,6 +464,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         let own = self.client.world().server_info().client;
         if let Some(state) = self.players.get(&own) {
             self.camera.position = state.pose.position;
+            self.camera.frame_rotation = frame_of(state.frame_rotation);
             self.camera.yaw = state.pose.yaw;
             self.camera.pitch = state.pose.pitch;
         }

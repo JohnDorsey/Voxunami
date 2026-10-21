@@ -2774,3 +2774,226 @@ fn a_ship_removed_in_the_tick_it_was_edited_is_gone_from_the_picture_without_tro
         [&ServerMessage::GridsDespawned(vec![a_ship_id(0)])]
     );
 }
+
+// ---- entities aboard ships ----
+
+/// A pose in the frame of a ship at a brick and an offset of its own coordinates.
+fn aboard_at(ship: GridId, brick_x: i64, offset_x: f32) -> EntityPose {
+    EntityPose::new(
+        ship,
+        WorldPosition::new(BrickCoordinate::new(brick_x, 0, 0), [offset_x, 5.0, 5.0]),
+        Orientation::IDENTITY,
+    )
+}
+
+/// A server with the cow kind whose game does `act` at each tick, and a client that has logged in.
+fn herd_ship_harness(
+    act: impl FnMut(Tick, &mut server::ServerWorld) + Send + 'static,
+) -> (Harness, TestClient) {
+    let game = Game::new(&ALL_PLUGINS);
+    let logic = ScriptedLogic::new()
+        .with_entity_catalog(cow_catalog())
+        .on_tick(act);
+    let mut harness =
+        Harness::with_logic(&game, game.new_world(), ServerConfig::new(game_id()), logic);
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    client.received();
+    (harness, client)
+}
+
+/// The entities the messages say came in, with the frame each is in, in the order told.
+fn spawned_frames(messages: &[ServerMessage]) -> Vec<(EntityId, GridId)> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            ServerMessage::EntitiesSpawned(states) => Some(states),
+            _ => None,
+        })
+        .flatten()
+        .map(|state| (state.id, state.pose.grid))
+        .collect()
+}
+
+#[test]
+fn a_client_is_told_of_the_entities_aboard_the_ships_it_holds_after_the_ship_and_of_no_others() {
+    let (mut harness, mut client) = herd_ship_harness(|tick, world| {
+        if tick.get() == 3 {
+            let near = world.create_grid(LevelIndex::MAIN, ship_pose(0)).unwrap();
+            build(world, near, &[([1, 1, 1], 4)]);
+            let far = world.create_grid(LevelIndex::MAIN, ship_pose(40)).unwrap();
+            build(world, far, &[([1, 1, 1], 4)]);
+            let cow = id("test:cow");
+            // 1: in the level, at the same coordinates as 2. 2: aboard the near ship. 3: aboard the far ship, at coordinates the
+            // region covers. 4: hidden, aboard the near ship, in a brick of the ship that the region does not cover (a ship is in
+            // the picture whole, so those aboard are told of wherever they are).
+            for pose in [
+                pose_in(0, 3.0),
+                aboard_at(near, 0, 3.0),
+                aboard_at(far, 0, 3.0),
+                aboard_at(near, 90, 3.0),
+            ] {
+                world.spawn_entity(&cow, pose, ComponentBag::new()).unwrap();
+            }
+            world
+                .set_entity_component(EntityId::new(4), &Hidden(true))
+                .unwrap();
+            // 5: aboard the near ship, far from its bricks, not hidden.
+            world
+                .spawn_entity(&cow, aboard_at(near, -70, 3.0), ComponentBag::new())
+                .unwrap();
+        }
+    });
+    client.watch(BrickCoordinate::ORIGIN, 2);
+    harness.server.step();
+    harness.server.step();
+    let messages = client.received();
+    assert_eq!(
+        spawned_frames(&messages),
+        [
+            (EntityId::new(1), GridId::MAIN),
+            (EntityId::new(2), a_ship_id(0)),
+            (EntityId::new(5), a_ship_id(0)),
+        ]
+    );
+    // The ship and its bricks come before the entities, so a client can place them the moment it hears of them.
+    let position = |wanted: fn(&ServerMessage) -> bool| messages.iter().position(wanted).unwrap();
+    assert!(
+        position(|message| matches!(message, ServerMessage::GridsSpawned(_)))
+            < position(|message| matches!(message, ServerMessage::EntitiesSpawned(_)))
+    );
+    // The pose told is the one in the frame of the ship, not the world's.
+    let ServerMessage::EntitiesSpawned(states) = messages
+        .iter()
+        .find(|message| matches!(message, ServerMessage::EntitiesSpawned(_)))
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    assert_eq!(states[1].pose, aboard_at(a_ship_id(0), 0, 3.0));
+}
+
+#[test]
+fn an_entity_aboard_moves_with_a_pose_in_the_frame_of_the_ship_and_the_ship_moving_tells_only_the_ship()
+ {
+    let (mut harness, mut client) = herd_ship_harness(|tick, world| match tick.get() {
+        3 => {
+            let ship = world.create_grid(LevelIndex::MAIN, ship_pose(0)).unwrap();
+            build(world, ship, &[([1, 1, 1], 4)]);
+            world
+                .spawn_entity(
+                    &id("test:cow"),
+                    aboard_at(ship, 0, 3.0),
+                    ComponentBag::new(),
+                )
+                .unwrap();
+        }
+        // The ship moves and the cow does not.
+        6 => world.set_grid_pose(a_ship_id(0), ship_pose(1)).unwrap(),
+        // The cow walks in the ship.
+        8 => world
+            .set_entity_pose(EntityId::new(1), aboard_at(a_ship_id(0), 0, 4.0))
+            .unwrap(),
+        _ => {}
+    });
+    client.watch(BrickCoordinate::ORIGIN, 2);
+    harness.server.step();
+    harness.server.step();
+    client.received();
+    // Tick 5: nothing. Tick 6: the ship moved, and the cow aboard did not, so it is not told of.
+    harness.server.step();
+    harness.server.step();
+    let messages = client.received();
+    assert!(entity_messages(&messages).is_empty(), "{messages:?}");
+    assert!(
+        messages
+            .iter()
+            .any(|message| matches!(message, ServerMessage::GridsChanged(_)))
+    );
+    // Tick 7, 8: the cow walked, and the pose told is in the frame of the ship.
+    harness.server.step();
+    harness.server.step();
+    let messages = client.received();
+    let [ServerMessage::EntitiesChanged(changed)] = entity_messages(&messages)[..] else {
+        panic!("{messages:?}");
+    };
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed[0].pose, Some(aboard_at(a_ship_id(0), 0, 4.0)));
+}
+
+#[test]
+fn a_ship_that_leaves_the_picture_takes_those_aboard_with_it_and_they_come_back_with_it() {
+    let (mut harness, mut client) = herd_ship_harness(|tick, world| match tick.get() {
+        3 => {
+            let ship = world.create_grid(LevelIndex::MAIN, ship_pose(0)).unwrap();
+            build(world, ship, &[([1, 1, 1], 4)]);
+            world
+                .spawn_entity(
+                    &id("test:cow"),
+                    aboard_at(ship, 0, 3.0),
+                    ComponentBag::new(),
+                )
+                .unwrap();
+        }
+        6 => world.set_grid_pose(a_ship_id(0), ship_pose(40)).unwrap(),
+        9 => world.set_grid_pose(a_ship_id(0), ship_pose(0)).unwrap(),
+        _ => {}
+    });
+    client.watch(BrickCoordinate::ORIGIN, 2);
+    harness.server.step();
+    harness.server.step();
+    assert_eq!(spawned_frames(&client.received()).len(), 1);
+    harness.server.step();
+    harness.server.step();
+    // The ship left the region at tick 6: the ship and the cow are both gone.
+    let messages = client.received();
+    assert!(messages.contains(&ServerMessage::GridsDespawned(vec![a_ship_id(0)])));
+    assert!(messages.contains(&ServerMessage::EntitiesDespawned(vec![EntityId::new(1)])));
+    for _ in 7..9 {
+        harness.server.step();
+        client.received();
+    }
+    harness.server.step(); // tick 9: the ship is back.
+    let messages = client.received();
+    assert_eq!(
+        spawned_frames(&messages),
+        [(EntityId::new(1), a_ship_id(0))]
+    );
+}
+
+#[test]
+fn a_ship_removed_with_someone_aboard_leaves_them_in_the_level_as_a_change_of_pose_not_a_new_entity()
+ {
+    let (mut harness, mut client) = herd_ship_harness(|tick, world| match tick.get() {
+        3 => {
+            let ship = world.create_grid(LevelIndex::MAIN, ship_pose(0)).unwrap();
+            build(world, ship, &[([1, 1, 1], 4)]);
+            world
+                .spawn_entity(
+                    &id("test:cow"),
+                    aboard_at(ship, 0, 3.0),
+                    ComponentBag::new(),
+                )
+                .unwrap();
+        }
+        6 => {
+            world.remove_grid(a_ship_id(0)).unwrap();
+        }
+        _ => {}
+    });
+    client.watch(BrickCoordinate::ORIGIN, 2);
+    harness.server.step();
+    harness.server.step();
+    client.received();
+    harness.server.step();
+    harness.server.step();
+    let messages = client.received();
+    assert!(messages.contains(&ServerMessage::GridsDespawned(vec![a_ship_id(0)])));
+    // The same entity, now in the level (the ship was at the origin, unturned, so it is where it was).
+    assert!(spawned_frames(&messages).is_empty(), "{messages:?}");
+    let [ServerMessage::EntitiesChanged(changed)] = entity_messages(&messages)[..] else {
+        panic!("{messages:?}");
+    };
+    assert_eq!(changed[0].id, EntityId::new(1));
+    assert_eq!(changed[0].pose, Some(pose_in(0, 3.0)));
+}

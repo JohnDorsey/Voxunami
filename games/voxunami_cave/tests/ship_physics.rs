@@ -3,24 +3,13 @@
 
 mod common;
 
-use common::Scene;
+use common::{FLOOR, Scene, flat_floor, make_ship, pose_at, ship_id as id};
 use server::GridView;
 use voxel_space::{
-    BrickCoordinate, GravitySettings, GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate,
+    BrickCoordinate, GravitySettings, GridPose, LevelIndex, Orientation, VoxelCoordinate,
     WorldPosition,
 };
 use voxunami_cave::content::CaveContent;
-
-fn id(number: u64) -> GridId {
-    GridId::new(GridId::FIRST_ALLOCATED + number)
-}
-
-fn pose_at(x: f32, y: f32, z: f32) -> GridPose {
-    GridPose::new(
-        WorldPosition::new(BrickCoordinate::ORIGIN, [x, y, z]),
-        Orientation::IDENTITY,
-    )
-}
 
 /// Makes a ship that is a cube of stone with this many voxels along an edge.
 fn make_a_cube(scene: &mut Scene, size: i64, pose: GridPose) {
@@ -29,49 +18,7 @@ fn make_a_cube(scene: &mut Scene, size: i64, pose: GridPose) {
 
 /// The same, held still from the tick it is made in if it is to be.
 fn make_a_cube_that_may_be_held(scene: &mut Scene, size: i64, pose: GridPose, held: bool) {
-    let content = CaveContent::new();
-    scene.run(move |world| {
-        let grid = world.create_grid(LevelIndex::MAIN, pose).unwrap();
-        world.set_grid_held(grid, held).unwrap();
-        let mut view = world.grid(grid).unwrap();
-        for x in 0..size {
-            for y in 0..size {
-                for z in 0..size {
-                    view.set(
-                        content.block_channel(),
-                        VoxelCoordinate::new(x, y, z),
-                        content.blocks.stone,
-                    )
-                    .unwrap();
-                }
-            }
-        }
-    });
-}
-
-/// The height of the top of the floor `flat_floor` makes.
-const FLOOR: f32 = 201.0;
-
-/// A flat floor of stone three voxels thick, from 0 to 64 along x and z, above the hills of the terrain: ground that is the same everywhere,
-/// since the terrain of Cave is bumpy and a ship on a slope rolls.
-fn flat_floor(scene: &mut Scene) {
-    let content = CaveContent::new();
-    scene.run(move |world| {
-        for x in 0..64 {
-            for z in 0..64 {
-                for y in 198..201 {
-                    world
-                        .set_voxel(
-                            LevelIndex::MAIN,
-                            content.block_channel(),
-                            VoxelCoordinate::new(x, y, z),
-                            content.blocks.stone,
-                        )
-                        .unwrap();
-                }
-            }
-        }
-    });
+    make_ship(scene, pose, held, [size; 3], |_| true);
 }
 
 fn ship_pose(scene: &Scene, number: u64) -> GridPose {
@@ -143,6 +90,32 @@ fn a_ship_falls_onto_the_ground_rests_on_it_and_the_player_sees_it_fall() {
         scene.rig.server.world().main().overrides.brick_count(),
         edited_bricks
     );
+}
+
+#[test]
+fn a_ship_that_has_gone_to_sleep_has_no_speed_left_on_record_not_the_last_it_had_before() {
+    let mut scene = Scene::new();
+    flat_floor(&mut scene);
+    // A cube dropped from a little way up, turned a little so that it tumbles as it lands and has some turning to lose.
+    let turned = GridPose::new(
+        WorldPosition::new(BrickCoordinate::ORIGIN, [14.0, FLOOR + 3.0, 14.0]),
+        Orientation::from_yaw_pitch(0.4, 0.2),
+    );
+    make_a_cube(&mut scene, 4, turned);
+    let mut asleep_from = None;
+    let mut last = None;
+    for tick in 0..600 {
+        scene.ticks(1);
+        let pose = ship_pose(&scene, 0);
+        if last == Some(pose) && asleep_from.is_none() {
+            asleep_from = Some(tick);
+        }
+        last = Some(pose);
+    }
+    assert!(asleep_from.is_some(), "the cube came to rest and slept");
+    let ship = scene.rig.server.world().grids().get(id(0)).unwrap();
+    assert_eq!(ship.linear_velocity, [0.0; 3]);
+    assert_eq!(ship.angular_velocity, [0.0; 3]);
 }
 
 #[test]
@@ -476,10 +449,39 @@ fn hash_of_ships(scene: &Scene) -> u64 {
     state
 }
 
+/// A hash of the pose alone of every ship, bit for bit: where the ships are, whatever is on record of how fast they were going.
+fn hash_of_poses(scene: &Scene) -> u64 {
+    let mut state: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |value: u64| {
+        for byte in value.to_le_bytes() {
+            state ^= u64::from(byte);
+            state = state.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    for (grid, ship) in scene.rig.server.world().grids().iter() {
+        feed(grid.get());
+        let (brick, offset) = (ship.pose.position.brick(), ship.pose.position.offset());
+        for value in [brick.x(), brick.y(), brick.z()] {
+            feed(value as u64);
+        }
+        for value in offset.into_iter().chain(ship.pose.orientation.components()) {
+            feed(u64::from(value.to_bits()));
+        }
+    }
+    state
+}
+
+#[test]
+fn the_poses_of_the_ships_are_the_same_whatever_is_kept_of_their_speeds() {
+    // Taken before a ship that went to sleep was given no speed on record (see the test of that), and not changed by it.
+    assert_eq!(hash_of_poses(&busy_scene()), 1_355_701_843_541_054_234);
+}
+
 #[test]
 fn the_same_ships_move_the_same_bits_every_time_and_on_every_machine() {
     let (first, second) = (busy_scene(), busy_scene());
     assert_eq!(hash_of_ships(&first), hash_of_ships(&second));
     // Written down once; a change in it is a change in the simulation (Windows and Linux must agree on it).
-    assert_eq!(hash_of_ships(&first), 187_330_083_679_574_898);
+    // (It changed in Phase 32g, when a ship that sleeps was given no speed on record: 187_330_083_679_574_898 before; the poses did not.)
+    assert_eq!(hash_of_ships(&first), 16_582_222_097_314_237_682);
 }

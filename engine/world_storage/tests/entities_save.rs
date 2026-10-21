@@ -2,17 +2,22 @@
 //! being reused, that a world without entities saves as it always did, and that what a game cannot interpret
 //! is kept.
 
+use std::sync::Arc;
+
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use entities::{ComponentBag, Entity, EntityKindSpec, EntityKinds, EntityStore};
 use namespaced_id::NamespacedId;
 use proptest::prelude::*;
 use protocol::{EntityId, Message};
+use voxel_grid::Grid;
 use voxel_space::test_support::entity_pose;
-use voxel_space::{BrickCoordinate, EntityPose, GridId, LevelIndex, Orientation, WorldPosition};
+use voxel_space::{
+    BrickCoordinate, EntityPose, GridId, GridPose, LevelIndex, Orientation, WorldPosition,
+};
 use world_storage::container::{read_container, write_container};
 use world_storage::engine_sections::{decode_entities, encode_entities, entities_id};
 use world_storage::test_support::{ALL_PLUGINS, Game, id, sample_world};
-use world_storage::{LoadError, Section, WorldData};
+use world_storage::{LoadError, MovingGrid, Section, WorldData};
 
 /// A component that is one number.
 #[derive(Debug, PartialEq)]
@@ -298,4 +303,93 @@ proptest! {
     fn decoding_arbitrary_bytes_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..120)) {
         let _ = decode_entities(&bytes);
     }
+}
+
+/// A ship in the main level at `pose`, with no voxels.
+fn make_ship(world: &mut WorldData, pose: GridPose) -> GridId {
+    let layout = Arc::clone(world.main().overrides.layout());
+    world.grids_mut().create(MovingGrid {
+        level: LevelIndex::MAIN,
+        pose,
+        linear_velocity: [0.0; 3],
+        angular_velocity: [0.0; 3],
+        mass: 0.0,
+        centre_of_mass: [0.0; 3],
+        held: false,
+        voxels: Grid::new(layout),
+    })
+}
+
+#[test]
+fn someone_aboard_a_ship_is_saved_in_the_level_where_the_ship_has_them_until_ships_are_saved_too() {
+    let game = Game::new(&ALL_PLUGINS);
+    let mut world = world_with_entities(&game);
+    let quarter = std::f32::consts::FRAC_PI_2;
+    let ship_pose = GridPose::new(
+        WorldPosition::new(BrickCoordinate::new(2, 0, 0), [1.0, 2.0, 3.0]),
+        Orientation::from_yaw_pitch(quarter, 0.0),
+    );
+    let ship = make_ship(&mut world, ship_pose);
+    let aboard = EntityPose::new(
+        ship,
+        WorldPosition::new(BrickCoordinate::new(0, 0, 0), [10.0, 0.0, 0.0]),
+        Orientation::from_yaw_pitch(0.0, quarter),
+    );
+    let passenger = spawn(&mut world, "test:cow", aboard);
+    let before = entities_of(&world);
+
+    let bytes = game.save(&world);
+
+    // Saving does not take them off the ship in the running world.
+    assert_eq!(entities_of(&world), before);
+    assert_eq!(world.entities().get(passenger).unwrap().pose, aboard);
+    // The file has them where the ship has them in the world, and they are the same entity (the id, the kind, the components).
+    let mut again = Game::new(&ALL_PLUGINS);
+    let (loaded, _) = again.load(&bytes).unwrap();
+    let saved = loaded.entities().get(passenger).unwrap();
+    let (position, orientation) = ship_pose
+        .place_in_world(aboard.position, aboard.orientation)
+        .unwrap();
+    assert_eq!(
+        saved.pose,
+        EntityPose::new(GridId::MAIN, position, orientation)
+    );
+    assert_eq!(saved.kind, id("test:cow"));
+    assert_eq!(
+        loaded.entities().component::<Health>(passenger).unwrap(),
+        Some(Health(10))
+    );
+    // Everything else is as it was, and the file is stable.
+    assert_eq!(loaded.entities().len(), before.len());
+    for entity in &before {
+        if entity.id != passenger {
+            assert_eq!(loaded.entities().get(entity.id), Some(entity));
+        }
+    }
+    assert_eq!(again.save(&loaded), bytes);
+}
+
+#[test]
+fn a_file_that_puts_an_entity_in_the_frame_of_a_ship_is_refused_because_no_ship_is_saved_yet() {
+    let game = Game::new(&ALL_PLUGINS);
+    let mut store = EntityStore::new();
+    store
+        .spawn(
+            &kinds(),
+            &id("test:pig"),
+            EntityPose::new(
+                GridId::new(GridId::FIRST_ALLOCATED),
+                WorldPosition::new(BrickCoordinate::ORIGIN, [1.0; 3]),
+                Orientation::IDENTITY,
+            ),
+            ComponentBag::new(),
+        )
+        .unwrap();
+    let payload = encode_entities(&store);
+    assert!(decode_entities(&payload).is_err());
+    let bytes = game.save(&world_with_entities(&game));
+    assert!(matches!(
+        Game::new(&ALL_PLUGINS).load(&with_entities_section(&bytes, 1, payload)),
+        Err(LoadError::Section { .. })
+    ));
 }

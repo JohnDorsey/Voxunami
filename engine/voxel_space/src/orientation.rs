@@ -51,6 +51,28 @@ impl Orientation {
     pub fn components(self) -> [f32; 4] {
         self.0
     }
+
+    /// The rotation that does `inner` first and then `self`: the product of the two quaternions, `self * inner`, as for matrices.
+    /// Computed in `f64`, normalised, and written as `f32`, so the same two rotations give the same bits on every machine.
+    pub fn compose(self, inner: Self) -> Self {
+        let [ax, ay, az, aw] = self.0.map(f64::from);
+        let [bx, by, bz, bw] = inner.0.map(f64::from);
+        let product = [
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+            aw * bw - ax * bx - ay * by - az * bz,
+        ];
+        let length = product.map(|c| c * c).iter().sum::<f64>().sqrt();
+        Self(product.map(|component| (component / length) as f32))
+    }
+
+    /// The rotation that undoes this one (the conjugate: for a unit quaternion that is its inverse).
+    pub fn inverse(self) -> Self {
+        let [x, y, z, w] = self.0;
+        // Written as subtractions from zero so that no turn about an axis gives +0 there, not -0.
+        Self([0.0 - x, 0.0 - y, 0.0 - z, w])
+    }
 }
 
 impl Default for Orientation {
@@ -130,7 +152,53 @@ mod tests {
         assert_ne!(positive, negative);
     }
 
+    #[test]
+    fn turns_about_one_axis_add_when_composed() {
+        let (first, second) = (0.7f32, -1.9f32);
+        let composed = Orientation::from_yaw_pitch(first, 0.0)
+            .compose(Orientation::from_yaw_pitch(second, 0.0));
+        let expected = Orientation::from_yaw_pitch(first + second, 0.0).components();
+        for (component, wanted) in composed.components().into_iter().zip(expected) {
+            assert!(
+                (component - wanted).abs() < 1e-6,
+                "{composed:?} vs {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn composing_is_not_commutative_and_does_the_inner_turn_first() {
+        // Tipped up a quarter turn about x first, then turned a quarter about the vertical axis: the product (yaw about y) * (pitch about
+        // x), worked out by hand for two quarter turns, is the quaternion (1/2, 1/2, -1/2, 1/2). The other order is another turn.
+        let quarter = std::f32::consts::FRAC_PI_2;
+        let tip = Orientation::from_yaw_pitch(0.0, quarter);
+        let turn = Orientation::from_yaw_pitch(quarter, 0.0);
+        let [x, y, z, w] = turn.compose(tip).components();
+        for (component, wanted) in [x, y, z, w].into_iter().zip([0.5, 0.5, -0.5, 0.5]) {
+            assert!((component - wanted).abs() < 1e-6, "{x} {y} {z} {w}");
+        }
+        assert_ne!(turn.compose(tip), tip.compose(turn));
+    }
+
+    #[test]
+    fn the_inverse_of_no_turn_is_no_turn_with_no_negative_zeros() {
+        assert_eq!(Orientation::IDENTITY.inverse(), Orientation::IDENTITY);
+    }
+
     proptest! {
+        #[test]
+        fn a_turn_composed_with_its_inverse_is_no_turn_in_either_order(
+            yaw in -20.0f32..20.0,
+            pitch in -1.5f32..1.5,
+        ) {
+            let turn = Orientation::from_yaw_pitch(yaw, pitch);
+            for composed in [turn.compose(turn.inverse()), turn.inverse().compose(turn)] {
+                let [x, y, z, w] = composed.components();
+                prop_assert!(x.abs() < 1e-6 && y.abs() < 1e-6 && z.abs() < 1e-6);
+                prop_assert!((w.abs() - 1.0).abs() < 1e-6);
+            }
+        }
+
         #[test]
         fn any_yaw_and_pitch_make_a_unit_orientation_that_is_accepted_back(
             yaw in -20.0f32..20.0,

@@ -20,7 +20,8 @@
 //!   its edited bricks (as the payload of `engine:override_bricks`).
 //! - `engine:entities`: the entity counter, then every entity in order of id: its id, kind, pose, a byte reserved for
 //!   a world-space fallback pose (0 now; an entity in a grid that is not a root grid will have one), and its
-//!   components by identifier as the bytes their codecs made. Written only when the world has entities or has
+//!   components by identifier as the bytes their codecs made. Until ships are saved (Phase 32i) an entity aboard one is written in the
+//!   level the ship is in, where the ship has it, and a pose in the frame of a ship is refused when read. Written only when the world has entities or has
 //!   had any (so a world without them is byte for byte what it was before entities), and not in a world
 //!   description. Entities of kinds nobody has, and components nobody knows, are kept as they are.
 //! - `engine:override_bricks`: the bricks that replace generated terrain, sorted by coordinate. (Files
@@ -100,6 +101,12 @@ pub fn decode_entities(payload: &[u8]) -> Result<EntityStore, DecodeError> {
         if reader.read_u8()? != 0 {
             return Err(DecodeError::Invalid(
                 "an entity has a world-space pose, which this program cannot keep",
+            ));
+        }
+        // No ship is in the file (they are not saved yet), so nothing can be aboard one.
+        if pose.grid.root_level().is_none() {
+            return Err(DecodeError::Invalid(
+                "an entity is in the frame of a ship, which this program cannot keep",
             ));
         }
         let components = ComponentBag::read(&mut reader)?;

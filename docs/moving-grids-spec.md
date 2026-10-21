@@ -1,6 +1,6 @@
 # Phase 32: moving grids (ships)
 
-Status: the owner answered section 6 on 2026-10-20 (answers at its end, and applied in the text); 32a to 32f are built (`build-log.md`). Read from the plan (requirements 1 to 16, the owner's
+Status: the owner answered section 6 on 2026-10-20 (answers at its end, and applied in the text); 32a to 32g are built (`build-log.md`). Read from the plan (requirements 1 to 16, the owner's
 decisions of 2026-10-18 and 2026-10-20), `future-goals.md` (goal 2 and "Ship goals"), and from the code after Phase 31. The choices are
 mine and marked; what I checked in the code is marked **[code]**, what I believe from memory is marked **[memory]**.
 
@@ -114,24 +114,91 @@ the plan is a budget of bricks made again per tick (the rest are made over the n
   the client's actions send it. Terrain and ships look the same to a client plugin.
 - Entities aboard are drawn under the grid's matrix (their pose is local to it).
 
-### 2.6 Aboard: the hard part
+### 2.6 Aboard: the hard part (built in 32g)
 
 A character's pose is `(frame, local)`. A character *aboard* is simulated in its ship's frame, as decided on 2026-10-18: its position is
 unchanged when the ship moves (exact carry), its collision world is the ship's blocks through a `CollisionSource` in local voxels (the same
 trait the terrain uses, so the controller does not change), and gravity is the field's value in the ship's axes (2.9), a vector that changes
-as the ship turns.
+as the ship turns. As built:
 
-- **Boarding:** a world-frame character that is grounded for 3 ticks on a voxel of a ship (found by a short downward probe against nearby
-  ships, in each ship's frame) becomes aboard: its pose is re-expressed in the ship's frame; its velocity becomes velocity relative to the
-  ship's point.
-- **Leaving:** an aboard character that is not grounded on the ship and is outside the ship's bounds expanded by 1 m for 3 ticks is moved to
-  the world frame, inheriting the ship's velocity at that point (linear plus angular times the offset). The three-tick hysteresis on both
-  ends stops flapping at an edge. Jumping off the deck is leaving; the character keeps its momentum, as a person leaving a train would.
-- **What aboard cannot see:** terrain and other ships' hulls are not in its collision world, so a character aboard near the edge could not
-  be stopped by a cliff next to the ship. The leave rule makes that edge the same place the world takes over, and the world frame then has
-  the ship as a body to collide with. I expect bugs here, and the steps (32h) put a scenario test for every transition: boarding at rest,
-  boarding while the ship moves, jumping off, being on a ship that turns, a ship that is destroyed under a player, and the same under
-  replay.
+**Entities in a frame.** `EntityPose.grid` may be a ship. The store keeps any grid; `ServerWorld::spawn_entity` and `set_entity_pose` refuse
+a ship that is not there (`EntityError::NoSuchGrid`, and nothing changes). `ServerWorld::remove_grid` puts everything aboard (players away
+included) in the ship's level where the ship had it, turned as it was, in the same call, so nothing is left in a frame that is gone. A client
+is told of every entity aboard each ship it is told of, after the ship and its bricks, wherever in the ship they are (a ship is in the picture
+whole); a ship that leaves the picture takes them with it. A world is saved with those aboard in the level where their ship has them, until
+ships are saved too (32i); a file that puts an entity in a ship's frame is refused when read. The client's `ClientWorld::entity_in_the_world`
+says where an entity is in the world.
+
+**The record is the truth about where a player is.** `Presence::pose_of`, `players` and `level_of` answer in the world (a passenger is where
+the ship puts them, in the ship's level); `frame_of`, `local_pose_of` and `set_pose_in` are for what moves players. Each tick
+`voxunami_cave:move_the_bodies` (after `engine:grid_bodies_move`, so the players meet the ships where they are this tick) reads each player's
+record, makes the body agree with it if it does not (the player was sent to another level, a ship was taken from under them, they came back
+aboard one), steps the body, and writes the new place, in the frame the body is in, back. `/tp` writes the record at once.
+
+**Boarding and leaving (aboard.rs).** A walker in a level that ends a tick on the ground, not flying, with a block of a ship within a tenth of a
+voxel under their feet (along the world's down, in the ship's coordinates, looking at the eighths a block's shape comes in) is put aboard it:
+the same place, and the speed they have *relative to the ship* at that place (the ship's recorded speed at a point is its centre of mass's plus its turning
+crossed with the arm: `MovingGrid::velocity_at`), in the ship's axes. A passenger has left when they are in the air and nothing of the ship is under
+them along gravity anywhere in the box of the ship's bricks (a jump from a deck is followed from where the line enters the box), or the middle of
+their body is more than a voxel outside that box; they are put in the level at the same place with the speed they had in the ship, turned, plus the
+ship's at that place. A player who walks off the edge of a deck leaves the moment they are off it, not three ticks later; one who jumps from the
+deck stays aboard. **These two rules differ from the 3-tick hysteresis above and I changed them (and it is the owner's to overrule):** the
+condition for boarding needs a block under the feet and the one for leaving needs none, so no one is passed back and forth at an edge, and a
+tick is all either needs; and a body left standing in the level on a moving ship is carried by nothing. (A body aboard cannot see the terrain, so
+three ticks beyond the edge of a deck that stands on the ground would have it walking through the ground.) A flying player is not aboard; one
+who flies out of the ship's box leaves it.
+
+**Ships are colliders for a body in a level.** The blocks of the ships within two bricks of a player are colliders in the player's own Rapier
+world (`CharacterBody::update_foreign`), put each tick where the ship is and turned as it is, made again where the ship is edited
+(`foreign_brick_changed`). Standing on a moving ship's deck for the one tick before boarding, the body is not carried; what carries it is the boarding.
+The controller loses the whole of a slide along a wall of a ship that is turned about the vertical axis where the wall meets the floor (found
+in 32g by a test that walks along a turned wall); a slide that comes out as nothing is made again level and along the wall, for walls of ships
+only (a regression test sweeps six turns, both ways, steep and shallow). **The same failure happens, rarely, against terrain walls:** it was seen
+once in the pinned Cave session (a walker pressed diagonally against a wall stops dead). The fix is not applied to terrain because it would change
+the pinned sessions; it is a follow-up task.
+
+**Keeping clear (found by measuring; I had written that a ship that moves into a player "overlaps them and nothing yet pushes them out", which
+was a belief from reading the code and was wrong in both directions).** For a ship that moved slowly (4 voxels a second) the controller did
+push a walker ahead of the wall; but a ship that fell on a walker pressed them into the floor and they fell down through the terrain and the
+world (the eyes went from 202.6 to 94.6), because the controller slides a body out of an overlap along one collider's surface with no regard to
+what is behind it, and the colliders of terrain leave out boxes buried in solid terrain; a ship at 60 voxels a second left a walker half in the
+floor; and a block built over a walker's head made the controller shake them 0.45 into the floor and out again at every step. So each tick, after the terrain and the ships'
+colliders are in place and before the steps, `CharacterBody::keep_clear` moves a character that is inside terrain or a ship's block out the
+shortest way (up before the others at one distance, by eighths of a voxel, at most 8 voxels; if there is no room it stays). Measured with the
+box 8 thick: a ship at 4, 24 and 60 voxels a second pushes the walker ahead of its face all the way; one that moves past the middle of the
+walker in a tick (120 a second) puts them out on the far side, and a wall a voxel thick that goes over them in a tick leaves them where they were:
+none of these is inside anything afterwards or in the ground. A ship that falls on a walker lifts them onto itself (the shortest way out), and
+they are aboard it; boarding takes away the speed relative to the ship that points away from it, or the walker would be thrown up at the speed
+the ship had (they were thrown ten voxels). The same rule moves a body out of a block built where it stands. Cost (median of 1000 server ticks each, Windows): the server's whole tick is 21
+microseconds with a ship and no player, 50 to 60 with one walker near the ship, under it or aboard it, 75 with one on hills far from it, and 250
+with eight aboard (about 30 for each); adding the check changed none of these by more than the run to run difference (about 5 microseconds).
+
+**The body's frame (physics, `CharacterBody`).** Gravity is a vector: `step_with_gravity`. Up is against it; the box of the character stands
+in it (a turn by the shortest arc from `+y`, a half turn about x if opposite); the way the character faces at yaw 0 (`heading`) is carried along
+whenever up turns, by the shortest turn between the two ups each time (a half turn about the character's right if they are opposite), so a character in a
+room that tips keeps facing as a person would, and a room that turns only about the vertical axis turns the character's view with it. When
+up is `+y` and heading `-z` (the plain frame) every operation is the one a character has always done, to the bit: the pinned scripted run and the
+golden sessions did not change. `reframe` moves a body to another frame keeping its speed, its flying and whether it stands. A walker in a ship
+rolled a quarter turn stands on what is the floor now (the walker slides down the old floor into the corner and stands on the wall), and in
+one turned over in a moment falls to the ceiling and stands on it; in both the walker is aboard throughout.
+
+**What a player sees.** The entity's orientation is the turn of the player's view in its frame: the body's frame turn, then the angles the
+player gave (`PlayerLook`, still the player's own and never converted at a boundary). For a player who has never been aboard this is
+`from_yaw_pitch(yaw, pitch)` to the bit, so those streams did not change. The client finds the turn of the room from the entity
+(`PlayerPose::frame_rotation_of`) and gives the camera a `frame_rotation`; the camera looks at its angles in that room, in the world. So the
+view is carried with the ship about the vertical axis and stays level against gravity for any pitch or roll of the ship. The picture of a
+replay of a walker carried by a turning ship was compared to the pixel with the live one (`pictures.rs`). A player who comes back to the entity
+they left is told where they are in the world (`player_presence:placed`): a client watches the bricks around its camera, and a player may have left far from where the
+program starts it (found: this was already so for a player who logged out far from the start; it is fixed for returning players here, not yet for `/tp` far away).
+
+**Known limits (none new in kind).** A body aboard does not see the terrain or other ships (the leave rule is what keeps it from walking through a
+cliff that touches the hull); players do not push ships or each other, and nothing is hurt by being pushed or pressed (there is no damage
+yet); items, light and fire do not ride ships; ships' speeds are not sent to clients; a ship beyond the per-client
+budget of bricks is not in the picture, nor are those aboard it; one frame per level for bodies (32e).
+
+- **Momentum on leaving** (as decided: "as a person leaving a train would"): the character keeps the ship's speed, and its air control (14 voxels a second a second,
+  `CharacterSettings::air_acceleration`) then pulls its horizontal speed toward what the keys ask: a ship at 6 voxels a second gives about a metre of carry. If the owner wants
+  the momentum kept in the air, the air control is what changes.
 - **No fictitious forces by default** (a server option to feel them is a goal, `future-goals.md`, "Ship goals" 6; the design leaves room: it would add the
   ship's acceleration, and the centrifugal and Euler terms, to the gravity a character feels): a ship that accelerates or spins does not push a person aboard sideways; only the direction of gravity changes
   relative to them. A person standing in a ship that accelerates hard feels nothing, and a person in a ship that rolls slides toward the
@@ -280,7 +347,7 @@ The phase is large; I propose a pause for the owner after 32h, before docking.
 - **32e Bodies** (2.3): the `BodyWorld`, compound colliders per brick, mass, terrain contacts; deterministic digests on Windows and Linux;
   the cost measurement for 10,000 and 100,000 blocks edited each tick (reported, then the budget chosen).
 - **32f Gravity field** (2.9): the service and its consumers (character, bodies, rules), `gravity_at(local)`, the setting for huge ships.
-- **32g Aboard** (2.6): the character in a ship's frame, boarding and leaving, the transition scenario tests, replay equality.
+- **32g Aboard** (2.6, built): the character in a ship's frame, boarding and leaving, the transition scenario tests, replay equality.
 - **32h Cave's ship commands and the first flight** (2.7 creation and held): `/ship create | push | hold | pilot`; an end-to-end test that a
   ship is made, flown, boarded, turned and left, recorded and replayed to the same picture. **Pause for the owner here.**
 - **32i Saving and loading** (2.8): ship files, `engine:grids`, loading on demand, the missing-ship prompt, the consistent save, the

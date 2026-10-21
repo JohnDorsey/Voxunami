@@ -27,10 +27,9 @@ pub struct MovingGrid {
 }
 
 impl MovingGrid {
-    /// The bricks of the level (its root grid's, in the level's coordinates) that the ship's bricks are in or touch, as a box: the box
-    /// around the turned box of its bricks. `None` for a ship with no bricks, or one whose bricks are outside the supported range in
-    /// the world. It is a bound, not a fit: a ship turned half way across the diagonal is covered by a box larger than it.
-    pub fn world_brick_bounds(&self) -> Option<BrickBox> {
+    /// The lowest and the highest brick that has anything in it, along each axis, in the ship's own coordinates. `None` for a ship with
+    /// no bricks.
+    pub fn brick_extent(&self) -> Option<(BrickCoordinate, BrickCoordinate)> {
         let mut bounds: Option<(BrickCoordinate, BrickCoordinate)> = None;
         for (brick, _) in self.voxels.bricks() {
             bounds = Some(match bounds {
@@ -49,7 +48,32 @@ impl MovingGrid {
                 ),
             });
         }
-        let (low, high) = bounds?;
+        bounds
+    }
+
+    /// How fast a place in the world moves because the ship carries it, in voxels a second in the world's axes: the speed of the ship's centre
+    /// of mass, and what its turning adds, which is the turn (an axis scaled by radians a second) crossed with the vector from the
+    /// centre of mass to the place. It is the speed on record: a ship that is held has none until whoever moves it says how fast.
+    pub fn velocity_at(&self, place: WorldPosition) -> [f32; 3] {
+        let centre = WorldPosition::new(BrickCoordinate::ORIGIN, self.centre_of_mass);
+        let Some(centre) = self.pose.local_to_world(centre) else {
+            return self.linear_velocity;
+        };
+        let arm = place.relative_to(centre).map(f64::from);
+        let turn = self.angular_velocity.map(f64::from);
+        let carried = [
+            turn[1] * arm[2] - turn[2] * arm[1],
+            turn[2] * arm[0] - turn[0] * arm[2],
+            turn[0] * arm[1] - turn[1] * arm[0],
+        ];
+        [0, 1, 2].map(|axis| (f64::from(self.linear_velocity[axis]) + carried[axis]) as f32)
+    }
+
+    /// The bricks of the level (its root grid's, in the level's coordinates) that the ship's bricks are in or touch, as a box: the box
+    /// around the turned box of its bricks. `None` for a ship with no bricks, or one whose bricks are outside the supported range in
+    /// the world. It is a bound, not a fit: a ship turned half way across the diagonal is covered by a box larger than it.
+    pub fn world_brick_bounds(&self) -> Option<BrickBox> {
+        let (low, high) = self.brick_extent()?;
         // The corners of the box of voxels, in the ship's own coordinates: from the first voxel of the lowest brick to the voxel
         // after the last of the highest.
         let mut corners = Vec::with_capacity(8);
@@ -226,7 +250,7 @@ mod tests {
     use std::sync::Arc;
 
     use voxel_grid::{ChannelDefinition, GridLayout};
-    use voxel_space::{LatticeRotation, VoxelCoordinate};
+    use voxel_space::{LatticeRotation, Orientation, VoxelCoordinate};
 
     use super::*;
 
@@ -251,6 +275,63 @@ mod tests {
             held: false,
             voxels,
         }
+    }
+
+    #[test]
+    fn a_place_on_a_ship_moves_with_the_ship_and_a_turning_ship_carries_places_around_its_centre_of_mass()
+     {
+        let mut ship = grid(1);
+        ship.pose = GridPose::new(
+            WorldPosition::new(BrickCoordinate::new(2, 0, 0), [1.0, 2.0, 3.0]),
+            // Turned a quarter about the vertical axis: its x is the world's -z.
+            Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0),
+        );
+        ship.centre_of_mass = [4.0, 1.0, 4.0];
+        ship.linear_velocity = [1.0, 2.0, 3.0];
+        let there =
+            |x: f32, y: f32, z: f32| WorldPosition::new(BrickCoordinate::new(2, 0, 0), [x, y, z]);
+        // Not turning: every place moves at the ship's speed.
+        assert_eq!(ship.velocity_at(there(7.0, 2.0, 9.0)), [1.0, 2.0, 3.0]);
+        // Turning at 2 radians a second about the vertical axis. The centre of mass is the ship's (4, 1, 4) turned: from the origin
+        // at (1, 2, 3), 4 along the ship's x is 4 along the world's -z and 4 along its z is 4 along the world's x, so it is at
+        // (5, 3, -1) from the brick's corner. A place 3 along the world's +x from it goes round: omega x r = (0, 2, 0) x (3, 0, 0) =
+        // (0, 0, -6).
+        ship.angular_velocity = [0.0, 2.0, 0.0];
+        let centre = there(5.0, 3.0, -1.0);
+        assert_eq!(ship.velocity_at(centre), [1.0, 2.0, 3.0]);
+        let moved = ship.velocity_at(there(8.0, 3.0, -1.0));
+        assert!(
+            (moved[0] - 1.0).abs() < 1e-5
+                && (moved[1] - 2.0).abs() < 1e-5
+                && (moved[2] - (3.0 - 6.0)).abs() < 1e-5,
+            "{moved:?}"
+        );
+        // A place above it, 2 up, with the turn about the world's x axis (1 radian a second): (1, 0, 0) x (0, 2, 0) = (0, 0, 2).
+        ship.angular_velocity = [1.0, 0.0, 0.0];
+        let above = ship.velocity_at(there(5.0, 5.0, -1.0));
+        assert!(
+            (above[0] - 1.0).abs() < 1e-5
+                && (above[1] - 2.0).abs() < 1e-5
+                && (above[2] - 5.0).abs() < 1e-5,
+            "{above:?}"
+        );
+        // A ship is as fast as is on record, held or not: a held ship that something moves goes at the speed it was told.
+        ship.held = true;
+        assert_eq!(ship.velocity_at(there(5.0, 5.0, -1.0)), above);
+    }
+
+    #[test]
+    fn a_ship_turning_about_no_particular_axis_carries_a_place_by_the_cross_product_in_all_three_components()
+     {
+        // Turning (1, 2, 3) radians a second, 4 along x, 5 up and 6 along z from the centre of mass, which is the origin of an unturned ship:
+        // (1, 2, 3) x (4, 5, 6) = (2 * 6 - 3 * 5, 3 * 4 - 1 * 6, 1 * 5 - 2 * 4) = (-3, 6, -3). Every term of every component is not zero.
+        let mut ship = grid(1);
+        ship.angular_velocity = [1.0, 2.0, 3.0];
+        let place = WorldPosition::new(BrickCoordinate::ORIGIN, [4.0, 5.0, 6.0]);
+        assert_eq!(ship.velocity_at(place), [-3.0, 6.0, -3.0]);
+        // With the ship's own speed added.
+        ship.linear_velocity = [10.0, 20.0, 30.0];
+        assert_eq!(ship.velocity_at(place), [7.0, 26.0, 27.0]);
     }
 
     fn shift(x: i64) -> LatticeTransform {
