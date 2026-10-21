@@ -9,6 +9,7 @@ mod fire;
 mod items;
 mod light;
 mod movement;
+mod ships;
 
 use game_shell::GameContent;
 use grid_bodies::{GridBodiesConfig, GridBodiesPlugin};
@@ -22,21 +23,26 @@ pub use block_editing::{BlockBroken, BlockEditRequested, BlockEditingPlugin, Blo
 pub use fire::FirePlugin;
 pub use items::ItemsPlugin;
 pub use light::LightPlugin;
-pub use movement::MovementPlugin;
+pub use movement::{MovementPlugin, SharedMovement};
+pub use ships::ShipCommandsPlugin;
 
 /// The plugins of the Cave server.
 pub fn cave_plugins(content: &CaveContent) -> Vec<Box<dyn Plugin>> {
     // The server moves the players, so what a client says about where it is is not believed.
     let players = PlayersPlugin::new(false);
     let presence = players.presence();
+    let movement = MovementPlugin::new(content, presence.clone());
+    // The one that flies ships by their pilots' keys shares the players' bodies with the one that moves them.
+    let commands = ShipCommandsPlugin::new(content, presence.clone(), movement.movement());
     vec![
         Box::new(players),
         Box::new(BlockEditingPlugin::new(content, presence.clone())),
         Box::new(ItemsPlugin::new(content, presence.clone())),
-        Box::new(MovementPlugin::new(content, presence.clone())),
+        Box::new(movement),
         Box::new(FirePlugin::new(content, presence)),
         Box::new(LightPlugin::new(content)),
         Box::new(ships(content)),
+        Box::new(commands),
     ]
 }
 

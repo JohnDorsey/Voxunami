@@ -666,6 +666,26 @@ Phase 32 (moving grids; `moving-grids-spec.md`):
   patterns checked against a separate Python calculation and equal on Windows and Linux. 21 mutations: 19 caught; 1 equivalent in practice (an exact tie between
   lattice turns); 1 redundant check (a range test that `checked_offset` already makes), which was deleted.
 
+Phase 32h (Cave's ship commands and the first flight; the pause for the owner is after it):
+- `/ship create [all] | push X Y Z | hold on|off | pilot` (`games/voxunami_cave/src/ships.rs` for the rules, `plugins/ships.rs` for the command and the
+  system that flies). A ship is made of the blocks that someone built, joined through faces to the one the player looks at (up to 4096), by the engine's
+  `detach_blocks`; `all` takes every solid block, which is nearly always too many (anything built on the ground is joined to the ground). Commands are
+  about the ship the player is aboard, else the nearest within 48 voxels. A pilot's keys fly the ship by force each tick (held up against gravity,
+  24 a second a second toward the keys, doubled by control, drag 1.0 a second), aimed by the pilot's request of this tick; the pilot stands.
+- Engine: `ServerWorld::generated_voxel` (what the generator made, whatever was built), `Presence::view_in_the_world`; `Extent::distance_to`; Cave's movement
+  has pilots (their keys are not for walking) and the plugin shares the players' bodies with the ship plugin.
+- Found by building the test: the pilot's thrust was a tick behind the way they looked (the first W after looking level went up at the earlier
+  pitch), because it read the record of their view, which the movement system writes after it: fixed by reading the request, with a test.
+- The golden session's stream is 29 bytes longer (the reply to an unknown command lists `/ship`); the saved world is the same. Checked by a control run: with the
+  plugin left out of the list the old pin came back exactly.
+- Tests: 10 in `flight.rs` (a ship made of what was built and not the ground, which refuses what nobody built and what is too big; the nearer of two ships and one
+  out of reach; hold and push, the push's gain of 6 a second to 5 percent; a pilot who hovers, flies north level and up when looking up, stops, goes up and down
+  with the same eyes in the ship all the time; only one pilot; a pilot who goes away; a scripted flight pinned to the bit), 5 for the rules, 1 each for the two
+  engine questions, and in `pictures.rs` the end-to-end test of the phase: a ship is made, held, boarded, flown, turned by a push off its middle and left, recorded, and the
+  replay draws the same picture as the live view to the pixel on every adapter. 29 mutations of the new code: all caught (the first versions of the
+  flood-fill test and of the nearest-ship test were not enough, and were made to start from every block and to have two ships, before the run).
+- Limits: nothing turns a ship but a force off its middle; the thrust numbers are a guess; `/ship create all` is refused wherever the ground is joined.
+
 Phase 32g (aboard: players in a ship's frame; boarding and leaving):
 - Entities in any frame: `EntityPose.grid` may be a ship (`voxel_space`: `Orientation::{compose, inverse}`, `GridPose::{place_in_world, place_in_grid}`;
   `entities`: the store takes any grid and has `in_grid`; `server`: `spawn_entity` and `set_entity_pose` refuse a ship that is not there

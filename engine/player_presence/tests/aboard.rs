@@ -196,6 +196,13 @@ fn a_player_aboard_is_in_the_world_where_the_ship_puts_them_and_in_the_level_of_
     assert_eq!(frame, ship);
     assert_eq!(local_pose, pose);
     assert_eq!(orientation, Orientation::from_yaw_pitch(0.5, -0.25));
+    // The view in the world is where the eyes are there and the turn of the view there: the ship's turn, and then the view's in the ship.
+    let (eyes, view) = presence.view_in_the_world(world, PLAYER).unwrap();
+    assert_eq!(eyes, seen.position);
+    let ship_turn = world.grids().get(ship).unwrap().pose.orientation;
+    assert_eq!(view, ship_turn.compose(orientation));
+    // A player who has no entity has no view.
+    assert_eq!(presence.view_in_the_world(world, ClientId::new(9)), None);
 }
 
 #[test]

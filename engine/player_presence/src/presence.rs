@@ -120,6 +120,18 @@ impl Presence {
         Some(placed_pose(world, entity))
     }
 
+    /// Where the player's eyes are in the world, and the turn of their view there (the turn of their room in the world, and then their
+    /// angles): what a ray from their eyes along their view needs. A player aboard a ship has the ship's turn in it.
+    pub fn view_in_the_world(
+        &self,
+        world: &WorldData,
+        client: ClientId,
+    ) -> Option<(WorldPosition, Orientation)> {
+        let entity = world.entities().get(*self.entities.get(&client)?)?;
+        let (_, position, orientation) = world_placement(world, entity);
+        Some((position, orientation))
+    }
+
     /// The level the player is in: the main level until they move. A player aboard a ship is in the level the ship is in.
     pub fn level_of(&self, world: &WorldData, client: ClientId) -> LevelIndex {
         self.entities

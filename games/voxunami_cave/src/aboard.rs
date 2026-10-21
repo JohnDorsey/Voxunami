@@ -56,6 +56,19 @@ impl Extent {
         })
     }
 
+    /// How far a place is from the box: nothing inside it, else the distance to the nearest point of it.
+    pub fn distance_to(&self, place: [f64; 3]) -> f64 {
+        let squared: f64 = (0..3)
+            .map(|axis| {
+                let outside = (self.low[axis] - place[axis])
+                    .max(place[axis] - self.high[axis])
+                    .max(0.0);
+                outside * outside
+            })
+            .sum();
+        squared.sqrt()
+    }
+
     /// The distances along `direction` from `from` at which a line enters the box and leaves it, the first not before `from`, or
     /// `None` if the line never goes through it from there.
     fn span(&self, from: [f64; 3], direction: [f64; 3]) -> Option<(f64, f64)> {
@@ -208,6 +221,20 @@ mod tests {
         // A ship with nothing has no extent.
         ship.voxels = Grid::new(Arc::clone(ship.voxels.layout()));
         assert_eq!(Extent::of(&ship), None);
+    }
+
+    #[test]
+    fn a_place_is_as_far_from_the_extent_as_the_nearest_point_of_it() {
+        let extent = Extent {
+            low: [0.0; 3],
+            high: [32.0; 3],
+        };
+        assert_eq!(extent.distance_to([5.0, 5.0, 5.0]), 0.0);
+        assert_eq!(extent.distance_to([32.0, 0.0, 32.0]), 0.0);
+        assert_eq!(extent.distance_to([40.0, 10.0, 10.0]), 8.0);
+        assert_eq!(extent.distance_to([10.0, -3.0, 10.0]), 3.0);
+        // Past a corner, it is the distance to the corner: (3, 4) away is 5.
+        assert_eq!(extent.distance_to([35.0, 36.0, 10.0]), 5.0);
     }
 
     #[test]

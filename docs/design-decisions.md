@@ -204,6 +204,22 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - The look angles are kept as reported (a component) beside the orientation quaternion, so that nothing recovers angles from a quaternion.
   The calls that read or move players take the world (`Presence`), a game holds it as it held the book.
 
+## Decided (ships a player can make and fly; built in Phase 32h; the choices are mine unless marked, the owner's to overrule)
+
+- **Ships come from `/ship`, Cave's command, on an engine that only knows how to detach blocks into a grid** (owner, 2026-10-20: approved). The engine
+  gained two small questions and no rule: `ServerWorld::generated_voxel` (what the terrain generator made at a voxel, whatever was built there) and
+  `Presence::view_in_the_world` (a player's eyes and the turn of their view, in the world).
+- **A ship is made of what was built, not of the ground it stands on:** `/ship create` takes the blocks that differ from the generator's, joined
+  through faces to the one the player looks at (up to 4096); `all` takes every solid block, which is the first text and is nearly always too many,
+  since a boat built on a beach is joined to the planet.
+- **A command is about the ship you are aboard, else the nearest within 48 voxels** of the box of its bricks.
+- **A pilot flies by force, in the physics the ship already has:** the keys never move the ship's pose. Each tick before the ships move, a force holds the
+  ship up against gravity, speeds it up toward the keys, and takes a part of its speed away, so the ship's mass, its collisions and the
+  other ships' pull all still apply, and a recording of the stream is a recording of a flight. The way the keys point is taken from the pilot's
+  request of this tick, not from the record of their view, which is a tick behind (found: the first W of a pilot who had just looked level went up).
+  The numbers (24 a second a second, doubled by control; drag 1.0 a second) are a first guess for the owner's feel.
+- **Turning is the physics's:** no key turns a ship yet; a force off its middle does. The controls are for the command chair (Phase 35).
+
 ## Decided (players aboard ships; built in Phase 32g; the choices are mine unless marked, the owner's to overrule)
 
 - **A player's record is the truth about which frame they are in and where; the body is made to agree with it.** A player is an entity whose

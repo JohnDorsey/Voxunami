@@ -258,6 +258,21 @@ impl ServerWorld {
         Ok(self.generated_brick(level, coordinate)?.get(channel, local))
     }
 
+    /// The value a voxel has in the terrain the generator makes, whatever has been built there since: a way to tell what a player
+    /// built from the ground it stands on.
+    pub fn generated_voxel(
+        &mut self,
+        level: LevelIndex,
+        channel: ChannelIndex,
+        at: VoxelCoordinate,
+    ) -> Result<u32, AccessError> {
+        let (coordinate, local) = at.split();
+        self.data
+            .level(level)
+            .ok_or(AccessError::NoSuchLevel(level))?;
+        Ok(self.generated_brick(level, coordinate)?.get(channel, local))
+    }
+
     /// The value that every voxel of a brick has in a channel, if they all have the same one: a way
     /// to know what a brick holds without looking at its voxels.
     pub fn uniform_value(
@@ -1008,6 +1023,31 @@ mod tests {
                 Some(voxel)
             );
         }
+    }
+
+    #[test]
+    fn the_generated_value_of_a_voxel_is_what_the_terrain_made_and_not_what_was_built_there() {
+        let (mut world, block, _) = counting_world();
+        let level = LevelIndex::MAIN;
+        let at = VoxelCoordinate::new(5, 7, 9);
+        let made = world.voxel(level, block, at).unwrap();
+        world.set_voxel(level, block, at, made + 5).unwrap();
+        assert_eq!(world.voxel(level, block, at).unwrap(), made + 5);
+        assert_eq!(world.generated_voxel(level, block, at).unwrap(), made);
+        // In a brick nobody edited, and in a brick that was edited somewhere else in it, it is the same as the voxel.
+        let beside = VoxelCoordinate::new(6, 7, 9);
+        let far = VoxelCoordinate::new(200, 7, 9);
+        for voxel in [beside, far] {
+            assert_eq!(
+                world.generated_voxel(level, block, voxel).unwrap(),
+                world.voxel(level, block, voxel).unwrap()
+            );
+        }
+        let nowhere = LevelIndex::new(9);
+        assert_eq!(
+            world.generated_voxel(nowhere, block, at),
+            Err(AccessError::NoSuchLevel(nowhere))
+        );
     }
 
     #[test]

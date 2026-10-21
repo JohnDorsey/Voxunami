@@ -365,6 +365,26 @@ pub fn eyes_in_their_frame(scene: &Scene, number: u32) -> [f64; 3] {
     in_voxels(player_pose(scene, number).position)
 }
 
+/// A raft of stone, one thick and `size` by `size` voxels, built in the air with its lowest corner at the voxel `(x, y, z)`: blocks
+/// that were built and are joined to nothing else, which `/ship create` makes a ship of.
+pub fn build_raft(scene: &mut Scene, x: i64, y: i64, z: i64, size: i64) {
+    let content = CaveContent::new();
+    scene.run(move |world| {
+        for across in 0..size {
+            for along in 0..size {
+                world
+                    .set_voxel(
+                        LevelIndex::MAIN,
+                        content.block_channel(),
+                        VoxelCoordinate::new(x + across, y, z + along),
+                        content.blocks.stone,
+                    )
+                    .unwrap();
+            }
+        }
+    });
+}
+
 /// Lets the server tick `count` times, the player taking in what it says after each.
 pub fn tick_and_follow(scene: &mut Scene, player: &mut Player, count: usize) {
     for _ in 0..count {

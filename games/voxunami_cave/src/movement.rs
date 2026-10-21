@@ -90,6 +90,8 @@ struct PlayerBody {
     /// A jump was asked for since the last tick, though it may not be asked for any more: a tap
     /// between two messages still jumps.
     jump_asked: bool,
+    /// The player pilots a ship: their keys fly it (see [`crate::ships`]) and do not walk them.
+    piloting: bool,
 }
 
 /// What the blocks of the world mean to bodies.
@@ -196,6 +198,7 @@ impl Movement {
                     pitch: placement.pitch,
                 },
                 jump_asked: false,
+                piloting: false,
             }
         });
     }
@@ -236,6 +239,18 @@ impl Movement {
             .body
             .update_terrain(&mut self.blocks.terrain(world, level));
         Some(player.body.eye_position())
+    }
+
+    /// Makes a player a pilot, whose keys are not for walking, or not.
+    pub fn set_piloting(&mut self, client: ClientId, piloting: bool) {
+        if let Some(player) = self.bodies.get_mut(&client) {
+            player.piloting = piloting;
+        }
+    }
+
+    /// What the player's keys last asked, if they have a body.
+    pub fn request_of(&self, client: ClientId) -> Option<MoveRequest> {
+        self.bodies.get(&client).map(|player| player.request)
     }
 
     /// Starts or stops a player flying. Returns whether they are flying now, or `None` if they
@@ -344,9 +359,17 @@ fn agree_with(player: &mut PlayerBody, placement: &Placement) {
 
 /// The input for this tick: the keys, with a jump that was asked for between two messages.
 fn input_for(player: &mut PlayerBody) -> MoveInput {
-    let input = MoveInput {
-        jump: player.request.input.jump || player.jump_asked,
-        ..player.request.input
+    let input = if player.piloting {
+        // The keys of a pilot fly the ship; the pilot stands.
+        MoveInput {
+            yaw: player.request.input.yaw,
+            ..MoveInput::default()
+        }
+    } else {
+        MoveInput {
+            jump: player.request.input.jump || player.jump_asked,
+            ..player.request.input
+        }
     };
     player.jump_asked = false;
     input

@@ -41,7 +41,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
   transforms; a matrix per grid in the renderer; Rapier bodies from blocks (mass from `engine:density`), full rotation, world gravity
   aboard; connectivity and splitting; docking connectors with a configurable attraction force; players and entities simulated in their
   frame; levels of detail per grid for drawing, for collision (coarse colliders, aggregated mass) and for streaming; a grid saved in
-  flight as a file of its own. Specified in `moving-grids-spec.md` (steps 32a to 32k, with a pause after 32h), answered 2026-10-20; 32a (frames), 32b (grids on the server), 32c (protocol and replay), 32d (renderer and picking) and 32e (bodies), 32f (the gravity field) and 32g (aboard) built, 32h (Cave's ship commands and the first flight; the pause for the owner) next.
+  flight as a file of its own. Specified in `moving-grids-spec.md` (steps 32a to 32k, with a pause after 32h), answered 2026-10-20; 32a (frames), 32b (grids on the server), 32c (protocol and replay), 32d (renderer and picking) and 32e (bodies), 32f (the gravity field) and 32g (aboard) and 32h (Cave's ship commands and the first flight) built; the pause for the owner is now, before saving, splitting and docking (32i to 32k).
 - 31 (built) A wider material palette: the renderer's palette in a storage buffer, 1,048,576 game materials instead of 240 (renderer-only; saves and protocol unchanged). Phase 32 (moving grids) is next.
 - 30 (built; `ui-spec.md`) Server-driven UI: a UI the server describes in the value vocabulary and the stream drives; the HUD, the command line, questions and Cave's hotbar are on the screen, not in the title. Phase 31 is next.
 - 29 (built; `data-packs-spec.md`, `pack-format.md`) Data-driven block packs (JSON), the generated JSON Schema, `check-pack`, and patches: tags by
@@ -251,6 +251,13 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   (Phases 27 and 32).
 
 ## Open
+- **To try after Phase 32h (the pause for the owner, 2026-10-21):** `cargo run --release -p launcher -- cave`; build something of stone that is
+  joined to nothing else but the ground (a raft, a boat on the beach), look at a block of it and type `/ship create` (it falls, so `/ship hold on`
+  first if you want to stand on it in the air; `/ship create all` takes the ground too and is refused as too many), walk or fall onto it, then
+  `/ship pilot`: W A S D fly it the way you look, space and shift go up and down, control goes faster, `/ship pilot` again lets go; `/ship push X Y Z`
+  and `/ship hold on|off` are for testing. What I would like your feel on: the thrust and the drag (24 and 1 a second), flying where the view
+  points (pitch included), that nothing turns a ship but a force off its middle, and how it feels to stand on a ship that accelerates (no
+  fictitious forces, as decided). Saving, splitting and docking (32i to 32k) wait for you.
 - **Left open by Phase 32g (aboard; 2026-10-21), for the owner's review after 32h:** (a) boarding and leaving are looked at once a tick and
   need no count (the first text said three ticks; the two conditions cannot hold together, so nothing flaps; yours to overrule); (b) a player
   leaving a ship keeps its speed and the air control (14 a second a second) pulls it toward the keys, which gives about a metre of carry from a

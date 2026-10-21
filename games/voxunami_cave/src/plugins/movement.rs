@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use block_models::BlockTable;
 use game_shell::GameContent;
 use namespaced_id::NamespacedId;
 use player_presence::{PlayerPose, Presence, SharedPresence, lock};
@@ -25,24 +24,36 @@ use crate::movement::{Movement, Placement};
 pub struct MovementPlugin {
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
-    table: BlockTable,
-    air: u32,
     players: SharedPresence,
+    movement: SharedMovement,
 }
+
+/// The players' bodies, which the plugin that flies ships shares with the one that moves players.
+pub type SharedMovement = Arc<Mutex<Movement>>;
 
 impl MovementPlugin {
     pub fn new(content: &CaveContent, players: SharedPresence) -> Self {
+        let movement = Movement::new(
+            content.block_table(),
+            content.block_channel(),
+            content.state_channel(),
+            content.blocks.air,
+        );
         Self {
             block_channel: content.block_channel(),
             state_channel: content.state_channel(),
-            table: content.block_table(),
-            air: content.blocks.air,
             players,
+            movement: Arc::new(Mutex::new(movement)),
         }
+    }
+
+    /// The bodies of the players, to share.
+    pub fn movement(&self) -> SharedMovement {
+        Arc::clone(&self.movement)
     }
 }
 
-fn locked(movement: &Mutex<Movement>) -> MutexGuard<'_, Movement> {
+pub(super) fn locked(movement: &Mutex<Movement>) -> MutexGuard<'_, Movement> {
     movement
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -138,12 +149,7 @@ impl Plugin for MovementPlugin {
     }
 
     fn register(&self, registrar: &mut Registrar<'_>) {
-        let movement = Arc::new(Mutex::new(Movement::new(
-            self.table.clone(),
-            self.block_channel,
-            self.state_channel,
-            self.air,
-        )));
+        let movement = Arc::clone(&self.movement);
 
         let (bodies, players) = (Arc::clone(&movement), Arc::clone(&self.players));
         registrar.message(move |context, client, Spawn(pose)| {

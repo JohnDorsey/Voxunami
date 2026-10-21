@@ -1,6 +1,6 @@
 # Phase 32: moving grids (ships)
 
-Status: the owner answered section 6 on 2026-10-20 (answers at its end, and applied in the text); 32a to 32g are built (`build-log.md`). Read from the plan (requirements 1 to 16, the owner's
+Status: the owner answered section 6 on 2026-10-20 (answers at its end, and applied in the text); 32a to 32h are built (`build-log.md`), and the pause for the owner after 32h is now. Read from the plan (requirements 1 to 16, the owner's
 decisions of 2026-10-18 and 2026-10-20), `future-goals.md` (goal 2 and "Ship goals"), and from the code after Phase 31. The choices are
 mine and marked; what I checked in the code is marked **[code]**, what I believe from memory is marked **[memory]**.
 
@@ -215,6 +215,24 @@ budget of bricks is not in the picture, nor are those aboard it; one frame per l
   `/ship hold on|off` and `/ship pilot` (the sender flies it with the fly keys; a very small control target, the full mechanism comes with the
   chair) make it testable. These are Cave commands and tests, not engine features, so the engine API (`create_grid`,
   `remove_blocks_from_grid`, `apply_force`, `set_hold`) is what the phase delivers.
+  **As built in 32h** (`games/voxunami_cave/src/ships.rs`, `plugins/ships.rs`; the engine side is `detach_blocks`, from 32b, and
+  `ServerWorld::generated_voxel`, `Presence::view_in_the_world`):
+  - `/ship create` looks along the player's view (24 voxels) at the first block that bodies cannot pass through, and takes **the blocks
+    that someone built** (a block that is not what the terrain generator made there) joined to it through faces, up to 4096; `/ship create all`
+    takes every solid block joined to it, ground and all, which is what the text above says and is refused as too many wherever the ground
+    is joined (nearly always). *This differs from the text above, on purpose:* anything built on the ground is joined to the ground, so
+    the text above could not make a ship of a boat built on a beach.
+  - The other commands are about **the ship the player is aboard, else the nearest within 48 voxels** (distance to the box of its bricks).
+    `/ship hold on|off`; `/ship push X Y Z` changes the ship's speed by that much (voxels a second, in the world's axes) with a force for
+    one tick, from its mass, and a held ship refuses it.
+  - `/ship pilot` (aboard a ship; again to let go): the pilot's keys do not walk them but fly the ship. Each tick, before the ships move,
+    a force is put on it that holds it up against gravity, speeds it up by 24 voxels a second a second toward where the keys point
+    (W and S along the way the pilot looks, pitch included; A and D to the sides; space and shift up and down in the world; control doubles
+    it), and takes a part of its speed away every second (drag 1.0), so with no keys it hangs where it is and with W it settles at about 24
+    voxels a second. One pilot to a ship. A pilot who is no longer aboard it, or who leaves, stops piloting; the ship then falls (unpiloted
+    ships stay simulated) unless it is held. *Turning is not a control yet:* a ship turns when a force is put on it off its middle (the
+    engine's `apply_grid_force` with a place), as the physics gives; the pilot's view turns with it (32g). Whether the pilot should steer
+    with the mouse, and what the real controls are, is for the command chair (Phase 35) and for your feel of this.
 - **Unpiloted ships stay simulated** (owner, 2026-10-20): movement physics and gravity continue with no pilot, so an unpiloted ship with no
   lift falls. *Held* (kinematic: it stays where it is) is an option a command sets per ship (`/ship hold on|off`), off by default.
 - **Simulation distance (the owner's server setting):** `ShipSettings { simulation_distance, unload_distance }` in `ServerConfig`
@@ -349,7 +367,7 @@ The phase is large; I propose a pause for the owner after 32h, before docking.
 - **32f Gravity field** (2.9): the service and its consumers (character, bodies, rules), `gravity_at(local)`, the setting for huge ships.
 - **32g Aboard** (2.6, built): the character in a ship's frame, boarding and leaving, the transition scenario tests, replay equality.
 - **32h Cave's ship commands and the first flight** (2.7 creation and held): `/ship create | push | hold | pilot`; an end-to-end test that a
-  ship is made, flown, boarded, turned and left, recorded and replayed to the same picture. **Pause for the owner here.**
+  ship is made, flown, boarded, turned and left, recorded and replayed to the same picture (built, `flight.rs` and `pictures.rs`). **Pause for the owner here.**
 - **32i Saving and loading** (2.8): ship files, `engine:grids`, loading on demand, the missing-ship prompt, the consistent save, the
   vanish policy and the blocked arrival search, the simulation-distance setting with freeze and park.
 - **32j Splitting** (2.7): the budgeted connectivity check, parts, velocities, entities re-framed, events and the stream.

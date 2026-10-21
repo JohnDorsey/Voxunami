@@ -374,3 +374,226 @@ fn a_replay_draws_exactly_what_a_walker_carried_by_a_ship_that_turns_saw() {
     }
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+/// Lets the server tick `count` times with the player taking in what it says, as a window does each frame, and keeps the changes to what
+/// is drawn.
+fn step_drawing(
+    scene: &mut common::Scene,
+    player: &mut common::Player,
+    updates: &mut Vec<world_view::MeshUpdate>,
+    count: usize,
+) {
+    for _ in 0..count {
+        scene.rig.step();
+        player.advance().unwrap();
+        updates.extend(player.update_view());
+    }
+}
+
+/// Types a command and ticks twice, so that it has been done and its reply is in.
+fn type_command(
+    scene: &mut common::Scene,
+    player: &mut common::Player,
+    updates: &mut Vec<world_view::MeshUpdate>,
+    command: &str,
+) -> String {
+    player.send_command(command);
+    step_drawing(scene, player, updates, 2);
+    player.take_command_replies().join(" | ")
+}
+
+#[test]
+fn a_replay_draws_exactly_what_a_player_saw_who_made_a_ship_flew_it_turned_it_and_left_it() {
+    let directory = std::env::temp_dir().join(format!(
+        "voxunami_cave_flight_pictures_{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("session.voxreplay");
+
+    // A raft built five above the floor, and a player looking up at it from the floor.
+    let mut scene = common::Scene::new();
+    common::flat_floor(&mut scene);
+    common::build_raft(&mut scene, 20, common::FLOOR as i64 + 6, 22, 8);
+    let connection = scene.rig.connector.connect().unwrap();
+    let recorded = record_connection(connection, &path).unwrap();
+    let mut player = scene.rig.join_walking_over(
+        recorded,
+        1,
+        [24.0, common::FLOOR as f64 + 3.0, 34.0],
+        0.0,
+        30.0,
+    );
+    let mut updates = Vec::new();
+    player.send_pose();
+    step_drawing(&mut scene, &mut player, &mut updates, 20);
+
+    // They make a ship of it and hold it, are put over it and fall aboard, and take the controls.
+    let made = type_command(&mut scene, &mut player, &mut updates, "/ship create");
+    assert!(made.starts_with("made ship 0 of 64 blocks"), "{made}");
+    type_command(&mut scene, &mut player, &mut updates, "/ship hold on");
+    player.send_command(&format!("/tp 24 {} 26", common::FLOOR as i64 + 12));
+    step_drawing(&mut scene, &mut player, &mut updates, 60);
+    assert_eq!(common::player_pose(&scene, 1).grid, common::ship_id(0));
+    let piloting = type_command(&mut scene, &mut player, &mut updates, "/ship pilot");
+    assert!(piloting.contains("you pilot ship 0"), "{piloting}");
+    type_command(&mut scene, &mut player, &mut updates, "/ship hold off");
+
+    // They fly it a little north, level, and let it come to rest.
+    player.camera.look_by(0.0, -player.camera.pitch);
+    player.hold(&[game_shell::KeyCode::KeyW]);
+    step_drawing(&mut scene, &mut player, &mut updates, 8);
+    player.hold(&[]);
+    step_drawing(&mut scene, &mut player, &mut updates, 100);
+
+    // It is turned: a push at the edge of it, off its middle, for half a second, and it goes on turning, with them carried.
+    let before = common::ship_pose(&scene, 0).orientation;
+    for _ in 0..10 {
+        scene.run(|world| {
+            world
+                .apply_grid_force(
+                    common::ship_id(0),
+                    [0.0, 0.0, 400_000.0],
+                    Some([7.5, 0.5, 4.0]),
+                )
+                .unwrap();
+        });
+        player.advance().unwrap();
+        updates.extend(player.update_view());
+    }
+    step_drawing(&mut scene, &mut player, &mut updates, 40);
+    assert_ne!(
+        common::ship_pose(&scene, 0).orientation,
+        before,
+        "it turned"
+    );
+    assert_eq!(common::player_pose(&scene, 1).grid, common::ship_id(0));
+
+    // They let go, stop the ship where it is (holding it stops its turning), and walk off the edge of it.
+    type_command(&mut scene, &mut player, &mut updates, "/ship pilot");
+    type_command(&mut scene, &mut player, &mut updates, "/ship hold on");
+    player.hold(&[game_shell::KeyCode::KeyA]);
+    step_drawing(&mut scene, &mut player, &mut updates, 100);
+    player.hold(&[]);
+    step_drawing(&mut scene, &mut player, &mut updates, 60);
+    assert!(
+        common::player_pose(&scene, 1).grid.root_level().is_some(),
+        "they walked off the ship"
+    );
+
+    // They look back at it, and that is the picture.
+    let centre = {
+        let ship = scene
+            .rig
+            .server
+            .world()
+            .grids()
+            .get(common::ship_id(0))
+            .unwrap();
+        voxunami_cave::aboard::in_voxels(
+            ship.pose
+                .local_to_world(voxel_space::WorldPosition::new(
+                    voxel_space::BrickCoordinate::ORIGIN,
+                    [4.0, 0.5, 4.0],
+                ))
+                .unwrap(),
+        )
+    };
+    let eyes = common::voxels_of(&player.camera);
+    let to_ship = [
+        centre[0] - eyes[0],
+        centre[1] - eyes[1],
+        centre[2] - eyes[2],
+    ];
+    let across = libm::sqrt(to_ship[0] * to_ship[0] + to_ship[2] * to_ship[2]);
+    // (Their view still has the turn of the room they left in it, so what they turn by is the difference of directions in the world.)
+    let (wanted_yaw, wanted_pitch) = (
+        libm::atan2(-to_ship[0], -to_ship[2]) as f32,
+        libm::atan2(to_ship[1], across) as f32,
+    );
+    let forward = player.camera.forward().to_array();
+    let (yaw, pitch) = (
+        libm::atan2(-f64::from(forward[0]), -f64::from(forward[2])) as f32,
+        libm::asin(f64::from(forward[1])) as f32,
+    );
+    player
+        .camera
+        .look_by(wanted_yaw - yaw, wanted_pitch - pitch);
+    player.send_pose();
+    step_drawing(&mut scene, &mut player, &mut updates, 5);
+    {
+        let server = &mut scene.rig.server;
+        updates.extend(
+            player
+                .settle(|| {
+                    server.step();
+                })
+                .unwrap(),
+        );
+    }
+    player.advance().unwrap();
+    let final_camera = player.camera;
+    // The ship is in front of the camera: near the middle of the view.
+    let forward = final_camera.forward().to_array();
+    let length = libm::sqrt(to_ship.iter().map(|value| value * value).sum());
+    let cosine = (0..3)
+        .map(|axis| to_ship[axis] * f64::from(forward[axis]))
+        .sum::<f64>()
+        / length;
+    assert!(cosine > 0.98, "the ship is not where they look: {cosine}");
+    drop(player);
+
+    let connection: Box<dyn Connection> = Box::new(open_recording(&path).unwrap());
+    let mut replay = Session::<_, Cave>::connect(
+        connection,
+        &Identity::generate(),
+        Mode::Replaying,
+        VIEW_RADIUS,
+        camera_at([0.0; 3], 0.0, 0.0, VIEW_RADIUS),
+        || {},
+    )
+    .unwrap();
+    while replay.advance_one_tick().is_ok() {}
+    let replay_updates = replay.settle(|| {}).unwrap();
+    assert_eq!(replay.camera.position, final_camera.position);
+    assert_eq!(
+        (replay.camera.yaw, replay.camera.pitch),
+        (final_camera.yaw, final_camera.pitch)
+    );
+
+    for context in contexts() {
+        let mut live_renderer = {
+            let mut renderer = VoxelRenderer::new(&context, wgpu::TextureFormat::Rgba8UnormSrgb);
+            configure_renderer(
+                &mut renderer,
+                replay.block_table(),
+                replay.package().ambient_light,
+                VIEW_RADIUS,
+            );
+            daylight(&mut renderer);
+            apply_updates(&mut renderer, updates.clone());
+            renderer
+        };
+        let live = settled(&mut live_renderer, &final_camera);
+        let mut replay_renderer = renderer_for(&context, &replay, replay_updates.clone());
+        let replayed = settled(&mut replay_renderer, &replay.camera);
+        let (pixels, drawn) = replay_renderer.render_to_rgba(&replay.camera, WIDTH, HEIGHT);
+        assert!(drawn.quads_drawn > 0);
+        let colours: std::collections::BTreeSet<[u8; 4]> = pixels
+            .chunks(4)
+            .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]])
+            .collect();
+        assert!(colours.len() >= 2, "{} colours", colours.len());
+        let differing = replayed
+            .chunks(4)
+            .zip(live.chunks(4))
+            .filter(|(replayed, live)| replayed != live)
+            .count();
+        assert!(
+            differing == 0,
+            "{}: {differing} pixels of the replayed picture differ from the live one",
+            renderer::describe(&context.adapter)
+        );
+    }
+    std::fs::remove_dir_all(&directory).unwrap();
+}
