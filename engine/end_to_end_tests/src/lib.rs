@@ -18,13 +18,13 @@ use namespaced_id::NamespacedId;
 use protocol::{EntityId, Message, Tick};
 use replay::{RecordingConnection, ReplayConnection};
 use server::test_support::ScriptedLogic;
-use server::{Audience, Server, ServerConfig};
+use server::{Audience, GridView, Server, ServerConfig, ServerWorld};
 use transport::Connection;
 use transport::loopback::{LoopbackConnection, LoopbackConnector, loopback_listener};
 use voxel_grid::Brick;
 use voxel_space::{
-    BrickBox, BrickCoordinate, EntityPose, GridId, LevelIndex, Orientation, VoxelCoordinate,
-    WorldPosition,
+    BrickBox, BrickCoordinate, EntityPose, GridId, GridPose, LevelIndex, Orientation,
+    VoxelCoordinate, WorldPosition,
 };
 use world_storage::test_support::{ALL_PLUGINS, Game, Plugin, id};
 use world_storage::{BrickSource, LevelData, WorldData};
@@ -86,6 +86,57 @@ fn wisp_pose(start: i64, step: u64) -> EntityPose {
     )
 }
 
+/// The ship of [`Fixture::with_ship`] at this tick.
+fn ship_at_tick(count: u64, world: &mut ServerWorld, marble: u32, glass: u32) {
+    let ship = GridId::new(GridId::FIRST_ALLOCATED);
+    let block = world
+        .data()
+        .main()
+        .overrides
+        .layout()
+        .channel_index(&id("core:block"))
+        .unwrap();
+    let pose = |count: u64| {
+        let along = count as i64 - 8;
+        GridPose::new(
+            WorldPosition::new(BrickCoordinate::new(0, 0, 0), [0.0, 4.0, 0.0]).translated([
+                along as f32,
+                0.0,
+                0.0,
+            ]),
+            Orientation::from_yaw_pitch(0.1 * along as f32, 0.0),
+        )
+    };
+    match count {
+        8 => {
+            let made = world.create_grid(LevelIndex::MAIN, pose(count)).unwrap();
+            assert_eq!(made, ship);
+            let mut view = world.grid(ship).unwrap();
+            for at in [[1, 1, 1], [2, 1, 1], [40, 3, 3]] {
+                view.set(block, VoxelCoordinate::new(at[0], at[1], at[2]), marble)
+                    .unwrap();
+            }
+        }
+        9..=49 => {
+            world.set_grid_pose(ship, pose(count)).unwrap();
+            if count.is_multiple_of(6) {
+                let mut view = world.grid(ship).unwrap();
+                let at = VoxelCoordinate::new(count as i64 % 5, 2, 2);
+                view.set(block, at, glass).unwrap();
+                if count.is_multiple_of(12) {
+                    // A voxel in a brick the ship did not have.
+                    view.set(block, VoxelCoordinate::new(-20, 1, count as i64), glass)
+                        .unwrap();
+                }
+            }
+        }
+        50 => {
+            assert!(world.remove_grid(ship).is_some());
+        }
+        _ => {}
+    }
+}
+
 /// A running server with the pretend game, and a way for players to connect to it.
 #[derive(Debug)]
 pub struct Fixture {
@@ -110,14 +161,23 @@ impl Fixture {
     pub fn with_herd() -> Self {
         let game = Game::new(&ALL_PLUGINS);
         let world = game.new_world();
-        Self::build(game, world, true)
+        Self::build(game, world, true, false)
+    }
+
+    /// A server for an empty world of the pretend game, with a ship: made on tick 8 with two bricks, turning a little more and moving
+    /// one voxel along x every tick, edited every 6th tick (a voxel of a brick it has, and every 12th tick one in a new brick), and
+    /// removed on tick 50.
+    pub fn with_ship() -> Self {
+        let game = Game::new(&ALL_PLUGINS);
+        let world = game.new_world();
+        Self::build(game, world, false, true)
     }
 
     pub fn with_world(game: Game, world: WorldData) -> Self {
-        Self::build(game, world, false)
+        Self::build(game, world, false, false)
     }
 
-    fn build(game: Game, world: WorldData, herd: bool) -> Self {
+    fn build(game: Game, world: WorldData, herd: bool, ship: bool) -> Self {
         let block_ids: HashMap<NamespacedId, u32> = (0..)
             .map_while(|raw| {
                 game.blocks
@@ -176,6 +236,9 @@ impl Fixture {
                 let glass = game.raw_block("fancy_blocks:glass");
                 move |tick, world| {
                     let count = tick.get();
+                    if ship {
+                        ship_at_tick(count, world, marble, glass);
+                    }
                     if herd {
                         if count % 7 == 0 && wisps.len() < 6 {
                             let start = (count % 5) as i64 - 2;
@@ -490,6 +553,46 @@ pub fn quick_differences<C: Connection>(
             )
         {
             differences.push(format!("brick {coordinate} holds different things"));
+        }
+    }
+    differences.extend(ship_differences(player, server_world, level, region));
+    differences
+}
+
+/// What is wrong with a player's picture of the ships: it must have exactly the ships of the watched level that touch the watched
+/// region, each where the server has it and (when both number content alike) holding what the server's holds.
+fn ship_differences<C: Connection>(
+    player: &Player<C>,
+    server_world: &WorldData,
+    level: LevelIndex,
+    region: BrickBox,
+) -> Vec<String> {
+    let mut differences = Vec::new();
+    let world = player.client.world();
+    for (id, ship) in server_world.grids().iter() {
+        let wanted = ship.level == level
+            && ship
+                .world_brick_bounds()
+                .is_some_and(|bounds| bounds.intersection(region).is_some());
+        match (wanted, world.grids().get(id)) {
+            (true, None) => differences.push(format!("{id} is missing on the client")),
+            (false, Some(_)) => differences.push(format!("{id} should not be on the client")),
+            (true, Some(theirs)) => {
+                if theirs.pose != ship.pose || theirs.level != ship.level {
+                    differences.push(format!("{id} is somewhere else on the client"));
+                }
+                if world.verifies_edit_digests()
+                    && theirs.voxels.content_digest() != ship.voxels.content_digest()
+                {
+                    differences.push(format!("{id} holds different things on the client"));
+                }
+            }
+            (false, None) => {}
+        }
+    }
+    for (id, _) in world.grids().iter() {
+        if server_world.grids().get(id).is_none() {
+            differences.push(format!("{id} is on the client and not on the server"));
         }
     }
     differences

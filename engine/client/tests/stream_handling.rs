@@ -13,7 +13,10 @@ use region_octree::BrickCube;
 use transport::Connection;
 use transport::loopback::{LoopbackConnection, loopback_pair};
 use voxel_grid::Brick;
-use voxel_space::{BrickBox, BrickCoordinate, LevelIndex, LocalVoxelIndex, VoxelCoordinate};
+use voxel_space::{
+    BrickBox, BrickCoordinate, GridId, GridPose, LevelIndex, LocalVoxelIndex, Orientation,
+    VoxelCoordinate, WorldPosition,
+};
 use world_storage::TranslationError;
 use world_storage::test_support::{ALL_PLUGINS, Game, Plugin, brick, id};
 
@@ -289,7 +292,7 @@ fn edited_bricks_replace_generated_terrain_and_edits_change_them() {
     let marble = rig.game.raw_block("fancy_blocks:marble");
     let contents = rig.edited_brick([1, 2, 3], "fancy_blocks:marble");
     rig.send(ServerMessage::BrickContents {
-        level: LevelIndex::MAIN,
+        grid: GridId::MAIN,
         brick: brick(0, 0, 0),
         contents: Arc::clone(&contents),
     });
@@ -298,7 +301,7 @@ fn edited_bricks_replace_generated_terrain_and_edits_change_them() {
     assert_eq!(
         update.events,
         [ClientEvent::BrickChanged {
-            level: LevelIndex::MAIN,
+            grid: GridId::MAIN,
             brick: brick(0, 0, 0)
         }]
     );
@@ -324,7 +327,7 @@ fn edited_bricks_replace_generated_terrain_and_edits_change_them() {
     let voxel = VoxelCoordinate::new(9, 9, 9).split().1;
     edited.set(block_channel, voxel, dirt);
     rig.send(ServerMessage::VoxelEdits {
-        level: LevelIndex::MAIN,
+        grid: GridId::MAIN,
         brick: brick(0, 0, 0),
         changes: vec![VoxelChange {
             voxel,
@@ -356,7 +359,7 @@ fn moving_the_watched_region_forgets_bricks_left_behind_and_keeps_the_rest() {
         let coordinate = VoxelCoordinate::new(at[0], at[1], at[2]).split().0;
         let contents = rig.edited_brick(at, "fancy_blocks:marble");
         rig.send(ServerMessage::BrickContents {
-            level: LevelIndex::MAIN,
+            grid: GridId::MAIN,
             brick: coordinate,
             contents,
         });
@@ -394,7 +397,7 @@ fn a_stream_that_breaks_the_rules_is_an_error_not_a_wrong_picture() {
             "a brick outside the watched region",
             Box::new(move |rig| {
                 vec![ServerMessage::BrickContents {
-                    level: LevelIndex::MAIN,
+                    grid: GridId::MAIN,
                     brick: brick(30, 0, 0),
                     contents: contents_of(rig),
                 }]
@@ -404,7 +407,7 @@ fn a_stream_that_breaks_the_rules_is_an_error_not_a_wrong_picture() {
             "an edit to a brick never sent",
             Box::new(|_| {
                 vec![ServerMessage::VoxelEdits {
-                    level: LevelIndex::MAIN,
+                    grid: GridId::MAIN,
                     brick: brick(0, 0, 0),
                     changes: vec![],
                     resulting_digest: 0,
@@ -437,7 +440,7 @@ fn a_stream_that_breaks_the_rules_is_an_error_not_a_wrong_picture() {
             "a brick with the wrong number of channels",
             Box::new(|_| {
                 vec![ServerMessage::BrickContents {
-                    level: LevelIndex::MAIN,
+                    grid: GridId::MAIN,
                     brick: brick(0, 0, 0),
                     contents: Arc::new(Brick::from_channels(vec![
                         voxel_grid::ChannelStorage::uniform(0),
@@ -492,12 +495,12 @@ fn ticks_must_be_consecutive_and_edits_must_match_the_servers_digest() {
     rig.watch_origin(1);
     let contents = rig.edited_brick([1, 2, 3], "fancy_blocks:marble");
     rig.send(ServerMessage::BrickContents {
-        level: LevelIndex::MAIN,
+        grid: GridId::MAIN,
         brick: brick(0, 0, 0),
         contents: Arc::clone(&contents),
     });
     rig.send(ServerMessage::VoxelEdits {
-        level: LevelIndex::MAIN,
+        grid: GridId::MAIN,
         brick: brick(0, 0, 0),
         changes: vec![],
         resulting_digest: contents.content_digest() ^ 1,
@@ -505,7 +508,7 @@ fn ticks_must_be_consecutive_and_edits_must_match_the_servers_digest() {
     rig.tick(6);
     assert!(matches!(
         rig.client.poll_tick().unwrap_err(),
-        ClientError::OutOfSync(LevelIndex::MAIN, coordinate) if coordinate == BrickCoordinate::ORIGIN
+        ClientError::OutOfSync(GridId::MAIN, coordinate) if coordinate == BrickCoordinate::ORIGIN
     ));
 }
 
@@ -523,12 +526,12 @@ fn edits_to_channels_or_values_the_server_has_no_table_for_are_refused() {
         rig.watch_origin(1);
         let contents = rig.edited_brick([1, 2, 3], "fancy_blocks:marble");
         rig.send(ServerMessage::BrickContents {
-            level: LevelIndex::MAIN,
+            grid: GridId::MAIN,
             brick: brick(0, 0, 0),
             contents,
         });
         rig.send(ServerMessage::VoxelEdits {
-            level: LevelIndex::MAIN,
+            grid: GridId::MAIN,
             brick: brick(0, 0, 0),
             changes: vec![VoxelChange {
                 voxel,
@@ -622,14 +625,14 @@ fn views_built_from_the_same_messages_are_equal_and_different_messages_differ() 
         rig.watch_origin(1);
         let contents = rig.edited_brick([1, 2, 3], "fancy_blocks:marble");
         rig.send(ServerMessage::BrickContents {
-            level: LevelIndex::MAIN,
+            grid: GridId::MAIN,
             brick: brick(0, 0, 0),
             contents,
         });
         if extra_edit {
             let contents = rig.edited_brick([40, 2, 3], "fancy_blocks:glass");
             rig.send(ServerMessage::BrickContents {
-                level: LevelIndex::MAIN,
+                grid: GridId::MAIN,
                 brick: brick(1, 0, 0),
                 contents,
             });
@@ -671,7 +674,7 @@ fn a_client_with_different_plugins_follows_the_stream_and_sees_the_same_meaning(
     rig.watch_origin(1);
     let contents = rig.edited_brick([1, 2, 3], "fancy_blocks:marble");
     rig.send(ServerMessage::BrickContents {
-        level: LevelIndex::MAIN,
+        grid: GridId::MAIN,
         brick: brick(0, 0, 0),
         contents: Arc::clone(&contents),
     });
@@ -681,7 +684,7 @@ fn a_client_with_different_plugins_follows_the_stream_and_sees_the_same_meaning(
     let voxel = VoxelCoordinate::new(9, 9, 9).split().1;
     let dirt = rig.game.raw_block("base_blocks:dirt");
     rig.send(ServerMessage::VoxelEdits {
-        level: LevelIndex::MAIN,
+        grid: GridId::MAIN,
         brick: brick(0, 0, 0),
         changes: vec![VoxelChange {
             voxel,
@@ -796,7 +799,7 @@ fn following_the_server_into_another_level_forgets_what_was_held_of_the_first() 
     let mut rig = Rig::with_two_levels();
     rig.watch_level_origin(LevelIndex::MAIN, 1, 5);
     rig.send(ServerMessage::BrickContents {
-        level: LevelIndex::MAIN,
+        grid: GridId::MAIN,
         brick: brick(0, 0, 0),
         contents: rig.edited_brick([1, 2, 3], "fancy_blocks:marble"),
     });
@@ -811,7 +814,7 @@ fn following_the_server_into_another_level_forgets_what_was_held_of_the_first() 
         assignments: vec![assignment_everywhere(1)],
     });
     rig.send(ServerMessage::BrickContents {
-        level: SECOND,
+        grid: GridId::root(SECOND),
         brick: brick(1, 0, 0),
         contents: rig.edited_brick([33, 2, 3], "base_blocks:dirt"),
     });
@@ -825,7 +828,7 @@ fn following_the_server_into_another_level_forgets_what_was_held_of_the_first() 
                 region: BrickBox::around(BrickCoordinate::ORIGIN, 1)
             },
             ClientEvent::BrickChanged {
-                level: SECOND,
+                grid: GridId::root(SECOND),
                 brick: brick(1, 0, 0)
             }
         ]
@@ -876,7 +879,7 @@ fn the_summary_tells_the_levels_apart() {
         Some((SECOND, BrickBox::around(BrickCoordinate::ORIGIN, 1)))
     );
     rig.send(ServerMessage::BrickContents {
-        level: SECOND,
+        grid: GridId::root(SECOND),
         brick: brick(0, 0, 0),
         contents: rig.edited_brick([1, 2, 3], "fancy_blocks:marble"),
     });
@@ -909,7 +912,7 @@ fn what_names_a_level_the_world_does_not_have_or_one_that_is_not_watched_is_an_e
         (
             "an edit in a level that does not exist",
             ServerMessage::VoxelEdits {
-                level: LevelIndex::new(5),
+                grid: GridId::root(LevelIndex::new(5)),
                 brick: brick(0, 0, 0),
                 changes: vec![],
                 resulting_digest: 0,
@@ -919,21 +922,21 @@ fn what_names_a_level_the_world_does_not_have_or_one_that_is_not_watched_is_an_e
         (
             "contents of a level that is not the watched one",
             ServerMessage::BrickContents {
-                level: SECOND,
+                grid: GridId::root(SECOND),
                 brick: brick(0, 0, 0),
                 contents: Arc::new(Brick::from_channels(vec![])),
             },
-            |error| matches!(error, ClientError::BrickOutsideWatchedRegion(level, _) if *level == SECOND),
+            |error| matches!(error, ClientError::BrickOutsideWatchedRegion(grid, _) if *grid == GridId::root(SECOND)),
         ),
         (
             "an edit to a brick held in another level",
             ServerMessage::VoxelEdits {
-                level: SECOND,
+                grid: GridId::root(SECOND),
                 brick: brick(0, 0, 0),
                 changes: vec![],
                 resulting_digest: 0,
             },
-            |error| matches!(error, ClientError::EditToUnknownBrick(level, _) if *level == SECOND),
+            |error| matches!(error, ClientError::EditToUnknownBrick(grid, _) if *grid == GridId::root(SECOND)),
         ),
     ];
     for (name, message, recognised) in cases {
@@ -941,7 +944,7 @@ fn what_names_a_level_the_world_does_not_have_or_one_that_is_not_watched_is_an_e
         rig.watch_level_origin(LevelIndex::MAIN, 1, 5);
         // A brick held in the main level, so an edit to the same brick of the second is the mistake.
         rig.send(ServerMessage::BrickContents {
-            level: LevelIndex::MAIN,
+            grid: GridId::MAIN,
             brick: brick(0, 0, 0),
             contents: rig.edited_brick([1, 2, 3], "fancy_blocks:marble"),
         });
@@ -996,4 +999,214 @@ fn watching_names_the_level_and_commands_go_out_as_text_and_replies_come_in_as_e
             }
         ]
     );
+}
+
+// ---- ships ----
+
+fn a_ship() -> GridId {
+    GridId::new(GridId::FIRST_ALLOCATED + 3)
+}
+
+fn pose_at(brick_x: i64) -> GridPose {
+    GridPose::new(
+        WorldPosition::new(BrickCoordinate::new(brick_x, 0, 0), [1.0, 2.0, 3.0]),
+        Orientation::IDENTITY,
+    )
+}
+
+fn spawn_a_ship(rig: &mut Rig) {
+    rig.send(ServerMessage::GridsSpawned(vec![protocol::GridState {
+        id: a_ship(),
+        level: LevelIndex::MAIN,
+        pose: pose_at(0),
+    }]));
+}
+
+#[test]
+fn a_ship_is_built_from_its_bricks_moved_by_changes_checked_by_digests_and_forgotten_when_gone() {
+    let mut rig = Rig::new();
+    rig.watch_origin(1);
+    spawn_a_ship(&mut rig);
+    // A brick far from the watched region is fine for a ship: its bricks are in its own coordinates.
+    let contents = rig.edited_brick([1, 2, 3], "fancy_blocks:marble");
+    rig.send(ServerMessage::BrickContents {
+        grid: a_ship(),
+        brick: brick(30, -4, 7),
+        contents: Arc::clone(&contents),
+    });
+    rig.tick(6);
+    let update = rig.client.poll_tick().unwrap().unwrap();
+    assert_eq!(
+        update.events,
+        [
+            ClientEvent::GridsChanged,
+            ClientEvent::BrickChanged {
+                grid: a_ship(),
+                brick: brick(30, -4, 7)
+            }
+        ]
+    );
+    let world = rig.client.world();
+    let ship = world.grids().get(a_ship()).unwrap();
+    assert_eq!((ship.level, ship.pose), (LevelIndex::MAIN, pose_at(0)));
+    assert_eq!(ship.voxels.brick_count(), 1);
+    // The terrain did not get the brick.
+    assert_eq!(world.world().main().overrides.brick_count(), 0);
+
+    // It moves.
+    rig.send(ServerMessage::GridsChanged(vec![protocol::GridChange {
+        id: a_ship(),
+        pose: pose_at(5),
+    }]));
+    rig.tick(7);
+    rig.client.poll_tick().unwrap().unwrap();
+    assert_eq!(
+        rig.client.world().grids().get(a_ship()).unwrap().pose,
+        pose_at(5)
+    );
+
+    // An edit that the client reaches the same result from is applied; one that it does not is a mistake.
+    let layout = Arc::clone(rig.client.world().world().main().overrides.layout());
+    let block = layout.channel_index(&id("core:block")).unwrap();
+    let marble = rig.game.raw_block("fancy_blocks:marble");
+    let mut expected = Brick::clone(&contents);
+    expected.set(block, LocalVoxelIndex::new(4, 5, 6), marble);
+    let edit = |digest: u64| ServerMessage::VoxelEdits {
+        grid: a_ship(),
+        brick: brick(30, -4, 7),
+        changes: vec![VoxelChange {
+            voxel: LocalVoxelIndex::new(4, 5, 6),
+            channel: block.get() as u16,
+            value: marble,
+        }],
+        resulting_digest: digest,
+    };
+    rig.send(edit(expected.content_digest()));
+    rig.tick(8);
+    rig.client.poll_tick().unwrap().unwrap();
+    let held = rig
+        .client
+        .world()
+        .grids()
+        .get(a_ship())
+        .unwrap()
+        .voxels
+        .brick(brick(30, -4, 7))
+        .unwrap();
+    assert_eq!(held.content_digest(), expected.content_digest());
+    // Its summary says where it is and what it holds, so that a replay can be compared with the live view.
+    let summary = rig.client.world().summary();
+    assert_eq!(summary.grids.len(), 1);
+    assert_eq!(
+        (
+            summary.grids[0].id,
+            summary.grids[0].pose,
+            summary.grids[0].bricks
+        ),
+        (
+            a_ship(),
+            pose_at(5),
+            rig.client
+                .world()
+                .grids()
+                .get(a_ship())
+                .unwrap()
+                .voxels
+                .content_digest()
+        )
+    );
+    rig.send(edit(expected.content_digest() ^ 1));
+    rig.tick(9);
+    assert!(matches!(
+        rig.client.poll_tick().unwrap_err(),
+        ClientError::OutOfSync(grid, _) if grid == a_ship()
+    ));
+
+    // Gone, it is forgotten with its bricks.
+    let mut rig = Rig::new();
+    rig.watch_origin(1);
+    spawn_a_ship(&mut rig);
+    rig.tick(6);
+    rig.client.poll_tick().unwrap().unwrap();
+    rig.send(ServerMessage::GridsDespawned(vec![a_ship()]));
+    rig.tick(7);
+    let update = rig.client.poll_tick().unwrap().unwrap();
+    assert_eq!(update.events, [ClientEvent::GridsChanged]);
+    assert!(rig.client.world().grids().is_empty());
+    assert!(rig.client.world().summary().grids.is_empty());
+}
+
+#[test]
+fn what_the_server_says_of_a_ship_it_never_described_or_described_twice_is_a_mistake() {
+    type Recognise = fn(&ClientError) -> bool;
+    let cases: Vec<(&str, bool, ServerMessage, Recognise)> = vec![
+        (
+            "a ship told of twice",
+            true,
+            ServerMessage::GridsSpawned(vec![protocol::GridState {
+                id: a_ship(),
+                level: LevelIndex::MAIN,
+                pose: pose_at(0),
+            }]),
+            |error| matches!(error, ClientError::GridAlreadyKnown(grid) if *grid == a_ship()),
+        ),
+        (
+            "a move of a ship never told of",
+            false,
+            ServerMessage::GridsChanged(vec![protocol::GridChange {
+                id: a_ship(),
+                pose: pose_at(1),
+            }]),
+            |error| matches!(error, ClientError::UnknownGrid(grid) if *grid == a_ship()),
+        ),
+        (
+            "the removal of a ship never told of",
+            false,
+            ServerMessage::GridsDespawned(vec![a_ship()]),
+            |error| matches!(error, ClientError::UnknownGrid(grid) if *grid == a_ship()),
+        ),
+        (
+            "a brick of a ship never told of",
+            false,
+            ServerMessage::BrickContents {
+                grid: a_ship(),
+                brick: brick(0, 0, 0),
+                contents: Arc::new(Brick::from_channels(vec![])),
+            },
+            |error| matches!(error, ClientError::UnknownGrid(grid) if *grid == a_ship()),
+        ),
+        (
+            "an edit to a ship never told of",
+            false,
+            ServerMessage::VoxelEdits {
+                grid: a_ship(),
+                brick: brick(0, 0, 0),
+                changes: vec![],
+                resulting_digest: 0,
+            },
+            |error| matches!(error, ClientError::UnknownGrid(grid) if *grid == a_ship()),
+        ),
+        (
+            "an edit to a brick of a ship that was never sent",
+            true,
+            ServerMessage::VoxelEdits {
+                grid: a_ship(),
+                brick: brick(0, 0, 0),
+                changes: vec![],
+                resulting_digest: 0,
+            },
+            |error| matches!(error, ClientError::EditToUnknownBrick(grid, _) if *grid == a_ship()),
+        ),
+    ];
+    for (name, ship_is_known, message, recognised) in cases {
+        let mut rig = Rig::new();
+        rig.watch_origin(1);
+        if ship_is_known {
+            spawn_a_ship(&mut rig);
+        }
+        rig.send(message);
+        rig.tick(6);
+        let error = rig.client.poll_tick().expect_err(name);
+        assert!(recognised(&error), "{name}: {error}");
+    }
 }

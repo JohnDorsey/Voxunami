@@ -2,7 +2,7 @@
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use voxel_space::{
-    BrickBox, BrickCoordinate, EntityPose, GridId, LevelIndex, Orientation, WorldPosition,
+    BrickBox, BrickCoordinate, EntityPose, GridId, GridPose, LevelIndex, Orientation, WorldPosition,
 };
 
 pub fn write_level(writer: &mut ByteWriter, level: LevelIndex) {
@@ -46,20 +46,29 @@ pub fn read_brick_box(reader: &mut ByteReader<'_>) -> Result<BrickBox, DecodeErr
     ))
 }
 
-/// An entity's pose: its grid, the brick and the offset in it, and the four components of its orientation.
-pub fn write_entity_pose(writer: &mut ByteWriter, pose: &EntityPose) {
-    writer.write_varint(pose.grid.get());
-    write_brick_coordinate(writer, pose.position.brick());
-    for component in pose.position.offset() {
+/// A grid: the number of the level for the root grid of a level, and from `GridId::FIRST_ALLOCATED` up for a ship.
+pub fn write_grid(writer: &mut ByteWriter, grid: GridId) {
+    writer.write_varint(grid.get());
+}
+
+pub fn read_grid(reader: &mut ByteReader<'_>) -> Result<GridId, DecodeError> {
+    Ok(GridId::new(reader.read_varint()?))
+}
+
+/// A position and an orientation: the brick and the offset in it, and the four components of the orientation.
+fn write_placement(writer: &mut ByteWriter, position: WorldPosition, orientation: Orientation) {
+    write_brick_coordinate(writer, position.brick());
+    for component in position.offset() {
         writer.write_u32(component.to_bits());
     }
-    for component in pose.orientation.components() {
+    for component in orientation.components() {
         writer.write_u32(component.to_bits());
     }
 }
 
-pub fn read_entity_pose(reader: &mut ByteReader<'_>) -> Result<EntityPose, DecodeError> {
-    let grid = GridId::new(reader.read_varint()?);
+fn read_placement(
+    reader: &mut ByteReader<'_>,
+) -> Result<(WorldPosition, Orientation), DecodeError> {
     let brick = read_brick_coordinate(reader)?;
     let mut offset = [0f32; 3];
     for component in &mut offset {
@@ -76,11 +85,29 @@ pub fn read_entity_pose(reader: &mut ByteReader<'_>) -> Result<EntityPose, Decod
     }
     let orientation = Orientation::from_components(components)
         .ok_or(DecodeError::Invalid("an orientation is not a rotation"))?;
-    Ok(EntityPose::new(
-        grid,
-        WorldPosition::new(brick, offset),
-        orientation,
-    ))
+    Ok((WorldPosition::new(brick, offset), orientation))
+}
+
+/// An entity's pose: its grid, then its position and orientation in the grid.
+pub fn write_entity_pose(writer: &mut ByteWriter, pose: &EntityPose) {
+    write_grid(writer, pose.grid);
+    write_placement(writer, pose.position, pose.orientation);
+}
+
+pub fn read_entity_pose(reader: &mut ByteReader<'_>) -> Result<EntityPose, DecodeError> {
+    let grid = read_grid(reader)?;
+    let (position, orientation) = read_placement(reader)?;
+    Ok(EntityPose::new(grid, position, orientation))
+}
+
+/// Where a ship is: the position of its origin and its orientation.
+pub fn write_grid_pose(writer: &mut ByteWriter, pose: &GridPose) {
+    write_placement(writer, pose.position, pose.orientation);
+}
+
+pub fn read_grid_pose(reader: &mut ByteReader<'_>) -> Result<GridPose, DecodeError> {
+    let (position, orientation) = read_placement(reader)?;
+    Ok(GridPose::new(position, orientation))
 }
 
 #[cfg(test)]

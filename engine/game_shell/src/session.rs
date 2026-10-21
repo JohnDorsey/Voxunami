@@ -261,7 +261,11 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         };
         for event in update.events {
             match event {
-                ClientEvent::BrickChanged { brick, .. } => self.mesher.brick_changed(brick),
+                // The bricks of ships are drawn from Phase 32d on; the mesher is the terrain's.
+                ClientEvent::BrickChanged { grid, brick } if grid.root_level().is_some() => {
+                    self.mesher.brick_changed(brick);
+                }
+                ClientEvent::BrickChanged { .. } | ClientEvent::GridsChanged => {}
                 ClientEvent::CommandReply { text } => self.command_replies.push(text),
                 ClientEvent::GameMessage { kind, payload } if kind == LevelChange::kind() => {
                     // The server moved the player. A recording shows the level by what it watches.

@@ -113,6 +113,49 @@ fn a_replay_rebuilds_every_view_the_live_client_had_and_every_event_it_was_told(
 }
 
 #[test]
+fn a_replay_of_a_session_with_a_ship_that_turns_moves_grows_and_goes_rebuilds_every_view_of_it() {
+    let session = play_session(Fixture::with_ship(), 60);
+    let mut replayed = replay_player(session.recording.contents(), &ALL_PLUGINS).unwrap();
+    play_to_the_end(&mut replayed);
+    assert_eq!(replayed.updates, session.alice.updates, "events differ");
+    assert_eq!(replayed.summaries, session.alice.summaries, "views differ");
+
+    // The ship was really there to be replayed: some views have it, with bricks, and later ones do not.
+    let with_the_ship = session
+        .alice
+        .summaries
+        .iter()
+        .filter(|summary| !summary.grids.is_empty())
+        .count();
+    assert!(with_the_ship >= 5, "{with_the_ship} views had the ship");
+    assert!(session.alice.summaries.last().unwrap().grids.is_empty());
+    let poses: std::collections::BTreeSet<String> = session
+        .alice
+        .summaries
+        .iter()
+        .flat_map(|summary| summary.grids.iter().map(|grid| format!("{:?}", grid.pose)))
+        .collect();
+    assert!(poses.len() >= 3, "{} poses", poses.len());
+    let digests: std::collections::BTreeSet<u64> = session
+        .alice
+        .summaries
+        .iter()
+        .flat_map(|summary| summary.grids.iter().map(|grid| grid.bricks))
+        .collect();
+    assert!(digests.len() >= 2, "the ship was edited as it flew");
+
+    // And what the live client had was the server's truth.
+    assert_eq!(
+        differences_from_server(
+            &replayed,
+            session.fixture.server.world(),
+            &session.fixture.game
+        ),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
 fn the_scenario_exercises_every_kind_of_message() {
     // Guards the test above against passing because nothing happened.
     let session = play_session(Fixture::new(), 60);
@@ -140,6 +183,9 @@ fn the_scenario_exercises_every_kind_of_message() {
             ServerMessage::EntitiesSpawned(_)
             | ServerMessage::EntitiesChanged(_)
             | ServerMessage::EntitiesDespawned(_) => panic!("this scenario has no entities"),
+            ServerMessage::GridsSpawned(_)
+            | ServerMessage::GridsChanged(_)
+            | ServerMessage::GridsDespawned(_) => panic!("this scenario has no ships"),
         }
     }
     assert_eq!(challenges, 1, "the server challenged the recorded player");
@@ -201,7 +247,7 @@ const PINNED_RECORDING_LENGTH: usize = 84_807;
 // Phase 27e: both changed: the challenge is in the stream, the welcome says version 4, and joins take longer, so the game's own
 // edits (by tick number) land elsewhere. Not checked against the old code the way the three games' golden sessions were.
 // Phase 28: the welcome has a package (here empty: one byte for its length) and the version is 5: 84,806 to 84,807 bytes.
-const PINNED_RECORDING_CHECKSUM: u32 = 4_187_928_838;
+const PINNED_RECORDING_CHECKSUM: u32 = 3_537_646_906;
 
 #[test]
 fn identical_sessions_make_byte_identical_recordings() {

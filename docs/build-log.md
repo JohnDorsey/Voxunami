@@ -666,6 +666,20 @@ Phase 32 (moving grids; `moving-grids-spec.md`):
   patterns checked against a separate Python calculation and equal on Windows and Linux. 21 mutations: 19 caught; 1 equivalent in practice (an exact tie between
   lattice turns); 1 redundant check (a range test that `checked_offset` already makes), which was deleted.
 
+Phase 32c (ships in the stream; protocol version 6):
+- `BrickContents` and `VoxelEdits` name a `GridId` (a level's number is the same bytes as before), and `GridsSpawned`, `GridsChanged` and `GridsDespawned` tell
+  a client of the ships in its region: server side `grid_replication` (a per-client list of what it knows, as for entities; a view of each ship made once a
+  tick from `MovingGrid::world_brick_bounds`; a budget of bricks of ships per client, `ServerConfig::maximum_ship_bricks`), client side `ClientGrids` and
+  `ViewSummary::grids`. Ships are not drawn yet (32d): the mesher still takes only the bricks of terrain.
+- Old golden sessions: with the version set back to 5 the old pins passed, so the stream of the terrain is the same bytes; with 6 only the hash of each stream and
+  the checksum of the standard recording changed (lengths and saved-world hashes did not), and were re-pinned.
+- Tests: wire layouts pinned (a ship's number is a five byte varint), a root grid is refused as a ship; server: a ship in the region is sent with every brick
+  in order, none outside it or in another level, ships after the region and before game messages, a move once, an edit of a known brick and a new brick,
+  leaving and returning, the budget, removal in the tick of an edit; client: build, move, digest-checked edits, forgetting, six kinds of mistake;
+  end to end: a ship that turns, moves, grows and goes, in a recording replayed to the same view tick by tick, and the property test that every player sees
+  what the server has now includes the ship flying through regions that move. 17 mutations, all caught.
+- Not covered by a test, and so not claimed: that the mesher ignores a ship's `BrickChanged` (it would only waste work until 32d).
+
 Phase 32b (grids on the server):
 - `world_storage::{GridStore, MovingGrid}`: the ships of a world (a level, a `GridPose`, and a sparse `voxel_grid::Grid` of their own), ids from a counter that
   only goes up from `GridId::FIRST_ALLOCATED`, `retire` (a split: every part a new id, none the original's) and `merge` (the result a new id), tombstones, and

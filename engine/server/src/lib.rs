@@ -13,6 +13,7 @@ mod command_line;
 mod config;
 mod game_logic;
 mod generated_cache;
+mod grid_replication;
 mod grid_view;
 mod replication;
 mod server;

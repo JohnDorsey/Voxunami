@@ -4,10 +4,12 @@ use namespaced_id::NamespacedId;
 use protocol::{PROTOCOL_VERSION, ServerMessage, Tick, Welcome};
 use region_octree::BrickCube;
 use voxel_grid::Brick;
-use voxel_space::{BrickBox, BrickCoordinate, LevelIndex};
+use voxel_grid::Grid;
+use voxel_space::{BrickBox, BrickCoordinate, GridId, GridPose, LevelIndex};
 use world_storage::{LevelData, LoadContext, LoadReport, ParsedWorld, SourceTranslator, WorldData};
 
 use crate::client_entities::{ClientEntities, ClientEntity};
+use crate::client_grids::ClientGrids;
 use crate::error::ClientError;
 
 /// What applying one message changed that a program showing the world needs to react to.
@@ -16,9 +18,9 @@ pub enum ClientEvent {
     /// The client now watches exactly this region of this level. Edited bricks outside it were
     /// forgotten, and the terrain generators of the newly watched part are known.
     WatchedRegionChanged { level: LevelIndex, region: BrickBox },
-    /// A brick's edited contents arrived or changed.
+    /// A brick's edited contents arrived or changed: a brick of a level's terrain, or of a ship.
     BrickChanged {
-        level: LevelIndex,
+        grid: GridId,
         brick: BrickCoordinate,
     },
     /// A message for the game or one of its plugins.
@@ -30,6 +32,8 @@ pub enum ClientEvent {
     CommandReply { text: String },
     /// Entities appeared, changed or went away.
     EntitiesChanged,
+    /// Ships appeared, moved or went away.
+    GridsChanged,
 }
 
 /// Facts about the connection, from the server's welcome.
@@ -49,6 +53,16 @@ pub struct LevelSummary {
     pub generator_assignments: Vec<(BrickCube, Option<NamespacedId>)>,
 }
 
+/// What identifies one ship of a client's view.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GridSummary {
+    pub id: GridId,
+    pub level: LevelIndex,
+    pub pose: GridPose,
+    /// `Grid::content_digest` of the bricks the client holds of the ship.
+    pub bricks: u64,
+}
+
 /// Everything that identifies a client's view, for comparing two views (a live client and a replay
 /// of it, say) and for reporting where they differ.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,6 +73,8 @@ pub struct ViewSummary {
     pub levels: Vec<LevelSummary>,
     /// The entities the client has been told of, in order of id.
     pub entities: Vec<ClientEntity>,
+    /// The ships the client has been told of, in order of id.
+    pub grids: Vec<GridSummary>,
 }
 
 /// A client's picture of the world: terrain it generates itself where the server says which
@@ -76,6 +92,7 @@ pub struct ClientWorld {
     tick: Tick,
     watched: Option<(LevelIndex, BrickBox)>,
     entities: ClientEntities,
+    grids: ClientGrids,
 }
 
 impl ClientWorld {
@@ -108,6 +125,7 @@ impl ClientWorld {
                 tick: welcome.tick,
                 watched: None,
                 entities: ClientEntities::default(),
+                grids: ClientGrids::default(),
             },
             report,
         ))
@@ -133,6 +151,11 @@ impl ClientWorld {
         &self.entities
     }
 
+    /// The ships the server has told this client of.
+    pub fn grids(&self) -> &ClientGrids {
+        &self.grids
+    }
+
     /// The level and region the server has told this client it watches.
     pub fn watched(&self) -> Option<(LevelIndex, BrickBox)> {
         self.watched
@@ -155,6 +178,16 @@ impl ClientWorld {
             tick: self.tick,
             watched: self.watched,
             entities: self.entities.iter().cloned().collect(),
+            grids: self
+                .grids
+                .iter()
+                .map(|(id, grid)| GridSummary {
+                    id,
+                    level: grid.level,
+                    pose: grid.pose,
+                    bricks: grid.voxels.content_digest(),
+                })
+                .collect(),
             levels: self
                 .world
                 .levels()
@@ -224,6 +257,20 @@ impl ClientWorld {
                 self.entities.despawn(ids)?;
                 Ok(Some(ClientEvent::EntitiesChanged))
             }
+            ServerMessage::GridsSpawned(states) => {
+                let layout = Arc::clone(self.world.main().overrides.layout());
+                self.grids
+                    .spawn(states, || Grid::new(Arc::clone(&layout)))?;
+                Ok(Some(ClientEvent::GridsChanged))
+            }
+            ServerMessage::GridsChanged(changes) => {
+                self.grids.change(changes)?;
+                Ok(Some(ClientEvent::GridsChanged))
+            }
+            ServerMessage::GridsDespawned(ids) => {
+                self.grids.despawn(ids)?;
+                Ok(Some(ClientEvent::GridsChanged))
+            }
             ServerMessage::InterestChanged {
                 level,
                 region,
@@ -262,40 +309,54 @@ impl ClientWorld {
                 Ok(Some(ClientEvent::WatchedRegionChanged { level, region }))
             }
             ServerMessage::BrickContents {
-                level,
+                grid,
                 brick,
                 contents,
             } => {
-                if !self
-                    .watched
-                    .is_some_and(|(watched, region)| watched == level && region.contains(brick))
-                {
-                    return Err(ClientError::BrickOutsideWatchedRegion(level, brick));
-                }
                 let contents =
                     Arc::try_unwrap(contents).unwrap_or_else(|shared| Brick::clone(&shared));
-                let translated = self.translator.translate_brick(contents)?;
-                self.world
-                    .level_mut(level)
-                    .expect("the watched level exists")
-                    .overrides
-                    .insert_brick(brick, Arc::new(translated))
-                    .expect("the translated brick has one storage per layout channel");
-                Ok(Some(ClientEvent::BrickChanged { level, brick }))
+                match grid.root_level() {
+                    Some(level) => {
+                        if !self.watched.is_some_and(|(watched, region)| {
+                            watched == level && region.contains(brick)
+                        }) {
+                            return Err(ClientError::BrickOutsideWatchedRegion(grid, brick));
+                        }
+                        let translated = self.translator.translate_brick(contents)?;
+                        self.world
+                            .level_mut(level)
+                            .expect("the watched level exists")
+                            .overrides
+                            .insert_brick(brick, Arc::new(translated))
+                            .expect("the translated brick has one storage per layout channel");
+                    }
+                    None => {
+                        // The ship is looked for first: contents for one the client was not told of are that mistake, whatever they hold.
+                        let ship = self.grids.get_mut(grid)?;
+                        ship.insert_brick(brick, self.translator.translate_brick(contents)?);
+                    }
+                }
+                Ok(Some(ClientEvent::BrickChanged { grid, brick }))
             }
             ServerMessage::VoxelEdits {
-                level,
+                grid,
                 brick,
                 changes,
                 resulting_digest,
             } => {
-                let held = self
-                    .world
-                    .level_mut(level)
-                    .ok_or(ClientError::UnknownLevel(level))?
-                    .overrides
+                let voxels = match grid.root_level() {
+                    Some(level) => {
+                        &mut self
+                            .world
+                            .level_mut(level)
+                            .ok_or(ClientError::UnknownLevel(level))?
+                            .overrides
+                    }
+                    None => &mut self.grids.get_mut(grid)?.voxels,
+                };
+                let held = voxels
                     .brick_mut(brick)
-                    .ok_or(ClientError::EditToUnknownBrick(level, brick))?;
+                    .ok_or(ClientError::EditToUnknownBrick(grid, brick))?;
                 for change in changes {
                     let (channel, value) = self
                         .translator
@@ -303,9 +364,9 @@ impl ClientWorld {
                     held.set(channel, change.voxel, value);
                 }
                 if self.verifies_edit_digests && held.content_digest() != resulting_digest {
-                    return Err(ClientError::OutOfSync(level, brick));
+                    return Err(ClientError::OutOfSync(grid, brick));
                 }
-                Ok(Some(ClientEvent::BrickChanged { level, brick }))
+                Ok(Some(ClientEvent::BrickChanged { grid, brick }))
             }
         }
     }

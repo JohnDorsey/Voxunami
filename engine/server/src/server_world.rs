@@ -427,6 +427,21 @@ impl ServerWorld {
         Ok(grid)
     }
 
+    /// Moves a ship (clients that watch it are told in this tick's updates).
+    pub fn set_grid_pose(&mut self, grid: GridId, pose: GridPose) -> Result<(), AccessError> {
+        self.data
+            .grids_mut()
+            .get_mut(grid)
+            .ok_or(AccessError::NoSuchGrid(grid))?
+            .pose = pose;
+        Ok(())
+    }
+
+    /// Removes a ship for good, as when it is destroyed, and returns it. Clients that watch it are told it is gone.
+    pub fn remove_grid(&mut self, grid: GridId) -> Option<MovingGrid> {
+        self.data.grids_mut().remove(grid)
+    }
+
     /// Makes an empty ship in a level.
     pub fn create_grid(
         &mut self,

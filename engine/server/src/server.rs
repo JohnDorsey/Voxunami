@@ -11,11 +11,12 @@ use protocol::{
 use region_octree::BrickCube;
 use transport::{Connection, ConnectionClosed, Listener};
 use voxel_grid::Grid;
-use voxel_space::{BrickBox, BrickCoordinate, LevelIndex};
+use voxel_space::{BrickBox, BrickCoordinate, GridId, LevelIndex};
 use world_storage::{SaveError, WorldData};
 
 use crate::config::ServerConfig;
 use crate::game_logic::GameLogic;
+use crate::grid_replication::{self, EditedBrick, KnownGrids};
 use crate::replication::{KnownEntities, ViewCache, entity_messages};
 use crate::server_world::{Audience, OutgoingGameMessage, ServerWorld};
 
@@ -63,6 +64,8 @@ enum Phase {
         requested: Option<(LevelIndex, BrickBox)>,
         /// The entities it has been told of, and as what.
         known_entities: KnownEntities,
+        /// The ships it has been told of.
+        known_grids: KnownGrids,
     },
 }
 
@@ -78,13 +81,6 @@ enum Stage {
 struct Session {
     connection: Box<dyn Connection>,
     phase: Phase,
-}
-
-/// What one edited brick needs sent to the clients that already hold it.
-struct EditedBrick {
-    level: LevelIndex,
-    brick: BrickCoordinate,
-    update: ServerMessage,
 }
 
 /// The authoritative server: it owns the world, runs the game's ticks, and sends each client the
@@ -413,6 +409,7 @@ impl Server {
             watched: None,
             requested: None,
             known_entities: KnownEntities::new(),
+            known_grids: KnownGrids::new(),
         };
         self.world.add_client(id, key);
         report.joined.push(id);
@@ -446,6 +443,7 @@ impl Server {
         let changed = self.world.data_mut().entities_mut().take_changed();
         self.entity_views.invalidate(changed);
         let edited = self.edited_bricks();
+        let ships = grid_replication::ship_views(&self.world);
         let ids: Vec<ClientId> = self
             .sessions
             .iter()
@@ -454,7 +452,7 @@ impl Server {
             .collect();
         let mut closed = Vec::new();
         for id in ids {
-            let frames = self.frames_for(id, tick, &edited);
+            let frames = self.frames_for(id, tick, &edited, &ships);
             let session = self.sessions.get_mut(&id).expect("the session exists");
             if frames
                 .into_iter()
@@ -473,43 +471,52 @@ impl Server {
         self.world
             .edits
             .iter()
-            // Ships are not sent yet (Phase 32c).
-            .filter_map(|(&(grid, brick), edits)| Some((grid.root_level()?, brick, edits)))
-            .map(|(level, brick, edits)| {
-                let contents = Arc::clone(
-                    self.world
-                        .data()
-                        .level(level)
-                        .expect("an edited level exists")
-                        .overrides
-                        .brick(brick)
-                        .expect("an edited brick has contents"),
-                );
+            // A ship that was removed in the tick it was edited has nothing left to send.
+            .filter_map(|(&(grid, brick), edits)| {
+                let voxels = match grid.root_level() {
+                    Some(level) => {
+                        &self
+                            .world
+                            .data()
+                            .level(level)
+                            .expect("an edited level exists")
+                            .overrides
+                    }
+                    None => &self.world.data().grids().get(grid)?.voxels,
+                };
+                let contents =
+                    Arc::clone(voxels.brick(brick).expect("an edited brick has contents"));
                 let update = if edits.created {
                     ServerMessage::BrickContents {
-                        level,
+                        grid,
                         brick,
                         contents,
                     }
                 } else {
                     ServerMessage::VoxelEdits {
-                        level,
+                        grid,
                         brick,
                         changes: edits.changes.clone(),
                         resulting_digest: contents.content_digest(),
                     }
                 };
-                EditedBrick {
-                    level,
+                Some(EditedBrick {
+                    grid,
                     brick,
                     update,
-                }
+                })
             })
             .collect()
     }
 
     /// Everything one client is sent for this tick, in order.
-    fn frames_for(&mut self, id: ClientId, tick: Tick, edited: &[EditedBrick]) -> Vec<Vec<u8>> {
+    fn frames_for(
+        &mut self,
+        id: ClientId,
+        tick: Tick,
+        edited: &[EditedBrick],
+        ships: &[grid_replication::ShipView],
+    ) -> Vec<Vec<u8>> {
         let session = self.sessions.get_mut(&id).expect("the session exists");
         let Phase::Joined {
             watched, requested, ..
@@ -549,7 +556,7 @@ impl Server {
             for slab in newly_watched {
                 for brick in edited_bricks_in(overrides, slab) {
                     messages.push(ServerMessage::BrickContents {
-                        level,
+                        grid: GridId::root(level),
                         brick,
                         contents: Arc::clone(
                             overrides.brick(brick).expect("the brick was just found"),
@@ -566,12 +573,16 @@ impl Server {
             messages.extend(
                 edited
                     .iter()
-                    .filter(|entry| entry.level == level && kept.contains(entry.brick))
+                    .filter(|entry| entry.grid == GridId::root(level) && kept.contains(entry.brick))
                     .map(|entry| entry.update.clone()),
             );
         }
-        // Entities come after the voxels they stand in, and before the messages of the game.
-        let Phase::Joined { known_entities, .. } = &mut self
+        // Ships come after the terrain, entities after the voxels they stand in, and both before the messages of the game.
+        let Phase::Joined {
+            known_entities,
+            known_grids,
+            ..
+        } = &mut self
             .sessions
             .get_mut(&id)
             .expect("the session exists")
@@ -579,6 +590,14 @@ impl Server {
         else {
             unreachable!("only joined clients are sent updates");
         };
+        messages.extend(grid_replication::grid_messages(
+            &self.world,
+            ships,
+            known_grids,
+            current,
+            self.config.maximum_ship_bricks,
+            edited,
+        ));
         messages.extend(entity_messages(
             &self.world,
             &mut self.entity_views,

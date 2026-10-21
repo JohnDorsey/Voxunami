@@ -1,4 +1,4 @@
-# The message stream and replays (protocol version 5)
+# The message stream and replays (protocol version 6)
 
 Implemented by `engine/protocol` (messages), `engine/transport` (carrying frames), `engine/server`, `engine/client`
 and `engine/replay`; scenarios that run them together are in `engine/end_to_end_tests`.
@@ -82,8 +82,8 @@ Server to client:
 |---|---|---|
 | 1 | `Welcome` | protocol version (`u32`), game (identifier), client id (`u32`), ticks per second (`u32`), tick (`u64`), world description (bytes), package (bytes) |
 | 2 | `InterestChanged` | level (varint), box, then count and per assignment: cube origin x, y, z (zigzag), cube size level (`u8`), generator file id plus one (varint, 0 = none) |
-| 3 | `BrickContents` | level (varint), brick x, y, z (zigzag), the brick in its stored form (bytes; see the world file format) |
-| 4 | `VoxelEdits` | level (varint), brick x, y, z, digest of the result (`u64`), count and per change: voxel index, channel number, value (varints) |
+| 3 | `BrickContents` | grid (varint: a level's number for its terrain, from 2^32 up for a ship), brick x, y, z (zigzag), the brick in its stored form (bytes; see the world file format) |
+| 4 | `VoxelEdits` | grid (varint), brick x, y, z, digest of the result (`u64`), count and per change: voxel index, channel number, value (varints) |
 | 5 | `GameMessage` | kind (identifier), payload (bytes) |
 | 6 | `TickCompleted` | tick (`u64`) |
 | 7 | `Disconnected` | reason (string) |
@@ -92,11 +92,14 @@ Server to client:
 | 10 | `EntitiesChanged` | count, then per entity: id, a byte (1 if a pose follows, else 0) and the pose, components. Only what changed |
 | 11 | `EntitiesDespawned` | count, then ids (varints): entities that left the watched region or no longer exist |
 | 12 | `Challenge` | nonce (32 bytes): what the client must sign to say it holds the private key of the key it announced |
+| 13 | `GridsSpawned` | count, then per ship: grid id (varint, never a level's number), level (varint), pose without a grid (the position and orientation as in a pose). Ships that came into the watched region, in order of id; each is followed in the same tick by a `BrickContents` of every brick it has |
+| 14 | `GridsChanged` | count, then per ship: grid id, pose without a grid. Ships the client knows that moved |
+| 15 | `GridsDespawned` | count, then ids: ships that left the watched region or no longer exist; the client forgets their bricks |
 
 A **pose** is the grid id (varint), the brick x, y, z (zigzag), the offset in the brick (three `f32`, each in [0, 32)) and the orientation
 (four `f32`, a unit quaternion within 1e-3). **Components** are a count, then each identifier and its bytes (a varint length, then the
 bytes the component's own codec made), in order of identifier and once each. Only the components the entity's kind says are replicated are
-sent. Messages 9 to 11 were added in version 3; the public key in `Hello`, `Prove` and `Challenge` in version 4; the package in `Welcome` in version 5. A program
+sent. Messages 9 to 11 were added in version 3; the public key in `Hello`, `Prove` and `Challenge` in version 4; the package in `Welcome` in version 5; messages 13 to 15, and the grid in place of the level in `BrickContents` and `VoxelEdits` (the same bytes for the terrain of a level), in version 6. A program
 reads only its own version (nothing is kept to read older streams before a first release).
 
 The **package** is opaque to the protocol and the server: the game's *package data* (`content-package-spec.md`), which the client decodes after
@@ -185,3 +188,15 @@ guarantees.
   protocol version.
 - A recorder that wants to see the whole action (not one player's view) connects as a spectator with a large region.
 - Players are entities since Phase 27f (a client knows those in the region it watches); structures will be in Phase 32.
+
+## Ships in the stream (since version 6)
+
+A client watches a box of bricks of one level, as before. A **ship** is in its picture if it is in that level and the box of bricks its
+turned bricks touch meets the watched box (the bound is `MovingGrid::world_brick_bounds`; a ship with no bricks is in nobody's picture).
+Nothing generates a ship's voxels, so a client is sent every brick of a ship it is newly told of, and forgets them all when told the ship is gone.
+Per tick, after the change of region and the edits of the terrain and before the entities and the messages of the game: the ships that left
+(`GridsDespawned`), the ones that came in (`GridsSpawned`, then their bricks), the ones that moved (`GridsChanged`), then the edits to ships the
+client already had (a brick the ship did not have is sent whole, as for terrain; a ship told of this tick has its bricks in their final
+state and gets no edits). The server limits the bricks of ships in one client's picture (`ServerConfig::maximum_ship_bricks`); a ship that would take
+it over the limit is not sent, in order of id. A replay records all of this like any other message, so a recording shows a ship as it moved.
+

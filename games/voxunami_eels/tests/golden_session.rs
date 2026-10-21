@@ -186,4 +186,8 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// identifier and 11 bytes of value) in each spawn of a player, and a different saved world (the players in it hold one). Two spawns here: 2 x 28 = 56 bytes: 70,676 to 70,732.
 /// Phase 28: the welcome carries the package data (how every block looks, the view channels), and the protocol version is 5. The
 /// package is 648 bytes and its length takes 2 more: 70,732 to 71,382, the saved world is the same. The hash changes with the bytes.
-const PINNED: (u64, usize, u64) = (409_162_026_465_302_028, 71_382, 3_527_138_528_036_399_531);
+const PINNED: (u64, usize, u64) = (
+    17_970_614_336_954_792_378,
+    71_382,
+    3_527_138_528_036_399_531,
+);

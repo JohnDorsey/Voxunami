@@ -288,7 +288,7 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// Phase 29: Cave declares the property `voxunami_cave:placeable` and sets it on the six blocks a player can place, so its package grows
 /// from 1,345 to 1,647 bytes (+302): 7,183,166 to 7,183,468; the saved world is the same.
 const PINNED: (u64, usize, u64) = (
-    6_515_587_032_642_353_546,
+    17_921_380_828_981_039_569,
     7_183_468,
     15_753_024_505_422_231_765,
 );

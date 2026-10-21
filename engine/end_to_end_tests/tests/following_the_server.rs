@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use client::ClientEvent;
 use end_to_end_tests::{Fixture, differences_from_server, quick_differences};
 use proptest::prelude::*;
-use voxel_space::{BrickBox, LevelIndex};
+use voxel_space::{BrickBox, GridId, LevelIndex};
 use world_storage::test_support::{ALL_PLUGINS, Game, Plugin, brick, id};
 
 #[derive(Clone, Debug)]
@@ -51,7 +51,8 @@ proptest! {
     fn every_player_sees_what_the_server_has_in_the_region_it_watches(
         actions in proptest::collection::vec(action(), 1..45),
     ) {
-        let mut fixture = Fixture::new();
+        // (A ship flies through the world meanwhile, so regions that move meet it coming and going.)
+        let mut fixture = Fixture::with_ship();
         let mut players = [
             fixture.join(&ALL_PLUGINS),
             fixture.join(&ALL_PLUGINS),
@@ -74,7 +75,7 @@ proptest! {
                     .iter()
                     .flat_map(|update| &update.events)
                     .filter_map(|event| match event {
-                        ClientEvent::BrickChanged { level: LevelIndex::MAIN, brick } => Some(*brick),
+                        ClientEvent::BrickChanged { grid, brick } if *grid == GridId::MAIN => Some(*brick),
                         _ => None,
                     })
                     .collect();
@@ -242,7 +243,7 @@ proptest! {
                     .iter()
                     .flat_map(|update| &update.events)
                     .filter_map(|event| match event {
-                        ClientEvent::BrickChanged { level, brick } if Some(*level) == watched_level => Some(*brick),
+                        ClientEvent::BrickChanged { grid, brick } if grid.root_level() == watched_level => Some(*brick),
                         _ => None,
                     })
                     .collect();

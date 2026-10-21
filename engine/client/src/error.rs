@@ -1,5 +1,5 @@
 use protocol::{EntityId, ProtocolError, Tick};
-use voxel_space::{BrickCoordinate, LevelIndex};
+use voxel_space::{BrickCoordinate, GridId, LevelIndex};
 use world_storage::{LoadError, TranslationError};
 
 /// Why a client could not follow its server's stream. After any of these the client's view cannot be
@@ -25,11 +25,15 @@ pub enum ClientError {
     #[error(
         "the server sent contents for brick {1} of {0}, outside the region it was told to watch"
     )]
-    BrickOutsideWatchedRegion(LevelIndex, BrickCoordinate),
+    BrickOutsideWatchedRegion(GridId, BrickCoordinate),
     #[error("the server sent changes to brick {1} of {0}, which this client has no contents for")]
-    EditToUnknownBrick(LevelIndex, BrickCoordinate),
+    EditToUnknownBrick(GridId, BrickCoordinate),
     #[error("brick {1} of {0} differs from the server's after applying its changes")]
-    OutOfSync(LevelIndex, BrickCoordinate),
+    OutOfSync(GridId, BrickCoordinate),
+    #[error("the server told this client of {0}, which it already knew")]
+    GridAlreadyKnown(GridId),
+    #[error("the server named {0}, which this client was not told of")]
+    UnknownGrid(GridId),
     #[error("the server named {0}, which its world description does not have")]
     UnknownLevel(LevelIndex),
     #[error("the server told this client of {0}, which it already knew")]

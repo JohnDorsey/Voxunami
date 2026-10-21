@@ -4,14 +4,17 @@ use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
 use region_octree::BrickCube;
 use voxel_grid::Brick;
-use voxel_space::{BrickBox, BrickCoordinate, EntityPose, LevelIndex, LocalVoxelIndex};
+use voxel_space::{
+    BrickBox, BrickCoordinate, EntityPose, GridId, GridPose, LevelIndex, LocalVoxelIndex,
+};
 
 use crate::MAXIMUM_COMMAND_LENGTH;
 use crate::error::ProtocolError;
 use crate::types::{ClientId, EntityId, Tick};
 use crate::wire::{
-    read_brick_box, read_brick_coordinate, read_entity_pose, read_level, write_brick_box,
-    write_brick_coordinate, write_entity_pose, write_level,
+    read_brick_box, read_brick_coordinate, read_entity_pose, read_grid, read_grid_pose, read_level,
+    write_brick_box, write_brick_coordinate, write_entity_pose, write_grid, write_grid_pose,
+    write_level,
 };
 
 const KIND_WELCOME: u8 = 1;
@@ -26,6 +29,9 @@ const KIND_ENTITIES_SPAWNED: u8 = 9;
 const KIND_ENTITIES_CHANGED: u8 = 10;
 const KIND_ENTITIES_DESPAWNED: u8 = 11;
 const KIND_CHALLENGE: u8 = 12;
+const KIND_GRIDS_SPAWNED: u8 = 13;
+const KIND_GRIDS_CHANGED: u8 = 14;
+const KIND_GRIDS_DESPAWNED: u8 = 15;
 
 /// The server's answer to `Hello`: everything a client needs to start interpreting the stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,6 +91,22 @@ pub struct EntityChange {
     pub components: Vec<(NamespacedId, Vec<u8>)>,
 }
 
+/// A ship a client has just been told of: which level it is in and where it is. Its bricks follow as `BrickContents` of the ship.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GridState {
+    /// Never the root grid of a level, which a client knows from the world description.
+    pub id: GridId,
+    pub level: LevelIndex,
+    pub pose: GridPose,
+}
+
+/// A ship the client knows that moved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GridChange {
+    pub id: GridId,
+    pub pose: GridPose,
+}
+
 /// Sent from the server to a client.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ServerMessage {
@@ -99,16 +121,17 @@ pub enum ServerMessage {
         region: BrickBox,
         assignments: Vec<GeneratorAssignment>,
     },
-    /// The whole contents of an edited brick, replacing whatever the client has for it. A brick
-    /// that has never been edited is not sent: clients generate it.
+    /// The whole contents of an edited brick of a grid (the root grid of a level has the level's number), replacing whatever
+    /// the client has for it. A brick that has never been edited is not sent: clients generate it. Every brick of a ship is
+    /// sent, since nothing generates a ship's.
     BrickContents {
-        level: LevelIndex,
+        grid: GridId,
         brick: BrickCoordinate,
         contents: Arc<Brick>,
     },
     /// Changes to a brick the client already has contents for.
     VoxelEdits {
-        level: LevelIndex,
+        grid: GridId,
         brick: BrickCoordinate,
         changes: Vec<VoxelChange>,
         /// `Brick::content_digest` of the brick once the changes are applied, in the server's own
@@ -136,6 +159,13 @@ pub enum ServerMessage {
     /// The answer to `Hello`: bytes the server has not used before, which the client signs to prove it holds the
     /// private key of the key it said it is. `Welcome` follows once it has. (Protocol version 4.)
     Challenge { nonce: [u8; 32] },
+    /// Ships that came into the region the client watches (or were made in it), in order of id; each is followed in the same tick by
+    /// the `BrickContents` of all its bricks. (Protocol version 6.)
+    GridsSpawned(Vec<GridState>),
+    /// Ships the client knows that moved, in order of id.
+    GridsChanged(Vec<GridChange>),
+    /// Ships the client knew that left the region it watches or no longer exist, in order of id. The client forgets their bricks.
+    GridsDespawned(Vec<GridId>),
 }
 
 /// Whether `frame` is a `TickCompleted` message. Recorders use it to know when a tick ends without
@@ -174,25 +204,25 @@ impl ServerMessage {
                 }
             }
             Self::BrickContents {
-                level,
+                grid,
                 brick,
                 contents,
             } => {
                 writer.write_u8(KIND_BRICK_CONTENTS);
-                write_level(&mut writer, *level);
+                write_grid(&mut writer, *grid);
                 write_brick_coordinate(&mut writer, *brick);
                 let mut encoded = Vec::new();
                 contents.encode(&mut encoded);
                 writer.write_bytes(&encoded);
             }
             Self::VoxelEdits {
-                level,
+                grid,
                 brick,
                 changes,
                 resulting_digest,
             } => {
                 writer.write_u8(KIND_VOXEL_EDITS);
-                write_level(&mut writer, *level);
+                write_grid(&mut writer, *grid);
                 write_brick_coordinate(&mut writer, *brick);
                 writer.write_u64(*resulting_digest);
                 writer.write_varint(changes.len() as u64);
@@ -255,6 +285,30 @@ impl ServerMessage {
                     writer.write_varint(id.get());
                 }
             }
+            Self::GridsSpawned(grids) => {
+                writer.write_u8(KIND_GRIDS_SPAWNED);
+                writer.write_varint(grids.len() as u64);
+                for grid in grids {
+                    write_grid(&mut writer, grid.id);
+                    write_level(&mut writer, grid.level);
+                    write_grid_pose(&mut writer, &grid.pose);
+                }
+            }
+            Self::GridsChanged(changes) => {
+                writer.write_u8(KIND_GRIDS_CHANGED);
+                writer.write_varint(changes.len() as u64);
+                for change in changes {
+                    write_grid(&mut writer, change.id);
+                    write_grid_pose(&mut writer, &change.pose);
+                }
+            }
+            Self::GridsDespawned(ids) => {
+                writer.write_u8(KIND_GRIDS_DESPAWNED);
+                writer.write_varint(ids.len() as u64);
+                for id in ids {
+                    write_grid(&mut writer, *id);
+                }
+            }
         }
         writer.into_bytes()
     }
@@ -298,7 +352,7 @@ impl ServerMessage {
                 }
             }
             KIND_BRICK_CONTENTS => {
-                let level = read_level(&mut reader)?;
+                let grid = read_grid(&mut reader)?;
                 let brick = read_brick_coordinate(&mut reader)?;
                 let mut encoded = reader.read_bytes()?;
                 let contents = Brick::decode(&mut encoded)?;
@@ -306,13 +360,13 @@ impl ServerMessage {
                     return Err(DecodeError::TrailingBytes(encoded.len()).into());
                 }
                 Self::BrickContents {
-                    level,
+                    grid,
                     brick,
                     contents: Arc::new(contents),
                 }
             }
             KIND_VOXEL_EDITS => {
-                let level = read_level(&mut reader)?;
+                let grid = read_grid(&mut reader)?;
                 let brick = read_brick_coordinate(&mut reader)?;
                 let resulting_digest = reader.read_u64()?;
                 let count = reader.read_count(3)?;
@@ -333,7 +387,7 @@ impl ServerMessage {
                     });
                 }
                 Self::VoxelEdits {
-                    level,
+                    grid,
                     brick,
                     changes,
                     resulting_digest,
@@ -405,11 +459,55 @@ impl ServerMessage {
                 }
                 Self::EntitiesDespawned(ids)
             }
+            KIND_GRIDS_SPAWNED => {
+                // An id, a level, and a pose (at least 29 bytes).
+                let count = reader.read_count(31)?;
+                let mut grids = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let id = read_ship(&mut reader)?;
+                    grids.push(GridState {
+                        id,
+                        level: read_level(&mut reader)?,
+                        pose: read_grid_pose(&mut reader)?,
+                    });
+                }
+                Self::GridsSpawned(grids)
+            }
+            KIND_GRIDS_CHANGED => {
+                let count = reader.read_count(30)?;
+                let mut changes = Vec::with_capacity(count);
+                for _ in 0..count {
+                    changes.push(GridChange {
+                        id: read_ship(&mut reader)?,
+                        pose: read_grid_pose(&mut reader)?,
+                    });
+                }
+                Self::GridsChanged(changes)
+            }
+            KIND_GRIDS_DESPAWNED => {
+                let count = reader.read_count(1)?;
+                let mut ids = Vec::with_capacity(count);
+                for _ in 0..count {
+                    ids.push(read_ship(&mut reader)?);
+                }
+                Self::GridsDespawned(ids)
+            }
             unknown => return Err(ProtocolError::UnknownMessageKind(unknown)),
         };
         reader.finish()?;
         Ok(message)
     }
+}
+
+/// The id of a ship: a root grid is a level, which a client knows from the world description and is never told of.
+fn read_ship(reader: &mut ByteReader<'_>) -> Result<GridId, DecodeError> {
+    let id = read_grid(reader)?;
+    if id.root_level().is_some() {
+        return Err(DecodeError::Invalid(
+            "the root grid of a level is not a ship",
+        ));
+    }
+    Ok(id)
 }
 
 /// A list of components: a count, then each identifier and its bytes. The identifiers are in order,
@@ -495,12 +593,27 @@ mod tests {
                 assignments: Vec::new(),
             },
             ServerMessage::BrickContents {
-                level: LevelIndex::new(300),
+                grid: GridId::root(LevelIndex::new(300)),
                 brick: BrickCoordinate::new(-5, 6, 7),
                 contents: sample_brick(),
             },
+            ServerMessage::BrickContents {
+                grid: ship(),
+                brick: BrickCoordinate::new(0, 0, -1),
+                contents: sample_brick(),
+            },
             ServerMessage::VoxelEdits {
-                level: LevelIndex::new(2),
+                grid: ship(),
+                brick: BrickCoordinate::new(0, 0, -1),
+                changes: vec![VoxelChange {
+                    voxel: LocalVoxelIndex::new(2, 2, 2),
+                    channel: 1,
+                    value: 9,
+                }],
+                resulting_digest: 7,
+            },
+            ServerMessage::VoxelEdits {
+                grid: GridId::root(LevelIndex::new(2)),
                 brick: BrickCoordinate::new(1, 1, 1),
                 changes: vec![
                     VoxelChange {
@@ -562,7 +675,34 @@ mod tests {
             ServerMessage::EntitiesDespawned(vec![EntityId::new(1), EntityId::new(300)]),
             ServerMessage::EntitiesDespawned(Vec::new()),
             ServerMessage::Challenge { nonce: [77; 32] },
+            ServerMessage::GridsSpawned(vec![
+                GridState {
+                    id: ship(),
+                    level: LevelIndex::new(1),
+                    pose: sample_grid_pose(3),
+                },
+                GridState {
+                    id: GridId::new(u64::MAX),
+                    level: LevelIndex::MAIN,
+                    pose: sample_grid_pose(-9),
+                },
+            ]),
+            ServerMessage::GridsSpawned(Vec::new()),
+            ServerMessage::GridsChanged(vec![GridChange {
+                id: ship(),
+                pose: sample_grid_pose(0),
+            }]),
+            ServerMessage::GridsDespawned(vec![ship(), GridId::new(GridId::FIRST_ALLOCATED + 300)]),
         ]
+    }
+
+    fn ship() -> GridId {
+        GridId::new(GridId::FIRST_ALLOCATED + 5)
+    }
+
+    fn sample_grid_pose(brick_x: i64) -> GridPose {
+        let pose = sample_pose(brick_x);
+        GridPose::new(pose.position, pose.orientation)
     }
 
     fn sample_pose(brick_x: i64) -> EntityPose {
@@ -626,6 +766,34 @@ mod tests {
             ServerMessage::EntitiesDespawned(vec![EntityId::new(1), EntityId::new(300)]).encode(),
             [11, 2, 1, 0xAC, 0x02]
         );
+        // A ship's number is 2^32 + 5: a varint of 5 bytes. The kind, a count, then the numbers.
+        assert_eq!(
+            ServerMessage::GridsDespawned(vec![ship(), GridId::new(GridId::FIRST_ALLOCATED)])
+                .encode(),
+            [
+                15, 2, 0x85, 0x80, 0x80, 0x80, 0x10, 0x80, 0x80, 0x80, 0x80, 0x10
+            ]
+        );
+        let mut changed = vec![14, 1, 0x85, 0x80, 0x80, 0x80, 0x10];
+        // The brick, then the offset and the orientation as the bits of 32-bit floats.
+        changed.extend([0, 0, 0]);
+        changed.extend(1.0f32.to_bits().to_le_bytes());
+        changed.extend(2.0f32.to_bits().to_le_bytes());
+        changed.extend(3.0f32.to_bits().to_le_bytes());
+        for component in [0.0f32, 0.0, 0.0, 1.0] {
+            changed.extend(component.to_bits().to_le_bytes());
+        }
+        assert_eq!(
+            ServerMessage::GridsChanged(vec![GridChange {
+                id: ship(),
+                pose: GridPose::new(
+                    voxel_space::WorldPosition::new(BrickCoordinate::ORIGIN, [1.0, 2.0, 3.0]),
+                    voxel_space::Orientation::IDENTITY
+                ),
+            }])
+            .encode(),
+            changed
+        );
         assert_eq!(
             ServerMessage::EntitiesChanged(vec![EntityChange {
                 id: EntityId::new(5),
@@ -637,7 +805,7 @@ mod tests {
         );
         assert_eq!(
             ServerMessage::VoxelEdits {
-                level: LevelIndex::new(1),
+                grid: GridId::root(LevelIndex::new(1)),
                 brick: BrickCoordinate::new(1, 0, 0),
                 changes: vec![VoxelChange {
                     voxel: LocalVoxelIndex::new(1, 0, 0),
@@ -718,9 +886,31 @@ mod tests {
     }
 
     #[test]
+    fn the_root_grid_of_a_level_is_never_told_of_as_a_ship() {
+        let root = GridId::root(LevelIndex::new(1));
+        for message in [
+            ServerMessage::GridsSpawned(vec![GridState {
+                id: root,
+                level: LevelIndex::MAIN,
+                pose: sample_grid_pose(0),
+            }]),
+            ServerMessage::GridsChanged(vec![GridChange {
+                id: root,
+                pose: sample_grid_pose(0),
+            }]),
+            ServerMessage::GridsDespawned(vec![root]),
+        ] {
+            assert!(
+                ServerMessage::decode(&message.encode()).is_err(),
+                "{message:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_brick_with_a_malformed_channel_is_refused() {
         let mut frame = ServerMessage::BrickContents {
-            level: LevelIndex::MAIN,
+            grid: GridId::MAIN,
             brick: BrickCoordinate::ORIGIN,
             contents: Arc::new(Brick::from_channels(vec![ChannelStorage::uniform(1)])),
         }
@@ -756,13 +946,13 @@ mod tests {
             contents in arbitrary_brick(),
             changes in proptest::collection::vec((local_voxel_index(), any::<u16>(), any::<u32>()), 0..30),
             digest in any::<u64>(),
-            level in any::<u32>(),
+            grid in any::<u64>(),
         ) {
-            let level = LevelIndex::new(level);
-            let brick_message = ServerMessage::BrickContents { level, brick: coordinate, contents };
+            let grid = GridId::new(grid);
+            let brick_message = ServerMessage::BrickContents { grid, brick: coordinate, contents };
             prop_assert_eq!(ServerMessage::decode(&brick_message.encode()), Ok(brick_message));
             let edit_message = ServerMessage::VoxelEdits {
-                level,
+                grid,
                 brick: coordinate,
                 changes: changes
                     .into_iter()

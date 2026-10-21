@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
 use voxel_grid::Grid;
-use voxel_space::{GridId, GridPose, LatticeTransform, LevelIndex};
+use voxel_space::{
+    BrickBox, BrickCoordinate, GridId, GridPose, LatticeTransform, LevelIndex, WorldPosition,
+};
 
 /// A grid of voxels that is not the terrain of a level: a ship. Its voxels are in its own coordinates, and its pose says where
 /// those coordinates are in its level.
@@ -12,6 +14,67 @@ pub struct MovingGrid {
     pub pose: GridPose,
     /// The voxels. An absent brick is every channel at its default (nothing generates a ship).
     pub voxels: Grid,
+}
+
+impl MovingGrid {
+    /// The bricks of the level (its root grid's, in the level's coordinates) that the ship's bricks are in or touch, as a box: the box
+    /// around the turned box of its bricks. `None` for a ship with no bricks, or one whose bricks are outside the supported range in
+    /// the world. It is a bound, not a fit: a ship turned half way across the diagonal is covered by a box larger than it.
+    pub fn world_brick_bounds(&self) -> Option<BrickBox> {
+        let mut bounds: Option<(BrickCoordinate, BrickCoordinate)> = None;
+        for (brick, _) in self.voxels.bricks() {
+            bounds = Some(match bounds {
+                None => (brick, brick),
+                Some((low, high)) => (
+                    BrickCoordinate::new(
+                        low.x().min(brick.x()),
+                        low.y().min(brick.y()),
+                        low.z().min(brick.z()),
+                    ),
+                    BrickCoordinate::new(
+                        high.x().max(brick.x()),
+                        high.y().max(brick.y()),
+                        high.z().max(brick.z()),
+                    ),
+                ),
+            });
+        }
+        let (low, high) = bounds?;
+        // The corners of the box of voxels, in the ship's own coordinates: from the first voxel of the lowest brick to the voxel
+        // after the last of the highest.
+        let mut corners = Vec::with_capacity(8);
+        for x in [low.x(), high.x() + 1] {
+            for y in [low.y(), high.y() + 1] {
+                for z in [low.z(), high.z() + 1] {
+                    let corner = BrickCoordinate::try_new(x, y, z).ok()?;
+                    corners.push(
+                        self.pose
+                            .local_to_world(WorldPosition::new(corner, [0.0; 3]))?,
+                    );
+                }
+            }
+        }
+        // The bricks the box touches run from the brick of its lowest corner to the brick of its highest, where a highest corner exactly
+        // on the boundary between two bricks touches only the one below.
+        let mut min = corners[0].brick();
+        let mut max = min;
+        for corner in &corners {
+            let brick = corner.brick();
+            let offset = corner.offset();
+            let upper = |value: i64, offset: f32| if offset != 0.0 { value } else { value - 1 };
+            min = BrickCoordinate::new(
+                min.x().min(brick.x()),
+                min.y().min(brick.y()),
+                min.z().min(brick.z()),
+            );
+            max = BrickCoordinate::new(
+                max.x().max(upper(brick.x(), offset[0])),
+                max.y().max(upper(brick.y(), offset[1])),
+                max.z().max(upper(brick.z(), offset[2])),
+            );
+        }
+        BrickBox::new(min, max)
+    }
 }
 
 /// The grids that are not the root grids of levels, and the ids they had before they were split or merged.
@@ -180,6 +243,85 @@ mod tests {
             offset: [x, 0, 0],
             ..LatticeTransform::IDENTITY
         }
+    }
+
+    /// A ship with a brick at each of these places and this pose.
+    fn ship_with_bricks(bricks: &[[i64; 3]], pose: GridPose) -> MovingGrid {
+        let mut ship = grid(1);
+        ship.voxels = Grid::new(Arc::clone(ship.voxels.layout()));
+        let channel = ship.voxels.layout().channel_indices().next().unwrap();
+        for brick in bricks {
+            let voxel = BrickCoordinate::new(brick[0], brick[1], brick[2]).origin();
+            ship.voxels.set(channel, voxel, 1);
+        }
+        ship.pose = pose;
+        ship
+    }
+
+    fn bounds(ship: &MovingGrid) -> Option<([i64; 3], [i64; 3])> {
+        ship.world_brick_bounds().map(|bounds| {
+            let (min, max) = (bounds.min(), bounds.max());
+            ([min.x(), min.y(), min.z()], [max.x(), max.y(), max.z()])
+        })
+    }
+
+    #[test]
+    fn the_bricks_a_ship_touches_in_the_world_are_found_for_a_move_a_turn_and_a_ship_with_none() {
+        let at = |x: i64, offset: [f32; 3]| {
+            GridPose::new(
+                WorldPosition::new(BrickCoordinate::new(x, 0, 0), offset),
+                voxel_space::Orientation::IDENTITY,
+            )
+        };
+        let bricks = [[0, 0, 0], [2, 1, 0]];
+        assert_eq!(bounds(&ship_with_bricks(&[], at(0, [0.0; 3]))), None);
+        // Where the bricks of the ship are is where the bricks of the world are, on the lattice ...
+        assert_eq!(
+            bounds(&ship_with_bricks(&bricks, at(0, [0.0; 3]))),
+            Some(([0, 0, 0], [2, 1, 0]))
+        );
+        assert_eq!(
+            bounds(&ship_with_bricks(&bricks, at(10, [0.0; 3]))),
+            Some(([10, 0, 0], [12, 1, 0]))
+        );
+        // ... and half a brick off it, the ship reaches into one more brick.
+        assert_eq!(
+            bounds(&ship_with_bricks(&bricks, at(0, [16.0, 0.0, 0.0]))),
+            Some(([0, 0, 0], [3, 1, 0]))
+        );
+        // A quarter turn about the vertical axis takes x onto -z and z onto x: bricks 0 to 1 along x become -2 to -1 along z.
+        let quarter = LatticeRotation::all()
+            .into_iter()
+            .find(|rotation| {
+                rotation.apply([1, 0, 0]) == [0, 0, -1] && rotation.apply([0, 1, 0]) == [0, 1, 0]
+            })
+            .unwrap();
+        let turned = GridPose::new(
+            WorldPosition::new(BrickCoordinate::new(0, 0, 0), [0.0; 3]),
+            quarter.orientation(),
+        );
+        let (low, high) = bounds(&ship_with_bricks(&[[0, 0, 0], [1, 0, 0]], turned)).unwrap();
+        // (The quaternion of a quarter turn is not exact in 32 bits, so a face that should be on a boundary may be a hair over it: the
+        // bound may be a brick wider, never narrower.)
+        assert!(
+            (-1..=0).contains(&low[0]) && (0..=1).contains(&high[0]),
+            "{low:?} {high:?}"
+        );
+        assert!(
+            (-1..=0).contains(&low[1]) && (0..=1).contains(&high[1]),
+            "{low:?} {high:?}"
+        );
+        assert!(
+            (-3..=-2).contains(&low[2]) && (-1..=0).contains(&high[2]),
+            "{low:?} {high:?}"
+        );
+        // At an angle the box of the world is larger than the ship.
+        let slanted = GridPose::new(
+            WorldPosition::new(BrickCoordinate::new(0, 0, 0), [0.0; 3]),
+            voxel_space::Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_4, 0.0),
+        );
+        let (low, high) = bounds(&ship_with_bricks(&[[0, 0, 0]], slanted)).unwrap();
+        assert!(low[0] <= 0 && high[0] >= 1 && low[2] <= -1 && high[2] >= 0);
     }
 
     #[test]

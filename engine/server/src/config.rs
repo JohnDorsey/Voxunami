@@ -9,6 +9,9 @@ pub struct ServerConfig {
     /// The most bricks one client may watch at once. A request for more disconnects the client,
     /// since the server would otherwise spend unbounded time on it.
     pub maximum_watched_bricks: u64,
+    /// The most bricks of ships that may be in one client's picture. A ship that would take it past this is not sent, and the
+    /// client sees nothing of it (levels of detail will fill that gap).
+    pub maximum_ship_bricks: u64,
     /// A client that has connected but not finished logging in (the hello, then the proof of its identity)
     /// within this many ticks is dropped.
     pub handshake_timeout_ticks: u32,
@@ -29,6 +32,7 @@ impl ServerConfig {
             game,
             ticks_per_second: 20,
             maximum_watched_bricks: 33 * 33 * 33,
+            maximum_ship_bricks: 16 * 1024,
             handshake_timeout_ticks: 200,
             challenge_seed: None,
             package: Vec::new(),

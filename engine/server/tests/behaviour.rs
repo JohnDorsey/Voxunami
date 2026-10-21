@@ -16,8 +16,8 @@ use server::{Audience, LeaveReason, Server, ServerConfig, StepReport};
 use transport::loopback::{LoopbackConnection, LoopbackConnector, loopback_listener};
 use transport::{Connection, ConnectionClosed};
 use voxel_space::{
-    BrickBox, BrickCoordinate, EntityPose, GridId, LevelIndex, Orientation, VoxelCoordinate,
-    WorldPosition,
+    BrickBox, BrickCoordinate, EntityPose, GridId, GridPose, LevelIndex, Orientation,
+    VoxelCoordinate, WorldPosition,
 };
 use world_storage::ParsedWorld;
 use world_storage::WorldData;
@@ -498,7 +498,7 @@ fn unedited_terrain_is_never_sent_and_edited_bricks_are_sent_when_they_come_into
         .iter()
         .filter_map(|m| match m {
             ServerMessage::BrickContents {
-                level: LevelIndex::MAIN,
+                grid: GridId::MAIN,
                 brick,
                 ..
             } => Some(*brick),
@@ -526,7 +526,7 @@ fn unedited_terrain_is_never_sent_and_edited_bricks_are_sent_when_they_come_into
         .iter()
         .filter_map(|m| match m {
             ServerMessage::BrickContents {
-                level: LevelIndex::MAIN,
+                grid: GridId::MAIN,
                 brick,
                 ..
             } => Some(*brick),
@@ -576,7 +576,7 @@ fn the_contents_sent_are_exactly_the_servers_brick() {
         .into_iter()
         .find_map(|m| match m {
             ServerMessage::BrickContents {
-                level: LevelIndex::MAIN,
+                grid: GridId::MAIN,
                 contents,
                 ..
             } => Some(contents),
@@ -610,7 +610,7 @@ fn a_first_edit_sends_the_whole_brick_and_later_edits_send_only_changes() {
     let messages = watcher.received();
     let [
         ServerMessage::BrickContents {
-            level: LevelIndex::MAIN,
+            grid: GridId::MAIN,
             brick: edited,
             contents,
         },
@@ -648,7 +648,7 @@ fn a_first_edit_sends_the_whole_brick_and_later_edits_send_only_changes() {
     let messages = watcher.received();
     let [
         ServerMessage::VoxelEdits {
-            level: LevelIndex::MAIN,
+            grid: GridId::MAIN,
             brick: edited,
             changes,
             resulting_digest,
@@ -708,10 +708,10 @@ fn a_brick_that_comes_into_view_in_the_tick_it_is_edited_is_sent_once() {
             .filter(|m| matches!(
                 m,
                 ServerMessage::BrickContents {
-                    level: LevelIndex::MAIN,
+                    grid: GridId::MAIN,
                     ..
                 } | ServerMessage::VoxelEdits {
-                    level: LevelIndex::MAIN,
+                    grid: GridId::MAIN,
                     ..
                 }
             ))
@@ -722,7 +722,7 @@ fn a_brick_that_comes_into_view_in_the_tick_it_is_edited_is_sent_once() {
     assert!(matches!(
         messages[1],
         ServerMessage::BrickContents {
-            level: LevelIndex::MAIN,
+            grid: GridId::MAIN,
             ..
         }
     ));
@@ -1039,7 +1039,7 @@ fn a_region_that_moves_partly_sends_only_the_bricks_it_gains_and_shrinking_sends
         .iter()
         .filter_map(|m| match m {
             ServerMessage::BrickContents {
-                level: LevelIndex::MAIN,
+                grid: GridId::MAIN,
                 brick,
                 ..
             } => Some(*brick),
@@ -1218,12 +1218,12 @@ fn place_in(client: &mut TestClient, level: LevelIndex, at: [i8; 3], block: u8) 
     });
 }
 
-/// The bricks a client was sent contents of, as (level, brick).
+/// The bricks of levels a client was sent contents of, as (level, brick).
 fn contents_sent(messages: &[ServerMessage]) -> Vec<(LevelIndex, BrickCoordinate)> {
     messages
         .iter()
         .filter_map(|message| match message {
-            ServerMessage::BrickContents { level, brick, .. } => Some((*level, *brick)),
+            ServerMessage::BrickContents { grid, brick, .. } => Some((grid.root_level()?, *brick)),
             _ => None,
         })
         .collect()
@@ -1233,7 +1233,7 @@ fn edits_sent(messages: &[ServerMessage]) -> Vec<(LevelIndex, BrickCoordinate)> 
     messages
         .iter()
         .filter_map(|message| match message {
-            ServerMessage::VoxelEdits { level, brick, .. } => Some((*level, *brick)),
+            ServerMessage::VoxelEdits { grid, brick, .. } => Some((grid.root_level()?, *brick)),
             _ => None,
         })
         .collect()
@@ -2373,5 +2373,404 @@ fn a_hidden_entity_is_told_to_nobody_and_showing_it_again_tells_those_who_can_se
             [ServerMessage::EntitiesDespawned(ids)] if ids == &[EntityId::new(1)]
         ),
         "{told:?}"
+    );
+}
+
+// ---- ships ----
+
+fn ship_pose(brick_x: i64) -> GridPose {
+    GridPose::new(
+        WorldPosition::new(BrickCoordinate::new(brick_x, 0, 0), [0.0; 3]),
+        Orientation::IDENTITY,
+    )
+}
+
+/// Sets voxels of a ship (block values), in the ship's own coordinates.
+fn build(world: &mut server::ServerWorld, ship: GridId, voxels: &[([i64; 3], u32)]) {
+    let block = world
+        .data()
+        .main()
+        .overrides
+        .layout()
+        .channel_index(&id("core:block"))
+        .unwrap();
+    let mut view = world.grid(ship).unwrap();
+    for (at, value) in voxels {
+        view.set(block, VoxelCoordinate::new(at[0], at[1], at[2]), *value)
+            .unwrap();
+    }
+}
+
+/// The messages about ships and their bricks, in the order they were sent.
+fn ship_messages(messages: &[ServerMessage]) -> Vec<&ServerMessage> {
+    messages
+        .iter()
+        .filter(|message| match message {
+            ServerMessage::GridsSpawned(_)
+            | ServerMessage::GridsChanged(_)
+            | ServerMessage::GridsDespawned(_) => true,
+            ServerMessage::BrickContents { grid, .. } | ServerMessage::VoxelEdits { grid, .. } => {
+                grid.root_level().is_none()
+            }
+            _ => false,
+        })
+        .collect()
+}
+
+/// A server whose game does `act` at each tick, and a client that has logged in and watches the bricks around the origin.
+fn ship_harness(
+    config: ServerConfig,
+    act: impl FnMut(Tick, &mut server::ServerWorld) + Send + 'static,
+) -> (Harness, TestClient) {
+    let game = Game::new(&ALL_PLUGINS);
+    let logic = ScriptedLogic::new().on_tick(act);
+    let mut harness = Harness::with_logic(&game, game.new_world(), config, logic);
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    client.received();
+    (harness, client)
+}
+
+fn a_ship_id(number: u64) -> GridId {
+    GridId::new(GridId::FIRST_ALLOCATED + number)
+}
+
+#[test]
+fn a_client_is_sent_the_ships_in_the_region_it_watches_with_every_brick_of_each_and_not_the_others()
+{
+    let (mut harness, mut client) = ship_harness(ServerConfig::new(game_id()), |tick, world| {
+        if tick.get() == 3 {
+            let near = world.create_grid(LevelIndex::MAIN, ship_pose(0)).unwrap();
+            // Two bricks, and the one at the far end of the second.
+            build(
+                world,
+                near,
+                &[([1, 1, 1], 4), ([40, 1, 1], 5), ([2, 33, 2], 6)],
+            );
+            let far = world.create_grid(LevelIndex::MAIN, ship_pose(40)).unwrap();
+            build(world, far, &[([1, 1, 1], 4)]);
+        }
+    });
+    client.watch(BrickCoordinate::ORIGIN, 2);
+    harness.server.step();
+    harness.server.step();
+    // The ships were made in the tick after the client asked, so the client has them with its next messages at the latest.
+    let messages = client.received();
+    let told = ship_messages(&messages);
+    let near = a_ship_id(0);
+    let [
+        ServerMessage::GridsSpawned(spawned),
+        ServerMessage::BrickContents {
+            grid: first,
+            brick: first_brick,
+            ..
+        },
+        ServerMessage::BrickContents {
+            grid: second,
+            brick: second_brick,
+            ..
+        },
+        ServerMessage::BrickContents {
+            grid: third,
+            brick: third_brick,
+            ..
+        },
+    ] = &told[..]
+    else {
+        panic!("{told:?}");
+    };
+    assert_eq!(spawned.len(), 1);
+    assert_eq!(
+        (spawned[0].id, spawned[0].level, spawned[0].pose),
+        (near, LevelIndex::MAIN, ship_pose(0))
+    );
+    // Every brick, in order.
+    assert_eq!(
+        [
+            (first, first_brick),
+            (second, second_brick),
+            (third, third_brick)
+        ]
+        .map(|(grid, brick)| (*grid, *brick)),
+        [
+            (near, BrickCoordinate::new(0, 0, 0)),
+            (near, BrickCoordinate::new(0, 1, 0)),
+            (near, BrickCoordinate::new(1, 0, 0)),
+        ]
+    );
+    // Quiet ticks say nothing more.
+    harness.server.step();
+    harness.server.step();
+    assert!(ship_messages(&client.received()).is_empty());
+}
+
+#[test]
+fn ships_come_after_the_change_of_region_and_before_the_messages_of_the_game() {
+    let (mut harness, mut client) = ship_harness(ServerConfig::new(game_id()), |tick, world| {
+        if tick.get() == 3 {
+            let ship = world.create_grid(LevelIndex::MAIN, ship_pose(0)).unwrap();
+            build(world, ship, &[([1, 1, 1], 4)]);
+            world.send(Audience::Everyone, id("test_game:hello"), vec![1]);
+        }
+    });
+    client.watch(BrickCoordinate::ORIGIN, 2);
+    harness.server.step();
+    harness.server.step();
+    let kinds: Vec<&str> = client
+        .received()
+        .iter()
+        .map(|message| match message {
+            ServerMessage::InterestChanged { .. } => "interest",
+            ServerMessage::GridsSpawned(_) => "ships",
+            ServerMessage::BrickContents { grid, .. } if grid.root_level().is_none() => {
+                "ship brick"
+            }
+            ServerMessage::GameMessage { .. } => "game",
+            ServerMessage::TickCompleted { .. } => "tick",
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        ["interest", "ships", "ship brick", "game", "tick", "tick"]
+    );
+}
+
+#[test]
+fn a_ship_that_moves_is_told_once_and_one_that_is_edited_is_sent_the_edit_or_the_new_brick() {
+    let (mut harness, mut client) = ship_harness(ServerConfig::new(game_id()), |tick, world| {
+        let ship = a_ship_id(0);
+        match tick.get() {
+            3 => {
+                let ship = world.create_grid(LevelIndex::MAIN, ship_pose(0)).unwrap();
+                build(world, ship, &[([1, 1, 1], 4)]);
+            }
+            5 => world.set_grid_pose(ship, ship_pose(1)).unwrap(),
+            7 => build(world, ship, &[([2, 1, 1], 9)]),
+            9 => build(world, ship, &[([70, 1, 1], 9)]),
+            _ => {}
+        }
+    });
+    client.watch(BrickCoordinate::ORIGIN, 3);
+    // Ticks 3 and 4: the ship appears.
+    harness.server.step();
+    harness.server.step();
+    let told = client.received();
+    let told = ship_messages(&told);
+    assert!(
+        matches!(told[0], ServerMessage::GridsSpawned(_)),
+        "{told:?}"
+    );
+    // Tick 5: the move.
+    let mut moves = Vec::new();
+    let mut edits = Vec::new();
+    for _ in 5..=10 {
+        harness.server.step();
+        let messages = client.received();
+        for message in ship_messages(&messages) {
+            match message {
+                ServerMessage::GridsChanged(changes) => moves.push(changes.clone()),
+                other => edits.push(other.clone()),
+            }
+        }
+    }
+    assert_eq!(moves.len(), 1, "told once");
+    assert_eq!(moves[0][0].id, a_ship_id(0));
+    assert_eq!(moves[0][0].pose, ship_pose(1));
+    // Tick 7: a voxel changed in a brick the client has. Tick 9: a voxel in a brick that did not exist, so the whole brick is sent.
+    let [
+        ServerMessage::VoxelEdits {
+            grid,
+            brick,
+            changes,
+            resulting_digest,
+        },
+        ServerMessage::BrickContents {
+            grid: new_grid,
+            brick: new_brick,
+            contents,
+        },
+    ] = &edits[..]
+    else {
+        panic!("{edits:?}");
+    };
+    assert_eq!((*grid, *brick), (a_ship_id(0), BrickCoordinate::ORIGIN));
+    assert_eq!(changes.len(), 1);
+    assert_eq!(
+        *resulting_digest,
+        harness
+            .server
+            .world()
+            .grids()
+            .get(a_ship_id(0))
+            .unwrap()
+            .voxels
+            .brick(BrickCoordinate::ORIGIN)
+            .unwrap()
+            .content_digest()
+    );
+    assert_eq!(
+        (*new_grid, *new_brick),
+        (a_ship_id(0), BrickCoordinate::new(2, 0, 0))
+    );
+    assert_eq!(
+        contents.content_digest(),
+        harness
+            .server
+            .world()
+            .grids()
+            .get(a_ship_id(0))
+            .unwrap()
+            .voxels
+            .brick(BrickCoordinate::new(2, 0, 0))
+            .unwrap()
+            .content_digest()
+    );
+}
+
+#[test]
+fn a_ship_that_leaves_the_region_is_dropped_and_is_sent_whole_again_when_it_returns() {
+    let (mut harness, mut client) = ship_harness(ServerConfig::new(game_id()), |tick, world| {
+        match tick.get() {
+            3 => {
+                let ship = world.create_grid(LevelIndex::MAIN, ship_pose(0)).unwrap();
+                build(world, ship, &[([1, 1, 1], 4), ([40, 1, 1], 5)]);
+            }
+            5 => world.set_grid_pose(a_ship_id(0), ship_pose(60)).unwrap(),
+            7 => world.set_grid_pose(a_ship_id(0), ship_pose(-1)).unwrap(),
+            _ => {}
+        }
+    });
+    client.watch(BrickCoordinate::ORIGIN, 2);
+    harness.server.step();
+    harness.server.step();
+    client.received();
+    // Tick 5: it moved out of the region.
+    harness.server.step();
+    let gone = client.received();
+    assert_eq!(
+        ship_messages(&gone),
+        [&ServerMessage::GridsDespawned(vec![a_ship_id(0)])]
+    );
+    harness.server.step();
+    harness.server.step();
+    // Tick 7: back, so it is a new arrival, with every brick, in place of a move.
+    let back = client.received();
+    let told = ship_messages(&back);
+    assert!(
+        matches!(told[0], ServerMessage::GridsSpawned(_)),
+        "{told:?}"
+    );
+    assert!(
+        matches!(told[1], ServerMessage::BrickContents { .. })
+            && matches!(told[2], ServerMessage::BrickContents { .. })
+    );
+    assert_eq!(told.len(), 3);
+}
+
+#[test]
+fn a_client_that_watches_nothing_or_another_level_is_sent_no_ships() {
+    let game = Game::new(&ALL_PLUGINS);
+    let (world, second) = two_level_world(&game);
+    let logic = ScriptedLogic::new().on_tick(move |tick, world| {
+        if tick.get() == 3 {
+            let ship = world.create_grid(LevelIndex::MAIN, ship_pose(0)).unwrap();
+            build(world, ship, &[([1, 1, 1], 4)]);
+            let other = world.create_grid(second, ship_pose(0)).unwrap();
+            build(world, other, &[([1, 1, 1], 4)]);
+        }
+    });
+    let mut harness = Harness::with_logic(&game, world, ServerConfig::new(game_id()), logic);
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    client.received();
+    // Watching nothing, it is sent nothing.
+    harness.server.step();
+    assert!(ship_messages(&client.received()).is_empty());
+    // Watching the second level, it is sent the ship of that level and not the other.
+    client.send(&ClientMessage::SetInterest {
+        level: second,
+        region: BrickBox::around(BrickCoordinate::ORIGIN, 2),
+    });
+    harness.server.step();
+    let messages = client.received();
+    let told = ship_messages(&messages);
+    let ServerMessage::GridsSpawned(spawned) = told[0] else {
+        panic!("{told:?}");
+    };
+    assert_eq!(
+        spawned
+            .iter()
+            .map(|state| (state.id, state.level))
+            .collect::<Vec<_>>(),
+        [(a_ship_id(1), second)]
+    );
+    // And watching the main level again swaps them.
+    client.watch(BrickCoordinate::ORIGIN, 2);
+    harness.server.step();
+    let messages = client.received();
+    let told = ship_messages(&messages);
+    assert_eq!(told[0], &ServerMessage::GridsDespawned(vec![a_ship_id(1)]));
+    let ServerMessage::GridsSpawned(spawned) = told[1] else {
+        panic!("{told:?}");
+    };
+    assert_eq!(spawned[0].id, a_ship_id(0));
+}
+
+#[test]
+fn ships_past_the_budget_of_bricks_are_left_out_in_order_of_id() {
+    let mut config = ServerConfig::new(game_id());
+    config.maximum_ship_bricks = 3;
+    let (mut harness, mut client) = ship_harness(config, |tick, world| {
+        if tick.get() == 3 {
+            // Two bricks, then two (which would make four), then one (which fits beside the first).
+            for voxels in [
+                &[([1, 1, 1], 4), ([40, 1, 1], 4)][..],
+                &[([1, 1, 1], 4), ([40, 1, 1], 4)][..],
+                &[([1, 1, 1], 4)][..],
+            ] {
+                let ship = world.create_grid(LevelIndex::MAIN, ship_pose(0)).unwrap();
+                build(world, ship, voxels);
+            }
+        }
+    });
+    client.watch(BrickCoordinate::ORIGIN, 2);
+    harness.server.step();
+    harness.server.step();
+    let messages = client.received();
+    let told = ship_messages(&messages);
+    let ServerMessage::GridsSpawned(spawned) = told[0] else {
+        panic!("{told:?}");
+    };
+    assert_eq!(
+        spawned.iter().map(|state| state.id).collect::<Vec<_>>(),
+        [a_ship_id(0), a_ship_id(2)]
+    );
+}
+
+#[test]
+fn a_ship_removed_in_the_tick_it_was_edited_is_gone_from_the_picture_without_trouble() {
+    let (mut harness, mut client) = ship_harness(ServerConfig::new(game_id()), |tick, world| {
+        match tick.get() {
+            3 => {
+                let ship = world.create_grid(LevelIndex::MAIN, ship_pose(0)).unwrap();
+                build(world, ship, &[([1, 1, 1], 4)]);
+            }
+            5 => {
+                build(world, a_ship_id(0), &[([2, 1, 1], 4)]);
+                assert!(world.remove_grid(a_ship_id(0)).is_some());
+            }
+            _ => {}
+        }
+    });
+    client.watch(BrickCoordinate::ORIGIN, 2);
+    harness.server.step();
+    harness.server.step();
+    client.received();
+    harness.server.step();
+    let messages = client.received();
+    assert_eq!(
+        ship_messages(&messages),
+        [&ServerMessage::GridsDespawned(vec![a_ship_id(0)])]
     );
 }

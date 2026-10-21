@@ -10,10 +10,14 @@
 
 mod client;
 mod client_entities;
+mod client_grids;
 mod client_world;
 mod error;
 
 pub use client::{Client, Handshake, HandshakeProgress, TickUpdate, Welcomed};
 pub use client_entities::{ClientEntities, ClientEntity};
-pub use client_world::{ClientEvent, ClientWorld, LevelSummary, ServerInfo, ViewSummary};
+pub use client_grids::{ClientGrid, ClientGrids};
+pub use client_world::{
+    ClientEvent, ClientWorld, GridSummary, LevelSummary, ServerInfo, ViewSummary,
+};
 pub use error::ClientError;

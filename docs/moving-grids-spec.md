@@ -1,6 +1,6 @@
 # Phase 32: moving grids (ships)
 
-Status: the owner answered section 6 on 2026-10-20 (answers at its end, and applied in the text); 32a and 32b are built (`build-log.md`). Read from the plan (requirements 1 to 16, the owner's
+Status: the owner answered section 6 on 2026-10-20 (answers at its end, and applied in the text); 32a to 32c are built (`build-log.md`). Read from the plan (requirements 1 to 16, the owner's
 decisions of 2026-10-18 and 2026-10-20), `future-goals.md` (goal 2 and "Ship goals"), and from the code after Phase 31. The choices are
 mine and marked; what I checked in the code is marked **[code]**, what I believe from memory is marked **[memory]**.
 
@@ -261,8 +261,8 @@ The phase is large; I propose a pause for the owner after 32h, before docking.
 - **32b Grids on the server** (2.1): `GridStore`, the id counter, tombstones, `ServerWorld::grid` for allocated grids, `create_grid` /
   `remove_blocks_from_grid`, edit replication with a `GridId`; the frame-invariance harness of requirement 6 (the same rule in a static grid
   with local gravity and a turned, moving one, by turns of 90 degrees) and its first users: the existing Cave rules (light, fire) under it.
-- **32c Protocol and replay** (2.4): version 6, the grid messages, interest, `GridId` in edits and in the client's actions, replay golden
-  sessions regenerated.
+- **32c Protocol and replay** (2.4): version 6, the grid messages, interest, `GridId` in the edits and bricks of the stream, replay golden
+  sessions regenerated. (`GridId` in the client's break, place and use messages is in 32d, with the picking that can name a ship.)
 - **32d Renderer and picking** (2.5): the rotation, GPU tests that a turned grid draws the same picture as the same blocks laid out in world
   space (pixel-compared with `settled`), picking tests in turned frames.
 - **32e Bodies** (2.3): the `BodyWorld`, compound colliders per brick, mass, terrain contacts; deterministic digests on Windows and Linux;
