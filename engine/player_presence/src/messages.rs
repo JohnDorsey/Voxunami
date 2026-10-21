@@ -40,6 +40,22 @@ impl PlayerPose {
         );
         (dx * dx + dy * dy + dz * dz).sqrt()
     }
+
+    /// The distance in voxels from the player to a position in the same grid.
+    pub fn distance_to_position(&self, position: WorldPosition) -> f64 {
+        let (brick, offset) = (self.position.brick(), self.position.offset());
+        let (other_brick, other_offset) = (position.brick(), position.offset());
+        let along = |other: i64, this: i64, other_offset: f32, offset: f32| {
+            ((other - this) * BRICK_EDGE_LENGTH as i64) as f64
+                + (f64::from(other_offset) - f64::from(offset))
+        };
+        let (dx, dy, dz) = (
+            along(other_brick.x(), brick.x(), other_offset[0], offset[0]),
+            along(other_brick.y(), brick.y(), other_offset[1], offset[1]),
+            along(other_brick.z(), brick.z(), other_offset[2], offset[2]),
+        );
+        (dx * dx + dy * dy + dz * dz).sqrt()
+    }
 }
 
 fn write_pose(writer: &mut ByteWriter, pose: &PlayerPose) {
@@ -297,6 +313,34 @@ mod tests {
         assert_eq!(protocol::check_message::<PlayerKeyComponent>(), Ok(()));
         assert_eq!(protocol::check_message::<PlayerClient>(), Ok(()));
         assert_eq!(protocol::check_message::<PlayerLook>(), Ok(()));
+    }
+
+    #[test]
+    fn the_distance_to_a_position_is_the_distance_to_a_voxel_when_the_position_is_its_centre() {
+        let standing = pose(1, [4.0, 6.0, 8.0], 0.0, 0.0);
+        for voxel in [
+            VoxelCoordinate::new(36, -58, 232),
+            VoxelCoordinate::new(-100, 500, 7),
+            VoxelCoordinate::new(31, -64, 224),
+        ] {
+            let (brick, local) = voxel.split();
+            let centre = WorldPosition::new(
+                brick,
+                [
+                    local.x() as f32 + 0.5,
+                    local.y() as f32 + 0.5,
+                    local.z() as f32 + 0.5,
+                ],
+            );
+            assert_eq!(
+                standing.distance_to_position(centre),
+                standing.distance_to_voxel(voxel),
+                "{voxel:?}"
+            );
+        }
+        // And a position that is not a centre: a quarter of a voxel along from the player's own.
+        let beside = standing.position.translated([0.25, 0.0, 0.0]);
+        assert_eq!(standing.distance_to_position(beside), 0.25);
     }
 
     #[test]

@@ -16,9 +16,14 @@ use plugin_host::{FormId, Prompt, PromptClosed, UiAction, UiClose, UiResponse, U
 use protocol::{ClientId, Message};
 use renderer::Camera;
 use transport::Connection;
-use voxel_space::{BrickBox, BrickCoordinate, LevelIndex, WorldPosition};
+use voxel_grid::Grid;
+use voxel_space::{
+    BrickBox, BrickCoordinate, GridId, GridPose, LevelIndex, VoxelCoordinate, WorldPosition,
+};
 use winit::keyboard::KeyCode;
-use world_view::{MeshUpdate, RayHit, ViewChannels, ViewSettings, WorldMesher, cast_ray};
+use world_view::{
+    GridMesher, MeshUpdate, RayHit, ViewChannels, ViewSettings, WorldMesher, cast_ray,
+};
 
 use crate::client_commands::ClientSettings;
 use crate::client_plugin::{
@@ -48,6 +53,9 @@ pub enum Mode {
     Replaying,
 }
 
+/// How many bricks of ships are meshed in one update of the view: a ship is meshed on the thread that asks, so this bounds the time.
+const SHIP_BRICKS_PER_UPDATE: usize = 16;
+
 #[derive(Debug)]
 pub struct Session<C: Connection, G: GameDefinition> {
     client: Client<C>,
@@ -58,6 +66,9 @@ pub struct Session<C: Connection, G: GameDefinition> {
     /// The channels the view reads, before the client plugins have their say.
     view_channels: ViewChannels,
     mesher: WorldMesher,
+    /// The meshes of the ships the server has told this client of, and what the renderer was last told of where each is.
+    grid_mesher: GridMesher,
+    sent_poses: BTreeMap<GridId, GridPose>,
     pub camera: Camera,
     /// The client halves of the game's plugins, and what they registered.
     client_plugins: Vec<Box<dyn ClientPlugin>>,
@@ -147,6 +158,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             view_channels.clone(),
             Arc::clone(&block_table),
         );
+        let grid_mesher = GridMesher::new(view_channels.clone(), Arc::clone(&block_table));
         let mut session = Self {
             client,
             content,
@@ -154,6 +166,8 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             block_table,
             view_channels,
             mesher,
+            grid_mesher,
+            sent_poses: BTreeMap::new(),
             camera: start,
             client_plugins,
             client_host,
@@ -261,11 +275,14 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         };
         for event in update.events {
             match event {
-                // The bricks of ships are drawn from Phase 32d on; the mesher is the terrain's.
                 ClientEvent::BrickChanged { grid, brick } if grid.root_level().is_some() => {
                     self.mesher.brick_changed(brick);
                 }
-                ClientEvent::BrickChanged { .. } | ClientEvent::GridsChanged => {}
+                ClientEvent::BrickChanged { grid, brick } => {
+                    self.grid_mesher.brick_changed(grid, brick);
+                }
+                // Where ships are and which are gone is read from the client's picture when the view is updated.
+                ClientEvent::GridsChanged => {}
                 ClientEvent::CommandReply { text } => self.command_replies.push(text),
                 ClientEvent::GameMessage { kind, payload } if kind == LevelChange::kind() => {
                     // The server moved the player. A recording shows the level by what it watches.
@@ -311,8 +328,9 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                 ClientEvent::WatchedRegionChanged { .. } => {}
             }
         }
-        self.mesher
-            .set_channels(self.client_host.view(self.view_channels.clone()));
+        let channels = self.client_host.view(self.view_channels.clone());
+        self.mesher.set_channels(channels.clone());
+        self.grid_mesher.set_channels(channels);
         if self.mode == Mode::Replaying {
             self.follow_recorded_player();
         } else if G::server_moves_players() {
@@ -441,6 +459,38 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             self.meshed_level = Some(level);
         }
         updates.extend(self.mesher.update(data, center));
+        updates.extend(self.ship_updates());
+        updates
+    }
+
+    /// What the renderer must change for the ships: the ones that are gone, the ones that moved, and the bricks that were meshed.
+    fn ship_updates(&mut self) -> Vec<MeshUpdate> {
+        let ships = self.client.world().grids();
+        let mut updates = Vec::new();
+        let gone: Vec<GridId> = self
+            .sent_poses
+            .keys()
+            .filter(|id| ships.get(**id).is_none())
+            .copied()
+            .collect();
+        for id in gone {
+            self.sent_poses.remove(&id);
+            self.grid_mesher.forget_grid(id);
+            updates.push(MeshUpdate::RemoveGrid(id));
+        }
+        for (id, ship) in ships.iter() {
+            if self.sent_poses.get(&id) != Some(&ship.pose) {
+                self.sent_poses.insert(id, ship.pose);
+                updates.push(MeshUpdate::GridPose {
+                    grid: id,
+                    pose: ship.pose,
+                });
+            }
+        }
+        updates.extend(self.grid_mesher.update(
+            |id| ships.get(id).map(|ship| &ship.voxels),
+            SHIP_BRICKS_PER_UPDATE,
+        ));
         updates
     }
 
@@ -515,12 +565,63 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         }
     }
 
-    /// The solid voxel under the crosshair, within the game's reach.
+    /// The solid voxel under the crosshair, within the game's reach: of the terrain of the level, or of a ship, whichever the ray
+    /// reaches first. A ship is aimed at by turning the ray into the ship's own coordinates.
     pub fn target(&self) -> Option<RayHit> {
         let forward = self.camera.forward().to_array();
-        cast_ray(self.camera.position, forward, G::reach(), |voxel| {
-            self.mesher.is_solid_at(voxel)
-        })
+        let terrain = cast_ray(
+            GridId::root(self.level()),
+            self.camera.position,
+            forward,
+            G::reach(),
+            |voxel| self.mesher.is_solid_at(voxel),
+        );
+        let level = self.level();
+        let ships = self
+            .client
+            .world()
+            .grids()
+            .iter()
+            .filter(|(_, ship)| ship.level == level)
+            .filter_map(|(id, ship)| {
+                let start = ship.pose.world_to_local(self.camera.position)?;
+                let direction = ship.pose.direction_to_local(forward);
+                cast_ray(id, start, direction, G::reach(), |voxel| {
+                    Some(self.ship_voxel_is_solid(&ship.voxels, voxel))
+                })
+            });
+        terrain
+            .into_iter()
+            .chain(ships)
+            .min_by(|first, second| first.distance.total_cmp(&second.distance))
+    }
+
+    /// Whether a voxel of a ship holds anything that fills any part of it. What was not sent is empty.
+    fn ship_voxel_is_solid(&self, voxels: &Grid, voxel: VoxelCoordinate) -> bool {
+        let block = voxels.get(self.view_channels.blocks, voxel);
+        let state = self
+            .view_channels
+            .states
+            .map_or(0, |channel| voxels.get(channel, voxel));
+        let model = self.block_table.model_of(block, state);
+        self.block_table.is_solid(model)
+    }
+
+    /// The block and state in the voxel a target is of, if the client knows them.
+    fn target_content_of(&self, hit: &RayHit) -> Option<(u32, u32)> {
+        if hit.grid.root_level().is_some() {
+            return Some((
+                self.mesher.material_at(hit.voxel)?,
+                self.mesher.state_at(hit.voxel)?,
+            ));
+        }
+        let voxels = &self.client.world().grids().get(hit.grid)?.voxels;
+        Some((
+            voxels.get(self.view_channels.blocks, hit.voxel),
+            self.view_channels
+                .states
+                .map_or(0, |channel| voxels.get(channel, hit.voxel)),
+        ))
     }
 
     /// Sends the server a message for the game. A replay asks for nothing, so it sends nothing.
@@ -556,12 +657,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         with: impl FnOnce(&mut ClientHost, &mut ClientContext<'_>) -> R,
     ) -> R {
         let target = self.target();
-        let target_content = target.and_then(|hit| {
-            Some((
-                self.mesher.material_at(hit.voxel)?,
-                self.mesher.state_at(hit.voxel)?,
-            ))
-        });
+        let target_content = target.and_then(|hit| self.target_content_of(&hit));
         let tick = self.client.world().tick();
         let own_client = self.client.world().server_info().client;
         let mut context = ClientContext::new(SessionView {

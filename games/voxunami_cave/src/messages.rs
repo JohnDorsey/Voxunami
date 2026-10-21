@@ -10,7 +10,7 @@ use namespaced_id::NamespacedId;
 use physics::MoveInput;
 use player_presence::{PlayerPose, PoseReport};
 use protocol::Message;
-use voxel_space::VoxelCoordinate;
+use voxel_space::{GridId, VoxelCoordinate};
 
 use crate::multiscale_light::LightScheme;
 
@@ -128,9 +128,11 @@ impl Message for MoveRequest {
     }
 }
 
-/// Client to server: replace one voxel with a block. A request to put `block`, in `state`, at `at`.
+/// Client to server: replace one voxel with a block. A request to put `block`, in `state`, at `at` of the grid `grid`: the terrain of the
+/// level the player is in (the root grid of the level), or a ship in it, whose voxels are in the ship's own coordinates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SetBlock {
+    pub grid: GridId,
     pub at: VoxelCoordinate,
     pub block: NamespacedId,
     pub state: u32,
@@ -143,6 +145,7 @@ impl Message for SetBlock {
 
     fn encode(&self) -> Vec<u8> {
         let mut writer = ByteWriter::new();
+        writer.write_varint(self.grid.get());
         for component in [self.at.x(), self.at.y(), self.at.z()] {
             writer.write_signed_varint(component);
         }
@@ -153,6 +156,7 @@ impl Message for SetBlock {
 
     fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = ByteReader::new(payload);
+        let grid = GridId::new(reader.read_varint()?);
         let at = VoxelCoordinate::try_new(
             reader.read_signed_varint()?,
             reader.read_signed_varint()?,
@@ -163,23 +167,31 @@ impl Message for SetBlock {
         let state = u32::try_from(reader.read_varint()?)
             .map_err(|_| DecodeError::Invalid("a block state is out of range"))?;
         reader.finish()?;
-        Ok(Self { at, block, state })
+        Ok(Self {
+            grid,
+            at,
+            block,
+            state,
+        })
     }
 
     fn samples() -> Vec<Self> {
         let lamp: NamespacedId = kind("base_blocks:lamp");
         vec![
             Self {
+                grid: GridId::MAIN,
                 at: VoxelCoordinate::new(-40, 200, 5),
                 block: lamp.clone(),
                 state: 3,
             },
             Self {
+                grid: GridId::new(GridId::FIRST_ALLOCATED + 7),
                 at: VoxelCoordinate::ORIGIN,
                 block: kind("a:b"),
                 state: 0,
             },
             Self {
+                grid: GridId::root(voxel_space::LevelIndex::new(2)),
                 at: VoxelCoordinate::new(-5, 100, 7),
                 block: lamp,
                 state: u32::MAX,
@@ -394,6 +406,7 @@ mod tests {
     #[test]
     fn a_request_survives_encoding() {
         let request = SetBlock {
+            grid: GridId::new(GridId::FIRST_ALLOCATED + 3),
             at: VoxelCoordinate::new(-5, 100, 7),
             block: "base_blocks:stone".parse().unwrap(),
             state: 5,
@@ -404,6 +417,7 @@ mod tests {
     #[test]
     fn every_state_up_to_the_largest_survives_and_larger_ones_are_errors() {
         let request = |state| SetBlock {
+            grid: GridId::MAIN,
             at: VoxelCoordinate::ORIGIN,
             block: "a:b".parse().unwrap(),
             state,
@@ -413,6 +427,7 @@ mod tests {
             assert_eq!(SetBlock::decode(&request.encode()), Ok(request));
         }
         let mut oversized = ByteWriter::new();
+        oversized.write_varint(0); // the grid
         for _ in 0..3 {
             oversized.write_signed_varint(0);
         }
@@ -424,6 +439,7 @@ mod tests {
     #[test]
     fn damaged_requests_are_errors_not_panics() {
         let good = (SetBlock {
+            grid: GridId::MAIN,
             at: VoxelCoordinate::ORIGIN,
             block: "a:b".parse().unwrap(),
             state: 300,

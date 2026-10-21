@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use block_models::{BlockDefinition, BlockTable, Shape};
+use block_models::{BlockDefinition, BlockTable, Shape, ShapeBox};
 use glam::Vec3;
 use renderer::{
     Atmosphere, Avatar, Camera, EntityBox, GraphicsContext, OverlayRect, RenderStatistics,
@@ -16,7 +16,8 @@ use renderer::{
 use voxel_grid::ChannelStorage;
 use voxel_meshing::{BrickChannels, BrickNeighbourhood, mesh_brick};
 use voxel_space::{
-    BRICK_VOXEL_COUNT, BrickCoordinate, FaceDirection, LocalVoxelIndex, WorldPosition,
+    BRICK_VOXEL_COUNT, BrickCoordinate, FaceDirection, GridId, GridPose, LocalVoxelIndex,
+    Orientation, WorldPosition,
 };
 
 const SIZE: u32 = 64;
@@ -76,6 +77,11 @@ fn new_renderer(context: &GraphicsContext) -> VoxelRenderer {
 
 /// A brick containing the given voxels (local x, y, z, material), meshed and uploaded.
 fn place_voxels(renderer: &mut VoxelRenderer, brick: BrickCoordinate, voxels: &[([u8; 3], u32)]) {
+    renderer.upload_brick(brick, &mesh_of(voxels));
+}
+
+/// The mesh of a brick containing these voxels.
+fn mesh_of(voxels: &[([u8; 3], u32)]) -> voxel_meshing::PackedBrickMesh {
     let mut values = vec![0u32; BRICK_VOXEL_COUNT];
     for &([x, y, z], material) in voxels {
         values[LocalVoxelIndex::new(x, y, z).index()] = material;
@@ -90,7 +96,7 @@ fn place_voxels(renderer: &mut VoxelRenderer, brick: BrickCoordinate, voxels: &[
         },
         &BlockTable::of_cubes(&opaque),
     );
-    renderer.upload_brick(brick, &mesh.pack());
+    mesh.pack()
 }
 
 fn camera_at(brick: BrickCoordinate, offset: [f32; 3]) -> Camera {
@@ -1304,5 +1310,389 @@ fn a_palette_of_the_most_there_may_be_is_drawn_and_one_more_is_refused() {
             renderer.set_palette(&too_many);
         }));
         assert!(refused.is_err(), "one more than the most was accepted");
+    }
+}
+
+// ---- ships: bricks drawn under the pose of a grid ----
+
+fn a_ship() -> GridId {
+    GridId::new(GridId::FIRST_ALLOCATED)
+}
+
+/// A ship at this voxel (given as brick and offset), turned this way.
+fn pose(brick: [i64; 3], offset: [f32; 3], orientation: Orientation) -> GridPose {
+    GridPose::new(
+        WorldPosition::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), offset),
+        orientation,
+    )
+}
+
+/// A quarter of the way round about the vertical axis twice: the quaternion is exact, so the turn is.
+fn half_turn_about_y() -> Orientation {
+    Orientation::from_components([0.0, 1.0, 0.0, 0.0]).unwrap()
+}
+
+fn half_turn_about_x() -> Orientation {
+    Orientation::from_components([1.0, 0.0, 0.0, 0.0]).unwrap()
+}
+
+fn place_ship_voxels(
+    renderer: &mut VoxelRenderer,
+    grid: GridId,
+    brick: BrickCoordinate,
+    voxels: &[([u8; 3], u32)],
+) {
+    renderer.upload_grid_brick(grid, brick, &mesh_of(voxels));
+}
+
+/// An L of two colours, which looks different from every side.
+const ELL: [([u8; 3], u32); 3] = [
+    ([16, 16, 16], RED),
+    ([17, 16, 16], GREEN),
+    ([16, 17, 16], RED),
+];
+
+#[test]
+fn a_ship_turned_half_way_round_is_drawn_exactly_as_the_terrain_it_amounts_to() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        // The ship's origin is the voxel (32, 0, 32) and it is turned about the vertical axis, so its voxel (x, y, z) is the world
+        // voxel (31 - x, y, 31 - z).
+        let mut ship = new_renderer(&context);
+        ship.set_grid_pose(a_ship(), pose([1, 0, 1], [0.0; 3], half_turn_about_y()));
+        place_ship_voxels(&mut ship, a_ship(), ORIGIN_BRICK, &ELL);
+        let mut terrain = new_renderer(&context);
+        let mirrored: Vec<([u8; 3], u32)> = ELL
+            .iter()
+            .map(|&([x, y, z], material)| ([31 - x, y, 31 - z], material))
+            .collect();
+        place_voxels(&mut terrain, ORIGIN_BRICK, &mirrored);
+        let mut camera = camera_at(ORIGIN_BRICK, [15.0, 20.0, 22.0]);
+        camera.pitch = -0.5;
+        let from_the_ship = settled(&mut ship, &camera);
+        let from_the_terrain = settled(&mut terrain, &camera);
+        save_image("ship_turned_about_y", &name, &from_the_ship);
+        let drawn = from_the_terrain
+            .chunks(4)
+            .filter(|chunk| !is_sky((*chunk).try_into().unwrap()))
+            .count();
+        assert!(drawn > 100, "{name}: the scene is empty ({drawn} pixels)");
+        assert!(from_the_ship == from_the_terrain, "{name}");
+    }
+}
+
+#[test]
+fn a_ship_upside_down_is_lit_by_the_sun_on_the_faces_that_point_to_it() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        // Turned over about the x axis, the ship's voxel (x, y, z) is the world voxel (x, 31 - y, 31 - z): a face that is the top of a
+        // cube in the ship is the bottom of it in the world, and is shaded as a bottom.
+        let mut ship = new_renderer(&context);
+        ship.set_grid_pose(a_ship(), pose([0, 1, 1], [0.0; 3], half_turn_about_x()));
+        place_ship_voxels(&mut ship, a_ship(), ORIGIN_BRICK, &ELL);
+        let mut terrain = new_renderer(&context);
+        let flipped: Vec<([u8; 3], u32)> = ELL
+            .iter()
+            .map(|&([x, y, z], material)| ([x, 31 - y, 31 - z], material))
+            .collect();
+        place_voxels(&mut terrain, ORIGIN_BRICK, &flipped);
+        // Seen from above and the side, where the top and the side of a block are shaded differently.
+        let mut camera = camera_at(ORIGIN_BRICK, [17.0, 19.0, 22.0]);
+        camera.pitch = -0.5;
+        let from_the_ship = settled(&mut ship, &camera);
+        let from_the_terrain = settled(&mut terrain, &camera);
+        save_image("ship_upside_down", &name, &from_the_ship);
+        let drawn = from_the_terrain
+            .chunks(4)
+            .filter(|chunk| !is_sky((*chunk).try_into().unwrap()))
+            .count();
+        assert!(drawn > 100, "{name}: the scene is empty ({drawn} pixels)");
+        assert!(from_the_ship == from_the_terrain, "{name}");
+    }
+}
+
+/// How many pixels wide the drawn part of a picture is.
+fn drawn_width(image: &[u8]) -> u32 {
+    let columns: Vec<u32> = (0..SIZE)
+        .filter(|&x| (0..SIZE).any(|y| !is_sky(pixel(image, x, y))))
+        .collect();
+    columns.last().unwrap() - columns.first().unwrap() + 1
+}
+
+#[test]
+fn a_ship_turned_45_degrees_shows_the_diagonal_of_its_block() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        // A block seen from straight above, turned by 45 degrees about the vertical axis: it is as wide as its diagonal.
+        let seen = |orientation: Orientation| {
+            let mut renderer = new_renderer(&context);
+            // The block's centre is the middle of the voxel at the ship's origin plus half a voxel on each side.
+            renderer.set_grid_pose(a_ship(), pose([0, 0, 0], [16.0, 16.0, 16.0], orientation));
+            place_ship_voxels(&mut renderer, a_ship(), ORIGIN_BRICK, &[([0, 0, 0], RED)]);
+            let mut camera = camera_at(ORIGIN_BRICK, [16.5, 19.0, 16.5]);
+            camera.pitch = -std::f32::consts::FRAC_PI_2;
+            settled(&mut renderer, &camera)
+        };
+        let straight = drawn_width(&seen(Orientation::IDENTITY));
+        let turned = drawn_width(&seen(Orientation::from_yaw_pitch(
+            std::f32::consts::FRAC_PI_4,
+            0.0,
+        )));
+        let ratio = turned as f32 / straight as f32;
+        assert!(
+            (1.25..1.6).contains(&ratio),
+            "{name}: {straight} pixels wide straight, {turned} turned"
+        );
+    }
+}
+
+#[test]
+fn a_ship_far_from_the_origin_is_drawn_exactly_as_one_at_it() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let seen = |brick: [i64; 3], local_brick: BrickCoordinate| {
+            let mut renderer = new_renderer(&context);
+            // The ship's origin is `brick`, and its block is `local_brick` along: both far, one the negative of the other, so that the
+            // block is at the origin of the world.
+            renderer.set_grid_pose(a_ship(), pose(brick, [0.0; 3], Orientation::IDENTITY));
+            place_ship_voxels(&mut renderer, a_ship(), local_brick, &CUBE);
+            let mut camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+            camera.position = WorldPosition::new(
+                BrickCoordinate::new(
+                    brick[0] + local_brick.x(),
+                    brick[1] + local_brick.y(),
+                    brick[2] + local_brick.z(),
+                ),
+                [16.5, 16.5, 22.0],
+            );
+            settled(&mut renderer, &camera)
+        };
+        let near = seen([0, 0, 0], ORIGIN_BRICK);
+        assert!(
+            !is_sky(pixel(&near, SIZE / 2, SIZE / 2)),
+            "{name}: the block is in the middle"
+        );
+        let far_origin = seen([2_000_000, -3_000_000, 1_000_000], ORIGIN_BRICK);
+        assert!(
+            far_origin == near,
+            "{name}: a ship far from the world's origin"
+        );
+        let far_along = seen(
+            [-1_500_000, 7, 2_500_000],
+            BrickCoordinate::new(1_500_000, 0, -2_499_999),
+        );
+        assert!(far_along == near, "{name}: a brick far along a ship");
+    }
+}
+
+#[test]
+fn a_ship_is_drawn_only_with_a_pose_and_only_until_it_is_removed_and_its_bricks_are_counted_and_culled()
+ {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+        place_ship_voxels(&mut renderer, a_ship(), ORIGIN_BRICK, &CUBE);
+        assert_eq!(renderer.grid_brick_count(), 1);
+        // Without a pose it is nowhere.
+        let image = render(&mut renderer, &camera);
+        assert!(is_sky(pixel(&image, SIZE / 2, SIZE / 2)), "{name}: no pose");
+        renderer.set_grid_pose(a_ship(), pose([0, 0, 0], [0.0; 3], Orientation::IDENTITY));
+        let image = settled(&mut renderer, &camera);
+        assert!(
+            is_red(pixel(&image, SIZE / 2, SIZE / 2)),
+            "{name}: with a pose"
+        );
+        let (_, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+        assert_eq!((statistics.bricks_drawn, statistics.bricks_culled), (1, 0));
+        assert_eq!(renderer.total_quad_count(), 6);
+
+        // Moved behind the camera, it is culled.
+        renderer.set_grid_pose(a_ship(), pose([0, 0, 3], [0.0; 3], Orientation::IDENTITY));
+        let (_, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+        assert_eq!((statistics.bricks_drawn, statistics.bricks_culled), (0, 1));
+
+        // Moved back and then removed whole, it and its bricks are gone, and the terrain is not touched.
+        renderer.set_grid_pose(a_ship(), pose([0, 0, 0], [0.0; 3], Orientation::IDENTITY));
+        place_voxels(&mut renderer, BrickCoordinate::new(0, -1, 0), &CUBE);
+        renderer.remove_grid(a_ship());
+        assert_eq!(renderer.grid_brick_count(), 0);
+        assert_eq!(renderer.brick_count(), 1);
+        let (_, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+        assert_eq!(statistics.bricks_drawn + statistics.bricks_culled, 1);
+    }
+}
+
+#[test]
+fn a_ship_brick_replaced_by_an_empty_mesh_goes_and_one_ship_does_not_disturb_another() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        let (first, second) = (a_ship(), GridId::new(GridId::FIRST_ALLOCATED + 1));
+        renderer.set_grid_pose(first, pose([0, 0, 0], [0.0; 3], Orientation::IDENTITY));
+        renderer.set_grid_pose(second, pose([5, 0, 0], [0.0; 3], Orientation::IDENTITY));
+        place_ship_voxels(&mut renderer, first, ORIGIN_BRICK, &CUBE);
+        place_ship_voxels(&mut renderer, second, ORIGIN_BRICK, &CUBE);
+        assert_eq!(renderer.grid_brick_count(), 2);
+        renderer.upload_grid_brick(first, ORIGIN_BRICK, &mesh_of(&[]));
+        assert_eq!(renderer.grid_brick_count(), 1, "{name}");
+        renderer.remove_grid_brick(second, ORIGIN_BRICK);
+        assert_eq!(renderer.grid_brick_count(), 0, "{name}");
+        place_ship_voxels(&mut renderer, first, ORIGIN_BRICK, &CUBE);
+        place_ship_voxels(&mut renderer, second, ORIGIN_BRICK, &CUBE);
+        renderer.remove_grid(second);
+        assert_eq!(renderer.grid_brick_count(), 1, "{name}");
+    }
+}
+
+/// The mesh of a brick that has a half block of material 1 at each of these voxels: the half is the box `from` to `to` (in eighths of a
+/// voxel) of the voxel.
+fn mesh_of_slabs(voxels: &[[u8; 3]], from: [u8; 3], to: [u8; 3]) -> voxel_meshing::PackedBrickMesh {
+    let mut values = vec![0u32; BRICK_VOXEL_COUNT];
+    for &[x, y, z] in voxels {
+        values[LocalVoxelIndex::new(x, y, z).index()] = 1;
+    }
+    let storage = ChannelStorage::from_values(&values);
+    let slab = BlockDefinition::cube([0.5; 3])
+        .with_shapes(vec![Shape::from_boxes(&[ShapeBox { min: from, max: to }])]);
+    let air = BlockDefinition::air();
+    let definitions: Vec<Option<&BlockDefinition>> = vec![Some(&air), Some(&slab)];
+    mesh_brick(
+        &BrickNeighbourhood {
+            center: BrickChannels::blocks_only(&storage),
+            neighbours: [None; 6],
+        },
+        &BlockTable::from_definitions(&definitions),
+    )
+    .pack()
+}
+
+#[test]
+fn a_ship_of_blocks_that_do_not_fill_their_cells_is_turned_like_one_of_whole_cubes() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        // Turned half way round about the vertical axis, a block that fills the voxel's x from 0 to a half and z from 0 to a half
+        // fills the world's voxel from a half to the whole on both: the box is mirrored in its cell as the voxels are in the world.
+        let mut ship = new_renderer(&context);
+        ship.set_grid_pose(a_ship(), pose([1, 0, 1], [0.0; 3], half_turn_about_y()));
+        let voxels = [[16, 16, 16], [17, 16, 16], [16, 17, 16]];
+        ship.upload_grid_brick(
+            a_ship(),
+            ORIGIN_BRICK,
+            &mesh_of_slabs(&voxels, [0, 0, 0], [4, 8, 4]),
+        );
+        let mut terrain = new_renderer(&context);
+        let mirrored: Vec<[u8; 3]> = voxels
+            .iter()
+            .map(|&[x, y, z]| [31 - x, y, 31 - z])
+            .collect();
+        terrain.upload_brick(
+            ORIGIN_BRICK,
+            &mesh_of_slabs(&mirrored, [4, 0, 4], [8, 8, 8]),
+        );
+        let mut camera = camera_at(ORIGIN_BRICK, [15.0, 20.0, 22.0]);
+        camera.pitch = -0.5;
+        let from_the_ship = settled(&mut ship, &camera);
+        let from_the_terrain = settled(&mut terrain, &camera);
+        let drawn = from_the_terrain
+            .chunks(4)
+            .filter(|chunk| !is_sky((*chunk).try_into().unwrap()))
+            .count();
+        assert!(drawn > 50, "{name}: the scene is empty ({drawn} pixels)");
+        assert!(from_the_ship == from_the_terrain, "{name}");
+    }
+}
+
+#[test]
+fn a_ship_tumbled_about_a_diagonal_is_drawn_exactly_as_the_terrain_it_amounts_to() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        // The quaternion (1/2, 1/2, 1/2, 1/2) turns the x axis onto y, y onto z and z onto x, and is exact: the ship's voxel
+        // (x, y, z) is the world's (z, x, y). Every entry of the matrix that turns it is used, in the place it is in.
+        let mut ship = new_renderer(&context);
+        ship.set_grid_pose(
+            a_ship(),
+            pose(
+                [0, 0, 0],
+                [0.0; 3],
+                Orientation::from_components([0.5, 0.5, 0.5, 0.5]).unwrap(),
+            ),
+        );
+        place_ship_voxels(&mut ship, a_ship(), ORIGIN_BRICK, &ELL);
+        let mut terrain = new_renderer(&context);
+        let tumbled: Vec<([u8; 3], u32)> = ELL
+            .iter()
+            .map(|&([x, y, z], material)| ([z, x, y], material))
+            .collect();
+        place_voxels(&mut terrain, ORIGIN_BRICK, &tumbled);
+        let mut camera = camera_at(ORIGIN_BRICK, [17.0, 20.0, 24.0]);
+        camera.pitch = -0.4;
+        let from_the_ship = settled(&mut ship, &camera);
+        let from_the_terrain = settled(&mut terrain, &camera);
+        save_image("ship_tumbled", &name, &from_the_ship);
+        let drawn = from_the_terrain
+            .chunks(4)
+            .filter(|chunk| !is_sky((*chunk).try_into().unwrap()))
+            .count();
+        assert!(drawn > 100, "{name}: the scene is empty ({drawn} pixels)");
+        assert!(from_the_ship == from_the_terrain, "{name}");
+    }
+}
+
+#[test]
+fn a_ship_is_drawn_when_the_camera_is_inside_its_brick_and_looks_at_the_far_side_of_it() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        // The brick's own corner is far behind the camera, and so is all of what a sphere around it would cover.
+        let mut renderer = new_renderer(&context);
+        renderer.set_grid_pose(a_ship(), pose([0, 0, 0], [0.0; 3], Orientation::IDENTITY));
+        place_ship_voxels(
+            &mut renderer,
+            a_ship(),
+            ORIGIN_BRICK,
+            &[([30, 16, 16], RED)],
+        );
+        let mut camera = camera_at(ORIGIN_BRICK, [28.5, 16.5, 16.5]);
+        camera.yaw = -std::f32::consts::FRAC_PI_2;
+        let (image, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+        let _ = image;
+        assert_eq!(statistics.bricks_drawn, 1, "{name}");
+        let image = settled(&mut renderer, &camera);
+        assert!(is_red(pixel(&image, SIZE / 2, SIZE / 2)), "{name}");
+    }
+}
+
+#[test]
+fn a_brick_far_along_a_tumbled_ship_is_drawn_where_the_turn_of_its_place_puts_it() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        // The ship's voxel (x, y, z) is the world's (z, x, y): a brick at (1, 2, 3) of the ship is the brick (3, 1, 2) of the world, and
+        // every entry of the matrix that turns the place of the brick matters.
+        let mut ship = new_renderer(&context);
+        ship.set_grid_pose(
+            a_ship(),
+            pose(
+                [0, 0, 0],
+                [0.0; 3],
+                Orientation::from_components([0.5, 0.5, 0.5, 0.5]).unwrap(),
+            ),
+        );
+        place_ship_voxels(&mut ship, a_ship(), BrickCoordinate::new(1, 2, 3), &ELL);
+        let mut terrain = new_renderer(&context);
+        let tumbled: Vec<([u8; 3], u32)> = ELL
+            .iter()
+            .map(|&([x, y, z], material)| ([z, x, y], material))
+            .collect();
+        terrain.upload_brick(BrickCoordinate::new(3, 1, 2), &mesh_of(&tumbled));
+        let mut camera = camera_at(BrickCoordinate::new(3, 1, 2), [17.0, 20.0, 24.0]);
+        camera.pitch = -0.4;
+        let from_the_ship = settled(&mut ship, &camera);
+        let from_the_terrain = settled(&mut terrain, &camera);
+        let drawn = from_the_terrain
+            .chunks(4)
+            .filter(|chunk| !is_sky((*chunk).try_into().unwrap()))
+            .count();
+        assert!(drawn > 100, "{name}: the scene is empty ({drawn} pixels)");
+        assert!(from_the_ship == from_the_terrain, "{name}");
     }
 }

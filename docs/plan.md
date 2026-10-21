@@ -41,7 +41,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
   transforms; a matrix per grid in the renderer; Rapier bodies from blocks (mass from `engine:density`), full rotation, world gravity
   aboard; connectivity and splitting; docking connectors with a configurable attraction force; players and entities simulated in their
   frame; levels of detail per grid for drawing, for collision (coarse colliders, aggregated mass) and for streaming; a grid saved in
-  flight as a file of its own. Specified in `moving-grids-spec.md` (steps 32a to 32k, with a pause after 32h), answered 2026-10-20; 32a (frames), 32b (grids on the server) and 32c (protocol and replay) built, 32d (renderer and picking) next.
+  flight as a file of its own. Specified in `moving-grids-spec.md` (steps 32a to 32k, with a pause after 32h), answered 2026-10-20; 32a (frames), 32b (grids on the server), 32c (protocol and replay) and 32d (renderer and picking) built, 32e (bodies) next.
 - 31 (built) A wider material palette: the renderer's palette in a storage buffer, 1,048,576 game materials instead of 240 (renderer-only; saves and protocol unchanged). Phase 32 (moving grids) is next.
 - 30 (built; `ui-spec.md`) Server-driven UI: a UI the server describes in the value vocabulary and the stream drives; the HUD, the command line, questions and Cave's hotbar are on the screen, not in the title. Phase 31 is next.
 - 29 (built; `data-packs-spec.md`, `pack-format.md`) Data-driven block packs (JSON), the generated JSON Schema, `check-pack`, and patches: tags by

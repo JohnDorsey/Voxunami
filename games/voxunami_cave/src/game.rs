@@ -26,8 +26,8 @@ pub struct Cave;
 
 pub type CaveSession<C> = game_shell::session::Session<C, Cave>;
 
-/// Asks the server to put `block` (named by identifier) at `at`, as a whole cube. The server
-/// decides.
+/// Asks the server to put `block` (named by identifier) at `at` of the terrain of the level the player is in, as a whole cube. The
+/// server decides.
 pub fn request_block<C: Connection>(
     session: &mut CaveSession<C>,
     at: voxel_space::VoxelCoordinate,
@@ -36,23 +36,36 @@ pub fn request_block<C: Connection>(
     request_block_with_state(session, at, block, 0);
 }
 
-/// Asks the server to put `block` in `state` (which shape it has) at `at`. The server decides.
+/// Asks the server to put `block` in `state` (which shape it has) at `at` of the terrain of the level the player is in. The server
+/// decides.
 pub fn request_block_with_state<C: Connection>(
     session: &mut CaveSession<C>,
     at: voxel_space::VoxelCoordinate,
     block: &str,
     state: u32,
 ) {
+    let grid = voxel_space::GridId::root(session.level());
+    request_block_in(session, grid, at, block, state);
+}
+
+/// Asks the server to put `block` in `state` at `at` of the grid `grid`: the terrain of the level the player is in, or a ship in it.
+pub fn request_block_in<C: Connection>(
+    session: &mut CaveSession<C>,
+    grid: voxel_space::GridId,
+    at: voxel_space::VoxelCoordinate,
+    block: &str,
+    state: u32,
+) {
     session.send_game_message(
         SetBlock::kind(),
-        set_block_request(at, block, state).encode(),
+        set_block_request(grid, at, block, state).encode(),
     );
 }
 
 /// Breaks the block under the crosshair, if there is one.
 pub fn break_block<C: Connection>(session: &mut CaveSession<C>) {
     if let Some(hit) = session.target() {
-        request_block(session, hit.voxel, "base_blocks:air");
+        request_block_in(session, hit.grid, hit.voxel, "base_blocks:air", 0);
     }
 }
 
@@ -68,7 +81,7 @@ pub fn place_block_with_state<C: Connection>(
     state: u32,
 ) {
     if let Some(hit) = session.target() {
-        request_block_with_state(session, hit.previous, block, state);
+        request_block_in(session, hit.grid, hit.previous, block, state);
     }
 }
 

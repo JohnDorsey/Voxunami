@@ -61,7 +61,7 @@ Verbs of `ClientRegistrar` (the budget: six, not a toolkit; `overlay` joined in 
 | `command(CommandSpec, \|ctx, arguments\| -> String)` | a `.`-command | in play only |
 
 - The **context** is a narrow, non-generic view of the session: `send_command(text)`, `send_message(&M)`, the voxel under the crosshair and the
-  block there (`target()`), the camera, the tick, the block table, and the entities the client has been told of (`entities()`, with their
+  block there (`target()`, which names the grid it is in, the terrain of the level or a ship, and how far along the ray it is), the camera, the tick, the block table, and the entities the client has been told of (`entities()`, with their
   replicated components: a plugin can show the player's own inventory). No access to the connection or the mesher. This keeps hooks pure functions
   of the stream plus local state, so replay is unaffected (hooks that send are never run in replay).
 - **The server's blocks** (Phase 29): `ClientContext::blocks_with(&PropertyKey<bool>)` lists the blocks whose definitions give a flag a true value, in block

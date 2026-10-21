@@ -18,6 +18,7 @@ world_storage.workspace = true
 content_registry.workspace = true
 proptest.workspace = true
 region_octree.workspace = true
+voxel_grid = { workspace = true, features = ["test-support"] }
 world_storage = { workspace = true, features = ["test-support"] }
 
 [lints]

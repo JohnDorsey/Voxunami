@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::num::NonZeroU64;
 
 use block_models::{BlockDefinition, BlockTable, Shape, ShapeBox};
@@ -8,7 +8,9 @@ use voxel_grid::ChannelStorage;
 use voxel_meshing::{
     BrickChannels, BrickNeighbourhood, PackedBrickMesh, PackedDetailedQuad, PackedQuad, mesh_brick,
 };
-use voxel_space::{BRICK_VOXEL_COUNT, BrickCoordinate, LocalVoxelIndex, WorldPosition};
+use voxel_space::{
+    BRICK_VOXEL_COUNT, BrickCoordinate, GridId, GridPose, LocalVoxelIndex, WorldPosition,
+};
 use wgpu::util::DeviceExt;
 
 use crate::camera::{Camera, Frustum};
@@ -20,7 +22,9 @@ pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth3
 /// Radius of a sphere around a brick: half the diagonal of a 32-voxel cube.
 const BRICK_BOUNDING_RADIUS: f32 = 27.72;
 const BRICK_CENTER_OFFSET: f32 = 16.0;
-const PLACEMENT_SIZE: u64 = 16;
+/// A placement is the position of the brick's corner relative to the camera (a `vec4`) and the three columns of the turn of the grid it
+/// is in (a `mat3x3`, each column padded to a `vec4`).
+const PLACEMENT_SIZE: u64 = 64;
 
 /// How many different avatar colours there are. Their material values are the last of all the values a quad can
 /// carry ([`AVATAR_MATERIAL_BASE`] and the 15 after it), which no game material can reach, so games have every
@@ -240,6 +244,30 @@ impl GpuBrick {
     }
 }
 
+/// Where one brick, avatar or box is drawn: the position of its corner relative to the camera, and the turn of what it is part of.
+#[derive(Clone, Copy)]
+struct Placement {
+    offset: Vec3,
+    /// `rotation[row][column]`; the identity for what is not part of a ship.
+    rotation: [[f32; 3]; 3],
+}
+
+const NO_TURN: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+/// A brick the renderer holds: one of the terrain, or one of a ship.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum BrickKey {
+    Terrain(BrickCoordinate),
+    Ship(GridId, BrickCoordinate),
+}
+
+/// The turn and place of a ship for one frame, as the camera sees it.
+struct ShipFrame {
+    rotation: [[f64; 3]; 3],
+    /// The vector from the camera to the ship's origin.
+    origin: [f64; 3],
+}
+
 struct PlacementBuffer {
     buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -270,6 +298,9 @@ pub struct VoxelRenderer {
     placements: PlacementBuffer,
     placement_stride: u64,
     bricks: HashMap<BrickCoordinate, GpuBrick>,
+    /// The bricks of ships, in the ships' own coordinates, and where each ship is. A ship without a pose is not drawn.
+    ship_bricks: HashMap<(GridId, BrickCoordinate), GpuBrick>,
+    ship_poses: BTreeMap<GridId, GridPose>,
     avatar_meshes: Vec<GpuBrick>,
     avatars: Vec<Avatar>,
     entity_boxes: Vec<EntityBox>,
@@ -455,6 +486,8 @@ impl VoxelRenderer {
             placements,
             placement_stride,
             bricks: HashMap::new(),
+            ship_bricks: HashMap::new(),
+            ship_poses: BTreeMap::new(),
             avatar_meshes: Vec::new(),
             avatars: Vec::new(),
             entity_boxes: Vec::new(),
@@ -639,9 +672,56 @@ impl VoxelRenderer {
         self.bricks.contains_key(&coordinate)
     }
 
-    /// Whole-voxel quads and detailed quads of every brick held.
+    /// Whole-voxel quads and detailed quads of every brick held, of the terrain and of ships.
     pub fn total_quad_count(&self) -> usize {
-        self.bricks.values().map(GpuBrick::quad_total).sum()
+        self.bricks
+            .values()
+            .chain(self.ship_bricks.values())
+            .map(GpuBrick::quad_total)
+            .sum()
+    }
+
+    /// Replaces the mesh of one brick of a ship, in the ship's own coordinates. An empty mesh removes the brick. The ship is drawn
+    /// once it has a pose ([`VoxelRenderer::set_grid_pose`]).
+    pub fn upload_grid_brick(
+        &mut self,
+        grid: GridId,
+        coordinate: BrickCoordinate,
+        mesh: &PackedBrickMesh,
+    ) {
+        if mesh.is_empty() {
+            self.ship_bricks.remove(&(grid, coordinate));
+            return;
+        }
+        let brick = self.gpu_brick(mesh);
+        self.ship_bricks.insert((grid, coordinate), brick);
+    }
+
+    pub fn remove_grid_brick(&mut self, grid: GridId, coordinate: BrickCoordinate) {
+        self.ship_bricks.remove(&(grid, coordinate));
+    }
+
+    /// Says where a ship is and how it is turned: its bricks are drawn there from the next picture on.
+    pub fn set_grid_pose(&mut self, grid: GridId, pose: GridPose) {
+        self.ship_poses.insert(grid, pose);
+    }
+
+    /// Forgets a ship, its pose and all its bricks.
+    pub fn remove_grid(&mut self, grid: GridId) {
+        self.ship_poses.remove(&grid);
+        self.ship_bricks.retain(|(held, _), _| *held != grid);
+    }
+
+    /// How many bricks of ships are held.
+    pub fn grid_brick_count(&self) -> usize {
+        self.ship_bricks.len()
+    }
+
+    fn brick_of(&self, key: BrickKey) -> &GpuBrick {
+        match key {
+            BrickKey::Terrain(coordinate) => &self.bricks[&coordinate],
+            BrickKey::Ship(grid, coordinate) => &self.ship_bricks[&(grid, coordinate)],
+        }
     }
 
     /// Draws every visible brick into `color_view`, which must be `size` pixels in the renderer's
@@ -659,60 +739,130 @@ impl VoxelRenderer {
 
         // Camera-relative placement, computed exactly from integers, then culled and sorted
         // front to back so nearer bricks hide farther ones early.
-        let mut visible: Vec<(f32, BrickCoordinate, Vec3)> = Vec::new();
+        let mut visible: Vec<(f32, BrickKey, Placement)> = Vec::new();
         for &coordinate in self.bricks.keys() {
             let corner = WorldPosition::new(coordinate, [0.0; 3]).relative_to(camera.position);
             let corner = Vec3::from_array(corner);
             let center = corner + Vec3::splat(BRICK_CENTER_OFFSET);
             if frustum.intersects_sphere(center, BRICK_BOUNDING_RADIUS) {
-                visible.push((center.length_squared(), coordinate, corner));
+                visible.push((
+                    center.length_squared(),
+                    BrickKey::Terrain(coordinate),
+                    Placement {
+                        offset: corner,
+                        rotation: NO_TURN,
+                    },
+                ));
+            }
+        }
+        // A ship's brick is placed by turning its place in the ship and adding the ship's place, in `f64` so that a brick far along a
+        // big ship is as exact as one near its origin.
+        let frames: BTreeMap<GridId, ShipFrame> = self
+            .ship_poses
+            .iter()
+            .map(|(&grid, pose)| {
+                (
+                    grid,
+                    ShipFrame {
+                        rotation: pose.rotation_matrix(),
+                        origin: pose.origin_relative_to(camera.position),
+                    },
+                )
+            })
+            .collect();
+        for &(grid, coordinate) in self.ship_bricks.keys() {
+            let Some(frame) = frames.get(&grid) else {
+                continue;
+            };
+            let place = |local: [f64; 3]| -> Vec3 {
+                Vec3::from_array(std::array::from_fn(|row| {
+                    (frame.origin[row]
+                        + frame.rotation[row][0] * local[0]
+                        + frame.rotation[row][1] * local[1]
+                        + frame.rotation[row][2] * local[2]) as f32
+                }))
+            };
+            let local = [
+                coordinate.x() as f64 * 32.0,
+                coordinate.y() as f64 * 32.0,
+                coordinate.z() as f64 * 32.0,
+            ];
+            let corner = place(local);
+            let center = place(local.map(|component| component + f64::from(BRICK_CENTER_OFFSET)));
+            if frustum.intersects_sphere(center, BRICK_BOUNDING_RADIUS) {
+                visible.push((
+                    center.length_squared(),
+                    BrickKey::Ship(grid, coordinate),
+                    Placement {
+                        offset: corner,
+                        rotation: frame.rotation.map(|row| row.map(|entry| entry as f32)),
+                    },
+                ));
             }
         }
         visible.sort_by(|a, b| a.0.total_cmp(&b.0));
         // Avatars are placed like bricks: by where their model's corner is relative to the camera.
         let eye = Vec3::splat(f32::from(AVATAR_EYE_VOXEL) + 0.5);
-        let visible_avatars: Vec<(usize, Vec3)> = self
+        let visible_avatars: Vec<(usize, Placement)> = self
             .avatars
             .iter()
             .filter_map(|avatar| {
                 let relative = Vec3::from_array(avatar.position.relative_to(camera.position));
                 frustum
                     .intersects_sphere(relative, AVATAR_BOUNDING_RADIUS)
-                    .then_some((avatar.color as usize % AVATAR_COLOR_COUNT, relative - eye))
+                    .then_some((
+                        avatar.color as usize % AVATAR_COLOR_COUNT,
+                        Placement {
+                            offset: relative - eye,
+                            rotation: NO_TURN,
+                        },
+                    ))
             })
             .collect();
-        let visible_boxes: Vec<((u32, [u8; 3]), Vec3)> = self
+        let visible_boxes: Vec<((u32, [u8; 3]), Placement)> = self
             .entity_boxes
             .iter()
             .filter_map(|entity_box| {
                 let relative = Vec3::from_array(entity_box.position.relative_to(camera.position));
                 frustum
                     .intersects_sphere(relative, ENTITY_BOX_BOUNDING_RADIUS)
-                    .then_some((entity_box.key(), relative - eye))
+                    .then_some((
+                        entity_box.key(),
+                        Placement {
+                            offset: relative - eye,
+                            rotation: NO_TURN,
+                        },
+                    ))
             })
             .collect();
         let statistics = RenderStatistics {
             avatars_drawn: visible_avatars.len(),
             entity_boxes_drawn: visible_boxes.len(),
             bricks_drawn: visible.len(),
-            bricks_culled: self.bricks.len() - visible.len(),
+            bricks_culled: self.bricks.len()
+                + self
+                    .ship_bricks
+                    .keys()
+                    .filter(|(grid, _)| self.ship_poses.contains_key(grid))
+                    .count()
+                - visible.len(),
             quads_drawn: visible
                 .iter()
-                .map(|(_, coordinate, _)| self.bricks[coordinate].quad_total())
+                .map(|(_, key, _)| self.brick_of(*key).quad_total())
                 .sum(),
             detailed_quads_drawn: visible
                 .iter()
-                .map(|(_, coordinate, _)| self.bricks[coordinate].detailed_count as usize)
+                .map(|(_, key, _)| self.brick_of(*key).detailed_count as usize)
                 .sum(),
         };
 
-        let corners: Vec<Vec3> = visible
+        let placements: Vec<Placement> = visible
             .iter()
-            .map(|(_, _, corner)| *corner)
-            .chain(visible_avatars.iter().map(|(_, corner)| *corner))
-            .chain(visible_boxes.iter().map(|(_, corner)| *corner))
+            .map(|(_, _, placement)| *placement)
+            .chain(visible_avatars.iter().map(|(_, placement)| *placement))
+            .chain(visible_boxes.iter().map(|(_, placement)| *placement))
             .collect();
-        self.write_placements(&corners);
+        self.write_placements(&placements);
         self.write_frame_uniform(view_projection);
         self.crosshair.set_screen_size(&self.queue, size);
         self.overlay.set_screen_size(&self.queue, size);
@@ -759,8 +909,8 @@ impl VoxelRenderer {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
-            for (index, (_, coordinate, _)) in visible.iter().enumerate() {
-                let brick = &self.bricks[coordinate];
+            for (index, (_, key, _)) in visible.iter().enumerate() {
+                let brick = self.brick_of(*key);
                 let Some(quads) = &brick.quads else {
                     continue;
                 };
@@ -774,8 +924,8 @@ impl VoxelRenderer {
             }
             // The bricks that have blocks that do not fill their cells, with the other pipeline.
             pass.set_pipeline(&self.detailed_pipeline);
-            for (index, (_, coordinate, _)) in visible.iter().enumerate() {
-                let brick = &self.bricks[coordinate];
+            for (index, (_, key, _)) in visible.iter().enumerate() {
+                let brick = self.brick_of(*key);
                 let Some(detailed) = &brick.detailed else {
                     continue;
                 };
@@ -999,9 +1149,9 @@ impl VoxelRenderer {
         });
     }
 
-    fn write_placements(&mut self, corners: &[Vec3]) {
-        if corners.len() > self.placements.capacity {
-            let capacity = corners.len().next_power_of_two();
+    fn write_placements(&mut self, placements: &[Placement]) {
+        if placements.len() > self.placements.capacity {
+            let capacity = placements.len().next_power_of_two();
             self.placements = Self::create_placement_buffer(
                 &self.device,
                 &self.placement_layout,
@@ -1010,11 +1160,30 @@ impl VoxelRenderer {
             );
         }
         let stride = self.placement_stride as usize;
-        let mut bytes = vec![0u8; corners.len() * stride];
-        for (index, corner) in corners.iter().enumerate() {
-            let placement = [corner.x, corner.y, corner.z, 0.0];
+        let mut bytes = vec![0u8; placements.len() * stride];
+        for (index, placement) in placements.iter().enumerate() {
+            let rotation = placement.rotation;
+            // The matrix by columns, each padded to four floats.
+            let words: [f32; 16] = [
+                placement.offset.x,
+                placement.offset.y,
+                placement.offset.z,
+                0.0,
+                rotation[0][0],
+                rotation[1][0],
+                rotation[2][0],
+                0.0,
+                rotation[0][1],
+                rotation[1][1],
+                rotation[2][1],
+                0.0,
+                rotation[0][2],
+                rotation[1][2],
+                rotation[2][2],
+                0.0,
+            ];
             bytes[index * stride..index * stride + PLACEMENT_SIZE as usize]
-                .copy_from_slice(bytemuck::cast_slice(&placement));
+                .copy_from_slice(bytemuck::cast_slice(&words));
         }
         if !bytes.is_empty() {
             self.queue.write_buffer(&self.placements.buffer, 0, &bytes);

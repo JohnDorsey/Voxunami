@@ -2,17 +2,23 @@
 
 //! A server ticked by the test, and players connected to it.
 
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+
 use game_shell::host::build_server;
 use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
 use game_shell::{GameContent, Identity, KeyCode};
+use namespaced_id::NamespacedId;
+use plugin_host::{Phase, Plugin, Registrar, SystemSpec};
 use renderer::Camera;
-use server::Server;
+use server::{Server, ServerWorld};
 use transport::Connection;
 use transport::loopback::LoopbackConnector;
 use voxel_space::{VoxelCoordinate, WorldPosition};
 use voxunami_cave::content::CaveContent;
 use voxunami_cave::game::Cave;
+use voxunami_cave::plugins::cave_plugins;
 
 pub const VIEW_RADIUS: i64 = 3;
 pub const SEED: u64 = 2024;
@@ -218,5 +224,67 @@ impl PlayerExt for Player {
             <Cave as game_shell::GameDefinition>::movement_message(&keys, &self.camera)
                 .expect("Cave moves players by messages");
         self.send_game_message(kind, payload);
+    }
+}
+
+/// Something to do to the server's world, inside the server.
+pub type Action = Box<dyn FnOnce(&mut ServerWorld) + Send>;
+
+/// A plugin that runs the actions it is given, one in each tick, before the rules.
+struct Script {
+    actions: Arc<Mutex<VecDeque<Action>>>,
+}
+
+impl Plugin for Script {
+    fn id(&self) -> NamespacedId {
+        "test:script".parse().unwrap()
+    }
+
+    fn register(&self, registrar: &mut Registrar<'_>) {
+        let actions = Arc::clone(&self.actions);
+        registrar.system(
+            SystemSpec::new("test:run_the_script", Phase::Decide),
+            move |context| {
+                let next = actions.lock().unwrap().pop_front();
+                if let Some(action) = next {
+                    action(context.world());
+                }
+            },
+        );
+    }
+}
+
+/// A server with Cave's plugins and a script, in which a test can do things to the world that no player can: make a ship, move it, remove
+/// it.
+pub struct Scene {
+    pub rig: Rig,
+    actions: Arc<Mutex<VecDeque<Action>>>,
+}
+
+impl Scene {
+    pub fn new() -> Self {
+        let content = CaveContent::new();
+        let world = content.new_world(SEED);
+        let actions: Arc<Mutex<VecDeque<Action>>> = Arc::default();
+        let mut plugins = cave_plugins(&content);
+        plugins.push(Box::new(Script {
+            actions: Arc::clone(&actions),
+        }));
+        Self {
+            rig: Rig::with_plugins(content, world, plugins),
+            actions,
+        }
+    }
+
+    /// Has the server run this in its next tick, and runs that tick.
+    pub fn run(&mut self, action: impl FnOnce(&mut ServerWorld) + Send + 'static) {
+        self.actions.lock().unwrap().push_back(Box::new(action));
+        self.rig.step();
+    }
+
+    pub fn ticks(&mut self, count: usize) {
+        for _ in 0..count {
+            self.rig.step();
+        }
     }
 }

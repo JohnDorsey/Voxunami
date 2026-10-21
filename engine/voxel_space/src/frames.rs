@@ -53,8 +53,9 @@ impl GridPose {
         )
     }
 
-    /// The pose's turn as a matrix, normalised, so that a slightly off unit quaternion does not scale lengths.
-    fn matrix(&self) -> [[f64; 3]; 3] {
+    /// The pose's turn as a matrix (`rotation_matrix()[row][column]`; a position in the grid, turned, is the matrix times the vector),
+    /// normalised, so that a slightly off unit quaternion does not scale lengths.
+    pub fn rotation_matrix(&self) -> [[f64; 3]; 3] {
         let [x, y, z, w] = self.orientation.components().map(f64::from);
         let length = (x * x + y * y + z * z + w * w).sqrt();
         let (x, y, z, w) = (x / length, y / length, z / length, w / length);
@@ -135,15 +136,22 @@ impl GridPose {
         })
     }
 
+    /// The vector from a position in the world (a camera) to this grid's origin, in voxels. Bricks are differenced exactly first, so it
+    /// is as exact for a camera far from the world's origin as for one near it.
+    pub fn origin_relative_to(&self, camera: WorldPosition) -> [f64; 3] {
+        self.world_vector_from_origin(camera)
+            .map(|component| -component)
+    }
+
     /// Where a position in the grid is in the world, or `None` if that is outside the supported range.
     pub fn local_to_world(&self, local: WorldPosition) -> Option<WorldPosition> {
-        let turned = Self::turn(self.matrix(), Self::local_vector(local));
+        let turned = Self::turn(self.rotation_matrix(), Self::local_vector(local));
         Self::displaced(self.position, turned)
     }
 
     /// Where a world position is in the grid, or `None` if that is outside the supported range.
     pub fn world_to_local(&self, world: WorldPosition) -> Option<WorldPosition> {
-        let local = Self::turn_back(self.matrix(), self.world_vector_from_origin(world));
+        let local = Self::turn_back(self.rotation_matrix(), self.world_vector_from_origin(world));
         Self::displaced(
             WorldPosition::new(BrickCoordinate::new(0, 0, 0), [0.0; 3]),
             local,
@@ -152,12 +160,14 @@ impl GridPose {
 
     /// A direction (gravity, a velocity) in the grid's axes, in the world's axes.
     pub fn direction_to_world(&self, direction: [f32; 3]) -> [f32; 3] {
-        Self::turn(self.matrix(), direction.map(f64::from)).map(|component| component as f32)
+        Self::turn(self.rotation_matrix(), direction.map(f64::from))
+            .map(|component| component as f32)
     }
 
     /// A direction in the world's axes, in the grid's axes.
     pub fn direction_to_local(&self, direction: [f32; 3]) -> [f32; 3] {
-        Self::turn_back(self.matrix(), direction.map(f64::from)).map(|component| component as f32)
+        Self::turn_back(self.rotation_matrix(), direction.map(f64::from))
+            .map(|component| component as f32)
     }
 }
 
@@ -181,7 +191,7 @@ pub fn voxel_in_other(
         ],
     )?;
     let world = from.local_to_world(centre)?;
-    let local = GridPose::turn_back(to.matrix(), to.world_vector_from_origin(world));
+    let local = GridPose::turn_back(to.rotation_matrix(), to.world_vector_from_origin(world));
     VoxelCoordinate::try_new(
         local[0].floor() as i64,
         local[1].floor() as i64,
@@ -208,7 +218,10 @@ pub fn lattice_alignment(
         return None;
     }
     // Where `from`'s origin is in `to`'s axes.
-    let origin = GridPose::turn_back(to.matrix(), to.world_vector_from_origin(from.position));
+    let origin = GridPose::turn_back(
+        to.rotation_matrix(),
+        to.world_vector_from_origin(from.position),
+    );
     let mut offset = [0i64; 3];
     for axis in 0..3 {
         let whole = origin[axis].round();
@@ -288,6 +301,32 @@ mod tests {
 
     fn any_lattice_rotation() -> impl Strategy<Value = LatticeRotation> {
         (0..24usize).prop_map(|index| LatticeRotation::all()[index])
+    }
+
+    #[test]
+    fn the_origin_of_a_grid_is_found_from_a_camera_and_the_matrix_turns_as_the_pose_does() {
+        let grid = pose(at(3, -2, 5, [1.0, 2.0, 3.0]), Orientation::IDENTITY);
+        let camera = at(1_000_000, 4, -7, [0.5, 0.25, 31.0]);
+        // The vector from the camera to the origin: bricks apart, exactly, then the offsets.
+        assert_eq!(
+            grid.origin_relative_to(camera),
+            [
+                (3 - 1_000_000) as f64 * 32.0 + 0.5,
+                (-2 - 4) as f64 * 32.0 + 1.75,
+                (5 + 7) as f64 * 32.0 - 28.0
+            ]
+        );
+        // The matrix of a quarter turn about the vertical axis carries z onto x (first row, third column), and is the identity unturned.
+        assert_eq!(
+            grid.rotation_matrix(),
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        );
+        let turned = pose(
+            at(0, 0, 0, [0.0; 3]),
+            Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0),
+        );
+        let matrix = turned.rotation_matrix();
+        assert!((matrix[0][2] - 1.0).abs() < 1e-6 && (matrix[2][0] + 1.0).abs() < 1e-6);
     }
 
     #[test]

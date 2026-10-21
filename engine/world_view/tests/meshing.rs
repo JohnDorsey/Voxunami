@@ -123,6 +123,11 @@ fn apply(live: &mut HashMap<BrickCoordinate, PackedBrickMesh>, updates: Vec<Mesh
             MeshUpdate::Remove(coordinate) => {
                 live.remove(&coordinate);
             }
+            // The terrain mesher makes nothing for ships.
+            MeshUpdate::UploadGridBrick { .. }
+            | MeshUpdate::RemoveGridBrick { .. }
+            | MeshUpdate::GridPose { .. }
+            | MeshUpdate::RemoveGrid(_) => panic!("the terrain mesher made an update for a ship"),
         }
     }
 }

@@ -1,6 +1,6 @@
 # Phase 32: moving grids (ships)
 
-Status: the owner answered section 6 on 2026-10-20 (answers at its end, and applied in the text); 32a to 32c are built (`build-log.md`). Read from the plan (requirements 1 to 16, the owner's
+Status: the owner answered section 6 on 2026-10-20 (answers at its end, and applied in the text); 32a to 32d are built (`build-log.md`). Read from the plan (requirements 1 to 16, the owner's
 decisions of 2026-10-18 and 2026-10-20), `future-goals.md` (goal 2 and "Ship goals"), and from the code after Phase 31. The choices are
 mine and marked; what I checked in the code is marked **[code]**, what I believe from memory is marked **[memory]**.
 

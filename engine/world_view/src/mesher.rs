@@ -18,7 +18,7 @@ use block_models::BlockTable;
 use terrain::TerrainGenerator;
 use voxel_grid::{Brick, ChannelIndex, ChannelStorage, GridLayout};
 use voxel_meshing::{BrickChannels, BrickNeighbourhood, PackedBrickMesh, mesh_brick};
-use voxel_space::{BrickCoordinate, FaceDirection, VoxelCoordinate};
+use voxel_space::{BrickCoordinate, FaceDirection, GridId, GridPose, VoxelCoordinate};
 use world_storage::LevelData;
 
 /// How far to keep bricks loaded around the viewer, and how much work to run at once.
@@ -81,7 +81,7 @@ impl ViewChannels {
     }
 
     /// The brightness of every voxel of a brick if the game has a bulk light hook.
-    fn bulk_brightness(
+    pub(crate) fn bulk_brightness(
         &self,
         brick: &Brick,
         coordinate: BrickCoordinate,
@@ -101,6 +101,23 @@ pub enum MeshUpdate {
         mesh: PackedBrickMesh,
     },
     Remove(BrickCoordinate),
+    /// Replaces the mesh of a brick of a ship, in the ship's own coordinates.
+    UploadGridBrick {
+        grid: GridId,
+        coordinate: BrickCoordinate,
+        mesh: PackedBrickMesh,
+    },
+    RemoveGridBrick {
+        grid: GridId,
+        coordinate: BrickCoordinate,
+    },
+    /// Says where a ship is and how it is turned.
+    GridPose {
+        grid: GridId,
+        pose: GridPose,
+    },
+    /// A ship is gone, with all its bricks.
+    RemoveGrid(GridId),
 }
 
 struct NeighbourhoodSnapshot {
@@ -142,7 +159,7 @@ enum JobResult {
 }
 
 /// The channels of a brick that meshing looks at.
-fn brick_channels<'a>(
+pub(crate) fn brick_channels<'a>(
     brick: &'a Brick,
     combined_light: Option<&'a ChannelStorage>,
     channels: &ViewChannels,

@@ -666,6 +666,27 @@ Phase 32 (moving grids; `moving-grids-spec.md`):
   patterns checked against a separate Python calculation and equal on Windows and Linux. 21 mutations: 19 caught; 1 equivalent in practice (an exact tie between
   lattice turns); 1 redundant check (a range test that `checked_offset` already makes), which was deleted.
 
+Phase 32d (ships drawn and aimed at):
+- Renderer: a placement is now an offset and the turn of the grid (64 bytes, in a stride that was already larger); the shader turns a quad's place and its
+  normal (the sun stays in the world). Bricks of ships are kept by (grid, brick) beside the terrain's, with `set_grid_pose`, `upload_grid_brick`,
+  `remove_grid_brick`, `remove_grid`. A ship brick is placed in `f64` (the ship's origin relative to the camera, bricks differenced exactly, plus the turned place of
+  the brick) so a ship, or a brick far along one, is as exact as terrain; the cull is a sphere around the turned centre of the brick.
+- `world_view::GridMesher`: meshes ships' bricks like the terrain's (same `mesh_brick`, same light hook) on the calling thread, a budget of bricks a call
+  (16 in a session), a brick and its six neighbours when one changes; an absent brick is empty. `MeshUpdate` has four new kinds.
+- Session: `ship_updates` tells the renderer of poses that changed and ships that went; `target()` casts into the terrain and into each ship's own coordinates (the camera
+  and ray turned back with `GridPose::world_to_local` and `direction_to_local`) and takes the nearest; `RayHit` has the `grid` and the `distance` along the ray.
+- Cave: `SetBlock` names a grid; the server accepts the terrain of the player's level or a ship in it, measures reach to the centre of the voxel as turned and placed (`PlayerPose::
+  distance_to_position`), and drops anything else (a ship that is not there, another level's grid, too far).
+- Tests: GPU, on every adapter: a ship turned half way, tumbled about a diagonal, upside down, with blocks that do not fill their cells, and a brick far along a ship is
+  drawn pixel for pixel as the terrain it amounts to (the quaternions chosen are exact); far from the origin is the same as at it; a 45 degree turn is as wide as the diagonal;
+  a ship is not drawn without a pose, is culled behind the camera, is drawn when the camera is inside its brick, and goes when removed. In Cave: a player aims at, breaks and builds on a ship not turned, turned half
+  way round and a million voxels away; the server refuses out of reach, missing and foreign grids; a ship between the player and the ground is aimed at first; a ship appears,
+  moves, is edited and goes in the pictures, the last to the pixel; a lamp on a ship lights the ship. 24 + 5 mutations; the survivors found weak tests (a brick far along a turned ship, a
+  detailed block turned, the camera inside the brick) which were then written. One is left that is not observable now: a request for the root grid of another level is
+  refused before it could be told apart from a missing level, because Cave has one level.
+- Limits: ships are drawn at full detail with no level of detail (plan: terrain's first); a ship has no sky light and its light is its own (see 32b); the mesher for a ship runs on the calling
+  thread, so a very large ship arriving takes several frames of 16 bricks.
+
 Phase 32c (ships in the stream; protocol version 6):
 - `BrickContents` and `VoxelEdits` name a `GridId` (a level's number is the same bytes as before), and `GridsSpawned`, `GridsChanged` and `GridsDespawned` tell
   a client of the ships in its region: server side `grid_replication` (a per-client list of what it knows, as for entities; a view of each ship made once a

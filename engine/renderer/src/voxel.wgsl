@@ -26,6 +26,9 @@ const AVATAR_BASE: u32 = 0xFFFFF0u;
 struct Placement {
     // Position of the brick's lowest corner relative to the camera, in voxels.
     offset: vec4<f32>,
+    // How the grid the brick is in is turned (the identity for terrain): a position in the brick, turned, plus the offset, is where
+    // it is relative to the camera.
+    rotation: mat3x3<f32>,
 }
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -89,7 +92,8 @@ fn corner_position(vertex_index: u32, face: u32, origin: vec3<f32>, width: f32, 
 }
 
 fn finish(relative: vec3<f32>, face: u32, material: u32, light: u32) -> VertexOutput {
-    let normal = axis_unit(face / 2u) * select(-1.0, 1.0, (face & 1u) == 1u);
+    // The face's normal in the grid's own axes, turned to the world's, where the sun is.
+    let normal = placement.rotation * (axis_unit(face / 2u) * select(-1.0, 1.0, (face & 1u) == 1u));
     // The light of the face and the ambient light combine like a screen blend: each is the share of
     // full brightness, and what is missing from both is what is missing from the result.
     let lit = 1.0 - (1.0 - frame.fog_range.z) * (1.0 - f32(light) / 255.0);
@@ -122,7 +126,7 @@ fn vertex_main(@builtin(vertex_index) vertex_index: u32, instance: Instance) -> 
     // The voxel owns its face; a positive face is on the voxel's far side.
     let plane = origin + axis_unit(face / 2u) * select(0.0, 1.0, (face & 1u) == 1u);
     let local = corner_position(vertex_index, face, plane, width, height);
-    return finish(local + placement.offset.xyz, face, instance.material & 0xFFFFFFu, instance.material >> 24u);
+    return finish(placement.rotation * local + placement.offset.xyz, face, instance.material & 0xFFFFFFu, instance.material >> 24u);
 }
 
 @vertex
@@ -136,7 +140,7 @@ fn vertex_detailed(@builtin(vertex_index) vertex_index: u32, instance: DetailedI
     let height = f32(instance.third & 0xFFFFu) / 8.0;
     let face = (instance.third >> 16u) & 7u;
     let local = corner_position(vertex_index, face, origin, width, height);
-    return finish(local + placement.offset.xyz, face, instance.material & 0xFFFFFFu, instance.third >> 24u);
+    return finish(placement.rotation * local + placement.offset.xyz, face, instance.material & 0xFFFFFFu, instance.third >> 24u);
 }
 
 @fragment

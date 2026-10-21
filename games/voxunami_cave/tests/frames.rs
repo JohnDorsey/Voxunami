@@ -4,78 +4,14 @@
 
 mod common;
 
-use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use common::{Rig, SEED};
-use game_shell::GameContent;
-use namespaced_id::NamespacedId;
-use plugin_host::{Phase, Plugin, Registrar, SystemSpec};
+use common::{Rig, Scene};
 use server::{GridView, ServerWorld};
 use voxel_space::{
     BrickCoordinate, GridId, GridPose, LatticeRotation, LevelIndex, VoxelCoordinate, WorldPosition,
 };
 use voxunami_cave::content::CaveContent;
-use voxunami_cave::plugins::cave_plugins;
-
-type Action = Box<dyn FnOnce(&mut ServerWorld) + Send>;
-
-/// A plugin that runs the actions it is given, in the first tick it can, before the rules.
-struct Script {
-    actions: Arc<Mutex<VecDeque<Action>>>,
-}
-
-impl Plugin for Script {
-    fn id(&self) -> NamespacedId {
-        "test:script".parse().unwrap()
-    }
-
-    fn register(&self, registrar: &mut Registrar<'_>) {
-        let actions = Arc::clone(&self.actions);
-        registrar.system(
-            SystemSpec::new("test:run_the_script", Phase::Decide),
-            move |context| {
-                let next = actions.lock().unwrap().pop_front();
-                if let Some(action) = next {
-                    action(context.world());
-                }
-            },
-        );
-    }
-}
-
-struct Scene {
-    rig: Rig,
-    actions: Arc<Mutex<VecDeque<Action>>>,
-}
-
-impl Scene {
-    fn new() -> Self {
-        let content = CaveContent::new();
-        let world = content.new_world(SEED);
-        let actions: Arc<Mutex<VecDeque<Action>>> = Arc::default();
-        let mut plugins = cave_plugins(&content);
-        plugins.push(Box::new(Script {
-            actions: Arc::clone(&actions),
-        }));
-        Self {
-            rig: Rig::with_plugins(content, world, plugins),
-            actions,
-        }
-    }
-
-    /// Has the server run this in its next tick, and runs that tick.
-    fn run(&mut self, action: impl FnOnce(&mut ServerWorld) + Send + 'static) {
-        self.actions.lock().unwrap().push_back(Box::new(action));
-        self.rig.step();
-    }
-
-    fn ticks(&mut self, count: usize) {
-        for _ in 0..count {
-            self.rig.step();
-        }
-    }
-}
 
 /// How big the room is: voxels 0 to 6 on each axis, with walls on the outside layer.
 const SIZE: i64 = 7;

@@ -6,8 +6,10 @@
 //! and state comes from a [`block_models::BlockTable`]. [`cast_ray`] finds the voxel
 //! under a crosshair using that answer.
 
+mod grid_mesher;
 mod mesher;
 mod ray;
 
+pub use grid_mesher::GridMesher;
 pub use mesher::{BrickLight, BulkLight, MeshUpdate, ViewChannels, ViewSettings, WorldMesher};
 pub use ray::{RayHit, cast_ray};

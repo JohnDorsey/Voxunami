@@ -65,6 +65,16 @@ pub fn apply_updates(renderer: &mut VoxelRenderer, updates: Vec<MeshUpdate>) {
         match update {
             MeshUpdate::Upload { coordinate, mesh } => renderer.upload_brick(coordinate, &mesh),
             MeshUpdate::Remove(coordinate) => renderer.remove_brick(coordinate),
+            MeshUpdate::UploadGridBrick {
+                grid,
+                coordinate,
+                mesh,
+            } => renderer.upload_grid_brick(grid, coordinate, &mesh),
+            MeshUpdate::RemoveGridBrick { grid, coordinate } => {
+                renderer.remove_grid_brick(grid, coordinate);
+            }
+            MeshUpdate::GridPose { grid, pose } => renderer.set_grid_pose(grid, pose),
+            MeshUpdate::RemoveGrid(grid) => renderer.remove_grid(grid),
         }
     }
 }

@@ -13,7 +13,7 @@ use namespaced_id::NamespacedId;
 use player_presence::{PlayerClient, player_kind};
 use ui::{Anchor, Color, Direction, Node, Panel, Ui};
 use voxel_grid::ChannelIndex;
-use voxel_space::VoxelCoordinate;
+use voxel_space::{GridId, VoxelCoordinate};
 use world_view::BulkLight;
 
 use crate::content::CaveContent;
@@ -32,9 +32,10 @@ fn identifier(text: &str) -> NamespacedId {
     text.parse().expect("constant identifier is valid")
 }
 
-/// The request to put `block` (named by identifier), in `state`, at `at`.
-pub fn set_block_request(at: VoxelCoordinate, block: &str, state: u32) -> SetBlock {
+/// The request to put `block` (named by identifier), in `state`, at `at` of the grid `grid`.
+pub fn set_block_request(grid: GridId, at: VoxelCoordinate, block: &str, state: u32) -> SetBlock {
     SetBlock {
+        grid,
         at,
         block: block.parse().expect("block names are valid identifiers"),
         state,
@@ -199,14 +200,19 @@ fn selected<'a>(placeable: &'a [NamespacedId], selection: &Selection) -> Option<
 /// Asks the server to break the block under the crosshair.
 fn break_target(context: &mut ClientContext<'_>) {
     if let Some(hit) = context.target() {
-        context.send_message(&set_block_request(hit.voxel, "base_blocks:air", 0));
+        context.send_message(&set_block_request(
+            hit.grid,
+            hit.voxel,
+            "base_blocks:air",
+            0,
+        ));
     }
 }
 
 /// Asks the server to place `block` in `state` against the face under the crosshair.
 fn place_at_target(context: &mut ClientContext<'_>, block: &str, state: u32) {
     if let Some(hit) = context.target() {
-        context.send_message(&set_block_request(hit.previous, block, state));
+        context.send_message(&set_block_request(hit.grid, hit.previous, block, state));
     }
 }
 
