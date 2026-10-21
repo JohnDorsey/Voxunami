@@ -31,12 +31,13 @@ pub fn serve_until<G: GameDefinition>(
     let mut content = crate::packs::content_with_packs::<G>(options.packs.as_deref())?;
     let world = open_world(&mut content, options.world_file.as_deref(), options.seed)?;
     let mut settings = HostSettings::local(options.view_radius);
+    settings.ships = options.ships;
     settings.network = Some(Box::new(listener));
     settings.announce_players = true;
     if let Some(path) = &options.world_file {
+        settings.world_file = Some(path.clone());
         settings.autosave = Some(Autosave {
             interval: Duration::from_secs_f32(options.autosave_seconds),
-            path: path.clone(),
         });
     }
     let host =

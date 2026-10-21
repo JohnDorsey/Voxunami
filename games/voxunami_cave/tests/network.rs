@@ -62,6 +62,7 @@ impl DedicatedServer {
             packs,
             autosave_seconds,
             view_radius: VIEW_RADIUS,
+            ships: server::ShipSettings::default(),
         };
         let thread = std::thread::spawn(move || serve_until::<Cave>(&options, listener, &stopping));
         Self {
@@ -476,6 +477,7 @@ fn a_dedicated_server_does_not_start_when_its_packs_have_problems() {
         packs: Some(packs.clone()),
         autosave_seconds: 60.0,
         view_radius: VIEW_RADIUS,
+        ships: server::ShipSettings::default(),
     };
     let error = serve_until::<Cave>(&options, listener, &AtomicBool::new(true)).unwrap_err();
     assert!(

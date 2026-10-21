@@ -15,9 +15,12 @@ use voxel_space::{
     BrickCoordinate, EntityPose, GridId, GridPose, LevelIndex, Orientation, WorldPosition,
 };
 use world_storage::container::{read_container, write_container};
-use world_storage::engine_sections::{decode_entities, encode_entities, entities_id};
+use world_storage::engine_sections::{
+    decode_entities, decode_entities_with_fallbacks, encode_entities, encode_entities_with,
+    entities_id,
+};
 use world_storage::test_support::{ALL_PLUGINS, Game, id, sample_world};
-use world_storage::{LoadError, MovingGrid, Section, WorldData};
+use world_storage::{LoadError, MovingGrid, PilotLogout, Section, WorldData};
 
 /// A component that is one number.
 #[derive(Debug, PartialEq)]
@@ -260,14 +263,65 @@ fn ids_out_of_order_repeated_or_beyond_the_counter_are_refused() {
     }
 }
 
-#[test]
-fn a_reserved_world_space_pose_is_refused_rather_than_dropped() {
+/// The payload for one pig, in a level, with its fallback flag set and this place after it.
+fn pig_in_a_level_with_a_fallback(place: EntityPose) -> Vec<u8> {
     let mut payload = payload_for(10, &[1]);
-    // The reserved byte is followed only by the count of components, which is 0.
+    // The flag is followed only by the count of components, which is 0.
     let at = payload.len() - 2;
-    assert_eq!(payload[at], 0, "this is the reserved byte");
-    payload[at] = 1;
+    assert_eq!(payload[at], 0, "this is the flag");
+    payload.truncate(at);
+    let mut writer = ByteWriter::new();
+    writer.write_u8(1);
+    protocol::write_entity_pose(&mut writer, &place);
+    writer.write_u8(0);
+    payload.extend(writer.into_bytes());
+    payload
+}
+
+#[test]
+fn a_place_to_fall_back_to_on_an_entity_that_is_in_a_level_is_refused_rather_than_dropped() {
+    let place = pose(0, [3, 0, 0], [1.0; 3]);
+    assert!(decode_entities(&pig_in_a_level_with_a_fallback(place)).is_err());
+    // Nor is any other flag.
+    let mut payload = payload_for(10, &[1]);
+    let at = payload.len() - 2;
+    payload[at] = 2;
     assert!(decode_entities(&payload).is_err());
+}
+
+#[test]
+fn a_place_to_fall_back_to_is_in_a_level_not_in_the_frame_of_another_ship() {
+    let ship = GridId::new(GridId::FIRST_ALLOCATED);
+    let aboard = EntityPose::new(
+        ship,
+        WorldPosition::new(BrickCoordinate::ORIGIN, [1.0; 3]),
+        Orientation::IDENTITY,
+    );
+    let mut store = EntityStore::new();
+    let pig = store
+        .spawn(&kinds(), &id("test:pig"), aboard, ComponentBag::new())
+        .unwrap();
+    // The writer does not write a place that is not in a level.
+    let elsewhere = EntityPose::new(
+        GridId::new(GridId::FIRST_ALLOCATED + 1),
+        WorldPosition::new(BrickCoordinate::ORIGIN, [2.0; 3]),
+        Orientation::IDENTITY,
+    );
+    let (read, fallbacks) =
+        decode_entities_with_fallbacks(&encode_entities_with(&store, |_| Some(elsewhere))).unwrap();
+    assert_eq!(read.get(pig).unwrap().pose, aboard);
+    assert!(fallbacks.is_empty());
+    // And a reader does not take one: the same bytes with the place put in by hand are refused.
+    let mut writer = ByteWriter::new();
+    writer.write_varint(store.next_id());
+    writer.write_varint(1);
+    writer.write_varint(pig.get());
+    writer.write_identifier(&id("test:pig"));
+    protocol::write_entity_pose(&mut writer, &aboard);
+    writer.write_u8(1);
+    protocol::write_entity_pose(&mut writer, &elsewhere);
+    writer.write_u8(0);
+    assert!(decode_entities_with_fallbacks(&writer.into_bytes()).is_err());
 }
 
 proptest! {
@@ -316,12 +370,15 @@ fn make_ship(world: &mut WorldData, pose: GridPose) -> GridId {
         mass: 0.0,
         centre_of_mass: [0.0; 3],
         held: false,
+        frozen: false,
+        on_pilot_logout: PilotLogout::Stay,
         voxels: Grid::new(layout),
+        sections: Vec::new(),
     })
 }
 
 #[test]
-fn someone_aboard_a_ship_is_saved_in_the_level_where_the_ship_has_them_until_ships_are_saved_too() {
+fn someone_aboard_a_ship_is_saved_in_the_frame_of_the_ship_with_the_place_it_has_in_the_world() {
     let game = Game::new(&ALL_PLUGINS);
     let mut world = world_with_entities(&game);
     let quarter = std::f32::consts::FRAC_PI_2;
@@ -338,58 +395,89 @@ fn someone_aboard_a_ship_is_saved_in_the_level_where_the_ship_has_them_until_shi
     let passenger = spawn(&mut world, "test:cow", aboard);
     let before = entities_of(&world);
 
-    let bytes = game.save(&world);
+    let save = game.save_with_ships(&mut world);
 
-    // Saving does not take them off the ship in the running world.
+    // Saving does not move them in the running world.
     assert_eq!(entities_of(&world), before);
-    assert_eq!(world.entities().get(passenger).unwrap().pose, aboard);
-    // The file has them where the ship has them in the world, and they are the same entity (the id, the kind, the components).
-    let mut again = Game::new(&ALL_PLUGINS);
-    let (loaded, _) = again.load(&bytes).unwrap();
-    let saved = loaded.entities().get(passenger).unwrap();
+    // The file has them in the frame of the ship, and where that is in the world.
+    let (in_the_file, fallbacks) =
+        decode_entities_with_fallbacks(&payload_of(&save.world)).unwrap();
+    assert_eq!(in_the_file.get(passenger).unwrap().pose, aboard);
     let (position, orientation) = ship_pose
         .place_in_world(aboard.position, aboard.orientation)
         .unwrap();
     assert_eq!(
-        saved.pose,
-        EntityPose::new(GridId::MAIN, position, orientation)
+        fallbacks.into_iter().collect::<Vec<_>>(),
+        [(
+            passenger,
+            EntityPose::new(GridId::MAIN, position, orientation)
+        )],
+        "only the one who is aboard has a place to fall back to"
     );
-    assert_eq!(saved.kind, id("test:cow"));
+
+    // Loaded, they are the same entity in the same frame, and the ship is in its file, where the world file says it is.
+    let mut again = Game::new(&ALL_PLUGINS);
+    let (loaded, _) = again.load(&save.world).unwrap();
+    assert_eq!(entities_of(&loaded), before);
     assert_eq!(
         loaded.entities().component::<Health>(passenger).unwrap(),
         Some(Health(10))
     );
-    // Everything else is as it was, and the file is stable.
-    assert_eq!(loaded.entities().len(), before.len());
-    for entity in &before {
-        if entity.id != passenger {
-            assert_eq!(loaded.entities().get(entity.id), Some(entity));
-        }
-    }
-    assert_eq!(again.save(&loaded), bytes);
+    assert!(loaded.grids().get(ship).is_none());
+    assert_eq!(
+        loaded.grids().frame_of(ship),
+        Some((LevelIndex::MAIN, ship_pose))
+    );
+    // Saved again with the ship still in its file, the world file is the same bytes: it names the file, and does not rewrite it.
+    assert_eq!(loaded.save(&again.registries()).unwrap(), save.world);
 }
 
 #[test]
-fn a_file_that_puts_an_entity_in_the_frame_of_a_ship_is_refused_because_no_ship_is_saved_yet() {
+fn an_entity_in_the_frame_of_a_ship_the_file_does_not_list_is_put_where_it_was_in_the_world() {
     let game = Game::new(&ALL_PLUGINS);
+    let (lost, forgotten) = (
+        GridId::new(GridId::FIRST_ALLOCATED),
+        GridId::new(GridId::FIRST_ALLOCATED + 1),
+    );
+    let at = |grid, x| {
+        EntityPose::new(
+            grid,
+            WorldPosition::new(BrickCoordinate::ORIGIN, [x, 2.0, 3.0]),
+            Orientation::IDENTITY,
+        )
+    };
     let mut store = EntityStore::new();
-    store
+    let with_place = store
         .spawn(
             &kinds(),
             &id("test:pig"),
-            EntityPose::new(
-                GridId::new(GridId::FIRST_ALLOCATED),
-                WorldPosition::new(BrickCoordinate::ORIGIN, [1.0; 3]),
-                Orientation::IDENTITY,
-            ),
+            at(lost, 1.0),
             ComponentBag::new(),
         )
         .unwrap();
-    let payload = encode_entities(&store);
-    assert!(decode_entities(&payload).is_err());
+    let without_place = store
+        .spawn(
+            &kinds(),
+            &id("test:pig"),
+            at(forgotten, 5.0),
+            ComponentBag::new(),
+        )
+        .unwrap();
+    let place = EntityPose::new(
+        GridId::root(LevelIndex::MAIN),
+        WorldPosition::new(BrickCoordinate::new(7, 0, 0), [9.0, 8.0, 7.0]),
+        Orientation::from_yaw_pitch(0.3, 0.0),
+    );
+    // A file that has these in the frames of two ships it does not list: one saved with the place it was in the world, the other not.
+    let payload = encode_entities_with(&store, |entity| (entity.id == with_place).then_some(place));
     let bytes = game.save(&world_with_entities(&game));
-    assert!(matches!(
-        Game::new(&ALL_PLUGINS).load(&with_entities_section(&bytes, 1, payload)),
-        Err(LoadError::Section { .. })
-    ));
+    let (loaded, _) = Game::new(&ALL_PLUGINS)
+        .load(&with_entities_section(&bytes, 1, payload))
+        .unwrap();
+    assert_eq!(loaded.entities().get(with_place).unwrap().pose, place);
+    // Nothing better is known of the other than the coordinates it had: in the main level.
+    assert_eq!(
+        loaded.entities().get(without_place).unwrap().pose,
+        at(GridId::MAIN, 5.0)
+    );
 }

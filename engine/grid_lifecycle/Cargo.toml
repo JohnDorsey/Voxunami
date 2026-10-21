@@ -1,0 +1,30 @@
+[package]
+name = "grid_lifecycle"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Ships that come and go with the players: moving near them, frozen farther off, put in files farther still, and back when a player comes near."
+
+[dependencies]
+grid_bodies.workspace = true
+namespaced_id.workspace = true
+physics.workspace = true
+player_presence.workspace = true
+plugin_host.workspace = true
+protocol.workspace = true
+server.workspace = true
+voxel_grid.workspace = true
+voxel_space.workspace = true
+world_storage.workspace = true
+
+[dev-dependencies]
+block_models.workspace = true
+entities.workspace = true
+identity.workspace = true
+transport.workspace = true
+world_storage = { workspace = true, features = ["test-support"] }
+server = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

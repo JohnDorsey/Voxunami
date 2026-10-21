@@ -125,9 +125,9 @@ as the ship turns. As built:
 a ship that is not there (`EntityError::NoSuchGrid`, and nothing changes). `ServerWorld::remove_grid` puts everything aboard (players away
 included) in the ship's level where the ship had it, turned as it was, in the same call, so nothing is left in a frame that is gone. A client
 is told of every entity aboard each ship it is told of, after the ship and its bricks, wherever in the ship they are (a ship is in the picture
-whole); a ship that leaves the picture takes them with it. A world is saved with those aboard in the level where their ship has them, until
-ships are saved too (32i); a file that puts an entity in a ship's frame is refused when read. The client's `ClientWorld::entity_in_the_world`
-says where an entity is in the world.
+whole); a ship that leaves the picture takes them with it. A world is saved with those aboard in the frame of their ship, with the place they
+have in the world beside it (32i); a file that lists their ship has them aboard it, and one that does not has them at that place. The client's
+`ClientWorld::entity_in_the_world` says where an entity is in the world.
 
 **The record is the truth about where a player is.** `Presence::pose_of`, `players` and `level_of` answer in the world (a passenger is where
 the ship puts them, in the ship's level); `frame_of`, `local_pose_of` and `set_pose_in` are for what moves players. Each tick
@@ -272,6 +272,53 @@ budget of bricks is not in the picture, nor are those aboard it; one frame per l
   the world file names exactly the ship files of this save (grid id, file, tick, checksum); older ship files are removed only after the
   world file is in place. A crash leaves the previous consistent set. The world file's new section `engine:grids` holds the counter,
   the tombstones, and the list of ships with their level, parked or not, and file.
+
+**As built in 32i, part 1 (the files and the consistent save; `engine/world_storage`, `engine/server`, `engine/game_shell`):**
+- *The name of a file is the ship and the number of the write, not the tick of the first text:* `<id>-<n>.voxship`, in `<the whole name of the world file>.ships/` (`cave.vxw.ships`: the extension is not replaced, so that two world files of one name do not share a folder, one cleaning the other's files away),
+  with *n* from a counter that is saved in `engine:grids`. Ticks begin again every time a server starts, so a new run would write a file with the name that the
+  world file on the disk still names, and a crash between the two writes would leave a world whose ship does not match its checksum; a counter that only goes
+  up cannot. `ShipFileName` can be made only from a ship and a number, or read in exactly that spelling (no sign, no leading zeros, no root grid), so a world
+  file cannot send a program to another path.
+- *The file is a container* of `engine:header`, `engine:registries` (the tables of the registries its channels use), `engine:channels`, `engine:ship` (the name of
+  its level, and its bricks written as a level's edited bricks are) and `engine:grid_flight` (pose, both speeds, held, what its pilot's logout does). Sections of
+  plugins that nobody here reads are carried in `MovingGrid::sections` and written back as they were. A file that names content the reading world lacks is
+  refused, saying what (`ParsedShip::referenced_content` lists it, so that an importer registers it first); a channel the world has no place for is refused too.
+  Every cut of a file and every changed byte of it is found (tested for each byte and four changes of it).
+- *The world file's `engine:grids`* lists, in order of id, each ship's level, pose, the bricks it touches, the number and the checksum of its file, and whether it
+  waits for those aboard; then the counter of ids, the counter of file numbers, and the retired ids with what took their places and the lattice turn between
+  (one of the 24). A world that never had a ship writes none, and saves to the bytes it always had.
+- *After a load every ship is in its file* (`GridStore::parked`), and the world knows where it is, in which level and which bricks it touches, without reading
+  it. `ServerWorld::load_ship` brings one into memory (the checksum is checked first); `park_ship` puts one away (the file is written first); each changes
+  nothing if it cannot. The rules hear of a ship that came in as a change of every voxel that is not at its default in each channel they watch (`take_changes`,
+  after the changes of the tick), as for a ship that was just made, which is how "pending rule work is rebuilt by waking the voxels" is done. Until the
+  lifecycle of part 2, a server brings in every ship when it is made (`Server::load_parked_ships`).
+- *A save is a `WorldSave`:* the files of the ships that are in memory, then the world file, then the removal of the ship files that the world file does not name.
+  Tested with a disk that fails at each of its calls in turn: the world file that is there is the old one or the new one, whole, with every file it names; the
+  next save, when the disk works, leaves nothing else. `Server::save` returns it and the shell writes it into the folder beside the world file, for the autosave
+  and for the save on exit. A world with a ship in memory cannot be saved as a world file alone (`SaveError::ShipsInMemory`), so the mistake is loud.
+- *`engine:entities`:* an entity in the frame of a ship is written in it, with the place it has in the world, in the byte the format had reserved for that. A file
+  that lists the ship has them aboard; one that does not has them at that place (else in the main level at the coordinates they have: nothing is lost).
+
+**As built in 32i, part 2 (the lifecycle; `engine/grid_lifecycle`, `server::ShipSettings`):**
+- *The settings* are `ShipSettings { simulation_distance, unload_distance, logout_policy }` in `ServerConfig` (and `Server::with_ship_settings`). The defaults are 256
+  and 1024 voxels (the spec's metres: a voxel is a metre at the scale Cave is played at). `ShipSettings::new` refuses a negative or non-number distance and an
+  unload distance below the simulation distance; infinity is a distance (`ShipSettings::everywhere`, which the tests of what ships do use, since they have no
+  player near them). `serve` has `--ship-simulation-distance`, `--ship-unload-distance` and `--ship-logout-policy`; the game that one plays alone uses the defaults.
+- *`GridLifecyclePlugin`* (the system `engine:grid_lifecycle_update`, in the controllers phase, before anything moves) looks at every ship once a tick, in order of id.
+  A ship in memory and awake is frozen when no player of its level is within a tenth more than the simulation distance of its nearest brick; a frozen ship is let go
+  when one is within the simulation distance, and put in a file when none is within a tenth more than the unload distance; a ship in a file is brought in when one
+  is within the simulation distance, unless it went away with whoever was aboard it. Distances are compared as squares, so nothing takes a square root. A
+  ship that cannot be written or read is left as it is and tried again after 200 ticks, not every tick; the plugin's report says why.
+- *Frozen* is `MovingGrid::frozen` (not saved), set by `ServerWorld::set_grid_frozen`, which also takes its speed away. The bodies hold a frozen ship as they hold a
+  held one, and the rules wait: `ActiveVoxels::take_simulated` leaves the voxels of a grid that waits pending, both light rules use it (`LightWorld::is_simulated`
+  and `ScaledLightWorld::is_simulated`, which Cave answers with `ServerWorld::grid_is_simulated`), and the light of a ship is made when the ship is let go. Fire
+  never ran on a ship (a ship is never "near a player" to it), so it has nothing to keep.
+- *A player who joins aboard a ship that is in a file* has it brought in by a handler of `PlayerJoined` (after the players' own), before anything places them. The
+  record of where a player is is read through `GridStore::frame_of`, which knows ships in files, so a player in the frame of a ship that is in a file is in the world
+  where the ship was put away, in its level, and is told so; `spawn_entity` and `set_entity_pose` accept a frame that is in a file.
+- *A server no longer brings every ship in when it starts* (part 1's temporary rule): a ship in a file waits for a player to come near, or aboard.
+  `Server::load_parked_ships` stays for a program that wants them all.
+
 - **Loading on demand:** a parked ship is loaded when a player comes within `simulation_distance` of its saved pose, or when an entity
   whose frame it is (a player aboard) must be placed. A file that cannot be found or read is the missing-ship case: the player's entity is
   held and the prompt (27h) with a modal form (30) asks: spawn at the world spawn, spawn in midair (at the world-space fallback pose saved
@@ -292,6 +339,37 @@ budget of bricks is not in the picture, nor are those aboard it; one frame per l
   - *Offline passengers (owner, 2026-10-20: they return aboard, even if the ship has moved):* a passenger who logged out aboard stays in the ship's frame as a hidden entity (players are hidden, not removed),
     so a parked ship keeps them, they return into the ship wherever it now is, and a split or a merge in the meantime re-frames them like everyone
     else aboard. A test covers: log out aboard, the ship moves, log in, still aboard at the same local place.
+
+**As built in 32i, part 3 (the pilot's logout and the questions; `engine/grid_lifecycle`, Cave's `ShipCommandsPlugin`):**
+- *The pilot's logout* is a handler of `PlayerLeft` in Cave (`voxunami_cave:a_player_who_leaves_stops_piloting`). The player `/ship pilot` made the pilot of a ship stops piloting when
+  they leave, and the ship goes with them if the policy says so: `chair` (the default) leaves it to the ship's own `on_pilot_logout`, which `/ship vanish on|off` sets until the command
+  chair exists, `always_stay` and `always_vanish` say it for every ship. A ship that goes: if another player who is connected is aboard it, it stays and is held instead (they would lose
+  their floor, and the pilot finds it where it was; the handler is ordered after the players' own, which has taken the leaving pilot out of the record of who is where, so the check finds
+  only the others, and the host refuses to start if that handler is renamed); otherwise it is stopped (both
+  speeds zero, so it is at rest when they come back) and put in a file that waits for those aboard (`park_ship(ship, true)`). If it cannot be put in a file, because the world has nowhere
+  to keep ships or the disk fails, it stays and goes on as it was, its speeds given back. Players who are away do not count as aboard: their entities stay in the ship's frame, hidden,
+  and whichever of them joins first has the ship brought in, as the pilot would. A server that is stopped (a singleplayer window closing, Ctrl-C on a dedicated server) does not run the
+  logout of the players who are connected, so nothing vanishes then: the ships are saved where they are, and the players are aboard them when they join (an open point, in `plan.md`).
+- *Coming back.* The game gives the lifecycle the world's spawn (`GridLifecyclePlugin::new`; Cave: the start of its default camera) and, to have it look at where a ship that went away
+  lands, what blocks are to a body and which channels are blocks and states (`with_arrivals(ArrivalConfig { .. })`; without it such a ship is brought in where it was). When a player joins
+  aboard a ship that waits for those aboard, the ship is read from its file, not yet admitted, and its **hull** is made: the cells whose block is not empty to a body, each as the place of its
+  centre (the empty cells of its bricks are not in it). The hull is *free* at the ship's saved pose if no centre is inside the terrain of the ship's level or inside a block of another ship
+  there; a place the world cannot hold counts as inside. If it is free the ship is admitted as it was, in the tick the player joined. If not, it stays in its file and the player is asked,
+  with the prompt facility, in this order: **1** move the ship to the nearest free place (moves of whole voxels along the world's axes, within a ball of 32 voxels, nearest first; of two as
+  near the higher; of two as near and as high the lower x and then the lower z; the ship is not turned; if there is none the player is told, and asked again with that said), **2** break the
+  terrain that is in the way (the voxels of terrain that hold the centre of a blocked cell, every channel back to its default), **3** break the blocks of the ship that are in the way,
+  **4** put the ship there anyway, **5** go to the world spawn and leave the ship behind (it stays in its file and no longer waits for those aboard, so whoever comes near finds it).
+  The look is of centres: it finds every overlap deeper than half a voxel, deterministically and quickly, and the bodies push the rest apart. A ship that did *not* go away with its player
+  (it was put away because nobody was near) is brought in without the look, as it would be had they never gone.
+- *A ship that cannot be found* (its file is missing, or damaged, or not the one the world file names) when a player joins aboard it: the player is asked to **1** go to the world spawn,
+  **2** appear in the air where they were (the place in the world that their place in the ship had when it was put away) or **3** quit to the title (they are disconnected, "you chose to quit").
+  The ship stays on the list of the world file with the reason in `LifecycleReport::problems`, so a file that is found again can be brought in.
+- *The questions* are asked of one player each and are not saved: a server that stops while a player is asked asks again when they join. A player who leaves is no longer waited for
+  (`LifecycleReport::waiting` counts those who are). When one player's answer brings a ship in, the questions of the others about that ship are withdrawn, and only those. An answer to
+  another plugin's question is not taken for an answer about a ship (every plugin hears every answer). The player numbers the options from 1 (`.choose 2`); the code numbers them from 0.
+- Tests: `grid_lifecycle/tests/arrivals.rs` (24 tests, the engine alone on the pretend game: each answer, the radius of the search to the voxel, the other level, two players, two ships,
+  another plugin's question, a file that is lost) and Cave's `ship_vanishing.rs` (16 tests: the commands, the policy, others aboard, a ship at speed, a restart, a disk that fails, the
+  screen of each question and an answer to it).
 
 ### 2.9 Gravity as a field (built in 32f, because the API is what is costly to change)
 
@@ -370,7 +448,7 @@ The phase is large; I propose a pause for the owner after 32h, before docking.
 - **32g Aboard** (2.6, built): the character in a ship's frame, boarding and leaving, the transition scenario tests, replay equality.
 - **32h Cave's ship commands and the first flight** (2.7 creation and held): `/ship create | push | hold | pilot`; an end-to-end test that a
   ship is made, flown, boarded, turned and left, recorded and replayed to the same picture (built, `flight.rs` and `pictures.rs`). **Pause for the owner here.**
-- **32i Saving and loading** (2.8): ship files, `engine:grids`, loading on demand, the missing-ship prompt, the consistent save, the
+- **32i Saving and loading** (2.8, built in three parts): ship files, `engine:grids`, loading on demand, the missing-ship prompt, the consistent save, the
   vanish policy and the blocked arrival search, the simulation-distance setting with freeze and park.
 - **32j Fast ships stop at thin ground** (2.3; found by the owner's first play of 32h, measured 2026-10-21; done *before* splitting and merging, see "Why here" below).
   *What happens:* a ship goes through ground that is thinner than it moves in one solver step. `BodyWorld` runs 3 steps of a twentieth of a second, so a ship

@@ -702,7 +702,8 @@ fn a_scripted_run_aboard_ends_in_the_same_bits_every_time_and_on_every_machine()
 }
 
 #[test]
-fn a_world_saved_with_a_passenger_aboard_holds_them_in_the_level_where_the_ship_has_them() {
+fn a_world_saved_with_a_passenger_aboard_holds_them_in_the_frame_of_the_ship_and_the_ship_in_a_file_beside_it()
+ {
     let directory =
         std::env::temp_dir().join(format!("voxunami_cave_aboard_save_{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
@@ -718,7 +719,7 @@ fn a_world_saved_with_a_passenger_aboard_holds_them_in_the_level_where_the_ship_
     scene.run(move |world| world.set_grid_pose(ship_id(0), moved).unwrap());
     scene.ticks(3);
     let in_the_world = eyes_in_the_world(&scene, 1);
-    // They log out aboard; the world is saved while they are away, ships not being saved yet.
+    // They log out aboard; the world is saved while they are away.
     drop(player);
     scene.ticks(3);
     assert_eq!(player_pose(&scene, 1).grid, ship_id(0));
@@ -728,7 +729,7 @@ fn a_world_saved_with_a_passenger_aboard_holds_them_in_the_level_where_the_ship_
     } = rig;
     let mut world = server.into_world();
     game_shell::files::save_world(&content, &mut world, &path).unwrap();
-    // Saving did not take them off the ship in the running world.
+    // Saving did not take them off the ship in the running world, or the ship out of it.
     let entity = |world: &world_storage::WorldData| {
         world
             .entities()
@@ -738,17 +739,32 @@ fn a_world_saved_with_a_passenger_aboard_holds_them_in_the_level_where_the_ship_
             .pose
     };
     assert_eq!(entity(&world).grid, ship_id(0));
+    assert!(world.grids().get(ship_id(0)).is_some());
+    // The ship has a file, in the folder beside the world file.
+    let files = world_storage::DirectoryShipFiles::beside(&path);
+    use world_storage::ShipFiles as _;
+    assert_eq!(files.names().unwrap().len(), 1);
 
-    // The file has them where the ship had them, in the level: the next program run has no ship to be aboard.
+    // The file has them in the frame of the ship, at the place they had in it, and the ship in its file, where it was.
     let mut content = voxunami_cave::content::CaveContent::new();
     let loaded = game_shell::files::open_world(&mut content, Some(&path), 1).unwrap();
-    let saved = entity(&loaded);
-    assert!(saved.grid.root_level().is_some());
-    let [x, y, z] = in_voxels(saved.position);
+    assert_eq!(entity(&loaded), entity(&world));
+    assert!(loaded.grids().get(ship_id(0)).is_none());
+    assert_eq!(
+        loaded.grids().frame_of(ship_id(0)),
+        Some((voxel_space::LevelIndex::MAIN, moved))
+    );
+    // Where they are in the world is where they were: the ship's place, and their place in the ship.
+    let (_, ship_pose) = loaded.grids().frame_of(ship_id(0)).unwrap();
+    let aboard = entity(&loaded);
+    let (position, _) = ship_pose
+        .place_in_world(aboard.position, aboard.orientation)
+        .unwrap();
+    let [x, y, z] = in_voxels(position);
     for (found, wanted) in [x, y, z].into_iter().zip(in_the_world) {
         assert!(
             (found - wanted).abs() < 1e-3,
-            "{saved:?} against {in_the_world:?}"
+            "{position:?} against {in_the_world:?}"
         );
     }
     std::fs::remove_dir_all(&directory).unwrap();

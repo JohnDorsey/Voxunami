@@ -3,18 +3,20 @@
 //! A server ticked by the test, and players connected to it.
 
 use std::collections::VecDeque;
+use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use game_shell::host::build_server;
+use game_shell::host::build_server_with;
 use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
-use game_shell::{GameContent, Identity, KeyCode};
+use game_shell::{GameContent, GameDefinition, Identity, KeyCode};
 use namespaced_id::NamespacedId;
 use player_presence::{PlayerClient, player_kind};
 use plugin_host::{Phase, Plugin, Registrar, SystemSpec};
 use protocol::ClientId;
 use renderer::Camera;
-use server::{GridView, Server, ServerWorld};
+use server::{GridView, Server, ServerWorld, ShipSettings};
 use transport::Connection;
 use transport::loopback::LoopbackConnector;
 use voxel_space::{
@@ -25,6 +27,7 @@ use voxunami_cave::aboard::in_voxels;
 use voxunami_cave::content::CaveContent;
 use voxunami_cave::game::Cave;
 use voxunami_cave::plugins::cave_plugins;
+use world_storage::{MemoryShipFiles, ParsedWorld, ShipFileName, ShipFiles};
 
 pub const VIEW_RADIUS: i64 = 3;
 pub const SEED: u64 = 2024;
@@ -35,6 +38,8 @@ pub struct Rig {
     pub content: CaveContent,
     pub server: Server,
     pub connector: LoopbackConnector,
+    /// The files of the server's ships (the server has a handle to the same ones).
+    pub files: MemoryShipFiles,
     /// How many players have joined: each is an identity of its own.
     pub joined: u8,
 }
@@ -43,13 +48,7 @@ impl Rig {
     pub fn new() -> Self {
         let content = CaveContent::new();
         let world = content.new_world(SEED);
-        let (server, connector) = build_server::<Cave>(&content, world, VIEW_RADIUS).unwrap();
-        Self {
-            content,
-            server,
-            connector,
-            joined: 0,
-        }
+        Self::with_world(content, world)
     }
 
     /// A server running these plugins (the game's own, perhaps in another order) for `world`.
@@ -58,29 +57,45 @@ impl Rig {
         world: world_storage::WorldData,
         plugins: Vec<Box<dyn plugin_host::Plugin>>,
     ) -> Self {
-        let (server, connector) = game_shell::host::build_server_with_plugins::<Cave>(
-            &content,
-            world,
-            VIEW_RADIUS,
-            plugins,
-        )
-        .unwrap();
+        Self::with_plugins_and_files(content, world, plugins, MemoryShipFiles::new())
+    }
+
+    /// The same, with the files of the ships of `world` in these (a world that was saved, and its ships with it).
+    pub fn with_plugins_and_files(
+        content: CaveContent,
+        world: world_storage::WorldData,
+        plugins: Vec<Box<dyn plugin_host::Plugin>>,
+        files: MemoryShipFiles,
+    ) -> Self {
+        let disk = Box::new(files.clone());
+        Self::with_plugins_on_disk(content, world, plugins, files, disk)
+    }
+
+    /// The same, with the server reading and writing ship files through `disk` (which keeps them in `files`, for the test to look at).
+    pub fn with_plugins_on_disk(
+        content: CaveContent,
+        world: world_storage::WorldData,
+        plugins: Vec<Box<dyn plugin_host::Plugin>>,
+        files: MemoryShipFiles,
+        disk: Box<dyn ShipFiles>,
+    ) -> Self {
+        let (mut server, connector) =
+            build_server_with::<Cave>(&content, world, VIEW_RADIUS, plugins, disk).unwrap();
+        // The tests of what ships do have no player near them, and ships are kept moving wherever the players are; the tests of
+        // what the distances do say so (with `server.set_ship_settings`).
+        server.set_ship_settings(ShipSettings::everywhere());
         Self {
             content,
             server,
             connector,
+            files,
             joined: 0,
         }
     }
 
     pub fn with_world(content: CaveContent, world: world_storage::WorldData) -> Self {
-        let (server, connector) = build_server::<Cave>(&content, world, VIEW_RADIUS).unwrap();
-        Self {
-            content,
-            server,
-            connector,
-            joined: 0,
-        }
+        let plugins = Cave::plugins(&content);
+        Self::with_plugins(content, world, plugins)
     }
 
     /// A player at `position` (in voxels) looking along the given angles, joined to the server.
@@ -425,6 +440,74 @@ pub fn walker_on_the_deck(scene: &mut Scene) -> Player {
     player
 }
 
+/// What a player is told after typing a command, once the server has had two ticks to answer.
+pub fn say(scene: &mut Scene, player: &mut Player, command: &str) -> String {
+    player.send_command(command);
+    tick_and_follow(scene, player, 2);
+    player.take_command_replies().join(" | ")
+}
+
+/// The block in a voxel of the main level, as the server has it (this takes a tick).
+pub fn block_at(scene: &mut Scene, at: [i64; 3]) -> u32 {
+    let content = CaveContent::new();
+    let found = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&found);
+    scene.run(move |world| {
+        let block = world
+            .voxel(
+                LevelIndex::MAIN,
+                content.block_channel(),
+                VoxelCoordinate::new(at[0], at[1], at[2]),
+            )
+            .unwrap();
+        *slot.lock().unwrap() = Some(block);
+    });
+    found.lock().unwrap().expect("the tick ran the action")
+}
+
+/// Stone at a voxel of the main level (this takes a tick).
+pub fn put_stone(scene: &mut Scene, at: [i64; 3]) {
+    let content = CaveContent::new();
+    scene.run(move |world| {
+        world
+            .set_voxel(
+                LevelIndex::MAIN,
+                content.block_channel(),
+                VoxelCoordinate::new(at[0], at[1], at[2]),
+                content.blocks.stone,
+            )
+            .unwrap();
+    });
+}
+
+/// The files of ships that fail to be written while `failing` is set (and are otherwise those of `inner`).
+#[derive(Clone, Debug)]
+pub struct FlakyFiles {
+    pub inner: MemoryShipFiles,
+    pub failing: Arc<AtomicBool>,
+}
+
+impl ShipFiles for FlakyFiles {
+    fn read(&self, name: &ShipFileName) -> io::Result<Vec<u8>> {
+        self.inner.read(name)
+    }
+
+    fn write(&mut self, name: &ShipFileName, bytes: &[u8]) -> io::Result<()> {
+        if self.failing.load(Ordering::SeqCst) {
+            return Err(io::Error::other("the disk is full"));
+        }
+        self.inner.write(name, bytes)
+    }
+
+    fn remove(&mut self, name: &ShipFileName) -> io::Result<()> {
+        self.inner.remove(name)
+    }
+
+    fn names(&self) -> io::Result<Vec<ShipFileName>> {
+        self.inner.names()
+    }
+}
+
 /// The id of the ship made `number`th (counting from 0) in a world with no ships before.
 pub fn ship_id(number: u64) -> GridId {
     GridId::new(GridId::FIRST_ALLOCATED + number)
@@ -478,6 +561,11 @@ pub struct Scene {
 
 impl Scene {
     pub fn new() -> Self {
+        Self::with_disk(|files| Box::new(files))
+    }
+
+    /// A scene whose server keeps ship files through the disk `disk` makes of the memory they are in.
+    pub fn with_disk(disk: impl FnOnce(MemoryShipFiles) -> Box<dyn ShipFiles>) -> Self {
         let content = CaveContent::new();
         let world = content.new_world(SEED);
         let actions: Arc<Mutex<VecDeque<Action>>> = Arc::default();
@@ -485,8 +573,10 @@ impl Scene {
         plugins.push(Box::new(Script {
             actions: Arc::clone(&actions),
         }));
+        let files = MemoryShipFiles::new();
+        let disk = disk(files.clone());
         Self {
-            rig: Rig::with_plugins(content, world, plugins),
+            rig: Rig::with_plugins_on_disk(content, world, plugins, files, disk),
             actions,
         }
     }
@@ -500,6 +590,39 @@ impl Scene {
     pub fn ticks(&mut self, count: usize) {
         for _ in 0..count {
             self.rig.step();
+        }
+    }
+
+    /// What a restart of the program does, without the program: the world is saved as a server that goes on running saves it (a world
+    /// file and a file for each ship that is in memory), and another server is made from what was written, with the same ship files. The
+    /// players are not connected to the new one: they join again.
+    pub fn restarted(self) -> Self {
+        let Scene { rig, .. } = self;
+        let Rig {
+            mut content,
+            mut server,
+            files,
+            ..
+        } = rig;
+        let save = server.save(&content.registries()).unwrap();
+        let mut world_file = Vec::new();
+        save.write_with(server.ship_files_mut(), |bytes| {
+            world_file = bytes.to_vec();
+            Ok(())
+        })
+        .unwrap();
+        drop(server);
+        let parsed = ParsedWorld::parse(&world_file).unwrap();
+        let seed = parsed.world_seed();
+        let (world, _) = parsed.load(content.load_context(seed)).unwrap();
+        let actions: Arc<Mutex<VecDeque<Action>>> = Arc::default();
+        let mut plugins = cave_plugins(&content);
+        plugins.push(Box::new(Script {
+            actions: Arc::clone(&actions),
+        }));
+        Self {
+            rig: Rig::with_plugins_and_files(content, world, plugins, files),
+            actions,
         }
     }
 }

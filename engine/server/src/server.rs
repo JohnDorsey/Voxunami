@@ -12,13 +12,14 @@ use region_octree::BrickCube;
 use transport::{Connection, ConnectionClosed, Listener};
 use voxel_grid::Grid;
 use voxel_space::{BrickBox, BrickCoordinate, GridId, LevelIndex};
-use world_storage::{SaveError, WorldData};
+use world_storage::{MemoryShipFiles, SaveError, ShipFiles, ShipLoadError, WorldData, WorldSave};
 
 use crate::config::ServerConfig;
 use crate::game_logic::GameLogic;
 use crate::grid_replication::{self, EditedBrick, KnownGrids};
 use crate::replication::{KnownEntities, ViewCache, entity_messages};
 use crate::server_world::{Audience, OutgoingGameMessage, ServerWorld};
+use crate::ship_settings::ShipSettings;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
@@ -35,6 +36,8 @@ pub enum LeaveReason {
     ConnectionClosed,
     /// The server disconnected the client for breaking the protocol, with the reason it was told.
     Refused(String),
+    /// The game sent the client away, with the reason it was told.
+    SentAway(String),
 }
 
 /// What one tick changed about who is connected.
@@ -122,8 +125,12 @@ impl Server {
         let challenges = config
             .challenge_seed
             .map_or_else(ChallengeSource::random, ChallengeSource::counter);
+        let format = world.ship_format(registries)?;
         let mut world = ServerWorld::new(world, logic.entity_catalog());
         world.set_gravity_settings(config.gravity);
+        world.set_ship_settings(config.ships);
+        // (A server keeps the files of its ships in memory until it is told where; see `Server::with_ship_files`.)
+        world.set_ship_storage(format, Box::new(MemoryShipFiles::new()));
         Ok(Self {
             config,
             world,
@@ -141,6 +148,58 @@ impl Server {
         self.world.data()
     }
 
+    /// The same server, keeping its ships as these say (a test of what ships do uses [`ShipSettings::everywhere`]).
+    pub fn with_ship_settings(mut self, settings: ShipSettings) -> Self {
+        self.set_ship_settings(settings);
+        self
+    }
+
+    /// Keeps the ships as these say from the next tick.
+    pub fn set_ship_settings(&mut self, settings: ShipSettings) {
+        self.config.ships = settings;
+        self.world.set_ship_settings(settings);
+    }
+
+    /// The same server, keeping the files of its ships in these. The ships the world file names must be there: they are read from them.
+    pub fn with_ship_files(mut self, files: Box<dyn ShipFiles>) -> Self {
+        let format = self
+            .world
+            .ship_format()
+            .expect("a server made with a ship format has one")
+            .clone();
+        self.world.set_ship_storage(format, files);
+        self
+    }
+
+    /// Brings every ship that is in a file into memory. Returns the ones that could not be brought, with why; they stay in their files
+    /// and the world file goes on naming them, so nothing is lost.
+    pub fn load_parked_ships(&mut self) -> Vec<(voxel_space::GridId, ShipLoadError)> {
+        let parked: Vec<_> = self
+            .world
+            .data()
+            .grids()
+            .parked()
+            .map(|(id, _)| id)
+            .collect();
+        let mut problems = Vec::new();
+        for id in parked {
+            if let Err(error) = self.world.load_ship(id) {
+                match error {
+                    crate::ShipStorageError::Load(error) => problems.push((id, error)),
+                    other => panic!("a server has somewhere to keep ships: {other}"),
+                }
+            }
+        }
+        problems
+    }
+
+    /// The files of this server's ships: for a save to write into, and to clean.
+    pub fn ship_files_mut(&mut self) -> &mut (dyn ShipFiles + '_) {
+        self.world
+            .ship_files_mut()
+            .expect("a server has somewhere to keep ships")
+    }
+
     /// The last tick completed.
     pub fn tick(&self) -> Tick {
         self.world.tick()
@@ -155,17 +214,17 @@ impl Server {
         self.sessions.keys().copied()
     }
 
-    /// The world as a world file, as it is right now, with the game's own state in it. `registries`
-    /// are the content tables, as for [`Server::new`]. The server keeps running; this is how a
-    /// server that never stops saves its world.
+    /// The world as a world file and the files of the ships that are in memory, as it is right now, with the game's own state in it.
+    /// `registries` are the content tables, as for [`Server::new`]. The server keeps running; this is how a server that never stops saves
+    /// its world. Writing the set is `WorldSave::write`, with this server's [`Server::ship_files_mut`], before the next tick.
     pub fn save(
         &mut self,
         registries: &[(NamespacedId, &dyn IdentifierRegistry)],
-    ) -> Result<Vec<u8>, SaveError> {
+    ) -> Result<WorldSave, SaveError> {
         for section in self.logic.save_sections() {
             self.world.data_mut().set_opaque_section(section);
         }
-        self.world.data().save(registries)
+        self.world.data_mut().save_with_ships(registries)
     }
 
     /// Ends the server and returns its world, for saving, with the game's own state in its plugin
@@ -191,6 +250,7 @@ impl Server {
         self.accept_new_connections();
         self.receive_messages(&mut report);
         self.logic.tick(tick, &mut self.world);
+        self.send_away(&mut report);
         self.send_updates(tick, &mut report);
         self.world.edits.clear();
         self.world.outgoing.clear();
@@ -465,6 +525,16 @@ impl Server {
         }
         for id in closed {
             self.remove_session(id, LeaveReason::ConnectionClosed, report);
+        }
+    }
+
+    /// Sends away the clients the game asked to send away, telling each why.
+    fn send_away(&mut self, report: &mut StepReport) {
+        for (id, reason) in self.world.take_disconnects() {
+            if self.sessions.contains_key(&id) {
+                let _ = self.refuse(id, reason.clone());
+                self.remove_session(id, LeaveReason::SentAway(reason), report);
+            }
         }
     }
 

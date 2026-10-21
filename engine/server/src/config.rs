@@ -1,6 +1,8 @@
 use namespaced_id::NamespacedId;
 use voxel_space::GravitySettings;
 
+use crate::ship_settings::ShipSettings;
+
 /// How a server is set up. Everything here is a property of the game or the host, not of the world.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ServerConfig {
@@ -25,6 +27,9 @@ pub struct ServerConfig {
     pub package: Vec<u8>,
     /// What gravity is: the level's pull and which bodies pull besides.
     pub gravity: GravitySettings,
+    /// How ships are kept: how near a player has to be for them to move, how far off for them to be put in files, and what a pilot's
+    /// logout does to them.
+    pub ships: ShipSettings,
 }
 
 impl ServerConfig {
@@ -40,6 +45,7 @@ impl ServerConfig {
             challenge_seed: None,
             package: Vec::new(),
             gravity: GravitySettings::default(),
+            ships: ShipSettings::default(),
         }
     }
 

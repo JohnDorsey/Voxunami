@@ -14,8 +14,11 @@ use terrain::{
 use voxel_grid::{Brick, ChannelDefinition, ChannelValueKind, Grid, GridLayout};
 use voxel_space::{BrickCoordinate, VoxelCoordinate};
 
+use voxel_space::{GridPose, Orientation, WorldPosition};
+
 use crate::{
-    LevelData, LevelIndex, LoadContext, LoadError, LoadReport, ParsedWorld, Section, WorldData,
+    LevelData, LevelIndex, LoadContext, LoadError, LoadReport, MovingGrid, ParsedWorld,
+    PilotLogout, Section, ShipFiles, ShipFormat, WorldData, WorldSave,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -203,6 +206,78 @@ impl Game {
 
     pub fn save(&self, world: &WorldData) -> Vec<u8> {
         world.save(&self.registries()).unwrap()
+    }
+
+    /// The world file and the files of the ships that are in memory.
+    pub fn save_with_ships(&self, world: &mut WorldData) -> WorldSave {
+        world.save_with_ships(&self.registries()).unwrap()
+    }
+
+    /// A ship of two bricks of this game's blocks (a deck of stone, and a marble block a brick away that is warm and, with the magic plugin,
+    /// holds a spell), in flight and held, that vanishes with its pilot, with a section of a plugin nobody has. Its pose is `shift` voxels
+    /// along x of where the first is, and so are its voxels, so that ships made with different shifts are different files.
+    pub fn sample_ship(&self, world: &WorldData, shift: i64) -> MovingGrid {
+        let layout = Arc::clone(world.main().overrides.layout());
+        let mut voxels = Grid::new(Arc::clone(&layout));
+        let block = layout.channel_index(&id("core:block")).unwrap();
+        let temperature = layout.channel_index(&id("core:temperature")).unwrap();
+        for x in 0..4 {
+            for z in 0..3 {
+                voxels.set(
+                    block,
+                    VoxelCoordinate::new(x + shift, 1, z),
+                    self.raw_block("base_blocks:stone"),
+                );
+            }
+        }
+        voxels.set(
+            block,
+            VoxelCoordinate::new(40 + shift, 33, 2),
+            self.raw_block("fancy_blocks:marble"),
+        );
+        voxels.set(temperature, VoxelCoordinate::new(40 + shift, 33, 2), 77);
+        if let Some(spells) = &self.spells {
+            let spell = layout.channel_index(&id("magic:spell")).unwrap();
+            voxels.set(
+                spell,
+                VoxelCoordinate::new(1 + shift, 1, 1),
+                spells.raw_id_of(&id("magic:fireball")).unwrap(),
+            );
+        }
+        MovingGrid {
+            level: LevelIndex::MAIN,
+            pose: GridPose::new(
+                WorldPosition::new(brick(-3 + shift, 2, 7), [1.5, 20.25, 31.0]),
+                Orientation::from_yaw_pitch(0.7, -0.2),
+            ),
+            linear_velocity: [1.0, -2.5, 0.125],
+            angular_velocity: [0.0, 0.5, -0.25],
+            mass: 12.0,
+            centre_of_mass: [1.0, 1.0, 1.0],
+            held: true,
+            frozen: false,
+            on_pilot_logout: PilotLogout::Vanish,
+            voxels,
+            sections: vec![Section {
+                identifier: id("unheard_of:ship_notes"),
+                version: 4,
+                payload: b"kept as they are".to_vec(),
+            }],
+        }
+    }
+
+    /// What it takes to make the files of the ships of this game's worlds and to read them.
+    pub fn ship_format(&self, world: &WorldData) -> ShipFormat {
+        world.ship_format(&self.registries()).unwrap()
+    }
+
+    /// Brings every ship that is in a file into memory, as a server that wants them all does.
+    pub fn load_all_ships(&self, world: &mut WorldData, files: &dyn ShipFiles) {
+        let format = self.ship_format(world);
+        let parked: Vec<_> = world.grids().parked().map(|(id, _)| id).collect();
+        for id in parked {
+            world.load_ship(id, files, &format).unwrap();
+        }
     }
 
     pub fn set(&self, world: &mut WorldData, at: [i64; 3], channel: &str, value: u32) {

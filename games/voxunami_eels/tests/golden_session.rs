@@ -140,7 +140,7 @@ fn session(name: &str, arrangement: usize) -> (u64, usize, u64) {
 
     let stream = std::fs::read(&path).unwrap();
     let registries = content.registries();
-    let saved = server.save(&registries).unwrap();
+    let saved = server.save(&registries).unwrap().world;
     let _ = std::fs::remove_dir_all(&directory);
     (hash(&stream), stream.len(), hash(&saved))
 }

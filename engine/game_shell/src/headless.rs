@@ -10,7 +10,7 @@ use transport::Connection;
 
 use crate::definition::GameDefinition;
 use crate::files::{open_recording, open_world, record_connection, recorded_game, save_world};
-use crate::host::{build_server, connect_to};
+use crate::host::{build_server_with_ship_files, connect_to};
 use crate::options::{PlayOptions, ReplayOptions};
 use crate::screen::ScreenText;
 use crate::session::{Mode, Session};
@@ -18,6 +18,7 @@ use crate::view::{
     apply_updates, camera_at, configure_renderer, show_entity_boxes, show_other_players,
     show_screen,
 };
+use world_storage::{DirectoryShipFiles, MemoryShipFiles, ShipFiles};
 
 pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
     let view = &options.view;
@@ -38,8 +39,13 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
         Some(address) => Box::new(connect_to(address)?),
         None => {
             let world = open_world(&mut content, options.world_file.as_deref(), options.seed)?;
-            let (server, connector) = build_server::<G>(&content, world, view.view_radius)
-                .map_err(|error| error.to_string())?;
+            let ship_files: Box<dyn ShipFiles> = match &options.world_file {
+                Some(path) => Box::new(DirectoryShipFiles::beside(path)),
+                None => Box::new(MemoryShipFiles::new()),
+            };
+            let (server, connector) =
+                build_server_with_ship_files::<G>(&content, world, view.view_radius, ship_files)
+                    .map_err(|error| error.to_string())?;
             local = Some(server);
             Box::new(connector.connect().map_err(|error| error.to_string())?)
         }

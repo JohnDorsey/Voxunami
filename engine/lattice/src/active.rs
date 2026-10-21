@@ -63,16 +63,46 @@ impl ActiveVoxels {
         std::mem::take(&mut self.voxels).into_iter().collect()
     }
 
+    /// Takes the voxels of the grids that `simulated` says are, in their fixed order, and leaves the voxels of the others pending: a rule
+    /// does not look at a grid that is waiting (a ship that is frozen), and loses nothing it had to look at there.
+    pub fn take_simulated(
+        &mut self,
+        mut simulated: impl FnMut(GridId) -> bool,
+    ) -> Vec<(GridId, VoxelCoordinate)> {
+        let mut taken = Vec::new();
+        let mut kept = BTreeSet::new();
+        // (The voxels are in order of grid, so a grid is asked about once.)
+        let mut asked: Option<(GridId, bool)> = None;
+        for (grid, voxel) in std::mem::take(&mut self.voxels) {
+            let wanted = match asked {
+                Some((last, wanted)) if last == grid => wanted,
+                _ => {
+                    let wanted = simulated(grid);
+                    asked = Some((grid, wanted));
+                    wanted
+                }
+            };
+            if wanted {
+                taken.push((grid, voxel));
+            } else {
+                kept.insert((grid, voxel));
+            }
+        }
+        self.voxels = kept;
+        taken
+    }
+
     /// Writes these voxels. The root grid of a level is named by the level's identifier in
     /// `level_ids`, in level order, since level numbers belong to one running server; voxels of a
-    /// level that is not listed are not written. The voxels of any other grid (a ship) are not written either: they are saved with
-    /// the ship (Phase 32i).
+    /// level that is not listed are not written. The voxels of any other grid (a ship) are not written either: the ship's file does not
+    /// hold them, and a ship that comes out of its file has its voxels looked at again (see `ServerWorld::take_changes`).
     pub fn write_to(&self, writer: &mut ByteWriter, level_ids: &[NamespacedId]) {
         let named: Vec<(&NamespacedId, VoxelCoordinate)> = self
             .voxels
             .iter()
             .filter_map(|&(grid, voxel)| {
-                // The work pending in a ship is saved with the ship (Phase 32i), not in the sections of the levels.
+                // The work pending in a ship is not kept in the sections of the levels, nor in the ship's file: it is made again when the ship
+                // comes out of its file.
                 let level = grid.root_level()?;
                 Some((level_ids.get(level.get() as usize)?, voxel))
             })
@@ -178,6 +208,52 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+
+    #[test]
+    fn taking_only_the_voxels_of_some_grids_leaves_the_rest_pending_in_their_order() {
+        let ship = GridId::new(GridId::FIRST_ALLOCATED);
+        let other = GridId::new(GridId::FIRST_ALLOCATED + 1);
+        let mut active = ActiveVoxels::new();
+        for (grid, x) in [
+            (other, 2),
+            (GridId::MAIN, 5),
+            (ship, 9),
+            (ship, 1),
+            (GridId::MAIN, 3),
+            (other, 8),
+        ] {
+            active.insert(grid, VoxelCoordinate::new(x, 0, 0));
+        }
+        let mut asked = Vec::new();
+        let taken = active.take_simulated(|grid| {
+            asked.push(grid);
+            grid != ship
+        });
+        // The others, in order of grid and then position; the ship's are still there.
+        assert_eq!(
+            taken,
+            [
+                (GridId::MAIN, VoxelCoordinate::new(3, 0, 0)),
+                (GridId::MAIN, VoxelCoordinate::new(5, 0, 0)),
+                (other, VoxelCoordinate::new(2, 0, 0)),
+                (other, VoxelCoordinate::new(8, 0, 0)),
+            ]
+        );
+        assert_eq!(
+            active.iter().collect::<Vec<_>>(),
+            [
+                (ship, VoxelCoordinate::new(1, 0, 0)),
+                (ship, VoxelCoordinate::new(9, 0, 0))
+            ]
+        );
+        // Each grid was asked about once, not once for each voxel.
+        assert_eq!(asked, [GridId::MAIN, ship, other]);
+        // When the ship is simulated again its voxels are taken, and nothing is left.
+        assert_eq!(active.take_simulated(|_| true).len(), 2);
+        assert!(active.is_empty());
+        // And taking from nothing is nothing.
+        assert!(active.take_simulated(|_| false).is_empty());
+    }
 
     fn name(text: &str) -> NamespacedId {
         format!("test_game:{text}").parse().unwrap()

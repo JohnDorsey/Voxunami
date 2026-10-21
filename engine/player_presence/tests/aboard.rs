@@ -255,6 +255,66 @@ fn a_ship_that_moves_carries_the_player_and_a_ship_that_is_gone_leaves_them_in_t
 }
 
 #[test]
+fn a_player_aboard_a_ship_that_is_in_a_file_is_where_the_ship_was_when_it_was_put_away_and_in_its_level()
+ {
+    let mut rig = Rig::new();
+    let ship = make_ship(&mut rig, quarter_turned_ship());
+    let pose = looking(at([0, 0, 0], [10.0, 0.0, 0.0]));
+    rig.in_a_tick(move |world, presence| {
+        presence
+            .set_pose_in(
+                world,
+                PLAYER,
+                ship,
+                pose,
+                Orientation::from_yaw_pitch(0.5, -0.25),
+            )
+            .unwrap();
+    });
+    let before = rig.presence().pose_of(rig.server.world(), PLAYER).unwrap();
+    // The ship is put in a file (a player who is away may be on a ship that is: here the player is on it still, which is what is
+    // asked of the record, not of the server's care).
+    rig.in_a_tick(move |world, _| world.park_ship(ship, false).unwrap());
+    assert!(rig.server.world().grids().get(ship).is_none());
+
+    let presence = rig.presence();
+    let world = rig.server.world();
+    // They are in the frame of the ship still, and the world has them where the ship was, in its level, turned as it was.
+    assert_eq!(presence.frame_of(world, PLAYER), Some(ship));
+    assert_eq!(presence.pose_of(world, PLAYER), Some(before));
+    assert_eq!(presence.level_of(world, PLAYER), second());
+    assert_eq!(presence.players(world), [(PLAYER, before, second())]);
+    let (eyes, view) = presence.view_in_the_world(world, PLAYER).unwrap();
+    assert_eq!(eyes, before.position);
+    assert_eq!(
+        view,
+        quarter_turned_ship()
+            .orientation
+            .compose(Orientation::from_yaw_pitch(0.5, -0.25))
+    );
+    drop(presence);
+
+    // A frame that is in a file is a frame: the player can be put somewhere in it (an eleventh voxel along the ship's x is a voxel
+    // along the world's -z from where they were).
+    rig.in_a_tick(move |world, presence| {
+        presence
+            .set_pose_in(
+                world,
+                PLAYER,
+                ship,
+                looking(at([0, 0, 0], [11.0, 0.0, 0.0])),
+                Orientation::from_yaw_pitch(0.5, -0.25),
+            )
+            .unwrap();
+    });
+    let moved = rig.presence().pose_of(rig.server.world(), PLAYER).unwrap();
+    assert_eq!(
+        moved.position.relative_to(before.position),
+        [0.0, 0.0, -1.0]
+    );
+}
+
+#[test]
 fn a_player_sent_to_another_level_while_aboard_leaves_the_ship_where_it_is_in_the_world() {
     let mut rig = Rig::new();
     let ship = make_ship(&mut rig, quarter_turned_ship());

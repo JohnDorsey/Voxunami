@@ -321,7 +321,7 @@ impl Bodies {
         let Some(ship) = world.data().grids().get(id) else {
             return;
         };
-        let kind = if ship.held {
+        let kind = if ship.held || ship.frozen {
             BodyKind::Fixed
         } else {
             BodyKind::Dynamic

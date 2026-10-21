@@ -1,20 +1,24 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io;
 use std::sync::Arc;
 
 use binary_codec::DecodeError;
 use content_registry::{IdentifierRegistry, Registry};
-use entities::EntityStore;
+use entities::{Entity, EntityStore};
 use namespaced_id::NamespacedId;
+use protocol::EntityId;
 use terrain::{GenerationOutcome, GeneratorId, TerrainGenerator, WorldTerrain, WorldTerrainError};
 use voxel_grid::{Brick, ChannelDefinition, ChannelValueKind, Grid, GridLayout, GridLayoutError};
 use voxel_space::{BrickCoordinate, EntityPose, GridId, LevelIndex};
 
 use crate::container::{ContainerError, Section, read_container, write_container};
 use crate::engine_sections::{
-    self as sections, ChannelRecord, GeneratorsRecord, Header, LevelRecord, LevelToWrite,
-    RegistryTable,
+    self as sections, ChannelRecord, GeneratorsRecord, GridRecord, GridsRecord, Header,
+    LevelRecord, LevelToWrite, RegistryTable,
 };
-use crate::moving_grids::GridStore;
+use crate::moving_grids::{GridStore, MovingGrid, ParkedGrid};
+use crate::ship_file::{ShipFileError, ShipFormat};
+use crate::ship_files::{ShipFileName, ShipFiles};
 use crate::translation::{SourceTranslator, TranslationError};
 
 /// One level of a world: the terrain recipe and the player-made changes to it.
@@ -44,7 +48,7 @@ pub struct WorldData {
     unknown_registry_tables: BTreeMap<NamespacedId, Vec<NamespacedId>>,
     opaque_sections: Vec<Section>,
     entities: EntityStore,
-    /// The ships. Not saved yet (Phase 32i): a world file has only the root grids of its levels.
+    /// The ships: in memory, or in files of their own that the world file lists.
     grids: GridStore,
 }
 
@@ -67,6 +71,97 @@ pub enum SaveError {
         channel: NamespacedId,
         registry: NamespacedId,
     },
+    #[error(
+        "{0} ships are in memory, and a world file does not hold their voxels: save the world with the files of its ships"
+    )]
+    ShipsInMemory(usize),
+    #[error("{grid} cannot be made into a file: {source}")]
+    Ship { grid: GridId, source: ShipFileError },
+}
+
+/// Why a parked ship could not be brought back into memory.
+#[derive(Debug, thiserror::Error)]
+pub enum ShipLoadError {
+    #[error("{0} is not a ship that is in a file")]
+    NotParked(GridId),
+    #[error("the file {file} of {grid} cannot be read: {source}")]
+    Unreadable {
+        grid: GridId,
+        file: ShipFileName,
+        source: io::Error,
+    },
+    #[error(
+        "the file {file} of {grid} is not the file the world saved: its checksum is {found:#010x}, not {expected:#010x}"
+    )]
+    WrongFile {
+        grid: GridId,
+        file: ShipFileName,
+        expected: u32,
+        found: u32,
+    },
+    #[error("the file {file} of {grid} is damaged: {source}")]
+    Damaged {
+        grid: GridId,
+        file: ShipFileName,
+        source: ShipFileError,
+    },
+}
+
+/// Why a ship could not be put into a file.
+#[derive(Debug, thiserror::Error)]
+pub enum ShipParkError {
+    #[error("{0} is not a ship that is in memory")]
+    NotLoaded(GridId),
+    #[error("{grid} cannot be made into a file: {source}")]
+    Encoding { grid: GridId, source: ShipFileError },
+    #[error("the file of {grid} cannot be written: {source}")]
+    Writing { grid: GridId, source: io::Error },
+}
+
+/// A world ready to be written to disk: the world file, and the files of the ships that were in memory. The files of ships that were already in
+/// files are on disk and are only named.
+///
+/// The set is written in an order that leaves a world that can be read whatever happens: the files of the ships first, then the world file,
+/// then the removal of the ship files the world file does not name. A save that stops before the world file is written leaves the
+/// previous world file with every file it names; one that stops after it leaves the new one with every file it names.
+#[derive(Debug)]
+pub struct WorldSave {
+    /// The world file.
+    pub world: Vec<u8>,
+    /// The files of the ships that were in memory, to write before the world file.
+    pub new_ship_files: Vec<(ShipFileName, Vec<u8>)>,
+    /// Every ship file the world file names: those, and those of the ships that were parked.
+    pub named_ship_files: BTreeSet<ShipFileName>,
+}
+
+impl WorldSave {
+    /// Writes the set: the ship files into `files`, then the world file by `write_world`, then removes from `files` what the world file
+    /// does not name (the files of earlier saves, and what saves that did not finish left). An error before the world file is in place
+    /// leaves the previous set as it was, apart from files nobody names; the removals cannot fail the save, since the new set is
+    /// complete when they are made, and are made again by the next one.
+    pub fn write_with(
+        &self,
+        files: &mut dyn ShipFiles,
+        write_world: impl FnOnce(&[u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        for (name, bytes) in &self.new_ship_files {
+            files.write(name, bytes)?;
+        }
+        write_world(&self.world)?;
+        if let Ok(names) = files.names() {
+            for name in names {
+                if !self.named_ship_files.contains(&name) {
+                    let _ = files.remove(&name);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes the set with the world file at `path` (replaced all or nothing) and the ship files in `files`.
+    pub fn write(&self, path: &std::path::Path, files: &mut dyn ShipFiles) -> io::Result<()> {
+        self.write_with(files, |bytes| crate::file::write_atomically(path, bytes))
+    }
 }
 
 /// Why a level cannot be added to a world.
@@ -279,37 +374,15 @@ impl WorldData {
         &mut self.grids
     }
 
-    /// The entities as a file holds them until ships are saved too (Phase 32i): one aboard a ship is in the level the ship is in, where
-    /// the ship has it, turned as it is in the world. The running world is not changed.
-    fn entities_in_the_levels(&self) -> std::borrow::Cow<'_, EntityStore> {
-        let aboard: Vec<_> = self
-            .entities
-            .iter()
-            .filter(|entity| entity.pose.grid.root_level().is_none())
-            .map(|entity| (entity.id, entity.pose))
-            .collect();
-        if aboard.is_empty() {
-            return std::borrow::Cow::Borrowed(&self.entities);
-        }
-        let mut store = self.entities.clone();
-        for (id, pose) in aboard {
-            let placed = self.grids.get(pose.grid).and_then(|ship| {
-                let (position, orientation) =
-                    ship.pose.place_in_world(pose.position, pose.orientation)?;
-                Some(EntityPose::new(
-                    GridId::root(ship.level),
-                    position,
-                    orientation,
-                ))
-            });
-            // A ship that is not there, or a place the world cannot hold: the main level, at the coordinates it has, is all that is known.
-            let placed = placed
-                .unwrap_or_else(|| EntityPose::new(GridId::MAIN, pose.position, pose.orientation));
-            store
-                .set_pose(id, placed)
-                .expect("an entity that is in the store can be moved in it");
-        }
-        std::borrow::Cow::Owned(store)
+    /// Where an entity in the frame of a ship is in the world, as a pose in the root grid of the ship's level: the place it is put at if its
+    /// ship is lost. `None` for an entity that is not in a ship's frame, or in the frame of one the world does not know, or at a place
+    /// the world cannot hold.
+    fn place_in_the_world(&self, entity: &Entity) -> Option<EntityPose> {
+        entity.pose.grid.root_level().is_none().then_some(())?;
+        let (level, pose) = self.grids.frame_of(entity.pose.grid)?;
+        let (position, orientation) =
+            pose.place_in_world(entity.pose.position, entity.pose.orientation)?;
+        Some(EntityPose::new(GridId::root(level), position, orientation))
     }
 
     /// Sections of plugins, in file order. Never interpreted here.
@@ -329,16 +402,220 @@ impl WorldData {
         }
     }
 
-    /// Serializes the world. `registries` supplies, per registry kind, the table translating raw ids
+    /// Serializes the world as a world file. `registries` supplies, per registry kind, the table translating raw ids
     /// to identifiers; it must include every kind a content channel uses (unless the kind came from
     /// a file whose plugin is missing, in which case the table is kept from loading).
+    ///
+    /// For a world in which no ship is in memory (a world of terrain, or one whose ships are all in files, which the world file names).
+    /// A world with a ship in memory is saved with [`WorldData::save_with_ships`], which makes the file of the ship as well.
     pub fn save(
         &self,
         registries: &[(NamespacedId, &dyn IdentifierRegistry)],
     ) -> Result<Vec<u8>, SaveError> {
-        let mut all = self.engine_sections(registries, true)?;
+        if !self.grids.is_empty() {
+            return Err(SaveError::ShipsInMemory(self.grids.len()));
+        }
+        let records = self.grid_records(&[]);
+        let mut all = self.engine_sections(registries, Some(&records))?;
         all.extend(self.opaque_sections.iter().cloned());
         Ok(write_container(&all))
+    }
+
+    /// Serializes the world as a world file and a file for each ship that is in memory, as they stand. The files are named with numbers the
+    /// world has not used before, so none is the name of a file that the world file on the disk still names. The ships that are in files
+    /// are named by the world file as they are.
+    pub fn save_with_ships(
+        &mut self,
+        registries: &[(NamespacedId, &dyn IdentifierRegistry)],
+    ) -> Result<WorldSave, SaveError> {
+        let format = self.ship_format(registries)?;
+        let mut new_ship_files = Vec::with_capacity(self.grids.len());
+        let mut loaded = Vec::with_capacity(self.grids.len());
+        // (The files are all made before any number is taken, so a save that cannot be made does not use any up.)
+        let mut made = Vec::with_capacity(self.grids.len());
+        for (id, ship) in self.grids.iter() {
+            let level = self
+                .level_id(ship.level)
+                .expect("a ship is in a level the world has");
+            let bytes = format
+                .encode(ship, level)
+                .map_err(|source| SaveError::Ship { grid: id, source })?;
+            made.push((
+                id,
+                level.clone(),
+                ship.pose,
+                ship.world_brick_bounds(),
+                bytes,
+            ));
+        }
+        for (id, level, pose, bounds, bytes) in made {
+            let serial = self.grids.take_serial();
+            loaded.push(GridRecord {
+                id,
+                level,
+                pose,
+                bounds,
+                serial,
+                checksum: crc32fast::hash(&bytes),
+                waits_for_those_aboard: false,
+            });
+            new_ship_files.push((ShipFileName::new(id, serial), bytes));
+        }
+        let records = self.grid_records(&loaded);
+        let mut named_ship_files: BTreeSet<ShipFileName> =
+            new_ship_files.iter().map(|(name, _)| *name).collect();
+        named_ship_files.extend(self.grids.parked().map(|(_, parked)| parked.file));
+        let mut all = self.engine_sections(registries, Some(&records))?;
+        all.extend(self.opaque_sections.iter().cloned());
+        Ok(WorldSave {
+            world: write_container(&all),
+            new_ship_files,
+            named_ship_files,
+        })
+    }
+
+    /// The ships a world file lists: those that are in memory (as `loaded` records them, in order of id) and those that are in files, in
+    /// order of id.
+    fn grid_records(&self, loaded: &[GridRecord]) -> GridsRecord {
+        let mut ships: Vec<GridRecord> = loaded.to_vec();
+        ships.extend(self.grids.parked().map(|(id, parked)| {
+            GridRecord {
+                id,
+                level: self
+                    .level_id(parked.level)
+                    .expect("a ship is in a level the world has")
+                    .clone(),
+                pose: parked.pose,
+                bounds: parked.bounds,
+                serial: parked.file.serial,
+                checksum: parked.checksum,
+                waits_for_those_aboard: parked.waits_for_those_aboard,
+            }
+        }));
+        ships.sort_by_key(|ship| ship.id);
+        GridsRecord {
+            next: self.grids.next_id(),
+            next_serial: self.grids.next_serial(),
+            ships,
+            tombstones: self
+                .grids
+                .tombstones()
+                .map(|(id, successors)| (id, successors.to_vec()))
+                .collect(),
+        }
+    }
+
+    /// Puts a ship that is in a file into memory, where it was and moving as it was. Nothing changes if the file cannot be read, is not
+    /// the one the world saved, or is damaged.
+    pub fn load_ship(
+        &mut self,
+        id: GridId,
+        files: &dyn ShipFiles,
+        format: &ShipFormat,
+    ) -> Result<(), ShipLoadError> {
+        let ship = self.read_ship(id, files, format)?;
+        self.admit_ship(id, ship)
+    }
+
+    /// The ship that is in a file, as it would be if it were brought in, without bringing it in: for whoever wants to see where it would
+    /// land, and perhaps change it, before it does. Nothing changes in the world.
+    pub fn read_ship(
+        &self,
+        id: GridId,
+        files: &dyn ShipFiles,
+        format: &ShipFormat,
+    ) -> Result<MovingGrid, ShipLoadError> {
+        let parked = self
+            .grids
+            .get_parked(id)
+            .ok_or(ShipLoadError::NotParked(id))?
+            .clone();
+        let bytes = files
+            .read(&parked.file)
+            .map_err(|source| ShipLoadError::Unreadable {
+                grid: id,
+                file: parked.file,
+                source,
+            })?;
+        let found = crc32fast::hash(&bytes);
+        if found != parked.checksum {
+            return Err(ShipLoadError::WrongFile {
+                grid: id,
+                file: parked.file,
+                expected: parked.checksum,
+                found,
+            });
+        }
+        let contents = format
+            .decode(&bytes)
+            .map_err(|source| ShipLoadError::Damaged {
+                grid: id,
+                file: parked.file,
+                source,
+            })?;
+        // The world file says where the ship is; the file says how it moved (a file that was shared may not say).
+        let flight = contents.flight;
+        Ok(MovingGrid {
+            level: parked.level,
+            pose: flight.map_or(parked.pose, |flight| flight.pose),
+            linear_velocity: flight.map_or([0.0; 3], |flight| flight.linear_velocity),
+            angular_velocity: flight.map_or([0.0; 3], |flight| flight.angular_velocity),
+            mass: 0.0,
+            centre_of_mass: [0.0; 3],
+            held: flight.is_some_and(|flight| flight.held),
+            frozen: false,
+            on_pilot_logout: flight.map_or(Default::default(), |flight| flight.on_pilot_logout),
+            voxels: contents.voxels,
+            sections: contents.sections,
+        })
+    }
+
+    /// Brings a ship that is in a file into memory as this ship (the one that [`WorldData::read_ship`] gave, changed or not). The ship
+    /// that was in the file is gone from the world's list of ships in files, and the ship in memory is the one given.
+    pub fn admit_ship(&mut self, id: GridId, ship: MovingGrid) -> Result<(), ShipLoadError> {
+        self.grids
+            .unpark(id, ship)
+            .map(|_| ())
+            .ok_or(ShipLoadError::NotParked(id))
+    }
+
+    /// Puts a ship that is in memory into a file, and out of memory. What is aboard it stays where it is, in the ship's frame. Nothing
+    /// changes if the file cannot be written.
+    pub fn park_ship(
+        &mut self,
+        id: GridId,
+        waits_for_those_aboard: bool,
+        files: &mut dyn ShipFiles,
+        format: &ShipFormat,
+    ) -> Result<(), ShipParkError> {
+        let ship = self.grids.get(id).ok_or(ShipParkError::NotLoaded(id))?;
+        let level = self
+            .level_id(ship.level)
+            .expect("a ship is in a level the world has");
+        let bytes = format
+            .encode(ship, level)
+            .map_err(|source| ShipParkError::Encoding { grid: id, source })?;
+        let file = ShipFileName::new(id, self.grids.take_serial());
+        files
+            .write(&file, &bytes)
+            .map_err(|source| ShipParkError::Writing { grid: id, source })?;
+        let ship = self
+            .grids
+            .get(id)
+            .expect("the ship was in memory a moment ago");
+        let level = ship.level;
+        let parked = ParkedGrid {
+            level,
+            pose: ship.pose,
+            bounds: ship.world_brick_bounds(),
+            file,
+            checksum: crc32fast::hash(&bytes),
+            waits_for_those_aboard,
+        };
+        self.grids
+            .park(id, parked)
+            .expect("the ship was in memory a moment ago");
+        Ok(())
     }
 
     /// The world's shape without its contents, as a small world file: seed, registry tables, channel
@@ -349,7 +626,32 @@ impl WorldData {
         &self,
         registries: &[(NamespacedId, &dyn IdentifierRegistry)],
     ) -> Result<Vec<u8>, SaveError> {
-        Ok(write_container(&self.engine_sections(registries, false)?))
+        Ok(write_container(&self.engine_sections(registries, None)?))
+    }
+
+    /// The identifiers of the entries of each registry, in order of their numbers: those the registries give, and the tables the file had of
+    /// registries nobody supplied one for this time.
+    fn registry_tables(
+        &self,
+        registries: &[(NamespacedId, &dyn IdentifierRegistry)],
+    ) -> BTreeMap<NamespacedId, Vec<NamespacedId>> {
+        let mut tables = self.unknown_registry_tables.clone();
+        for (kind, registry) in registries {
+            tables.insert(kind.clone(), table_of(*registry));
+        }
+        tables
+    }
+
+    /// What it takes to write the files of this world's ships and to read them again.
+    pub fn ship_format(
+        &self,
+        registries: &[(NamespacedId, &dyn IdentifierRegistry)],
+    ) -> Result<ShipFormat, SaveError> {
+        ShipFormat::new(
+            self.world_seed,
+            &self.registry_tables(registries),
+            Arc::clone(self.main().overrides.layout()),
+        )
     }
 
     fn section(identifier: NamespacedId, payload: Vec<u8>) -> Section {
@@ -360,18 +662,16 @@ impl WorldData {
         }
     }
 
-    /// Header, registries, channels and levels, with the levels' assignments and bricks if
-    /// `with_contents`.
+    /// Header, registries, channels and levels, with the levels' assignments and bricks, and the entities and the ships `grids` lists,
+    /// if there is a list of ships (a world's description has none, and has none of the contents).
     fn engine_sections(
         &self,
         registries: &[(NamespacedId, &dyn IdentifierRegistry)],
-        with_contents: bool,
+        grids: Option<&GridsRecord>,
     ) -> Result<Vec<Section>, SaveError> {
+        let with_contents = grids.is_some();
         let main = self.main();
-        let mut tables = self.unknown_registry_tables.clone();
-        for (kind, registry) in registries {
-            tables.insert(kind.clone(), table_of(*registry));
-        }
+        let mut tables = self.registry_tables(registries);
         tables.insert(
             sections::terrain_generator_registry_kind(),
             generator_table(&main.terrain),
@@ -472,7 +772,18 @@ impl WorldData {
         if with_contents && sections::entities_are_saved(&self.entities) {
             written.push(Self::section(
                 sections::entities_id(),
-                sections::encode_entities(&self.entities_in_the_levels()),
+                sections::encode_entities_with(&self.entities, |entity| {
+                    self.place_in_the_world(entity)
+                }),
+            ));
+        }
+        // Ships are contents as well, and a world that never had one does not write the section.
+        if let Some(record) = grids
+            && self.grids.is_worth_saving()
+        {
+            written.push(Self::section(
+                sections::grids_id(),
+                sections::encode_grids(record),
             ));
         }
         Ok(written)
@@ -524,6 +835,8 @@ pub enum LoadError {
     Layout(#[from] GridLayoutError),
     #[error("the terrain could not be set up: {0}")]
     Terrain(#[from] WorldTerrainError),
+    #[error("{ship} is listed in level {level}, which the world does not have")]
+    ShipInUnknownLevel { ship: GridId, level: NamespacedId },
 }
 
 /// What the game supplies so a world file can be turned into runtime data.
@@ -622,6 +935,9 @@ pub struct ParsedWorld {
     channels: Vec<ChannelRecord>,
     levels: ParsedLevels,
     entities: EntityStore,
+    /// Where the entities in the frames of ships fall back to if their ships are lost.
+    entity_fallbacks: BTreeMap<EntityId, EntityPose>,
+    grids: Option<GridsRecord>,
     opaque_sections: Vec<Section>,
 }
 
@@ -634,6 +950,8 @@ impl ParsedWorld {
         let mut legacy_generators = None;
         let mut legacy_bricks = None;
         let mut entities = EntityStore::new();
+        let mut entity_fallbacks = BTreeMap::new();
+        let mut grids = None;
         let mut opaque_sections = Vec::new();
         for section in read_container(bytes)? {
             let known = [
@@ -644,6 +962,7 @@ impl ParsedWorld {
                 sections::generators_id(),
                 sections::override_bricks_id(),
                 sections::entities_id(),
+                sections::grids_id(),
             ]
             .contains(&section.identifier);
             if !known {
@@ -675,7 +994,10 @@ impl ParsedWorld {
             } else if section.identifier == sections::levels_id() {
                 listed_levels = Some(sections::decode_levels(payload).map_err(wrap)?);
             } else if section.identifier == sections::entities_id() {
-                entities = sections::decode_entities(payload).map_err(wrap)?;
+                (entities, entity_fallbacks) =
+                    sections::decode_entities_with_fallbacks(payload).map_err(wrap)?;
+            } else if section.identifier == sections::grids_id() {
+                grids = Some(sections::decode_grids(payload).map_err(wrap)?);
             } else if section.identifier == sections::generators_id() {
                 legacy_generators =
                     Some(sections::decode_generators(payload, section.version).map_err(wrap)?);
@@ -701,6 +1023,8 @@ impl ParsedWorld {
             channels,
             levels,
             entities,
+            entity_fallbacks,
+            grids,
             opaque_sections,
         })
     }
@@ -977,6 +1301,66 @@ impl ParsedWorld {
             })
             .collect::<Result<Vec<_>, LoadError>>()?;
 
+        // Every ship the file lists starts in its file: the server brings in those that are wanted.
+        let level_index = |name: &NamespacedId| {
+            levels
+                .iter()
+                .position(|(id, _)| id == name)
+                .map(|position| LevelIndex::new(position as u32))
+        };
+        let grids = match self.grids {
+            None => GridStore::new(),
+            Some(record) => {
+                let mut parked = Vec::with_capacity(record.ships.len());
+                for ship in record.ships {
+                    let level =
+                        level_index(&ship.level).ok_or_else(|| LoadError::ShipInUnknownLevel {
+                            ship: ship.id,
+                            level: ship.level.clone(),
+                        })?;
+                    parked.push((
+                        ship.id,
+                        ParkedGrid {
+                            level,
+                            pose: ship.pose,
+                            bounds: ship.bounds,
+                            file: ShipFileName::new(ship.id, ship.serial),
+                            checksum: ship.checksum,
+                            waits_for_those_aboard: ship.waits_for_those_aboard,
+                        },
+                    ));
+                }
+                GridStore::from_saved(record.next, record.next_serial, parked, record.tombstones)
+            }
+        };
+        // What the file puts in the frame of a ship it does not list is put where it was in the world: not in a frame that is not there.
+        let mut entities = self.entities;
+        let stranded: Vec<(EntityId, EntityPose)> = entities
+            .iter()
+            .filter(|entity| {
+                entity.pose.grid.root_level().is_none() && !grids.knows(entity.pose.grid)
+            })
+            .map(|entity| {
+                let place =
+                    self.entity_fallbacks
+                        .get(&entity.id)
+                        .copied()
+                        .unwrap_or(EntityPose::new(
+                            GridId::MAIN,
+                            entity.pose.position,
+                            entity.pose.orientation,
+                        ));
+                (entity.id, place)
+            })
+            .collect();
+        for (id, place) in stranded {
+            entities
+                .set_pose(id, place)
+                .expect("an entity that is in the store can be moved in it");
+        }
+        // (That is a change to the entities that nobody was told of.)
+        let _ = entities.take_changed();
+
         report.opaque_sections = self
             .opaque_sections
             .iter()
@@ -987,8 +1371,8 @@ impl ParsedWorld {
             levels,
             unknown_registry_tables,
             opaque_sections: self.opaque_sections,
-            entities: self.entities,
-            grids: GridStore::new(),
+            entities,
+            grids,
         };
         Ok((world, report, translator))
     }

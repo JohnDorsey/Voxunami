@@ -9,12 +9,12 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use plugin_host::{Plugin, PluginHost};
-use server::{Server, ServerConfig, ServerError};
+use server::{Server, ServerConfig, ServerError, ShipSettings};
 use transport::loopback::{LoopbackConnection, LoopbackConnector, loopback_listener};
 use transport::tcp::{TcpConnection, TcpServerListener};
 use transport::{ConnectionClosed, Listener, ListenerSet};
-use world_storage::WorldData;
 use world_storage::file::write_atomically;
+use world_storage::{DirectoryShipFiles, MemoryShipFiles, ShipFiles, WorldData};
 
 use crate::definition::{GameContent, GameDefinition};
 
@@ -31,8 +31,10 @@ fn server_config<G: GameDefinition>(
     package: Vec<u8>,
     view_radius_bricks: i64,
     counted_challenges: bool,
+    ships: ShipSettings,
 ) -> ServerConfig {
     let mut config = ServerConfig::new(G::id()).with_package(package);
+    config.ships = ships;
     if counted_challenges {
         config = config.with_counted_challenges(1);
     }
@@ -42,6 +44,12 @@ fn server_config<G: GameDefinition>(
     config
 }
 
+/// Where a server keeps the files of its ships, and how it keeps them.
+struct ShipKeeping {
+    files: Box<dyn ShipFiles>,
+    settings: ShipSettings,
+}
+
 fn new_server<G: GameDefinition>(
     content: &G::Content,
     world: WorldData,
@@ -49,6 +57,7 @@ fn new_server<G: GameDefinition>(
     listener: Box<dyn Listener>,
     plugins: Vec<Box<dyn Plugin>>,
     counted_challenges: bool,
+    ships: ShipKeeping,
 ) -> Result<Server, ServerError> {
     // A game's plugins are fixed when it is built, so a set that cannot be registered is a mistake in
     // the game that its tests find, not a condition to recover from.
@@ -58,27 +67,70 @@ fn new_server<G: GameDefinition>(
     if let Err(errors) = logic.check_messages() {
         panic!("a message of {} does not round-trip: {errors:#?}", G::id());
     }
-    Server::new(
+    let server = Server::new(
         server_config::<G>(
             content.package_data().encode(),
             view_radius_bricks,
             counted_challenges,
+            ships.settings,
         ),
         world,
         &content.registries(),
         Box::new(logic),
         listener,
-    )
+    )?
+    .with_ship_files(ships.files);
+    Ok(server)
 }
 
 /// A server for `world`, and the way to connect to it from this process. The caller decides when
-/// it ticks.
+/// it ticks. Its ships that are put away are kept in memory.
 pub fn build_server<G: GameDefinition>(
     content: &G::Content,
     world: WorldData,
     view_radius_bricks: i64,
 ) -> Result<(Server, LoopbackConnector), ServerError> {
     build_server_with_plugins::<G>(content, world, view_radius_bricks, G::plugins(content))
+}
+
+/// Like [`build_server`], keeping the files of its ships in these (the folder beside the world file, for a world that is kept in one).
+pub fn build_server_with_ship_files<G: GameDefinition>(
+    content: &G::Content,
+    world: WorldData,
+    view_radius_bricks: i64,
+    ship_files: Box<dyn ShipFiles>,
+) -> Result<(Server, LoopbackConnector), ServerError> {
+    build_server_with::<G>(
+        content,
+        world,
+        view_radius_bricks,
+        G::plugins(content),
+        ship_files,
+    )
+}
+
+/// Like [`build_server`], with these plugins instead of the game's own list and the files of its ships in these.
+pub fn build_server_with<G: GameDefinition>(
+    content: &G::Content,
+    world: WorldData,
+    view_radius_bricks: i64,
+    plugins: Vec<Box<dyn Plugin>>,
+    ship_files: Box<dyn ShipFiles>,
+) -> Result<(Server, LoopbackConnector), ServerError> {
+    let (listener, connector) = loopback_listener();
+    let server = new_server::<G>(
+        content,
+        world,
+        view_radius_bricks,
+        Box::new(listener),
+        plugins,
+        true,
+        ShipKeeping {
+            files: ship_files,
+            settings: ShipSettings::default(),
+        },
+    )?;
+    Ok((server, connector))
 }
 
 /// Like [`build_server`], with these plugins instead of the game's own list: tests use it to put the same
@@ -89,16 +141,13 @@ pub fn build_server_with_plugins<G: GameDefinition>(
     view_radius_bricks: i64,
     plugins: Vec<Box<dyn Plugin>>,
 ) -> Result<(Server, LoopbackConnector), ServerError> {
-    let (listener, connector) = loopback_listener();
-    let server = new_server::<G>(
+    build_server_with::<G>(
         content,
         world,
         view_radius_bricks,
-        Box::new(listener),
         plugins,
-        true,
-    )?;
-    Ok((server, connector))
+        Box::new(MemoryShipFiles::new()),
+    )
 }
 
 /// Starts accepting players on the network at `address`.
@@ -117,11 +166,10 @@ pub fn connect_to(address: &str) -> Result<TcpConnection, String> {
         .map_err(|error| format!("cannot connect to {address}: {error}"))
 }
 
-/// Saves the world to a file at regular intervals while the server runs.
-#[derive(Clone, Debug)]
+/// Saves the world to its file at regular intervals while the server runs.
+#[derive(Clone, Copy, Debug)]
 pub struct Autosave {
     pub interval: Duration,
-    pub path: PathBuf,
 }
 
 /// How a server thread is set up beyond its world.
@@ -130,9 +178,15 @@ pub struct HostSettings {
     pub view_radius_bricks: i64,
     /// Where players on other machines connect, if anywhere.
     pub network: Option<Box<dyn Listener>>,
+    /// The file the world is kept in, if it is kept in one. The files of its ships are in the folder beside it, and an autosave
+    /// writes there.
+    pub world_file: Option<PathBuf>,
     pub autosave: Option<Autosave>,
     /// Print a line when a player joins or leaves.
     pub announce_players: bool,
+    /// How ships are kept: how near a player has to be for them to move, how far off for them to be put in files, and what a pilot's logout
+    /// does to them.
+    pub ships: ShipSettings,
 }
 
 impl HostSettings {
@@ -141,8 +195,10 @@ impl HostSettings {
         Self {
             view_radius_bricks,
             network: None,
+            world_file: None,
             autosave: None,
             announce_players: false,
+            ships: ShipSettings::default(),
         }
     }
 }
@@ -153,6 +209,7 @@ impl fmt::Debug for HostSettings {
             .debug_struct("HostSettings")
             .field("view_radius_bricks", &self.view_radius_bricks)
             .field("network", &self.network.is_some())
+            .field("world_file", &self.world_file)
             .field("autosave", &self.autosave)
             .finish_non_exhaustive()
     }
@@ -187,6 +244,10 @@ impl<G: GameDefinition> ServerThread<G> {
             listeners = listeners.with_boxed(network);
         }
         let plugins = G::plugins(&content);
+        let ship_files: Box<dyn ShipFiles> = match &settings.world_file {
+            Some(path) => Box::new(DirectoryShipFiles::beside(path)),
+            None => Box::new(MemoryShipFiles::new()),
+        };
         let mut server = new_server::<G>(
             &content,
             world,
@@ -194,10 +255,15 @@ impl<G: GameDefinition> ServerThread<G> {
             Box::new(listeners),
             plugins,
             false,
+            ShipKeeping {
+                files: ship_files,
+                settings: settings.ships,
+            },
         )?;
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stop);
         let (autosave, announce) = (settings.autosave, settings.announce_players);
+        let world_file = settings.world_file.clone();
         let thread = std::thread::spawn(move || {
             // The clock only paces the loop; the server itself never reads it.
             let tick_length = Duration::from_secs_f64(1.0 / f64::from(G::ticks_per_second()));
@@ -213,17 +279,17 @@ impl<G: GameDefinition> ServerThread<G> {
                         println!("{client} left ({reason:?})");
                     }
                 }
-                if let Some(autosave) = &autosave
+                if let (Some(autosave), Some(path)) = (&autosave, &world_file)
                     && last_save.elapsed() >= autosave.interval
                 {
                     last_save = Instant::now();
                     match server.save(&content.registries()) {
-                        Ok(bytes) => {
-                            if let Err(error) = write_atomically(&autosave.path, &bytes) {
-                                eprintln!(
-                                    "autosave to {} failed: {error}",
-                                    autosave.path.display()
-                                );
+                        // (The files of the ships, then the world file: before the next tick, so that what is written is what was saved.)
+                        Ok(save) => {
+                            if let Err(error) = save.write_with(server.ship_files_mut(), |bytes| {
+                                write_atomically(path, bytes)
+                            }) {
+                                eprintln!("autosave to {} failed: {error}", path.display());
                             }
                         }
                         Err(error) => eprintln!("autosave failed: {error}"),

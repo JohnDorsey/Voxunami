@@ -1128,13 +1128,13 @@ fn a_running_server_can_be_saved_with_its_games_state_and_keeps_running() {
     harness.server.step();
     client.prove();
     harness.server.step();
-    let bytes = harness.server.save(&game.registries()).unwrap();
+    let bytes = harness.server.save(&game.registries()).unwrap().world;
 
     let mut other = Game::new(&ALL_PLUGINS);
     let (loaded, _) = other.load(&bytes).unwrap();
     assert_eq!(loaded.opaque_sections(), [state]);
     // Saving twice does not duplicate the section, and the server goes on serving.
-    let again = harness.server.save(&game.registries()).unwrap();
+    let again = harness.server.save(&game.registries()).unwrap().world;
     assert_eq!(again, bytes);
     assert_eq!(harness.server.step().tick, Tick::new(3));
     assert_eq!(harness.server.connected_clients().count(), 1);
@@ -2167,7 +2167,7 @@ fn entities_made_in_play_are_in_the_saved_world_and_a_server_started_from_it_tel
         }
     });
     harness.server.step();
-    let saved = harness.server.save(&game.registries()).unwrap();
+    let saved = harness.server.save(&game.registries()).unwrap().world;
 
     // A new server, started from the file, with the same kinds, knows the entity and the counter.
     let mut reloaded = Game::new(&ALL_PLUGINS);
@@ -2996,4 +2996,46 @@ fn a_ship_removed_with_someone_aboard_leaves_them_in_the_level_as_a_change_of_po
     };
     assert_eq!(changed[0].id, EntityId::new(1));
     assert_eq!(changed[0].pose, Some(pose_in(0, 3.0)));
+}
+
+#[test]
+fn a_game_can_send_a_client_away_with_a_reason_and_the_client_is_told_and_gone_from_the_world() {
+    let game = Game::new(&ALL_PLUGINS);
+    let logic = ScriptedLogic::new().on_message(|client, kind, _, world| {
+        if *kind == id("test_game:go_away") {
+            world.disconnect_client(client, "you chose to quit");
+            // Nobody to send away is not an error, and a client is sent away once however often it is asked.
+            world.disconnect_client(ClientId::new(77), "nobody");
+            world.disconnect_client(client, "again");
+        }
+    });
+    let mut harness =
+        Harness::with_logic(&game, game.new_world(), ServerConfig::new(game_id()), logic);
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    client.received();
+    client.send(&ClientMessage::GameMessage {
+        kind: id("test_game:go_away"),
+        payload: Vec::new(),
+    });
+    let report = harness.server.step();
+    assert_eq!(
+        report.left,
+        [(
+            ClientId::new(1),
+            LeaveReason::SentAway("you chose to quit".to_owned())
+        )]
+    );
+    let seen = client.received();
+    assert!(
+        seen.iter().any(|message| matches!(message, ServerMessage::Disconnected { reason } if reason == "you chose to quit")),
+        "{seen:?}"
+    );
+    assert_eq!(harness.server.connected_clients().count(), 0);
+    // The game heard that they left, as it does of any client that goes.
+    assert!(
+        harness
+            .logic_events()
+            .contains(&LogicEvent::Left(ClientId::new(1)))
+    );
 }

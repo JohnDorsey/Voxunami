@@ -152,6 +152,7 @@ mod tests {
     use grid_bodies::collision::BlockCollisions;
     use voxel_grid::{ChannelDefinition, ChannelIndex, Grid, GridLayout};
     use voxel_space::{BrickCoordinate, GridPose, LevelIndex, Orientation, VoxelCoordinate};
+    use world_storage::PilotLogout;
 
     use super::*;
     use crate::block_properties::test_table;
@@ -192,7 +193,10 @@ mod tests {
             mass: 0.0,
             centre_of_mass: [0.0; 3],
             held: false,
+            frozen: false,
+            on_pilot_logout: PilotLogout::Stay,
             voxels,
+            sections: Vec::new(),
         };
         (ship, block, state)
     }

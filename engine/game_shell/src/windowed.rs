@@ -59,10 +59,10 @@ pub fn play<G: GameDefinition>(options: PlayOptions) -> Result<(), String> {
                 settings.network = Some(Box::new(listen_on(address)?));
                 settings.announce_players = true;
             }
-            if let (Some(seconds), Some(path)) = (options.autosave_seconds, &options.world_file) {
+            settings.world_file = options.world_file.clone();
+            if let (Some(seconds), Some(_)) = (options.autosave_seconds, &options.world_file) {
                 settings.autosave = Some(Autosave {
                     interval: Duration::from_secs_f32(seconds),
-                    path: path.clone(),
                 });
             }
             let host = ServerThread::<G>::start(content, world, settings)

@@ -260,8 +260,22 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   boards is byte for byte what it was. The camera has a `frame_rotation` and looks at its angles in it.
 - **A ship that sleeps has no speed on record, and one that is held has none until whoever moves it says how fast** (`set_grid_held(true)` stops it):
   what a player who steps onto it inherits is its recorded speed at the place (`MovingGrid::velocity_at`).
-- **A world is saved with passengers in the level where their ship has them** until ships are saved (32i); a file that puts an entity in a
-  ship's frame is refused. (The reserved byte for a world-space fallback pose stays 0.)
+- **A ship that goes away with its pilot comes back where it was, or the player decides (32i):** it is stopped and put in a file that waits for those aboard; when a player who was aboard
+  joins (the pilot, or a passenger who was away) it is looked at against the terrain and the other ships at the place it was left, and if it fits it is there. If not, the player is asked
+  (move it, break the terrain, break its blocks, put it there anyway, or leave it and go to the spawn); the engine does not guess. A ship that cannot be found asks too, with three other
+  answers (the spawn, the air, the title). The look is of the centres of the cells that something can bump into: deterministic and quick, and it finds every overlap deeper than half a
+  voxel; it is not a collision test, and the bodies resolve the rest. A ship with another player aboard does not go (they would lose their floor). The questions are not saved.
+- **Ships are kept by the distance of the nearest player in their level (32i, `engine/grid_lifecycle`):** moving within the simulation distance, frozen beyond it (held,
+  their rules waiting), in a file beyond the unload distance, with a tenth more to leave a state than to enter it so that a ship at an edge does not change every tick.
+  The distance is to the nearest brick, compared as squares. The host chooses the two distances and what a pilot's logout does (`ShipSettings`); the defaults are 256
+  and 1024 voxels. A server with no player in a level keeps no ship of it awake: each is frozen and then put away, which is what the plan says (a simulation distance with freeze and
+  park), and what a test of what ships do must say it does not want (`ShipSettings::everywhere`).
+- **A ship is saved as a file of its own, named by the ship and the number of the write, and a world is saved as a set (32i):** the ship files first, the world
+  file that names them last, and then the ship files nobody names are removed. The number is a counter saved with the world, not the tick (the first plan): a
+  tick begins again with the server, and a new run could write the name that the world file on the disk still names. Whatever a save is stopped by, the world file
+  that is there is whole and every ship file it names is there. After a load every ship is in its file; the server brings in the ones that are wanted, and the
+  rules hear of them as changes of what is in them. A passenger is saved in the frame of its ship with the place it has in the world, and put there if the ship
+  is lost.
 - **A player who comes back is told where they are** (`player_presence:placed`, in the world), because a client watches around its camera and a
   returning player may be anywhere. (Not yet done for `/tp`; a follow-up.)
 

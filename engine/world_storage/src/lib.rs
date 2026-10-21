@@ -16,16 +16,24 @@ pub mod container;
 pub mod engine_sections;
 pub mod file;
 mod moving_grids;
+mod ship_file;
+mod ship_files;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 mod translation;
 mod world;
 
 pub use container::{ContainerError, Section};
-pub use moving_grids::{GridStore, MovingGrid};
+pub use moving_grids::{GridStore, MovingGrid, ParkedGrid, PilotLogout};
+pub use ship_file::{
+    ParsedShip, ShipContents, ShipFileError, ShipFlight, ShipFormat, flight_id, ship_id,
+};
+pub use ship_files::{
+    DirectoryShipFiles, MemoryShipFiles, NotAShipFileName, ShipFileName, ShipFiles,
+};
 pub use translation::{SourceTranslator, TranslationError};
 pub use voxel_space::LevelIndex;
 pub use world::{
     BrickSource, LevelData, LevelError, LoadContext, LoadError, LoadReport, ParsedWorld, SaveError,
-    WorldData,
+    ShipLoadError, ShipParkError, WorldData, WorldSave,
 };

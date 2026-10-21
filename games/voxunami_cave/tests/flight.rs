@@ -5,7 +5,7 @@ mod common;
 
 use common::{
     FLOOR, Player, PlayerExt, Scene, build_raft, eyes_in_the_world, eyes_in_their_frame,
-    flat_floor, player_pose, ship_id, ship_pose, tick_and_follow,
+    flat_floor, player_pose, say, ship_id, ship_pose, tick_and_follow,
 };
 use game_shell::KeyCode;
 use voxel_space::VoxelCoordinate;
@@ -23,13 +23,6 @@ fn raft_and_a_player_looking_at_it() -> (Scene, Player) {
     scene.rig.settle(&mut [&mut player]);
     tick_and_follow(&mut scene, &mut player, 20);
     (scene, player)
-}
-
-/// What a player is told after typing a command.
-fn say(scene: &mut Scene, player: &mut Player, command: &str) -> String {
-    player.send_command(command);
-    tick_and_follow(scene, player, 2);
-    player.take_command_replies().join(" | ")
 }
 
 fn ship_speed(scene: &Scene, number: u64) -> [f32; 3] {

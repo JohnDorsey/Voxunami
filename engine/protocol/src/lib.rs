@@ -35,7 +35,10 @@ mod server_message;
 mod types;
 mod wire;
 
-pub use wire::{read_entity_pose, write_entity_pose};
+pub use wire::{
+    read_brick_box, read_entity_pose, read_grid, read_grid_pose, write_brick_box,
+    write_entity_pose, write_grid, write_grid_pose,
+};
 
 pub use client_message::ClientMessage;
 pub use error::ProtocolError;

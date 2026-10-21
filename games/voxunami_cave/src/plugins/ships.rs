@@ -15,11 +15,12 @@ use plugin_host::{
     Argument, Arguments, CommandSpec, HandlerSpec, Phase, PlayerLeft, Plugin, Registrar, SystemSpec,
 };
 use protocol::ClientId;
-use server::ServerWorld;
+use server::{LogoutPolicy, ServerWorld};
 use voxel_grid::ChannelIndex;
 use voxel_space::{
     BrickCoordinate, GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate, WorldPosition,
 };
+use world_storage::PilotLogout;
 use world_view::cast_ray;
 
 use super::movement::{SharedMovement, locked};
@@ -29,7 +30,7 @@ use crate::ships::{
     LOOK_REACH, MAXIMUM_BLOCKS, NEAR, PilotKeys, TICK_SECONDS, connected_blocks, pilot_force,
 };
 
-const USAGE: &str = "usage: /ship create [all] | push X Y Z | hold on|off | pilot";
+const USAGE: &str = "usage: /ship create [all] | push X Y Z | hold on|off | pilot | vanish on|off";
 
 /// The `/ship` command, and the system that flies the ships that have pilots.
 #[derive(Debug)]
@@ -90,7 +91,7 @@ impl Plugin for ShipCommandsPlugin {
         registrar.command(
             CommandSpec::new(
                 "ship",
-                "makes ships of what you built, and pushes, holds and pilots them",
+                "makes ships of what you built, and pushes, holds, pilots and puts them away",
             )
             .argument(Argument::word("action"))
             .argument(Argument::rest("details").optional()),
@@ -108,11 +109,17 @@ impl Plugin for ShipCommandsPlugin {
             move |context| ships.fly(context.world()),
         );
 
+        // A pilot who leaves stops piloting, and their ship may go with them. (After the players' own handler has taken the pilot out of the record
+        // of who is where, so that the ship finds only the others who are aboard.)
         let ships = Arc::clone(&self.ships);
         registrar.on::<PlayerLeft>(
-            HandlerSpec::new("voxunami_cave:a_player_who_leaves_stops_piloting"),
-            move |event, _| {
-                ships.pilots().remove(&event.client);
+            HandlerSpec::new("voxunami_cave:a_player_who_leaves_stops_piloting")
+                .after("player_presence:hide_players_who_leave"),
+            move |event, context| {
+                let piloted = ships.pilots().remove(&event.client);
+                if let Some(ship) = piloted {
+                    ships.pilot_left(context.world(), ship);
+                }
             },
         );
     }
@@ -144,6 +151,8 @@ impl Ships {
             ("hold", ["on"]) => self.hold(world, client, true),
             ("hold", ["off"]) => self.hold(world, client, false),
             ("pilot", []) => self.pilot(world, client),
+            ("vanish", ["on"]) => self.vanish(world, client, PilotLogout::Vanish),
+            ("vanish", ["off"]) => self.vanish(world, client, PilotLogout::Stay),
             _ => USAGE.to_owned(),
         }
     }
@@ -291,6 +300,66 @@ impl Ships {
             Ok(()) if held => format!("ship {} is held", number(ship)),
             Ok(()) => format!("ship {} is let go", number(ship)),
             Err(_) => "that ship is gone".to_owned(),
+        }
+    }
+
+    /// `/ship vanish`: whether the ship goes away with its pilot when they log out, and is where it was when they come back. (Until there is a
+    /// command chair, which will say this, this is how a ship is told.)
+    fn vanish(&self, world: &mut ServerWorld, client: ClientId, wish: PilotLogout) -> String {
+        let ship = match self.target(world, &lock(&self.presence), client) {
+            Ok(ship) => ship,
+            Err(problem) => return problem,
+        };
+        if world.set_grid_on_pilot_logout(ship, wish).is_err() {
+            return "that ship is gone".to_owned();
+        }
+        match wish {
+            PilotLogout::Vanish => format!(
+                "ship {} will go away with its pilot when they log out, and be where it was when they come back",
+                number(ship)
+            ),
+            PilotLogout::Stay => format!(
+                "ship {} will stay where it is when its pilot logs out",
+                number(ship)
+            ),
+        }
+    }
+
+    /// The pilot of a ship has left (and is out of the record of who is where). The ship goes with them if the host says ships do, or leaves it
+    /// to the ship and the ship says it does. If someone else is aboard, who would lose their floor, it stays, held, for the pilot to find.
+    fn pilot_left(&self, world: &mut ServerWorld, ship: GridId) {
+        let Some(moving) = world.data().grids().get(ship) else {
+            return;
+        };
+        let (wish, linear, angular) = (
+            moving.on_pilot_logout,
+            moving.linear_velocity,
+            moving.angular_velocity,
+        );
+        let goes = match world.ship_settings().logout_policy {
+            LogoutPolicy::Chair => wish == PilotLogout::Vanish,
+            LogoutPolicy::AlwaysStay => false,
+            LogoutPolicy::AlwaysVanish => true,
+        };
+        if !goes {
+            return;
+        }
+        let someone_else_is_aboard = {
+            let presence = lock(&self.presence);
+            presence
+                .players(world.data())
+                .into_iter()
+                .any(|(client, ..)| presence.frame_of(world.data(), client) == Some(ship))
+        };
+        if someone_else_is_aboard {
+            let _ = world.set_grid_held(ship, true);
+            return;
+        }
+        // It stops, and waits in its file for whoever is aboard it (the pilot, whose place in it is kept). If it cannot be put in a file
+        // (the world has nowhere to keep it, or the disk fails) it stays, as a ship that does not vanish does.
+        let _ = world.set_grid_velocity(ship, [0.0; 3], [0.0; 3]);
+        if world.park_ship(ship, true).is_err() {
+            let _ = world.set_grid_velocity(ship, linear, angular);
         }
     }
 

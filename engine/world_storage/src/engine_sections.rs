@@ -18,12 +18,17 @@
 //! - `engine:levels`: the world's levels in order, the first being the main level where players start.
 //!   Per level: its identifier, its generator setup (as the payload of `engine:generators`, version 2) and
 //!   its edited bricks (as the payload of `engine:override_bricks`).
-//! - `engine:entities`: the entity counter, then every entity in order of id: its id, kind, pose, a byte reserved for
-//!   a world-space fallback pose (0 now; an entity in a grid that is not a root grid will have one), and its
-//!   components by identifier as the bytes their codecs made. Until ships are saved (Phase 32i) an entity aboard one is written in the
-//!   level the ship is in, where the ship has it, and a pose in the frame of a ship is refused when read. Written only when the world has entities or has
+//! - `engine:entities`: the entity counter, then every entity in order of id: its id, kind, pose, a byte that says whether
+//!   a world-space fallback pose follows (1 for an entity in the frame of a ship: where it is in the world, so that it is not lost if
+//!   the ship is, 0 for any other), and its
+//!   components by identifier as the bytes their codecs made. An entity aboard a ship is written in the ship's frame. Written only when the world has entities or has
 //!   had any (so a world without them is byte for byte what it was before entities), and not in a world
 //!   description. Entities of kinds nobody has, and components nobody knows, are kept as they are.
+//! - `engine:grids`: the counter that ship ids come from and the one that the numbers of ship files come from, then each ship in order of
+//!   id (its level, where it was, the bricks it touched, and its file: the number of the write and the checksum of the bytes), then the
+//!   ids that were retired by a split or a merge and
+//!   the ships that took their places. The voxels of the ships are in files of their own. Written only when the world has had ships (so a
+//!   world without them is byte for byte what it was before ships).
 //! - `engine:override_bricks`: the bricks that replace generated terrain, sorted by coordinate. (Files
 //!   written before levels existed; newer files keep them inside `engine:levels`.)
 
@@ -32,9 +37,15 @@ use region_octree::BrickCube;
 use voxel_grid::{Brick, ChannelValueKind};
 use voxel_space::BrickCoordinate;
 
+use std::collections::BTreeMap;
+
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use entities::{ComponentBag, Entity, EntityError, EntityStore};
-use protocol::{EntityId, read_entity_pose, write_entity_pose};
+use protocol::{
+    EntityId, read_brick_box, read_entity_pose, read_grid_pose, write_brick_box, write_entity_pose,
+    write_grid_pose,
+};
+use voxel_space::{BrickBox, EntityPose, GridId, GridPose, LatticeRotation, LatticeTransform};
 
 pub const SUPPORTED_VERSION: u32 = 1;
 
@@ -67,13 +78,26 @@ pub fn levels_id() -> NamespacedId {
 pub fn entities_id() -> NamespacedId {
     engine_id("entities")
 }
+pub fn grids_id() -> NamespacedId {
+    engine_id("grids")
+}
 
 /// Whether a world's entities are worth a section: it has some, or has had some (the counter says so).
 pub fn entities_are_saved(store: &EntityStore) -> bool {
     !store.is_empty() || store.next_id() != 1
 }
 
+/// The entities of a store as the section, for a store in which none is in the frame of a ship.
 pub fn encode_entities(store: &EntityStore) -> Vec<u8> {
+    encode_entities_with(store, |_| None)
+}
+
+/// The entities of a store as the section. `fallback_of` says, for an entity in the frame of a ship, where it is in the world (a pose in
+/// the root grid of a level), which is written with it; for one that is not, or for which it says nothing, no place is written.
+pub fn encode_entities_with(
+    store: &EntityStore,
+    fallback_of: impl Fn(&Entity) -> Option<EntityPose>,
+) -> Vec<u8> {
     let mut writer = ByteWriter::new();
     writer.write_varint(store.next_id());
     writer.write_varint(store.len() as u64);
@@ -81,33 +105,61 @@ pub fn encode_entities(store: &EntityStore) -> Vec<u8> {
         writer.write_varint(entity.id.get());
         writer.write_identifier(&entity.kind);
         write_entity_pose(&mut writer, &entity.pose);
-        // Reserved for the world-space pose of an entity in a grid that is not a root grid.
-        writer.write_u8(0);
+        let fallback = fallback_of(entity).filter(|place| {
+            place.grid.root_level().is_some() && entity.pose.grid.root_level().is_none()
+        });
+        match fallback {
+            Some(place) => {
+                writer.write_u8(1);
+                write_entity_pose(&mut writer, &place);
+            }
+            None => writer.write_u8(0),
+        }
         entity.components.write(&mut writer);
     }
     writer.into_bytes()
 }
 
+/// The entities of the section, without the places they would be put at if their ships were lost.
 pub fn decode_entities(payload: &[u8]) -> Result<EntityStore, DecodeError> {
+    decode_entities_with_fallbacks(payload).map(|(store, _)| store)
+}
+
+/// The entities of the section, and for each one in the frame of a ship that has one the place in the world it was saved at.
+pub fn decode_entities_with_fallbacks(
+    payload: &[u8],
+) -> Result<(EntityStore, BTreeMap<EntityId, EntityPose>), DecodeError> {
     let mut reader = ByteReader::new(payload);
     let next_id = reader.read_varint()?;
-    // An id, a kind, a pose, the reserved byte and a component count.
+    // An id, a kind, a pose, the fallback byte and a component count.
     let count = reader.read_count(40)?;
     let mut entities = Vec::with_capacity(count);
+    let mut fallbacks = BTreeMap::new();
     for _ in 0..count {
         let id = EntityId::new(reader.read_varint()?);
         let kind = reader.read_identifier()?;
         let pose = read_entity_pose(&mut reader)?;
-        if reader.read_u8()? != 0 {
-            return Err(DecodeError::Invalid(
-                "an entity has a world-space pose, which this program cannot keep",
-            ));
-        }
-        // No ship is in the file (they are not saved yet), so nothing can be aboard one.
-        if pose.grid.root_level().is_none() {
-            return Err(DecodeError::Invalid(
-                "an entity is in the frame of a ship, which this program cannot keep",
-            ));
+        match reader.read_u8()? {
+            0 => {}
+            1 => {
+                let place = read_entity_pose(&mut reader)?;
+                if place.grid.root_level().is_none() {
+                    return Err(DecodeError::Invalid(
+                        "the place an entity falls back to is not in a level",
+                    ));
+                }
+                if pose.grid.root_level().is_some() {
+                    return Err(DecodeError::Invalid(
+                        "an entity that is in a level has a place to fall back to",
+                    ));
+                }
+                fallbacks.insert(id, place);
+            }
+            _ => {
+                return Err(DecodeError::Invalid(
+                    "an entity has a fallback place flag that is neither 0 nor 1",
+                ));
+            }
         }
         let components = ComponentBag::read(&mut reader)?;
         entities.push(Entity {
@@ -118,11 +170,192 @@ pub fn decode_entities(payload: &[u8]) -> Result<EntityStore, DecodeError> {
         });
     }
     reader.finish()?;
-    EntityStore::restore(next_id, entities).map_err(|error| {
+    let store = EntityStore::restore(next_id, entities).map_err(|error| {
         DecodeError::Invalid(match error {
             EntityError::UnorderedEntities => "the entities are not in order of id, each once",
             _ => "an entity id is not below the saved counter",
         })
+    })?;
+    Ok((store, fallbacks))
+}
+
+/// A ship as the world file lists it: enough to know where it is and which file holds it, without reading the file.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GridRecord {
+    pub id: GridId,
+    /// The name of the level it is in.
+    pub level: NamespacedId,
+    pub pose: GridPose,
+    pub bounds: Option<BrickBox>,
+    /// The number of the write that made its file (the file is named for it and the ship), and the checksum of the file's bytes.
+    pub serial: u64,
+    pub checksum: u32,
+    pub waits_for_those_aboard: bool,
+}
+
+/// The section of ships: the counter, the ships, and the ids that were retired.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GridsRecord {
+    pub next: u64,
+    /// The number the next file of a ship will have.
+    pub next_serial: u64,
+    pub ships: Vec<GridRecord>,
+    pub tombstones: Vec<(GridId, Vec<(GridId, LatticeTransform)>)>,
+}
+
+/// Whether a ship id is one a world has given out.
+fn is_allocated_below(id: GridId, next: u64) -> bool {
+    (GridId::FIRST_ALLOCATED..next).contains(&id.get())
+}
+
+pub fn encode_grids(record: &GridsRecord) -> Vec<u8> {
+    let rotations = LatticeRotation::all();
+    let mut writer = ByteWriter::new();
+    writer.write_varint(record.next);
+    writer.write_varint(record.next_serial);
+    writer.write_varint(record.ships.len() as u64);
+    for ship in &record.ships {
+        writer.write_varint(ship.id.get());
+        writer.write_identifier(&ship.level);
+        write_grid_pose(&mut writer, &ship.pose);
+        match ship.bounds {
+            Some(bounds) => {
+                writer.write_u8(1);
+                write_brick_box(&mut writer, bounds);
+            }
+            None => writer.write_u8(0),
+        }
+        writer.write_varint(ship.serial);
+        writer.write_u32(ship.checksum);
+        writer.write_u8(u8::from(ship.waits_for_those_aboard));
+    }
+    writer.write_varint(record.tombstones.len() as u64);
+    for (id, successors) in &record.tombstones {
+        writer.write_varint(id.get());
+        writer.write_varint(successors.len() as u64);
+        for (successor, transform) in successors {
+            writer.write_varint(successor.get());
+            let rotation = rotations
+                .iter()
+                .position(|candidate| *candidate == transform.rotation)
+                .expect("every rotation is one of the 24");
+            writer.write_u8(rotation as u8);
+            for component in transform.offset {
+                writer.write_signed_varint(component);
+            }
+        }
+    }
+    writer.into_bytes()
+}
+
+pub fn decode_grids(payload: &[u8]) -> Result<GridsRecord, DecodeError> {
+    let rotations = LatticeRotation::all();
+    let mut reader = ByteReader::new(payload);
+    let next = reader.read_varint()?;
+    if next < GridId::FIRST_ALLOCATED {
+        return Err(DecodeError::Invalid(
+            "the counter of ship ids is below the first ship id",
+        ));
+    }
+    let next_serial = reader.read_varint()?;
+    // An id, a level, a pose, a flag, a serial number, a checksum and a flag.
+    let count = reader.read_count(40)?;
+    let mut ships: Vec<GridRecord> = Vec::with_capacity(count);
+    for _ in 0..count {
+        let id = GridId::new(reader.read_varint()?);
+        if !is_allocated_below(id, next) {
+            return Err(DecodeError::Invalid(
+                "a ship has an id the world has not given out",
+            ));
+        }
+        if ships.last().is_some_and(|previous| previous.id >= id) {
+            return Err(DecodeError::Invalid(
+                "the ships are not in order of id, each once",
+            ));
+        }
+        let level = reader.read_identifier()?;
+        let pose = read_grid_pose(&mut reader)?;
+        let bounds = match reader.read_u8()? {
+            0 => None,
+            1 => Some(read_brick_box(&mut reader)?),
+            _ => return Err(DecodeError::Invalid("a bounds flag is neither 0 nor 1")),
+        };
+        let serial = reader.read_varint()?;
+        if serial >= next_serial {
+            return Err(DecodeError::Invalid(
+                "a ship has a file with a number that has not been given out",
+            ));
+        }
+        let checksum = reader.read_u32()?;
+        let waits_for_those_aboard = match reader.read_u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(DecodeError::Invalid("a waiting flag is neither 0 nor 1")),
+        };
+        ships.push(GridRecord {
+            id,
+            level,
+            pose,
+            bounds,
+            serial,
+            checksum,
+            waits_for_those_aboard,
+        });
+    }
+    // An id, and a count of the ships that took its place.
+    let count = reader.read_count(2)?;
+    let mut tombstones: Vec<(GridId, Vec<(GridId, LatticeTransform)>)> = Vec::with_capacity(count);
+    for _ in 0..count {
+        let id = GridId::new(reader.read_varint()?);
+        if !is_allocated_below(id, next) {
+            return Err(DecodeError::Invalid(
+                "a retired id is one the world has not given out",
+            ));
+        }
+        if tombstones
+            .last()
+            .is_some_and(|(previous, _)| *previous >= id)
+        {
+            return Err(DecodeError::Invalid(
+                "the retired ids are not in order, each once",
+            ));
+        }
+        if ships.iter().any(|ship| ship.id == id) {
+            return Err(DecodeError::Invalid("a ship is also a retired id"));
+        }
+        // A successor, a turn and three offsets.
+        let successor_count = reader.read_count(5)?;
+        if successor_count == 0 {
+            return Err(DecodeError::Invalid(
+                "a retired id has nothing in its place",
+            ));
+        }
+        let mut successors = Vec::with_capacity(successor_count);
+        for _ in 0..successor_count {
+            let successor = GridId::new(reader.read_varint()?);
+            if !is_allocated_below(successor, next) || successor == id {
+                return Err(DecodeError::Invalid(
+                    "a retired id has in its place a ship the world has not given out",
+                ));
+            }
+            let rotation = *rotations
+                .get(usize::from(reader.read_u8()?))
+                .ok_or(DecodeError::Invalid("a lattice turn is not one of the 24"))?;
+            let offset = [
+                reader.read_signed_varint()?,
+                reader.read_signed_varint()?,
+                reader.read_signed_varint()?,
+            ];
+            successors.push((successor, LatticeTransform { rotation, offset }));
+        }
+        tombstones.push((id, successors));
+    }
+    reader.finish()?;
+    Ok(GridsRecord {
+        next,
+        next_serial,
+        ships,
+        tombstones,
     })
 }
 

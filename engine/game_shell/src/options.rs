@@ -63,6 +63,11 @@ Usage: voxunami serve {command} [options]
   --packs DIRECTORY               load the data packs in this folder
   --autosave SECONDS              save the world this often (default 60 with --world)
   --view-radius BRICKS            the view radius players are expected to use (default 12)
+  --ship-simulation-distance N    ships move while a player is within N voxels of them (default 256)
+  --ship-unload-distance N        ships farther than N voxels from every player are put in files (default 1024;
+                                  not less than the simulation distance)
+  --ship-logout-policy POLICY     chair, always-stay or always-vanish: what a pilot's logout does to their ship
+                                  (default chair: each ship does what it says)
   --help                          show this text
 
 Players join with `voxunami {command} --join HOST[:PORT]`. The server saves on Ctrl-C.
@@ -298,6 +303,8 @@ pub struct ServeOptions {
     pub packs: Option<PathBuf>,
     pub autosave_seconds: f32,
     pub view_radius: i64,
+    /// How ships are kept.
+    pub ships: server::ShipSettings,
 }
 
 pub fn parse_serve<G: GameDefinition>(
@@ -310,6 +317,7 @@ pub fn parse_serve<G: GameDefinition>(
         packs: None,
         autosave_seconds: 60.0,
         view_radius: ViewOptions::default().view_radius,
+        ships: server::ShipSettings::default(),
     };
     let mut arguments = arguments.into_iter();
     while let Some(flag) = arguments.next() {
@@ -336,9 +344,35 @@ pub fn parse_serve<G: GameDefinition>(
                     return Err("--view-radius must be between 1 and 16".to_owned());
                 }
             }
+            "--ship-simulation-distance" => {
+                options.ships.simulation_distance = parse_number(&flag, &value(&flag)?)?;
+            }
+            "--ship-unload-distance" => {
+                options.ships.unload_distance = parse_number(&flag, &value(&flag)?)?;
+            }
+            "--ship-logout-policy" => {
+                let name = value(&flag)?;
+                options.ships.logout_policy =
+                    server::LogoutPolicy::from_name(&name).ok_or_else(|| {
+                        format!(
+                            "--ship-logout-policy must be chair, always-stay or always-vanish, not {name:?}"
+                        )
+                    })?;
+            }
             other => return Err(format!("unknown option {other:?}; try --help")),
         }
     }
+    // The two distances are a pair: one that does not agree with the other (or with the one it was not given) is refused.
+    server::ShipSettings::new(
+        options.ships.simulation_distance,
+        options.ships.unload_distance,
+    )
+    .map_err(|error| {
+        format!(
+            "--ship-simulation-distance {} and --ship-unload-distance {}: {error}",
+            options.ships.simulation_distance, options.ships.unload_distance
+        )
+    })?;
     Ok(Parsed::Run(options))
 }
 
@@ -573,6 +607,7 @@ mod tests {
                 packs: Some(PathBuf::from("mods")),
                 autosave_seconds: 10.0,
                 view_radius: 6,
+                ships: server::ShipSettings::default(),
             }
         );
         assert_eq!(parse("--help").unwrap(), Parsed::ShowHelp);
@@ -580,6 +615,50 @@ mod tests {
         assert!(parse("--autosave -1").unwrap_err().contains("positive"));
         assert!(parse("--view-radius 99").unwrap_err().contains("between"));
         assert!(serve_usage::<ExampleGame>().contains("voxunami serve example"));
+    }
+
+    #[test]
+    fn a_dedicated_server_is_told_how_to_keep_ships_and_refuses_distances_that_do_not_fit() {
+        let parse =
+            |text: &str| parse_serve::<ExampleGame>(text.split_whitespace().map(str::to_owned));
+        let ships = |text: &str| match parse(text).unwrap() {
+            Parsed::Run(options) => options.ships,
+            Parsed::ShowHelp => panic!("expected options"),
+        };
+        assert_eq!(ships(""), server::ShipSettings::default());
+        let set = ships(
+            "--ship-simulation-distance 100 --ship-unload-distance 400 --ship-logout-policy always-vanish",
+        );
+        assert_eq!(set.simulation_distance, 100.0);
+        assert_eq!(set.unload_distance, 400.0);
+        assert_eq!(set.logout_policy, server::LogoutPolicy::AlwaysVanish);
+        // One of the two, with the other what it was: each must still fit the other.
+        assert_eq!(
+            ships("--ship-simulation-distance 500").simulation_distance,
+            500.0
+        );
+        let error = parse("--ship-simulation-distance 2000").unwrap_err();
+        assert!(error.contains("2000") && error.contains("1024"), "{error}");
+        assert!(
+            parse("--ship-unload-distance 10")
+                .unwrap_err()
+                .contains("--ship-unload-distance 10")
+        );
+        assert!(parse("--ship-simulation-distance -5").is_err());
+        assert!(parse("--ship-simulation-distance far").is_err());
+        assert!(
+            parse("--ship-logout-policy sometimes")
+                .unwrap_err()
+                .contains("always-stay")
+        );
+        let usage = serve_usage::<ExampleGame>();
+        for flag in [
+            "--ship-simulation-distance",
+            "--ship-unload-distance",
+            "--ship-logout-policy",
+        ] {
+            assert!(usage.contains(flag), "{flag}");
+        }
     }
 
     #[test]

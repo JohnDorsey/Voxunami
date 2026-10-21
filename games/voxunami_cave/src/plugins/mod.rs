@@ -11,13 +11,17 @@ mod light;
 mod movement;
 mod ships;
 
-use game_shell::GameContent;
+use game_shell::{GameContent, GameDefinition};
+use grid_bodies::collision::BlockCollisions;
 use grid_bodies::{GridBodiesConfig, GridBodiesPlugin};
+use grid_lifecycle::{ArrivalConfig, GridLifecyclePlugin};
 use physics::BodySettings;
 use player_presence::PlayersPlugin;
 use plugin_host::Plugin;
+use voxel_space::{BrickCoordinate, WorldPosition};
 
 use crate::content::CaveContent;
+use crate::game::Cave;
 
 pub use block_editing::{BlockBroken, BlockEditRequested, BlockEditingPlugin, BlockPlaced};
 pub use fire::FirePlugin;
@@ -34,6 +38,18 @@ pub fn cave_plugins(content: &CaveContent) -> Vec<Box<dyn Plugin>> {
     let movement = MovementPlugin::new(content, presence.clone());
     // The one that flies ships by their pilots' keys shares the players' bodies with the one that moves them.
     let commands = ShipCommandsPlugin::new(content, presence.clone(), movement.movement());
+    // Ships move while a player is near, wait farther off, and are put in files farther still. A player whose ship is lost can go to where
+    // players start, and one whose ship went away with them and finds something in its place is asked what to do.
+    let table = content.block_table();
+    let lifecycle =
+        GridLifecyclePlugin::new(presence.clone(), world_spawn()).with_arrivals(ArrivalConfig {
+            collisions: BlockCollisions::new(
+                table.clone(),
+                Some(crate::block_properties::passable(&table)),
+            ),
+            block_channel: content.block_channel(),
+            state_channel: content.state_channel(),
+        });
     vec![
         Box::new(players),
         Box::new(BlockEditingPlugin::new(content, presence.clone())),
@@ -42,8 +58,15 @@ pub fn cave_plugins(content: &CaveContent) -> Vec<Box<dyn Plugin>> {
         Box::new(FirePlugin::new(content, presence)),
         Box::new(LightPlugin::new(content)),
         Box::new(ships(content)),
+        Box::new(lifecycle),
         Box::new(commands),
     ]
+}
+
+/// Where players start: the world's spawn.
+fn world_spawn() -> WorldPosition {
+    let [x, y, z] = Cave::default_camera().position;
+    WorldPosition::new(BrickCoordinate::ORIGIN, [x as f32, y as f32, z as f32])
 }
 
 /// The plugin that moves ships: they fall under the gravity players do, rest on the terrain, and are as heavy as the density of their blocks.

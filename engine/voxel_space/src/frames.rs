@@ -121,7 +121,9 @@ impl GridPose {
         let brick = origin
             .brick()
             .checked_offset(bricks[0], bricks[1], bricks[2])?;
-        Some(WorldPosition::new(brick, offset))
+        // (The offset may be a whole brick or more past the end of the brick, and is carried into the next: a place past the edge of the
+        // world is none, not a panic.)
+        WorldPosition::try_new(brick, offset)
     }
 
     fn turn(matrix: [[f64; 3]; 3], vector: [f64; 3]) -> [f64; 3] {
@@ -268,6 +270,7 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+    use crate::{BRICK_COORDINATE_MAXIMUM, BRICK_COORDINATE_MINIMUM};
 
     fn at(x: i64, y: i64, z: i64, offset: [f32; 3]) -> WorldPosition {
         WorldPosition::new(BrickCoordinate::new(x, y, z), offset)
@@ -275,6 +278,25 @@ mod tests {
 
     fn pose(position: WorldPosition, orientation: Orientation) -> GridPose {
         GridPose::new(position, orientation)
+    }
+
+    #[test]
+    fn a_place_just_past_the_edge_of_the_world_is_no_place_and_not_a_panic() {
+        // The last brick there is, and a ship whose origin is near its far corner: a place half a voxel on carries into the next brick.
+        let last = BRICK_COORDINATE_MAXIMUM;
+        let near_the_edge = pose(at(last, last, last, [31.9; 3]), Orientation::IDENTITY);
+        let past = at(0, 0, 0, [0.5; 3]);
+        assert_eq!(near_the_edge.local_to_world(past), None);
+        // The same distance from the origin the other way is a place (the low edge has room).
+        let inside = pose(at(last, last, last, [31.0; 3]), Orientation::IDENTITY);
+        assert!(inside.local_to_world(at(0, 0, 0, [0.5; 3])).is_some());
+        // And at the low end of the world too.
+        let low = pose(
+            at(BRICK_COORDINATE_MINIMUM, 0, 0, [0.0; 3]),
+            Orientation::IDENTITY,
+        );
+        assert_eq!(low.local_to_world(at(-1, 0, 0, [31.5, 0.0, 0.0])), None);
+        assert!(low.local_to_world(at(0, 0, 0, [1.5, 0.0, 0.0])).is_some());
     }
 
     fn close(a: WorldPosition, b: WorldPosition, tolerance: f32) -> bool {

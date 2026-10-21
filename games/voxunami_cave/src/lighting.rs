@@ -56,6 +56,12 @@ pub trait LightWorld {
 
     /// Stores the light of a voxel. Only called for voxels that were just read.
     fn set_light(&mut self, grid: GridId, at: VoxelCoordinate, value: u8);
+
+    /// Whether the rules of a grid run: the light of a grid that is waiting (a ship that is frozen) is not looked at, and what there
+    /// was to look at there is looked at when it is not.
+    fn is_simulated(&mut self, _grid: GridId) -> bool {
+        true
+    }
 }
 
 /// The light rule and the voxels it has yet to look at.
@@ -114,7 +120,7 @@ impl Lighting {
     /// One tick, looking at no more than `budget` of the pending voxels, in their fixed order; the
     /// rest stay pending for the next step.
     pub fn step_within(&mut self, world: &mut impl LightWorld, budget: usize) -> usize {
-        let mut looked_at = self.pending.take();
+        let mut looked_at = self.pending.take_simulated(|grid| world.is_simulated(grid));
         if looked_at.len() > budget {
             for (grid, at) in looked_at.split_off(budget) {
                 self.pending.insert(grid, at);
@@ -230,6 +236,8 @@ mod tests {
         blocks: HashMap<(GridId, VoxelCoordinate), (u32, u32)>,
         light: HashMap<(GridId, VoxelCoordinate), u8>,
         reads: usize,
+        /// The grids whose rules wait.
+        frozen: Vec<GridId>,
     }
 
     fn inside(at: VoxelCoordinate) -> bool {
@@ -250,6 +258,10 @@ mod tests {
 
         fn set_light(&mut self, grid: GridId, at: VoxelCoordinate, value: u8) {
             self.light.insert((grid, at), value);
+        }
+
+        fn is_simulated(&mut self, grid: GridId) -> bool {
+            !self.frozen.contains(&grid)
         }
     }
 
@@ -286,6 +298,43 @@ mod tests {
             lit.sort();
             lit
         }
+    }
+
+    #[test]
+    fn the_light_of_a_grid_that_waits_is_not_looked_at_and_is_looked_at_when_it_does_not() {
+        let ship = GridId::new(GridId::FIRST_ALLOCATED);
+        let mut lighting = Lighting::new(table());
+        let mut world = Box3::default();
+        // The same lamp in the terrain and in a ship that is frozen.
+        for grid in [MAIN, ship] {
+            world.blocks.insert((grid, at(4, 4, 4)), (LAMP, 0));
+            lighting.voxel_changed(grid, at(4, 4, 4));
+        }
+        world.frozen.push(ship);
+        for _ in 0..40 {
+            lighting.step(&mut world);
+        }
+        // The lamp of the terrain lit the box; the ship's lit nothing, and its work is still to be done.
+        assert!(world.light.keys().all(|(grid, _)| *grid == MAIN));
+        // (A whole lamp holds no light itself; the air beside it does.)
+        assert!(world.light_at(5, 4, 4) > 0);
+        assert!(!lighting.is_settled());
+        assert!(lighting.pending().iter().all(|(grid, _)| grid == ship));
+        // Let go, the light of the ship settles to what the terrain's did.
+        world.frozen.clear();
+        settle(&mut lighting, &mut world);
+        let lit_in = |grid: GridId| {
+            let mut lit: Vec<_> = world
+                .light
+                .iter()
+                .filter(|((in_grid, _), value)| *in_grid == grid && **value > 0)
+                .map(|((_, voxel), value)| (*voxel, *value))
+                .collect();
+            lit.sort();
+            lit
+        };
+        assert!(!lit_in(MAIN).is_empty());
+        assert_eq!(lit_in(ship), lit_in(MAIN));
     }
 
     /// Steps until nothing is pending, returning how many steps it took.

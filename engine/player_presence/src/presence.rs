@@ -388,8 +388,9 @@ fn update(
 }
 
 /// Where an entity is in the world: the level it is in, and its position and orientation there. An entity in the frame of a ship is
-/// where the ship puts it. (One in the frame of a ship that is not there, which the world does not allow, is taken to be in the main
-/// level at the coordinates it has: nothing better is known.)
+/// where the ship puts it, whether the ship is in memory or in a file (the world knows where it was put away). (One in the frame of
+/// a ship that the world does not know, which it does not allow, is taken to be in the main level at the coordinates it has: nothing
+/// better is known.)
 fn world_placement(world: &WorldData, entity: &Entity) -> (LevelIndex, WorldPosition, Orientation) {
     let pose = entity.pose;
     if let Some(level) = pose.grid.root_level() {
@@ -397,11 +398,10 @@ fn world_placement(world: &WorldData, entity: &Entity) -> (LevelIndex, WorldPosi
     }
     world
         .grids()
-        .get(pose.grid)
-        .and_then(|ship| {
-            let (position, orientation) =
-                ship.pose.place_in_world(pose.position, pose.orientation)?;
-            Some((ship.level, position, orientation))
+        .frame_of(pose.grid)
+        .and_then(|(level, ship)| {
+            let (position, orientation) = ship.place_in_world(pose.position, pose.orientation)?;
+            Some((level, position, orientation))
         })
         .unwrap_or((LevelIndex::MAIN, pose.position, pose.orientation))
 }

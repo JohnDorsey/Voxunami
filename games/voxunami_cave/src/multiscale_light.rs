@@ -375,6 +375,12 @@ pub trait ScaledLightWorld {
 
     /// Stores what a cell holds. Only called for cells whose anchor was just read.
     fn set_word(&mut self, scale: usize, grid: GridId, anchor: VoxelCoordinate, value: u32);
+
+    /// Whether the rules of a grid run: the cells of a grid that is waiting (a ship that is frozen) are not looked at, and are when it
+    /// is not.
+    fn is_simulated(&mut self, _grid: GridId) -> bool {
+        true
+    }
 }
 
 /// What a cell stores: for each of its six faces (by [`FaceDirection::index`]) the level it gives to
@@ -569,7 +575,7 @@ impl MultiScaleLighting {
             "a budget for every scale"
         );
         for (scale, &budget) in budgets.iter().enumerate().take(self.scheme.scales()) {
-            let mut looked_at = self.pending[scale].take();
+            let mut looked_at = self.pending[scale].take_simulated(|grid| world.is_simulated(grid));
             if looked_at.len() > budget {
                 for (grid, anchor) in looked_at.split_off(budget) {
                     self.pending[scale].insert(grid, anchor);
@@ -910,6 +916,56 @@ mod tests {
             lit.sort();
             lit
         }
+    }
+
+    /// A box in which the rules of one grid wait.
+    struct Waiting<'a> {
+        world: &'a mut Box3,
+        grid: GridId,
+    }
+
+    impl ScaledLightWorld for Waiting<'_> {
+        fn block_and_state(&mut self, grid: GridId, at: VoxelCoordinate) -> Option<(u32, u32)> {
+            self.world.block_and_state(grid, at)
+        }
+
+        fn word(&mut self, scale: usize, grid: GridId, anchor: VoxelCoordinate) -> u32 {
+            self.world.word(scale, grid, anchor)
+        }
+
+        fn set_word(&mut self, scale: usize, grid: GridId, anchor: VoxelCoordinate, value: u32) {
+            self.world.set_word(scale, grid, anchor, value);
+        }
+
+        fn is_simulated(&mut self, grid: GridId) -> bool {
+            grid != self.grid
+        }
+    }
+
+    #[test]
+    fn the_cells_of_a_grid_that_waits_are_not_looked_at_and_are_looked_at_when_it_does_not() {
+        let ship = GridId::new(GridId::FIRST_ALLOCATED);
+        let mut lighting = MultiScaleLighting::new(table(), SCHEME);
+        let mut world = Box3::with_edge(EDGE);
+        world.blocks.insert(at(4, 4, 4), LAMP);
+        lighting.voxel_changed(ship, at(4, 4, 4));
+        for _ in 0..30 {
+            lighting.step(&mut Waiting {
+                world: &mut world,
+                grid: ship,
+            });
+        }
+        assert!(world.lit(0).is_empty(), "nothing was lit");
+        assert!(!lighting.is_settled(), "and the work is still there");
+        // The light it makes when it does not wait is the light it would have made if it never had.
+        let mut never_waited = Box3::with_edge(EDGE);
+        never_waited.blocks.insert(at(4, 4, 4), LAMP);
+        let mut other = MultiScaleLighting::new(table(), SCHEME);
+        other.voxel_changed(ship, at(4, 4, 4));
+        settle(&mut other, &mut never_waited);
+        settle(&mut lighting, &mut world);
+        assert!(!world.lit(0).is_empty());
+        assert_eq!(world.lit(0), never_waited.lit(0));
     }
 
     /// Steps until nothing is pending, returning how many steps it took.

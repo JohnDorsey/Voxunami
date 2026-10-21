@@ -7,12 +7,15 @@ use protocol::{ClientId, EntityId, MAXIMUM_COMMAND_LENGTH, Message, PlayerKey, T
 use terrain::GenerationOutcome;
 use voxel_grid::{Brick, ChannelIndex, Grid};
 use voxel_space::{
-    BrickCoordinate, EntityPose, GravitySettings, GridId, GridPose, LevelIndex, MassPull,
-    Orientation, VoxelCoordinate, WorldPosition, gravity_at,
+    BrickCoordinate, EntityPose, GravitySettings, GridId, GridPose, LevelIndex, LocalVoxelIndex,
+    MassPull, Orientation, VoxelCoordinate, WorldPosition, gravity_at,
 };
-use world_storage::{MovingGrid, WorldData};
+use world_storage::{
+    MovingGrid, PilotLogout, ShipFiles, ShipFormat, ShipLoadError, ShipParkError, WorldData,
+};
 
 use crate::generated_cache::GeneratedBrickCache;
+use crate::ship_settings::ShipSettings;
 
 /// Who receives a game message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +48,24 @@ pub enum DetachError {
     NoVoxels,
     #[error(transparent)]
     Access(#[from] AccessError),
+}
+
+/// Why a ship could not be put into a file or brought out of one.
+#[derive(Debug, thiserror::Error)]
+pub enum ShipStorageError {
+    #[error("this world has nowhere to keep the files of ships")]
+    NoStorage,
+    #[error(transparent)]
+    Load(#[from] ShipLoadError),
+    #[error(transparent)]
+    Park(#[from] ShipParkError),
+}
+
+/// Where the files of ships are, and how they are written and read.
+#[derive(Debug)]
+pub(crate) struct ShipStorage {
+    pub format: ShipFormat,
+    pub files: Box<dyn ShipFiles>,
 }
 
 /// A force asked of a ship (see [`ServerWorld::apply_grid_force`]).
@@ -101,6 +122,14 @@ pub struct ServerWorld {
     /// The forces asked of ships and not yet taken.
     grid_forces: Vec<GridForce>,
     gravity: GravitySettings,
+    /// Where ships go when they are put away and come from when they are asked for; none in a world made without (see
+    /// [`ServerWorld::set_ship_storage`]).
+    ships: Option<ShipStorage>,
+    /// The ships that were brought into memory since the rules were told of their voxels (see [`ServerWorld::take_changes`]).
+    woken: Vec<GridId>,
+    ship_settings: ShipSettings,
+    /// The clients the game has sent away this tick, with what they are told.
+    disconnects: Vec<(ClientId, String)>,
 }
 
 impl ServerWorld {
@@ -119,7 +148,89 @@ impl ServerWorld {
             changes: Vec::new(),
             grid_forces: Vec::new(),
             gravity: GravitySettings::default(),
+            ships: None,
+            woken: Vec::new(),
+            ship_settings: ShipSettings::default(),
+            disconnects: Vec::new(),
         }
+    }
+
+    /// Sends a client away at the end of this tick's handling of the game, telling it why: it is disconnected and gone from the world,
+    /// as a client that said goodbye is. A client that is not there, or has been sent already, is not an error.
+    pub fn disconnect_client(&mut self, client: ClientId, reason: &str) {
+        if !self.disconnects.iter().any(|(sent, _)| *sent == client) {
+            self.disconnects.push((client, reason.to_owned()));
+        }
+    }
+
+    pub(crate) fn take_disconnects(&mut self) -> Vec<(ClientId, String)> {
+        std::mem::take(&mut self.disconnects)
+    }
+
+    /// How the host wants ships kept: see [`ShipSettings`].
+    pub fn ship_settings(&self) -> &ShipSettings {
+        &self.ship_settings
+    }
+
+    pub(crate) fn set_ship_settings(&mut self, settings: ShipSettings) {
+        self.ship_settings = settings;
+    }
+
+    pub(crate) fn set_ship_storage(&mut self, format: ShipFormat, files: Box<dyn ShipFiles>) {
+        self.ships = Some(ShipStorage { format, files });
+    }
+
+    pub(crate) fn ship_format(&self) -> Option<&ShipFormat> {
+        self.ships.as_ref().map(|ships| &ships.format)
+    }
+
+    /// The files of ships, if the world has somewhere to keep them: for a save to write into, and to clean.
+    pub fn ship_files_mut(&mut self) -> Option<&mut (dyn ShipFiles + '_)> {
+        match &mut self.ships {
+            Some(ships) => Some(&mut *ships.files),
+            None => None,
+        }
+    }
+
+    /// Brings a ship that is in a file into memory, where it was and moving as it was. The rules hear of its voxels as if they had just
+    /// been made (see [`ServerWorld::take_changes`]). Nothing changes if the file cannot be read.
+    pub fn load_ship(&mut self, grid: GridId) -> Result<(), ShipStorageError> {
+        let ships = self.ships.as_ref().ok_or(ShipStorageError::NoStorage)?;
+        self.data.load_ship(grid, &*ships.files, &ships.format)?;
+        self.woken.push(grid);
+        Ok(())
+    }
+
+    /// The ship that is in a file as it would be if it were brought in, without bringing it in (see [`WorldData::read_ship`]).
+    pub fn read_parked_ship(&self, grid: GridId) -> Result<MovingGrid, ShipStorageError> {
+        let ships = self.ships.as_ref().ok_or(ShipStorageError::NoStorage)?;
+        Ok(self.data.read_ship(grid, &*ships.files, &ships.format)?)
+    }
+
+    /// Brings a ship that is in a file into memory as this ship, which [`ServerWorld::read_parked_ship`] gave and the caller may have
+    /// changed. The rules hear of it as they do of a ship brought in with [`ServerWorld::load_ship`].
+    pub fn admit_ship(&mut self, grid: GridId, ship: MovingGrid) -> Result<(), ShipStorageError> {
+        self.data.admit_ship(grid, ship)?;
+        self.woken.push(grid);
+        Ok(())
+    }
+
+    /// Puts a ship that is in memory into a file, and out of memory. Whatever is aboard it stays aboard it, in its frame. With
+    /// `waits_for_those_aboard` it is not brought back when a player comes near, but when someone who is aboard it comes back. Nothing
+    /// changes if the file cannot be written.
+    pub fn park_ship(
+        &mut self,
+        grid: GridId,
+        waits_for_those_aboard: bool,
+    ) -> Result<(), ShipStorageError> {
+        let ships = self.ships.as_mut().ok_or(ShipStorageError::NoStorage)?;
+        self.data.park_ship(
+            grid,
+            waits_for_those_aboard,
+            &mut *ships.files,
+            &ships.format,
+        )?;
+        Ok(())
     }
 
     /// Says which channels to log changes of, in the order they happen. Nothing is logged for any
@@ -130,9 +241,32 @@ impl ServerWorld {
     }
 
     /// The changes made to watched channels since the last call, in order. Only changes that altered
-    /// a voxel are in it (setting a voxel to the value it has is not a change).
+    /// a voxel are in it (setting a voxel to the value it has is not a change). A ship that came out of its file since the last call
+    /// is in it too, last: every voxel of it that is not at its default, in each watched channel, as a change, so that a rule that
+    /// looks at what changes finds out what the ship holds, as it does for a ship that was made a moment ago.
     pub fn take_changes(&mut self) -> Vec<ChannelChange> {
-        std::mem::take(&mut self.changes)
+        let mut changes = std::mem::take(&mut self.changes);
+        for grid in std::mem::take(&mut self.woken) {
+            let Some(ship) = self.data.grids().get(grid) else {
+                continue;
+            };
+            for brick in ship.voxels.sorted_brick_coordinates() {
+                let contents = ship.voxels.brick(brick).expect("a listed brick exists");
+                for &channel in &self.watched {
+                    let default = ship.voxels.layout().default_value(channel);
+                    for local in LocalVoxelIndex::all() {
+                        if contents.get(channel, local) != default {
+                            changes.push(ChannelChange {
+                                grid,
+                                channel,
+                                voxel: brick.voxel_at(local),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        changes
     }
 
     /// The kinds of entity and the items the game has.
@@ -159,9 +293,9 @@ impl ServerWorld {
             .spawn(&self.catalog.kinds, kind, pose, overrides)
     }
 
-    /// An entity can be in the frame of a level or of a ship that is there, and of nothing else.
+    /// An entity can be in the frame of a level or of a ship the world has (in memory or in a file), and of nothing else.
     fn check_frame(&self, grid: GridId) -> Result<(), EntityError> {
-        if grid.root_level().is_some() || self.data.grids().get(grid).is_some() {
+        if grid.root_level().is_some() || self.data.grids().knows(grid) {
             Ok(())
         } else {
             Err(EntityError::NoSuchGrid(grid))
@@ -579,6 +713,59 @@ impl ServerWorld {
         Ok(())
     }
 
+    /// Whether the rules of a grid run and its bodies move: the terrain of a level always, and a ship unless it is frozen. A grid that is not
+    /// there is not.
+    pub fn grid_is_simulated(&self, grid: GridId) -> bool {
+        match grid.root_level() {
+            Some(level) => self.data.level(level).is_some(),
+            None => self.data.grids().get(grid).is_some_and(|ship| !ship.frozen),
+        }
+    }
+
+    /// Freezes a ship, because no player is near it, or lets it go again. A frozen ship is where it is, asleep: the bodies hold it, its
+    /// rules wait, and whatever speed it had is gone (as for a ship that is held). It is not saved as frozen.
+    pub fn set_grid_frozen(&mut self, grid: GridId, frozen: bool) -> Result<(), AccessError> {
+        let ship = self
+            .data
+            .grids_mut()
+            .get_mut(grid)
+            .ok_or(AccessError::NoSuchGrid(grid))?;
+        if frozen && !ship.frozen {
+            ship.linear_velocity = [0.0; 3];
+            ship.angular_velocity = [0.0; 3];
+        }
+        ship.frozen = frozen;
+        Ok(())
+    }
+
+    /// Says whether a ship that is in a file waits for whoever is aboard it instead of coming back when a player is near.
+    pub fn set_parked_ship_waits(
+        &mut self,
+        grid: GridId,
+        waits_for_those_aboard: bool,
+    ) -> Result<(), AccessError> {
+        self.data
+            .grids_mut()
+            .get_parked_mut(grid)
+            .ok_or(AccessError::NoSuchGrid(grid))?
+            .waits_for_those_aboard = waits_for_those_aboard;
+        Ok(())
+    }
+
+    /// Says what a pilot's logout does to a ship.
+    pub fn set_grid_on_pilot_logout(
+        &mut self,
+        grid: GridId,
+        on_pilot_logout: PilotLogout,
+    ) -> Result<(), AccessError> {
+        self.data
+            .grids_mut()
+            .get_mut(grid)
+            .ok_or(AccessError::NoSuchGrid(grid))?
+            .on_pilot_logout = on_pilot_logout;
+        Ok(())
+    }
+
     /// Holds a ship still, or lets it move.
     pub fn set_grid_held(&mut self, grid: GridId, held: bool) -> Result<(), AccessError> {
         let ship = self
@@ -655,7 +842,10 @@ impl ServerWorld {
             mass: 0.0,
             centre_of_mass: [0.0; 3],
             held: false,
+            frozen: false,
+            on_pilot_logout: PilotLogout::Stay,
             voxels: Grid::new(layout),
+            sections: Vec::new(),
         }))
     }
 
@@ -1464,5 +1654,98 @@ mod tests {
         assert!(world.entities().in_grid(ship).is_empty());
         // A ship that is not there takes nothing with it.
         assert!(world.remove_grid(ship).is_none());
+    }
+
+    #[test]
+    fn a_world_made_without_somewhere_to_keep_ship_files_cannot_put_ships_away_or_bring_them_in() {
+        let (mut world, ..) = counting_world();
+        let ship = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        assert!(matches!(
+            world.park_ship(ship, false),
+            Err(ShipStorageError::NoStorage)
+        ));
+        assert!(matches!(
+            world.load_ship(ship),
+            Err(ShipStorageError::NoStorage)
+        ));
+        assert!(world.ship_files_mut().is_none());
+        // The ship is where it was.
+        assert!(world.data().grids().get(ship).is_some());
+    }
+
+    #[test]
+    fn a_frozen_ship_is_not_simulated_and_has_no_speed_and_the_terrain_always_is() {
+        let (mut world, ..) = counting_world();
+        let ship = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        world
+            .set_grid_velocity(ship, [1.0, 2.0, 3.0], [0.0, 0.5, 0.0])
+            .unwrap();
+        assert!(world.grid_is_simulated(ship));
+        assert!(world.grid_is_simulated(GridId::MAIN));
+        // A grid that is not there is not simulated: not a level the world lacks, and not a ship it never made.
+        assert!(!world.grid_is_simulated(GridId::new(5)));
+        assert!(!world.grid_is_simulated(GridId::new(GridId::FIRST_ALLOCATED + 40)));
+
+        world.set_grid_frozen(ship, true).unwrap();
+        assert!(!world.grid_is_simulated(ship));
+        let frozen = world.data().grids().get(ship).unwrap();
+        assert!(frozen.frozen);
+        assert_eq!(
+            (frozen.linear_velocity, frozen.angular_velocity),
+            ([0.0; 3], [0.0; 3])
+        );
+        // Whoever moves it while it is frozen says how fast; freezing again does not take that away.
+        world
+            .set_grid_velocity(ship, [4.0, 0.0, 0.0], [0.0; 3])
+            .unwrap();
+        world.set_grid_frozen(ship, true).unwrap();
+        assert_eq!(
+            world.data().grids().get(ship).unwrap().linear_velocity,
+            [4.0, 0.0, 0.0]
+        );
+        // Let go, it is simulated again, and starts from rest as it is (the bodies start it).
+        world.set_grid_frozen(ship, false).unwrap();
+        assert!(world.grid_is_simulated(ship));
+        assert!(matches!(
+            world.set_grid_frozen(GridId::new(GridId::FIRST_ALLOCATED + 40), true),
+            Err(AccessError::NoSuchGrid(_))
+        ));
+    }
+
+    #[test]
+    fn a_ship_says_what_its_pilots_logout_does_to_it() {
+        let (mut world, ..) = counting_world();
+        let ship = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        assert_eq!(
+            world.data().grids().get(ship).unwrap().on_pilot_logout,
+            PilotLogout::Stay
+        );
+        world
+            .set_grid_on_pilot_logout(ship, PilotLogout::Vanish)
+            .unwrap();
+        assert_eq!(
+            world.data().grids().get(ship).unwrap().on_pilot_logout,
+            PilotLogout::Vanish
+        );
+        world
+            .set_grid_on_pilot_logout(ship, PilotLogout::Stay)
+            .unwrap();
+        assert_eq!(
+            world.data().grids().get(ship).unwrap().on_pilot_logout,
+            PilotLogout::Stay
+        );
+        assert!(matches!(
+            world.set_grid_on_pilot_logout(
+                GridId::new(GridId::FIRST_ALLOCATED + 9),
+                PilotLogout::Vanish
+            ),
+            Err(AccessError::NoSuchGrid(_))
+        ));
     }
 }

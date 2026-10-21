@@ -5,6 +5,19 @@ use voxel_space::{
     BrickBox, BrickCoordinate, GridId, GridPose, LatticeTransform, LevelIndex, WorldPosition,
 };
 
+use crate::container::Section;
+use crate::ship_files::ShipFileName;
+
+/// What happens to a ship when its pilot logs out (a ship's own wish; a server setting can override it).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PilotLogout {
+    /// It stays where it is, in the world, as any ship does.
+    #[default]
+    Stay,
+    /// It is saved and put away with the pilot, and comes back, where it was, when they do.
+    Vanish,
+}
+
 /// A grid of voxels that is not the terrain of a level: a ship. Its voxels are in its own coordinates, and its pose says where
 /// those coordinates are in its level.
 #[derive(Clone, Debug, PartialEq)]
@@ -22,8 +35,15 @@ pub struct MovingGrid {
     pub centre_of_mass: [f32; 3],
     /// A held ship does not move: gravity, forces and collisions leave it where it is, and everything else collides with it.
     pub held: bool,
+    /// A frozen ship is held, and its rules wait, because no player is near it (see `server::ShipSettings`). It is not saved: a ship that
+    /// comes out of its file is awake.
+    pub frozen: bool,
+    /// What its pilot's logout does to it.
+    pub on_pilot_logout: PilotLogout,
     /// The voxels. An absent brick is every channel at its default (nothing generates a ship).
     pub voxels: Grid,
+    /// Sections of plugins that the ship's file had and nobody here reads, kept as they were so that a ship saved again loses nothing.
+    pub sections: Vec<Section>,
 }
 
 impl MovingGrid {
@@ -111,6 +131,22 @@ impl MovingGrid {
     }
 }
 
+/// A ship that is not in memory: its voxels are in a file, and this is what the world knows of it without reading the file, which is enough
+/// to say where it is in the world, how near a player is to it, and where what was aboard it is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParkedGrid {
+    pub level: LevelIndex,
+    /// Where it was when it was put away.
+    pub pose: GridPose,
+    /// The bricks of the level it touched then (`None` for a ship with no bricks).
+    pub bounds: Option<BrickBox>,
+    /// Its file, and the checksum the file had when it was written.
+    pub file: ShipFileName,
+    pub checksum: u32,
+    /// It went away with its pilot and comes back with whoever is aboard it, not when a player comes near.
+    pub waits_for_those_aboard: bool,
+}
+
 /// The grids that are not the root grids of levels, and the ids they had before they were split or merged.
 ///
 /// Ids come from a counter that only goes up, starting at [`GridId::FIRST_ALLOCATED`], so an id is never given twice in a world and a
@@ -120,7 +156,11 @@ impl MovingGrid {
 #[derive(Clone, Debug, PartialEq)]
 pub struct GridStore {
     next: u64,
+    /// The number the next file of a ship will have (see [`ShipFileName`]).
+    next_serial: u64,
     grids: BTreeMap<GridId, MovingGrid>,
+    /// The ships that are in files and not in memory.
+    parked: BTreeMap<GridId, ParkedGrid>,
     tombstones: BTreeMap<GridId, Vec<(GridId, LatticeTransform)>>,
 }
 
@@ -134,9 +174,114 @@ impl GridStore {
     pub fn new() -> Self {
         Self {
             next: GridId::FIRST_ALLOCATED,
+            next_serial: 0,
             grids: BTreeMap::new(),
+            parked: BTreeMap::new(),
             tombstones: BTreeMap::new(),
         }
+    }
+
+    /// The store a saved world had: no ship in memory, these in files, this counter and these retired ids. The caller has checked that the
+    /// ids are below the counter and that no id is both a ship and retired.
+    pub(crate) fn from_saved(
+        next: u64,
+        next_serial: u64,
+        parked: Vec<(GridId, ParkedGrid)>,
+        tombstones: Vec<(GridId, Vec<(GridId, LatticeTransform)>)>,
+    ) -> Self {
+        Self {
+            next: next.max(GridId::FIRST_ALLOCATED),
+            next_serial,
+            grids: BTreeMap::new(),
+            parked: parked.into_iter().collect(),
+            tombstones: tombstones.into_iter().collect(),
+        }
+    }
+
+    /// The id the next ship will get: what a save keeps, so that an id is never given twice.
+    pub fn next_id(&self) -> u64 {
+        self.next
+    }
+
+    /// The number the next file of a ship will have: what a save keeps, so that a file is never given the name of an earlier one.
+    pub fn next_serial(&self) -> u64 {
+        self.next_serial
+    }
+
+    /// The number for a file that is about to be written, which is not given again.
+    pub fn take_serial(&mut self) -> u64 {
+        let serial = self.next_serial;
+        self.next_serial += 1;
+        serial
+    }
+
+    /// Whether anything about this store is worth saving: a ship, a retired id, or ids given out.
+    pub fn is_worth_saving(&self) -> bool {
+        self.next != GridId::FIRST_ALLOCATED
+            || self.next_serial != 0
+            || !self.grids.is_empty()
+            || !self.parked.is_empty()
+            || !self.tombstones.is_empty()
+    }
+
+    /// The retired ids and what took their places, in order of id.
+    pub fn tombstones(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (GridId, &[(GridId, LatticeTransform)])> {
+        self.tombstones
+            .iter()
+            .map(|(id, successors)| (*id, successors.as_slice()))
+    }
+
+    /// The ships that are in files, in order of id.
+    pub fn parked(&self) -> impl ExactSizeIterator<Item = (GridId, &ParkedGrid)> {
+        self.parked.iter().map(|(id, parked)| (*id, parked))
+    }
+
+    pub fn get_parked(&self, id: GridId) -> Option<&ParkedGrid> {
+        self.parked.get(&id)
+    }
+
+    pub fn get_parked_mut(&mut self, id: GridId) -> Option<&mut ParkedGrid> {
+        self.parked.get_mut(&id)
+    }
+
+    /// Whether this is a ship of the world, in memory or in a file.
+    pub fn knows(&self, id: GridId) -> bool {
+        self.grids.contains_key(&id) || self.parked.contains_key(&id)
+    }
+
+    /// The level a ship is in and where it is there, whether it is in memory or in a file.
+    pub fn frame_of(&self, id: GridId) -> Option<(LevelIndex, GridPose)> {
+        match (self.grids.get(&id), self.parked.get(&id)) {
+            (Some(ship), _) => Some((ship.level, ship.pose)),
+            (None, Some(parked)) => Some((parked.level, parked.pose)),
+            (None, None) => None,
+        }
+    }
+
+    /// Puts a ship in a file: it leaves memory, and `parked` says where it went. Returns the ship, or `None`, changing nothing, if it is
+    /// not in memory.
+    pub fn park(&mut self, id: GridId, parked: ParkedGrid) -> Option<MovingGrid> {
+        let ship = self.grids.remove(&id)?;
+        self.parked.insert(id, parked);
+        Some(ship)
+    }
+
+    /// Brings a parked ship into memory under its own id. Returns what the world knew of it, or `None`, changing nothing, if no ship of
+    /// that id is parked (or one is already in memory).
+    pub fn unpark(&mut self, id: GridId, ship: MovingGrid) -> Option<ParkedGrid> {
+        if self.grids.contains_key(&id) {
+            return None;
+        }
+        let parked = self.parked.remove(&id)?;
+        self.grids.insert(id, ship);
+        Some(parked)
+    }
+
+    /// Forgets a ship that is in a file (its file is the caller's to remove), leaving no tombstone.
+    pub fn remove_parked(&mut self, id: GridId) -> Option<ParkedGrid> {
+        self.parked.remove(&id)
     }
 
     fn allocate(&mut self) -> GridId {
@@ -228,7 +373,7 @@ impl GridStore {
     /// grid itself (with no transform) if it still exists, the parts it was split into or the grid it was merged into (following
     /// further splits and merges), or nothing if the grid is gone.
     pub fn resolve(&self, id: GridId) -> Vec<(GridId, LatticeTransform)> {
-        if self.grids.contains_key(&id) {
+        if self.knows(id) {
             return vec![(id, LatticeTransform::IDENTITY)];
         }
         let Some(successors) = self.tombstones.get(&id) else {
@@ -273,7 +418,10 @@ mod tests {
             mass: 0.0,
             centre_of_mass: [0.0; 3],
             held: false,
+            frozen: false,
+            on_pilot_logout: PilotLogout::Stay,
             voxels,
+            sections: Vec::new(),
         }
     }
 

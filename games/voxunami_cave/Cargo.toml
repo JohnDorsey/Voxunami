@@ -13,6 +13,7 @@ block_models.workspace = true
 content_registry.workspace = true
 game_shell.workspace = true
 grid_bodies.workspace = true
+grid_lifecycle.workspace = true
 lattice.workspace = true
 physics.workspace = true
 plugin_host.workspace = true

@@ -21,10 +21,22 @@ impl WorldPosition {
     /// Carries whole bricks out of `offset`, so any finite offset is accepted. Panics if the
     /// offset is not finite or the position would leave the supported coordinate range.
     pub fn new(brick: BrickCoordinate, offset: [f32; 3]) -> Self {
+        assert!(
+            offset.iter().all(|component| component.is_finite()),
+            "position offset must be finite"
+        );
+        Self::try_new(brick, offset).expect("position is outside the supported coordinate range")
+    }
+
+    /// Like [`WorldPosition::new`], but `None` for an offset that is not finite or a position that would leave the supported coordinate
+    /// range, which `new` panics at.
+    pub fn try_new(brick: BrickCoordinate, offset: [f32; 3]) -> Option<Self> {
         let mut carries = [0i64; 3];
         let mut normalized = offset;
         for axis in 0..3 {
-            assert!(offset[axis].is_finite(), "position offset must be finite");
+            if !offset[axis].is_finite() {
+                return None;
+            }
             let mut carry = (offset[axis] / EDGE).floor();
             let mut remainder = offset[axis] - carry * EDGE;
             // Rounding can leave the remainder exactly at the edge length.
@@ -35,13 +47,11 @@ impl WorldPosition {
             normalized[axis] = remainder;
             carries[axis] = carry as i64;
         }
-        let brick = brick
-            .checked_offset(carries[0], carries[1], carries[2])
-            .expect("position is outside the supported coordinate range");
-        Self {
+        let brick = brick.checked_offset(carries[0], carries[1], carries[2])?;
+        Some(Self {
             brick,
             offset: normalized,
-        }
+        })
     }
 
     pub fn brick(self) -> BrickCoordinate {
@@ -102,6 +112,33 @@ mod tests {
 
     fn brick(x: i64, y: i64, z: i64) -> BrickCoordinate {
         BrickCoordinate::new(x, y, z)
+    }
+
+    #[test]
+    fn a_position_that_cannot_be_made_is_none_from_try_new_and_the_same_as_new_when_it_can() {
+        use crate::BRICK_COORDINATE_MAXIMUM;
+        let last = brick(BRICK_COORDINATE_MAXIMUM, 0, 0);
+        // Past the end of the world, by a carry; or not a number at all.
+        assert_eq!(WorldPosition::try_new(last, [32.0, 0.0, 0.0]), None);
+        assert_eq!(
+            WorldPosition::try_new(last, [31.0, 0.0, 0.0])
+                .unwrap()
+                .brick(),
+            last
+        );
+        assert_eq!(
+            WorldPosition::try_new(brick(0, 0, 0), [f32::NAN, 0.0, 0.0]),
+            None
+        );
+        assert_eq!(
+            WorldPosition::try_new(brick(0, 0, 0), [0.0, f32::INFINITY, 0.0]),
+            None
+        );
+        // Where it can be made it is what `new` makes, carries and all.
+        assert_eq!(
+            WorldPosition::try_new(brick(1, 2, 3), [40.0, -1.0, 64.5]),
+            Some(WorldPosition::new(brick(1, 2, 3), [40.0, -1.0, 64.5]))
+        );
     }
 
     #[test]

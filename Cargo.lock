@@ -1129,6 +1129,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "grid_lifecycle"
+version = "0.0.0"
+dependencies = [
+ "block_models",
+ "entities",
+ "grid_bodies",
+ "identity",
+ "namespaced_id",
+ "physics",
+ "player_presence",
+ "plugin_host",
+ "protocol",
+ "server",
+ "transport",
+ "voxel_grid",
+ "voxel_space",
+ "world_storage",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3308,6 +3328,7 @@ dependencies = [
  "entities",
  "game_shell",
  "grid_bodies",
+ "grid_lifecycle",
  "lattice",
  "libm",
  "namespaced_id",

@@ -7,8 +7,7 @@ use std::path::Path;
 use namespaced_id::NamespacedId;
 use replay::RecordingConnection;
 use transport::Connection;
-use world_storage::file::write_atomically;
-use world_storage::{ParsedWorld, WorldData};
+use world_storage::{DirectoryShipFiles, ParsedWorld, WorldData};
 
 use crate::definition::GameContent;
 
@@ -38,17 +37,19 @@ pub fn open_world<Content: GameContent>(
     Ok(world)
 }
 
-/// Saves the world to `path`, all or nothing.
+/// Saves the world to `path`, and the files of its ships to the folder beside it: the files first and the world file last, so that
+/// whatever happens there is a world that can be read.
 pub fn save_world<Content: GameContent>(
     content: &Content,
     world: &mut WorldData,
     path: &Path,
 ) -> Result<(), String> {
     world.prune_unmodified_overrides();
-    let bytes = world
-        .save(&content.registries())
+    let save = world
+        .save_with_ships(&content.registries())
         .map_err(|error| format!("{}: {error}", path.display()))?;
-    write_atomically(path, &bytes).map_err(|error| format!("{}: {error}", path.display()))
+    save.write(path, &mut DirectoryShipFiles::beside(path))
+        .map_err(|error| format!("{}: {error}", path.display()))
 }
 
 /// Wraps `connection` so what it receives is recorded to `path`.

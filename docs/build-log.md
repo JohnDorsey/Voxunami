@@ -686,6 +686,61 @@ Phase 32h, after the owner's first play (2026-10-21): a crash and lag spikes, bo
   second goes through a floor 3 thick (it does not at 138). Three mutants of the new lookahead survive (no distance ahead; no speed term; no hysteresis): they are safety margins
   that no scene can show, since the one that would, a faster fall, goes through the floor whatever the colliders.
 
+Phase 32i, part 1 (ship files and the consistent save; 2026-10-21): ships are saved. The step was built in three parts, one after the other, and checked and committed as one, since the
+parts changed the same files: files and the save (this), then the lifecycle (simulation distance, freezing, parking, loading on demand), then the questions to the player (a ship that
+cannot be found, a ship that went away with its pilot and comes back blocked).
+- `world_storage`: `ShipFileName`, `ShipFiles` (`DirectoryShipFiles`, `MemoryShipFiles`), the file of a ship (`ShipFormat`, `ParsedShip`: written from a world's
+  numbering of content and read into another's), `ParkedGrid`, `WorldSave`, `engine:grids`, and a place to fall back to for entities in the frame of a ship;
+  `MovingGrid` gained `on_pilot_logout` and `sections`. `WorldData::{save_with_ships, load_ship, park_ship, ship_format}`. The rest is in `moving-grids-spec.md` 2.8.
+- `server`: `ServerWorld::{load_ship, park_ship}`, the rules told of a ship that came in (`take_changes`), `Server::{save -> WorldSave, with_ship_files,
+  load_parked_ships, ship_files_mut}`. `game_shell`: the world file's folder of ships, for the autosave and for the save on exit.
+- **A correction to the spec found while building:** the file is named for the number of the write, not the tick. Ticks begin again when a server starts, so
+  a new run could write the name that the world file on the disk still names, and a crash between the two writes would leave a ship whose file does not match its
+  checksum. The counter is saved in `engine:grids`. And the folder is `<whole name>.ships`, not the name with its extension replaced (two world files differing in
+  the extension would have shared one, and the cleaning after a save would have taken the other's files).
+- Tests: `ship_files.rs` (the file: round trip, the same bytes every time, a world that numbers content otherwise, every cut and every changed byte found),
+  `ship_save.rs` (the set: names and numbers, loading one by one, tombstones with turns, other levels, a disk that fails at each call in turn, damaged and
+  missing and swapped files), the entities aboard (`entities_save.rs`), `ships_in_files.rs` (a server and the next one from its save; the rules told), and Cave's
+  `saved_ships.rs` (a ship in flight is where it was and moving as it was after a restart; a held ship stays held; a passenger who logged out aboard logs in aboard,
+  at the same place in the ship, turned and moved as it is). Two pins, a ship file and a world file, were taken on Windows and are checked on Linux. (The three
+  parts were checked and committed together, since they changed the same files; the totals of the whole suite are with part 3.)
+- Mutations: 32, 30 caught at once. Two survived and the tests were wrong, not the code: one passed for the wrong reason (the retired id I changed was also
+  the id of its own successor, which another check refused), and one never made an ordinary edit in the same tick, so the order of the two kinds of change was
+  not tested. Both fixed and caught.
+- The questions and the pilot's logout are part 3, below.
+
+Phase 32i, part 2 (the lifecycle; 2026-10-21): ships are kept by how near the players are.
+- New crate `engine/grid_lifecycle` (`GridLifecyclePlugin`, `squared_distance_to_bricks`) and `server::ShipSettings` (see `moving-grids-spec.md` 2.7 and 2.8 for what it
+  does): frozen beyond the simulation distance, in a file beyond the unload distance, back when a player comes near or a player who was aboard joins. `MovingGrid::frozen`,
+  `ServerWorld::{set_grid_frozen, grid_is_simulated, ship_settings}`, the bodies hold a frozen ship, `ActiveVoxels::take_simulated` and the two light rules wait for a grid that
+  waits. `serve` has the three flags. Presence places a player in the frame of a ship that is in a file by the ship's saved pose.
+- A design point the tests made me look at: with no player there is nothing near any ship, so the first ticks of a server (before its first player has a place) freeze and
+  put away every ship, and a player who then joins has the ones near them brought back in the tick they arrive. That is the behaviour the owner described, not a bug; the
+  test rigs of ships keep them going with `ShipSettings::everywhere`.
+- Tests: `grid_lifecycle/tests/lifecycle.rs` (10: the tenth of hysteresis at both ends, between the two distances, the distance to a ship in a file from either side, other
+  levels, a ship that waits for those aboard, a player joining aboard a ship in a file, a disk that fails and is not asked again at once, `everywhere`, each ship its own way), the distances, Cave's `ship_distances.rs` (a
+  falling ship stops where it is, is put in a file, and falls on when the player comes back; a frozen ship hangs; what is in a ship is the same after a file; the light of a
+  frozen ship waits), the two light rules and `ActiveVoxels::take_simulated`, the flags of `serve`, and the player in the frame of a ship in a file. Mutations: 26.
+
+Phase 32i, part 3 (the pilot's logout and the questions to the player; 2026-10-21): 32i is built.
+- `grid_lifecycle` gained the arrivals (`arrival.rs`: the hull, the look at a landing, the search for the nearest free pose, breaking terrain and blocks), the two questions (a ship that
+  cannot be found; a ship that would land in something) and `LifecycleReport::waiting`. A game gives it the world's spawn and, for the look, what its blocks are to a body
+  (`ArrivalConfig`). `ServerWorld::{set_parked_ship_waits, set_grid_on_pilot_logout}`. Cave: `ShipCommandsPlugin` puts a pilot's ship away with them (`/ship vanish on|off` says whether it
+  should), and Cave gives the lifecycle its default camera as the spawn and its blocks for the look. See `moving-grids-spec.md` 2.8 for what happens.
+- Decisions made while building, for the owner to overrule: (a) "someone else is aboard" counts only players who are connected: a passenger who is away keeps their place in the ship's
+  frame, and the first of them to join brings the ship in; (b) the look at a landing is of the cells with blocks, not of the empty space of the bricks (a first version of the tests could not
+  tell, a mutation said so, and there is a test for it now); (c) a ship that cannot be put in a file when its pilot leaves stays and goes on as it was, instead of stopping; (d) the questions
+  are not saved; (e) a lost ship's "appear in the air" puts the player where they were in the world, at the height they had; (f) stopping a server does not run the logout of the players
+  who are connected, so a pilot's ship does not vanish when a singleplayer window is closed (found while writing how to try this, from reading the code and not run: the window keeps its connection until the world is saved).
+  Left alone, since making a stop mean "everyone leaves" changes what a recording ends with; it is in the plan's open list.
+- Tests: `grid_lifecycle/tests/arrivals.rs` (24 tests) over a harness moved to `tests/common/mod.rs`, which `lifecycle.rs` now uses with its tests unchanged; Cave's `ship_vanishing.rs`
+  (16 tests); the shared Cave harness gained `say`, `put_stone`, `block_at` and a disk that fails. Windows 1646 and Linux 1647 tests pass; fmt and clippy are clean.
+- Mutations: 45 in this part, 42 caught as the tests were. Three survived. Two tests were too weak and are fixed (and the mutants caught): the look at a landing could not tell the
+  blocks of a ship from the empty space of its bricks (a ship whose empty cells are in the ground now comes back without a question), and the check that a ship that goes is stopped looked at it
+  after friction had stopped it anyway (it reads what is in the file now). The third, a guard that left the leaving pilot out of "someone else is aboard", could not be caught because the order of
+  the handlers already did it; the order is now stated (`after`), which the host checks when it is built, and the guard is gone. All 58 mutants of parts 1 and 2 that still applied were run again on
+  the final code and all were caught (one mutant of part 1 was split in two, for `load_ship` and `admit_ship`, and one of part 2 was replaced by those of part 3).
+
 Planning note, 2026-10-21 (the owner asked for the two open ship items to be put in the plan; they became steps 32j and 32k, before splitting): the claim in the earlier
 entries that ships "have no continuous collision detection against terrain" was a guess about the cause, and measuring it showed the cause is another. In the `physics` crate
 alone (a throwaway test, removed), cubes of 1 and 4 and rafts of 10 by 10 were dropped at set speeds on a slab of terrain: with the 3 solver steps a tick has, a floor of 1

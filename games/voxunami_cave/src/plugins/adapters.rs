@@ -71,6 +71,10 @@ impl LightWorld for WorldLight<'_, '_> {
             .grid(grid)
             .and_then(|mut grid| grid.set(self.channels.light, at, u32::from(value)));
     }
+
+    fn is_simulated(&mut self, grid: GridId) -> bool {
+        self.context.world().grid_is_simulated(grid)
+    }
 }
 
 /// The world as the multiscale light sees it.
@@ -102,6 +106,10 @@ impl ScaledLightWorld for WorldScaledLight<'_, '_> {
         for home in multiscale_light::word_homes(self.scheme.width(scale), anchor) {
             let _ = grid.set(self.channels.scales[scale], home, value);
         }
+    }
+
+    fn is_simulated(&mut self, grid: GridId) -> bool {
+        self.context.world().grid_is_simulated(grid)
     }
 }
 
