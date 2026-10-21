@@ -295,8 +295,11 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// Phase 32h: the command `/ship` is in the reply to `/nonsense`, which lists the commands: 29 bytes, 7,183,468 to 7,183,497; the saved
 /// world is the same. Checked by a control run: with the plugin of the command left out of the list the old values came back.
 /// Both together (the slide, then the command): 7,183,468 + 1,478 + 29 = 7,184,975 bytes. Taken on Windows and Linux; the two agree.
+/// Phase 32g, after: `/tp` tells the player where they are (`PlayerPlaced`, so that the client watches around the new place even when it is
+/// far from the camera). The script teleports six times and each message is 45 bytes: +270, 7,183,468 to 7,183,738; the saved world is the same.
+/// All three together (the slide, the command, the teleports): 7,183,468 + 1,478 + 29 + 270 = 7,185,245 bytes.
 const PINNED: (u64, usize, u64) = (
-    10_695_475_092_735_636_736,
-    7_184_975,
+    10_421_932_796_118_103_930,
+    7_185_245,
     15_753_024_505_422_231_765,
 );
