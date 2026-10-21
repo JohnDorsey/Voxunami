@@ -474,7 +474,10 @@ fn hash_of_poses(scene: &Scene) -> u64 {
 #[test]
 fn the_poses_of_the_ships_are_the_same_whatever_is_kept_of_their_speeds() {
     // Taken before a ship that went to sleep was given no speed on record (see the test of that), and not changed by it.
-    assert_eq!(hash_of_poses(&busy_scene()), 1_355_701_843_541_054_234);
+    // (It changed in Phase 32h, when a ship came to have colliders for the terrain within a few voxels of it and not for the bricks around its
+    // bricks: 1_355_701_843_541_054_234 before. Two of the three ships are where they were to the bit, and the third, which slides and spins on the
+    // ground, is 0.003 and 0.004 voxel from where it was and 0.0001 in the turn: the terrain that does not touch it is not the same in the solver.)
+    assert_eq!(hash_of_poses(&busy_scene()), 4_233_839_071_203_554_194);
 }
 
 #[test]
@@ -483,5 +486,73 @@ fn the_same_ships_move_the_same_bits_every_time_and_on_every_machine() {
     assert_eq!(hash_of_ships(&first), hash_of_ships(&second));
     // Written down once; a change in it is a change in the simulation (Windows and Linux must agree on it).
     // (It changed in Phase 32g, when a ship that sleeps was given no speed on record: 187_330_083_679_574_898 before; the poses did not.)
-    assert_eq!(hash_of_ships(&first), 16_582_222_097_314_237_682);
+    // (It changed again in Phase 32h, with the terrain a ship has colliders for: 16_582_222_097_314_237_682 before; see the test of the poses.)
+    assert_eq!(hash_of_ships(&first), 8_675_827_597_625_099_639);
+}
+
+/// A cube of 4 let go over the natural ground (not the flat floor of the other tests: it is what a player has), `height` voxels above where
+/// the ground is at its middle. Returns how many bricks the terrain generator made in each of `ticks` ticks from the one before the cube was
+/// made.
+fn bricks_generated_each_tick_by_a_ship_falling_to_natural_ground(
+    height: i64,
+    ticks: usize,
+) -> Vec<u64> {
+    let mut scene = Scene::new();
+    let seen = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let generated_so_far = |scene: &mut Scene| {
+        let writer = std::sync::Arc::clone(&seen);
+        scene.run(move |world| {
+            writer.store(
+                world.bricks_generated(),
+                std::sync::atomic::Ordering::SeqCst,
+            )
+        });
+        seen.load(std::sync::atomic::Ordering::SeqCst)
+    };
+    generated_so_far(&mut scene);
+    let mut before = generated_so_far(&mut scene);
+    // (The ground at x = 16, z = 16 is 102 high, in the world of the seed of these tests.)
+    make_a_cube(&mut scene, 4, pose_at(14.0, 102.0 + height as f32, 14.0));
+    let mut counts = Vec::new();
+    for _ in 0..ticks {
+        let now = generated_so_far(&mut scene);
+        counts.push(now - before);
+        before = now;
+    }
+    counts
+}
+
+#[test]
+fn a_ship_falling_to_natural_ground_makes_the_world_generate_only_the_terrain_near_it() {
+    // (Found by a player: ships stopped the game for a quarter of a second as they came to the ground. A brick of natural terrain costs ten
+    // milliseconds or more to generate and make colliders of, and a ship had colliders made for all the bricks around its bricks: 375
+    // generated in these 120 ticks, 90 of them in one. It has them for the terrain within some voxels of its bounds: 50, 24 in the most.)
+    let counts = bricks_generated_each_tick_by_a_ship_falling_to_natural_ground(14, 120);
+    let (total, most) = (counts.iter().sum::<u64>(), *counts.iter().max().unwrap());
+    assert!(
+        total <= 100 && most <= 40,
+        "{total} bricks generated in all, {most} in one tick: {counts:?}"
+    );
+}
+
+#[test]
+fn a_ship_that_falls_a_long_way_has_the_ground_ready_for_it_and_stops_on_it() {
+    // From 300 above the ground a ship is going 138 voxels a second where it lands, nearly 7 a tick: the colliders of the ground are wanted
+    // from far enough ahead of it, and if they were not it would go through. (The floor of these tests, which is flat: natural ground is
+    // hills, and a cube that lands on a slope rolls to wherever it rolls.)
+    let mut scene = Scene::new();
+    flat_floor(&mut scene);
+    make_a_cube(&mut scene, 4, pose_at(14.0, FLOOR + 300.0, 14.0));
+    let mut fastest = 0.0f32;
+    for _ in 0..250 {
+        scene.ticks(1);
+        fastest = fastest.max(-velocity_of(&scene, 0)[1]);
+    }
+    assert!(fastest > 100.0, "it fell fast: {fastest}");
+    let height = height_of(ship_pose(&scene, 0));
+    assert!(
+        (height - FLOOR).abs() < 0.05,
+        "it rests on the floor, not in it or under it: {height}"
+    );
+    assert!(velocity_of(&scene, 0)[1].abs() < 0.1);
 }

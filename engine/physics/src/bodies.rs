@@ -459,6 +459,39 @@ impl BodyWorld {
         }
     }
 
+    /// The bricks of the level, in the world, that a body's colliders come within `margin` voxels of, as they stand now (the box around the
+    /// turned body, so a little more than it fills if it is turned), or `None` for a body with no blocks yet or one that is not there. It
+    /// is what terrain a body needs colliders of, as far ahead as it can get in the time that is wanted.
+    pub fn bricks_near(&self, id: BodyId, margin: f32) -> Option<voxel_space::BrickBox> {
+        let body = self.by_id.get(&id)?;
+        let mut low = Vector::splat(f32::INFINITY);
+        let mut high = Vector::splat(f32::NEG_INFINITY);
+        for &handle in self.bodies[body.handle].colliders() {
+            let bounds = self.colliders[handle].compute_aabb();
+            low = low.min(bounds.mins);
+            high = high.max(bounds.maxs);
+        }
+        if !(low.x <= high.x && low.y <= high.y && low.z <= high.z) {
+            return None;
+        }
+        let brick = |value: f32, origin: i64| {
+            origin.saturating_add((f64::from(value) / EDGE as f64).floor() as i64)
+        };
+        let (low, high) = (low - Vector::splat(margin), high + Vector::splat(margin));
+        voxel_space::BrickBox::new(
+            BrickCoordinate::new(
+                brick(low.x, self.origin.x()),
+                brick(low.y, self.origin.y()),
+                brick(low.z, self.origin.z()),
+            ),
+            BrickCoordinate::new(
+                brick(high.x, self.origin.x()),
+                brick(high.y, self.origin.y()),
+                brick(high.z, self.origin.z()),
+            ),
+        )
+    }
+
     pub fn remove_terrain_brick(&mut self, brick: BrickCoordinate) {
         if let Some(handle) = self.terrain.remove(&brick) {
             self.colliders.remove(
@@ -710,6 +743,102 @@ mod tests {
     fn speed_of(world: &BodyWorld, id: u64) -> f32 {
         let [x, y, z] = world.state(BodyId(id)).unwrap().linear_velocity;
         (x * x + y * y + z * z).sqrt()
+    }
+
+    #[test]
+    fn the_bricks_near_a_body_are_those_its_colliders_come_within_a_margin_of() {
+        use voxel_space::BrickBox;
+        let bricks = |low: [i64; 3], high: [i64; 3]| {
+            Some(
+                BrickBox::new(
+                    BrickCoordinate::new(low[0], low[1], low[2]),
+                    BrickCoordinate::new(high[0], high[1], high[2]),
+                )
+                .unwrap(),
+            )
+        };
+        let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, BodySettings::default());
+        // A body with no blocks yet has no bounds.
+        world
+            .add_body(
+                BodyId(1),
+                resting_at(at(10.0, 10.0, 10.0)),
+                BodyKind::Dynamic,
+            )
+            .unwrap();
+        assert_eq!(world.bricks_near(BodyId(1), 5.0), None);
+        // A cube of 4 with its corner at (10, 10, 10) is inside the brick (0, 0, 0), and the margin takes in the bricks beside it only when it
+        // reaches them: the cube is from 10 to 14, the brick from 0 to 32. (Within the voxels of a collider a little: its bounds are of
+        // the cells of its grid.)
+        let hull = Hull::cube(4);
+        world
+            .set_brick(BodyId(1), BrickCoordinate::ORIGIN, &mut &hull)
+            .unwrap();
+        assert_eq!(world.bricks_near(BodyId(1), 0.0), bricks([0; 3], [0; 3]));
+        assert_eq!(world.bricks_near(BodyId(1), 4.0), bricks([0; 3], [0; 3]));
+        // 10 away from 10 is the corner of the brick, 11 is past it; 14 and 18 away is 25, not yet the next brick, and 19 away is 33.
+        assert_eq!(world.bricks_near(BodyId(1), 10.0), bricks([0; 3], [0; 3]));
+        assert_eq!(world.bricks_near(BodyId(1), 11.0), bricks([-1; 3], [0; 3]));
+        assert_eq!(world.bricks_near(BodyId(1), 19.0), bricks([-1; 3], [1; 3]));
+        // 33 below the corner of the cube's 10 is -33: two bricks down.
+        assert_eq!(world.bricks_near(BodyId(1), 43.0), bricks([-2; 3], [1; 3]));
+        // No body of that number.
+        assert_eq!(world.bricks_near(BodyId(7), 5.0), None);
+    }
+
+    #[test]
+    fn the_bricks_near_a_body_are_in_the_world_whatever_the_frame_and_follow_its_turn() {
+        use voxel_space::BrickBox;
+        // The frame's origin is the brick (2, 0, 0); the body is in the brick (3, 0, 1).
+        let mut world = BodyWorld::new(BrickCoordinate::new(2, 0, 0), BodySettings::default());
+        let hull = Hull::cube(4);
+        world
+            .add_body(
+                BodyId(1),
+                resting_at(WorldPosition::new(
+                    BrickCoordinate::new(3, 0, 1),
+                    [10.0, 10.0, 10.0],
+                )),
+                BodyKind::Dynamic,
+            )
+            .unwrap();
+        world
+            .set_brick(BodyId(1), BrickCoordinate::ORIGIN, &mut &hull)
+            .unwrap();
+        let only = BrickBox::new(BrickCoordinate::new(3, 0, 1), BrickCoordinate::new(3, 0, 1));
+        assert_eq!(world.bricks_near(BodyId(1), 2.0), only);
+        // A long body turned a quarter about the vertical axis lies where it is turned to, not where it was: a bar of 10 along x from (40, 5, 36)
+        // goes along -z, to z from 26 to 36, and is in the bricks z = 0 and 1 and not only 1.
+        let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, BodySettings::default());
+        let mut bar = Hull::default();
+        for x in 0..10 {
+            bar.0.insert(VoxelCoordinate::new(x, 0, 0), Collision::Full);
+        }
+        world
+            .add_body(
+                BodyId(1),
+                BodyState {
+                    position: at(40.0, 5.0, 36.0),
+                    orientation: Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0),
+                    linear_velocity: [0.0; 3],
+                    angular_velocity: [0.0; 3],
+                },
+                BodyKind::Dynamic,
+            )
+            .unwrap();
+        world
+            .set_brick(BodyId(1), BrickCoordinate::ORIGIN, &mut &bar)
+            .unwrap();
+        let turned = world.bricks_near(BodyId(1), 0.0).unwrap();
+        assert_eq!(
+            (
+                turned.min().x(),
+                turned.max().x(),
+                turned.min().z(),
+                turned.max().z()
+            ),
+            (1, 1, 0, 1)
+        );
     }
 
     #[test]

@@ -157,19 +157,33 @@ pub(crate) fn build_brick(
                     }
                 }
                 // A box that is buried inside the terrain, touching nothing open, is not needed.
+                // (Only a voxel on the surface of the box can have a neighbour that is not in it, and one that is in it is a whole cube, so
+                // only the faces of the box are looked at, and no further than the first open one.)
                 let mut touches_open =
                     |x: usize, y: usize, z: usize, width: usize, height: usize, depth: usize| {
-                        let mut open = false;
-                        for dz in 0..depth {
-                            for dy in 0..height {
-                                for dx in 0..width {
-                                    open |= FaceDirection::ALL
-                                        .iter()
-                                        .any(|&face| !full_beside(x + dx, y + dy, z + dz, face));
+                        let low = [x, y, z];
+                        let high = [x + width, y + height, z + depth];
+                        for face in FaceDirection::ALL {
+                            let axis = face.axis();
+                            let (first, second) = ((axis + 1) % 3, (axis + 2) % 3);
+                            let layer = if face.is_positive() {
+                                high[axis] - 1
+                            } else {
+                                low[axis]
+                            };
+                            for a in low[first]..high[first] {
+                                for b in low[second]..high[second] {
+                                    let mut cell = [0usize; 3];
+                                    cell[axis] = layer;
+                                    cell[first] = a;
+                                    cell[second] = b;
+                                    if !full_beside(cell[0], cell[1], cell[2], face) {
+                                        return true;
+                                    }
                                 }
                             }
                         }
-                        open
+                        false
                     };
                 if touches_open(x, y, z, width, height, depth) {
                     // Where the box reaches the edge of the brick and the terrain goes on solid in the
@@ -282,4 +296,151 @@ pub(crate) fn build_brick(
                 .build()
         }),
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A random number from a place and a seed: the same everywhere.
+    fn mix(seed: u64, x: i64, y: i64, z: i64) -> u64 {
+        let mut state = seed
+            ^ (x as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            ^ (y as u64).wrapping_mul(0xc2b2_ae3d_27d4_eb4f)
+            ^ (z as u64).wrapping_mul(0x1656_67b1_9e37_79f9);
+        state = (state ^ (state >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        state = (state ^ (state >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        state ^ (state >> 31)
+    }
+
+    /// Terrain of several kinds, for bricks to be made of.
+    #[derive(Clone, Copy)]
+    enum Kind {
+        /// Hills: solid up to a height that varies from column to column.
+        Hills,
+        /// Mostly solid with random holes.
+        Cheese,
+        /// Solid but for a room in the middle and a few slabs lying in it.
+        RoomWithSlabs,
+        /// Solid up to x = 40 and open beyond it: large boxes with one open side.
+        Wall,
+    }
+
+    struct Terrain {
+        seed: u64,
+        kind: Kind,
+    }
+
+    impl CollisionSource for Terrain {
+        fn collision_at(&mut self, voxel: VoxelCoordinate) -> Collision {
+            let (x, y, z) = (voxel.x(), voxel.y(), voxel.z());
+            let chance = mix(self.seed, x, y, z) % 100;
+            match self.kind {
+                Kind::Hills => {
+                    let height =
+                        40 + (mix(self.seed, x.div_euclid(3), 0, z.div_euclid(3)) % 9) as i64;
+                    if y <= height {
+                        Collision::Full
+                    } else {
+                        Collision::Empty
+                    }
+                }
+                Kind::Cheese => {
+                    if chance < 85 {
+                        Collision::Full
+                    } else {
+                        Collision::Empty
+                    }
+                }
+                Kind::RoomWithSlabs => {
+                    let inside = (4..28).contains(&x.rem_euclid(32))
+                        && (4..28).contains(&y.rem_euclid(32))
+                        && (4..28).contains(&z.rem_euclid(32));
+                    if !inside {
+                        Collision::Full
+                    } else if chance < 6 {
+                        Collision::Partial(Arc::from(vec![ShapeBox {
+                            min: [0, 0, 0],
+                            max: [8, 4, 8],
+                        }]))
+                    } else {
+                        Collision::Empty
+                    }
+                }
+                Kind::Wall => {
+                    if x <= 40 {
+                        Collision::Full
+                    } else {
+                        Collision::Empty
+                    }
+                }
+            }
+        }
+    }
+
+    /// A hash of every box of a brick's collider, bit for bit, in order.
+    fn hash_of_boxes(
+        source: &mut Terrain,
+        brick: BrickCoordinate,
+        origin: BrickCoordinate,
+    ) -> (u64, usize) {
+        let made = build_brick(source, brick, origin);
+        let mut state: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut feed = |value: u32| {
+            for byte in value.to_le_bytes() {
+                state ^= u64::from(byte);
+                state = state.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        };
+        let Some(collider) = made.terrain else {
+            return (state, 0);
+        };
+        for value in collider.position().translation.to_array() {
+            feed(value.to_bits());
+        }
+        let compound = collider.shape().as_compound().expect("a compound of boxes");
+        for (pose, shape) in compound.shapes() {
+            for value in pose.translation.to_array() {
+                feed(value.to_bits());
+            }
+            for value in shape.as_cuboid().expect("boxes").half_extents.to_array() {
+                feed(value.to_bits());
+            }
+        }
+        (state, compound.shapes().len())
+    }
+
+    /// The boxes of the bricks of terrain of every kind, taken with the code that merged cubes into boxes one voxel at a time, so that making
+    /// bricks quicker is known to make the same boxes in the same order.
+    #[test]
+    fn the_boxes_of_a_brick_are_what_they_were_for_terrain_of_every_kind() {
+        let mut combined: u64 = 0;
+        let mut counts = Vec::new();
+        for (index, kind) in [Kind::Hills, Kind::Cheese, Kind::RoomWithSlabs, Kind::Wall]
+            .into_iter()
+            .enumerate()
+        {
+            for (seed, brick) in [
+                (1u64, BrickCoordinate::new(0, 1, 0)),
+                (2, BrickCoordinate::new(-1, 1, 2)),
+                (3, BrickCoordinate::new(5, 1, -4)),
+                (4, BrickCoordinate::new(1, 1, 1)),
+                (5, BrickCoordinate::new(1, 0, 0)),
+                (6, BrickCoordinate::new(-3, 1, -3)),
+            ] {
+                let mut terrain = Terrain {
+                    seed: seed + 10 * index as u64,
+                    kind,
+                };
+                let (hash, count) =
+                    hash_of_boxes(&mut terrain, brick, BrickCoordinate::new(0, 0, 0));
+                combined = combined.rotate_left(7) ^ hash;
+                counts.push(count);
+            }
+        }
+        println!("boxes per brick: {counts:?}");
+        assert_eq!(combined, PINNED_BOXES, "boxes per brick: {counts:?}");
+    }
+
+    const PINNED_BOXES: u64 = 17_322_980_413_275_256_541;
 }

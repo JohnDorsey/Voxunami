@@ -213,6 +213,10 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   through faces to the one the player looks at (up to 4096); `all` takes every solid block, which is the first text and is nearly always too many,
   since a boat built on a beach is joined to the planet.
 - **A command is about the ship you are aboard, else the nearest within 48 voxels** of the box of its bricks.
+- **A ship has colliders for the terrain close to it, not for the bricks around it:** within 8 voxels of the bounds of its own colliders and five ticks of its speed, and
+  they are let go 16 voxels farther out. A brick of natural terrain costs 10 to 25 ms to generate and make colliders of on the thread of the tick, and a ship of a few
+  blocks occupies a whole brick, so the bricks around its bricks were 16 to 64 of them at a time and stopped the game for a quarter of a second as it came to the
+  ground (found by the owner playing, 2026-10-21).
 - **A pilot flies by force, in the physics the ship already has:** the keys never move the ship's pose. Each tick before the ships move, a force holds the
   ship up against gravity, speeds it up toward the keys, and takes a part of its speed away, so the ship's mass, its collisions and the
   other ships' pull all still apply, and a recording of the stream is a recording of a flight. The way the keys point is taken from the pilot's

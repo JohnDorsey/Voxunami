@@ -19,10 +19,14 @@ use crate::collision::{BlockCollisions, ShipHull, WorldTerrain};
 /// from the first ship of its level than this stays where it is (the simulation distance and a frame for each place will replace this).
 pub const FRAME_RADIUS_BRICKS: i64 = 500;
 
-/// How many bricks around a ship's bounds terrain has colliders for (one is enough for a ship that moves a fraction of a brick a tick), and
-/// how many before they are let go (so that a ship at the edge of the margin does not make and drop the same brick every tick).
-const TERRAIN_MARGIN_BRICKS: i64 = 1;
-const TERRAIN_KEEP_BRICKS: i64 = 2;
+/// How far from a ship's bounds terrain has colliders, in voxels: a few, and the way the ship goes in a few ticks. (A brick of natural terrain
+/// costs ten milliseconds or more to generate and make colliders of, on the thread of the tick, so a ship that has colliders for all the bricks
+/// within a brick of its bounds, as it first had, stopped the game for a quarter of a second each time it crossed from one brick to the next.)
+const TERRAIN_LOOKAHEAD_VOXELS: f32 = 8.0;
+const TERRAIN_LOOKAHEAD_SECONDS: f32 = 0.25;
+/// How much farther before the colliders of terrain are let go, so that a ship at the edge of the margin does not make and drop the same brick
+/// every tick.
+const TERRAIN_KEEP_EXTRA_VOXELS: f32 = 16.0;
 
 /// How much gravity may change, as a share of its size (or of one voxel a second squared, if that is more), before it wakes a ship that sleeps.
 const GRAVITY_CHANGE_THAT_WAKES: f32 = 1e-3;
@@ -451,24 +455,19 @@ impl Bodies {
             let mut kept: BTreeSet<BrickCoordinate> = BTreeSet::new();
             let ship_ids: Vec<GridId> = self.levels[&level_index].ships.keys().copied().collect();
             for id in ship_ids {
-                let Some(bounds) = world
-                    .data()
-                    .grids()
-                    .get(id)
-                    .and_then(MovingGrid::world_brick_bounds)
-                else {
+                let level = &self.levels[&level_index];
+                let Some(state) = level.bodies.state(BodyId(id.get())) else {
                     continue;
                 };
+                let [vx, vy, vz] = state.linear_velocity;
+                let speed = (vx * vx + vy * vy + vz * vz).sqrt();
+                let lookahead = TERRAIN_LOOKAHEAD_VOXELS + TERRAIN_LOOKAHEAD_SECONDS * speed;
                 for (margin, set) in [
-                    (TERRAIN_MARGIN_BRICKS, &mut near),
-                    (TERRAIN_KEEP_BRICKS, &mut kept),
+                    (lookahead, &mut near),
+                    (lookahead + TERRAIN_KEEP_EXTRA_VOXELS, &mut kept),
                 ] {
-                    for x in bounds.min().x() - margin..=bounds.max().x() + margin {
-                        for y in bounds.min().y() - margin..=bounds.max().y() + margin {
-                            for z in bounds.min().z() - margin..=bounds.max().z() + margin {
-                                set.insert(BrickCoordinate::new(x, y, z));
-                            }
-                        }
+                    if let Some(bricks) = level.bodies.bricks_near(BodyId(id.get()), margin) {
+                        set.extend(bricks.bricks());
                     }
                 }
             }

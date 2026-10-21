@@ -74,6 +74,31 @@ fn a_ship_is_made_of_the_built_blocks_joined_to_the_one_the_player_looks_at_and_
 }
 
 #[test]
+fn a_raft_built_long_ago_is_still_a_ship_after_the_world_has_forgotten_the_terrain_it_was_built_in()
+{
+    // (A player's crash: "the brick has no edits and was just assigned a generator", from asking what the generator made in a brick that had
+    // been edited, once the world no longer remembered having generated it.)
+    let (mut scene, mut player) = raft_and_a_player_looking_at_it();
+    let content = voxunami_cave::content::CaveContent::new();
+    scene.run(move |world| {
+        // Far more bricks than the world remembers, a long way off and high up where they are empty and quick to make.
+        for x in 1..=400 {
+            world
+                .voxel(
+                    voxel_space::LevelIndex::MAIN,
+                    content.block_channel(),
+                    VoxelCoordinate::new(32 * x, 3000, 5),
+                )
+                .unwrap();
+        }
+    });
+    assert_eq!(
+        say(&mut scene, &mut player, "/ship create"),
+        "made ship 0 of 64 blocks (it falls unless you /ship hold on)"
+    );
+}
+
+#[test]
 fn what_is_not_a_ship_to_make_is_said_so_and_nothing_changes() {
     let (mut scene, mut player) = raft_and_a_player_looking_at_it();
     // Looking at the sky.

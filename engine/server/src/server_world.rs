@@ -4,12 +4,13 @@ use std::sync::Arc;
 use entities::{ComponentBag, Entity, EntityCatalog, EntityError, EntityStore};
 use namespaced_id::NamespacedId;
 use protocol::{ClientId, EntityId, MAXIMUM_COMMAND_LENGTH, Message, PlayerKey, Tick, VoxelChange};
+use terrain::GenerationOutcome;
 use voxel_grid::{Brick, ChannelIndex, Grid};
 use voxel_space::{
     BrickCoordinate, EntityPose, GravitySettings, GridId, GridPose, LevelIndex, MassPull,
     Orientation, VoxelCoordinate, WorldPosition, gravity_at,
 };
-use world_storage::{BrickSource, MovingGrid, WorldData};
+use world_storage::{MovingGrid, WorldData};
 
 use crate::generated_cache::GeneratedBrickCache;
 
@@ -88,6 +89,8 @@ pub struct ServerWorld {
     tick: Tick,
     clients: BTreeMap<ClientId, PlayerKey>,
     generated: GeneratedBrickCache,
+    /// How many times the terrain generator has made a brick (see [`ServerWorld::bricks_generated`]).
+    generations: u64,
     /// The bricks changed this tick, by grid. Only the root grids' edits are sent to clients so far (Phase 32c sends the rest).
     pub(crate) edits: BTreeMap<(GridId, BrickCoordinate), BrickEdits>,
     pub(crate) outgoing: Vec<OutgoingGameMessage>,
@@ -108,6 +111,7 @@ impl ServerWorld {
             tick: Tick::ZERO,
             clients: BTreeMap::new(),
             generated: GeneratedBrickCache::default(),
+            generations: 0,
             edits: BTreeMap::new(),
             outgoing: Vec::new(),
             replies: Vec::new(),
@@ -271,6 +275,12 @@ impl ServerWorld {
             .level(level)
             .ok_or(AccessError::NoSuchLevel(level))?;
         Ok(self.generated_brick(level, coordinate)?.get(channel, local))
+    }
+
+    /// How many times the terrain generator has made a brick since the world was made: what reading terrain nobody has edited costs
+    /// (ten milliseconds or more a brick for natural terrain), for whoever wants to know what a rule or a body asks of it.
+    pub fn bricks_generated(&self) -> u64 {
+        self.generations
     }
 
     /// The value that every voxel of a brick has in a channel, if they all have the same one: a way
@@ -683,18 +693,20 @@ impl ServerWorld {
             .level_mut(level)
             .ok_or(AccessError::NoSuchLevel(level))?;
         data.terrain.assign_unassigned(coordinate);
-        match data.effective_brick(coordinate) {
-            BrickSource::Generated(brick) => {
+        // (What the generator makes, whether or not the brick has been edited: the edits are not asked about here.)
+        match data.terrain.generate(data.overrides.layout(), coordinate) {
+            GenerationOutcome::Generated(brick) => {
+                self.generations += 1;
                 let brick = Arc::new(brick);
                 self.generated
                     .insert((level, coordinate), Arc::clone(&brick));
                 Ok(brick)
             }
-            BrickSource::MissingGenerator(generator) => {
+            GenerationOutcome::MissingGenerator(generator) => {
                 Err(AccessError::TerrainUnavailable { generator })
             }
-            BrickSource::Edited(_) | BrickSource::Unassigned => {
-                unreachable!("the brick has no edits and was just assigned a generator")
+            GenerationOutcome::Unassigned => {
+                unreachable!("the brick was just assigned a generator")
             }
         }
     }
@@ -765,6 +777,32 @@ mod tests {
         let channel = block_channel(&level);
         let data = WorldData::new(1, main_level_id(), level);
         (ServerWorld::new(data, Arc::default()), channel, calls)
+    }
+
+    #[test]
+    fn the_world_counts_the_times_the_generator_ran() {
+        let (mut world, channel, calls) = counting_world();
+        assert_eq!(world.bricks_generated(), 0);
+        for x in 0..32 {
+            world
+                .voxel(LevelIndex::MAIN, channel, VoxelCoordinate::new(x, 2, 3))
+                .unwrap();
+        }
+        assert_eq!(world.bricks_generated(), 1);
+        world
+            .voxel(LevelIndex::MAIN, channel, VoxelCoordinate::new(40, 2, 3))
+            .unwrap();
+        // The generator's own count, and the world's, are the same.
+        assert_eq!(world.bricks_generated(), 2);
+        assert_eq!(
+            calls.load(Ordering::Relaxed) as u64,
+            world.bricks_generated()
+        );
+        // A brick that is read again from the cache is not made again.
+        world
+            .voxel(LevelIndex::MAIN, channel, VoxelCoordinate::new(41, 2, 3))
+            .unwrap();
+        assert_eq!(world.bricks_generated(), 2);
     }
 
     #[test]
@@ -1048,6 +1086,25 @@ mod tests {
             world.generated_voxel(nowhere, block, at),
             Err(AccessError::NoSuchLevel(nowhere))
         );
+    }
+
+    #[test]
+    fn the_generated_value_of_a_voxel_of_an_edited_brick_is_found_after_the_cache_has_forgotten_the_brick()
+     {
+        // (This panicked: the cache remembers the bricks generated lately, and a brick that was edited long ago is not in it.)
+        let (mut world, block, _) = counting_world();
+        let level = LevelIndex::MAIN;
+        let at = VoxelCoordinate::new(5, 7, 9);
+        let made = world.voxel(level, block, at).unwrap();
+        world.set_voxel(level, block, at, made + 5).unwrap();
+        // Many other bricks are read, enough to push it out of the cache of the most recent.
+        for x in 1..=2000 {
+            world
+                .voxel(level, block, VoxelCoordinate::new(32 * x, 7, 9))
+                .unwrap();
+        }
+        assert_eq!(world.voxel(level, block, at).unwrap(), made + 5);
+        assert_eq!(world.generated_voxel(level, block, at).unwrap(), made);
     }
 
     #[test]

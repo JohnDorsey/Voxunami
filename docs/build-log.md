@@ -666,6 +666,27 @@ Phase 32 (moving grids; `moving-grids-spec.md`):
   patterns checked against a separate Python calculation and equal on Windows and Linux. 21 mutations: 19 caught; 1 equivalent in practice (an exact tie between
   lattice turns); 1 redundant check (a range test that `checked_offset` already makes), which was deleted.
 
+Phase 32h, after the owner's first play (2026-10-21): a crash and lag spikes, both found in the ship commands and the bodies plugin:
+- **The crash** ("the brick has no edits and was just assigned a generator", in the server thread, on `/ship create` of a large built ship): `ServerWorld::generated_voxel`,
+  which I wrote for `/ship create`, asked the world's cache of generated bricks, and on a miss for a brick that had been edited the code behind it hit an
+  `unreachable!` (it assumed the brick had no edits, as every other caller guarantees by looking first). My test asked straight after the edit, while the brick was still
+  in the cache of 128; a large ship is built over many bricks and the cache had forgotten them. Fixed by asking the terrain generator itself whatever has been
+  edited. Tests: the server unit test that reads 2000 other bricks between the edit and the question (it panicked with the same message before the fix), and a Cave
+  test that does the same through `/ship create` (checked against the old code: the same panic).
+- **The lag** (half a second or more shortly after making smaller ships): measured with natural terrain and the real command: single ticks of 140 to 435 ms as a falling
+  ship reached new ground, 200 ms when it was made. Each was the bodies plugin making 16 to 64 terrain bricks at once (10 to 25 ms each on the thread of the tick, most
+  of it generating the neighbouring bricks that the colliders' seams ask about), because a ship had colliders for every brick within a brick of the bricks it occupies,
+  and a ship of 16 blocks occupies a whole brick. A ship now has them for the terrain within 8 voxels of the bounds of its colliders (from Rapier, new
+  `BodyWorld::bricks_near`) and five ticks of its speed, and lets them go 16 voxels farther out. Over 120 ticks of a small ship falling to natural ground the world
+  generated 50 bricks, 24 in the most (375 and 90 before); the worst tick of the 4 by 4 raft is 17 ms (435 before), a 16 by 16 raft 25 ms, 30 by 30 82 ms and 40 by 40 73 ms.
+  Also `touches_open` in `build_brick` looks at the faces of a box and not at all its voxels (the same boxes, pinned by a new test taken before the change: 79 to 38 ms
+  for one brick of ground), `ServerWorld::bricks_generated` counts the generator's runs (the deterministic way to test this), and two ship physics pins changed because
+  fewer far colliders change the order of Rapier's solver (two ships to the bit, the third, which slides and spins, within 0.005 voxel; checked by printing the poses).
+- Not fixed, found while measuring: a walker has the same hitch (109 and 136 ms in 400 sprinting ticks, when they cross into new ground: the character loads the 27 bricks
+  around it); the 30 by 30 and 40 by 40 rafts still have single ticks of 70 to 80 ms; a ship has no continuous collision against terrain, so one falling at 250 voxels a
+  second goes through a floor 3 thick (it does not at 138). Three mutants of the new lookahead survive (no distance ahead; no speed term; no hysteresis): they are safety margins
+  that no scene can show, since the one that would, a faster fall, goes through the floor whatever the colliders.
+
 Phase 32h (Cave's ship commands and the first flight; the pause for the owner is after it):
 - `/ship create [all] | push X Y Z | hold on|off | pilot` (`games/voxunami_cave/src/ships.rs` for the rules, `plugins/ships.rs` for the command and the
   system that flies). A ship is made of the blocks that someone built, joined through faces to the one the player looks at (up to 4096), by the engine's

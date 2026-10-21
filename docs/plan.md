@@ -251,6 +251,12 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   (Phases 27 and 32).
 
 ## Open
+- **Found after the owner's first play of 32h (2026-10-21), not fixed:** (a) a walker hitches (100 to 140 ms) when it walks into new ground, as ships did: the character
+  loads colliders for the 27 bricks around it, 10 to 25 ms a brick on the tick's thread; the same fix (the terrain within some voxels, by speed) would change the walkers'
+  physics in the golden session in the last bits, so it needs its own change and re-pin; (b) big ships (900 blocks and more) still have single ticks of 70 to 80 ms when they
+  reach new ground: a budget of bricks per tick for the colliders farther than the ship's own bounds is the next step; (c) ships have no continuous collision detection against
+  terrain: one falling at 250 voxels a second goes through a floor 3 voxels thick (138 does not); (d) natural terrain costs 5 to 10 ms a brick to generate, which every
+  reader of voxels pays when the world's cache of 128 bricks has forgotten it.
 - **To try after Phase 32h (the pause for the owner, 2026-10-21):** `cargo run --release -p launcher -- cave`; build something of stone that is
   joined to nothing else but the ground (a raft, a boat on the beach), look at a block of it and type `/ship create` (it falls, so `/ship hold on`
   first if you want to stand on it in the air; `/ship create all` takes the ground too and is refused as too many), walk or fall onto it, then
