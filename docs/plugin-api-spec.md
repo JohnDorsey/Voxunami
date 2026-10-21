@@ -149,7 +149,7 @@ pub trait GridView {
     fn get(&mut self, channel: ChannelIndex, at: VoxelCoordinate) -> Option<u32>;
     fn set(&mut self, channel: ChannelIndex, at: VoxelCoordinate, value: u32) -> Result<(), AccessError>;
     fn read_region(&mut self, region: VoxelBox) -> RegionSnapshot;              // bulk; the only way to read many voxels
-    fn gravity(&self) -> LocalDirection;           // the world's gravity in this grid's axes; today always -y
+    fn gravity(&self) -> LocalDirection;           // (built differently, in Phase 32f: `Context::gravity_at(grid, local position)`, in the grid's axes, from the field of the level and of ships that weigh enough)
     fn world_position(&self, at: VoxelCoordinate) -> WorldPosition;
 }
 ```

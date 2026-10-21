@@ -666,6 +666,17 @@ Phase 32 (moving grids; `moving-grids-spec.md`):
   patterns checked against a separate Python calculation and equal on Windows and Linux. 21 mutations: 19 caught; 1 equivalent in practice (an exact tie between
   lattice turns); 1 redundant check (a range test that `checked_offset` already makes), which was deleted.
 
+Phase 32f (gravity as a field):
+- `voxel_space::gravity_at(settings, pulls, position)`: the level's constant plus, for each body of at least the threshold mass, `G m r / (r^2 + s^2)^(3/2)` toward its centre of mass (softened, so finite and zero at the centre).
+  `ServerConfig::gravity` and `ServerWorld::set_gravity_settings`; `MovingGrid` has `mass` and `centre_of_mass` (the bodies write them); `ServerWorld::gravity_at` and `gravity_in`; `Context::gravity_at`.
+- The bodies take their gravity from the field: Rapier's own gravity is zero and each tick a moving ship gets `mass * gravity` at its centre of mass as a force that does not wake a sleeper (new
+  `BodyWorld::apply_steady_force`), except that a change in gravity of more than a thousandth wakes it. The Cave ship tests and their pinned hash did not change.
+- Tests: the field (inverse square, direction, the level added, finite and zero at a centre, the threshold including exactly it, sums in order, exact a billion bricks out, bits pinned and checked against Python);
+  the world (the level's down in the axes of a ship turned over and a quarter turn; a ship's pull is toward its centre of mass, a ship that is placed or turned elsewhere pulls from there, small ones pull nothing);
+  the context (a rule asks for terrain and for a ship turned over, and for a ship that is not there); Cave: a ship of 4.1 million kilograms held in empty space pulls a ship of 6 voxels that is 36 voxels
+  away with the acceleration the law gives, to 3 percent, toward its centre of mass and not its corner; with the threshold above its mass, or none, nothing is pulled; a free big ship pulls and is pulled by a held one and is
+  pulled by none alone. 14 mutations of the field and its uses, all caught (after one was found to be equivalent: a ship's pull on itself is zero at its centre, so there is nothing to leave out, and the argument for it was removed).
+
 Phase 32e, part 2 (ships move in the server: the `grid_bodies` crate):
 - `grid_bodies::GridBodiesPlugin` (registered by Cave beside its other plugins; configured with the block table, channels, the game's passable property and `engine:density`): a system of
   the Physics phase keeps one `BodyWorld` for each level that has ships in step with the server's world. A ship that appears gets a body and a collider made from all its bricks; blocks that change

@@ -1844,3 +1844,63 @@ fn the_order_the_plugins_are_listed_in_does_not_change_which_entity_gets_which_i
     );
     assert_eq!(kinds_by_id(true), listed);
 }
+
+#[test]
+fn a_rule_asks_where_down_is_for_the_voxels_it_looks_at_and_gets_the_answer_in_the_grids_own_axes()
+{
+    let log = new_log();
+    let mut rig = build(|_, _| {
+        let system_log = Arc::clone(&log);
+        vec![plugin("test:gravity", move |registrar| {
+            let log = Arc::clone(&system_log);
+            registrar.system(
+                SystemSpec::new("test:ask_gravity", Phase::Rules),
+                move |context| {
+                    if context.tick().get() != 1 {
+                        return;
+                    }
+                    let here = WorldPosition::new(BrickCoordinate::ORIGIN, [4.0, 5.0, 6.0]);
+                    // Turned over about the x axis, a ship's down is up.
+                    let upside_down = voxel_space::GridPose::new(
+                        here,
+                        Orientation::from_components([1.0, 0.0, 0.0, 0.0]).unwrap(),
+                    );
+                    let ship = context
+                        .world()
+                        .create_grid(voxel_space::LevelIndex::MAIN, upside_down)
+                        .unwrap();
+                    let show = |gravity: [f32; 3]| {
+                        format!(
+                            "{:.1} {:.1} {:.1}",
+                            gravity[0] + 0.0,
+                            gravity[1] + 0.0,
+                            gravity[2] + 0.0
+                        )
+                    };
+                    note(
+                        &log,
+                        format!(
+                            "terrain {}",
+                            show(context.gravity_at(GridId::MAIN, here).unwrap())
+                        ),
+                    );
+                    note(
+                        &log,
+                        format!("ship {}", show(context.gravity_at(ship, here).unwrap())),
+                    );
+                    let missing = GridId::new(GridId::FIRST_ALLOCATED + 99);
+                    note(
+                        &log,
+                        format!("missing {}", context.gravity_at(missing, here).is_err()),
+                    );
+                },
+            );
+        })]
+    })
+    .unwrap();
+    rig.server.step();
+    assert_eq!(
+        lines(&log),
+        ["terrain 0.0 -32.0 0.0", "ship 0.0 32.0 0.0", "missing true"]
+    );
+}

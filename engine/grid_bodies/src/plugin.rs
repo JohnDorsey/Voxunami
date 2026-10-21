@@ -9,6 +9,7 @@ use server::ServerWorld;
 use voxel_grid::ChannelIndex;
 use voxel_space::{
     BRICK_EDGE_LENGTH, BrickCoordinate, GridId, GridPose, LevelIndex, LocalVoxelIndex,
+    WorldPosition,
 };
 use world_storage::MovingGrid;
 
@@ -23,6 +24,9 @@ pub const FRAME_RADIUS_BRICKS: i64 = 500;
 const TERRAIN_MARGIN_BRICKS: i64 = 1;
 const TERRAIN_KEEP_BRICKS: i64 = 2;
 
+/// How much gravity may change, as a share of its size (or of one voxel a second squared, if that is more), before it wakes a ship that sleeps.
+const GRAVITY_CHANGE_THAT_WAKES: f32 = 1e-3;
+
 /// What the plugin needs to know of a game's blocks.
 #[derive(Debug)]
 pub struct GridBodiesConfig {
@@ -35,6 +39,8 @@ pub struct GridBodiesConfig {
     pub passable: Option<PropertyHandle<bool>>,
     /// A block's mass in kilograms a voxel (`engine:density`).
     pub density: PropertyHandle<u32>,
+    /// How a tick is cut into steps. The gravity of these settings is not used: gravity is the world's field, which the plugin applies as a
+    /// force on each ship (see [`ServerWorld::gravity_at`]).
     pub settings: BodySettings,
 }
 
@@ -103,6 +109,11 @@ struct Ship {
     /// The mass of each brick that has any, summed in order of brick for the body's mass.
     moments: BTreeMap<BrickCoordinate, MassMoments>,
     kind: BodyKind,
+    /// How much the ship weighs and where its centre of mass is in its coordinates, as last worked out.
+    mass: f32,
+    centre_of_mass: [f32; 3],
+    /// The gravity the ship was last pulled by: a ship at rest sleeps while it is the same, and is woken when it changes.
+    gravity: [f32; 3],
     /// What the simulation last said of where the ship is and how fast it moves: if the world says other, something else moved it.
     written: (GridPose, [f32; 3], [f32; 3]),
 }
@@ -122,6 +133,8 @@ struct Bodies {
     /// The bricks of ships and of terrain changed since the last step.
     changed_ship_bricks: BTreeSet<(GridId, BrickCoordinate)>,
     changed_terrain_bricks: BTreeSet<(LevelIndex, BrickCoordinate)>,
+    /// What the world is to be told of the weight of ships, at the end of the step.
+    weighed: BTreeMap<GridId, (f32, [f32; 3])>,
 }
 
 fn pose_of(state: &BodyState) -> GridPose {
@@ -137,6 +150,7 @@ impl Bodies {
             levels: BTreeMap::new(),
             changed_ship_bricks: BTreeSet::new(),
             changed_terrain_bricks: BTreeSet::new(),
+            weighed: BTreeMap::new(),
         }
     }
 
@@ -266,6 +280,10 @@ impl Bodies {
         }
         self.keep_terrain(world, &changed_terrain);
 
+        for (id, (mass, centre)) in std::mem::take(&mut self.weighed) {
+            let _ = world.set_grid_mass(id, mass, centre);
+        }
+        self.apply_gravity(world);
         for force in world.take_grid_forces() {
             let Some(level) = world
                 .data()
@@ -332,7 +350,13 @@ impl Bodies {
                 .levels
                 .entry(level_index)
                 .or_insert_with(|| LevelBodies {
-                    bodies: BodyWorld::new(origin, self.config.settings),
+                    bodies: BodyWorld::new(
+                        origin,
+                        BodySettings {
+                            gravity: [0.0; 3],
+                            ..self.config.settings
+                        },
+                    ),
                     ships: BTreeMap::new(),
                     terrain: BTreeSet::new(),
                 });
@@ -347,6 +371,9 @@ impl Bodies {
                 id,
                 Ship {
                     moments: BTreeMap::new(),
+                    mass: 0.0,
+                    centre_of_mass: [0.0; 3],
+                    gravity: [0.0; 3],
                     kind,
                     written: (ship.pose, ship.linear_velocity, ship.angular_velocity),
                 },
@@ -394,12 +421,22 @@ impl Bodies {
         let Some(level) = self.levels.get_mut(&level_index) else {
             return;
         };
-        let Some(record) = level.ships.get(&id) else {
+        let Some(record) = level.ships.get_mut(&id) else {
             return;
         };
-        if let Some(properties) = MassMoments::sum(record.moments.values().copied()).properties() {
-            let _ = level.bodies.set_mass(BodyId(id.get()), properties);
+        match MassMoments::sum(record.moments.values().copied()).properties() {
+            Some(properties) => {
+                let _ = level.bodies.set_mass(BodyId(id.get()), properties);
+                record.mass = properties.mass;
+                record.centre_of_mass = properties.centre_of_mass;
+            }
+            None => {
+                record.mass = 0.0;
+                record.centre_of_mass = [0.0; 3];
+            }
         }
+        self.weighed
+            .insert(id, (record.mass, record.centre_of_mass));
     }
 
     /// Terrain has colliders where ships are, and not far from them.
@@ -471,6 +508,38 @@ impl Bodies {
                 let level = self.levels.get_mut(&level_index).expect("the level exists");
                 level.bodies.set_terrain_brick(brick, &mut source);
                 level.terrain.insert(brick);
+            }
+        }
+    }
+
+    /// Pulls every ship that moves with the gravity there is at its centre of mass: the level's, and the pull of the other ships that weigh enough.
+    fn apply_gravity(&mut self, world: &ServerWorld) {
+        for (level_index, level) in &mut self.levels {
+            for (id, record) in &mut level.ships {
+                if record.kind == BodyKind::Fixed || record.mass <= 0.0 {
+                    continue;
+                }
+                let Some(ship) = world.data().grids().get(*id) else {
+                    continue;
+                };
+                let centre = WorldPosition::new(BrickCoordinate::ORIGIN, record.centre_of_mass);
+                let Some(there) = ship.pose.local_to_world(centre) else {
+                    continue;
+                };
+                let gravity = world.gravity_at(*level_index, there);
+                let force = gravity.map(|component| component * record.mass);
+                // A change in gravity wakes a ship that is asleep (a heavy ship came near); the same gravity does not, so a ship at rest sleeps.
+                let change: f32 = (0..3)
+                    .map(|axis| (gravity[axis] - record.gravity[axis]).abs())
+                    .sum();
+                let size: f32 = gravity.iter().map(|component| component.abs()).sum();
+                record.gravity = gravity;
+                let body = BodyId(id.get());
+                let _ = if change > GRAVITY_CHANGE_THAT_WAKES * size.max(1.0) {
+                    level.bodies.apply_force(body, force, None)
+                } else {
+                    level.bodies.apply_steady_force(body, force)
+                };
             }
         }
     }

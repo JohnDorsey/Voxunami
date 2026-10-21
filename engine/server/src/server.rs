@@ -122,9 +122,11 @@ impl Server {
         let challenges = config
             .challenge_seed
             .map_or_else(ChallengeSource::random, ChallengeSource::counter);
+        let mut world = ServerWorld::new(world, logic.entity_catalog());
+        world.set_gravity_settings(config.gravity);
         Ok(Self {
             config,
-            world: ServerWorld::new(world, logic.entity_catalog()),
+            world,
             logic,
             listener,
             world_description,

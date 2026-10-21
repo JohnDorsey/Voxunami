@@ -6,8 +6,8 @@ use namespaced_id::NamespacedId;
 use protocol::{ClientId, EntityId, MAXIMUM_COMMAND_LENGTH, Message, PlayerKey, Tick, VoxelChange};
 use voxel_grid::{Brick, ChannelIndex, Grid};
 use voxel_space::{
-    BrickCoordinate, EntityPose, GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate,
-    WorldPosition,
+    BrickCoordinate, EntityPose, GravitySettings, GridId, GridPose, LevelIndex, MassPull,
+    Orientation, VoxelCoordinate, WorldPosition, gravity_at,
 };
 use world_storage::{BrickSource, MovingGrid, WorldData};
 
@@ -97,6 +97,7 @@ pub struct ServerWorld {
     changes: Vec<ChannelChange>,
     /// The forces asked of ships and not yet taken.
     grid_forces: Vec<GridForce>,
+    gravity: GravitySettings,
 }
 
 impl ServerWorld {
@@ -113,6 +114,7 @@ impl ServerWorld {
             watched: BTreeSet::new(),
             changes: Vec::new(),
             grid_forces: Vec::new(),
+            gravity: GravitySettings::default(),
         }
     }
 
@@ -469,6 +471,78 @@ impl ServerWorld {
         std::mem::take(&mut self.grid_forces)
     }
 
+    /// What gravity is in this world: the level's pull and what pulls besides.
+    pub fn gravity_settings(&self) -> &GravitySettings {
+        &self.gravity
+    }
+
+    /// Changes what gravity is, from the next tick: a server setting, and what a game's command for it changes.
+    pub fn set_gravity_settings(&mut self, settings: GravitySettings) {
+        self.gravity = settings;
+    }
+
+    /// The acceleration of gravity at a place of a level, in the level's axes, in voxels per second per second: the level's own, and the
+    /// pull of every ship of the level that weighs enough (see [`GravitySettings`]). A ship's own pull is nothing at its centre of mass, which
+    /// is where it is pulled, so nothing needs to leave it out.
+    pub fn gravity_at(&self, level: LevelIndex, position: WorldPosition) -> [f32; 3] {
+        let pulls = self
+            .data
+            .grids()
+            .iter()
+            .filter(|(_, ship)| ship.level == level && ship.mass > 0.0)
+            .filter_map(|(_, ship)| {
+                let centre = WorldPosition::new(BrickCoordinate::ORIGIN, ship.centre_of_mass);
+                Some(MassPull {
+                    position: ship.pose.local_to_world(centre)?,
+                    mass: ship.mass,
+                })
+            });
+        gravity_at(&self.gravity, pulls, position)
+    }
+
+    /// The acceleration of gravity at a place of a grid, in the grid's own axes: for the terrain of a level the level's, and for a ship
+    /// that of the place in the world where the ship's place is, turned into the ship's axes. So it changes as a ship turns, and rules and
+    /// bodies aboard fall toward the world's down (or toward a ship that pulls). `local` is a position in the grid.
+    pub fn gravity_in(&self, grid: GridId, local: WorldPosition) -> Result<[f32; 3], AccessError> {
+        match grid.root_level() {
+            Some(level) => {
+                if self.data.level(level).is_none() {
+                    return Err(AccessError::NoSuchGrid(grid));
+                }
+                Ok(self.gravity_at(level, local))
+            }
+            None => {
+                let ship = self
+                    .data
+                    .grids()
+                    .get(grid)
+                    .ok_or(AccessError::NoSuchGrid(grid))?;
+                let Some(world) = ship.pose.local_to_world(local) else {
+                    return Ok(self.gravity.base);
+                };
+                let there = self.gravity_at(ship.level, world);
+                Ok(ship.pose.direction_to_local(there))
+            }
+        }
+    }
+
+    /// Says how much a ship weighs and where its centre of mass is (the bodies do this as they work it out from its blocks).
+    pub fn set_grid_mass(
+        &mut self,
+        grid: GridId,
+        mass: f32,
+        centre_of_mass: [f32; 3],
+    ) -> Result<(), AccessError> {
+        let ship = self
+            .data
+            .grids_mut()
+            .get_mut(grid)
+            .ok_or(AccessError::NoSuchGrid(grid))?;
+        ship.mass = mass;
+        ship.centre_of_mass = centre_of_mass;
+        Ok(())
+    }
+
     /// Holds a ship still, or lets it move.
     pub fn set_grid_held(&mut self, grid: GridId, held: bool) -> Result<(), AccessError> {
         self.data
@@ -519,6 +593,8 @@ impl ServerWorld {
             pose,
             linear_velocity: [0.0; 3],
             angular_velocity: [0.0; 3],
+            mass: 0.0,
+            centre_of_mass: [0.0; 3],
             held: false,
             voxels: Grid::new(layout),
         }))
@@ -968,5 +1044,125 @@ mod tests {
         assert!(moving.held);
         assert_eq!(moving.linear_velocity, [1.0, 2.0, 3.0]);
         assert_eq!(moving.angular_velocity, [4.0, 5.0, 6.0]);
+    }
+
+    fn at(x: f32, y: f32, z: f32) -> WorldPosition {
+        WorldPosition::new(BrickCoordinate::ORIGIN, [x, y, z])
+    }
+
+    #[test]
+    fn gravity_in_a_grid_is_the_levels_in_the_axes_of_the_grid_and_turns_as_a_ship_does() {
+        let (mut world, _, _) = counting_world();
+        let root = GridId::MAIN;
+        assert_eq!(
+            world.gravity_in(root, at(1.0, 2.0, 3.0)),
+            Ok([0.0, -32.0, 0.0])
+        );
+        let nowhere = GridId::root(LevelIndex::new(9));
+        assert_eq!(
+            world.gravity_in(nowhere, at(0.0, 0.0, 0.0)),
+            Err(AccessError::NoSuchGrid(nowhere))
+        );
+        // Turned a quarter about the z axis, a ship's down is along its own x axis (its x axis points where the world's y does...
+        // whichever way, the length is the same and the world's down is the ship's turned axis).
+        let quarter =
+            Orientation::from_components([0.0, 0.0, 0.5f32.sqrt(), 0.5f32.sqrt()]).unwrap();
+        let ship = world
+            .create_grid(
+                LevelIndex::MAIN,
+                GridPose::new(at(0.0, 100.0, 0.0), quarter),
+            )
+            .unwrap();
+        let local = world.gravity_in(ship, at(1.0, 1.0, 1.0)).unwrap();
+        // The ship's x axis, turned a quarter about z, is the world's y: so a world down is the ship's negative x axis turned back, which is
+        // along +x or -x of the ship, and nothing along its y or z.
+        assert!(
+            (local[0].abs() - 32.0).abs() < 1e-3 && local[1].abs() < 1e-3 && local[2].abs() < 1e-3,
+            "{local:?}"
+        );
+        // The same from the other side: a half turn flips it.
+        let flipped = world
+            .create_grid(
+                LevelIndex::MAIN,
+                GridPose::new(
+                    at(0.0, 0.0, 0.0),
+                    Orientation::from_components([1.0, 0.0, 0.0, 0.0]).unwrap(),
+                ),
+            )
+            .unwrap();
+        let up = world.gravity_in(flipped, at(0.0, 0.0, 0.0)).unwrap();
+        assert!(
+            (up[1] - 32.0).abs() < 1e-4 && up[0].abs() < 1e-4 && up[2].abs() < 1e-4,
+            "{up:?}"
+        );
+        let gone = GridId::new(GridId::FIRST_ALLOCATED + 70);
+        assert_eq!(
+            world.gravity_in(gone, at(0.0, 0.0, 0.0)),
+            Err(AccessError::NoSuchGrid(gone))
+        );
+    }
+
+    #[test]
+    fn a_ship_that_weighs_enough_pulls_toward_its_centre_of_mass_and_not_itself_and_places_in_it_feel_it()
+     {
+        let (mut world, _, _) = counting_world();
+        world.set_gravity_settings(GravitySettings {
+            base: [0.0; 3],
+            pull_strength: 1e-3,
+            pull_mass_threshold: Some(1e6),
+            softening: 1.0,
+        });
+        let big = world
+            .create_grid(
+                LevelIndex::MAIN,
+                GridPose::new(at(20.0, 0.0, 0.0), Orientation::IDENTITY),
+            )
+            .unwrap();
+        let light = world
+            .create_grid(
+                LevelIndex::MAIN,
+                GridPose::new(at(100.0, 0.0, 0.0), Orientation::IDENTITY),
+            )
+            .unwrap();
+        // Nothing has been weighed: nothing pulls.
+        assert_eq!(
+            world.gravity_at(LevelIndex::MAIN, at(50.0, 0.0, 0.0)),
+            [0.0; 3]
+        );
+        world.set_grid_mass(big, 4e6, [8.0, 8.0, 8.0]).unwrap();
+        world.set_grid_mass(light, 5e5, [1.0, 1.0, 1.0]).unwrap();
+        // 4e6 kg at a distance of 50 from the centre, (28, 8, 8) in the world (the ship is 20 along x and its centre is (8, 8, 8) in it): along x toward it, G m / d^2 = 1.6 (plus a hair of softening and the y and z).
+        let pull = world.gravity_at(LevelIndex::MAIN, at(78.0, 8.0, 8.0));
+        assert!(
+            (pull[0] + 1e-3 * 4e6 / 2501.0 * 50.0 / 2501.0f32.sqrt()).abs() < 1e-3,
+            "{pull:?}"
+        );
+        assert!(pull[1].abs() < 1e-5 && pull[2].abs() < 1e-5);
+        // The light ship is under the threshold and pulls nothing: a point beside it feels exactly what the big one alone gives there.
+        let settings = *world.gravity_settings();
+        let big_alone = MassPull {
+            position: at(28.0, 8.0, 8.0),
+            mass: 4e6,
+        };
+        let near_light = world.gravity_at(LevelIndex::MAIN, at(101.0, 1.0, 1.0));
+        assert_eq!(
+            near_light,
+            gravity_at(&settings, [big_alone], at(101.0, 1.0, 1.0))
+        );
+        assert!(near_light[0] < -0.3, "{near_light:?}");
+        // A ship's pull is nothing at its own centre of mass, where a ship is pulled: it does not pull itself.
+        assert_eq!(
+            world.gravity_at(LevelIndex::MAIN, at(28.0, 8.0, 8.0)),
+            [0.0; 3]
+        );
+        // A place in the big ship, in its own axes, feels it too (toward its centre): the voxel above the centre is pulled down.
+        let inside = world.gravity_in(big, at(8.0, 12.0, 8.0)).unwrap();
+        assert!(inside[1] < 0.0 && inside[0].abs() < 1e-5, "{inside:?}");
+        // A ship that is in another level does not pull this one.
+        let gone = GridId::new(GridId::FIRST_ALLOCATED + 70);
+        assert_eq!(
+            world.set_grid_mass(gone, 1.0, [0.0; 3]),
+            Err(AccessError::NoSuchGrid(gone))
+        );
     }
 }

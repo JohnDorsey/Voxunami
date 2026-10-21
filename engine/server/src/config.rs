@@ -1,7 +1,8 @@
 use namespaced_id::NamespacedId;
+use voxel_space::GravitySettings;
 
 /// How a server is set up. Everything here is a property of the game or the host, not of the world.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ServerConfig {
     /// The game this server runs. Clients of another game are refused.
     pub game: NamespacedId,
@@ -22,6 +23,8 @@ pub struct ServerConfig {
     /// What every client is sent in its welcome besides the world's description: the game's package data, which the
     /// server passes on without reading.
     pub package: Vec<u8>,
+    /// What gravity is: the level's pull and which bodies pull besides.
+    pub gravity: GravitySettings,
 }
 
 impl ServerConfig {
@@ -36,6 +39,7 @@ impl ServerConfig {
             handshake_timeout_ticks: 200,
             challenge_seed: None,
             package: Vec::new(),
+            gravity: GravitySettings::default(),
         }
     }
 

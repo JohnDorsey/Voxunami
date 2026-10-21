@@ -1,6 +1,6 @@
 # Phase 32: moving grids (ships)
 
-Status: the owner answered section 6 on 2026-10-20 (answers at its end, and applied in the text); 32a to 32e are built (`build-log.md`). Read from the plan (requirements 1 to 16, the owner's
+Status: the owner answered section 6 on 2026-10-20 (answers at its end, and applied in the text); 32a to 32f are built (`build-log.md`). Read from the plan (requirements 1 to 16, the owner's
 decisions of 2026-10-18 and 2026-10-20), `future-goals.md` (goal 2 and "Ship goals"), and from the code after Phase 31. The choices are
 mine and marked; what I checked in the code is marked **[code]**, what I believe from memory is marked **[memory]**.
 
@@ -206,7 +206,15 @@ as the ship turns.
     so a parked ship keeps them, they return into the ship wherever it now is, and a split or a merge in the meantime re-frames them like everyone
     else aboard. A test covers: log out aboard, the ship moves, log in, still aboard at the same local place.
 
-### 2.9 Gravity as a field (built now, because the API is what is costly to change)
+### 2.9 Gravity as a field (built in 32f, because the API is what is costly to change)
+
+As built: `voxel_space::{GravitySettings, MassPull, gravity_at}` (the pure field, in `f64` with only products, quotients and square roots; bits pinned); `ServerConfig::gravity` (a server setting, also
+changeable at run time with `ServerWorld::set_gravity_settings`) with the level's constant `base` (default 32 down, as characters fall), a `pull_strength` (default the real G, 6.674e-11, so that only a moon
+pulls), an optional `pull_mass_threshold` (default none: nothing pulls) and a `softening`; ships carry the `mass` and `centre_of_mass` the bodies work out from their blocks;
+`ServerWorld::gravity_at(level, position)` (the level's axes) and `gravity_in(grid, local position)` (the grid's own axes: for a ship the world's gravity there, turned into the ship's axes), and for
+plugins `Context::gravity_at(grid, local)`. The bodies are pulled by it: each tick a ship that moves gets the force `mass * gravity` at its centre of mass (a ship's own pull is nothing there, so nothing is left out); a ship
+at rest sleeps while that is the same and is woken when it changes by more than a thousandth. Characters do not feel it yet (they fall in their own constant, 32g puts a player aboard a ship in the ship's frame
+with the field in its axes).
 
 `GravityField` in the physics crate: `gravity_at(frame, local position) -> local vector`, summing *sources*: the level's own source (today's
 constant, pointing down) and, for each ship whose mass is at least `ship_gravity_mass_threshold` (a server setting; default: none, i.e.

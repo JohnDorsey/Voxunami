@@ -6,7 +6,8 @@ mod common;
 use common::Scene;
 use server::GridView;
 use voxel_space::{
-    BrickCoordinate, GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate, WorldPosition,
+    BrickCoordinate, GravitySettings, GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate,
+    WorldPosition,
 };
 use voxunami_cave::content::CaveContent;
 
@@ -353,6 +354,68 @@ fn a_ship_too_far_from_the_first_one_of_its_level_stays_where_it_is() {
         "the first one falls"
     );
     assert_eq!(ship_pose(&scene, 1), far, "the far one does not");
+}
+
+/// Space: no gravity of the level, and a body of at least a million kilograms pulls at a strength that shows in a few ticks.
+fn pulling_space(threshold: Option<f32>) -> GravitySettings {
+    GravitySettings {
+        base: [0.0; 3],
+        pull_strength: 1e-3,
+        pull_mass_threshold: threshold,
+        softening: 1.0,
+    }
+}
+
+#[test]
+fn a_ship_that_weighs_enough_pulls_the_ships_near_it_toward_its_centre_and_one_that_does_not_pulls_nothing()
+ {
+    let pulled = |threshold: Option<f32>| {
+        let mut scene = Scene::new();
+        scene.run(move |world| world.set_gravity_settings(pulling_space(threshold)));
+        // A cube of 16 voxels along an edge: 4,096 blocks of 1,000 kilograms, held; and a small one 30 voxels from it.
+        make_a_cube_that_may_be_held(&mut scene, 16, pose_at(200.0, 400.0, 0.0), true);
+        make_a_cube(&mut scene, 6, pose_at(170.0, 400.0, 0.0));
+        scene.ticks(10);
+        velocity_of(&scene, 1)
+    };
+    let velocity = pulled(Some(1e6));
+    // Toward the big one's centre, (208, 408, 8), from the small one's, (173, 403, 3): a distance of 35.7, an acceleration of
+    // G m / (d^2 + 1) = 1e-3 * 4.096e6 / 1275 = 3.2 for eleven ticks of a twentieth of a second (the tick that made the ship is one). The pull
+    // is at the centre of mass, not at the corner a ship is placed by: the two are 5 voxels apart.
+    let toward = [35.0f32, 5.0, 5.0];
+    let distance = (toward[0] * toward[0] + toward[1] * toward[1] + toward[2] * toward[2]).sqrt();
+    let acceleration = 1e-3 * 4.096e6 / (distance * distance + 1.0);
+    let seconds = 0.55;
+    for axis in 0..3 {
+        let expected = acceleration * toward[axis] / distance * seconds;
+        assert!(
+            (velocity[axis] - expected).abs() < 0.03 * expected.abs() + 0.01,
+            "axis {axis}: {velocity:?}, expected {expected}"
+        );
+    }
+    // With the threshold above its mass, nothing pulls anything.
+    assert_eq!(pulled(Some(5e6)), [0.0; 3]);
+    assert_eq!(pulled(None), [0.0; 3]);
+}
+
+#[test]
+fn a_ship_does_not_pull_itself_and_a_held_one_that_is_pulled_does_not_move() {
+    let mut scene = Scene::new();
+    scene.run(|world| world.set_gravity_settings(pulling_space(Some(1e6))));
+    // A big ship alone in space that is free to move: nothing pulls it.
+    make_a_cube(&mut scene, 16, pose_at(200.0, 400.0, 0.0));
+    scene.ticks(20);
+    assert_eq!(velocity_of(&scene, 0), [0.0; 3]);
+    // A held one of the same weight beside it pulls it, and is not moved by being pulled or by pulling.
+    make_a_cube_that_may_be_held(&mut scene, 16, pose_at(260.0, 400.0, 0.0), true);
+    let held = ship_pose(&scene, 1);
+    scene.ticks(20);
+    assert_eq!(ship_pose(&scene, 1), held);
+    assert!(
+        velocity_of(&scene, 0)[0] > 0.5,
+        "{:?}",
+        velocity_of(&scene, 0)
+    );
 }
 
 /// A scene with ships of different shapes, one turned, one pushed, one edited, on the floor and in the air.

@@ -66,6 +66,17 @@ impl<'a> Context<'a> {
         self.world
     }
 
+    /// The acceleration of gravity at a place of a grid, in the grid's own axes, in voxels per second per second: the level's, and the pull of
+    /// the ships that weigh enough. For a ship it is the world's gravity turned into the ship's axes, so it changes as the ship turns: a rule
+    /// never asks where down is in the world, only where it is for the voxels it looks at. `local` is a position in the grid.
+    pub fn gravity_at(
+        &self,
+        grid: GridId,
+        local: voxel_space::WorldPosition,
+    ) -> Result<[f32; 3], AccessError> {
+        self.world.gravity_in(grid, local)
+    }
+
     /// One grid, read and written in its own coordinates. Fails for a grid the world does not have.
     pub fn grid(&mut self, grid: GridId) -> Result<CheckedGrid<'_>, AccessError> {
         let inner = self.world.grid(grid)?;

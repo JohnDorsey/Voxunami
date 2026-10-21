@@ -16,6 +16,10 @@ pub struct MovingGrid {
     /// write them as they move the ship; a ship made anew has none.
     pub linear_velocity: [f32; 3],
     pub angular_velocity: [f32; 3],
+    /// How much the ship weighs in kilograms and where its centre of mass is in its own coordinates, as the bodies work it out from its blocks
+    /// (zero where nothing has). A ship of enough mass pulls things toward its centre of mass (see `voxel_space::gravity_at`).
+    pub mass: f32,
+    pub centre_of_mass: [f32; 3],
     /// A held ship does not move: gravity, forces and collisions leave it where it is, and everything else collides with it.
     pub held: bool,
     /// The voxels. An absent brick is every channel at its default (nothing generates a ship).
@@ -242,6 +246,8 @@ mod tests {
             pose: GridPose::identity(),
             linear_velocity: [0.0; 3],
             angular_velocity: [0.0; 3],
+            mass: 0.0,
+            centre_of_mass: [0.0; 3],
             held: false,
             voxels,
         }

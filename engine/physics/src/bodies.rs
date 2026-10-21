@@ -496,6 +496,19 @@ impl BodyWorld {
         Ok(())
     }
 
+    /// Pushes a body with a force for the next [`BodyWorld::step`] only, like [`BodyWorld::apply_force`] at its centre of mass, except that it
+    /// does not wake a body that is asleep. It is for forces that are always there, such as gravity, which a body at rest has no need to be
+    /// woken by: if something else wakes it, the force is on it again.
+    pub fn apply_steady_force(&mut self, id: BodyId, force: [f32; 3]) -> Result<(), BodyError> {
+        let handle = self
+            .by_id
+            .get(&id)
+            .ok_or(BodyError::UnknownBody(id))?
+            .handle;
+        self.bodies[handle].add_force(Vector::from_array(force), false);
+        Ok(())
+    }
+
     /// Moves everything one tick: gravity and the forces applied since the last call, then collisions, in
     /// [`BodySettings::substeps`] steps. The forces are then forgotten.
     pub fn step(&mut self) {
