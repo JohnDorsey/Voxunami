@@ -450,7 +450,7 @@ The phase is large; I propose a pause for the owner after 32h, before docking.
   ship is made, flown, boarded, turned and left, recorded and replayed to the same picture (built, `flight.rs` and `pictures.rs`). **Pause for the owner here.**
 - **32i Saving and loading** (2.8, built in three parts): ship files, `engine:grids`, loading on demand, the missing-ship prompt, the consistent save, the
   vanish policy and the blocked arrival search, the simulation-distance setting with freeze and park.
-- **32j Fast ships stop at thin ground** (2.3; found by the owner's first play of 32h, measured 2026-10-21; done *before* splitting and merging, see "Why here" below).
+- **32j Fast ships stop at thin ground** (2.3; built 2026-10-21, see the build log; found by the owner's first play of 32h, measured 2026-10-21; done *before* splitting and merging, see "Why here" below).
   *What happens:* a ship goes through ground that is thinner than it moves in one solver step. `BodyWorld` runs 3 steps of a twentieth of a second, so a ship
   moves its speed divided by 60 in a step, and (measured in the `physics` crate alone, cubes of 1 and 4 and rafts of 10 by 10 dropped on a slab; the ship's size makes no
   difference) it goes through a floor **1 voxel** thick from about **96 voxels a second**, and through floors of 2 and of 3 voxels from about 200 (with 6 steps: 200, and
@@ -465,6 +465,7 @@ The phase is large; I propose a pause for the owner after 32h, before docking.
   today, kept as a test; a thin raft on a thin raft; the Cave case, a ship from 1000 above the flat floor stops on it (today it lands on the hills below, and at 357 a
   second a cube of 4 ends 4 voxels *above* the floor, which is not understood: the step must explain it or remove it); the cost of a ship of 100 and of 1000 blocks at the
   top speed. *Confidence:* high that it works (measured); medium on the cost for big ships (only fast ones pay, and only while they are fast), which the measurement decides.
+  *As built:* `BodyWorld::steps_for_this_tick` (constants `MOST_A_STEP_MOVES` 0.8 and `MOST_STEPS` 24). The "4 above" was not a bug: a cube that tumbled rests on another face, with its origin corner a cube's width up.
   Not chosen: our own shape cast to limit the velocity (more code and more cases: rotation, compounds) and a lower speed cap (it would show in play).
 - **32k Terrain colliders on a budget** (2.3, 2.7; found by the owner's first play of 32h): a big ship (a 30 by 30 and a 40 by 40 raft measured, 900 blocks and more) still
   has single ticks of 70 to 80 ms as it reaches new natural ground, because the terrain within 8 voxels of such a ship is 8 to 27 bricks and each costs 5 to 25 ms to

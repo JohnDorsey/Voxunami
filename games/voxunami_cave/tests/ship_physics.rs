@@ -477,7 +477,9 @@ fn the_poses_of_the_ships_are_the_same_whatever_is_kept_of_their_speeds() {
     // (It changed in Phase 32h, when a ship came to have colliders for the terrain within a few voxels of it and not for the bricks around its
     // bricks: 1_355_701_843_541_054_234 before. Two of the three ships are where they were to the bit, and the third, which slides and spins on the
     // ground, is 0.003 and 0.004 voxel from where it was and 0.0001 in the turn: the terrain that does not touch it is not the same in the solver.)
-    assert_eq!(hash_of_poses(&busy_scene()), 4_233_839_071_203_554_194);
+    // (It changed in Phase 32j, when a tick is cut into more solver steps while any point of a ship moves faster than about 48 voxels a second, which
+    // the spinning ships of this scene do for a few ticks: 4_233_839_071_203_554_194 before.)
+    assert_eq!(hash_of_poses(&busy_scene()), 15_101_816_868_498_766_766);
 }
 
 #[test]
@@ -487,7 +489,8 @@ fn the_same_ships_move_the_same_bits_every_time_and_on_every_machine() {
     // Written down once; a change in it is a change in the simulation (Windows and Linux must agree on it).
     // (It changed in Phase 32g, when a ship that sleeps was given no speed on record: 187_330_083_679_574_898 before; the poses did not.)
     // (It changed again in Phase 32h, with the terrain a ship has colliders for: 16_582_222_097_314_237_682 before; see the test of the poses.)
-    assert_eq!(hash_of_ships(&first), 8_675_827_597_625_099_639);
+    // (And in Phase 32j, with the steps of a fast tick: 8_675_827_597_625_099_639 before; see the test of the poses.)
+    assert_eq!(hash_of_ships(&first), 8_817_648_817_650_209_632);
 }
 
 /// A cube of 4 let go over the natural ground (not the flat floor of the other tests: it is what a player has), `height` voxels above where
@@ -555,4 +558,24 @@ fn a_ship_that_falls_a_long_way_has_the_ground_ready_for_it_and_stops_on_it() {
         "it rests on the floor, not in it or under it: {height}"
     );
     assert!(velocity_of(&scene, 0)[1].abs() < 0.1);
+}
+
+#[test]
+fn a_ship_that_falls_faster_than_the_floor_is_thick_stops_on_it() {
+    // From 1000 above, a ship is going about 250 voxels a second where it lands, which is more than the floor (three thick) is thick in a
+    // solver step of the three a tick has: it went through, and landed on the hills below. A tick is cut into more steps while it is fast.
+    let mut scene = Scene::new();
+    flat_floor(&mut scene);
+    make_a_cube(&mut scene, 4, pose_at(14.0, FLOOR + 1000.0, 14.0));
+    let mut fastest = 0.0f32;
+    for _ in 0..400 {
+        scene.ticks(1);
+        fastest = fastest.max(-velocity_of(&scene, 0)[1]);
+    }
+    assert!(fastest > 200.0, "it fell fast: {fastest}");
+    let height = height_of(ship_pose(&scene, 0));
+    assert!(
+        (height - FLOOR).abs() < 0.05,
+        "it rests on the floor, not in it or under it: {height}"
+    );
 }

@@ -741,6 +741,16 @@ Phase 32i, part 3 (the pilot's logout and the questions to the player; 2026-10-2
   the handlers already did it; the order is now stated (`after`), which the host checks when it is built, and the guard is gone. All 58 mutants of parts 1 and 2 that still applied were run again on
   the final code and all were caught (one mutant of part 1 was split in two, for `load_ship` and `admit_ship`, and one of part 2 was replaced by those of part 3).
 
+Phase 32j (fast ships stop at thin ground; 2026-10-21): `BodyWorld::step` cuts a tick into more solver steps while any point of a dynamic body (its speed plus its turn rate times
+the reach of its colliders' boxes) would move more than 0.8 voxel in one: the settings' 3 under about 48 voxels a second, 24 at most. A tick in which nothing is fast is cut as before, bit for bit.
+- Tests first: a table in `physics` (cubes of 1 and 4, floors of 1 and 3, 100, 250 and 400 a second) that fails with the cap at 3 (a cube of 4 at 400 ended 780 below); the step counts (3, 7, 24);
+  Cave's `ship_physics.rs`: a ship from 1000 above the flat floor stops on it (with the cap at 3 it ended at height 103, on the hills 98 below the floor). Cost, measured with a throwaway
+  test: a ship of 125 or 1000 blocks at 400 a second costs about 0.05 to 0.07 ms a tick in free flight; only fast ones pay, and only while fast.
+- Pins changed, for the reason in the design: the spinning ships of two scenes cross 48 for a few ticks (2 ticks of 5 steps in `physics`'s busy scene). `bodies.rs` `13_668_004_898_244_483_961` to
+  `8_592_658_610_343_128_269`; `ship_physics.rs` poses `4_233_839_071_203_554_194` to `15_101_816_868_498_766_766` and ships `8_675_827_597_625_099_639` to `8_817_648_817_650_209_632`. Windows and Linux agree
+  (1649 and 1650 pass; fmt and clippy clean). Mutation: the cap at 3 is caught by both new tests.
+- The spec's "4 above" puzzle: a cube that tumbled rests on another face, so its origin corner is a cube's width up. Not a bug; the tests say "on top of the floor", not "origin on it".
+
 Planning note, 2026-10-21 (the owner asked for the two open ship items to be put in the plan; they became steps 32j and 32k, before splitting): the claim in the earlier
 entries that ships "have no continuous collision detection against terrain" was a guess about the cause, and measuring it showed the cause is another. In the `physics` crate
 alone (a throwaway test, removed), cubes of 1 and 4 and rafts of 10 by 10 were dropped at set speeds on a slab of terrain: with the 3 solver steps a tick has, a floor of 1

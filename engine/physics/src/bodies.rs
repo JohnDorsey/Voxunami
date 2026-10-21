@@ -33,6 +33,11 @@ pub struct BodyState {
     pub angular_velocity: [f32; 3],
 }
 
+/// The farthest, in voxels, that the fastest point of a body is let move in one solver step.
+const MOST_A_STEP_MOVES: f32 = 0.8;
+/// The most solver steps a tick is cut into (Rapier caps a body at 400 voxels a second, which is 20 a tick and 0.8 a step at 24).
+const MOST_STEPS: u32 = 24;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BodySettings {
     /// How long one call to [`BodyWorld::step`] is, in seconds: a tick of the server.
@@ -546,7 +551,9 @@ impl BodyWorld {
     /// [`BodySettings::substeps`] steps. The forces are then forgotten.
     pub fn step(&mut self) {
         let gravity = Vector::from_array(self.settings.gravity);
-        for _ in 0..self.settings.substeps.max(1) {
+        let steps = self.steps_for_this_tick();
+        self.parameters.dt = self.settings.time_step / steps as f32;
+        for _ in 0..steps {
             self.pipeline.step(
                 gravity,
                 &self.parameters,
@@ -567,6 +574,37 @@ impl BodyWorld {
             body.reset_forces(false);
             body.reset_torques(false);
         }
+    }
+
+    /// How many solver steps this tick is cut into: the settings' number, or more when a body is fast enough to cross [`MOST_A_STEP_MOVES`] voxels in
+    /// one of them, since a body that moves farther than the ground is thick goes through it. (Rapier's own continuous detection leaves out the voxel
+    /// colliders that ships are made of.) At most [`MOST_STEPS`]. A tick in which nothing is fast is cut as the settings say, bit for bit.
+    fn steps_for_this_tick(&self) -> u32 {
+        let base = self.settings.substeps.max(1);
+        let mut fastest = 0.0f32;
+        for (_, body) in self.bodies.iter() {
+            if !body.is_dynamic() {
+                continue;
+            }
+            let mut speed = body.linvel().length();
+            let turn = body.angvel().length();
+            if turn > 0.0 {
+                // The farthest point of the body from its middle, by the boxes of its colliders.
+                let middle = body.translation();
+                let reach = body
+                    .colliders()
+                    .iter()
+                    .map(|&handle| {
+                        let aabb = self.colliders[handle].compute_aabb();
+                        (aabb.center() - middle).length() + aabb.half_extents().length()
+                    })
+                    .fold(0.0f32, f32::max);
+                speed += turn * reach;
+            }
+            fastest = fastest.max(speed);
+        }
+        let needed = (fastest * self.settings.time_step / MOST_A_STEP_MOVES).ceil();
+        (needed as u32).clamp(base, MOST_STEPS.max(base))
     }
 
     /// Moves the frame's origin to the corner of another brick, keeping everything where it is in the world. Positions near the new origin
@@ -718,6 +756,70 @@ mod tests {
             }
         }
         world
+    }
+
+    /// A floor `thickness` voxels thick with its top at 0, as the colliders of the bricks around the origin.
+    struct Floor {
+        thickness: i64,
+    }
+
+    impl CollisionSource for Floor {
+        fn collision_at(&mut self, voxel: VoxelCoordinate) -> Collision {
+            if voxel.y() < 0 && voxel.y() >= -self.thickness {
+                Collision::Full
+            } else {
+                Collision::Empty
+            }
+        }
+    }
+
+    #[test]
+    fn a_body_that_falls_faster_than_the_floor_is_thick_still_stops_on_it() {
+        for thickness in [1, 3] {
+            for size in [1, 4] {
+                for speed in [100.0f32, 250.0, 400.0] {
+                    let mut world =
+                        BodyWorld::new(BrickCoordinate::ORIGIN, BodySettings::default());
+                    for x in -1..=1 {
+                        for z in -1..=1 {
+                            world.set_terrain_brick(
+                                BrickCoordinate::new(x, -1, z),
+                                &mut Floor { thickness },
+                            );
+                        }
+                    }
+                    let hull = Hull::cube(size);
+                    let mut state = resting_at(at(2.0, 20.0, 2.0));
+                    state.linear_velocity = [0.0, -speed, 0.0];
+                    ship_of(&mut world, 1, &hull, state, BodyKind::Dynamic);
+                    run(&mut world, 40);
+                    let height = world.state(BodyId(1)).unwrap().position.offset()[1]
+                        + world.state(BodyId(1)).unwrap().position.brick().y() as f32 * 32.0;
+                    // On top of the floor: its corner is on the floor or, if it came to rest on another face, a cube's width above (not below the top).
+                    assert!(
+                        (-0.2..=size as f32 + 0.2).contains(&height),
+                        "a cube of {size} at {speed} on a floor of {thickness} ended at {height}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_tick_in_which_nothing_is_fast_is_cut_as_the_settings_say() {
+        let mut world = world_with_ground();
+        let hull = Hull::cube(2);
+        let mut state = resting_at(at(2.0, 20.0, 2.0));
+        state.linear_velocity = [0.0, -40.0, 0.0];
+        ship_of(&mut world, 1, &hull, state, BodyKind::Dynamic);
+        assert_eq!(world.steps_for_this_tick(), 3);
+        let mut faster = state;
+        faster.linear_velocity = [0.0, -100.0, 0.0];
+        world.set_state(BodyId(1), faster).unwrap();
+        assert_eq!(world.steps_for_this_tick(), 7);
+        faster.linear_velocity = [0.0, -4000.0, 0.0];
+        world.set_state(BodyId(1), faster).unwrap();
+        assert_eq!(world.steps_for_this_tick(), 24);
     }
 
     fn ship_of(world: &mut BodyWorld, id: u64, hull: &Hull, state: BodyState, kind: BodyKind) {
@@ -1309,6 +1411,6 @@ mod tests {
         let (first, second) = (busy_scene(), busy_scene());
         assert_eq!(first.state_hash(), second.state_hash());
         // Written down once; a change in it is a change in the simulation (and Windows and Linux must agree on it).
-        assert_eq!(first.state_hash(), 13_668_004_898_244_483_961);
+        assert_eq!(first.state_hash(), 8_592_658_610_343_128_269);
     }
 }
