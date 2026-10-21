@@ -372,10 +372,45 @@ The phase is large; I propose a pause for the owner after 32h, before docking.
   ship is made, flown, boarded, turned and left, recorded and replayed to the same picture (built, `flight.rs` and `pictures.rs`). **Pause for the owner here.**
 - **32i Saving and loading** (2.8): ship files, `engine:grids`, loading on demand, the missing-ship prompt, the consistent save, the
   vanish policy and the blocked arrival search, the simulation-distance setting with freeze and park.
-- **32j Splitting** (2.7): the budgeted connectivity check, parts, velocities, entities re-framed, events and the stream.
-- **32k Merging and docking** (2.7): connectors, attraction, snap, merge, welds, undock refusal; merge invariance and split invariance tests
+- **32j Fast ships stop at thin ground** (2.3; found by the owner's first play of 32h, measured 2026-10-21; done *before* splitting and merging, see "Why here" below).
+  *What happens:* a ship goes through ground that is thinner than it moves in one solver step. `BodyWorld` runs 3 steps of a twentieth of a second, so a ship
+  moves its speed divided by 60 in a step, and (measured in the `physics` crate alone, cubes of 1 and 4 and rafts of 10 by 10 dropped on a slab; the ship's size makes no
+  difference) it goes through a floor **1 voxel** thick from about **96 voxels a second**, and through floors of 2 and of 3 voxels from about 200 (with 6 steps: 200, and
+  400). A 1-voxel wall is what a player builds; 96 is a fall of about 150 voxels, not a flight (a ship flown with control held does about 48). Rapier caps speed at 400 a step.
+  *Why a flag does not fix it:* Rapier does continuous collision detection by itself, for every fast dynamic body against fixed colliders, but it leaves voxel-shaped
+  colliders out of it (`shape_never_ccd_swept`: a body made only of them has an infinite CCD thickness and is never counted as fast), and the whole cubes of a ship are one
+  `Voxels` collider (2.3). `ccd_enabled` and `soft_ccd_prediction` on the ship bodies were tried and change nothing, bit for bit.
+  *The fix is ours and small:* `BodyWorld::step` chooses the number of solver steps for the tick from the fastest point of any dynamic body (its speed plus its turn
+  rate times the radius of its colliders) so that no point moves more than about 0.8 voxel in a step: 3 for anything under about 48 voxels a second, 24 at most (the cap
+  of 400). Measured, 28 steps stop every hull at 400 even on a floor of 1. Slower scenes are bit-identical to before (their pins hold); only scenes that go faster than
+  48 change, and the fall of 300 in `ship_physics.rs` is one. It helps ships hitting ships too. *Tests first:* the table (hull by floor thickness by speed) that fails
+  today, kept as a test; a thin raft on a thin raft; the Cave case, a ship from 1000 above the flat floor stops on it (today it lands on the hills below, and at 357 a
+  second a cube of 4 ends 4 voxels *above* the floor, which is not understood: the step must explain it or remove it); the cost of a ship of 100 and of 1000 blocks at the
+  top speed. *Confidence:* high that it works (measured); medium on the cost for big ships (only fast ones pay, and only while they are fast), which the measurement decides.
+  Not chosen: our own shape cast to limit the velocity (more code and more cases: rotation, compounds) and a lower speed cap (it would show in play).
+- **32k Terrain colliders on a budget** (2.3, 2.7; found by the owner's first play of 32h): a big ship (a 30 by 30 and a 40 by 40 raft measured, 900 blocks and more) still
+  has single ticks of 70 to 80 ms as it reaches new natural ground, because the terrain within 8 voxels of such a ship is 8 to 27 bricks and each costs 5 to 25 ms to
+  generate and make colliders of on the thread of the tick (the generating is a third to a half of it). 32i makes the same cost appear when a ship is loaded or unfrozen
+  next to natural ground, and 32l's connectivity check needs the same thing, "at most so much work a tick", so this step builds that once: **a per-tick budget counted
+  in units of work, never in time** (a wall-clock budget would make the simulation depend on the machine, which the hard rule forbids; a count is the same on every machine).
+  A ship's terrain has two zones: the *needed* zone, the bricks that the ship's bounds sweep in this tick (and a voxel or two around), is always made, so a ship can never
+  reach a brick that has no colliders; the *wanted* zone, the rest of the lookahead (8 voxels and five ticks of speed), is made nearest first, at most as many bricks a tick as
+  the budget says (chosen by measurement, about 2), ties broken by brick coordinate. A ship that has just been made, loaded or unfrozen, and so has a large needed zone
+  all at once, is the case to decide by measurement: wait the few ticks it takes (kinematic and asleep, as a frozen ship is) or pay the spike once. The same budget is the
+  "bricks made again per tick" of 2.3, for a ship edited in many bricks in a tick. *Tests first:* a big raft falling to natural ground (the worst tick of the 30 by 30 raft is
+  82 ms and of the 40 by 40 73 ms today) has no tick over 30 ms; a ship's path with the budget is the path without it whenever the lookahead is long enough (a property
+  test over speeds); a ship cannot reach a brick without colliders however small the budget is. Related and *not* part of this step: natural terrain costs 5 to 10 ms a brick to
+  generate, and every reader pays it when the world's cache of 128 bricks has forgotten the brick (plan.md, Open). Generating is a pure function of the seed and the
+  coordinate, so a worker thread that fills that cache ahead of the tick cannot change any result (the tick would find the brick, or generate the same one itself): it is the
+  next idea if the budget leaves ticks too long, and it needs no change to the simulation.
+- **32l Splitting** (2.7): the budgeted connectivity check (on the budget of 32k), parts, velocities, entities re-framed, events and the stream.
+- **32m Merging and docking** (2.7): connectors, attraction, snap, merge, welds, undock refusal; merge invariance and split invariance tests
   (requirement 14).
 
+*Why 32j and 32k are here (decided 2026-10-21):* both change the body layer that splitting and merging build on, and both would change the pins those steps make
+(32l and 32m make new bodies, with velocities, in new orders), so doing them after would mean pinning twice; the budget is a facility that 32l uses; and neither
+needs anything from 32i, which is why they are not before it (the owner asked for saving next). Splitting was 32j and merging and docking 32k in the text before
+2026-10-21; they were renumbered so that the letters stay in the order the steps are done.
 ## 5. Risks
 
 - **Aboard physics (32g)** is the one I would bet on being the source of most bugs. It is the reason for the scenario tests, and for
@@ -385,6 +420,8 @@ The phase is large; I propose a pause for the owner after 32h, before docking.
 - **Determinism of bodies in many orders.** Rapier's `enhanced-determinism` held in the spike for the cases it tried. Bodies are created,
   removed, split and merged here in many orders, so the golden digests must run bodies in a shuffled-creation test.
 - **Protocol churn.** `GridId` in edits and actions touches client plugins and Cave; it is the right place to pay for it (nothing is released).
+- **Rapier's continuous collision detection does not cover voxel colliders (found 2026-10-21).** A ship goes through ground thinner than it moves in a step; the
+  fix (32j) is more solver steps for fast bodies. Anything that relies on Rapier's CCD for a ship (a flag, a "bullet" body) will not get it.
 - **Scope.** This is larger than any earlier phase; the pause after 32h and the order (safe, pure pieces first) are the control.
 
 ## 6. Questions for the owner, answered (2026-10-20)

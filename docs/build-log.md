@@ -686,6 +686,17 @@ Phase 32h, after the owner's first play (2026-10-21): a crash and lag spikes, bo
   second goes through a floor 3 thick (it does not at 138). Three mutants of the new lookahead survive (no distance ahead; no speed term; no hysteresis): they are safety margins
   that no scene can show, since the one that would, a faster fall, goes through the floor whatever the colliders.
 
+Planning note, 2026-10-21 (the owner asked for the two open ship items to be put in the plan; they became steps 32j and 32k, before splitting): the claim in the earlier
+entries that ships "have no continuous collision detection against terrain" was a guess about the cause, and measuring it showed the cause is another. In the `physics` crate
+alone (a throwaway test, removed), cubes of 1 and 4 and rafts of 10 by 10 were dropped at set speeds on a slab of terrain: with the 3 solver steps a tick has, a floor of 1
+voxel is gone through from 96 voxels a second (12 to 72 are fine), floors of 2 and 3 from 200 (138 is fine), whatever the ship's size; with 6 steps 200 and 400; with 28 steps
+nothing goes through at 400. `ccd_enabled(true)` and `soft_ccd_prediction(12.0)` on the ship bodies gave bit-identical results to doing nothing, and `is_ccd_active()` stayed
+false at 13 voxels a tick: Rapier 0.36 does CCD of every fast dynamic body against fixed colliders by itself, but `shape_never_ccd_swept` leaves out `Voxels` shapes and a
+body made of them keeps an infinite CCD thickness, and a ship's whole cubes are one `Voxels` collider. Also seen and not understood: in Cave a cube of 4 let go from 2000
+above the flat floor (357 voxels a second at the floor) ends at rest 4 voxels above it, a cube of 1 one above it, and cubes of 2, 8 and 12 on it (Rapier pushes a deep overlap
+out at 3 voxels a second at most, which makes it slow, not wrong); 32j's tests must explain it or remove it. The fix chosen is more solver steps for fast bodies (32j), and the
+work budget of 32k also serves 32l's connectivity check.
+
 Phase 32h, the same fix for walkers (2026-10-21; the owner asked): a walker hitched when it walked into new ground because `CharacterBody` made colliders for the 27 bricks
 around the one it is in, 10 to 25 ms a brick on the tick's thread. It now has them for the terrain within 8 voxels of its centre and a quarter of a second of its speed, and
 lets them go 16 voxels farther out (the same three numbers as a ship's, in `character.rs`). Measured in Cave with natural terrain, 1500 ticks of a player sprinting from the

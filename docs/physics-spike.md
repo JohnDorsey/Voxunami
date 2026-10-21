@@ -78,5 +78,5 @@ measured on a Ryzen 7600X, single thread, release build, 60 Hz steps, unless sta
 - Hollow hulls: buoyancy here counts solid voxels; a watertight hull displaces its enclosed air, which needs a
   flood fill from outside to find.
 - Stacking, wheels and friction models beyond defaults; aerodynamics for aircraft; very large mass ratios beyond 576:1.
-- Tuning for 1/32 m voxels with many small fast objects (continuous collision detection); tunnelling was not examined.
+- Tuning for 1/32 m voxels with many small fast objects (continuous collision detection); tunnelling was not examined. (It was, on 2026-10-21, for ships: see `moving-grids-spec.md`, step 32j.)
 - Other CPU architectures and compiler versions.
