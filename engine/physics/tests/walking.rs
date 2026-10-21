@@ -145,6 +145,68 @@ fn a_wall_stops_the_character_and_it_slides_along_it() {
     );
 }
 
+/// A floor topped at 7 with a wall along z of the blocks on it, one high (more than a character steps up), whose face is at x = 15 and
+/// reaches from z = 0 to 41. A character on the floor at (`x`, `z`) walks with the yaw `yaw` and its keys held, which is toward -z and
+/// leaning into the wall for a yaw above 0: `steps` steps. Returns where it ended and the most steps in a row that it did not move.
+fn walk_into_a_step(yaw: f32, x: f32, z: f32, steps: usize) -> ([f64; 3], usize) {
+    let mut scene = Scene::with_floor(6);
+    for wall_x in 0..=14 {
+        for wall_z in 0..=40 {
+            scene.cube(wall_x, 7, wall_z);
+        }
+    }
+    let mut body = spawn(x, 7.0 + 1.62 + 0.01, z);
+    run(&mut body, &mut scene, STILL, 30);
+    let input = MoveInput { yaw, ..FORWARD };
+    let mut last = eye(&body);
+    let (mut still, mut longest_still) = (0, 0);
+    for _ in 0..steps {
+        run(&mut body, &mut scene, input, 1);
+        let now = eye(&body);
+        if (now[0] - last[0]).abs() + (now[2] - last[2]).abs() < 1e-6 {
+            still += 1;
+            longest_still = longest_still.max(still);
+        } else {
+            still = 0;
+        }
+        last = now;
+    }
+    (last, longest_still)
+}
+
+#[test]
+fn a_walker_pressed_into_a_wall_on_a_slant_slides_along_it_where_the_controller_alone_stops_dead() {
+    // Found in Cave's golden session, where a player walking with the yaw 0.4 along a hillside stood still for a hundred steps: the
+    // shape cast against the wall gives a normal with a hair of downward slope (about 1e-5), the slide along the wall has a hair of
+    // downward speed, and the controller then takes the floor, which it meets at once, to be what the walker slides down, and
+    // gives up with nothing moved. This is one such walk: it reaches the wall and sticks at z = 25.8 after 67 steps if nothing is done.
+    let (end, longest_still) = walk_into_a_step(0.3, 15.6, 30.0, 150);
+    assert_eq!(longest_still, 0, "it stood still, at {end:?}");
+    // The walk along the wall is 4.3 cos(0.3) a second: more than 10 voxels in the 150 steps, less the few spent starting and arriving.
+    assert!(end[2] < 30.0 - 9.0, "it only got to z = {}", end[2]);
+    assert!(
+        end[0] > 15.2 && end[0] < 15.5,
+        "it stays at the wall: {end:?}"
+    );
+}
+
+#[test]
+fn a_walker_never_stops_dead_against_a_wall_that_is_free_to_slide_along_for_any_slant_and_place() {
+    // About a fifth of these used to stick. (Every walk is along a wall that goes on for 20 voxels or more, so a slide is free.)
+    let mut stuck = Vec::new();
+    for yaw_hundredths in (10..130).step_by(5) {
+        for start in 0..6 {
+            let yaw = yaw_hundredths as f32 / 100.0;
+            let x = 15.6 + start as f32 * 0.23;
+            let (end, longest_still) = walk_into_a_step(yaw, x, 30.0, 150);
+            if longest_still > 0 {
+                stuck.push((yaw, x, end));
+            }
+        }
+    }
+    assert!(stuck.is_empty(), "stood still: {stuck:?}");
+}
+
 #[test]
 fn a_jump_clears_a_block_and_a_quarter_and_not_two_blocks() {
     let (mut body, mut scene) = standing_on_a_floor();

@@ -287,8 +287,13 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// package is 1,345 bytes and its length takes 2 more: 7,181,819 to 7,183,166, the saved world is the same. The hash changes with the bytes.
 /// Phase 29: Cave declares the property `voxunami_cave:placeable` and sets it on the six blocks a player can place, so its package grows
 /// from 1,345 to 1,647 bytes (+302): 7,183,166 to 7,183,468; the saved world is the same.
+/// Phase 32h (a walker slides along terrain walls): the walking stage had the player stand still against a hillside wall for about a
+/// hundred steps (the controller lost the slide, see `walking.rs`); now it slides on, so the stream holds the moves it did not have:
+/// the stream hash changed and the length by 1,478 bytes (7,183,468 to 7,184,946); the saved world did not (the session ends with a
+/// teleport, which is probably why). Checked by tracing the old code: in this session the first move of a step came out as under a
+/// tenth of what was asked at 104 steps, all at one place, to the bit, which is the walker stuck on the hillside wall.
 const PINNED: (u64, usize, u64) = (
-    17_921_380_828_981_039_569,
-    7_183_468,
+    10_532_312_086_834_500_854,
+    7_184_946,
     15_753_024_505_422_231_765,
 );

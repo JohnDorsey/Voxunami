@@ -257,8 +257,8 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   ship at 6 a second: if you want the momentum kept in the air, the air control is what changes; (c) a body aboard does not see terrain or other
   ships, so the leave rule is what keeps it from walking through a cliff that touches the hull, and a ship that stops dead throws no one forward
   (no fictitious forces, as decided; the goal in `future-goals.md`, "Ship goals" 6, adds them); (d) the controller sometimes loses a slide
-  along a wall (seen once in the pinned Cave session against terrain, and found with turned ship walls, where it is made again for ships only):
-  fixing it for terrain would change the pinned sessions, so it is a follow-up; (e) `/tp` far from the start does not tell the client where it
+  along a wall (seen once in the pinned Cave session against terrain, and found with turned ship walls): made again for walls of terrain too in 32h,
+  which changed the pinned Cave session (the walker no longer stands still for a hundred steps); (e) `/tp` far from the start does not tell the client where it
   is (returning players now are told); (f) nothing is hurt by being pushed or pressed: a ship that falls on a player lifts them onto itself.
 - Plugin architecture (2026-10-17; `docs/plugin-architecture-review.md` has the options and sources; each item is now in the
   Build plan, and what stays open is the detail): (a) *Entities and items* (Phase 27): only players exist, and the protocol, the
