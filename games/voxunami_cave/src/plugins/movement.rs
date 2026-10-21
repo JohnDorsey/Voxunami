@@ -103,6 +103,8 @@ fn teleport(
             pose.view_orientation(Orientation::IDENTITY),
         );
     }
+    // Their client watches around its camera, which may be far from here: it is told where they are.
+    presence.tell_placed(world, client);
     let [now_x, now_y, now_z] = voxels(now);
     // (The position is made of an `f32` offset in a brick, so a place that was not moved is the one asked for,
     // to within what an `f32` holds.)

@@ -82,13 +82,7 @@ impl Presence {
         });
         // The client watches the bricks around its camera, which starts where its program starts it; a player who left somewhere else is
         // told where they are, in the world (aboard a ship, where the ship has them), so that the view goes there.
-        if let Some(position) = self.pose_of(world.data(), client).map(|pose| pose.position) {
-            world.send(
-                Audience::Client(client),
-                PlayerPlaced::kind(),
-                PlayerPlaced(position).encode(),
-            );
-        }
+        self.tell_placed(world, client);
         // A player who left in another level is back in it, and their client does not know.
         let level = self.level_of(world.data(), client);
         if level != LevelIndex::MAIN
@@ -99,6 +93,19 @@ impl Presence {
                 Audience::Client(client),
                 LevelChange::kind(),
                 LevelChange(level_id).encode(),
+            );
+        }
+    }
+
+    /// Tells a player where they are in the world (a player aboard a ship is where the ship has them), so that their view goes
+    /// there. A client only watches the bricks around its camera: a game that moves a player far (a teleport) calls this after
+    /// the move, or the player is somewhere their client does not show. Nothing is sent to a player with no pose yet.
+    pub fn tell_placed(&self, world: &mut ServerWorld, client: ClientId) {
+        if let Some(position) = self.pose_of(world.data(), client).map(|pose| pose.position) {
+            world.send(
+                Audience::Client(client),
+                PlayerPlaced::kind(),
+                PlayerPlaced(position).encode(),
             );
         }
     }

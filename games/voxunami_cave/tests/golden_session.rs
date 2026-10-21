@@ -287,8 +287,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// package is 1,345 bytes and its length takes 2 more: 7,181,819 to 7,183,166, the saved world is the same. The hash changes with the bytes.
 /// Phase 29: Cave declares the property `voxunami_cave:placeable` and sets it on the six blocks a player can place, so its package grows
 /// from 1,345 to 1,647 bytes (+302): 7,183,166 to 7,183,468; the saved world is the same.
+/// Phase 32g, after: `/tp` tells the player where they are (`PlayerPlaced`, so that the client watches around the new place even when it is
+/// far from the camera). The script teleports six times and each message is 45 bytes: +270, 7,183,468 to 7,183,738; the saved world is the same.
 const PINNED: (u64, usize, u64) = (
-    17_921_380_828_981_039_569,
-    7_183_468,
+    5_001_548_606_711_507_795,
+    7_183_738,
     15_753_024_505_422_231_765,
 );

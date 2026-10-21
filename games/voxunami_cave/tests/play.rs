@@ -1368,6 +1368,37 @@ fn flying_hovers_and_the_commands_for_it_and_for_teleporting_answer() {
 }
 
 #[test]
+fn teleporting_far_beyond_the_watched_region_takes_the_view_along_to_see_the_ground_there() {
+    let mut rig = Rig::new();
+    let mut player = rig.join_walking([16.5, 130.0, 16.5], 0.0, 0.0);
+    rig.settle(&mut [&mut player]);
+    player.take_command_replies();
+    // Far outside the bricks around the camera (the view reaches `VIEW_RADIUS` bricks of 32 voxels).
+    let (far_x, far_z) = (2000.5, -1500.5);
+    assert!(far_x > (VIEW_RADIUS * 32 * 10) as f64);
+    assert!(
+        player
+            .mesher()
+            .is_opaque_at(VoxelCoordinate::new(2000, 0, -1501))
+            .is_none()
+    );
+    player.send_command(&format!("/tp {far_x} 200 {far_z}"));
+    // The view needs the camera to be there, and then the bricks around it.
+    rig.settle(&mut [&mut player]);
+    let moved = voxels_of(&player.camera);
+    assert!(
+        (moved[0] - far_x).abs() < 0.01 && (moved[2] - far_z).abs() < 0.01,
+        "{moved:?}"
+    );
+    assert_eq!(
+        player.take_command_replies(),
+        ["teleported to 2000.5 200 -1500.5"]
+    );
+    let ground = ground_height(&player, 2000, -1501);
+    assert!((20..200).contains(&ground), "{ground}");
+}
+
+#[test]
 fn a_player_cannot_move_by_saying_where_they_are() {
     let mut rig = Rig::new();
     let mut player = rig.join([16.5, 130.0, 16.5], 0.0, 0.0);
