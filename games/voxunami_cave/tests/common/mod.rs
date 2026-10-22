@@ -2,6 +2,8 @@
 
 //! A server ticked by the test, and players connected to it.
 
+pub mod parity;
+
 use std::collections::VecDeque;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};

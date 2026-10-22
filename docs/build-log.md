@@ -776,6 +776,26 @@ Phase 32l (splitting; 2026-10-22): a ship that is cut in two becomes two ships. 
 - Known: parts are in the order the pieces were found and then the rest, so the part with the most blocks is usually last; nothing in the game depends on it. A ship edited every few ticks is not split until the
   editing pauses. Merging and docking (32m) is next.
 
+Rules aboard (2026-10-22; the owner set fire to a ship they were flying and it did not burn): found, measured, fixed, and checked.
+- *Measured first:* the same plank of wood (144 blocks, one fire on it) with a player beside it: as terrain it burned to 3 blocks in 200 ticks; as a ship, nothing burned in 600 ticks and the fire
+  did not even age. *Cause, confirmed by changing only that:* `plugins/fire.rs` decided whether a fire was near a player with `Some(player_level) == grid.root_level() && pose.distance_to_voxel(at)`. A
+  ship has no root level, so no fire on a ship was ever near anyone, and the rule left it waiting. With only that test made ship-aware the plank burned (and burned apart: the ship was split into
+  pieces by 32l, which was a pleasant check that the two compose).
+- *My part:* in 32i I wrote "fire never ran on a ship, so it has nothing to keep" and listed it as a known limit. That was a consequence of the same defect, noticed while thinking about freezing and
+  not tested.
+- *Fixed once, for every rule:* `world_storage::GridFrame` and `WorldData::{grid_frame, voxel_in_world}` (where the voxels of any grid are in the world, including a ship in a file),
+  `player_presence::{PlayerPose::distance_to_voxel_of, PlayerReach}` (how far players are from a voxel of any grid; `PlayerReach` owns its snapshot so a rule can hold it while it writes). Fire uses
+  `PlayerReach`; block editing's twenty hand-written lines for ships are now the same call. Terrain distances are the same numbers as before (the golden sessions did not move).
+- *Checked, not trusted:* `tests/ship_parity.rs` with `tests/common/parity.rs` (a `Site` in the terrain or in a ship, the same blocks at the same offsets): fire burns a plank away in both places; fire
+  waits while no player is within its range and burns when one comes, in both; a lamp lights the same values and its removal fades the same values in both (to the value, at 0, 30 and 400 ticks, on a
+  site that is whole bricks from the origin: the light works in cells of bricks, so the same offsets must fall in the same cells); a block can be changed within reach and not beyond it, in both. The
+  two fire scenarios failed on a ship before the fix; the light and editing ones passed (they were already right). The harness reads a ship through the parts it was cut into.
+- *The audit* (the open list in `plan.md`): the design is sound for what a rule does to voxels (everything is keyed by grid, which is why light, bodies, freezing and splitting work on ships), and leaks at
+  the edges: questions about the world (now one call), the level-keyed voxel calls, grids not touching, no use of the ship's own down. Windows {WINDOWS} and Linux {LINUX} tests pass; fmt and clippy clean.
+- A flaky test of my own, found by the full Linux run and reproduced under artificial load: one fire sometimes burns out without catching anything (about one in six), and which one depends on the tick it
+  is first looked at, which a loaded machine can move; so the scenario with a single fire failed now and then on either place. It now has nine fires, and passed eight runs in a row on Linux with every core busy.
+- Observed, not investigated: the light of Cave fades slowly after a lamp is taken away (63 to 43 to 21 over 400 ticks, in the terrain as well as on a ship). It looks like how that light scheme works.
+
 Planning note, 2026-10-21 (the owner asked for the two open ship items to be put in the plan; they became steps 32j and 32k, before splitting): the claim in the earlier
 entries that ships "have no continuous collision detection against terrain" was a guess about the cause, and measuring it showed the cause is another. In the `physics` crate
 alone (a throwaway test, removed), cubes of 1 and 4 and rafts of 10 by 10 were dropped at set speeds on a slab of terrain: with the 3 solver steps a tick has, a floor of 1

@@ -280,6 +280,24 @@ budget of bricks is not in the picture, nor are those aboard it; one frame per l
   Welding (solid blocks flush with the ports that touch when merged) follows the 2026-10-18 decision. Docking is the biggest single piece
   after 32h; section 4 puts it after a pause for review.
 
+**Writing a rule that works aboard (as built after the fire on a ship, 2026-10-22).** The promise of ships is that a block behaviour, interaction or natural process that a game or a mod
+adds works on board any ship with no effort from its author. It holds by construction for the part of a rule that is about one grid, and by discipline for the part that asks about the world:
+- *A rule that is about one grid* (what burns next to a fire, how light spreads, what a block does to its neighbours) works aboard if it names voxels as `(GridId, VoxelCoordinate)` and reads and
+  writes them through `context.grid(id)` / `world.grid(id)`. The pending work (`ActiveVoxels`), the change events (`ChannelsChanged`) and the random numbers (`voxel_random`) are all keyed by grid, so
+  the rule never has to know it is aboard. **Do not use the calls keyed by level** (`ServerWorld::voxel(level, ..)`, `set_voxel(level, ..)`, `GridId::root(level)` or `LevelIndex::MAIN` in rule
+  code): they are the root grid of the level and nothing else, and a rule written with them silently leaves ships out. (2048 and Eels are written so; they have no ships, and nothing in them is
+  checked for it.)
+- *A question about the world* (is a player near this voxel? how high is it? is it under the sky?) needs the voxel's place in its level, which for a ship is the voxel turned and placed by its pose.
+  The engine answers it in one place for every grid: `WorldData::grid_frame(grid)` (a `GridFrame`: the terrain of a level, or a ship with its level and pose),
+  `WorldData::voxel_in_world(grid, voxel)`, `PlayerPose::distance_to_voxel_of`, and for a rule that looks at many voxels a tick `PlayerReach::new(&presence, world)` and `reach.near(grid, voxel, distance)`.
+  A rule must not do this arithmetic itself.
+- *Directions.* A ship turns, so "down" in its coordinates is not always -y: `ServerWorld::gravity_in(grid, place)` gives gravity in the ship's axes. A rule that moves things down must use it.
+  (No rule of Cave does yet; fire spreads to all six neighbours alike.)
+- *Grids are islands.* Two grids that touch (a ship on the ground, two docked ships) do not interact: fire does not spread from a ship to the ground it rests on, light does not cross, fluids would not
+  flow. Most rules are right to be so; a rule that wants the contact must ask for it, and there is no engine support for it yet (`plan.md`, Open).
+- *The check.* `games/voxunami_cave/tests/ship_parity.rs` runs each rule's scenario once over a `Site` (`tests/common/parity.rs`) in the terrain and in a ship, with the same blocks at the same offsets
+  and the same place in the world, and fails if they differ. A game adds the scenarios of its own rules there; a rule with no scenario is a rule nobody has shown works aboard.
+
 ### 2.8 Saving, loading, and ships that vanish with their pilot
 
 - **Files:** each grid is saved as `<world name>.ships/<grid id>-<tick>.voxship`, in the container format, with its own `engine:registries`

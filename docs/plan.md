@@ -258,6 +258,12 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   about 96 voxels a second, of 3 from about 200 (the earlier text said "no continuous collision detection"; it is that Rapier's leaves out voxel colliders, so a flag does not
   help): **32j**, more solver steps for fast bodies. Both come after 32i and before splitting. Not planned yet: (d) natural terrain costs 5 to 10 ms a brick to generate, which every
   reader of voxels pays when the world's cache of 128 bricks has forgotten it (a worker thread filling the cache ahead of the tick would change no result; see 32k).
+- **Found by the owner's fire on a ship (2026-10-22); the fire is fixed and the rest is open.** (a) The level-keyed voxel calls (`ServerWorld::voxel/set_voxel(level, ..)`) are the easy path for a
+  rule and leave ships out; 2048 and Eels use only them (`games/voxunami_2048/src/motion.rs` keys everything by `(LevelIndex::MAIN, voxel)`, and `logic.rs` checks reach with `distance_to_voxel` as if
+  every request were terrain). Proposal: rule-facing code gets only the grid-keyed calls, the level ones stay for tools and tests. (b) Grids are islands: nothing crosses between a ship and the
+  ground it rests on, or between docked ships (fire, light, fluids, sound). Whether and how is a design question for you; the easy part is a way for a rule to ask what is on the other side of a face
+  of a grid, which for a ship means looking in the world's grids at the place the face points to. (c) No rule uses gravity in the ship's axes; a rule that has a "down" would be wrong on a turned
+  ship. (d) The parity scenarios cover fire, light and block editing; items, movement and the lifecycle's questions are not in them.
 - **To try after Phase 32i (saving and loading; 2026-10-21):** make a ship and stand on it as below, quit, and start again with the same `--world FILE` (`cargo run --release -p launcher -- cave
   --world FILE`): the ship is in `FILE.ships/` and you are aboard it where you were. A pilot's ship goes into its file with them only when they *leave a server that goes on running*, so for that
   run `serve cave --world FILE` and join with two windows (`cave --join localhost`): the first makes a ship, stands on it, says `/ship pilot` and `/ship vanish on` and closes the window; the

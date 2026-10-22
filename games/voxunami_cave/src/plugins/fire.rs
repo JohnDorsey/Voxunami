@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use game_shell::GameContent;
 use namespaced_id::NamespacedId;
-use player_presence::{SharedPresence, lock};
+use player_presence::{PlayerReach, SharedPresence, lock};
 use plugin_host::{HandlerSpec, Phase, Plugin, Registrar, SaveScope, SystemSpec};
 use server::GridView;
 
@@ -100,18 +100,14 @@ impl Plugin for FirePlugin {
             SystemSpec::new("voxunami_cave:burn", Phase::Rules)
                 .writes(&[self.channels.block, self.channels.state]),
             move |context| {
-                let players_now = lock(&players).players(context.world().data());
+                // Where the players and the ships are now: a fire is near a player if the place it is in the world is, whatever grid it is in.
+                let reach = PlayerReach::new(&lock(&players), context.world().data());
                 let _ = locked(&burner).step(
                     &mut WorldFire {
                         context,
                         channels: &channels,
                     },
-                    |grid, at| {
-                        players_now.iter().any(|(_, pose, player_level)| {
-                            Some(*player_level) == grid.root_level()
-                                && pose.distance_to_voxel(at) <= FIRE_RANGE
-                        })
-                    },
+                    |grid, at| reach.near(grid, at, FIRE_RANGE),
                 );
             },
         );

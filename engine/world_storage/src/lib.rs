@@ -15,6 +15,7 @@
 pub mod container;
 pub mod engine_sections;
 pub mod file;
+mod grid_frame;
 mod moving_grids;
 mod ship_file;
 mod ship_files;
@@ -24,6 +25,7 @@ mod translation;
 mod world;
 
 pub use container::{ContainerError, Section};
+pub use grid_frame::GridFrame;
 pub use moving_grids::{GridStore, MovingGrid, ParkedGrid, PilotLogout};
 pub use ship_file::{
     ParsedShip, ShipContents, ShipFileError, ShipFlight, ShipFormat, flight_id, ship_id,

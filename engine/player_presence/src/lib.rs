@@ -14,6 +14,7 @@
 mod messages;
 mod plugin;
 mod presence;
+mod reach;
 
 pub use messages::{
     LevelChange, PlayerClient, PlayerKeyComponent, PlayerLook, PlayerPlaced, PlayerPose,
@@ -21,3 +22,4 @@ pub use messages::{
 };
 pub use plugin::{PlayersPlugin, SharedPresence, lock};
 pub use presence::{PLAYER_INVENTORY_SLOTS, Presence, player_kind, player_kind_spec};
+pub use reach::PlayerReach;

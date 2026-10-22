@@ -10,7 +10,7 @@ use plugin_host::{Event, Plugin, Registrar, Verdict};
 use protocol::ClientId;
 use server::GridView;
 use voxel_grid::ChannelIndex;
-use voxel_space::{GridId, VoxelCoordinate, WorldPosition};
+use voxel_space::{GridId, VoxelCoordinate};
 
 use crate::content::CaveContent;
 use crate::logic::REACH;
@@ -137,30 +137,13 @@ impl Plugin for BlockEditingPlugin {
             };
             // Players change the terrain of the level they are in, or a ship in it, within reach of where they are.
             let grid = request.grid;
-            let distance = match grid.root_level() {
-                Some(root) if root == level => pose.distance_to_voxel(request.at),
-                Some(_) => return,
-                None => {
-                    let Some(ship) = context
-                        .world()
-                        .data()
-                        .grids()
-                        .get(grid)
-                        .filter(|ship| ship.level == level)
-                    else {
-                        return;
-                    };
-                    // The centre of the voxel, turned and placed where the ship is.
-                    let (brick, local) = request.at.split();
-                    let centre = WorldPosition::new(
-                        brick,
-                        [local.x(), local.y(), local.z()].map(|axis| f32::from(axis) + 0.5),
-                    );
-                    let Some(centre) = ship.pose.local_to_world(centre) else {
-                        return;
-                    };
-                    pose.distance_to_position(centre)
-                }
+            let Some(distance) = context
+                .world()
+                .data()
+                .grid_frame(grid)
+                .and_then(|frame| pose.distance_to_voxel_of(level, &frame, request.at))
+            else {
+                return; // a grid that is not there, or is in another level
             };
             // Air has one state, so breaking a block always resets its state too.
             if distance > REACH || request.state >= table.state_count(raw) {
