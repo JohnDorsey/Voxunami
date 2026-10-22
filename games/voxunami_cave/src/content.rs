@@ -6,15 +6,16 @@ use base_blocks::{
     BaseBlockIds, BaseBlocks, block_channel_identifier, block_registry_kind,
     light_channel_identifier, rolling_hills_generator_identifier, state_channel_identifier,
 };
-use block_models::BlockDefinition;
+use block_models::{BlockDefinition, Shape};
 use content_registry::{IdentifierRegistry, Registry};
 use game_shell::{ContentPackage, GameContent, PackErrors, PackageData, PackageSpec, RawPack};
 use namespaced_id::NamespacedId;
 use voxel_grid::{ChannelDefinition, ChannelIndex};
+use voxel_space::FaceDirection;
 use world_storage::{LoadContext, WorldData};
 use world_view::ViewChannels;
 
-use crate::items::{PLACEABLE, PLACEABLE_BY_DEFAULT};
+use crate::items::{CREATIVE_ONLY, CREATIVE_ONLY_BY_DEFAULT, PLACEABLE, PLACEABLE_BY_DEFAULT};
 use crate::multiscale_light;
 
 /// How bright, from 0 to 255, a face is that no light reaches. There is no sky light yet (it was
@@ -46,12 +47,31 @@ pub struct CaveContent {
     package: ContentPackage,
 }
 
-/// The blocks of a registry, with the flag that says a player can place a block set on the ones Cave says they can.
-fn mark_placeable(blocks: Registry<BlockDefinition>) -> Registry<BlockDefinition> {
-    let key: NamespacedId = PLACEABLE
-        .id()
+/// The identifier of the dev docking port.
+pub fn dev_docking_port_id() -> NamespacedId {
+    "voxunami_cave:dev_docking_port"
         .parse()
-        .expect("a property key is an identifier");
+        .expect("constant identifier is valid")
+}
+
+/// The dev docking port (a block for building and testing ships, creative only): a gunmetal gray cube with one yellow face, the one that docks with
+/// the yellow face of another. It has six states, one for each face the yellow can be on (in the order of `FaceDirection::ALL`), and the face
+/// that docks is the yellow one.
+pub fn dev_docking_port() -> BlockDefinition {
+    let faces = FaceDirection::ALL.map(Some);
+    BlockDefinition::cube([0.17, 0.21, 0.22])
+        .with_shapes(vec![Shape::full(); faces.len()])
+        .with_marked_faces([255, 216, 0], &faces)
+        .with_docking_faces(&faces)
+}
+
+/// The blocks of a registry, with the flags that say a player can place a block, and that a block is for creative only, set on the ones Cave says
+/// they are.
+fn mark_placeable(blocks: Registry<BlockDefinition>) -> Registry<BlockDefinition> {
+    let key = |property: &str| -> NamespacedId {
+        property.parse().expect("a property key is an identifier")
+    };
+    let (placeable, creative_only) = (key(PLACEABLE.id()), key(CREATIVE_ONLY.id()));
     let mut marked = Registry::new();
     for (_, entry) in blocks.iter() {
         let identifier = entry.identifier().clone();
@@ -59,7 +79,10 @@ fn mark_placeable(blocks: Registry<BlockDefinition>) -> Registry<BlockDefinition
             Some(definition) => {
                 let mut definition = definition.clone();
                 if PLACEABLE_BY_DEFAULT.contains(&identifier.as_str()) {
-                    definition.set_property_value(key.clone(), None, 1);
+                    definition.set_property_value(placeable.clone(), None, 1);
+                }
+                if CREATIVE_ONLY_BY_DEFAULT.contains(&identifier.as_str()) {
+                    definition.set_property_value(creative_only.clone(), None, 1);
                 }
                 marked
                     .register(identifier, definition)
@@ -83,6 +106,11 @@ impl CaveContent {
     pub fn new() -> Self {
         let base = BaseBlocks::new();
         let ids = base.ids();
+        // The base blocks have the ids they always had; Cave's own come after them.
+        let mut blocks = base.into_registry();
+        blocks
+            .register(dev_docking_port_id(), dev_docking_port())
+            .expect("the name of the dev docking port is not a base block's");
         let spec = PackageSpec {
             level: overworld_id(),
             block_registry_kind: block_registry_kind(),
@@ -108,6 +136,7 @@ impl CaveContent {
             properties: {
                 let mut properties = base_blocks::property_declarations();
                 properties.push(PLACEABLE.declaration());
+                properties.push(CREATIVE_ONLY.declaration());
                 properties
             },
             generators: Arc::new(move |seed, layout| {
@@ -122,7 +151,7 @@ impl CaveContent {
         };
         Self {
             blocks: ids,
-            package: ContentPackage::new(mark_placeable(base.into_registry()), spec),
+            package: ContentPackage::new(mark_placeable(blocks), spec),
         }
     }
 

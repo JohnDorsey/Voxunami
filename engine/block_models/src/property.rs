@@ -125,7 +125,44 @@ pub struct PropertyDeclaration {
 
 /// The engine's own properties: the ones the engine itself reads, so that every game has them.
 pub mod engine {
+    use voxel_space::FaceDirection;
+
     use super::PropertyKey;
+
+    /// What a property that names a face holds: 0 for no face, else 1 plus the face's index (west 1, east 2, down 3, up 4, north 5, south 6),
+    /// with east along +x, up along +y and north along -z.
+    pub fn face_code(face: Option<FaceDirection>) -> u8 {
+        face.map_or(0, |face| face.index() + 1)
+    }
+
+    /// The face a code names: `None` for 0, and for a number that is no face.
+    pub fn face_from_code(code: u8) -> Option<FaceDirection> {
+        code.checked_sub(1).and_then(FaceDirection::from_index)
+    }
+
+    /// Which face of a block, in each state, is drawn in [`MARK_COLOR`] instead of the block's own colour (a face code, 0 for none), so a block
+    /// can show which way it faces.
+    pub const MARKED_FACE: PropertyKey<u8> = PropertyKey::new(
+        "engine:marked_face",
+        0,
+        "the face of the block drawn in its mark colour: 0 for none, else 1 plus the face's index (west 1, east 2, down 3, up 4, north 5, south 6)",
+    );
+
+    /// The colour of the marked face, as 0xRRGGBB.
+    pub const MARK_COLOR: PropertyKey<u32> = PropertyKey::new(
+        "engine:mark_color",
+        0,
+        "the colour of the marked face, as 0xRRGGBB",
+    );
+
+    /// Which face of a block, in each state, is its docking face: the face a ship docks by (a face code, 0 for a block that is not a docking
+    /// port). A face that looks one way in a state looks the way the grid is turned to when the block's grid is, so a docking port is turned
+    /// with its ship (see [`crate::BlockTable::turned_state`]).
+    pub const DOCKING_FACE: PropertyKey<u8> = PropertyKey::new(
+        "engine:docking_face",
+        0,
+        "the face of the block that docks with another ship's: 0 for a block that is not a docking port, else 1 plus the face's index (west 1, east 2, down 3, up 4, north 5, south 6)",
+    );
 
     /// A block's mass for a body made of it, in kilograms a voxel. (Nothing reads it yet: bodies made of
     /// blocks are Phase 32.)
@@ -194,6 +231,9 @@ impl PropertySchema {
         for declaration in [
             engine::DENSITY.declaration(),
             engine::PLACEABLE_ON_MOVING_GRIDS.declaration(),
+            engine::MARKED_FACE.declaration(),
+            engine::MARK_COLOR.declaration(),
+            engine::DOCKING_FACE.declaration(),
         ] {
             schema
                 .declare(declaration)

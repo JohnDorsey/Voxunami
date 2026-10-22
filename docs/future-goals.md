@@ -252,6 +252,15 @@ then what it needs and what I found in the code.
    bricks equal the bricks the server would have sent, bit for bit, for random cuts.
 
 
+9. **Ship mass calculation from materials, and metric units throughout (owner, 2026-10-22): a conversation to have soon.**
+   *Today:* every block that is not air weighs `engine:density` = 1000 kilograms a voxel (the default of the property), scaled by the share of the cell its shape fills; a voxel is one
+   metre, so this is one metric ton per cubic metre for every material, as a placeholder (owner, 2026-10-22). Nothing but that number distinguishes stone, wood and a lamp.
+   *To talk about:* densities of the real materials (stone, dirt, wood, metal, glass, water), whether a block's mass belongs to the block definition or to a material that definitions name
+   (so a data pack changes one number, not every block), hollow and partly filled blocks, the mass of what is aboard (players, items, cargo), and how mass should show to the player (a
+   display, a scale, a command). *Decided with it:* all the game's measurements are metric wherever they exist in our world (metres, kilograms, seconds, newtons, and so on; a voxel is a
+   metre); the code and the docs say "voxels a second" for what is a metre a second, and a rule that needs a unit says which.
+
+
 ## Levels (owner, 2026-10-20)
 
 - **A superflat level.** A level of flat ground in layers (as Minecraft's superflat world type: for example bedrock, stone, dirt, grass), for building,

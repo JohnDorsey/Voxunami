@@ -57,6 +57,7 @@ impl BlockTable {
 | Keys | Declared in | Why there |
 |---|---|---|
 | `engine:density` (u32, default 1000), `engine:placeable_on_moving_grids` (bool, default true) | `block_models` | The engine will read them (bodies' mass, Phase 32; the one flag a mod author sets for airships). Nothing reads them yet; they are declared and tested so the engine-owned path exists |
+| `engine:marked_face` (u8, 0), `engine:mark_color` (u32, 0), `engine:docking_face` (u8, 0) | `block_models` | Faces of a block per state, as face codes (0 none, else 1 plus the face index; west 1, east 2, down 3, up 4, north 5, south 6): the face drawn in the mark colour (0xRRGGBB), and the face that docks. The table draws the first and turns states with the ship by both (`BlockTable::turned_state`); the docking of ships reads the second (2026-10-22, 32m part 2). |
 | `base_blocks:emission` (u8, 0), `base_blocks:flammability` (u8, 0), `base_blocks:passable` (bool, false) | `base_blocks` | The plugin whose blocks set them. Cave's rules (a game above the plugin) read them; the engine no longer knows them |
 
 `BlockPropertiesExt` in `base_blocks` gives `with_emission`, `with_flammability` and `with_passable` on `BlockDefinition`, so the call sites keep

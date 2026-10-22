@@ -471,6 +471,9 @@ mod tests {
                 "base_blocks:flammability",
                 "base_blocks:passable",
                 "engine:density",
+                "engine:docking_face",
+                "engine:mark_color",
+                "engine:marked_face",
                 "engine:placeable_on_moving_grids"
             ]
         );

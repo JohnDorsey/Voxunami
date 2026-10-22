@@ -103,8 +103,8 @@ fn a_server_with_a_pack_has_its_blocks_after_the_games_own_and_its_patches_appli
         "the games blocks keep their numbers"
     );
     // In the order of the file names: glow_stone before marble.
-    assert_eq!(raw_in(&content, "my_pack:glow_stone"), 7);
-    assert_eq!(raw_in(&content, "my_pack:marble"), 8);
+    assert_eq!(raw_in(&content, "my_pack:glow_stone"), 8);
+    assert_eq!(raw_in(&content, "my_pack:marble"), 9);
     let table = content.block_table();
     let emission = table.handle(&EMISSION).unwrap();
     assert_eq!(
@@ -113,11 +113,11 @@ fn a_server_with_a_pack_has_its_blocks_after_the_games_own_and_its_patches_appli
         "patched"
     );
     assert_eq!(
-        table.get_of(emission, 7, 0),
+        table.get_of(emission, 8, 0),
         10,
         "a block of the pack that glows"
     );
-    assert_eq!(table.get_of(emission, 8, 0), 0);
+    assert_eq!(table.get_of(emission, 9, 0), 0);
 }
 
 #[test]
@@ -312,14 +312,14 @@ fn a_block_of_a_pack_that_can_be_placed_has_a_number_key_an_item_and_is_used_up_
     ticks(&mut rig, &mut player, 2);
     let ruby = raw_in(&rig.content, "my_pack:ruby");
 
-    // The first key is stone, as it was; the seventh is the pack's block; a key past the end of the list is
+    // The first key is stone, as it was; the seventh is the dev docking port and the eighth the pack's block; a key past the end of the list is
     // the first block again, never nothing or a crash.
     assert!(
         player.hud_text().contains("placing stone (whole)"),
         "{}",
         player.hud_text()
     );
-    player.key_pressed(KeyCode::Digit7);
+    player.key_pressed(KeyCode::Digit8);
     assert!(
         player.hud_text().contains("placing ruby (whole)"),
         "{}",
@@ -327,7 +327,7 @@ fn a_block_of_a_pack_that_can_be_placed_has_a_number_key_an_item_and_is_used_up_
     );
     player.key_pressed(KeyCode::Digit9);
     assert!(player.hud_text().contains("placing stone (whole)"));
-    player.key_pressed(KeyCode::Digit7);
+    player.key_pressed(KeyCode::Digit8);
 
     // Creative: the mouse button places it.
     player.mouse_pressed(MouseButton::Secondary);
@@ -411,9 +411,13 @@ fn the_hotbar_of_a_player_who_has_never_heard_of_a_pack_has_a_swatch_for_its_pla
             _ => None,
         })
         .collect();
-    assert_eq!(swatches.len(), 7, "the six of the game and the pack's ruby");
     assert_eq!(
-        swatches[6],
+        swatches.len(),
+        8,
+        "the seven of the game (the dev docking port is the seventh) and the pack's ruby"
+    );
+    assert_eq!(
+        swatches[7],
         ui::Color([204, 26, 51]),
         "ruby is [0.8, 0.1, 0.2]"
     );

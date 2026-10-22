@@ -11,9 +11,9 @@ use world_storage::MovingGrid;
 use crate::server_world::{AccessError, ServerWorld};
 
 /// What the values of a voxel become when the ship they are in is turned: see [`MergePlan::turn`].
-pub trait TurnValues: Fn(&mut [(ChannelIndex, u32)], LatticeRotation) {}
+pub trait TurnValues: Fn(&mut Vec<(ChannelIndex, u32)>, LatticeRotation) {}
 
-impl<T: Fn(&mut [(ChannelIndex, u32)], LatticeRotation)> TurnValues for T {}
+impl<T: Fn(&mut Vec<(ChannelIndex, u32)>, LatticeRotation)> TurnValues for T {}
 
 /// What a merge needs to know, besides the two ships.
 pub struct MergePlan<'a> {
@@ -22,8 +22,8 @@ pub struct MergePlan<'a> {
     /// How near to one lattice the ships must be.
     pub tolerance: AlignmentTolerance,
     /// What the values of a voxel become when the ship they are in is turned to be on the lattice of the other: given the non-default values of a
-    /// voxel (a channel and its value) and the turn, it changes them (a stair that faced north faces east). Called only for a turn that is not
-    /// none.
+    /// voxel (a channel and its value) and the turn, it changes them (a stair that faced north faces east), and may add a channel whose value was
+    /// the default and is not now. Called only for a turn that is not none.
     pub turn: &'a dyn TurnValues,
     /// How the merged ship moves: the caller works it out from the masses (the server does not know them).
     pub linear_velocity: [f32; 3],
@@ -257,7 +257,7 @@ mod tests {
         )
     }
 
-    fn nothing_turns(_: &mut [(ChannelIndex, u32)], _: LatticeRotation) {}
+    fn nothing_turns(_: &mut Vec<(ChannelIndex, u32)>, _: LatticeRotation) {}
 
     fn plan<'a>(world: &ServerWorld, turn: &'a dyn TurnValues) -> MergePlan<'a> {
         MergePlan {
@@ -298,7 +298,7 @@ mod tests {
         let small_pose = pose(9.0, 40.0, 3.0, 1.0);
         let small = ship(&mut world, small_pose, &THREE, None);
         let turned = AtomicUsize::new(0);
-        let turn = |_: &mut [(ChannelIndex, u32)], _: LatticeRotation| {
+        let turn = |_: &mut Vec<(ChannelIndex, u32)>, _: LatticeRotation| {
             turned.fetch_add(1, Ordering::Relaxed);
         };
         let merged = world
@@ -461,7 +461,7 @@ mod tests {
         // The turn adds a hundred to the temperature, standing for a stair that faces another way.
         let (mut world, _) = world_with_a_walker();
         let channel = temperature_channel(&world);
-        let turn = move |values: &mut [(ChannelIndex, u32)], _: LatticeRotation| {
+        let turn = move |values: &mut Vec<(ChannelIndex, u32)>, _: LatticeRotation| {
             for (found, value) in values.iter_mut() {
                 if *found == channel {
                     *value += 100;
@@ -518,6 +518,43 @@ mod tests {
         assert_eq!(
             view.get(channel, VoxelCoordinate::new(5, 0, 0)).unwrap(),
             55
+        );
+    }
+
+    #[test]
+    fn a_turn_may_give_a_voxel_a_value_in_a_channel_where_it_had_the_default() {
+        // The turn gives the temperature 9 to a block that had none (a state that was the first and is not the first once turned).
+        let (mut world, _) = world_with_a_walker();
+        let channel = temperature_channel(&world);
+        let turn = move |values: &mut Vec<(ChannelIndex, u32)>, _: LatticeRotation| {
+            if !values.iter().any(|(found, _)| *found == channel) {
+                values.push((channel, 9));
+            }
+        };
+        let large = ship(
+            &mut world,
+            pose(3.0, 40.0, 3.0, 0.0),
+            &[[0, 0, 0], [1, 0, 0]],
+            None,
+        );
+        let small = ship(&mut world, pose(9.0, 40.0, 3.0, 1.0), &[[0, 0, 0]], None);
+        let merged = world
+            .merge_grids(large, small, &plan(&world, &turn))
+            .unwrap();
+        let (_, transform) = world.data().grids().resolve(small)[0];
+        let there = transform.apply(VoxelCoordinate::ORIGIN).unwrap();
+        let default = world
+            .data()
+            .main()
+            .overrides
+            .layout()
+            .default_value(channel);
+        let mut view = world.grid(merged).unwrap();
+        assert_eq!(view.get(channel, there).unwrap(), 9);
+        assert_eq!(
+            view.get(channel, VoxelCoordinate::ORIGIN).unwrap(),
+            default,
+            "the larger ship's voxels are not asked"
         );
     }
 

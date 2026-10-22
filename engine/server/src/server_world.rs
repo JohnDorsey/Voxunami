@@ -97,6 +97,13 @@ pub struct GridForce {
     pub at: Option<[f32; 3]>,
 }
 
+/// A torque asked of a ship (see [`ServerWorld::apply_grid_torque`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GridTorque {
+    pub grid: GridId,
+    pub torque: [f32; 3],
+}
+
 /// A voxel whose value in a watched channel changed (see [`ServerWorld::watch_channels`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChannelChange {
@@ -142,6 +149,7 @@ pub struct ServerWorld {
     changes: Vec<ChannelChange>,
     /// The forces asked of ships and not yet taken.
     grid_forces: Vec<GridForce>,
+    grid_torques: Vec<GridTorque>,
     gravity: GravitySettings,
     /// Where ships go when they are put away and come from when they are asked for; none in a world made without (see
     /// [`ServerWorld::set_ship_storage`]).
@@ -168,6 +176,7 @@ impl ServerWorld {
             watched: BTreeSet::new(),
             changes: Vec::new(),
             grid_forces: Vec::new(),
+            grid_torques: Vec::new(),
             gravity: GravitySettings::default(),
             ships: None,
             woken: Vec::new(),
@@ -695,6 +704,22 @@ impl ServerWorld {
             .ok_or(AccessError::NoSuchGrid(grid))?;
         self.grid_forces.push(GridForce { grid, force, at });
         Ok(())
+    }
+
+    /// Turns a ship with a torque (kilograms times voxels squared per second per second, an axis in the world's directions) about its centre of
+    /// mass, for the next step of the bodies only. A torque does not push the ship's centre.
+    pub fn apply_grid_torque(&mut self, grid: GridId, torque: [f32; 3]) -> Result<(), AccessError> {
+        self.data
+            .grids()
+            .get(grid)
+            .ok_or(AccessError::NoSuchGrid(grid))?;
+        self.grid_torques.push(GridTorque { grid, torque });
+        Ok(())
+    }
+
+    /// The torques asked of ships since the last call, in the order asked. The bodies take them when they move the ships.
+    pub fn take_grid_torques(&mut self) -> Vec<GridTorque> {
+        std::mem::take(&mut self.grid_torques)
     }
 
     /// The forces asked of ships since the last call, in the order asked. The bodies take them when they move the ships.
@@ -1700,6 +1725,10 @@ pub(crate) mod tests {
             Err(AccessError::NoSuchGrid(gone))
         );
         assert_eq!(
+            world.apply_grid_torque(gone, [1.0; 3]),
+            Err(AccessError::NoSuchGrid(gone))
+        );
+        assert_eq!(
             world.set_grid_held(gone, true),
             Err(AccessError::NoSuchGrid(gone))
         );
@@ -1731,6 +1760,22 @@ pub(crate) mod tests {
             ]
         );
         assert!(world.take_grid_forces().is_empty());
+        world.apply_grid_torque(ship, [1.0, 2.0, 3.0]).unwrap();
+        world.apply_grid_torque(ship, [4.0, 5.0, 6.0]).unwrap();
+        assert_eq!(
+            world.take_grid_torques(),
+            [
+                GridTorque {
+                    grid: ship,
+                    torque: [1.0, 2.0, 3.0]
+                },
+                GridTorque {
+                    grid: ship,
+                    torque: [4.0, 5.0, 6.0]
+                },
+            ]
+        );
+        assert!(world.take_grid_torques().is_empty());
         // A ship that is moving and is then held has stopped: nothing is left on record of how fast it went.
         world
             .set_grid_velocity(ship, [7.0, 8.0, 9.0], [1.0, 1.0, 1.0])

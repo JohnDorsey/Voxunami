@@ -1,4 +1,4 @@
-use voxel_space::FaceDirection;
+use voxel_space::{FaceDirection, LatticeRotation};
 
 /// How many sub-cells a voxel's edge is divided into when describing the part of the voxel a block
 /// fills. Shapes are made of boxes whose corners are on this grid.
@@ -308,6 +308,30 @@ impl Shape {
         FaceConnections(connections)
     }
 
+    /// The shape of the same block when its grid is turned by a whole number of quarter turns: every box turned about the middle of the
+    /// voxel.
+    pub fn turned(&self, rotation: LatticeRotation) -> Self {
+        let middle = (SUBDIVISIONS / 2) as i64;
+        let boxes: Vec<ShapeBox> = self
+            .boxes
+            .iter()
+            .map(|shape_box| {
+                let low = rotation.apply(shape_box.min.map(|corner| i64::from(corner) - middle));
+                let high = rotation.apply(shape_box.max.map(|corner| i64::from(corner) - middle));
+                ShapeBox {
+                    min: [0, 1, 2].map(|axis| (low[axis].min(high[axis]) + middle) as u8),
+                    max: [0, 1, 2].map(|axis| (low[axis].max(high[axis]) + middle) as u8),
+                }
+            })
+            .collect();
+        Self::from_boxes(&boxes)
+    }
+
+    /// Whether the shapes fill the same sub-cells (they may have been made of different boxes).
+    pub fn same_cells(&self, other: &Self) -> bool {
+        self.occupied == other.occupied
+    }
+
     /// The boxes the shape was made of: what something solid collides with.
     pub fn boxes(&self) -> &[ShapeBox] {
         &self.boxes
@@ -415,6 +439,91 @@ mod tests {
 
     const DOWN: FaceDirection = FaceDirection::NegativeY;
     const UP: FaceDirection = FaceDirection::PositiveY;
+
+    fn the_shapes_there_are() -> Vec<Shape> {
+        let mut shapes = vec![Shape::empty(), Shape::full()];
+        shapes.extend(FaceDirection::ALL.map(Shape::half));
+        shapes.extend(
+            FaceDirection::ALL
+                .into_iter()
+                .filter(|face| face.axis() != 1)
+                .map(Shape::stair),
+        );
+        shapes
+    }
+
+    #[test]
+    fn a_turned_shape_fills_the_cells_the_turn_carries_the_cells_to() {
+        for shape in the_shapes_there_are() {
+            for rotation in LatticeRotation::all() {
+                let turned = shape.turned(rotation);
+                assert_eq!(turned.filled_cells(), shape.filled_cells());
+                for z in 0..8usize {
+                    for y in 0..8usize {
+                        for x in 0..8usize {
+                            // The middle of a sub-cell, in sixteenths from the middle of the voxel, carried and put back in a cell.
+                            let centre = [x, y, z].map(|cell| 2 * cell as i64 + 1 - 8);
+                            let carried = rotation
+                                .apply(centre)
+                                .map(|value| ((value + 8 - 1) / 2) as usize);
+                            assert_eq!(
+                                turned.fills(carried),
+                                shape.fills([x, y, z]),
+                                "{shape:?} {rotation:?} {x} {y} {z}"
+                            );
+                        }
+                    }
+                }
+                assert!(turned.turned(rotation.inverse()).same_cells(&shape));
+            }
+        }
+    }
+
+    #[test]
+    fn a_turned_slab_is_the_slab_against_the_face_the_turn_carries_its_face_to_and_a_stair_turned_about_the_vertical_is_the_stair_rising_the_turned_way()
+     {
+        for rotation in LatticeRotation::all() {
+            for side in FaceDirection::ALL {
+                assert!(
+                    Shape::half(side)
+                        .turned(rotation)
+                        .same_cells(&Shape::half(rotation.apply_face(side))),
+                    "{rotation:?} {side:?}"
+                );
+            }
+            if rotation.apply([0, 1, 0]) != [0, 1, 0] {
+                continue;
+            }
+            for high_side in FaceDirection::ALL
+                .into_iter()
+                .filter(|face| face.axis() != 1)
+            {
+                assert!(
+                    Shape::stair(high_side)
+                        .turned(rotation)
+                        .same_cells(&Shape::stair(rotation.apply_face(high_side))),
+                    "{rotation:?} {high_side:?}"
+                );
+            }
+        }
+        // A bottom slab turned over is a top slab; the same cells made of other boxes are the same shape.
+        let over = LatticeRotation::all()
+            .into_iter()
+            .find(|rotation| rotation.apply([0, 1, 0]) == [0, -1, 0])
+            .unwrap();
+        assert!(Shape::half(DOWN).turned(over).same_cells(&Shape::half(UP)));
+        let split = Shape::from_boxes(&[
+            ShapeBox {
+                min: [0, 0, 0],
+                max: [8, 2, 8],
+            },
+            ShapeBox {
+                min: [0, 2, 0],
+                max: [8, 4, 8],
+            },
+        ]);
+        assert!(split.same_cells(&Shape::half(DOWN)) && split != Shape::half(DOWN));
+    }
 
     #[test]
     fn nothing_and_everything() {

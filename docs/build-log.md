@@ -805,6 +805,39 @@ callers (ship creation, the bodies' terrain, the arrival look, the light-model s
 - Tests: the existing ones, rewritten by a tool for the calls (`regrid.py`, a scratch file) and by hand where a test expected an error for a level that is not there; two new for `detach_blocks` out of a
   ship and for `uniform_value` and `generated` on a ship. No pin moved. Windows {WINDOWS} and Linux {LINUX} tests pass; fmt and clippy clean.
 
+Phase 32m part 2 (docking; 2026-10-22): the dev docking port, ships drawn together, turned into line, snapped and made one, and `/ship undock`. See `moving-grids-spec.md` 2.7 ("As built in 32m part 2").
+- *The owner's instructions:* a creative-only dev docking port, gunmetal gray with one yellow face that docks with another's; snap to exact alignment in rotation on all axes within 10 degrees, any roll in
+  quarter turns; snapping distance 0.3 voxels; the attraction also twists; forces do not scale with the masses of the ships (each port gets the same, so lighter ships accelerate more); a to-do for the
+  conversation about ship mass from materials (`future-goals.md`, goal 9); a metric ton per cubic metre for everything that is not air for now; all measurements metric. 1 metric ton per cubic metre is what
+  `engine:density` already defaulted to (1,000 kilograms a voxel, a voxel being a metre): nothing changed there, and the docs now say so.
+- *Engine:* `Shape::turned` and `LatticeRotation::apply_face`; three engine block properties (`engine:marked_face`, `engine:mark_color`, `engine:docking_face`) and, in `BlockTable`, `material_of_face`,
+  `marked_face_material`, `docking_face` and `turned_state`; the mesher draws each face with its own material (the greedy quads merge only faces of one material); `physics::BodyMotion::join`
+  (momentum, angular momentum and inertia of bodies joined, in `f64`) and `BodyWorld::apply_torque`, `ServerWorld::apply_grid_torque`; `grid_bodies::docking` (the geometry, `Docking`, `undock`) and
+  docking in `GridBodiesPlugin` (ports are kept for each brick of a ship as it is remade, with the mass); `MergePlan::turn` can now add a value to a voxel that had the default.
+- *Cave:* the block (`dev_docking_port()` in `content.rs`, placeable by default and `voxunami_cave:creative_only`), `/ship undock`, the shape key goes through the states of the block chosen (a lamp
+  has one: its HUD said "bottom slab" before, and asked the server for a state it does not have, which the server refused; it says "whole" now, and `the_shape_key_cycles_through_every_shape_...` was changed
+  for that, on purpose), the pilot command follows a ship that was merged as `fly` does.
+- *Wire:* the welcome's package carries three more property declarations: 432 bytes, measured by encoding the three alone, in every game's stream; no message changed, so the protocol version stays 6 and the
+  three games' golden sessions were pinned again (the saved worlds did not move). Cave's again for the block itself.
+- *Found by the tests, fixed, and each pinned by a test:* (a) a force put at a place on a body in the tick the body is made makes a turn that is not the force's: Rapier works out the lever from a centre of mass
+  it updates when it steps, and a ship made this tick has the one it started with, the origin (a head-on docking of two ships in line came out spinning at 0.2 radians a second; the test is
+  `ships_that_meet_head_on_dock_...`). The same is true of `apply_grid_force` with a place, which nothing but a test uses. I first mended that by adding the lever's torque from the centre of mass this plugin keeps;
+  then the fire test, with walls of wood that put a ship's centre 2.5 m from its port, showed the lever itself is the trouble (25 kN m of swing against 10 kN m of twist: the ship drifted and did not dock), so
+  **the pull is now put on the centre of mass** and the lever is gone; (b) the record of ships that were undocked and have not come apart forgot a pair in the tick after the split, because the two ships were not yet known to the
+  bodies (they docked again at once); (c) `/ship pilot` named the old ship for a tick after a merge (the command runs before the flight step that follows the pilot); (d) my first tests set a ship going after the pull had begun,
+  which threw away what the pull had given it (momentum seemed to be lost, by one tick of the force each time) -- the tests were wrong, not the code, and they say why.
+- *Measured:* the equal and opposite pull gives 1,000 newton seconds to each ship in a tick (a twentieth of a second), whatever the mass (4 and 3 metric tons: speeds 0.25 and 0.333 m/s); ships 4 m apart meet at about
+  9.6 m/s relatively with 20 kN, which is why the default is 10 kN (about 7 m/s, still a crash and a merge, and still within the 0.6 m window of a tick); the momentum of the merged ship equals the sum of
+  the two to better than one in a hundred in the straight and in the off-centre, twisted approach.
+- *The fire test* (fire crossing what was a boundary) was flaky until it was made a test of something: the fire is chance, keyed by the numbers of the ships and the tick a player's first message reaches the server, which a
+  loaded machine moves (the parity tests say so), so 3 blocks and 6 fires were luck; it is a wall of 24 and nine fires lit after the ships have docked (lit before, they burn the first wall down before the second ship arrives), and
+  it passed ten runs in a row. *Found on the way, not mended:* a ship that burns away in pieces leaves ships with no blocks in them (a part that was only flames is a ship; when the flames go out it is an empty ship that stays), so
+  a burnt-out ship is not removed: noted in `plan.md`.
+- *Mutation experiments:* by hand, in groups. The turn of states and the marks in the table (9 mutants), the mesher (3), `BodyMotion::join` (6) and the docking geometry (11) were all caught, but not all at first: in the table, ignoring the docking face or the marked face when turning a state, and preferring another state to the right one, survived until a block whose marked and docking faces differ and a block with twin states were added to the tests; in the geometry, each of the three facing conditions for pulling survived because another failed with it in every case I had, until a test made each the only one that fails. In the plugin, 10 of 11 were caught (a held ship moved, the whole going at no speed, the twist turned the wrong way, undocking across the ports, an undocked pair forgotten, a weld missed, the parts coming together, a released pair not skipped, a creative-only block leaving an item, and a new ship forgotten as released at once) and the backoff of refused tries was caught after its test was rewritten (its first version could not tell). **One is not caught:** that a ship that could not be docked is put back where it was: the bodies move it in the same tick, so its place does not show it, and I know it from reading the code and not from a test.
+- Windows {WINDOWS} and Linux {LINUX} tests pass; fmt and clippy clean.
+- *Known:* a slab or stair on a ship that docks rolled a quarter turn about a horizontal axis is not turned (the standard blocks have no state for it); a pair of ships can only dock by ports on the
+  same level; both held ships never dock; a ship that could not be joined for overlap is retried only when one of the two has moved.
+
 Phase 32m part 1 (merging; 2026-10-22): `ServerWorld::merge_grids`, the operation under docking. See `moving-grids-spec.md` 2.7 ("As built in 32m part 1").
 - New file `engine/server/src/merge.rs` (`MergePlan`, `TurnValues`, `MergeError`), `voxel_space::LatticeTransform::apply_point` (a point, not a voxel, carried by a transform; a property test says it
   agrees with `apply` on voxel centres). The server grew no knowledge of docking, masses or block shapes: the plan carries the block channel, the tolerance, the velocity and the function that

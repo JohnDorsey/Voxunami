@@ -293,7 +293,36 @@ budget of bricks is not in the picture, nor are those aboard it; one frame per l
     (`LatticeTransform::apply_point`) and their turn composed with the quarter turn.
   - *Turning values:* a block of the other that is turned is, in general, a different block (a stair that faced north faces east). The server cannot know that, so the plan carries `turn`, called with
     the non-default values of a voxel and the `LatticeRotation`, and only when the rotation is not the identity. The game's block table supplies it.
-  - *Not here:* finding ports, attraction, the snap, welds and undock (the next parts), and the message `GridMerged` (clients see two ships leave and one arrive, as for a split).
+  - *Not here:* the message `GridMerged` (clients see two ships leave and one arrive, as for a split).
+  **As built in 32m part 2: docking** (`grid_bodies::docking` and `plugin.rs`; Cave's `voxunami_cave:dev_docking_port`; the owner's decisions of 2026-10-22 are marked *owner*):
+  - *Ports.* A block says it is a docking port, and which face docks in each state, with the property `engine:docking_face` (0 none, else 1 plus the face index: west 1, east 2, down 3, up
+    4, north 5, south 6; per state). The engine also reserves `engine:marked_face` and `engine:mark_color` (0xRRGGBB): the marked face of a state is drawn in that colour and the other faces in
+    the block's own (`BlockTable::material_of_face`; one palette entry for each colour a block marks; the mesher gives each face its own material, so faces merge only with faces of the same
+    one). These are properties, so a data pack can set them: a pack can make a docking port without code. A property of a face is turned with the ship: `BlockTable::turned_state(block, state,
+    rotation)` is the state whose shape, marked face and docking face are the turned ones (a stair rises the way it did, a slab stays on its side, a port faces the way the ship does); a state
+    that has no turned version is kept (a bottom slab on a ship that is rolled a quarter turn lies on its side, which the standard blocks have no state for: it stays a bottom slab. *Known
+    limit.*), and so is a number that is not a shape (a fire's age).
+  - *The dev docking port* (*owner*): a creative-only block, `voxunami_cave:dev_docking_port`, gunmetal gray with one yellow face, the one that docks with the yellow face of another. It has
+    six states, one for each face the yellow can be on; the shape key (`R`) goes through them and the HUD names them ("docking face east"). Creative only is a flag (`voxunami_cave:creative_only`):
+    placeable in a creative world, it leaves no item when broken in survival, so playing never gives one and there is none to place.
+  - *What pulls.* Each tick, for every two ships of a level that are not frozen and are not both held, the closest pair of ports that pull on each other: within the range (6 m), each looking
+    toward the other (a little behind it by the snap distance is allowed), and against each other. A pair that was undocked and has not come apart, and a pair that could not be docked where
+    it is, are left out. Each port gets the same force toward the other, **whatever its ship weighs** (*owner*): 10 kN for the dev port's settings (`DockingSettings::default()`; a game sets
+    its own), so a light ship is moved more than a heavy one (a checked test: 500 newton seconds in a tick to each of a 4 and a 3 metric ton ship). The force is put on the **centre of mass**, not at the port, so that it takes the ship straight toward the other port whatever its shape (put at the port it swings a ship whose centre is far from its port: a wall of wood 2.5 m from its port gave 25 kN m of lever against a 10 kN m twist, and the ship did not dock; a design call of mine, see Open in `plan.md`). A twist pulls them into line: the same torque on
+    each ship, the second about the axis that brings it into line by the shortest way and the first the other way, 10 kN m at 30 degrees or more out and in proportion below.
+  - *Into line* (*owner*): lined up means the grids' voxels agree cube to cube, so of the 24 turns of the lattice the four that put the second's docking face against the first's are the ones
+    that count, **any roll about the docking axis in quarter turns docks**, and the nearest of the four is the one aimed at.
+  - *The snap* (*owner*): ports within 0.3 m of each other and within 10 degrees of the nearest of the four turns dock: the lighter ship (never a held one) is put exactly where it docks (the
+    pose a lattice turn and a whole number of voxels give, checked to be the one `lattice_alignment` finds from the poses), and `merge_grids` makes one ship of the two, going at the velocity
+    both together had (`physics::BodyMotion::join`: perfectly inelastic, linear momentum, and angular momentum about the new centre, kept exactly, proved by a property test). If either was held
+    the whole is held and still. If blocks of the two would meet, nothing is done and the pose is put back; the pair is not tried again until one of them has moved.
+  - *Undocking.* `/ship undock` cuts the docked pair of ports nearest the player, on the ship they are aboard or the nearest: the two ports are not a join, and if nothing else joins the sides the ship
+    becomes two (`split_grid`), which go apart at half a metre a second in all (shared out so that their momentum is as it was), and do not pull on each other until they are out of range. If something
+    else joins them (a weld: solid blocks beside the ports that are beside each other now) it is refused, and says so, until those are broken. Pilots keep the controls of the whole, or the part they are on.
+  - *Not here, on purpose:* ports of different kinds that refuse each other (every port docks with every port; a second property could say which), docking two held ships (nothing would move them),
+    ports of ships that are frozen, and a limit to the work: every pair of ports of two ships in a level is looked at each tick, which is a few dozen for any ship we have.
+  - Tests: 14 docking tests in `games/voxunami_cave/tests/docking.rs` (the pull, the momentum, the roll, the held ship, the player and the pilot aboard, undocking, the weld, fire across the former
+    boundary and not across ships that only touch), the geometry in `grid_bodies/src/docking.rs`, the join in `physics/src/motion.rs`, the turn of states in `block_models`.
 
 **Writing a rule that works aboard (as built after the fire on a ship, 2026-10-22).** The promise of ships is that a block behaviour, interaction or natural process that a game or a mod
 adds works on board any ship with no effort from its author. It holds by construction for the part of a rule that is about one grid, and by discipline for the part that asks about the world:
@@ -537,8 +566,8 @@ The phase is large; I propose a pause for the owner after 32h, before docking.
   next idea if the budget leaves ticks too long, and it needs no change to the simulation.
 - **32l Splitting** (2.7, built 2026-10-22, see the build log): the budgeted connectivity check (on the budget of 32k), parts, velocities, entities re-framed, events and the stream.
 - **32m Merging and docking** (2.7): connectors, attraction, snap, merge, welds, undock refusal; merge invariance and split invariance tests
-  (requirement 14). Built in parts: (1) the merge operation `ServerWorld::merge_grids` (built 2026-10-22); (2) the docking plugin: ports, attraction, snap, merged velocity, undock;
-  (3) Cave's port block, `/ship undock`, the parity test across a former boundary, the invariance tests.
+  (requirement 14). Built in parts: (1) the merge operation `ServerWorld::merge_grids` (built 2026-10-22); (2) docking: ports, attraction, snap, merged velocity, undock, Cave's dev docking port and
+  `/ship undock`, fire across a former boundary (built 2026-10-22); (3) the invariance tests (requirement 14) are still to write.
 
 *Why 32j and 32k are here (decided 2026-10-21):* both change the body layer that splitting and merging build on, and both would change the pins those steps make
 (32l and 32m make new bodies, with velocities, in new orders), so doing them after would mean pinning twice; the budget is a facility that 32l uses; and neither

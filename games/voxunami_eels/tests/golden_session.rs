@@ -186,8 +186,11 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// identifier and 11 bytes of value) in each spawn of a player, and a different saved world (the players in it hold one). Two spawns here: 2 x 28 = 56 bytes: 70,676 to 70,732.
 /// Phase 28: the welcome carries the package data (how every block looks, the view channels), and the protocol version is 5. The
 /// package is 648 bytes and its length takes 2 more: 70,732 to 71,382, the saved world is the same. The hash changes with the bytes.
+/// Docking, part 1 (2026-10-22): the engine declares three more block properties (`engine:marked_face`, `engine:mark_color`, `engine:docking_face`), and the welcome carries them in
+/// the package's schema: 432 bytes, measured by encoding the three declarations alone (not assumed), 71,382 to 71,814. The saved world is the same, and no message changed, so the protocol
+/// version stays 6.
 const PINNED: (u64, usize, u64) = (
-    17_970_614_336_954_792_378,
-    71_382,
+    14_837_336_491_908_814_025,
+    71_814,
     3_527_138_528_036_399_531,
 );

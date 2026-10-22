@@ -76,7 +76,8 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
     assert!(!hotbar.modal);
     assert_eq!(hotbar.root.direction, Direction::Row);
     let shown = swatches(&hotbar.root);
-    // Stone, dirt, grass, lamp, wood, fire: in the colours the base blocks are drawn in, the first chosen, no counts in creative.
+    // Stone, dirt, grass, lamp, wood, fire, and the dev docking port: in the colours the blocks are drawn in (the port's is gunmetal gray), the first
+    // chosen, no counts in creative.
     let expected_colors = [
         [0.50, 0.50, 0.53],
         [0.45, 0.30, 0.18],
@@ -84,8 +85,9 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
         [1.0, 0.92, 0.65],
         [0.55, 0.38, 0.20],
         [0.95, 0.5, 0.1],
+        [0.17, 0.21, 0.22],
     ];
-    assert_eq!(shown.len(), 6);
+    assert_eq!(shown.len(), 7);
     for (index, ((color, count, selected), expected)) in
         shown.iter().zip(expected_colors).enumerate()
     {
@@ -101,8 +103,8 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
         .iter()
         .map(|(_, _, selected)| *selected)
         .collect();
-    assert_eq!(chosen, [false, false, false, true, false, false]);
-    // A key for a block there is not (the seventh) leaves the choice alone: it still points at the fourth block, never past the end.
+    assert_eq!(chosen, [false, false, false, true, false, false, false]);
+    // A key for a block there is not (the ninth) leaves the choice alone: it still points at the fourth block, never past the end.
     player.key_pressed(KeyCode::Digit9);
     let panels = overlays(&mut player);
     let chosen: Vec<bool> = swatches(&panels[0].1.root)

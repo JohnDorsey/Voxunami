@@ -272,8 +272,11 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// carries it, which is now over 127 bytes and so has a two byte length (117 bytes before, 145 now): 55,386 to 55,415.
 /// Phase 28: the welcome carries the package data (how every block looks, the view channels), and the protocol version is 5. The
 /// package is 2,611 bytes and its length takes 2 more: 55,415 to 58,028, the saved world is the same. The hash changes with the bytes.
+/// Docking, part 1 (2026-10-22): the engine declares three more block properties (`engine:marked_face`, `engine:mark_color`, `engine:docking_face`), and the welcome carries them in
+/// the package's schema: 432 bytes, measured by encoding the three declarations alone (not assumed), 58,028 to 58,460. The saved world is the same, and no message changed, so the protocol
+/// version stays 6.
 const PINNED: (u64, usize, u64) = (
-    7_535_343_237_837_923_921,
-    58_028,
+    17_396_479_107_971_002_395,
+    58_460,
     10_009_978_534_765_434_239,
 );

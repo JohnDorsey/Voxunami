@@ -4,6 +4,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use base_blocks::{SHAPE_NAMES, shape_name};
+use block_models::BlockDefinition;
 use entities::{Inventory, ItemStack};
 use game_shell::client_plugin::{
     ActionSpec, Appearance, ClientContext, ClientPlugin, ClientRegistrar, MouseButton,
@@ -17,7 +18,7 @@ use voxel_space::{GridId, VoxelCoordinate};
 use world_view::BulkLight;
 
 use crate::content::CaveContent;
-use crate::items::{GameMode, PLACEABLE, dropped_item_kind};
+use crate::items::{GameMode, PLACEABLE, dropped_item_kind, state_for, state_name};
 use crate::messages::{GameModeIs, LightSchemeChanged, SetBlock};
 use crate::multiscale_light::{LEVEL_FORMAT, LightScheme, MAXIMUM_SCALES, full_brightness};
 use crate::scaled_light::{MultiScaleView, ScaledLight};
@@ -239,11 +240,15 @@ impl ClientPlugin for ClientBlockEditing {
             KeyCode::KeyR,
             ActionSpec::new(
                 "voxunami_cave:cycle_shape",
-                "cycles whole block, slabs and stairs",
+                "cycles the states of the selected block: whole block, slabs and stairs, or the face of a docking port that docks",
             ),
-            move |_| {
+            move |context| {
+                let placeable = context.blocks_with(&PLACEABLE);
                 let mut selection = locked(&selection);
-                selection.shape = (selection.shape + 1) % SHAPE_NAMES.len() as u32;
+                let states = selected(&placeable, &selection)
+                    .and_then(|block| context.block_definition(block))
+                    .map_or(SHAPE_NAMES.len(), BlockDefinition::state_count);
+                selection.shape = state_for(selection.shape + 1, states);
             },
         );
 
@@ -266,7 +271,10 @@ impl ClientPlugin for ClientBlockEditing {
                     (selected(&placeable, &selection).cloned(), selection.shape)
                 };
                 if let Some(block) = block {
-                    place_at_target(context, block.as_str(), shape);
+                    let states = context
+                        .block_definition(&block)
+                        .map_or(SHAPE_NAMES.len(), BlockDefinition::state_count);
+                    place_at_target(context, block.as_str(), state_for(shape, states));
                 }
             },
         );
@@ -367,7 +375,13 @@ impl ClientPlugin for ClientBlockEditing {
             let selection = locked(&selection);
             let block = selected(&placeable, &selection)?;
             let name = block.name();
-            let shape = shape_name(selection.shape);
+            let shape = match context.block_definition(block) {
+                Some(definition) => state_name(
+                    definition,
+                    state_for(selection.shape, definition.state_count()),
+                ),
+                None => shape_name(selection.shape).to_owned(),
+            };
             Some(match *locked(&mode) {
                 GameMode::Creative => format!("placing {name} ({shape})"),
                 GameMode::Survival => {

@@ -1,4 +1,4 @@
-use crate::{Orientation, VoxelCoordinate};
+use crate::{FaceDirection, Orientation, VoxelCoordinate};
 
 /// One of the 24 ways to turn a grid so that its voxels still line up with another grid's voxels: a turn by
 /// a multiple of 90 degrees about each axis. All arithmetic on it is on integers, so it is exact.
@@ -74,6 +74,15 @@ impl LatticeRotation {
             turned[target] = sign * component;
         }
         turned
+    }
+
+    /// The face this turn carries a face to: the one that looks where the face's step goes.
+    pub fn apply_face(self, face: FaceDirection) -> FaceDirection {
+        let turned = self.apply(face.offset());
+        FaceDirection::ALL
+            .into_iter()
+            .find(|candidate| candidate.offset() == turned)
+            .expect("a turn of a unit step along an axis is a unit step along an axis")
     }
 
     /// The rotation that does `self` and then `next`.
@@ -281,6 +290,37 @@ mod tests {
                 assert_ne!(rotation, other);
             }
         }
+    }
+
+    #[test]
+    fn a_face_goes_where_its_step_goes_and_opposite_faces_stay_opposite() {
+        for rotation in LatticeRotation::all() {
+            for face in FaceDirection::ALL {
+                let turned = rotation.apply_face(face);
+                assert_eq!(turned.offset(), rotation.apply(face.offset()));
+                assert_eq!(
+                    rotation.apply_face(face.opposite()),
+                    turned.opposite(),
+                    "{rotation:?} {face:?}"
+                );
+                assert_eq!(rotation.inverse().apply_face(turned), face);
+            }
+        }
+        // The turn that carries +z to +x about +y carries the east face to the north face (-z) and leaves the top alone.
+        let quarter = LatticeRotation::all()
+            .into_iter()
+            .find(|rotation| {
+                rotation.apply([0, 0, 1]) == [1, 0, 0] && rotation.apply([0, 1, 0]) == [0, 1, 0]
+            })
+            .unwrap();
+        assert_eq!(
+            quarter.apply_face(FaceDirection::PositiveX),
+            FaceDirection::NegativeZ
+        );
+        assert_eq!(
+            quarter.apply_face(FaceDirection::PositiveY),
+            FaceDirection::PositiveY
+        );
     }
 
     #[test]

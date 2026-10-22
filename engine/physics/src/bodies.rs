@@ -534,6 +534,18 @@ impl BodyWorld {
         Ok(())
     }
 
+    /// Turns a body with a torque (an axis scaled by voxel masses times voxels squared per second per second, in the world's axes) about its
+    /// centre of mass, for the next [`BodyWorld::step`] only.
+    pub fn apply_torque(&mut self, id: BodyId, torque: [f32; 3]) -> Result<(), BodyError> {
+        let handle = self
+            .by_id
+            .get(&id)
+            .ok_or(BodyError::UnknownBody(id))?
+            .handle;
+        self.bodies[handle].add_torque(Vector::from_array(torque), true);
+        Ok(())
+    }
+
     /// Pushes a body with a force for the next [`BodyWorld::step`] only, like [`BodyWorld::apply_force`] at its centre of mass, except that it
     /// does not wake a body that is asleep. It is for forces that are always there, such as gravity, which a body at rest has no need to be
     /// woken by: if something else wakes it, the force is on it again.
@@ -1022,6 +1034,41 @@ mod tests {
     }
 
     #[test]
+    fn a_torque_turns_a_ship_by_its_inertia_for_one_tick_only_and_moves_its_centre_nowhere() {
+        let mut world = BodyWorld::new(
+            BrickCoordinate::ORIGIN,
+            BodySettings {
+                gravity: [0.0; 3],
+                ..BodySettings::default()
+            },
+        );
+        // A 2 by 2 by 2 ship of density 5: a mass of 40, and about any axis through its middle 40 * (4 + 4) / 12.
+        let hull = Hull::cube(2);
+        ship_of(
+            &mut world,
+            1,
+            &hull,
+            resting_at(at(0.0, 0.0, 0.0)),
+            BodyKind::Dynamic,
+        );
+        world.set_mass(BodyId(1), hull.mass(5.0)).unwrap();
+        world.apply_torque(BodyId(1), [0.0, 100.0, 0.0]).unwrap();
+        world.step();
+        let state = world.state(BodyId(1)).unwrap();
+        // 100 / (80 / 3) = 3.75 radians a second a second, for a twentieth of a second.
+        assert!(
+            (state.angular_velocity[1] - 3.75 / 20.0).abs() < 1e-3,
+            "{:?}",
+            state.angular_velocity
+        );
+        assert!(state.angular_velocity[0].abs() < 1e-5 && state.angular_velocity[2].abs() < 1e-5);
+        assert_eq!(state.linear_velocity, [0.0; 3], "a torque does not push");
+        // The torque was for that step alone.
+        world.step();
+        assert!((world.state(BodyId(1)).unwrap().angular_velocity[1] - 3.75 / 20.0).abs() < 1e-3);
+    }
+
+    #[test]
     fn taking_the_blocks_under_a_ship_away_lets_it_sink_by_that_much() {
         let mut world = world_with_ground();
         let mut hull = Hull::cube(4);
@@ -1330,6 +1377,7 @@ mod tests {
         assert_eq!(world.set_kind(ghost, BodyKind::Fixed), unknown);
         assert_eq!(world.set_state(ghost, state), unknown);
         assert_eq!(world.apply_force(ghost, [1.0; 3], None), unknown);
+        assert_eq!(world.apply_torque(ghost, [1.0; 3]), unknown);
         assert_eq!(world.set_mass(ghost, Hull::cube(1).mass(1.0)), unknown);
         assert_eq!(
             world.set_brick(ghost, BrickCoordinate::ORIGIN, &mut &Hull::cube(1)),

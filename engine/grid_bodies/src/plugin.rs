@@ -3,18 +3,19 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use block_models::{BlockTable, PropertyHandle};
 use namespaced_id::NamespacedId;
-use physics::{BodyId, BodyKind, BodySettings, BodyState, BodyWorld, MassMoments};
+use physics::{BodyId, BodyKind, BodyMotion, BodySettings, BodyState, BodyWorld, MassMoments};
 use plugin_host::{HandlerSpec, Phase, Plugin, Registrar, SystemSpec};
-use server::{ServerWorld, SplitPart};
+use server::{MergePlan, ServerWorld, SplitPart};
 use voxel_grid::ChannelIndex;
 use voxel_space::{
-    BRICK_EDGE_LENGTH, BrickCoordinate, GridId, GridPose, LevelIndex, LocalVoxelIndex,
-    VoxelCoordinate, WorldPosition,
+    AlignmentTolerance, BRICK_EDGE_LENGTH, BrickCoordinate, GridId, GridPose, LevelIndex,
+    LocalVoxelIndex, VoxelCoordinate, WorldPosition,
 };
 use world_storage::MovingGrid;
 
 use crate::collision::{BlockCollisions, ShipHull, WorldTerrain};
 use crate::connectivity::{Connectivity, Outcome};
+use crate::docking::{Docking, Port, PortView, approach, docked_pose};
 
 /// How far, in bricks, from the origin of a level's frame a ship may be to be simulated: `f32` is exact enough within it. A ship farther
 /// from the first ship of its level than this stays where it is (the simulation distance and a frame for each place will replace this).
@@ -43,6 +44,9 @@ const SPLIT_VISITS_PER_TICK: usize = 4096;
 /// every tick.
 const TERRAIN_KEEP_EXTRA_VOXELS: f32 = 16.0;
 
+/// How many ticks a pair of ships that could not be docked is left alone before it is tried again: a second.
+const REFUSED_RETRY_TICKS: u64 = 20;
+
 /// How much gravity may change, as a share of its size (or of one voxel a second squared, if that is more), before it wakes a ship that sleeps.
 const GRAVITY_CHANGE_THAT_WAKES: f32 = 1e-3;
 
@@ -58,6 +62,8 @@ pub struct GridBodiesConfig {
     pub passable: Option<PropertyHandle<bool>>,
     /// A block's mass in kilograms a voxel (`engine:density`).
     pub density: PropertyHandle<u32>,
+    /// How ships with docking ports are drawn together and joined, if the game has any (see [`Docking`]).
+    pub docking: Option<Docking>,
     /// How a tick is cut into steps. The gravity of these settings is not used: gravity is the world's field, which the plugin applies as a
     /// force on each ship (see [`ServerWorld::gravity_at`]).
     pub settings: BodySettings,
@@ -80,6 +86,9 @@ pub struct BodiesReport {
     pub terrain_bricks_made_last_tick: u64,
     pub terrain_bricks_made_most_in_a_tick: u64,
     pub terrain_bricks_made: u64,
+    /// Ships made one by docking, and times two ships that were near enough and in line could not be (blocks of the two would be in one place).
+    pub dockings_made: u64,
+    pub dockings_refused: u64,
 }
 
 impl GridBodiesPlugin {
@@ -157,6 +166,8 @@ impl Plugin for GridBodiesPlugin {
 struct Ship {
     /// The mass of each brick that has any, summed in order of brick for the body's mass.
     moments: BTreeMap<BrickCoordinate, MassMoments>,
+    /// The docking ports in each brick that has any.
+    ports: BTreeMap<BrickCoordinate, Vec<Port>>,
     kind: BodyKind,
     /// How much the ship weighs and where its centre of mass is in its coordinates, as last worked out.
     mass: f32,
@@ -188,6 +199,11 @@ struct Bodies {
     changed_terrain_bricks: BTreeSet<(LevelIndex, BrickCoordinate)>,
     /// What the world is to be told of the weight of ships, at the end of the step.
     weighed: BTreeMap<GridId, (f32, [f32; 3])>,
+    /// Pairs of ships (the lower id first) that could not be docked, and the tick before which they are not tried again nor pulled together: the
+    /// attempt works out the whole of the smaller ship, and a pair whose blocks meet and are pushed about by the bodies would be tried every tick.
+    refused: BTreeMap<(GridId, GridId), u64>,
+    /// Which tick this is, counting the steps of the bodies.
+    tick: u64,
     report: Arc<Mutex<BodiesReport>>,
 }
 
@@ -223,6 +239,8 @@ impl Bodies {
             checks: BTreeMap::new(),
             changed_terrain_bricks: BTreeSet::new(),
             weighed: BTreeMap::new(),
+            refused: BTreeMap::new(),
+            tick: 0,
             report,
         }
     }
@@ -251,7 +269,11 @@ impl Bodies {
         brick: BrickCoordinate,
         ship: &MovingGrid,
     ) {
-        let moments = self.moments_of(ship, brick);
+        let (moments, ports) = self.weigher().scan_brick(
+            ship,
+            brick,
+            self.config.docking.as_ref().map(Docking::table),
+        );
         let Some(bodies) = self.levels.get_mut(&level) else {
             return;
         };
@@ -263,10 +285,10 @@ impl Bodies {
         };
         // A brick too far from the ship's origin for a collider has none (and no mass either).
         let made = bodies.bodies.set_brick(BodyId(id.get()), brick, &mut hull);
-        let moments = if made.is_ok() {
-            moments
+        let (moments, ports) = if made.is_ok() {
+            (moments, ports)
         } else {
-            MassMoments::NOTHING
+            (MassMoments::NOTHING, Vec::new())
         };
         if let Some(record) = bodies.ships.get_mut(&id) {
             if moments.mass() > 0.0 {
@@ -274,59 +296,33 @@ impl Bodies {
             } else {
                 record.moments.remove(&brick);
             }
-        }
-    }
-
-    /// The mass in the voxels of a brick of a ship.
-    fn moments_of(&self, ship: &MovingGrid, brick: BrickCoordinate) -> MassMoments {
-        let Some(contents) = ship.voxels.brick(brick) else {
-            return MassMoments::NOTHING;
-        };
-        let first = brick.origin();
-        let mut parts = Vec::new();
-        for z in 0..BRICK_EDGE_LENGTH {
-            for y in 0..BRICK_EDGE_LENGTH {
-                for x in 0..BRICK_EDGE_LENGTH {
-                    let local = LocalVoxelIndex::new(x as u8, y as u8, z as u8);
-                    let block = contents.get(self.config.block_channel, local);
-                    let state = contents.get(self.config.state_channel, local);
-                    let voxel = [
-                        first.x() + x as i64,
-                        first.y() + y as i64,
-                        first.z() + z as i64,
-                    ];
-                    parts.extend(self.voxel_moments(voxel, block, state));
-                }
+            if ports.is_empty() {
+                record.ports.remove(&brick);
+            } else {
+                record.ports.insert(brick, ports);
             }
         }
-        MassMoments::sum(parts)
     }
 
-    /// The mass of one voxel of a ship, with the block and the state in it (`None` for air and the like).
-    fn voxel_moments(&self, voxel: [i64; 3], block: u32, state: u32) -> Option<MassMoments> {
-        let table = self.collisions.table();
-        let model = table.model_of(block, state);
-        let shape = table.shape(model);
-        if shape.is_empty() {
-            return None;
+    /// Changes the report.
+    fn count(&self, change: impl FnOnce(&mut BodiesReport)) {
+        change(
+            &mut self
+                .report
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+    }
+
+    /// What it takes to weigh the voxels of a ship.
+    fn weigher(&self) -> Weigher<'_> {
+        Weigher {
+            table: &self.config.table,
+            density: self.config.density,
+            block_channel: self.config.block_channel,
+            state_channel: self.config.state_channel,
+            air: self.config.air,
         }
-        // The share of the cell the block fills, in eighths of each edge.
-        let filled: u32 = if shape.is_full() {
-            512
-        } else {
-            shape
-                .boxes()
-                .iter()
-                .map(|part| {
-                    (0..3)
-                        .map(|axis| u32::from(part.max[axis] - part.min[axis]))
-                        .product::<u32>()
-                })
-                .sum()
-        };
-        let density = table.get(self.config.density, model);
-        let mass = f64::from(density) * f64::from(filled) / 512.0;
-        Some(MassMoments::of_voxel(voxel, mass))
     }
 
     /// Looks at the ships that blocks were taken out of, to see if they are still in one piece, with a little work each tick; a ship that is
@@ -391,7 +387,12 @@ impl Bodies {
                 }
                 Outcome::Split { pieces } => {
                     self.checks.remove(&id);
-                    let parts = self.parts_of(ship, pieces);
+                    let parts: Vec<SplitPart> = self
+                        .weigher()
+                        .parts_of(ship, pieces)
+                        .into_iter()
+                        .map(|(part, _)| part)
+                        .collect();
                     if parts.len() >= 2 {
                         let _ = world.split_grid(id, parts);
                     }
@@ -403,67 +404,16 @@ impl Bodies {
         }
     }
 
-    /// The parts a ship is cut into, given the pieces that were found cut off: those, and all the rest of its blocks as one more if there are
-    /// any. Each says where its centre of mass is.
-    fn parts_of(
-        &self,
-        ship: &MovingGrid,
-        pieces: Vec<BTreeSet<VoxelCoordinate>>,
-    ) -> Vec<SplitPart> {
-        let (block_channel, air) = (self.config.block_channel, self.config.air);
-        let mut rest: BTreeSet<VoxelCoordinate> = BTreeSet::new();
-        for brick in ship.voxels.sorted_brick_coordinates() {
-            let contents = ship.voxels.brick(brick).expect("a listed brick exists");
-            for local in LocalVoxelIndex::all() {
-                if contents.get(block_channel, local) != air {
-                    rest.insert(brick.voxel_at(local));
-                }
-            }
-        }
-        for piece in &pieces {
-            for voxel in piece {
-                rest.remove(voxel);
-            }
-        }
-        let mut voxel_sets = pieces;
-        if !rest.is_empty() {
-            voxel_sets.push(rest);
-        }
-        voxel_sets
-            .into_iter()
-            .map(|voxels| {
-                let moments = MassMoments::sum(voxels.iter().filter_map(|voxel| {
-                    let block = ship.voxels.get(block_channel, *voxel);
-                    let state = ship.voxels.get(self.config.state_channel, *voxel);
-                    self.voxel_moments([voxel.x(), voxel.y(), voxel.z()], block, state)
-                }));
-                // A part with no weight (nothing in it that bodies feel) is at the middle of its blocks.
-                let centre_of_mass = moments.properties().map_or_else(
-                    || {
-                        let count = voxels.len() as f64;
-                        [
-                            voxels.iter().map(|v| v.x() as f64 + 0.5).sum::<f64>() / count,
-                            voxels.iter().map(|v| v.y() as f64 + 0.5).sum::<f64>() / count,
-                            voxels.iter().map(|v| v.z() as f64 + 0.5).sum::<f64>() / count,
-                        ]
-                        .map(|value| value as f32)
-                    },
-                    |properties| properties.centre_of_mass,
-                );
-                SplitPart {
-                    voxels,
-                    centre_of_mass,
-                }
-            })
-            .collect()
-    }
-
     /// One tick: what changed is made again, the ships are carried to where the world has them, the forces are applied, the bodies move and
     /// the ships are put where they went.
     fn step(&mut self, world: &mut ServerWorld) {
+        self.tick += 1;
+        let tick = self.tick;
+        self.refused.retain(|_, until| tick < *until);
         let changed_ships = std::mem::take(&mut self.changed_ship_bricks);
         let changed_terrain = std::mem::take(&mut self.changed_terrain_bricks);
         let changed_voxels = std::mem::take(&mut self.changed_ship_voxels);
+        self.dock(world);
         self.split_ships(world, changed_voxels);
         let present: Vec<(GridId, LevelIndex)> = world
             .data()
@@ -496,6 +446,7 @@ impl Bodies {
             let _ = world.set_grid_mass(id, mass, centre);
         }
         self.apply_gravity(world);
+        self.attract(world);
         for force in world.take_grid_forces() {
             let Some(level) = world
                 .data()
@@ -509,6 +460,22 @@ impl Bodies {
                 let _ = level
                     .bodies
                     .apply_force(BodyId(force.grid.get()), force.force, force.at);
+            }
+        }
+
+        for torque in world.take_grid_torques() {
+            let Some(level) = world
+                .data()
+                .grids()
+                .get(torque.grid)
+                .and_then(|ship| self.levels.get_mut(&ship.level))
+            else {
+                continue;
+            };
+            if level.ships.contains_key(&torque.grid) {
+                let _ = level
+                    .bodies
+                    .apply_torque(BodyId(torque.grid.get()), torque.torque);
             }
         }
 
@@ -583,6 +550,7 @@ impl Bodies {
                 id,
                 Ship {
                     moments: BTreeMap::new(),
+                    ports: BTreeMap::new(),
                     mass: 0.0,
                     centre_of_mass: [0.0; 3],
                     gravity: [0.0; 3],
@@ -828,5 +796,406 @@ impl Bodies {
                 }
             }
         }
+    }
+}
+
+/// A pair of ships with a pair of ports that pull on each other: the closest such pair of ports of the two.
+struct PortPair {
+    level: LevelIndex,
+    first: GridId,
+    second: GridId,
+    first_port: Port,
+    second_port: Port,
+    approach: crate::docking::Approach,
+}
+
+impl Bodies {
+    /// Whether two ships are both held (or frozen): nothing would move them together.
+    fn both_fixed(&self, level: &LevelBodies, first: GridId, second: GridId) -> bool {
+        [first, second].iter().all(|id| {
+            level
+                .ships
+                .get(id)
+                .is_some_and(|ship| ship.kind == BodyKind::Fixed)
+        })
+    }
+
+    /// For every two ships of a level that have ports that pull on each other, the closest pair of ports, in order of ship. Ships that are
+    /// frozen, pairs that were undocked and have not yet come apart, and pairs that could not be docked where they are, have none.
+    fn port_pairs(&self, world: &ServerWorld, docking: &Docking) -> Vec<PortPair> {
+        let settings = docking.settings;
+        let released = docking.released();
+        let mut pairs = Vec::new();
+        for (&level_index, level) in &self.levels {
+            let ships: Vec<(GridId, &Ship, &MovingGrid)> = level
+                .ships
+                .iter()
+                .filter_map(|(id, record)| {
+                    let ship = world.data().grids().get(*id)?;
+                    (!ship.frozen && !record.ports.is_empty()).then_some((*id, record, ship))
+                })
+                .collect();
+            for (index, (first_id, first, first_ship)) in ships.iter().enumerate() {
+                for (second_id, second, second_ship) in &ships[index + 1..] {
+                    if self.both_fixed(level, *first_id, *second_id)
+                        || released.contains(&(*first_id, *second_id))
+                        || self
+                            .refused
+                            .get(&(*first_id, *second_id))
+                            .is_some_and(|until| self.tick < *until)
+                    {
+                        continue;
+                    }
+                    let from = first_ship.pose.position;
+                    let mut best: Option<PortPair> = None;
+                    for first_port in first.ports.values().flatten() {
+                        let first_view = PortView::of(*first_port, &first_ship.pose, from);
+                        for second_port in second.ports.values().flatten() {
+                            let second_view = PortView::of(*second_port, &second_ship.pose, from);
+                            let how = approach(&first_view, &second_view);
+                            if settings.pulls(&first_view, &second_view, &how)
+                                && best
+                                    .as_ref()
+                                    .is_none_or(|top| how.distance < top.approach.distance)
+                            {
+                                best = Some(PortPair {
+                                    level: level_index,
+                                    first: *first_id,
+                                    second: *second_id,
+                                    first_port: *first_port,
+                                    second_port: *second_port,
+                                    approach: how,
+                                });
+                            }
+                        }
+                    }
+                    pairs.extend(best);
+                }
+            }
+        }
+        pairs
+    }
+
+    /// Ships whose ports have come together, and are in line, are made one ship.
+    fn dock(&mut self, world: &mut ServerWorld) {
+        let Some(docking) = self.config.docking.clone() else {
+            return;
+        };
+        if docking.has_released() {
+            docking.forget_those_that_have_come_apart(world, &self.levels_ports());
+        }
+        let mut joined: BTreeSet<GridId> = BTreeSet::new();
+        for pair in self.port_pairs(world, &docking) {
+            if !docking.settings.can_snap(&pair.approach)
+                || joined.contains(&pair.first)
+                || joined.contains(&pair.second)
+            {
+                continue;
+            }
+            if self.dock_pair(world, &docking, &pair) {
+                joined.insert(pair.first);
+                joined.insert(pair.second);
+            }
+        }
+    }
+
+    /// The ports of every ship that has any, for the docking that looks at what is near.
+    fn levels_ports(&self) -> BTreeMap<GridId, Vec<Port>> {
+        self.levels
+            .values()
+            .flat_map(|level| level.ships.iter())
+            .map(|(id, ship)| (*id, ship.ports.values().flatten().copied().collect()))
+            .collect()
+    }
+
+    /// The motion of a ship's body, with positions measured from a point.
+    fn motion_of(
+        &self,
+        world: &ServerWorld,
+        level: LevelIndex,
+        id: GridId,
+        from: WorldPosition,
+    ) -> Option<BodyMotion> {
+        let level = self.levels.get(&level)?;
+        let record = level.ships.get(&id)?;
+        let state = level.bodies.state(BodyId(id.get()))?;
+        let properties = MassMoments::sum(record.moments.values().copied()).properties()?;
+        let pose = world.data().grids().get(id)?.pose;
+        let rotation = pose.rotation_matrix();
+        let origin = pose.origin_relative_to(from);
+        let centre_of_mass = properties.centre_of_mass.map(f64::from);
+        let centre = [0, 1, 2].map(|axis| {
+            origin[axis]
+                + (0..3)
+                    .map(|column| rotation[axis][column] * centre_of_mass[column])
+                    .sum::<f64>()
+        });
+        Some(BodyMotion::of_body(
+            &properties,
+            rotation,
+            centre,
+            state.linear_velocity.map(f64::from),
+            state.angular_velocity.map(f64::from),
+        ))
+    }
+
+    /// Docks two ships that are close enough and in line: the lighter (never a held one) is put exactly where it docks, and they are made one
+    /// ship that goes as the two did together (the momentum of both). Whether it was done: it is not when blocks of the two would be in one place,
+    /// and the pair is not tried again until one of them has moved.
+    fn dock_pair(&mut self, world: &mut ServerWorld, docking: &Docking, pair: &PortPair) -> bool {
+        let Some(level) = self.levels.get(&pair.level) else {
+            return false;
+        };
+        let (Some(first), Some(second)) =
+            (level.ships.get(&pair.first), level.ships.get(&pair.second))
+        else {
+            return false;
+        };
+        // The ports must still be there (an edit this tick may have taken one away).
+        let (Some(first_ship), Some(second_ship)) = (
+            world.data().grids().get(pair.first),
+            world.data().grids().get(pair.second),
+        ) else {
+            return false;
+        };
+        if !docking.has_port(first_ship, pair.first_port)
+            || !docking.has_port(second_ship, pair.second_port)
+        {
+            return false;
+        }
+        let first_moves = match (first.kind, second.kind) {
+            (BodyKind::Fixed, _) => false,
+            (_, BodyKind::Fixed) => true,
+            _ => first.mass < second.mass,
+        };
+        let (still, still_port, moving, moving_port) = if first_moves {
+            (pair.second, pair.second_port, pair.first, pair.first_port)
+        } else {
+            (pair.first, pair.first_port, pair.second, pair.second_port)
+        };
+        let still_pose = world.data().grids().get(still).expect("checked above").pose;
+        let moving_pose = world
+            .data()
+            .grids()
+            .get(moving)
+            .expect("checked above")
+            .pose;
+        let from = still_pose.position;
+        let held = first.kind == BodyKind::Fixed || second.kind == BodyKind::Fixed;
+        // The motion of both, before one is moved.
+        let motions = [still, moving].map(|id| self.motion_of(world, pair.level, id, from));
+        let (linear, angular) = match (held, motions) {
+            (false, [Some(one), Some(other)]) => match BodyMotion::join(&[one, other]) {
+                Some(whole) => (
+                    whole.linear_velocity.map(|speed| speed as f32),
+                    whole.angular_velocity.map(|speed| speed as f32),
+                ),
+                None => ([0.0; 3], [0.0; 3]),
+            },
+            _ => ([0.0; 3], [0.0; 3]),
+        };
+        // Where the lighter ship is when it has docked exactly.
+        let still_view = PortView::of(still_port, &still_pose, from);
+        let moving_view = PortView::of(moving_port, &moving_pose, from);
+        let turn = approach(&still_view, &moving_view).turn;
+        let Some((docked, _)) = docked_pose(&still_pose, still_port, moving_port, turn) else {
+            return false;
+        };
+        if world.set_grid_pose(moving, docked).is_err() {
+            return false;
+        }
+        let turn_values = docking.turn_values();
+        let plan = MergePlan {
+            block_channel: self.config.block_channel,
+            tolerance: AlignmentTolerance::default(),
+            turn: &turn_values,
+            linear_velocity: linear,
+            angular_velocity: angular,
+        };
+        match world.merge_grids(still, moving, &plan) {
+            Ok(_) => {
+                self.refused.remove(&(pair.first, pair.second));
+                self.count(|report| report.dockings_made += 1);
+                true
+            }
+            Err(_) => {
+                let _ = world.set_grid_pose(moving, moving_pose);
+                self.refused
+                    .insert((pair.first, pair.second), self.tick + REFUSED_RETRY_TICKS);
+                self.count(|report| report.dockings_refused += 1);
+                false
+            }
+        }
+    }
+
+    /// Ships with ports that pull on each other are pulled together and turned into line: each of the two ports gets the same force toward the
+    /// other, and each ship the same torque, whatever it weighs.
+    fn attract(&mut self, world: &ServerWorld) {
+        let Some(docking) = self.config.docking.clone() else {
+            return;
+        };
+        for pair in self.port_pairs(world, &docking) {
+            let force = docking.settings.attraction(&pair.approach);
+            let twist = docking.settings.twist(&pair.approach);
+            let Some(level) = self.levels.get_mut(&pair.level) else {
+                continue;
+            };
+            for (id, sign) in [(pair.first, 1.0), (pair.second, -1.0)] {
+                if level
+                    .ships
+                    .get(&id)
+                    .is_none_or(|ship| ship.kind == BodyKind::Fixed)
+                {
+                    continue;
+                }
+                // The pull is put on the centre of mass, so that it takes the ship straight toward the other port whatever the ship's shape, and
+                // does not swing a ship whose centre is far from its port (that is the twist's work, which turns the second ship toward line
+                // and the first the other way).
+                let body = BodyId(id.get());
+                let _ = level.bodies.apply_force(
+                    body,
+                    force.map(|component| (component * sign) as f32),
+                    None,
+                );
+                let _ = level
+                    .bodies
+                    .apply_torque(body, twist.map(|component| (-component * sign) as f32));
+            }
+        }
+    }
+}
+
+/// What it takes to know the mass of the voxels of a ship: the table, the density property and the channels.
+pub(crate) struct Weigher<'a> {
+    pub table: &'a BlockTable,
+    pub density: PropertyHandle<u32>,
+    pub block_channel: ChannelIndex,
+    pub state_channel: ChannelIndex,
+    pub air: u32,
+}
+
+impl Weigher<'_> {
+    /// The mass of one voxel of a ship, with the block and the state in it (`None` for air and the like).
+    pub fn voxel_moments(&self, voxel: [i64; 3], block: u32, state: u32) -> Option<MassMoments> {
+        let model = self.table.model_of(block, state);
+        let shape = self.table.shape(model);
+        if shape.is_empty() {
+            return None;
+        }
+        // The share of the cell the block fills, in eighths of each edge.
+        let filled: u32 = if shape.is_full() {
+            512
+        } else {
+            shape
+                .boxes()
+                .iter()
+                .map(|part| {
+                    (0..3)
+                        .map(|axis| u32::from(part.max[axis] - part.min[axis]))
+                        .product::<u32>()
+                })
+                .sum()
+        };
+        let density = self.table.get(self.density, model);
+        let mass = f64::from(density) * f64::from(filled) / 512.0;
+        Some(MassMoments::of_voxel(voxel, mass))
+    }
+
+    /// The mass in the voxels of a brick of a ship, and (if a table to read them by is given) the docking ports in it.
+    pub fn scan_brick(
+        &self,
+        ship: &MovingGrid,
+        brick: BrickCoordinate,
+        ports_by: Option<&BlockTable>,
+    ) -> (MassMoments, Vec<Port>) {
+        let Some(contents) = ship.voxels.brick(brick) else {
+            return (MassMoments::NOTHING, Vec::new());
+        };
+        let first = brick.origin();
+        let mut parts = Vec::new();
+        let mut ports = Vec::new();
+        for z in 0..BRICK_EDGE_LENGTH {
+            for y in 0..BRICK_EDGE_LENGTH {
+                for x in 0..BRICK_EDGE_LENGTH {
+                    let local = LocalVoxelIndex::new(x as u8, y as u8, z as u8);
+                    let block = contents.get(self.block_channel, local);
+                    let state = contents.get(self.state_channel, local);
+                    let voxel = [
+                        first.x() + x as i64,
+                        first.y() + y as i64,
+                        first.z() + z as i64,
+                    ];
+                    parts.extend(self.voxel_moments(voxel, block, state));
+                    if let Some(table) = ports_by
+                        && block != self.air
+                        && let Some(face) = table.docking_face(block, state)
+                    {
+                        ports.push(Port {
+                            voxel: VoxelCoordinate::new(voxel[0], voxel[1], voxel[2]),
+                            face,
+                        });
+                    }
+                }
+            }
+        }
+        (MassMoments::sum(parts), ports)
+    }
+
+    /// The parts a ship is cut into, given the pieces that were found cut off: those, and all the rest of its blocks as one more if there are
+    /// any. Each says where its centre of mass is, and (beside it) what it weighs.
+    pub fn parts_of(
+        &self,
+        ship: &MovingGrid,
+        pieces: Vec<BTreeSet<VoxelCoordinate>>,
+    ) -> Vec<(SplitPart, f64)> {
+        let (block_channel, air) = (self.block_channel, self.air);
+        let mut rest: BTreeSet<VoxelCoordinate> = BTreeSet::new();
+        for brick in ship.voxels.sorted_brick_coordinates() {
+            let contents = ship.voxels.brick(brick).expect("a listed brick exists");
+            for local in LocalVoxelIndex::all() {
+                if contents.get(block_channel, local) != air {
+                    rest.insert(brick.voxel_at(local));
+                }
+            }
+        }
+        for piece in &pieces {
+            for voxel in piece {
+                rest.remove(voxel);
+            }
+        }
+        let mut voxel_sets = pieces;
+        if !rest.is_empty() {
+            voxel_sets.push(rest);
+        }
+        voxel_sets
+            .into_iter()
+            .map(|voxels| {
+                let moments = MassMoments::sum(voxels.iter().filter_map(|voxel| {
+                    let block = ship.voxels.get(block_channel, *voxel);
+                    let state = ship.voxels.get(self.state_channel, *voxel);
+                    self.voxel_moments([voxel.x(), voxel.y(), voxel.z()], block, state)
+                }));
+                // A part with no weight (nothing in it that bodies feel) is at the middle of its blocks.
+                let centre_of_mass = moments.properties().map_or_else(
+                    || {
+                        let count = voxels.len() as f64;
+                        [
+                            voxels.iter().map(|v| v.x() as f64 + 0.5).sum::<f64>() / count,
+                            voxels.iter().map(|v| v.y() as f64 + 0.5).sum::<f64>() / count,
+                            voxels.iter().map(|v| v.z() as f64 + 0.5).sum::<f64>() / count,
+                        ]
+                        .map(|value| value as f32)
+                    },
+                    |properties| properties.centre_of_mass,
+                );
+                (
+                    SplitPart {
+                        voxels,
+                        centre_of_mass,
+                    },
+                    moments.mass(),
+                )
+            })
+            .collect()
     }
 }

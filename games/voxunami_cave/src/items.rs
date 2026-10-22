@@ -6,11 +6,11 @@
 //! beyond placing it in the middle of a voxel), and comes into the inventory of a player who gets close.
 //! In creative nothing is dropped or used up.
 
-use block_models::PropertyKey;
+use block_models::{BlockDefinition, PropertyKey, engine};
 use entities::{EntityKindSpec, ItemSpec, ItemStack};
 use game_shell::PackageData;
 use namespaced_id::NamespacedId;
-use voxel_space::{EntityPose, GridId, Orientation, VoxelCoordinate, WorldPosition};
+use voxel_space::{EntityPose, FaceDirection, GridId, Orientation, VoxelCoordinate, WorldPosition};
 use world_storage::Section;
 
 /// How many of an item fit in a stack.
@@ -37,20 +37,61 @@ pub const PLACEABLE: PropertyKey<bool> = PropertyKey::new(
     "whether a player can place the block, and so whether it has an item that puts it down and that breaking it leaves",
 );
 
+/// Whether a block exists only in creative: a player in a world in creative mode can place it, but nobody gets it by playing, so breaking one
+/// leaves nothing, and in survival there is none to place. (Blocks for building and testing, such as the dev docking port.)
+pub const CREATIVE_ONLY: PropertyKey<bool> = PropertyKey::new(
+    "voxunami_cave:creative_only",
+    false,
+    "whether the block can be placed only in a creative world, and leaves no item when it is broken",
+);
+
 /// The blocks Cave itself says a player can place: it sets [`PLACEABLE`] on these when it makes its content.
-pub const PLACEABLE_BY_DEFAULT: [&str; 6] = [
+pub const PLACEABLE_BY_DEFAULT: [&str; 7] = [
     "base_blocks:stone",
     "base_blocks:dirt",
     "base_blocks:grass",
     "base_blocks:lamp",
     "base_blocks:wood",
     "base_blocks:fire",
+    "voxunami_cave:dev_docking_port",
 ];
+
+/// The blocks Cave itself says exist only in creative: it sets [`CREATIVE_ONLY`] on these when it makes its content.
+pub const CREATIVE_ONLY_BY_DEFAULT: [&str; 1] = ["voxunami_cave:dev_docking_port"];
 
 /// The blocks a player can place, in the order of the blocks, which is the order the number keys choose them in. Read
 /// from what the server says blocks are, so a client has the same list as the server.
 pub fn placeable_blocks(package: &PackageData) -> Vec<NamespacedId> {
     package.blocks_with(&PLACEABLE)
+}
+
+/// The word for a face, with east along +x, up along +y and north along -z.
+pub fn face_name(face: FaceDirection) -> &'static str {
+    ["west", "east", "down", "up", "north", "south"][usize::from(face.index())]
+}
+
+/// What a state of a block is called to a player: the face that docks, if the state has one, else the shape of the base blocks.
+pub fn state_name(definition: &BlockDefinition, state: u32) -> String {
+    let key: NamespacedId = engine::DOCKING_FACE
+        .id()
+        .parse()
+        .expect("a property key is an identifier");
+    let code = definition.property_value(&key, Some(state), 0);
+    match u8::try_from(code).ok().and_then(engine::face_from_code) {
+        Some(face) => format!("docking face {}", face_name(face)),
+        None => base_blocks::shape_name(state).to_owned(),
+    }
+}
+
+/// The state a selected shape number means for a block with this many states: the number is kept in range, so that one number chosen
+/// for a block with seven states is a state of a block with six or one.
+pub fn state_for(shape: u32, state_count: usize) -> u32 {
+    shape % u32::try_from(state_count.max(1)).unwrap_or(u32::MAX)
+}
+
+/// The blocks that exist only in creative.
+pub fn creative_only_blocks(package: &PackageData) -> Vec<NamespacedId> {
+    package.blocks_with(&CREATIVE_ONLY)
 }
 
 /// The items there are: one for each block that can be placed.

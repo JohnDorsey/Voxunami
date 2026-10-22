@@ -493,3 +493,27 @@ fn a_stack_that_fits_in_part_is_taken_in_part_and_the_rest_stays_on_the_ground()
         "and one is left, where it was"
     );
 }
+
+#[test]
+fn a_block_that_exists_only_in_creative_is_placed_in_creative_leaves_nothing_when_broken_in_survival_and_cannot_be_placed_there()
+ {
+    let mut rig = Rig::new();
+    let (mut player, ground) = hovering(&mut rig, 1.5);
+    let port = "voxunami_cave:dev_docking_port";
+    // In creative anyone may build with it.
+    request_block(&mut player, ground, port);
+    tick(&mut rig, &mut player, 3);
+    assert_eq!(block_at(&rig, &player, ground), id(port));
+    // In survival, breaking it leaves no item on the ground and none in the inventory (a stone block, broken the same way, does).
+    reply_to(&mut rig, &mut player, "/gamemode survival");
+    request_block(&mut player, ground, "base_blocks:air");
+    tick(&mut rig, &mut player, 3);
+    assert_eq!(block_at(&rig, &player, ground), id("base_blocks:air"));
+    assert_eq!(on_the_ground(&rig), []);
+    assert_eq!(inventory(&rig), Inventory::new(PLAYER_INVENTORY_SLOTS));
+    // So there is none to place, and the place stays empty.
+    request_block(&mut player, ground, port);
+    tick(&mut rig, &mut player, 3);
+    assert_eq!(block_at(&rig, &player, ground), id("base_blocks:air"));
+    let _ = player.take_command_replies();
+}

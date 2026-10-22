@@ -26,9 +26,9 @@ use super::block_editing::{BlockBroken, BlockEditRequested, BlockPlaced};
 use crate::block_properties;
 use crate::content::CaveContent;
 use crate::items::{
-    GameMode, LOWEST_DROP_VOXEL, PICKUP_RADIUS, STACK_SIZE, drop_pose, dropped_item_kind,
-    dropped_item_kind_spec, falls_this_tick, game_mode_section, item_for_block, item_specs,
-    placeable_blocks, read_game_mode, voxel_of,
+    GameMode, LOWEST_DROP_VOXEL, PICKUP_RADIUS, STACK_SIZE, creative_only_blocks, drop_pose,
+    dropped_item_kind, dropped_item_kind_spec, falls_this_tick, game_mode_section, item_for_block,
+    item_specs, placeable_blocks, read_game_mode, voxel_of,
 };
 use crate::messages::GameModeIs;
 
@@ -52,6 +52,8 @@ pub struct ItemsPlugin {
     block_names: HashMap<u32, NamespacedId>,
     /// The blocks that can be placed, and so have items.
     placeable: Arc<Vec<NamespacedId>>,
+    /// The blocks that exist only in creative: breaking one leaves no item.
+    creative_only: Arc<Vec<NamespacedId>>,
     air: u32,
     table: BlockTable,
     passable: PropertyHandle<bool>,
@@ -73,6 +75,7 @@ impl ItemsPlugin {
             passable: block_properties::passable(&table),
             table,
             placeable: Arc::new(placeable_blocks(&content.package_data())),
+            creative_only: Arc::new(creative_only_blocks(&content.package_data())),
             block_names,
             block_channel: content.block_channel(),
             state_channel: content.state_channel(),
@@ -230,11 +233,12 @@ impl Plugin for ItemsPlugin {
             },
         );
 
-        // A broken block leaves its item where it was.
-        let (shared, names, placeable) = (
+        // A broken block leaves its item where it was (a block that exists only in creative leaves none, so that playing never gives one).
+        let (shared, names, placeable, creative_only) = (
             Arc::clone(&rules),
             self.block_names.clone(),
             Arc::clone(&self.placeable),
+            Arc::clone(&self.creative_only),
         );
         registrar.on::<BlockBroken>(
             HandlerSpec::new("voxunami_cave:breaking_leaves_the_item"),
@@ -244,6 +248,7 @@ impl Plugin for ItemsPlugin {
                 }
                 let Some(item) = names
                     .get(&event.block)
+                    .filter(|block| !creative_only.contains(block))
                     .and_then(|block| item_for_block(block, &placeable))
                 else {
                     return;

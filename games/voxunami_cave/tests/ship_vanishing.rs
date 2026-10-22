@@ -373,11 +373,11 @@ fn a_vanish_that_is_asked_for_is_said_so_and_a_command_that_is_not_one_says_how_
     assert_eq!(say(&mut scene, &mut pilot, "/ship vanish off"), VANISH_OFF);
     assert_eq!(
         say(&mut scene, &mut pilot, "/ship vanish maybe"),
-        "usage: /ship create [all] | push X Y Z | hold on|off | pilot | vanish on|off"
+        "usage: /ship create [all] | push X Y Z | hold on|off | pilot | undock | vanish on|off"
     );
     assert_eq!(
         say(&mut scene, &mut pilot, "/ship vanish"),
-        "usage: /ship create [all] | push X Y Z | hold on|off | pilot | vanish on|off"
+        "usage: /ship create [all] | push X Y Z | hold on|off | pilot | undock | vanish on|off"
     );
     // Away from every ship there is none to tell.
     pilot.send_command("/tp 40 300 40");

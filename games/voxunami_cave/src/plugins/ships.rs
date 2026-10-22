@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use block_models::BlockTable;
 use game_shell::GameContent;
 use grid_bodies::collision::BlockCollisions;
+use grid_bodies::{Docking, UndockError};
 use namespaced_id::NamespacedId;
 use physics::Collision;
 use player_presence::{Presence, SharedPresence, lock};
@@ -30,7 +31,8 @@ use crate::ships::{
     LOOK_REACH, MAXIMUM_BLOCKS, NEAR, PilotKeys, TICK_SECONDS, connected_blocks, pilot_force,
 };
 
-const USAGE: &str = "usage: /ship create [all] | push X Y Z | hold on|off | pilot | vanish on|off";
+const USAGE: &str =
+    "usage: /ship create [all] | push X Y Z | hold on|off | pilot | undock | vanish on|off";
 
 /// The `/ship` command, and the system that flies the ships that have pilots.
 #[derive(Debug)]
@@ -47,14 +49,22 @@ struct Ships {
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
     table: BlockTable,
+    /// How ships dock, shared with the plugin that moves them.
+    docking: Docking,
 }
 
 impl ShipCommandsPlugin {
-    pub fn new(content: &CaveContent, players: SharedPresence, movement: SharedMovement) -> Self {
+    pub fn new(
+        content: &CaveContent,
+        players: SharedPresence,
+        movement: SharedMovement,
+        docking: Docking,
+    ) -> Self {
         Self {
             ships: Arc::new(Ships {
                 presence: players,
                 movement,
+                docking,
                 pilots: Mutex::new(BTreeMap::new()),
                 block_channel: content.block_channel(),
                 state_channel: content.state_channel(),
@@ -151,6 +161,7 @@ impl Ships {
             ("hold", ["on"]) => self.hold(world, client, true),
             ("hold", ["off"]) => self.hold(world, client, false),
             ("pilot", []) => self.pilot(world, client),
+            ("undock", []) => self.undock(world, client),
             ("vanish", ["on"]) => self.vanish(world, client, PilotLogout::Vanish),
             ("vanish", ["off"]) => self.vanish(world, client, PilotLogout::Stay),
             _ => USAGE.to_owned(),
@@ -307,6 +318,60 @@ impl Ships {
         }
     }
 
+    /// `/ship undock`: the docked pair of ports nearest to the player, on the ship they are aboard or the one nearest, is cut apart: the ship becomes
+    /// two ships that move apart, and do not pull on each other until they are out of range. Refused if something besides the ports joins the two
+    /// sides (a weld).
+    fn undock(&self, world: &mut ServerWorld, client: ClientId) -> String {
+        let (ship, eyes) = {
+            let presence = lock(&self.presence);
+            let ship = match self.target(world, &presence, client) {
+                Ok(ship) => ship,
+                Err(problem) => return problem,
+            };
+            let Some((eyes, _)) = presence.view_in_the_world(world.data(), client) else {
+                return "you have not joined yet".to_owned();
+            };
+            (ship, eyes)
+        };
+        let Some(moving) = world.data().grids().get(ship) else {
+            return "that ship is gone".to_owned();
+        };
+        // The pair whose ports are nearest to the player's eyes.
+        let nearest = self
+            .docking
+            .docked_pairs(moving)
+            .into_iter()
+            .filter_map(|pair| {
+                let centre = pair.first.local_centre().map(|component| component as f32);
+                let place = moving
+                    .pose
+                    .local_to_world(WorldPosition::new(BrickCoordinate::ORIGIN, centre))?;
+                let arm = place.relative_to(eyes);
+                let distance = arm
+                    .iter()
+                    .map(|component| component * component)
+                    .sum::<f32>();
+                Some((distance, pair))
+            })
+            .min_by(|(first, _), (second, _)| first.total_cmp(second));
+        let Some((_, pair)) = nearest else {
+            return format!("ship {} has no ships docked to it", number(ship));
+        };
+        match self.docking.undock(world, ship, pair) {
+            Ok([first, second]) => format!(
+                "ship {} came apart into ships {} and {}",
+                number(ship),
+                number(first),
+                number(second)
+            ),
+            Err(UndockError::Welded) => format!(
+                "ship {} is welded there: solid blocks join the two sides besides the docking ports, and breaking them lets the ships come apart",
+                number(ship)
+            ),
+            Err(error) => format!("could not undock ship {}: {error}", number(ship)),
+        }
+    }
+
     /// `/ship vanish`: whether the ship goes away with its pilot when they log out, and is where it was when they come back. (Until there is a
     /// command chair, which will say this, this is how a ship is told.)
     fn vanish(&self, world: &mut ServerWorld, client: ClientId, wish: PilotLogout) -> String {
@@ -367,10 +432,32 @@ impl Ships {
         }
     }
 
+    /// A ship that was cut apart or made one with another is gone, and its pilot has the part (or the whole) that they are aboard.
+    fn follow_ships_that_were_replaced(
+        world: &ServerWorld,
+        presence: &Presence,
+        pilots: &mut BTreeMap<ClientId, GridId>,
+    ) {
+        for (client, ship) in pilots.iter_mut() {
+            if world.data().grids().get(*ship).is_none()
+                && let Some(frame) = presence.frame_of(world.data(), *client)
+                && world
+                    .data()
+                    .grids()
+                    .resolve(*ship)
+                    .iter()
+                    .any(|(part, _)| *part == frame)
+            {
+                *ship = frame;
+            }
+        }
+    }
+
     /// `/ship pilot`: the player's keys fly the ship they are aboard, until they say so again, leave it, or leave.
     fn pilot(&self, world: &mut ServerWorld, client: ClientId) -> String {
         let presence = lock(&self.presence);
         let mut pilots = self.pilots();
+        Self::follow_ships_that_were_replaced(world, &presence, &mut pilots);
         if let Some(ship) = pilots.remove(&client) {
             locked(&self.movement).set_piloting(client, false);
             return format!("you let go of the controls of ship {}", number(ship));
@@ -400,20 +487,7 @@ impl Ships {
             return;
         }
         let mut movement = locked(&self.movement);
-        // A ship that was cut apart is gone, and its pilot has the part that they are aboard.
-        for (client, ship) in pilots.iter_mut() {
-            if world.data().grids().get(*ship).is_none()
-                && let Some(frame) = presence.frame_of(world.data(), *client)
-                && world
-                    .data()
-                    .grids()
-                    .resolve(*ship)
-                    .iter()
-                    .any(|(part, _)| *part == frame)
-            {
-                *ship = frame;
-            }
-        }
+        Self::follow_ships_that_were_replaced(world, &presence, &mut pilots);
         let mut finished = Vec::new();
         for (&client, &ship) in pilots.iter() {
             let aboard = presence.frame_of(world.data(), client) == Some(ship);

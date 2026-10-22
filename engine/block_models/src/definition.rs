@@ -1,6 +1,8 @@
+use crate::property::engine::{self, face_code};
 use crate::property::{PropertyKey, PropertyType, SetProperties, key_id};
 use crate::shape::Shape;
 use namespaced_id::NamespacedId;
+use voxel_space::FaceDirection;
 
 /// What a type of block is like: how it looks, how it fills its cell, and how it treats light.
 ///
@@ -90,6 +92,26 @@ impl BlockDefinition {
             .or_default()
             .by_state
             .insert(state, value.to_value());
+        self
+    }
+
+    /// The same block with a face of each state drawn in `color` (sRGB bytes): `faces[state]` is the face marked in that state, if any.
+    /// Every other face is the block's own colour. (The marked face takes a place in the renderer's palette, like a colour of a state.)
+    pub fn with_marked_faces(self, color: [u8; 3], faces: &[Option<FaceDirection>]) -> Self {
+        let packed = u32::from(color[0]) << 16 | u32::from(color[1]) << 8 | u32::from(color[2]);
+        let mut marked = self.with_property(&engine::MARK_COLOR, packed);
+        for (state, face) in faces.iter().enumerate() {
+            marked =
+                marked.with_state_property(state as u32, &engine::MARKED_FACE, face_code(*face));
+        }
+        marked
+    }
+
+    /// The same block with a docking face in each state: `faces[state]` is the face that docks in that state, if any.
+    pub fn with_docking_faces(mut self, faces: &[Option<FaceDirection>]) -> Self {
+        for (state, face) in faces.iter().enumerate() {
+            self = self.with_state_property(state as u32, &engine::DOCKING_FACE, face_code(*face));
+        }
         self
     }
 

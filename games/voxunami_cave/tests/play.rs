@@ -759,13 +759,52 @@ fn the_shape_key_cycles_through_every_shape_and_placing_uses_the_one_chosen() {
     // Choosing another block keeps the shape; pressing the key enough times comes back to whole.
     player.key_pressed(KeyCode::Digit3);
     assert_eq!(player.hud_text(), "placing grass (bottom slab)");
+    // (The lamp has one state, a whole cube; the shape chosen for the blocks that have more is kept in range for it. It used to say "bottom slab"
+    // here, and ask the server for a state the lamp does not have, which the server refused.)
     player.key_pressed(KeyCode::Digit4);
-    assert_eq!(player.hud_text(), "placing lamp (bottom slab)");
+    assert_eq!(player.hud_text(), "placing lamp (whole)");
     player.key_pressed(KeyCode::Digit3);
     for _ in 1..base_blocks::SHAPE_NAMES.len() {
         player.key_pressed(KeyCode::KeyR);
     }
     assert_eq!(player.hud_text(), "placing grass (whole)");
+}
+
+#[test]
+fn the_dev_docking_port_is_chosen_with_its_number_its_facing_is_cycled_with_the_shape_key_and_placing_uses_the_one_chosen()
+ {
+    let mut rig = Rig::new();
+    let mut player = player_above_ground(&mut rig);
+    let hit = player.target().unwrap();
+    // The seventh block there is to place.
+    player.key_pressed(KeyCode::Digit7);
+    assert_eq!(
+        player.hud_text(),
+        "placing dev_docking_port (docking face west)"
+    );
+    // The key goes through its six facings and not the seven shapes of the others.
+    let names = ["east", "down", "up", "north", "south", "west"];
+    for name in names {
+        player.key_pressed(KeyCode::KeyR);
+        assert_eq!(
+            player.hud_text(),
+            format!("placing dev_docking_port (docking face {name})")
+        );
+    }
+    player.key_pressed(KeyCode::KeyR);
+    player.mouse_pressed(MouseButton::Secondary);
+    rig.settle(&mut [&mut player]);
+    let port = {
+        rig.content.registries()[0]
+            .1
+            .raw_id_of(&voxunami_cave::content::dev_docking_port_id())
+            .unwrap()
+    };
+    // The first press after the six came back to west (0), the seventh made it east (1): the state placed is the one the HUD said.
+    assert_eq!(server_block_and_state(&rig, hit.previous), (port, 1));
+    // Choosing a block with more states keeps the number in range for the one chosen: stone has seven.
+    player.key_pressed(KeyCode::Digit1);
+    assert_eq!(player.hud_text(), "placing stone (bottom slab)");
 }
 
 /// Ticks the server `count` times.

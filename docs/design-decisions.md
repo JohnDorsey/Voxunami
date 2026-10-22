@@ -77,6 +77,15 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
     fire, light, and the interaction of any blocks that interact with their neighbours, as if the two had been one from the start.
     It is not only the connector blocks that join: any blocks that become adjacent are adjacent. If solid blocks flush with the ports
     touch when the ships dock, they are welded, and the ships cannot undock until the player breaks the blocks that join them.
+  - Docking, as decided on 2026-10-22 (built in 32m part 2): the yellow face of one dev docking port docks with the yellow face of another; ships snap to exact alignment on all axes within 10 degrees
+    and 0.3 metres, and any roll in quarter turns is allowed because the grids need only be aligned cube to cube; the attraction also twists the ships into line; **forces do not scale with the
+    masses of the ships**: each port gets the same force and each ship the same torque, so lighter ships accelerate more. The dev docking port is creative only. A block's face properties
+    (`engine:marked_face`, `engine:mark_color`, `engine:docking_face`) are engine-reserved block properties, not a new field of a block definition, so the bytes of a definition and the
+    data-pack format do not change and a pack sets them like any property. Merging is `ServerWorld::merge_grids` and undocking is `split_grid` with the ports not counted as a join, so everything that
+    works across a ship works across a docked pair with no work from a mod; a hinge or an axle joining ships is a different union and is not planned to carry natural processes across.
+  - **Units are metric** wherever the thing exists in our world (owner, 2026-10-22): a voxel is a metre, mass is in kilograms, force in newtons, torque in newton metres, time in seconds. The code and the
+    older text say "voxels a second" for a metre a second. Until materials have real densities (a conversation in `future-goals.md`, goal 9), every block that is not air weighs 1,000 kilograms
+    a cubic metre (a metric ton), the default of `engine:density`.
   - A player who connects to a server and whose ship file cannot be found is asked what to do: spawn at the world spawn, spawn in
     midair, or quit to the title screen.
   - Added by the owner, 2026-10-20 (`future-goals.md`, "Ship goals"; planned in `moving-grids-spec.md`): sufficiently huge ships have their own

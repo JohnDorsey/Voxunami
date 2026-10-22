@@ -1119,10 +1119,12 @@ name = "grid_bodies"
 version = "0.0.0"
 dependencies = [
  "block_models",
+ "libm",
  "namespaced_id",
  "physics",
  "plugin_host",
  "server",
+ "thiserror 2.0.21",
  "voxel_grid",
  "voxel_space",
  "world_storage",

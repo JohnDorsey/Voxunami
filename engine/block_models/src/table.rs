@@ -1,8 +1,9 @@
 use std::marker::PhantomData;
 
-use voxel_space::FaceDirection;
+use voxel_space::{FaceDirection, LatticeRotation};
 
 use crate::definition::BlockDefinition;
+use crate::property::engine::{self, face_from_code};
 use crate::property::{
     Column, PropertyError, PropertyHandle, PropertyKey, PropertySchema, PropertyType, check_value,
     key_id,
@@ -43,6 +44,8 @@ struct Model {
     /// block is see-through.
     hides: [u64; 6],
     opaque_cube: bool,
+    /// The face drawn in the block's mark colour, and the palette entry of that colour.
+    mark: Option<(FaceDirection, u32)>,
 }
 
 /// Every block's definition, turned into what the mesher, the renderer, lighting and physics ask
@@ -53,10 +56,13 @@ pub struct BlockTable {
     entries: Vec<Entry>,
     models: Vec<Model>,
     unknown: ModelId,
-    /// The colours after the blocks' own: every block's state colours, in block order.
+    /// The colours after the blocks' own: every block's state colours, in block order, and then the mark colours.
     state_palette: Vec<[f32; 3]>,
     /// The properties, a column for each, with a value for every model.
     columns: Vec<Column>,
+    /// The columns of the face properties of the engine, if the schema declares them.
+    marked_face_column: Option<usize>,
+    docking_face_column: Option<usize>,
 }
 
 impl BlockTable {
@@ -155,12 +161,50 @@ impl BlockTable {
                 }
             }
         }
+        // The marked faces: each colour a block marks a face in takes one palette entry after all the state colours.
+        let marked_face_column = position_of(&columns, engine::MARKED_FACE.id());
+        if let (Some(face_column), Some(color_column)) = (
+            marked_face_column,
+            position_of(&columns, engine::MARK_COLOR.id()),
+        ) {
+            let first_mark_material = (definitions.len() + state_palette.len()) as u32;
+            let mut mark_colors: Vec<u32> = Vec::new();
+            for entry in entries
+                .iter()
+                .filter(|entry| entry.first_model != unknown.0)
+            {
+                for state in 0..entry.state_count {
+                    let model = (entry.first_model + state) as usize;
+                    let Some(face) = u8::try_from(columns[face_column].values[model])
+                        .ok()
+                        .and_then(face_from_code)
+                    else {
+                        continue;
+                    };
+                    let color = columns[color_column].values[model] as u32;
+                    let position = mark_colors
+                        .iter()
+                        .position(|known| *known == color)
+                        .unwrap_or_else(|| {
+                            mark_colors.push(color);
+                            mark_colors.len() - 1
+                        });
+                    models[model].mark = Some((face, first_mark_material + position as u32));
+                }
+            }
+            state_palette.extend(mark_colors.into_iter().map(|packed| {
+                [16, 8, 0].map(|shift| f32::from((packed >> shift & 0xFF) as u8) / 255.0)
+            }));
+        }
+        let docking_face_column = position_of(&columns, engine::DOCKING_FACE.id());
         Ok(Self {
             entries,
             models,
             unknown,
             state_palette,
             columns,
+            marked_face_column,
+            docking_face_column,
         })
     }
 
@@ -248,6 +292,65 @@ impl BlockTable {
         }
     }
 
+    /// What a face of a voxel is drawn as: the material of the voxel (see [`BlockTable::material_of`]), unless the face is the block's marked
+    /// face in this state, which is drawn in the mark colour.
+    pub fn material_of_face(&self, block: u32, state: u32, face: FaceDirection) -> u32 {
+        match self.marked_face_material(block, state) {
+            Some((marked, material)) if marked == face => material,
+            _ => self.material_of(block, state),
+        }
+    }
+
+    /// The face a block marks in a state and the material it is drawn in, if the block marks one.
+    pub fn marked_face_material(&self, block: u32, state: u32) -> Option<(FaceDirection, u32)> {
+        self.models[self.model_of(block, state).0 as usize].mark
+    }
+
+    /// The face of a block that docks, in a state (`engine:docking_face`): `None` for a block that is no docking port.
+    pub fn docking_face(&self, block: u32, state: u32) -> Option<FaceDirection> {
+        self.face_property(self.docking_face_column, block, state)
+    }
+
+    fn face_property(
+        &self,
+        column: Option<usize>,
+        block: u32,
+        state: u32,
+    ) -> Option<FaceDirection> {
+        let model = self.model_of(block, state);
+        let value = self.columns[column?].values[model.0 as usize];
+        u8::try_from(value).ok().and_then(face_from_code)
+    }
+
+    /// The state a block has when the grid it is in is turned by a rotation of the lattice: the state whose shape, marked face and docking
+    /// face are those of this state turned, so that a stair rises the way it did, a slab stays on the side it was and a docking port faces
+    /// the way the ship does. A state that is already right is kept; if the block has no state of the turned shape, or the state is not
+    /// one of its shapes (a number the block's rules use, a fire's age), it is kept as it is.
+    pub fn turned_state(&self, block: u32, state: u32, rotation: LatticeRotation) -> u32 {
+        let Some(entry) = self.entries.get(block as usize) else {
+            return state;
+        };
+        if rotation == LatticeRotation::IDENTITY || state >= entry.state_count {
+            return state;
+        }
+        let turned_face = |face: Option<FaceDirection>| face.map(|face| rotation.apply_face(face));
+        let shape = self.shape(self.model_of(block, state)).turned(rotation);
+        let marked = turned_face(self.face_property(self.marked_face_column, block, state));
+        let docking = turned_face(self.docking_face(block, state));
+        let fits = |candidate: u32| {
+            self.shape(self.model_of(block, candidate))
+                .same_cells(&shape)
+                && self.face_property(self.marked_face_column, block, candidate) == marked
+                && self.docking_face(block, candidate) == docking
+        };
+        if fits(state) {
+            return state;
+        }
+        (0..entry.state_count)
+            .find(|candidate| fits(*candidate))
+            .unwrap_or(state)
+    }
+
     pub fn shape(&self, model: ModelId) -> &Shape {
         &self.models[model.0 as usize].shape
     }
@@ -326,6 +429,12 @@ impl BlockTable {
     }
 }
 
+/// Where the column of a property is, if the schema declares it.
+fn position_of(columns: &[Column], key: &'static str) -> Option<usize> {
+    let id = key_id(key);
+    columns.iter().position(|column| column.id == id)
+}
+
 fn make_model(shape: &Shape, see_through: bool, block: u32) -> Model {
     let hides = std::array::from_fn(|index| {
         if see_through {
@@ -340,6 +449,7 @@ fn make_model(shape: &Shape, see_through: bool, block: u32) -> Model {
         see_through,
         hides,
         opaque_cube: shape.is_full() && !see_through,
+        mark: None,
     }
 }
 
@@ -562,5 +672,215 @@ mod tests {
         assert!(table.is_opaque_cube(table.model_of(1, 0)));
         assert!(table.is_opaque_cube(table.model_of(2, 0)));
         assert_eq!(table.block_count(), 3);
+    }
+
+    const YELLOW: [u8; 3] = [255, 216, 0];
+
+    /// A block of whole cubes with six states, the marked face and the docking face of each looking a different way.
+    fn port() -> BlockDefinition {
+        let faces = FaceDirection::ALL.map(Some);
+        BlockDefinition::cube([0.3, 0.3, 0.32])
+            .with_shapes(vec![Shape::full(); 6])
+            .with_marked_faces(YELLOW, &faces)
+            .with_docking_faces(&faces)
+    }
+
+    #[test]
+    fn a_marked_face_is_drawn_in_its_own_colour_and_the_other_faces_in_the_blocks() {
+        let stone = BlockDefinition::cube([0.5; 3]);
+        let tinted = BlockDefinition::cube([0.6; 3]).with_state_colors(vec![[0.9; 3], [0.8; 3]]);
+        let port = port();
+        let table = BlockTable::from_definitions(&[Some(&stone), Some(&tinted), Some(&port)]);
+        // The palette is the three blocks, the two state colours of the tinted one, and the yellow once, however many states mark it.
+        let yellow = [255.0 / 255.0, 216.0 / 255.0, 0.0];
+        let palette = table.palette();
+        assert_eq!(palette.len(), 6);
+        assert_eq!(palette[5], yellow);
+        for state in 0..6 {
+            for face in FaceDirection::ALL {
+                let wanted = if face.index() as u32 == state { 5 } else { 2 };
+                assert_eq!(
+                    table.material_of_face(2, state, face),
+                    wanted,
+                    "state {state} {face:?}"
+                );
+            }
+            assert_eq!(
+                table.marked_face_material(2, state),
+                Some((FaceDirection::ALL[state as usize], 5))
+            );
+        }
+        // A block that marks nothing is drawn as it always was, whatever the face; so is a state its block does not have.
+        for face in FaceDirection::ALL {
+            assert_eq!(table.material_of_face(0, 0, face), table.material_of(0, 0));
+            assert_eq!(table.material_of_face(1, 1, face), table.material_of(1, 1));
+            assert_eq!(table.material_of_face(9999, 0, face), 9999);
+        }
+        assert_eq!(table.marked_face_material(0, 0), None);
+        // Gunmetal is the block's own colour.
+        assert_eq!(table.color(2), [0.3, 0.3, 0.32]);
+    }
+
+    #[test]
+    fn the_docking_face_of_each_state_is_what_the_definition_says_and_a_block_that_is_no_port_has_none()
+     {
+        let stone = BlockDefinition::cube([0.5; 3]);
+        let port = port();
+        let table = BlockTable::from_definitions(&[Some(&stone), Some(&port)]);
+        for (state, face) in FaceDirection::ALL.into_iter().enumerate() {
+            assert_eq!(table.docking_face(1, state as u32), Some(face));
+        }
+        assert_eq!(table.docking_face(0, 0), None);
+        assert_eq!(table.docking_face(9999, 0), None);
+    }
+
+    fn rotations() -> [LatticeRotation; 24] {
+        LatticeRotation::all()
+    }
+
+    #[test]
+    fn a_docking_port_turned_with_its_ship_faces_the_way_the_ship_turned_it() {
+        let port = port();
+        let table = BlockTable::from_definitions(&[Some(&port)]);
+        for rotation in rotations() {
+            for face in FaceDirection::ALL {
+                let state = u32::from(face.index());
+                let turned = table.turned_state(0, state, rotation);
+                assert_eq!(
+                    table.docking_face(0, turned),
+                    Some(rotation.apply_face(face)),
+                    "{rotation:?} {face:?}"
+                );
+                assert_eq!(
+                    table.marked_face_material(0, turned).map(|mark| mark.0),
+                    Some(rotation.apply_face(face)),
+                    "the yellow face goes with the docking face"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn slabs_and_stairs_turned_with_their_ship_are_the_state_of_the_turned_shape_and_what_has_no_such_state_is_kept()
+     {
+        let stone = BlockDefinition::cube([0.5; 3]).with_shapes(vec![
+            Shape::full(),
+            Shape::half(DOWN),
+            Shape::half(UP),
+            Shape::stair(FaceDirection::PositiveX),
+            Shape::stair(FaceDirection::NegativeX),
+            Shape::stair(FaceDirection::NegativeZ),
+            Shape::stair(FaceDirection::PositiveZ),
+        ]);
+        let table = BlockTable::from_definitions(&[Some(&stone)]);
+        let find = |wanted: &dyn Fn([i64; 3]) -> [i64; 3]| {
+            rotations()
+                .into_iter()
+                .find(|rotation| {
+                    [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+                        .into_iter()
+                        .all(|vector| rotation.apply(vector) == wanted(vector))
+                })
+                .unwrap()
+        };
+        // Turned over about the x axis (up goes down, z goes to -z): a bottom slab is a top slab, a top slab a bottom slab.
+        let over = find(&|v| [v[0], -v[1], -v[2]]);
+        assert_eq!(table.turned_state(0, 1, over), 2);
+        assert_eq!(table.turned_state(0, 2, over), 1);
+        assert_eq!(
+            table.turned_state(0, 0, over),
+            0,
+            "a whole block is as it was"
+        );
+        // A quarter turn about the vertical axis (+z goes to +x, +x to -z): the stair rising east rises north, and north becomes west.
+        let quarter = find(&|v| [v[2], v[1], -v[0]]);
+        assert_eq!(table.turned_state(0, 3, quarter), 5);
+        assert_eq!(table.turned_state(0, 5, quarter), 4);
+        assert_eq!(
+            table.turned_state(0, 1, quarter),
+            1,
+            "a bottom slab stays on the bottom"
+        );
+        // A quarter turn about the x axis stands a slab on its side, which this block has no state for: it keeps its state.
+        let on_its_side = find(&|v| [v[0], -v[2], v[1]]);
+        assert_eq!(table.turned_state(0, 1, on_its_side), 1);
+        // No turn is no change; a state that is not one of the block's shapes (a number) and an unknown block are kept, whatever the turn.
+        for rotation in rotations() {
+            assert_eq!(table.turned_state(0, 77, rotation), 77);
+            assert_eq!(table.turned_state(5, 3, rotation), 3);
+            assert_eq!(table.turned_state(0, 3, LatticeRotation::IDENTITY), 3);
+        }
+    }
+
+    #[test]
+    fn a_turn_and_its_inverse_give_the_state_back_for_every_state_that_has_a_turned_state() {
+        let port = port();
+        let table = BlockTable::from_definitions(&[Some(&port)]);
+        for rotation in rotations() {
+            for state in 0..6 {
+                let there = table.turned_state(0, state, rotation);
+                assert_eq!(table.turned_state(0, there, rotation.inverse()), state);
+            }
+        }
+    }
+
+    #[test]
+    fn the_shape_the_marked_face_and_the_docking_face_each_decide_which_state_a_turn_leads_to() {
+        use FaceDirection::{NegativeX, NegativeZ, PositiveX, PositiveZ};
+        let east_to_south = LatticeRotation::all()
+            .into_iter()
+            .find(|rotation| {
+                rotation.apply_face(PositiveX) == PositiveZ
+                    && rotation.apply([0, 1, 0]) == [0, 1, 0]
+            })
+            .unwrap();
+        // Four states of whole cubes: marked east or marked west, each docking east or docking west. Turned so that east is south, the
+        // states that face south and north are wanted, and there are none: so use faces that do exist after the turn, by making the
+        // block with every combination of south and north as well.
+        let combos: Vec<(Option<FaceDirection>, Option<FaceDirection>)> =
+            [PositiveX, NegativeX, PositiveZ, NegativeZ]
+                .into_iter()
+                .flat_map(|mark| {
+                    [PositiveX, NegativeX, PositiveZ, NegativeZ]
+                        .map(|dock| (Some(mark), Some(dock)))
+                })
+                .collect();
+        let marks: Vec<Option<FaceDirection>> = combos.iter().map(|combo| combo.0).collect();
+        let docks: Vec<Option<FaceDirection>> = combos.iter().map(|combo| combo.1).collect();
+        let block = BlockDefinition::cube([0.3; 3])
+            .with_shapes(vec![Shape::full(); combos.len()])
+            .with_marked_faces(YELLOW, &marks)
+            .with_docking_faces(&docks);
+        let table = BlockTable::from_definitions(&[Some(&block)]);
+        for (state, (mark, dock)) in combos.iter().enumerate() {
+            let turned = table.turned_state(0, state as u32, east_to_south) as usize;
+            assert_eq!(
+                combos[turned],
+                (
+                    mark.map(|face| east_to_south.apply_face(face)),
+                    dock.map(|face| east_to_south.apply_face(face))
+                ),
+                "state {state}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_state_that_is_right_already_is_kept_though_another_state_fits_as_well_and_a_number_is_kept_though_a_shape_fits()
+     {
+        // Two states that are the same whole cube: either is right for either.
+        let twins = BlockDefinition::cube([0.5; 3]).with_shapes(vec![Shape::full(), Shape::full()]);
+        // Two slabs, and a state number beyond them (a fire's age is the model of its first state).
+        let slabs =
+            BlockDefinition::cube([0.5; 3]).with_shapes(vec![Shape::half(DOWN), Shape::half(UP)]);
+        let table = BlockTable::from_definitions(&[Some(&twins), Some(&slabs)]);
+        let over = LatticeRotation::all()
+            .into_iter()
+            .find(|rotation| rotation.apply([0, 1, 0]) == [0, -1, 0])
+            .unwrap();
+        assert_eq!(table.turned_state(0, 1, over), 1);
+        assert_eq!(table.turned_state(0, 0, over), 0);
+        assert_eq!(table.turned_state(1, 0, over), 1);
+        assert_eq!(table.turned_state(1, 77, over), 77);
     }
 }

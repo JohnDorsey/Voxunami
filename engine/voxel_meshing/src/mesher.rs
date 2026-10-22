@@ -136,6 +136,8 @@ struct MeshedBrick<'a> {
     /// What each voxel is drawn as: its block, or for a block with colours for its states, the
     /// colour of its state (see [`BlockTable::material_of`]).
     materials: Vec<u32>,
+    /// For a voxel whose block marks a face in its state, the face and the material it is drawn in.
+    marks: Vec<Option<(FaceDirection, u32)>>,
     models: Vec<ModelId>,
     light: Vec<u8>,
     /// Indexed by [`FaceDirection::index`].
@@ -157,6 +159,11 @@ impl<'a> MeshedBrick<'a> {
             .enumerate()
             .map(|(index, &block)| table.material_of(block, state_of(index)))
             .collect();
+        let marks = blocks
+            .iter()
+            .enumerate()
+            .map(|(index, &block)| table.marked_face_material(block, state_of(index)))
+            .collect();
         let light = match input.center.light {
             Some(light) => light.iter().map(|value| value.min(255) as u8).collect(),
             None => vec![FULL_LIGHT; blocks.len()],
@@ -164,12 +171,21 @@ impl<'a> MeshedBrick<'a> {
         Self {
             table,
             materials,
+            marks,
             models,
             light,
             layers: std::array::from_fn(|index| {
                 let face = FaceDirection::from_index(index as u8).expect("six faces");
                 Layer::of(input.neighbours[index].as_ref(), face, table)
             }),
+        }
+    }
+
+    /// What the `face` of the voxel at this index is drawn as: the marked face in the mark colour, the others in the voxel's.
+    fn material_of_face(&self, index: usize, face: FaceDirection) -> u32 {
+        match self.marks[index] {
+            Some((marked, material)) if marked == face => material,
+            _ => self.materials[index],
         }
     }
 
@@ -225,7 +241,7 @@ impl<'a> MeshedBrick<'a> {
                     if self.table.is_opaque_cube(model) {
                         let (front, light) = self.in_front(p, face);
                         if self.hidden_by(model, front, face) != u64::MAX {
-                            key = Some((self.materials[index], light));
+                            key = Some((self.material_of_face(index, face), light));
                         }
                     }
                     any |= key.is_some();
@@ -278,7 +294,7 @@ impl<'a> MeshedBrick<'a> {
                                 width: u16::from(rectangle.width),
                                 height: u16::from(rectangle.height),
                                 face,
-                                material: self.materials[index],
+                                material: self.material_of_face(index, face),
                                 light,
                             });
                         }
@@ -642,6 +658,120 @@ mod tests {
             .filter(|quad| quad.face == FaceDirection::PositiveY)
             .collect();
         assert_eq!(tops, [quad([0, 0, 0], 32, 32, FaceDirection::PositiveY, 7)]);
+    }
+
+    // ----- Marked faces -----
+
+    const PORT: u32 = 2;
+    const SLAB_PORT: u32 = 3;
+    /// The first material after the blocks': the yellow of the marked faces.
+    const YELLOW: u32 = 4;
+
+    /// Blocks 0 air, 1 gunmetal cube, 2 a cube with six states that mark a different face each, and 3 a slab (bottom half) that marks its top.
+    fn marked_table() -> BlockTable {
+        let faces = FaceDirection::ALL.map(Some);
+        let port = BlockDefinition::cube([0.3; 3])
+            .with_shapes(vec![Shape::full(); 6])
+            .with_marked_faces([255, 216, 0], &faces);
+        let slab = BlockDefinition::cube([0.35; 3])
+            .with_shapes(vec![Shape::half(FaceDirection::NegativeY)])
+            .with_marked_faces([255, 216, 0], &[Some(FaceDirection::PositiveY)]);
+        let air = BlockDefinition::air();
+        let gunmetal = BlockDefinition::cube([0.3; 3]);
+        BlockTable::from_definitions(&[Some(&air), Some(&gunmetal), Some(&port), Some(&slab)])
+    }
+
+    fn mesh_marked(blocks: &ChannelStorage, states: &ChannelStorage) -> BrickMesh {
+        mesh_brick(
+            &BrickNeighbourhood {
+                center: BrickChannels {
+                    blocks,
+                    states: Some(states),
+                    light: None,
+                },
+                neighbours: [None; 6],
+            },
+            &marked_table(),
+        )
+    }
+
+    #[test]
+    fn only_the_marked_face_of_a_cube_is_drawn_in_the_mark_colour() {
+        let at = (5, 6, 7);
+        let blocks = brick_from(|x, y, z| if (x, y, z) == at { PORT } else { AIR });
+        for marked in FaceDirection::ALL {
+            let states = brick_from(|x, y, z| {
+                if (x, y, z) == at {
+                    u32::from(marked.index())
+                } else {
+                    0
+                }
+            });
+            let mesh = mesh_marked(&blocks, &states);
+            assert!(mesh.detailed.is_empty());
+            assert_eq!(mesh.quads.len(), 6);
+            for face in FaceDirection::ALL {
+                let wanted = if face == marked { YELLOW } else { PORT };
+                assert!(
+                    mesh.quads.contains(&quad([5, 6, 7], 1, 1, face, wanted)),
+                    "marked {marked:?}, face {face:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn faces_merge_only_with_faces_of_the_same_material_so_marks_that_meet_merge_and_a_mark_beside_plain_does_not()
+     {
+        // Two ports side by side along z, both marked on +x: their +x faces are one yellow quad. A third beside them marked on +z has a plain +x face.
+        let blocks = brick_from(|x, y, z| {
+            if (x, y) == (5, 6) && (7..10).contains(&z) {
+                PORT
+            } else {
+                AIR
+            }
+        });
+        let states = brick_from(|x, y, z| {
+            if (x, y) == (5, 6) && (7..10).contains(&z) {
+                if z == 9 { 5 } else { 1 }
+            } else {
+                0
+            }
+        });
+        let mesh = mesh_marked(&blocks, &states);
+        let positive_x: Vec<Quad> = mesh
+            .quads
+            .iter()
+            .copied()
+            .filter(|quad| quad.face == FaceDirection::PositiveX)
+            .collect();
+        assert_eq!(positive_x.len(), 2, "{positive_x:?}");
+        // The +x face spans y (width) then z (height).
+        assert!(positive_x.contains(&quad([5, 6, 7], 1, 2, FaceDirection::PositiveX, YELLOW)));
+        assert!(positive_x.contains(&quad([5, 6, 9], 1, 1, FaceDirection::PositiveX, PORT)));
+    }
+
+    #[test]
+    fn the_marked_face_of_a_block_that_is_not_a_cube_is_drawn_in_the_mark_colour_too() {
+        let blocks = brick_from(|x, y, z| {
+            if (x, y, z) == (5, 6, 7) {
+                SLAB_PORT
+            } else {
+                AIR
+            }
+        });
+        let states = brick_from(|_, _, _| 0);
+        let mesh = mesh_marked(&blocks, &states);
+        assert!(mesh.quads.is_empty());
+        assert_eq!(mesh.detailed.len(), 6);
+        for quad in &mesh.detailed {
+            let wanted = if quad.face == FaceDirection::PositiveY {
+                YELLOW
+            } else {
+                SLAB_PORT
+            };
+            assert_eq!(quad.material, wanted, "{:?}", quad.face);
+        }
     }
 
     // ----- Blocks that do not fill their cell -----

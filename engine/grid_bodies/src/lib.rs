@@ -7,6 +7,8 @@
 
 pub mod collision;
 pub mod connectivity;
+pub mod docking;
 mod plugin;
 
+pub use docking::{DockedPair, Docking, DockingSettings, Port, UndockError};
 pub use plugin::{BodiesReport, FRAME_RADIUS_BRICKS, GridBodiesConfig, GridBodiesPlugin};

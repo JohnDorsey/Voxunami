@@ -298,8 +298,14 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// Phase 32g, after: `/tp` tells the player where they are (`PlayerPlaced`, so that the client watches around the new place even when it is
 /// far from the camera). The script teleports six times and each message is 45 bytes: +270, 7,183,468 to 7,183,738; the saved world is the same.
 /// All three together (the slide, the command, the teleports): 7,183,468 + 1,478 + 29 + 270 = 7,185,245 bytes.
+/// Docking, part 1 (2026-10-22): the engine declares three more block properties (`engine:marked_face`, `engine:mark_color`, `engine:docking_face`), and the welcome carries them in
+/// the package's schema: 432 bytes, measured by encoding the three declarations alone (not assumed), 7,185,245 to 7,185,677. The saved world is the same, and no message changed, so the protocol
+/// version stays 6.
+/// Docking, part 2 (2026-10-22): Cave has a block more, the creative-only dev docking port. The welcome grows by 395 bytes, 7,185,677 to 7,186,072: the package by 364 (the block's
+/// definition 207, its entry 32 and the declaration of the property `voxunami_cave:creative_only` 125, measured by encoding each alone) and, read and not measured separately, 31
+/// for its item (the 30 characters of its identifier and a length). The saved world changes too, as a world file lists the blocks of its game.
 const PINNED: (u64, usize, u64) = (
-    10_421_932_796_118_103_930,
-    7_185_245,
-    15_753_024_505_422_231_765,
+    4_176_588_984_324_657_272,
+    7_186_072,
+    11_848_533_088_863_063_950,
 );
