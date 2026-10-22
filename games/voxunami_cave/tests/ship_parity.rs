@@ -213,3 +213,48 @@ fn a_player_can_change_a_block_within_reach_and_not_beyond_it_in_the_terrain_and
         );
     }
 }
+
+/// The light a lamp makes after the world's light is changed to another scheme, read at some offsets in every channel the lights use: the classic
+/// channel and the first scales of the multiscale one.
+fn light_after_changing_the_scheme(place: Place) -> Vec<u32> {
+    let content = CaveContent::new();
+    let mut scene = Scene::new();
+    let mut player = scene.rig.join([40.0, 232.0, 40.0], 0.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    let site = Site::new(&mut scene, place, [32, 224, 32]);
+    let mut blocks: Vec<([i64; 3], u32)> = Vec::new();
+    for x in 0..12 {
+        for z in 0..12 {
+            blocks.push(([x, 0, z], content.blocks.stone));
+        }
+    }
+    blocks.push(([6, 2, 6], content.blocks.lamp));
+    site.set(&mut scene, content.block_channel(), blocks);
+    tick_and_follow(&mut scene, &mut player, 30);
+    // The light the world has is changed: every light there is is cleared, and the new one looks at every lamp.
+    player.send_command("/light multiscale 4");
+    tick_and_follow(&mut scene, &mut player, 3);
+    let replies = player.take_command_replies();
+    assert!(
+        replies
+            .iter()
+            .any(|reply| reply.starts_with("the light is now")),
+        "the light was changed: {replies:?}"
+    );
+    tick_and_follow(&mut scene, &mut player, 30);
+    let offsets = [[6, 3, 6], [7, 2, 6], [6, 2, 9], [2, 2, 6], [6, 6, 6]];
+    let mut found = site.read(&mut scene, content.light_channel(), &offsets);
+    for scale in 0..4 {
+        found.extend(site.read(&mut scene, content.scale_channel(scale), &offsets));
+    }
+    found
+}
+
+#[test]
+fn changing_the_light_of_the_world_changes_it_in_a_ship_as_in_the_terrain() {
+    // (Changing the light cleared and re-seeded the terrain's bricks and never a ship's, so a ship kept the old light and none of the new.)
+    let terrain = light_after_changing_the_scheme(Place::Terrain);
+    let ship = light_after_changing_the_scheme(Place::Ship);
+    assert!(terrain.iter().any(|light| *light > 0), "{terrain:?}");
+    assert_eq!(ship, terrain);
+}

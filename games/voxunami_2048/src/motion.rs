@@ -22,12 +22,12 @@
 //! A block that is pushed along by a row moves once and does not become a mover, but if it already
 //! was one it stays one, from its new place.
 //!
-//! A block moves within its level: a world has several, and blocks of different levels never meet.
+//! A block moves within its grid (the terrain of a level or a ship): a world has several, and blocks of different grids never meet.
 //!
 //! The rules see the world only through [`BlockField`], so they run the same on a server's world and
 //! on the plain maps the tests use.
 
-use voxel_space::{FaceDirection, LevelIndex, VoxelCoordinate};
+use voxel_space::{FaceDirection, GridId, VoxelCoordinate};
 
 use crate::material::PUSH_LIMIT;
 use crate::numbered_block::NumberedBlock;
@@ -44,17 +44,17 @@ pub enum Occupant {
 
 /// The voxels of a world, as far as moving blocks need to know.
 pub trait BlockField {
-    fn occupant(&mut self, level: LevelIndex, at: VoxelCoordinate) -> Occupant;
+    fn occupant(&mut self, grid: GridId, at: VoxelCoordinate) -> Occupant;
 
     /// Puts a block at a voxel, or empties it. Only called for voxels that were just seen to be
     /// empty or to hold a block.
-    fn place(&mut self, level: LevelIndex, at: VoxelCoordinate, block: Option<NumberedBlock>);
+    fn place(&mut self, grid: GridId, at: VoxelCoordinate, block: Option<NumberedBlock>);
 }
 
-/// A block that is moving. The block itself is in the world, at `position` in `level`.
+/// A block that is moving. The block itself is in the world, at `position` in `grid`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Mover {
-    pub level: LevelIndex,
+    pub grid: GridId,
     pub position: VoxelCoordinate,
     pub direction: FaceDirection,
     /// The tool that pushed the block, which decides what it does to the blocks it meets.
@@ -97,22 +97,22 @@ impl Movers {
         self.movers.is_empty()
     }
 
-    /// Pushes the block at `position` of `level` toward `direction` with `tool`, for the full range
+    /// Pushes the block at `position` of `grid` toward `direction` with `tool`, for the full range
     /// of its material. A block that is already moving is pushed anew (with the new direction and
     /// tool), keeping its place in the order. Returns whether there was a block to push.
     pub fn push_block(
         &mut self,
         field: &mut impl BlockField,
-        level: LevelIndex,
+        grid: GridId,
         position: VoxelCoordinate,
         direction: FaceDirection,
         tool: Tool,
     ) -> bool {
-        let Occupant::Block(block) = field.occupant(level, position) else {
+        let Occupant::Block(block) = field.occupant(grid, position) else {
             return false;
         };
         let pushed = Mover {
-            level,
+            grid,
             position,
             direction,
             tool,
@@ -121,7 +121,7 @@ impl Movers {
         match self
             .movers
             .iter_mut()
-            .find(|mover| mover.level == level && mover.position == position)
+            .find(|mover| mover.grid == grid && mover.position == position)
         {
             Some(moving) => *moving = pushed,
             None => self.movers.push(pushed),
@@ -149,7 +149,7 @@ impl Movers {
 /// world. `first` is the voxel just ahead of the pushing block, and holds a block.
 fn row_to_push(
     field: &mut impl BlockField,
-    level: LevelIndex,
+    grid: GridId,
     first: VoxelCoordinate,
     direction: FaceDirection,
 ) -> Option<(Vec<(VoxelCoordinate, NumberedBlock)>, VoxelCoordinate)> {
@@ -157,7 +157,7 @@ fn row_to_push(
     let mut row = Vec::new();
     let mut cursor = first;
     loop {
-        match field.occupant(level, cursor) {
+        match field.occupant(grid, cursor) {
             Occupant::Block(block) => {
                 // The pushing block is one of the blocks that move.
                 if row.len() + 1 >= PUSH_LIMIT as usize {
@@ -182,7 +182,7 @@ fn step(
     let mover = movers[index];
     // A mover that finished earlier this tick, or whose block something other than this program
     // took away: nothing is moving any more.
-    let Occupant::Block(block) = field.occupant(mover.level, mover.position) else {
+    let Occupant::Block(block) = field.occupant(mover.grid, mover.position) else {
         return false;
     };
     let Some(steps_left) = mover.steps_left.checked_sub(1) else {
@@ -193,25 +193,25 @@ fn step(
     let ahead = mover
         .position
         .checked_offset(dx, dy, dz)
-        .map(|target| (target, field.occupant(mover.level, target)));
+        .map(|target| (target, field.occupant(mover.grid, target)));
     let mut can_advance = false;
     match ahead {
         Some((_, Occupant::Empty)) => can_advance = true,
         Some((target, Occupant::Block(struck))) => {
             match mover.tool.combine(block.number(), struck.number()) {
                 Some(combination) => {
-                    field.place(mover.level, mover.position, None);
+                    field.place(mover.grid, mover.position, None);
                     match combination {
                         Combination::Becomes(number) => {
                             let made = NumberedBlock::new(struck.material, number);
-                            field.place(mover.level, target, Some(made));
+                            field.place(mover.grid, target, Some(made));
                             merges.push(made);
                         }
                         Combination::Vanish => {
-                            field.place(mover.level, target, None);
+                            field.place(mover.grid, target, None);
                             // The struck block is gone, and if it was moving, so is its motion.
                             for other in movers.iter_mut() {
-                                if other.level == mover.level && other.position == target {
+                                if other.grid == mover.grid && other.position == target {
                                     other.steps_left = 0;
                                 }
                             }
@@ -221,16 +221,16 @@ fn step(
                 }
                 None if block.material.motion().pushes => {
                     if let Some((row, end)) =
-                        row_to_push(field, mover.level, target, mover.direction)
+                        row_to_push(field, mover.grid, target, mover.direction)
                     {
                         // Each block of the row moves into the place of the next, the last one
                         // into the empty voxel at the end; the first one's place is the pushing
                         // block's next.
                         let mut into = end;
                         for &(from, pushed) in row.iter().rev() {
-                            field.place(mover.level, into, Some(pushed));
+                            field.place(mover.grid, into, Some(pushed));
                             for other in movers.iter_mut() {
-                                if other.level == mover.level && other.position == from {
+                                if other.grid == mover.grid && other.position == from {
                                     other.position = into;
                                 }
                             }
@@ -249,8 +249,8 @@ fn step(
             .position
             .checked_offset(dx, dy, dz)
             .expect("the voxel ahead was just seen");
-        field.place(mover.level, mover.position, None);
-        field.place(mover.level, target, Some(block));
+        field.place(mover.grid, mover.position, None);
+        field.place(mover.grid, target, Some(block));
         movers[index].position = target;
     } else if block.material.motion().bounces {
         movers[index].direction = mover.direction.opposite();
@@ -265,20 +265,20 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     use proptest::prelude::*;
-    use voxel_space::VOXEL_COORDINATE_MAXIMUM;
+    use voxel_space::{LevelIndex, VOXEL_COORDINATE_MAXIMUM};
 
     use super::*;
     use crate::material::{COASTING_RANGE, Material, PUSH_LIMIT};
 
     #[derive(Default)]
     struct TestField {
-        blocks: HashMap<(LevelIndex, VoxelCoordinate), NumberedBlock>,
-        obstacles: HashSet<(LevelIndex, VoxelCoordinate)>,
+        blocks: HashMap<(GridId, VoxelCoordinate), NumberedBlock>,
+        obstacles: HashSet<(GridId, VoxelCoordinate)>,
     }
 
     impl BlockField for TestField {
-        fn occupant(&mut self, level: LevelIndex, at: VoxelCoordinate) -> Occupant {
-            let at = (level, at);
+        fn occupant(&mut self, grid: GridId, at: VoxelCoordinate) -> Occupant {
+            let at = (grid, at);
             if self.obstacles.contains(&at) {
                 Occupant::Obstacle
             } else {
@@ -288,8 +288,8 @@ mod tests {
             }
         }
 
-        fn place(&mut self, level: LevelIndex, at: VoxelCoordinate, block: Option<NumberedBlock>) {
-            let at = (level, at);
+        fn place(&mut self, grid: GridId, at: VoxelCoordinate, block: Option<NumberedBlock>) {
+            let at = (grid, at);
             match block {
                 Some(block) => self.blocks.insert(at, block),
                 None => self.blocks.remove(&at),
@@ -303,14 +303,14 @@ mod tests {
             for &((x, y, z), block) in blocks {
                 field
                     .blocks
-                    .insert((LevelIndex::MAIN, VoxelCoordinate::new(x, y, z)), block);
+                    .insert((GridId::MAIN, VoxelCoordinate::new(x, y, z)), block);
             }
             field
         }
 
         fn at(&self, x: i64, y: i64, z: i64) -> Option<NumberedBlock> {
             self.blocks
-                .get(&(LevelIndex::MAIN, VoxelCoordinate::new(x, y, z)))
+                .get(&(GridId::MAIN, VoxelCoordinate::new(x, y, z)))
                 .copied()
         }
 
@@ -357,7 +357,7 @@ mod tests {
         let mut movers = Movers::new();
         assert!(movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveZ,
             Tool::Double
@@ -383,7 +383,7 @@ mod tests {
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
             Tool::Double,
@@ -402,7 +402,7 @@ mod tests {
     fn a_row_that_cannot_move_stays_where_it_is() {
         // The row ends at an obstacle.
         let mut field = TestField::with(&[((0, 0, 0), stone(1)), ((1, 0, 0), stone(2))]);
-        field.obstacles.insert((LevelIndex::MAIN, at(2, 0, 0)));
+        field.obstacles.insert((GridId::MAIN, at(2, 0, 0)));
         assert_eq!(push_origin_block(&mut field, Tool::Double), []);
         assert_eq!(field.at(0, 0, 0), Some(stone(1)));
         assert_eq!(field.at(1, 0, 0), Some(stone(2)));
@@ -413,7 +413,7 @@ mod tests {
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(edge - 1, 0, 0),
             FaceDirection::PositiveX,
             Tool::Double,
@@ -500,7 +500,7 @@ mod tests {
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
             Tool::Double,
@@ -517,14 +517,14 @@ mod tests {
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
             Tool::Double,
         );
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(1, 0, 0),
             FaceDirection::PositiveY,
             Tool::Double,
@@ -536,7 +536,7 @@ mod tests {
         assert_eq!(
             movers.as_slice(),
             [Mover {
-                level: LevelIndex::MAIN,
+                grid: GridId::MAIN,
                 position: at(2, 1, 0),
                 direction: FaceDirection::PositiveY,
                 tool: Tool::Double,
@@ -547,7 +547,7 @@ mod tests {
 
     #[test]
     fn rows_are_pushed_within_their_level() {
-        let second = LevelIndex::new(1);
+        let second = GridId::root(LevelIndex::new(1));
         let mut field = TestField::with(&[((0, 0, 0), stone(1)), ((1, 0, 0), stone(2))]);
         field.blocks.insert((second, at(0, 0, 0)), stone(3));
         field.blocks.insert((second, at(1, 0, 0)), stone(4));
@@ -555,14 +555,14 @@ mod tests {
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
             Tool::Double,
         );
         run_to_rest(&mut movers, &mut field);
-        // The main level's row moved; the second level's, which has a block at the end of the
-        // main level's row, was not in its way and did not move.
+        // The main grid's row moved; the second grid's, which has a block at the end of the
+        // main grid's row, was not in its way and did not move.
         assert_eq!(field.at(2, 0, 0), Some(stone(2)));
         assert_eq!(field.blocks.get(&(second, at(0, 0, 0))), Some(&stone(3)));
         assert_eq!(field.blocks.get(&(second, at(2, 0, 0))), Some(&stone(5)));
@@ -574,7 +574,7 @@ mod tests {
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
             Tool::Double,
@@ -593,7 +593,7 @@ mod tests {
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
             Tool::Double,
@@ -624,7 +624,7 @@ mod tests {
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
             Tool::Double,
@@ -642,7 +642,7 @@ mod tests {
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::NegativeY,
             Tool::Double,
@@ -664,7 +664,7 @@ mod tests {
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
             Tool::Double,
@@ -688,11 +688,11 @@ mod tests {
     #[test]
     fn spring_ice_bounces_off_what_is_not_a_block_and_merges_with_an_equal_one() {
         let mut field = TestField::with(&[((0, 0, 0), spring_ice(2))]);
-        field.obstacles.insert((LevelIndex::MAIN, at(1, 0, 0)));
+        field.obstacles.insert((GridId::MAIN, at(1, 0, 0)));
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
             Tool::Double,
@@ -705,7 +705,7 @@ mod tests {
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
             Tool::Double,
@@ -719,11 +719,11 @@ mod tests {
     #[test]
     fn blocks_stop_at_obstacles_and_at_the_edge_of_the_world() {
         let mut field = TestField::with(&[((0, 0, 0), ice(1))]);
-        field.obstacles.insert((LevelIndex::MAIN, at(3, 0, 0)));
+        field.obstacles.insert((GridId::MAIN, at(3, 0, 0)));
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
             Tool::Double,
@@ -736,7 +736,7 @@ mod tests {
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(edge, 0, 0),
             FaceDirection::PositiveX,
             Tool::Double,
@@ -749,18 +749,18 @@ mod tests {
     #[test]
     fn only_a_block_can_be_pushed() {
         let mut field = TestField::default();
-        field.obstacles.insert((LevelIndex::MAIN, at(1, 1, 1)));
+        field.obstacles.insert((GridId::MAIN, at(1, 1, 1)));
         let mut movers = Movers::new();
         assert!(!movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
             Tool::Double
         ));
         assert!(!movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(1, 1, 1),
             FaceDirection::PositiveX,
             Tool::Double
@@ -774,7 +774,7 @@ mod tests {
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
             Tool::Double,
@@ -784,7 +784,7 @@ mod tests {
         assert_eq!(movers.as_slice()[0].steps_left, COASTING_RANGE - 2);
         assert!(movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(2, 0, 0),
             FaceDirection::PositiveY,
             Tool::Double
@@ -803,14 +803,14 @@ mod tests {
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(1, 0, 0),
             FaceDirection::PositiveX,
             Tool::Double,
         );
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
             Tool::Double,
@@ -827,14 +827,14 @@ mod tests {
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
             Tool::Double,
         );
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(1, 0, 0),
             FaceDirection::PositiveX,
             Tool::Double,
@@ -851,14 +851,14 @@ mod tests {
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
             Tool::Double,
         );
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(1, 0, 0),
             FaceDirection::PositiveY,
             Tool::Double,
@@ -870,7 +870,7 @@ mod tests {
         assert_eq!(
             movers.as_slice(),
             [Mover {
-                level: LevelIndex::MAIN,
+                grid: GridId::MAIN,
                 position: at(1, 1, 0),
                 direction: FaceDirection::PositiveY,
                 steps_left: COASTING_RANGE - 1,
@@ -885,12 +885,12 @@ mod tests {
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
             Tool::Double,
         );
-        field.place(LevelIndex::MAIN, at(0, 0, 0), None);
+        field.place(GridId::MAIN, at(0, 0, 0), None);
         assert!(movers.advance(&mut field).is_empty());
         assert!(movers.is_empty());
         assert!(field.blocks.is_empty());
@@ -899,7 +899,7 @@ mod tests {
     #[test]
     fn saved_movers_with_no_steps_left_are_not_restored() {
         let mover = |steps_left| Mover {
-            level: LevelIndex::MAIN,
+            grid: GridId::MAIN,
             position: at(0, 0, 0),
             direction: FaceDirection::PositiveX,
             tool: Tool::Double,
@@ -911,10 +911,10 @@ mod tests {
 
     #[test]
     fn blocks_of_different_levels_never_meet_even_at_the_same_place() {
-        let second = LevelIndex::new(1);
+        let second = GridId::root(LevelIndex::new(1));
         let mut field = TestField::with(&[((0, 0, 0), ice(1)), ((2, 0, 0), stone(2))]);
-        // The same voxel positions in the second level hold other blocks, and a wall in the way
-        // of the main level's block is not a wall for the second level's.
+        // The same voxel positions in the second grid hold other blocks, and a wall in the way
+        // of the main grid's block is not a wall for the second grid's.
         field.blocks.insert((second, at(0, 0, 0)), ice(1));
         field.blocks.insert((second, at(3, 0, 0)), stone(1));
         let mut movers = Movers::new();
@@ -929,18 +929,18 @@ mod tests {
         assert_eq!(
             (ticks, merges.len()),
             (3, 1),
-            "the second level's blocks merged"
+            "the second grid's blocks merged"
         );
         assert_eq!(field.blocks.get(&(second, at(3, 0, 0))), Some(&stone(2)));
-        // The main level is as it was: the stone at x = 2 was not in the second level's way.
+        // The main grid is as it was: the stone at x = 2 was not in the second grid's way.
         assert_eq!(field.at(0, 0, 0), Some(ice(1)));
         assert_eq!(field.at(2, 0, 0), Some(stone(2)));
-        // A block pushed in one level is not moving in another, even at the same position.
+        // A block pushed in one grid is not moving in another, even at the same position.
         field.blocks.insert((second, at(0, 0, 0)), stone(3));
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::NegativeY,
             Tool::Double,
@@ -972,7 +972,7 @@ mod tests {
         let mut movers = Movers::new();
         assert!(movers.push_block(
             field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
             tool
@@ -1044,14 +1044,14 @@ mod tests {
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
             Tool::Subtract,
         );
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(1, 0, 0),
             FaceDirection::PositiveY,
             Tool::Double,
@@ -1075,14 +1075,14 @@ mod tests {
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
             Tool::Subtract,
         );
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(2, 0, 0),
             FaceDirection::NegativeX,
             Tool::Subtract,
@@ -1123,7 +1123,7 @@ mod tests {
         let mut movers = Movers::new();
         movers.push_block(
             &mut field,
-            LevelIndex::MAIN,
+            GridId::MAIN,
             at(0, 0, 0),
             FaceDirection::PositiveX,
             Tool::Double,
@@ -1152,7 +1152,7 @@ mod tests {
         for tool in [Tool::Add, Tool::Subtract] {
             movers.push_block(
                 &mut field,
-                LevelIndex::MAIN,
+                GridId::MAIN,
                 at(0, 0, 0),
                 FaceDirection::PositiveX,
                 tool,
@@ -1181,12 +1181,12 @@ mod tests {
         ) {
             let mut field = TestField::default();
             for (x, y, z, material, number) in blocks {
-                field.blocks.insert((LevelIndex::MAIN, at(x, y, z)), NumberedBlock::new(material, number));
+                field.blocks.insert((GridId::MAIN, at(x, y, z)), NumberedBlock::new(material, number));
             }
             let mut movers = Movers::new();
             for (x, y, z, direction) in pushes {
                 let direction = FaceDirection::from_index(direction).unwrap();
-                movers.push_block(&mut field, LevelIndex::MAIN, at(x, y, z), direction, Tool::Subtract);
+                movers.push_block(&mut field, GridId::MAIN, at(x, y, z), direction, Tool::Subtract);
             }
             let (mut total, mut count) = (field.total_value(), field.blocks.len());
             for _ in 0..COASTING_RANGE {
@@ -1195,7 +1195,7 @@ mod tests {
                 prop_assert!(field.blocks.len() <= count);
                 (total, count) = (field.total_value(), field.blocks.len());
                 for mover in movers.as_slice() {
-                    prop_assert!(field.blocks.contains_key(&(mover.level, mover.position)));
+                    prop_assert!(field.blocks.contains_key(&(mover.grid, mover.position)));
                     prop_assert_eq!(mover.tool, Tool::Subtract);
                 }
             }
@@ -1214,23 +1214,23 @@ mod tests {
         ) {
             let mut field = TestField::default();
             for (x, y, z, material, exponent) in blocks {
-                field.blocks.insert((LevelIndex::MAIN, at(x, y, z)), NumberedBlock::new(material, 1 << exponent));
+                field.blocks.insert((GridId::MAIN, at(x, y, z)), NumberedBlock::new(material, 1 << exponent));
             }
             let (starting_value, starting_count) = (field.total_value(), field.blocks.len());
             let mut movers = Movers::new();
             for (x, y, z, direction) in pushes {
                 let direction = FaceDirection::from_index(direction).unwrap();
-                movers.push_block(&mut field, LevelIndex::MAIN, at(x, y, z), direction, tool);
+                movers.push_block(&mut field, GridId::MAIN, at(x, y, z), direction, tool);
             }
             let mut merge_count = 0;
             for _ in 0..COASTING_RANGE {
                 merge_count += movers.advance(&mut field).len();
                 prop_assert_eq!(field.total_value(), starting_value);
                 prop_assert_eq!(field.blocks.len(), starting_count - merge_count);
-                let positions: HashSet<_> = movers.as_slice().iter().map(|mover| (mover.level, mover.position)).collect();
+                let positions: HashSet<_> = movers.as_slice().iter().map(|mover| (mover.grid, mover.position)).collect();
                 prop_assert_eq!(positions.len(), movers.len());
                 for mover in movers.as_slice() {
-                    prop_assert!(field.blocks.contains_key(&(mover.level, mover.position)));
+                    prop_assert!(field.blocks.contains_key(&(mover.grid, mover.position)));
                     prop_assert!(mover.steps_left > 0);
                 }
             }

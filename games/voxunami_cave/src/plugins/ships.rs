@@ -15,7 +15,7 @@ use plugin_host::{
     Argument, Arguments, CommandSpec, HandlerSpec, Phase, PlayerLeft, Plugin, Registrar, SystemSpec,
 };
 use protocol::ClientId;
-use server::{LogoutPolicy, ServerWorld};
+use server::{GridView, LogoutPolicy, ServerWorld};
 use voxel_grid::ChannelIndex;
 use voxel_space::{
     BrickCoordinate, GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate, WorldPosition,
@@ -165,16 +165,20 @@ impl Ships {
         collisions: &BlockCollisions,
         voxel: VoxelCoordinate,
     ) -> Option<bool> {
-        let block = world.voxel(level, self.block_channel, voxel).ok()?;
-        let state = world.voxel(level, self.state_channel, voxel).ok()?;
+        let mut terrain = world.grid(GridId::root(level)).ok()?;
+        let block = terrain.get(self.block_channel, voxel).ok()?;
+        let state = terrain.get(self.state_channel, voxel).ok()?;
         Some(collisions.of(block, state) != Collision::Empty)
     }
 
     /// Whether the block at a voxel is not what the terrain made there: someone built it.
     fn built(&self, world: &mut ServerWorld, level: LevelIndex, voxel: VoxelCoordinate) -> bool {
+        let Ok(mut terrain) = world.grid(GridId::root(level)) else {
+            return false;
+        };
         match (
-            world.voxel(level, self.block_channel, voxel),
-            world.generated_voxel(level, self.block_channel, voxel),
+            terrain.get(self.block_channel, voxel),
+            terrain.generated(self.block_channel, voxel),
         ) {
             (Ok(now), Ok(made)) => now != made,
             _ => false,
@@ -219,7 +223,7 @@ impl Ships {
             return "that was not built by anyone; /ship create all takes what is there, ground and all"
                 .to_owned();
         }
-        match world.detach_blocks(level, &blocks) {
+        match world.detach_blocks(GridId::root(level), &blocks) {
             Ok(ship) => format!(
                 "made ship {} of {} blocks (it falls unless you /ship hold on)",
                 number(ship),

@@ -1,6 +1,7 @@
 //! Ships in files, as a server sees them: a save writes a file for each ship that is in memory and the world file names them; a server made
 //! from that world with those files brings the ships back, and the rules hear of what is in them as if it had just been made.
 
+use server::GridView;
 use std::collections::BTreeSet;
 use std::io;
 use std::sync::{Arc, Mutex};
@@ -189,7 +190,9 @@ fn a_ship_brought_in_is_announced_to_the_rules_as_voxels_that_were_just_made_in_
             2 => {
                 // An edit of the terrain is heard of first, and the ship after it.
                 world
-                    .set_voxel(LevelIndex::MAIN, block, VoxelCoordinate::new(1, 2, 3), dirt)
+                    .grid(GridId::root(LevelIndex::MAIN))
+                    .unwrap()
+                    .set(block, VoxelCoordinate::new(1, 2, 3), dirt)
                     .unwrap();
                 world.load_ship(id).unwrap();
                 hearing.lock().unwrap().push(world.take_changes());

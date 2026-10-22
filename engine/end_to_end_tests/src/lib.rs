@@ -242,7 +242,12 @@ impl Fixture {
                     .layout()
                     .channel_index(&id("core:block"))
                     .unwrap();
-                if world.set_voxel(level, channel, at, raw) == Ok(true) {
+                if world
+                    .grid(GridId::root(level))
+                    .unwrap()
+                    .set(channel, at, raw)
+                    == Ok(true)
+                {
                     let mut announcement = ByteWriter::new();
                     announcement.write_signed_varint(at.x());
                     announcement.write_signed_varint(at.y());
@@ -306,7 +311,9 @@ impl Fixture {
                         );
                         let block = if count % 10 == 0 { marble } else { glass };
                         world
-                            .set_voxel(LevelIndex::MAIN, channel, at, block)
+                            .grid(GridId::root(LevelIndex::MAIN))
+                            .unwrap()
+                            .set(channel, at, block)
                             .expect("flat terrain is always available");
                     }
                     if count % 10 == 0 {

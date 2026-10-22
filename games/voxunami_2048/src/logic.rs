@@ -13,9 +13,9 @@ use namespaced_id::NamespacedId;
 use player_presence::{Presence, SharedPresence};
 use plugin_host::{HandlerSpec, Phase, PlayerJoined, Plugin, Registrar, SaveScope, SystemSpec};
 use protocol::{ClientId, Message};
-use server::{Audience, ServerWorld};
+use server::{Audience, GridView, ServerWorld};
 use voxel_grid::ChannelIndex;
-use voxel_space::{LevelIndex, VoxelCoordinate};
+use voxel_space::{GridId, VoxelCoordinate};
 use world_storage::{Section, WorldData};
 
 use crate::content::{Content2048, landscape_id};
@@ -37,10 +37,13 @@ struct WorldField<'a> {
 }
 
 impl BlockField for WorldField<'_> {
-    fn occupant(&mut self, level: LevelIndex, at: VoxelCoordinate) -> Occupant {
-        match self.world.voxel(level, self.block_channel, at) {
+    fn occupant(&mut self, grid: GridId, at: VoxelCoordinate) -> Occupant {
+        let Ok(mut view) = self.world.grid(grid) else {
+            return Occupant::Obstacle;
+        };
+        match view.get(self.block_channel, at) {
             Ok(AIR) => Occupant::Empty,
-            Ok(id) => match self.world.voxel(level, self.number_channel, at) {
+            Ok(id) => match view.get(self.number_channel, at) {
                 Ok(number) => NumberedBlock::from_voxel(id, number)
                     .map_or(Occupant::Obstacle, Occupant::Block),
                 Err(_) => Occupant::Obstacle,
@@ -49,17 +52,17 @@ impl BlockField for WorldField<'_> {
         }
     }
 
-    fn place(&mut self, level: LevelIndex, at: VoxelCoordinate, block: Option<NumberedBlock>) {
-        // The voxel was just read, so the level and the terrain there are available. Air has no
-        // number, so emptying a voxel resets that too.
-        let _ = self.world.set_voxel(
-            level,
+    fn place(&mut self, grid: GridId, at: VoxelCoordinate, block: Option<NumberedBlock>) {
+        // The voxel was just read, so the grid and the voxel are there. Air has no number, so emptying a voxel resets that too.
+        let Ok(mut view) = self.world.grid(grid) else {
+            return;
+        };
+        let _ = view.set(
             self.number_channel,
             at,
             block.map_or(0, NumberedBlock::state),
         );
-        let _ = self.world.set_voxel(
-            level,
+        let _ = view.set(
             self.block_channel,
             at,
             block.map_or(AIR, NumberedBlock::block_id),
@@ -87,7 +90,7 @@ impl Logic2048 {
         // A block saved in a level this world no longer has is not moving any more.
         let movers = saved.movers.into_iter().filter_map(|saved| {
             Some(Mover {
-                level: world.level_index(&saved.level)?,
+                grid: GridId::root(world.level_index(&saved.level)?),
                 position: saved.position,
                 direction: saved.direction,
                 tool: saved.tool,
@@ -117,7 +120,8 @@ impl Logic2048 {
         if pose.distance_to_voxel(request.voxel) > REACH {
             return;
         }
-        let level = presence.level_of(world.data(), client);
+        // The terrain of the level the player is in (the request names a voxel, not a grid).
+        let grid = GridId::root(presence.level_of(world.data(), client));
         let mut field = WorldField {
             world,
             block_channel: self.block_channel,
@@ -125,7 +129,7 @@ impl Logic2048 {
         };
         if self.movers.push_block(
             &mut field,
-            level,
+            grid,
             request.voxel,
             request.direction,
             request.tool,
@@ -175,7 +179,11 @@ impl Logic2048 {
             .iter()
             .filter_map(|mover| {
                 Some(SavedMover {
-                    level: self.level_ids.get(mover.level.get() as usize)?.clone(),
+                    // (A block that is moving in a ship is not saved: the ship's file does not hold it.)
+                    level: self
+                        .level_ids
+                        .get(mover.grid.root_level()?.get() as usize)?
+                        .clone(),
                     position: mover.position,
                     direction: mover.direction,
                     tool: mover.tool,

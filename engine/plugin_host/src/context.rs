@@ -6,7 +6,7 @@ use namespaced_id::NamespacedId;
 use protocol::{ClientId, EntityId, Message, Tick};
 use server::{AccessError, Audience, GridView, ServerGrid, ServerWorld};
 use voxel_grid::ChannelIndex;
-use voxel_space::{EntityPose, GridId, VoxelCoordinate, WorldPosition};
+use voxel_space::{BrickCoordinate, EntityPose, GridId, VoxelCoordinate, WorldPosition};
 
 use crate::event::{EntityDespawned, EntitySpawned, Event, Verdict};
 use crate::registry::{HandlerKind, Registry};
@@ -375,6 +375,24 @@ impl GridView for CheckedGrid<'_> {
     ) -> Result<bool, AccessError> {
         self.check(channel, true);
         self.inner.set(channel, at, value)
+    }
+
+    fn uniform_value(
+        &mut self,
+        channel: ChannelIndex,
+        brick: BrickCoordinate,
+    ) -> Result<Option<u32>, AccessError> {
+        self.check(channel, false);
+        self.inner.uniform_value(channel, brick)
+    }
+
+    fn generated(
+        &mut self,
+        channel: ChannelIndex,
+        at: VoxelCoordinate,
+    ) -> Result<u32, AccessError> {
+        self.check(channel, false);
+        self.inner.generated(channel, at)
     }
 }
 

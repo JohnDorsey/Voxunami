@@ -6,9 +6,9 @@ use std::collections::HashMap;
 
 use block_models::{BlockTable, PropertyHandle};
 use physics::{BrickHint, Collision, CollisionSource};
-use server::ServerWorld;
+use server::{GridView, ServerWorld};
 use voxel_grid::{ChannelIndex, Grid};
-use voxel_space::{BrickCoordinate, LevelIndex, VoxelCoordinate};
+use voxel_space::{BrickCoordinate, GridId, LevelIndex, VoxelCoordinate};
 
 /// What each block's shape means to something moving through it, worked out once: the whole cube, the boxes in it, or nothing (air, and
 /// the blocks a game says can be passed through, such as flames). The sources below share one, so a body that meets several ships at
@@ -69,9 +69,12 @@ pub struct WorldTerrain<'a> {
 
 impl CollisionSource for WorldTerrain<'_> {
     fn collision_at(&mut self, voxel: VoxelCoordinate) -> Collision {
+        let Ok(mut terrain) = self.world.grid(GridId::root(self.level)) else {
+            return Collision::Full;
+        };
         let (Ok(block), Ok(state)) = (
-            self.world.voxel(self.level, self.block_channel, voxel),
-            self.world.voxel(self.level, self.state_channel, voxel),
+            terrain.get(self.block_channel, voxel),
+            terrain.get(self.state_channel, voxel),
         ) else {
             return Collision::Full;
         };
@@ -79,19 +82,16 @@ impl CollisionSource for WorldTerrain<'_> {
     }
 
     fn brick_hint(&mut self, brick: BrickCoordinate) -> BrickHint {
-        let Ok(Some(block)) = self
-            .world
-            .uniform_value(self.level, self.block_channel, brick)
-        else {
+        let Ok(mut terrain) = self.world.grid(GridId::root(self.level)) else {
+            return BrickHint::Unknown;
+        };
+        let Ok(Some(block)) = terrain.uniform_value(self.block_channel, brick) else {
             return BrickHint::Unknown;
         };
         if block == self.air {
             return BrickHint::Empty;
         }
-        match self
-            .world
-            .uniform_value(self.level, self.state_channel, brick)
-        {
+        match terrain.uniform_value(self.state_channel, brick) {
             Ok(Some(state)) => match self.collisions.of(block, state) {
                 Collision::Empty => BrickHint::Empty,
                 Collision::Full => BrickHint::Solid,

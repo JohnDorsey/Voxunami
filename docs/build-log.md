@@ -796,6 +796,15 @@ Rules aboard (2026-10-22; the owner set fire to a ship they were flying and it d
   is first looked at, which a loaded machine can move; so the scenario with a single fire failed now and then on either place. It now has nine fires, and passed eight runs in a row on Linux with every core busy.
 - Observed, not investigated: the light of Cave fades slowly after a lamp is taken away (63 to 43 to 21 over 400 ticks, in the terrain as well as on a ship). It looks like how that light scheme works.
 
+The level-keyed voxel calls are removed (2026-10-22; the owner: pre-alpha, no modders yet, be bold). `ServerWorld::{voxel, set_voxel, uniform_value, generated_voxel}` are now crate-private
+(`root_voxel` and so on: the root-grid half of `GridView`), and `GridView` gained `uniform_value` and `generated`, which a ship answers too (a brick nobody made is the default throughout; nothing generates
+a ship). `ServerWorld::grid` of a level that is not there says `NoSuchLevel`, as the old calls did. `detach_blocks` takes a `GridId`: out of terrain it begins at rest as before, out of a ship the new ship is
+where the blocks were, turned as the ship is, going as the ship was at their middle (so docking can undock later). The 2048 board (`motion.rs`, `logic.rs`) is keyed by `GridId`; Eels' arena and Cave's
+callers (ship creation, the bodies' terrain, the arrival look, the light-model switch) use `world.grid(..)`.
+- *Found on the way:* switching Cave's light model cleared and re-seeded light only in the terrain's bricks, never in a ship's (the same family as the fire). It reaches ships in memory now.
+- Tests: the existing ones, rewritten by a tool for the calls (`regrid.py`, a scratch file) and by hand where a test expected an error for a level that is not there; two new for `detach_blocks` out of a
+  ship and for `uniform_value` and `generated` on a ship. No pin moved. Windows {WINDOWS} and Linux {LINUX} tests pass; fmt and clippy clean.
+
 Planning note, 2026-10-21 (the owner asked for the two open ship items to be put in the plan; they became steps 32j and 32k, before splitting): the claim in the earlier
 entries that ships "have no continuous collision detection against terrain" was a guess about the cause, and measuring it showed the cause is another. In the `physics` crate
 alone (a throwaway test, removed), cubes of 1 and 4 and rafts of 10 by 10 were dropped at set speeds on a slab of terrain: with the 3 solver steps a tick has, a floor of 1

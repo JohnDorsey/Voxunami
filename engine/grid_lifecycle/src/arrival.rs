@@ -9,9 +9,9 @@ use std::collections::{BTreeSet, HashMap};
 
 use grid_bodies::collision::{BlockCollisions, ShipHull};
 use physics::Collision;
-use server::ServerWorld;
+use server::{GridView, ServerWorld};
 use voxel_grid::{ChannelIndex, Grid};
-use voxel_space::{GridPose, LevelIndex, LocalVoxelIndex, VoxelCoordinate, WorldPosition};
+use voxel_space::{GridId, GridPose, LevelIndex, LocalVoxelIndex, VoxelCoordinate, WorldPosition};
 use world_storage::MovingGrid;
 
 /// How far a ship is moved to find a place where it fits, at most, in voxels.
@@ -211,12 +211,15 @@ impl<'a> Obstacles<'a> {
         if let Some(known) = self.terrain.get(&voxel) {
             return known.clone();
         }
-        let found = match (
-            self.world.voxel(self.level, self.block_channel, voxel),
-            self.world.voxel(self.level, self.state_channel, voxel),
-        ) {
-            (Ok(block), Ok(state)) => self.collisions.of(block, state),
-            _ => Collision::Full,
+        let found = match self.world.grid(GridId::root(self.level)) {
+            Ok(mut terrain) => match (
+                terrain.get(self.block_channel, voxel),
+                terrain.get(self.state_channel, voxel),
+            ) {
+                (Ok(block), Ok(state)) => self.collisions.of(block, state),
+                _ => Collision::Full,
+            },
+            Err(_) => Collision::Full,
         };
         self.terrain.insert(voxel, found.clone());
         found
@@ -285,12 +288,14 @@ pub fn break_terrain(
     else {
         return 0;
     };
+    let Ok(mut terrain) = world.grid(GridId::root(level)) else {
+        return 0;
+    };
     let mut changed = 0;
     for &voxel in voxels {
         let mut any = false;
         for channel in layout.channel_indices() {
-            if let Ok(true) = world.set_voxel(level, channel, voxel, layout.default_value(channel))
-            {
+            if let Ok(true) = terrain.set(channel, voxel, layout.default_value(channel)) {
                 any = true;
             }
         }

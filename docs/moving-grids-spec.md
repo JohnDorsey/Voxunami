@@ -284,9 +284,10 @@ budget of bricks is not in the picture, nor are those aboard it; one frame per l
 adds works on board any ship with no effort from its author. It holds by construction for the part of a rule that is about one grid, and by discipline for the part that asks about the world:
 - *A rule that is about one grid* (what burns next to a fire, how light spreads, what a block does to its neighbours) works aboard if it names voxels as `(GridId, VoxelCoordinate)` and reads and
   writes them through `context.grid(id)` / `world.grid(id)`. The pending work (`ActiveVoxels`), the change events (`ChannelsChanged`) and the random numbers (`voxel_random`) are all keyed by grid, so
-  the rule never has to know it is aboard. **Do not use the calls keyed by level** (`ServerWorld::voxel(level, ..)`, `set_voxel(level, ..)`, `GridId::root(level)` or `LevelIndex::MAIN` in rule
-  code): they are the root grid of the level and nothing else, and a rule written with them silently leaves ships out. (2048 and Eels are written so; they have no ships, and nothing in them is
-  checked for it.)
+  the rule never has to know it is aboard. **There is no call keyed by level** (the owner removed them, 2026-10-22): `ServerWorld::grid(GridId)` is the only way to read or write voxels, and the terrain
+  of a level is `GridId::root(level)` (`GridId::MAIN` for the main level), a grid like any other. `GridView` has `get`, `set`, `uniform_value` (is a brick one value?) and `generated` (what the
+  terrain generator made there; the channel's default for a ship). A rule takes the `GridId` it is given by an event or a pending voxel and passes it on; a rule that is about the terrain of a
+  particular level (Eels' arena, 2048's board) says `GridId::MAIN` or `GridId::root(level)` where it starts, and keys everything after by grid, as 2048's blocks and movers now are.
 - *A question about the world* (is a player near this voxel? how high is it? is it under the sky?) needs the voxel's place in its level, which for a ship is the voxel turned and placed by its pose.
   The engine answers it in one place for every grid: `WorldData::grid_frame(grid)` (a `GridFrame`: the terrain of a level, or a ship with its level and pose),
   `WorldData::voxel_in_world(grid, voxel)`, `PlayerPose::distance_to_voxel_of`, and for a rule that looks at many voxels a tick `PlayerReach::new(&presence, world)` and `reach.near(grid, voxel, distance)`.

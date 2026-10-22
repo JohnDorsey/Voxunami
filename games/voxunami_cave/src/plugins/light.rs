@@ -12,7 +12,7 @@ use plugin_host::{
     SystemSpec,
 };
 use protocol::{ClientId, Message};
-use server::{Audience, ServerWorld};
+use server::{Audience, GridView, ServerWorld};
 use voxel_space::{GridId, LocalVoxelIndex, VoxelCoordinate};
 
 use super::adapters::{CaveChannels, WorldLight, WorldScaledLight};
@@ -79,25 +79,33 @@ impl LightState {
         channels.extend(self.channels.scales.iter().copied());
         let mut emitters = Vec::new();
         let mut lit = Vec::new();
-        for (level, _, data) in context.world().data().levels() {
-            for (brick, contents) in data.overrides.bricks() {
+        // The terrain of every level, and every ship that is in memory (a ship in a file has its light made again when it comes out).
+        let data = context.world().data();
+        let grids = data
+            .levels()
+            .map(|(level, _, data)| (GridId::root(level), &data.overrides))
+            .chain(data.grids().iter().map(|(id, ship)| (id, &ship.voxels)));
+        for (grid, voxels) in grids {
+            for (brick, contents) in voxels.bricks() {
                 for local in LocalVoxelIndex::all() {
                     let voxel = brick.voxel_at(local);
                     let block = contents.get(self.channels.block, local);
                     let state = contents.get(self.channels.state, local);
                     if self.table.get_of(self.emission, block, state) > 0 {
-                        emitters.push((GridId::root(level), voxel));
+                        emitters.push((grid, voxel));
                     }
                     for &channel in &channels {
                         if contents.get(channel, local) != 0 {
-                            lit.push((level, channel, voxel));
+                            lit.push((grid, channel, voxel));
                         }
                     }
                 }
             }
         }
-        for (level, channel, voxel) in lit {
-            let _ = context.world().set_voxel(level, channel, voxel, 0);
+        for (grid, channel, voxel) in lit {
+            if let Ok(mut view) = context.world().grid(grid) {
+                let _ = view.set(channel, voxel, 0);
+            }
         }
         self.lighting = Lighting::new(self.table.clone());
         let scheme = match model {

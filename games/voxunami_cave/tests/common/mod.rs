@@ -307,8 +307,9 @@ pub fn flat_floor(scene: &mut Scene) {
             for z in 0..64 {
                 for y in 198..201 {
                     world
-                        .set_voxel(
-                            LevelIndex::MAIN,
+                        .grid(GridId::root(LevelIndex::MAIN))
+                        .unwrap()
+                        .set(
                             content.block_channel(),
                             VoxelCoordinate::new(x, y, z),
                             content.blocks.stone,
@@ -390,8 +391,9 @@ pub fn build_raft(scene: &mut Scene, x: i64, y: i64, z: i64, size: i64) {
         for across in 0..size {
             for along in 0..size {
                 world
-                    .set_voxel(
-                        LevelIndex::MAIN,
+                    .grid(GridId::root(LevelIndex::MAIN))
+                    .unwrap()
+                    .set(
                         content.block_channel(),
                         VoxelCoordinate::new(x + across, y, z + along),
                         content.blocks.stone,
@@ -456,8 +458,9 @@ pub fn block_at(scene: &mut Scene, at: [i64; 3]) -> u32 {
     let slot = Arc::clone(&found);
     scene.run(move |world| {
         let block = world
-            .voxel(
-                LevelIndex::MAIN,
+            .grid(GridId::root(LevelIndex::MAIN))
+            .unwrap()
+            .get(
                 content.block_channel(),
                 VoxelCoordinate::new(at[0], at[1], at[2]),
             )
@@ -472,8 +475,9 @@ pub fn put_stone(scene: &mut Scene, at: [i64; 3]) {
     let content = CaveContent::new();
     scene.run(move |world| {
         world
-            .set_voxel(
-                LevelIndex::MAIN,
+            .grid(GridId::root(LevelIndex::MAIN))
+            .unwrap()
+            .set(
                 content.block_channel(),
                 VoxelCoordinate::new(at[0], at[1], at[2]),
                 content.blocks.stone,

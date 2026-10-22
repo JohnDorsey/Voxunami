@@ -198,12 +198,9 @@ fn taking_blocks_from_under_a_resting_ship_or_the_ground_under_it_lets_it_sink()
         for x in 8..24 {
             for z in 8..24 {
                 world
-                    .set_voxel(
-                        LevelIndex::MAIN,
-                        content.block_channel(),
-                        VoxelCoordinate::new(x, 200, z),
-                        0,
-                    )
+                    .grid(GridId::root(LevelIndex::MAIN))
+                    .unwrap()
+                    .set(content.block_channel(), VoxelCoordinate::new(x, 200, z), 0)
                     .unwrap();
             }
         }
@@ -296,8 +293,9 @@ fn flames_are_not_in_the_way_of_a_ship() {
         for x in 0..32 {
             for z in 0..32 {
                 world
-                    .set_voxel(
-                        LevelIndex::MAIN,
+                    .grid(GridId::root(LevelIndex::MAIN))
+                    .unwrap()
+                    .set(
                         content.block_channel(),
                         VoxelCoordinate::new(x, 200, z),
                         content.blocks.fire,

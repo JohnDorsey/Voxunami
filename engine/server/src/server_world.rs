@@ -14,6 +14,7 @@ use world_storage::{
     MovingGrid, PilotLogout, ShipFiles, ShipFormat, ShipLoadError, ShipParkError, WorldData,
 };
 
+use crate::GridView;
 use crate::generated_cache::GeneratedBrickCache;
 use crate::ship_settings::ShipSettings;
 
@@ -46,6 +47,8 @@ pub enum AccessError {
 pub enum DetachError {
     #[error("there are no voxels to make a ship of")]
     NoVoxels,
+    #[error("the place the new ship would be in is outside what the world can hold")]
+    OutOfRange,
     #[error(transparent)]
     Access(#[from] AccessError),
 }
@@ -396,8 +399,9 @@ impl ServerWorld {
         self.clients.get(&client).copied()
     }
 
-    /// The value of a voxel, from the edited brick if there is one, else from the terrain generator.
-    pub fn voxel(
+    /// The value of a voxel of a level's terrain, from the edited brick if there is one, else from the terrain generator. (Rules and games read voxels
+    /// through [`GridView`](crate::GridView), which is this for the terrain of a level and the ship's own bricks for a ship.)
+    pub(crate) fn root_voxel(
         &mut self,
         level: LevelIndex,
         channel: ChannelIndex,
@@ -416,7 +420,7 @@ impl ServerWorld {
 
     /// The value a voxel has in the terrain the generator makes, whatever has been built there since: a way to tell what a player
     /// built from the ground it stands on.
-    pub fn generated_voxel(
+    pub(crate) fn root_generated_voxel(
         &mut self,
         level: LevelIndex,
         channel: ChannelIndex,
@@ -437,7 +441,7 @@ impl ServerWorld {
 
     /// The value that every voxel of a brick has in a channel, if they all have the same one: a way
     /// to know what a brick holds without looking at its voxels.
-    pub fn uniform_value(
+    pub(crate) fn root_uniform_value(
         &mut self,
         level: LevelIndex,
         channel: ChannelIndex,
@@ -458,7 +462,7 @@ impl ServerWorld {
 
     /// Sets a voxel and replicates the change to the clients watching its brick. Returns whether
     /// the voxel changed; setting it to the value it has changes and sends nothing.
-    pub fn set_voxel(
+    pub(crate) fn set_root_voxel(
         &mut self,
         level: LevelIndex,
         channel: ChannelIndex,
@@ -562,29 +566,38 @@ impl ServerWorld {
         Ok(true)
     }
 
-    /// Makes a ship of the blocks at these voxels of a level's terrain: takes everything in them out of the terrain (every channel goes
-    /// to its default there) and puts it into a new grid, which is exactly where the voxels were and not turned. The grid's origin is the
-    /// lowest corner of the box around the voxels, so its coordinates are small however far from the origin of the world it is. Nothing
-    /// changes if any voxel cannot be read.
+    /// Makes a ship of the blocks at these voxels of a grid, the terrain of a level or a ship: takes everything in them out of the grid (every
+    /// channel goes to its default there) and puts it into a new grid, which is exactly where the voxels were and turned as the grid is. The new
+    /// grid's origin is the lowest corner of the box around the voxels, so its coordinates are small however far from the origin of the world it
+    /// is. Out of a ship it goes on at the speed its blocks had (the ship's speed at their middle, and its turn); out of terrain it begins at
+    /// rest. It is not held. Nothing changes if any voxel cannot be read.
     pub fn detach_blocks(
         &mut self,
-        level: LevelIndex,
+        from: GridId,
         voxels: &[VoxelCoordinate],
     ) -> Result<GridId, DetachError> {
-        if self.data.level(level).is_none() {
-            return Err(AccessError::NoSuchLevel(level).into());
-        }
+        // Where the grid is in its level, and its layout.
+        let (level, layout) = match from.root_level() {
+            Some(level) => {
+                let data = self
+                    .data
+                    .level(level)
+                    .ok_or(AccessError::NoSuchLevel(level))?;
+                (level, Arc::clone(data.overrides.layout()))
+            }
+            None => {
+                let ship = self
+                    .data
+                    .grids()
+                    .get(from)
+                    .ok_or(AccessError::NoSuchGrid(from))?;
+                (ship.level, Arc::clone(ship.voxels.layout()))
+            }
+        };
         let voxels: BTreeSet<VoxelCoordinate> = voxels.iter().copied().collect();
         let Some(first) = voxels.first().copied() else {
             return Err(DetachError::NoVoxels);
         };
-        let layout = Arc::clone(
-            self.data
-                .level(level)
-                .expect("the level exists")
-                .overrides
-                .layout(),
-        );
         let channels: Vec<ChannelIndex> = layout.channel_indices().collect();
         let mut low = [first.x(), first.y(), first.z()];
         for voxel in &voxels {
@@ -599,30 +612,60 @@ impl ServerWorld {
         for &voxel in &voxels {
             let mut values = Vec::with_capacity(channels.len());
             for &channel in &channels {
-                values.push(self.voxel(level, channel, voxel)?);
+                values.push(self.grid(from)?.get(channel, voxel)?);
             }
             contents.push((voxel, values));
         }
         let origin = VoxelCoordinate::new(low[0], low[1], low[2]);
         let (origin_brick, origin_local) = origin.split();
-        let pose = GridPose::new(
-            WorldPosition::new(
-                origin_brick,
-                [
-                    origin_local.x() as f32,
-                    origin_local.y() as f32,
-                    origin_local.z() as f32,
-                ],
-            ),
-            Orientation::IDENTITY,
+        let origin_in_grid = WorldPosition::new(
+            origin_brick,
+            [
+                origin_local.x() as f32,
+                origin_local.y() as f32,
+                origin_local.z() as f32,
+            ],
         );
+        let (pose, linear, angular) = match self.data.grids().get(from) {
+            None => (
+                GridPose::new(origin_in_grid, Orientation::IDENTITY),
+                [0.0; 3],
+                [0.0; 3],
+            ),
+            Some(ship) => {
+                let place = ship
+                    .pose
+                    .local_to_world(origin_in_grid)
+                    .ok_or(DetachError::OutOfRange)?;
+                // The speed of the blocks that are taken: the ship's at their middle.
+                let count = voxels.len() as f64;
+                let middle = [0, 1, 2].map(|axis| {
+                    let sum: f64 = voxels
+                        .iter()
+                        .map(|v| [v.x(), v.y(), v.z()][axis] as f64 + 0.5)
+                        .sum();
+                    (sum / count) as f32
+                });
+                let linear = ship
+                    .pose
+                    .local_to_world(WorldPosition::new(BrickCoordinate::ORIGIN, middle))
+                    .map_or(ship.linear_velocity, |at| ship.velocity_at(at));
+                (
+                    GridPose::new(place, ship.pose.orientation),
+                    linear,
+                    ship.angular_velocity,
+                )
+            }
+        };
         let grid = self.create_grid(level, pose)?;
+        self.set_grid_velocity(grid, linear, angular)?;
         for (voxel, values) in contents {
             let moved =
                 VoxelCoordinate::new(voxel.x() - low[0], voxel.y() - low[1], voxel.z() - low[2]);
             for (&channel, value) in channels.iter().zip(values) {
                 self.set_moving_voxel(grid, channel, moved, value)?;
-                self.set_voxel(level, channel, voxel, layout.default_value(channel))?;
+                self.grid(from)?
+                    .set(channel, voxel, layout.default_value(channel))?;
             }
         }
         Ok(grid)
@@ -1141,12 +1184,16 @@ mod tests {
         assert_eq!(world.bricks_generated(), 0);
         for x in 0..32 {
             world
-                .voxel(LevelIndex::MAIN, channel, VoxelCoordinate::new(x, 2, 3))
+                .grid(GridId::root(LevelIndex::MAIN))
+                .unwrap()
+                .get(channel, VoxelCoordinate::new(x, 2, 3))
                 .unwrap();
         }
         assert_eq!(world.bricks_generated(), 1);
         world
-            .voxel(LevelIndex::MAIN, channel, VoxelCoordinate::new(40, 2, 3))
+            .grid(GridId::root(LevelIndex::MAIN))
+            .unwrap()
+            .get(channel, VoxelCoordinate::new(40, 2, 3))
             .unwrap();
         // The generator's own count, and the world's, are the same.
         assert_eq!(world.bricks_generated(), 2);
@@ -1156,7 +1203,9 @@ mod tests {
         );
         // A brick that is read again from the cache is not made again.
         world
-            .voxel(LevelIndex::MAIN, channel, VoxelCoordinate::new(41, 2, 3))
+            .grid(GridId::root(LevelIndex::MAIN))
+            .unwrap()
+            .get(channel, VoxelCoordinate::new(41, 2, 3))
             .unwrap();
         assert_eq!(world.bricks_generated(), 2);
     }
@@ -1166,12 +1215,16 @@ mod tests {
         let (mut world, channel, calls) = counting_world();
         for x in 0..32 {
             world
-                .voxel(LevelIndex::MAIN, channel, VoxelCoordinate::new(x, 2, 3))
+                .grid(GridId::root(LevelIndex::MAIN))
+                .unwrap()
+                .get(channel, VoxelCoordinate::new(x, 2, 3))
                 .unwrap();
         }
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         world
-            .voxel(LevelIndex::MAIN, channel, VoxelCoordinate::new(40, 2, 3))
+            .grid(GridId::root(LevelIndex::MAIN))
+            .unwrap()
+            .get(channel, VoxelCoordinate::new(40, 2, 3))
             .unwrap();
         assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
@@ -1182,15 +1235,49 @@ mod tests {
         let level = LevelIndex::MAIN;
         let at = VoxelCoordinate::new(5, 5, 5);
         let neighbour = VoxelCoordinate::new(6, 5, 5);
-        let before = world.voxel(level, channel, neighbour).unwrap();
-        let original = world.voxel(level, channel, at).unwrap();
-        assert!(world.set_voxel(level, channel, at, original + 1).unwrap());
+        let before = world
+            .grid(GridId::root(level))
+            .unwrap()
+            .get(channel, neighbour)
+            .unwrap();
+        let original = world
+            .grid(GridId::root(level))
+            .unwrap()
+            .get(channel, at)
+            .unwrap();
+        assert!(
+            world
+                .grid(GridId::root(level))
+                .unwrap()
+                .set(channel, at, original + 1)
+                .unwrap()
+        );
         assert_eq!(calls.load(Ordering::Relaxed), 1);
-        assert_eq!(world.voxel(level, channel, at).unwrap(), original + 1);
-        assert_eq!(world.voxel(level, channel, neighbour).unwrap(), before);
+        assert_eq!(
+            world
+                .grid(GridId::root(level))
+                .unwrap()
+                .get(channel, at)
+                .unwrap(),
+            original + 1
+        );
+        assert_eq!(
+            world
+                .grid(GridId::root(level))
+                .unwrap()
+                .get(channel, neighbour)
+                .unwrap(),
+            before
+        );
         // The remembered brick is not changed by the edit: setting the original value back is
         // a change again only if the edit really happened.
-        assert!(world.set_voxel(level, channel, at, original).unwrap());
+        assert!(
+            world
+                .grid(GridId::root(level))
+                .unwrap()
+                .set(channel, at, original)
+                .unwrap()
+        );
     }
 
     #[test]
@@ -1210,11 +1297,35 @@ mod tests {
         assert_eq!(world.level_index(&id("test_content:nowhere")), None);
 
         let at = VoxelCoordinate::new(1, 1, 1);
-        let ground = world.voxel(LevelIndex::MAIN, channel, at).unwrap();
+        let ground = world
+            .grid(GridId::root(LevelIndex::MAIN))
+            .unwrap()
+            .get(channel, at)
+            .unwrap();
         // Editing one level leaves the other as it was, and each remembers its own bricks.
-        assert!(world.set_voxel(nether, channel, at, ground + 1).unwrap());
-        assert_eq!(world.voxel(nether, channel, at).unwrap(), ground + 1);
-        assert_eq!(world.voxel(LevelIndex::MAIN, channel, at).unwrap(), ground);
+        assert!(
+            world
+                .grid(GridId::root(nether))
+                .unwrap()
+                .set(channel, at, ground + 1)
+                .unwrap()
+        );
+        assert_eq!(
+            world
+                .grid(GridId::root(nether))
+                .unwrap()
+                .get(channel, at)
+                .unwrap(),
+            ground + 1
+        );
+        assert_eq!(
+            world
+                .grid(GridId::root(LevelIndex::MAIN))
+                .unwrap()
+                .get(channel, at)
+                .unwrap(),
+            ground
+        );
         assert_eq!(world.data().main().overrides.brick_count(), 0);
         assert_eq!(
             world.data().level(nether).unwrap().overrides.brick_count(),
@@ -1233,13 +1344,10 @@ mod tests {
         );
 
         let nowhere = LevelIndex::new(9);
+        // (A level that is not there has no terrain to read or to change.)
         assert_eq!(
-            world.voxel(nowhere, channel, at),
-            Err(AccessError::NoSuchLevel(nowhere))
-        );
-        assert_eq!(
-            world.set_voxel(nowhere, channel, at, 1),
-            Err(AccessError::NoSuchLevel(nowhere))
+            world.grid(GridId::root(nowhere)).err(),
+            Some(AccessError::NoSuchLevel(nowhere))
         );
     }
 
@@ -1267,14 +1375,25 @@ mod tests {
         assert_eq!(ship.root_level(), None);
         let at = VoxelCoordinate::new(1, 2, 3);
         let default = world.data().main().overrides.layout().default_value(block);
-        let terrain = world.voxel(LevelIndex::MAIN, block, at).unwrap();
+        let terrain = world
+            .grid(GridId::root(LevelIndex::MAIN))
+            .unwrap()
+            .get(block, at)
+            .unwrap();
         assert_eq!(world.grid(ship).unwrap().get(block, at), Ok(default));
 
         assert_eq!(world.grid(ship).unwrap().set(block, at, 7), Ok(true));
         assert_eq!(world.grid(ship).unwrap().get(block, at), Ok(7));
         assert_eq!(world.grid(ship).unwrap().set(block, at, 7), Ok(false));
         // The terrain at the same coordinates is as it was, and nothing was generated for the ship.
-        assert_eq!(world.voxel(LevelIndex::MAIN, block, at).unwrap(), terrain);
+        assert_eq!(
+            world
+                .grid(GridId::root(LevelIndex::MAIN))
+                .unwrap()
+                .get(block, at)
+                .unwrap(),
+            terrain
+        );
         assert_eq!(world.data().main().overrides.brick_count(), 0);
 
         // One edit of one brick of the ship, which was made by it.
@@ -1293,7 +1412,11 @@ mod tests {
         world.watch_channels(BTreeSet::from([block]));
         let at = VoxelCoordinate::new(40, -3, 9);
         world.grid(ship).unwrap().set(block, at, 2).unwrap();
-        world.set_voxel(LevelIndex::MAIN, block, at, 4).unwrap();
+        world
+            .grid(GridId::root(LevelIndex::MAIN))
+            .unwrap()
+            .set(block, at, 4)
+            .unwrap();
         assert_eq!(
             world.take_changes(),
             [
@@ -1346,11 +1469,17 @@ mod tests {
         ];
         for (index, voxel) in voxels.iter().enumerate() {
             world
-                .set_voxel(level, block, *voxel, 10 + index as u32)
+                .grid(GridId::root(level))
+                .unwrap()
+                .set(block, *voxel, 10 + index as u32)
                 .unwrap();
         }
         let bystander = VoxelCoordinate::new(1, 5, 31);
-        world.set_voxel(level, block, bystander, 99).unwrap();
+        world
+            .grid(GridId::root(level))
+            .unwrap()
+            .set(block, bystander, 99)
+            .unwrap();
         // A second channel travels too.
         let temperature = world
             .data()
@@ -1365,17 +1494,42 @@ mod tests {
             .overrides
             .layout()
             .default_value(temperature);
-        world.set_voxel(level, temperature, voxels[2], 33).unwrap();
+        world
+            .grid(GridId::root(level))
+            .unwrap()
+            .set(temperature, voxels[2], 33)
+            .unwrap();
         world.edits.clear();
 
-        let ship = world.detach_blocks(level, &voxels).unwrap();
+        let ship = world.detach_blocks(GridId::root(level), &voxels).unwrap();
 
         // The terrain there is empty now, the bystander is as it was, and the edits are the ordinary ones of the terrain.
         for voxel in &voxels {
-            assert_eq!(world.voxel(level, block, *voxel).unwrap(), default);
+            assert_eq!(
+                world
+                    .grid(GridId::root(level))
+                    .unwrap()
+                    .get(block, *voxel)
+                    .unwrap(),
+                default
+            );
         }
-        assert_eq!(world.voxel(level, block, bystander).unwrap(), 99);
-        assert_eq!(world.voxel(level, temperature, voxels[2]).unwrap(), normal);
+        assert_eq!(
+            world
+                .grid(GridId::root(level))
+                .unwrap()
+                .get(block, bystander)
+                .unwrap(),
+            99
+        );
+        assert_eq!(
+            world
+                .grid(GridId::root(level))
+                .unwrap()
+                .get(temperature, voxels[2])
+                .unwrap(),
+            normal
+        );
         assert!(world.edits.keys().any(|(grid, _)| *grid == GridId::MAIN));
         // The ship has the blocks where the box of the voxels starts at its own origin ...
         let moving = world.data().grids().get(ship).unwrap();
@@ -1424,23 +1578,53 @@ mod tests {
         let (mut world, block, _) = counting_world();
         let level = LevelIndex::MAIN;
         let at = VoxelCoordinate::new(5, 7, 9);
-        let made = world.voxel(level, block, at).unwrap();
-        world.set_voxel(level, block, at, made + 5).unwrap();
-        assert_eq!(world.voxel(level, block, at).unwrap(), made + 5);
-        assert_eq!(world.generated_voxel(level, block, at).unwrap(), made);
+        let made = world
+            .grid(GridId::root(level))
+            .unwrap()
+            .get(block, at)
+            .unwrap();
+        world
+            .grid(GridId::root(level))
+            .unwrap()
+            .set(block, at, made + 5)
+            .unwrap();
+        assert_eq!(
+            world
+                .grid(GridId::root(level))
+                .unwrap()
+                .get(block, at)
+                .unwrap(),
+            made + 5
+        );
+        assert_eq!(
+            world
+                .grid(GridId::root(level))
+                .unwrap()
+                .generated(block, at)
+                .unwrap(),
+            made
+        );
         // In a brick nobody edited, and in a brick that was edited somewhere else in it, it is the same as the voxel.
         let beside = VoxelCoordinate::new(6, 7, 9);
         let far = VoxelCoordinate::new(200, 7, 9);
         for voxel in [beside, far] {
             assert_eq!(
-                world.generated_voxel(level, block, voxel).unwrap(),
-                world.voxel(level, block, voxel).unwrap()
+                world
+                    .grid(GridId::root(level))
+                    .unwrap()
+                    .generated(block, voxel)
+                    .unwrap(),
+                world
+                    .grid(GridId::root(level))
+                    .unwrap()
+                    .get(block, voxel)
+                    .unwrap()
             );
         }
         let nowhere = LevelIndex::new(9);
         assert_eq!(
-            world.generated_voxel(nowhere, block, at),
-            Err(AccessError::NoSuchLevel(nowhere))
+            world.grid(GridId::root(nowhere)).err(),
+            Some(AccessError::NoSuchLevel(nowhere))
         );
     }
 
@@ -1451,28 +1635,52 @@ mod tests {
         let (mut world, block, _) = counting_world();
         let level = LevelIndex::MAIN;
         let at = VoxelCoordinate::new(5, 7, 9);
-        let made = world.voxel(level, block, at).unwrap();
-        world.set_voxel(level, block, at, made + 5).unwrap();
+        let made = world
+            .grid(GridId::root(level))
+            .unwrap()
+            .get(block, at)
+            .unwrap();
+        world
+            .grid(GridId::root(level))
+            .unwrap()
+            .set(block, at, made + 5)
+            .unwrap();
         // Many other bricks are read, enough to push it out of the cache of the most recent.
         for x in 1..=2000 {
             world
-                .voxel(level, block, VoxelCoordinate::new(32 * x, 7, 9))
+                .grid(GridId::root(level))
+                .unwrap()
+                .get(block, VoxelCoordinate::new(32 * x, 7, 9))
                 .unwrap();
         }
-        assert_eq!(world.voxel(level, block, at).unwrap(), made + 5);
-        assert_eq!(world.generated_voxel(level, block, at).unwrap(), made);
+        assert_eq!(
+            world
+                .grid(GridId::root(level))
+                .unwrap()
+                .get(block, at)
+                .unwrap(),
+            made + 5
+        );
+        assert_eq!(
+            world
+                .grid(GridId::root(level))
+                .unwrap()
+                .generated(block, at)
+                .unwrap(),
+            made
+        );
     }
 
     #[test]
     fn detaching_nothing_or_from_a_level_that_is_not_there_is_refused_and_changes_nothing() {
         let (mut world, block, _) = counting_world();
         assert_eq!(
-            world.detach_blocks(LevelIndex::MAIN, &[]),
+            world.detach_blocks(GridId::MAIN, &[]),
             Err(DetachError::NoVoxels)
         );
         let nowhere = LevelIndex::new(3);
         assert_eq!(
-            world.detach_blocks(nowhere, &[VoxelCoordinate::ORIGIN]),
+            world.detach_blocks(GridId::root(nowhere), &[VoxelCoordinate::ORIGIN]),
             Err(DetachError::Access(AccessError::NoSuchLevel(nowhere)))
         );
         assert!(world.data().grids().is_empty());
@@ -1828,6 +2036,77 @@ mod tests {
         assert!(world.data().grids().get(ship).is_some());
         assert_eq!(world.data().grids().tombstones().count(), 0);
         assert_eq!(world.entities().get(walkers[0]).unwrap().pose.grid, ship);
+    }
+
+    #[test]
+    fn blocks_can_be_detached_from_a_ship_into_a_ship_that_is_where_they_were_turned_as_the_ship_is_and_going_as_they_were()
+     {
+        let (mut world, ship, block, _) = row_with_walkers(&[]);
+        // The ship is turned a quarter about the vertical axis and turns at a radian a second about its middle, which is 5 along its x.
+        let turned = GridPose::new(
+            WorldPosition::new(BrickCoordinate::ORIGIN, [3.0, 40.0, 3.0]),
+            Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0),
+        );
+        world.set_grid_pose(ship, turned).unwrap();
+        let taken: Vec<VoxelCoordinate> = (6..10).map(|x| VoxelCoordinate::new(x, 0, 0)).collect();
+        let part = world.detach_blocks(ship, &taken).unwrap();
+        // The blocks are gone from the ship and are in the new one, from its origin, which is the lowest corner of them (voxel 6).
+        for x in 0..10 {
+            let here = world
+                .grid(ship)
+                .unwrap()
+                .get(block, VoxelCoordinate::new(x, 0, 0))
+                .unwrap();
+            assert_eq!(here, if x < 6 { 7 } else { 0 }, "x = {x}");
+        }
+        for x in 0..4 {
+            let there = world
+                .grid(part)
+                .unwrap()
+                .get(block, VoxelCoordinate::new(x, 0, 0))
+                .unwrap();
+            assert_eq!(there, 7);
+        }
+        let new = world.data().grids().get(part).unwrap();
+        // Turned as the ship is; its origin is where voxel 6 of the ship is: 6 along the ship's x, which the quarter turn makes -z in the world.
+        assert_eq!(new.pose.orientation, turned.orientation);
+        let origin = turned
+            .local_to_world(WorldPosition::new(BrickCoordinate::ORIGIN, [6.0, 0.0, 0.0]))
+            .unwrap();
+        assert_eq!(new.pose.position, origin);
+        // Not held, and going as the blocks were: the ship's speed at their middle (voxel 8 of the ship, 3 past its middle) plus its turn.
+        assert!(!new.held);
+        let expected = world.data().grids().get(ship).unwrap().velocity_at(
+            turned
+                .local_to_world(WorldPosition::new(BrickCoordinate::ORIGIN, [8.0, 0.5, 0.5]))
+                .unwrap(),
+        );
+        assert_eq!(new.linear_velocity, expected);
+        assert_eq!(new.angular_velocity, [0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn a_ship_has_nothing_generated_and_a_brick_of_it_that_was_never_made_is_every_voxel_at_the_default()
+     {
+        let (mut world, ship, block, _) = row_with_walkers(&[]);
+        let default = world.data().main().overrides.layout().default_value(block);
+        let mut view = world.grid(ship).unwrap();
+        // What a ship has to begin with is the channel's default, whatever is built there.
+        assert_eq!(
+            view.generated(block, VoxelCoordinate::new(2, 0, 0))
+                .unwrap(),
+            default
+        );
+        // A brick that holds the row is not one value; a brick that was never made is the default throughout.
+        assert_eq!(
+            view.uniform_value(block, BrickCoordinate::ORIGIN).unwrap(),
+            None
+        );
+        assert_eq!(
+            view.uniform_value(block, BrickCoordinate::new(5, 5, 5))
+                .unwrap(),
+            Some(default)
+        );
     }
 
     /// A world whose entity catalog has one kind, with no components.

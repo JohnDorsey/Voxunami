@@ -17,9 +17,9 @@ use plugin_host::{
     HandlerSpec, Phase as TickPhase, PlayerJoined, PlayerLeft, Plugin, Registrar, SystemSpec,
 };
 use protocol::{ClientId, Message};
-use server::{Audience, ServerWorld};
+use server::{Audience, GridView, ServerWorld};
 use voxel_grid::ChannelIndex;
-use voxel_space::{BrickCoordinate, LevelIndex, LocalVoxelIndex, VoxelCoordinate};
+use voxel_space::{BrickCoordinate, GridId, LocalVoxelIndex, VoxelCoordinate};
 
 use crate::arena::{ARENA_EDGE, Cell, is_inside};
 use crate::content::{ContentEels, blocks};
@@ -43,23 +43,22 @@ impl WorldArena<'_> {
     fn set(&mut self, cell: Cell, block: u32, slot: u32) {
         // Read just before, so the level and the terrain there are available.
         let voxel = voxel_of(cell);
-        let _ = self
-            .world
-            .set_voxel(LevelIndex::MAIN, self.slot_channel, voxel, slot);
-        let _ = self
-            .world
-            .set_voxel(LevelIndex::MAIN, self.block_channel, voxel, block);
+        if let Ok(mut arena) = self.world.grid(GridId::MAIN) {
+            let _ = arena.set(self.slot_channel, voxel, slot);
+            let _ = arena.set(self.block_channel, voxel, block);
+        }
+    }
+
+    /// What is in a voxel of the arena in a channel, or `None` if it cannot be read.
+    fn read(&mut self, channel: ChannelIndex, voxel: VoxelCoordinate) -> Option<u32> {
+        self.world.grid(GridId::MAIN).ok()?.get(channel, voxel).ok()
     }
 }
 
 impl Arena for WorldArena<'_> {
     fn is_occupied(&mut self, cell: Cell) -> bool {
         // Anything that cannot be read is solid: nothing swims into it.
-        !matches!(
-            self.world
-                .voxel(LevelIndex::MAIN, self.block_channel, voxel_of(cell)),
-            Ok(blocks::AIR)
-        )
+        self.read(self.block_channel, voxel_of(cell)) != Some(blocks::AIR)
     }
 
     fn paint(&mut self, cell: Cell, paint: Paint) {
@@ -77,9 +76,10 @@ impl Arena for WorldArena<'_> {
                 for z in 0..bricks {
                     let brick = BrickCoordinate::new(x, y, z);
                     // A brick that is all air, as most are, has nothing to clear.
-                    if let Ok(Some(blocks::AIR)) =
-                        self.world
-                            .uniform_value(LevelIndex::MAIN, self.block_channel, brick)
+                    if let Ok(Some(blocks::AIR)) = self
+                        .world
+                        .grid(GridId::MAIN)
+                        .and_then(|mut arena| arena.uniform_value(self.block_channel, brick))
                     {
                         continue;
                     }
@@ -87,11 +87,7 @@ impl Arena for WorldArena<'_> {
                         let voxel = brick.voxel_at(local);
                         let cell = [voxel.x(), voxel.y(), voxel.z()];
                         if is_inside(cell)
-                            && !matches!(
-                                self.world
-                                    .voxel(LevelIndex::MAIN, self.block_channel, voxel),
-                                Ok(blocks::AIR)
-                            )
+                            && self.read(self.block_channel, voxel) != Some(blocks::AIR)
                         {
                             self.set(cell, blocks::AIR, 0);
                         }

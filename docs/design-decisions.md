@@ -265,7 +265,9 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   the question about the world was not, and the engine gave no way to ask it that did not have to be written by hand (block editing had its own copy, correct, 20 lines). Now there is one:
   `WorldData::grid_frame` / `voxel_in_world`, `PlayerPose::distance_to_voxel_of`, `PlayerReach`; fire and block editing both use it. The promise that a mod's rules work aboard is kept by the
   grid-keyed design for what a rule does to voxels, and by these calls for what it asks of the world, and is *tested*, not trusted: `ship_parity.rs` runs a rule's scenario in the terrain and in a
-  ship. Rules are not to use the level-keyed voxel calls. (Open: whether to remove them from the rule-facing API; `plan.md`.)
+  ship. The level-keyed voxel calls are gone (owner, 2026-10-22: pre-alpha, no modders yet, so be bold): `ServerWorld::{voxel, set_voxel, uniform_value, generated_voxel}` are crate-private and the one way to
+  read and write voxels is `ServerWorld::grid(GridId)` and `GridView`, for the terrain of a level (`GridId::root(level)`) and a ship alike. `detach_blocks` takes a grid, so it lifts blocks out of a
+  ship as well as out of terrain.
 - **A ship that goes away with its pilot comes back where it was, or the player decides (32i):** it is stopped and put in a file that waits for those aboard; when a player who was aboard
   joins (the pilot, or a passenger who was away) it is looked at against the terrain and the other ships at the place it was left, and if it fits it is there. If not, the player is asked
   (move it, break the terrain, break its blocks, put it there anyway, or leave it and go to the spawn); the engine does not guess. A ship that cannot be found asks too, with three other

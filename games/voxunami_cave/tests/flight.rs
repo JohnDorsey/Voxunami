@@ -8,6 +8,8 @@ use common::{
     flat_floor, player_pose, say, ship_id, ship_pose, tick_and_follow,
 };
 use game_shell::KeyCode;
+use server::GridView;
+use voxel_space::GridId;
 use voxel_space::VoxelCoordinate;
 use voxunami_cave::aboard::in_voxels;
 
@@ -77,8 +79,9 @@ fn a_raft_built_long_ago_is_still_a_ship_after_the_world_has_forgotten_the_terra
         // Far more bricks than the world remembers, a long way off and high up where they are empty and quick to make.
         for x in 1..=400 {
             world
-                .voxel(
-                    voxel_space::LevelIndex::MAIN,
+                .grid(GridId::root(voxel_space::LevelIndex::MAIN))
+                .unwrap()
+                .get(
                     content.block_channel(),
                     VoxelCoordinate::new(32 * x, 3000, 5),
                 )
