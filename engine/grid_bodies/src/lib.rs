@@ -8,4 +8,4 @@
 pub mod collision;
 mod plugin;
 
-pub use plugin::{FRAME_RADIUS_BRICKS, GridBodiesConfig, GridBodiesPlugin};
+pub use plugin::{BodiesReport, FRAME_RADIUS_BRICKS, GridBodiesConfig, GridBodiesPlugin};

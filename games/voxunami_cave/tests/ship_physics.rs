@@ -500,6 +500,15 @@ fn bricks_generated_each_tick_by_a_ship_falling_to_natural_ground(
     height: i64,
     ticks: usize,
 ) -> Vec<u64> {
+    bricks_generated_each_tick_by_a_block_of_ship_falling_to_natural_ground([4; 3], height, ticks)
+}
+
+/// The same for a ship that is a box of stone of this size.
+fn bricks_generated_each_tick_by_a_block_of_ship_falling_to_natural_ground(
+    size: [i64; 3],
+    height: i64,
+    ticks: usize,
+) -> Vec<u64> {
     let mut scene = Scene::new();
     let seen = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let generated_so_far = |scene: &mut Scene| {
@@ -515,7 +524,13 @@ fn bricks_generated_each_tick_by_a_ship_falling_to_natural_ground(
     generated_so_far(&mut scene);
     let mut before = generated_so_far(&mut scene);
     // (The ground at x = 16, z = 16 is 102 high, in the world of the seed of these tests.)
-    make_a_cube(&mut scene, 4, pose_at(14.0, 102.0 + height as f32, 14.0));
+    make_ship(
+        &mut scene,
+        pose_at(14.0, 102.0 + height as f32, 14.0),
+        false,
+        size,
+        |_| true,
+    );
     let mut counts = Vec::new();
     for _ in 0..ticks {
         let now = generated_so_far(&mut scene);
@@ -578,4 +593,43 @@ fn a_ship_that_falls_faster_than_the_floor_is_thick_stops_on_it() {
         (height - FLOOR).abs() < 0.05,
         "it rests on the floor, not in it or under it: {height}"
     );
+}
+
+#[test]
+fn the_terrain_a_ship_only_wants_gets_colliders_one_brick_a_tick_and_all_of_it_in_the_end() {
+    // A raft of 30 by 30 held in the sky (every brick there is empty and cheap, so only the counts matter). The bricks its bounds reach within two
+    // voxels are needed and are all made in the first tick (4: it is over two bricks in each direction); the rest of the 8 voxels around it (9
+    // bricks in all) is only wanted, and comes one a tick, nearest first.
+    let (mut scene, report) = Scene::reporting();
+    make_ship(
+        &mut scene,
+        pose_at(2.0, 200.0, 2.0),
+        true,
+        [30, 1, 30],
+        |_| true,
+    );
+    let mut per_tick = vec![report().terrain_bricks_made_last_tick];
+    for _ in 0..8 {
+        scene.ticks(1);
+        per_tick.push(report().terrain_bricks_made_last_tick);
+    }
+    assert_eq!(per_tick, [5, 1, 1, 1, 1, 0, 0, 0, 0], "{per_tick:?}");
+    assert_eq!(report().terrain_bricks_made, 9);
+    assert_eq!(report().terrain_bricks_made_most_in_a_tick, 5);
+}
+
+#[test]
+fn a_big_raft_falling_to_natural_ground_makes_the_world_generate_a_few_bricks_a_tick_and_not_a_wall_of_them()
+ {
+    // (The owner's play: rafts of 900 and 1600 blocks stopped the game for 70 to 80 ms as they came to new ground. Before the budget these two
+    // had 24 and 31 bricks generated in their worst tick, and 12 now, which is the bricks the raft is in when it is made.)
+    for size in [[30, 1, 30], [40, 1, 40]] {
+        let counts =
+            bricks_generated_each_tick_by_a_block_of_ship_falling_to_natural_ground(size, 14, 150);
+        let most = *counts.iter().max().unwrap();
+        assert!(
+            most <= 14,
+            "{size:?}: {most} bricks in one tick: {counts:?}"
+        );
+    }
 }

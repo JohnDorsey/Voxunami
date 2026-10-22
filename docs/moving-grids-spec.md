@@ -467,7 +467,7 @@ The phase is large; I propose a pause for the owner after 32h, before docking.
   top speed. *Confidence:* high that it works (measured); medium on the cost for big ships (only fast ones pay, and only while they are fast), which the measurement decides.
   *As built:* `BodyWorld::steps_for_this_tick` (constants `MOST_A_STEP_MOVES` 0.8 and `MOST_STEPS` 24). The "4 above" was not a bug: a cube that tumbled rests on another face, with its origin corner a cube's width up.
   Not chosen: our own shape cast to limit the velocity (more code and more cases: rotation, compounds) and a lower speed cap (it would show in play).
-- **32k Terrain colliders on a budget** (2.3, 2.7; found by the owner's first play of 32h): a big ship (a 30 by 30 and a 40 by 40 raft measured, 900 blocks and more) still
+- **32k Terrain colliders on a budget** (2.3, 2.7; built 2026-10-22, see the build log; found by the owner's first play of 32h): a big ship (a 30 by 30 and a 40 by 40 raft measured, 900 blocks and more) still
   has single ticks of 70 to 80 ms as it reaches new natural ground, because the terrain within 8 voxels of such a ship is 8 to 27 bricks and each costs 5 to 25 ms to
   generate and make colliders of on the thread of the tick (the generating is a third to a half of it). 32i makes the same cost appear when a ship is loaded or unfrozen
   next to natural ground, and 32l's connectivity check needs the same thing, "at most so much work a tick", so this step builds that once: **a per-tick budget counted

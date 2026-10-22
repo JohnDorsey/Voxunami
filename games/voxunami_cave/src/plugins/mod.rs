@@ -13,7 +13,7 @@ mod ships;
 
 use game_shell::{GameContent, GameDefinition};
 use grid_bodies::collision::BlockCollisions;
-use grid_bodies::{GridBodiesConfig, GridBodiesPlugin};
+use grid_bodies::{BodiesReport, GridBodiesConfig, GridBodiesPlugin};
 use grid_lifecycle::{ArrivalConfig, GridLifecyclePlugin};
 use physics::BodySettings;
 use player_presence::PlayersPlugin;
@@ -32,6 +32,16 @@ pub use ships::ShipCommandsPlugin;
 
 /// The plugins of the Cave server.
 pub fn cave_plugins(content: &CaveContent) -> Vec<Box<dyn Plugin>> {
+    cave_plugins_reporting(content).0
+}
+
+/// The plugins of the Cave server, and a way to ask what the one that moves ships has done with the colliders of terrain (a test counts them).
+pub fn cave_plugins_reporting(
+    content: &CaveContent,
+) -> (
+    Vec<Box<dyn Plugin>>,
+    impl Fn() -> BodiesReport + Send + Sync + 'static + use<>,
+) {
     // The server moves the players, so what a client says about where it is is not believed.
     let players = PlayersPlugin::new(false);
     let presence = players.presence();
@@ -50,17 +60,20 @@ pub fn cave_plugins(content: &CaveContent) -> Vec<Box<dyn Plugin>> {
             block_channel: content.block_channel(),
             state_channel: content.state_channel(),
         });
-    vec![
+    let bodies = ships(content);
+    let report = bodies.report_handle();
+    let plugins: Vec<Box<dyn Plugin>> = vec![
         Box::new(players),
         Box::new(BlockEditingPlugin::new(content, presence.clone())),
         Box::new(ItemsPlugin::new(content, presence.clone())),
         Box::new(movement),
         Box::new(FirePlugin::new(content, presence)),
         Box::new(LightPlugin::new(content)),
-        Box::new(ships(content)),
+        Box::new(bodies),
         Box::new(lifecycle),
         Box::new(commands),
-    ]
+    ];
+    (plugins, report)
 }
 
 /// Where players start: the world's spawn.

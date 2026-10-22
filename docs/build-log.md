@@ -751,6 +751,18 @@ the reach of its colliders' boxes) would move more than 0.8 voxel in one: the se
   (1649 and 1650 pass; fmt and clippy clean). Mutation: the cap at 3 is caught by both new tests.
 - The spec's "4 above" puzzle: a cube that tumbled rests on another face, so its origin corner is a cube's width up. Not a bug; the tests say "on top of the floor", not "origin on it".
 
+Phase 32k (terrain colliders on a budget; 2026-10-22): `grid_bodies` splits the terrain a ship wants into the *needed* bricks (its bounds, two voxels and a tenth of a second of its speed around them: always made in the
+tick) and the *wanted* rest of the lookahead (8 voxels and a quarter second of speed), which is made nearest first (by rings of 8 voxels, ties by coordinate), **one brick a tick**. A count, not a time, so every machine
+simulates the same. `GridBodiesPlugin::report` (bricks made last tick, most in a tick, in all) is what the tests count; Cave has `cave_plugins_reporting`.
+- Measured on this machine (the worst tick's terrain work, 150 ticks of a raft falling to natural ground, a throwaway timer in the plugin): 30 by 30: 148 ms before, 74 now; 40 by 40: 191 before, 60 now;
+  ticks over 20 ms in the terrain work: 7 and 6 before, 6 and 4 now (a budget of 2 had 16 and 14, which is why it is 1). Bricks generated in the worst tick: 24 and 31 before, 12 now.
+- **What it did not fix, and the spec's goal of "no tick over 30 ms" is not met by it:** what is left in the worst ticks is not the colliders of terrain but the first tick (the raft is *made* inside the surface bricks, which are
+  needed: about 60 ms, paid once) and Rapier's own step for a big ship in contact with the ground, 25 to 145 ms a tick for 900 to 1600 blocks (a voxel collider against voxel colliders). That is a separate cost and
+  a separate step if the owner wants it; the generating of natural terrain is the other (plan.md, Open).
+- Tests: the counts of a raft held in the sky (5 bricks in the first tick, the 4 needed and 1 wanted, then 1 a tick up to 9; caught with the budget at 0 and at 100), the generation counts of 30 by 30 and 40 by 40 rafts
+  (at most 14 in a tick), and the existing falls (300 and 1000 above) still stop on the ground, so a ship does reach only bricks that have colliders. Not done: the property test of the spec (a ship's path with the budget
+  is the path without it when the lookahead is long) -- the falls and the pins say it for the scenes we have. No pin changed. Windows 1651 and Linux 1652 pass; fmt and clippy clean.
+
 Planning note, 2026-10-21 (the owner asked for the two open ship items to be put in the plan; they became steps 32j and 32k, before splitting): the claim in the earlier
 entries that ships "have no continuous collision detection against terrain" was a guess about the cause, and measuring it showed the cause is another. In the `physics` crate
 alone (a throwaway test, removed), cubes of 1 and 4 and rafts of 10 by 10 were dropped at set speeds on a slab of terrain: with the 3 solver steps a tick has, a floor of 1

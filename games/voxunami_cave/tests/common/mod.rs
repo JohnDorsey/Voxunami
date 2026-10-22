@@ -564,6 +564,21 @@ impl Scene {
         Self::with_disk(|files| Box::new(files))
     }
 
+    /// A scene, and a way to ask what the plugin that moves ships has done with the colliders of terrain.
+    pub fn reporting() -> (Self, impl Fn() -> grid_bodies::BodiesReport) {
+        let content = CaveContent::new();
+        let world = content.new_world(SEED);
+        let actions: Arc<Mutex<VecDeque<Action>>> = Arc::default();
+        let (mut plugins, report) = voxunami_cave::plugins::cave_plugins_reporting(&content);
+        plugins.push(Box::new(Script {
+            actions: Arc::clone(&actions),
+        }));
+        let files = MemoryShipFiles::new();
+        let disk = Box::new(files.clone());
+        let rig = Rig::with_plugins_on_disk(content, world, plugins, files, disk);
+        (Self { rig, actions }, report)
+    }
+
     /// A scene whose server keeps ship files through the disk `disk` makes of the memory they are in.
     pub fn with_disk(disk: impl FnOnce(MemoryShipFiles) -> Box<dyn ShipFiles>) -> Self {
         let content = CaveContent::new();

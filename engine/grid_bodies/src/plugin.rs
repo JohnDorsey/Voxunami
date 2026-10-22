@@ -24,6 +24,15 @@ pub const FRAME_RADIUS_BRICKS: i64 = 500;
 /// within a brick of its bounds, as it first had, stopped the game for a quarter of a second each time it crossed from one brick to the next.)
 const TERRAIN_LOOKAHEAD_VOXELS: f32 = 8.0;
 const TERRAIN_LOOKAHEAD_SECONDS: f32 = 0.25;
+/// The terrain a ship *needs* colliders of now: the bricks its bounds reach in the next two ticks (its speed for a tenth of a second) and two voxels more. These
+/// are always made in the tick, whatever it costs, so that a ship never reaches a brick that has none.
+const TERRAIN_NEEDED_VOXELS: f32 = 2.0;
+const TERRAIN_NEEDED_SECONDS: f32 = 0.1;
+/// The rest of the lookahead is *wanted*, not needed: it is made nearest first, at most this many bricks a tick. It is a count and not a time, so that what
+/// is simulated is the same on every machine (a brick of natural terrain costs 5 to 25 ms to generate and make colliders of, so this bounds a tick).
+const TERRAIN_WANTED_BRICKS_PER_TICK: usize = 1;
+/// How much farther each ring of the wanted bricks reaches, in voxels: the nearer a brick is in rings, the sooner it is made.
+const TERRAIN_RING_VOXELS: f32 = 8.0;
 /// How much farther before the colliders of terrain are let go, so that a ship at the edge of the margin does not make and drop the same brick
 /// every tick.
 const TERRAIN_KEEP_EXTRA_VOXELS: f32 = 16.0;
@@ -54,12 +63,42 @@ pub struct GridBodiesConfig {
 #[derive(Debug)]
 pub struct GridBodiesPlugin {
     config: Arc<Mutex<Option<GridBodiesConfig>>>,
+    report: Arc<Mutex<BodiesReport>>,
+}
+
+/// What the plugin has done with the colliders of terrain, for whoever runs the server and for tests. It counts bricks and not time: what is
+/// simulated must not depend on how fast a machine is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BodiesReport {
+    /// Bricks of terrain that got colliders in the last tick, in the most of any tick, and in all (edits that made one again do not count).
+    pub terrain_bricks_made_last_tick: u64,
+    pub terrain_bricks_made_most_in_a_tick: u64,
+    pub terrain_bricks_made: u64,
 }
 
 impl GridBodiesPlugin {
     pub fn new(config: GridBodiesConfig) -> Self {
         Self {
             config: Arc::new(Mutex::new(Some(config))),
+            report: Arc::default(),
+        }
+    }
+
+    /// What the plugin has done so far.
+    pub fn report(&self) -> BodiesReport {
+        *self
+            .report
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// A handle to the report, which stays usable after the plugin moves into a server.
+    pub fn report_handle(&self) -> impl Fn() -> BodiesReport + Send + Sync + 'static + use<> {
+        let report = Arc::clone(&self.report);
+        move || {
+            *report
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
         }
     }
 }
@@ -85,7 +124,7 @@ impl Plugin for GridBodiesPlugin {
             .take()
             .expect("a plugin is registered once");
         let channels = [config.block_channel, config.state_channel];
-        let bodies = Arc::new(Mutex::new(Bodies::new(config)));
+        let bodies = Arc::new(Mutex::new(Bodies::new(config, Arc::clone(&self.report))));
 
         // Where blocks changed, the colliders and the mass are made again.
         let hearing = Arc::clone(&bodies);
@@ -139,6 +178,7 @@ struct Bodies {
     changed_terrain_bricks: BTreeSet<(LevelIndex, BrickCoordinate)>,
     /// What the world is to be told of the weight of ships, at the end of the step.
     weighed: BTreeMap<GridId, (f32, [f32; 3])>,
+    report: Arc<Mutex<BodiesReport>>,
 }
 
 fn pose_of(state: &BodyState) -> GridPose {
@@ -146,7 +186,7 @@ fn pose_of(state: &BodyState) -> GridPose {
 }
 
 impl Bodies {
-    fn new(config: GridBodiesConfig) -> Self {
+    fn new(config: GridBodiesConfig, report: Arc<Mutex<BodiesReport>>) -> Self {
         let collisions = BlockCollisions::new(config.table.clone(), config.passable);
         Self {
             config,
@@ -155,6 +195,7 @@ impl Bodies {
             changed_ship_bricks: BTreeSet::new(),
             changed_terrain_bricks: BTreeSet::new(),
             weighed: BTreeMap::new(),
+            report,
         }
     }
 
@@ -450,27 +491,46 @@ impl Bodies {
         changed: &BTreeSet<(LevelIndex, BrickCoordinate)>,
     ) {
         let level_indices: Vec<LevelIndex> = self.levels.keys().copied().collect();
+        let mut made_this_tick = 0u64;
         for level_index in level_indices {
-            let mut near: BTreeSet<BrickCoordinate> = BTreeSet::new();
+            // The bricks that are needed now, those that are wanted (with how many rings from a ship), and those that are kept.
+            let mut needed: BTreeSet<BrickCoordinate> = BTreeSet::new();
+            let mut wanted: BTreeMap<BrickCoordinate, usize> = BTreeMap::new();
             let mut kept: BTreeSet<BrickCoordinate> = BTreeSet::new();
             let ship_ids: Vec<GridId> = self.levels[&level_index].ships.keys().copied().collect();
             for id in ship_ids {
                 let level = &self.levels[&level_index];
-                let Some(state) = level.bodies.state(BodyId(id.get())) else {
+                let body = BodyId(id.get());
+                let Some(state) = level.bodies.state(body) else {
                     continue;
                 };
                 let [vx, vy, vz] = state.linear_velocity;
                 let speed = (vx * vx + vy * vy + vz * vz).sqrt();
                 let lookahead = TERRAIN_LOOKAHEAD_VOXELS + TERRAIN_LOOKAHEAD_SECONDS * speed;
-                for (margin, set) in [
-                    (lookahead, &mut near),
-                    (lookahead + TERRAIN_KEEP_EXTRA_VOXELS, &mut kept),
-                ] {
-                    if let Some(bricks) = level.bodies.bricks_near(BodyId(id.get()), margin) {
-                        set.extend(bricks.bricks());
+                let needed_margin = TERRAIN_NEEDED_VOXELS + TERRAIN_NEEDED_SECONDS * speed;
+                if let Some(bricks) = level.bodies.bricks_near(body, needed_margin) {
+                    needed.extend(bricks.bricks());
+                }
+                let mut ring = 0;
+                let mut margin = needed_margin;
+                while margin < lookahead {
+                    margin = (margin + TERRAIN_RING_VOXELS).min(lookahead);
+                    ring += 1;
+                    if let Some(bricks) = level.bodies.bricks_near(body, margin) {
+                        for brick in bricks.bricks() {
+                            let nearest = wanted.entry(brick).or_insert(ring);
+                            *nearest = (*nearest).min(ring);
+                        }
                     }
                 }
+                if let Some(bricks) = level
+                    .bodies
+                    .bricks_near(body, lookahead + TERRAIN_KEEP_EXTRA_VOXELS)
+                {
+                    kept.extend(bricks.bricks());
+                }
             }
+            kept.extend(needed.iter().copied());
             let loaded: Vec<BrickCoordinate> =
                 self.levels[&level_index].terrain.iter().copied().collect();
             let to_drop: Vec<BrickCoordinate> = loaded
@@ -478,10 +538,23 @@ impl Bodies {
                 .copied()
                 .filter(|brick| !kept.contains(brick))
                 .collect();
-            let to_make: Vec<BrickCoordinate> = near
+            // Everything needed; of the wanted, the nearest few that are not made yet (ties by coordinate: the map is in order).
+            let mut missing_wanted: Vec<(usize, BrickCoordinate)> = wanted
+                .iter()
+                .filter(|(brick, _)| !needed.contains(brick) && !loaded.contains(brick))
+                .map(|(brick, ring)| (*ring, *brick))
+                .collect();
+            missing_wanted.sort();
+            let to_make: Vec<BrickCoordinate> = needed
                 .iter()
                 .copied()
                 .filter(|brick| !loaded.contains(brick))
+                .chain(
+                    missing_wanted
+                        .into_iter()
+                        .take(TERRAIN_WANTED_BRICKS_PER_TICK)
+                        .map(|(_, brick)| brick),
+                )
                 .chain(
                     changed
                         .iter()
@@ -496,6 +569,7 @@ impl Bodies {
                 level.terrain.remove(&brick);
             }
             for brick in to_make {
+                made_this_tick += u64::from(!self.levels[&level_index].terrain.contains(&brick));
                 let mut source = WorldTerrain {
                     world,
                     level: level_index,
@@ -509,6 +583,15 @@ impl Bodies {
                 level.terrain.insert(brick);
             }
         }
+        let mut report = self
+            .report
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        report.terrain_bricks_made_last_tick = made_this_tick;
+        report.terrain_bricks_made_most_in_a_tick = report
+            .terrain_bricks_made_most_in_a_tick
+            .max(made_this_tick);
+        report.terrain_bricks_made += made_this_tick;
     }
 
     /// Pulls every ship that moves with the gravity there is at its centre of mass: the level's, and the pull of the other ships that weigh enough.
