@@ -15,6 +15,7 @@ fn height_of_the_ship(scene: &Scene) -> Option<f32> {
 fn a_ship_that_falls_stops_where_it_is_when_the_player_goes_away_is_put_in_a_file_and_falls_on_when_they_come_back()
  {
     let mut scene = Scene::new();
+    common::heavy_planet(&mut scene);
     flat_floor(&mut scene);
     scene
         .rig

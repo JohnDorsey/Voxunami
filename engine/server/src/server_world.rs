@@ -1813,7 +1813,7 @@ pub(crate) mod tests {
         let root = GridId::MAIN;
         assert_eq!(
             world.gravity_in(root, at(1.0, 2.0, 3.0)),
-            Ok([0.0, -32.0, 0.0])
+            Ok([0.0, -5.0, 0.0])
         );
         let nowhere = GridId::root(LevelIndex::new(9));
         assert_eq!(
@@ -1834,7 +1834,7 @@ pub(crate) mod tests {
         // The ship's x axis, turned a quarter about z, is the world's y: so a world down is the ship's negative x axis turned back, which is
         // along +x or -x of the ship, and nothing along its y or z.
         assert!(
-            (local[0].abs() - 32.0).abs() < 1e-3 && local[1].abs() < 1e-3 && local[2].abs() < 1e-3,
+            (local[0].abs() - 5.0).abs() < 1e-3 && local[1].abs() < 1e-3 && local[2].abs() < 1e-3,
             "{local:?}"
         );
         // The same from the other side: a half turn flips it.
@@ -1849,7 +1849,7 @@ pub(crate) mod tests {
             .unwrap();
         let up = world.gravity_in(flipped, at(0.0, 0.0, 0.0)).unwrap();
         assert!(
-            (up[1] - 32.0).abs() < 1e-4 && up[0].abs() < 1e-4 && up[2].abs() < 1e-4,
+            (up[1] - 5.0).abs() < 1e-4 && up[0].abs() < 1e-4 && up[2].abs() < 1e-4,
             "{up:?}"
         );
         let gone = GridId::new(GridId::FIRST_ALLOCATED + 70);

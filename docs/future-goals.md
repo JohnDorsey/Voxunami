@@ -258,7 +258,7 @@ then what it needs and what I found in the code.
    *To talk about:* densities of the real materials (stone, dirt, wood, metal, glass, water), whether a block's mass belongs to the block definition or to a material that definitions name
    (so a data pack changes one number, not every block), hollow and partly filled blocks, the mass of what is aboard (players, items, cargo), and how mass should show to the player (a
    display, a scale, a command). *Decided with it:* all the game's measurements are metric wherever they exist in our world (metres, kilograms, seconds, newtons, and so on; a voxel is a
-   metre); the code and the docs say "voxels a second" for what is a metre a second, and a rule that needs a unit says which.
+   metre; gravity is 5 metres a second a second, the planet not being the Earth); the code and the docs say "voxels a second" for what is a metre a second, and a rule that needs a unit says which.
 
 
 ## Levels (owner, 2026-10-20)

@@ -140,6 +140,11 @@ pub mod engine {
         code.checked_sub(1).and_then(FaceDirection::from_index)
     }
 
+    /// The word for a face.
+    pub fn face_name(face: FaceDirection) -> &'static str {
+        ["west", "east", "down", "up", "north", "south"][usize::from(face.index())]
+    }
+
     /// Which face of a block, in each state, is drawn in [`MARK_COLOR`] instead of the block's own colour (a face code, 0 for none), so a block
     /// can show which way it faces.
     pub const MARKED_FACE: PropertyKey<u8> = PropertyKey::new(

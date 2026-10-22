@@ -54,7 +54,7 @@ impl Default for BodySettings {
         Self {
             time_step: 1.0 / 20.0,
             substeps: 3,
-            gravity: [0.0, -32.0, 0.0],
+            gravity: [0.0, -5.0, 0.0],
         }
     }
 }
@@ -760,8 +760,21 @@ mod tests {
     }
 
     /// Flat ground with its top at 0, as colliders of the bricks around the origin.
+    /// A planet that pulls at 32 metres a second a second, six times as hard as the default (5): most of these tests were written for falls that
+    /// are fast, to see that bodies are stopped by thin ground and rest on what they land on, and they are about bodies and not about the planet.
+    fn heavy_planet() -> BodySettings {
+        BodySettings {
+            gravity: [0.0, -32.0, 0.0],
+            ..BodySettings::default()
+        }
+    }
+
     fn world_with_ground() -> BodyWorld {
-        let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, BodySettings::default());
+        world_with_ground_and(heavy_planet())
+    }
+
+    fn world_with_ground_and(settings: BodySettings) -> BodyWorld {
+        let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, settings);
         for x in -1..=1 {
             for z in -1..=1 {
                 world.set_terrain_brick(BrickCoordinate::new(x, -1, z), &mut Ground { top: 0 });
@@ -790,8 +803,7 @@ mod tests {
         for thickness in [1, 3] {
             for size in [1, 4] {
                 for speed in [100.0f32, 250.0, 400.0] {
-                    let mut world =
-                        BodyWorld::new(BrickCoordinate::ORIGIN, BodySettings::default());
+                    let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, heavy_planet());
                     for x in -1..=1 {
                         for z in -1..=1 {
                             world.set_terrain_brick(
@@ -957,7 +969,8 @@ mod tests {
 
     #[test]
     fn a_ship_falls_by_gravity_comes_to_rest_on_the_ground_and_goes_to_sleep() {
-        let mut world = world_with_ground();
+        // On the planet of the default, 5 metres a second a second.
+        let mut world = world_with_ground_and(BodySettings::default());
         let hull = Hull::cube(4);
         ship_of(
             &mut world,
@@ -967,9 +980,9 @@ mod tests {
             BodyKind::Dynamic,
         );
         run(&mut world, 2);
-        // After a tenth of a second in a gravity of 32 it is falling at about 3.2 voxels a second.
+        // After a tenth of a second in a gravity of 5 it is falling at about half a metre a second.
         let velocity = world.state(BodyId(1)).unwrap().linear_velocity;
-        assert!((velocity[1] + 3.2).abs() < 0.1, "{velocity:?}");
+        assert!((velocity[1] + 0.5).abs() < 0.02, "{velocity:?}");
         assert!(velocity[0].abs() < 1e-4 && velocity[2].abs() < 1e-4);
         run(&mut world, 98);
         let height = height_of(&world, 1);

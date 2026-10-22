@@ -4,7 +4,7 @@
 mod common;
 
 use common::{FORWARD, STILL, Scene, eye, position, spawn};
-use physics::{CharacterBody, MoveInput};
+use physics::{CharacterBody, CharacterSettings, MoveInput};
 use voxel_space::VoxelCoordinate;
 
 /// A turn of the whole scene by a multiple of a quarter turn: where a point goes is the matrix times the point, and the quaternion is
@@ -43,7 +43,12 @@ fn turned(turn: Turn, vector: [f64; 3]) -> [f64; 3] {
 }
 
 fn gravity_after(turn: Turn) -> [f32; 3] {
-    turned(turn, [0.0, -32.0, 0.0]).map(|component| component as f32)
+    // The character's own gravity, turned (the script jumps onto a block with the character's own jump, which is made for it).
+    turned(
+        turn,
+        [0.0, -f64::from(CharacterSettings::default().gravity), 0.0],
+    )
+    .map(|component| component as f32)
 }
 
 /// Whether two quaternions are the same turn (a quaternion and its negative are).
@@ -124,15 +129,20 @@ fn script_in(turn: Turn) -> Vec<([f64; 3], [f64; 3], bool)> {
     };
     let stages = [
         (STILL, 60),
-        // To the face of the block, then onto it, then off the other side.
-        (FORWARD, 100),
+        // Toward the block, far enough from it to clear it at the speed of this planet's jump (a character that meets its side before it is high
+        // enough slides along it, and the turned and upright runs slide a few centimetres apart), then onto it, then off the other side.
+        (FORWARD, 70),
+        // One jump (the key is pressed for a step), then walking on until it is over: a jump of 1.3 metres in a gravity of 5 takes 1.4 seconds,
+        // 86 steps. The two runs may take off a step apart (the arithmetic of a turned shape is not that of an upright one), and a stage that
+        // ended in the air would compare them at different moments of a jump.
         (
             MoveInput {
                 jump: true,
                 ..FORWARD
             },
-            25,
+            1,
         ),
+        (FORWARD, 110),
         (FORWARD, 40),
         // Diagonally toward the wall and along it.
         (
@@ -185,7 +195,7 @@ fn gravity_along_minus_y_with_the_step_that_takes_it_is_the_step_without() {
                 if own {
                     body.step(input);
                 } else {
-                    body.step_with_gravity(input, [0.0, -32.0, 0.0]);
+                    body.step_with_gravity(input, [0.0, -body.settings().gravity, 0.0]);
                 }
             }
             hashes.push(body.state_hash());
@@ -228,8 +238,16 @@ fn assert_turned_like(turn: Turn) {
                 before.0,
                 after.0
             );
+            // A character on the ground has no speed up or down, or has the speed one step of gravity gives it before the floor takes it away,
+            // which of the two it is at the moment of the look depends on the arithmetic of the step (at a gravity of 5 a step's worth is 0.08 and
+            // is seen; at 32 it was taken away at once and was not).
+            let one_step_of_gravity = if axis == 1 && before.2 && after.2 {
+                f64::from(CharacterSettings::default().gravity) / 60.0 + 1e-3
+            } else {
+                0.0
+            };
             assert!(
-                (before.1[axis] - after.1[axis]).abs() < 2e-3,
+                (before.1[axis] - after.1[axis]).abs() < 2e-3f64.max(one_step_of_gravity),
                 "stage {stage}, speed on axis {axis}: {:?} against {:?}",
                 before.1,
                 after.1

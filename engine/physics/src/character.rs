@@ -95,8 +95,8 @@ impl Default for CharacterSettings {
             radius: 0.3,
             height: 1.8,
             eye_height: 1.62,
-            gravity: 32.0,
-            jump_speed: 9.0,
+            gravity: 5.0,
+            jump_speed: 3.6,
             walk_speed: 4.3,
             sprint_speed: 5.6,
             fly_speed: 10.9,
@@ -930,7 +930,9 @@ impl CharacterBody {
             };
             let (across, mut along) = self.split(self.velocity);
             let across = approach_vector(across, target, acceleration * dt);
-            if self.grounded && input.jump {
+            // (A character that is going up has jumped: just after take-off the ground is still near enough to count, and a jump again then
+            // would be a second jump in the air, a tick later and as high.)
+            if self.grounded && input.jump && along <= 0.0 {
                 along = settings.jump_speed;
             }
             along = (along - pull * dt).max(-settings.terminal_speed);

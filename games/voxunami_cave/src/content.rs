@@ -63,6 +63,7 @@ pub fn dev_docking_port() -> BlockDefinition {
         .with_shapes(vec![Shape::full(); faces.len()])
         .with_marked_faces([255, 216, 0], &faces)
         .with_docking_faces(&faces)
+        .in_every_orientation()
 }
 
 /// The blocks of a registry, with the flags that say a player can place a block, and that a block is for creative only, set on the ones Cave says

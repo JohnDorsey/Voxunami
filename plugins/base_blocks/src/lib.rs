@@ -167,6 +167,52 @@ pub fn standard_shapes() -> Vec<Shape> {
     ]
 }
 
+/// What a shape is, in words: whole, a slab (the bottom, the top, or against another side) or a stair (which way it rises, and what its floor is if
+/// not the bottom). For the states of the solid blocks, which stand every way.
+pub fn describe_shape(shape: &Shape) -> String {
+    use block_models::engine::face_name;
+    use voxel_space::LatticeRotation;
+    if shape.is_full() {
+        return "whole".to_owned();
+    }
+    for face in FaceDirection::ALL {
+        if shape.same_cells(&Shape::half(face)) {
+            return match face {
+                FaceDirection::NegativeY => "bottom slab".to_owned(),
+                FaceDirection::PositiveY => "top slab".to_owned(),
+                other => format!("slab against the {} side", face_name(other)),
+            };
+        }
+    }
+    // A stair is its floor and the side it rises toward; a stair has two such descriptions (its profile is an L, which a half turn about the diagonal
+    // leaves as it is), and the one with the floor down is the one said if there is one.
+    let described: Vec<(FaceDirection, FaceDirection)> = LatticeRotation::all()
+        .into_iter()
+        .filter(|rotation| {
+            shape.same_cells(&Shape::stair(FaceDirection::PositiveX).turned(*rotation))
+        })
+        .map(|rotation| {
+            (
+                rotation.apply_face(FaceDirection::NegativeY),
+                rotation.apply_face(FaceDirection::PositiveX),
+            )
+        })
+        .collect();
+    if let Some(&(floor, high)) = described
+        .iter()
+        .find(|(floor, _)| *floor == FaceDirection::NegativeY)
+        .or(described.first())
+    {
+        let high = face_name(high);
+        return if floor == FaceDirection::NegativeY {
+            format!("stair rising {high}")
+        } else {
+            format!("stair on the {} side rising {high}", face_name(floor))
+        };
+    }
+    "odd shape".to_owned()
+}
+
 /// The name of a state of a solid block, as for [`SHAPE_NAMES`].
 pub fn shape_name(state: u32) -> &'static str {
     SHAPE_NAMES.get(state as usize).copied().unwrap_or("whole")
@@ -267,7 +313,14 @@ impl BaseBlocks {
                 .expect("the block names are distinct")
                 .raw()
         };
-        let solid = |color: [f32; 3]| BlockDefinition::cube(color).with_shapes(standard_shapes());
+        // Every block can stand every way (a ship turned onto another's lattice is made of blocks turned with it): the seven shapes first, as they
+        // always were, and then the turns of them there are no states for yet, so the numbers saved in worlds mean what they did. (The fire is not:
+        // its states are ages.)
+        let solid = |color: [f32; 3]| {
+            BlockDefinition::cube(color)
+                .with_shapes(standard_shapes())
+                .in_every_orientation()
+        };
         let air = register("air", BlockDefinition::air());
         let stone = register("stone", solid([0.50, 0.50, 0.53]));
         let dirt = register("dirt", solid([0.45, 0.30, 0.18]));
@@ -277,7 +330,9 @@ impl BaseBlocks {
         );
         let lamp = register(
             "lamp",
-            BlockDefinition::cube([1.0, 0.92, 0.65]).with_emission(LAMP_EMISSION),
+            BlockDefinition::cube([1.0, 0.92, 0.65])
+                .with_emission(LAMP_EMISSION)
+                .in_every_orientation(),
         );
         let wood = register(
             "wood",
@@ -385,7 +440,8 @@ mod tests {
     }
 
     #[test]
-    fn solid_blocks_have_seven_shapes_by_state_and_air_and_the_lamp_have_one() {
+    fn solid_blocks_have_the_seven_shapes_first_and_then_every_other_way_they_stand_and_air_the_lamp_and_fire_have_one()
+     {
         let table = BaseBlocks::new().block_table();
         assert_eq!(table.state_count(0), 1);
         assert_eq!(table.state_count(4), 1);
@@ -394,8 +450,9 @@ mod tests {
             1,
             "a fire has one shape, and ages are not shapes"
         );
+        // Whole, six slabs and twelve stairs: every way each can stand, the first seven as they have always been.
         for block in [1, 2, 3, 5] {
-            assert_eq!(table.state_count(block), SHAPE_NAMES.len() as u32);
+            assert_eq!(table.state_count(block), 19);
         }
         assert_eq!(standard_shapes().len(), SHAPE_NAMES.len());
         // State 0 is the whole cube and the others are not; the names follow the shapes.
@@ -411,6 +468,51 @@ mod tests {
         assert!(table.shape(stone(4)).covers_face(FaceDirection::NegativeX));
         assert!(table.shape(stone(5)).covers_face(FaceDirection::NegativeZ));
         assert!(table.shape(stone(6)).covers_face(FaceDirection::PositiveZ));
+        // The rest are described by their shape: the slabs and stairs that stand other ways than the seven.
+        let definitions = BaseBlocks::new();
+        let stone_definition = definitions
+            .blocks
+            .entry(
+                definitions
+                    .blocks
+                    .runtime_id(&identifier("base_blocks:stone"))
+                    .unwrap(),
+            )
+            .and_then(|entry| entry.content())
+            .unwrap();
+        let names: Vec<String> = stone_definition
+            .shapes()
+            .iter()
+            .map(describe_shape)
+            .collect();
+        assert_eq!(
+            &names[..7],
+            SHAPE_NAMES,
+            "the first seven are named as they were"
+        );
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| name.starts_with("slab against the"))
+                .count(),
+            4
+        );
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| name.starts_with("stair"))
+                .count(),
+            12
+        );
+        let mut distinct = names.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            19,
+            "no two states are named alike: {names:?}"
+        );
+        assert!(names.iter().all(|name| name != "odd shape"));
         assert_eq!(shape_name(0), "whole");
         assert_eq!(shape_name(2), "top slab");
         assert_eq!(shape_name(99), "whole");

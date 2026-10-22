@@ -1,8 +1,8 @@
-use crate::property::engine::{self, face_code};
+use crate::property::engine::{self, face_code, face_from_code};
 use crate::property::{PropertyKey, PropertyType, SetProperties, key_id};
 use crate::shape::Shape;
 use namespaced_id::NamespacedId;
-use voxel_space::FaceDirection;
+use voxel_space::{FaceDirection, LatticeRotation};
 
 /// What a type of block is like: how it looks, how it fills its cell, and how it treats light.
 ///
@@ -218,6 +218,79 @@ impl BlockDefinition {
     pub fn state_count(&self) -> usize {
         self.shapes.len()
     }
+
+    /// The same block with a state for every way each of its states can be turned by the 24 turns of the lattice (a block must be able to exist in
+    /// every orientation, so that a ship that is turned onto another's lattice can be made of the other's blocks): states are added after the last, in
+    /// the order of the states they are turns of and then of [`LatticeRotation::all`], for each turn whose shape, marked face, docking face and
+    /// other properties are not those of a state the block has already. The states it had keep their numbers (a saved world holds them). A turned
+    /// state has what the state it is a turn of has, with the faces of the two face properties turned.
+    ///
+    /// Panics if the block has colours for its states: those states are numbers (an age, a score), not ways to stand, and cannot be turned.
+    pub fn in_every_orientation(mut self) -> Self {
+        assert!(
+            self.state_colors.is_empty(),
+            "a block whose states are drawn by number cannot be put in every orientation"
+        );
+        let face_keys = [engine::MARKED_FACE.id(), engine::DOCKING_FACE.id()].map(key_id);
+        let value_in = |definition: &Self, key: &NamespacedId, state: usize| {
+            definition.property_value(key, Some(state as u32), 0)
+        };
+        let face_in = |definition: &Self, key: &NamespacedId, state: usize| {
+            face_from_code(u8::try_from(value_in(definition, key, state)).unwrap_or(0))
+        };
+        // What makes a state the same as another: its shape, its two faces, and the rest of what it sets.
+        let others_of = |definition: &Self, state: usize| -> Vec<(NamespacedId, i64)> {
+            definition
+                .properties
+                .keys()
+                .filter(|key| !face_keys.contains(key))
+                .map(|key| (key.clone(), value_in(definition, key, state)))
+                .collect()
+        };
+        let original = self.shapes.len();
+        for source in 0..original {
+            for rotation in LatticeRotation::all() {
+                let shape = self.shapes[source].turned(rotation);
+                let faces: Vec<Option<FaceDirection>> = face_keys
+                    .iter()
+                    .map(|key| face_in(&self, key, source).map(|face| rotation.apply_face(face)))
+                    .collect();
+                let others = others_of(&self, source);
+                let known = (0..self.shapes.len()).any(|state| {
+                    self.shapes[state].same_cells(&shape)
+                        && face_keys
+                            .iter()
+                            .zip(&faces)
+                            .all(|(key, face)| face_in(&self, key, state) == *face)
+                        && others_of(&self, state) == others
+                });
+                if known {
+                    continue;
+                }
+                let state = self.shapes.len() as u32;
+                self.shapes.push(shape);
+                for (key, face) in face_keys.iter().zip(&faces) {
+                    if face.is_some() || self.properties.contains_key(key) {
+                        self.set_property_value(
+                            key.clone(),
+                            Some(state),
+                            i64::from(face_code(*face)),
+                        );
+                    }
+                }
+                for (key, value) in others {
+                    let own = self
+                        .properties
+                        .get(&key)
+                        .is_some_and(|set| set.by_state.contains_key(&(source as u32)));
+                    if own {
+                        self.set_property_value(key, Some(state), value);
+                    }
+                }
+            }
+        }
+        self
+    }
 }
 
 #[cfg(test)]
@@ -225,6 +298,7 @@ mod tests {
     use voxel_space::FaceDirection;
 
     use super::*;
+    use crate::BlockTable;
 
     #[test]
     fn a_cube_is_opaque_whole_and_has_one_state_and_air_is_empty_and_see_through() {
@@ -308,6 +382,119 @@ mod tests {
         assert_eq!(block.state_colors(), [[0.1; 3], [0.2; 3]]);
         block.set_state_colors(Vec::new());
         assert!(block.state_colors().is_empty());
+    }
+
+    fn standard() -> Vec<Shape> {
+        vec![
+            Shape::full(),
+            Shape::half(FaceDirection::NegativeY),
+            Shape::half(FaceDirection::PositiveY),
+            Shape::stair(FaceDirection::PositiveX),
+            Shape::stair(FaceDirection::NegativeX),
+            Shape::stair(FaceDirection::NegativeZ),
+            Shape::stair(FaceDirection::PositiveZ),
+        ]
+    }
+
+    #[test]
+    fn a_block_in_every_orientation_has_a_state_for_each_way_each_shape_can_stand_and_keeps_the_numbers_it_had()
+     {
+        // A whole cube stands one way; a slab six; a stair twelve (its profile is an L, which a half turn about its diagonal leaves as it is).
+        let count = |shapes: Vec<Shape>| {
+            BlockDefinition::cube([0.5; 3])
+                .with_shapes(shapes)
+                .in_every_orientation()
+                .state_count()
+        };
+        assert_eq!(count(vec![Shape::full()]), 1);
+        assert_eq!(count(vec![Shape::half(FaceDirection::NegativeY)]), 6);
+        assert_eq!(count(vec![Shape::stair(FaceDirection::PositiveX)]), 12);
+        // The standard seven are 1 + 6 + 12, and the states they had are the same states.
+        let block = BlockDefinition::cube([0.5; 3])
+            .with_shapes(standard())
+            .in_every_orientation();
+        assert_eq!(block.state_count(), 19);
+        for (state, shape) in standard().iter().enumerate() {
+            assert_eq!(&block.shapes()[state], shape, "state {state}");
+        }
+        // Closed: whatever the turn, every state has a state that is its shape turned.
+        let table = BlockTable::from_definitions(&[Some(&block)]);
+        for state in 0..19 {
+            for rotation in LatticeRotation::all() {
+                let turned = table.turned_state(0, state, rotation);
+                assert!(
+                    table
+                        .shape(table.model_of(0, turned))
+                        .same_cells(&block.shapes()[state as usize].turned(rotation)),
+                    "state {state} turned by {rotation:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn what_a_state_sets_goes_with_its_turns_and_states_that_differ_in_it_are_not_taken_for_one() {
+        let key: NamespacedId = "test:glow".parse().unwrap();
+        // An unlit and a lit bottom slab: the same shape, and two states.
+        let block = BlockDefinition::cube([0.5; 3])
+            .with_shapes(vec![
+                Shape::half(FaceDirection::NegativeY),
+                Shape::half(FaceDirection::NegativeY),
+            ])
+            .with_state_property_value(0, key.clone(), 0)
+            .with_state_property_value(1, key.clone(), 9)
+            .in_every_orientation();
+        // Six ways to stand, lit and unlit.
+        assert_eq!(block.state_count(), 12);
+        let lit = (0..12)
+            .filter(|state| block.property_value(&key, Some(*state), 0) == 9)
+            .count();
+        assert_eq!(lit, 6);
+        // A turn of the lit one is lit: the slab against the top, from state 1.
+        let top_lit = (0..12)
+            .find(|state| {
+                block.shapes()[*state as usize].same_cells(&Shape::half(FaceDirection::PositiveY))
+                    && block.property_value(&key, Some(*state), 0) == 9
+            })
+            .unwrap();
+        assert!(top_lit >= 2);
+    }
+
+    #[test]
+    fn the_faces_of_a_docking_port_turn_with_its_states_and_a_port_already_stands_every_way() {
+        let faces = FaceDirection::ALL.map(Some);
+        let port = BlockDefinition::cube([0.3; 3])
+            .with_shapes(vec![Shape::full(); 6])
+            .with_marked_faces([255, 216, 0], &faces)
+            .with_docking_faces(&faces);
+        assert_eq!(port.clone().in_every_orientation(), port);
+        // A port with one state only gets the other five.
+        let one = BlockDefinition::cube([0.3; 3])
+            .with_marked_faces([255, 216, 0], &[Some(FaceDirection::PositiveX)])
+            .with_docking_faces(&[Some(FaceDirection::PositiveX)])
+            .in_every_orientation();
+        assert_eq!(one.state_count(), 6);
+        let table = BlockTable::from_definitions(&[Some(&one)]);
+        let mut seen: Vec<FaceDirection> = (0..6)
+            .map(|state| table.docking_face(0, state).unwrap())
+            .collect();
+        seen.sort();
+        assert_eq!(seen, FaceDirection::ALL);
+        for state in 0..6 {
+            assert_eq!(
+                table.marked_face_material(0, state).map(|mark| mark.0),
+                table.docking_face(0, state),
+                "the yellow face is the docking face in state {state}"
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "drawn by number")]
+    fn a_block_whose_states_are_numbers_is_not_put_in_every_orientation() {
+        BlockDefinition::cube([0.0; 3])
+            .with_state_colors(vec![[0.1; 3]])
+            .in_every_orientation();
     }
 
     #[test]

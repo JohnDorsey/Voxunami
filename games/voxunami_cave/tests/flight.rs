@@ -453,7 +453,8 @@ fn a_scripted_flight_ends_in_the_same_bits_every_time_and_on_every_machine() {
     let first = scripted_flight();
     assert_eq!(first, scripted_flight());
     // Taken on Windows; Linux is checked to agree to the bit.
-    assert_eq!(first, 18_015_188_713_189_090_947);
+    // (Moved once, on purpose, 2026-10-22: the pull of the planet is 5 metres a second a second, was 32, and the pilot's thrust holds the ship up against it.)
+    assert_eq!(first, 1_611_522_163_103_596_451);
 }
 
 #[test]

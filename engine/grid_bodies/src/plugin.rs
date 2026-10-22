@@ -15,7 +15,7 @@ use world_storage::MovingGrid;
 
 use crate::collision::{BlockCollisions, ShipHull, WorldTerrain};
 use crate::connectivity::{Connectivity, Outcome};
-use crate::docking::{Docking, Port, PortView, approach, docked_pose};
+use crate::docking::{Docking, Port, PortView, approach, docked_pose, torque_of_force};
 
 /// How far, in bricks, from the origin of a level's frame a ship may be to be simulated: `f32` is exact enough within it. A ship farther
 /// from the first ship of its level than this stays where it is (the simulation distance and a frame for each place will replace this).
@@ -1040,26 +1040,35 @@ impl Bodies {
             let Some(level) = self.levels.get_mut(&pair.level) else {
                 continue;
             };
-            for (id, sign) in [(pair.first, 1.0), (pair.second, -1.0)] {
-                if level
-                    .ships
-                    .get(&id)
-                    .is_none_or(|ship| ship.kind == BodyKind::Fixed)
-                {
+            for (id, port, sign) in [
+                (pair.first, pair.first_port, 1.0),
+                (pair.second, pair.second_port, -1.0),
+            ] {
+                let (Some(record), Some(ship)) =
+                    (level.ships.get(&id), world.data().grids().get(id))
+                else {
+                    continue;
+                };
+                if record.kind == BodyKind::Fixed {
                     continue;
                 }
-                // The pull is put on the centre of mass, so that it takes the ship straight toward the other port whatever the ship's shape, and
-                // does not swing a ship whose centre is far from its port (that is the twist's work, which turns the second ship toward line
-                // and the first the other way).
+                // The force is at the port (the owner, 2026-10-22: a ship whose centre is far from its port is swung by it). It is put on the centre of
+                // mass, and the turn it gives by being at the port is added as a torque worked out here from the centre of mass this plugin keeps:
+                // Rapier works out a lever from a centre of mass it updates when it steps, which is not the one just set for a ship made this tick.
+                let pull = force.map(|component| component * sign);
+                let (at, centre) = (port.local_centre(), record.centre_of_mass);
+                let arm = [0, 1, 2].map(|axis| at[axis] - f64::from(centre[axis]));
+                let lever = torque_of_force(ship.pose.rotation_matrix(), arm, pull);
+                // The second ship turns toward line and the first the other way.
+                let turn = [0, 1, 2].map(|axis| lever[axis] - twist[axis] * sign);
                 let body = BodyId(id.get());
-                let _ = level.bodies.apply_force(
-                    body,
-                    force.map(|component| (component * sign) as f32),
-                    None,
-                );
+                let _ =
+                    level
+                        .bodies
+                        .apply_force(body, pull.map(|component| component as f32), None);
                 let _ = level
                     .bodies
-                    .apply_torque(body, twist.map(|component| (-component * sign) as f32));
+                    .apply_torque(body, turn.map(|component| component as f32));
             }
         }
     }

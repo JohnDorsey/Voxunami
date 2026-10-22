@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{FLOOR, Scene, flat_floor, make_ship, pose_at, ship_id as id};
+use common::{FLOOR, Scene, flat_floor, heavy_planet, make_ship, pose_at, ship_id as id};
 use server::GridView;
 use voxel_space::{
     BrickCoordinate, GravitySettings, GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate,
@@ -45,6 +45,28 @@ fn velocity_of(scene: &Scene, number: u64) -> [f32; 3] {
         .get(id(number))
         .unwrap()
         .linear_velocity
+}
+
+#[test]
+fn ships_fall_at_the_pull_of_cave_five_metres_a_second_a_second() {
+    let mut scene = Scene::new();
+    flat_floor(&mut scene);
+    make_a_cube(&mut scene, 4, pose_at(14.0, FLOOR + 40.0, 14.0));
+    // Two ticks to make and weigh the body, then a second (20 ticks) of free fall: 5 metres a second faster, and 2.5 metres lower.
+    scene.ticks(2);
+    let (speed_before, height_before) =
+        (velocity_of(&scene, 0)[1], height_of(ship_pose(&scene, 0)));
+    scene.ticks(20);
+    let (speed, height) = (velocity_of(&scene, 0)[1], height_of(ship_pose(&scene, 0)));
+    assert!(
+        ((speed_before - speed) - 5.0).abs() < 0.05,
+        "{speed_before} to {speed}"
+    );
+    // (From the speed it had, v, over a second: v + 2.5.)
+    assert!(
+        ((height_before - height) - (-speed_before + 2.5)).abs() < 0.05,
+        "{height_before} to {height}"
+    );
 }
 
 #[test]
@@ -217,6 +239,7 @@ fn taking_blocks_from_under_a_resting_ship_or_the_ground_under_it_lets_it_sink()
 #[test]
 fn a_held_ship_stays_in_the_air_until_it_is_let_go_and_a_ship_put_somewhere_goes_on_from_there() {
     let mut scene = Scene::new();
+    heavy_planet(&mut scene);
     flat_floor(&mut scene);
     make_a_cube(&mut scene, 3, pose_at(14.0, FLOOR + 20.0, 14.0));
     scene.run(|world| world.set_grid_held(id(0), true).unwrap());
@@ -250,6 +273,7 @@ fn a_held_ship_stays_in_the_air_until_it_is_let_go_and_a_ship_put_somewhere_goes
 #[test]
 fn a_ship_rests_on_a_held_one_and_removing_ships_leaves_the_others_to_carry_on() {
     let mut scene = Scene::new();
+    heavy_planet(&mut scene);
     flat_floor(&mut scene);
     make_a_cube_that_may_be_held(&mut scene, 4, pose_at(14.0, FLOOR, 14.0), true);
     make_a_cube(&mut scene, 2, pose_at(15.0, FLOOR + 12.0, 15.0));
@@ -287,6 +311,7 @@ fn a_ship_rests_on_a_held_one_and_removing_ships_leaves_the_others_to_carry_on()
 #[test]
 fn flames_are_not_in_the_way_of_a_ship() {
     let mut scene = Scene::new();
+    heavy_planet(&mut scene);
     // A floor of fire, which bodies pass through: the ship goes through it and on down to the hills.
     let content = CaveContent::new();
     scene.run(move |world| {
@@ -312,6 +337,7 @@ fn flames_are_not_in_the_way_of_a_ship() {
 #[test]
 fn a_ship_too_far_from_the_first_one_of_its_level_stays_where_it_is() {
     let mut scene = Scene::new();
+    heavy_planet(&mut scene);
     make_a_cube(&mut scene, 2, pose_at(0.0, 300.0, 0.0));
     // A ship 2000 bricks away from the first would need more than the frame can hold.
     let far = GridPose::new(
@@ -392,6 +418,7 @@ fn a_ship_does_not_pull_itself_and_a_held_one_that_is_pulled_does_not_move() {
 /// A scene with ships of different shapes, one turned, one pushed, one edited, on the floor and in the air.
 fn busy_scene() -> Scene {
     let mut scene = Scene::new();
+    heavy_planet(&mut scene);
     flat_floor(&mut scene);
     make_a_cube(&mut scene, 4, pose_at(14.0, FLOOR + 6.0, 14.0));
     let turned = GridPose::new(
@@ -557,6 +584,7 @@ fn a_ship_that_falls_a_long_way_has_the_ground_ready_for_it_and_stops_on_it() {
     // from far enough ahead of it, and if they were not it would go through. (The floor of these tests, which is flat: natural ground is
     // hills, and a cube that lands on a slope rolls to wherever it rolls.)
     let mut scene = Scene::new();
+    heavy_planet(&mut scene);
     flat_floor(&mut scene);
     make_a_cube(&mut scene, 4, pose_at(14.0, FLOOR + 300.0, 14.0));
     let mut fastest = 0.0f32;
@@ -578,6 +606,7 @@ fn a_ship_that_falls_faster_than_the_floor_is_thick_stops_on_it() {
     // From 1000 above, a ship is going about 250 voxels a second where it lands, which is more than the floor (three thick) is thick in a
     // solver step of the three a tick has: it went through, and landed on the hills below. A tick is cut into more steps while it is fast.
     let mut scene = Scene::new();
+    heavy_planet(&mut scene);
     flat_floor(&mut scene);
     make_a_cube(&mut scene, 4, pose_at(14.0, FLOOR + 1000.0, 14.0));
     let mut fastest = 0.0f32;

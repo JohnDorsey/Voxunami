@@ -621,7 +621,8 @@ fn teleporting_a_passenger_puts_them_in_the_level_at_the_place_asked_and_not_abo
     assert_eq!(player_pose(&scene, 1).grid, ship_id(0));
     // Above the floor, well away from the deck (which is over x 5 to 35, z 20 to 28).
     player.send_command("/tp 50 230 50");
-    tick_and_follow(&mut scene, &mut player, 60);
+    // (A fall of 28 metres takes 3.4 seconds, 68 ticks, with 5 metres a second a second.)
+    tick_and_follow(&mut scene, &mut player, 120);
     let pose = player_pose(&scene, 1);
     assert!(pose.grid.root_level().is_some(), "in the level, not aboard");
     let [x, y, z] = in_voxels(pose.position);
@@ -698,7 +699,8 @@ fn a_scripted_run_aboard_ends_in_the_same_bits_every_time_and_on_every_machine()
     let first = scripted_run();
     assert_eq!(first, scripted_run());
     // Taken on Windows; the test passes on Linux too, so the two agree to the bit.
-    assert_eq!(first, 16_974_554_394_980_614_153);
+    // (Moved once, on purpose, 2026-10-22: the pull of the planet is 5 and a jump 3.6 metres a second; was 32 and 9, a jump of the same height.)
+    assert_eq!(first, 1_723_153_240_201_899_822);
 }
 
 #[test]
@@ -1102,9 +1104,9 @@ fn height_of_a_jump(scene: &mut Scene, player: &mut Player) -> f64 {
 
 #[test]
 fn the_walkers_feel_the_gravity_of_the_world_in_a_level_and_aboard_a_ship() {
-    // A moon: a quarter of the gravity, so a jump of 9 a second goes four times as high as the 1.27 voxels of the usual (9^2 / 16 = 5.06).
+    // A moon: half the gravity, so a jump of 3.6 a second goes twice as high as the 1.3 metres of the usual (3.6^2 / 5 = 2.59).
     let moon = voxel_space::GravitySettings {
-        base: [0.0, -8.0, 0.0],
+        base: [0.0, -2.5, 0.0],
         ..voxel_space::GravitySettings::default()
     };
     let mut scene = scene_with_a_deck();
@@ -1112,7 +1114,7 @@ fn the_walkers_feel_the_gravity_of_the_world_in_a_level_and_aboard_a_ship() {
     let mut player = walker_on_the_deck(&mut scene);
     assert_eq!(player_pose(&scene, 1).grid, ship_id(0));
     let aboard = height_of_a_jump(&mut scene, &mut player);
-    assert!((aboard - 5.06).abs() < 0.2, "aboard: {aboard}");
+    assert!((aboard - 2.59).abs() < 0.2, "aboard: {aboard}");
     assert_eq!(
         player_pose(&scene, 1).grid,
         ship_id(0),
@@ -1124,7 +1126,7 @@ fn the_walkers_feel_the_gravity_of_the_world_in_a_level_and_aboard_a_ship() {
     assert!(player_pose(&scene, 1).grid.root_level().is_some());
     let in_the_level = height_of_a_jump(&mut scene, &mut player);
     assert!(
-        (in_the_level - 5.06).abs() < 0.2,
+        (in_the_level - 2.59).abs() < 0.2,
         "in the level: {in_the_level}"
     );
 }

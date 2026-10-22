@@ -805,6 +805,25 @@ callers (ship creation, the bodies' terrain, the arrival look, the light-model s
 - Tests: the existing ones, rewritten by a tool for the calls (`regrid.py`, a scratch file) and by hand where a test expected an error for a level that is not there; two new for `detach_blocks` out of a
   ship and for `uniform_value` and `generated` on a ship. No pin moved. Windows {WINDOWS} and Linux {LINUX} tests pass; fmt and clippy clean.
 
+Phase 32m part 3 (the owner's answers to the docking report; 2026-10-22): the lever back, every block in every orientation, metric gravity, and the invariance tests.
+- *The owner's instructions:* (1) put the lever back; (2) chance keyed by grid is fine; (4) every block must be able to exist in every orientation; gravity should be metric, try 5 metres a second a second.
+- *The lever:* the pull is at the port again, as a force on the centre of mass and the torque `arm x force` worked out from the plugin's own centre of mass (`torque_of_force`, tested), not Rapier's (the cause of the first spin). The
+  fire test of docking had walls whose ports were at a corner; it now has ports in the middle of the walls, which is how a ship is built that is meant to dock (it passed every run I made of it, three in a row, and in the full suites below).
+- *Every block in every orientation:* `BlockDefinition::in_every_orientation` (tests: the number of states of a whole cube, a slab and a stair are 1, 6 and 12; the first seven states of the standard blocks are the seven they were; closed under every
+  turn; what a state sets goes with its turns and states that differ in it are not merged; the faces of a port turn; a block with numbered states is refused), applied to stone, dirt, grass, wood, the lamp and the dev docking port. A stair has 12
+  orientations and not 24 (checked by the test: its L profile has a half turn symmetry about its diagonal). `base_blocks::describe_shape` names the states. The docking roll test now says, for every roll including the eighths, that the
+  slab in the whole is the slab of the second ship turned by the transform (it used to say so for two rolls and shrug at the rest). Mutation experiments on the closure: ignoring the other properties, not turning the shape, not turning the
+  faces, not carrying the faces: all four caught. Cave's golden session moved by the package, 2,443 to 2,971 bytes, exactly the 528 the stream grew by.
+- *Gravity 5:* the three defaults (`GravitySettings`, `BodySettings`, `CharacterSettings`) and the jump (3.6, the same 1.3 metres). The tests: most of the physics and ship tests were about falling fast and stopping on thin ground, and
+  say so now by using an explicit planet of 32 (`heavy_planet`), and the two pinned hashes of the ships are *the same numbers they were* on it, which is the check that nothing else moved; the others were rewritten for slower falls
+  (more ticks, a wider trench, the walker's deck kept still until they land) or re-pinned (walking, flights, the aboard run), with the reason in the comment beside the number. New: `ships_fall_at_the_pull_of_cave_five_metres_a_second_a_second`, and
+  `a_jump_is_one_impulse_...` (the jump at 5: the speed goes down one step of gravity at a time all the way up, and the top is 1.3 metres). *Found by the tests on the way:* the turned-room tests compared a turned and an upright run at a moment in
+  the middle of a jump; they now compare after it, with one jump and a walk, and a grounded character's vertical speed is 'nothing or one step of gravity' (a step of gravity at 5 is 0.08 and was folded away at 32). A tolerance in the character
+  step (`1e-5` for 'stopped short') I loosened and put back: it was not the cause. A double jump from the ground-snap margin is refused (a character that is going up cannot jump).
+- *Invariance:* `tests/ship_invariance.rs`: two ships merged have the light of one built whole (and differ before the merge), a ship cut in two has the light of two built apart. They hold, with the light (no chance); the merge test
+  fails if the merged ship is not announced to the rules (`woken`). The first version of the split test put the lamp where it was joined to nothing, so the check gave it to the other half: a lamp must be on something.
+- Windows {WINDOWS} and Linux {LINUX} tests pass; fmt and clippy clean.
+
 Phase 32m part 2 (docking; 2026-10-22): the dev docking port, ships drawn together, turned into line, snapped and made one, and `/ship undock`. See `moving-grids-spec.md` 2.7 ("As built in 32m part 2").
 - *The owner's instructions:* a creative-only dev docking port, gunmetal gray with one yellow face that docks with another's; snap to exact alignment in rotation on all axes within 10 degrees, any roll in
   quarter turns; snapping distance 0.3 voxels; the attraction also twists; forces do not scale with the masses of the ships (each port gets the same, so lighter ships accelerate more); a to-do for the

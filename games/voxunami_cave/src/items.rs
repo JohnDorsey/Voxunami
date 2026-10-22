@@ -10,7 +10,7 @@ use block_models::{BlockDefinition, PropertyKey, engine};
 use entities::{EntityKindSpec, ItemSpec, ItemStack};
 use game_shell::PackageData;
 use namespaced_id::NamespacedId;
-use voxel_space::{EntityPose, FaceDirection, GridId, Orientation, VoxelCoordinate, WorldPosition};
+use voxel_space::{EntityPose, GridId, Orientation, VoxelCoordinate, WorldPosition};
 use world_storage::Section;
 
 /// How many of an item fit in a stack.
@@ -65,11 +65,6 @@ pub fn placeable_blocks(package: &PackageData) -> Vec<NamespacedId> {
     package.blocks_with(&PLACEABLE)
 }
 
-/// The word for a face, with east along +x, up along +y and north along -z.
-pub fn face_name(face: FaceDirection) -> &'static str {
-    ["west", "east", "down", "up", "north", "south"][usize::from(face.index())]
-}
-
 /// What a state of a block is called to a player: the face that docks, if the state has one, else the shape of the base blocks.
 pub fn state_name(definition: &BlockDefinition, state: u32) -> String {
     let key: NamespacedId = engine::DOCKING_FACE
@@ -78,8 +73,11 @@ pub fn state_name(definition: &BlockDefinition, state: u32) -> String {
         .expect("a property key is an identifier");
     let code = definition.property_value(&key, Some(state), 0);
     match u8::try_from(code).ok().and_then(engine::face_from_code) {
-        Some(face) => format!("docking face {}", face_name(face)),
-        None => base_blocks::shape_name(state).to_owned(),
+        Some(face) => format!("docking face {}", engine::face_name(face)),
+        None => definition.shapes().get(state as usize).map_or_else(
+            || base_blocks::shape_name(state).to_owned(),
+            base_blocks::describe_shape,
+        ),
     }
 }
 

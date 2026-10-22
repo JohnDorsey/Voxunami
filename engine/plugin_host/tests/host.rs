@@ -1901,6 +1901,6 @@ fn a_rule_asks_where_down_is_for_the_voxels_it_looks_at_and_gets_the_answer_in_t
     rig.server.step();
     assert_eq!(
         lines(&log),
-        ["terrain 0.0 -32.0 0.0", "ship 0.0 32.0 0.0", "missing true"]
+        ["terrain 0.0 -5.0 0.0", "ship 0.0 5.0 0.0", "missing true"]
     );
 }

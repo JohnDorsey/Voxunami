@@ -223,6 +223,12 @@ impl DockingSettings {
 
 const DEGREES: f64 = std::f64::consts::PI / 180.0;
 
+/// The torque about the centre of mass of a force put on a body away from it: the arm (from the centre of mass to where the force is, in the body's
+/// own axes), turned into the world's by the body's rotation, crossed with the force.
+pub fn torque_of_force(rotation: [[f64; 3]; 3], arm: [f64; 3], force: [f64; 3]) -> [f64; 3] {
+    cross(turn(rotation, arm), force)
+}
+
 /// Where the second ship is when it has docked with the first, exactly: the pose it has, and the transform that carries its voxels onto the
 /// first's (the one `voxel_space::lattice_alignment` finds from the two poses). The second's port voxel is the voxel against the first's
 /// port, on the side its face looks. `None` if that is outside the world.
@@ -256,6 +262,14 @@ pub fn docked_pose(
             offset,
         },
     ))
+}
+
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -821,6 +835,33 @@ mod tests {
         ));
         // Only out of range.
         assert!(!pulls(east, steep, [1.0, -7.0, 0.0]));
+    }
+
+    #[test]
+    fn a_force_away_from_the_centre_turns_a_body_about_the_axis_arm_cross_force_in_the_worlds_axes()
+    {
+        let upright = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        // One metre up from the centre, pushed along x: the torque is arm (0, 1, 0) crossed with force (5, 0, 0).
+        assert_eq!(
+            torque_of_force(upright, [0.0, 1.0, 0.0], [5.0, 0.0, 0.0]),
+            [0.0, 0.0, -5.0]
+        );
+        // On the centre: none.
+        assert_eq!(
+            torque_of_force(upright, [0.0; 3], [5.0, 2.0, 1.0]),
+            [0.0; 3]
+        );
+        // Turned a quarter about z (its y along the world's +x): the arm is along +x, and a push along x is on the axis.
+        let quarter = [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        assert_eq!(
+            torque_of_force(quarter, [0.0, 1.0, 0.0], [5.0, 0.0, 0.0]),
+            [0.0; 3]
+        );
+        // And pushed along y: arm (1, 0, 0) crossed with force (0, 5, 0).
+        assert_eq!(
+            torque_of_force(quarter, [0.0, 1.0, 0.0], [0.0, 5.0, 0.0]),
+            [0.0, 0.0, 5.0]
+        );
     }
 
     #[test]

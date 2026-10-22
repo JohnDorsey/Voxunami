@@ -85,7 +85,13 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
     works across a ship works across a docked pair with no work from a mod; a hinge or an axle joining ships is a different union and is not planned to carry natural processes across.
   - **Units are metric** wherever the thing exists in our world (owner, 2026-10-22): a voxel is a metre, mass is in kilograms, force in newtons, torque in newton metres, time in seconds. The code and the
     older text say "voxels a second" for a metre a second. Until materials have real densities (a conversation in `future-goals.md`, goal 9), every block that is not air weighs 1,000 kilograms
-    a cubic metre (a metric ton), the default of `engine:density`.
+    a cubic metre (a metric ton), the default of `engine:density`. **Gravity is 5 metres a second a second** (owner, 2026-10-22: the planet is not the Earth, so it need not be 9.8; it was 32, a number from block games):
+    `GravitySettings`, `BodySettings` and `CharacterSettings` default to it, and the jump is 3.6 metres a second (was 9), which is the same jump of 1.3 metres.
+  - **Every block can exist in every orientation** (owner, 2026-10-22): a block's states are closed under the 24 turns of the lattice (`BlockDefinition::in_every_orientation`), with the states it had keeping their numbers. A block
+    whose states are numbers (a fire's age) is the exception, because its state is not a way to stand.
+  - **The docking force is at the port** (owner, 2026-10-22), as a force on the centre of mass and the torque of the lever; a ship whose centre is far from its port is swung by it, and the twist does not have to overcome that for
+    ships that are built sensibly (the port near the middle of the face).
+  - **Chance keyed by grid is fine** (owner, 2026-10-22): a rule with chance does not go on bit for bit across a merge or a split, only in distribution.
   - A player who connects to a server and whose ship file cannot be found is asked what to do: spawn at the world spawn, spawn in
     midair, or quit to the title screen.
   - Added by the owner, 2026-10-20 (`future-goals.md`, "Ship goals"; planned in `moving-grids-spec.md`): sufficiently huge ships have their own

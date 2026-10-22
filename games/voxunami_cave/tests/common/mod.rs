@@ -22,8 +22,8 @@ use server::{GridView, Server, ServerWorld, ShipSettings};
 use transport::Connection;
 use transport::loopback::LoopbackConnector;
 use voxel_space::{
-    BrickCoordinate, EntityPose, GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate,
-    WorldPosition,
+    BrickCoordinate, EntityPose, GravitySettings, GridId, GridPose, LevelIndex, Orientation,
+    VoxelCoordinate, WorldPosition,
 };
 use voxunami_cave::aboard::in_voxels;
 use voxunami_cave::content::CaveContent;
@@ -555,6 +555,18 @@ pub fn make_ship(
                 }
             }
         }
+    });
+}
+
+/// The planet most of the ship tests were written for: it pulls at 32 metres a second a second, six times as hard as Cave's (5, the owner's
+/// choice of 2026-10-22). Those tests are about ships that fall fast, stop on thin ground, and are found where the numbers put them in a few ticks,
+/// and not about the planet; one test says what the default planet does (`ships_fall_at_the_pull_of_cave`).
+pub fn heavy_planet(scene: &mut Scene) {
+    scene.run(|world| {
+        world.set_gravity_settings(GravitySettings {
+            base: [0.0, -32.0, 0.0],
+            ..*world.gravity_settings()
+        });
     });
 }
 

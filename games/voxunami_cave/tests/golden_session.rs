@@ -304,8 +304,14 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// Docking, part 2 (2026-10-22): Cave has a block more, the creative-only dev docking port. The welcome grows by 395 bytes, 7,185,677 to 7,186,072: the package by 364 (the block's
 /// definition 207, its entry 32 and the declaration of the property `voxunami_cave:creative_only` 125, measured by encoding each alone) and, read and not measured separately, 31
 /// for its item (the 30 characters of its identifier and a length). The saved world changes too, as a world file lists the blocks of its game.
+/// Every block in every orientation (2026-10-22): the solid blocks and the lamp have a state for each way they stand (stone, dirt, grass and wood have 19: whole, six
+/// slabs, twelve stairs), so their definitions carry more shapes. The welcome grows by 528 bytes, 7,186,072 to 7,186,600, all of it the package, which went from 2,443 to
+/// 2,971 bytes (measured by encoding it). The saved world is the same: the numbers of the states it holds are the same.
+/// Gravity of 5 metres a second a second and a jump of 3.6 (2026-10-22; was 32 and 9, a jump of the same height). The welcome and the package are the same bytes, and the saved
+/// world is the same (every player ends where they stood); the stream is 210 bytes longer, 7,186,600 to 7,186,810, and its hash is not the same: the players fall and jump more
+/// slowly, so the stream holds more ticks of their motion. (Read from what changed, and not measured separately.)
 const PINNED: (u64, usize, u64) = (
-    4_176_588_984_324_657_272,
-    7_186_072,
+    3_113_545_625_050_401_371,
+    7_186_810,
     11_848_533_088_863_063_950,
 );

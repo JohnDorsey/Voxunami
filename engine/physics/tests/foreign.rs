@@ -446,7 +446,8 @@ fn a_run_about_a_ship_that_moves_ends_in_the_same_state_every_time_and_on_every_
     assert_eq!(first, PINNED_RUN);
 }
 
-const PINNED_RUN: u64 = 8_082_165_827_112_142_602;
+/// Moved once, on purpose, 2026-10-22: the default gravity is 5 metres a second a second (was 32), and the jump 3.6 metres a second (was 9: the same jump of 1.3 metres).
+const PINNED_RUN: u64 = 10_938_225_372_350_862_205;
 
 #[test]
 fn the_blocks_of_a_brick_that_is_not_the_first_of_a_turned_ship_are_where_the_turned_ship_puts_them()

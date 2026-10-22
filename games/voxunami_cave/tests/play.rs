@@ -699,7 +699,12 @@ fn the_server_refuses_states_a_block_does_not_have_and_air_has_only_the_first() 
         own.brick().y() * 32 + own.offset()[1] as i64 - 3,
         own.brick().z() * 32 + own.offset()[2] as i64,
     );
-    let shapes = base_blocks::SHAPE_NAMES.len() as u32;
+    // Stone stands nineteen ways (whole, six slabs and twelve stairs): state 19 is the first it does not have.
+    let shapes = rig
+        .content
+        .block_table()
+        .state_count(rig.content.blocks.stone);
+    assert_eq!(shapes, 19);
 
     request_block_with_state(&mut player, near, "base_blocks:stone", shapes);
     request_block_with_state(&mut player, near, "base_blocks:stone", u32::MAX);
@@ -764,7 +769,7 @@ fn the_shape_key_cycles_through_every_shape_and_placing_uses_the_one_chosen() {
     player.key_pressed(KeyCode::Digit4);
     assert_eq!(player.hud_text(), "placing lamp (whole)");
     player.key_pressed(KeyCode::Digit3);
-    for _ in 1..base_blocks::SHAPE_NAMES.len() {
+    for _ in 1..19 {
         player.key_pressed(KeyCode::KeyR);
     }
     assert_eq!(player.hud_text(), "placing grass (whole)");
@@ -1257,12 +1262,13 @@ fn a_walking_player_falls_and_stands_on_the_ground_and_stays_there() {
     // (The player's own place comes to them as an entity they watch, so the view is asked for, as every frame does.)
     let _ = player.update_view();
     let start = voxels_of(&player.camera)[1];
-    // They fall: after half a second they are several voxels lower.
-    tick_and_follow(&mut rig, &mut player, 10);
+    // They fall: after a second they are two and a half metres lower (5 metres a second a second).
+    tick_and_follow(&mut rig, &mut player, 20);
     let falling = voxels_of(&player.camera)[1];
-    assert!(falling < start - 3.0, "{start} {falling}");
+    assert!(falling < start - 2.0, "{start} {falling}");
     rig.settle(&mut [&mut player]);
-    tick_and_follow(&mut rig, &mut player, 120);
+    // (The ground is 30 below: 3.5 seconds, 70 ticks.)
+    tick_and_follow(&mut rig, &mut player, 200);
     // Standing on the highest solid voxel of their column, eyes a standing player's height above it.
     let ground = ground_height(&player, 16, 16) as f64;
     let standing = voxels_of(&player.camera);
@@ -1433,6 +1439,9 @@ fn teleporting_far_beyond_the_watched_region_takes_the_view_along_to_see_the_gro
         player.take_command_replies(),
         ["teleported to 2000.5 200 -1500.5"]
     );
+    // (They fall to the ground, 100 metres or so, which takes 6 seconds on this planet; the view comes down with them.)
+    tick_and_follow(&mut rig, &mut player, 200);
+    rig.settle(&mut [&mut player]);
     let ground = ground_height(&player, 2000, -1501);
     assert!((20..200).contains(&ground), "{ground}");
 }
@@ -1663,7 +1672,8 @@ fn a_player_in_a_trench_sent_to_a_level_whose_ground_is_whole_ends_up_on_it_not_
     let mut player = standing_walker(&mut rig);
     // Two columns of the ground dug out ahead of them: a trench they walk into and cannot climb out of (as
     // the fire digs one, by chance, in the test of walking through flames).
-    for z in [13, 12] {
+    // (Four wide: a walker at 4.3 metres a second takes 2.7 metres to fall one on this planet, and would cross a trench of two.)
+    for z in [15, 14, 13, 12] {
         let ground = ground_height(&player, 16, z);
         request_block(
             &mut player,
@@ -1747,14 +1757,16 @@ fn a_scripted_walk_over_the_hills_ends_in_the_same_place_every_time_and_on_every
     assert_eq!(first, PINNED_WALK, "{first:?}");
 }
 
+/// (Moved once, on purpose, 2026-10-22, all but the first and the fifth: the pull of the planet is 5 metres a second a second and a jump 3.6 metres a second, was 32 and 9. The first
+/// and the fifth, where the player stands still at the end of a stage on the ground, are the numbers they were.)
 const PINNED_WALK: [u64; 7] = [
     468_518_576_783_366_090,
-    12_890_916_843_119_075_606,
-    13_982_467_350_068_254_181,
-    17_157_314_486_479_003_852,
+    3_621_015_791_496_737_235,
+    15_049_547_940_405_347_413,
+    17_907_881_989_766_520_762,
     2_040_764_607_994_219_951,
-    14_899_297_459_819_532_857,
-    14_552_058_698_843_509_522,
+    3_385_291_536_655_073_884,
+    10_975_456_705_509_759_913,
 ];
 
 #[test]

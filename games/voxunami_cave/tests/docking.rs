@@ -5,6 +5,7 @@ mod common;
 
 use std::collections::BTreeMap;
 
+use block_models::Shape;
 use common::{Scene, ship_id};
 use game_shell::GameContent;
 use server::GridView;
@@ -395,7 +396,8 @@ fn rolled_pair(quarters: f32) -> Scene {
 }
 
 #[test]
-fn a_ship_docks_whatever_its_roll_about_the_docking_axis_and_its_slab_goes_with_the_roll() {
+fn a_ship_docks_whatever_its_roll_about_the_docking_axis_and_its_slab_is_the_same_slab_turned_with_it()
+ {
     for quarters in [0.0, 1.0, 2.0, 3.0, 0.5, 1.5, -0.4] {
         let mut scene = rolled_pair(quarters);
         let ticks = until_one_ship(&mut scene, 900);
@@ -407,23 +409,19 @@ fn a_ship_docks_whatever_its_roll_about_the_docking_axis_and_its_slab_goes_with_
         );
         let blocks = blocks_of(&scene, merged[0]);
         assert_eq!(blocks.len(), 4 + 3, "roll {quarters}");
-        // The slab was a bottom slab (state 1) of the second ship. Turned over (two quarters) it is a top slab (state 2); it is a bottom slab
-        // when the ship is not turned over. (Turned a quarter, it lies on its side, which the block has no state for: it keeps its state.)
-        let slab_states: Vec<u32> = blocks
-            .values()
-            .filter(|(block, state)| *block == stone() && *state != 0)
-            .map(|(_, state)| *state)
-            .collect();
-        let wanted = match quarters as i32 {
-            2 => Some(2),
-            0 => Some(1),
-            _ => None,
-        };
-        if quarters.fract() == 0.0
-            && let Some(wanted) = wanted
-        {
-            assert_eq!(slab_states, [wanted], "roll {quarters}");
-        }
+        // The slab was a bottom slab (state 1) of the second ship: it is the same slab in the whole, turned as the ship was turned onto the lattice
+        // of the first, whichever way that is (every block can stand every way).
+        let (_, transform) = scene.rig.server.world().grids().resolve(ship_id(1))[0];
+        let slab_at = transform.apply(VoxelCoordinate::new(1, 0, 0)).unwrap();
+        let (block, state) = blocks[&slab_at];
+        assert_eq!(block, stone(), "roll {quarters}");
+        let table = CaveContent::new().block_table();
+        let slab = table.shape(table.model_of(block, state));
+        assert!(
+            slab.same_cells(&Shape::half(FaceDirection::NegativeY).turned(transform.rotation)),
+            "roll {quarters}: state {state} is not the slab turned by {:?}",
+            transform.rotation
+        );
         // The ports are docked, and aligned to the lattice of the first.
         let docking = voxunami_cave::plugins::docking(&CaveContent::new());
         let ship = scene.rig.server.world().grids().get(merged[0]).unwrap();
@@ -808,23 +806,37 @@ fn a_command_to_undock_on_a_ship_with_nothing_docked_says_so() {
     assert_eq!(ships(&scene).len(), 2);
 }
 
-/// The first ship (held) has a wall of wood beside its port, 6 wide and 4 high, and nine fires beside it; the second has a wall of wood just like it
+/// Stone blocks along x from `from` to `to` (not including it), at this height and depth.
+fn stones_at_height(from: i64, to: i64, y: i64, z: i64) -> Vec<Placed> {
+    (from..to).map(|x| ([x, y, z], stone(), 0)).collect()
+}
+
+/// The first ship (held) has a wall of wood beside its port, 6 wide and 5 high, and nine fires beside it; the second has a wall of wood just like it
 /// beside its own port, which touches the first's wall if they are docked. How much of the second's wood is left after a good while, and whether
 /// the ships docked. The ports face each other if `docking`, and look the same way (so the ships touch and do not dock) if not.
 ///
 /// (The fire is chance, and what it is depends on the tick a player's first message reaches the server, which a loaded machine moves, and on the
-/// numbers of the ships, so a test about whether it spreads must not hang on the luck of one fire or of a few blocks: a wall of 24 and nine fires.)
+/// numbers of the ships, so a test about whether it spreads must not hang on the luck of one fire or of a few blocks: a wall of 29 and nine fires.)
 fn wood_of_the_second_ship_left_after_a_while(docking: bool) -> (usize, u64) {
     use common::tick_and_follow;
     let content = CaveContent::new();
-    let (mut first, mut second) = a_pair();
-    first.truncate(4);
-    for (y, z) in (1..5).flat_map(|y| (0..6).map(move |z| (y, z))) {
-        first.push(([3, y, z], content.blocks.wood, 0));
-        second.push(([0, y, z], content.blocks.wood, 0));
+    // Each wall is a plane of wood with the port in the middle of it and a row of stone behind the port (a port at the edge of a heavy ship would
+    // swing it, as ports do, and the test is about fire).
+    let mut first = stones_at_height(0, 3, 2, 3);
+    let mut second = stones_at_height(1, 3, 2, 3);
+    for (y, z) in (0..5).flat_map(|y| (0..6).map(move |z| (y, z))) {
+        if (y, z) != (2, 3) {
+            first.push(([3, y, z], content.blocks.wood, 0));
+            second.push(([0, y, z], content.blocks.wood, 0));
+        }
     }
+    first.push(([3, 2, 3], port_block(), facing(FaceDirection::PositiveX)));
+    second.insert(
+        0,
+        ([0, 2, 3], port_block(), facing(FaceDirection::NegativeX)),
+    );
     if !docking {
-        second[0] = ([0, 0, 0], port_block(), facing(FaceDirection::PositiveX));
+        second[0] = ([0, 2, 3], port_block(), facing(FaceDirection::PositiveX));
     }
     let (mut scene, report) = Scene::reporting();
     common::flat_floor(&mut scene);
@@ -906,13 +918,13 @@ fn fire_crosses_what_was_the_boundary_between_two_docked_ships_and_does_not_betw
     let (docked_left, made) = wood_of_the_second_ship_left_after_a_while(true);
     assert_eq!(made, 1, "the ships docked");
     assert!(
-        docked_left <= 4,
-        "docked: {docked_left} of the second ship's 24 blocks of wood are left, the fire having spread to it"
+        docked_left <= 5,
+        "docked: {docked_left} of the second ship's 29 blocks of wood are left, the fire having spread to it"
     );
     let (touching_left, made) = wood_of_the_second_ship_left_after_a_while(false);
     assert_eq!(made, 0, "the ships did not dock");
     assert_eq!(
-        touching_left, 24,
+        touching_left, 29,
         "touching but not docked: nothing crosses between ships"
     );
 }

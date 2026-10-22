@@ -13,7 +13,7 @@ use crate::{BRICK_EDGE_LENGTH, WorldPosition};
 /// What gravity is in a world: a server setting.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GravitySettings {
-    /// The acceleration of the level itself, in voxels per second per second, the same everywhere: 32 downward is what characters fall in.
+    /// The acceleration of the level itself, in voxels per second per second, the same everywhere: 5 downward is what characters fall in (a metric number for a planet that is not the Earth; owner, 2026-10-22).
     pub base: [f32; 3],
     /// The `G` of a body's pull, in voxels cubed per kilogram per second squared. The real one for metres is 6.674e-11, at which only a
     /// body the size of a moon pulls noticeably.
@@ -25,10 +25,10 @@ pub struct GravitySettings {
 }
 
 impl Default for GravitySettings {
-    /// Down at 32, and nothing pulls (no threshold is set).
+    /// Down at 5 metres a second a second, and nothing pulls (no threshold is set).
     fn default() -> Self {
         Self {
-            base: [0.0, -32.0, 0.0],
+            base: [0.0, -5.0, 0.0],
             pull_strength: 6.674e-11,
             pull_mass_threshold: None,
             softening: 1.0,
@@ -119,7 +119,7 @@ mod tests {
         );
         assert_eq!(
             gravity_at(&GravitySettings::default(), [], at(1.0, 2.0, 3.0)),
-            [0.0, -32.0, 0.0]
+            [0.0, -5.0, 0.0]
         );
     }
 

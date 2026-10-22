@@ -26,8 +26,9 @@ fn a_character_falls_and_comes_to_rest_on_the_floor_and_stays_there_without_a_tr
     // It is in the air at first, and falls.
     run(&mut body, &mut scene, STILL, 10);
     assert!(!body.is_grounded());
-    assert!(body.velocity()[1] < -3.0);
-    run(&mut body, &mut scene, STILL, 120);
+    // (A sixth of a second at 5 metres a second a second: 0.8 metres a second.)
+    assert!(body.velocity()[1] < -0.7);
+    run(&mut body, &mut scene, STILL, 150);
     assert!(body.is_grounded());
     let resting = eye(&body);
     // The eyes are at standing height above the floor, give or take the small gap collision leaves.
@@ -261,7 +262,8 @@ fn a_jump_clears_a_block_and_a_quarter_and_not_two_blocks() {
         },
         1,
     );
-    run(&mut body, &mut scene, FORWARD, 50);
+    // (The jump takes 1.4 seconds, 86 steps, on this planet; it is on the block by the 62nd, and 75 is a few steps along the block.)
+    run(&mut body, &mut scene, FORWARD, 75);
     let on_top = eye(&body);
     assert!(body.is_grounded());
     assert!(
@@ -395,7 +397,8 @@ fn a_ceiling_stops_a_jump_short_and_the_character_falls_back() {
 fn a_fall_gets_no_faster_than_the_terminal_speed() {
     let mut scene = Scene::with_floor(9);
     let mut body = spawn(16.5, 2000.0, 16.5);
-    run(&mut body, &mut scene, STILL, 400);
+    // (At 5 metres a second a second it takes 78 over 5 seconds to reach the terminal speed, 15.6 seconds, 936 steps, and 600 metres.)
+    run(&mut body, &mut scene, STILL, 1200);
     assert_eq!(
         body.velocity()[1],
         -CharacterSettings::default().terminal_speed
@@ -480,7 +483,7 @@ fn removing_the_ground_under_the_character_lets_it_fall_and_building_it_back_cat
     }
     // The terrain the character stands on changed: its brick is made again.
     edited(&mut body, &mut scene);
-    run(&mut body, &mut scene, STILL, 15);
+    run(&mut body, &mut scene, STILL, 60);
     assert!(!body.is_grounded());
     assert!(
         eye(&body)[1] < STANDING_EYE_HEIGHT - 1.0,
@@ -1171,7 +1174,8 @@ fn a_character_put_where_there_is_no_clear_space_above_stays_where_it_was_put_an
     );
 }
 
-const PINNED_SCRIPTED_RUN: u64 = 7_763_444_616_874_213_092;
+/// Moved once, on purpose, 2026-10-22: the default gravity is 5 metres a second a second (was 32), and the jump 3.6 metres a second (was 9: the same jump of 1.3 metres).
+const PINNED_SCRIPTED_RUN: u64 = 4_984_977_719_643_994_898;
 
 /// Whether the character's box reaches into any solid thing of the scene by more than a hair.
 fn is_inside_something(body: &CharacterBody, scene: &mut Scene) -> bool {
@@ -1374,4 +1378,43 @@ mod properties {
             );
         }
     }
+}
+
+#[test]
+fn a_jump_is_one_impulse_whatever_the_key_does_and_the_speed_up_falls_at_the_pull_of_gravity_all_the_way_up()
+ {
+    // (The ground is near enough to count as under the character for a tick or two after it leaves it, at a jump as slow as this planet's: the key
+    // held down must not jump the character again then.)
+    let (mut body, mut scene) = standing_on_a_floor();
+    let jump = MoveInput {
+        jump: true,
+        ..STILL
+    };
+    let pull = CharacterSettings::default().gravity / 60.0;
+    let mut speeds = Vec::new();
+    for _ in 0..40 {
+        run(&mut body, &mut scene, jump, 1);
+        speeds.push(body.velocity()[1]);
+    }
+    let start = CharacterSettings::default().jump_speed - pull;
+    assert!((speeds[0] - start).abs() < 1e-4, "{speeds:?}");
+    for step in 1..speeds.len() {
+        assert!(
+            (speeds[step] - (speeds[step - 1] - pull)).abs() < 1e-4,
+            "step {step}: {speeds:?}"
+        );
+    }
+    // And it comes to the height the numbers say: 3.6 squared over twice 5, 1.3 metres.
+    let top = {
+        let (mut body, mut scene) = standing_on_a_floor();
+        let floor = eye(&body)[1];
+        let mut highest = floor;
+        run(&mut body, &mut scene, jump, 1);
+        for _ in 0..90 {
+            run(&mut body, &mut scene, STILL, 1);
+            highest = highest.max(eye(&body)[1]);
+        }
+        highest - floor
+    };
+    assert!((top - 1.296).abs() < 0.06, "{top}");
 }

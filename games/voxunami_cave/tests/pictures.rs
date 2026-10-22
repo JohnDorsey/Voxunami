@@ -267,11 +267,14 @@ fn a_replay_draws_exactly_what_a_walker_carried_by_a_ship_that_turns_saw() {
     // (Which way they look is theirs to say; they say it.)
     player.send_pose();
     let origin = common::ship_pose(&scene, 0).position;
-    for tick in 0..140usize {
+    // (The deck keeps still while the walker falls onto it, which takes 33 ticks at 5 metres a second a second, and then moves and turns for 140 ticks.)
+    const LANDED: usize = 40;
+    for tick in 0..LANDED + 140 {
         scene.run(move |world| {
+            let ridden = tick.saturating_sub(LANDED) as f32;
             let pose = voxel_space::GridPose::new(
-                origin.translated([0.04 * tick as f32, 0.0, 0.0]),
-                voxel_space::Orientation::from_yaw_pitch(0.01 * tick as f32, 0.0),
+                origin.translated([0.04 * ridden, 0.0, 0.0]),
+                voxel_space::Orientation::from_yaw_pitch(0.01 * ridden, 0.0),
             );
             world.set_grid_pose(common::ship_id(0), pose).unwrap();
         });
