@@ -6,7 +6,7 @@ mod common;
 use common::{FLOOR, Scene, flat_floor, make_ship, pose_at, ship_id as id};
 use server::GridView;
 use voxel_space::{
-    BrickCoordinate, GravitySettings, GridPose, LevelIndex, Orientation, VoxelCoordinate,
+    BrickCoordinate, GravitySettings, GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate,
     WorldPosition,
 };
 use voxunami_cave::content::CaveContent;
@@ -630,6 +630,157 @@ fn a_big_raft_falling_to_natural_ground_makes_the_world_generate_a_few_bricks_a_
         assert!(
             most <= 14,
             "{size:?}: {most} bricks in one tick: {counts:?}"
+        );
+    }
+}
+
+/// How many blocks a ship has in a box of its coordinates.
+fn blocks_of(scene: &Scene, number: u64, size: [i64; 3]) -> usize {
+    let content = CaveContent::new();
+    let ship = scene
+        .rig
+        .server
+        .world()
+        .grids()
+        .get(common::ship_id(number))
+        .expect("the ship exists");
+    let mut count = 0;
+    for x in 0..size[0] {
+        for y in 0..size[1] {
+            for z in 0..size[2] {
+                let block = ship
+                    .voxels
+                    .get(content.block_channel(), VoxelCoordinate::new(x, y, z));
+                count += usize::from(block != content.blocks.air);
+            }
+        }
+    }
+    count
+}
+
+/// Takes the blocks of a ship at these voxels away (in the next tick).
+fn cut(scene: &mut Scene, number: u64, voxels: Vec<[i64; 3]>) {
+    let content = CaveContent::new();
+    scene.run(move |world| {
+        for [x, y, z] in voxels {
+            world
+                .grid(common::ship_id(number))
+                .unwrap()
+                .set(
+                    content.block_channel(),
+                    VoxelCoordinate::new(x, y, z),
+                    content.blocks.air,
+                )
+                .unwrap();
+        }
+    });
+}
+
+fn ship_numbers(scene: &Scene) -> Vec<u64> {
+    scene
+        .rig
+        .server
+        .world()
+        .grids()
+        .iter()
+        .map(|(id, _)| id.get() - GridId::FIRST_ALLOCATED)
+        .collect()
+}
+
+#[test]
+fn a_ship_cut_in_two_becomes_two_ships_that_fall_and_rest_on_their_own() {
+    let mut scene = Scene::new();
+    flat_floor(&mut scene);
+    make_ship(
+        &mut scene,
+        pose_at(10.0, FLOOR + 20.0, 10.0),
+        false,
+        [20, 1, 4],
+        |_| true,
+    );
+    scene.ticks(3);
+    assert_eq!(ship_numbers(&scene), [0]);
+    // A column of four blocks across the middle.
+    cut(&mut scene, 0, (0..4).map(|z| [10, 0, z]).collect());
+    scene.ticks(3);
+    // The ship is gone, and two new ones are there, none with its id, with the 40 blocks to one side and the 36 to the other.
+    let numbers = ship_numbers(&scene);
+    assert_eq!(numbers.len(), 2, "{numbers:?}");
+    assert!(numbers.iter().all(|number| *number > 0));
+    let mut counts: Vec<usize> = numbers
+        .iter()
+        .map(|number| blocks_of(&scene, *number, [20, 1, 4]))
+        .collect();
+    counts.sort();
+    assert_eq!(counts, [36, 40]);
+    // The old id leads to both, and they go on falling, and rest on the floor.
+    let resolved = scene.rig.server.world().grids().resolve(common::ship_id(0));
+    assert_eq!(resolved.len(), 2);
+    scene.ticks(200);
+    for number in numbers {
+        let height = height_of(ship_pose(&scene, number));
+        assert!((height - FLOOR).abs() < 0.1, "{number} rests at {height}");
+    }
+}
+
+#[test]
+fn a_dent_or_a_hole_that_cuts_nothing_off_leaves_the_ship_whole() {
+    let mut scene = Scene::new();
+    flat_floor(&mut scene);
+    make_ship(
+        &mut scene,
+        pose_at(10.0, FLOOR + 20.0, 10.0),
+        false,
+        [10, 1, 10],
+        |_| true,
+    );
+    // A hole in the middle, an end block, and a corner.
+    cut(
+        &mut scene,
+        0,
+        vec![[5, 0, 5], [0, 0, 0], [9, 0, 9], [9, 0, 8]],
+    );
+    scene.ticks(20);
+    assert_eq!(ship_numbers(&scene), [0]);
+    assert_eq!(blocks_of(&scene, 0, [10, 1, 10]), 96);
+}
+
+#[test]
+fn a_big_ship_cut_in_two_is_whole_until_the_work_of_finding_out_is_done_and_the_work_is_counted_not_timed()
+ {
+    // Two halves of 7500 blocks: finding that the cut separates them takes both being flooded to the end of one, some 15000 voxels, which the
+    // budget of 4096 a tick gives in four ticks.
+    let mut scene = Scene::new();
+    make_ship(
+        &mut scene,
+        pose_at(0.0, 5000.0, 0.0),
+        true,
+        [151, 1, 100],
+        |_| true,
+    );
+    scene.ticks(2);
+    cut(&mut scene, 0, (0..100).map(|z| [75, 0, z]).collect());
+    let mut ticks_until_split = 0;
+    while ship_numbers(&scene) == [0] && ticks_until_split < 20 {
+        scene.ticks(1);
+        ticks_until_split += 1;
+    }
+    assert!(
+        (3..=6).contains(&ticks_until_split),
+        "split after {ticks_until_split} ticks"
+    );
+    assert_eq!(ship_numbers(&scene).len(), 2);
+    // Held, and still held: the parts are where the ship was.
+    for number in ship_numbers(&scene) {
+        assert!(
+            scene
+                .rig
+                .server
+                .world()
+                .grids()
+                .get(common::ship_id(number))
+                .unwrap()
+                .held
         );
     }
 }

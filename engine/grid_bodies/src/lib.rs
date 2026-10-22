@@ -6,6 +6,7 @@
 //! as sources of it) is in [`collision`], which a game also uses for the bodies of its players.
 
 pub mod collision;
+pub mod connectivity;
 mod plugin;
 
 pub use plugin::{BodiesReport, FRAME_RADIUS_BRICKS, GridBodiesConfig, GridBodiesPlugin};

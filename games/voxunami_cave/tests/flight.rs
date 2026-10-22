@@ -452,3 +452,42 @@ fn a_scripted_flight_ends_in_the_same_bits_every_time_and_on_every_machine() {
     // Taken on Windows; Linux is checked to agree to the bit.
     assert_eq!(first, 18_015_188_713_189_090_947);
 }
+
+#[test]
+fn a_pilot_of_a_ship_that_is_cut_apart_has_the_controls_of_the_part_they_are_aboard() {
+    use common::{scene_with_a_deck, walker_on_the_deck};
+    let mut scene = scene_with_a_deck();
+    let mut pilot = walker_on_the_deck(&mut scene);
+    assert!(say(&mut scene, &mut pilot, "/ship pilot").starts_with("you pilot ship 0"));
+    // The end of the deck, 7 columns of it, from the 23rd along, is taken away from the rest by a cut of one column, away from the pilot.
+    let content = voxunami_cave::content::CaveContent::new();
+    scene.run(move |world| {
+        for z in 0..8 {
+            for y in 0..2 {
+                use server::GridView;
+                world
+                    .grid(ship_id(0))
+                    .unwrap()
+                    .set(
+                        content.block_channel(),
+                        VoxelCoordinate::new(22, y, z),
+                        content.blocks.air,
+                    )
+                    .unwrap();
+            }
+        }
+    });
+    tick_and_follow(&mut scene, &mut pilot, 5);
+    let frame = player_pose(&scene, 1).grid;
+    assert_ne!(frame, ship_id(0), "the ship they were on is gone");
+    assert!(scene.rig.server.world().grids().get(frame).is_some());
+    // They are still at the controls, of the part: letting go says so, with the number of the part.
+    let reply = say(&mut scene, &mut pilot, "/ship pilot");
+    assert_eq!(
+        reply,
+        format!(
+            "you let go of the controls of ship {}",
+            frame.get() - voxel_space::GridId::FIRST_ALLOCATED
+        )
+    );
+}

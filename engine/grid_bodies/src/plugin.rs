@@ -5,15 +5,16 @@ use block_models::{BlockTable, PropertyHandle};
 use namespaced_id::NamespacedId;
 use physics::{BodyId, BodyKind, BodySettings, BodyState, BodyWorld, MassMoments};
 use plugin_host::{HandlerSpec, Phase, Plugin, Registrar, SystemSpec};
-use server::ServerWorld;
+use server::{ServerWorld, SplitPart};
 use voxel_grid::ChannelIndex;
 use voxel_space::{
     BRICK_EDGE_LENGTH, BrickCoordinate, GridId, GridPose, LevelIndex, LocalVoxelIndex,
-    WorldPosition,
+    VoxelCoordinate, WorldPosition,
 };
 use world_storage::MovingGrid;
 
 use crate::collision::{BlockCollisions, ShipHull, WorldTerrain};
+use crate::connectivity::{Connectivity, Outcome};
 
 /// How far, in bricks, from the origin of a level's frame a ship may be to be simulated: `f32` is exact enough within it. A ship farther
 /// from the first ship of its level than this stays where it is (the simulation distance and a frame for each place will replace this).
@@ -33,6 +34,11 @@ const TERRAIN_NEEDED_SECONDS: f32 = 0.1;
 const TERRAIN_WANTED_BRICKS_PER_TICK: usize = 1;
 /// How much farther each ring of the wanted bricks reaches, in voxels: the nearer a brick is in rings, the sooner it is made.
 const TERRAIN_RING_VOXELS: f32 = 8.0;
+
+/// How many voxels of ships the checks for a ship that was cut in two may look at in a tick, all the ships together. A count and not a time, for
+/// the same reason as the budget of terrain. A cut that does not separate anything is found in a few steps; one that does costs about the size of the
+/// smaller part, so a ship that has lost a wing waits a few ticks (it is whole until the check is done) and a ship that is only dented does not.
+const SPLIT_VISITS_PER_TICK: usize = 4096;
 /// How much farther before the colliders of terrain are let go, so that a ship at the edge of the margin does not make and drop the same brick
 /// every tick.
 const TERRAIN_KEEP_EXTRA_VOXELS: f32 = 16.0;
@@ -134,7 +140,7 @@ impl Plugin for GridBodiesPlugin {
             move |event, _| {
                 let mut bodies = locked(&hearing);
                 for voxel in &event.voxels {
-                    bodies.changed(event.grid, voxel.split().0);
+                    bodies.changed(event.grid, *voxel);
                 }
             },
         );
@@ -175,11 +181,31 @@ struct Bodies {
     levels: BTreeMap<LevelIndex, LevelBodies>,
     /// The bricks of ships and of terrain changed since the last step.
     changed_ship_bricks: BTreeSet<(GridId, BrickCoordinate)>,
+    /// The voxels of ships changed since the last step: where a ship may have been cut.
+    changed_ship_voxels: BTreeMap<GridId, BTreeSet<VoxelCoordinate>>,
+    /// The ships that are being looked at to see if they were cut in two.
+    checks: BTreeMap<GridId, Check>,
     changed_terrain_bricks: BTreeSet<(LevelIndex, BrickCoordinate)>,
     /// What the world is to be told of the weight of ships, at the end of the step.
     weighed: BTreeMap<GridId, (f32, [f32; 3])>,
     report: Arc<Mutex<BodiesReport>>,
 }
+
+/// A ship that is being looked at to see whether it is still in one piece.
+struct Check {
+    /// The blocks beside the places where blocks were taken out, since the ship was last known to be whole.
+    seeds: BTreeSet<VoxelCoordinate>,
+    flood: Connectivity,
+}
+
+const FACES: [[i64; 3]; 6] = [
+    [-1, 0, 0],
+    [1, 0, 0],
+    [0, -1, 0],
+    [0, 1, 0],
+    [0, 0, -1],
+    [0, 0, 1],
+];
 
 fn pose_of(state: &BodyState) -> GridPose {
     GridPose::new(state.position, state.orientation)
@@ -193,19 +219,26 @@ impl Bodies {
             collisions,
             levels: BTreeMap::new(),
             changed_ship_bricks: BTreeSet::new(),
+            changed_ship_voxels: BTreeMap::new(),
+            checks: BTreeMap::new(),
             changed_terrain_bricks: BTreeSet::new(),
             weighed: BTreeMap::new(),
             report,
         }
     }
 
-    fn changed(&mut self, grid: GridId, brick: BrickCoordinate) {
+    fn changed(&mut self, grid: GridId, voxel: VoxelCoordinate) {
+        let brick = voxel.split().0;
         match grid.root_level() {
             Some(level) => {
                 self.changed_terrain_bricks.insert((level, brick));
             }
             None => {
                 self.changed_ship_bricks.insert((grid, brick));
+                self.changed_ship_voxels
+                    .entry(grid)
+                    .or_default()
+                    .insert(voxel);
             }
         }
     }
@@ -257,40 +290,172 @@ impl Bodies {
                     let local = LocalVoxelIndex::new(x as u8, y as u8, z as u8);
                     let block = contents.get(self.config.block_channel, local);
                     let state = contents.get(self.config.state_channel, local);
-                    let table = self.collisions.table();
-                    let model = table.model_of(block, state);
-                    let shape = table.shape(model);
-                    if shape.is_empty() {
-                        continue;
-                    }
-                    // The share of the cell the block fills, in eighths of each edge.
-                    let filled: u32 = if shape.is_full() {
-                        512
-                    } else {
-                        shape
-                            .boxes()
-                            .iter()
-                            .map(|part| {
-                                (0..3)
-                                    .map(|axis| u32::from(part.max[axis] - part.min[axis]))
-                                    .product::<u32>()
-                            })
-                            .sum()
-                    };
-                    let density = table.get(self.config.density, model);
-                    let mass = f64::from(density) * f64::from(filled) / 512.0;
-                    parts.push(MassMoments::of_voxel(
-                        [
-                            first.x() + x as i64,
-                            first.y() + y as i64,
-                            first.z() + z as i64,
-                        ],
-                        mass,
-                    ));
+                    let voxel = [
+                        first.x() + x as i64,
+                        first.y() + y as i64,
+                        first.z() + z as i64,
+                    ];
+                    parts.extend(self.voxel_moments(voxel, block, state));
                 }
             }
         }
         MassMoments::sum(parts)
+    }
+
+    /// The mass of one voxel of a ship, with the block and the state in it (`None` for air and the like).
+    fn voxel_moments(&self, voxel: [i64; 3], block: u32, state: u32) -> Option<MassMoments> {
+        let table = self.collisions.table();
+        let model = table.model_of(block, state);
+        let shape = table.shape(model);
+        if shape.is_empty() {
+            return None;
+        }
+        // The share of the cell the block fills, in eighths of each edge.
+        let filled: u32 = if shape.is_full() {
+            512
+        } else {
+            shape
+                .boxes()
+                .iter()
+                .map(|part| {
+                    (0..3)
+                        .map(|axis| u32::from(part.max[axis] - part.min[axis]))
+                        .product::<u32>()
+                })
+                .sum()
+        };
+        let density = table.get(self.config.density, model);
+        let mass = f64::from(density) * f64::from(filled) / 512.0;
+        Some(MassMoments::of_voxel(voxel, mass))
+    }
+
+    /// Looks at the ships that blocks were taken out of, to see if they are still in one piece, with a little work each tick; a ship that is
+    /// found to be in pieces is cut apart (see [`ServerWorld::split_grid`]). A ship is whole until its check says otherwise.
+    fn split_ships(
+        &mut self,
+        world: &mut ServerWorld,
+        changed: BTreeMap<GridId, BTreeSet<VoxelCoordinate>>,
+    ) {
+        let (block_channel, air) = (self.config.block_channel, self.config.air);
+        for (id, voxels) in changed {
+            let Some(ship) = world.data().grids().get(id) else {
+                self.checks.remove(&id);
+                continue;
+            };
+            let is_part = |voxel: VoxelCoordinate| ship.voxels.get(block_channel, voxel) != air;
+            // The blocks beside a place where a block was taken out.
+            let mut seeds: BTreeSet<VoxelCoordinate> = BTreeSet::new();
+            for voxel in voxels.into_iter().filter(|voxel| !is_part(*voxel)) {
+                for face in FACES {
+                    let near = VoxelCoordinate::new(
+                        voxel.x() + face[0],
+                        voxel.y() + face[1],
+                        voxel.z() + face[2],
+                    );
+                    if is_part(near) {
+                        seeds.insert(near);
+                    }
+                }
+            }
+            if seeds.is_empty() && !self.checks.contains_key(&id) {
+                continue;
+            }
+            // What was being looked at is looked at again with these as well (the ship has changed under it).
+            if let Some(earlier) = self.checks.remove(&id) {
+                seeds.extend(earlier.seeds.into_iter().filter(|seed| is_part(*seed)));
+            }
+            self.checks.insert(
+                id,
+                Check {
+                    flood: Connectivity::new(seeds.iter().copied()),
+                    seeds,
+                },
+            );
+        }
+        let mut budget = SPLIT_VISITS_PER_TICK;
+        let ids: Vec<GridId> = self.checks.keys().copied().collect();
+        for id in ids {
+            let Some(ship) = world.data().grids().get(id) else {
+                self.checks.remove(&id);
+                continue;
+            };
+            let is_part = |voxel: VoxelCoordinate| ship.voxels.get(block_channel, voxel) != air;
+            let check = self.checks.get_mut(&id).expect("the check is there");
+            let before = check.flood.visited();
+            let outcome = check.flood.step(budget, &is_part).clone();
+            budget = budget.saturating_sub((check.flood.visited() - before) as usize);
+            match outcome {
+                Outcome::Working => {}
+                Outcome::Whole => {
+                    self.checks.remove(&id);
+                }
+                Outcome::Split { pieces } => {
+                    self.checks.remove(&id);
+                    let parts = self.parts_of(ship, pieces);
+                    if parts.len() >= 2 {
+                        let _ = world.split_grid(id, parts);
+                    }
+                }
+            }
+            if budget == 0 {
+                break;
+            }
+        }
+    }
+
+    /// The parts a ship is cut into, given the pieces that were found cut off: those, and all the rest of its blocks as one more if there are
+    /// any. Each says where its centre of mass is.
+    fn parts_of(
+        &self,
+        ship: &MovingGrid,
+        pieces: Vec<BTreeSet<VoxelCoordinate>>,
+    ) -> Vec<SplitPart> {
+        let (block_channel, air) = (self.config.block_channel, self.config.air);
+        let mut rest: BTreeSet<VoxelCoordinate> = BTreeSet::new();
+        for brick in ship.voxels.sorted_brick_coordinates() {
+            let contents = ship.voxels.brick(brick).expect("a listed brick exists");
+            for local in LocalVoxelIndex::all() {
+                if contents.get(block_channel, local) != air {
+                    rest.insert(brick.voxel_at(local));
+                }
+            }
+        }
+        for piece in &pieces {
+            for voxel in piece {
+                rest.remove(voxel);
+            }
+        }
+        let mut voxel_sets = pieces;
+        if !rest.is_empty() {
+            voxel_sets.push(rest);
+        }
+        voxel_sets
+            .into_iter()
+            .map(|voxels| {
+                let moments = MassMoments::sum(voxels.iter().filter_map(|voxel| {
+                    let block = ship.voxels.get(block_channel, *voxel);
+                    let state = ship.voxels.get(self.config.state_channel, *voxel);
+                    self.voxel_moments([voxel.x(), voxel.y(), voxel.z()], block, state)
+                }));
+                // A part with no weight (nothing in it that bodies feel) is at the middle of its blocks.
+                let centre_of_mass = moments.properties().map_or_else(
+                    || {
+                        let count = voxels.len() as f64;
+                        [
+                            voxels.iter().map(|v| v.x() as f64 + 0.5).sum::<f64>() / count,
+                            voxels.iter().map(|v| v.y() as f64 + 0.5).sum::<f64>() / count,
+                            voxels.iter().map(|v| v.z() as f64 + 0.5).sum::<f64>() / count,
+                        ]
+                        .map(|value| value as f32)
+                    },
+                    |properties| properties.centre_of_mass,
+                );
+                SplitPart {
+                    voxels,
+                    centre_of_mass,
+                }
+            })
+            .collect()
     }
 
     /// One tick: what changed is made again, the ships are carried to where the world has them, the forces are applied, the bodies move and
@@ -298,6 +463,8 @@ impl Bodies {
     fn step(&mut self, world: &mut ServerWorld) {
         let changed_ships = std::mem::take(&mut self.changed_ship_bricks);
         let changed_terrain = std::mem::take(&mut self.changed_terrain_bricks);
+        let changed_voxels = std::mem::take(&mut self.changed_ship_voxels);
+        self.split_ships(world, changed_voxels);
         let present: Vec<(GridId, LevelIndex)> = world
             .data()
             .grids()

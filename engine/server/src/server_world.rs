@@ -7,8 +7,8 @@ use protocol::{ClientId, EntityId, MAXIMUM_COMMAND_LENGTH, Message, PlayerKey, T
 use terrain::GenerationOutcome;
 use voxel_grid::{Brick, ChannelIndex, Grid};
 use voxel_space::{
-    BrickCoordinate, EntityPose, GravitySettings, GridId, GridPose, LevelIndex, LocalVoxelIndex,
-    MassPull, Orientation, VoxelCoordinate, WorldPosition, gravity_at,
+    BrickCoordinate, EntityPose, GravitySettings, GridId, GridPose, LatticeTransform, LevelIndex,
+    LocalVoxelIndex, MassPull, Orientation, VoxelCoordinate, WorldPosition, gravity_at,
 };
 use world_storage::{
     MovingGrid, PilotLogout, ShipFiles, ShipFormat, ShipLoadError, ShipParkError, WorldData,
@@ -48,6 +48,24 @@ pub enum DetachError {
     NoVoxels,
     #[error(transparent)]
     Access(#[from] AccessError),
+}
+
+/// One piece of a ship that is being cut apart: the voxels it keeps, in the ship's own coordinates, and where its centre of mass is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SplitPart {
+    pub voxels: BTreeSet<VoxelCoordinate>,
+    pub centre_of_mass: [f32; 3],
+}
+
+/// Why a ship could not be split.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SplitError {
+    #[error(transparent)]
+    Access(#[from] AccessError),
+    #[error("a ship is split into at least two parts, each with a voxel")]
+    NotTwoParts,
+    #[error("a voxel is in two of the parts")]
+    Overlap,
 }
 
 /// Why a ship could not be put into a file or brought out of one.
@@ -821,6 +839,154 @@ impl ServerWorld {
         Some(ship)
     }
 
+    /// Cuts a ship into parts. Each part is a new ship (none keeps the id of the ship, which leaves a tombstone naming them all), in the
+    /// same place and turned the same, with only its voxels (every channel of them), and it goes on at the speed its centre of mass had in
+    /// the ship, which is the ship's speed there plus the turn of the ship. It is held or frozen if the ship was, and says the same of its
+    /// pilot's logout. Whatever was aboard goes to the part whose block it is standing on (the first block along the way gravity pulls, within
+    /// four voxels), else to the part nearest it, and is where it was in the ship's coordinates, which are the parts' too. The rules hear of
+    /// the parts as of ships that came out of a file. Voxels of the ship that are in no part are lost with it. Nothing changes on an error.
+    pub fn split_grid(
+        &mut self,
+        grid: GridId,
+        parts: Vec<SplitPart>,
+    ) -> Result<Vec<GridId>, SplitError> {
+        let old = self
+            .data
+            .grids()
+            .get(grid)
+            .ok_or(AccessError::NoSuchGrid(grid))?;
+        if parts.len() < 2 || parts.iter().any(|part| part.voxels.is_empty()) {
+            return Err(SplitError::NotTwoParts);
+        }
+        let mut owner: BTreeMap<VoxelCoordinate, usize> = BTreeMap::new();
+        for (index, part) in parts.iter().enumerate() {
+            for &voxel in &part.voxels {
+                if owner.insert(voxel, index).is_some() {
+                    return Err(SplitError::Overlap);
+                }
+            }
+        }
+        let layout = Arc::clone(old.voxels.layout());
+        let channels: Vec<ChannelIndex> = layout.channel_indices().collect();
+        let made: Vec<MovingGrid> = parts
+            .iter()
+            .map(|part| {
+                let mut voxels = Grid::new(Arc::clone(&layout));
+                for &voxel in &part.voxels {
+                    for &channel in &channels {
+                        voxels.set(channel, voxel, old.voxels.get(channel, voxel));
+                    }
+                }
+                let centre = WorldPosition::new(BrickCoordinate::ORIGIN, part.centre_of_mass);
+                let linear_velocity = old
+                    .pose
+                    .local_to_world(centre)
+                    .map_or(old.linear_velocity, |place| old.velocity_at(place));
+                MovingGrid {
+                    level: old.level,
+                    pose: old.pose,
+                    linear_velocity,
+                    angular_velocity: old.angular_velocity,
+                    mass: 0.0,
+                    centre_of_mass: part.centre_of_mass,
+                    held: old.held,
+                    frozen: old.frozen,
+                    on_pilot_logout: old.on_pilot_logout,
+                    voxels,
+                    sections: old.sections.clone(),
+                }
+            })
+            .collect();
+        // Which part each thing aboard goes to, decided while the ship is still there.
+        let aboard: Vec<(EntityId, EntityPose, usize)> = self
+            .data
+            .entities()
+            .in_grid(grid)
+            .into_iter()
+            .filter_map(|id| {
+                let pose = self.data.entities().get(id)?.pose;
+                Some((
+                    id,
+                    pose,
+                    self.part_under(grid, pose.position, &owner, &parts),
+                ))
+            })
+            .collect();
+        let (_, ids) = self
+            .data
+            .grids_mut()
+            .retire(
+                grid,
+                made.into_iter()
+                    .map(|part| (part, LatticeTransform::IDENTITY))
+                    .collect(),
+            )
+            .ok_or(AccessError::NoSuchGrid(grid))?;
+        for (id, pose, part) in aboard {
+            let _ = self.data.entities_mut().set_pose(
+                id,
+                EntityPose::new(ids[part], pose.position, pose.orientation),
+            );
+        }
+        self.woken.extend(ids.iter().copied());
+        Ok(ids)
+    }
+
+    /// The part of a ship that something at this place in it belongs to: the part of the block below it (along gravity, within four voxels), or
+    /// else the part with the voxel nearest to it.
+    fn part_under(
+        &self,
+        grid: GridId,
+        place: WorldPosition,
+        owner: &BTreeMap<VoxelCoordinate, usize>,
+        parts: &[SplitPart],
+    ) -> usize {
+        let at = {
+            let [x, y, z] = [0, 1, 2].map(|axis| {
+                let brick = [place.brick().x(), place.brick().y(), place.brick().z()][axis];
+                brick as f64 * 32.0 + f64::from(place.offset()[axis])
+            });
+            [x, y, z]
+        };
+        if let Ok(gravity) = self.gravity_in(grid, place) {
+            let gravity = gravity.map(f64::from);
+            let length = gravity.iter().map(|g| g * g).sum::<f64>().sqrt();
+            if length > 0.0 {
+                for step in 1..=8 {
+                    let t = f64::from(step) * 0.5;
+                    let voxel = VoxelCoordinate::new(
+                        (at[0] + gravity[0] / length * t).floor() as i64,
+                        (at[1] + gravity[1] / length * t).floor() as i64,
+                        (at[2] + gravity[2] / length * t).floor() as i64,
+                    );
+                    if let Some(&part) = owner.get(&voxel) {
+                        return part;
+                    }
+                }
+            }
+        }
+        let distance = |voxel: &VoxelCoordinate| {
+            let d = [
+                voxel.x() as f64 + 0.5 - at[0],
+                voxel.y() as f64 + 0.5 - at[1],
+                voxel.z() as f64 + 0.5 - at[2],
+            ];
+            d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+        };
+        parts
+            .iter()
+            .enumerate()
+            .filter_map(|(index, part)| {
+                part.voxels
+                    .iter()
+                    .map(distance)
+                    .min_by(f64::total_cmp)
+                    .map(|nearest| (nearest, index))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
+            .map_or(0, |(_, index)| index)
+    }
+
     /// Makes an empty ship in a level.
     pub fn create_grid(
         &mut self,
@@ -1502,6 +1668,166 @@ mod tests {
             world.set_grid_mass(gone, 1.0, [0.0; 3]),
             Err(AccessError::NoSuchGrid(gone))
         );
+    }
+
+    /// A ship that is a row of ten blocks along x, turning about the vertical axis at one radian a second about its middle, with a walker in it
+    /// at each of these places (in the ship's coordinates). Returns the world, the ship, the block channel and the walkers.
+    fn row_with_walkers(places: &[[f32; 3]]) -> (ServerWorld, GridId, ChannelIndex, Vec<EntityId>) {
+        let (mut world, walker) = world_with_a_walker();
+        let block = block_channel(world.data().main());
+        let ship = world
+            .create_grid(
+                LevelIndex::MAIN,
+                GridPose::new(
+                    WorldPosition::new(BrickCoordinate::ORIGIN, [3.0, 40.0, 3.0]),
+                    Orientation::IDENTITY,
+                ),
+            )
+            .unwrap();
+        for x in 0..10 {
+            world
+                .grid(ship)
+                .unwrap()
+                .set(block, VoxelCoordinate::new(x, 0, 0), 7)
+                .unwrap();
+        }
+        world.set_grid_mass(ship, 10.0, [5.0, 0.5, 0.5]).unwrap();
+        world
+            .set_grid_velocity(ship, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
+            .unwrap();
+        world.set_grid_held(ship, false).unwrap();
+        let walkers = places
+            .iter()
+            .map(|place| {
+                world
+                    .spawn_entity(
+                        &walker,
+                        aboard(ship, [0, 0, 0], *place, Orientation::IDENTITY),
+                        ComponentBag::new(),
+                    )
+                    .unwrap()
+            })
+            .collect();
+        (world, ship, block, walkers)
+    }
+
+    fn halves() -> Vec<SplitPart> {
+        let part = |range: std::ops::Range<i64>, x: f32| SplitPart {
+            voxels: range.map(|x| VoxelCoordinate::new(x, 0, 0)).collect(),
+            centre_of_mass: [x, 0.5, 0.5],
+        };
+        vec![part(0..5, 2.5), part(5..10, 7.5)]
+    }
+
+    #[test]
+    fn a_ship_split_in_two_is_two_new_ships_with_their_voxels_their_own_speeds_and_a_tombstone() {
+        let (mut world, ship, block, _) = row_with_walkers(&[]);
+        world.set_grid_held(ship, true).unwrap();
+        world
+            .set_grid_velocity(ship, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
+            .unwrap();
+        world
+            .set_grid_on_pilot_logout(ship, PilotLogout::Vanish)
+            .unwrap();
+        let parts = world.split_grid(ship, halves()).unwrap();
+        assert_eq!(parts.len(), 2);
+        // None has the id of the ship, which is gone, and it names both.
+        assert!(parts.iter().all(|part| part.get() > ship.get()));
+        assert!(world.data().grids().get(ship).is_none());
+        let named: Vec<GridId> = world
+            .data()
+            .grids()
+            .resolve(ship)
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        assert_eq!(named, parts);
+        for (index, part) in parts.iter().enumerate() {
+            let moving = world.data().grids().get(*part).unwrap();
+            // Where the ship was, turned as it was, with only its own blocks.
+            assert_eq!(
+                moving.pose.position,
+                WorldPosition::new(BrickCoordinate::ORIGIN, [3.0, 40.0, 3.0])
+            );
+            let own: Vec<i64> = (0..10)
+                .filter(|&x| moving.voxels.get(block, VoxelCoordinate::new(x, 0, 0)) == 7)
+                .collect();
+            assert_eq!(
+                own,
+                if index == 0 {
+                    (0..5).collect::<Vec<_>>()
+                } else {
+                    (5..10).collect::<Vec<_>>()
+                }
+            );
+            // The ship's speed, and what its turn adds at the middle of the part: the ship turns about y, so a place 2.5 voxels to one side of
+            // its middle moves 2.5 voxels a second along z, the other way for the other side.
+            let along_z = if index == 0 { 2.5 } else { -2.5 };
+            assert_eq!(moving.linear_velocity, [1.0, 0.0, along_z]);
+            assert_eq!(moving.angular_velocity, [0.0, 1.0, 0.0]);
+            assert!(moving.held && moving.on_pilot_logout == PilotLogout::Vanish);
+        }
+    }
+
+    #[test]
+    fn what_is_aboard_a_ship_that_is_split_goes_to_the_part_it_stands_on_or_else_the_nearest() {
+        let (mut world, ship, _, walkers) = row_with_walkers(&[
+            [1.5, 2.0, 0.5],  // standing on the left half
+            [8.5, 2.0, 0.5],  // standing on the right half
+            [6.2, 30.0, 0.5], // in the air far above, nearer the right half
+            [4.4, 30.0, 0.5], // in the air far above, nearer the left half
+        ]);
+        let parts = world.split_grid(ship, halves()).unwrap();
+        let frames: Vec<GridId> = walkers
+            .iter()
+            .map(|id| world.entities().get(*id).unwrap().pose.grid)
+            .collect();
+        assert_eq!(frames, [parts[0], parts[1], parts[1], parts[0]]);
+        // Where they are in the ship's coordinates is where they were, which are the parts' too.
+        assert_eq!(
+            world.entities().get(walkers[1]).unwrap().pose.position,
+            WorldPosition::new(BrickCoordinate::ORIGIN, [8.5, 2.0, 0.5])
+        );
+    }
+
+    #[test]
+    fn the_rules_hear_of_the_parts_of_a_split_ship_as_of_ships_that_came_out_of_a_file() {
+        let (mut world, ship, block, _) = row_with_walkers(&[]);
+        world.watch_channels([block].into_iter().collect());
+        world.take_changes();
+        let parts = world.split_grid(ship, halves()).unwrap();
+        let changes = world.take_changes();
+        assert_eq!(changes.len(), 10);
+        assert!(changes.iter().all(|change| parts.contains(&change.grid)));
+    }
+
+    #[test]
+    fn a_split_that_is_not_one_changes_nothing() {
+        let (mut world, ship, _, walkers) = row_with_walkers(&[[1.5, 2.0, 0.5]]);
+        let missing = GridId::new(GridId::FIRST_ALLOCATED + 99);
+        assert_eq!(
+            world.split_grid(missing, halves()),
+            Err(SplitError::Access(AccessError::NoSuchGrid(missing)))
+        );
+        assert_eq!(
+            world.split_grid(ship, halves()[..1].to_vec()),
+            Err(SplitError::NotTwoParts)
+        );
+        let mut with_nothing = halves();
+        with_nothing[1].voxels.clear();
+        assert_eq!(
+            world.split_grid(ship, with_nothing),
+            Err(SplitError::NotTwoParts)
+        );
+        let mut overlapping = halves();
+        overlapping[1].voxels.insert(VoxelCoordinate::new(4, 0, 0));
+        assert_eq!(
+            world.split_grid(ship, overlapping),
+            Err(SplitError::Overlap)
+        );
+        assert!(world.data().grids().get(ship).is_some());
+        assert_eq!(world.data().grids().tombstones().count(), 0);
+        assert_eq!(world.entities().get(walkers[0]).unwrap().pose.grid, ship);
     }
 
     /// A world whose entity catalog has one kind, with no components.

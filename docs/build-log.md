@@ -763,6 +763,19 @@ simulates the same. `GridBodiesPlugin::report` (bricks made last tick, most in a
   (at most 14 in a tick), and the existing falls (300 and 1000 above) still stop on the ground, so a ship does reach only bricks that have colliders. Not done: the property test of the spec (a ship's path with the budget
   is the path without it when the lookahead is long) -- the falls and the pins say it for the scenes we have. No pin changed. Windows 1651 and Linux 1652 pass; fmt and clippy clean.
 
+Phase 32l (splitting; 2026-10-22): a ship that is cut in two becomes two ships. See `moving-grids-spec.md` 2.7 for what happens.
+- `grid_bodies::connectivity` (the flood from the seeds, a count of voxels at a time, pure and tested alone: a row cut in two costs about the smaller part, a hole in a plate of 1600 costs
+  under 16, a block that hung by one face costs nothing, and the answer is the same for every budget), `ServerWorld::split_grid` and `SplitPart`/`SplitError` in `server`, the check and the
+  centres of mass in the plugin (`voxel_moments` was taken out of `moments_of`, so one voxel's mass is worked out in one place), and the pilot of a split ship in Cave.
+- Tests first: the connectivity tests; four of `split_grid` (voxels, speeds with the turn, flags, a tombstone; what is aboard goes to the part it stands on, else the nearest; the rules told; every
+  error changes nothing); in Cave a plank cut across falls as two ships that rest on the floor (40 and 36 blocks), a hole and an end and a corner leave one ship, a ship of 15,000 blocks is whole for
+  3 to 6 ticks and then two, and a pilot has the controls of the part they are on. Mutation (by hand, not the whole harness): the budget unlimited, the pilot not followed, the rest of the ship dropped,
+  the turn left out of the speed of a part: all four caught. Windows 1666 and Linux 1667 pass; fmt and clippy clean.
+- One test of the whole suite failed once in the full Windows run: `screen.rs` `a_replay_draws_the_form_exactly_as_it_was_drawn_live...`, one pixel on one GPU adapter. It passed three times alone and has
+  nothing to do with ships; I did not find the cause, and say so rather than call it nothing.
+- Known: parts are in the order the pieces were found and then the rest, so the part with the most blocks is usually last; nothing in the game depends on it. A ship edited every few ticks is not split until the
+  editing pauses. Merging and docking (32m) is next.
+
 Planning note, 2026-10-21 (the owner asked for the two open ship items to be put in the plan; they became steps 32j and 32k, before splitting): the claim in the earlier
 entries that ships "have no continuous collision detection against terrain" was a guess about the cause, and measuring it showed the cause is another. In the `physics` crate
 alone (a throwaway test, removed), cubes of 1 and 4 and rafts of 10 by 10 were dropped at set speeds on a slab of terrain: with the 3 solver steps a tick has, a floor of 1

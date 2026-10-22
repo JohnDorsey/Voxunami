@@ -253,6 +253,25 @@ budget of bricks is not in the picture, nor are those aboard it; one frame per l
   re-resolved (an entity or a pilot reference picks the part it ends up in). Each part continues with the velocity of its own centre of mass (linear plus angular
   times offset); entities aboard go to the part whose block they stand on, else the nearest by distance, then the event `GridSplit
   { from, parts }` is sent and recorded.
+  **As built in 32l** (`grid_bodies::connectivity`, `grid_bodies` plugin, `ServerWorld::split_grid`, Cave's pilots):
+  - *The check.* A block is part of a ship if it is not air. When blocks are taken out of a ship (a change that leaves air), the blocks beside those places are the *seeds*, and a
+    region is grown from each, a voxel at a time in turn (`Connectivity`). Regions that touch are one. If the seeds end in one region, the ship is whole, found as soon as they meet
+    (a dent, a hole, an end block: a few voxels, or none for a block that hung by one face). A region that runs out of voxels is a piece cut off; when one region is left that has not run
+    out, everything else is joined to it and is not flooded, so the cost of a cut is the size of the smaller parts. The work is a count of voxels looked at, `SPLIT_VISITS_PER_TICK` = 4096
+    for all the ships together, in order of ship; the ship is whole until its check says otherwise (a cut through a ship of 15,000 blocks took four ticks). What is found does not depend on
+    how the work is divided (tested for every budget from 1 to 40). A ship edited again while it is being checked is checked again from all the seeds so far: a ship that is cut every few
+    ticks is not split until the cutting stops.
+  - *The split.* `ServerWorld::split_grid(ship, parts)`, with the voxels and the centre of mass of each part (the plugin works the centre out from the densities): each part is a new ship
+    in the same place and turned the same, with only its voxels (every channel of them), held or frozen if the ship was, with the same pilot-logout wish and the sections of plugins; none
+    has the ship's id, which leaves a tombstone naming the parts (they are saved with the world file and resolved by `GridStore::resolve`). The parts are the pieces that were cut off,
+    in the order they were found, and then all the rest of the blocks as one more. A part goes on at the speed its centre of mass had in the ship: the ship's speed there plus its
+    turn crossed with the arm. The rules hear of the parts as of a ship that came out of a file. Blocks' other channels in air voxels (light, say) are not carried: the rules make them again.
+  - *Aboard.* Whatever was aboard goes to the part of the block it stands on (the first block along gravity, within four voxels), else to the part with the voxel nearest to it, and
+    is where it was in the ship's coordinates, which are the parts' too, so nothing jumps; players' bodies are reframed by the record as for any change of frame. Cave: a pilot of a ship
+    that is cut apart is at the controls of the part they are aboard.
+  - *Not done, on purpose:* a message `GridSplit` in the stream. Clients see the ship leave and the parts arrive (the stream already says so for any grid), and the lineage is in the tombstones;
+    nothing on the client needs more yet, and a new message would be a protocol version. A block placed so that it touches the ship only at an edge or corner is not a piece the check
+    looks for (nothing taken out, so no seed); in Cave a block is placed against a face, so it is joined.
 - **Merging and docking:** two grids merge only if `lattice_alignment` says they are on one lattice. A docking connector (engine part: a
   pair of ports, an attraction force, a snap distance) pulls two ships together; within the snap distance, the engine moves them to exact
   alignment and merges them: the smaller grid's bricks are re-keyed into the larger by the lattice transform (no re-mesh needed beyond the
@@ -482,7 +501,7 @@ The phase is large; I propose a pause for the owner after 32h, before docking.
   generate, and every reader pays it when the world's cache of 128 bricks has forgotten the brick (plan.md, Open). Generating is a pure function of the seed and the
   coordinate, so a worker thread that fills that cache ahead of the tick cannot change any result (the tick would find the brick, or generate the same one itself): it is the
   next idea if the budget leaves ticks too long, and it needs no change to the simulation.
-- **32l Splitting** (2.7): the budgeted connectivity check (on the budget of 32k), parts, velocities, entities re-framed, events and the stream.
+- **32l Splitting** (2.7, built 2026-10-22, see the build log): the budgeted connectivity check (on the budget of 32k), parts, velocities, entities re-framed, events and the stream.
 - **32m Merging and docking** (2.7): connectors, attraction, snap, merge, welds, undock refusal; merge invariance and split invariance tests
   (requirement 14).
 

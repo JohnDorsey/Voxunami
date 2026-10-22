@@ -396,6 +396,20 @@ impl Ships {
             return;
         }
         let mut movement = locked(&self.movement);
+        // A ship that was cut apart is gone, and its pilot has the part that they are aboard.
+        for (client, ship) in pilots.iter_mut() {
+            if world.data().grids().get(*ship).is_none()
+                && let Some(frame) = presence.frame_of(world.data(), *client)
+                && world
+                    .data()
+                    .grids()
+                    .resolve(*ship)
+                    .iter()
+                    .any(|(part, _)| *part == frame)
+            {
+                *ship = frame;
+            }
+        }
         let mut finished = Vec::new();
         for (&client, &ship) in pilots.iter() {
             let aboard = presence.frame_of(world.data(), client) == Some(ship);
