@@ -805,6 +805,16 @@ callers (ship creation, the bodies' terrain, the arrival look, the light-model s
 - Tests: the existing ones, rewritten by a tool for the calls (`regrid.py`, a scratch file) and by hand where a test expected an error for a level that is not there; two new for `detach_blocks` out of a
   ship and for `uniform_value` and `generated` on a ship. No pin moved. Windows {WINDOWS} and Linux {LINUX} tests pass; fmt and clippy clean.
 
+Phase 32m part 1 (merging; 2026-10-22): `ServerWorld::merge_grids`, the operation under docking. See `moving-grids-spec.md` 2.7 ("As built in 32m part 1").
+- New file `engine/server/src/merge.rs` (`MergePlan`, `TurnValues`, `MergeError`), `voxel_space::LatticeTransform::apply_point` (a point, not a voxel, carried by a transform; a property test says it
+  agrees with `apply` on voxel centres). The server grew no knowledge of docking, masses or block shapes: the plan carries the block channel, the tolerance, the velocity and the function that
+  turns a block's values.
+- Tests first (six): every block of both ships is where it was in the world (checked by world position of voxel centres, with the smaller turned a quarter and 6 voxels off), each old id a tombstone;
+  what is aboard either ship keeps its place in the world and its turn; held if either was, the plan's velocity, and the rules told; the order of the two names does not matter; values are turned
+  with a turned ship and not otherwise; every error says why and changes nothing. Mutation (by hand): the overlap check dropped, the turn function not called, held from the base only, the other's
+  passengers not carried, their turn not composed, the voxels carried one voxel off, the plan's velocity ignored, the smaller kept as the base: all eight caught.
+- Windows {WINDOWS} and Linux {LINUX} tests pass; fmt and clippy clean. (Clippy asked for the `turn` type to be named, hence `TurnValues`, a trait every matching closure implements.)
+
 Planning note, 2026-10-21 (the owner asked for the two open ship items to be put in the plan; they became steps 32j and 32k, before splitting): the claim in the earlier
 entries that ships "have no continuous collision detection against terrain" was a guess about the cause, and measuring it showed the cause is another. In the `physics` crate
 alone (a throwaway test, removed), cubes of 1 and 4 and rafts of 10 by 10 were dropped at set speeds on a slab of terrain: with the 3 solver steps a tick has, a floor of 1

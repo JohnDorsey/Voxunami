@@ -125,7 +125,7 @@ pub(crate) struct OutgoingGameMessage {
 /// change them and to talk to clients. Everything done here is replicated to the clients that watch it.
 #[derive(Debug)]
 pub struct ServerWorld {
-    data: WorldData,
+    pub(crate) data: WorldData,
     /// The kinds of entity and the items, from the game.
     catalog: Arc<EntityCatalog>,
     tick: Tick,
@@ -147,7 +147,7 @@ pub struct ServerWorld {
     /// [`ServerWorld::set_ship_storage`]).
     ships: Option<ShipStorage>,
     /// The ships that were brought into memory since the rules were told of their voxels (see [`ServerWorld::take_changes`]).
-    woken: Vec<GridId>,
+    pub(crate) woken: Vec<GridId>,
     ship_settings: ShipSettings,
     /// The clients the game has sent away this tick, with what they are told.
     disconnects: Vec<(ClientId, String)>,
@@ -1112,7 +1112,7 @@ impl ServerWorld {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use terrain::{TerrainGenerator, WorldTerrain};
@@ -1161,7 +1161,7 @@ mod tests {
         LevelData::new(terrain, Grid::new(layout))
     }
 
-    fn block_channel(level: &LevelData) -> ChannelIndex {
+    pub(crate) fn block_channel(level: &LevelData) -> ChannelIndex {
         level
             .overrides
             .layout()
@@ -2110,7 +2110,7 @@ mod tests {
     }
 
     /// A world whose entity catalog has one kind, with no components.
-    fn world_with_a_walker() -> (ServerWorld, NamespacedId) {
+    pub(crate) fn world_with_a_walker() -> (ServerWorld, NamespacedId) {
         let (world, _, _) = counting_world();
         let mut kinds = entities::EntityKinds::new();
         kinds
@@ -2126,7 +2126,12 @@ mod tests {
         )
     }
 
-    fn aboard(ship: GridId, brick: [i64; 3], offset: [f32; 3], turn: Orientation) -> EntityPose {
+    pub(crate) fn aboard(
+        ship: GridId,
+        brick: [i64; 3],
+        offset: [f32; 3],
+        turn: Orientation,
+    ) -> EntityPose {
         EntityPose::new(
             ship,
             WorldPosition::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), offset),

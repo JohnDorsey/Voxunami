@@ -15,6 +15,7 @@ mod game_logic;
 mod generated_cache;
 mod grid_replication;
 mod grid_view;
+mod merge;
 mod replication;
 mod server;
 mod server_world;
@@ -26,6 +27,7 @@ pub use command_line::CommandLine;
 pub use config::ServerConfig;
 pub use game_logic::GameLogic;
 pub use grid_view::{GridView, ServerGrid};
+pub use merge::{MergeError, MergePlan, TurnValues};
 pub use server::{LeaveReason, Server, ServerError, StepReport};
 pub use server_world::{
     AccessError, Audience, ChannelChange, DetachError, GridForce, ServerWorld, ShipStorageError,

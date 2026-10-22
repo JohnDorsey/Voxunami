@@ -186,6 +186,19 @@ impl LatticeTransform {
         .ok()
     }
 
+    /// Where a point goes: the same map as [`LatticeTransform::apply`], for a point anywhere in a voxel (coordinates in voxels, the middle of voxel
+    /// `v` being at `v + 0.5`). The middle of a voxel goes to the middle of the voxel it goes to, so what stands on a block stays on it.
+    pub fn apply_point(self, point: [f64; 3]) -> [f64; 3] {
+        let matrix = self.rotation.matrix();
+        [0, 1, 2].map(|row| {
+            let turned: f64 = (0..3)
+                .map(|column| matrix[row][column] as f64 * point[column])
+                .sum();
+            let along: f64 = (0..3).map(|column| matrix[row][column] as f64).sum();
+            turned + self.offset[row] as f64 + 0.5 * (1.0 - along)
+        })
+    }
+
     /// The transform that does `self` and then `next`, or `None` if an offset would overflow.
     pub fn then(self, next: Self) -> Option<Self> {
         let turned = next.rotation.apply(self.offset);
@@ -230,6 +243,26 @@ mod tests {
 
     fn transform() -> impl Strategy<Value = LatticeTransform> {
         (rotation(), vector()).prop_map(|(rotation, offset)| LatticeTransform { rotation, offset })
+    }
+
+    proptest! {
+        #[test]
+        fn a_point_goes_where_the_voxel_it_is_in_goes(
+            transform in transform(),
+            voxel in prop::array::uniform3(-100_000i64..100_000),
+            inside in prop::array::uniform3(0.0f64..1.0),
+        ) {
+            let from = VoxelCoordinate::new(voxel[0], voxel[1], voxel[2]);
+            let to = transform.apply(from).unwrap();
+            // The middle of the voxel goes to the middle of the voxel it goes to.
+            let middle = transform.apply_point([0, 1, 2].map(|axis| voxel[axis] as f64 + 0.5));
+            prop_assert_eq!(middle, [to.x() as f64 + 0.5, to.y() as f64 + 0.5, to.z() as f64 + 0.5]);
+            // And any point of it goes to a point of the other.
+            let point = transform.apply_point([0, 1, 2].map(|axis| voxel[axis] as f64 + inside[axis]));
+            for (axis, value) in [to.x(), to.y(), to.z()].into_iter().enumerate() {
+                prop_assert!(point[axis] >= value as f64 && point[axis] <= value as f64 + 1.0, "{point:?} not in {to:?}");
+            }
+        }
     }
 
     fn determinant(m: [[i64; 3]; 3]) -> i64 {

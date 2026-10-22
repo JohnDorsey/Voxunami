@@ -279,6 +279,21 @@ budget of bricks is not in the picture, nor are those aboard it; one frame per l
   passengers) are re-framed, `GridMerged { from, into, transform }` is sent.
   Welding (solid blocks flush with the ports that touch when merged) follows the 2026-10-18 decision. Docking is the biggest single piece
   after 32h; section 4 puts it after a pause for review.
+  **As built in 32m part 1: the merge** (`engine/server/src/merge.rs`; the owner, 2026-10-22: docked ships become one ship, so that every natural process crosses what was their boundary
+  with no work from a mod; a hinge or an axle is a different union, and not planned to carry processes across):
+  - `ServerWorld::merge_grids(a, b, &MergePlan) -> Result<GridId, MergeError>`. The ship with more bricks (of two as large, the lower id) is the *base*: it keeps its coordinates, its pose and
+    its sections. `lattice_alignment(other, base, plan.tolerance)` gives the transform that carries the other onto the base's lattice, and every block of the other is carried by it (a block is a
+    voxel whose `plan.block_channel` is not the channel's default; every non-default channel of it comes along). A block that would land on a block of the base is `MergeError::Overlap`; ships
+    that are not on one lattice (a half-voxel off, a tilt that is not a quarter turn) are `NotOnOneLattice`; also `SameShip`, `DifferentLevels`, `OutOfRange`, and `Access` for a ship that is not there.
+    Everything is worked out before anything changes, so an error leaves the world as it was.
+  - The merged ship is a *new* ship (a new id from the counter; neither old id is kept), and each old id becomes a tombstone naming it, with the transform to it (`GridStore::merge`; `resolve`
+    follows it). It is held if either was, frozen if both were, and goes at the velocity in the plan: the server does not know masses, so whoever calls (the docking plugin) works out the
+    momentum-conserving velocity. The rules hear of it as of a ship that came out of a file.
+  - *Aboard:* whatever was aboard either ship is aboard the new one, at the same block and turned the same: the base's keep their coordinates; the other's are carried by the same transform
+    (`LatticeTransform::apply_point`) and their turn composed with the quarter turn.
+  - *Turning values:* a block of the other that is turned is, in general, a different block (a stair that faced north faces east). The server cannot know that, so the plan carries `turn`, called with
+    the non-default values of a voxel and the `LatticeRotation`, and only when the rotation is not the identity. The game's block table supplies it.
+  - *Not here:* finding ports, attraction, the snap, welds and undock (the next parts), and the message `GridMerged` (clients see two ships leave and one arrive, as for a split).
 
 **Writing a rule that works aboard (as built after the fire on a ship, 2026-10-22).** The promise of ships is that a block behaviour, interaction or natural process that a game or a mod
 adds works on board any ship with no effort from its author. It holds by construction for the part of a rule that is about one grid, and by discipline for the part that asks about the world:
@@ -522,7 +537,8 @@ The phase is large; I propose a pause for the owner after 32h, before docking.
   next idea if the budget leaves ticks too long, and it needs no change to the simulation.
 - **32l Splitting** (2.7, built 2026-10-22, see the build log): the budgeted connectivity check (on the budget of 32k), parts, velocities, entities re-framed, events and the stream.
 - **32m Merging and docking** (2.7): connectors, attraction, snap, merge, welds, undock refusal; merge invariance and split invariance tests
-  (requirement 14).
+  (requirement 14). Built in parts: (1) the merge operation `ServerWorld::merge_grids` (built 2026-10-22); (2) the docking plugin: ports, attraction, snap, merged velocity, undock;
+  (3) Cave's port block, `/ship undock`, the parity test across a former boundary, the invariance tests.
 
 *Why 32j and 32k are here (decided 2026-10-21):* both change the body layer that splitting and merging build on, and both would change the pins those steps make
 (32l and 32m make new bodies, with velocities, in new orders), so doing them after would mean pinning twice; the budget is a facility that 32l uses; and neither
