@@ -239,6 +239,18 @@ then what it needs and what I found in the code.
    edit path refuses to change (including explosions and fire), a server setting that decides whether logout may fossilize and who may
    undo it, and a visible marker. Fits `on_pilot_logout` as a third value.
 
+8. **A `GridSplit` message in the stream (owner, 2026-10-22), and, optionally, the parts' bricks derived by the client.**
+   *Found:* splitting (32l) sends no message of its own: a client sees the ship leave (`GridsDespawned`) and the parts arrive (`GridsSpawned` and the `BrickContents` of every brick of
+   every part, since nothing generates a ship's bricks); the lineage is in the tombstones, which are saved but not sent. *Needs:* a message `GridSplit { from, parts }` (the spec's wording
+   in `moving-grids-spec.md` 2.7), so that a client can keep what refers to the old ship (a camera, a picked block, a drawn selection) on the part it went to, and so that a
+   recording says it; a protocol version, and the golden sessions that record the stream are regenerated.
+   *Optional part 2:* the client works out the bricks of the parts from the bricks of the whole instead of being sent them again. A part keeps the pose and the coordinates of the
+   ship, so a part's brick is the whole's brick with the voxels of the other parts set to their defaults: the message would carry, for each part, the voxels it keeps (the
+   server already has them as `SplitPart`; run-length coded they are small beside the bricks), and the client would cut its copy of the ship's bricks accordingly and keep them under the
+   new ids (re-meshing only the bricks that changed). *Needs, beyond the message:* the client must hold the whole's bricks at that moment (a ship it did not watch gets the
+   parts in full, as now); the voxels in no part (air with light in it) are dropped on both sides the same way, as `split_grid` drops them; and a test that the client's derived
+   bricks equal the bricks the server would have sent, bit for bit, for random cuts.
+
 
 ## Levels (owner, 2026-10-20)
 
