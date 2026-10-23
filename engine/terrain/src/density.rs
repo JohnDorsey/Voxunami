@@ -68,12 +68,22 @@ impl ShellCaves {
     }
 }
 
+/// What a field whose features are all finer than the footprint is: no feature, which for caves is solid everywhere. (Not the value the noise has
+/// when it is all dropped, which is 0, the middle of a sheet of air: that would make a world with caves air everywhere from far away.)
+const NO_CAVES: f64 = 1.0e12;
+
 impl DensityField for ShellCaves {
     fn sample(&self, position: VoxelCoordinate, footprint: LevelOfDetail) -> f64 {
+        if self.noise.is_entirely_finer_than(footprint) {
+            return NO_CAVES;
+        }
         self.strength * (self.noise.sample(position, footprint).abs() - self.half_thickness)
     }
 
     fn bounds(&self, region: &VoxelBox, footprint: LevelOfDetail) -> Interval {
+        if self.noise.is_entirely_finer_than(footprint) {
+            return Interval::point(NO_CAVES);
+        }
         self.noise
             .bounds(region, footprint)
             .absolute()
@@ -166,6 +176,39 @@ mod tests {
             "no solid voxels found"
         );
         assert!(values.iter().all(|&value| value >= -16.0 * 0.1 - 1e-12));
+    }
+
+    #[test]
+    fn caves_that_are_all_finer_than_the_footprint_are_no_caves_and_not_air_everywhere() {
+        // The noise of caves at footprint 6 has every octave dropped (wavelengths 2^5 and 2^4), and then it is 0, which is the middle of a sheet of air:
+        // the world from far away must not be air. Found by the coarse cells of the rolling hills, which were all air from detail level 6.
+        let noise = FractalNoise::standard(9, Dimensionality::Volumetric, 5, 2, 1.0, 0.5);
+        let caves = ShellCaves::new(noise, 0.08, 16.0);
+        let coarse = LevelOfDetail::new(6).unwrap();
+        for i in 0..200 {
+            assert!(caves.sample(voxel(i * 37, i * 11, -i * 5), coarse) > 0.0);
+        }
+        let region = VoxelBox::new(voxel(0, 0, 0), voxel(1000, 1000, 1000)).unwrap();
+        assert!(caves.bounds(&region, coarse).lower() > 0.0);
+        // Where an octave is kept (footprint 5 keeps the first), the sheets are there as they were, and at full detail nothing is changed.
+        let kept = LevelOfDetail::new(5).unwrap();
+        let values: Vec<f64> = (0..4000)
+            .map(|i| caves.sample(voxel(i, 7, -i), kept))
+            .collect();
+        assert!(values.iter().any(|&value| value <= 0.0));
+        // Ground with such caves, from far away, is the ground.
+        let world = Minimum {
+            first: flat_ground(10.0),
+            second: caves,
+        };
+        assert!(world.sample(voxel(5, 3, 5), coarse) > 0.0);
+        assert!(world.sample(voxel(5, 30, 5), coarse) <= 0.0);
+        // And noise with no octaves at all is not "dropped": it is 0 at every footprint, as it always was.
+        let nothing = ShellCaves::new(FractalNoise::none(), 0.1, 16.0);
+        assert!(
+            nothing.sample(voxel(1, 2, 3), FULL) < 0.0
+                && nothing.sample(voxel(1, 2, 3), coarse) < 0.0
+        );
     }
 
     #[test]

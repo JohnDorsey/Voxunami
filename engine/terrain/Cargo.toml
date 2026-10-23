@@ -7,6 +7,7 @@ publish.workspace = true
 description = "Deterministic procedural terrain: density fields with conservative bounds, brick generation, and per-region generator versions."
 
 [dependencies]
+coarse_cells.workspace = true
 content_registry.workspace = true
 namespaced_id.workspace = true
 region_octree.workspace = true

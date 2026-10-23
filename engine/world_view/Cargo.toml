@@ -15,6 +15,7 @@ voxel_space.workspace = true
 world_storage.workspace = true
 
 [dev-dependencies]
+coarse_cells.workspace = true
 content_registry.workspace = true
 proptest.workspace = true
 region_octree.workspace = true

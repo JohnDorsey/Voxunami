@@ -163,6 +163,16 @@ impl FractalNoise {
         total
     }
 
+    /// Whether the noise has octaves and every one of them is finer than `footprint`, so that it is dropped altogether (and the sample is 0 because there
+    /// is nothing left, not because the noise happens to be zero there). Noise with no octaves at all is not "dropped".
+    pub fn is_entirely_finer_than(&self, footprint: LevelOfDetail) -> bool {
+        !self.octaves.is_empty()
+            && self
+                .octaves
+                .iter()
+                .all(|octave| !Self::keeps(octave, footprint))
+    }
+
     /// The most the sampled value can differ between full detail and `footprint`: the combined
     /// amplitude of the octaves dropped at that footprint.
     pub fn omitted_amplitude(&self, footprint: LevelOfDetail) -> f64 {

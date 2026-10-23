@@ -15,9 +15,11 @@
 //! top of it) are still made. Transparent blocks that blend (water) need their own pass, which is not
 //! built.
 
+mod coarse;
 mod mesher;
 mod quad;
 
+pub use coarse::coarse_node_of_brick;
 pub use mesher::{BrickChannels, BrickNeighbourhood, mesh_brick};
 pub use quad::{
     BrickMesh, DetailedQuad, FULL_LIGHT, MAXIMUM_MATERIAL, PackedBrickMesh, PackedDetailedQuad,

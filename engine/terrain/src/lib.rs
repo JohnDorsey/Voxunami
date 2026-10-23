@@ -16,6 +16,7 @@
 //! A [`TerrainGenerator`] turns a field into bricks. [`WorldTerrain`] chooses which registered
 //! generator version produced each region of a world.
 
+mod coarse;
 mod density;
 mod generator;
 mod interval;

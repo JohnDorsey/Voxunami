@@ -1,6 +1,8 @@
 use std::fmt::Debug;
 use std::sync::Arc;
 
+use coarse_cells::CoarseNode;
+use region_octree::BrickCube;
 use voxel_grid::{Brick, ChannelIndex, ChannelStorage, GridLayout};
 use voxel_space::{
     BRICK_EDGE_LENGTH, BRICK_VOXEL_COUNT, BrickCoordinate, LevelOfDetail, LocalVoxelIndex, VoxelBox,
@@ -17,6 +19,17 @@ use crate::noise::{Dimensionality, FractalNoise};
 pub trait TerrainGenerator: Debug + Send + Sync {
     /// The brick at `coordinate`, with every channel of `layout` set.
     fn generate_brick(&self, layout: &GridLayout, coordinate: BrickCoordinate) -> Brick;
+
+    /// The coarse cells of a cube of bricks (see `coarse_cells`): what the terrain of the cube is drawn as from far away, in a node of 32 x 32 x 32
+    /// cells of `2^level` voxels, where `level` is the cube's. `unlit` is the brightness of terrain no light reaches, which the caller knows and
+    /// the generator does not. `None` if the generator does not say (the default, and always for a cube of level 0, which is a brick).
+    ///
+    /// Like [`TerrainGenerator::generate_brick`] this is part of a world's file format for as long as a recording can be replayed: a generator that has
+    /// said something about its coarse cells never says anything else. It is approximate: it is not the summary of the bricks under it.
+    fn coarse_node(&self, cube: BrickCube, unlit: u8) -> Option<CoarseNode> {
+        let _ = (cube, unlit);
+        None
+    }
 }
 
 /// The material values a terrain generator writes into the material channel.
@@ -29,7 +42,7 @@ pub struct TerrainMaterials {
 }
 
 /// Voxels of dirt-or-grass above the stone: grass on top, then dirt, then stone from this depth.
-const SURFACE_LAYER_DEPTH: usize = 4;
+pub(crate) const SURFACE_LAYER_DEPTH: usize = 4;
 
 /// Turns a [`DensityField`] into bricks: solid voxels become grass under open air, dirt within
 /// three voxels of the surface above them, and stone deeper down.
@@ -107,6 +120,10 @@ impl TerrainGenerator for FieldTerrainGenerator {
         }
         *brick.channel_mut(self.material_channel) = ChannelStorage::from_values(&materials);
         brick
+    }
+
+    fn coarse_node(&self, cube: BrickCube, unlit: u8) -> Option<CoarseNode> {
+        crate::coarse::coarse_node_of_field(&*self.field, self.materials, cube, unlit)
     }
 }
 

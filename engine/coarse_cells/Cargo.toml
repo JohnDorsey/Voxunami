@@ -1,0 +1,16 @@
+[package]
+name = "coarse_cells"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Coarse cells: what a cell of 2^n voxels is drawn as (its dominant block, how much of it is filled, how bright it is), how eight cells make the next, and nodes of 32 x 32 x 32 of them."
+
+[dependencies]
+voxel_space.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

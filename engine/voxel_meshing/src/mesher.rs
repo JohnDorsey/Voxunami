@@ -30,16 +30,16 @@ impl<'a> BrickChannels<'a> {
         }
     }
 
-    fn state_at(&self, voxel: LocalVoxelIndex) -> u32 {
+    pub(crate) fn state_at(&self, voxel: LocalVoxelIndex) -> u32 {
         self.states.map_or(0, |states| states.get(voxel))
     }
 
-    fn orientation_at(&self, voxel: LocalVoxelIndex) -> u32 {
+    pub(crate) fn orientation_at(&self, voxel: LocalVoxelIndex) -> u32 {
         self.orientations
             .map_or(0, |orientations| orientations.get(voxel))
     }
 
-    fn light_at(&self, voxel: LocalVoxelIndex) -> u8 {
+    pub(crate) fn light_at(&self, voxel: LocalVoxelIndex) -> u8 {
         self.light
             .map_or(FULL_LIGHT, |light| light.get(voxel).min(255) as u8)
     }
@@ -89,7 +89,7 @@ pub fn mesh_brick(input: &BrickNeighbourhood<'_>, table: &BlockTable) -> BrickMe
 }
 
 /// The model every voxel of the brick has, if they all have the same.
-fn uniform_model(channels: &BrickChannels<'_>, table: &BlockTable) -> Option<ModelId> {
+pub(crate) fn uniform_model(channels: &BrickChannels<'_>, table: &BlockTable) -> Option<ModelId> {
     let block = channels.blocks.uniform_value()?;
     let state = match channels.states {
         Some(states) => states.uniform_value()?,

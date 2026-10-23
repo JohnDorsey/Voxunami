@@ -78,7 +78,7 @@ namespaced ids" rule is untouched.
   number of its faces that the mesher would draw (a face next to a see-through block) (`BlockTable::is_see_through`); a parent's exposure is the sum of
   its children's divided by 4 (a child's face is a quarter of the parent's), in integer fixed point, saturating. A flat ground one voxel deep has
   exposure about 1 at every level.
-- **block**: the child block with the largest exposure (ties go to the lowest octant index, which does not depend on how a game numbers its blocks).
+- **block**: the block whose children together have the most exposure (the exposure of the children that have that block is added up, so four children of grass with a little surface each can outweigh one of stone with more). Ties go to the block of the lowest octant index, which does not depend on how a game numbers its blocks. If no child has any surface, the block with the most fill.
   A layer of snow one voxel thick on stone is almost all of what touches the sky, so the cell is snow from above. This is a close approximation, not
   an exact answer: a parent sees only its children's dominant blocks, so a thin layer that is not dominant in any child is lost one level up.
 - **light**: for parents whose cells are up to 32 voxels (detail levels 0 to 5) the brightest child; above that the average of the children's light
@@ -107,8 +107,9 @@ view: near nodes are fine and far nodes coarse, within one grid. The number of n
 
 ### 3.4 Where coarse data comes from (hybrid)
 
-- **Unedited terrain**: the client makes it. `TerrainGenerator` gets a second method, `coarse_node(layout, node)`, with a default that summarizes the
-  fine bricks exactly (allowed only for a few detail levels, since it generates `8^n` bricks); the field generator (`FieldTerrainGenerator`) answers by
+- **Unedited terrain**: the client makes it. `TerrainGenerator` gets a second method, `coarse_node(cube, unlit)`, whose default is `None` (as built: the
+  default cannot summarize the bricks, because a generator has no block table to say what a face is; an exact summary is what `voxel_meshing` makes of bricks);
+  the field generator (`FieldTerrainGenerator`) answers by
   sampling its density field at footprint `n` (`DensityField::sample` and `bounds` already take it), with the surface layering of the generator
   (grass on top, then dirt, then stone) deciding the dominant block. Coarse output of a released generator is as frozen as its `generate_brick`:
   replays must draw the same picture (a hard rule extended, not a new one).
@@ -169,12 +170,12 @@ used in 62 files) first and alone, so that nothing else is mixed into it.
   each pin gets a justification from measured bytes. This is the step most likely to take longer than planned; I will stop and say so if it does.
 - **38b Reverse-Z** (**built 2026-10-23**, `build-log.md`). Test first: two surfaces 1 m apart at 100 m, 100 m apart at 10^7 m and 1000 m apart at 10^8 m draw without z-fighting in an
   offscreen render; and every existing renderer test passes unchanged. Measure and record the real resolution.
-- **38c Cell summaries.** A pure library: `CoarseCell`, combining eight children into a parent (3.2). Tests: the snow layer is snow; a cave wall
+- **38c Cell summaries** (**built 2026-10-23**, `build-log.md`). A pure library: `CoarseCell`, combining eight children into a parent (3.2). Tests: the snow layer is snow; a cave wall
   does not outvote the ground; fill never rounds a speck to nothing; light rules at the 32-voxel boundary; ties by octant; saturation; the combination
   of eight is the same whatever order the children are computed in; and a property test that the parent of a uniform region is that region.
-- **38d Summaries of stored data.** Summarize a `Brick` (or several) to a node: exact. Used for ships and edited terrain. Tests against a direct
+- **38d Summaries of stored data** (**built 2026-10-23**). Summarize a `Brick` (or several) to a node: exact. Used for ships and edited terrain. Tests against a direct
   count, on random bricks.
-- **38e Generator coarse sampling.** `TerrainGenerator::coarse_node`, the field generator's version. Tests: the agreement of coarse and exact summaries on
+- **38e Generator coarse sampling** (**built 2026-10-23**; the measurements are in section 7). `TerrainGenerator::coarse_node`, the field generator's version. Tests: the agreement of coarse and exact summaries on
   the Cave and 2048 generators, **measured** (the threshold is set from the measurement, and the measurement is written in the build log); the coarse
   output is pinned like `generate_brick` is.
 - **38f The selection rule.** Pure: nodes for a viewer in a grid's axes. Tests: they tile the grid with no gap and no overlap; counts per detail level
@@ -199,6 +200,22 @@ used in 62 files) first and alone, so that nothing else is mixed into it.
 2. A ship is known while some part of it would be a pixel wide, as in 3.7; a cap does not change that.
 3. The coarse light rule of 3.2 stands for now.
 4. The texture distance setting and its command are built in 38k and change nothing visible until there are textures.
+
+## 7. What 38c to 38e found (2026-10-23)
+
+- **The agreement of the generator's cells with the bricks' (measured, `world_view/tests/coarse_agreement.rs`).** Rolling hills of seed 2024 (hills 40 high), a few nodes around the surface at each level; "exact" is every brick
+  generated, summarised, and made up level by level. For hills **without caves**: the cells drawn alike are 100% at levels 1 and 2 and 99% at 3 and 4; the mean difference of fill is 0.01% to 0.9% of full; the block of the
+  surface cells (cells with any surface in either) is the same for 93% (level 1), 88%, 83% and 83% (level 4). **With the caves** of the settings, fill and drawn agree as closely (98% to 100%, differences up to 2.3%), but the block
+  of the surface cells agrees for only 78%, 70%, 62% and 41%.
+- **The cause is the exposed faces rule, and it is a question for the owner.** The sheets of the caves have more surface than the top of the hill in a cell of 8 voxels or more, so the cells made of the bricks are stone where the
+  generator says grass, which is what is seen from outside. The generator's cells are the better picture here; the rule is what is wrong. It matters in the cells made from bricks (the regions with edits, and ships) and not in the
+  unedited terrain, which the client makes from the generator; but near an edit in cave country the coarse cells would turn to stone. **Options:** (a) weight each exposed face by the light in front of it, so that dark enclosed air counts for
+  little (the cell has a light level already; Cave has no sky light yet, so this waits for it); (b) the optional upgrade of one block per direction (`future-goals.md`, goal 11), which the caves would also disturb, less; (c) count the faces that
+  look up and sideways and not those that look down; (d) leave it, and accept stone near edits in caves. I recommend (a) once there is sky light, and (c) until then, but have built none of them: the owner decides.
+- **A bug the coarse cells found in the terrain fields.** `ShellCaves` has 0 for its noise when every octave is finer than the footprint, and 0 is the middle of a sheet of air, so from detail level 6 up the whole rolling-hills world
+  was air (and a `min` of ground and caves was air). It is fixed (caves that are all finer than the footprint are no caves); full detail, and so every released brick, is unchanged (the pinned brick digests pass).
+- **Cost.** A node of terrain from the field takes a few milliseconds to a few tens; the measurement of 4 + 4 + 1 + 1 cubes takes 8 to 14 seconds together with generating all their bricks, which dominates (taken in the test profile, not a
+  benchmark). Memory: a node that is not all one cell is 32,768 cells of 12 bytes, 393 kilobytes; nearly every node is one cell. Step 38f measures the node counts that matter.
 
 ## 6. Not here
 

@@ -8,6 +8,7 @@ description = "Turns bricks of voxels into greedy-merged quads, compactly packed
 
 [dependencies]
 block_models.workspace = true
+coarse_cells.workspace = true
 voxel_grid.workspace = true
 voxel_space.workspace = true
 

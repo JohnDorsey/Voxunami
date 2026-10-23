@@ -805,6 +805,22 @@ callers (ship creation, the bodies' terrain, the arrival look, the light-model s
 - Tests: the existing ones, rewritten by a tool for the calls (`regrid.py`, a scratch file) and by hand where a test expected an error for a level that is not there; two new for `detach_blocks` out of a
   ship and for `uniform_value` and `generated` on a ship. No pin moved. Windows 1745 and Linux 1746 tests pass; fmt and clippy clean.
 
+Phase 38c to 38e (levels of detail, steps 3 to 5: coarse cells, summaries of bricks, coarse terrain; 2026-10-23). See `lod-spec.md`, sections 3.2, 3.4 and 7.
+- *38c, `coarse_cells`:* `CoarseCell` (block, fill, light, exposure), `combine` (eight cells make one), `CoarseNode` (32 x 32 x 32, kept as one cell when they are all the same). Tests (21): a layer of snow is snow, a cave wall does not outvote the ground when
+  it has less surface, blocks are counted together across children, ties by octant whatever the block numbers, a speck is not lost, light is the brightest up to 32 voxels and an average above (and falls back to fill), exposure rounds and saturates,
+  the cells of a node are combined from the right child and the right octant; two property tests. **Mutation experiments:** eight mutants (volume instead of surface, children not counted together, light always the brightest, the average from level 0,
+  fill rounded down, ties to the highest octant, exposure truncated, exposure not divided) were all caught. *I refined the rule of the spec:* the block is the one whose children together have the most surface, not the child with the most.
+- *38d, `voxel_meshing::coarse_node_of_brick`:* the node of a brick from the same inputs the mesher takes (the brick and the six beside it). Fill from the shape (a slab 128), exposure from the faces the mesher would draw (partial faces and the faces inside a
+  slab counted), light of the air a filled voxel looks out at; the two commonest bricks (sky; buried ground) without looking at a voxel. Eight tests, including a property test that the cells made of a brick keep its surface and fill to within rounding.
+  **Seven mutants** (a missing neighbour hides everything, the inside of a voxel not counted, light always the voxel's own, fill rounded down, double exposure, nothing hidden, the neighbour of a brick is itself) were all caught.
+- *38e, `terrain::TerrainGenerator::coarse_node` and `FieldTerrainGenerator`:* from the density field at the footprint of the cells: the bounds say air or ground for a block of cells at a time, a lattice of 4 x 4 x 4 samples says how full the rest are, the
+  surface and the layers (grass, dirt, stone) come from the fills of the cells around. The default is `None` (see 3.4). Tests: fourteen, including the shape of a slope and a cliff, a pocket of air in the ground, a steep slope, the coarsest level (40), and a pinned
+  digest of two nodes of the rolling hills (to be the same on Windows and Linux). **Ten mutants** were run; two survived the first tests (a cell with air in it having a surface of its own, and the top of a slanting surface being grass), and
+  two tests were written for them, which catch both. *Two estimators were tried and dropped:* the column of two samples (a slanting surface was called solid) and the middle sample with the range of the bounds (the bounds on noise are too wide:
+  twice as many cells, fill off by 39%); the lattice of samples is what stayed.
+- *Measured:* section 7 of the spec (agreement with the bricks; the cave finding, which needs the owner; the `ShellCaves` bug, fixed, with a regression test that fails without the fix).
+- Windows 1800 and Linux 1801 tests pass; fmt and clippy clean.
+
 Phase 38b (levels of detail, step 2: reverse-Z with an infinite far plane; 2026-10-23). See `lod-spec.md`.
 - *What:* `Camera::view_projection` is `perspective_infinite_reverse` (depth is `near / distance`: 1 at the near plane, toward 0 for ever), the depth buffer is cleared to 0 and the test is "greater". `Camera::far_plane` is gone (nothing clips for being far;
   it also held `game_shell::camera_at`'s view radius, which nothing else used, so that parameter is gone and its fifty-odd callers lost an argument). `Frustum` has five planes (there is no far side), and the extraction was written for reversed depth.

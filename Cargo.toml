@@ -13,6 +13,7 @@ base_blocks = { path = "plugins/base_blocks" }
 block_models = { path = "engine/block_models" }
 binary_codec = { path = "engine/binary_codec" }
 client = { path = "engine/client" }
+coarse_cells = { path = "engine/coarse_cells" }
 content_registry = { path = "engine/content_registry" }
 data_packs = { path = "engine/data_packs" }
 entities = { path = "engine/entities" }
