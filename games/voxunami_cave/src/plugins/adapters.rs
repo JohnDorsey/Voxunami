@@ -15,6 +15,7 @@ use crate::multiscale_light::{self, LightScheme, ScaledLightWorld};
 pub(super) struct CaveChannels {
     pub block: ChannelIndex,
     pub state: ChannelIndex,
+    pub orientation: ChannelIndex,
     pub light: ChannelIndex,
     pub scales: Vec<ChannelIndex>,
 }
@@ -24,6 +25,7 @@ impl CaveChannels {
         Self {
             block: content.block_channel(),
             state: content.state_channel(),
+            orientation: content.orientation_channel(),
             light: content.light_channel(),
             scales: (0..multiscale_light::MAXIMUM_SCALES)
                 .map(|scale| content.scale_channel(scale))
@@ -45,6 +47,20 @@ fn block_and_state_of(
     Some((block, state))
 }
 
+/// The orientation of a voxel of a grid (0 where there is nothing to read).
+fn orientation_of(
+    context: &mut Context<'_>,
+    channels: &CaveChannels,
+    grid: GridId,
+    at: VoxelCoordinate,
+) -> u32 {
+    context
+        .grid(grid)
+        .ok()
+        .and_then(|mut grid| grid.get(channels.orientation, at).ok())
+        .unwrap_or(0)
+}
+
 /// The world as the classic light rule sees it. Terrain this server cannot generate has nothing to
 /// read, and lets no light through.
 pub(super) struct WorldLight<'a, 'b> {
@@ -55,6 +71,10 @@ pub(super) struct WorldLight<'a, 'b> {
 impl LightWorld for WorldLight<'_, '_> {
     fn block_and_state(&mut self, grid: GridId, at: VoxelCoordinate) -> Option<(u32, u32)> {
         block_and_state_of(self.context, self.channels, grid, at)
+    }
+
+    fn orientation_at(&mut self, grid: GridId, at: VoxelCoordinate) -> u32 {
+        orientation_of(self.context, self.channels, grid, at)
     }
 
     fn light(&mut self, grid: GridId, at: VoxelCoordinate) -> u8 {
@@ -87,6 +107,10 @@ pub(super) struct WorldScaledLight<'a, 'b> {
 impl ScaledLightWorld for WorldScaledLight<'_, '_> {
     fn block_and_state(&mut self, grid: GridId, at: VoxelCoordinate) -> Option<(u32, u32)> {
         block_and_state_of(self.context, self.channels, grid, at)
+    }
+
+    fn orientation_at(&mut self, grid: GridId, at: VoxelCoordinate) -> u32 {
+        orientation_of(self.context, self.channels, grid, at)
     }
 
     fn word(&mut self, scale: usize, grid: GridId, anchor: VoxelCoordinate) -> u32 {

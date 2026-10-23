@@ -14,6 +14,23 @@ impl LatticeRotation {
     /// No turn.
     pub const IDENTITY: Self = Self { images: [1, 2, 3] };
 
+    /// How many rotations there are.
+    pub const COUNT: usize = 24;
+
+    /// The number of this rotation in [`LatticeRotation::all`]: 0 for none. This is how a block's orientation is saved in a world, the same for
+    /// every block, so the order of `all` is a file format and must never change.
+    pub fn index(self) -> u8 {
+        Self::all()
+            .iter()
+            .position(|rotation| *rotation == self)
+            .expect("every rotation is in the list of all") as u8
+    }
+
+    /// The rotation with this number in [`LatticeRotation::all`]; `None` for a number there is no rotation for.
+    pub fn from_index(index: u8) -> Option<Self> {
+        Self::all().get(usize::from(index)).copied()
+    }
+
     /// All 24 rotations, in a fixed order (the identity first).
     pub fn all() -> [Self; 24] {
         // Each permutation of the axes and whether it is an even one.
@@ -291,6 +308,38 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn a_rotation_has_a_number_for_ever_the_identity_is_zero_and_the_order_is_the_file_format() {
+        let all = LatticeRotation::all();
+        assert_eq!(LatticeRotation::COUNT, all.len());
+        assert_eq!(LatticeRotation::IDENTITY.index(), 0);
+        for (index, rotation) in all.iter().enumerate() {
+            assert_eq!(rotation.index() as usize, index);
+            assert_eq!(LatticeRotation::from_index(index as u8), Some(*rotation));
+        }
+        assert_eq!(LatticeRotation::from_index(24), None);
+        assert_eq!(LatticeRotation::from_index(255), None);
+        // The order is written down in saved worlds: where each rotation sends the three axes, for all 24, as one number. Do not change it.
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for rotation in all {
+            for axis in [[1, 0, 0], [0, 1, 0], [0, 0, 1]] {
+                for component in rotation.apply(axis) {
+                    hash = (hash ^ (component + 2) as u64).wrapping_mul(0x0000_0100_0000_01b3);
+                }
+            }
+        }
+        assert_eq!(hash, PINNED_ORDER);
+        // Doing one and then another is one more, whose number the numbers do not need to know to find: the composition is on the rotations.
+        for first in all {
+            for second in all {
+                let both = first.then(second);
+                assert_eq!(LatticeRotation::from_index(both.index()), Some(both));
+            }
+        }
+    }
+
+    const PINNED_ORDER: u64 = 989_952_821_047_606_661;
 
     #[test]
     fn a_face_goes_where_its_step_goes_and_opposite_faces_stay_opposite() {

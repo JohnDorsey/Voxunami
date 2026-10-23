@@ -4,9 +4,10 @@ use std::sync::Arc;
 
 use base_blocks::{
     BaseBlockIds, BaseBlocks, block_channel_identifier, block_registry_kind,
-    light_channel_identifier, rolling_hills_generator_identifier, state_channel_identifier,
+    light_channel_identifier, orientation_channel_identifier, rolling_hills_generator_identifier,
+    state_channel_identifier,
 };
-use block_models::{BlockDefinition, Shape};
+use block_models::BlockDefinition;
 use content_registry::{IdentifierRegistry, Registry};
 use game_shell::{ContentPackage, GameContent, PackErrors, PackageData, PackageSpec, RawPack};
 use namespaced_id::NamespacedId;
@@ -55,15 +56,13 @@ pub fn dev_docking_port_id() -> NamespacedId {
 }
 
 /// The dev docking port (a block for building and testing ships, creative only): a gunmetal gray cube with one yellow face, the one that docks with
-/// the yellow face of another. It has six states, one for each face the yellow can be on (in the order of `FaceDirection::ALL`), and the face
-/// that docks is the yellow one.
+/// the yellow face of another. It has one state, made with the yellow face to the east, which is also its front: it is placed turned to face the
+/// player, as a piston is, and the orientation of the voxel says which way the yellow is.
 pub fn dev_docking_port() -> BlockDefinition {
-    let faces = FaceDirection::ALL.map(Some);
     BlockDefinition::cube([0.17, 0.21, 0.22])
-        .with_shapes(vec![Shape::full(); faces.len()])
-        .with_marked_faces([255, 216, 0], &faces)
-        .with_docking_faces(&faces)
-        .in_every_orientation()
+        .with_marked_faces([255, 216, 0], &[Some(FaceDirection::PositiveX)])
+        .with_docking_faces(&[Some(FaceDirection::PositiveX)])
+        .with_front_face(FaceDirection::PositiveX)
 }
 
 /// The blocks of a registry, with the flags that say a player can place a block, and that a block is for creative only, set on the ones Cave says
@@ -130,9 +129,12 @@ impl CaveContent {
                 ChannelDefinition::number(multiscale_light::channel_identifier(4), 0),
                 ChannelDefinition::number(multiscale_light::channel_identifier(5), 0),
                 ChannelDefinition::number(multiscale_light::channel_identifier(6), 0),
+                // (After all the others, so that the numbers of the channels of worlds saved before it do not move.)
+                ids.orientation_channel(),
             ],
             block_channel: block_channel_identifier(),
             state_channel: Some(state_channel_identifier()),
+            orientation_channel: Some(orientation_channel_identifier()),
             light_channel: Some(light_channel_identifier()),
             properties: {
                 let mut properties = base_blocks::property_declarations();
@@ -162,6 +164,11 @@ impl CaveContent {
     }
 
     /// The channel holding each voxel's block state.
+    /// The channel holding each voxel's orientation.
+    pub fn orientation_channel(&self) -> ChannelIndex {
+        self.package.orientation_channel()
+    }
+
     pub fn state_channel(&self) -> ChannelIndex {
         self.package.state_channel()
     }

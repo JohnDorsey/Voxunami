@@ -276,6 +276,7 @@ mod tests {
             voxels: &ship.voxels,
             block_channel,
             state_channel,
+            orientation_channel: None,
             collisions: &collisions,
         };
         let down = [0.0, -1.0, 0.0];
@@ -313,6 +314,7 @@ mod tests {
             voxels: &ship.voxels,
             block_channel,
             state_channel,
+            orientation_channel: None,
             collisions: &collisions,
         };
         let down = [0.0, -32.0, 0.0].map(|c: f32| c / 32.0);
@@ -340,6 +342,7 @@ mod tests {
             voxels: &ship.voxels,
             block_channel,
             state_channel,
+            orientation_channel: None,
             collisions: &collisions,
         };
         let down = [0.0, -1.0, 0.0];
@@ -370,6 +373,7 @@ mod tests {
             voxels: &ship.voxels,
             block_channel,
             state_channel,
+            orientation_channel: None,
             collisions: &collisions,
         };
         let down = [0.0, -1.0, 0.0];

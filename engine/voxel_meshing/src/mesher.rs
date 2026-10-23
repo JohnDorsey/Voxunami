@@ -1,4 +1,4 @@
-use block_models::{BlockTable, ModelId, SUBDIVISIONS};
+use block_models::{BlockTable, FaceMark, ModelId, SUBDIVISIONS};
 use voxel_grid::ChannelStorage;
 use voxel_space::{BRICK_EDGE_LENGTH, FaceDirection, LocalVoxelIndex};
 
@@ -13,6 +13,8 @@ pub struct BrickChannels<'a> {
     pub blocks: &'a ChannelStorage,
     /// The state of each voxel's block; state 0 everywhere when absent.
     pub states: Option<&'a ChannelStorage>,
+    /// The orientation of each voxel (the number of a turn of the lattice, see `block_models::ORIENTATION_COUNT`); none everywhere when absent.
+    pub orientations: Option<&'a ChannelStorage>,
     /// The light in each voxel, 0 to 255; [`FULL_LIGHT`] everywhere when absent.
     pub light: Option<&'a ChannelStorage>,
 }
@@ -23,12 +25,18 @@ impl<'a> BrickChannels<'a> {
         Self {
             blocks,
             states: None,
+            orientations: None,
             light: None,
         }
     }
 
     fn state_at(&self, voxel: LocalVoxelIndex) -> u32 {
         self.states.map_or(0, |states| states.get(voxel))
+    }
+
+    fn orientation_at(&self, voxel: LocalVoxelIndex) -> u32 {
+        self.orientations
+            .map_or(0, |orientations| orientations.get(voxel))
     }
 
     fn light_at(&self, voxel: LocalVoxelIndex) -> u8 {
@@ -87,7 +95,11 @@ fn uniform_model(channels: &BrickChannels<'_>, table: &BlockTable) -> Option<Mod
         Some(states) => states.uniform_value()?,
         None => 0,
     };
-    Some(table.model_of(block, state))
+    let orientation = match channels.orientations {
+        Some(orientations) => orientations.uniform_value()?,
+        None => 0,
+    };
+    Some(table.model_of(block, state, orientation))
 }
 
 fn local(p: [usize; 3]) -> LocalVoxelIndex {
@@ -120,9 +132,11 @@ impl Layer {
                 p[u_axis] = u;
                 p[v_axis] = v;
                 let voxel = local(p);
-                models.push(Some(
-                    table.model_of(neighbour.blocks.get(voxel), neighbour.state_at(voxel)),
-                ));
+                models.push(Some(table.model_of(
+                    neighbour.blocks.get(voxel),
+                    neighbour.state_at(voxel),
+                    neighbour.orientation_at(voxel),
+                )));
                 light.push(neighbour.light_at(voxel));
             }
         }
@@ -137,7 +151,7 @@ struct MeshedBrick<'a> {
     /// colour of its state (see [`BlockTable::material_of`]).
     materials: Vec<u32>,
     /// For a voxel whose block marks a face in its state, the face and the material it is drawn in.
-    marks: Vec<Option<(FaceDirection, u32)>>,
+    marks: Vec<Option<FaceMark>>,
     models: Vec<ModelId>,
     light: Vec<u8>,
     /// Indexed by [`FaceDirection::index`].
@@ -149,10 +163,19 @@ impl<'a> MeshedBrick<'a> {
         let blocks: Vec<u32> = input.center.blocks.iter().collect();
         let states: Option<Vec<u32>> = input.center.states.map(|states| states.iter().collect());
         let state_of = |index: usize| states.as_ref().map_or(0, |states| states[index]);
+        let orientations: Option<Vec<u32>> = input
+            .center
+            .orientations
+            .map(|orientations| orientations.iter().collect());
+        let orientation_of = |index: usize| {
+            orientations
+                .as_ref()
+                .map_or(0, |orientations| orientations[index])
+        };
         let models = blocks
             .iter()
             .enumerate()
-            .map(|(index, &block)| table.model_of(block, state_of(index)))
+            .map(|(index, &block)| table.model_of(block, state_of(index), orientation_of(index)))
             .collect();
         let materials = blocks
             .iter()
@@ -162,7 +185,7 @@ impl<'a> MeshedBrick<'a> {
         let marks = blocks
             .iter()
             .enumerate()
-            .map(|(index, &block)| table.marked_face_material(block, state_of(index)))
+            .map(|(index, &block)| table.face_mark(block, state_of(index), orientation_of(index)))
             .collect();
         let light = match input.center.light {
             Some(light) => light.iter().map(|value| value.min(255) as u8).collect(),
@@ -184,7 +207,7 @@ impl<'a> MeshedBrick<'a> {
     /// What the `face` of the voxel at this index is drawn as: the marked face in the mark colour, the others in the voxel's.
     fn material_of_face(&self, index: usize, face: FaceDirection) -> u32 {
         match self.marks[index] {
-            Some((marked, material)) if marked == face => material,
+            Some(mark) if mark.marks(face) => mark.material,
             _ => self.materials[index],
         }
     }
@@ -583,6 +606,7 @@ mod tests {
         let slab = |states| BrickChannels {
             blocks: &rock,
             states: Some(states),
+            orientations: None,
             light: None,
         };
         neighbours[usize::from(FaceDirection::PositiveY.index())] = slab(&top_slab);
@@ -616,6 +640,7 @@ mod tests {
                 center: BrickChannels {
                     blocks: &stone,
                     states: None,
+                    orientations: None,
                     light: Some(&dark),
                 },
                 neighbours: [Some(only(&air)); 6],
@@ -687,6 +712,7 @@ mod tests {
                 center: BrickChannels {
                     blocks,
                     states: Some(states),
+                    orientations: None,
                     light: None,
                 },
                 neighbours: [None; 6],
@@ -788,6 +814,7 @@ mod tests {
                 center: BrickChannels {
                     blocks,
                     states: Some(states),
+                    orientations: None,
                     light: None,
                 },
                 neighbours: [None; 6],
@@ -963,6 +990,7 @@ mod tests {
                 center: BrickChannels {
                     blocks: &blocks,
                     states: Some(&states),
+                    orientations: None,
                     light: None,
                 },
                 neighbours: [Some(only(&stone)); 6],
@@ -987,6 +1015,7 @@ mod tests {
                     Some(BrickChannels {
                         blocks: &blocks,
                         states: Some(&states),
+                        orientations: None,
                         light: None,
                     }),
                     None,
@@ -1012,6 +1041,7 @@ mod tests {
                 center: BrickChannels {
                     blocks,
                     states: None,
+                    orientations: None,
                     light: Some(light),
                 },
                 neighbours: [None; 6],
@@ -1070,6 +1100,7 @@ mod tests {
                     Some(BrickChannels {
                         blocks: &neighbour_blocks,
                         states: None,
+                        orientations: None,
                         light: Some(&neighbour_light),
                     }),
                     None,
@@ -1105,6 +1136,7 @@ mod tests {
                 center: BrickChannels {
                     blocks: &blocks,
                     states: Some(&states),
+                    orientations: None,
                     light: Some(&light),
                 },
                 neighbours: [None; 6],
@@ -1209,7 +1241,7 @@ mod tests {
             ])
             .index();
             Some((
-                self.table.model_of(blocks[index], states[index]),
+                self.table.model_of(blocks[index], states[index], 0),
                 light[index],
             ))
         }
@@ -1223,7 +1255,7 @@ mod tests {
                     let index = local([x, y, z]).index();
                     let model = world
                         .table
-                        .model_of(world.center[index], world.states[index]);
+                        .model_of(world.center[index], world.states[index], 0);
                     if !world.table.is_solid(model) {
                         continue;
                     }
@@ -1381,6 +1413,7 @@ mod tests {
         BrickChannels {
             blocks: &storages.0,
             states: Some(&storages.1),
+            orientations: None,
             light: Some(&storages.2),
         }
     }

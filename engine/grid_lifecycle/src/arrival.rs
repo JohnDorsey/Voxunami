@@ -32,6 +32,7 @@ impl Hull {
         collisions: &BlockCollisions,
         block: ChannelIndex,
         state: ChannelIndex,
+        orientation: Option<ChannelIndex>,
     ) -> Self {
         let mut cells = Vec::new();
         for brick in ship.voxels.sorted_brick_coordinates() {
@@ -39,7 +40,9 @@ impl Hull {
             for local in LocalVoxelIndex::all() {
                 let (found_block, found_state) =
                     (contents.get(block, local), contents.get(state, local));
-                if collisions.of(found_block, found_state) == Collision::Empty {
+                let found_orientation =
+                    orientation.map_or(0, |channel| contents.get(channel, local));
+                if collisions.of(found_block, found_state, found_orientation) == Collision::Empty {
                     continue;
                 }
                 let voxel = brick.voxel_at(local);
@@ -173,6 +176,7 @@ pub struct Obstacles<'a> {
     level: LevelIndex,
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
+    orientation_channel: Option<ChannelIndex>,
     collisions: &'a BlockCollisions,
     /// What the terrain is at the voxels asked about, which a search asks about again and again.
     terrain: HashMap<VoxelCoordinate, Collision>,
@@ -186,6 +190,7 @@ impl<'a> Obstacles<'a> {
         level: LevelIndex,
         block_channel: ChannelIndex,
         state_channel: ChannelIndex,
+        orientation_channel: Option<ChannelIndex>,
         collisions: &'a BlockCollisions,
     ) -> Self {
         let ships = world
@@ -200,6 +205,7 @@ impl<'a> Obstacles<'a> {
             level,
             block_channel,
             state_channel,
+            orientation_channel,
             collisions,
             terrain: HashMap::new(),
             ships,
@@ -215,8 +221,12 @@ impl<'a> Obstacles<'a> {
             Ok(mut terrain) => match (
                 terrain.get(self.block_channel, voxel),
                 terrain.get(self.state_channel, voxel),
+                self.orientation_channel
+                    .map_or(Ok(0), |channel| terrain.get(channel, voxel)),
             ) {
-                (Ok(block), Ok(state)) => self.collisions.of(block, state),
+                (Ok(block), Ok(state), Ok(orientation)) => {
+                    self.collisions.of(block, state, orientation)
+                }
                 _ => Collision::Full,
             },
             Err(_) => Collision::Full,
@@ -248,6 +258,7 @@ impl<'a> Obstacles<'a> {
                 voxels,
                 block_channel: self.block_channel,
                 state_channel: self.state_channel,
+                orientation_channel: self.orientation_channel,
                 collisions: self.collisions,
             }
             .solid_at(here)
@@ -372,7 +383,7 @@ mod tests {
 
     fn hull(voxels: &[[i64; 3]]) -> Hull {
         let (ship, block, state) = ship(voxels);
-        Hull::of(&ship, &collisions(), block, state)
+        Hull::of(&ship, &collisions(), block, state, None)
     }
 
     fn pose_at(x: f32, y: f32, z: f32) -> GridPose {

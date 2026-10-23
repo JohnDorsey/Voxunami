@@ -29,6 +29,7 @@ impl GameContent for ExampleContent {
                 .channel_index(&id("core:block"))
                 .expect("the fixture has a block channel"),
             states: None,
+            orientations: None,
             light: None,
             bulk_light: None,
         }
@@ -55,6 +56,7 @@ impl GameContent for ExampleContent {
             blocks,
             block_channel: id("core:block"),
             state_channel: None,
+            orientation_channel: None,
             light_channel: None,
             ambient_light: 0,
         }

@@ -55,7 +55,7 @@ fn a_property_is_read_as_the_definition_set_it_and_the_default_where_it_did_not(
     assert_eq!(table.get_of(warmth, 1, 0), 7, "the key's default");
     assert!(!table.get_of(open, 1, 0));
     // The same through the model.
-    assert_eq!(table.get(warmth, table.model_of(0, 0)), 200);
+    assert_eq!(table.get(warmth, table.model_of(0, 0, 0)), 200);
     // A block the table has no definition for, and one beyond its ids, have the default.
     assert_eq!(table.get_of(warmth, 99, 0), 7);
     let with_a_gap = BlockTable::try_from_definitions(&schema(), &[Some(&warm), None]).unwrap();

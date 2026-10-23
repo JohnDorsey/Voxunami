@@ -249,7 +249,11 @@ impl Plugin for LightPlugin {
         let hearing = Arc::clone(&state);
         registrar.on_channels(
             HandlerSpec::new("voxunami_cave:light_notices_changed_blocks"),
-            &[self.channels.block, self.channels.state],
+            &[
+                self.channels.block,
+                self.channels.state,
+                self.channels.orientation,
+            ],
             move |event, _| {
                 let mut state = locked(&hearing);
                 for &voxel in &event.voxels {
@@ -284,7 +288,11 @@ impl Plugin for LightPlugin {
         registrar.system(
             SystemSpec::new("voxunami_cave:spread_light", Phase::Rules)
                 .after("voxunami_cave:burn")
-                .reads(&[self.channels.block, self.channels.state])
+                .reads(&[
+                    self.channels.block,
+                    self.channels.state,
+                    self.channels.orientation,
+                ])
                 .writes(&written),
             move |context| locked(&spreading).spread(context),
         );

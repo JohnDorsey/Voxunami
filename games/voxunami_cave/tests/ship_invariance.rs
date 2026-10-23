@@ -134,14 +134,16 @@ fn two_ships_merged_settle_to_the_light_one_ship_built_whole_has() {
     );
     let content = CaveContent::new();
     two.run(move |world| {
-        let docking = voxunami_cave::plugins::docking(&content);
-        let turn = docking.turn_values();
+        // (The orientations of the blocks are turned by the merge itself; nothing else needs turning.)
+        let turn =
+            |_: &mut Vec<(voxel_grid::ChannelIndex, u32)>, _: voxel_space::LatticeRotation| {};
         world
             .merge_grids(
                 ship_id(0),
                 ship_id(1),
                 &MergePlan {
                     block_channel: content.block_channel(),
+                    orientation_channel: Some(content.orientation_channel()),
                     tolerance: AlignmentTolerance::default(),
                     turn: &turn,
                     linear_velocity: [0.0; 3],

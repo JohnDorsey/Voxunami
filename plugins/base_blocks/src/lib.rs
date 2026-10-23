@@ -38,6 +38,13 @@ pub fn state_channel_identifier() -> NamespacedId {
     identifier("base_blocks:block_state")
 }
 
+/// The grid channel holding each voxel's orientation: the number of a turn of the lattice (see `voxel_space::LatticeRotation::index`), 0 for none. It is
+/// the same for every block, whatever the block looks like turned, so a ship can be turned by turning these numbers, and the blocks of a plugin that is not
+/// loaded are turned too.
+pub fn orientation_channel_identifier() -> NamespacedId {
+    identifier("base_blocks:block_orientation")
+}
+
 /// The grid channel holding the block light of each voxel: 0 to 255, in the voxels light can be in
 /// (air, and the empty parts of blocks) and 0 in the others.
 pub fn light_channel_identifier() -> NamespacedId {
@@ -111,6 +118,9 @@ pub fn property_schema() -> PropertySchema {
     schema
 }
 
+/// The colour of the ends of a log, as sRGB bytes.
+pub const LOG_END_COLOR: [u8; 3] = [191, 148, 92];
+
 /// How much light a lamp gives off. Light loses one level for every voxel it spreads, so this is
 /// also how many voxels away a lamp lights things.
 pub const LAMP_EMISSION: u8 = 64;
@@ -167,52 +177,6 @@ pub fn standard_shapes() -> Vec<Shape> {
     ]
 }
 
-/// What a shape is, in words: whole, a slab (the bottom, the top, or against another side) or a stair (which way it rises, and what its floor is if
-/// not the bottom). For the states of the solid blocks, which stand every way.
-pub fn describe_shape(shape: &Shape) -> String {
-    use block_models::engine::face_name;
-    use voxel_space::LatticeRotation;
-    if shape.is_full() {
-        return "whole".to_owned();
-    }
-    for face in FaceDirection::ALL {
-        if shape.same_cells(&Shape::half(face)) {
-            return match face {
-                FaceDirection::NegativeY => "bottom slab".to_owned(),
-                FaceDirection::PositiveY => "top slab".to_owned(),
-                other => format!("slab against the {} side", face_name(other)),
-            };
-        }
-    }
-    // A stair is its floor and the side it rises toward; a stair has two such descriptions (its profile is an L, which a half turn about the diagonal
-    // leaves as it is), and the one with the floor down is the one said if there is one.
-    let described: Vec<(FaceDirection, FaceDirection)> = LatticeRotation::all()
-        .into_iter()
-        .filter(|rotation| {
-            shape.same_cells(&Shape::stair(FaceDirection::PositiveX).turned(*rotation))
-        })
-        .map(|rotation| {
-            (
-                rotation.apply_face(FaceDirection::NegativeY),
-                rotation.apply_face(FaceDirection::PositiveX),
-            )
-        })
-        .collect();
-    if let Some(&(floor, high)) = described
-        .iter()
-        .find(|(floor, _)| *floor == FaceDirection::NegativeY)
-        .or(described.first())
-    {
-        let high = face_name(high);
-        return if floor == FaceDirection::NegativeY {
-            format!("stair rising {high}")
-        } else {
-            format!("stair on the {} side rising {high}", face_name(floor))
-        };
-    }
-    "odd shape".to_owned()
-}
-
 /// The name of a state of a solid block, as for [`SHAPE_NAMES`].
 pub fn shape_name(state: u32) -> &'static str {
     SHAPE_NAMES.get(state as usize).copied().unwrap_or("whole")
@@ -255,6 +219,11 @@ impl BaseBlockIds {
     /// whole cube.
     pub fn state_channel(&self) -> ChannelDefinition {
         ChannelDefinition::number(state_channel_identifier(), 0)
+    }
+
+    /// The channel definition for the orientation of each voxel; new voxels are not turned.
+    pub fn orientation_channel(&self) -> ChannelDefinition {
+        ChannelDefinition::number(orientation_channel_identifier(), 0)
     }
 
     /// The channel definition for the light of each voxel; new voxels have none.
@@ -313,14 +282,7 @@ impl BaseBlocks {
                 .expect("the block names are distinct")
                 .raw()
         };
-        // Every block can stand every way (a ship turned onto another's lattice is made of blocks turned with it): the seven shapes first, as they
-        // always were, and then the turns of them there are no states for yet, so the numbers saved in worlds mean what they did. (The fire is not:
-        // its states are ages.)
-        let solid = |color: [f32; 3]| {
-            BlockDefinition::cube(color)
-                .with_shapes(standard_shapes())
-                .in_every_orientation()
-        };
+        let solid = |color: [f32; 3]| BlockDefinition::cube(color).with_shapes(standard_shapes());
         let air = register("air", BlockDefinition::air());
         let stone = register("stone", solid([0.50, 0.50, 0.53]));
         let dirt = register("dirt", solid([0.45, 0.30, 0.18]));
@@ -330,13 +292,16 @@ impl BaseBlocks {
         );
         let lamp = register(
             "lamp",
-            BlockDefinition::cube([1.0, 0.92, 0.65])
-                .with_emission(LAMP_EMISSION)
-                .in_every_orientation(),
+            BlockDefinition::cube([1.0, 0.92, 0.65]).with_emission(LAMP_EMISSION),
         );
+        // Wood is a log: it is drawn with lighter ends, and when a player places it the line between its ends runs along the face it is placed against.
         let wood = register(
             "wood",
-            solid([0.55, 0.38, 0.20]).with_flammability(WOOD_FLAMMABILITY),
+            solid([0.55, 0.38, 0.20])
+                .with_flammability(WOOD_FLAMMABILITY)
+                .with_marked_faces(LOG_END_COLOR, &[Some(FaceDirection::PositiveY); 7])
+                .with_both_ends_marked()
+                .with_axis_face(FaceDirection::PositiveY),
         );
         let fire = register(
             "fire",
@@ -440,8 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn solid_blocks_have_the_seven_shapes_first_and_then_every_other_way_they_stand_and_air_the_lamp_and_fire_have_one()
-     {
+    fn solid_blocks_have_the_seven_shapes_and_air_the_lamp_and_fire_have_one() {
         let table = BaseBlocks::new().block_table();
         assert_eq!(table.state_count(0), 1);
         assert_eq!(table.state_count(4), 1);
@@ -450,13 +414,12 @@ mod tests {
             1,
             "a fire has one shape, and ages are not shapes"
         );
-        // Whole, six slabs and twelve stairs: every way each can stand, the first seven as they have always been.
+        // The whole cube, and the slabs and stairs: how they stand is their orientation, which every block has, not a state.
         for block in [1, 2, 3, 5] {
-            assert_eq!(table.state_count(block), 19);
+            assert_eq!(table.state_count(block), SHAPE_NAMES.len() as u32);
         }
-        assert_eq!(standard_shapes().len(), SHAPE_NAMES.len());
         // State 0 is the whole cube and the others are not; the names follow the shapes.
-        let stone = |state| table.model_of(1, state);
+        let stone = |state| table.model_of(1, state, 0);
         assert!(table.is_opaque_cube(stone(0)));
         for state in 1..7 {
             assert!(!table.is_opaque_cube(stone(state)), "{}", shape_name(state));
@@ -468,62 +431,41 @@ mod tests {
         assert!(table.shape(stone(4)).covers_face(FaceDirection::NegativeX));
         assert!(table.shape(stone(5)).covers_face(FaceDirection::NegativeZ));
         assert!(table.shape(stone(6)).covers_face(FaceDirection::PositiveZ));
-        // The rest are described by their shape: the slabs and stairs that stand other ways than the seven.
-        let definitions = BaseBlocks::new();
-        let stone_definition = definitions
-            .blocks
-            .entry(
-                definitions
-                    .blocks
-                    .runtime_id(&identifier("base_blocks:stone"))
-                    .unwrap(),
-            )
-            .and_then(|entry| entry.content())
-            .unwrap();
-        let names: Vec<String> = stone_definition
-            .shapes()
-            .iter()
-            .map(describe_shape)
-            .collect();
-        assert_eq!(
-            &names[..7],
-            SHAPE_NAMES,
-            "the first seven are named as they were"
-        );
-        assert_eq!(
-            names
-                .iter()
-                .filter(|name| name.starts_with("slab against the"))
-                .count(),
-            4
-        );
-        assert_eq!(
-            names
-                .iter()
-                .filter(|name| name.starts_with("stair"))
-                .count(),
-            12
-        );
-        let mut distinct = names.clone();
-        distinct.sort();
-        distinct.dedup();
-        assert_eq!(
-            distinct.len(),
-            19,
-            "no two states are named alike: {names:?}"
-        );
-        assert!(names.iter().all(|name| name != "odd shape"));
         assert_eq!(shape_name(0), "whole");
         assert_eq!(shape_name(2), "top slab");
         assert_eq!(shape_name(99), "whole");
     }
 
     #[test]
+    fn wood_is_a_log_with_its_line_up_and_down_and_both_ends_marked_and_nothing_else_is_turned_by_the_player()
+     {
+        let table = BaseBlocks::new().block_table();
+        let wood = BaseBlocks::new().wood;
+        assert_eq!(
+            table.placement(wood, 0),
+            block_models::Placement::AlongPlacedFace(FaceDirection::PositiveY)
+        );
+        // Marked at the top and at the bottom as it is made (the ends of the trunk), and the other faces are the bark.
+        let ends: Vec<FaceDirection> = FaceDirection::ALL
+            .into_iter()
+            .filter(|face| table.material_of_face(wood, 0, 0, *face) != table.material_of(wood, 0))
+            .collect();
+        assert_eq!(ends, [FaceDirection::NegativeY, FaceDirection::PositiveY]);
+        for block in [0, 1, 2, 3, 4, 6] {
+            assert_eq!(
+                table.placement(block, 0),
+                block_models::Placement::Fixed,
+                "{block}"
+            );
+        }
+    }
+
+    #[test]
     fn the_table_has_the_blocks_colours_air_is_see_through_and_missing_blocks_are_magenta_cubes() {
         let mut blocks = BaseBlocks::new();
         let table = blocks.block_table();
-        // The blocks, then the colours a fire is drawn in as it ages.
-        assert_eq!(table.palette().len(), 7 + FIRE_LIFETIME as usize);
+        // The blocks, then the colours a fire is drawn in as it ages, then the colour of the ends of a log.
+        assert_eq!(table.palette().len(), 7 + FIRE_LIFETIME as usize + 1);
         assert_eq!(table.color(3), [0.30, 0.62, 0.20]);
         // Only the lamp and the fire give off light, only grass and wood burn, and bodies pass through flames and
         // nothing else of the blocks.
@@ -544,22 +486,22 @@ mod tests {
             "grass and wood burn, and fire does not burn"
         );
         // The lamp is a whole opaque block.
-        assert!(table.is_opaque_cube(table.model_of(4, 0)));
+        assert!(table.is_opaque_cube(table.model_of(4, 0, 0)));
         assert_eq!(
             (0..7)
                 .map(|block| table.get_of(passable, block, 0))
                 .collect::<Vec<_>>(),
             [false, false, false, false, false, false, true]
         );
-        assert!(!table.is_solid(table.model_of(0, 0)));
-        assert!(table.is_see_through(table.model_of(0, 0)));
+        assert!(!table.is_solid(table.model_of(0, 0, 0)));
+        assert!(table.is_see_through(table.model_of(0, 0, 0)));
         let missing = blocks
             .blocks
             .register_missing(identifier("elsewhere:marble"));
         assert_eq!(missing.raw(), 7);
         let table = blocks.block_table();
         assert_eq!(table.palette()[7], MISSING_BLOCK_COLOR);
-        assert!(table.is_opaque_cube(table.model_of(7, 0)));
+        assert!(table.is_opaque_cube(table.model_of(7, 0, 0)));
     }
 
     #[test]
@@ -572,8 +514,11 @@ mod tests {
                 "base_blocks:emission",
                 "base_blocks:flammability",
                 "base_blocks:passable",
+                "engine:axis_face",
                 "engine:density",
                 "engine:docking_face",
+                "engine:front_face",
+                "engine:mark_both_ends",
                 "engine:mark_color",
                 "engine:marked_face",
                 "engine:placeable_on_moving_grids"

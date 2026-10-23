@@ -369,6 +369,11 @@ pub trait ScaledLightWorld {
     /// The block and state of a voxel, or `None` where there is nothing to read.
     fn block_and_state(&mut self, grid: GridId, at: VoxelCoordinate) -> Option<(u32, u32)>;
 
+    /// The orientation of the block in a voxel (the number of a turn of the lattice); none for a world whose blocks are not turned.
+    fn orientation_at(&mut self, _grid: GridId, _at: VoxelCoordinate) -> u32 {
+        0
+    }
+
     /// What is stored at the anchor of a cell of a scale (see [`face_output`]); 0 where there is
     /// nothing to read.
     fn word(&mut self, scale: usize, grid: GridId, anchor: VoxelCoordinate) -> u32;
@@ -631,12 +636,14 @@ impl MultiScaleLighting {
         for x in 0..width {
             for y in 0..width {
                 for z in 0..width {
-                    let read = anchor
-                        .checked_offset(x as i64, y as i64, z as i64)
-                        .and_then(|at| world.block_and_state(grid, at));
+                    let at = anchor.checked_offset(x as i64, y as i64, z as i64);
+                    let read = at.and_then(|at| world.block_and_state(grid, at));
                     // What cannot be read lets no light in.
-                    let Some((block, state)) = read else { continue };
-                    let model = self.table.model_of(block, state);
+                    let (Some(at), Some((block, state))) = (at, read) else {
+                        continue;
+                    };
+                    let orientation = world.orientation_at(grid, at);
+                    let model = self.table.model_of(block, state, orientation);
                     let connections = self.table.connections(model);
                     open[index(x, y, z)] = FaceDirection::ALL
                         .iter()
@@ -983,7 +990,7 @@ mod tests {
     fn is_open(world: &Box3, table: &BlockTable, voxel: VoxelCoordinate) -> bool {
         world.contains(voxel) && {
             let block = world.blocks.get(&voxel).copied().unwrap_or(AIR);
-            let connections = table.connections(table.model_of(block, 0));
+            let connections = table.connections(table.model_of(block, 0, 0));
             FaceDirection::ALL
                 .iter()
                 .any(|&face| connections.is_open(face))

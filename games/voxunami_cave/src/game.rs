@@ -12,7 +12,8 @@ use transport::Connection;
 use voxel_space::WorldPosition;
 
 use crate::client::{
-    ClientBlockEditing, ClientItems, ClientLight, ClientMovement, set_block_request,
+    ClientBlockEditing, ClientItems, ClientLight, ClientMovement, place_block_request,
+    set_block_request,
 };
 use crate::content::{CaveContent, game_id};
 use crate::logic::REACH;
@@ -81,7 +82,10 @@ pub fn place_block_with_state<C: Connection>(
     state: u32,
 ) {
     if let Some(hit) = session.target() {
-        request_block_in(session, hit.grid, hit.previous, block, state);
+        session.send_game_message(
+            SetBlock::kind(),
+            place_block_request(&hit, block, state).encode(),
+        );
     }
 }
 

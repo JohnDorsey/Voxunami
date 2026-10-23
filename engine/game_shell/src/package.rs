@@ -39,6 +39,8 @@ pub struct PackageSpec {
     /// Which channel holds each voxel's block, and where the game has them, its state and light.
     pub block_channel: NamespacedId,
     pub state_channel: Option<NamespacedId>,
+    /// The channel holding each voxel's orientation, where the game's blocks can be turned.
+    pub orientation_channel: Option<NamespacedId>,
     pub light_channel: Option<NamespacedId>,
     /// The properties of blocks that the game's plugins declare, besides the engine's.
     pub properties: Vec<PropertyDeclaration>,
@@ -90,6 +92,16 @@ impl ContentPackage {
     /// The channel holding each voxel's block.
     pub fn block_channel(&self) -> ChannelIndex {
         self.channel(&self.spec.block_channel)
+    }
+
+    /// The channel holding each voxel's orientation. Panics if the game has none.
+    pub fn orientation_channel(&self) -> ChannelIndex {
+        self.channel(
+            self.spec
+                .orientation_channel
+                .as_ref()
+                .expect("the package declares an orientation channel"),
+        )
     }
 
     /// The channel holding each voxel's state. Panics if the game has none.
@@ -180,6 +192,12 @@ impl GameContent for ContentPackage {
             self.spec.state_channel.as_ref().map(|id| self.channel(id)),
             self.spec.light_channel.as_ref().map(|id| self.channel(id)),
         )
+        .with_orientations(
+            self.spec
+                .orientation_channel
+                .as_ref()
+                .map(|id| self.channel(id)),
+        )
     }
 
     fn package_data(&self) -> PackageData {
@@ -201,6 +219,7 @@ impl GameContent for ContentPackage {
                 .collect(),
             block_channel: self.spec.block_channel.clone(),
             state_channel: self.spec.state_channel.clone(),
+            orientation_channel: self.spec.orientation_channel.clone(),
             light_channel: self.spec.light_channel.clone(),
             ambient_light: self.spec.ambient_light,
         }
@@ -277,6 +296,7 @@ mod tests {
                 ],
                 block_channel: id("test_game:block"),
                 state_channel: Some(id("test_game:state")),
+                orientation_channel: None,
                 light_channel: None,
                 properties: Vec::new(),
                 generators: Arc::new(|_seed, _layout| {

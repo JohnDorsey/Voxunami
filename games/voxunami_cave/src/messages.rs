@@ -10,7 +10,7 @@ use namespaced_id::NamespacedId;
 use physics::MoveInput;
 use player_presence::{PlayerPose, PoseReport};
 use protocol::Message;
-use voxel_space::{GridId, VoxelCoordinate};
+use voxel_space::{FaceDirection, GridId, VoxelCoordinate};
 
 use crate::multiscale_light::LightScheme;
 
@@ -136,6 +136,9 @@ pub struct SetBlock {
     pub at: VoxelCoordinate,
     pub block: NamespacedId,
     pub state: u32,
+    /// The face of the neighbouring block that the player clicked to put this one next to it (the neighbour's face that touches `at`): `None`
+    /// if they did not click one (a break, or a block put in the voxel the player looks into).
+    pub against: Option<FaceDirection>,
 }
 
 impl Message for SetBlock {
@@ -151,6 +154,8 @@ impl Message for SetBlock {
         }
         writer.write_identifier(&self.block);
         writer.write_varint(u64::from(self.state));
+        // 0 for none, else 1 plus the face's index.
+        writer.write_varint(self.against.map_or(0, |face| 1 + u64::from(face.index())));
         writer.into_bytes()
     }
 
@@ -166,12 +171,22 @@ impl Message for SetBlock {
         let block = reader.read_identifier()?;
         let state = u32::try_from(reader.read_varint()?)
             .map_err(|_| DecodeError::Invalid("a block state is out of range"))?;
+        let against = match reader.read_varint()? {
+            0 => None,
+            code => Some(
+                u8::try_from(code - 1)
+                    .ok()
+                    .and_then(FaceDirection::from_index)
+                    .ok_or(DecodeError::Invalid("a face is not one of the six"))?,
+            ),
+        };
         reader.finish()?;
         Ok(Self {
             grid,
             at,
             block,
             state,
+            against,
         })
     }
 
@@ -183,18 +198,21 @@ impl Message for SetBlock {
                 at: VoxelCoordinate::new(-40, 200, 5),
                 block: lamp.clone(),
                 state: 3,
+                against: Some(FaceDirection::PositiveZ),
             },
             Self {
                 grid: GridId::new(GridId::FIRST_ALLOCATED + 7),
                 at: VoxelCoordinate::ORIGIN,
                 block: kind("a:b"),
                 state: 0,
+                against: None,
             },
             Self {
                 grid: GridId::root(voxel_space::LevelIndex::new(2)),
                 at: VoxelCoordinate::new(-5, 100, 7),
                 block: lamp,
                 state: u32::MAX,
+                against: Some(FaceDirection::NegativeX),
             },
         ]
     }
@@ -410,8 +428,32 @@ mod tests {
             at: VoxelCoordinate::new(-5, 100, 7),
             block: "base_blocks:stone".parse().unwrap(),
             state: 5,
+            against: Some(FaceDirection::PositiveY),
         };
         assert_eq!(SetBlock::decode(&request.encode()), Ok(request));
+    }
+
+    #[test]
+    fn every_face_clicked_and_none_survive_and_a_number_that_is_no_face_is_an_error() {
+        let request = |against| SetBlock {
+            grid: GridId::MAIN,
+            at: VoxelCoordinate::ORIGIN,
+            block: "a:b".parse().unwrap(),
+            state: 0,
+            against,
+        };
+        for against in [None].into_iter().chain(FaceDirection::ALL.map(Some)) {
+            let request = request(against);
+            assert_eq!(SetBlock::decode(&request.encode()), Ok(request));
+        }
+        let mut bytes = request(None).encode();
+        *bytes.last_mut().unwrap() = 7; // 1 plus the index of a seventh face
+        assert!(SetBlock::decode(&bytes).is_err());
+        *bytes.last_mut().unwrap() = 6;
+        assert_eq!(
+            SetBlock::decode(&bytes).unwrap().against,
+            Some(FaceDirection::PositiveZ)
+        );
     }
 
     #[test]
@@ -421,6 +463,7 @@ mod tests {
             at: VoxelCoordinate::ORIGIN,
             block: "a:b".parse().unwrap(),
             state,
+            against: None,
         };
         for state in [0, 1, 127, 128, 70_000, u32::MAX] {
             let request = request(state);
@@ -433,6 +476,7 @@ mod tests {
         }
         oversized.write_identifier(&"a:b".parse().unwrap());
         oversized.write_varint(u64::from(u32::MAX) + 1);
+        oversized.write_varint(0);
         assert!(SetBlock::decode(&oversized.into_bytes()).is_err());
     }
 
@@ -443,6 +487,7 @@ mod tests {
             at: VoxelCoordinate::ORIGIN,
             block: "a:b".parse().unwrap(),
             state: 300,
+            against: Some(FaceDirection::NegativeY),
         })
         .encode();
         for length in 0..good.len() {

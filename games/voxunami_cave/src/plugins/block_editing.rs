@@ -15,6 +15,7 @@ use voxel_space::{GridId, VoxelCoordinate};
 use crate::content::CaveContent;
 use crate::logic::REACH;
 use crate::messages::SetBlock;
+use crate::placement::{PlacerView, orientation_of_placement};
 
 /// A player asks to put a block (in a state) at a voxel, within reach and of a block and state that
 /// exist. Handlers of this event may refuse, with a reason that the player is told.
@@ -78,6 +79,7 @@ pub struct BlockEditingPlugin {
     table: BlockTable,
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
+    orientation_channel: ChannelIndex,
     players: SharedPresence,
 }
 
@@ -94,6 +96,7 @@ impl BlockEditingPlugin {
             table: content.block_table(),
             block_channel: content.block_channel(),
             state_channel: content.state_channel(),
+            orientation_channel: content.orientation_channel(),
             players,
         }
     }
@@ -122,28 +125,33 @@ impl Plugin for BlockEditingPlugin {
         let block_ids = self.block_ids.clone();
         let table = self.table.clone();
         let (block_channel, state_channel) = (self.block_channel, self.state_channel);
+        let orientation_channel = self.orientation_channel;
         let players = std::sync::Arc::clone(&self.players);
         registrar.message(move |context, client, request: SetBlock| {
-            let (pose, level) = {
+            let (pose, level, eyes) = {
                 let presence = lock(&players);
                 let world = context.world().data();
                 (
                     presence.pose_of(world, client),
                     presence.level_of(world, client),
+                    presence.view_in_the_world(world, client),
                 )
             };
-            let (Some(pose), Some(&raw)) = (pose, block_ids.get(&request.block)) else {
+            let (Some(pose), Some((eyes, view)), Some(&raw)) =
+                (pose, eyes, block_ids.get(&request.block))
+            else {
                 return; // a player who has not said where they are, or a block this server lacks
             };
             // Players change the terrain of the level they are in, or a ship in it, within reach of where they are.
             let grid = request.grid;
-            let Some(distance) = context
-                .world()
-                .data()
-                .grid_frame(grid)
-                .and_then(|frame| pose.distance_to_voxel_of(level, &frame, request.at))
-            else {
-                return; // a grid that is not there, or is in another level
+            let Some(frame) = context.world().data().grid_frame(grid) else {
+                return; // a grid that is not there
+            };
+            let Some(distance) = pose.distance_to_voxel_of(level, &frame, request.at) else {
+                return; // a grid in another level
+            };
+            let Some(placer) = PlacerView::in_frame(&frame, eyes, view) else {
+                return;
             };
             // Air has one state, so breaking a block always resets its state too.
             if distance > REACH || request.state >= table.state_count(raw) {
@@ -165,7 +173,21 @@ impl Plugin for BlockEditingPlugin {
                 return;
             };
             let before = edited.get(block_channel, request.at).ok();
+            // A block is turned as the player placing it is placed (a piston faces them, a log lies along the face it is put against); air is not turned.
+            let orientation = if raw == air {
+                0
+            } else {
+                orientation_of_placement(
+                    table.placement(raw, request.state),
+                    request.at,
+                    request.against,
+                    &placer,
+                )
+            };
             let changed = edited.set(state_channel, request.at, request.state).is_ok()
+                && edited
+                    .set(orientation_channel, request.at, orientation)
+                    .is_ok()
                 && edited.set(block_channel, request.at, raw).is_ok();
             if !changed {
                 return;

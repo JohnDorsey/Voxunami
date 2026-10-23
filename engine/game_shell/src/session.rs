@@ -637,7 +637,11 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             .view_channels
             .states
             .map_or(0, |channel| voxels.get(channel, voxel));
-        let model = self.block_table.model_of(block, state);
+        let orientation = self
+            .view_channels
+            .orientations
+            .map_or(0, |channel| voxels.get(channel, voxel));
+        let model = self.block_table.model_of(block, state, orientation);
         self.block_table.is_solid(model)
     }
 

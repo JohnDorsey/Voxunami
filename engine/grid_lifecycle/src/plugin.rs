@@ -69,6 +69,8 @@ pub struct ArrivalConfig {
     pub collisions: BlockCollisions,
     pub block_channel: ChannelIndex,
     pub state_channel: ChannelIndex,
+    /// Where the game keeps the orientation of its blocks, if it has any.
+    pub orientation_channel: Option<ChannelIndex>,
 }
 
 /// Keeps ships by how near the players are: see the crate documentation.
@@ -277,6 +279,7 @@ fn arrive(
         &arrivals.collisions,
         arrivals.block_channel,
         arrivals.state_channel,
+        arrivals.orientation_channel,
     );
     let free = {
         let mut obstacles = Obstacles::new(
@@ -284,6 +287,7 @@ fn arrive(
             parked.level,
             arrivals.block_channel,
             arrivals.state_channel,
+            arrivals.orientation_channel,
             &arrivals.collisions,
         );
         hull.is_free(&ship.pose, &mut |place| obstacles.solid_at(place))
@@ -429,12 +433,14 @@ fn answered(
         &arrivals.collisions,
         arrivals.block_channel,
         arrivals.state_channel,
+        arrivals.orientation_channel,
     );
     let mut obstacles = Obstacles::new(
         context.world(),
         level,
         arrivals.block_channel,
         arrivals.state_channel,
+        arrivals.orientation_channel,
         &arrivals.collisions,
     );
     let blocked = hull.blocked_cells(&landing.pose, &mut |place| obstacles.solid_at(place));

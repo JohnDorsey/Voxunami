@@ -59,6 +59,7 @@ pub struct ItemsPlugin {
     passable: PropertyHandle<bool>,
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
+    orientation_channel: ChannelIndex,
     players: SharedPresence,
 }
 
@@ -79,6 +80,7 @@ impl ItemsPlugin {
             block_names,
             block_channel: content.block_channel(),
             state_channel: content.state_channel(),
+            orientation_channel: content.orientation_channel(),
             players,
         }
     }
@@ -270,6 +272,7 @@ impl Plugin for ItemsPlugin {
             passable: self.passable,
             block_channel: self.block_channel,
             state_channel: self.state_channel,
+            orientation_channel: self.orientation_channel,
             players: Arc::clone(&self.players),
         };
         registrar.system(
@@ -279,7 +282,11 @@ impl Plugin for ItemsPlugin {
             )
             // (After the fire has burnt: items see the ground as it is left.)
             .after("voxunami_cave:burn")
-            .reads(&[self.block_channel, self.state_channel])
+            .reads(&[
+                self.block_channel,
+                self.state_channel,
+                self.orientation_channel,
+            ])
             .reads_entities()
             .writes_entities()
             .writes_component::<ItemStack>()
@@ -296,6 +303,7 @@ struct ItemsRun {
     passable: PropertyHandle<bool>,
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
+    orientation_channel: ChannelIndex,
     players: SharedPresence,
 }
 
@@ -345,16 +353,17 @@ impl ItemsRun {
         let Ok(mut view) = context.grid(grid) else {
             return true;
         };
-        let (Ok(block), Ok(state)) = (
+        let (Ok(block), Ok(state), Ok(orientation)) = (
             view.get(self.block_channel, voxel),
             view.get(self.state_channel, voxel),
+            view.get(self.orientation_channel, voxel),
         ) else {
             return true;
         };
         if block == self.air {
             return false;
         }
-        let model = self.table.model_of(block, state);
+        let model = self.table.model_of(block, state, orientation);
         !(self.table.get(self.passable, model) || self.table.shape(model).is_empty())
     }
 

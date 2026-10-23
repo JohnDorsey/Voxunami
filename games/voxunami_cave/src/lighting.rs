@@ -51,6 +51,11 @@ pub trait LightWorld {
     /// cannot generate, the edge of the world), which lets no light in or out.
     fn block_and_state(&mut self, grid: GridId, at: VoxelCoordinate) -> Option<(u32, u32)>;
 
+    /// The orientation of the block in a voxel (the number of a turn of the lattice); none for a world whose blocks are not turned.
+    fn orientation_at(&mut self, _grid: GridId, _at: VoxelCoordinate) -> u32 {
+        0
+    }
+
     /// The light stored in a voxel, 0 to 255; 0 where there is nothing to read.
     fn light(&mut self, grid: GridId, at: VoxelCoordinate) -> u8;
 
@@ -145,7 +150,8 @@ impl Lighting {
         let Some((block, state)) = world.block_and_state(grid, at) else {
             return 0;
         };
-        let model = self.table.model_of(block, state);
+        let orientation = world.orientation_at(grid, at);
+        let model = self.table.model_of(block, state, orientation);
         let connections = self.table.connections(model);
         if !FaceDirection::ALL
             .iter()
@@ -165,7 +171,10 @@ impl Lighting {
             else {
                 continue;
             };
-            let neighbour_model = self.table.model_of(neighbour_block, neighbour_state);
+            let neighbour_orientation = world.orientation_at(grid, neighbour);
+            let neighbour_model =
+                self.table
+                    .model_of(neighbour_block, neighbour_state, neighbour_orientation);
             let neighbour_connections = self.table.connections(neighbour_model);
             let emission = self.table.get(self.emission, neighbour_model);
             if neighbour_connections.is_open(face.opposite()) || emission > 0 {
@@ -359,7 +368,7 @@ mod tests {
                     .get(&(MAIN, voxel))
                     .copied()
                     .unwrap_or((AIR, 0));
-                (block, table.model_of(block, state))
+                (block, table.model_of(block, state, 0))
             })
         };
         let mut best: HashMap<VoxelCoordinate, u8> = HashMap::new();

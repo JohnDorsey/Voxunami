@@ -37,6 +37,7 @@ impl MovementPlugin {
             content.block_table(),
             content.block_channel(),
             content.state_channel(),
+            content.orientation_channel(),
             content.blocks.air,
         );
         Self {

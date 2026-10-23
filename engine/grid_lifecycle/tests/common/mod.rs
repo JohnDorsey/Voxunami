@@ -241,6 +241,7 @@ impl Rig {
                 collisions: collisions(&game),
                 block_channel: layout.channel_index(&id("core:block")).unwrap(),
                 state_channel: layout.channel_index(&id("core:temperature")).unwrap(),
+                orientation_channel: None,
             })
         } else {
             lifecycle

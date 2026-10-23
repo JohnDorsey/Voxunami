@@ -6,7 +6,7 @@
 //! beyond placing it in the middle of a voxel), and comes into the inventory of a player who gets close.
 //! In creative nothing is dropped or used up.
 
-use block_models::{BlockDefinition, PropertyKey, engine};
+use block_models::{BlockDefinition, PropertyKey};
 use entities::{EntityKindSpec, ItemSpec, ItemStack};
 use game_shell::PackageData;
 use namespaced_id::NamespacedId;
@@ -65,20 +65,10 @@ pub fn placeable_blocks(package: &PackageData) -> Vec<NamespacedId> {
     package.blocks_with(&PLACEABLE)
 }
 
-/// What a state of a block is called to a player: the face that docks, if the state has one, else the shape of the base blocks.
-pub fn state_name(definition: &BlockDefinition, state: u32) -> String {
-    let key: NamespacedId = engine::DOCKING_FACE
-        .id()
-        .parse()
-        .expect("a property key is an identifier");
-    let code = definition.property_value(&key, Some(state), 0);
-    match u8::try_from(code).ok().and_then(engine::face_from_code) {
-        Some(face) => format!("docking face {}", engine::face_name(face)),
-        None => definition.shapes().get(state as usize).map_or_else(
-            || base_blocks::shape_name(state).to_owned(),
-            base_blocks::describe_shape,
-        ),
-    }
+/// What a state of a block is called to a player: the shape of the base blocks. (How a block is turned is not a state, and is not chosen: a block is
+/// placed turned by where the player is and what they place it against.)
+pub fn state_name(_definition: &BlockDefinition, state: u32) -> String {
+    base_blocks::shape_name(state).to_owned()
 }
 
 /// The state a selected shape number means for a block with this many states: the number is kept in range, so that one number chosen
@@ -241,6 +231,7 @@ mod tests {
                 .collect(),
             block_channel: identifier("test:block"),
             state_channel: None,
+            orientation_channel: None,
             light_channel: None,
             ambient_light: 0,
         }

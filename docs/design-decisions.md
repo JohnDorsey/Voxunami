@@ -87,8 +87,15 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
     older text say "voxels a second" for a metre a second. Until materials have real densities (a conversation in `future-goals.md`, goal 9), every block that is not air weighs 1,000 kilograms
     a cubic metre (a metric ton), the default of `engine:density`. **Gravity is 5 metres a second a second** (owner, 2026-10-22: the planet is not the Earth, so it need not be 9.8; it was 32, a number from block games):
     `GravitySettings`, `BodySettings` and `CharacterSettings` default to it, and the jump is 3.6 metres a second (was 9), which is the same jump of 1.3 metres.
-  - **Every block can exist in every orientation** (owner, 2026-10-22): a block's states are closed under the 24 turns of the lattice (`BlockDefinition::in_every_orientation`), with the states it had keeping their numbers. A block
-    whose states are numbers (a fire's age) is the exception, because its state is not a way to stand.
+  - **Every block has an orientation, saved the same way for all blocks** (owner, 2026-10-22; replaces the first answer that closed a block's states under the turns): a voxel has a channel `base_blocks:block_orientation`,
+    the number (0 to 23, the index in `LatticeRotation::all()`, whose order is pinned as a file format) of the turn that carries the block as it was made to the way it stands. It is the same for a stone, a log and a
+    block of a plugin that is not loaded, however many visibly different orientations the block has, so turning is composing numbers (a merge turns every voxel's orientation by the transform, with no knowledge of the
+    block, and data of missing plugins is turned too). A block's definition does not list turns; `BlockTable` is indexed by block, state and orientation (`ModelId = base * 24 + orientation`) and de-duplicates the
+    shapes, so a cube in 24 orientations is one shape and a slab six. Face properties (`engine:marked_face`, `engine:docking_face`, `engine:front_face`, `engine:axis_face`) are given for the block as it is made and turned at read
+    time. A fire's age, and 2048's numbers, are states and are not orientations, so they turn like everything else. **Placing** (`engine:front_face` and `engine:axis_face`, set per state): a block with one front face (a piston)
+    is turned to face the player as in Minecraft (up if put within two voxels beside the player and more than two under their eyes, down if above them, else opposite the way they look along the ground); a block with a line of
+    radial symmetry (a log; wood is one, with both ends marked) lies along the face it was put against; any other block is not turned. The client says which face it clicked (`SetBlock.against`), the server works out the turn
+    from the player's eyes in the grid's own axes (a ship's, aboard one) and writes it. Breaking resets it.
   - **The docking force is at the port** (owner, 2026-10-22), as a force on the centre of mass and the torque of the lever; a ship whose centre is far from its port is swung by it, and the twist does not have to overcome that for
     ships that are built sensibly (the port near the middle of the face).
   - **Chance keyed by grid is fine** (owner, 2026-10-22): a rule with chance does not go on bit for bit across a merge or a split, only in distribution.

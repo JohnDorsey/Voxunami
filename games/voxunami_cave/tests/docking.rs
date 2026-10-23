@@ -14,10 +14,27 @@ use voxel_space::{
     Orientation, VoxelCoordinate, WorldPosition,
 };
 use voxunami_cave::content::{CaveContent, dev_docking_port_id};
+use voxunami_cave::placement::turn_carrying;
 
-/// The state of a dev docking port whose yellow face is this one.
-fn facing(face: FaceDirection) -> u32 {
-    u32::from(face.index())
+/// How a block is made in a ship: its state, and which way it is turned (the number of a turn of the lattice).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Look {
+    state: u32,
+    orientation: u32,
+}
+
+/// A block as it is made, not turned.
+const PLAIN: Look = Look {
+    state: 0,
+    orientation: 0,
+};
+
+/// A dev docking port turned so that its yellow face (the east, as it is made) is this one.
+fn facing(face: FaceDirection) -> Look {
+    Look {
+        state: 0,
+        orientation: u32::from(turn_carrying(FaceDirection::PositiveX, face).index()),
+    }
 }
 
 fn port_block() -> u32 {
@@ -31,11 +48,11 @@ fn stone() -> u32 {
     CaveContent::new().blocks.stone
 }
 
-/// A block of a ship: where it is in the ship, which block, and its state.
-type Placed = ([i64; 3], u32, u32);
+/// A block of a ship: where it is in the ship, which block, and how it is made.
+type Placed = ([i64; 3], u32, Look);
 
 fn stones(from: i64, to: i64) -> Vec<Placed> {
-    (from..to).map(|x| ([x, 0, 0], stone(), 0)).collect()
+    (from..to).map(|x| ([x, 0, 0], stone(), PLAIN)).collect()
 }
 
 fn pose(x: f32, y: f32, z: f32, orientation: Orientation) -> GridPose {
@@ -52,9 +69,12 @@ fn make(scene: &mut Scene, at: GridPose, held: bool, blocks: Vec<Placed>) {
         let grid = world.create_grid(LevelIndex::MAIN, at).unwrap();
         world.set_grid_held(grid, held).unwrap();
         let mut view = world.grid(grid).unwrap();
-        for ([x, y, z], block, state) in blocks {
+        for ([x, y, z], block, look) in blocks {
             let voxel = VoxelCoordinate::new(x, y, z);
-            view.set(content.state_channel(), voxel, state).unwrap();
+            view.set(content.state_channel(), voxel, look.state)
+                .unwrap();
+            view.set(content.orientation_channel(), voxel, look.orientation)
+                .unwrap();
             view.set(content.block_channel(), voxel, block).unwrap();
         }
     });
@@ -117,26 +137,26 @@ fn the_dev_docking_port_is_gunmetal_gray_with_one_yellow_face_that_docks_and_exi
     assert_eq!(creative_only_blocks(&package), std::slice::from_ref(&id));
     let table = content.block_table();
     let block = port_block();
-    // Six states, one for each face the yellow can be on, and the yellow face is the one that docks.
-    assert_eq!(table.state_count(block), 6);
+    // One state, and the yellow face is the one that docks, wherever the port is turned to: all 24 turns.
+    assert_eq!(table.state_count(block), 1);
     let palette = table.palette();
     for face in FaceDirection::ALL {
-        let state = facing(face);
-        assert_eq!(table.docking_face(block, state), Some(face));
-        let (marked, material) = table.marked_face_material(block, state).unwrap();
-        assert_eq!(marked, face);
-        assert_eq!(palette[material as usize], [1.0, 216.0 / 255.0, 0.0]);
+        let orientation = facing(face).orientation;
+        assert_eq!(table.docking_face(block, 0, orientation), Some(face));
+        let mark = table.face_mark(block, 0, orientation).unwrap();
+        assert_eq!(mark.face, face);
+        assert_eq!(palette[mark.material as usize], [1.0, 216.0 / 255.0, 0.0]);
         for other in FaceDirection::ALL
             .into_iter()
             .filter(|other| *other != face)
         {
-            assert_eq!(table.material_of_face(block, state, other), block);
+            assert_eq!(table.material_of_face(block, 0, orientation, other), block);
         }
     }
     // Gunmetal gray: dark, a little blue, and not yellow.
     let [red, green, blue] = table.color(block);
     assert!(red < 0.3 && green < 0.3 && blue < 0.3 && blue >= red);
-    assert!(table.shape(table.model_of(block, 0)).is_full());
+    assert!(table.shape(table.model_of(block, 0, 0)).is_full());
 }
 
 #[test]
@@ -243,8 +263,8 @@ fn ships_that_are_far_or_face_away_or_face_the_same_way_do_not_move_toward_each_
     assert_eq!(ships(&scene).len(), 6);
 }
 
-/// Every block of a ship: where, which block, and its state.
-fn blocks_of(scene: &Scene, id: GridId) -> BTreeMap<VoxelCoordinate, (u32, u32)> {
+/// Every block of a ship: where, which block, its state and its orientation.
+fn blocks_of(scene: &Scene, id: GridId) -> BTreeMap<VoxelCoordinate, (u32, u32, u32)> {
     let content = CaveContent::new();
     let ship = scene.rig.server.world().grids().get(id).unwrap();
     let mut blocks = BTreeMap::new();
@@ -255,7 +275,11 @@ fn blocks_of(scene: &Scene, id: GridId) -> BTreeMap<VoxelCoordinate, (u32, u32)>
             if block != content.blocks.air {
                 blocks.insert(
                     brick.voxel_at(local),
-                    (block, contents.get(content.state_channel(), local)),
+                    (
+                        block,
+                        contents.get(content.state_channel(), local),
+                        contents.get(content.orientation_channel(), local),
+                    ),
                 );
             }
         }
@@ -374,8 +398,15 @@ fn rolled_pair(quarters: f32) -> Scene {
     // The second ship: its port, then a bottom slab (state 1) and a stone.
     let second = vec![
         ([0, 0, 0], port_block(), facing(FaceDirection::NegativeX)),
-        ([1, 0, 0], stone(), 1),
-        ([2, 0, 0], stone(), 0),
+        (
+            [1, 0, 0],
+            stone(),
+            Look {
+                state: 1,
+                orientation: 0,
+            },
+        ),
+        ([2, 0, 0], stone(), PLAIN),
     ];
     // Rolled about x by the angle: the middle of its port face, 0.5 along y and z from its origin, is then at the offset the roll gives.
     let angle = quarters * std::f32::consts::FRAC_PI_2;
@@ -413,13 +444,20 @@ fn a_ship_docks_whatever_its_roll_about_the_docking_axis_and_its_slab_is_the_sam
         // of the first, whichever way that is (every block can stand every way).
         let (_, transform) = scene.rig.server.world().grids().resolve(ship_id(1))[0];
         let slab_at = transform.apply(VoxelCoordinate::new(1, 0, 0)).unwrap();
-        let (block, state) = blocks[&slab_at];
+        let (block, state, orientation) = blocks[&slab_at];
         assert_eq!(block, stone(), "roll {quarters}");
+        assert_eq!(state, 1, "roll {quarters}");
+        // The block itself was not turned in its ship, so what it keeps is the number of the turn that carried the ship onto the lattice.
+        assert_eq!(
+            orientation,
+            u32::from(transform.rotation.index()),
+            "roll {quarters}"
+        );
         let table = CaveContent::new().block_table();
-        let slab = table.shape(table.model_of(block, state));
+        let slab = table.shape(table.model_of(block, state, orientation));
         assert!(
             slab.same_cells(&Shape::half(FaceDirection::NegativeY).turned(transform.rotation)),
-            "roll {quarters}: state {state} is not the slab turned by {:?}",
+            "roll {quarters}: orientation {orientation} is not the slab turned by {:?}",
             transform.rotation
         );
         // The ports are docked, and aligned to the lattice of the first.
@@ -510,8 +548,8 @@ fn ships_near_enough_and_in_line_that_cannot_be_joined_are_left_two_and_tried_ag
     weightless(&mut scene);
     let content = CaveContent::new();
     let (mut first, mut second) = a_pair();
-    first.push(([4, 1, 0], content.blocks.fire, 0));
-    second.push(([0, 1, 0], stone(), 0));
+    first.push(([4, 1, 0], content.blocks.fire, PLAIN));
+    second.push(([0, 1, 0], stone(), PLAIN));
     make(
         &mut scene,
         pose(20.0, 230.0, 20.0, Orientation::IDENTITY),
@@ -548,9 +586,9 @@ fn a_player_on_a_deck_with_a_ship_to_dock() -> (Scene, common::Player) {
         let mut deck = world.grid(ship_id(0)).unwrap();
         let end = VoxelCoordinate::new(29, 1, 3);
         deck.set(
-            content.state_channel(),
+            content.orientation_channel(),
             end,
-            facing(FaceDirection::PositiveX),
+            facing(FaceDirection::PositiveX).orientation,
         )
         .unwrap();
         deck.set(content.block_channel(), end, port_block())
@@ -759,8 +797,8 @@ fn ships_welded_by_blocks_beside_the_ports_cannot_be_undocked_until_the_weld_is_
     use common::{say, tick_and_follow};
     let (mut first, mut second) = a_pair();
     // A stone above each port: once docked, the two are beside each other, and join the ships whatever the ports do.
-    first.push(([3, 1, 0], stone(), 0));
-    second.push(([0, 1, 0], stone(), 0));
+    first.push(([3, 1, 0], stone(), PLAIN));
+    second.push(([0, 1, 0], stone(), PLAIN));
     let (mut scene, mut player) = a_player_and_two_ships(first, second);
     let mut ticks = 0;
     while ships(&scene).len() > 1 && ticks < 900 {
@@ -808,7 +846,7 @@ fn a_command_to_undock_on_a_ship_with_nothing_docked_says_so() {
 
 /// Stone blocks along x from `from` to `to` (not including it), at this height and depth.
 fn stones_at_height(from: i64, to: i64, y: i64, z: i64) -> Vec<Placed> {
-    (from..to).map(|x| ([x, y, z], stone(), 0)).collect()
+    (from..to).map(|x| ([x, y, z], stone(), PLAIN)).collect()
 }
 
 /// The first ship (held) has a wall of wood beside its port, 6 wide and 5 high, and nine fires beside it; the second has a wall of wood just like it
@@ -826,8 +864,8 @@ fn wood_of_the_second_ship_left_after_a_while(docking: bool) -> (usize, u64) {
     let mut second = stones_at_height(1, 3, 2, 3);
     for (y, z) in (0..5).flat_map(|y| (0..6).map(move |z| (y, z))) {
         if (y, z) != (2, 3) {
-            first.push(([3, y, z], content.blocks.wood, 0));
-            second.push(([0, y, z], content.blocks.wood, 0));
+            first.push(([3, y, z], content.blocks.wood, PLAIN));
+            second.push(([0, y, z], content.blocks.wood, PLAIN));
         }
     }
     first.push(([3, 2, 3], port_block(), facing(FaceDirection::PositiveX)));
@@ -906,7 +944,9 @@ fn wood_of_the_second_ship_left_after_a_while(docking: bool) -> (usize, u64) {
             .offset()[0];
         left += blocks_of(&scene, id)
             .iter()
-            .filter(|(voxel, (block, _))| *block == wood && origin + voxel.x() as f32 + 0.5 > 24.0)
+            .filter(|(voxel, (block, _, _))| {
+                *block == wood && origin + voxel.x() as f32 + 0.5 > 24.0
+            })
             .count();
     }
     (left, report().dockings_made)

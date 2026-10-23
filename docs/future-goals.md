@@ -261,6 +261,11 @@ then what it needs and what I found in the code.
    metre; gravity is 5 metres a second a second, the planet not being the Earth); the code and the docs say "voxels a second" for what is a metre a second, and a rule that needs a unit says which.
 
 
+10. **More ways a placed block is turned (follows the owner's answer of 2026-10-22).** Pistons (one front face) and logs (a line of symmetry) are placed as in Minecraft. Not built: slabs
+    and stairs placed by the half of the face the player clicks and the way they look (they are still chosen by the shape key), a tool that rotates a block already placed, and the
+    rest of Minecraft's families (a block that faces the way the player faces, not toward them, like a furnace; a block that turns by the half of a face clicked, like a hopper).
+    The orientation channel and the placement properties are in place for any of these; each is a rule in `games/voxunami_cave/src/placement.rs` and a property of the block.
+
 ## Levels (owner, 2026-10-20)
 
 - **A superflat level.** A level of flat ground in layers (as Minecraft's superflat world type: for example bedrock, stone, dirt, grass), for building,

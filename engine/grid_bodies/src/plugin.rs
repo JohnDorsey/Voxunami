@@ -56,6 +56,8 @@ pub struct GridBodiesConfig {
     pub table: BlockTable,
     pub block_channel: ChannelIndex,
     pub state_channel: ChannelIndex,
+    /// Where the game keeps the orientation of its blocks, if it has any.
+    pub orientation_channel: Option<ChannelIndex>,
     /// The block that is air, which makes a brick that is all of it empty without a look at each voxel.
     pub air: u32,
     /// The game's property for blocks bodies can pass through, if it has one.
@@ -138,7 +140,10 @@ impl Plugin for GridBodiesPlugin {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take()
             .expect("a plugin is registered once");
-        let channels = [config.block_channel, config.state_channel];
+        let channels: Vec<ChannelIndex> = [config.block_channel, config.state_channel]
+            .into_iter()
+            .chain(config.orientation_channel)
+            .collect();
         let bodies = Arc::new(Mutex::new(Bodies::new(config, Arc::clone(&self.report))));
 
         // Where blocks changed, the colliders and the mass are made again.
@@ -281,6 +286,7 @@ impl Bodies {
             voxels: &ship.voxels,
             block_channel: self.config.block_channel,
             state_channel: self.config.state_channel,
+            orientation_channel: self.config.orientation_channel,
             collisions: &mut self.collisions,
         };
         // A brick too far from the ship's origin for a collider has none (and no mass either).
@@ -321,6 +327,7 @@ impl Bodies {
             density: self.config.density,
             block_channel: self.config.block_channel,
             state_channel: self.config.state_channel,
+            orientation_channel: self.config.orientation_channel,
             air: self.config.air,
         }
     }
@@ -341,7 +348,9 @@ impl Bodies {
             let is_part = |voxel: VoxelCoordinate| ship.voxels.get(block_channel, voxel) != air;
             // The blocks beside a place where a block was taken out.
             let mut seeds: BTreeSet<VoxelCoordinate> = BTreeSet::new();
+            let mut removed_any = false;
             for voxel in voxels.into_iter().filter(|voxel| !is_part(*voxel)) {
+                removed_any = true;
                 for face in FACES {
                     let near = VoxelCoordinate::new(
                         voxel.x() + face[0],
@@ -352,6 +361,12 @@ impl Bodies {
                         seeds.insert(near);
                     }
                 }
+            }
+            // A ship that blocks were taken out of and that has none left is gone: there is nothing of it to carry.
+            if seeds.is_empty() && removed_any && !has_blocks(ship, block_channel, air) {
+                self.checks.remove(&id);
+                let _ = world.remove_grid(id);
+                continue;
             }
             if seeds.is_empty() && !self.checks.contains_key(&id) {
                 continue;
@@ -710,6 +725,7 @@ impl Bodies {
                     level: level_index,
                     block_channel: self.config.block_channel,
                     state_channel: self.config.state_channel,
+                    orientation_channel: self.config.orientation_channel,
                     air: self.config.air,
                     collisions: &mut self.collisions,
                 };
@@ -1004,9 +1020,11 @@ impl Bodies {
         if world.set_grid_pose(moving, docked).is_err() {
             return false;
         }
-        let turn_values = docking.turn_values();
+        // (The orientations of the blocks are turned by the merge itself; nothing else here needs turning.)
+        let turn_values = |_: &mut Vec<(ChannelIndex, u32)>, _: voxel_space::LatticeRotation| {};
         let plan = MergePlan {
             block_channel: self.config.block_channel,
+            orientation_channel: self.config.orientation_channel,
             tolerance: AlignmentTolerance::default(),
             turn: &turn_values,
             linear_velocity: linear,
@@ -1080,13 +1098,20 @@ pub(crate) struct Weigher<'a> {
     pub density: PropertyHandle<u32>,
     pub block_channel: ChannelIndex,
     pub state_channel: ChannelIndex,
+    pub orientation_channel: Option<ChannelIndex>,
     pub air: u32,
 }
 
 impl Weigher<'_> {
     /// The mass of one voxel of a ship, with the block and the state in it (`None` for air and the like).
-    pub fn voxel_moments(&self, voxel: [i64; 3], block: u32, state: u32) -> Option<MassMoments> {
-        let model = self.table.model_of(block, state);
+    pub fn voxel_moments(
+        &self,
+        voxel: [i64; 3],
+        block: u32,
+        state: u32,
+        orientation: u32,
+    ) -> Option<MassMoments> {
+        let model = self.table.model_of(block, state, orientation);
         let shape = self.table.shape(model);
         if shape.is_empty() {
             return None;
@@ -1129,15 +1154,18 @@ impl Weigher<'_> {
                     let local = LocalVoxelIndex::new(x as u8, y as u8, z as u8);
                     let block = contents.get(self.block_channel, local);
                     let state = contents.get(self.state_channel, local);
+                    let orientation = self
+                        .orientation_channel
+                        .map_or(0, |channel| contents.get(channel, local));
                     let voxel = [
                         first.x() + x as i64,
                         first.y() + y as i64,
                         first.z() + z as i64,
                     ];
-                    parts.extend(self.voxel_moments(voxel, block, state));
+                    parts.extend(self.voxel_moments(voxel, block, state, orientation));
                     if let Some(table) = ports_by
                         && block != self.air
-                        && let Some(face) = table.docking_face(block, state)
+                        && let Some(face) = table.docking_face(block, state, orientation)
                     {
                         ports.push(Port {
                             voxel: VoxelCoordinate::new(voxel[0], voxel[1], voxel[2]),
@@ -1182,7 +1210,10 @@ impl Weigher<'_> {
                 let moments = MassMoments::sum(voxels.iter().filter_map(|voxel| {
                     let block = ship.voxels.get(block_channel, *voxel);
                     let state = ship.voxels.get(self.state_channel, *voxel);
-                    self.voxel_moments([voxel.x(), voxel.y(), voxel.z()], block, state)
+                    let orientation = self
+                        .orientation_channel
+                        .map_or(0, |channel| ship.voxels.get(channel, *voxel));
+                    self.voxel_moments([voxel.x(), voxel.y(), voxel.z()], block, state, orientation)
                 }));
                 // A part with no weight (nothing in it that bodies feel) is at the middle of its blocks.
                 let centre_of_mass = moments.properties().map_or_else(
@@ -1207,4 +1238,15 @@ impl Weigher<'_> {
             })
             .collect()
     }
+}
+
+/// Whether the ship has a block at all.
+fn has_blocks(ship: &MovingGrid, block_channel: ChannelIndex, air: u32) -> bool {
+    ship.voxels
+        .sorted_brick_coordinates()
+        .into_iter()
+        .any(|brick| {
+            let contents = ship.voxels.brick(brick).expect("a listed brick exists");
+            LocalVoxelIndex::all().any(|local| contents.get(block_channel, local) != air)
+        })
 }

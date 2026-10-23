@@ -59,6 +59,8 @@ pub struct ViewChannels {
     pub blocks: ChannelIndex,
     /// The state of each voxel's block, for games whose blocks have states.
     pub states: Option<ChannelIndex>,
+    /// The orientation of each voxel, for games whose blocks can be turned.
+    pub orientations: Option<ChannelIndex>,
     /// How bright each voxel is, for games with lighting.
     pub light: Option<ChannelIndex>,
     /// How the channels become the brightness drawn, when `light` is not drawn as it is.
@@ -75,9 +77,16 @@ impl ViewChannels {
         Self {
             blocks,
             states,
+            orientations: None,
             light,
             bulk_light: None,
         }
+    }
+
+    /// The same, for a game whose voxels have an orientation in this channel.
+    pub fn with_orientations(mut self, orientations: Option<ChannelIndex>) -> Self {
+        self.orientations = orientations;
+        self
     }
 
     /// The brightness of every voxel of a brick if the game has a bulk light hook.
@@ -167,6 +176,9 @@ pub(crate) fn brick_channels<'a>(
     BrickChannels {
         blocks: brick.channel(channels.blocks),
         states: channels.states.map(|states| brick.channel(states)),
+        orientations: channels
+            .orientations
+            .map(|orientations| brick.channel(orientations)),
         light: combined_light.or_else(|| channels.light.map(|light| brick.channel(light))),
     }
 }
@@ -358,20 +370,34 @@ impl WorldMesher {
         })
     }
 
+    /// The orientation of the block in a voxel (0 where the game has none), if its brick is loaded.
+    pub fn orientation_at(&self, coordinate: VoxelCoordinate) -> Option<u32> {
+        let (brick, local) = coordinate.split();
+        self.bricks.get(&brick).map(|loaded| {
+            self.channels
+                .orientations
+                .map_or(0, |orientations| loaded.get(orientations, local))
+        })
+    }
+
     /// Whether a voxel holds something that fills any part of it (anything but air), if its brick is
     /// loaded. This is what a crosshair can point at.
     pub fn is_solid_at(&self, coordinate: VoxelCoordinate) -> Option<bool> {
-        let model = self
-            .table
-            .model_of(self.material_at(coordinate)?, self.state_at(coordinate)?);
+        let model = self.table.model_of(
+            self.material_at(coordinate)?,
+            self.state_at(coordinate)?,
+            self.orientation_at(coordinate)?,
+        );
         Some(self.table.is_solid(model))
     }
 
     /// Whether a voxel holds a whole cube that hides what is behind it, if its brick is loaded.
     pub fn is_opaque_at(&self, coordinate: VoxelCoordinate) -> Option<bool> {
-        let model = self
-            .table
-            .model_of(self.material_at(coordinate)?, self.state_at(coordinate)?);
+        let model = self.table.model_of(
+            self.material_at(coordinate)?,
+            self.state_at(coordinate)?,
+            self.orientation_at(coordinate)?,
+        );
         Some(self.table.is_opaque_cube(model))
     }
 

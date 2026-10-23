@@ -58,6 +58,7 @@ pub struct PackageData {
     /// The channel holding each voxel's block, and where the game has them, its state and its light.
     pub block_channel: NamespacedId,
     pub state_channel: Option<NamespacedId>,
+    pub orientation_channel: Option<NamespacedId>,
     pub light_channel: Option<NamespacedId>,
     /// How bright a face is that no light reaches, 0 to 255.
     pub ambient_light: u8,
@@ -74,6 +75,7 @@ impl PackageData {
             blocks: vec![(id("test:air"), Some(BlockDefinition::air()))],
             block_channel: id("test:block"),
             state_channel: None,
+            orientation_channel: None,
             light_channel: None,
             ambient_light: 0,
         }
@@ -141,7 +143,8 @@ impl PackageData {
             find(&self.block_channel)?,
             self.state_channel.as_ref().map(find).transpose()?,
             self.light_channel.as_ref().map(find).transpose()?,
-        ))
+        )
+        .with_orientations(self.orientation_channel.as_ref().map(find).transpose()?))
     }
 
     pub fn encode(&self) -> Vec<u8> {
@@ -160,7 +163,11 @@ impl PackageData {
             }
         }
         writer.write_identifier(&self.block_channel);
-        for channel in [&self.state_channel, &self.light_channel] {
+        for channel in [
+            &self.state_channel,
+            &self.light_channel,
+            &self.orientation_channel,
+        ] {
             match channel {
                 Some(identifier) => {
                     writer.write_u8(1);
@@ -202,6 +209,7 @@ impl PackageData {
         };
         let state_channel = optional_channel(&mut reader)?;
         let light_channel = optional_channel(&mut reader)?;
+        let orientation_channel = optional_channel(&mut reader)?;
         let ambient_light = reader.read_u8()?;
         reader.finish()?;
         Ok(Self {
@@ -210,6 +218,7 @@ impl PackageData {
             blocks,
             block_channel,
             state_channel,
+            orientation_channel,
             light_channel,
             ambient_light,
         })
@@ -248,6 +257,7 @@ mod tests {
             ],
             block_channel: id("test_game:block"),
             state_channel: Some(id("test_game:state")),
+            orientation_channel: None,
             light_channel: Some(id("test_game:light")),
             ambient_light: 90,
         }
@@ -268,8 +278,8 @@ mod tests {
         let package = sample();
         let table = package.block_table().unwrap();
         assert_eq!(table.block_count(), 4);
-        assert!(table.shape(table.model_of(0, 0)).is_empty());
-        assert!(table.is_opaque_cube(table.model_of(1, 0)));
+        assert!(table.shape(table.model_of(0, 0, 0)).is_empty());
+        assert!(table.is_opaque_cube(table.model_of(1, 0, 0)));
         assert_eq!(table.color(1), [0.5; 3]);
         assert_eq!(table.state_count(2), 2);
         assert_eq!(table.color(3), block_models::MISSING_BLOCK_COLOR);

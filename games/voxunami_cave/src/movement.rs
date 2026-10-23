@@ -99,6 +99,7 @@ struct Blocks {
     collisions: BlockCollisions,
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
+    orientation_channel: ChannelIndex,
     air: u32,
 }
 
@@ -108,6 +109,7 @@ impl Blocks {
             voxels: &ship.voxels,
             block_channel: self.block_channel,
             state_channel: self.state_channel,
+            orientation_channel: Some(self.orientation_channel),
             collisions: &self.collisions,
         }
     }
@@ -119,6 +121,7 @@ impl Blocks {
             level,
             block_channel: self.block_channel,
             state_channel: self.state_channel,
+            orientation_channel: Some(self.orientation_channel),
             air: self.air,
             collisions: &self.collisions,
         }
@@ -156,6 +159,7 @@ impl Movement {
         table: BlockTable,
         block_channel: ChannelIndex,
         state_channel: ChannelIndex,
+        orientation_channel: ChannelIndex,
         air: u32,
     ) -> Self {
         Self {
@@ -167,6 +171,7 @@ impl Movement {
                 ),
                 block_channel,
                 state_channel,
+                orientation_channel,
                 air,
             },
             changed: BTreeSet::new(),

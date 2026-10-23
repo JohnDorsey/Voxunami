@@ -275,8 +275,7 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// Docking, part 1 (2026-10-22): the engine declares three more block properties (`engine:marked_face`, `engine:mark_color`, `engine:docking_face`), and the welcome carries them in
 /// the package's schema: 432 bytes, measured by encoding the three declarations alone (not assumed), 58,028 to 58,460. The saved world is the same, and no message changed, so the protocol
 /// version stays 6.
-const PINNED: (u64, usize, u64) = (
-    17_396_479_107_971_002_395,
-    58_460,
-    10_009_978_534_765_434_239,
-);
+/// Orientation, one channel for every block (2026-10-22): the engine declares three more block properties (`engine:mark_both_ends`, `engine:front_face`, `engine:axis_face`) and the
+/// package data says whether the game has an orientation channel (2048 has none: one byte). The welcome grows by 467 bytes, 58,460 to 58,927: 466 for the declarations,
+/// measured by encoding them alone, and 1 for that byte. The saved world is the same.
+const PINNED: (u64, usize, u64) = (699_962_433_646_896_824, 58_927, 10_009_978_534_765_434_239);

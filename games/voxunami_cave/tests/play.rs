@@ -20,7 +20,7 @@ use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
 use game_shell::{GameContent, KeyCode};
 use transport::{Connection, ConnectionClosed};
-use voxel_space::VoxelCoordinate;
+use voxel_space::{FaceDirection, VoxelCoordinate};
 use voxunami_cave::content::CaveContent;
 use voxunami_cave::game::{
     Cave, break_block, place_block, place_block_with_state, request_block, request_block_with_state,
@@ -699,12 +699,12 @@ fn the_server_refuses_states_a_block_does_not_have_and_air_has_only_the_first() 
         own.brick().y() * 32 + own.offset()[1] as i64 - 3,
         own.brick().z() * 32 + own.offset()[2] as i64,
     );
-    // Stone stands nineteen ways (whole, six slabs and twelve stairs): state 19 is the first it does not have.
+    // Stone has the seven shapes (how they stand is the orientation, which every block has): state 7 is the first it does not have.
     let shapes = rig
         .content
         .block_table()
         .state_count(rig.content.blocks.stone);
-    assert_eq!(shapes, 19);
+    assert_eq!(shapes, 7);
 
     request_block_with_state(&mut player, near, "base_blocks:stone", shapes);
     request_block_with_state(&mut player, near, "base_blocks:stone", u32::MAX);
@@ -769,34 +769,23 @@ fn the_shape_key_cycles_through_every_shape_and_placing_uses_the_one_chosen() {
     player.key_pressed(KeyCode::Digit4);
     assert_eq!(player.hud_text(), "placing lamp (whole)");
     player.key_pressed(KeyCode::Digit3);
-    for _ in 1..19 {
+    for _ in 1..7 {
         player.key_pressed(KeyCode::KeyR);
     }
     assert_eq!(player.hud_text(), "placing grass (whole)");
 }
 
 #[test]
-fn the_dev_docking_port_is_chosen_with_its_number_its_facing_is_cycled_with_the_shape_key_and_placing_uses_the_one_chosen()
- {
+fn the_dev_docking_port_is_chosen_with_its_number_has_one_state_and_is_placed_facing_the_player() {
     let mut rig = Rig::new();
     let mut player = player_above_ground(&mut rig);
     let hit = player.target().unwrap();
     // The seventh block there is to place.
     player.key_pressed(KeyCode::Digit7);
-    assert_eq!(
-        player.hud_text(),
-        "placing dev_docking_port (docking face west)"
-    );
-    // The key goes through its six facings and not the seven shapes of the others.
-    let names = ["east", "down", "up", "north", "south", "west"];
-    for name in names {
-        player.key_pressed(KeyCode::KeyR);
-        assert_eq!(
-            player.hud_text(),
-            format!("placing dev_docking_port (docking face {name})")
-        );
-    }
+    assert_eq!(player.hud_text(), "placing dev_docking_port (whole)");
+    // It has one state: the shape key leaves it as it is (how it faces is the orientation, which comes from where the player is).
     player.key_pressed(KeyCode::KeyR);
+    assert_eq!(player.hud_text(), "placing dev_docking_port (whole)");
     player.mouse_pressed(MouseButton::Secondary);
     rig.settle(&mut [&mut player]);
     let port = {
@@ -805,11 +794,21 @@ fn the_dev_docking_port_is_chosen_with_its_number_its_facing_is_cycled_with_the_
             .raw_id_of(&voxunami_cave::content::dev_docking_port_id())
             .unwrap()
     };
-    // The first press after the six came back to west (0), the seventh made it east (1): the state placed is the one the HUD said.
-    assert_eq!(server_block_and_state(&rig, hit.previous), (port, 1));
+    assert_eq!(server_block_and_state(&rig, hit.previous), (port, 0));
+    let orientation = rig
+        .server
+        .world()
+        .main()
+        .overrides
+        .get(rig.content.orientation_channel(), hit.previous);
+    // The player looks straight down from three voxels over the place, close beside it: the front of the port faces up.
+    assert_eq!(
+        rig.content.block_table().front_face(port, 0, orientation),
+        Some(FaceDirection::PositiveY)
+    );
     // Choosing a block with more states keeps the number in range for the one chosen: stone has seven.
     player.key_pressed(KeyCode::Digit1);
-    assert_eq!(player.hud_text(), "placing stone (bottom slab)");
+    assert_eq!(player.hud_text(), "placing stone (whole)");
 }
 
 /// Ticks the server `count` times.

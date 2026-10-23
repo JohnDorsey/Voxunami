@@ -773,6 +773,41 @@ fn a_dent_or_a_hole_that_cuts_nothing_off_leaves_the_ship_whole() {
 }
 
 #[test]
+fn a_ship_with_every_block_taken_out_is_gone_and_a_ship_with_one_left_is_not() {
+    let mut scene = Scene::new();
+    flat_floor(&mut scene);
+    make_ship(
+        &mut scene,
+        pose_at(10.0, FLOOR + 20.0, 10.0),
+        false,
+        [3, 1, 3],
+        |_| true,
+    );
+    make_ship(
+        &mut scene,
+        pose_at(40.0, FLOOR + 20.0, 10.0),
+        false,
+        [3, 1, 3],
+        |_| true,
+    );
+    scene.ticks(3);
+    assert_eq!(ship_numbers(&scene), [0, 1]);
+    let everything: Vec<[i64; 3]> = (0..3)
+        .flat_map(|x| (0..3).map(move |z| [x, 0, z]))
+        .collect();
+    // The first loses all nine, the second all but its corner.
+    cut(&mut scene, 0, everything.clone());
+    cut(&mut scene, 1, everything[1..].to_vec());
+    scene.ticks(5);
+    assert_eq!(ship_numbers(&scene), [1]);
+    assert_eq!(blocks_of(&scene, 1, [3, 1, 3]), 1);
+    // The last block goes too, and the ship with it.
+    cut(&mut scene, 1, vec![everything[0]]);
+    scene.ticks(5);
+    assert_eq!(ship_numbers(&scene), Vec::<u64>::new());
+}
+
+#[test]
 fn a_big_ship_cut_in_two_is_whole_until_the_work_of_finding_out_is_done_and_the_work_is_counted_not_timed()
  {
     // Two halves of 7500 blocks: finding that the cut separates them takes both being flooded to the end of one, some 15000 voxels, which the

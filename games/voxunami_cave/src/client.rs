@@ -15,12 +15,13 @@ use player_presence::{PlayerClient, player_kind};
 use ui::{Anchor, Color, Direction, Node, Panel, Ui};
 use voxel_grid::ChannelIndex;
 use voxel_space::{GridId, VoxelCoordinate};
-use world_view::BulkLight;
+use world_view::{BulkLight, RayHit};
 
 use crate::content::CaveContent;
 use crate::items::{GameMode, PLACEABLE, dropped_item_kind, state_for, state_name};
 use crate::messages::{GameModeIs, LightSchemeChanged, SetBlock};
 use crate::multiscale_light::{LEVEL_FORMAT, LightScheme, MAXIMUM_SCALES, full_brightness};
+use crate::placement::face_between;
 use crate::scaled_light::{MultiScaleView, ScaledLight};
 
 fn locked<T>(state: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -40,6 +41,15 @@ pub fn set_block_request(grid: GridId, at: VoxelCoordinate, block: &str, state: 
         at,
         block: block.parse().expect("block names are valid identifiers"),
         state,
+        against: None,
+    }
+}
+
+/// The request to put `block` in `state` where the player's crosshair says: in the voxel `hit.previous` next to the clicked voxel `hit.voxel`.
+pub fn place_block_request(hit: &RayHit, block: &str, state: u32) -> SetBlock {
+    SetBlock {
+        against: face_between(hit.voxel, hit.previous),
+        ..set_block_request(hit.grid, hit.previous, block, state)
     }
 }
 
@@ -213,7 +223,7 @@ fn break_target(context: &mut ClientContext<'_>) {
 /// Asks the server to place `block` in `state` against the face under the crosshair.
 fn place_at_target(context: &mut ClientContext<'_>, block: &str, state: u32) {
     if let Some(hit) = context.target() {
-        context.send_message(&set_block_request(hit.grid, hit.previous, block, state));
+        context.send_message(&place_block_request(&hit, block, state));
     }
 }
 

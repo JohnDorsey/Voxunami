@@ -250,6 +250,7 @@ fn the_server_refuses_edits_of_a_ship_out_of_reach_that_does_not_exist_or_is_of_
         at: far,
         block: "base_blocks:stone".parse().unwrap(),
         state: 0,
+        against: None,
     };
     player.send_game_message(SetBlock::kind(), message.encode());
     scene.rig.settle(&mut [&mut player]);

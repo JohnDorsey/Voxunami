@@ -15,7 +15,7 @@ pub fn face_axes(face: FaceDirection) -> (usize, usize) {
 
 /// A box inside a voxel, in eighths of a voxel: `min` is below `max` on every axis and every
 /// coordinate is from 0 to 8.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ShapeBox {
     pub min: [u8; 3],
     pub max: [u8; 3],
@@ -325,6 +325,11 @@ impl Shape {
             })
             .collect();
         Self::from_boxes(&boxes)
+    }
+
+    /// The sub-cells the shape fills, as bits: two shapes that fill the same have the same key.
+    pub fn cell_key(&self) -> [u64; 8] {
+        self.occupied
     }
 
     /// Whether the shapes fill the same sub-cells (they may have been made of different boxes).

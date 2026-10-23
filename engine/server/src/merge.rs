@@ -19,6 +19,10 @@ impl<T: Fn(&mut Vec<(ChannelIndex, u32)>, LatticeRotation)> TurnValues for T {}
 pub struct MergePlan<'a> {
     /// The channel of the blocks: a voxel whose block is not the channel's default is a block of the ship (the rest of a ship is air).
     pub block_channel: ChannelIndex,
+    /// The channel that holds the orientation of each block, if the game has one: the number of a turn of the lattice (`LatticeRotation::index`), 0 for
+    /// none. A block of the other ship that is carried onto the lattice of the base is turned by the turn that carries it, whatever the block is, and
+    /// so are the blocks of plugins that are not loaded: its orientation becomes its own turn followed by the carrying one.
+    pub orientation_channel: Option<ChannelIndex>,
     /// How near to one lattice the ships must be.
     pub tolerance: AlignmentTolerance,
     /// What the values of a voxel become when the ship they are in is turned to be on the lattice of the other: given the non-default values of a
@@ -134,6 +138,23 @@ impl ServerWorld {
                     .filter(|(channel, value)| *value != layout.default_value(*channel))
                     .collect();
                 if transform.rotation != LatticeRotation::IDENTITY {
+                    if let Some(channel) = plan.orientation_channel {
+                        let position = values.iter().position(|(found, _)| *found == channel);
+                        let own = position.map_or_else(
+                            || layout.default_value(channel),
+                            |position| values[position].1,
+                        );
+                        // (A number that is not a turn is left as it is: a world is read as it is found.)
+                        if let Some(own) =
+                            u8::try_from(own).ok().and_then(LatticeRotation::from_index)
+                        {
+                            let turned = u32::from(own.then(transform.rotation).index());
+                            match position {
+                                Some(position) => values[position].1 = turned,
+                                None => values.push((channel, turned)),
+                            }
+                        }
+                    }
                     (plan.turn)(&mut values, transform.rotation);
                 }
                 for (channel, value) in values {
@@ -262,6 +283,7 @@ mod tests {
     fn plan<'a>(world: &ServerWorld, turn: &'a dyn TurnValues) -> MergePlan<'a> {
         MergePlan {
             block_channel: block_channel(world.data().main()),
+            orientation_channel: None,
             tolerance: AlignmentTolerance::default(),
             turn,
             linear_velocity: [1.0, 2.0, 3.0],
@@ -556,6 +578,74 @@ mod tests {
             default,
             "the larger ship's voxels are not asked"
         );
+    }
+
+    #[test]
+    fn the_orientation_of_every_block_of_the_turned_ship_is_its_own_turn_followed_by_the_turn_that_carries_it_whatever_the_block_is()
+     {
+        // The channel stands in for the orientation channel (it is a number channel like it; its default, 20, is a turn too).
+        let (mut world, _) = world_with_a_walker();
+        let channel = temperature_channel(&world);
+        let large = ship(&mut world, pose(3.0, 40.0, 3.0, 0.0), &[[0, 0, 0]], None);
+        let small = ship(
+            &mut world,
+            pose(9.0, 40.0, 3.0, 1.0),
+            &[[0, 0, 0], [1, 0, 0]],
+            Some(5),
+        );
+        // (The second block is one the first plugin does not know: it has a number nobody knows the meaning of, and it is turned all the same.)
+        let mut with_orientation = plan(&world, &nothing_turns);
+        with_orientation.orientation_channel = Some(channel);
+        let merged = world.merge_grids(large, small, &with_orientation).unwrap();
+        let (_, transform) = world.data().grids().resolve(small)[0];
+        assert_ne!(transform.rotation, LatticeRotation::IDENTITY);
+        let mut view = world.grid(merged).unwrap();
+        for x in 0..2 {
+            let there = transform.apply(VoxelCoordinate::new(x, 0, 0)).unwrap();
+            let now = view.get(channel, there).unwrap();
+            let before = LatticeRotation::from_index(5).unwrap();
+            let after = LatticeRotation::from_index(now as u8).unwrap();
+            // Where each axis ends up is where the old turn sends it, and then the carrying turn.
+            for axis in [[1, 0, 0], [0, 1, 0], [0, 0, 1]] {
+                assert_eq!(
+                    after.apply(axis),
+                    transform.rotation.apply(before.apply(axis)),
+                    "block {x}, axis {axis:?}"
+                );
+            }
+        }
+        // The larger ship's block is not turned.
+        assert_eq!(view.get(channel, VoxelCoordinate::ORIGIN).unwrap(), 20);
+    }
+
+    #[test]
+    fn a_ship_not_turned_to_the_lattice_keeps_every_orientation_and_a_number_that_is_no_turn_is_left_as_it_is()
+     {
+        let (mut world, _) = world_with_a_walker();
+        let channel = temperature_channel(&world);
+        let large = ship(&mut world, pose(3.0, 40.0, 3.0, 0.0), &[[0, 0, 0]], None);
+        let small = ship(&mut world, pose(8.0, 40.0, 3.0, 0.0), &[[0, 0, 0]], Some(7));
+        let mut with_orientation = plan(&world, &nothing_turns);
+        with_orientation.orientation_channel = Some(channel);
+        let merged = world.merge_grids(large, small, &with_orientation).unwrap();
+        let mut view = world.grid(merged).unwrap();
+        assert_eq!(view.get(channel, VoxelCoordinate::new(5, 0, 0)).unwrap(), 7);
+        // A number of 24 or more is nothing the engine can turn.
+        let (mut world, _) = world_with_a_walker();
+        let channel = temperature_channel(&world);
+        let large = ship(&mut world, pose(3.0, 40.0, 3.0, 0.0), &[[0, 0, 0]], None);
+        let small = ship(
+            &mut world,
+            pose(9.0, 40.0, 3.0, 1.0),
+            &[[0, 0, 0]],
+            Some(99),
+        );
+        let mut with_orientation = plan(&world, &nothing_turns);
+        with_orientation.orientation_channel = Some(channel);
+        let merged = world.merge_grids(large, small, &with_orientation).unwrap();
+        let (_, transform) = world.data().grids().resolve(small)[0];
+        let there = transform.apply(VoxelCoordinate::ORIGIN).unwrap();
+        assert_eq!(world.grid(merged).unwrap().get(channel, there).unwrap(), 99);
     }
 
     #[test]

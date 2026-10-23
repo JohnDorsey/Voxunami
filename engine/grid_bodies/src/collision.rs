@@ -34,9 +34,9 @@ impl BlockCollisions {
         &self.table
     }
 
-    /// What the block in this state is to a body.
-    pub fn of(&self, block: u32, state: u32) -> Collision {
-        let model = self.table.model_of(block, state);
+    /// What the block in this state, standing in this orientation, is to a body.
+    pub fn of(&self, block: u32, state: u32, orientation: u32) -> Collision {
+        let model = self.table.model_of(block, state, orientation);
         let table = &self.table;
         let passable = self.passable;
         self.cache
@@ -63,6 +63,8 @@ pub struct WorldTerrain<'a> {
     pub level: LevelIndex,
     pub block_channel: ChannelIndex,
     pub state_channel: ChannelIndex,
+    /// Where the game keeps the orientations of its blocks, if it has them.
+    pub orientation_channel: Option<ChannelIndex>,
     pub air: u32,
     pub collisions: &'a BlockCollisions,
 }
@@ -78,7 +80,14 @@ impl CollisionSource for WorldTerrain<'_> {
         ) else {
             return Collision::Full;
         };
-        self.collisions.of(block, state)
+        let orientation = match self.orientation_channel {
+            Some(channel) => match terrain.get(channel, voxel) {
+                Ok(orientation) => orientation,
+                Err(_) => return Collision::Full,
+            },
+            None => 0,
+        };
+        self.collisions.of(block, state, orientation)
     }
 
     fn brick_hint(&mut self, brick: BrickCoordinate) -> BrickHint {
@@ -91,8 +100,15 @@ impl CollisionSource for WorldTerrain<'_> {
         if block == self.air {
             return BrickHint::Empty;
         }
+        let orientation = match self.orientation_channel {
+            Some(channel) => match terrain.uniform_value(channel, brick) {
+                Ok(Some(orientation)) => orientation,
+                _ => return BrickHint::Unknown,
+            },
+            None => 0,
+        };
         match terrain.uniform_value(self.state_channel, brick) {
-            Ok(Some(state)) => match self.collisions.of(block, state) {
+            Ok(Some(state)) => match self.collisions.of(block, state, orientation) {
                 Collision::Empty => BrickHint::Empty,
                 Collision::Full => BrickHint::Solid,
                 Collision::Partial(_) => BrickHint::Unknown,
@@ -108,6 +124,7 @@ pub struct ShipHull<'a> {
     pub voxels: &'a Grid,
     pub block_channel: ChannelIndex,
     pub state_channel: ChannelIndex,
+    pub orientation_channel: Option<ChannelIndex>,
     pub collisions: &'a BlockCollisions,
 }
 
@@ -138,7 +155,10 @@ impl CollisionSource for ShipHull<'_> {
     fn collision_at(&mut self, voxel: VoxelCoordinate) -> Collision {
         let block = self.voxels.get(self.block_channel, voxel);
         let state = self.voxels.get(self.state_channel, voxel);
-        self.collisions.of(block, state)
+        let orientation = self
+            .orientation_channel
+            .map_or(0, |channel| self.voxels.get(channel, voxel));
+        self.collisions.of(block, state, orientation)
     }
 
     fn brick_hint(&mut self, brick: BrickCoordinate) -> BrickHint {
@@ -206,6 +226,7 @@ mod tests {
             voxels: &voxels,
             block_channel,
             state_channel,
+            orientation_channel: None,
             collisions: &collisions,
         };
         // A whole block: all of it, its low faces, and not past the high ones.
@@ -231,6 +252,7 @@ mod tests {
             voxels: &voxels,
             block_channel,
             state_channel,
+            orientation_channel: None,
             collisions: &collisions,
         };
         assert!(other.solid_at([3.5, 4.5, 5.5]) && hull.solid_at([3.5, 4.5, 5.5]));

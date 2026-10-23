@@ -66,6 +66,7 @@ pub fn cave_plugins_reporting(
             ),
             block_channel: content.block_channel(),
             state_channel: content.state_channel(),
+            orientation_channel: Some(content.orientation_channel()),
         });
     let bodies = ships(content, docking);
     let report = bodies.report_handle();
@@ -96,6 +97,7 @@ pub fn docking(content: &CaveContent) -> Docking {
         content.block_table(),
         content.block_channel(),
         content.state_channel(),
+        Some(content.orientation_channel()),
         content.blocks.air,
     )
 }
@@ -107,6 +109,7 @@ fn ships(content: &CaveContent, docking: Docking) -> GridBodiesPlugin {
     GridBodiesPlugin::new(GridBodiesConfig {
         block_channel: content.block_channel(),
         state_channel: content.state_channel(),
+        orientation_channel: Some(content.orientation_channel()),
         air: content.blocks.air,
         passable: Some(crate::block_properties::passable(&table)),
         density: table

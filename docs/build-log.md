@@ -791,7 +791,7 @@ Rules aboard (2026-10-22; the owner set fire to a ship they were flying and it d
   site that is whole bricks from the origin: the light works in cells of bricks, so the same offsets must fall in the same cells); a block can be changed within reach and not beyond it, in both. The
   two fire scenarios failed on a ship before the fix; the light and editing ones passed (they were already right). The harness reads a ship through the parts it was cut into.
 - *The audit* (the open list in `plan.md`): the design is sound for what a rule does to voxels (everything is keyed by grid, which is why light, bodies, freezing and splitting work on ships), and leaks at
-  the edges: questions about the world (now one call), the level-keyed voxel calls, grids not touching, no use of the ship's own down. Windows {WINDOWS} and Linux {LINUX} tests pass; fmt and clippy clean.
+  the edges: questions about the world (now one call), the level-keyed voxel calls, grids not touching, no use of the ship's own down. Windows 1745 and Linux 1746 tests pass; fmt and clippy clean.
 - A flaky test of my own, found by the full Linux run and reproduced under artificial load: one fire sometimes burns out without catching anything (about one in six), and which one depends on the tick it
   is first looked at, which a loaded machine can move; so the scenario with a single fire failed now and then on either place. It now has nine fires, and passed eight runs in a row on Linux with every core busy.
 - Observed, not investigated: the light of Cave fades slowly after a lamp is taken away (63 to 43 to 21 over 400 ticks, in the terrain as well as on a ship). It looks like how that light scheme works.
@@ -803,7 +803,26 @@ where the blocks were, turned as the ship is, going as the ship was at their mid
 callers (ship creation, the bodies' terrain, the arrival look, the light-model switch) use `world.grid(..)`.
 - *Found on the way:* switching Cave's light model cleared and re-seeded light only in the terrain's bricks, never in a ship's (the same family as the fire). It reaches ships in memory now.
 - Tests: the existing ones, rewritten by a tool for the calls (`regrid.py`, a scratch file) and by hand where a test expected an error for a level that is not there; two new for `detach_blocks` out of a
-  ship and for `uniform_value` and `generated` on a ship. No pin moved. Windows {WINDOWS} and Linux {LINUX} tests pass; fmt and clippy clean.
+  ship and for `uniform_value` and `generated` on a ship. No pin moved. Windows 1745 and Linux 1746 tests pass; fmt and clippy clean.
+
+Phase 32m part 4 (the owner's answer about orientation; 2026-10-22): one orientation channel for every block, pistons and logs placed as in Minecraft, and an empty ship vanishes.
+- *The owner's instructions:* an empty ship vanishes; a block's orientation when placed should depend on the player's; copy Minecraft's pistons for blocks with one front face and logs for blocks with a line of radial
+  symmetry; orientation saved the same way for all blocks regardless of how many visually distinct orientations they have, so that they can be rotated by simple algorithms and blocks of unloaded plugins can be rotated too.
+- *I replaced my own part 3 answer.* Part 3 closed a block's states under the turns (19 states for a stone). That could not do what is asked here (a log's state would be "which way it stands" and a block of an unloaded plugin would
+  not turn), so it is gone: `in_every_orientation` and `describe_shape` are removed and the standard blocks have their seven states again.
+- *The channel:* `base_blocks:block_orientation` holds the index in `LatticeRotation::all()` (new `COUNT`, `index`, `from_index`; the order is pinned by a test as a file format). `BlockTable` is indexed by block, state and
+  orientation; shapes are de-duplicated (tests: a cube is one shape in 24 orientations, a slab six, a stair twelve). The mesher, world view, picking, hull, terrain colliders, weigher, arrival and docking take the channel;
+  a merge turns each voxel's orientation (tests: whatever the block, the turn is the voxel's own followed by the transform; a ship not on the lattice keeps them; a number that is no turn is left).
+- *Placing:* `placement.rs` (tests first: the four ground directions, a tilted look, up and down at the thresholds, far away, the axis for all six faces, a block with neither), `SetBlock.against` (round trip for all faces and none, a
+  face number past the sixth is an error; the two pinned messages grew by one byte each, `00`/`06`), the client sends the clicked face (`place_block_request`), the server works out the eyes in the grid's own axes
+  (`PlacerView::in_frame`) and writes the channel; breaking writes 0. Wood is a log (`engine:mark_both_ends`, a wood-end colour); the dev docking port has one state and a front, so it faces the player when placed
+  (checked through the real server: placed from three voxels over, it faces up).
+- *An empty ship vanishes* (`split_ships`): a ship that blocks were taken out of and that has none left is removed (`remove_grid`). Mutation: with the removal disabled the test
+  `a_ship_with_every_block_taken_out_is_gone_and_a_ship_with_one_left_is_not` fails (caught). A ship never given any block is not removed (only a change removes it).
+- *Pins:* 2048 and eels moved by 467 bytes (the welcome: 466 for the three declarations, measured alone, and 1 byte for "no orientation channel", read in the code), saved worlds the same. Cave moved by 619 bytes, measured by recording
+  the script before and after and comparing the 6,934 frames one by one: the welcome +74, 109 whole-brick frames +5 each (the channel), 5,747 brick-change frames the same length with another digest (the digest covers the channels);
+  74 + 545 = 619. Its saved world changed (a channel more). The wire pins changed only by the byte at the end.
+- Windows 1745 and Linux 1746 tests pass; fmt and clippy clean.
 
 Phase 32m part 3 (the owner's answers to the docking report; 2026-10-22): the lever back, every block in every orientation, metric gravity, and the invariance tests.
 - *The owner's instructions:* (1) put the lever back; (2) chance keyed by grid is fine; (4) every block must be able to exist in every orientation; gravity should be metric, try 5 metres a second a second.
@@ -822,7 +841,7 @@ Phase 32m part 3 (the owner's answers to the docking report; 2026-10-22): the le
   step (`1e-5` for 'stopped short') I loosened and put back: it was not the cause. A double jump from the ground-snap margin is refused (a character that is going up cannot jump).
 - *Invariance:* `tests/ship_invariance.rs`: two ships merged have the light of one built whole (and differ before the merge), a ship cut in two has the light of two built apart. They hold, with the light (no chance); the merge test
   fails if the merged ship is not announced to the rules (`woken`). The first version of the split test put the lamp where it was joined to nothing, so the check gave it to the other half: a lamp must be on something.
-- Windows {WINDOWS} and Linux {LINUX} tests pass; fmt and clippy clean.
+- Windows 1745 and Linux 1746 tests pass; fmt and clippy clean.
 
 Phase 32m part 2 (docking; 2026-10-22): the dev docking port, ships drawn together, turned into line, snapped and made one, and `/ship undock`. See `moving-grids-spec.md` 2.7 ("As built in 32m part 2").
 - *The owner's instructions:* a creative-only dev docking port, gunmetal gray with one yellow face that docks with another's; snap to exact alignment in rotation on all axes within 10 degrees, any roll in
@@ -853,7 +872,7 @@ Phase 32m part 2 (docking; 2026-10-22): the dev docking port, ships drawn togeth
   it passed ten runs in a row. *Found on the way, not mended:* a ship that burns away in pieces leaves ships with no blocks in them (a part that was only flames is a ship; when the flames go out it is an empty ship that stays), so
   a burnt-out ship is not removed: noted in `plan.md`.
 - *Mutation experiments:* by hand, in groups. The turn of states and the marks in the table (9 mutants), the mesher (3), `BodyMotion::join` (6) and the docking geometry (11) were all caught, but not all at first: in the table, ignoring the docking face or the marked face when turning a state, and preferring another state to the right one, survived until a block whose marked and docking faces differ and a block with twin states were added to the tests; in the geometry, each of the three facing conditions for pulling survived because another failed with it in every case I had, until a test made each the only one that fails. In the plugin, 10 of 11 were caught (a held ship moved, the whole going at no speed, the twist turned the wrong way, undocking across the ports, an undocked pair forgotten, a weld missed, the parts coming together, a released pair not skipped, a creative-only block leaving an item, and a new ship forgotten as released at once) and the backoff of refused tries was caught after its test was rewritten (its first version could not tell). **One is not caught:** that a ship that could not be docked is put back where it was: the bodies move it in the same tick, so its place does not show it, and I know it from reading the code and not from a test.
-- Windows {WINDOWS} and Linux {LINUX} tests pass; fmt and clippy clean.
+- Windows 1745 and Linux 1746 tests pass; fmt and clippy clean.
 - *Known:* a slab or stair on a ship that docks rolled a quarter turn about a horizontal axis is not turned (the standard blocks have no state for it); a pair of ships can only dock by ports on the
   same level; both held ships never dock; a ship that could not be joined for overlap is retried only when one of the two has moved.
 

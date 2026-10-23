@@ -160,6 +160,29 @@ pub mod engine {
         "the colour of the marked face, as 0xRRGGBB",
     );
 
+    /// Whether the face opposite the marked face is drawn in the mark colour too: a log, with its two ends.
+    pub const MARK_BOTH_ENDS: PropertyKey<bool> = PropertyKey::new(
+        "engine:mark_both_ends",
+        false,
+        "whether the face opposite the marked face is drawn in the mark colour too (the two ends of a log)",
+    );
+
+    /// The front of a block that has one, in each state, as it is made (a face code, 0 for none): a block with a front is turned, when a player places
+    /// it, to face the player, as a piston does.
+    pub const FRONT_FACE: PropertyKey<u8> = PropertyKey::new(
+        "engine:front_face",
+        0,
+        "the front of the block as it is made, 0 for a block with none, else 1 plus the face's index (west 1, east 2, down 3, up 4, north 5, south 6)",
+    );
+
+    /// One end of the line a block is symmetrical about, in each state, as it is made (a face code, 0 for none): a block with such a line is turned, when a
+    /// player places it, so that the line runs along the face it is placed against, as a log is.
+    pub const AXIS_FACE: PropertyKey<u8> = PropertyKey::new(
+        "engine:axis_face",
+        0,
+        "one end of the line the block is symmetrical about as it is made, 0 for none, else 1 plus the face's index (west 1, east 2, down 3, up 4, north 5, south 6)",
+    );
+
     /// Which face of a block, in each state, is its docking face: the face a ship docks by (a face code, 0 for a block that is not a docking
     /// port). A face that looks one way in a state looks the way the grid is turned to when the block's grid is, so a docking port is turned
     /// with its ship (see [`crate::BlockTable::turned_state`]).
@@ -239,6 +262,9 @@ impl PropertySchema {
             engine::MARKED_FACE.declaration(),
             engine::MARK_COLOR.declaration(),
             engine::DOCKING_FACE.declaration(),
+            engine::MARK_BOTH_ENDS.declaration(),
+            engine::FRONT_FACE.declaration(),
+            engine::AXIS_FACE.declaration(),
         ] {
             schema
                 .declare(declaration)

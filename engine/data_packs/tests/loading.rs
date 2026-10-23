@@ -401,7 +401,7 @@ fn a_patch_to_a_block_that_does_not_exist_is_refused_unless_it_is_optional() {
 #[test]
 fn a_property_nobody_declared_is_refused_with_a_hint_unless_the_patch_is_optional() {
     let operations = r#"{ "op": "set", "property": "test:glo", "value": 1 }"#;
-    let declared = "\"engine:density\", \"engine:docking_face\", \"engine:mark_color\", \"engine:marked_face\", \"engine:placeable_on_moving_grids\", \"test:glow\", \"test:sticky\"";
+    let declared = "\"engine:axis_face\", \"engine:density\", \"engine:docking_face\", \"engine:front_face\", \"engine:mark_both_ends\", \"engine:mark_color\", \"engine:marked_face\", \"engine:placeable_on_moving_grids\", \"test:glow\", \"test:sticky\"";
     assert_eq!(
         refusal(&one_patch(
             &["base"],

@@ -193,6 +193,7 @@ fn a_player_can_change_a_block_within_reach_and_not_beyond_it_in_the_terrain_and
                 at: site.voxel(offset),
                 block: "base_blocks:air".parse().unwrap(),
                 state: 0,
+                against: None,
             };
             player.send_game_message(SetBlock::kind(), message.encode());
             tick_and_follow(scene, player, 3);

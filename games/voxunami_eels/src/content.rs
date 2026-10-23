@@ -140,6 +140,7 @@ impl ContentEels {
             ],
             block_channel: block_channel_identifier(),
             state_channel: Some(slot_channel_identifier()),
+            orientation_channel: None,
             light_channel: None,
             properties: Vec::new(),
             generators: Arc::new(|_seed, layout| {
@@ -231,7 +232,7 @@ mod tests {
         let mut seen = Vec::new();
         for block in [blocks::TRAIL, blocks::HEAD] {
             for slot in 0..8u32 {
-                assert!(table.is_opaque_cube(table.model_of(block, slot)));
+                assert!(table.is_opaque_cube(table.model_of(block, slot, 0)));
                 let drawn = palette[table.material_of(block, slot) as usize];
                 assert!(!seen.contains(&drawn), "block {block} slot {slot}");
                 seen.push(drawn);

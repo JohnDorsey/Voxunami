@@ -48,6 +48,7 @@ struct Ships {
     pilots: Mutex<BTreeMap<ClientId, GridId>>,
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
+    orientation_channel: ChannelIndex,
     table: BlockTable,
     /// How ships dock, shared with the plugin that moves them.
     docking: Docking,
@@ -68,6 +69,7 @@ impl ShipCommandsPlugin {
                 pilots: Mutex::new(BTreeMap::new()),
                 block_channel: content.block_channel(),
                 state_channel: content.state_channel(),
+                orientation_channel: content.orientation_channel(),
                 table: content.block_table(),
             }),
         }
@@ -179,7 +181,8 @@ impl Ships {
         let mut terrain = world.grid(GridId::root(level)).ok()?;
         let block = terrain.get(self.block_channel, voxel).ok()?;
         let state = terrain.get(self.state_channel, voxel).ok()?;
-        Some(collisions.of(block, state) != Collision::Empty)
+        let orientation = terrain.get(self.orientation_channel, voxel).ok()?;
+        Some(collisions.of(block, state, orientation) != Collision::Empty)
     }
 
     /// Whether the block at a voxel is not what the terrain made there: someone built it.

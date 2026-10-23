@@ -4,7 +4,7 @@ use namespaced_id::NamespacedId;
 use physics::MoveInput;
 use player_presence::PlayerPose;
 use protocol::Message;
-use voxel_space::{BrickCoordinate, GridId, VoxelCoordinate, WorldPosition};
+use voxel_space::{BrickCoordinate, FaceDirection, GridId, VoxelCoordinate, WorldPosition};
 use voxunami_cave::messages::{LightSchemeChanged, MoveRequest, SetBlock, Spawn};
 use voxunami_cave::multiscale_light::LightScheme;
 
@@ -32,12 +32,14 @@ fn cave_messages_have_their_pinned_bytes() {
         at: VoxelCoordinate::new(-40, 200, 5),
         block,
         state: 3,
+        against: Some(FaceDirection::PositiveZ),
     };
     let set_block_in_a_ship = SetBlock {
         grid: GridId::new(GridId::FIRST_ALLOCATED + 7),
         at: VoxelCoordinate::new(1, 2, 3),
         block: "a:b".parse().unwrap(),
         state: 0,
+        against: None,
     };
     let pins: [(&str, Vec<u8>, &str); 6] = [
         (
@@ -53,12 +55,12 @@ fn cave_messages_have_their_pinned_bytes() {
         (
             "a block to set",
             set_block.encode(),
-            "004f90030a10626173655f626c6f636b733a6c616d7003",
+            "004f90030a10626173655f626c6f636b733a6c616d700306",
         ),
         (
             "a block to set in a ship",
             set_block_in_a_ship.encode(),
-            "878080801002040603613a6200",
+            "878080801002040603613a620000",
         ),
         ("no light scheme", LightSchemeChanged(None).encode(), "00"),
         (

@@ -310,8 +310,15 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// Gravity of 5 metres a second a second and a jump of 3.6 (2026-10-22; was 32 and 9, a jump of the same height). The welcome and the package are the same bytes, and the saved
 /// world is the same (every player ends where they stood); the stream is 210 bytes longer, 7,186,600 to 7,186,810, and its hash is not the same: the players fall and jump more
 /// slowly, so the stream holds more ticks of their motion. (Read from what changed, and not measured separately.)
+/// Orientation, one channel for every block (2026-10-22): the game has a channel more, `base_blocks:block_orientation`, and the engine declares three more block properties
+/// (`engine:mark_both_ends`, `engine:front_face`, `engine:axis_face`). The stream is 619 bytes longer, 7,186,810 to 7,187,429, with the same 6,934 frames, and the saved world
+/// is not the same (its bricks have a channel more). Measured, by recording the stream of this script with the code before and after and comparing them frame by frame: the welcome
+/// is 74 bytes longer: the package by 39 (measured by encoding it, 2,971 to 3,010 bytes; +466 for the three declarations, measured by encoding them alone, and so -427 for the
+/// shorter list of shapes of the solid blocks, which now have seven states and not nineteen, read and not measured separately) and 35 for the channel in the description of the world; 109 frames that carry a whole brick are 5 bytes longer each (the new channel of
+/// the brick: 545), and 5,747 frames of changes to a brick have the same length and another digest of the brick (the digest covers the channels, and there is one more). Nothing else
+/// differs: 74 + 545 = 619.
 const PINNED: (u64, usize, u64) = (
-    3_113_545_625_050_401_371,
-    7_186_810,
-    11_848_533_088_863_063_950,
+    5_198_328_761_951_487_305,
+    7_187_429,
+    6_002_248_363_129_101_495,
 );

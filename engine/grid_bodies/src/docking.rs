@@ -323,6 +323,7 @@ pub struct Docking {
     table: BlockTable,
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
+    orientation_channel: Option<ChannelIndex>,
     air: u32,
     density: PropertyHandle<u32>,
     released: Arc<Mutex<BTreeSet<(GridId, GridId)>>>,
@@ -335,6 +336,7 @@ impl Docking {
         table: BlockTable,
         block_channel: ChannelIndex,
         state_channel: ChannelIndex,
+        orientation_channel: Option<ChannelIndex>,
         air: u32,
     ) -> Self {
         let density = table
@@ -345,6 +347,7 @@ impl Docking {
             table,
             block_channel,
             state_channel,
+            orientation_channel,
             air,
             density,
             released: Arc::default(),
@@ -361,6 +364,7 @@ impl Docking {
             density: self.density,
             block_channel: self.block_channel,
             state_channel: self.state_channel,
+            orientation_channel: self.orientation_channel,
             air: self.air,
         }
     }
@@ -413,39 +417,17 @@ impl Docking {
 
     /// Whether a ship has a docking port there, as it says.
     pub(crate) fn has_port(&self, ship: &MovingGrid, port: Port) -> bool {
+        let orientation = self
+            .orientation_channel
+            .map_or(0, |channel| ship.voxels.get(channel, port.voxel));
         self.table
             .docking_face(
                 ship.voxels.get(self.block_channel, port.voxel),
                 ship.voxels.get(self.state_channel, port.voxel),
+                orientation,
             )
             .is_some_and(|face| face == port.face)
             && ship.voxels.get(self.block_channel, port.voxel) != self.air
-    }
-
-    /// What a voxel becomes when the ship it is in is turned to be on another's lattice: a block that has states whose shapes, marked faces and
-    /// docking faces are turned versions of one another is in the state that is the turned one (see [`BlockTable::turned_state`]). For
-    /// [`server::MergePlan::turn`].
-    pub fn turn_values(&self) -> impl Fn(&mut Vec<(ChannelIndex, u32)>, LatticeRotation) + use<> {
-        let table = self.table.clone();
-        let (block_channel, state_channel) = (self.block_channel, self.state_channel);
-        move |values, rotation| {
-            let find = |values: &[(ChannelIndex, u32)], channel: ChannelIndex| {
-                values
-                    .iter()
-                    .find(|(found, _)| *found == channel)
-                    .map(|(_, value)| *value)
-            };
-            let Some(block) = find(values, block_channel) else {
-                return;
-            };
-            let state = find(values, state_channel).unwrap_or(0);
-            let turned = table.turned_state(block, state, rotation);
-            match values.iter_mut().find(|(found, _)| *found == state_channel) {
-                Some(entry) => entry.1 = turned,
-                None if turned != 0 => values.push((state_channel, turned)),
-                None => {}
-            }
-        }
     }
 
     /// The docking ports of a ship, in order of brick and voxel.

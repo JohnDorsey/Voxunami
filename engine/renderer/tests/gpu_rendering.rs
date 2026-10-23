@@ -720,6 +720,7 @@ fn place_blocks(
             center: BrickChannels {
                 blocks: &blocks,
                 states: Some(&states),
+                orientations: None,
                 light: light.as_ref(),
             },
             neighbours: [None; 6],

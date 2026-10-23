@@ -136,6 +136,7 @@ impl Content2048 {
             channels: Self::channels(),
             block_channel: block_channel_identifier(),
             state_channel: Some(number_channel_identifier()),
+            orientation_channel: None,
             light_channel: None,
             properties: Vec::new(),
             generators: Arc::new(|seed, layout| {
@@ -240,11 +241,11 @@ mod tests {
         );
         let table = content.block_table();
         assert_eq!(table.block_count(), 4);
-        assert!(!table.is_solid(table.model_of(AIR, 0)));
+        assert!(!table.is_solid(table.model_of(AIR, 0, 0)));
         for material in Material::ALL {
             // Whatever the number, the block is a whole opaque cube.
             for number in [1, 2, 3, 2048, u32::MAX] {
-                let model = table.model_of(material.block_id(), number);
+                let model = table.model_of(material.block_id(), number, 0);
                 assert!(table.is_opaque_cube(model), "{material:?} {number}");
             }
         }
