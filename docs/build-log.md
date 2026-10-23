@@ -805,6 +805,16 @@ callers (ship creation, the bodies' terrain, the arrival look, the light-model s
 - Tests: the existing ones, rewritten by a tool for the calls (`regrid.py`, a scratch file) and by hand where a test expected an error for a level that is not there; two new for `detach_blocks` out of a
   ship and for `uniform_value` and `generated` on a ship. No pin moved. Windows 1745 and Linux 1746 tests pass; fmt and clippy clean.
 
+Phase 38g (levels of detail, step 7: meshing a coarse node; 2026-10-23). See `lod-spec.md`.
+- `voxel_meshing::mesh_coarse_node(node, neighbours) -> BrickMesh`: a cube for each cell with fill of at least half; a face wherever the cell beside it (in the node, or in the node of the same detail level on that side if it is given; air if not) is not a cube; the greedy
+  merge of the mesher (`merge_slice`, now shared) over equal block and light. The quad has the block as its material (the palette of the renderer begins with the block colours) and **the cell's own light on all of its sides**, so a cell with a lamp in it
+  is as bright from every side, as the owner described. Quads are in cell units; the renderer scales them (38h). A seam against a node of another detail level is a crack (accepted); detailed (sub-voxel) quads are never made.
+- Tests (10 + 1): air and less than half full have no mesh; the exact threshold between cells of 127 and 128; a solid node has six faces, five with a solid neighbour, none with six, six against air; flat ground is one rectangle on top; a hill topped with snow has
+  snow on every top and far fewer quads than faces; a lamp cell is as bright on every side and unequal light does not merge (equal does); a property test that the area of the quads is exactly the number of uncovered faces counted the slow way (with and without a neighbour);
+  and, from the real generator, a coarse node of the rolling hills meshes to 942 quads whose top area, 1,024, is all grass. **Seven mutants** (neighbour ignored, a missing neighbour taken as solid, light or block out of the merge key, drawn at any fill, faces made when covered,
+  the all-solid shortcut) were all caught; one first survived because the threshold was only tested through the shortcut, and a test was added.
+- Windows 1822 and Linux 1823 tests pass; fmt and clippy clean.
+
 Phase 38f (levels of detail, step 6: which nodes to draw; 2026-10-23). See `lod-spec.md`, 3.3 and section 8.
 - `coarse_cells::select_nodes(extent, &Selection)`: the octree walk, finer near and coarser far, for terrain and every ship alike (the viewer in the grid's own axes), with the zoom cone, the cap, a distance limit, sub-pixel culling and a
   `may_hold` predicate. Pure, IEEE arithmetic only, deterministic (a digest pinned). Tests (14): small grid near and far, tiling with no gap or overlap, every cube fine enough and its parent not (a property of the rule), a planet's counts and

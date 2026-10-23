@@ -5,11 +5,10 @@
 
 use block_models::{BlockTable, ModelId, SUBDIVISIONS};
 use coarse_cells::{CELLS_PER_NODE, CoarseCell, CoarseNode, FULL_LIGHT};
-use voxel_space::{BRICK_EDGE_LENGTH, FaceDirection, LocalVoxelIndex};
+use voxel_space::{FaceDirection, LocalVoxelIndex};
 
-use crate::mesher::{BrickChannels, BrickNeighbourhood, uniform_model};
-
-const EDGE: usize = BRICK_EDGE_LENGTH;
+use crate::mesher::{BrickChannels, BrickNeighbourhood, EDGE, merge_slice, uniform_model};
+use crate::quad::{BrickMesh, quad_axes};
 
 /// Sub-faces in a face of a voxel (it is cut into `SUBDIVISIONS` by `SUBDIVISIONS`).
 const SUB_FACES: u32 = (SUBDIVISIONS * SUBDIVISIONS) as u32;
@@ -168,6 +167,84 @@ fn uniform_node(
     })
 }
 
+/// The mesh of a coarse node (`docs/lod-spec.md`, 38g): a cube for each cell that is filled by at least [`DRAWN_FILL`] (half), in the units of the cells
+/// (one unit is a cell, `2^level` voxels; the renderer scales it), with a face wherever the cell next to it is not a cube. Cubes of the same block and light
+/// along a face are merged into one rectangle, as for a brick.
+///
+/// `neighbours` are the nodes of the same detail level beside this one, indexed by [`FaceDirection::index`]; a node that is not given counts as air, so the
+/// faces on that side are made (a seam against a node of another detail level is left as a crack, which is accepted). A quad takes the block of the cell as its
+/// material (the palette of the renderer begins with the block colours, so the block number is the colour) and **the cell's own light on all of its sides**:
+/// a cell with a lamp in it is as bright as the lamp makes it from every side.
+pub fn mesh_coarse_node(node: &CoarseNode, neighbours: &[Option<&CoarseNode>; 6]) -> BrickMesh {
+    // Fast path: a node that is one cell is either nothing or a block with a face only where a neighbour is not as solid.
+    if let Some(cell) = node.uniform_cell() {
+        let all_cubes_beside = FaceDirection::ALL.iter().all(|&face| {
+            neighbours[usize::from(face.index())]
+                .and_then(CoarseNode::uniform_cell)
+                .is_some_and(CoarseCell::is_drawn)
+        });
+        if !cell.is_drawn() || all_cubes_beside {
+            return BrickMesh::default();
+        }
+    }
+    let cells: Vec<CoarseCell> = node.cells().collect();
+    let drawn = |cell: &CoarseCell| cell.is_drawn();
+    let mut quads = Vec::new();
+    for face in FaceDirection::ALL {
+        let axis = face.axis();
+        let (u_axis, v_axis) = quad_axes(face);
+        let step = face.offset();
+        let mut mask: Vec<Option<(u32, u8)>> = vec![None; EDGE * EDGE];
+        for slice in 0..EDGE {
+            let mut any = false;
+            for v in 0..EDGE {
+                for u in 0..EDGE {
+                    let mut at = [0usize; 3];
+                    at[axis] = slice;
+                    at[u_axis] = u;
+                    at[v_axis] = v;
+                    let cell =
+                        &cells[LocalVoxelIndex::new(at[0] as u8, at[1] as u8, at[2] as u8).index()];
+                    let mut key = None;
+                    if drawn(cell) {
+                        let next = [0, 1, 2].map(|a| at[a] as i64 + step[a]);
+                        let beside =
+                            if next.iter().all(|&c| (0..EDGE as i64).contains(&c)) {
+                                drawn(
+                                    &cells[LocalVoxelIndex::new(
+                                        next[0] as u8,
+                                        next[1] as u8,
+                                        next[2] as u8,
+                                    )
+                                    .index()],
+                                )
+                            } else {
+                                neighbours[usize::from(face.index())].is_some_and(|other| {
+                                    let wrapped = next.map(|c| c.rem_euclid(EDGE as i64) as u8);
+                                    drawn(&other.cell(LocalVoxelIndex::new(
+                                        wrapped[0], wrapped[1], wrapped[2],
+                                    )))
+                                })
+                            };
+                        if !beside {
+                            key = Some((cell.block, cell.light));
+                        }
+                    }
+                    any |= key.is_some();
+                    mask[v * EDGE + u] = key;
+                }
+            }
+            if any {
+                merge_slice(face, slice, &mut mask, &mut quads);
+            }
+        }
+    }
+    BrickMesh {
+        quads,
+        detailed: Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use block_models::{BlockDefinition, Shape};
@@ -182,6 +259,7 @@ mod tests {
     const GRASS: u32 = 2;
     const SLAB: u32 = 3;
     const LAMP: u32 = 4;
+    const SNOW: u32 = 5;
     /// The state of a bottom slab of the `SLAB` block (state 0 is the whole block).
     const BOTTOM: u32 = 1;
 
@@ -455,6 +533,256 @@ mod tests {
         let cell = cell(&found, 3, 3, 3);
         assert_eq!((cell.block, cell.fill, cell.exposure), (LAMP, 255, 6 * ONE));
         assert_eq!(cell.light, FULL_LIGHT);
+    }
+
+    // --- meshing a node ---
+
+    fn cube(block: u32, light: u8) -> CoarseCell {
+        CoarseCell {
+            block,
+            fill: 255,
+            light,
+            exposure: 0,
+        }
+    }
+
+    fn sky(light: u8) -> CoarseCell {
+        CoarseCell::empty(AIR, light)
+    }
+
+    fn node_of(of: impl Fn(usize, usize, usize) -> CoarseCell) -> CoarseNode {
+        let mut cells = Vec::with_capacity(CELLS_PER_NODE);
+        for z in 0..EDGE {
+            for y in 0..EDGE {
+                for x in 0..EDGE {
+                    cells.push(of(x, y, z));
+                }
+            }
+        }
+        CoarseNode::from_cells(cells)
+    }
+
+    fn quads_of(node: &CoarseNode, neighbours: [Option<&CoarseNode>; 6]) -> Vec<crate::quad::Quad> {
+        let mut quads = mesh_coarse_node(node, &neighbours).quads;
+        quads.sort_by_key(|quad| (quad.face.index(), quad.origin, quad.width, quad.height));
+        quads
+    }
+
+    #[test]
+    fn a_node_of_air_or_of_cells_less_than_half_full_has_no_mesh() {
+        assert!(mesh_coarse_node(&CoarseNode::uniform(sky(5)), &[None; 6]).is_empty());
+        let nearly = CoarseCell {
+            fill: 127,
+            ..cube(STONE, 0)
+        };
+        assert!(mesh_coarse_node(&CoarseNode::uniform(nearly), &[None; 6]).is_empty());
+        let half = CoarseCell {
+            fill: 128,
+            ..nearly
+        };
+        assert!(!mesh_coarse_node(&CoarseNode::uniform(half), &[None; 6]).is_empty());
+    }
+
+    #[test]
+    fn a_cell_is_a_cube_from_half_full_and_the_one_beside_it_is_air_to_it_below_that() {
+        // Two cells side by side along x: 128 (a cube) and 127 (not). The cube has all six faces, since what is beside it is not a cube; the other has none.
+        let two = node_of(|x, y, z| match (x, y, z) {
+            (4, 5, 6) => CoarseCell {
+                fill: 128,
+                ..cube(STONE, 0)
+            },
+            (5, 5, 6) => CoarseCell {
+                fill: 127,
+                ..cube(GRASS, 0)
+            },
+            _ => sky(0),
+        });
+        let found = quads_of(&two, [None; 6]);
+        assert_eq!(found.len(), 6, "{found:?}");
+        assert!(
+            found
+                .iter()
+                .all(|quad| quad.material == STONE && quad.origin[0] == 4)
+        );
+    }
+
+    #[test]
+    fn a_solid_node_has_its_six_faces_and_none_where_a_solid_node_is_beside_it() {
+        let solid = CoarseNode::uniform(cube(STONE, 9));
+        let alone = quads_of(&solid, [None; 6]);
+        assert_eq!(alone.len(), 6);
+        assert!(alone.iter().all(|quad| quad.width == 32
+            && quad.height == 32
+            && quad.material == STONE
+            && quad.light == 9));
+        // A solid node on one side takes away that side's face only.
+        let mut beside = [None; 6];
+        beside[usize::from(FaceDirection::PositiveX.index())] = Some(&solid);
+        let found = quads_of(&solid, beside);
+        assert_eq!(found.len(), 5);
+        assert!(
+            found
+                .iter()
+                .all(|quad| quad.face != FaceDirection::PositiveX)
+        );
+        // On every side, nothing at all.
+        assert!(mesh_coarse_node(&solid, &[Some(&solid); 6]).is_empty());
+        // An air node beside it does not.
+        let air_node = CoarseNode::uniform(sky(0));
+        assert_eq!(quads_of(&solid, [Some(&air_node); 6]).len(), 6);
+    }
+
+    #[test]
+    fn the_coarse_node_of_flat_ground_is_one_slab_a_single_rectangle_on_top() {
+        // Stone below y = 16, sky above; stone under, stone and sky beside (the same node), sky above.
+        let ground = node_of(|_, y, _| if y < 16 { cube(STONE, 0) } else { sky(0) });
+        let below = CoarseNode::uniform(cube(STONE, 0));
+        let above = CoarseNode::uniform(sky(0));
+        let mut beside = [Some(&ground); 6];
+        beside[usize::from(FaceDirection::NegativeY.index())] = Some(&below);
+        beside[usize::from(FaceDirection::PositiveY.index())] = Some(&above);
+        let found = quads_of(&ground, beside);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let top = found[0];
+        assert_eq!(
+            (top.face, top.origin, top.width, top.height),
+            (FaceDirection::PositiveY, [0, 15, 0], 32, 32)
+        );
+        assert_eq!((top.material, top.light), (STONE, 0));
+    }
+
+    #[test]
+    fn the_coarse_node_of_a_snow_topped_hill_has_snow_on_top() {
+        // A hill: stone under a top layer of snow whose height steps up toward the middle.
+        let height = |x: usize, z: usize| 10 + (x.min(31 - x).min(z).min(31 - z)).min(6);
+        let hill = node_of(|x, y, z| {
+            let top = height(x, z);
+            if y < top {
+                cube(STONE, 0)
+            } else if y == top {
+                cube(SNOW, 0)
+            } else {
+                sky(0)
+            }
+        });
+        let found = quads_of(&hill, [None; 6]);
+        let tops: Vec<_> = found
+            .iter()
+            .filter(|quad| quad.face == FaceDirection::PositiveY)
+            .collect();
+        assert!(!tops.is_empty());
+        assert!(tops.iter().all(|quad| quad.material == SNOW), "{tops:?}");
+        // The steps and the sides are stone or snow (the layer of snow is in the sides too); no quad is of the air block.
+        assert!(
+            found
+                .iter()
+                .all(|quad| quad.material == STONE || quad.material == SNOW)
+        );
+        // Merging keeps the number of quads far under the number of faces.
+        let faces: usize = found
+            .iter()
+            .map(|quad| usize::from(quad.width) * usize::from(quad.height))
+            .sum();
+        assert!(
+            found.len() * 4 < faces,
+            "{} quads for {faces} faces",
+            found.len()
+        );
+    }
+
+    #[test]
+    fn a_cell_with_a_lamp_in_it_is_as_bright_on_every_side_and_cells_of_a_different_light_do_not_merge()
+     {
+        let lit = node_of(|x, y, z| {
+            if (x, y, z) == (4, 5, 6) {
+                cube(LAMP, 250)
+            } else {
+                sky(7)
+            }
+        });
+        let found = quads_of(&lit, [None; 6]);
+        assert_eq!(found.len(), 6);
+        assert!(found.iter().all(|quad| quad.light == 250
+            && quad.material == LAMP
+            && quad.width == 1
+            && quad.height == 1));
+        // Two cells beside each other of one block and two lights: two rectangles on a face that both have.
+        let two = node_of(|x, y, z| match (x, y, z) {
+            (4, 5, 6) => cube(STONE, 10),
+            (5, 5, 6) => cube(STONE, 20),
+            _ => sky(0),
+        });
+        let tops: Vec<_> = quads_of(&two, [None; 6])
+            .into_iter()
+            .filter(|quad| quad.face == FaceDirection::PositiveY)
+            .collect();
+        assert_eq!(tops.len(), 2);
+        // The same light merges them.
+        let same = node_of(|x, y, z| {
+            if (y, z) == (5, 6) && (4..=5).contains(&x) {
+                cube(STONE, 10)
+            } else {
+                sky(0)
+            }
+        });
+        let tops: Vec<_> = quads_of(&same, [None; 6])
+            .into_iter()
+            .filter(|quad| quad.face == FaceDirection::PositiveY)
+            .collect();
+        // (A top face is spanned by z, then x: the two cells along x make a quad one wide and two high.)
+        assert_eq!((tops.len(), tops[0].width, tops[0].height), (1, 1, 2));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(16))]
+
+        #[test]
+        fn the_faces_of_the_mesh_are_exactly_the_faces_of_the_cubes_that_nothing_covers(
+            seed in any::<u64>(),
+            density in 1u64..8,
+            with_neighbour in any::<bool>(),
+        ) {
+            let pick = |x: usize, y: usize, z: usize, salt: u64| {
+                let hash = (x as u64 * 73_856_093) ^ (y as u64 * 19_349_663) ^ (z as u64 * 83_492_791) ^ seed ^ salt;
+                hash.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 56
+            };
+            let cell_at = |x: usize, y: usize, z: usize, salt: u64| {
+                let choice = pick(x, y, z, salt);
+                if choice % 8 < density { cube(1 + (choice as u32 % 3), (choice % 4) as u8 * 50) } else { sky(0) }
+            };
+            let node = node_of(|x, y, z| cell_at(x, y, z, 0));
+            let other = node_of(|x, y, z| cell_at(x, y, z, 77));
+            let mut neighbours = [None; 6];
+            if with_neighbour {
+                neighbours[usize::from(FaceDirection::NegativeZ.index())] = Some(&other);
+            }
+            let mesh = mesh_coarse_node(&node, &neighbours);
+            // Count the faces by looking at every cell and every side, the slow obvious way.
+            let mut wanted = 0usize;
+            for z in 0..EDGE {
+                for y in 0..EDGE {
+                    for x in 0..EDGE {
+                        let cell = node.cell(LocalVoxelIndex::new(x as u8, y as u8, z as u8));
+                        if !cell.is_drawn() { continue; }
+                        for face in FaceDirection::ALL {
+                            let step = face.offset();
+                            let next = [x as i64 + step[0], y as i64 + step[1], z as i64 + step[2]];
+                            let covered = if next.iter().all(|&c| (0..EDGE as i64).contains(&c)) {
+                                node.cell(LocalVoxelIndex::new(next[0] as u8, next[1] as u8, next[2] as u8)).is_drawn()
+                            } else if face == FaceDirection::NegativeZ && with_neighbour {
+                                other.cell(LocalVoxelIndex::new(next[0] as u8, next[1] as u8, next[2].rem_euclid(32) as u8)).is_drawn()
+                            } else {
+                                false
+                            };
+                            wanted += usize::from(!covered);
+                        }
+                    }
+                }
+            }
+            let made: usize = mesh.quads.iter().map(|quad| usize::from(quad.width) * usize::from(quad.height)).sum();
+            prop_assert_eq!(made, wanted);
+            prop_assert!(mesh.quads.iter().all(|quad| quad.material != AIR));
+        }
     }
 
     fn random_voxel() -> impl Strategy<Value = (u32, u32)> {

@@ -303,3 +303,43 @@ fn the_coarse_cells_of_hills_with_caves_are_as_full_as_those_of_the_bricks_and_t
         );
     }
 }
+
+#[test]
+fn the_coarse_node_of_hills_from_the_generator_meshes_to_grass_on_top_and_far_fewer_quads_than_faces()
+ {
+    use voxel_space::FaceDirection;
+    let settings = RollingHillsSettings {
+        cave_half_thickness: 0.0,
+        ..RollingHillsSettings::for_one_metre_voxels(2024)
+    };
+    let fixture = StandardTestLayout::default();
+    let generator = rolling_hills(settings, fixture.material, MATERIALS);
+    let cube = BrickCube::new(BrickCoordinate::new(8, 0, 8), 3).unwrap();
+    let node = generator.coarse_node(cube, FULL_LIGHT).unwrap();
+    let mesh = voxel_meshing::mesh_coarse_node(&node, &[None; 6]);
+    let area = |quad: &voxel_meshing::Quad| u64::from(quad.width) * u64::from(quad.height);
+    let top_area: u64 = mesh
+        .quads
+        .iter()
+        .filter(|quad| quad.face == FaceDirection::PositiveY)
+        .map(area)
+        .sum();
+    let grass_area: u64 = mesh
+        .quads
+        .iter()
+        .filter(|quad| quad.face == FaceDirection::PositiveY && quad.material == MATERIALS.grass)
+        .map(area)
+        .sum();
+    eprintln!(
+        "MESH {} quads, top area {top_area}, grass {grass_area}",
+        mesh.quads.len()
+    );
+    assert!(top_area > 500, "{top_area}");
+    assert!(grass_area * 10 > top_area * 9, "{grass_area} of {top_area}");
+    let faces: u64 = mesh.quads.iter().map(area).sum();
+    assert!(
+        (mesh.quads.len() as u64) * 3 < faces,
+        "{} quads for {faces} faces",
+        mesh.quads.len()
+    );
+}

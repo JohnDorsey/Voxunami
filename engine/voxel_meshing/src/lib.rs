@@ -19,7 +19,7 @@ mod coarse;
 mod mesher;
 mod quad;
 
-pub use coarse::coarse_node_of_brick;
+pub use coarse::{coarse_node_of_brick, mesh_coarse_node};
 pub use mesher::{BrickChannels, BrickNeighbourhood, mesh_brick};
 pub use quad::{
     BrickMesh, DetailedQuad, FULL_LIGHT, MAXIMUM_MATERIAL, PackedBrickMesh, PackedDetailedQuad,

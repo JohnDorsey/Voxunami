@@ -184,7 +184,7 @@ used in 62 files) first and alone, so that nothing else is mixed into it.
   are bounded; a viewer at a point of a 10^8-voxel grid gets fine nodes there and coarse ones far; a turned ship gives the same nodes as an unturned
   one seen from the equivalent point; the cap; the zoom cone; integer arithmetic gives the same answer on both platforms. Measure the node count at
   40 levels.
-- **38g Meshing nodes.** The mesher takes a node's cells and draws cubes for cells with fill at least half, merging faces as it does now; light from
+- **38g Meshing nodes** (**built 2026-10-23**, `voxel_meshing::mesh_coarse_node`). The mesher takes a node's cells and draws cubes for cells with fill at least half, merging faces as it does now; light from
   the cell. Tests: a flat world's coarse node is one slab; a snow-topped hill's coarse node has snow on top.
 - **38h Rendering.** `Placement` scale, new mesh keys, draw coarse nodes, swap on refinement. Offscreen render tests: terrain at several distances; a
   ship with two detail levels at once; existing render tests unchanged.

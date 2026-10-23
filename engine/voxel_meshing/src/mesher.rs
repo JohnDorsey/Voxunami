@@ -4,7 +4,7 @@ use voxel_space::{BRICK_EDGE_LENGTH, FaceDirection, LocalVoxelIndex};
 
 use crate::quad::{BrickMesh, DetailedQuad, FULL_LIGHT, Quad, quad_axes};
 
-const EDGE: usize = BRICK_EDGE_LENGTH;
+pub(crate) const EDGE: usize = BRICK_EDGE_LENGTH;
 
 /// What a brick holds in each voxel that meshing looks at: the block, which state of it, and how
 /// bright the voxel is. A game without block states or lighting leaves those out.
@@ -330,7 +330,7 @@ impl<'a> MeshedBrick<'a> {
 
 /// Covers the set cells of `mask` with maximal rectangles of equal material and brightness, clearing
 /// it as it goes.
-fn merge_slice(
+pub(crate) fn merge_slice(
     face: FaceDirection,
     slice: usize,
     mask: &mut [Option<(u32, u8)>],
