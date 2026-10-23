@@ -29,7 +29,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 16 Cave gravity and collision: the server moves the players (`/fly`, `/tp`). **Done.**
 - 17 Voxunami Eels (3D Tron) and the shell hooks it needed. **Done.**
 - 18 Mod stage 1, first step: a game's content as one declared package (`ContentPackage`). **Done.**
-- 38 (in progress, owner 2026-10-23; before 33; 38a to 38e built) Levels of detail for terrain and ships alike (`lod-spec.md`, steps 38a to 38l): coarse cells (dominant block, fill, light), one octree
+- 38 (in progress, owner 2026-10-23; before 33; 38a to 38f built) Levels of detail for terrain and ships alike (`lod-spec.md`, steps 38a to 38l): coarse cells (dominant block, fill, light), one octree
   refinement rule by distance, hybrid streaming (the client derives unedited terrain, the server sends edits and ships' nodes), reverse-Z with an infinite far plane, orientations in `f64`
   (protocol 7), coarse nodes in the stream (protocol 8). Planets are a later phase that this one must leave room for.
 - 37 (far future) Learning NPCs: brains as data (a network in a fixed format plus a manifest of sensors and actions, in the content

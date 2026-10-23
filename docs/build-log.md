@@ -805,6 +805,14 @@ callers (ship creation, the bodies' terrain, the arrival look, the light-model s
 - Tests: the existing ones, rewritten by a tool for the calls (`regrid.py`, a scratch file) and by hand where a test expected an error for a level that is not there; two new for `detach_blocks` out of a
   ship and for `uniform_value` and `generated` on a ship. No pin moved. Windows 1745 and Linux 1746 tests pass; fmt and clippy clean.
 
+Phase 38f (levels of detail, step 6: which nodes to draw; 2026-10-23). See `lod-spec.md`, 3.3 and section 8.
+- `coarse_cells::select_nodes(extent, &Selection)`: the octree walk, finer near and coarser far, for terrain and every ship alike (the viewer in the grid's own axes), with the zoom cone, the cap, a distance limit, sub-pixel culling and a
+  `may_hold` predicate. Pure, IEEE arithmetic only, deterministic (a digest pinned). Tests (14): small grid near and far, tiling with no gap or overlap, every cube fine enough and its parent not (a property of the rule), a planet's counts and
+  its finest cube under the viewer, the cap, the sub-pixel cut, the distance limit, `may_hold`, the zoom (only refines; unchanged outside the cone; finer on the axis; a coarser or equal zoom changes nothing), the exact boundary of "fine enough",
+  determinism, a turned and moved ship, the viewer inside a cube. Ten mutants, all caught (two needed new tests); one condition (the cap) was found dead by a mutant and removed.
+- *Measured, and my estimate was wrong:* the node count is the same at every level, tens of thousands in all, not a few thousand (section 8): 25,957 for a sphere of 10^8 voxels, 23,806 for a world with a surface, 57,427 with a 10 times zoom.
+- Windows 1814 and Linux 1815 tests pass; fmt and clippy clean.
+
 Phase 38c to 38e (levels of detail, steps 3 to 5: coarse cells, summaries of bricks, coarse terrain; 2026-10-23). See `lod-spec.md`, sections 3.2, 3.4 and 7.
 - *38c, `coarse_cells`:* `CoarseCell` (block, fill, light, exposure), `combine` (eight cells make one), `CoarseNode` (32 x 32 x 32, kept as one cell when they are all the same). Tests (21): a layer of snow is snow, a cave wall does not outvote the ground when
   it has less surface, blocks are counted together across children, ties by octant whatever the block numbers, a speck is not lost, light is the brightest up to 32 voxels and an average above (and falls back to fill), exposure rounds and saturates,

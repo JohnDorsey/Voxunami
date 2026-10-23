@@ -419,7 +419,9 @@ dependencies = [
 name = "coarse_cells"
 version = "0.0.0"
 dependencies = [
+ "libm",
  "proptest",
+ "region_octree",
  "voxel_space",
 ]
 

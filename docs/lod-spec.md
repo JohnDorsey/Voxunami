@@ -95,10 +95,12 @@ is **fine enough** when its cell size is small against its distance: `2^n ≤ r 
 pixel as seen from the camera (`2 · tan(field_of_view / 2) / viewport_height`). Otherwise it is replaced by its eight children, down to detail level 0.
 With a cell of 2 pixels, a 1080-line view and a 70° field of view, a voxel is split to full detail within about 400 voxels (the owner's target is 256, so the default `cell_pixels` will be about 3); it is a setting
 (`.detail`, a client command), not a constant. The rule is the same for the world's terrain and for every ship, and it gives the owner's falling-toward-a-planet
-view: near nodes are fine and far nodes coarse, within one grid. The number of nodes is a few per detail level, so a few thousand for 40 levels
-(an estimate, to be measured in step 38f).
+view: near nodes are fine and far nodes coarse, within one grid. **How many nodes** is not "a few per level" (my estimate in the first draft, which was wrong): each
+doubling of the distance holds as many cubes as the one before, about `(2 / (32 r))^2` for a surface (and the cube of that for a solid volume), `r` being cells per
+distance, so the same number at every level; measured in 38f in section 8.
 
-- **Cap**: a ship's cap `c` forbids nodes coarser than `c`; a grid wider than one node of level `c` is covered by several. The default is no cap.
+- **Cap**: a ship's cap `c` forbids nodes coarser than `c`; a grid wider than one node of level `c` is covered by several. The default is no cap. (A planet
+with a small cap has very many nodes; the cap is the owner's to set, and a planet should have a large one.)
 - **Not drawn**: a node whose projection is under one pixel, whatever the cap (3.7).
 - **Zoom**: the data (not only the drawing) must refine with the zoom, but only toward where the player looks, or a tenfold zoom would ask for a
   thousand times the bricks in all directions. So the set of nodes a client needs is: the nodes the rule gives with the *unzoomed* field of view in all
@@ -178,7 +180,7 @@ used in 62 files) first and alone, so that nothing else is mixed into it.
 - **38e Generator coarse sampling** (**built 2026-10-23**; the measurements are in section 7). `TerrainGenerator::coarse_node`, the field generator's version. Tests: the agreement of coarse and exact summaries on
   the Cave and 2048 generators, **measured** (the threshold is set from the measurement, and the measurement is written in the build log); the coarse
   output is pinned like `generate_brick` is.
-- **38f The selection rule.** Pure: nodes for a viewer in a grid's axes. Tests: they tile the grid with no gap and no overlap; counts per detail level
+- **38f The selection rule** (**built 2026-10-23**, `coarse_cells::select_nodes`; measurements in section 8). Pure: nodes for a viewer in a grid's axes. Tests: they tile the grid with no gap and no overlap; counts per detail level
   are bounded; a viewer at a point of a 10^8-voxel grid gets fine nodes there and coarse ones far; a turned ship gives the same nodes as an unturned
   one seen from the equivalent point; the cap; the zoom cone; integer arithmetic gives the same answer on both platforms. Measure the node count at
   40 levels.
@@ -216,6 +218,22 @@ used in 62 files) first and alone, so that nothing else is mixed into it.
   was air (and a `min` of ground and caves was air). It is fixed (caves that are all finer than the footprint are no caves); full detail, and so every released brick, is unchanged (the pinned brick digests pass).
 - **Cost.** A node of terrain from the field takes a few milliseconds to a few tens; the measurement of 4 + 4 + 1 + 1 cubes takes 8 to 14 seconds together with generating all their bricks, which dominates (taken in the test profile, not a
   benchmark). Memory: a node that is not all one cell is 32,768 cells of 12 bytes, 393 kilobytes; nearly every node is one cell. Step 38f measures the node counts that matter.
+
+## 8. What 38f found (2026-10-23)
+
+- **The rule is built as `coarse_cells::select_nodes(extent, &Selection)`.** The viewer is a `WorldPosition` in the grid's own axes (a ship: `GridPose::world_to_local` of the eyes, tested to give the nodes of a ship that is turned
+  and moved anywhere). Settings are `cell_pixels` and `pixel_size`; optional parts are the zoom cone, the cap, a distance limit and a `may_hold` predicate (what the grid can hold; for a sphere, the cubes that touch its surface). Only
+  IEEE `+ - * / sqrt` and comparisons are used, so every machine agrees (a digest of the cubes of the planet case is pinned). Not integer arithmetic as the first draft said: the answer is the same, and the distances are not whole.
+- **Node counts (measured, before any frustum culling), at 3 pixels a cell and a 70 degree view of 1080 lines (full detail to 256 voxels):**
+  - a *solid* grid 10^8 voxels across, the viewer at its corner: **180,412** cubes, about 19,000 for each of the levels 0 to 6 (most of it the inside of the planet, which nothing can see);
+  - a *sphere* of that size (the cubes that touch its surface), the viewer on top: **25,957** cubes, 3,776 bricks and 1,200 to 1,460 of each larger level, in 4 milliseconds;
+  - a *world with a surface* (a slab of 8 bricks thick and a million voxels across): **23,806** cubes, and **57,427** with a 10 times zoom in a cone of 6 degrees (2.4 times as many).
+  So `may_hold` must be the surface and not the volume, and **tens of thousands of nodes** (not a few thousand) is the size of the problem before the frustum takes about four in five of them away. That is about 5,000 draws a frame: workable, but
+  it is the number that step 38l has to weigh against GPU-driven culling, and `cell_pixels` (a coarser drawing) is the setting that reduces it (the count falls with the square of it).
+- **A cone of zoom is exact:** a cube that was chosen without the zoom and that the cone does not touch is chosen with it (tested), and the cone only ever refines.
+- **A cap is free:** the walk starts at the cap or the level that covers the grid, whichever is finer, and only goes down, so no check was needed (the one I wrote first was dead, found by a mutation experiment).
+- **Mutation experiments:** ten mutants (cap, sub-pixel cull, distance to the middle, zoom touching everything, zoom coarsening, distance limit the wrong way, what the grid cannot hold, an offset in the high half, a strict
+  comparison, the zoom pixel used for the cull only) were all caught after two tests were added (the exact boundary of "fine enough", and a zoom of a coarser pixel).
 
 ## 6. Not here
 

@@ -270,6 +270,8 @@ then what it needs and what I found in the code.
     - *Optional upgrade of the dominant block of a coarse cell:* a dominant exposed block **per direction** (six ids for a mixed cell, one for a uniform one), so
       that snow shows from above and stone from the side. Phase 38 starts with one block per cell chosen by the faces that touch air; this is the upgrade if that
       looks wrong. **Optional.**
+    - *Weight the exposed faces of a coarse cell by the light in front of them* (owner, 2026-10-23; option (a) of `lod-spec.md` section 7): a face that looks out at dark, enclosed air counts for little in choosing the
+      dominant block, so the walls of caves stop outvoting the grass on the top of a hill in the cells made from bricks (edited regions, ships). Needs sky light, which Cave does not have yet.
     - Planets: a ground that is a ship, a sphere generator with analytic coarse sampling, a ship with a generator instead of every brick stored, atmosphere and
       fog for planet distances. Planets are rough spheres of cubes in ordinary space (no curved grids), real-planet size (10^8 m and more).
     - Stars as voxels of 2^32 m and more that break into smaller ones on approach (needs emissive blocks).
