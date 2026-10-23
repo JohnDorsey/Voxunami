@@ -192,4 +192,11 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// Orientation, one channel for every block (2026-10-22): the engine declares three more block properties (`engine:mark_both_ends`, `engine:front_face`, `engine:axis_face`) and the
 /// package data says whether the game has an orientation channel (the eels has none: one byte). The welcome grows by 467 bytes, 71,814 to 72,281: 466 for the declarations,
 /// measured by encoding them alone, and 1 for that byte. The saved world is the same.
-const PINNED: (u64, usize, u64) = (7_601_601_639_200_419_435, 72_281, 3_527_138_528_036_399_531);
+/// Orientations are `f64` (Phase 38a, 2026-10-23; protocol 7, the sections that hold poses at version 2): a pose is 16 bytes longer. Measured by recording the stream of the script with the code before and after and comparing the frames one by one: the same number of frames, every frame the same except those that carry a pose, and the welcome (version 7, same length):
+/// 1,274 frames, 1,007 identical; 531 poses in 266 of the other 267 frames (one spawn and 265 changes; the 267th is the welcome), 531 x 16 = 8,496, and 3 bytes for frames whose length now takes a byte more in the recording:
+/// 72,281 to 80,780. The saved world changed (it holds the players' poses).
+const PINNED: (u64, usize, u64) = (
+    6_874_980_114_787_360_946,
+    80_780,
+    16_297_960_288_978_290_439,
+);

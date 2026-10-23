@@ -1823,7 +1823,7 @@ pub(crate) mod tests {
         // Turned a quarter about the z axis, a ship's down is along its own x axis (its x axis points where the world's y does...
         // whichever way, the length is the same and the world's down is the ship's turned axis).
         let quarter =
-            Orientation::from_components([0.0, 0.0, 0.5f32.sqrt(), 0.5f32.sqrt()]).unwrap();
+            Orientation::from_components([0.0, 0.0, 0.5f64.sqrt(), 0.5f64.sqrt()]).unwrap();
         let ship = world
             .create_grid(
                 LevelIndex::MAIN,

@@ -106,8 +106,10 @@ fn a_world_with_ships_is_a_world_file_and_a_file_for_each_ship_that_the_world_fi
     assert_eq!(fnv(&save.world), PINNED_WORLD, "{} bytes", save.world.len());
 }
 
-/// The hash of the world file of the scenario above.
-const PINNED_WORLD: u64 = 3_028_195_094_562_407_983;
+/// The hash of the world file of the scenario above. (Moved on purpose, Phase 38a: 3_028_195_094_562_407_983 before. The ships section is version 2 and each of the two
+/// poses has four `f64` for its turn where it had four `f32`: 16 bytes each, 34,105 to 34,137 (the length at the old commit measured, not assumed); the checksums of the ship files
+/// in the section changed with the files. Taken on Windows; Linux is checked to agree.)
+const PINNED_WORLD: u64 = 13_693_694_158_651_394_378;
 
 #[test]
 fn a_world_loaded_has_its_ships_in_their_files_and_asks_for_them_one_by_one_as_they_were() {

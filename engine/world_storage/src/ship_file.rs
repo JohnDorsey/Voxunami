@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
-use protocol::{read_grid_pose, write_grid_pose};
+use protocol::{PoseFormat, read_grid_pose_in, write_grid_pose};
 use voxel_grid::{Brick, ChannelValueKind, Grid, GridLayout};
 use voxel_space::{BrickCoordinate, GridPose};
 
@@ -83,9 +83,9 @@ fn encode_flight(flight: &ShipFlight) -> Vec<u8> {
     writer.into_bytes()
 }
 
-fn decode_flight(payload: &[u8]) -> Result<ShipFlight, DecodeError> {
+fn decode_flight(payload: &[u8], format: PoseFormat) -> Result<ShipFlight, DecodeError> {
     let mut reader = ByteReader::new(payload);
-    let pose = read_grid_pose(&mut reader)?;
+    let pose = read_grid_pose_in(&mut reader, format)?;
     let mut components = [0f32; 6];
     for component in &mut components {
         *component = f32::from_bits(reader.read_u32()?);
@@ -194,7 +194,12 @@ impl ParsedShip {
                 opaque.push(section);
                 continue;
             }
-            if section.version != sections::SUPPORTED_VERSION {
+            let readable = if section.identifier == flight_id() {
+                sections::pose_format_of(section.version).is_some()
+            } else {
+                section.version == sections::SUPPORTED_VERSION
+            };
+            if !readable {
                 return Err(ShipFileError::UnsupportedSection {
                     section: section.identifier,
                     version: section.version,
@@ -214,7 +219,8 @@ impl ParsedShip {
             } else if section.identifier == ship_id() {
                 ship = Some(decode_ship(payload).map_err(wrap)?);
             } else {
-                flight = Some(decode_flight(payload).map_err(wrap)?);
+                let format = sections::pose_format_of(section.version).expect("a readable version");
+                flight = Some(decode_flight(payload, format).map_err(wrap)?);
             }
         }
         let (level, bricks) = ship.ok_or_else(|| ShipFileError::MissingSection(ship_id()))?;
@@ -441,8 +447,12 @@ impl ShipFormat {
             })
             .collect();
         let section = |identifier, payload| Section {
+            version: if identifier == flight_id() {
+                sections::POSES_VERSION
+            } else {
+                sections::SUPPORTED_VERSION
+            },
             identifier,
-            version: sections::SUPPORTED_VERSION,
             payload,
         };
         let mut written = vec![

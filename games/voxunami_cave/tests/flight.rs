@@ -420,7 +420,7 @@ fn scripted_flight() -> u64 {
             }
             for value in offset
                 .into_iter()
-                .chain(ship.pose.orientation.components())
+                .chain(ship.pose.orientation.components_single())
                 .chain(ship.linear_velocity)
                 .chain(ship.angular_velocity)
             {
@@ -433,7 +433,7 @@ fn scripted_flight() -> u64 {
             .position
             .offset()
             .into_iter()
-            .chain(pose.orientation.components())
+            .chain(pose.orientation.components_single())
         {
             feed(u64::from(value.to_bits()));
         }
@@ -454,7 +454,8 @@ fn a_scripted_flight_ends_in_the_same_bits_every_time_and_on_every_machine() {
     assert_eq!(first, scripted_flight());
     // Taken on Windows; Linux is checked to agree to the bit.
     // (Moved once, on purpose, 2026-10-22: the pull of the planet is 5 metres a second a second, was 32, and the pilot's thrust holds the ship up against it.)
-    assert_eq!(first, 1_611_522_163_103_596_451);
+    // (Moved on purpose, Phase 38a: 1_611_522_163_103_596_451 before. Orientations are f64 (Phase 38a, 2026-10-23): a yaw and a pitch are turned into a quaternion in f64 and rounded once to the f32 the solver takes, which is not always the f32 the old arithmetic in f32 gave, to the last bit. Control: with `from_yaw_pitch` put back to the f32 arithmetic and nothing else changed, the old value came back; so this is the only thing that moved it.)
+    assert_eq!(first, 14_857_158_006_750_149_408);
 }
 
 #[test]

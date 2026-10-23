@@ -805,6 +805,26 @@ callers (ship creation, the bodies' terrain, the arrival look, the light-model s
 - Tests: the existing ones, rewritten by a tool for the calls (`regrid.py`, a scratch file) and by hand where a test expected an error for a level that is not there; two new for `detach_blocks` out of a
   ship and for `uniform_value` and `generated` on a ship. No pin moved. Windows 1745 and Linux 1746 tests pass; fmt and clippy clean.
 
+Phase 38a (levels of detail, step 1: orientations in `f64`; 2026-10-23). See `lod-spec.md`.
+- *Why first:* `Orientation` was `[f32; 4]` and is used in 62 files; a planet turned by an `f32` quaternion has points metres out (measured: over 199 turns of a point 5 x 10^7 voxels from the origin, the worst miss of an `f32` turn is 3.78
+  metres, 0.05 for one turn). It is the riskiest step of Phase 38, so it was done alone, and its pins checked before anything else was built on it.
+- *The type:* `Orientation([f64; 4])`; `components()` is `f64`; `from_single_components` and `components_single` are the edges to the physics engine and the graphics card (which stay `f32`; rounding is the only loss);
+  `from_yaw_pitch` takes `f32` angles and works in `f64` with `libm`; `compose` normalises in `f64` and keeps the `f64`; `LatticeRotation::orientation` and `nearest` are `f64` (exact for the lattice turns); `AlignmentTolerance`'s closeness is `f64`.
+- *The wire and the files:* protocol 7 (a pose has four `f64`); the sections that hold poses (`engine:entities`, `engine:grids`, a ship file's `engine:grid_flight`) are written as version 2 and version 1 (four `f32`) is still read, as exactly the same
+  turn (`PoseFormat`, `engine_sections::pose_format_of`, `reads_version`); a version it does not know is refused. Tests: `older_poses.rs` (entities, ships, a world file whose ships section is rewritten as version 1, a ship file whose flight is
+  rewritten as version 1, the versions read and refused) and the wire test of version 1 bytes (read as the same turn; not mistaken for the new layout).
+- *Held ships keep an exact turn:* the bodies plugin does not write a held ship's pose back from the solver, so a planet that is held keeps its `f64` turn to the bit (test `a_held_ship_keeps_a_turn_that_is_not_an_f32_...`; mutation: writing
+  held ships back from the solver makes it fail). A ship the solver moves has the solver's `f32` turn (the test says so); that is a limit of the physics engine, not of the type, and it matters only if a planet is ever moved by the solver.
+- *Pins moved, and why (checked by a control, not assumed):* the physics pins (bodies, foreign), `scripted_run` aboard, the scripted flight and both ship-physics hashes all moved, because the starting turns are now worked out in `f64` and rounded once
+  to `f32` for the solver, which is not always the `f32` the old arithmetic gave, to the last bit. **Control:** with `from_yaw_pitch` put back to `f32` arithmetic and nothing else changed, all of them came back to their old values, so that is the only thing that moved them
+  (storing and composing in `f64` moved nothing). The pose of a grid at an angle (`conversions_are_the_same_bit_for_bit...`) moved for the same reason; the new bits were reproduced by a separate calculation in Python (the matrix of the `f64` turn, then the
+  rounding that `displaced` does), and the old value was ten `f32` steps from the exact answer. The golden sessions of the three games moved by whole poses: **measured** by recording each script before and after and comparing frames: the same number of
+  frames, and every frame that differs is longer by a multiple of 16 bytes (2048: one pose; eels: 531 poses and 3 bytes of frame lengths; Cave: 169 poses); the saved worlds changed (poses are longer, the sections are version 2). The recording of the end-to-end
+  test moved only for the protocol version number in the welcome (control: version 6 gave the old checksum). The ship file and the world file with ships moved by 16 bytes a pose (the world file's length at the old commit was measured: 34,105 to 34,137).
+- *Found on the way, not fixed:* `GridPose::local_to_world` rounds an offset to `f32` before it carries into the next brick, so a position can be a few `f32` steps (4 x 10^-6 voxel at most) from the exact one. Harmless at this size; the carry can be done in `f64`
+  if it ever matters.
+- Windows 1753 and Linux 1754 tests pass; fmt and clippy clean.
+
 Phase 32m part 4 (the owner's answer about orientation; 2026-10-22): one orientation channel for every block, pistons and logs placed as in Minecraft, and an empty ship vanishes.
 - *The owner's instructions:* an empty ship vanishes; a block's orientation when placed should depend on the player's; copy Minecraft's pistons for blocks with one front face and logs for blocks with a line of radial
   symmetry; orientation saved the same way for all blocks regardless of how many visually distinct orientations they have, so that they can be rotated by simple algorithms and blocks of unloaded plugins can be rotated too.

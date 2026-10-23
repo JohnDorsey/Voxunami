@@ -278,4 +278,11 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// Orientation, one channel for every block (2026-10-22): the engine declares three more block properties (`engine:mark_both_ends`, `engine:front_face`, `engine:axis_face`) and the
 /// package data says whether the game has an orientation channel (2048 has none: one byte). The welcome grows by 467 bytes, 58,460 to 58,927: 466 for the declarations,
 /// measured by encoding them alone, and 1 for that byte. The saved world is the same.
-const PINNED: (u64, usize, u64) = (699_962_433_646_896_824, 58_927, 10_009_978_534_765_434_239);
+/// Orientations are `f64` (Phase 38a, 2026-10-23; protocol 7, the sections that hold poses at version 2): a pose is 16 bytes longer (four components of 8 bytes where they had 4).
+/// Measured by recording the stream of the script with the code before and after and comparing the frames one by one: the same number of frames, every frame the same except those that carry a pose, and the welcome, which says version 7 (same length): here 303 frames, 301 identical, the welcome and the one spawn of the player, which is 16 bytes longer: 58,927 to 58,943.
+/// The saved world changed (it holds the player, whose pose is longer, in a section of version 2).
+const PINNED: (u64, usize, u64) = (
+    10_172_756_250_389_026_349,
+    58_943,
+    15_351_264_323_488_952_325,
+);

@@ -36,8 +36,8 @@ mod types;
 mod wire;
 
 pub use wire::{
-    read_brick_box, read_entity_pose, read_grid, read_grid_pose, write_brick_box,
-    write_entity_pose, write_grid, write_grid_pose,
+    PoseFormat, read_brick_box, read_entity_pose, read_entity_pose_in, read_grid, read_grid_pose,
+    read_grid_pose_in, write_brick_box, write_entity_pose, write_grid, write_grid_pose,
 };
 
 pub use client_message::ClientMessage;
@@ -51,7 +51,7 @@ pub use types::{ClientId, EntityId, PlayerKey, Tick};
 
 /// Bumped whenever a message changes. A recording stores the version it was made with, and a program
 /// plays only recordings of its own version (nothing is kept to read older ones before a first release).
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// The most bytes of text a command may have; a longer one is a protocol violation.
 pub const MAXIMUM_COMMAND_LENGTH: usize = 1024;

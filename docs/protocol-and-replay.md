@@ -1,4 +1,4 @@
-# The message stream and replays (protocol version 6)
+# The message stream and replays (protocol version 7)
 
 Implemented by `engine/protocol` (messages), `engine/transport` (carrying frames), `engine/server`, `engine/client`
 and `engine/replay`; scenarios that run them together are in `engine/end_to_end_tests`.
@@ -97,9 +97,9 @@ Server to client:
 | 15 | `GridsDespawned` | count, then ids: ships that left the watched region or no longer exist; the client forgets their bricks |
 
 A **pose** is the grid id (varint), the brick x, y, z (zigzag), the offset in the brick (three `f32`, each in [0, 32)) and the orientation
-(four `f32`, a unit quaternion within 1e-3). **Components** are a count, then each identifier and its bytes (a varint length, then the
+(four `f64` since version 7, a unit quaternion within 1e-3). **Components** are a count, then each identifier and its bytes (a varint length, then the
 bytes the component's own codec made), in order of identifier and once each. Only the components the entity's kind says are replicated are
-sent. Messages 9 to 11 were added in version 3; the public key in `Hello`, `Prove` and `Challenge` in version 4; the package in `Welcome` in version 5; messages 13 to 15, and the grid in place of the level in `BrickContents` and `VoxelEdits` (the same bytes for the terrain of a level), in version 6. A program
+sent. Messages 9 to 11 were added in version 3; the public key in `Hello`, `Prove` and `Challenge` in version 4; the package in `Welcome` in version 5; messages 13 to 15, and the grid in place of the level in `BrickContents` and `VoxelEdits` (the same bytes for the terrain of a level), in version 6; the orientation of a pose as four `f64` instead of four `f32`, in version 7. A program
 reads only its own version (nothing is kept to read older streams before a first release).
 
 The **package** is opaque to the protocol and the server: the game's *package data* (`content-package-spec.md`), which the client decodes after

@@ -787,7 +787,7 @@ impl CharacterBody {
         let frame = WorldPosition::new(self.origin, [0.0; 3]);
         let origin = grid.pose.origin_relative_to(frame);
         let matrix = grid.pose.rotation_matrix();
-        let [x, y, z, w] = grid.pose.orientation.components();
+        let [x, y, z, w] = grid.pose.orientation.components_single();
         let turn = Rotation::from_xyzw(x, y, z, w).normalize();
         let edge = BRICK_EDGE_LENGTH as f64;
         let mut moved = false;

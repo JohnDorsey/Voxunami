@@ -99,7 +99,7 @@ pub struct Session<C: Connection, G: GameDefinition> {
 
 /// A turn as the camera holds it.
 fn frame_of(turn: Orientation) -> glam::Quat {
-    glam::Quat::from_array(turn.components())
+    glam::Quat::from_array(turn.components_single())
 }
 
 impl<C: Connection, G: GameDefinition> Session<C, G> {

@@ -93,7 +93,7 @@ These are the rules I chose to meet the owner's description; the thresholds (hal
 For a viewer at a point `p` (expressed in the grid's own axes by the inverse of the grid's pose, so a ship turned any way works), a node of edge `E`
 is **fine enough** when its cell size is small against its distance: `2^n ≤ r · distance(p, node box)`, where `r` is `cell_pixels` times the size of a
 pixel as seen from the camera (`2 · tan(field_of_view / 2) / viewport_height`). Otherwise it is replaced by its eight children, down to detail level 0.
-With a cell of 2 pixels, a 1080-line view and a 70° field of view, a voxel is split to full detail within about 400 voxels; it is a setting
+With a cell of 2 pixels, a 1080-line view and a 70° field of view, a voxel is split to full detail within about 400 voxels (the owner's target is 256, so the default `cell_pixels` will be about 3); it is a setting
 (`.detail`, a client command), not a constant. The rule is the same for the world's terrain and for every ship, and it gives the owner's falling-toward-a-planet
 view: near nodes are fine and far nodes coarse, within one grid. The number of nodes is a few per detail level, so a few thousand for 40 levels
 (an estimate, to be measured in step 38f).
@@ -163,7 +163,7 @@ Orientation as `f64` (38a) is part of this room: a turned planet's far side has 
 Each step ends with passing tests, clippy and rustfmt on Windows and Linux, and is committed. Tests first. The order puts the riskiest piece (38a, a type
 used in 62 files) first and alone, so that nothing else is mixed into it.
 
-- **38a Orientation in `f64`** (protocol 7, ships' and entities' files). Lock current behaviour first: tests of composition, inversion, matrix, yaw/pitch
+- **38a Orientation in `f64`** (**built 2026-10-23**, `build-log.md`; protocol 7, ships' and entities' files). Lock current behaviour first: tests of composition, inversion, matrix, yaw/pitch
   and the wire/file round trip with the `f32` values. Then widen the type; saved ships and entities written as `f32` are read as exact `f64`, new ones
   written as `f64` (a format version, per `world-file-format.md`). Physics converts at its edge. Golden sessions that contain ships or entities move:
   each pin gets a justification from measured bytes. This is the step most likely to take longer than planned; I will stop and say so if it does.
@@ -191,18 +191,14 @@ used in 62 files) first and alone, so that nothing else is mixed into it.
   `world-file-format.md`) and set by a `/ship` command. Tests: a big ship at a distance; a small one vanishing at the distance its size gives; the cap.
 - **38k Client commands.** `.detail` (cell pixels), `.texture_distance`, and the download rate; each reports its value with no argument.
 - **38l Measurement and budget.** Draw calls and frame time at the node counts the rule gives, on the owner's machine, with the numbers in the build log;
-  decide on GPU-driven culling from them. A note: the target frame time is not yet decided (section 5, question 1).
+  decide on GPU-driven culling from them. The target is in section 5.
 
-## 5. Open questions for the owner
+## 5. Answers to the open questions (owner, 2026-10-23)
 
-1. **The target.** What machine, resolution and frames a second should this reach at the largest view you want? I have no number from you, and 38l
-   needs one. My placeholder: 60 frames a second at 1920 × 1080 on the machine you run the tests on, with the view at full detail to about 500 voxels.
-2. **Known ships (3.7).** A ship is known while some part of it would be a pixel wide. Is that what you want, or do you want a ship with a cap of 0
-   ("always full detail") to be known at any distance (at a cost to everyone)?
-3. **Coarse light of a lamp-lit cell.** The rule in 3.2 is mine (brightest child up to 32 voxels, an exposure-weighted average above). If you would
-   rather have a different rule for stars and lamps, say so before 38c.
-4. **Texture distance with no textures.** I plan to build the setting and the command in 38k and let it do nothing visible until there are textures. Say
-   so if you would rather it waits.
+1. The target is 60 frames a second at 1920 x 1080 on the owner's machine, with full detail out to **256 voxels** (not 500).
+2. A ship is known while some part of it would be a pixel wide, as in 3.7; a cap does not change that.
+3. The coarse light rule of 3.2 stands for now.
+4. The texture distance setting and its command are built in 38k and change nothing visible until there are textures.
 
 ## 6. Not here
 

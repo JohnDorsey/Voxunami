@@ -414,9 +414,9 @@ fn rolled_pair(quarters: f32) -> Scene {
     let (y, z) = (0.5 * cosine - 0.5 * sine, 0.5 * sine + 0.5 * cosine);
     // The first's east face is at x = 24, 230.5, 20.5; the second's port face is to be there, 2 metres further along.
     let origin = (26.0, 230.5 - y, 20.5 - z);
+    let half = f64::from(angle) / 2.0;
     let orientation =
-        Orientation::from_components([libm::sinf(angle / 2.0), 0.0, 0.0, libm::cosf(angle / 2.0)])
-            .unwrap();
+        Orientation::from_components([libm::sin(half), 0.0, 0.0, libm::cos(half)]).unwrap();
     make(
         &mut scene,
         pose(origin.0, origin.1, origin.2, orientation),

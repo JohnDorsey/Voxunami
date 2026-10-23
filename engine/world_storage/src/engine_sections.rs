@@ -42,12 +42,36 @@ use std::collections::BTreeMap;
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use entities::{ComponentBag, Entity, EntityError, EntityStore};
 use protocol::{
-    EntityId, read_brick_box, read_entity_pose, read_grid_pose, write_brick_box, write_entity_pose,
-    write_grid_pose,
+    EntityId, PoseFormat, read_brick_box, read_entity_pose_in, read_grid_pose_in, write_brick_box,
+    write_entity_pose, write_grid_pose,
 };
 use voxel_space::{BrickBox, EntityPose, GridId, GridPose, LatticeRotation, LatticeTransform};
 
 pub const SUPPORTED_VERSION: u32 = 1;
+
+/// The version of the sections that hold poses (`engine:entities`, `engine:grids` and a ship file's flight) that this program writes: 2, in
+/// which an orientation is four `f64`. Version 1 had four `f32`, and is still read, as the same turn.
+pub const POSES_VERSION: u32 = 2;
+
+/// How the poses of a section are stored at this version, if it is one that holds poses and this program reads it.
+pub fn pose_format_of(version: u32) -> Option<PoseFormat> {
+    match version {
+        1 => Some(PoseFormat::Single),
+        POSES_VERSION => Some(PoseFormat::Double),
+        _ => None,
+    }
+}
+
+/// Whether this program can read the section `identifier` at this version.
+pub fn reads_version(identifier: &NamespacedId, version: u32) -> bool {
+    if *identifier == generators_id() {
+        reads_generators_version(version)
+    } else if *identifier == entities_id() || *identifier == grids_id() {
+        pose_format_of(version).is_some()
+    } else {
+        version == SUPPORTED_VERSION
+    }
+}
 
 /// The version of `engine:generators` this program writes.
 pub const GENERATORS_VERSION: u32 = 2;
@@ -129,6 +153,14 @@ pub fn decode_entities(payload: &[u8]) -> Result<EntityStore, DecodeError> {
 pub fn decode_entities_with_fallbacks(
     payload: &[u8],
 ) -> Result<(EntityStore, BTreeMap<EntityId, EntityPose>), DecodeError> {
+    decode_entities_with_fallbacks_in(payload, PoseFormat::CURRENT)
+}
+
+/// [`decode_entities_with_fallbacks`] for a section written with poses in `format` (see [`pose_format_of`]).
+pub fn decode_entities_with_fallbacks_in(
+    payload: &[u8],
+    format: PoseFormat,
+) -> Result<(EntityStore, BTreeMap<EntityId, EntityPose>), DecodeError> {
     let mut reader = ByteReader::new(payload);
     let next_id = reader.read_varint()?;
     // An id, a kind, a pose, the fallback byte and a component count.
@@ -138,11 +170,11 @@ pub fn decode_entities_with_fallbacks(
     for _ in 0..count {
         let id = EntityId::new(reader.read_varint()?);
         let kind = reader.read_identifier()?;
-        let pose = read_entity_pose(&mut reader)?;
+        let pose = read_entity_pose_in(&mut reader, format)?;
         match reader.read_u8()? {
             0 => {}
             1 => {
-                let place = read_entity_pose(&mut reader)?;
+                let place = read_entity_pose_in(&mut reader, format)?;
                 if place.grid.root_level().is_none() {
                     return Err(DecodeError::Invalid(
                         "the place an entity falls back to is not in a level",
@@ -249,6 +281,11 @@ pub fn encode_grids(record: &GridsRecord) -> Vec<u8> {
 }
 
 pub fn decode_grids(payload: &[u8]) -> Result<GridsRecord, DecodeError> {
+    decode_grids_in(payload, PoseFormat::CURRENT)
+}
+
+/// [`decode_grids`] for a section written with poses in `format` (see [`pose_format_of`]).
+pub fn decode_grids_in(payload: &[u8], format: PoseFormat) -> Result<GridsRecord, DecodeError> {
     let rotations = LatticeRotation::all();
     let mut reader = ByteReader::new(payload);
     let next = reader.read_varint()?;
@@ -274,7 +311,7 @@ pub fn decode_grids(payload: &[u8]) -> Result<GridsRecord, DecodeError> {
             ));
         }
         let level = reader.read_identifier()?;
-        let pose = read_grid_pose(&mut reader)?;
+        let pose = read_grid_pose_in(&mut reader, format)?;
         let bounds = match reader.read_u8()? {
             0 => None,
             1 => Some(read_brick_box(&mut reader)?),

@@ -304,7 +304,7 @@ mod tests {
     /// Whether two orientations are the same turn (a quaternion and its negative are).
     fn same_turn(a: Orientation, b: Orientation) -> bool {
         let (a, b) = (a.components(), b.components());
-        let dot: f32 = (0..4).map(|axis| a[axis] * b[axis]).sum();
+        let dot: f64 = (0..4).map(|axis| a[axis] * b[axis]).sum();
         dot.abs() > 1.0 - 1e-5
     }
 

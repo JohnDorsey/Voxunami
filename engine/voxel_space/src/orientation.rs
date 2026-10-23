@@ -2,16 +2,17 @@ use std::fmt;
 
 /// How far from 1 the length of an orientation's four components may be. Rotating a body many times
 /// drifts a little; a value read from a message or a file that is further off than this is damaged.
-const LENGTH_TOLERANCE: f32 = 1e-3;
+const LENGTH_TOLERANCE: f64 = 1e-3;
 
-/// A rotation in three dimensions, as a unit quaternion `[x, y, z, w]`.
+/// A rotation in three dimensions, as a unit quaternion `[x, y, z, w]` of `f64`.
 ///
 /// Walking things need only a yaw and a pitch ([`Orientation::from_yaw_pitch`]); ships and the
 /// creatures that hold on to surfaces turn all ways, which is why the stored form is the full rotation.
-/// Two orientations are equal when their components are bit for bit the same, so an orientation that
-/// was sent, saved and read back is equal to the one it was.
+/// It is `f64` so that a very large ship, a planet, can be turned exactly: an error of one part in ten million
+/// of the turn is five metres at fifty thousand kilometres. Two orientations are equal when their components are bit for bit the same, so
+/// an orientation that was sent, saved and read back is equal to the one it was.
 #[derive(Clone, Copy)]
-pub struct Orientation([f32; 4]);
+pub struct Orientation([f64; 4]);
 
 impl Orientation {
     /// No rotation.
@@ -21,9 +22,9 @@ impl Orientation {
     /// -x, as the camera's yaw does), then tipped up by `pitch` radians. Uses `libm`, so the result
     /// is the same on every machine.
     pub fn from_yaw_pitch(yaw: f32, pitch: f32) -> Self {
-        let (half_yaw, half_pitch) = (yaw * 0.5, pitch * 0.5);
-        let (yaw_sin, yaw_cos) = (libm::sinf(half_yaw), libm::cosf(half_yaw));
-        let (pitch_sin, pitch_cos) = (libm::sinf(half_pitch), libm::cosf(half_pitch));
+        let (half_yaw, half_pitch) = (f64::from(yaw) * 0.5, f64::from(pitch) * 0.5);
+        let (yaw_sin, yaw_cos) = (libm::sin(half_yaw), libm::cos(half_yaw));
+        let (pitch_sin, pitch_cos) = (libm::sin(half_pitch), libm::cos(half_pitch));
         // Yaw about +y, then pitch about the turned x axis: q = yaw * pitch.
         Self([
             yaw_cos * pitch_sin,
@@ -36,35 +37,45 @@ impl Orientation {
 
     /// The orientation with these components `[x, y, z, w]`, if they are finite and make a unit
     /// quaternion (to within the drift [`Orientation`] allows).
-    pub fn from_components(components: [f32; 4]) -> Option<Self> {
+    pub fn from_components(components: [f64; 4]) -> Option<Self> {
         if components.iter().any(|component| !component.is_finite()) {
             return None;
         }
-        let length_squared: f32 = components
+        let length_squared: f64 = components
             .iter()
             .map(|component| component * component)
             .sum();
         ((length_squared - 1.0).abs() <= LENGTH_TOLERANCE).then_some(Self(components))
     }
 
+    /// The orientation with these `f32` components, exactly (every `f32` is an `f64`): what an older file or a graphics or physics library holds.
+    pub fn from_single_components(components: [f32; 4]) -> Option<Self> {
+        Self::from_components(components.map(f64::from))
+    }
+
     /// The components `[x, y, z, w]`.
-    pub fn components(self) -> [f32; 4] {
+    pub fn components(self) -> [f64; 4] {
         self.0
     }
 
+    /// The components rounded to `f32`, for the libraries that work in it (the graphics card, the physics engine). Rounding is the only loss.
+    pub fn components_single(self) -> [f32; 4] {
+        self.0.map(|component| component as f32)
+    }
+
     /// The rotation that does `inner` first and then `self`: the product of the two quaternions, `self * inner`, as for matrices.
-    /// Computed in `f64`, normalised, and written as `f32`, so the same two rotations give the same bits on every machine.
+    /// Normalised, so the same two rotations give the same bits on every machine.
     pub fn compose(self, inner: Self) -> Self {
-        let [ax, ay, az, aw] = self.0.map(f64::from);
-        let [bx, by, bz, bw] = inner.0.map(f64::from);
+        let [ax, ay, az, aw] = self.0;
+        let [bx, by, bz, bw] = inner.0;
         let product = [
             aw * bx + ax * bw + ay * bz - az * by,
             aw * by - ax * bz + ay * bw + az * bx,
             aw * bz + ax * by - ay * bx + az * bw,
             aw * bw - ax * bx - ay * by - az * bz,
         ];
-        let length = product.map(|c| c * c).iter().sum::<f64>().sqrt();
-        Self(product.map(|component| (component / length) as f32))
+        let length = libm::sqrt(product.map(|c| c * c).iter().sum::<f64>());
+        Self(product.map(|component| component / length))
     }
 
     /// The rotation that undoes this one (the conjugate: for a unit quaternion that is its inverse).
@@ -108,7 +119,7 @@ mod tests {
 
     use super::*;
 
-    fn length_squared(orientation: Orientation) -> f32 {
+    fn length_squared(orientation: Orientation) -> f64 {
         orientation.components().iter().map(|c| c * c).sum()
     }
 
@@ -122,9 +133,9 @@ mod tests {
     #[test]
     fn a_quarter_turn_of_yaw_is_a_half_root_two_about_the_vertical_axis() {
         let turned = Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0).components();
-        let half_root_two = std::f32::consts::FRAC_1_SQRT_2;
-        assert!((turned[1] - half_root_two).abs() < 1e-6, "{turned:?}");
-        assert!((turned[3] - half_root_two).abs() < 1e-6, "{turned:?}");
+        let half_root_two = std::f64::consts::FRAC_1_SQRT_2;
+        assert!((turned[1] - half_root_two).abs() < 1e-7, "{turned:?}");
+        assert!((turned[3] - half_root_two).abs() < 1e-7, "{turned:?}");
         assert_eq!((turned[0].to_bits(), turned[2].to_bits()), (0, 0));
     }
 
@@ -136,8 +147,8 @@ mod tests {
             [0.0, 0.0, 0.0, 0.0],
             [0.0, 0.0, 0.0, 2.0],
             [0.0, 0.0, 0.0, 1.01],
-            [f32::NAN, 0.0, 0.0, 1.0],
-            [0.0, f32::INFINITY, 0.0, 1.0],
+            [f64::NAN, 0.0, 0.0, 1.0],
+            [0.0, f64::INFINITY, 0.0, 1.0],
         ] {
             assert!(Orientation::from_components(bad).is_none(), "{bad:?}");
         }
@@ -194,8 +205,8 @@ mod tests {
             let turn = Orientation::from_yaw_pitch(yaw, pitch);
             for composed in [turn.compose(turn.inverse()), turn.inverse().compose(turn)] {
                 let [x, y, z, w] = composed.components();
-                prop_assert!(x.abs() < 1e-6 && y.abs() < 1e-6 && z.abs() < 1e-6);
-                prop_assert!((w.abs() - 1.0).abs() < 1e-6);
+                prop_assert!(x.abs() < 1e-12 && y.abs() < 1e-12 && z.abs() < 1e-12);
+                prop_assert!((w.abs() - 1.0).abs() < 1e-12);
             }
         }
 
@@ -205,7 +216,7 @@ mod tests {
             pitch in -3.2f32..3.2,
         ) {
             let orientation = Orientation::from_yaw_pitch(yaw, pitch);
-            prop_assert!((length_squared(orientation) - 1.0).abs() < 1e-5);
+            prop_assert!((length_squared(orientation) - 1.0).abs() < 1e-12);
             prop_assert_eq!(Orientation::from_components(orientation.components()), Some(orientation));
         }
     }

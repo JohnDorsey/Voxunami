@@ -179,7 +179,7 @@ impl BodyWorld {
     }
 
     fn rotation_of(orientation: Orientation) -> Rotation {
-        let [x, y, z, w] = orientation.components();
+        let [x, y, z, w] = orientation.components_single();
         Rotation::from_xyzw(x, y, z, w).normalize()
     }
 
@@ -292,7 +292,7 @@ impl BodyWorld {
         let [x, y, z, w] = body.rotation().normalize().to_array();
         Some(BodyState {
             position: self.world(body.translation())?,
-            orientation: Orientation::from_components([x, y, z, w])?,
+            orientation: Orientation::from_single_components([x, y, z, w])?,
             linear_velocity: body.linvel().to_array(),
             angular_velocity: body.angvel().to_array(),
         })
@@ -1312,12 +1312,20 @@ mod tests {
         };
         ship_of(&mut world, 1, &hull, state, BodyKind::Dynamic);
         run(&mut world, 5);
-        assert_eq!(world.state(BodyId(1)).unwrap().orientation, orientation);
+        // (The solver holds it as f32: the turn that was set, rounded to f32, is what stays.)
+        assert_eq!(
+            world
+                .state(BodyId(1))
+                .unwrap()
+                .orientation
+                .components_single(),
+            orientation.components_single()
+        );
         run(&mut world, 120);
         assert!(world.is_asleep(BodyId(1)));
         // No corner of the hull is below the ground, to within the skin of a contact, and the lowest is on it.
         let final_state = world.state(BodyId(1)).unwrap();
-        let [x, y, z, w] = final_state.orientation.components();
+        let [x, y, z, w] = final_state.orientation.components_single();
         let turn = Rotation::from_xyzw(x, y, z, w);
         let origin_height = height_of(&world, 1);
         let mut lowest = f32::MAX;
@@ -1472,6 +1480,7 @@ mod tests {
         let (first, second) = (busy_scene(), busy_scene());
         assert_eq!(first.state_hash(), second.state_hash());
         // Written down once; a change in it is a change in the simulation (and Windows and Linux must agree on it).
-        assert_eq!(first.state_hash(), 8_592_658_610_343_128_269);
+        // (Moved on purpose, Phase 38a: 8_592_658_610_343_128_269 before. Orientations are f64 (Phase 38a, 2026-10-23): a yaw and a pitch are turned into a quaternion in f64 and rounded once to the f32 the solver takes, which is not always the f32 the old arithmetic in f32 gave, to the last bit. Control: with `from_yaw_pitch` put back to the f32 arithmetic and nothing else changed, the old value came back; so this is the only thing that moved it.)
+        assert_eq!(first.state_hash(), 13_989_029_006_912_403_583);
     }
 }

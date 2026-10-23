@@ -56,8 +56,9 @@ fn a_ship_comes_back_from_its_file_as_it_was_and_the_file_is_the_same_every_time
     assert_eq!(fnv(&bytes), PINNED_FILE, "{} bytes", bytes.len());
 }
 
-/// The hash of the file of the ship above.
-const PINNED_FILE: u64 = 15_394_325_344_773_901_199;
+/// The hash of the file of the ship above. (Moved on purpose, Phase 38a: 15_394_325_344_773_901_199 before. The flight section is version 2, and its pose has four `f64` for
+/// the turn where it had four `f32`: 16 bytes more, 17,066 in all; nothing else in the file changed. Taken on Windows; Linux is checked to agree.)
+const PINNED_FILE: u64 = 12_409_944_318_068_720_745;
 
 #[test]
 fn a_world_that_numbers_its_content_otherwise_reads_the_ship_and_means_the_same_blocks() {
@@ -239,7 +240,7 @@ fn a_world_file_is_not_a_ship_and_a_section_of_a_newer_version_is_not_guessed_at
             .into_iter()
             .map(|mut section| {
                 if section.identifier == world_storage::flight_id() {
-                    section.version = 2;
+                    section.version = 3;
                 }
                 section
             })
@@ -247,7 +248,7 @@ fn a_world_file_is_not_a_ship_and_a_section_of_a_newer_version_is_not_guessed_at
     );
     let error = ParsedShip::parse(&newer).unwrap_err();
     assert!(
-        matches!(&error, ShipFileError::UnsupportedSection { version: 2, .. }),
+        matches!(&error, ShipFileError::UnsupportedSection { version: 3, .. }),
         "{error}"
     );
 }

@@ -271,6 +271,31 @@ fn a_held_ship_stays_in_the_air_until_it_is_let_go_and_a_ship_put_somewhere_goes
 }
 
 #[test]
+fn a_held_ship_keeps_a_turn_that_is_not_an_f32_to_the_bit_and_a_ship_the_solver_moves_has_the_f32_one()
+ {
+    // A planet is held, and its turn has to stay exact (an f32 one is metres out at its far side); a ship the solver moves is the solver's, which works in f32.
+    let components = [0.123_456_789_012_345_67f64, -0.5, 0.25, 0.0];
+    let w = (1.0 - components.iter().map(|c| c * c).sum::<f64>()).sqrt();
+    let turn =
+        Orientation::from_components([components[0], components[1], components[2], w]).unwrap();
+    assert_ne!(turn.components_single().map(f64::from), turn.components());
+    let mut scene = Scene::new();
+    heavy_planet(&mut scene);
+    flat_floor(&mut scene);
+    let turned = |x: f32| GridPose::new(pose_at(x, FLOOR + 20.0, 14.0).position, turn);
+    make_a_cube_that_may_be_held(&mut scene, 3, turned(14.0), true);
+    make_a_cube_that_may_be_held(&mut scene, 3, turned(40.0), false);
+    scene.ticks(60);
+    assert_eq!(ship_pose(&scene, 0).orientation, turn);
+    let moved = ship_pose(&scene, 1);
+    assert!(height_of(moved) < FLOOR + 20.0, "it fell");
+    assert_eq!(
+        moved.orientation.components(),
+        moved.orientation.components_single().map(f64::from)
+    );
+}
+
+#[test]
 fn a_ship_rests_on_a_held_one_and_removing_ships_leaves_the_others_to_carry_on() {
     let mut scene = Scene::new();
     heavy_planet(&mut scene);
@@ -464,7 +489,7 @@ fn hash_of_ships(scene: &Scene) -> u64 {
         }
         for value in offset
             .into_iter()
-            .chain(ship.pose.orientation.components())
+            .chain(ship.pose.orientation.components_single())
             .chain(ship.linear_velocity)
             .chain(ship.angular_velocity)
         {
@@ -489,7 +514,10 @@ fn hash_of_poses(scene: &Scene) -> u64 {
         for value in [brick.x(), brick.y(), brick.z()] {
             feed(value as u64);
         }
-        for value in offset.into_iter().chain(ship.pose.orientation.components()) {
+        for value in offset
+            .into_iter()
+            .chain(ship.pose.orientation.components_single())
+        {
             feed(u64::from(value.to_bits()));
         }
     }
@@ -504,7 +532,8 @@ fn the_poses_of_the_ships_are_the_same_whatever_is_kept_of_their_speeds() {
     // ground, is 0.003 and 0.004 voxel from where it was and 0.0001 in the turn: the terrain that does not touch it is not the same in the solver.)
     // (It changed in Phase 32j, when a tick is cut into more solver steps while any point of a ship moves faster than about 48 voxels a second, which
     // the spinning ships of this scene do for a few ticks: 4_233_839_071_203_554_194 before.)
-    assert_eq!(hash_of_poses(&busy_scene()), 15_101_816_868_498_766_766);
+    // (And in Phase 38a: 15_101_816_868_498_766_766 before. Orientations are f64 (Phase 38a, 2026-10-23): a yaw and a pitch are turned into a quaternion in f64 and rounded once to the f32 the solver takes, which is not always the f32 the old arithmetic in f32 gave, to the last bit. Control: with `from_yaw_pitch` put back to the f32 arithmetic and nothing else changed, the old value came back; so this is the only thing that moved it. The hash is of the orientation rounded to f32, so this is the only change.)
+    assert_eq!(hash_of_poses(&busy_scene()), 5_664_689_377_588_003_914);
 }
 
 #[test]
@@ -515,7 +544,8 @@ fn the_same_ships_move_the_same_bits_every_time_and_on_every_machine() {
     // (It changed in Phase 32g, when a ship that sleeps was given no speed on record: 187_330_083_679_574_898 before; the poses did not.)
     // (It changed again in Phase 32h, with the terrain a ship has colliders for: 16_582_222_097_314_237_682 before; see the test of the poses.)
     // (And in Phase 32j, with the steps of a fast tick: 8_675_827_597_625_099_639 before; see the test of the poses.)
-    assert_eq!(hash_of_ships(&first), 8_817_648_817_650_209_632);
+    // (And in Phase 38a: 8_817_648_817_650_209_632 before; see the test of the poses.)
+    assert_eq!(hash_of_ships(&first), 15_605_515_214_656_621_284);
 }
 
 /// A cube of 4 let go over the natural ground (not the flat floor of the other tests: it is what a player has), `height` voxels above where

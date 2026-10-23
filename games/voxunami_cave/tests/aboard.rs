@@ -263,8 +263,13 @@ fn about_the_middle(centre: [f32; 3], half: [f32; 3], orientation: Orientation) 
 
 /// A turn of `angle` radians about the z axis.
 fn roll(angle: f32) -> Orientation {
-    Orientation::from_components([0.0, 0.0, libm::sinf(angle / 2.0), libm::cosf(angle / 2.0)])
-        .unwrap()
+    Orientation::from_components([
+        0.0,
+        0.0,
+        libm::sin(f64::from(angle) / 2.0),
+        libm::cos(f64::from(angle) / 2.0),
+    ])
+    .unwrap()
 }
 
 /// The middle of the cabin of these tests, in the air high above the floor.
@@ -684,7 +689,10 @@ fn scripted_run() -> u64 {
         for value in [brick.x(), brick.y(), brick.z()] {
             feed(value as u64);
         }
-        for value in offset.into_iter().chain(pose.orientation.components()) {
+        for value in offset
+            .into_iter()
+            .chain(pose.orientation.components_single())
+        {
             feed(u64::from(value.to_bits()));
         }
     }
@@ -700,7 +708,8 @@ fn a_scripted_run_aboard_ends_in_the_same_bits_every_time_and_on_every_machine()
     assert_eq!(first, scripted_run());
     // Taken on Windows; the test passes on Linux too, so the two agree to the bit.
     // (Moved once, on purpose, 2026-10-22: the pull of the planet is 5 and a jump 3.6 metres a second; was 32 and 9, a jump of the same height.)
-    assert_eq!(first, 1_723_153_240_201_899_822);
+    // (Moved on purpose, Phase 38a: 1_723_153_240_201_899_822 before. Orientations are f64 (Phase 38a, 2026-10-23): a yaw and a pitch are turned into a quaternion in f64 and rounded once to the f32 the solver takes, which is not always the f32 the old arithmetic in f32 gave, to the last bit. Control: with `from_yaw_pitch` put back to the f32 arithmetic and nothing else changed, the old value came back; so this is the only thing that moved it.)
+    assert_eq!(first, 168_849_048_036_750_818);
 }
 
 #[test]

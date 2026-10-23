@@ -16,8 +16,8 @@ use voxel_space::{
 };
 use world_storage::container::{read_container, write_container};
 use world_storage::engine_sections::{
-    decode_entities, decode_entities_with_fallbacks, encode_entities, encode_entities_with,
-    entities_id,
+    POSES_VERSION, decode_entities, decode_entities_with_fallbacks, encode_entities,
+    encode_entities_with, entities_id,
 };
 use world_storage::test_support::{ALL_PLUGINS, Game, id, sample_world};
 use world_storage::{LoadError, MovingGrid, PilotLogout, Section, WorldData};
@@ -206,8 +206,9 @@ fn a_damaged_entities_section_is_refused_and_never_panics() {
     let game = Game::new(&ALL_PLUGINS);
     let bytes = game.save(&world_with_entities(&game));
     let good = payload_of(&bytes);
-    let load =
-        |payload: Vec<u8>| Game::new(&ALL_PLUGINS).load(&with_entities_section(&bytes, 1, payload));
+    let load = |payload: Vec<u8>| {
+        Game::new(&ALL_PLUGINS).load(&with_entities_section(&bytes, POSES_VERSION, payload))
+    };
     assert!(load(good.clone()).is_ok());
     for length in 0..good.len() {
         assert!(load(good[..length].to_vec()).is_err(), "cut at {length}");
@@ -217,7 +218,7 @@ fn a_damaged_entities_section_is_refused_and_never_panics() {
     assert!(load(trailing).is_err());
     // A newer section version is refused, not read as if it were this one.
     assert!(matches!(
-        Game::new(&ALL_PLUGINS).load(&with_entities_section(&bytes, 2, good)),
+        Game::new(&ALL_PLUGINS).load(&with_entities_section(&bytes, POSES_VERSION + 1, good)),
         Err(LoadError::UnsupportedEngineSection { .. })
     ));
 }
@@ -472,7 +473,7 @@ fn an_entity_in_the_frame_of_a_ship_the_file_does_not_list_is_put_where_it_was_i
     let payload = encode_entities_with(&store, |entity| (entity.id == with_place).then_some(place));
     let bytes = game.save(&world_with_entities(&game));
     let (loaded, _) = Game::new(&ALL_PLUGINS)
-        .load(&with_entities_section(&bytes, 1, payload))
+        .load(&with_entities_section(&bytes, POSES_VERSION, payload))
         .unwrap();
     assert_eq!(loaded.entities().get(with_place).unwrap().pose, place);
     // Nothing better is known of the other than the coordinates it had: in the main level.

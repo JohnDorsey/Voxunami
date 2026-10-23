@@ -189,7 +189,11 @@ impl Movement {
             // A player who was aboard a ship when they last played is in its frame at once.
             let frame_rotation = placement.frame_rotation();
             if placement.frame.root_level().is_none() || frame_rotation != Orientation::IDENTITY {
-                body.reframe(placement.position, [0.0; 3], frame_rotation.components());
+                body.reframe(
+                    placement.position,
+                    [0.0; 3],
+                    frame_rotation.components_single(),
+                );
             }
             PlayerBody {
                 body,
@@ -356,7 +360,7 @@ fn agree_with(player: &mut PlayerBody, placement: &Placement) {
     player.body.reframe(
         placement.position,
         velocity,
-        placement.frame_rotation().components(),
+        placement.frame_rotation().components_single(),
     );
     player.frame = placement.frame;
     player.level = placement.level;
@@ -487,13 +491,13 @@ fn board(player: &mut PlayerBody, id: GridId, world: &ServerWorld) {
             relative[axis] -= up[axis] * away;
         }
     }
-    let turn =
-        Orientation::from_components(player.body.frame_rotation()).unwrap_or(Orientation::IDENTITY);
+    let turn = Orientation::from_single_components(player.body.frame_rotation())
+        .unwrap_or(Orientation::IDENTITY);
     let frame_rotation = ship.pose.orientation.inverse().compose(turn);
     player.body.reframe(
         local,
         ship.pose.direction_to_local(relative),
-        frame_rotation.components(),
+        frame_rotation.components_single(),
     );
     player.frame = id;
 }
@@ -565,12 +569,12 @@ fn leave(player: &mut PlayerBody, world: &ServerWorld) {
     let in_the_ship = ship.pose.direction_to_world(player.body.velocity());
     let carried = ship.velocity_at(world_eyes);
     let velocity = [0, 1, 2].map(|axis| in_the_ship[axis] + carried[axis]);
-    let turn =
-        Orientation::from_components(player.body.frame_rotation()).unwrap_or(Orientation::IDENTITY);
+    let turn = Orientation::from_single_components(player.body.frame_rotation())
+        .unwrap_or(Orientation::IDENTITY);
     let frame_rotation = ship.pose.orientation.compose(turn);
     player
         .body
-        .reframe(world_eyes, velocity, frame_rotation.components());
+        .reframe(world_eyes, velocity, frame_rotation.components_single());
     player.frame = GridId::root(ship.level);
     player.level = ship.level;
 }
@@ -582,8 +586,8 @@ fn moved_pose(client: ClientId, player: &PlayerBody) -> Moved {
         yaw: player.request.input.yaw,
         pitch: player.request.pitch,
     };
-    let frame_rotation =
-        Orientation::from_components(player.body.frame_rotation()).unwrap_or(Orientation::IDENTITY);
+    let frame_rotation = Orientation::from_single_components(player.body.frame_rotation())
+        .unwrap_or(Orientation::IDENTITY);
     Moved {
         client,
         frame: player.frame,

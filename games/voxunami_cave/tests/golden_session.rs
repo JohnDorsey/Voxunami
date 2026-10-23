@@ -317,8 +317,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// shorter list of shapes of the solid blocks, which now have seven states and not nineteen, read and not measured separately) and 35 for the channel in the description of the world; 109 frames that carry a whole brick are 5 bytes longer each (the new channel of
 /// the brick: 545), and 5,747 frames of changes to a brick have the same length and another digest of the brick (the digest covers the channels, and there is one more). Nothing else
 /// differs: 74 + 545 = 619.
+/// Orientations are `f64` (Phase 38a, 2026-10-23; protocol 7, the sections that hold poses at version 2): a pose is 16 bytes longer. Measured by recording the stream of the script with the code before and after and comparing the frames one by one: the same number of frames, every frame the same except those that carry a pose, and the welcome (version 7, same length):
+/// 6,934 frames, 6,765 identical; 169 poses in 168 of the other 169 frames (3 spawns and 165 changes, one frame carrying two; the 169th is the welcome), 169 x 16 = 2,704: 7,187,429 to 7,190,133. The saved world changed (it holds the players' poses).
 const PINNED: (u64, usize, u64) = (
-    5_198_328_761_951_487_305,
-    7_187_429,
-    6_002_248_363_129_101_495,
+    15_876_146_309_874_477_616,
+    7_190_133,
+    5_952_411_052_594_281_229,
 );

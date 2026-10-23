@@ -55,19 +55,35 @@ pub fn read_grid(reader: &mut ByteReader<'_>) -> Result<GridId, DecodeError> {
     Ok(GridId::new(reader.read_varint()?))
 }
 
-/// A position and an orientation: the brick and the offset in it, and the four components of the orientation.
+/// How the four components of an orientation are stored in a pose. Files and messages written before the orientation was `f64`
+/// (protocol version 7, and the version 2 of the sections that hold poses) have `f32` ones; everything written now has `f64`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PoseFormat {
+    /// Four `f32`, as protocol versions up to 6 and version 1 of the sections that hold poses.
+    Single,
+    /// Four `f64`.
+    Double,
+}
+
+impl PoseFormat {
+    /// What is written now.
+    pub const CURRENT: Self = Self::Double;
+}
+
+/// A position and an orientation: the brick and the offset in it, and the four components of the orientation (as `f64`).
 fn write_placement(writer: &mut ByteWriter, position: WorldPosition, orientation: Orientation) {
     write_brick_coordinate(writer, position.brick());
     for component in position.offset() {
         writer.write_u32(component.to_bits());
     }
     for component in orientation.components() {
-        writer.write_u32(component.to_bits());
+        writer.write_u64(component.to_bits());
     }
 }
 
 fn read_placement(
     reader: &mut ByteReader<'_>,
+    format: PoseFormat,
 ) -> Result<(WorldPosition, Orientation), DecodeError> {
     let brick = read_brick_coordinate(reader)?;
     let mut offset = [0f32; 3];
@@ -79,9 +95,12 @@ fn read_placement(
             ));
         }
     }
-    let mut components = [0f32; 4];
+    let mut components = [0f64; 4];
     for component in &mut components {
-        *component = f32::from_bits(reader.read_u32()?);
+        *component = match format {
+            PoseFormat::Single => f64::from(f32::from_bits(reader.read_u32()?)),
+            PoseFormat::Double => f64::from_bits(reader.read_u64()?),
+        };
     }
     let orientation = Orientation::from_components(components)
         .ok_or(DecodeError::Invalid("an orientation is not a rotation"))?;
@@ -94,9 +113,18 @@ pub fn write_entity_pose(writer: &mut ByteWriter, pose: &EntityPose) {
     write_placement(writer, pose.position, pose.orientation);
 }
 
+/// An entity's pose as [`write_entity_pose`] writes it now.
 pub fn read_entity_pose(reader: &mut ByteReader<'_>) -> Result<EntityPose, DecodeError> {
+    read_entity_pose_in(reader, PoseFormat::CURRENT)
+}
+
+/// An entity's pose as an older program wrote it, in `format`.
+pub fn read_entity_pose_in(
+    reader: &mut ByteReader<'_>,
+    format: PoseFormat,
+) -> Result<EntityPose, DecodeError> {
     let grid = read_grid(reader)?;
-    let (position, orientation) = read_placement(reader)?;
+    let (position, orientation) = read_placement(reader, format)?;
     Ok(EntityPose::new(grid, position, orientation))
 }
 
@@ -105,8 +133,17 @@ pub fn write_grid_pose(writer: &mut ByteWriter, pose: &GridPose) {
     write_placement(writer, pose.position, pose.orientation);
 }
 
+/// A ship's pose as [`write_grid_pose`] writes it now.
 pub fn read_grid_pose(reader: &mut ByteReader<'_>) -> Result<GridPose, DecodeError> {
-    let (position, orientation) = read_placement(reader)?;
+    read_grid_pose_in(reader, PoseFormat::CURRENT)
+}
+
+/// A ship's pose as an older program wrote it, in `format`.
+pub fn read_grid_pose_in(
+    reader: &mut ByteReader<'_>,
+    format: PoseFormat,
+) -> Result<GridPose, DecodeError> {
+    let (position, orientation) = read_placement(reader, format)?;
     Ok(GridPose::new(position, orientation))
 }
 
@@ -172,10 +209,66 @@ mod tests {
         assert_eq!(
             hex,
             concat!(
-                "0206030e", "0000c03f", "0000fc41", "00000000", "00000000", "00000000", "00000000",
-                "0000803f"
+                "0206030e",
+                "0000c03f",
+                "0000fc41",
+                "00000000",
+                "0000000000000000",
+                "0000000000000000",
+                "0000000000000000",
+                "000000000000f03f"
             )
         );
+    }
+
+    #[test]
+    fn a_pose_written_when_orientations_were_f32_is_read_as_the_same_turn_and_the_new_layout_is_not_taken_for_it()
+     {
+        // What the program wrote before the orientation was f64 (the layout this test pinned then), with a turn that is not exact in f32.
+        let single = |components: [f32; 4]| {
+            let mut writer = ByteWriter::new();
+            write_grid(&mut writer, GridId::root(voxel_space::LevelIndex::new(2)));
+            write_brick_coordinate(&mut writer, BrickCoordinate::new(3, -2, 7));
+            for offset in [1.5f32, 31.5, 0.0] {
+                writer.write_u32(offset.to_bits());
+            }
+            for component in components {
+                writer.write_u32(component.to_bits());
+            }
+            writer.into_bytes()
+        };
+        let old = single([0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(
+            old.iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+            "0206030e0000c03f0000fc41000000000000000000000000000000000000803f"
+        );
+        let mut reader = ByteReader::new(&old);
+        let pose = read_entity_pose_in(&mut reader, PoseFormat::Single).unwrap();
+        reader.finish().unwrap();
+        assert_eq!(
+            pose,
+            EntityPose::new(
+                GridId::root(voxel_space::LevelIndex::new(2)),
+                WorldPosition::new(BrickCoordinate::new(3, -2, 7), [1.5, 31.5, 0.0]),
+                Orientation::IDENTITY,
+            )
+        );
+        // A turn written as f32 reads as exactly those f32 values.
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        let bytes = single([0.0, half, 0.0, half]);
+        let pose = read_entity_pose_in(&mut ByteReader::new(&bytes), PoseFormat::Single).unwrap();
+        assert_eq!(
+            pose.orientation.components(),
+            [0.0, f64::from(half), 0.0, f64::from(half)]
+        );
+        // The old bytes are too short to be the new layout, and the new layout is too long to be the old.
+        assert!(decoded(&old).is_err());
+        let new = encoded(&pose);
+        let mut reader = ByteReader::new(&new);
+        let read_as_old = read_entity_pose_in(&mut reader, PoseFormat::Single);
+        assert!(read_as_old.is_err() || reader.finish().is_err());
     }
 
     #[test]
@@ -192,8 +285,8 @@ mod tests {
             assert!(decoded(&bytes).is_err(), "{bad}");
         }
         let mut bytes = good;
-        let at = bytes.len() - 4;
-        bytes[at..].copy_from_slice(&2.0f32.to_bits().to_le_bytes());
+        let at = bytes.len() - 8;
+        bytes[at..].copy_from_slice(&2.0f64.to_bits().to_le_bytes());
         assert!(decoded(&bytes).is_err(), "not a unit quaternion");
     }
 }

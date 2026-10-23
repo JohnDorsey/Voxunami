@@ -127,10 +127,10 @@ impl LatticeRotation {
     /// The same turn as an [`Orientation`], with its first component that is not zero positive (a unit quaternion and its negative are
     /// the same turn; this is the one that is written, so that two equal turns are equal bit for bit).
     pub fn orientation(self) -> Orientation {
-        let m = self.matrix().map(|row| row.map(|entry| entry as f32));
+        let m = self.matrix().map(|row| row.map(|entry| entry as f64));
         let trace = m[0][0] + m[1][1] + m[2][2];
         let [x, y, z, w] = if trace > 0.0 {
-            let scale = (trace + 1.0).sqrt() * 2.0;
+            let scale = libm::sqrt(trace + 1.0) * 2.0;
             [
                 (m[2][1] - m[1][2]) / scale,
                 (m[0][2] - m[2][0]) / scale,
@@ -138,7 +138,7 @@ impl LatticeRotation {
                 0.25 * scale,
             ]
         } else if m[0][0] > m[1][1] && m[0][0] > m[2][2] {
-            let scale = (1.0 + m[0][0] - m[1][1] - m[2][2]).sqrt() * 2.0;
+            let scale = libm::sqrt(1.0 + m[0][0] - m[1][1] - m[2][2]) * 2.0;
             [
                 0.25 * scale,
                 (m[0][1] + m[1][0]) / scale,
@@ -146,7 +146,7 @@ impl LatticeRotation {
                 (m[2][1] - m[1][2]) / scale,
             ]
         } else if m[1][1] > m[2][2] {
-            let scale = (1.0 + m[1][1] - m[0][0] - m[2][2]).sqrt() * 2.0;
+            let scale = libm::sqrt(1.0 + m[1][1] - m[0][0] - m[2][2]) * 2.0;
             [
                 (m[0][1] + m[1][0]) / scale,
                 0.25 * scale,
@@ -154,7 +154,7 @@ impl LatticeRotation {
                 (m[0][2] - m[2][0]) / scale,
             ]
         } else {
-            let scale = (1.0 + m[2][2] - m[0][0] - m[1][1]).sqrt() * 2.0;
+            let scale = libm::sqrt(1.0 + m[2][2] - m[0][0] - m[1][1]) * 2.0;
             [
                 (m[0][2] + m[2][0]) / scale,
                 (m[1][2] + m[2][1]) / scale,
@@ -174,12 +174,12 @@ impl LatticeRotation {
 
     /// The lattice rotation closest to an orientation, and how close it is: the absolute value of the dot product of the two unit
     /// quaternions, 1 for the same turn and 0.7071 for the furthest possible (45 degrees). The first of [`LatticeRotation::all`] wins a tie.
-    pub fn nearest(orientation: Orientation) -> (Self, f32) {
+    pub fn nearest(orientation: Orientation) -> (Self, f64) {
         let wanted = orientation.components();
-        let mut best = (Self::IDENTITY, -1.0f32);
+        let mut best = (Self::IDENTITY, -1.0f64);
         for rotation in Self::all() {
             let own = rotation.orientation().components();
-            let dot: f32 = own.iter().zip(wanted).map(|(a, b)| a * b).sum();
+            let dot: f64 = own.iter().zip(wanted).map(|(a, b)| a * b).sum();
             if dot.abs() > best.1 {
                 best = (rotation, dot.abs());
             }
@@ -390,10 +390,10 @@ mod tests {
         for rotation in LatticeRotation::all() {
             let [x, y, z, w] = rotation.orientation().components();
             for axis in 0..3 {
-                let mut basis = [0.0f32; 3];
+                let mut basis = [0.0f64; 3];
                 basis[axis] = 1.0;
                 // v + 2w (q x v) + 2 q x (q x v)
-                let cross = |a: [f32; 3], b: [f32; 3]| {
+                let cross = |a: [f64; 3], b: [f64; 3]| {
                     [
                         a[1] * b[2] - a[2] * b[1],
                         a[2] * b[0] - a[0] * b[2],
@@ -403,7 +403,7 @@ mod tests {
                 let q = [x, y, z];
                 let first = cross(q, basis);
                 let second = cross(q, first);
-                let turned: Vec<f32> = (0..3)
+                let turned: Vec<f64> = (0..3)
                     .map(|i| basis[i] + 2.0 * w * first[i] + 2.0 * second[i])
                     .collect();
                 let mut unit = [0i64; 3];
@@ -411,7 +411,7 @@ mod tests {
                 let expected = rotation.apply(unit);
                 for i in 0..3 {
                     assert!(
-                        (turned[i] - expected[i] as f32).abs() < 1e-6,
+                        (turned[i] - expected[i] as f64).abs() < 1e-12,
                         "{rotation:?} axis {axis}: {turned:?} vs {expected:?}"
                     );
                 }

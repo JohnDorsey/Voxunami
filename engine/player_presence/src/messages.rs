@@ -372,7 +372,7 @@ mod tests {
         let ahead = pose(0, [1.0; 3], 0.0, 0.0);
         let view = ahead.view_orientation(frame);
         let [x, y, z, w] = view.components();
-        let half = std::f32::consts::FRAC_1_SQRT_2;
+        let half = std::f64::consts::FRAC_1_SQRT_2;
         assert!(
             (x - half).abs() < 1e-6 && y.abs() < 1e-6 && z.abs() < 1e-6 && (w - half).abs() < 1e-6,
             "{view:?}"
@@ -401,7 +401,7 @@ mod tests {
             let frame = Orientation::from_yaw_pitch(frame_yaw, frame_pitch);
             let found = looking.frame_rotation_of(looking.view_orientation(frame));
             let (before, after) = (frame.components(), found.components());
-            let same: f32 = (0..4).map(|axis| before[axis] * after[axis]).sum();
+            let same: f64 = (0..4).map(|axis| before[axis] * after[axis]).sum();
             prop_assert!(same.abs() > 1.0 - 1e-5, "{before:?} vs {after:?}");
         }
     }

@@ -655,9 +655,15 @@ impl WorldData {
     }
 
     fn section(identifier: NamespacedId, payload: Vec<u8>) -> Section {
+        let version = if identifier == sections::entities_id() || identifier == sections::grids_id()
+        {
+            sections::POSES_VERSION
+        } else {
+            sections::SUPPORTED_VERSION
+        };
         Section {
             identifier,
-            version: sections::SUPPORTED_VERSION,
+            version,
             payload,
         }
     }
@@ -969,12 +975,7 @@ impl ParsedWorld {
                 opaque_sections.push(section);
                 continue;
             }
-            let readable = if section.identifier == sections::generators_id() {
-                sections::reads_generators_version(section.version)
-            } else {
-                section.version == sections::SUPPORTED_VERSION
-            };
-            if !readable {
+            if !sections::reads_version(&section.identifier, section.version) {
                 return Err(LoadError::UnsupportedEngineSection {
                     section: section.identifier,
                     version: section.version,
@@ -994,10 +995,12 @@ impl ParsedWorld {
             } else if section.identifier == sections::levels_id() {
                 listed_levels = Some(sections::decode_levels(payload).map_err(wrap)?);
             } else if section.identifier == sections::entities_id() {
+                let format = sections::pose_format_of(section.version).expect("a readable version");
                 (entities, entity_fallbacks) =
-                    sections::decode_entities_with_fallbacks(payload).map_err(wrap)?;
+                    sections::decode_entities_with_fallbacks_in(payload, format).map_err(wrap)?;
             } else if section.identifier == sections::grids_id() {
-                grids = Some(sections::decode_grids(payload).map_err(wrap)?);
+                let format = sections::pose_format_of(section.version).expect("a readable version");
+                grids = Some(sections::decode_grids_in(payload, format).map_err(wrap)?);
             } else if section.identifier == sections::generators_id() {
                 legacy_generators =
                     Some(sections::decode_generators(payload, section.version).map_err(wrap)?);

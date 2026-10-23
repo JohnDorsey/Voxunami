@@ -581,13 +581,13 @@ mod tests {
 
     /// An orientation that does `orientation` and then turns by `angle` about a world axis.
     fn tilted(orientation: Orientation, axis: [f32; 3], angle: f32) -> Orientation {
-        let half = angle / 2.0;
-        let sine = libm::sinf(half);
+        let half = f64::from(angle) / 2.0;
+        let sine = libm::sin(half);
         Orientation::from_components([
-            axis[0] * sine,
-            axis[1] * sine,
-            axis[2] * sine,
-            libm::cosf(half),
+            f64::from(axis[0]) * sine,
+            f64::from(axis[1]) * sine,
+            f64::from(axis[2]) * sine,
+            libm::cos(half),
         ])
         .unwrap()
         .compose(orientation)
