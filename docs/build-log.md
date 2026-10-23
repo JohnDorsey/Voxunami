@@ -805,6 +805,18 @@ callers (ship creation, the bodies' terrain, the arrival look, the light-model s
 - Tests: the existing ones, rewritten by a tool for the calls (`regrid.py`, a scratch file) and by hand where a test expected an error for a level that is not there; two new for `detach_blocks` out of a
   ship and for `uniform_value` and `generated` on a ship. No pin moved. Windows 1745 and Linux 1746 tests pass; fmt and clippy clean.
 
+Phase 38h (levels of detail, step 8: drawing coarse nodes; 2026-10-23). See `lod-spec.md`, 3.6.
+- *The renderer:* a `Placement` has a scale (the fourth float of its offset, which was padding), and the shader multiplies the mesh by it before the turn, so a coarse node's mesh (in cells) is drawn at `2^level` voxels a cell.
+  `upload_coarse_node(cube, mesh)` / `remove_coarse_node` / `has_coarse_node` / `coarse_node_count` for the terrain, and `upload_grid_coarse_node` / `remove_grid_coarse_node` / `grid_coarse_node_count` for a ship (in its own coordinates, placed
+  and turned by its pose, dropped with it by `remove_grid`). Each node is culled by its own sphere (`node_sphere`: that of a brick times the scale), and counted in `RenderStatistics` (`coarse_nodes_drawn`; `bricks_drawn` and `bricks_culled` include nodes).
+  The renderer holds and draws what it is given and does not choose: a node and the bricks it stands for, both held, are both drawn; whoever selects the nodes (38i) removes what a node replaces. The mesh key of a node is its cube (and its ship), which has the level in it.
+- *Tests (GPU, on all four adapters):* a coarse node draws **the same picture as the bricks it stands for**: exactly at levels 1 and 2, and at level 3 to within one pixel of 4,096 on the silhouette (the outline of one big quad and of many brick quads share a straight
+  edge, but where bricks meet their vertices are snapped to the rasteriser's grid on their own, so a pixel whose middle is on the edge can fall the other way; a wrong scale or place would differ in hundreds). A turned ship with bricks near its origin and a coarse
+  node beyond them is drawn as all bricks. A cell of 262 kilometres 1,000 kilometres off is drawn to its angular size (about 12 pixels of 64) and the far corner of a node 8 million voxels across is not culled. The bookkeeping (held, counted, culled, replaced,
+  removed with the ship; a cube of level 0 is refused). **Six mutants** (scale not applied in the shader; the sphere's radius or its middle not scaled; a ship's node not turned; its scale 1; removing a ship keeping its nodes) were all caught, the sphere's middle by a
+  unit test of `node_sphere` after the picture tests could not see it (culling is conservative, and the sphere of a huge node is so big that a misplaced middle still meets the view).
+- Windows 1829 and Linux 1830 tests pass; fmt and clippy clean.
+
 Phase 38g (levels of detail, step 7: meshing a coarse node; 2026-10-23). See `lod-spec.md`.
 - `voxel_meshing::mesh_coarse_node(node, neighbours) -> BrickMesh`: a cube for each cell with fill of at least half; a face wherever the cell beside it (in the node, or in the node of the same detail level on that side if it is given; air if not) is not a cube; the greedy
   merge of the mesher (`merge_slice`, now shared) over equal block and light. The quad has the block as its material (the palette of the renderer begins with the block colours) and **the cell's own light on all of its sides**, so a cell with a lamp in it

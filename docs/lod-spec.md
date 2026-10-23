@@ -186,7 +186,7 @@ used in 62 files) first and alone, so that nothing else is mixed into it.
   40 levels.
 - **38g Meshing nodes** (**built 2026-10-23**, `voxel_meshing::mesh_coarse_node`). The mesher takes a node's cells and draws cubes for cells with fill at least half, merging faces as it does now; light from
   the cell. Tests: a flat world's coarse node is one slab; a snow-topped hill's coarse node has snow on top.
-- **38h Rendering.** `Placement` scale, new mesh keys, draw coarse nodes, swap on refinement. Offscreen render tests: terrain at several distances; a
+- **38h Rendering** (**built 2026-10-23**, `renderer::VoxelRenderer::upload_coarse_node` and `upload_grid_coarse_node`). `Placement` scale, new mesh keys, draw coarse nodes, swap on refinement. Offscreen render tests: terrain at several distances; a
   ship with two detail levels at once; existing render tests unchanged.
 - **38i Protocol and streaming for terrain.** Version 8: `CoarseNodes`, `SetDetail`, server dirty tracking for edits, the rate limit, coarse before
   fine. Tests: an edit far away appears in the coarse view of another player; replay of a recording shows the same; the rate limit holds in bytes.

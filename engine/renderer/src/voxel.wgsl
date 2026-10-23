@@ -24,7 +24,8 @@ struct Frame {
 const AVATAR_BASE: u32 = 0xFFFFF0u;
 
 struct Placement {
-    // Position of the brick's lowest corner relative to the camera, in voxels.
+    // Position of the brick's lowest corner relative to the camera, in voxels (xyz), and how many voxels a unit of the mesh is (w: 1 for a brick, 2^n for
+    // a coarse node of detail level n, whose mesh is in cells).
     offset: vec4<f32>,
     // How the grid the brick is in is turned (the identity for terrain): a position in the brick, turned, plus the offset, is where
     // it is relative to the camera.
@@ -126,7 +127,7 @@ fn vertex_main(@builtin(vertex_index) vertex_index: u32, instance: Instance) -> 
     // The voxel owns its face; a positive face is on the voxel's far side.
     let plane = origin + axis_unit(face / 2u) * select(0.0, 1.0, (face & 1u) == 1u);
     let local = corner_position(vertex_index, face, plane, width, height);
-    return finish(placement.rotation * local + placement.offset.xyz, face, instance.material & 0xFFFFFFu, instance.material >> 24u);
+    return finish(placement.rotation * (local * placement.offset.w) + placement.offset.xyz, face, instance.material & 0xFFFFFFu, instance.material >> 24u);
 }
 
 @vertex
@@ -140,7 +141,7 @@ fn vertex_detailed(@builtin(vertex_index) vertex_index: u32, instance: DetailedI
     let height = f32(instance.third & 0xFFFFu) / 8.0;
     let face = (instance.third >> 16u) & 7u;
     let local = corner_position(vertex_index, face, origin, width, height);
-    return finish(placement.rotation * local + placement.offset.xyz, face, instance.material & 0xFFFFFFu, instance.third >> 24u);
+    return finish(placement.rotation * (local * placement.offset.w) + placement.offset.xyz, face, instance.material & 0xFFFFFFu, instance.third >> 24u);
 }
 
 @fragment

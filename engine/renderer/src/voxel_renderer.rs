@@ -4,6 +4,7 @@ use std::num::NonZeroU64;
 use block_models::{BlockDefinition, BlockTable, Shape, ShapeBox};
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
+use region_octree::BrickCube;
 use voxel_grid::ChannelStorage;
 use voxel_meshing::{
     BrickChannels, BrickNeighbourhood, PackedBrickMesh, PackedDetailedQuad, PackedQuad, mesh_brick,
@@ -209,7 +210,10 @@ impl Default for Atmosphere {
 /// What a frame drew.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RenderStatistics {
+    /// Bricks and coarse nodes drawn.
     pub bricks_drawn: usize,
+    /// Of those, the coarse nodes.
+    pub coarse_nodes_drawn: usize,
     pub bricks_culled: usize,
     /// Whole-voxel quads and detailed quads together.
     pub quads_drawn: usize,
@@ -248,17 +252,31 @@ impl GpuBrick {
 #[derive(Clone, Copy)]
 struct Placement {
     offset: Vec3,
+    /// Voxels to a unit of the mesh: 1 for a brick, `2^n` for a coarse node of detail level `n`.
+    scale: f32,
     /// `rotation[row][column]`; the identity for what is not part of a ship.
     rotation: [[f32; 3]; 3],
 }
 
 const NO_TURN: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
+/// The sphere that holds a node whose lowest corner is at `corner` (relative to the camera) and whose mesh is in units of `scale` voxels: its middle
+/// and its radius, which are those of a brick times the scale.
+fn node_sphere(corner: Vec3, scale: f32) -> (Vec3, f32) {
+    (
+        corner + Vec3::splat(BRICK_CENTER_OFFSET * scale),
+        BRICK_BOUNDING_RADIUS * scale,
+    )
+}
+
 /// A brick the renderer holds: one of the terrain, or one of a ship.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum BrickKey {
     Terrain(BrickCoordinate),
     Ship(GridId, BrickCoordinate),
+    /// A coarse node of the terrain or of a ship (detail level 1 or more): cells of `2^n` voxels.
+    CoarseTerrain(BrickCube),
+    CoarseShip(GridId, BrickCube),
 }
 
 /// The turn and place of a ship for one frame, as the camera sees it.
@@ -300,6 +318,9 @@ pub struct VoxelRenderer {
     bricks: HashMap<BrickCoordinate, GpuBrick>,
     /// The bricks of ships, in the ships' own coordinates, and where each ship is. A ship without a pose is not drawn.
     ship_bricks: HashMap<(GridId, BrickCoordinate), GpuBrick>,
+    /// The coarse nodes (detail level 1 or more) of the terrain, and of ships in their own coordinates.
+    coarse_nodes: HashMap<BrickCube, GpuBrick>,
+    ship_coarse_nodes: HashMap<(GridId, BrickCube), GpuBrick>,
     ship_poses: BTreeMap<GridId, GridPose>,
     avatar_meshes: Vec<GpuBrick>,
     avatars: Vec<Avatar>,
@@ -487,6 +508,8 @@ impl VoxelRenderer {
             placement_stride,
             bricks: HashMap::new(),
             ship_bricks: HashMap::new(),
+            coarse_nodes: HashMap::new(),
+            ship_coarse_nodes: HashMap::new(),
             ship_poses: BTreeMap::new(),
             avatar_meshes: Vec::new(),
             avatars: Vec::new(),
@@ -677,6 +700,8 @@ impl VoxelRenderer {
         self.bricks
             .values()
             .chain(self.ship_bricks.values())
+            .chain(self.coarse_nodes.values())
+            .chain(self.ship_coarse_nodes.values())
             .map(GpuBrick::quad_total)
             .sum()
     }
@@ -701,6 +726,58 @@ impl VoxelRenderer {
         self.ship_bricks.remove(&(grid, coordinate));
     }
 
+    /// Replaces the mesh of a coarse node of the terrain: a cube of bricks of detail level 1 or more (`mesh_coarse_node` makes the mesh, in cells of
+    /// `2^level` voxels). An empty mesh removes the node. Panics for level 0, which is a brick (see [`VoxelRenderer::upload_brick`]).
+    ///
+    /// The renderer draws what it holds and does not choose: a node and the bricks inside it that are both held are both drawn, so whoever selects the
+    /// nodes (`coarse_cells::select_nodes`) removes what a node replaces.
+    pub fn upload_coarse_node(&mut self, cube: BrickCube, mesh: &PackedBrickMesh) {
+        assert!(cube.level() > 0, "a cube of level 0 is a brick");
+        if mesh.is_empty() {
+            self.coarse_nodes.remove(&cube);
+            return;
+        }
+        let node = self.gpu_brick(mesh);
+        self.coarse_nodes.insert(cube, node);
+    }
+
+    pub fn remove_coarse_node(&mut self, cube: BrickCube) {
+        self.coarse_nodes.remove(&cube);
+    }
+
+    pub fn coarse_node_count(&self) -> usize {
+        self.coarse_nodes.len()
+    }
+
+    pub fn has_coarse_node(&self, cube: BrickCube) -> bool {
+        self.coarse_nodes.contains_key(&cube)
+    }
+
+    /// The same for a coarse node of a ship, in the ship's own coordinates.
+    pub fn upload_grid_coarse_node(
+        &mut self,
+        grid: GridId,
+        cube: BrickCube,
+        mesh: &PackedBrickMesh,
+    ) {
+        assert!(cube.level() > 0, "a cube of level 0 is a brick");
+        if mesh.is_empty() {
+            self.ship_coarse_nodes.remove(&(grid, cube));
+            return;
+        }
+        let node = self.gpu_brick(mesh);
+        self.ship_coarse_nodes.insert((grid, cube), node);
+    }
+
+    pub fn remove_grid_coarse_node(&mut self, grid: GridId, cube: BrickCube) {
+        self.ship_coarse_nodes.remove(&(grid, cube));
+    }
+
+    /// How many coarse nodes of ships are held.
+    pub fn grid_coarse_node_count(&self) -> usize {
+        self.ship_coarse_nodes.len()
+    }
+
     /// Says where a ship is and how it is turned: its bricks are drawn there from the next picture on.
     pub fn set_grid_pose(&mut self, grid: GridId, pose: GridPose) {
         self.ship_poses.insert(grid, pose);
@@ -710,6 +787,7 @@ impl VoxelRenderer {
     pub fn remove_grid(&mut self, grid: GridId) {
         self.ship_poses.remove(&grid);
         self.ship_bricks.retain(|(held, _), _| *held != grid);
+        self.ship_coarse_nodes.retain(|(held, _), _| *held != grid);
     }
 
     /// How many bricks of ships are held.
@@ -721,6 +799,8 @@ impl VoxelRenderer {
         match key {
             BrickKey::Terrain(coordinate) => &self.bricks[&coordinate],
             BrickKey::Ship(grid, coordinate) => &self.ship_bricks[&(grid, coordinate)],
+            BrickKey::CoarseTerrain(cube) => &self.coarse_nodes[&cube],
+            BrickKey::CoarseShip(grid, cube) => &self.ship_coarse_nodes[&(grid, cube)],
         }
     }
 
@@ -750,6 +830,26 @@ impl VoxelRenderer {
                     BrickKey::Terrain(coordinate),
                     Placement {
                         offset: corner,
+                        scale: 1.0,
+                        rotation: NO_TURN,
+                    },
+                ));
+            }
+        }
+        // Coarse nodes of the terrain: a node of detail level `n` is `2^n` bricks along an edge, drawn from its mesh in cells of `2^n` voxels.
+        for &cube in self.coarse_nodes.keys() {
+            let scale = (1u64 << cube.level()) as f32;
+            let corner = Vec3::from_array(
+                WorldPosition::new(cube.origin(), [0.0; 3]).relative_to(camera.position),
+            );
+            let (center, radius) = node_sphere(corner, scale);
+            if frustum.intersects_sphere(center, radius) {
+                visible.push((
+                    center.length_squared(),
+                    BrickKey::CoarseTerrain(cube),
+                    Placement {
+                        offset: corner,
+                        scale,
                         rotation: NO_TURN,
                     },
                 ));
@@ -795,6 +895,41 @@ impl VoxelRenderer {
                     BrickKey::Ship(grid, coordinate),
                     Placement {
                         offset: corner,
+                        scale: 1.0,
+                        rotation: frame.rotation.map(|row| row.map(|entry| entry as f32)),
+                    },
+                ));
+            }
+        }
+        for &(grid, cube) in self.ship_coarse_nodes.keys() {
+            let Some(frame) = frames.get(&grid) else {
+                continue;
+            };
+            let scale = (1u64 << cube.level()) as f32;
+            let place = |local: [f64; 3]| -> Vec3 {
+                Vec3::from_array(std::array::from_fn(|row| {
+                    (frame.origin[row]
+                        + frame.rotation[row][0] * local[0]
+                        + frame.rotation[row][1] * local[1]
+                        + frame.rotation[row][2] * local[2]) as f32
+                }))
+            };
+            let origin = cube.origin();
+            let local = [
+                origin.x() as f64 * 32.0,
+                origin.y() as f64 * 32.0,
+                origin.z() as f64 * 32.0,
+            ];
+            let corner = place(local);
+            let half = f64::from(BRICK_CENTER_OFFSET) * f64::from(scale);
+            let center = place(local.map(|component| component + half));
+            if frustum.intersects_sphere(center, BRICK_BOUNDING_RADIUS * scale) {
+                visible.push((
+                    center.length_squared(),
+                    BrickKey::CoarseShip(grid, cube),
+                    Placement {
+                        offset: corner,
+                        scale,
                         rotation: frame.rotation.map(|row| row.map(|entry| entry as f32)),
                     },
                 ));
@@ -814,6 +949,7 @@ impl VoxelRenderer {
                         avatar.color as usize % AVATAR_COLOR_COUNT,
                         Placement {
                             offset: relative - eye,
+                            scale: 1.0,
                             rotation: NO_TURN,
                         },
                     ))
@@ -830,6 +966,7 @@ impl VoxelRenderer {
                         entity_box.key(),
                         Placement {
                             offset: relative - eye,
+                            scale: 1.0,
                             rotation: NO_TURN,
                         },
                     ))
@@ -839,9 +976,21 @@ impl VoxelRenderer {
             avatars_drawn: visible_avatars.len(),
             entity_boxes_drawn: visible_boxes.len(),
             bricks_drawn: visible.len(),
+            coarse_nodes_drawn: visible
+                .iter()
+                .filter(|(_, key, _)| {
+                    matches!(key, BrickKey::CoarseTerrain(_) | BrickKey::CoarseShip(..))
+                })
+                .count(),
             bricks_culled: self.bricks.len()
+                + self.coarse_nodes.len()
                 + self
                     .ship_bricks
+                    .keys()
+                    .filter(|(grid, _)| self.ship_poses.contains_key(grid))
+                    .count()
+                + self
+                    .ship_coarse_nodes
                     .keys()
                     .filter(|(grid, _)| self.ship_poses.contains_key(grid))
                     .count()
@@ -1169,7 +1318,7 @@ impl VoxelRenderer {
                 placement.offset.x,
                 placement.offset.y,
                 placement.offset.z,
-                0.0,
+                placement.scale,
                 rotation[0][0],
                 rotation[1][0],
                 rotation[2][0],
@@ -1216,6 +1365,18 @@ impl VoxelRenderer {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_sphere_of_a_node_is_that_of_a_brick_times_its_scale_from_its_corner() {
+        let corner = Vec3::new(5.0, -7.0, 100.0);
+        let (middle, radius) = node_sphere(corner, 1.0);
+        assert_eq!((middle, radius), (corner + Vec3::splat(16.0), 27.72));
+        let (middle, radius) = node_sphere(corner, 8.0);
+        assert_eq!((middle, radius), (corner + Vec3::splat(128.0), 27.72 * 8.0));
+        // The sphere holds the node: the far corner of the cube (32 * scale along each axis) is inside it.
+        let far = corner + Vec3::splat(32.0 * 8.0);
+        assert!((far - middle).length() <= radius);
+    }
+
     use super::*;
 
     #[test]

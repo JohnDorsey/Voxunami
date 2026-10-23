@@ -14,7 +14,7 @@ use renderer::{
     VoxelRenderer,
 };
 use voxel_grid::ChannelStorage;
-use voxel_meshing::{BrickChannels, BrickNeighbourhood, mesh_brick};
+use voxel_meshing::{BrickChannels, BrickNeighbourhood, FULL_LIGHT, mesh_brick};
 use voxel_space::{
     BRICK_VOXEL_COUNT, BrickCoordinate, FaceDirection, GridId, GridPose, LocalVoxelIndex,
     Orientation, WorldPosition,
@@ -719,6 +719,320 @@ fn surfaces_keep_their_order_at_planet_distances_to_the_limits_measured_whicheve
         );
         assert!(is_sky(pixel(&image, 2, 2)));
     }
+}
+
+// --- coarse nodes ---
+
+/// The mesh of a coarse node whose cell at `(x, y, z)` is a cube of this block where `solid` says so, and sky elsewhere.
+fn coarse_mesh(
+    solid: impl Fn(usize, usize, usize) -> Option<u32>,
+) -> voxel_meshing::PackedBrickMesh {
+    use coarse_cells::{CoarseCell, CoarseNode};
+    let mut cells = Vec::with_capacity(32 * 32 * 32);
+    for z in 0..32 {
+        for y in 0..32 {
+            for x in 0..32 {
+                cells.push(match solid(x, y, z) {
+                    Some(block) => CoarseCell {
+                        block,
+                        fill: 255,
+                        light: FULL_LIGHT,
+                        exposure: 0,
+                    },
+                    None => CoarseCell::empty(0, FULL_LIGHT),
+                });
+            }
+        }
+    }
+    voxel_meshing::mesh_coarse_node(&CoarseNode::from_cells(cells), &[None; 6]).pack()
+}
+
+fn cube_of_bricks(origin: [i64; 3], level: u8) -> region_octree::BrickCube {
+    region_octree::BrickCube::new(BrickCoordinate::new(origin[0], origin[1], origin[2]), level)
+        .unwrap()
+}
+
+/// A renderer with no fog at all, for things a long way off.
+fn renderer_without_fog(context: &GraphicsContext) -> VoxelRenderer {
+    let mut renderer = new_renderer(context);
+    renderer.set_atmosphere(Atmosphere {
+        sky_color: SKY,
+        fog_start: 1.0e15,
+        fog_end: 2.0e15,
+        ..Atmosphere::default()
+    });
+    renderer
+}
+
+/// A camera at a place given in voxels, looking along -z.
+fn camera_in_voxels(position: [i64; 3]) -> Camera {
+    camera_at(
+        BrickCoordinate::new(
+            position[0].div_euclid(32),
+            position[1].div_euclid(32),
+            position[2].div_euclid(32),
+        ),
+        [
+            position[0].rem_euclid(32) as f32,
+            position[1].rem_euclid(32) as f32,
+            position[2].rem_euclid(32) as f32,
+        ],
+    )
+}
+
+/// Uploads, as bricks of a renderer, the voxels of material `block` inside the box `low` to `high` (voxels, from the origin of the bricks).
+fn fine_bricks_of_a_box(renderer: &mut VoxelRenderer, low: [i64; 3], high: [i64; 3], block: u32) {
+    for bz in low[2].div_euclid(32)..=(high[2] - 1).div_euclid(32) {
+        for by in low[1].div_euclid(32)..=(high[1] - 1).div_euclid(32) {
+            for bx in low[0].div_euclid(32)..=(high[0] - 1).div_euclid(32) {
+                let mut voxels = Vec::new();
+                for z in 0..32i64 {
+                    for y in 0..32i64 {
+                        for x in 0..32i64 {
+                            let at = [bx * 32 + x, by * 32 + y, bz * 32 + z];
+                            if (0..3).all(|axis| (low[axis]..high[axis]).contains(&at[axis])) {
+                                voxels.push(([x as u8, y as u8, z as u8], block));
+                            }
+                        }
+                    }
+                }
+                if !voxels.is_empty() {
+                    place_voxels(renderer, BrickCoordinate::new(bx, by, bz), &voxels);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_coarse_node_is_drawn_as_the_bricks_it_stands_for_at_every_detail_level() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        for level in 1u8..=3 {
+            let cell = 1i64 << level;
+            // A block of cells (8 by 8 by 8, a little off the corner of the node) of the red block.
+            let (low_cell, high_cell) = ([8i64, 0, 8], [16i64, 8, 16]);
+            let mut coarse = new_renderer(&context);
+            coarse.upload_coarse_node(
+                cube_of_bricks([0, 0, 0], level),
+                &coarse_mesh(|x, y, z| {
+                    let at = [x as i64, y as i64, z as i64];
+                    (0..3)
+                        .all(|axis| (low_cell[axis]..high_cell[axis]).contains(&at[axis]))
+                        .then_some(RED)
+                }),
+            );
+            let mut fine = new_renderer(&context);
+            fine_bricks_of_a_box(
+                &mut fine,
+                low_cell.map(|c| c * cell),
+                high_cell.map(|c| c * cell),
+                RED,
+            );
+            // Seen from a place that is above, to the side and in front: the top and two sides.
+            let size = 8 * cell;
+            let mut camera = camera_in_voxels([
+                low_cell[0] * cell + size * 2,
+                size * 2,
+                high_cell[2] * cell + size * 3,
+            ]);
+            camera.yaw = 0.35;
+            camera.pitch = -0.4;
+            let from_coarse = settled(&mut coarse, &camera);
+            let from_fine = settled(&mut fine, &camera);
+            let drawn = from_fine
+                .chunks(4)
+                .filter(|chunk| !is_sky((*chunk).try_into().unwrap()))
+                .count();
+            assert!(
+                drawn > 100,
+                "{name} level {level}: the scene is empty ({drawn} pixels)"
+            );
+            // The same picture, to the pixel at the finer levels. At level 3 one pixel of the silhouette differed (measured: 1 of 4,096): the outline of
+            // one big quad and the outline of many brick quads have the same straight edge, but the vertices where the bricks meet are snapped to the
+            // rasteriser's grid on their own and can lie a hair off the line, so a pixel whose middle is on the edge can fall the other way. A few such
+            // pixels are allowed; a wrong scale or place would differ in hundreds.
+            let differing = from_coarse
+                .chunks(4)
+                .zip(from_fine.chunks(4))
+                .filter(|(a, b)| a != b)
+                .count();
+            let allowed = if level < 3 { 0 } else { 4 };
+            assert!(
+                differing <= allowed,
+                "{name} level {level}: the coarse node differs from the bricks in {differing} pixels"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_ship_with_bricks_near_and_a_coarse_node_beyond_them_is_drawn_as_all_bricks_turned_and_placed()
+{
+    for context in contexts() {
+        let name = adapter_name(&context);
+        // A block of red voxels, 8 across, near the ship's origin (one voxel would be under a pixel from here).
+        let red_block: Vec<([u8; 3], u32)> = (12..20u8)
+            .flat_map(|x| (12..20u8).flat_map(move |y| (12..20u8).map(move |z| ([x, y, z], RED))))
+            .collect();
+        let turned = pose([1, 0, 1], [0.0; 3], half_turn_about_y());
+        // The ship has a red cube of fine bricks near its origin, and beyond, in the cube of bricks from (2, 0, 0) of detail level 1 (cells of 2 voxels), a
+        // green block of cells 0 to 8 along each axis (voxels 64 to 80 along x and 0 to 16 along y and z).
+        let mut mixed = new_renderer(&context);
+        mixed.set_grid_pose(a_ship(), turned);
+        place_ship_voxels(&mut mixed, a_ship(), ORIGIN_BRICK, &red_block);
+        mixed.upload_grid_coarse_node(
+            a_ship(),
+            cube_of_bricks([2, 0, 0], 1),
+            &coarse_mesh(|x, y, z| (x < 8 && y < 8 && z < 8).then_some(GREEN)),
+        );
+        let mut bricks = new_renderer(&context);
+        bricks.set_grid_pose(a_ship(), turned);
+        place_ship_voxels(&mut bricks, a_ship(), ORIGIN_BRICK, &red_block);
+        let green_voxels: Vec<([u8; 3], u32)> = (0..16u8)
+            .flat_map(|x| (0..16u8).flat_map(move |y| (0..16u8).map(move |z| ([x, y, z], GREEN))))
+            .collect();
+        place_ship_voxels(
+            &mut bricks,
+            a_ship(),
+            BrickCoordinate::new(2, 0, 0),
+            &green_voxels,
+        );
+        // The ship is turned half way round, so its +x is the world's -x from its origin at voxel (32, 0, 32): seen from the front, in the ship's
+        // coordinates, it is at x from -80 to -64 and the red cube near -16.
+        let mut camera = camera_in_voxels([-12, 30, 110]);
+        camera.pitch = -0.2;
+        let from_mixed = settled(&mut mixed, &camera);
+        let from_bricks = settled(&mut bricks, &camera);
+        let colours = |image: &[u8]| {
+            let pixels: Vec<[u8; 4]> = image.chunks(4).map(|c| c.try_into().unwrap()).collect();
+            (
+                pixels.iter().filter(|p| is_red(**p)).count(),
+                pixels.iter().filter(|p| is_green(**p)).count(),
+            )
+        };
+        let (red, green) = colours(&from_bricks);
+        assert!(
+            red > 20 && green > 20,
+            "{name}: the scene has {red} red and {green} green pixels"
+        );
+        assert!(
+            from_mixed == from_bricks,
+            "{name}: the fine bricks and the coarse node together differ from all bricks"
+        );
+    }
+}
+
+#[test]
+fn a_cell_of_a_node_of_the_coarsest_detail_a_thousand_kilometres_off_is_drawn_to_scale() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = renderer_without_fog(&context);
+        // A cell of 2^18 voxels (262 kilometres): the first cell of the node of detail level 18 at the origin.
+        renderer.upload_coarse_node(
+            cube_of_bricks([0, 0, 0], 18),
+            &coarse_mesh(|x, y, z| (x == 0 && y == 0 && z == 0).then_some(RED)),
+        );
+        let edge = 1i64 << 18;
+        // Looking at the face toward +z from 1,000 kilometres in front of it, in line with its middle: it is 2 * atan(131072 / 10^6) = 15 degrees wide in a
+        // view of 70, about 12 pixels of 64.
+        let mut camera = camera_in_voxels([edge / 2, edge / 2, edge + 1_000_000]);
+        camera.vertical_field_of_view = 70.0f32.to_radians();
+        let image = render(&mut renderer, &camera);
+        assert!(
+            is_red(pixel(&image, 32, 32)),
+            "{name}: {:?}",
+            pixel(&image, 32, 32)
+        );
+        assert!(
+            is_red(pixel(&image, 28, 28)) && is_red(pixel(&image, 36, 36)),
+            "{name}"
+        );
+        assert!(
+            is_sky(pixel(&image, 22, 32)) && is_sky(pixel(&image, 42, 32)),
+            "{name}: wider than it should be"
+        );
+        assert!(is_sky(pixel(&image, 2, 2)), "{name}");
+    }
+}
+
+#[test]
+fn the_far_corner_of_a_huge_node_is_not_culled_for_being_far_from_the_middle_of_a_small_one() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = renderer_without_fog(&context);
+        renderer.upload_coarse_node(
+            cube_of_bricks([0, 0, 0], 18),
+            &coarse_mesh(|x, y, z| (x == 31 && y == 31 && z == 31).then_some(RED)),
+        );
+        // The last cell: voxels 31 * 2^18 up to 32 * 2^18 along each axis. Seen from 1,000 kilometres in front of its +z face, in line with its middle.
+        let edge = 1i64 << 18;
+        let camera = camera_in_voxels([
+            31 * edge + edge / 2,
+            31 * edge + edge / 2,
+            32 * edge + 1_000_000,
+        ]);
+        let (image, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+        assert_eq!(statistics.coarse_nodes_drawn, 1, "{name}");
+        assert!(
+            is_red(pixel(&image, 32, 32)),
+            "{name}: {:?}",
+            pixel(&image, 32, 32)
+        );
+    }
+}
+
+#[test]
+fn coarse_nodes_are_held_counted_culled_replaced_and_removed_like_bricks() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        let node = |origin: [i64; 3]| cube_of_bricks(origin, 2);
+        let cell = coarse_mesh(|x, y, z| (x < 4 && y < 4 && z < 4).then_some(RED));
+        renderer.upload_coarse_node(node([0, 0, 0]), &cell);
+        // A node behind the camera.
+        renderer.upload_coarse_node(node([0, 0, 40]), &cell);
+        assert_eq!(renderer.coarse_node_count(), 2);
+        assert!(renderer.has_coarse_node(node([0, 0, 0])));
+        let mut camera = camera_in_voxels([8, 8, 60]);
+        camera.vertical_field_of_view = 70.0f32.to_radians();
+        let (_, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+        assert_eq!(statistics.coarse_nodes_drawn, 1, "{name}");
+        assert_eq!(statistics.bricks_drawn, 1, "{name}");
+        assert_eq!(statistics.bricks_culled, 1, "{name}");
+        assert!(renderer.total_quad_count() >= 12, "{name}");
+        // An empty mesh removes the node, and so does asking for it.
+        renderer.upload_coarse_node(node([0, 0, 40]), &coarse_mesh(|_, _, _| None));
+        assert_eq!(renderer.coarse_node_count(), 1);
+        renderer.remove_coarse_node(node([0, 0, 0]));
+        assert_eq!(renderer.coarse_node_count(), 0);
+        // Those of a ship go with the ship, and one ship does not disturb another.
+        let (first, second) = (a_ship(), GridId::new(GridId::FIRST_ALLOCATED + 1));
+        renderer.upload_grid_coarse_node(first, node([0, 0, 0]), &cell);
+        renderer.upload_grid_coarse_node(second, node([0, 0, 0]), &cell);
+        assert_eq!(renderer.grid_coarse_node_count(), 2);
+        renderer.remove_grid_coarse_node(second, node([0, 0, 0]));
+        assert_eq!(renderer.grid_coarse_node_count(), 1);
+        renderer.upload_grid_coarse_node(second, node([4, 0, 0]), &cell);
+        renderer.remove_grid(second);
+        assert_eq!(renderer.grid_coarse_node_count(), 1, "{name}");
+        // A ship with no pose is not drawn, coarse nodes too.
+        let (_, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+        assert_eq!(statistics.coarse_nodes_drawn, 0, "{name}");
+    }
+}
+
+#[test]
+#[should_panic(expected = "a cube of level 0 is a brick")]
+fn a_cube_of_bricks_of_level_0_is_not_a_coarse_node() {
+    let Some(context) = GraphicsContext::all_physical_adapters().into_iter().next() else {
+        panic!("a cube of level 0 is a brick");
+    };
+    let mut renderer = new_renderer(&context);
+    renderer.upload_coarse_node(
+        cube_of_bricks([0, 0, 0], 0),
+        &coarse_mesh(|_, _, _| Some(RED)),
+    );
 }
 
 #[test]

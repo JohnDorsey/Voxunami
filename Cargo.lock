@@ -2610,9 +2610,11 @@ version = "0.0.0"
 dependencies = [
  "block_models",
  "bytemuck",
+ "coarse_cells",
  "glam 0.34.1",
  "png",
  "pollster",
+ "region_octree",
  "thiserror 2.0.21",
  "voxel_grid",
  "voxel_meshing",
