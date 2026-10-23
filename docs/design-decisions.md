@@ -134,6 +134,16 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   uniform light. Rounding light to fewer bands in the mesher is the lever if a scene gets heavy (not built); a light
   texture is the later route to smooth shading and would not change storage or the protocol.
 
+## Decided (levels of detail; Phase 38, owner 2026-10-23; specified in `lod-spec.md`)
+- One level-of-detail system for terrain and every grid, ships included, so that the ground can one day be a ship (a planet: a rough sphere of cubes in ordinary
+  space, no curved grids). It must scale to planets of 10^8 m and more; the maximum detail level is **40** (a cell of 2^40 voxels). Detail levels are counted in voxels; a game has one voxel size.
+- One grid shows several detail levels at once, by the distance of each part; the rule is an octree refinement by distance (cell size against distance and pixel size).
+- A coarse cell stores the dominant block (chosen among the blocks that touch air, so a layer of snow shows), a fill fraction and a light level (brightest child up to
+  32 voxels, an exposure-weighted average above). Coarse cells are untextured always; a client setting gives the distance within which blocks are textured.
+- Coarse data is hybrid: the client derives what the generator gives, the server sends it where there are edits and for ships. It is drawing only (no rule reads it) and is
+  never saved. A ship can cap how coarsely it is drawn (a detail level); the cap does not keep a ship from disappearing when it is under a pixel.
+- Rendering uses reverse-Z with an infinite far plane. Orientations are `f64`. GPU-driven culling is built only if measurement says the CPU is the limit.
+
 ## Decided (the plugin host; built in Phase 23)
 - A game's server rules are plugins run by `plugin_host::PluginHost` (the specification and its record are in `plugin-api-spec.md`). What a plugin
   registers, and when: systems in the phases `Decide`, `Controllers`, `Physics`, `Settle` and `Rules`; handlers of events, delivered first in first
@@ -445,7 +455,8 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   stays proposed for lattice rules (light, fluids, heat), which are the first thing that needs it.
 
 ## Foundations (proposed 2026-10-16 and built on since; not separately confirmed by the owner)
-- Rust, wgpu, mesh-based GPU-driven rendering, nested clipmap LOD shells.
+- Rust, wgpu, mesh-based rendering. Levels of detail are chosen by one octree refinement rule by distance for terrain and every grid alike, not by nested shells
+  (owner, 2026-10-23, `lod-spec.md`; this replaces the earlier "nested clipmap LOD shells", and "GPU-driven" rendering is built only if measurement shows the CPU is the limit).
 - Everything with voxels is a `Grid`: sparse, chunked, with a rigid transform. Terrain is the infinite root grid
   (procedural base plus saved overrides); structures, creatures and tiles are finite grids.
 - Voxel coordinates are i64 per axis within +-2^60; rendering is camera-relative.

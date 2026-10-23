@@ -266,6 +266,19 @@ then what it needs and what I found in the code.
     rest of Minecraft's families (a block that faces the way the player faces, not toward them, like a furnace; a block that turns by the half of a face clicked, like a hopper).
     The orientation channel and the placement properties are in place for any of these; each is a rule in `games/voxunami_cave/src/placement.rs` and a property of the block.
 
+11. **Later pieces of the level-of-detail work (owner, 2026-10-23; `lod-spec.md`).** Not in Phase 38:
+    - *Optional upgrade of the dominant block of a coarse cell:* a dominant exposed block **per direction** (six ids for a mixed cell, one for a uniform one), so
+      that snow shows from above and stone from the side. Phase 38 starts with one block per cell chosen by the faces that touch air; this is the upgrade if that
+      looks wrong. **Optional.**
+    - Planets: a ground that is a ship, a sphere generator with analytic coarse sampling, a ship with a generator instead of every brick stored, atmosphere and
+      fog for planet distances. Planets are rough spheres of cubes in ordinary space (no curved grids), real-planet size (10^8 m and more).
+    - Stars as voxels of 2^32 m and more that break into smaller ones on approach (needs emissive blocks).
+    - A telescope item that raises the detail where the player looks (the rule already refines with the field of view; the item and the download cost are new).
+    - Fading between detail levels (cracks are accepted at first).
+    - A server-side coarse mass for the direction of gravity (Phase 38 is drawing only).
+    - GPU-driven culling, if Phase 38's measurement says the CPU is the limit.
+    - Textures near the player, with distant detail always untextured (Phase 38 builds only the distance setting).
+
 ## Levels (owner, 2026-10-20)
 
 - **A superflat level.** A level of flat ground in layers (as Minecraft's superflat world type: for example bedrock, stone, dirt, grass), for building,

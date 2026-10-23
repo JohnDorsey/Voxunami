@@ -29,6 +29,9 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 16 Cave gravity and collision: the server moves the players (`/fly`, `/tp`). **Done.**
 - 17 Voxunami Eels (3D Tron) and the shell hooks it needed. **Done.**
 - 18 Mod stage 1, first step: a game's content as one declared package (`ContentPackage`). **Done.**
+- 38 (next, owner 2026-10-23; before 33) Levels of detail for terrain and ships alike (`lod-spec.md`, steps 38a to 38l): coarse cells (dominant block, fill, light), one octree
+  refinement rule by distance, hybrid streaming (the client derives unedited terrain, the server sends edits and ships' nodes), reverse-Z with an infinite far plane, orientations in `f64`
+  (protocol 7), coarse nodes in the stream (protocol 8). Planets are a later phase that this one must leave room for.
 - 37 (far future) Learning NPCs: brains as data (a network in a fixed format plus a manifest of sensors and actions, in the content
   package), learning in the background with results applied at a tick boundary, weights saved with the world (`future-goals.md`, goal 3).
 - 36 (far future) Tentacle locomotion: an octopus character and NPC on articulated sub-grids (goal 1).
@@ -245,7 +248,7 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
      pilot; a grid's header says what to do when its pilot logs out (`stay` or `vanish`); a server setting can override it.
   20. **Ship simulation distance and unload distance are server settings (Phase 32);** terrain should get the same shape later.
   21. **Mesh keys are `(grid, brick)` and can grow a level of detail** (Phase 32 draws level 0): terrain's levels of detail, when built, serve
-     grids too (`future-goals.md`, "Ship goals" 1).
+     grids too (`future-goals.md`, "Ship goals" 1). Phase 38 builds them: `lod-spec.md`.
   Not changed by the goals: the content package, the schema, patches, the palette. One ordering consequence, accepted by the owner
   2026-10-18: the loader ABI (Phase 33) encodes the coordinate model, so it is frozen only after grids, frames and entities exist
   (Phases 27 and 32).
