@@ -210,7 +210,7 @@ fn the_server_refuses_edits_of_a_ship_out_of_reach_that_does_not_exist_or_is_of_
     assert_eq!(block_in_the_ship(&scene, [2, 2, 2]), 0);
 
     // Out of reach: the player flies off, and asks to break a block of the ship.
-    player.camera = camera_at([21.5, 301.5, 60.5], 0.0, 0.0, VIEW_RADIUS);
+    player.camera = camera_at([21.5, 301.5, 60.5], 0.0, 0.0);
     player.teleport_to_camera();
     scene.rig.settle(&mut [&mut player]);
     request_block_in(
@@ -225,7 +225,7 @@ fn the_server_refuses_edits_of_a_ship_out_of_reach_that_does_not_exist_or_is_of_
 
     // Back in reach, a ship that does not exist, and the terrain of a level that is not the player's, are refused too, and
     // nothing is made of either.
-    player.camera = camera_at([21.5, 301.5, 26.5], 0.0, 0.0, VIEW_RADIUS);
+    player.camera = camera_at([21.5, 301.5, 26.5], 0.0, 0.0);
     player.teleport_to_camera();
     scene.rig.settle(&mut [&mut player]);
     for grid in [
@@ -414,12 +414,7 @@ fn a_ship_between_the_player_and_the_ground_is_aimed_at_first_and_the_ground_pas
     scene.rig.settle(&mut [&mut player]);
     // Looking straight down from 110 at ground whose top is at 103 (the ground is 102 high).
     let ground = ground_height(&player, 16, 16);
-    let mut camera = camera_at(
-        [16.5, f64::from(ground as i32) + 7.0, 16.5],
-        0.0,
-        0.0,
-        VIEW_RADIUS,
-    );
+    let mut camera = camera_at([16.5, f64::from(ground as i32) + 7.0, 16.5], 0.0, 0.0);
     camera.look_by(0.0, -std::f32::consts::FRAC_PI_2);
     player.camera = camera;
     player.teleport_to_camera();

@@ -60,7 +60,7 @@ fn color_of_block_seen_from_the_front(context: &GraphicsContext, block: Numbered
     configure_renderer(&mut renderer, &table, content.ambient_light(), VIEW_RADIUS);
     renderer.upload_brick(BrickCoordinate::new(0, 0, 0), &mesh.pack());
     // Looking along -z at the block from four voxels in front of its face.
-    let camera = camera_at([16.5, 16.5, 21.0], 0.0, 0.0, VIEW_RADIUS);
+    let camera = camera_at([16.5, 16.5, 21.0], 0.0, 0.0);
     let (image, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
     assert_eq!(statistics.quads_drawn, 6);
     let offset = ((SIZE / 2 * SIZE + SIZE / 2) * 4) as usize;

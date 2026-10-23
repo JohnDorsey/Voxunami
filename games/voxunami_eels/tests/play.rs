@@ -51,7 +51,7 @@ impl Rig {
     }
 
     fn join_with(&mut self, connection: Box<dyn Connection>) -> Player {
-        let start = camera_at([32.5, 40.0, 32.5], 0.0, 0.0, VIEW_RADIUS);
+        let start = camera_at([32.5, 40.0, 32.5], 0.0, 0.0);
         self.joined += 1;
         let identity = Identity::from_secret([self.joined; 32]);
         let server = &mut self.server;
@@ -411,7 +411,7 @@ fn a_player_cannot_move_their_camera_by_saying_where_it_is() {
     rig.tick(&mut [&mut player], 3);
     let before = voxels_of(&player.camera);
     let far = PlayerPose {
-        position: camera_at([500.5, 40.0, 500.5], 0.0, 0.0, VIEW_RADIUS).position,
+        position: camera_at([500.5, 40.0, 500.5], 0.0, 0.0).position,
         yaw: 1.0,
         pitch: 0.3,
     };
@@ -481,7 +481,7 @@ fn a_recording_replays_the_match_from_the_recorded_players_eel() {
         &Identity::generate(),
         Mode::Replaying,
         VIEW_RADIUS,
-        camera_at([0.0; 3], 0.0, 0.0, VIEW_RADIUS),
+        camera_at([0.0; 3], 0.0, 0.0),
         || {},
     )
     .unwrap();

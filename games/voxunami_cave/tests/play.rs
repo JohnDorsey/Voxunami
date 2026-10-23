@@ -265,7 +265,7 @@ fn a_recording_replays_the_session_from_the_recorded_players_point_of_view() {
         &Identity::generate(),
         Mode::Replaying,
         VIEW_RADIUS,
-        camera_at([0.0; 3], 0.0, 0.0, VIEW_RADIUS),
+        camera_at([0.0; 3], 0.0, 0.0),
         || {},
     )
     .unwrap();
@@ -362,7 +362,7 @@ fn only_entities_of_the_player_kind_are_players_to_a_session() {
                 kind: "test:rock".parse().unwrap(),
                 pose: voxel_space::EntityPose::new(
                     voxel_space::GridId::MAIN,
-                    camera_at([16.5, 110.0, 16.5], 0.0, 0.0, VIEW_RADIUS).position,
+                    camera_at([16.5, 110.0, 16.5], 0.0, 0.0).position,
                     voxel_space::Orientation::IDENTITY,
                 ),
                 components: vec![
@@ -391,7 +391,7 @@ fn only_entities_of_the_player_kind_are_players_to_a_session() {
         &Identity::generate(),
         Mode::Replaying,
         VIEW_RADIUS,
-        camera_at([0.0; 3], 0.0, 0.0, VIEW_RADIUS),
+        camera_at([0.0; 3], 0.0, 0.0),
         || {},
     )
     .unwrap();
@@ -480,7 +480,7 @@ fn the_integrated_server_ticks_by_itself_and_hands_back_the_world() {
     let host =
         ServerThread::<Cave>::start(content, world, HostSettings::local(VIEW_RADIUS)).unwrap();
     let connection = host.connect().unwrap();
-    let start = camera_at([16.5, 110.0, 16.5], 0.0, 0.0, VIEW_RADIUS);
+    let start = camera_at([16.5, 110.0, 16.5], 0.0, 0.0);
     let mut player = Session::<_, Cave>::connect(
         Box::new(connection) as Box<dyn transport::Connection>,
         &Identity::from_secret([60; 32]),
@@ -623,7 +623,7 @@ fn a_recording_follows_the_recorded_player_into_another_level() {
         &Identity::generate(),
         Mode::Replaying,
         VIEW_RADIUS,
-        camera_at([0.0; 3], 0.0, 0.0, VIEW_RADIUS),
+        camera_at([0.0; 3], 0.0, 0.0),
         || {},
     )
     .unwrap();
@@ -1173,7 +1173,7 @@ fn a_fire_is_frozen_unless_a_player_in_its_level_is_within_range() {
     elsewhere.send_command("/level go cellar");
     rig.settle(&mut [&mut elsewhere]);
     assert_eq!(elsewhere.level(), second);
-    elsewhere.camera = camera_at(here, 0.0, 0.0, VIEW_RADIUS);
+    elsewhere.camera = camera_at(here, 0.0, 0.0);
     elsewhere.teleport_to_camera();
     rig.settle(&mut [&mut elsewhere]);
     run_ticks(&mut rig, 200);
@@ -1454,7 +1454,7 @@ fn a_player_cannot_move_by_saying_where_they_are() {
     let before = voxels_of(&player.camera);
     // A pose, as the other games' players send; a second spawn; and nonsense for a move.
     let far = player_presence::PlayerPose {
-        position: camera_at([500.5, 130.0, 500.5], 0.0, 0.0, VIEW_RADIUS).position,
+        position: camera_at([500.5, 130.0, 500.5], 0.0, 0.0).position,
         yaw: 0.0,
         pitch: 0.0,
     };

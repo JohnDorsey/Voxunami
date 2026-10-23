@@ -75,12 +75,7 @@ pub fn play<G: GameDefinition>(options: PlayOptions) -> Result<(), String> {
         Some(path) => record_connection(connection, path)?,
         None => connection,
     };
-    let start = camera_at(
-        options.camera,
-        options.yaw_degrees,
-        options.pitch_degrees,
-        view.view_radius,
-    );
+    let start = camera_at(options.camera, options.yaw_degrees, options.pitch_degrees);
     let session = Session::<_, G>::connect(
         connection,
         &identity,
@@ -115,7 +110,7 @@ pub fn replay<G: GameDefinition>(options: ReplayOptions) -> Result<(), String> {
     }
     let view = options.view;
     let connection: Box<dyn Connection> = Box::new(open_recording(&options.file)?);
-    let start = camera_at([0.0, 0.0, 0.0], 0.0, 0.0, view.view_radius);
+    let start = camera_at([0.0, 0.0, 0.0], 0.0, 0.0);
     let session = Session::<_, G>::connect(
         connection,
         &crate::player_identity::for_replay(),

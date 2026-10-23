@@ -638,12 +638,86 @@ fn many_bricks_beyond_the_initial_placement_capacity_all_draw() {
             );
         }
         let mut camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 28.0]);
-        camera.far_plane = 6000.0;
         camera.vertical_field_of_view = 1.0;
         let (image, statistics): (Vec<u8>, RenderStatistics) =
             renderer.render_to_rgba(&camera, SIZE, SIZE);
         assert_eq!(statistics.bricks_drawn, 150, "{}", adapter_name(&context));
         assert!(is_red(pixel(&image, 32, 32)));
+    }
+}
+
+/// Two walls of 32 by 32 voxels `gap` voxels apart a long way ahead, the nearer red and the farther green, seen along the line through their middles, in a view
+/// so narrow that they cover a few pixels, with no fog. The nearer is drawn first when `nearer_first` (the camera looks along +z, and a brick's faces are emitted
+/// from its low z end) and last when not; a depth test that does not tell them apart shows green in one of the two. Returns the pixel in the middle.
+fn depth_of_two_walls(
+    context: &GraphicsContext,
+    distance_in_bricks: i64,
+    gap: u8,
+    nearer_first: bool,
+) -> [u8; 4] {
+    let mut renderer = VoxelRenderer::new(context, wgpu::TextureFormat::Rgba8UnormSrgb);
+    renderer.set_palette(&[[0.0, 0.0, 0.0], [0.9, 0.1, 0.1], [0.1, 0.8, 0.1]]);
+    renderer.set_atmosphere(Atmosphere {
+        sky_color: SKY,
+        fog_start: 1.0e15,
+        fog_end: 2.0e15,
+        ..Atmosphere::default()
+    });
+    let mut walls = Vec::new();
+    for x in 0..32u8 {
+        for y in 0..32u8 {
+            let (near, far) = if nearer_first {
+                (0, gap)
+            } else {
+                (31, 31 - gap)
+            };
+            walls.push(([x, y, near], RED));
+            walls.push(([x, y, far], GREEN));
+        }
+    }
+    let (brick_z, yaw) = if nearer_first {
+        (distance_in_bricks, std::f32::consts::PI)
+    } else {
+        (-distance_in_bricks, 0.0)
+    };
+    place_voxels(&mut renderer, BrickCoordinate::new(0, 0, brick_z), &walls);
+    let mut camera = camera_at(BrickCoordinate::new(0, 0, 0), [16.0, 16.0, 0.0]);
+    camera.yaw = yaw;
+    // 0.01 radians at 100 kilometres, and narrower in proportion farther out, so that the 32 voxel wall covers a few pixels at every distance.
+    camera.vertical_field_of_view = 0.01 * 3125.0 / distance_in_bricks as f32;
+    pixel(&render(&mut renderer, &camera), 32, 32)
+}
+
+#[test]
+fn surfaces_keep_their_order_at_planet_distances_to_the_limits_measured_whichever_is_drawn_first() {
+    // Measured on one adapter (an RTX 3090; the test passes on the others too): walls 2 metres apart are in order at 100 kilometres and at 10,000
+    // kilometres, and at 100,000 kilometres the limit is between 4 and 8 metres (2 and 4 were wrong, in one of the two draw orders). That is what reversed
+    // depth in 32 bits gives, and it is what is asserted here: 2 metres at the first two, 8 at the last. (A depth buffer that is not reversed does not do
+    // this at 100 kilometres: its steps there are thousands of metres, and a far plane would have cut the walls off long before.)
+    for context in contexts() {
+        for (distance_in_bricks, gap) in [(3_125, 2), (312_500, 2), (3_125_000, 8)] {
+            for nearer_first in [true, false] {
+                let found = depth_of_two_walls(&context, distance_in_bricks, gap, nearer_first);
+                assert!(
+                    is_red(found),
+                    "{}: walls {gap} apart, {} metres away, nearer {}: {found:?}",
+                    adapter_name(&context),
+                    distance_in_bricks * 32,
+                    if nearer_first { "first" } else { "last" }
+                );
+            }
+        }
+        // And the sky is still the sky around a small wall in a narrow view.
+        let mut renderer = new_renderer(&context);
+        renderer.set_atmosphere(Atmosphere {
+            sky_color: SKY,
+            ..Atmosphere::default()
+        });
+        let image = render(
+            &mut renderer,
+            &camera_at(BrickCoordinate::new(0, 0, 0), [16.0, 16.0, 0.0]),
+        );
+        assert!(is_sky(pixel(&image, 2, 2)));
     }
 }
 

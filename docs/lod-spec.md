@@ -138,8 +138,8 @@ those in the watched box (3.7). Replay: the new messages are in the recording li
 - Mesh keys become `(grid, origin, detail level)` (plan requirement 21 reserved the room). A node replaced by its children, or the reverse, swaps
   meshes in one frame; no fading, cracks accepted (decision 13).
 - Reverse-Z: the projection maps far to 0 and near to 1 with no far plane, `Depth32Float` is cleared to 0, the depth test is "greater". Fog and
-  atmosphere work from distance, not depth, and are unchanged. `Camera::far_plane` stops meaning a depth limit (it remains the drawing radius).
-  I expect a resolution of about 0.6 m at 10^7 m and 6 m at 10^8 m (calculated, not measured); step 38b measures it.
+  atmosphere work from distance, not depth, and are unchanged. `Camera::far_plane` is removed.
+  Measured in 38b: walls 2 m apart are in order at 10^5 m and 10^7 m, and at 10^8 m the limit is between 4 and 8 m, on `Depth32Float`.
 - Drawing cost is one draw per node, as now. **GPU-driven culling is not built** unless step 38l's measurement shows the CPU is the limit.
 - Texture distance: a client setting, changed by `.texture_distance`, in voxels. It exists and is tested from this phase; nothing is textured yet, so it
   changes nothing visible until textures exist.
@@ -167,7 +167,7 @@ used in 62 files) first and alone, so that nothing else is mixed into it.
   and the wire/file round trip with the `f32` values. Then widen the type; saved ships and entities written as `f32` are read as exact `f64`, new ones
   written as `f64` (a format version, per `world-file-format.md`). Physics converts at its edge. Golden sessions that contain ships or entities move:
   each pin gets a justification from measured bytes. This is the step most likely to take longer than planned; I will stop and say so if it does.
-- **38b Reverse-Z.** Test first: two surfaces 1 m apart at 100 m, 100 m apart at 10^7 m and 1000 m apart at 10^8 m draw without z-fighting in an
+- **38b Reverse-Z** (**built 2026-10-23**, `build-log.md`). Test first: two surfaces 1 m apart at 100 m, 100 m apart at 10^7 m and 1000 m apart at 10^8 m draw without z-fighting in an
   offscreen render; and every existing renderer test passes unchanged. Measure and record the real resolution.
 - **38c Cell summaries.** A pure library: `CoarseCell`, combining eight children into a parent (3.2). Tests: the snow layer is snow; a cave wall
   does not outvote the ground; fill never rounds a speck to nothing; light rules at the 32-voxel boundary; ties by octant; saturation; the combination

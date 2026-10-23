@@ -166,7 +166,7 @@ impl Rig {
         yaw_degrees: f32,
         pitch_degrees: f32,
     ) -> Player {
-        let start = camera_at(position, yaw_degrees, pitch_degrees, VIEW_RADIUS);
+        let start = camera_at(position, yaw_degrees, pitch_degrees);
         self.joined += 1;
         let identity = Identity::from_secret([self.joined; 32]);
         let server = &mut self.server;
@@ -525,7 +525,7 @@ fn the_ground_is_made_of_blocks_that_can_be_pushed_like_any_other() {
         player.mesher().state_at(top).unwrap(),
     )
     .expect("the ground is numbered blocks");
-    player.camera = camera_at([8.5, top.y() as f64 + 5.5, 8.5], 0.0, -89.0, VIEW_RADIUS);
+    player.camera = camera_at([8.5, top.y() as f64 + 5.5, 8.5], 0.0, -89.0);
     rig.settle(&mut [&mut player]);
     send_push(&mut player, top, FaceDirection::PositiveY);
     rig.step(COASTING_RANGE + 2);
@@ -672,7 +672,7 @@ fn a_recording_of_a_game_replays_the_blocks_and_the_score() {
         &Identity::generate(),
         Mode::Replaying,
         VIEW_RADIUS,
-        camera_at([0.0; 3], 0.0, 0.0, VIEW_RADIUS),
+        camera_at([0.0; 3], 0.0, 0.0),
         || {},
     )
     .unwrap();

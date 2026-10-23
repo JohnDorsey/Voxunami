@@ -17,8 +17,8 @@ pub struct Camera {
     pub frame_rotation: Quat,
     /// Vertical field of view in radians.
     pub vertical_field_of_view: f32,
+    /// The distance of the nearest thing drawn. There is no far plane: depth is reversed and goes on for ever (see [`Camera::view_projection`]).
     pub near_plane: f32,
-    pub far_plane: f32,
 }
 
 impl Camera {
@@ -34,7 +34,6 @@ impl Camera {
             frame_rotation: Quat::IDENTITY,
             vertical_field_of_view: 70.0 * std::f32::consts::PI / 180.0,
             near_plane: 0.1,
-            far_plane: 4096.0,
         }
     }
 
@@ -79,27 +78,32 @@ impl Camera {
 
     /// Maps positions relative to the camera (not world positions) to clip space; the
     /// camera-relative translation is applied by the renderer in exact integer arithmetic.
+    ///
+    /// Depth is **reversed** and the far plane is at infinity: a point at distance `d` ahead has depth `near / d`, so the nearest thing drawn is 1 and what is
+    /// farther is between 0 and 1, however far. A floating point depth buffer has most of its precision near 0, which is where the far things are, so
+    /// surfaces keep their order at planet distances: measured, walls 2 metres apart are in order at 100 kilometres and at 10,000 kilometres, and at 100,000
+    /// kilometres the limit is between 4 and 8 metres (the test draws them, in both orders of drawing). The depth buffer is cleared to 0 and the test is "greater".
     pub fn view_projection(&self, aspect_ratio: f32) -> Mat4 {
-        // Right-handed, y up, clip depth 0..1: wgpu's conventions.
-        let projection = glam::camera::rh::proj::directx::perspective(
+        // Right-handed, y up, clip depth 0..1: wgpu's conventions, with depth reversed.
+        let projection = glam::camera::rh::proj::directx::perspective_infinite_reverse(
             self.vertical_field_of_view,
             aspect_ratio,
             self.near_plane,
-            self.far_plane,
         );
         projection * Mat4::from_quat(self.rotation().inverse())
     }
 }
 
-/// The six planes bounding what a camera can see, for cheap visibility tests.
+/// The five planes bounding what a camera can see (left, right, bottom, top and near: there is no far one), for cheap visibility tests.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Frustum {
     /// Each plane is `(normal, distance)`; points with `normal . p + distance >= 0` are inside.
-    planes: [Vec4; 6],
+    planes: [Vec4; 5],
 }
 
 impl Frustum {
-    /// Extracts the planes of a clip volume with depth in `0..=1` (wgpu's convention).
+    /// Extracts the planes of a clip volume with depth in `0..=1` (wgpu's convention) that is reversed (1 at the near plane) and has no far plane, as
+    /// [`Camera::view_projection`] makes.
     pub fn from_view_projection(view_projection: Mat4) -> Self {
         let (row0, row1, row2, row3) = (
             view_projection.row(0),
@@ -114,7 +118,7 @@ impl Frustum {
                 normalize(row3 - row0),
                 normalize(row3 + row1),
                 normalize(row3 - row1),
-                normalize(row2),
+                // Depth at most 1 is not nearer than the near plane. (Depth at least 0 is every distance: there is no plane for it.)
                 normalize(row3 - row2),
             ],
         }
@@ -141,6 +145,49 @@ mod tests {
 
     fn close(a: Vec3, b: Vec3) -> bool {
         (a - b).length() < 1e-5
+    }
+
+    /// The depth a point straight ahead at this distance gets, and whether it is inside the view at all.
+    fn depth_ahead(camera: &Camera, distance: f32) -> (f32, bool) {
+        let clip = camera.view_projection(1.0) * Vec4::new(0.0, 0.0, -distance, 1.0);
+        let depth = clip.z / clip.w;
+        (depth, (0.0..=1.0).contains(&depth) && clip.w > 0.0)
+    }
+
+    #[test]
+    fn depth_is_reversed_and_has_no_far_plane_so_the_nearest_thing_is_1_and_everything_beyond_is_between_0_and_1()
+     {
+        let camera = camera_at_origin();
+        let near = camera.near_plane;
+        // The near plane is depth 1, and depth is the near distance over the distance, all the way out: nothing is clipped for being far.
+        assert!((depth_ahead(&camera, near).0 - 1.0).abs() < 1e-5);
+        for distance in [1.0f32, 100.0, 4096.0, 1.0e5, 1.0e7, 1.0e9, 1.0e12] {
+            let (depth, inside) = depth_ahead(&camera, distance);
+            assert!(inside, "{distance} is clipped");
+            assert!(
+                (depth - near / distance).abs() <= 1e-5 * (near / distance),
+                "{distance}: {depth}"
+            );
+        }
+        // Nearer than the near plane is outside (depth over 1), and what is behind the camera is behind it.
+        assert!(!depth_ahead(&camera, near * 0.5).1);
+        assert!(!depth_ahead(&camera, -10.0).1);
+    }
+
+    #[test]
+    fn the_frustum_has_no_far_side_and_still_culls_what_is_behind_beside_and_too_near() {
+        let camera = camera_at_origin();
+        let frustum = Frustum::from_view_projection(camera.view_projection(1.0));
+        // Far ahead, however far, is in view (the sphere is a planet).
+        for distance in [100.0f32, 1.0e6, 1.0e12] {
+            assert!(frustum.intersects_sphere(Vec3::new(0.0, 0.0, -distance), 1.0));
+        }
+        // Behind, and far to the side, are not.
+        assert!(!frustum.intersects_sphere(Vec3::new(0.0, 0.0, 50.0), 1.0));
+        assert!(!frustum.intersects_sphere(Vec3::new(1.0e6, 0.0, -1.0e3), 1.0));
+        assert!(!frustum.intersects_sphere(Vec3::new(0.0, -1.0e6, -1.0e3), 1.0));
+        // A sphere that reaches into the view from the side is kept.
+        assert!(frustum.intersects_sphere(Vec3::new(1.0e3, 0.0, -1.0e3), 1.0e3));
     }
 
     #[test]
@@ -237,7 +284,7 @@ mod tests {
         assert!(!visible(100.0, 0.0, -10.0, 1.0), "far to the right");
         assert!(!visible(0.0, -100.0, -10.0, 1.0), "far below");
         assert!(visible(9.0, 0.0, -10.0, 3.0), "overlapping the right edge");
-        assert!(!visible(0.0, 0.0, -5000.0, 1.0), "beyond the far plane");
+        assert!(visible(0.0, 0.0, -5000.0, 1.0), "there is no far plane");
         assert!(!visible(0.0, 0.0, 0.5, 0.1), "behind the near plane");
         assert!(
             visible(0.0, 0.0, 0.0, 1.0),

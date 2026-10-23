@@ -184,7 +184,7 @@ fn a_replay_shows_a_form_while_it_was_shown_and_not_after_and_answers_nothing() 
         &Identity::generate(),
         Mode::Replaying,
         VIEW_RADIUS,
-        camera_at([0.0; 3], 0.0, 0.0, VIEW_RADIUS),
+        camera_at([0.0; 3], 0.0, 0.0),
         || {},
     )
     .unwrap();

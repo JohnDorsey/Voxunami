@@ -129,7 +129,7 @@ mod tests {
         settings: &mut ClientSettings,
         prompts: &[plugin_host::Prompt],
     ) -> (String, Vec<crate::client_plugin::Outgoing>) {
-        let camera = camera_at([0.0; 3], 0.0, 0.0, 3);
+        let camera = camera_at([0.0; 3], 0.0, 0.0);
         let table = BlockTable::of_cubes(&[false]);
         let package = crate::package_data::PackageData::for_tests();
         let players = BTreeMap::new();

@@ -805,6 +805,16 @@ callers (ship creation, the bodies' terrain, the arrival look, the light-model s
 - Tests: the existing ones, rewritten by a tool for the calls (`regrid.py`, a scratch file) and by hand where a test expected an error for a level that is not there; two new for `detach_blocks` out of a
   ship and for `uniform_value` and `generated` on a ship. No pin moved. Windows 1745 and Linux 1746 tests pass; fmt and clippy clean.
 
+Phase 38b (levels of detail, step 2: reverse-Z with an infinite far plane; 2026-10-23). See `lod-spec.md`.
+- *What:* `Camera::view_projection` is `perspective_infinite_reverse` (depth is `near / distance`: 1 at the near plane, toward 0 for ever), the depth buffer is cleared to 0 and the test is "greater". `Camera::far_plane` is gone (nothing clips for being far;
+  it also held `game_shell::camera_at`'s view radius, which nothing else used, so that parameter is gone and its fifty-odd callers lost an argument). `Frustum` has five planes (there is no far side), and the extraction was written for reversed depth.
+- *Tests first:* the depth of a point ahead is `near / d` for distances from 1 to 10^12 and is never clipped for being far; behind and too near are out; the frustum keeps a sphere 10^12 away and drops one behind or beside (CPU); and a GPU test of two walls (red
+  nearer, green behind) a long way off. It failed before the change (the far plane cut the walls off), and with the depth test set to "always" it shows green: it does test the order.
+- *Measured* (one adapter, an RTX 3090; the test passes on all four): walls 2 metres apart are in order at 100 kilometres and at 10,000 kilometres, in both orders of drawing; at 100,000 kilometres, 2 and 4 metres were wrong in one order and 8 was right. (My first run of this
+  at 100,000 kilometres looked right for 2 metres, and was wrong to trust: both walls had the same depth there, because a position in `f32` has steps of 8 metres, and the wall drawn first won the tie. It was seen only by looking from the other side, so the test runs both. My calculation had said
+  6 metres at 100,000 kilometres; the measurement agrees with it.)
+- Windows 1756 and Linux 1757 tests pass; fmt and clippy clean.
+
 Phase 38a (levels of detail, step 1: orientations in `f64`; 2026-10-23). See `lod-spec.md`.
 - *Why first:* `Orientation` was `[f32; 4]` and is used in 62 files; a planet turned by an `f32` quaternion has points metres out (measured: over 199 turns of a point 5 x 10^7 voxels from the origin, the worst miss of an `f32` turn is 3.78
   metres, 0.05 for one turn). It is the riskiest step of Phase 38, so it was done alone, and its pins checked before anything else was built on it.

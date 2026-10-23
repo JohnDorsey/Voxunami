@@ -200,7 +200,7 @@ fn a_recording_of_a_session_with_a_pack_shows_the_packs_blocks_with_no_pack_inst
         &Identity::generate(),
         Mode::Replaying,
         VIEW_RADIUS,
-        camera_at([0.0; 3], 0.0, 0.0, VIEW_RADIUS),
+        camera_at([0.0; 3], 0.0, 0.0),
         || {},
     )
     .unwrap();

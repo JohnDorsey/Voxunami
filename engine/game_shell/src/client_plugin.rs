@@ -763,7 +763,7 @@ mod tests {
         prompts: &[Prompt],
         with: impl FnOnce(&mut ClientHost, &mut ClientContext<'_>) -> R,
     ) -> (R, Vec<Outgoing>) {
-        let camera = camera_at([0.0; 3], 0.0, 0.0, 3);
+        let camera = camera_at([0.0; 3], 0.0, 0.0);
         let table = BlockTable::of_cubes(&[false]);
         let package = PackageData::for_tests();
         let players = BTreeMap::new();
@@ -1034,7 +1034,7 @@ mod tests {
             ),
             (id("b:gone"), None),
         ];
-        let camera = camera_at([0.0; 3], 0.0, 0.0, 3);
+        let camera = camera_at([0.0; 3], 0.0, 0.0);
         let table = BlockTable::of_cubes(&[false]);
         let (players, entities) = (BTreeMap::new(), ClientEntities::default());
         let mut settings = ClientSettings::new(0);
@@ -1247,7 +1247,7 @@ mod tests {
             (id("b:four"), Some(plain.clone().with_property(&FLAG, true))),
             (id("b:five"), Some(plain.with_property(&FLAG, false))),
         ];
-        let camera = camera_at([0.0; 3], 0.0, 0.0, 3);
+        let camera = camera_at([0.0; 3], 0.0, 0.0);
         let table = BlockTable::of_cubes(&[false]);
         let (players, entities) = (BTreeMap::new(), ClientEntities::default());
         let mut settings = ClientSettings::new(0);

@@ -349,7 +349,7 @@ fn a_replay_draws_the_form_exactly_as_it_was_drawn_live_and_stops_when_it_was_cl
         &Identity::generate(),
         Mode::Replaying,
         VIEW_RADIUS,
-        camera_at([0.0; 3], 0.0, 0.0, VIEW_RADIUS),
+        camera_at([0.0; 3], 0.0, 0.0),
         || {},
     )
     .unwrap();

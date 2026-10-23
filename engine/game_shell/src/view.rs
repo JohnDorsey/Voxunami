@@ -126,12 +126,7 @@ pub fn binary_voxel_coordinates(position: WorldPosition) -> String {
 }
 
 /// A camera at a position given in voxels, with angles in degrees.
-pub fn camera_at(
-    position: [f64; 3],
-    yaw_degrees: f32,
-    pitch_degrees: f32,
-    view_radius_bricks: i64,
-) -> Camera {
+pub fn camera_at(position: [f64; 3], yaw_degrees: f32, pitch_degrees: f32) -> Camera {
     let brick = BrickCoordinate::new(
         (position[0].floor() as i64).div_euclid(32),
         (position[1].floor() as i64).div_euclid(32),
@@ -145,7 +140,6 @@ pub fn camera_at(
     let mut camera = Camera::new(WorldPosition::new(brick, offset));
     camera.yaw = yaw_degrees.to_radians();
     camera.pitch = pitch_degrees.to_radians();
-    camera.far_plane = (view_radius_bricks * 32 * 2) as f32;
     camera
 }
 
@@ -155,19 +149,17 @@ mod tests {
 
     #[test]
     fn the_camera_lands_in_the_right_brick_and_offset() {
-        let camera = camera_at([-1.0, 110.5, 70.0], 90.0, -30.0, 12);
+        let camera = camera_at([-1.0, 110.5, 70.0], 90.0, -30.0);
         assert_eq!(camera.position.brick(), BrickCoordinate::new(-1, 3, 2));
         assert_eq!(camera.position.offset(), [31.0, 14.5, 6.0]);
         assert!((camera.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
         assert!((camera.pitch + std::f32::consts::FRAC_PI_6).abs() < 1e-6);
-        assert_eq!(camera.far_plane, 768.0);
     }
 
     #[test]
     fn coordinates_are_the_voxel_the_position_is_in_in_binary() {
-        let binary = |position: [f64; 3]| {
-            binary_voxel_coordinates(camera_at(position, 0.0, 0.0, 12).position)
-        };
+        let binary =
+            |position: [f64; 3]| binary_voxel_coordinates(camera_at(position, 0.0, 0.0).position);
         assert_eq!(binary([0.0, 0.0, 0.0]), "x 0b0 y 0b0 z 0b0");
         assert_eq!(binary([11.9, 6.0, 5.5]), "x 0b1011 y 0b110 z 0b101");
         // Across bricks: 32 + 5 = 100101, 110 = 0b1101110.

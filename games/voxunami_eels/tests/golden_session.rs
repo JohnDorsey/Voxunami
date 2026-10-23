@@ -76,7 +76,7 @@ fn session(name: &str, arrangement: usize) -> (u64, usize, u64) {
         ),
     )
     .unwrap();
-    let start = camera_at([32.5, 40.0, 32.5], 0.0, 0.0, VIEW_RADIUS);
+    let start = camera_at([32.5, 40.0, 32.5], 0.0, 0.0);
     let recorded = record_connection(connector.connect().unwrap(), &path).unwrap();
     let mut first = Session::<_, Eels>::connect(
         recorded,

@@ -147,7 +147,7 @@ fn session(name: &str, arrangement: usize) -> (u64, usize, u64) {
     assert_eq!(occupied(&server), blocks.len());
     let connection = connector.connect().unwrap();
     let recorded = record_connection(connection, &path).unwrap();
-    let start = camera_at([30.5, SKY as f64 + 2.0, 12.5], 0.0, 0.0, VIEW_RADIUS);
+    let start = camera_at([30.5, SKY as f64 + 2.0, 12.5], 0.0, 0.0);
     let mut player = Session::<_, Game2048>::connect(
         recorded,
         &Identity::from_secret([1; 32]),

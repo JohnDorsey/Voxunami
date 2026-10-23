@@ -839,7 +839,7 @@ mod package_tests {
             &Identity::from_secret([1; 32]),
             Mode::Playing,
             3,
-            camera_at([16.0, 110.0, 16.0], 0.0, 0.0, 3),
+            camera_at([16.0, 110.0, 16.0], 0.0, 0.0),
             || {
                 server.step();
             },

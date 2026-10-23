@@ -127,7 +127,7 @@ impl Rig {
         yaw: f32,
         pitch: f32,
     ) -> Player {
-        let start = camera_at(position, yaw, pitch, VIEW_RADIUS);
+        let start = camera_at(position, yaw, pitch);
         let identity = Identity::from_secret([who; 32]);
         let server = &mut self.server;
         let mut player = Session::<_, Cave>::connect(
@@ -169,7 +169,7 @@ impl Rig {
         yaw: f32,
         pitch: f32,
     ) -> Player {
-        let start = camera_at(position, yaw, pitch, VIEW_RADIUS);
+        let start = camera_at(position, yaw, pitch);
         let identity = Identity::from_secret([who; 32]);
         let server = &mut self.server;
         Session::<_, Cave>::connect(
@@ -223,7 +223,6 @@ pub fn above_ground(player: &Player, x: i64, z: i64, height: f32) -> Camera {
         [x as f64 + 0.5, f64::from(ground + height), z as f64 + 0.5],
         0.0,
         0.0,
-        VIEW_RADIUS,
     );
     camera.look_by(0.0, -std::f32::consts::FRAC_PI_2); // clamped to just short of straight down
     camera

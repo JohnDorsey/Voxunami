@@ -95,7 +95,7 @@ impl Drop for DedicatedServer {
 static JOINED: AtomicU8 = AtomicU8::new(0);
 
 fn join(connection: Box<dyn Connection>, position: [f64; 3]) -> Player {
-    let start = camera_at(position, 0.0, 0.0, VIEW_RADIUS);
+    let start = camera_at(position, 0.0, 0.0);
     let identity = Identity::from_secret([JOINED.fetch_add(1, Ordering::Relaxed); 32]);
     Session::<_, Cave>::connect(
         connection,
@@ -283,7 +283,7 @@ fn a_recording_made_over_the_network_replays_the_same_view() {
         &Identity::generate(),
         Mode::Replaying,
         VIEW_RADIUS,
-        camera_at([0.0; 3], 0.0, 0.0, VIEW_RADIUS),
+        camera_at([0.0; 3], 0.0, 0.0),
         || {},
     )
     .unwrap();
