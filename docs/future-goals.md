@@ -272,7 +272,7 @@ then what it needs and what I found in the code.
       looks wrong. **Optional.**
     - *Weight the exposed faces of a coarse cell by the light in front of them* (owner, 2026-10-23; option (a) of `lod-spec.md` section 7): a face that looks out at dark, enclosed air counts for little in choosing the
       dominant block, so the walls of caves stop outvoting the grass on the top of a hill in the cells made from bricks (edited regions, ships). Needs sky light, which Cave does not have yet.
-    - Planets: a ground that is a ship, a sphere generator with analytic coarse sampling, a ship with a generator instead of every brick stored, atmosphere and
+    - Planets: (now planned as Phase 39 in `plan.md`, `lod-spec.md` 3.8: a ship with terrain generators sent to the client) a ground that is a ship, a sphere generator with analytic coarse sampling, atmosphere and
       fog for planet distances. Planets are rough spheres of cubes in ordinary space (no curved grids), real-planet size (10^8 m and more).
     - Stars as voxels of 2^32 m and more that break into smaller ones on approach (needs emissive blocks).
     - A telescope item that raises the detail where the player looks (the rule already refines with the field of view; the item and the download cost are new).

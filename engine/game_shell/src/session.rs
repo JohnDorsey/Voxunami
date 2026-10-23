@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use block_models::BlockTable;
 use client::{Client, ClientError, ClientEvent, Handshake, HandshakeProgress};
+use coarse_streaming::{CoarseNodes, SetDetail};
 use identity::Identity;
 use namespaced_id::NamespacedId;
 use player_presence::{
@@ -24,15 +25,16 @@ use voxel_space::{
 };
 use winit::keyboard::KeyCode;
 use world_view::{
-    GridMesher, MeshUpdate, RayHit, ViewChannels, ViewSettings, WorldMesher, cast_ray,
+    GridMesher, LodConfig, LodSettings, LodView, MeshUpdate, RayHit, ViewChannels, ViewSettings,
+    WorldMesher, cast_ray,
 };
 
 use crate::client_commands::ClientSettings;
 use crate::client_plugin::{
     ClientContext, ClientHost, ClientPlugin, MouseButton, Outgoing, SessionView,
 };
-use crate::definition::{GameContent, GameDefinition};
-use crate::host::WATCH_MARGIN_BRICKS;
+use crate::definition::{CoarseDetail, GameContent, GameDefinition};
+use crate::host::{COARSE_WATCH_MARGIN_BRICKS, WATCH_MARGIN_BRICKS};
 use crate::package_data::{PackageData, PackageError, check_materials};
 
 #[derive(Debug, thiserror::Error)]
@@ -58,6 +60,57 @@ pub enum Mode {
 /// How many bricks of ships are meshed in one update of the view: a ship is meshed on the thread that asks, so this bounds the time.
 const SHIP_BRICKS_PER_UPDATE: usize = 16;
 
+/// How the terrain around the camera is drawn.
+#[derive(Debug)]
+enum TerrainView {
+    /// Bricks around the camera and nothing beyond.
+    Bricks(Box<WorldMesher>),
+    /// Bricks near and coarse nodes beyond, as the game asks.
+    Coarse(Box<CoarseTerrain>),
+}
+
+#[derive(Debug)]
+struct CoarseTerrain {
+    view: LodView,
+    detail: CoarseDetail,
+    /// What the server was last asked (or would have been, in a replay).
+    asked: Option<SetDetail>,
+}
+
+impl TerrainView {
+    fn mesher(&self) -> &WorldMesher {
+        match self {
+            Self::Bricks(mesher) => mesher.as_ref(),
+            Self::Coarse(coarse) => coarse.view.mesher(),
+        }
+    }
+
+    fn mesher_mut(&mut self) -> &mut WorldMesher {
+        match self {
+            Self::Bricks(mesher) => mesher.as_mut(),
+            Self::Coarse(coarse) => coarse.view.mesher_mut(),
+        }
+    }
+
+    fn reset(&mut self) -> Vec<MeshUpdate> {
+        match self {
+            Self::Bricks(mesher) => mesher.reset(),
+            Self::Coarse(coarse) => coarse.view.reset(),
+        }
+    }
+
+    /// Whether there is nothing more to make or to put on the screen.
+    fn is_settled(&self) -> bool {
+        match self {
+            Self::Bricks(mesher) => mesher.pending_jobs() == 0,
+            Self::Coarse(coarse) => coarse.view.is_settled(),
+        }
+    }
+}
+
+/// The height of the picture, in pixels, until a window or a screenshot says otherwise.
+const DEFAULT_VIEWPORT_HEIGHT: f32 = 1080.0;
+
 #[derive(Debug)]
 pub struct Session<C: Connection, G: GameDefinition> {
     client: Client<C>,
@@ -67,7 +120,11 @@ pub struct Session<C: Connection, G: GameDefinition> {
     block_table: Arc<BlockTable>,
     /// The channels the view reads, before the client plugins have their say.
     view_channels: ViewChannels,
-    mesher: WorldMesher,
+    terrain: TerrainView,
+    /// What the mesher of the bricks was made with, for making it again when terrain is drawn farther.
+    view_settings: ViewSettings,
+    /// How many pixels high the picture is, which says how big a pixel is and so how fine the terrain has to be.
+    viewport_height: f32,
     /// The meshes of the ships the server has told this client of, and what the renderer was last told of where each is.
     grid_mesher: GridMesher,
     sent_poses: BTreeMap<GridId, GridPose>,
@@ -157,14 +214,16 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         let settings = ClientSettings::new(package.ambient_light);
         let worker_count = std::thread::available_parallelism()
             .map_or(2, |count| count.get().saturating_sub(1).max(2));
+        let view_settings = ViewSettings {
+            view_radius_bricks,
+            worker_count,
+        };
         let mesher = WorldMesher::new(
-            ViewSettings {
-                view_radius_bricks,
-                worker_count,
-            },
+            view_settings,
             view_channels.clone(),
             Arc::clone(&block_table),
         );
+        let terrain = TerrainView::Bricks(Box::new(mesher));
         let grid_mesher = GridMesher::new(view_channels.clone(), Arc::clone(&block_table));
         let mut session = Self {
             client,
@@ -172,7 +231,9 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             package,
             block_table,
             view_channels,
-            mesher,
+            terrain,
+            view_settings,
+            viewport_height: DEFAULT_VIEWPORT_HEIGHT,
             grid_mesher,
             sent_poses: BTreeMap::new(),
             camera: start,
@@ -251,7 +312,71 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     }
 
     pub fn mesher(&self) -> &WorldMesher {
-        &self.mesher
+        self.terrain.mesher()
+    }
+
+    /// Makes the session draw terrain beyond the bricks round the camera, as coarse nodes (`docs/lod-spec.md`), and ask the server for the ones it must
+    /// correct. Done before anything is drawn, or what has been is made again.
+    pub fn enable_coarse_detail(&mut self, detail: CoarseDetail) {
+        if matches!(self.terrain, TerrainView::Coarse(_)) {
+            return;
+        }
+        // (The server is told the radius as a byte.)
+        self.view_radius_bricks = self.view_radius_bricks.min(i64::from(u8::MAX));
+        self.view_settings.view_radius_bricks = self.view_radius_bricks;
+        let mesher = WorldMesher::new(
+            self.view_settings,
+            self.client_host.view(self.view_channels.clone()),
+            Arc::clone(&self.block_table),
+        );
+        self.terrain = TerrainView::Coarse(Box::new(CoarseTerrain {
+            view: LodView::new(
+                mesher,
+                LodConfig {
+                    unlit: detail.unlit,
+                    worker_count: self.view_settings.worker_count,
+                },
+            ),
+            detail,
+            asked: None,
+        }));
+        self.watched_center = None;
+        self.meshed_level = None;
+    }
+
+    /// How far beyond the radius of the view the player watches, so that what is drawn has its neighbours.
+    fn watch_margin_bricks(&self) -> i64 {
+        match self.terrain {
+            TerrainView::Bricks(_) => WATCH_MARGIN_BRICKS,
+            TerrainView::Coarse(_) => COARSE_WATCH_MARGIN_BRICKS,
+        }
+    }
+
+    /// How many pixels high the picture is: a bigger one has smaller pixels, and terrain is drawn finer to match.
+    pub fn set_viewport_height(&mut self, pixels: u32) {
+        self.viewport_height = pixels.max(1) as f32;
+    }
+
+    /// The radius, in bricks, the fog is set for: the distance terrain is drawn to.
+    pub fn fog_radius_bricks(&self) -> i64 {
+        match &self.terrain {
+            TerrainView::Bricks(_) => self.view_radius_bricks,
+            TerrainView::Coarse(coarse) => {
+                ((coarse.detail.maximum_distance / 32.0).ceil() as i64).max(self.view_radius_bricks)
+            }
+        }
+    }
+
+    /// What the server is asked for, and what the terrain is drawn with: how fine, as far as the camera sees and the picture is high.
+    fn coarse_request(&self, detail: &CoarseDetail) -> SetDetail {
+        let tangent = libm::tanf(self.camera.vertical_field_of_view * 0.5);
+        SetDetail {
+            cell_pixels: detail.cell_pixels,
+            pixel_size: (2.0 * tangent / self.viewport_height).clamp(1.0e-6, 1.0),
+            bytes_per_second: detail.bytes_per_second,
+            fine_radius: u8::try_from(self.view_radius_bricks).unwrap_or(u8::MAX),
+            zoom: None,
+        }
     }
 
     /// What every block and state of this game looks like and how it fills its cell.
@@ -285,7 +410,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         for event in update.events {
             match event {
                 ClientEvent::BrickChanged { grid, brick } if grid.root_level().is_some() => {
-                    self.mesher.brick_changed(brick);
+                    self.terrain.mesher_mut().brick_changed(brick);
                 }
                 ClientEvent::BrickChanged { grid, brick } => {
                     self.grid_mesher.brick_changed(grid, brick);
@@ -336,6 +461,19 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                         self.prompts.retain(|waiting| waiting.id != id);
                     }
                 }
+                ClientEvent::GameMessage { kind, payload } if kind == CoarseNodes::kind() => {
+                    // Nodes the server says differ from what the generators make. A message that cannot be read is dropped, as are the nodes of a game that
+                    // does not draw coarse nodes.
+                    if let (TerrainView::Coarse(coarse), Ok(CoarseNodes(updates))) =
+                        (&mut self.terrain, CoarseNodes::decode(&payload))
+                    {
+                        for update in updates {
+                            coarse
+                                .view
+                                .set_override(update.grid, update.cube, update.node);
+                        }
+                    }
+                }
                 ClientEvent::GameMessage { kind, payload } => {
                     // A kind no client plugin handles is another game's, or a message only a server needs.
                     self.client_host.message(&kind, &payload);
@@ -348,7 +486,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             self.players = self.players_among_the_entities();
         }
         let channels = self.client_host.view(self.view_channels.clone());
-        self.mesher.set_channels(channels.clone());
+        self.terrain.mesher_mut().set_channels(channels.clone());
         self.grid_mesher.set_channels(channels);
         if self.mode == Mode::Replaying {
             self.follow_recorded_player();
@@ -477,7 +615,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         if self.mode == Mode::Playing && self.watched_center != Some((self.level, center)) {
             let region = BrickBox::around(
                 center,
-                (self.view_radius_bricks + WATCH_MARGIN_BRICKS) as u32,
+                (self.view_radius_bricks + self.watch_margin_bricks()) as u32,
             );
             // A closed connection shows up in the next `advance`, which reports it.
             let _ = self.client.watch(self.level, region);
@@ -489,12 +627,47 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         let mut updates = Vec::new();
         if self.meshed_level != Some(level) {
             // Another level's bricks have nothing to do with the ones the meshes are of.
-            updates.extend(self.mesher.reset());
+            updates.extend(self.terrain.reset());
             self.meshed_level = Some(level);
         }
-        updates.extend(self.mesher.update(data, center));
+        let request = match &self.terrain {
+            TerrainView::Coarse(coarse) => Some(self.coarse_request(&coarse.detail)),
+            TerrainView::Bricks(_) => None,
+        };
+        match (&mut self.terrain, request) {
+            (TerrainView::Coarse(coarse), Some(request)) => {
+                let settings = LodSettings {
+                    detail: request.settings(),
+                    zoom: request.zoom(),
+                    maximum_distance: coarse.detail.maximum_distance,
+                };
+                updates.extend(
+                    coarse
+                        .view
+                        .update(level, data, self.camera.position, &settings),
+                );
+            }
+            (terrain, _) => updates.extend(terrain.mesher_mut().update(data, center)),
+        }
+        if let Some(request) = request {
+            self.ask_for_coarse_nodes(request);
+        }
         updates.extend(self.ship_updates());
         updates
+    }
+
+    /// Tells the server how the terrain is drawn, when that is not what it was told last. A replay asks for nothing.
+    fn ask_for_coarse_nodes(&mut self, request: SetDetail) {
+        let TerrainView::Coarse(coarse) = &mut self.terrain else {
+            return;
+        };
+        if coarse.asked == Some(request) {
+            return;
+        }
+        coarse.asked = Some(request);
+        if self.mode == Mode::Playing {
+            self.send_game_message(SetDetail::kind(), request.encode());
+        }
     }
 
     /// What the renderer must change for the ships: the ones that are gone, the ones that moved, and the bricks that were meshed.
@@ -552,7 +725,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                     .watched()
                     .is_some_and(|(level, _)| level == self.level),
             };
-            if updates.is_empty() && loaded && self.mesher.pending_jobs() == 0 {
+            if updates.is_empty() && loaded && self.terrain.is_settled() {
                 quiet_rounds += 1;
             } else {
                 quiet_rounds = 0;
@@ -608,7 +781,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             self.camera.position,
             forward,
             G::reach(),
-            |voxel| self.mesher.is_solid_at(voxel),
+            |voxel| self.mesher().is_solid_at(voxel),
         );
         let level = self.level();
         let ships = self
@@ -649,8 +822,8 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     fn target_content_of(&self, hit: &RayHit) -> Option<(u32, u32)> {
         if hit.grid.root_level().is_some() {
             return Some((
-                self.mesher.material_at(hit.voxel)?,
-                self.mesher.state_at(hit.voxel)?,
+                self.mesher().material_at(hit.voxel)?,
+                self.mesher().state_at(hit.voxel)?,
             ));
         }
         let voxels = &self.client.world().grids().get(hit.grid)?.voxels;

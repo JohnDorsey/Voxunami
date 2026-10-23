@@ -805,6 +805,21 @@ callers (ship creation, the bodies' terrain, the arrival look, the light-model s
 - Tests: the existing ones, rewritten by a tool for the calls (`regrid.py`, a scratch file) and by hand where a test expected an error for a level that is not there; two new for `detach_blocks` out of a
   ship and for `uniform_value` and `generated` on a ship. No pin moved. Windows 1745 and Linux 1746 tests pass; fmt and clippy clean.
 
+Phase 38i (levels of detail, step 9: coarse nodes in the stream, and bricks and nodes drawn together; 2026-10-23). See `lod-spec.md`, 3.5, 3.6a and section 9.
+- *Messages and the server* (`coarse_streaming`): `SetDetail` and `CoarseNodes` as plugin messages (no protocol bump), `CoarseServerPlugin` keeping the overrides of every edited cube (levels 1 to 12) with the exact cells of edited bricks
+  patched into the generator's node, remade finest first a few a tick, sent coarsest first within a rate in bytes. Pure pieces tested on their own: the order and the removals (`pending_updates`), the credit (`refilled`), the messages in groups of 256, the marking of a brick and its neighbours.
+- *Selection:* `FineRegion` (a ball of bricks and the cubes of two that touch it), `ViewSelection`/`select_around_brick` (one function for both ends, the viewer at the middle of its brick), a floor of detail level 1 outside the region.
+  `plan_swaps` (the groups in which what is drawn is exchanged for what is wanted). `CoarseNode::patched_with_child`, `without_exposure`, `WorldTerrain::coarse_generator`.
+- *The client:* `WorldMesher::with_held_back_display` (`is_ready`, `show`, `hide`), `LodView` (nodes made on threads, replaced where they are when the server says so), `MeshUpdate::UploadCoarse`/`RemoveCoarse`, the session's `enable_coarse_detail`,
+  the request it sends from the camera and the picture's height, fog for the distance drawn. Two shortcuts that came from measuring (a uniform node takes 3 ms to make and mesh; see `lod-spec.md` section 9).
+- *Tests:* server plugin 15 integration and 13 unit with the messages' 9; the region, the selection and the swap planner (with a property test on tilings with different ready sets); the held-back mesher 10; `LodView` 9 (tiling, walking 8 bricks never leaves a hole or draws twice, an override replaces a picture in place and taking it back
+  restores it, a stale picture is never put up); in the shell, an edit far away appears for a watcher and for a player who arrives later, and a recording shows what the live watcher saw.
+  **Mutation experiments** on each piece: the server plugin 32 mutants, 29 caught at first (the three left were an equivalent filter, a first-tick burst the budget test did not see and a fine radius not tested at a distance where it matters: tests added, all caught);
+  the region, the selection and the swap planner 17 (one equivalent); the held-back mesher 14 (one equivalent, one hangs rather than fails: a keep radius too small makes it reload what it unloads); the sealed-ground shortcut 5 and the uniform mesh 5, all caught
+  after a slab of ground in the air and a node beside a bubble were added; `LodView` 17, of which 13 caught, 1 equivalent (a hint), and 3 not tested (the order nodes are made in, a ready node made again, the accounting after a reset).
+- *Found:* a mixed node of Cave's terrain takes the generators 375 ms, so Cave does not use any of this yet (section 9); node counts are tens of thousands for a view of a kilometre; the exposure of a cell changes where nothing else does, so a node's version counts only what is sent.
+- Windows 1907 and Linux 1908 tests pass; fmt and clippy clean.
+
 Phase 38h (levels of detail, step 8: drawing coarse nodes; 2026-10-23). See `lod-spec.md`, 3.6.
 - *The renderer:* a `Placement` has a scale (the fourth float of its offset, which was padding), and the shader multiplies the mesh by it before the turn, so a coarse node's mesh (in cells) is drawn at `2^level` voxels a cell.
   `upload_coarse_node(cube, mesh)` / `remove_coarse_node` / `has_coarse_node` / `coarse_node_count` for the terrain, and `upload_grid_coarse_node` / `remove_grid_coarse_node` / `grid_coarse_node_count` for a ship (in its own coordinates, placed

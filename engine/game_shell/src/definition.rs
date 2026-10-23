@@ -75,6 +75,21 @@ pub struct CameraStart {
     pub pitch_degrees: f32,
 }
 
+/// How a game draws terrain that is far away: as coarse nodes (`docs/lod-spec.md`), which the client makes from the terrain generators and the server corrects where
+/// the world has been edited. A game that does not say draws bricks around the camera and nothing beyond.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CoarseDetail {
+    /// How far, in voxels, terrain is drawn.
+    pub maximum_distance: f64,
+    /// How bright terrain that the generators made is: they know nothing of the light, so this is the light of everything far away that nobody has edited (the
+    /// server is configured with the same).
+    pub unlit: u8,
+    /// How many pixels across a cell of a node may be before it is split: the lower, the finer the drawing and the more nodes.
+    pub cell_pixels: f32,
+    /// The most bytes a second of corrected nodes the client asks the server for.
+    pub bytes_per_second: u32,
+}
+
 /// A game, as the shell runs it. Implemented by a unit struct in each game's crate.
 ///
 /// The shell does everything that does not depend on the game: the window and camera, the
@@ -148,6 +163,11 @@ pub trait GameDefinition: Sized + 'static {
     ) -> Option<(NamespacedId, Vec<u8>)> {
         None
     }
+    /// How far terrain is drawn, if beyond the bricks round the camera it is. The default is not at all.
+    fn coarse_detail() -> Option<CoarseDetail> {
+        None
+    }
+
     /// The plugins that are the server's rules. Each is given the world the server starts from when it
     /// is registered, and so finds any state it saved. The order of the list does not matter.
     fn plugins(content: &Self::Content) -> Vec<Box<dyn Plugin>>;

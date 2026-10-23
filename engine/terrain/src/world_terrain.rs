@@ -127,6 +127,24 @@ impl WorldTerrain {
         self.default_generator
     }
 
+    /// The coarse cells of a cube of bricks (see [`TerrainGenerator::coarse_node`]), from the generator of the brick in the middle of the cube, or the default
+    /// generator where nothing is assigned yet (the one the region will have when it is first needed). A cube with more than one generator in it is drawn
+    /// as the one in the middle; `None` if that generator is not available or does not give coarse cells.
+    pub fn coarse_node(&self, cube: BrickCube, unlit: u8) -> Option<coarse_cells::CoarseNode> {
+        self.coarse_generator(cube)?.coarse_node(cube, unlit)
+    }
+
+    /// The generator that makes the coarse cells of a cube (see [`WorldTerrain::coarse_node`]), for handing to a thread that makes them.
+    pub fn coarse_generator(&self, cube: BrickCube) -> Option<Arc<dyn TerrainGenerator>> {
+        let half = (cube.edge_length() / 2) as i64;
+        let origin = cube.origin();
+        let middle = BrickCoordinate::new(origin.x() + half, origin.y() + half, origin.z() + half);
+        let generator = self
+            .assigned_generator(middle)
+            .unwrap_or(self.default_generator);
+        self.generators.entry(generator)?.content().cloned()
+    }
+
     pub fn generate(&self, layout: &GridLayout, brick: BrickCoordinate) -> GenerationOutcome {
         let Some(generator_id) = self.assigned_generator(brick) else {
             return GenerationOutcome::Unassigned;
@@ -209,6 +227,46 @@ mod tests {
             GenerationOutcome::Generated(brick) => brick,
             other => panic!("expected a generated brick, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_coarse_cells_of_a_cube_are_those_of_the_generator_in_its_middle_the_default_where_nothing_is_assigned_and_none_where_it_is_missing()
+     {
+        let mut fixture = fixture(3);
+        let cube = |origin: [i64; 3], level: u8| {
+            BrickCube::new(brick(origin[0], origin[1], origin[2]), level).unwrap()
+        };
+        // Flat ground at 10 (the default) and at 40: a cube of level 3 from y = 0 holds voxels 0 to 255, and its cells (8 voxels) are the ground below
+        // 10 and below 40 respectively; the cell at height 4 is ground for both and the cell at height 2 (voxels 16 to 23) is air under the first and ground under the second.
+        let at = voxel_space::LocalVoxelIndex::new(3, 2, 3);
+        let unassigned = fixture.terrain.coarse_node(cube([8, 0, 8], 3), 7).unwrap();
+        assert_eq!(unassigned.cell(at).fill, 0, "the default has ground to 10");
+        // Assign the cube to the higher ground: now it is ground there.
+        fixture
+            .terrain
+            .set_assignment(cube([8, 0, 8], 3), Some(fixture.high));
+        let assigned = fixture.terrain.coarse_node(cube([8, 0, 8], 3), 7).unwrap();
+        assert_eq!(assigned.cell(at).fill, 255);
+        // A cube that holds both is drawn as the generator in its middle: the cube of level 4 from (0, 0, 0) (cells of 16 voxels, voxels 0 to 511) has
+        // its middle brick at (8, 8, 8), in the cube assigned to the high ground (to 40), so its cell at height 1 (voxels 16 to 31) is ground, which
+        // the low ground (to 10) would leave air.
+        let in_the_middle = voxel_space::LocalVoxelIndex::new(3, 1, 3);
+        fixture
+            .terrain
+            .set_assignment(cube([8, 8, 8], 3), Some(fixture.high));
+        let mixed = fixture.terrain.coarse_node(cube([0, 0, 0], 4), 7).unwrap();
+        assert_eq!(mixed.cell(in_the_middle).fill, 255);
+        fixture
+            .terrain
+            .set_assignment(cube([8, 8, 8], 3), Some(fixture.low));
+        let now_low = fixture.terrain.coarse_node(cube([0, 0, 0], 4), 7).unwrap();
+        assert_eq!(now_low.cell(in_the_middle).fill, 0);
+        // A generator whose plugin is missing gives nothing, and so does a brick-sized cube (a brick is generated, not summarised).
+        fixture
+            .terrain
+            .set_assignment(cube([16, 0, 16], 3), Some(fixture.ghost));
+        assert_eq!(fixture.terrain.coarse_node(cube([16, 0, 16], 3), 7), None);
+        assert_eq!(fixture.terrain.coarse_node(cube([8, 0, 8], 0), 7), None);
     }
 
     #[test]

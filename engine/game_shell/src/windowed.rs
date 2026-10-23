@@ -76,7 +76,7 @@ pub fn play<G: GameDefinition>(options: PlayOptions) -> Result<(), String> {
         None => connection,
     };
     let start = camera_at(options.camera, options.yaw_degrees, options.pitch_degrees);
-    let session = Session::<_, G>::connect(
+    let mut session = Session::<_, G>::connect(
         connection,
         &identity,
         Mode::Playing,
@@ -87,6 +87,9 @@ pub fn play<G: GameDefinition>(options: PlayOptions) -> Result<(), String> {
         },
     )
     .map_err(|error| error.to_string())?;
+    if let Some(detail) = G::coarse_detail() {
+        session.enable_coarse_detail(detail);
+    }
 
     let (_session, failure) = run_window::<G>(session, &view)?;
     if let Some(host) = host {
@@ -111,7 +114,7 @@ pub fn replay<G: GameDefinition>(options: ReplayOptions) -> Result<(), String> {
     let view = options.view;
     let connection: Box<dyn Connection> = Box::new(open_recording(&options.file)?);
     let start = camera_at([0.0, 0.0, 0.0], 0.0, 0.0);
-    let session = Session::<_, G>::connect(
+    let mut session = Session::<_, G>::connect(
         connection,
         &crate::player_identity::for_replay(),
         Mode::Replaying,
@@ -120,6 +123,9 @@ pub fn replay<G: GameDefinition>(options: ReplayOptions) -> Result<(), String> {
         || {},
     )
     .map_err(|error| error.to_string())?;
+    if let Some(detail) = G::coarse_detail() {
+        session.enable_coarse_detail(detail);
+    }
     let (_, failure) = run_window::<G>(session, &view)?;
     failure.map_or(Ok(()), Err)
 }
@@ -177,8 +183,6 @@ struct Viewer<G: GameDefinition> {
     entry: CommandEntry,
     /// The latest answer to a command, and when it came.
     reply: Option<(String, Instant)>,
-    /// How far the view reaches (which the fog depends on).
-    view_radius: i64,
     started: Instant,
     last_frame: Instant,
     last_pose_sent: Instant,
@@ -201,7 +205,7 @@ impl<G: GameDefinition> Viewer<G> {
     fn new(
         event_loop: &ActiveEventLoop,
         view: &ViewOptions,
-        session: GameSession<G>,
+        mut session: GameSession<G>,
     ) -> Result<Self, String> {
         let attributes = Window::default_attributes()
             .with_title(G::title())
@@ -227,6 +231,7 @@ impl<G: GameDefinition> Viewer<G> {
             .find(|format| format.is_srgb())
             .ok_or("the display offers no sRGB surface format")?;
         let size = window.inner_size();
+        session.set_viewport_height(size.height);
         let surface_configuration = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -249,7 +254,7 @@ impl<G: GameDefinition> Viewer<G> {
             &mut renderer,
             session.block_table(),
             session.package().ambient_light,
-            view.view_radius,
+            session.fog_radius_bricks(),
         );
         renderer.set_crosshair(session.mode() == Mode::Playing && G::shows_crosshair());
         let now = Instant::now();
@@ -268,7 +273,6 @@ impl<G: GameDefinition> Viewer<G> {
             focus: None,
             entry: CommandEntry::default(),
             reply: None,
-            view_radius: view.view_radius,
             started: now,
             last_frame: now,
             last_pose_sent: now,
@@ -291,7 +295,7 @@ impl<G: GameDefinition> Viewer<G> {
         if is_client_command(text) {
             let reply = self.session.client_command(text);
             self.renderer.set_atmosphere(atmosphere(
-                self.view_radius,
+                self.session.fog_radius_bricks(),
                 self.session.settings().ambient_light,
             ));
             println!("{reply}");
@@ -626,6 +630,7 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
                 viewer
                     .surface
                     .configure(&viewer.context.device, &viewer.surface_configuration);
+                viewer.session.set_viewport_height(size.height);
             }
             // A press the system makes up when the window gains focus while a key is down belongs
             // to whatever had the focus before; a release is harmless.

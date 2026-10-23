@@ -9,6 +9,8 @@
 
 pub mod client_commands;
 pub mod client_plugin;
+#[cfg(test)]
+mod coarse_view_tests;
 mod command_entry;
 mod definition;
 pub mod files;
@@ -29,7 +31,7 @@ pub mod view;
 mod windowed;
 
 pub use data_packs::{PackErrors, RawFile, RawPack};
-pub use definition::{CameraStart, GameContent, GameDefinition};
+pub use definition::{CameraStart, CoarseDetail, GameContent, GameDefinition};
 pub use identity::Identity;
 pub use package::{ContentPackage, GeneratorFactory, PackageSpec};
 pub use package_data::{PackageData, PackageError, check_materials};

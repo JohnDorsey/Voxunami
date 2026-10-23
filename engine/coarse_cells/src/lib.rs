@@ -10,9 +10,16 @@
 //! ground is). They are for drawing only: nothing in the simulation reads them, and they are never saved.
 
 mod cell;
+mod fine_region;
 mod node;
 mod selection;
+mod swap;
 
 pub use cell::{BRIGHTEST_LIGHT_UP_TO_LEVEL, CoarseCell, DRAWN_FILL, FULL_LIGHT, combine};
+pub use fine_region::FineRegion;
 pub use node::{CELLS_PER_NODE, CoarseNode, NODE_EDGE};
-pub use selection::{DetailSettings, MAXIMUM_DETAIL_LEVEL, Selection, Zoom, select_nodes};
+pub use selection::{
+    DetailSettings, MAXIMUM_DETAIL_LEVEL, Selection, ViewSelection, Zoom, brick_centre,
+    select_around_brick, select_nodes,
+};
+pub use swap::{Swap, plan_swaps};

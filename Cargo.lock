@@ -426,6 +426,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "coarse_streaming"
+version = "0.0.0"
+dependencies = [
+ "binary_codec",
+ "block_models",
+ "coarse_cells",
+ "libm",
+ "namespaced_id",
+ "player_presence",
+ "plugin_host",
+ "proptest",
+ "protocol",
+ "region_octree",
+ "server",
+ "transport",
+ "voxel_grid",
+ "voxel_meshing",
+ "voxel_space",
+ "world_storage",
+]
+
+[[package]]
 name = "codespan-reporting"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -947,18 +969,22 @@ dependencies = [
  "binary_codec",
  "block_models",
  "client",
+ "coarse_cells",
+ "coarse_streaming",
  "content_registry",
  "ctrlc",
  "data_packs",
  "entities",
  "glam 0.34.1",
  "identity",
+ "libm",
  "namespaced_id",
  "player_presence",
  "plugin_host",
  "png",
  "proptest",
  "protocol",
+ "region_octree",
  "renderer",
  "replay",
  "server",
@@ -967,6 +993,7 @@ dependencies = [
  "transport",
  "ui",
  "voxel_grid",
+ "voxel_meshing",
  "voxel_space",
  "wgpu",
  "winit",

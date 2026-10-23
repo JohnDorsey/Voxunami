@@ -47,6 +47,19 @@ impl CoarseNode {
         }
     }
 
+    /// The same node with the exposure of every cell set to 0: what a client has of a node it was sent (exposure is working data for making a parent, and
+    /// a client does not make parents of what it is sent).
+    pub fn without_exposure(&self) -> Self {
+        let plain = |cell: CoarseCell| CoarseCell {
+            exposure: 0,
+            ..cell
+        };
+        match self {
+            Self::Uniform(cell) => Self::Uniform(plain(*cell)),
+            Self::Cells(cells) => Self::from_cells(cells.iter().copied().map(plain).collect()),
+        }
+    }
+
     /// The one cell every cell is, if they are all the same.
     pub fn uniform_cell(&self) -> Option<CoarseCell> {
         match self {
@@ -61,6 +74,43 @@ impl CoarseNode {
             Self::Uniform(cell) => *cell,
             Self::Cells(cells) => cells[index],
         })
+    }
+
+    /// This node with the cells that one of its eight halves covers replaced by the cells that `child` (the node of that half, one detail level finer) makes:
+    /// the 16 x 16 x 16 cells of the octant `x + 2 y + 4 z` become the combinations of the eight child cells under each. `parent_level` is the detail level of
+    /// this node. What the rest of the node holds is untouched, so a node that is approximately known (made from a generator) can be made exact where its
+    /// halves are known exactly.
+    pub fn patched_with_child(
+        &self,
+        octant: usize,
+        child: &Self,
+        parent_level: LevelOfDetail,
+        air: u32,
+    ) -> Self {
+        assert!(octant < 8, "there are eight octants");
+        let mut cells: Vec<CoarseCell> = self.cells().collect();
+        let (ox, oy, oz) = (
+            (octant & 1) * 16,
+            ((octant >> 1) & 1) * 16,
+            (octant >> 2) * 16,
+        );
+        for z in 0..16 {
+            for y in 0..16 {
+                for x in 0..16 {
+                    let eight: [CoarseCell; 8] = std::array::from_fn(|which| {
+                        let (dx, dy, dz) = (which & 1, (which >> 1) & 1, which >> 2);
+                        child.cell(LocalVoxelIndex::new(
+                            (2 * x + dx) as u8,
+                            (2 * y + dy) as u8,
+                            (2 * z + dz) as u8,
+                        ))
+                    });
+                    let at = LocalVoxelIndex::new((ox + x) as u8, (oy + y) as u8, (oz + z) as u8);
+                    cells[at.index()] = combine(&eight, parent_level, air);
+                }
+            }
+        }
+        Self::from_cells(cells)
     }
 
     /// The node one detail level up that covers eight nodes: `children` are the nodes of the eight octants, in the order `x + 2 y + 4 z` (so the
@@ -136,6 +186,81 @@ mod tests {
             }
         }
         CoarseNode::from_cells(cells)
+    }
+
+    #[test]
+    fn patching_with_a_child_replaces_the_cells_of_that_half_with_the_combinations_and_nothing_else()
+     {
+        let parent = CoarseNode::uniform(solid(STONE, 0));
+        // A child that is grass on its bottom layer and air above.
+        let child = node_of(|_, y, _| {
+            if y == 0 {
+                solid(GRASS, CoarseCell::EXPOSURE_ONE)
+            } else {
+                CoarseCell::empty(AIR, 7)
+            }
+        });
+        for octant in 0..8usize {
+            let patched = parent.patched_with_child(octant, &child, level(1), AIR);
+            let (ox, oy, oz) = (
+                (octant & 1) * 16,
+                ((octant >> 1) & 1) * 16,
+                (octant >> 2) * 16,
+            );
+            for (x, y, z) in [
+                (0usize, 0usize, 0usize),
+                (15, 15, 15),
+                (16, 5, 5),
+                (31, 31, 31),
+                (3, 20, 9),
+            ] {
+                let inside = (ox..ox + 16).contains(&x)
+                    && (oy..oy + 16).contains(&y)
+                    && (oz..oz + 16).contains(&z);
+                let found = patched.cell(LocalVoxelIndex::new(x as u8, y as u8, z as u8));
+                if inside {
+                    // The cells of the child at (2x, 2y, 2z) mod 32 and the seven after it: the layer 0 is grass, layer 1 air: half full grass.
+                    let layer = (2 * (y - oy)) % 32;
+                    let expected = if layer == 0 { GRASS } else { AIR };
+                    if layer == 0 {
+                        assert_eq!(
+                            (found.block, found.fill),
+                            (expected, 128),
+                            "octant {octant} ({x}, {y}, {z})"
+                        );
+                    } else {
+                        assert_eq!(found.fill, 0, "octant {octant} ({x}, {y}, {z})");
+                    }
+                } else {
+                    assert_eq!(
+                        found,
+                        solid(STONE, 0),
+                        "octant {octant} ({x}, {y}, {z}) is outside it"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn patching_all_eight_halves_with_the_children_is_making_the_node_from_them() {
+        let pattern = |octant: usize| {
+            node_of(move |x, y, z| {
+                if (x + 2 * y + 3 * z + octant).is_multiple_of(5) {
+                    CoarseCell::empty(AIR, 3)
+                } else {
+                    solid(1 + ((x + y + octant) % 3) as u32, ((x * y) % 7) as u32 * 64)
+                }
+            })
+        };
+        let children: Vec<CoarseNode> = (0..8).map(pattern).collect();
+        let refs: [&CoarseNode; 8] = std::array::from_fn(|index| &children[index]);
+        let made = CoarseNode::from_children(refs, level(3), AIR);
+        let mut patched = CoarseNode::uniform(CoarseCell::empty(AIR, 0));
+        for (octant, child) in children.iter().enumerate() {
+            patched = patched.patched_with_child(octant, child, level(3), AIR);
+        }
+        assert_eq!(patched, made);
     }
 
     #[test]

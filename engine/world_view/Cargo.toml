@@ -8,6 +8,8 @@ description = "Turns a world into what a viewer draws: meshes kept up to date in
 
 [dependencies]
 block_models.workspace = true
+coarse_cells.workspace = true
+region_octree.workspace = true
 terrain.workspace = true
 voxel_grid.workspace = true
 voxel_meshing.workspace = true
@@ -15,10 +17,8 @@ voxel_space.workspace = true
 world_storage.workspace = true
 
 [dev-dependencies]
-coarse_cells.workspace = true
 content_registry.workspace = true
 proptest.workspace = true
-region_octree.workspace = true
 voxel_grid = { workspace = true, features = ["test-support"] }
 world_storage = { workspace = true, features = ["test-support"] }
 

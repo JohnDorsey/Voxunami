@@ -28,25 +28,58 @@ pub(crate) fn coarse_node_of_field(
     cube: BrickCube,
     unlit: u8,
 ) -> Option<CoarseNode> {
+    let sampler = sampler_of(field, cube)?;
+    // Ground that the bounds say has ground all round it and over it is the same everywhere, without asking about each of 32,768 cells: the half of the
+    // world that is under the other half.
+    if sampler.is_sealed_ground() {
+        return Some(CoarseNode::uniform(CoarseCell {
+            block: materials.stone,
+            fill: 255,
+            light: unlit,
+            exposure: 0,
+        }));
+    }
+    Some(coarse_node_by_cells(&sampler, materials, unlit))
+}
+
+/// The same as [`coarse_node_of_field`], asking about every cell (what it was before the shortcut for sealed ground; the tests check them against each other).
+#[cfg(test)]
+pub(crate) fn coarse_node_of_field_cell_by_cell(
+    field: &dyn DensityField,
+    materials: TerrainMaterials,
+    cube: BrickCube,
+    unlit: u8,
+) -> Option<CoarseNode> {
+    let sampler = sampler_of(field, cube)?;
+    Some(coarse_node_by_cells(&sampler, materials, unlit))
+}
+
+fn sampler_of(field: &dyn DensityField, cube: BrickCube) -> Option<Sampler<'_>> {
     let level = cube.level();
     if level == 0 {
         return None;
     }
-    let detail = LevelOfDetail::new(level)?;
-    let sampler = Sampler {
+    Some(Sampler {
         field,
-        detail,
+        detail: LevelOfDetail::new(level)?,
         edge: 1i64 << level,
         origin: cube.origin().origin(),
         halo: RefCell::new(HashMap::new()),
-    };
+    })
+}
+
+fn coarse_node_by_cells(
+    sampler: &Sampler<'_>,
+    materials: TerrainMaterials,
+    unlit: u8,
+) -> CoarseNode {
     let air = materials.air;
 
     // The fill of every cell of the node, found a block at a time where the bounds say the whole block is air or ground.
     let mut fills = vec![0u8; CELLS_PER_NODE];
     sampler.fill_block([0, 0, 0], NODE_EDGE as i64, &mut fills);
     if fills.iter().all(|&fill| fill == 0) {
-        return Some(CoarseNode::uniform(CoarseCell::empty(air, unlit)));
+        return CoarseNode::uniform(CoarseCell::empty(air, unlit));
     }
     let index = |cell: [i64; 3]| (cell[0] + 32 * cell[1] + 1024 * cell[2]) as usize;
     // What a cell is, inside the node or beside it.
@@ -118,7 +151,7 @@ pub(crate) fn coarse_node_of_field(
             }
         }
     }
-    Some(CoarseNode::from_cells(cells))
+    CoarseNode::from_cells(cells)
 }
 
 struct Sampler<'a> {
@@ -146,6 +179,28 @@ impl Sampler<'_> {
             size * self.edge - 1,
         )?;
         VoxelBox::new(low, high)
+    }
+
+    /// Whether the bounds say that all of the node, the cells round it, and the cells over it that the layers of the surface look at, are ground: then every
+    /// cell of the node is stone, whole and with no surface.
+    fn is_sealed_ground(&self) -> bool {
+        // The layers look up until the ground over a cell is as deep as the surface layer.
+        let above = (SURFACE_LAYER_DEPTH as i64 + self.edge - 1) / self.edge;
+        let low = self
+            .origin
+            .checked_offset(-self.edge, -self.edge, -self.edge);
+        let high = self.origin.checked_offset(
+            (NODE_EDGE as i64 + 1) * self.edge - 1,
+            (NODE_EDGE as i64 + above) * self.edge - 1,
+            (NODE_EDGE as i64 + 1) * self.edge - 1,
+        );
+        let Some(region) = low
+            .zip(high)
+            .and_then(|(low, high)| VoxelBox::new(low, high))
+        else {
+            return false;
+        };
+        self.field.bounds(&region, self.detail).lower() > 0.0
     }
 
     /// Fills `out` (the fills of the node, x fastest) for the block of `size` cells along an edge from `base`: all of it at once where the bounds say
@@ -290,6 +345,136 @@ mod tests {
 
     fn cell(node: &CoarseNode, x: u8, y: u8, z: u8) -> CoarseCell {
         node.cell(voxel_space::LocalVoxelIndex::new(x, y, z))
+    }
+
+    /// Every node of this field that is wholly ground or wholly air or not, at levels 1 to 6 over a stretch of bricks: the shortcut for sealed ground gives
+    /// what asking about every cell gives.
+    fn assert_the_shortcut_changes_nothing(
+        field: &dyn DensityField,
+        bricks: std::ops::Range<i64>,
+        at_least_solid: usize,
+    ) {
+        let mut sealed = 0;
+        for level in 1..=6u8 {
+            let edge = 1i64 << level;
+            let aligned = |range: &std::ops::Range<i64>| {
+                (range.start.div_euclid(edge)..=(range.end.div_euclid(edge))).map(move |n| n * edge)
+            };
+            for x in aligned(&bricks) {
+                for y in aligned(&bricks) {
+                    for z in aligned(&bricks) {
+                        let cube = BrickCube::new(BrickCoordinate::new(x, y, z), level).unwrap();
+                        let quick = coarse_node_of_field(field, materials(), cube, UNLIT);
+                        let slow =
+                            coarse_node_of_field_cell_by_cell(field, materials(), cube, UNLIT);
+                        assert_eq!(quick, slow, "{cube:?}");
+                        sealed += usize::from(
+                            quick
+                                .as_ref()
+                                .and_then(CoarseNode::uniform_cell)
+                                .is_some_and(|cell| cell.fill == 255),
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            sealed >= at_least_solid,
+            "only {sealed} nodes were solid to the end"
+        );
+    }
+
+    #[test]
+    fn the_shortcut_for_ground_with_ground_all_round_it_changes_nothing_on_flat_ground_a_step_and_a_bubble()
+     {
+        assert_the_shortcut_changes_nothing(&Flat(50.0), -6..6, 10);
+        assert_the_shortcut_changes_nothing(&Flat(77.3), -6..6, 10);
+        // The ground reaching to just over the top of a node: the layers of the surface are in the node.
+        for height in [64.5, 66.0, 67.5, 130.0] {
+            assert_the_shortcut_changes_nothing(&Flat(height), -6..6, 10);
+        }
+        #[derive(Debug)]
+        struct Step;
+        impl DensityField for Step {
+            fn sample(&self, position: VoxelCoordinate, _: LevelOfDetail) -> f64 {
+                let height = if position.x() < 0 { 100.0 } else { 40.0 };
+                height - (position.y() as f64 + 0.5)
+            }
+            fn bounds(&self, region: &VoxelBox, _: LevelOfDetail) -> Interval {
+                let (low, high): (f64, f64) = (
+                    if region.min().x() < 0 { 100.0 } else { 40.0 },
+                    if region.max().x() < 0 { 100.0 } else { 40.0 },
+                );
+                Interval::new(
+                    low.min(high) - (region.max().y() as f64 + 0.5),
+                    low.max(high) - (region.min().y() as f64 + 0.5),
+                )
+            }
+        }
+        assert_the_shortcut_changes_nothing(&Step, -6..6, 10);
+        // A slab of ground in the air: the cells under and over it are air.
+        #[derive(Debug)]
+        struct Slab {
+            low: f64,
+            high: f64,
+        }
+        impl DensityField for Slab {
+            fn sample(&self, position: VoxelCoordinate, _: LevelOfDetail) -> f64 {
+                let y = position.y() as f64 + 0.5;
+                (y - self.low).min(self.high - y)
+            }
+            fn bounds(&self, region: &VoxelBox, _: LevelOfDetail) -> Interval {
+                let (bottom, top) = (region.min().y() as f64 + 0.5, region.max().y() as f64 + 0.5);
+                let value = |y: f64| (y - self.low).min(self.high - y);
+                let middle = (self.low + self.high) / 2.0;
+                let upper = if (bottom..=top).contains(&middle) {
+                    (self.high - self.low) / 2.0
+                } else {
+                    value(bottom).max(value(top))
+                };
+                Interval::new(value(bottom).min(value(top)), upper)
+            }
+        }
+        assert_the_shortcut_changes_nothing(
+            &Slab {
+                low: 64.0,
+                high: 300.0,
+            },
+            -6..6,
+            0,
+        );
+        assert_the_shortcut_changes_nothing(
+            &Slab {
+                low: 63.0,
+                high: 129.0,
+            },
+            -6..6,
+            0,
+        );
+        assert_the_shortcut_changes_nothing(
+            &Bubble {
+                centre: [1000.0, 1000.0, 1000.0],
+                radius: 300.0,
+            },
+            -6..6,
+            10,
+        );
+    }
+
+    #[test]
+    fn a_node_the_bubble_comes_up_to_is_not_taken_for_sealed_ground() {
+        // Ground but for a ball of air that reaches into the cell beside the node: the cell that has air beside it has a surface.
+        let field = Bubble {
+            centre: [-10.0, 16.0, 16.0],
+            radius: 10.0,
+        };
+        let cube = BrickCube::new(BrickCoordinate::new(0, 0, 0), 1).unwrap();
+        let found = coarse_node_of_field(&field, materials(), cube, UNLIT).unwrap();
+        assert!(found.uniform_cell().is_none(), "the node is not uniform");
+        assert_eq!(
+            Some(found),
+            coarse_node_of_field_cell_by_cell(&field, materials(), cube, UNLIT)
+        );
     }
 
     #[test]

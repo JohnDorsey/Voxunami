@@ -15,6 +15,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 
 use block_models::BlockTable;
+use coarse_cells::FineRegion;
+use region_octree::BrickCube;
 use terrain::TerrainGenerator;
 use voxel_grid::{Brick, ChannelIndex, ChannelStorage, GridLayout};
 use voxel_meshing::{BrickChannels, BrickNeighbourhood, PackedBrickMesh, mesh_brick};
@@ -127,6 +129,12 @@ pub enum MeshUpdate {
     },
     /// A ship is gone, with all its bricks.
     RemoveGrid(GridId),
+    /// Replaces the picture of a coarse node of the terrain (a cube of bricks of detail level 1 or more, see `coarse_cells`).
+    UploadCoarse {
+        cube: BrickCube,
+        mesh: PackedBrickMesh,
+    },
+    RemoveCoarse(BrickCube),
 }
 
 struct NeighbourhoodSnapshot {
@@ -226,6 +234,14 @@ pub struct WorldMesher {
     versions: HashMap<BrickCoordinate, u64>,
     /// Offsets of bricks to load: the view sphere plus a one-brick shell for neighbours.
     load_offsets: Vec<[i64; 3]>,
+    /// Whether the pictures are kept until they are asked for (see [`WorldMesher::with_held_back_display`]).
+    held_back: bool,
+    /// The pictures of bricks that are up to date and not shown, when held back.
+    finished: HashMap<BrickCoordinate, PackedBrickMesh>,
+    /// Counts the pictures that have become ready, so that a coordinator can tell that there is something new.
+    ready_serial: u64,
+    /// The bricks that were asked to be shown and not to be hidden, when held back (including the ones with nothing to see).
+    shown: HashSet<BrickCoordinate>,
     jobs: Option<mpsc::Sender<Job>>,
     results: mpsc::Receiver<JobResult>,
     workers: Vec<JoinHandle<()>>,
@@ -334,12 +350,70 @@ impl WorldMesher {
             displayed: HashSet::new(),
             versions: HashMap::new(),
             load_offsets: offsets_within(settings.view_radius_bricks + 1),
+            held_back: false,
+            finished: HashMap::new(),
+            ready_serial: 0,
+            shown: HashSet::new(),
             jobs: Some(job_sender),
             results,
             workers,
             scheduled_last_update: 0,
             epoch: 0,
         }
+    }
+
+    /// Makes the mesher keep the pictures it makes instead of reporting them, for a view that swaps bricks and coarse nodes for each other
+    /// (`docs/lod-spec.md`, 3.6) and so decides when a picture goes up: [`WorldMesher::is_ready`] says that one is waiting, [`WorldMesher::show`] hands it out
+    /// and [`WorldMesher::hide`] takes it down. The bricks it makes pictures of are the ones the view radius (as a [`FineRegion`]) says are drawn as bricks:
+    /// those in a cube of two bricks that touches the ball. A brick that is shown and changes is reported again as it is made, since it is on the screen
+    /// already. Bricks that go out of range are not hidden, that is for the caller to do.
+    pub fn with_held_back_display(mut self) -> Self {
+        self.held_back = true;
+        // The wanted bricks reach less than two bricks past the ball, and their neighbours one more.
+        self.load_offsets = offsets_within(self.settings.view_radius_bricks + 3);
+        self
+    }
+
+    /// How many pictures have become ready since the mesher was made (when held back).
+    pub fn ready_serial(&self) -> u64 {
+        self.ready_serial
+    }
+
+    /// The radius of the ball of bricks that are drawn as bricks.
+    pub fn view_radius_bricks(&self) -> i64 {
+        self.settings.view_radius_bricks
+    }
+
+    /// Whether a picture of the brick is waiting to be shown (when held back).
+    pub fn is_ready(&self, coordinate: BrickCoordinate) -> bool {
+        self.finished.contains_key(&coordinate)
+    }
+
+    /// Whether the brick has been asked to be shown and not hidden since (when held back).
+    pub fn is_shown(&self, coordinate: BrickCoordinate) -> bool {
+        self.shown.contains(&coordinate)
+    }
+
+    /// Shows the picture of a brick that [`WorldMesher::is_ready`]: returns what the renderer must be given for it, which is nothing if there is nothing to see
+    /// (the brick is shown all the same). Nothing happens, and nothing is returned, for a brick that is not ready.
+    pub fn show(&mut self, coordinate: BrickCoordinate) -> Option<MeshUpdate> {
+        let mesh = self.finished.remove(&coordinate)?;
+        self.shown.insert(coordinate);
+        if mesh.is_empty() {
+            return None;
+        }
+        self.displayed.insert(coordinate);
+        Some(MeshUpdate::Upload { coordinate, mesh })
+    }
+
+    /// Takes a shown brick down: returns what the renderer must do, which is nothing if it had nothing on the screen.
+    pub fn hide(&mut self, coordinate: BrickCoordinate) -> Option<MeshUpdate> {
+        if !self.shown.remove(&coordinate) {
+            return None;
+        }
+        self.displayed
+            .remove(&coordinate)
+            .then_some(MeshUpdate::Remove(coordinate))
     }
 
     /// Jobs handed to workers and not yet finished.
@@ -413,6 +487,7 @@ impl WorldMesher {
         ) {
             *self.versions.entry(affected).or_insert(0) += 1;
             self.meshed.remove(&affected);
+            self.finished.remove(&affected);
         }
     }
 
@@ -429,6 +504,7 @@ impl WorldMesher {
         }
         self.meshed.clear();
         self.meshing.clear();
+        self.finished.clear();
     }
 
     /// Forgets every brick and all work in progress, as when the viewer moves to another level whose
@@ -439,6 +515,8 @@ impl WorldMesher {
         self.generating.clear();
         self.meshing.clear();
         self.meshed.clear();
+        self.finished.clear();
+        self.shown.clear();
         self.versions.clear();
         self.scheduled_last_update = 0;
         let mut displayed: Vec<BrickCoordinate> = self.displayed.drain().collect();
@@ -455,7 +533,9 @@ impl WorldMesher {
     pub fn update(&mut self, level: &LevelData, center: BrickCoordinate) -> Vec<MeshUpdate> {
         let mut updates = Vec::new();
         let view_radius = self.settings.view_radius_bricks;
-        let keep_radius_squared = i128::from((view_radius + 2) * (view_radius + 2));
+        let keep_radius = view_radius + if self.held_back { 4 } else { 2 };
+        let keep_radius_squared = i128::from(keep_radius * keep_radius);
+        let fine_region = FineRegion::new(center, u32::try_from(view_radius).unwrap_or(0));
 
         while let Ok(result) = self.results.try_recv() {
             match result {
@@ -481,6 +561,11 @@ impl WorldMesher {
                         continue; // unloaded, or changed since: the brick will be meshed again
                     }
                     self.meshed.insert(coordinate);
+                    if self.held_back && !self.shown.contains(&coordinate) {
+                        self.finished.insert(coordinate, mesh);
+                        self.ready_serial += 1;
+                        continue;
+                    }
                     if mesh.is_empty() && !self.displayed.contains(&coordinate) {
                         continue;
                     }
@@ -505,7 +590,8 @@ impl WorldMesher {
             self.bricks.remove(&coordinate);
             self.meshed.remove(&coordinate);
             self.meshing.remove(&coordinate);
-            if self.displayed.remove(&coordinate) {
+            self.finished.remove(&coordinate);
+            if !self.held_back && self.displayed.remove(&coordinate) {
                 updates.push(MeshUpdate::Remove(coordinate));
             }
         }
@@ -540,7 +626,11 @@ impl WorldMesher {
                     continue;
                 }
             }
-            let within_view = dx * dx + dy * dy + dz * dz <= view_radius * view_radius;
+            let within_view = if self.held_back {
+                fine_region.wants_brick(coordinate)
+            } else {
+                dx * dx + dy * dy + dz * dz <= view_radius * view_radius
+            };
             if !within_view
                 || self.meshed.contains(&coordinate)
                 || self.meshing.contains_key(&coordinate)

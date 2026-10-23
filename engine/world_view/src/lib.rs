@@ -7,9 +7,11 @@
 //! under a crosshair using that answer.
 
 mod grid_mesher;
+mod lod;
 mod mesher;
 mod ray;
 
 pub use grid_mesher::GridMesher;
+pub use lod::{LodConfig, LodSettings, LodView};
 pub use mesher::{BrickLight, BulkLight, MeshUpdate, ViewChannels, ViewSettings, WorldMesher};
 pub use ray::{RayHit, cast_ray};

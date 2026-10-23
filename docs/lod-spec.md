@@ -1,6 +1,6 @@
 # Phase 38: levels of detail
 
-Status: designed with the owner on 2026-10-23 (their answers are in section 2); not started. Phase 38 comes **before** Phase 33 (the mod loaders) by the
+Status: designed with the owner on 2026-10-23 (their answers are in section 2); steps 38a to 38i are built (section 4). Phase 38 comes **before** Phase 33 (the mod loaders) by the
 owner's decision. Read with `moving-grids-spec.md` (grids and ships), `future-goals.md` ("Ship goals" 1) and `design-decisions.md`. What I checked in
 the code is marked **[code]**; what I believe and did not check is marked **[belief]**; the choices are mine unless marked *owner*.
 
@@ -125,14 +125,24 @@ with a small cap has very many nodes; the cap is the owner's to set, and a plane
   range, send nothing new. A ship with a generator is a later case (planets, 3.8).
 - **Never saved**, rebuilt as needed (owner's decision 16).
 
-### 3.5 Protocol (version 8; version 7 is the orientation change in 38a)
+### 3.5 Protocol (as built in 38i: no version bump; version 7 is the orientation change in 38a)
 
-New server message `CoarseNodes` (node address, the 32³ cells, run-length coded the way bricks are, `Arc` shared) and a client message `SetDetail`
-(`cell_pixels`, the field of view and view size or just the resulting ratio, and the download rate in bytes a second). The server derives the set of nodes
-a client needs from the client's reported camera (it already knows each player's pose) and `SetDetail`, with integer arithmetic for the node set so that
-client and server agree on the rule's result for the same inputs; the client's own drawing uses its exact camera. Sent nearest and largest-error first,
-**coarse before fine**, so something is on screen at once; the rate limit applies to the whole. Ships the client should know about are no longer only
-those in the watched box (3.7). Replay: the new messages are in the recording like any other; a replay needs nothing else.
+The two messages are **plugin game messages**, not parts of the protocol: `engine:set_detail` (client to server) and `engine:coarse_nodes` (server to client), the second declared by
+the plugin `engine:coarse_streaming` (`coarse_streaming::CoarseServerPlugin`, which depends on `player_presence:players` for where each player is). Recordings carry them like any other
+game message, so a replay needs nothing else, and a server without the plugin simply ignores the first.
+
+- `SetDetail { cell_pixels, pixel_size, bytes_per_second, fine_radius, zoom }`: how fine the picture is (3.3), how fast the client can be told, the radius of its ball of bricks (3.6a) and
+  an optional telescope cone. Sent when it joins and whenever it changes; 0 bytes a second asks for nothing. Values that make no sense are refused at decode.
+- `CoarseNodes(Vec<CoarseNodeUpdate { grid, cube, node: Option<CoarseNode> }>)`, at most 256 to a message: a node is one cell, or runs of cells (equal neighbours cost one run);
+  the *exposure* of a cell is working data for making parents and is not sent. `None` takes back what was said.
+- **The server** keeps an **override** for every cube of detail level 1 to 12 (cells of 4 kilometres) that holds an edited brick: the generator's node for the cube, patched with the exact cells
+  of each half that is known exactly (an edited brick, summarised with the six bricks beside it as the game sees them, or a half that has an override). Edits mark the cube of two bricks
+  that holds the brick, and those beside it, dirty; a few dirty cubes are remade each tick, finest first, so that a node is made once from the nodes it is made from; the node only counts as
+  new (a new *version*) when what is sent of it changed. Per client it works out the cubes to draw for the brick the client is in (below), and sends the overrides of those it has not sent, **coarsest first**, no
+  faster than the client asked (a credit in bytes, topped up each tick; a message's own size is taken off it; a client can save up a second of its rate, or enough for the biggest node).
+  Overrides are kept per grid, and only the root grids of levels are handled until 38j.
+- **The same cubes on both ends.** Client and server work the cubes out with the same function (`coarse_cells::select_around_brick`) from the same inputs: the brick the viewer is in (taken to be at the
+  middle of it, so that they agree whatever the offset), the `SetDetail` values as sent, and the distance. The client draws what it works out, the server sends overrides for the same.
 
 ### 3.6 Meshing and rendering
 
@@ -147,6 +157,20 @@ those in the watched box (3.7). Replay: the new messages are in the recording li
 - Texture distance: a client setting, changed by `.texture_distance`, in voxels. It exists and is tested from this phase; nothing is textured yet, so it
   changes nothing visible until textures exist.
 
+#### 3.6a Bricks and nodes together (built in 38i)
+
+- **The fine region** (`coarse_cells::FineRegion`): the bricks drawn as bricks are a ball of the radius in `SetDetail` round the viewer's brick, plus the whole of every cube of two bricks (a node of
+  detail level 1) that touches it, so a fringe of less than two bricks. The selection splits every cube that touches the ball down to bricks, and never splits a cube outside it below detail level 1: the rule
+  alone would ask for bricks out to 500 voxels at the default settings, and a client does not hold them. `WorldMesher` in its *held back* mode meshes exactly the bricks the region wants (with the
+  neighbours they need loaded, `R + 3` bricks out) and keeps the finished pictures instead of reporting them. The client watches `R + 4` bricks out (`COARSE_WATCH_MARGIN_BRICKS`).
+- **Swapping.** What is drawn is a set of cubes that do not overlap (bricks and nodes) and so is what is wanted; they differ as the viewer moves. `coarse_cells::plan_swaps` takes them in **groups**: a cube
+  and the cubes of the other set it overlaps (its halves, its quarters, or the cube that holds it) change together, and only when every cube that comes in is ready (a brick meshed, a node made); a cube that
+  goes with nothing to take its place goes at once. A property test checks that whatever is ready, nothing is ever drawn twice or dropped, and that with everything ready the result is exactly what is wanted.
+  `world_view::LodView` runs it: it asks the mesher for the bricks, makes nodes on threads of its own (from the override if there is one, else from the terrain generator of the middle brick of the cube),
+  nearest first, and puts at most 64 cubes on the screen in an update. A node whose override changes is made again and replaced where it is.
+- The renderer is told by `MeshUpdate::UploadCoarse` and `RemoveCoarse`. A game turns it on with `Session::enable_coarse_detail(CoarseDetail { maximum_distance, unlit, cell_pixels, bytes_per_second })`
+  (the windows and screenshots do when `GameDefinition::coarse_detail()` says so; the default is no), and the fog is then set for the distance drawn (`Session::fog_radius_bricks`).
+
 ### 3.7 Which ships a client knows (a gap that this phase has to close)
 
 Today a ship is known only if it is inside the watched box, about 500 voxels. A planet, or a ship a hundred kilometres away that is still big
@@ -154,11 +178,27 @@ in the sky, must be known farther away. Rule: a ship is **known** while any of i
 distance that follows from its size, a planet never within any range this game has. A cap on coarseness cannot change that, because below a pixel there
 is nothing to draw (decision 3). The server's *simulation* distance for ships (the frozen ships of Phase 32) is a separate thing and does not change.
 
-### 3.8 What this phase leaves room for (planets)
+### 3.8 Planets are ships: grids with terrain generators (owner, 2026-10-23)
 
-A grid with a **generator** (like the root grid of a level) instead of "every brick stored" is the missing piece for a planet-sized ship: today nothing
-generates a ship, and the spawn message sends every brick. Nothing in Phase 38 may assume that a ship's bricks all exist: the node API
-says "this node has contents or is empty, or the generator has it". A sphere generator, its coarse sampling, and a ground that is a ship are the next phase.
+A planet is a ship. A ship must therefore be able to **store terrain generator versions** and **send them to the client**, so that the client generates the planet's unmodified bricks itself instead of
+downloading them, exactly as it does for the terrain of a level. Phase 38 does not build this (it is Phase 39 in `plan.md`), but it is designed so that it fits, and these are the rules it follows:
+
+- **What a ship gets.** `MovingGrid` gains an optional `terrain`: the generator assignments of the grid (the seed and a `WorldTerrain`-style octree of generator versions over the grid's own brick coordinates) and a
+  declared **extent** (a `BrickBox`: the planet's box, since its bricks are not stored). Edits are stored bricks that replace generated ones, as for a level; a brick never stored is generated.
+- **The file.** A ship file gets a section `engine:grid_terrain` (version 1): generator ids as namespaced strings (a generator of a plugin that is not loaded is preserved as it was, as for a level), the assignment octree in the
+  encoding of `engine:generators` version 2, and the extent. Nothing numeric from a registry is stored (the hard rule), and a released generator version is never edited.
+- **The wire.** `GridsSpawned` carries a ship's terrain (generator ids and assignments, and the extent) when it has one; after that the server sends only the stored (edited) bricks, as `BrickContents`, and not every brick. A recording holds the
+  ids and replays by regenerating.
+- **The server.** `ServerWorld::grid` reads through the generator for a ship with terrain, as for a level's root; saving writes only the bricks that differ from what the generator makes. Bodies get colliders from generated bricks near a body by the same path.
+  The mass of a planet is analytic or from coarse cells (a later job: "coarse mass", `future-goals.md` goal 11).
+- **Coarse cells.** `TerrainGenerator::coarse_node(cube, unlit)` (38e) takes a cube in the grid's own brick coordinates and knows nothing of levels, so it serves a ship with terrain unchanged. The hybrid rule of 3.4 is the same: the client derives the cells of
+  unedited terrain from the generators it was told of, and the server sends cells only where there are edits; for a ship **without** terrain the server sends all of its nodes, since nothing generates them.
+- **What this asks of Phase 38 now.** (1) Everything is keyed by `GridId` (the `CoarseNodes` message, the server's store of cells, the client's store), never by "the terrain of the level". (2) The client's source of unedited cells is a **per-grid, optional**
+  thing (`CoarseSource`): for the root grid of a level it is the level's terrain; for a ship it is none today and the ship's own terrain in Phase 39. (3) The extent and the "may this cube hold anything" predicate of the selection come from the grid
+  (a declared extent and the generator's surface), not from stored bricks. (4) A cube is never assumed to have all its bricks.
+- **Phase 39 steps (planned):** 39a `GridTerrain` on `MovingGrid`, the file section, save and load (an unknown generator kept); 39b the server reads through and prunes; 39c the wire and the client generate (and a replay test); 39d colliders from generated bricks;
+  39e a sphere generator with analytic coarse cells and the surface predicate; 39f the ground of a level as a ship, and gravity from mass.
+
 Orientation as `f64` (38a) is part of this room: a turned planet's far side has to be placed exactly.
 
 ## 4. Steps
@@ -188,8 +228,9 @@ used in 62 files) first and alone, so that nothing else is mixed into it.
   the cell. Tests: a flat world's coarse node is one slab; a snow-topped hill's coarse node has snow on top.
 - **38h Rendering** (**built 2026-10-23**, `renderer::VoxelRenderer::upload_coarse_node` and `upload_grid_coarse_node`). `Placement` scale, new mesh keys, draw coarse nodes, swap on refinement. Offscreen render tests: terrain at several distances; a
   ship with two detail levels at once; existing render tests unchanged.
-- **38i Protocol and streaming for terrain.** Version 8: `CoarseNodes`, `SetDetail`, server dirty tracking for edits, the rate limit, coarse before
-  fine. Tests: an edit far away appears in the coarse view of another player; replay of a recording shows the same; the rate limit holds in bytes.
+- **38i Protocol and streaming for terrain** (**built 2026-10-23**, `build-log.md`; section 9). The messages and the server plugin (3.5), the fine region, the swap planner and `LodView` (3.6a), the shell's
+  glue, and tests on both ends: an edit far away appears in the coarse view of another player and a player who arrives later sees the same, a recording shows what the live player saw, the rate limit holds in bytes.
+  **Cave does not turn it on yet:** the generators' coarse cells are far too slow on its terrain (section 9), which is the next job before it can.
 - **38j Ships.** The server sends ship nodes; ships known by size (3.7); the cap stored in the ship (saved: a ship header field, per
   `world-file-format.md`) and set by a `/ship` command. Tests: a big ship at a distance; a small one vanishing at the distance its size gives; the cap.
 - **38k Client commands.** `.detail` (cell pixels), `.texture_distance`, and the download rate; each reports its value with no argument.
@@ -234,6 +275,25 @@ used in 62 files) first and alone, so that nothing else is mixed into it.
 - **A cap is free:** the walk starts at the cap or the level that covers the grid, whichever is finer, and only goes down, so no check was needed (the one I wrote first was dead, found by a mutation experiment).
 - **Mutation experiments:** ten mutants (cap, sub-pixel cull, distance to the middle, zoom touching everything, zoom coarsening, distance limit the wrong way, what the grid cannot hold, an offset in the high half, a strict
   comparison, the zoom pixel used for the cull only) were all caught after two tests were added (the exact boundary of "fine enough", and a zoom of a coarser pixel).
+
+## 9. What 38i found (2026-10-23)
+
+- **The cost of a coarse node is the limit, and on Cave's terrain it is far too high.** A level 1 node of Cave's hills with its caves takes the generator about **375 ms** when the bounds cannot decide its cells (60 ms with a lattice of
+  2 x 2 x 2 points in a cell instead of 4 x 4 x 4, which changes what 38e measured); flat ground takes 1 to 2 ms. At the default settings a view out to 700 voxels is about 6,900 cubes, so a Cave view would never finish,
+  and the server pays the same for every edit (it starts each override from the generator's node). So `Cave::coarse_detail()` is still none and Cave does not register the plugin. What has to be found before it is turned on: a sampler that
+  asks the field about a cell once (or a column once) rather than 64 times, bounds that decide more, a cache of the generator's nodes on the server, and skipping cubes that need no picture (see below). This is the first job of 38l.
+- **What was fast and was not:** the nodes of flat ground were 26,630 of 27,805 *uniform*, and each cost 1.6 ms in the generator and 1.5 ms in the mesher: a node of one cell was built and meshed cell by cell. Both have a
+  shortcut now (`terrain`: ground that the bounds say has ground all round it and over it is one stone cell; `voxel_meshing`: a node of one cube has the faces of its sides only), each checked against the slow way (on three kinds of field, and by property)
+  and by mutation. Sky nodes already took 9 microseconds.
+- **Node counts are larger than the "few per level" I wrote in 38f.** At the default settings, out to 1,500 voxels, flat ground has 28,037 cubes (232 bricks, 22,491 nodes of detail level 1, 5,314 of level 2); the sky half of them is empty.
+  Most of any real world's cubes are air above or ground below, and only the surface and the caves need a picture: **pruning** cubes that hold nothing (and cubes buried in ground with ground all round, when nothing near them is edited), with a
+  predicate in the selection (`may_hold`, which exists for ships), would cut them to the surface shell. It needs the generators to say what is in a cube cheaply, and both ends to agree.
+- **Known limitations, in order of how much they will be noticed:** (1) A cube the server has not yet sent an override for is drawn from the generators, so an edit far away can be missing for a moment when the viewer moves and the
+  leaves change, and then appear. The fix is designed: the server sends, with an overridden cube, whether each of its eight halves is overridden too, and the client waits (a few ticks at most) for a half whose parent
+  is overridden. (2) Nodes are meshed with no neighbours, so every node has faces on all its sides, including buried ones that are never seen; meshing with the neighbours that the generators give (or pruning, above) removes them.
+  (3) The order nodes are made in (nearest first) and the accounting of jobs after a reset are not tested. (4) The `.detail` and similar commands are 38k; for now the pixel size comes from the camera and the height of the picture.
+- **Decisions made on the way:** the viewer is taken to be at the middle of its brick, on both ends; the messages are plugin messages and the protocol stays at 7; an override's version only counts up when what is *sent* of it changes (exposure
+  changes, which nobody sees, do not make it sent again: measured, a one-voxel dig below the surface changed the exposure of six levels and the cells of two); the server lets a client watch `R + 4` bricks beyond the radius.
 
 ## 6. Not here
 

@@ -142,6 +142,11 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   32 voxels, an exposure-weighted average above). Coarse cells are untextured always; a client setting gives the distance within which blocks are textured.
 - Coarse data is hybrid: the client derives what the generator gives, the server sends it where there are edits and for ships. It is drawing only (no rule reads it) and is
   never saved. A ship can cap how coarsely it is drawn (a detail level); the cap does not keep a ship from disappearing when it is under a pixel.
+- **Planets are ships** (owner, 2026-10-23): a ship can store terrain generator versions (with a declared extent) and send them to the client, which generates the unmodified bricks itself, as for a level; edits are stored bricks over the generated ones. Built in
+  Phase 39; Phase 38 keys everything by grid and treats the source of unedited cells as per-grid and optional, so that it fits (`lod-spec.md` 3.8).
+- Coarse nodes reach a client as plugin messages (`engine:set_detail`, `engine:coarse_nodes`), so the protocol does not change and recordings carry them. Client and server work out which cubes are drawn with one function from the brick the viewer is in
+  (taken at its middle); bricks are drawn inside a ball round it (plus the cubes of two that touch it) and nodes outside, exchanged in groups so that nothing is drawn twice or dropped (`lod-spec.md` 3.5, 3.6a). Cave does not draw coarse terrain until the
+  generators' coarse cells are fast enough (`lod-spec.md` section 9).
 - Rendering uses reverse-Z with an infinite far plane. Orientations are `f64`. GPU-driven culling is built only if measurement says the CPU is the limit.
 
 ## Decided (the plugin host; built in Phase 23)

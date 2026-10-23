@@ -1,0 +1,32 @@
+[package]
+name = "coarse_streaming"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Coarse levels of detail in the stream: the messages a client and a server send about how far things are drawn and the coarse nodes that differ from what a client derives, and the plugins that send and use them."
+
+[dependencies]
+binary_codec.workspace = true
+block_models.workspace = true
+coarse_cells.workspace = true
+libm = "0.2"
+namespaced_id.workspace = true
+player_presence.workspace = true
+plugin_host.workspace = true
+protocol.workspace = true
+region_octree.workspace = true
+server.workspace = true
+voxel_grid.workspace = true
+voxel_meshing.workspace = true
+voxel_space.workspace = true
+world_storage.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+server = { workspace = true, features = ["test-support"] }
+transport.workspace = true
+world_storage = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

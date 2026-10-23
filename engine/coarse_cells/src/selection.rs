@@ -11,6 +11,8 @@
 use region_octree::BrickCube;
 use voxel_space::{BRICK_EDGE_LENGTH, BrickBox, BrickCoordinate, WorldPosition};
 
+use crate::fine_region::FineRegion;
+
 /// The coarsest detail level there is (`lod-spec.md`, decision 2): a cell of 2^40 voxels.
 pub const MAXIMUM_DETAIL_LEVEL: u8 = 40;
 
@@ -57,6 +59,9 @@ pub struct Selection<'a> {
     pub maximum_distance: Option<f64>,
     /// Whether a node smaller than a pixel is left out. On unless a test turns it off.
     pub cull_sub_pixel: bool,
+    /// The bricks that are drawn as bricks whatever the rule says (the ones a client holds): a cube that touches it is split down to the bricks, so that a
+    /// coarse node never covers a brick that is also drawn, and a cube outside it is never split below detail level 1, so that no brick outside it is wanted.
+    pub fine_region: Option<FineRegion>,
     /// Whether the cube may hold anything of the grid (a ship holds nothing outside its bounds, and a hole in it may be known): a cube it says no to is
     /// left out. Terrain says yes to every cube.
     pub may_hold: &'a dyn Fn(BrickCube) -> bool,
@@ -72,6 +77,7 @@ impl std::fmt::Debug for Selection<'_> {
             .field("coarsest_level", &self.coarsest_level)
             .field("maximum_distance", &self.maximum_distance)
             .field("cull_sub_pixel", &self.cull_sub_pixel)
+            .field("fine_region", &self.fine_region)
             .finish_non_exhaustive()
     }
 }
@@ -90,6 +96,7 @@ impl<'a> Selection<'a> {
             coarsest_level: MAXIMUM_DETAIL_LEVEL,
             maximum_distance: None,
             cull_sub_pixel: true,
+            fine_region: None,
             may_hold: &anywhere,
         }
     }
@@ -123,6 +130,13 @@ impl<'a> Selection<'a> {
     pub fn without_culling(self) -> Self {
         Self {
             cull_sub_pixel: false,
+            ..self
+        }
+    }
+
+    pub fn with_fine_region(self, fine_region: FineRegion) -> Self {
+        Self {
+            fine_region: Some(fine_region),
             ..self
         }
     }
@@ -211,6 +225,40 @@ pub fn select_nodes(extent: BrickBox, selection: &Selection<'_>) -> Vec<BrickCub
     chosen
 }
 
+/// What a viewer asks for, as both ends of a connection know it: the server to work out which nodes to send, the client to work out which to draw.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewSelection {
+    pub detail: DetailSettings,
+    pub zoom: Option<Zoom>,
+    /// The radius, in bricks, of the ball of bricks drawn as bricks ([`FineRegion`]).
+    pub fine_radius: u32,
+    /// How far, in voxels, anything is drawn.
+    pub maximum_distance: f64,
+}
+
+/// Where a viewer is taken to be, for the cubes it is shown: the middle of the brick it is in. The two ends of a connection do not know exactly where the
+/// other is a moment after it has moved, but they know the brick, and the same cubes follow from the same brick.
+pub fn brick_centre(brick: BrickCoordinate) -> WorldPosition {
+    let middle = BRICK_EDGE / 2.0;
+    WorldPosition::new(brick, [middle as f32; 3])
+}
+
+/// The cubes of the terrain of a level that are drawn for a viewer in `brick`: bricks near it and nodes beyond, with the settings in `view`. The same
+/// brick and settings give the same cubes on any machine.
+pub fn select_around_brick(brick: BrickCoordinate, view: &ViewSelection) -> Vec<BrickCube> {
+    let reach = (view.maximum_distance / BRICK_EDGE)
+        .ceil()
+        .clamp(0.0, f64::from(u32::MAX - 1)) as u32
+        + 1;
+    let mut selection = Selection::new(brick_centre(brick), view.detail)
+        .with_maximum_distance(view.maximum_distance)
+        .with_fine_region(FineRegion::new(brick, view.fine_radius));
+    if let Some(zoom) = view.zoom {
+        selection = selection.with_zoom(zoom);
+    }
+    select_nodes(BrickBox::around(brick, reach), &selection)
+}
+
 fn descend(cube: BrickCube, selection: &Selection<'_>, chosen: &mut Vec<BrickCube>) {
     if !(selection.may_hold)(cube) {
         return;
@@ -238,9 +286,16 @@ fn descend(cube: BrickCube, selection: &Selection<'_>, chosen: &mut Vec<BrickCub
         return;
     }
     let cell_edge = (1u64 << cube.level()) as f64;
-    let fine_enough = cell_edge <= selection.settings.cell_pixels * pixel_size * distance;
+    let (in_the_fine_region, has_a_fine_region) = match &selection.fine_region {
+        Some(region) => (region.touches_cube(cube), true),
+        None => (false, false),
+    };
+    let fine_enough =
+        !in_the_fine_region && cell_edge <= selection.settings.cell_pixels * pixel_size * distance;
+    // Outside a fine region the bricks are not held, so a node of detail level 1 is as fine as there is.
+    let finest_outside = has_a_fine_region && !in_the_fine_region && cube.level() == 1;
     // (A cube is never coarser than the cap: the walk starts at a level that is not, and only goes down.)
-    if cube.level() == 0 || fine_enough {
+    if cube.level() == 0 || fine_enough || finest_outside {
         chosen.push(cube);
         return;
     }
@@ -652,6 +707,112 @@ mod tests {
                 "{factor}"
             );
         }
+    }
+
+    #[test]
+    fn a_cube_that_touches_the_fine_region_is_split_to_bricks_and_the_rest_is_as_it_was() {
+        let (extent, holds) = slab();
+        let viewer = at([0, 4, 0], [3.0, 3.0, 3.0]);
+        let base = Selection::new(viewer, settings()).with_may_hold(&holds);
+        let plain = select_nodes(extent, &base);
+        // The bricks the client holds: 12 each way around the viewer, more than the 256 voxels of full detail.
+        let region = FineRegion::new(BrickCoordinate::new(0, 4, 0), 12);
+        let with_region = select_nodes(extent, &base.with_fine_region(region));
+        // No cube bigger than a brick touches the region.
+        for cube in &with_region {
+            if cube.level() > 0 {
+                assert!(!region.touches_cube(*cube), "{cube:?}");
+            }
+        }
+        // The bricks that are leaves are exactly those the region wants, among the bricks the grid can hold.
+        let leaves: std::collections::HashSet<BrickCoordinate> = with_region
+            .iter()
+            .filter(|cube| cube.level() == 0)
+            .map(|cube| cube.origin())
+            .collect();
+        for x in -20..=20 {
+            for y in -20..=30 {
+                for z in -20..=20 {
+                    let brick = BrickCoordinate::new(x, y, z);
+                    let can_hold = holds(BrickCube::new(brick, 0).unwrap());
+                    assert_eq!(
+                        leaves.contains(&brick),
+                        can_hold && region.wants_brick(brick),
+                        "{brick:?}"
+                    );
+                }
+            }
+        }
+        // Outside it, what was chosen is still chosen, except bricks, which the region does not hold there: the node of detail level 1 over a brick is
+        // chosen in place of it (the rule wants bricks out to 500 voxels, and the region is 12 bricks, 384 voxels).
+        let with_region_set: std::collections::HashSet<BrickCube> =
+            with_region.iter().copied().collect();
+        for cube in plain.iter().filter(|cube| !region.touches_cube(**cube)) {
+            let stand_in = if cube.level() == 0 && !region.wants_brick(cube.origin()) {
+                BrickCube::containing(cube.origin(), 1)
+            } else {
+                *cube
+            };
+            assert!(with_region_set.contains(&stand_in), "{cube:?}");
+        }
+    }
+
+    #[test]
+    fn with_a_fine_region_no_brick_outside_it_is_wanted_however_fine_the_rule_asks_for_things_to_be()
+     {
+        // A pixel so small and a cell so many of them that the rule wants bricks everywhere.
+        let demanding = DetailSettings {
+            cell_pixels: 0.001,
+            pixel_size: 0.0001,
+        };
+        let extent = box_of([-20; 3], [19; 3]);
+        let region = FineRegion::new(BrickCoordinate::new(0, 0, 0), 4);
+        let selection = Selection::new(at([0; 3], [1.0; 3]), demanding)
+            .without_culling()
+            .with_fine_region(region);
+        let cubes = select_nodes(extent, &selection);
+        for cube in &cubes {
+            match cube.level() {
+                0 => assert!(region.wants_brick(cube.origin()), "{cube:?}"),
+                1 => assert!(!region.touches_cube(*cube), "{cube:?}"),
+                level => panic!(
+                    "level {level} for {cube:?}: the rule wants bricks, the region allows nodes of 1"
+                ),
+            }
+        }
+        // Nothing is left out: the cubes tile the extent.
+        let mut seen = std::collections::HashSet::new();
+        for cube in &cubes {
+            let edge = cube.edge_length() as i64;
+            for x in 0..edge {
+                for y in 0..edge {
+                    for z in 0..edge {
+                        let brick = BrickCoordinate::new(
+                            cube.origin().x() + x,
+                            cube.origin().y() + y,
+                            cube.origin().z() + z,
+                        );
+                        assert!(seen.insert(brick), "{brick:?} is in two cubes");
+                    }
+                }
+            }
+        }
+        for x in -20..20 {
+            for y in -20..20 {
+                for z in -20..20 {
+                    assert!(
+                        seen.contains(&BrickCoordinate::new(x, y, z)),
+                        "({x}, {y}, {z})"
+                    );
+                }
+            }
+        }
+        // And without the region the same rule gives bricks everywhere.
+        let without = select_nodes(
+            extent,
+            &Selection::new(at([0; 3], [1.0; 3]), demanding).without_culling(),
+        );
+        assert!(without.iter().all(|cube| cube.level() == 0));
     }
 
     #[test]

@@ -10,6 +10,8 @@ description = "Everything a Voxunami game shares: window, camera, singleplayer s
 binary_codec.workspace = true
 block_models.workspace = true
 client.workspace = true
+coarse_cells.workspace = true
+coarse_streaming.workspace = true
 content_registry.workspace = true
 data_packs.workspace = true
 identity.workspace = true
@@ -29,6 +31,7 @@ world_storage.workspace = true
 world_view.workspace = true
 thiserror.workspace = true
 ctrlc = "3"
+libm = "0.2"
 glam = "0.34.1"
 png = "0.18.1"
 wgpu = "30.0.1"
@@ -36,6 +39,8 @@ winit = "0.30.13"
 
 [dev-dependencies]
 entities.workspace = true
+region_octree.workspace = true
+voxel_meshing.workspace = true
 proptest.workspace = true
 server = { workspace = true, features = ["test-support"] }
 world_storage = { workspace = true, features = ["test-support"] }

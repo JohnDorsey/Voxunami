@@ -186,6 +186,7 @@ pub fn mesh_coarse_node(node: &CoarseNode, neighbours: &[Option<&CoarseNode>; 6]
         if !cell.is_drawn() || all_cubes_beside {
             return BrickMesh::default();
         }
+        return mesh_uniform_cube(cell, neighbours);
     }
     let cells: Vec<CoarseCell> = node.cells().collect();
     let drawn = |cell: &CoarseCell| cell.is_drawn();
@@ -237,6 +238,47 @@ pub fn mesh_coarse_node(node: &CoarseNode, neighbours: &[Option<&CoarseNode>; 6]
             if any {
                 merge_slice(face, slice, &mut mask, &mut quads);
             }
+        }
+    }
+    BrickMesh {
+        quads,
+        detailed: Vec::new(),
+    }
+}
+
+/// The mesh of a node of one cell that is a cube, the same as [`mesh_coarse_node`] makes of its cells one by one: only the layer of cells against a side has a
+/// face, and only where the cell beside it, in the node on that side, is not a cube. Most of the world far away is this, ground under ground.
+fn mesh_uniform_cube(cell: CoarseCell, neighbours: &[Option<&CoarseNode>; 6]) -> BrickMesh {
+    let mut quads = Vec::new();
+    for face in FaceDirection::ALL {
+        let axis = face.axis();
+        let (u_axis, v_axis) = quad_axes(face);
+        let (own_layer, layer_beside) = if face.offset()[axis] > 0 {
+            (EDGE - 1, 0)
+        } else {
+            (0, EDGE - 1)
+        };
+        let mut mask: Vec<Option<(u32, u8)>> = vec![None; EDGE * EDGE];
+        let mut any = false;
+        for v in 0..EDGE {
+            for u in 0..EDGE {
+                let beside = neighbours[usize::from(face.index())].is_some_and(|other| {
+                    let mut at = [0usize; 3];
+                    at[axis] = layer_beside;
+                    at[u_axis] = u;
+                    at[v_axis] = v;
+                    other
+                        .cell(LocalVoxelIndex::new(at[0] as u8, at[1] as u8, at[2] as u8))
+                        .is_drawn()
+                });
+                if !beside {
+                    mask[v * EDGE + u] = Some((cell.block, cell.light));
+                    any = true;
+                }
+            }
+        }
+        if any {
+            merge_slice(face, own_layer, &mut mask, &mut quads);
         }
     }
     BrickMesh {
@@ -566,6 +608,36 @@ mod tests {
         let mut quads = mesh_coarse_node(node, &neighbours).quads;
         quads.sort_by_key(|quad| (quad.face.index(), quad.origin, quad.width, quad.height));
         quads
+    }
+
+    /// The cells of a node, all of them given one at a time so that it is not kept as one.
+    fn spelled_out(cell: CoarseCell) -> CoarseNode {
+        CoarseNode::Cells(vec![cell; CELLS_PER_NODE].into_boxed_slice())
+    }
+
+    proptest! {
+        #[test]
+        fn a_node_of_one_cube_is_meshed_as_the_same_node_spelled_out_cell_by_cell(
+            block in 0u32..6,
+            fill in 128u8..=255,
+            light in any::<u8>(),
+            sides in proptest::array::uniform6(0u8..4),
+        ) {
+            let cell = CoarseCell { block, fill, light, exposure: 0 };
+            let solid = CoarseNode::uniform(cube(STONE, 0));
+            let air_node = CoarseNode::uniform(sky(0));
+            // Ground below half the height, a node that is a cube in some places and not in others.
+            let ground = node_of(|x, y, _| if y < 16 || x == 3 { cube(STONE, 0) } else { sky(0) });
+            let neighbours: [Option<&CoarseNode>; 6] = std::array::from_fn(|side| match sides[side] {
+                0 => None,
+                1 => Some(&solid),
+                2 => Some(&air_node),
+                _ => Some(&ground),
+            });
+            let quick = mesh_coarse_node(&CoarseNode::uniform(cell), &neighbours);
+            let slow = mesh_coarse_node(&spelled_out(cell), &neighbours);
+            prop_assert_eq!(quick, slow);
+        }
     }
 
     #[test]

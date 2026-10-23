@@ -21,6 +21,10 @@ use crate::definition::{GameContent, GameDefinition};
 /// How far beyond the drawn distance a client watches, so every drawn brick has its neighbours.
 pub const WATCH_MARGIN_BRICKS: i64 = 2;
 
+/// The same for a client that draws coarse nodes too (a server allows a client to watch as much as it may need to): the bricks it draws reach less than two bricks beyond its view radius (the cubes of two bricks that touch
+/// it), and their neighbours one more.
+pub const COARSE_WATCH_MARGIN_BRICKS: i64 = 4;
+
 /// The port servers listen on, and clients connect to, unless told otherwise.
 pub const DEFAULT_PORT: u16 = 24816;
 
@@ -39,7 +43,7 @@ fn server_config<G: GameDefinition>(
         config = config.with_counted_challenges(1);
     }
     config.ticks_per_second = G::ticks_per_second();
-    let edge = (2 * (view_radius_bricks + WATCH_MARGIN_BRICKS) + 1) as u64;
+    let edge = (2 * (view_radius_bricks + COARSE_WATCH_MARGIN_BRICKS) + 1) as u64;
     config.maximum_watched_bricks = edge * edge * edge;
     config
 }

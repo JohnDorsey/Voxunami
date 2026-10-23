@@ -4,111 +4,20 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use block_models::BlockTable;
 use content_registry::Registry;
 use terrain::{TerrainGenerator, WorldTerrain};
 
 use region_octree::BrickCube;
-use voxel_grid::{Brick, ChannelIndex, ChannelStorage, Grid, GridLayout};
+use voxel_grid::{Brick, ChannelStorage, Grid, GridLayout};
 use voxel_meshing::{FULL_LIGHT, PackedBrickMesh, Quad};
 use voxel_space::{BrickBox, BrickCoordinate, FaceDirection, VoxelCoordinate};
 use world_storage::test_support::{Game, Plugin, brick, id};
 use world_storage::{LevelData, WorldData};
-use world_view::{BrickLight, BulkLight, MeshUpdate, ViewChannels, ViewSettings, WorldMesher};
+use world_view::{BrickLight, MeshUpdate};
 
-struct Scene {
-    game: Game,
-    world: WorldData,
-    material: ChannelIndex,
-    air: u32,
-}
+mod common;
 
-/// Flat ground: stone below, three layers of dirt, grass at height 10 (the top voxel is y = 9).
-fn scene() -> Scene {
-    let game = Game::new(&[Plugin::BaseBlocks]);
-    let world = game.new_world();
-    let material = world
-        .main()
-        .overrides
-        .layout()
-        .channel_index(&id("core:block"))
-        .unwrap();
-    let air = game.raw_block("base_blocks:air");
-    Scene {
-        game,
-        world,
-        material,
-        air,
-    }
-}
-
-impl Scene {
-    /// What the server does when a region is watched: gives its terrain a generator.
-    fn assign_around(&mut self, center: BrickCoordinate, radius: u32) {
-        let level = self.world.main().terrain.assignment_cube_level();
-        for cube in BrickCube::covering(BrickBox::around(center, radius), level) {
-            self.world
-                .main_mut()
-                .terrain
-                .assign_unassigned(cube.origin());
-        }
-    }
-
-    fn mesher(&self, radius: i64) -> WorldMesher {
-        self.mesher_seeing(radius, ViewChannels::new(self.material, None, None))
-    }
-
-    fn mesher_seeing(&self, radius: i64, channels: ViewChannels) -> WorldMesher {
-        // Air is see-through; every other block of the fixtures is an opaque cube.
-        let mut opaque = vec![true; 16];
-        opaque[self.air as usize] = false;
-        WorldMesher::new(
-            ViewSettings {
-                view_radius_bricks: radius,
-                worker_count: 3,
-            },
-            channels,
-            Arc::new(BlockTable::of_cubes(&opaque)),
-        )
-    }
-
-    /// What the view draws from when a game's hook says how bright `lit` is and everything else is dark.
-    fn channels_lit_by(&self, hook: &Arc<LitBrick>) -> ViewChannels {
-        let mut channels = ViewChannels::new(self.material, None, None);
-        channels.bulk_light = Some(BulkLight(Arc::clone(hook) as Arc<dyn BrickLight>));
-        channels
-    }
-
-    fn edit(&mut self, at: [i64; 3], block: &str) -> BrickCoordinate {
-        let coordinate = VoxelCoordinate::new(at[0], at[1], at[2]);
-        let (brick_coordinate, local) = coordinate.split();
-        if self
-            .world
-            .main()
-            .overrides
-            .brick(brick_coordinate)
-            .is_none()
-        {
-            let world_storage::BrickSource::Generated(generated) =
-                self.world.main().effective_brick(brick_coordinate)
-            else {
-                panic!("the region must be assigned first");
-            };
-            self.world
-                .main_mut()
-                .overrides
-                .insert_brick(brick_coordinate, std::sync::Arc::new(generated))
-                .unwrap();
-        }
-        self.world
-            .main_mut()
-            .overrides
-            .brick_mut(brick_coordinate)
-            .unwrap()
-            .set(self.material, local, self.game.raw_block(block));
-        brick_coordinate
-    }
-}
+use common::{Scene, scene};
 
 /// Applies updates the way a renderer would.
 fn apply(live: &mut HashMap<BrickCoordinate, PackedBrickMesh>, updates: Vec<MeshUpdate>) {
@@ -128,6 +37,9 @@ fn apply(live: &mut HashMap<BrickCoordinate, PackedBrickMesh>, updates: Vec<Mesh
             | MeshUpdate::RemoveGridBrick { .. }
             | MeshUpdate::GridPose { .. }
             | MeshUpdate::RemoveGrid(_) => panic!("the terrain mesher made an update for a ship"),
+            MeshUpdate::UploadCoarse { .. } | MeshUpdate::RemoveCoarse(_) => {
+                panic!("the mesher of bricks made an update for a coarse node")
+            }
         }
     }
 }
