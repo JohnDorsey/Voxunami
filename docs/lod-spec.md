@@ -331,7 +331,7 @@ comparison with nodes made from the bricks) is kept as a patch and three files o
   (the cave *floors* are grass too, so "buried grass" is real: 4.8% to 9.7%, 90% at level 4). The caves no longer outvote the grass; a cell of cliff with one grass voxel in it shows grass, which is the accepted loss.
 - **What a view is made of.** To 700 voxels: 6,648 cubes, 3,463 air, 2,451 solid, 734 mixed (11%). To 2,000: 38,031 cubes, 19,437 air, 16,349 solid, 2,245 mixed (6%). A mixed node costs about 1 ms to mesh as well. With the column variant and the
   tight bounds the whole 700-voxel view would be about 734 x (0.3 + 1.3) ms, a second on one thread; pruning the air and the buried solid leaves a tenth of the jobs, draw calls and uploads.
-- **Order of the work, by what it buys** ((1) and (3) are built: 9b): (1) tight bounds (identical output, 9x for hills, helps brick generation too); (2) a far field for generators and the column fill for fields that are heights (a trait method `surface_height`, with the
+- **Order of the work, by what it buys** ((1) and (3) are built: 9b): (1) tight bounds (identical output, 9x for hills, helps brick generation too); (2) a far field for generators and the column fill for fields that are heights (measured in `lod-spike.md`: 25 microseconds a node; a trait method `surface_height`, with the
   per-cell distance as the fallback for other fields, which must then be roughly distances in voxels; a planet's analytic cells in 39e are the same idea); (3) pruning cubes that hold nothing visible (`may_hold`); (4) priority for blocks, with a
   `coarse_priority` property on blocks; (5) a cache of generator nodes on the server, and a faster mesher for nodes that are surfaces of columns.
 

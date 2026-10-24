@@ -805,6 +805,13 @@ callers (ship creation, the bodies' terrain, the arrival look, the light-model s
 - Tests: the existing ones, rewritten by a tool for the calls (`regrid.py`, a scratch file) and by hand where a test expected an error for a level that is not there; two new for `detach_blocks` out of a
   ship and for `uniform_value` and `generated` on a ship. No pin moved. Windows 1745 and Linux 1746 tests pass; fmt and clippy clean.
 
+Phase 38 (levels of detail: experiments; 2026-10-24). See `lod-spike.md` and `spikes/lod/`.
+- *Columns:* a node of hills made from its height columns (a batch of the same noise, bit for bit; the mesh made straight from the heights) takes 25 microseconds against 14 to 38 milliseconds, and a whole view out to 100 million voxels is made from nothing in 0.1 second on 12 threads.
+- *Occlusion:* from a valley or an ordinary place 99 to 100% of the far surface of the rolling hills is hidden (rays); a horizon from the generator's bounds is sound (0 wrong) and gets two thirds from a valley and nothing from an ordinary place.
+- *Drawing:* one indirect call over one arena is 8 to 23 times less CPU than a draw for each node on the RTX 3090 (0.5 ms against 11.6 for 25,500 nodes); the integrated GPU is limited by quads (5 ns each).
+- *Not built:* a ray-marched far field, a cubemap of the far field, column meshes read from a height buffer (reasons in the report).
+- Nothing in the engine changed; the experiments are a standalone project like the other spikes.
+
 Phase 38 (levels of detail: tight bounds and pruning; 2026-10-24). See `lod-spec.md`, 9b.
 - *Tight bounds* (`terrain::noise`): the bound of an octave over a region is the narrower of the range of the lattice values and the value at the middle plus and minus the steepest slope of the blend times the reach; identical output, a node of hills 9 times
   faster to make (9a). `bounds_through_finer` on `FractalNoise` and `DensityField` (all the finer levels at once), `Interval::hull`.
