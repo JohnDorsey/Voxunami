@@ -21,6 +21,8 @@ mod density;
 mod generator;
 mod interval;
 mod noise;
+mod planet;
+mod planet_node;
 mod world_terrain;
 
 pub use density::{DensityField, Heightfield, Minimum, ShellCaves};
@@ -29,4 +31,5 @@ pub use generator::{
 };
 pub use interval::Interval;
 pub use noise::{Dimensionality, FractalNoise, Octave, lattice_hash, lattice_value, mix};
+pub use planet::{PlanetGenerator, PlanetGround, PlanetSettings, planet};
 pub use world_terrain::{GenerationOutcome, GeneratorId, WorldTerrain, WorldTerrainError};

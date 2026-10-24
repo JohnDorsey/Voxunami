@@ -195,6 +195,12 @@ impl FractalNoise {
                 .all(|octave| !Self::keeps(octave, footprint))
     }
 
+    /// The most the value can be away from zero at any position and any footprint: the combined amplitude of all the octaves. (The bound of a region too
+    /// wide for the lattice to say anything about.)
+    pub fn largest_magnitude(&self) -> f64 {
+        self.octaves.iter().map(|octave| octave.amplitude).sum()
+    }
+
     /// The most the sampled value can differ between full detail and `footprint`: the combined
     /// amplitude of the octaves dropped at that footprint.
     pub fn omitted_amplitude(&self, footprint: LevelOfDetail) -> f64 {
@@ -509,6 +515,20 @@ mod tests {
             none.bounds(&region, LevelOfDetail::FULL_DETAIL),
             Interval::point(0.0)
         );
+    }
+
+    #[test]
+    fn the_largest_magnitude_is_the_sum_of_the_amplitudes_and_no_sample_exceeds_it() {
+        let noise = FractalNoise::standard(11, Dimensionality::Volumetric, 5, 4, 8.0, 0.5);
+        assert_eq!(noise.largest_magnitude(), 8.0 + 4.0 + 2.0 + 1.0);
+        assert_eq!(FractalNoise::none().largest_magnitude(), 0.0);
+        for i in 0..2000 {
+            let value = noise.sample(
+                voxel(i * 7, i * 3 - 900, -i * 5),
+                LevelOfDetail::FULL_DETAIL,
+            );
+            assert!(value.abs() <= noise.largest_magnitude(), "{value}");
+        }
     }
 
     #[test]

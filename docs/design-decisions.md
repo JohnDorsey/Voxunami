@@ -153,6 +153,14 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   overrides and nothing else, so it follows the selection only to the cubes that have one and does not ask the terrain.
 - Rendering uses reverse-Z with an infinite far plane. Orientations are `f64`. GPU-driven culling is built only if measurement says the CPU is the limit.
 
+## Decided (planets as ships, and the level `mini_cosmos`; Phase 39, owner 2026-10-24; specified in `planet-spec.md`)
+- The first planet is a ship with a terrain generator, 1% of the Earth's radius (63,710 voxels), in a new level `mini_cosmos` that is the default level for now; a new world has it first and the overworld second, and `/level go overworld` reaches the overworld (owner). Its
+  outside is a 2D heightmap bent into a sphere: a cube-sphere with the faces' heightmaps blended where they meet (owner). Gravity at its surface is 10 m/s^2 (owner; the overworld's is 5). Caves are in the bricks and not in the levels of detail (owner).
+- Mine, the owner's to overrule: the planet's heights are the overworld's noise on six faces (9 octaves from a kilometre, 160 voxels at the largest), read at the angle across the face (a polynomial, not `atan`: IEEE operations only, as every generator) and blended with weights whose squares add
+  to one (so the blend keeps the spread of the noise); the layers (grass, 3 of dirt, stone) are read from the depth under the surface, radially, so a cave under the ground does not turn the ground beside it to grass; bounds combine the faces by Cauchy-Schwarz, which is looser at
+  the corners of the cube (404 wide at a brick against 134 to 151 elsewhere) and costs only work; the planet's coarse nodes are made by walking columns along the axis the node is nearest to and asking the field at the middle of each cell, with the layers looking outward along the axis
+  (`coarse.rs` took the step "up" from a cell as a parameter for this). A planet's generator is a new version with its own ids; its output and its coarse nodes are file format like every generator's.
+
 ## Decided (the plugin host; built in Phase 23)
 - A game's server rules are plugins run by `plugin_host::PluginHost` (the specification and its record are in `plugin-api-spec.md`). What a plugin
   registers, and when: systems in the phases `Decide`, `Controllers`, `Physics`, `Settle` and `Rules`; handlers of events, delivered first in first

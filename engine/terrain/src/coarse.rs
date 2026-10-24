@@ -81,6 +81,19 @@ pub(crate) fn coarse_node_of_field_cell_by_cell(
     Some(coarse_node_by_cells(&sampler, materials, unlit))
 }
 
+/// The fill of every cell of the node of `cube`, found by asking the field about each cell (what coarse nodes are made from; for tests that compare another
+/// way of finding the fills with it).
+#[cfg(test)]
+pub(crate) fn fills_of_field_cell_by_cell(
+    field: &dyn DensityField,
+    cube: BrickCube,
+) -> Option<Vec<u8>> {
+    let sampler = sampler_of(field, cube)?;
+    let mut fills = vec![0u8; CELLS_PER_NODE];
+    sampler.fill_block([0, 0, 0], NODE_EDGE as i64, &mut fills);
+    Some(fills)
+}
+
 fn sampler_of(field: &dyn DensityField, cube: BrickCube) -> Option<Sampler<'_>> {
     let level = cube.level();
     if level == 0 {
@@ -108,6 +121,28 @@ fn coarse_node_by_cells(
     if fills.iter().all(|&fill| fill == 0) {
         return CoarseNode::uniform(CoarseCell::empty(air, unlit));
     }
+    coarse_node_from_fills(
+        &fills,
+        &|cell| sampler.fill_outside(cell),
+        [0, 1, 0],
+        sampler.edge,
+        materials,
+        unlit,
+    )
+}
+
+/// The cells of a node from how full each of its cells is (`fills`, x fastest, 0 to 255) and how full the cells beside it are (`fill_outside`, by their
+/// numbers counted from the node's), for cells `edge` voxels across: the block of a cell (grass with open air over it, dirt with less than the depth of the
+/// surface layer of ground over it, stone otherwise) and the surface it shows. `up` is the step to the cell over a cell: the layers look along it, outward.
+pub(crate) fn coarse_node_from_fills(
+    fills: &[u8],
+    fill_outside: &dyn Fn([i64; 3]) -> u8,
+    up: [i64; 3],
+    edge: i64,
+    materials: TerrainMaterials,
+    unlit: u8,
+) -> CoarseNode {
+    let air = materials.air;
     let index = |cell: [i64; 3]| (cell[0] + 32 * cell[1] + 1024 * cell[2]) as usize;
     // What a cell is, inside the node or beside it.
     let fill_at = |cell: [i64; 3]| {
@@ -117,7 +152,7 @@ fn coarse_node_by_cells(
         {
             fills[index(cell)]
         } else {
-            sampler.fill_outside(cell)
+            fill_outside(cell)
         }
     };
 
@@ -152,17 +187,18 @@ fn coarse_node_by_cells(
                 // The layers: grass if there is open air over the cell, dirt if the ground over it is less than the depth of the surface layer,
                 // else stone. (The ground over it is counted in voxels, from the fill of the cells above.)
                 let mut covered = 0u64;
-                let mut above = [x, y + 1, z];
+                let over_the_cell = [x + up[0], y + up[1], z + up[2]];
+                let mut above = over_the_cell;
                 while covered < SURFACE_LAYER_DEPTH as u64 * 255 {
                     let over = fill_at(above);
                     if over < DRAWN_FILL {
                         break;
                     }
-                    covered += sampler.edge as u64 * u64::from(over);
-                    above[1] += 1;
+                    covered += edge as u64 * u64::from(over);
+                    above = [above[0] + up[0], above[1] + up[1], above[2] + up[2]];
                 }
                 // A cell with air in it that has air over it, or a cell the ground goes through, is the top of the ground: grass.
-                let block = if covered == 0 || (mixed && fill_at([x, y + 1, z]) < 254) {
+                let block = if covered == 0 || (mixed && fill_at(over_the_cell) < 254) {
                     materials.grass
                 } else if covered < SURFACE_LAYER_DEPTH as u64 * 255 {
                     materials.dirt
@@ -323,6 +359,26 @@ impl Sampler<'_> {
             count => (((count * 255 + total / 2) / total) as u8).clamp(1, 254),
         }
     }
+}
+
+/// A digest of the cells of a node (FNV-1a over each cell's block, fill, light and exposure, in order), for tests that pin the nodes of a generator.
+#[cfg(test)]
+pub(crate) fn node_digest(node: &CoarseNode) -> u64 {
+    let mut state: u64 = 0xcbf2_9ce4_8422_2325;
+    for cell in node.cells() {
+        for value in [
+            cell.block,
+            u32::from(cell.fill),
+            u32::from(cell.light),
+            cell.exposure,
+        ] {
+            for byte in value.to_le_bytes() {
+                state ^= u64::from(byte);
+                state = state.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+    }
+    state
 }
 
 #[cfg(test)]
@@ -986,24 +1042,7 @@ mod tests {
         );
     }
 
-    /// A digest of the cells of a node (FNV-1a over each cell's block, fill, light and exposure, in order).
-    fn digest(node: &CoarseNode) -> u64 {
-        let mut state: u64 = 0xcbf2_9ce4_8422_2325;
-        for cell in node.cells() {
-            for value in [
-                cell.block,
-                u32::from(cell.fill),
-                u32::from(cell.light),
-                cell.exposure,
-            ] {
-                for byte in value.to_le_bytes() {
-                    state ^= u64::from(byte);
-                    state = state.wrapping_mul(0x0000_0100_0000_01b3);
-                }
-            }
-        }
-        state
-    }
+    use super::node_digest as digest;
 
     #[test]
     fn the_coarse_nodes_of_rolling_hills_are_pinned() {
