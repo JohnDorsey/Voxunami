@@ -71,7 +71,7 @@ as of any ship, with the terrain, and then sends the **stored** bricks only; `sh
 a level, and `ShipTerrainMesher` is that mesher saying what it draws as bricks of the ship (`UploadGridBrick`), under the ship's pose. The `Session` keeps one for each planet, feeds it the camera in the planet's coordinates (`GridPose::world_to_local`), sends the changes of its stored bricks to it
 and not to the mesher of ships (which no longer meshes the stored bricks of a planet alone, without the neighbours the generator makes), aims the crosshair through it, and waits for it when it settles. The view summary a replay is compared with names the generator and the extent. A brick beyond the extent is empty and the face of the brick against it is drawn,
 so a planet cut off by its extent shows its side. **Golden sessions:** the four that pin a stream or a recording (2048, Eels, Cave, and the end-to-end recording) moved once, for the version in the welcome; each was checked by running the code of the commit before with only the version raised to 8, which gave the new hash and the same length, so none of them tells of a ship.
-**Not yet:** the levels of detail of a planet (39e).
+**Not yet:** a level and a game that have a planet in them (39f).
 
 **Bodies (built in 39d).** A walker meets a planet through the generator. `grid_bodies::collision::GeneratedHull` is a `CollisionSource` that reads a ship's voxels through the world (`ServerWorld::moving_voxel` and `moving_uniform_value`, now `&self` and public: the bricks a generator makes are
 remembered behind a cell, so a body can meet several ships at once while the world is borrowed shared). `ShipSource` is that or the `ShipHull` that reads a ship's stored voxels directly (kept as the fast path of an ordinary ship: the two agree for a ship without terrain, and a test cannot tell them apart,
@@ -90,9 +90,20 @@ p99, and crossing into a new row of bricks costs one tick of 37 to 44 ms (about 
 (a) spreading the first contact and the crossings over ticks; (b) a rigid-body ship (`grid_bodies`) has no collider against a planet, **verified:** a ship of 4 x 4 x 4 stone let go 40 voxels over the planet accelerated at 10 m/s^2, went through the surface and came to rest on the hills of the overworld 320 metres lower (the colliders that
 follow a ship are the level's terrain, and a planet is not that); (c) every brick below the surface that was probed (6 columns of 50 bricks each, from the surface to 1,600 voxels down) has air in it from a cave, so a brick of the planet is hardly ever one block and the hints seldom save a scan.
 
-**Levels of detail for a ship (38j, 39e).** The client makes the nodes of a ship with terrain from its generators, in the ship's own cubes, as it does for the terrain of a level; the **viewer is taken into the ship's axes** by the inverse of the pose, the
-selection's `may_hold` is the shell of the surface, the fine region is a ball of bricks round the viewer in the ship's bricks, and the nodes are drawn by `upload_grid_coarse_node` under the ship's pose (the renderer has that). A ship is **known**
-while it would be a pixel (3.7 of the LOD spec); a planet is known from anywhere in its level.
+**Levels of detail for a planet (built in 39e).** `world_view::CoarseTerrainSource` (a version, `may_show`, `coarse_generator` and an optional `solid_core`; `LevelData` and `ShipTerrainSource` are both one) is all that `LodView::update` and `settle` ask of the terrain they draw, now
+`(grid, source, viewer, settings)`, so the view that draws a level draws a planet. `ShipTerrainMesher::with_detail` wraps a `LodView` and says what it draws as `MeshUpdate::{UploadGridBrick, UploadGridCoarse, ...}` (the two new ones for nodes; the renderer already had `upload_grid_coarse_node`). The viewer is taken into the planet's axes
+(`GridPose::world_to_local`); `may_show` is the generator's bounds inside the extent (a node with no brick in the extent is not made, one that reaches in is made whole: a planet's extent holds its ground); the nodes are the generator's. **The server does not correct the nodes of a planet**: an edit shows in the bricks round the
+viewer and not in the nodes farther away (open: the messages and the store are keyed by grid already, so this is a matter of the server's side). **Known from anywhere:** `grid_replication` tells every client that watches a level of every planet in it, and the lifecycle never puts a planet in a file (it is frozen when no one is near, as any ship, and
+stays in memory), so a client draws it from as far as there is anything to see. **The horizon:** a generator may say it has a solid core (`TerrainGenerator::solid_core`; the planet's is its radius less the square root of three times the greatest height of a face alone, which bounds the blend of the faces, less a voxel), and a view
+does not make the cubes that are wholly behind it from a viewer outside it (`world_view::horizon::is_hidden_by`: the cube's bounding sphere against the cone of the lines that touch the core, and beyond the places they touch; a margin of a brick's diagonal, because a view is worked out again only when the viewer leaves its brick). It is
+conservative, because the core is lower than the ground: its horizon is 8.4 km from a viewer on the ground, not the half a kilometre of the real one. **The game:** `GameDefinition::grid_detail()` (Cave: out to 10^7 voxels, light 0, cells of 3 pixels), `Session::enable_grid_detail` (called by the shell where it calls `enable_coarse_detail`),
+and `fog_radius_bricks` reaches as far as the farthest of the level's terrain and the planet's.
+
+**What it costs (measured, release, 4 worker threads, this machine; Cave's planet of 63,710 voxels, a picture of 1080 pixels).** From 2 m over the ground: 12,879 nodes (levels 1 to 7: 4,058, 2,784, 2,227, 2,019, 1,371, 385, 35) and 1,334 bricks, 4.8 million quads, settled in 6.0 s. Without the horizon: 18,764 nodes, 9.2 s. From 1 km up 9,929 nodes, 3.2 s (14,962 and 5.4 s
+without); from 30 km up 1,995 nodes, 0.6 s (3,131 and 0.85 s); from 500 km up 36 nodes, 0.17 s. The nodes near the viewer are most of it, and the horizon of the core is far off, so the cull takes a third and not the 97% to 99% that the spike found with the real heights of columns (`lod-spike.md`): a tighter cull needs the heights of
+the ground, per direction, which a generator would have to give. The setting that matters is `cell_pixels`: at the surface 4 gives 7,947 nodes, 6 gives 3,997, 8 gives 2,596 and 12 gives 1,322 (4.1 to 4.7 s whatever the setting: that is the 1,334 bricks, 6 ms each to generate). Cave uses 3 (the value the views of levels were tuned with); I have not looked at it
+on a screen yet (39f does).
+
 
 **The level and the game (Cave).** `voxunami_cave:mini_cosmos`, the generator of an empty level (all air), a planet made when the world is made; a new world has it first. An overworld-first constructor is kept for the tests that start in the overworld.
 
@@ -103,7 +114,7 @@ while it would be a pixel (3.7 of the LOD spec); a planet is known from anywhere
 - **39b The server reads through** and the replication of a ship with terrain. **Read-through built 2026-10-24; the replication is 39c's.**
 - **39c The wire (protocol 8) and the client generates.** A replay test. **Built 2026-10-24.**
 - **39d Colliders from generated bricks; gravity of a level; the planet's mass; boarding and leaving on a planet.** **Built 2026-10-24.**
-- **39e Levels of detail for a ship with terrain.**
+- **39e Levels of detail for a ship with terrain.** **Built 2026-10-24.**
 - **39f The level `mini_cosmos` in Cave**: the empty generator, the planet, the spawn, the default; the tests that start in the overworld; documents.
 
 ## 5. Questions

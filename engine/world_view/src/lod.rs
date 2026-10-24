@@ -14,12 +14,13 @@ use coarse_cells::{
     CoarseNode, DetailSettings, EditedCubes, ViewSelection, Zoom, plan_swaps, select_around_brick,
 };
 use region_octree::BrickCube;
-use terrain::TerrainGenerator;
+use terrain::{SolidBall, TerrainGenerator};
 use voxel_meshing::{PackedBrickMesh, mesh_coarse_node};
-use voxel_space::{BrickCoordinate, GridId, LevelIndex, WorldPosition};
+use voxel_space::{BrickCoordinate, GridId, WorldPosition};
 use world_storage::LevelData;
 
-use crate::mesher::{MeshUpdate, WorldMesher};
+use crate::horizon::{VIEWER_MARGIN, is_hidden_by, voxels_of};
+use crate::mesher::{MeshUpdate, TerrainSource, WorldMesher};
 
 /// How much a picture is asked to show.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -37,6 +38,39 @@ pub struct LodConfig {
     pub unlit: u8,
     /// How many threads make nodes.
     pub worker_count: usize,
+}
+
+/// What a view of levels of detail needs of the terrain it draws, besides its bricks ([`TerrainSource`]): which cubes may show anything, what makes the node of
+/// one, and a version to forget answers by. The terrain of a level is one, and so is the terrain of a planet (a ship with terrain).
+pub trait CoarseTerrainSource: TerrainSource {
+    /// Changes whenever the answers of [`CoarseTerrainSource::may_show`] and [`CoarseTerrainSource::coarse_generator`] could.
+    fn version(&self) -> u64;
+
+    /// Whether drawing the cube could show anything (see [`TerrainGenerator::may_show`]).
+    fn may_show(&self, cube: BrickCube) -> bool;
+
+    /// What makes the node of the cube, if this program has it.
+    fn coarse_generator(&self, cube: BrickCube) -> Option<Arc<dyn TerrainGenerator>>;
+
+    /// A ball of the terrain that is ground all through, if it has one (a planet's core): a viewer outside it is not shown what is behind it. None, the default, for
+    /// the terrain of a level.
+    fn solid_core(&self) -> Option<SolidBall> {
+        None
+    }
+}
+
+impl CoarseTerrainSource for LevelData {
+    fn version(&self) -> u64 {
+        self.terrain.version()
+    }
+
+    fn may_show(&self, cube: BrickCube) -> bool {
+        self.terrain.may_show(cube)
+    }
+
+    fn coarse_generator(&self, cube: BrickCube) -> Option<Arc<dyn TerrainGenerator>> {
+        self.terrain.coarse_generator(cube)
+    }
 }
 
 /// The fewest updates between two times the cubes are worked out again because the server has told of an edit somewhere new (the cubes round an edit are not
@@ -325,25 +359,26 @@ impl LodView {
     }
 
     /// Collects what the threads have finished, works out what is to be drawn from where the viewer is, and puts on the screen what can be. Returns what
-    /// the renderer must change. `level` is the level the viewer is in (and `level_index` its number); the viewer is `viewer`, in its bricks.
+    /// the renderer must change. `grid` is the grid whose terrain is drawn (a level's root grid, or a planet) and `source` its terrain; the viewer is `viewer`,
+    /// in the grid's coordinates.
     pub fn update(
         &mut self,
-        level_index: LevelIndex,
-        level: &LevelData,
+        grid: GridId,
+        source: &impl CoarseTerrainSource,
         viewer: WorldPosition,
         settings: &LodSettings,
     ) -> Vec<MeshUpdate> {
-        self.grid = GridId::root(level_index);
+        self.grid = grid;
         let centre = viewer.brick();
-        let mut updates = self.mesher.update(level, centre);
+        let mut updates = self.mesher.update(source, centre);
         self.collect_nodes(&mut updates);
         self.updates_since_selection = self.updates_since_selection.saturating_add(1);
         let moved = self.wanted_for != Some((centre, *settings));
         let new_edits = self.new_edits && self.updates_since_selection >= RESELECT_MINIMUM_UPDATES;
         if moved || new_edits {
-            self.reselect(centre, settings, level);
+            self.reselect(centre, viewer, settings, source);
         }
-        self.start_jobs(level);
+        self.start_jobs(source);
         let serial = self.mesher.ready_serial();
         if self.plan_needed || serial != self.seen_ready_serial {
             self.seen_ready_serial = serial;
@@ -355,14 +390,14 @@ impl LodView {
     /// Updates until nothing is left to make or swap, returning every change. For headless rendering and tests.
     pub fn settle(
         &mut self,
-        level_index: LevelIndex,
-        level: &LevelData,
+        grid: GridId,
+        source: &impl CoarseTerrainSource,
         viewer: WorldPosition,
         settings: &LodSettings,
     ) -> Vec<MeshUpdate> {
         let mut updates = Vec::new();
         loop {
-            updates.extend(self.update(level_index, level, viewer, settings));
+            updates.extend(self.update(grid, source, viewer, settings));
             if self.is_settled() {
                 return updates;
             }
@@ -406,15 +441,25 @@ impl LodView {
         }
     }
 
-    fn reselect(&mut self, centre: BrickCoordinate, settings: &LodSettings, level: &LevelData) {
-        // A cube that is all air or buried is left out, unless an edit is in it or beside it.
-        self.may_show.keep_for(level.terrain.version());
+    fn reselect(
+        &mut self,
+        centre: BrickCoordinate,
+        viewer: WorldPosition,
+        settings: &LodSettings,
+        source: &impl CoarseTerrainSource,
+    ) {
+        // A cube that is all air or buried is left out, unless an edit is in it or beside it; and one that is behind the horizon of the terrain's core.
+        self.may_show.keep_for(source.version());
         let (grid, edited) = (self.grid, &self.edited);
+        let core = source.solid_core();
+        let viewer_in_voxels = voxels_of(viewer);
         let memo = RefCell::new(&mut self.may_show);
         let may_hold = |cube: BrickCube| {
-            memo.borrow_mut()
-                .get_or_ask(cube, || level.terrain.may_show(cube))
-                || edited.near(grid, cube)
+            let may_show = memo.borrow_mut().get_or_ask(cube, || source.may_show(cube))
+                || edited.near(grid, cube);
+            may_show
+                && !core
+                    .is_some_and(|core| is_hidden_by(&core, viewer_in_voxels, cube, VIEWER_MARGIN))
         };
         let cubes = select_around_brick(
             centre,
@@ -470,7 +515,7 @@ impl LodView {
         }
     }
 
-    fn start_jobs(&mut self, level: &LevelData) {
+    fn start_jobs(&mut self, source: &impl CoarseTerrainSource) {
         let limit = self.workers.len() * JOBS_PER_WORKER;
         while self.in_flight < limit {
             let Some(cube) = self.queue.pop() else {
@@ -482,7 +527,7 @@ impl LodView {
             let version = self.data_version(cube);
             let source = match self.overrides.get(&(self.grid, cube)) {
                 Some(held) => Source::Override(Arc::clone(&held.node)),
-                None => match level.terrain.coarse_generator(cube) {
+                None => match source.coarse_generator(cube) {
                     Some(generator) => Source::Generator(generator),
                     None => Source::Nothing,
                 },

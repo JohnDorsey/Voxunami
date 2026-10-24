@@ -164,6 +164,16 @@ pub enum MeshUpdate {
         mesh: PackedBrickMesh,
     },
     RemoveCoarse(BrickCube),
+    /// Replaces the picture of a coarse node of a planet, in the planet's own coordinates (see [`MeshUpdate::UploadCoarse`]).
+    UploadGridCoarse {
+        grid: GridId,
+        cube: BrickCube,
+        mesh: PackedBrickMesh,
+    },
+    RemoveGridCoarse {
+        grid: GridId,
+        cube: BrickCube,
+    },
 }
 
 struct NeighbourhoodSnapshot {

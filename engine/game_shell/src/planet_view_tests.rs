@@ -9,6 +9,7 @@ use identity::Identity;
 use namespaced_id::NamespacedId;
 use player_presence::PlayersPlugin;
 use plugin_host::{Phase, Plugin, Registrar, SystemSpec};
+use region_octree::BrickCube;
 use server::Server;
 use transport::Connection;
 use transport::loopback::LoopbackConnector;
@@ -22,7 +23,7 @@ use world_storage::{GridTerrain, MovingGrid, PilotLogout};
 use world_view::MeshUpdate;
 
 use crate::coarse_view_tests::Digger;
-use crate::definition::{GameContent, GameDefinition};
+use crate::definition::{CoarseDetail, GameContent, GameDefinition};
 use crate::files::{open_recording, record_connection};
 use crate::host::build_server_with_plugins;
 use crate::session::{Mode, Session};
@@ -35,6 +36,8 @@ type Player = Session<Box<dyn Connection>, ExampleGame>;
 #[derive(Default, Debug)]
 struct Screen {
     planet: HashMap<BrickCoordinate, PackedBrickMesh>,
+    /// The coarse nodes of the planet.
+    nodes: HashMap<BrickCube, PackedBrickMesh>,
     /// Every picture of a brick of the planet that was ever put on the screen, in order (a wrong one that was soon replaced would show here).
     history: Vec<(BrickCoordinate, PackedBrickMesh)>,
     /// Anything else the updates said about the planet's grid or other grids.
@@ -62,9 +65,22 @@ impl Screen {
                     assert_eq!(grid, planet);
                     self.planet.remove(&coordinate);
                 }
+                MeshUpdate::UploadGridCoarse { grid, cube, mesh } => {
+                    assert_eq!(grid, planet);
+                    if mesh.is_empty() {
+                        self.nodes.remove(&cube);
+                    } else {
+                        self.nodes.insert(cube, mesh);
+                    }
+                }
+                MeshUpdate::RemoveGridCoarse { grid, cube } => {
+                    assert_eq!(grid, planet);
+                    self.nodes.remove(&cube);
+                }
                 MeshUpdate::RemoveGrid(grid) => {
                     assert_eq!(grid, planet);
                     self.planet.clear();
+                    self.nodes.clear();
                     self.other_grids += 1;
                 }
                 MeshUpdate::GridPose { .. } => self.other_grids += 1,
@@ -197,6 +213,20 @@ impl Rig {
             },
         )
         .unwrap()
+    }
+
+    /// A player as `join` makes one, whose game draws planets out to `detail`.
+    fn join_seeing_planets_in_detail(
+        &mut self,
+        connection: Box<dyn Connection>,
+        who: u8,
+        position: [f64; 3],
+        pitch: f32,
+        detail: CoarseDetail,
+    ) -> Player {
+        let mut player = self.join(connection, who, position, pitch);
+        player.enable_grid_detail(detail);
+        player
     }
 
     fn settle(&mut self, player: &mut Player, screen: &mut Screen) {
@@ -425,4 +455,245 @@ fn a_recording_of_a_player_over_a_planet_shows_what_the_player_saw() {
         );
     }
     std::fs::remove_dir_all(&directory).unwrap();
+}
+
+/// Planets drawn out to a kilometre and a half, as the fixtures of the views of levels are.
+fn planet_detail(maximum_distance: f64) -> CoarseDetail {
+    CoarseDetail {
+        maximum_distance,
+        unlit: 0,
+        cell_pixels: 3.0,
+        bytes_per_second: 0,
+    }
+}
+
+/// Whether any brick of the cube is in the box.
+fn meets(extent: BrickBox, cube: BrickCube) -> bool {
+    let origin = cube.origin();
+    let last = cube.edge_length() as i64 - 1;
+    BrickBox::new(
+        origin,
+        BrickCoordinate::new(origin.x() + last, origin.y() + last, origin.z() + last),
+    )
+    .is_some_and(|whole| extent.intersection(whole).is_some())
+}
+
+#[test]
+fn a_player_whose_game_draws_planets_in_detail_sees_the_nodes_of_the_planet_beyond_its_bricks() {
+    // Without: the bricks and nothing beyond.
+    let mut plain_rig = Rig::new();
+    let connection = plain_rig.connection();
+    let mut plain = plain_rig.join(connection, 1, OVER_THE_PLANET, 0.0);
+    let mut plain_screen = Screen::default();
+    plain_rig.settle(&mut plain, &mut plain_screen);
+    assert!(plain_screen.nodes.is_empty());
+
+    // With: the same bricks, and nodes of the planet's generator, in the planet's cubes, none wholly beyond its extent.
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    let mut player = rig.join_seeing_planets_in_detail(
+        connection,
+        1,
+        OVER_THE_PLANET,
+        0.0,
+        planet_detail(700.0),
+    );
+    let mut screen = Screen::default();
+    rig.settle(&mut player, &mut screen);
+    // (The fine region of a view in detail is not quite the sphere of bricks the mesher of bricks keeps, so it has a few more; those both have are the same pictures.)
+    assert!(screen.planet.len() > plain_screen.planet.len());
+    for (coordinate, mesh) in &plain_screen.planet {
+        assert_eq!(screen.planet.get(coordinate), Some(mesh), "{coordinate:?}");
+    }
+    assert!(screen.nodes.len() > 10, "{}", screen.nodes.len());
+    let extent = BrickBox::around(BrickCoordinate::ORIGIN, 8);
+    for cube in screen.nodes.keys() {
+        assert!(cube.level() > 0);
+        assert!(meets(extent, *cube), "{cube:?}");
+    }
+    assert!(player.client().world().grids().get(rig.planet).is_some());
+}
+
+#[test]
+fn a_player_far_from_a_planet_sees_its_nodes_though_none_of_its_bricks_are_near() {
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    // Three kilometres over the planet, looking down: more than a hundred bricks from any of it, and far outside the region the player watches.
+    let mut player = rig.join_seeing_planets_in_detail(
+        connection,
+        1,
+        [5.5, 20.0 * 32.0 + 3000.0, 5.5],
+        -90.0,
+        planet_detail(5000.0),
+    );
+    let mut screen = Screen::default();
+    rig.settle(&mut player, &mut screen);
+    assert!(player.client().world().grids().get(rig.planet).is_some());
+    assert!(screen.planet.is_empty(), "no brick is near");
+    assert!(screen.nodes.len() > 5, "{}", screen.nodes.len());
+}
+
+#[test]
+fn a_recording_of_a_player_who_saw_a_planet_in_detail_shows_the_same_nodes() {
+    let directory =
+        std::env::temp_dir().join(format!("voxunami_planet_detail_{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("session.voxreplay");
+    let mut rig = Rig::new();
+    let recorded: Box<dyn Connection> =
+        record_connection(rig.connector.connect().unwrap(), &path).unwrap();
+    let mut player =
+        rig.join_seeing_planets_in_detail(recorded, 1, OVER_THE_PLANET, 0.0, planet_detail(700.0));
+    let mut screen = Screen::default();
+    rig.settle(&mut player, &mut screen);
+    assert!(!screen.nodes.is_empty());
+    drop(player);
+
+    let connection: Box<dyn Connection> = Box::new(open_recording(&path).unwrap());
+    let mut replay = Session::<_, ExampleGame>::connect(
+        connection,
+        &Identity::generate(),
+        Mode::Replaying,
+        3,
+        camera_at([0.0; 3], 0.0, 0.0),
+        || {},
+    )
+    .unwrap();
+    replay.enable_grid_detail(planet_detail(700.0));
+    while replay.advance_one_tick().unwrap_or(false) {}
+    let mut replay_screen = Screen::default();
+    replay_screen.apply(rig.planet, replay.settle(|| {}).unwrap());
+
+    assert_eq!(replay_screen.planet, screen.planet);
+    assert_eq!(replay_screen.nodes, screen.nodes);
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+/// How far the nearest point of a node is from a place, in voxels: both in the planet's own coordinates.
+fn distance_to_node(cube: BrickCube, from: [f64; 3]) -> f64 {
+    let edge = cube.edge_length() as f64 * 32.0;
+    let origin = cube.origin();
+    let along = |first: i64, at: f64| {
+        let low = first as f64 * 32.0;
+        (low - at).max(at - (low + edge)).max(0.0)
+    };
+    let (x, y, z) = (
+        along(origin.x(), from[0]),
+        along(origin.y(), from[1]),
+        along(origin.z(), from[2]),
+    );
+    (x * x + y * y + z * z).sqrt()
+}
+
+/// Where the camera of a player is in the planet's own coordinates, in voxels.
+fn camera_in_the_planet(rig: &Rig, player: &Player) -> [f64; 3] {
+    let pose = player
+        .client()
+        .world()
+        .grids()
+        .get(rig.planet)
+        .unwrap()
+        .pose;
+    let local = pose.world_to_local(player.camera.position).unwrap();
+    let brick = local.brick();
+    let offset = local.offset();
+    [
+        brick.x() as f64 * 32.0 + f64::from(offset[0]),
+        brick.y() as f64 * 32.0 + f64::from(offset[1]),
+        brick.z() as f64 * 32.0 + f64::from(offset[2]),
+    ]
+}
+
+#[test]
+fn no_node_of_a_planet_is_drawn_farther_than_the_game_says_and_its_light_is_the_games() {
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    // (Nearer than the planet's extent reaches, so that the distance is what cuts the nodes off.)
+    let detail = CoarseDetail {
+        unlit: 9,
+        ..planet_detail(150.0)
+    };
+    let mut player = rig.join_seeing_planets_in_detail(connection, 1, OVER_THE_PLANET, 0.0, detail);
+    let mut screen = Screen::default();
+    rig.settle(&mut player, &mut screen);
+    assert!(screen.nodes.len() > 5, "{}", screen.nodes.len());
+    let camera = camera_in_the_planet(&rig, &player);
+    let mut farthest: f64 = 0.0;
+    for (cube, mesh) in &screen.nodes {
+        // (The viewer is taken to be in the middle of its brick, which is up to 16 voxels off along each axis.)
+        let distance = distance_to_node(*cube, camera);
+        farthest = farthest.max(distance);
+        assert!(distance <= 150.0 + 28.0, "{cube:?} is {distance} away");
+        assert!(!mesh.quads.is_empty());
+        for quad in &mesh.quads {
+            assert_eq!(quad.unpack().light, 9, "{cube:?}");
+        }
+    }
+    // And the nodes go out to near where the game says.
+    assert!(farthest > 100.0, "{farthest}");
+}
+
+#[test]
+fn the_nodes_of_a_planet_are_coarser_for_a_coarser_picture() {
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    let mut player = rig.join_seeing_planets_in_detail(
+        connection,
+        1,
+        OVER_THE_PLANET,
+        0.0,
+        planet_detail(700.0),
+    );
+    let mut screen = Screen::default();
+    rig.settle(&mut player, &mut screen);
+    let finer = screen.nodes.len();
+    // An eighth as many pixels high: each pixel is eight times as big, and the nodes are joined. (The other way round there is no change here: the nodes are as
+    // fine as nodes are, at this distance, for a picture of this many pixels.)
+    player.set_viewport_height(135);
+    rig.settle(&mut player, &mut screen);
+    assert!(
+        screen.nodes.len() < finer,
+        "{} against {finer}",
+        screen.nodes.len()
+    );
+    assert!(!screen.nodes.is_empty());
+}
+
+#[test]
+fn asking_for_detail_after_a_planet_is_drawn_draws_it_in_detail() {
+    let mut rig = Rig::new();
+    let connection = rig.connection();
+    let mut player = rig.join(connection, 1, OVER_THE_PLANET, 0.0);
+    let mut screen = Screen::default();
+    rig.settle(&mut player, &mut screen);
+    assert!(screen.nodes.is_empty());
+    assert_eq!(player.planet_count(), 1);
+
+    player.enable_grid_detail(planet_detail(700.0));
+    rig.settle(&mut player, &mut screen);
+    assert!(screen.nodes.len() > 10);
+    assert_eq!(player.planet_count(), 1);
+}
+
+#[test]
+fn the_fog_reaches_as_far_as_the_terrain_that_is_drawn_whether_it_is_a_level_or_a_planet() {
+    let radius_of = |coarse: Option<f64>, grid: Option<f64>| {
+        let mut rig = Rig::new();
+        let connection = rig.connection();
+        let mut player = rig.join(connection, 1, OVER_THE_PLANET, 0.0);
+        if let Some(distance) = coarse {
+            player.enable_coarse_detail(planet_detail(distance));
+        }
+        if let Some(distance) = grid {
+            player.enable_grid_detail(planet_detail(distance));
+        }
+        player.fog_radius_bricks()
+    };
+    // The radius of the view, 3 bricks, unless something is drawn farther (in bricks of 32 voxels, rounded up).
+    assert_eq!(radius_of(None, None), 3);
+    assert_eq!(radius_of(None, Some(50.0)), 3);
+    assert_eq!(radius_of(None, Some(700.0)), 22);
+    assert_eq!(radius_of(Some(700.0), None), 22);
+    assert_eq!(radius_of(Some(3200.0), Some(700.0)), 100);
+    assert_eq!(radius_of(Some(700.0), Some(3200.0)), 100);
 }

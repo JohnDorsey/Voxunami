@@ -73,6 +73,9 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
     if let Some(detail) = G::coarse_detail() {
         session.enable_coarse_detail(detail);
     }
+    if let Some(detail) = G::grid_detail() {
+        session.enable_grid_detail(detail);
+    }
 
     let mut renderer = VoxelRenderer::new(&context, wgpu::TextureFormat::Rgba8UnormSrgb);
     configure_renderer(
@@ -137,6 +140,9 @@ pub fn replay<G: GameDefinition>(options: &ReplayOptions) -> Result<(), String> 
     .map_err(|error| error.to_string())?;
     if let Some(detail) = G::coarse_detail() {
         session.enable_coarse_detail(detail);
+    }
+    if let Some(detail) = G::grid_detail() {
+        session.enable_grid_detail(detail);
     }
     let context = GraphicsContext::headless(view.adapter).map_err(|error| error.to_string())?;
     println!("graphics adapter: {}", describe(&context.adapter));

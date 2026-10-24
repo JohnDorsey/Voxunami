@@ -24,7 +24,7 @@ use voxel_space::{
 };
 
 use crate::density::{DensityField, ShellCaves};
-use crate::generator::{SURFACE_LAYER_DEPTH, TerrainGenerator, TerrainMaterials};
+use crate::generator::{SURFACE_LAYER_DEPTH, SolidBall, TerrainGenerator, TerrainMaterials};
 use crate::interval::Interval;
 use crate::noise::{Dimensionality, FractalNoise, mix};
 
@@ -154,6 +154,18 @@ impl PlanetGround {
 
     pub fn radius(&self) -> f64 {
         self.radius
+    }
+
+    /// The radius of the ball about the centre that is ground all through: the radius less the most the hills can raise or lower it (the blend of the faces can reach
+    /// the square root of three times the greatest height of a face alone, by the Cauchy-Schwarz inequality, for weights whose squares add to one) and a voxel,
+    /// for the middle of a voxel being what the field is asked at.
+    pub fn core_radius(&self) -> f64 {
+        let greatest = self
+            .faces
+            .iter()
+            .map(FractalNoise::largest_magnitude)
+            .fold(0.0, f64::max);
+        self.radius - 3.0f64.sqrt() * greatest - 1.0
     }
 
     /// Where on the heightmap of a face a point at `ratio` times the distance along the face's axis across the face is read: in whole voxels.
@@ -465,6 +477,14 @@ impl TerrainGenerator for PlanetGenerator {
 
     fn may_show(&self, cube: BrickCube) -> bool {
         crate::coarse::cube_may_show(&*self.ground, cube)
+    }
+
+    fn solid_core(&self) -> Option<SolidBall> {
+        let radius = self.ground.core_radius();
+        (radius > 0.0).then_some(SolidBall {
+            centre: [0.0; 3],
+            radius,
+        })
     }
 }
 
@@ -1233,6 +1253,68 @@ mod tests {
     }
 
     // ---- what need not be drawn ----
+
+    /// A direction from a number, spread over the sphere well enough to meet the seams and corners of the cube: the integers `0..` mixed into three components.
+    fn direction_number(number: u64) -> [f64; 3] {
+        let component = |salt: u64| {
+            let bits = mix(number.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ salt) >> 11;
+            bits as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+        };
+        let direction = [component(1), component(2), component(3)];
+        let length = (direction[0] * direction[0]
+            + direction[1] * direction[1]
+            + direction[2] * direction[2])
+            .sqrt();
+        direction.map(|axis| axis / length)
+    }
+
+    #[test]
+    fn a_planet_says_it_has_a_core_that_is_ground_at_every_place_in_it_and_most_of_the_planet() {
+        for settings in [small_planet(5), PlanetSettings::one_percent_of_earth(6)] {
+            let fixture = StandardTestLayout::default();
+            let radius = settings.radius;
+            let generator = generator_of(settings, &fixture);
+            let core = generator
+                .solid_core()
+                .expect("a planet says where its core is");
+            assert_eq!(core.centre, [0.0; 3]);
+            // Most of the planet: the hills reach no more than a few times their height down, and the hills of the planet are a few hundredths of its size at the most.
+            assert!(core.radius > radius * 0.8 && core.radius < radius);
+            // Ground at every sampled place in it: at its own radius, where the surface is nearest, and at fractions of it. (The directions meet seams and corners.)
+            for number in 0..4000 {
+                let direction = direction_number(number);
+                for share in [1.0, 0.999, 0.9, 0.5, 0.0] {
+                    let at = direction.map(|axis| axis * core.radius * share);
+                    let value = generator.ground().sample(
+                        voxel(
+                            at[0].floor() as i64,
+                            at[1].floor() as i64,
+                            at[2].floor() as i64,
+                        ),
+                        FULL,
+                    );
+                    assert!(value > 0.0, "{value} at {at:?} ({number}, {share})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_core_of_a_planet_is_not_a_great_deal_smaller_than_it_has_to_be() {
+        // The hills of the small planet are 20 voxels tall at the most, 40 with all the octaves, and the blend can reach about 1.7 times a face's (the squares of its weights add
+        // to one): the surface is nowhere more than 70 voxels below the radius, and the core is not much deeper than that.
+        let fixture = StandardTestLayout::default();
+        let generator = generator_of(small_planet(5), &fixture);
+        let core = generator.solid_core().unwrap();
+        assert!(core.radius >= 500.0 - 80.0, "{}", core.radius);
+        // And a ball, with no hills, has its whole radius but the one voxel that keeps the rounding of the middle of a voxel out of it.
+        let whole_ball = generator_of(ball(300.0), &fixture).solid_core().unwrap();
+        assert_eq!(whole_ball.radius, 299.0);
+        // A planet so small that the hills could take its ground to nothing has no core to speak of.
+        assert_eq!(generator_of(ball(1.0), &fixture).solid_core(), None);
+        assert_eq!(generator_of(ball(0.5), &fixture).solid_core(), None);
+        assert!(generator_of(ball(2.0), &fixture).solid_core().is_some());
+    }
 
     #[test]
     fn a_cube_that_may_not_show_has_only_air_or_only_ground_all_round_it() {

@@ -77,6 +77,12 @@ pub fn apply_updates(renderer: &mut VoxelRenderer, updates: Vec<MeshUpdate>) {
             MeshUpdate::RemoveGrid(grid) => renderer.remove_grid(grid),
             MeshUpdate::UploadCoarse { cube, mesh } => renderer.upload_coarse_node(cube, &mesh),
             MeshUpdate::RemoveCoarse(cube) => renderer.remove_coarse_node(cube),
+            MeshUpdate::UploadGridCoarse { grid, cube, mesh } => {
+                renderer.upload_grid_coarse_node(grid, cube, &mesh);
+            }
+            MeshUpdate::RemoveGridCoarse { grid, cube } => {
+                renderer.remove_grid_coarse_node(grid, cube);
+            }
         }
     }
 }

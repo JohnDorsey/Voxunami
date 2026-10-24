@@ -2,12 +2,18 @@
 
 use std::collections::{HashMap, HashSet};
 
+use std::cell::Cell;
+use std::sync::Arc;
+
 use coarse_cells::{CoarseCell, CoarseNode, DetailSettings, ViewSelection, select_around_brick};
 use region_octree::BrickCube;
+use terrain::TerrainGenerator;
+use voxel_grid::{Brick, GridLayout};
 use voxel_meshing::{PackedBrickMesh, mesh_coarse_node};
 use voxel_space::{BrickCoordinate, GridId, LevelIndex, WorldPosition};
+use world_storage::LevelData;
 use world_storage::test_support::brick;
-use world_view::{LodConfig, LodSettings, LodView, MeshUpdate};
+use world_view::{CoarseTerrainSource, LodConfig, LodSettings, LodView, MeshUpdate, TerrainSource};
 
 mod common;
 
@@ -147,7 +153,7 @@ fn bricks_near_and_nodes_far_are_drawn_together_with_no_gap_and_no_overlap() {
     let mut view = view_of(&scene, 3);
     let mut screen = Screen::default();
     screen.apply(view.settle(
-        LevelIndex::MAIN,
+        GridId::MAIN,
         scene.world.main(),
         viewer_in(brick(0, 0, 0)),
         &settings(),
@@ -176,7 +182,7 @@ fn a_settled_view_has_nothing_more_to_do() {
     scene.assign_around(brick(0, 0, 0), 10);
     let mut view = view_of(&scene, 3);
     view.settle(
-        LevelIndex::MAIN,
+        GridId::MAIN,
         scene.world.main(),
         viewer_in(brick(0, 0, 0)),
         &settings(),
@@ -185,7 +191,7 @@ fn a_settled_view_has_nothing_more_to_do() {
     assert_eq!(view.pending_jobs(), 0);
     assert!(
         view.update(
-            LevelIndex::MAIN,
+            GridId::MAIN,
             scene.world.main(),
             viewer_in(brick(0, 0, 0)),
             &settings()
@@ -206,7 +212,7 @@ fn walking_never_leaves_a_hole_where_something_was_and_is_wanted_and_never_draws
         let viewer = viewer_in(brick(step, 0, 0));
         let started = std::time::Instant::now();
         loop {
-            screen.apply(view.update(LevelIndex::MAIN, scene.world.main(), viewer, &nearer()));
+            screen.apply(view.update(GridId::MAIN, scene.world.main(), viewer, &nearer()));
             if view.shown() != &previous {
                 checked += 1;
                 assert_nothing_overlaps(view.shown());
@@ -287,7 +293,7 @@ fn what_the_server_says_replaces_the_picture_of_a_node_where_it_is_and_taking_it
     let mut view = view_of(&scene, 3);
     let mut screen = Screen::default();
     let viewer = viewer_in(brick(0, 0, 0));
-    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    screen.apply(view.settle(GridId::MAIN, scene.world.main(), viewer, &settings()));
     let cube = a_drawn_node(&view, &screen);
     let original = screen.nodes[&cube].clone();
     let shown_before = view.shown().clone();
@@ -299,7 +305,7 @@ fn what_the_server_says_replaces_the_picture_of_a_node_where_it_is_and_taking_it
         cube,
         Some(CoarseNode::uniform(CoarseCell::empty(air, 0))),
     );
-    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    screen.apply(view.settle(GridId::MAIN, scene.world.main(), viewer, &settings()));
     assert!(!screen.nodes.contains_key(&cube));
     // (The cubes beside an edit are not left out as buried, so more may be drawn than were; none that were is gone.)
     assert!(shown_before.is_subset(view.shown()));
@@ -308,7 +314,7 @@ fn what_the_server_says_replaces_the_picture_of_a_node_where_it_is_and_taking_it
     // A node of one block: the picture of a cube of that block.
     let stone = scene.game.raw_block("base_blocks:stone");
     view.set_override(GridId::MAIN, cube, Some(node_of(stone)));
-    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    screen.apply(view.settle(GridId::MAIN, scene.world.main(), viewer, &settings()));
     assert_eq!(
         screen.nodes[&cube],
         mesh_coarse_node(&node_of(stone), &[None; 6]).pack()
@@ -319,7 +325,7 @@ fn what_the_server_says_replaces_the_picture_of_a_node_where_it_is_and_taking_it
 
     // Taken back: what the generators give.
     view.set_override(GridId::MAIN, cube, None);
-    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    screen.apply(view.settle(GridId::MAIN, scene.world.main(), viewer, &settings()));
     assert_eq!(screen.nodes[&cube], original);
 }
 
@@ -331,7 +337,7 @@ fn the_last_thing_said_is_what_is_drawn_and_a_picture_made_from_what_was_said_be
     let mut view = view_of(&scene, 3);
     let mut screen = Screen::default();
     let viewer = viewer_in(brick(0, 0, 0));
-    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    screen.apply(view.settle(GridId::MAIN, scene.world.main(), viewer, &settings()));
     let cube = a_drawn_node(&view, &screen);
     let stone = scene.game.raw_block("base_blocks:stone");
     let dirt = scene.game.raw_block("base_blocks:dirt");
@@ -340,9 +346,9 @@ fn the_last_thing_said_is_what_is_drawn_and_a_picture_made_from_what_was_said_be
     for _ in 0..3 {
         // The picture of the first is being made when the second is said: whenever it is done, it is for something that is no longer so.
         view.set_override(GridId::MAIN, cube, Some(node_of(stone)));
-        let started = view.update(LevelIndex::MAIN, scene.world.main(), viewer, &settings());
+        let started = view.update(GridId::MAIN, scene.world.main(), viewer, &settings());
         view.set_override(GridId::MAIN, cube, Some(node_of(dirt)));
-        let later = view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings());
+        let later = view.settle(GridId::MAIN, scene.world.main(), viewer, &settings());
         for update in started.iter().chain(&later) {
             assert!(
                 !matches!(update, MeshUpdate::UploadCoarse { cube: found, mesh } if *found == cube && *mesh == of_stone),
@@ -354,7 +360,7 @@ fn the_last_thing_said_is_what_is_drawn_and_a_picture_made_from_what_was_said_be
         assert_eq!(screen.nodes[&cube], of_dirt);
         // And back to stone for the next round.
         view.set_override(GridId::MAIN, cube, Some(node_of(stone)));
-        screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+        screen.apply(view.settle(GridId::MAIN, scene.world.main(), viewer, &settings()));
         assert_eq!(screen.nodes[&cube], of_stone);
     }
 }
@@ -366,20 +372,20 @@ fn what_is_said_of_another_level_or_of_a_cube_that_is_not_drawn_changes_nothing_
     let mut view = view_of(&scene, 3);
     let mut screen = Screen::default();
     let viewer = viewer_in(brick(0, 0, 0));
-    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    screen.apply(view.settle(GridId::MAIN, scene.world.main(), viewer, &settings()));
     let cube = a_drawn_node(&view, &screen);
     let before: HashMap<BrickCube, PackedBrickMesh> = screen.nodes.clone();
     let stone = scene.game.raw_block("base_blocks:stone");
     view.set_override(GridId::root(LevelIndex::new(1)), cube, Some(node_of(stone)));
     let far = BrickCube::containing(brick(1_000_000, 0, 0), 3);
     view.set_override(GridId::MAIN, far, Some(node_of(stone)));
-    let updates = view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings());
+    let updates = view.settle(GridId::MAIN, scene.world.main(), viewer, &settings());
     assert!(updates.is_empty(), "{updates:?}");
     assert_eq!(screen.nodes, before);
 
     // Nor does it when the view is worked out again from a brick over: the cube is drawn as it was, and no picture of it is made again.
     let moved = view.settle(
-        LevelIndex::MAIN,
+        GridId::MAIN,
         scene.world.main(),
         viewer_in(brick(0, 0, 1)),
         &settings(),
@@ -390,6 +396,105 @@ fn what_is_said_of_another_level_or_of_a_cube_that_is_not_drawn_changes_nothing_
         ),
         "{moved:?}"
     );
+}
+
+#[test]
+fn a_view_of_the_terrain_of_another_grid_takes_what_is_said_of_that_grid_and_not_of_the_main_one() {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 10);
+    let mut view = view_of(&scene, 3);
+    let mut screen = Screen::default();
+    let viewer = viewer_in(brick(0, 0, 0));
+    let second = GridId::root(LevelIndex::new(1));
+    screen.apply(view.settle(second, scene.world.main(), viewer, &settings()));
+    let cube = a_drawn_node(&view, &screen);
+    let before = screen.nodes[&cube].clone();
+    let stone = scene.game.raw_block("base_blocks:stone");
+
+    // What is said of the main level is not for this one.
+    view.set_override(GridId::MAIN, cube, Some(node_of(stone)));
+    screen.apply(view.settle(second, scene.world.main(), viewer, &settings()));
+    assert_eq!(screen.nodes[&cube], before);
+    // What is said of its own grid is.
+    view.set_override(second, cube, Some(node_of(stone)));
+    screen.apply(view.settle(second, scene.world.main(), viewer, &settings()));
+    assert_ne!(screen.nodes[&cube], before);
+}
+
+/// The terrain of a level that can be made to say that nothing may show, and that says what version of itself that is.
+struct Dimmable<'a> {
+    level: &'a LevelData,
+    dark: Cell<bool>,
+    version: Cell<u64>,
+}
+
+impl TerrainSource for Dimmable<'_> {
+    fn known(&self, coordinate: BrickCoordinate) -> Option<Arc<Brick>> {
+        self.level.known(coordinate)
+    }
+
+    fn generator_for(&self, coordinate: BrickCoordinate) -> Option<Arc<dyn TerrainGenerator>> {
+        self.level.generator_for(coordinate)
+    }
+
+    fn layout(&self) -> &Arc<GridLayout> {
+        self.level.layout()
+    }
+}
+
+impl CoarseTerrainSource for Dimmable<'_> {
+    fn version(&self) -> u64 {
+        self.version.get()
+    }
+
+    fn may_show(&self, cube: BrickCube) -> bool {
+        !self.dark.get() && self.level.may_show(cube)
+    }
+
+    fn coarse_generator(&self, cube: BrickCube) -> Option<Arc<dyn TerrainGenerator>> {
+        self.level.coarse_generator(cube)
+    }
+}
+
+#[test]
+fn what_a_terrain_said_may_show_is_asked_again_when_its_version_changes_and_not_before() {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 10);
+    let terrain = Dimmable {
+        level: scene.world.main(),
+        dark: Cell::new(false),
+        version: Cell::new(0),
+    };
+    let mut view = view_of(&scene, 3);
+    let mut screen = Screen::default();
+    screen.apply(view.settle(
+        GridId::MAIN,
+        &terrain,
+        viewer_in(brick(0, 0, 0)),
+        &settings(),
+    ));
+    assert!(!screen.nodes.is_empty());
+
+    // The terrain now says nothing may show, but not that it is another terrain: the answers the view has are kept, and the view is worked out from them for the
+    // next place the viewer is at.
+    terrain.dark.set(true);
+    screen.apply(view.settle(
+        GridId::MAIN,
+        &terrain,
+        viewer_in(brick(0, 0, 1)),
+        &settings(),
+    ));
+    assert!(!screen.nodes.is_empty());
+
+    // Once it says it is another, they are asked again.
+    terrain.version.set(1);
+    screen.apply(view.settle(
+        GridId::MAIN,
+        &terrain,
+        viewer_in(brick(0, 0, 2)),
+        &settings(),
+    ));
+    assert!(screen.nodes.is_empty());
 }
 
 #[test]
@@ -404,7 +509,7 @@ fn what_is_said_of_a_brick_is_ignored() {
         Some(node_of(stone)),
     );
     let updates = view.settle(
-        LevelIndex::MAIN,
+        GridId::MAIN,
         scene.world.main(),
         viewer_in(brick(0, 0, 0)),
         &settings(),
@@ -419,13 +524,13 @@ fn a_reset_takes_everything_down_and_the_view_is_built_again_for_the_new_level()
     let mut view = view_of(&scene, 3);
     let mut screen = Screen::default();
     let viewer = viewer_in(brick(0, 0, 0));
-    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    screen.apply(view.settle(GridId::MAIN, scene.world.main(), viewer, &settings()));
     assert!(!screen.nodes.is_empty());
     screen.apply(view.reset());
     assert!(screen.nodes.is_empty());
     assert!(screen.bricks.is_empty());
     assert!(view.shown().is_empty());
-    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    screen.apply(view.settle(GridId::MAIN, scene.world.main(), viewer, &settings()));
     assert_eq!(view.shown(), view.wanted());
     assert_screen_matches(&screen, &view);
 }
@@ -437,11 +542,11 @@ fn an_edit_to_a_brick_that_is_drawn_changes_its_picture_as_before() {
     let mut view = view_of(&scene, 3);
     let mut screen = Screen::default();
     let viewer = viewer_in(brick(0, 0, 0));
-    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    screen.apply(view.settle(GridId::MAIN, scene.world.main(), viewer, &settings()));
     let before = screen.bricks[&brick(0, 0, 0)].clone();
     let edited = scene.edit([5, 9, 5], "base_blocks:air");
     view.mesher_mut().brick_changed(edited);
-    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    screen.apply(view.settle(GridId::MAIN, scene.world.main(), viewer, &settings()));
     assert_ne!(screen.bricks[&brick(0, 0, 0)], before);
     assert_nothing_overlaps(view.shown());
 }
@@ -509,7 +614,7 @@ fn cubes_that_are_all_air_or_buried_in_ground_are_not_drawn_and_what_is_left_is_
     let mut view = view_of(&scene, 3);
     let mut screen = Screen::default();
     screen.apply(view.settle(
-        LevelIndex::MAIN,
+        GridId::MAIN,
         scene.world.main(),
         viewer_in(brick(0, 0, 0)),
         &settings(),
@@ -545,13 +650,13 @@ fn a_block_placed_high_in_the_air_among_the_bricks_is_drawn_though_the_nodes_rou
     let mut view = view_of(&scene, 3);
     let mut screen = Screen::default();
     let viewer = viewer_in(brick(0, 0, 0));
-    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    screen.apply(view.settle(GridId::MAIN, scene.world.main(), viewer, &settings()));
 
     // Three bricks up, the farthest the bricks go: there is only air there, and the cubes that hold it are air all through.
     let edited = scene.edit([5, 3 * 32 + 5, 5], "base_blocks:stone");
     assert_eq!(edited, brick(0, 3, 0));
     view.mesher_mut().brick_changed(edited);
-    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    screen.apply(view.settle(GridId::MAIN, scene.world.main(), viewer, &settings()));
     assert!(
         view.shown()
             .contains(&BrickCube::new(brick(0, 3, 0), 0).unwrap())
@@ -567,7 +672,7 @@ fn a_flood_of_edits_in_new_places_is_one_reselect_after_a_few_updates_and_not_on
     let mut view = view_of(&scene, 3);
     let mut screen = Screen::default();
     let viewer = viewer_in(brick(0, 0, 0));
-    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    screen.apply(view.settle(GridId::MAIN, scene.world.main(), viewer, &settings()));
     let before = view.wanted().clone();
     let stone = scene.game.raw_block("base_blocks:stone");
     let all = selected(&scene, brick(0, 0, 0), false);
@@ -593,18 +698,18 @@ fn a_flood_of_edits_in_new_places_is_one_reselect_after_a_few_updates_and_not_on
 
     // The first, after a quiet time, is taken in at once.
     view.set_override(GridId::MAIN, in_the_sky[0], Some(node_of(stone)));
-    screen.apply(view.update(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    screen.apply(view.update(GridId::MAIN, scene.world.main(), viewer, &settings()));
     assert!(view.wanted().contains(&in_the_sky[0]));
     // The next is not: the cubes are worked out again at most every few updates, and the view knows there is more to do.
     view.set_override(GridId::MAIN, in_the_sky[1], Some(node_of(stone)));
-    screen.apply(view.update(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    screen.apply(view.update(GridId::MAIN, scene.world.main(), viewer, &settings()));
     assert!(!view.wanted().contains(&in_the_sky[1]), "not at once");
     assert!(!view.is_settled());
     // A third comes meanwhile. Some updates later both are in, from the one working out.
     view.set_override(GridId::MAIN, in_the_sky[2], Some(node_of(stone)));
     let mut updates = 2;
     while !view.wanted().contains(&in_the_sky[1]) {
-        screen.apply(view.update(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+        screen.apply(view.update(GridId::MAIN, scene.world.main(), viewer, &settings()));
         updates += 1;
         assert!(updates <= 30, "never worked out");
     }
@@ -612,7 +717,7 @@ fn a_flood_of_edits_in_new_places_is_one_reselect_after_a_few_updates_and_not_on
     for cube in &in_the_sky {
         assert!(view.wanted().contains(cube), "{cube:?}");
     }
-    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    screen.apply(view.settle(GridId::MAIN, scene.world.main(), viewer, &settings()));
     for cube in &in_the_sky {
         assert_eq!(
             screen.nodes[cube],
@@ -629,7 +734,7 @@ fn an_edit_in_the_sky_or_under_the_ground_brings_in_the_cubes_round_it_and_takin
     let mut view = view_of(&scene, 3);
     let mut screen = Screen::default();
     let viewer = viewer_in(brick(0, 0, 0));
-    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    screen.apply(view.settle(GridId::MAIN, scene.world.main(), viewer, &settings()));
     let before = view.wanted().clone();
 
     // A cube of the finest detail high over the ground and one deep under it, each with cubes of the same detail all round it: the rule would give them all, and
@@ -666,7 +771,7 @@ fn an_edit_in_the_sky_or_under_the_ground_brings_in_the_cubes_round_it_and_takin
         Some(node_of(scene.game.raw_block("base_blocks:dirt"))),
     );
     view.set_override(GridId::MAIN, sky, Some(node_of(stone)));
-    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    screen.apply(view.settle(GridId::MAIN, scene.world.main(), viewer, &settings()));
     assert_eq!(
         screen.nodes[&sky],
         mesh_coarse_node(&node_of(stone), &[None; 6]).pack()
@@ -689,7 +794,7 @@ fn an_edit_in_the_sky_or_under_the_ground_brings_in_the_cubes_round_it_and_takin
         deep,
         Some(CoarseNode::uniform(CoarseCell::empty(scene.air, 0))),
     );
-    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    screen.apply(view.settle(GridId::MAIN, scene.world.main(), viewer, &settings()));
     assert!(view.wanted().contains(&deep));
     assert!(!screen.nodes.contains_key(&deep));
     for beside in touching(deep) {
@@ -707,7 +812,7 @@ fn an_edit_in_the_sky_or_under_the_ground_brings_in_the_cubes_round_it_and_takin
     // Both taken back: what was left out is left out again, once the cubes are worked out again.
     view.set_override(GridId::MAIN, sky, None);
     view.set_override(GridId::MAIN, deep, None);
-    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    screen.apply(view.settle(GridId::MAIN, scene.world.main(), viewer, &settings()));
     assert_eq!(view.wanted(), &before);
     assert_eq!(view.shown(), &before);
     for cube in screen.nodes.keys() {

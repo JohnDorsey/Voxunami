@@ -27,7 +27,8 @@ mod world_terrain;
 
 pub use density::{DensityField, Heightfield, Minimum, ShellCaves};
 pub use generator::{
-    FieldTerrainGenerator, RollingHillsSettings, TerrainGenerator, TerrainMaterials, rolling_hills,
+    FieldTerrainGenerator, RollingHillsSettings, SolidBall, TerrainGenerator, TerrainMaterials,
+    rolling_hills,
 };
 pub use interval::Interval;
 pub use noise::{Dimensionality, FractalNoise, Octave, lattice_hash, lattice_value, mix};

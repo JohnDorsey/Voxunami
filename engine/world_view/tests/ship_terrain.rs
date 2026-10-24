@@ -7,7 +7,9 @@ use block_models::BlockTable;
 use terrain::TerrainGenerator;
 use voxel_grid::Grid;
 use voxel_meshing::PackedBrickMesh;
-use voxel_space::{BrickBox, BrickCoordinate, FaceDirection, GridId, VoxelCoordinate};
+use voxel_space::{
+    BrickBox, BrickCoordinate, FaceDirection, GridId, VoxelCoordinate, WorldPosition,
+};
 use world_storage::test_support::brick;
 use world_view::{MeshUpdate, ShipTerrainMesher, ShipTerrainSource, ViewChannels, ViewSettings};
 
@@ -16,6 +18,11 @@ mod common;
 use common::{LitBrick, Scene, scene};
 
 const PLANET: GridId = GridId::new(GridId::FIRST_ALLOCATED + 2);
+
+/// A viewer in the middle of a brick.
+fn at(x: i64, y: i64, z: i64) -> WorldPosition {
+    WorldPosition::new(brick(x, y, z), [16.0; 3])
+}
 
 /// Applies the updates for a ship the way a renderer would, saying so if any is not for the ship.
 fn apply(live: &mut HashMap<BrickCoordinate, PackedBrickMesh>, updates: Vec<MeshUpdate>) {
@@ -99,7 +106,7 @@ fn a_planet_is_meshed_exactly_as_the_terrain_of_a_level_with_the_same_ground() {
     );
     let mut mesher = planet_mesher(&scene, 3);
     let mut as_ship = HashMap::new();
-    apply(&mut as_ship, mesher.settle(&source, brick(0, 0, 0)));
+    apply(&mut as_ship, mesher.settle(&source, at(0, 0, 0)));
 
     assert_eq!(as_ship.len(), 29);
     let mut ship_bricks: Vec<_> = as_ship.keys().copied().collect();
@@ -123,7 +130,7 @@ fn a_stored_brick_of_a_planet_is_drawn_instead_of_the_generated_one_and_a_change
     let mut live = HashMap::new();
     {
         let source = ShipTerrainSource::new(&voxels, Some(Arc::clone(&generator)), extent);
-        apply(&mut live, mesher.settle(&source, brick(0, 0, 0)));
+        apply(&mut live, mesher.settle(&source, at(0, 0, 0)));
     }
     let plain = live[&brick(0, 0, 0)].clone();
 
@@ -141,7 +148,7 @@ fn a_stored_brick_of_a_planet_is_drawn_instead_of_the_generated_one_and_a_change
     mesher.brick_changed(brick(0, 0, 0));
     {
         let source = ShipTerrainSource::new(&voxels, Some(Arc::clone(&generator)), extent);
-        apply(&mut live, mesher.settle(&source, brick(0, 0, 0)));
+        apply(&mut live, mesher.settle(&source, at(0, 0, 0)));
     }
     assert_ne!(
         live[&brick(0, 0, 0)],
@@ -163,7 +170,7 @@ fn beyond_the_extent_there_is_nothing_so_the_edge_of_a_planet_shows_its_side() {
     );
     let mut mesher = planet_mesher(&scene, 3);
     let mut live = HashMap::new();
-    apply(&mut live, mesher.settle(&source, brick(0, 0, 0)));
+    apply(&mut live, mesher.settle(&source, at(0, 0, 0)));
 
     // Only the bricks of the ground that are inside the extent are drawn: the 3 x 3 of the surface and the 3 x 3 of the stone under it (whose underside is
     // against the nothing below the extent, and so is drawn).
@@ -195,7 +202,7 @@ fn a_planet_whose_generator_this_program_lacks_draws_nothing() {
     let source = ShipTerrainSource::new(&voxels, None, extent_around_the_origin(8));
     let mut mesher = planet_mesher(&scene, 3);
     let mut live = HashMap::new();
-    apply(&mut live, mesher.settle(&source, brick(0, 0, 0)));
+    apply(&mut live, mesher.settle(&source, at(0, 0, 0)));
     assert!(live.is_empty());
 }
 
@@ -210,7 +217,7 @@ fn a_planet_is_drawn_again_with_the_light_a_game_gives_it_when_the_game_changes_
     );
     let mut mesher = planet_mesher(&scene, 2);
     let mut live = HashMap::new();
-    apply(&mut live, mesher.settle(&source, brick(0, 0, 0)));
+    apply(&mut live, mesher.settle(&source, at(0, 0, 0)));
     let light_of_origin = |live: &HashMap<BrickCoordinate, PackedBrickMesh>| {
         live[&brick(0, 0, 0)]
             .quads
@@ -227,7 +234,7 @@ fn a_planet_is_drawn_again_with_the_light_a_game_gives_it_when_the_game_changes_
         brightness: 100,
     });
     mesher.set_channels(scene.channels_lit_by(&hook));
-    apply(&mut live, mesher.settle(&source, brick(0, 0, 0)));
+    apply(&mut live, mesher.settle(&source, at(0, 0, 0)));
     assert_eq!(light_of_origin(&live), Some(100));
 }
 
@@ -242,7 +249,7 @@ fn resetting_the_mesher_takes_down_every_brick_it_showed() {
     );
     let mut mesher = planet_mesher(&scene, 3);
     let mut live = HashMap::new();
-    apply(&mut live, mesher.settle(&source, brick(0, 0, 0)));
+    apply(&mut live, mesher.settle(&source, at(0, 0, 0)));
     assert_eq!(live.len(), 29);
     apply(&mut live, mesher.reset());
     assert!(live.is_empty());

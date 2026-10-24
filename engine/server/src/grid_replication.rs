@@ -2,7 +2,8 @@
 //! the ones it already has.
 //!
 //! A client watches a box of bricks of one level. A ship is in its picture if the ship is in that level and the bricks its box touches
-//! (the bound [`MovingGrid::world_brick_bounds`] gives) meet the box. A client that is told of a ship is sent every brick of it, and is told to
+//! (the bound [`MovingGrid::world_brick_bounds`] gives) meet the box, or if it is a planet, which is in the picture of every client that watches its level. A
+//! client that is told of a ship is sent every brick of it, and is told to
 //! forget it all when the ship leaves. A ship with terrain, a planet, is told of with the generator and the extent, and only the bricks that are stored (the
 //! edits) are sent: the client makes the others itself, and the bricks edited later arrive as the edits of a brick it has, or as a whole brick when the
 //! edit stored it.
@@ -75,8 +76,9 @@ pub(crate) fn grid_messages(
     if let Some((level, region)) = watched {
         let mut used = 0u64;
         for view in views {
+            // (A planet is known from anywhere in its level: it is drawn from as far as there is anything to see of it, and a client has to know it to draw it.)
             if view.level == level
-                && view.bounds.intersection(region).is_some()
+                && (view.terrain.is_some() || view.bounds.intersection(region).is_some())
                 && used + view.brick_count <= budget
             {
                 used += view.brick_count;

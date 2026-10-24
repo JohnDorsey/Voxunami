@@ -178,6 +178,12 @@ pub trait GameDefinition: Sized + 'static {
         None
     }
 
+    /// How far the terrain of a planet (a ship with terrain) is drawn, if beyond the bricks round the camera it is. The default is not at all. (The server corrects the
+    /// nodes of a level where it was edited and the nodes of a planet it does not, so `bytes_per_second` means nothing here.)
+    fn grid_detail() -> Option<CoarseDetail> {
+        None
+    }
+
     /// The plugins that are the server's rules. Each is given the world the server starts from when it
     /// is registered, and so finds any state it saved. The order of the list does not matter.
     fn plugins(content: &Self::Content) -> Vec<Box<dyn Plugin>>;

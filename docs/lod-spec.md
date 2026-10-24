@@ -200,6 +200,9 @@ downloading them, exactly as it does for the terrain of a level. Phase 38 does n
 - **Phase 39 steps (planned):** 39a `GridTerrain` on `MovingGrid`, the file section, save and load (an unknown generator kept); 39b the server reads through and prunes; 39c the wire and the client generate (and a replay test); 39d colliders from generated bricks;
   39e a sphere generator with analytic coarse cells and the surface predicate; 39f the ground of a level as a ship, and gravity from mass.
 
+**Built (Phase 39, 2026-10-24):** the grid-keyed view is `world_view::LodView` over a `CoarseTerrainSource` (a level's terrain or a planet's), a planet is known from anywhere in its level by every client that watches the level (not by the pixel rule of 3.7), the horizon of a planet's solid core culls what is behind it, and the server does not yet correct the
+nodes of a planet. See `planet-spec.md`.
+
 Orientation as `f64` (38a) is part of this room: a turned planet's far side has to be placed exactly.
 
 ## 4. Steps

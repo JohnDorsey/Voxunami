@@ -268,6 +268,18 @@ fn the_game_lets_a_planet_pull_and_not_a_ship_that_someone_built_and_space_has_n
 }
 
 #[test]
+fn the_game_draws_a_planet_out_to_where_it_is_a_few_pixels_across_and_the_terrain_of_a_level_not_beyond_its_bricks()
+ {
+    let detail = Cave::grid_detail().expect("a planet is drawn in detail");
+    // Far enough that the planet is still drawn from a hundred of its radii off, and not so far that the nodes of the far side of a star are asked for.
+    assert!(detail.maximum_distance >= 100.0 * RADIUS);
+    assert!(detail.maximum_distance <= 1.0e9);
+    assert_eq!(detail.unlit, 0);
+    assert!(detail.cell_pixels > 0.0);
+    assert_eq!(Cave::coarse_detail(), None);
+}
+
+#[test]
 fn a_trench_across_a_stored_brick_of_a_planet_does_not_cut_the_planet_in_two() {
     let mut scene = Scene::new();
     make_the_planet(&mut scene);

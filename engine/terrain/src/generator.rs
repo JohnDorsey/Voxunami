@@ -11,6 +11,13 @@ use voxel_space::{
 use crate::density::{DensityField, Heightfield, Minimum, ShellCaves};
 use crate::noise::{Dimensionality, FractalNoise};
 
+/// A ball, in the coordinates of a terrain generator, that is ground all through (caves apart): nothing can be seen through it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SolidBall {
+    pub centre: [f64; 3],
+    pub radius: f64,
+}
+
 /// Produces the bricks of a world from nothing but a seed baked into the generator.
 ///
 /// A generator is part of the world's file format: a world regenerates unmodified terrain from it
@@ -39,6 +46,14 @@ pub trait TerrainGenerator: Debug + Send + Sync {
     fn may_show(&self, cube: BrickCube) -> bool {
         let _ = cube;
         true
+    }
+
+    /// A ball that is ground all through, if the generator has one: a planet has its core. What is behind it is hidden from a viewer outside it, so a view need not
+    /// draw it. `None`, the default, when there is none or the generator does not say.
+    ///
+    /// Like [`TerrainGenerator::may_show`] this is not part of the file format: it only says what need not be drawn, and a ball with air in it hides too much.
+    fn solid_core(&self) -> Option<SolidBall> {
+        None
     }
 }
 

@@ -108,6 +108,15 @@ impl TerrainView {
     }
 }
 
+/// What a view of levels of detail is asked to show: as fine as the request says, to as far as the game draws.
+fn lod_settings_of(request: &SetDetail, detail: &CoarseDetail) -> LodSettings {
+    LodSettings {
+        detail: request.settings(),
+        zoom: request.zoom(),
+        maximum_distance: detail.maximum_distance,
+    }
+}
+
 /// The height of the picture, in pixels, until a window or a screenshot says otherwise.
 const DEFAULT_VIEWPORT_HEIGHT: f32 = 1080.0;
 
@@ -127,8 +136,11 @@ pub struct Session<C: Connection, G: GameDefinition> {
     viewport_height: f32,
     /// The meshes of the ships the server has told this client of, and what the renderer was last told of where each is.
     grid_mesher: GridMesher,
-    /// The bricks around the camera of each planet (a ship with terrain), which the client generates; the stored bricks of such a ship are not meshed by `grid_mesher`.
+    /// The bricks around the camera of each planet (a ship with terrain), which the client generates, and the nodes beyond them if the game asks for that; the
+    /// stored bricks of such a ship are not meshed by `grid_mesher`.
     planets: BTreeMap<GridId, ShipTerrainMesher>,
+    /// How far, and how fine, the terrain of a planet is drawn beyond its bricks, if the game says.
+    grid_detail: Option<CoarseDetail>,
     sent_poses: BTreeMap<GridId, GridPose>,
     pub camera: Camera,
     /// The client halves of the game's plugins, and what they registered.
@@ -238,6 +250,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             viewport_height: DEFAULT_VIEWPORT_HEIGHT,
             grid_mesher,
             planets: BTreeMap::new(),
+            grid_detail: None,
             sent_poses: BTreeMap::new(),
             camera: start,
             client_plugins,
@@ -347,6 +360,13 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         self.meshed_level = None;
     }
 
+    /// Makes the session draw the terrain of a planet beyond the bricks round the camera, as the nodes of the planet's generator (`docs/planet-spec.md`, 39e). Done
+    /// before anything is drawn, or the planets that are already are made again.
+    pub fn enable_grid_detail(&mut self, detail: CoarseDetail) {
+        self.grid_detail = Some(detail);
+        self.planets.clear();
+    }
+
     /// How far beyond the radius of the view the player watches, so that what is drawn has its neighbours.
     fn watch_margin_bricks(&self) -> i64 {
         match self.terrain {
@@ -362,12 +382,15 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
 
     /// The radius, in bricks, the fog is set for: the distance terrain is drawn to.
     pub fn fog_radius_bricks(&self) -> i64 {
-        match &self.terrain {
+        let distance_in_bricks =
+            |detail: &CoarseDetail| (detail.maximum_distance / 32.0).ceil() as i64;
+        let terrain = match &self.terrain {
             TerrainView::Bricks(_) => self.view_radius_bricks,
             TerrainView::Coarse(coarse) => {
-                ((coarse.detail.maximum_distance / 32.0).ceil() as i64).max(self.view_radius_bricks)
+                distance_in_bricks(&coarse.detail).max(self.view_radius_bricks)
             }
-        }
+        };
+        terrain.max(self.grid_detail.as_ref().map_or(0, distance_in_bricks))
     }
 
     /// What the server is asked for, and what the terrain is drawn with: how fine, as far as the camera sees and the picture is high.
@@ -646,16 +669,13 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         };
         match (&mut self.terrain, request) {
             (TerrainView::Coarse(coarse), Some(request)) => {
-                let settings = LodSettings {
-                    detail: request.settings(),
-                    zoom: request.zoom(),
-                    maximum_distance: coarse.detail.maximum_distance,
-                };
-                updates.extend(
-                    coarse
-                        .view
-                        .update(level, data, self.camera.position, &settings),
-                );
+                let settings = lod_settings_of(&request, &coarse.detail);
+                updates.extend(coarse.view.update(
+                    GridId::root(level),
+                    data,
+                    self.camera.position,
+                    &settings,
+                ));
             }
             (terrain, _) => updates.extend(terrain.mesher_mut().update(data, center)),
         }
@@ -706,7 +726,12 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                 });
             }
         }
-        // The planets: the bricks around the camera, in the planet's own coordinates, made from its generator and the bricks the server stored.
+        // The planets: the bricks around the camera, in the planet's own coordinates, made from its generator and the bricks the server stored; and the nodes of
+        // its generator beyond them, if the game draws them.
+        let detail = self.grid_detail.map(|detail| {
+            let request = self.coarse_request(&detail);
+            (detail, lod_settings_of(&request, &detail))
+        });
         let world = self.client.world().world();
         for (id, ship) in ships.iter() {
             let Some(terrain) = ship.terrain else {
@@ -715,14 +740,28 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             let Some(local) = ship.pose.world_to_local(self.camera.position) else {
                 continue;
             };
-            let planet = self.planets.entry(id).or_insert_with(|| {
-                ShipTerrainMesher::new(
+            let planet = self.planets.entry(id).or_insert_with(|| match detail {
+                Some((detail, settings)) => ShipTerrainMesher::with_detail(
                     id,
                     self.view_settings,
                     self.view_channels.clone(),
                     Arc::clone(&self.block_table),
-                )
+                    LodConfig {
+                        unlit: detail.unlit,
+                        worker_count: self.view_settings.worker_count,
+                    },
+                    settings,
+                ),
+                None => ShipTerrainMesher::new(
+                    id,
+                    self.view_settings,
+                    self.view_channels.clone(),
+                    Arc::clone(&self.block_table),
+                ),
             });
+            if let Some((_, settings)) = detail {
+                planet.set_detail(settings);
+            }
             let generator = world
                 .main()
                 .terrain
@@ -730,7 +769,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                 .entry(terrain.generator)
                 .and_then(|entry| entry.content().cloned());
             let source = ShipTerrainSource::new(&ship.voxels, generator, terrain.extent);
-            updates.extend(planet.update(&source, local.brick()));
+            updates.extend(planet.update(&source, local));
         }
         // (The stored bricks of a planet are meshed with the rest of it, by its own mesher.)
         updates.extend(self.grid_mesher.update(

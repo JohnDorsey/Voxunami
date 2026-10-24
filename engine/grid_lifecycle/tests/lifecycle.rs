@@ -12,9 +12,9 @@ use protocol::{ClientId, ClientMessage};
 use server::ShipSettings;
 use server::test_support::log_in;
 use transport::Connection;
-use voxel_space::{BrickCoordinate, LevelIndex, Orientation, WorldPosition};
-use world_storage::MemoryShipFiles;
+use voxel_space::{BrickBox, BrickCoordinate, LevelIndex, Orientation, WorldPosition};
 use world_storage::test_support::id;
+use world_storage::{GridTerrain, MemoryShipFiles};
 
 fn settings() -> ShipSettings {
     ShipSettings::new(100.0, 300.0).unwrap()
@@ -297,4 +297,41 @@ fn each_ship_does_what_its_own_distance_asks_whatever_the_others_are_doing() {
     assert!(rig.in_a_file(ships[1]));
     assert!(rig.in_a_file(ships[2]));
     assert!(rig.in_memory(ships[0]));
+}
+
+#[test]
+fn a_planet_is_frozen_when_no_player_is_near_but_is_never_put_away_so_that_it_can_be_drawn_from_anywhere()
+ {
+    // Two ships side by side, as the others are; the first is made a planet (its extent is the brick on each side of its origin), and the second is the control.
+    let (mut rig, ships) = Rig::new(settings(), &[0, 10]);
+    let (planet, ordinary) = (ships[0], ships[1]);
+    rig.in_a_tick(move |world| {
+        let generator = world.data().main().terrain.default_generator();
+        world
+            .set_grid_terrain(
+                planet,
+                GridTerrain {
+                    generator,
+                    extent: BrickBox::around(BrickCoordinate::ORIGIN, 1),
+                    mass: 1.0e20,
+                },
+            )
+            .unwrap();
+    });
+    // Far from both: both are frozen, and the ordinary one is put away.
+    rig.player_at(-2000.0);
+    rig.tick();
+    rig.tick();
+    assert!(rig.frozen(planet) && rig.in_memory(planet));
+    assert!(rig.in_a_file(ordinary));
+    // However long it goes on, and however far the player goes.
+    rig.player_at(-50_000.0);
+    for _ in 0..5 {
+        rig.tick();
+    }
+    assert!(rig.in_memory(planet) && !rig.in_a_file(planet));
+    assert_eq!(rig.report().parked, 1, "only the ordinary ship");
+    // And a player who comes near wakes it as any ship.
+    rig.player_at(-50.0);
+    assert!(rig.in_memory(planet) && !rig.frozen(planet));
 }

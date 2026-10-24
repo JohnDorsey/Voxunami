@@ -554,7 +554,8 @@ fn update(world: &mut ServerWorld, presence: &SharedPresence, state: &Mutex<Stat
             }
         } else if away <= simulate {
             actions.push((id, Action::Thaw));
-        } else if away > keep {
+        } else if away > keep && ship.terrain.is_none() {
+            // (A planet is asleep when no one is near, and is never put away: a client draws it from as far as there is anything to see of it.)
             actions.push((id, Action::Park));
         }
     }

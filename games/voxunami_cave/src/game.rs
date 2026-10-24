@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use game_shell::client_plugin::ClientPlugin;
-use game_shell::{CameraStart, GameDefinition, KeyCode, PlayerPose};
+use game_shell::{CameraStart, CoarseDetail, GameDefinition, KeyCode, PlayerPose};
 use namespaced_id::NamespacedId;
 use physics::MoveInput;
 use plugin_host::Plugin;
@@ -118,6 +118,17 @@ impl GameDefinition for Cave {
     /// Space has no pull of its own.
     fn level_gravity() -> Vec<(NamespacedId, [f32; 3])> {
         vec![(mini_cosmos_id(), [0.0; 3])]
+    }
+
+    /// A planet is drawn out to ten thousand kilometres, from which the one of the first level is a few pixels across, with the light that the bricks of its generator
+    /// have (none: the nodes are as bright as the bricks beside them). The terrain of a level is not drawn beyond its bricks yet.
+    fn grid_detail() -> Option<CoarseDetail> {
+        Some(CoarseDetail {
+            maximum_distance: 1.0e7,
+            unlit: 0,
+            cell_pixels: 3.0,
+            bytes_per_second: 0,
+        })
     }
 
     fn title() -> &'static str {

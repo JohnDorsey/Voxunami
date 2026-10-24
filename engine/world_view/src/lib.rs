@@ -7,13 +7,14 @@
 //! under a crosshair using that answer.
 
 mod grid_mesher;
+mod horizon;
 mod lod;
 mod mesher;
 mod ray;
 mod ship_terrain_mesher;
 
 pub use grid_mesher::GridMesher;
-pub use lod::{LodConfig, LodSettings, LodView};
+pub use lod::{CoarseTerrainSource, LodConfig, LodSettings, LodView};
 pub use mesher::{
     BrickLight, BulkLight, MeshUpdate, TerrainSource, ViewChannels, ViewSettings, WorldMesher,
 };

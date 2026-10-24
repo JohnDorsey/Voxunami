@@ -2970,6 +2970,50 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_planet_is_told_of_to_a_client_watching_anywhere_in_its_level_and_an_ordinary_ship_only_near()
+     {
+        let (mut world, planet, block, _) = world_with_a_planet();
+        let ship = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        world
+            .grid(ship)
+            .unwrap()
+            .set(block, VoxelCoordinate::new(1, 1, 1), 2)
+            .unwrap();
+        let views = crate::grid_replication::ship_views(&world);
+        let told = |watched: Option<(LevelIndex, BrickBox)>| {
+            let mut known = crate::grid_replication::KnownGrids::default();
+            let messages = crate::grid_replication::grid_messages(
+                &world,
+                &views,
+                &mut known,
+                watched,
+                1000,
+                &[],
+            );
+            let ships: Vec<GridId> = match messages.first() {
+                Some(ServerMessage::GridsSpawned(states)) => {
+                    states.iter().map(|state| state.id).collect()
+                }
+                _ => Vec::new(),
+            };
+            (ships, known.keys().copied().collect::<Vec<_>>())
+        };
+        // Near, both. A long way off in the level (a client watching the far side of the planet, or a place in space), only the planet, which a client has to know to draw.
+        let near = BrickBox::around(BrickCoordinate::ORIGIN, 5);
+        let far = BrickBox::around(BrickCoordinate::new(100_000, -7, 300), 5);
+        assert_eq!(told(Some((LevelIndex::MAIN, near))).0, [planet, ship]);
+        assert_eq!(
+            told(Some((LevelIndex::MAIN, far))),
+            (vec![planet], vec![planet])
+        );
+        // Another level has none of them, and a client that watches nothing is told of nothing.
+        assert_eq!(told(Some((LevelIndex::new(1), near))).0, []);
+        assert_eq!(told(None).0, []);
+    }
+
+    #[test]
     fn a_planet_is_read_through_a_shared_borrow_of_the_world_alongside_other_readers_of_it() {
         let (world, planet, block, calls) = world_with_a_planet();
         // Two readers of the world at once, as a body that meets several ships has: the bricks that the generator makes are remembered all the same.
