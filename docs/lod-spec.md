@@ -142,7 +142,8 @@ game message, so a replay needs nothing else, and a server without the plugin si
   faster than the client asked (a credit in bytes, topped up each tick; a message's own size is taken off it; a client can save up a second of its rate, or enough for the biggest node).
   Overrides are kept per grid, and only the root grids of levels are handled until 38j.
 - **The same cubes on both ends.** Client and server work the cubes out with the same function (`coarse_cells::select_around_brick`) from the same inputs: the brick the viewer is in (taken to be at the
-  middle of it, so that they agree whatever the offset), the `SetDetail` values as sent, and the distance. The client draws what it works out, the server sends overrides for the same.
+  middle of it, so that they agree whatever the offset), the `SetDetail` values as sent, and the distance, so that a cube is a leaf of the same size on both. The client draws what it works out, leaving out the cubes that hold nothing to see (9b); the server
+  follows the selection only to where there is an override (a cube without one is sent nothing, so which cubes the client leaves out does not matter to it, and it does not ask the terrain) and sends the overrides of those leaves.
 
 ### 3.6 Meshing and rendering
 
@@ -231,6 +232,7 @@ used in 62 files) first and alone, so that nothing else is mixed into it.
 - **38i Protocol and streaming for terrain** (**built 2026-10-23**, `build-log.md`; section 9). The messages and the server plugin (3.5), the fine region, the swap planner and `LodView` (3.6a), the shell's
   glue, and tests on both ends: an edit far away appears in the coarse view of another player and a player who arrives later sees the same, a recording shows what the live player saw, the rate limit holds in bytes.
   **Cave does not turn it on yet:** the generators' coarse cells are far too slow on its terrain (section 9), which is the next job before it can.
+- **Tight bounds and pruning** (**built 2026-10-24**, section 9b; the first two items of 9a's order of work). Cubes of air and cubes of ground with ground all round them are not drawn.
 - **38j Ships.** The server sends ship nodes; ships known by size (3.7); the cap stored in the ship (saved: a ship header field, per
   `world-file-format.md`) and set by a `/ship` command. Tests: a big ship at a distance; a small one vanishing at the distance its size gives; the cap.
 - **38k Client commands.** `.detail` (cell pixels), `.texture_distance`, and the download rate; each reports its value with no argument.
@@ -287,7 +289,7 @@ used in 62 files) first and alone, so that nothing else is mixed into it.
   and by mutation. Sky nodes already took 9 microseconds.
 - **Node counts are larger than the "few per level" I wrote in 38f.** At the default settings, out to 1,500 voxels, flat ground has 28,037 cubes (232 bricks, 22,491 nodes of detail level 1, 5,314 of level 2); the sky half of them is empty.
   Most of any real world's cubes are air above or ground below, and only the surface and the caves need a picture: **pruning** cubes that hold nothing (and cubes buried in ground with ground all round, when nothing near them is edited), with a
-  predicate in the selection (`may_hold`, which exists for ships), would cut them to the surface shell. It needs the generators to say what is in a cube cheaply, and both ends to agree.
+  predicate in the selection (`may_hold`, which exists for ships), cuts them to the surface shell (built: 9b). It needs the generators to say what is in a cube cheaply.
 - **Known limitations, in order of how much they will be noticed:** (1) A cube the server has not yet sent an override for is drawn from the generators, so an edit far away can be missing for a moment when the viewer moves and the
   leaves change, and then appear. The fix is designed: the server sends, with an overridden cube, whether each of its eight halves is overridden too, and the client waits (a few ticks at most) for a half whose parent
   is overridden. (2) Nodes are meshed with no neighbours, so every node has faces on all its sides, including buried ones that are never seen; meshing with the neighbours that the generators give (or pruning, above) removes them.
@@ -329,9 +331,55 @@ comparison with nodes made from the bricks) is kept as a patch and three files o
   (the cave *floors* are grass too, so "buried grass" is real: 4.8% to 9.7%, 90% at level 4). The caves no longer outvote the grass; a cell of cliff with one grass voxel in it shows grass, which is the accepted loss.
 - **What a view is made of.** To 700 voxels: 6,648 cubes, 3,463 air, 2,451 solid, 734 mixed (11%). To 2,000: 38,031 cubes, 19,437 air, 16,349 solid, 2,245 mixed (6%). A mixed node costs about 1 ms to mesh as well. With the column variant and the
   tight bounds the whole 700-voxel view would be about 734 x (0.3 + 1.3) ms, a second on one thread; pruning the air and the buried solid leaves a tenth of the jobs, draw calls and uploads.
-- **Order of the work, by what it buys:** (1) tight bounds (identical output, 9x for hills, helps brick generation too); (2) a far field for generators and the column fill for fields that are heights (a trait method `surface_height`, with the
+- **Order of the work, by what it buys** ((1) and (3) are built: 9b): (1) tight bounds (identical output, 9x for hills, helps brick generation too); (2) a far field for generators and the column fill for fields that are heights (a trait method `surface_height`, with the
   per-cell distance as the fallback for other fields, which must then be roughly distances in voxels; a planet's analytic cells in 39e are the same idea); (3) pruning cubes that hold nothing visible (`may_hold`); (4) priority for blocks, with a
   `coarse_priority` property on blocks; (5) a cache of generator nodes on the server, and a faster mesher for nodes that are surfaces of columns.
+
+### 9b. Tight bounds and pruning (built 2026-10-24)
+
+The first two items of the order of work in 9a, built together because pruning needs the bounds to be tight.
+
+- **Tight bounds** (`terrain::noise`, `octave_bounds`). A sample of one octave is a weighted average of the lattice values at the corners of its cell, so it lies between the smallest and largest of the lattice values of the cells a region touches; that is all
+  the bound was, and for a region of 2 voxels in an octave of 128 it is still the octave's whole amplitude. Now it is the narrower of that and **the value at the middle of the region, plus and minus the most it can move**: the quintic blend has a slope of at most
+  1.875 per cell, so along an axis the value moves by at most 1.875 times the largest step between two neighbouring lattice values (of the cells the region touches), over the cell's size, times how far the region reaches from its middle (summed over the axes, with
+  a hair of 1e-9 for rounding). The middle is worked out in doubled coordinates in `i128`, so it is exact at any distance from the origin. The output of every generator is **identical** (a bound only has to be sound); the time falls (9a: 166 ms to 18 ms for a node
+  of hills, 265 ms to 94 ms with caves). Tested by property (a bound holds every sample, at every finer level, of regions from one voxel up, up to 2^50 voxels from the origin), by a dense scan of every small region across the borders of the cells of a lattice
+  with small cells (a bound made from only some of the cells a region touches fails there, on every axis), by pinning the slope constant to the maximum of the blend's derivative, and by a single voxel being bounded by its own value.
+- **`bounds_through_finer(region, footprint)`** (on `FractalNoise` and `DensityField`; a field that does not know says "anything", the default). A cube is drawn at its own level of detail and at every finer one as the viewer comes near, so "is there anything in
+  it" has to hold for all of them: the octaves the footprint keeps are bounded as they are, and each it drops may or may not be there at a finer level, so it adds its range or nothing (the hull with 0). `ShellCaves` with every octave dropped has no caves at the
+  footprint and may have some at a finer one (the hull with the value of no caves).
+- **`TerrainGenerator::may_show(cube)`** (the field generator: `terrain::coarse::cube_may_show`; the default is yes). A cube **may show nothing** when the field is air all through it (`upper <= 0` over the cube) or is ground all through the cube *and the cubes
+  round it*, one cube's edge in each direction (`lower > 0` over the cube grown by its edge on every side): nothing of it can be seen from outside, and no air is beside it. `WorldTerrain::may_show` asks the one generator that makes the whole cube (the default where
+  nothing is assigned yet) and says yes for a cube with two in it or one whose plugin is missing. Tested on flat ground at the edges (a surface exactly at the middle of a voxel), on plates and cliffs facing every way, on a field whose ground depends on the level,
+  and against the real thing: for flat ground, hills and hills with caves, every cube it says no to is a node of one cell, air or stone (0 of 5,598 / 25,229 / 61,812 dropped cubes of flat ground and 4,944 / 23,269 / 58,293 of hills, to 700 / 1,500 / 6,000
+  voxels, had anything in them; for the caves 0 of a seventh of the 431 dropped to 700).
+- **Where it applies** (`coarse_cells::select_around_brick(brick, view, may_hold)`): a cube `may_hold` says no to is left out with everything inside it. The client (`LodView`) passes "the terrain says it may show something, or an edit is in it or beside it". **Never left out:**
+  every cube that has a brick of the fine region in it (a player builds in the air and digs in the ground; the first version left them out, and a test of a block placed three bricks up, which was not drawn, found it).
+  The server does not ask the terrain at all: it sends overrides, so it follows the selection only to the cubes that have one (`EditedCubes::holds`), which is cheap whatever the view distance. (Mutation experiments showed that the terrain's say changed nothing the server sent.)
+- **Edits** (`coarse_cells::EditedCubes`, kept by the client from the overrides the server sends and by the server from its own): a cube that holds an override, or has one in any of the 26 cubes of its size beside it, is kept. When an override arrives for a place that had
+  none, or the last one in a place is taken back, the cubes are worked out again, at most every 10 updates (a flood of edits is one working out).
+- **What it buys** (`select_around_brick` at the default settings, 3 pixels a cell, 70 degrees, 1080 lines, a ball of 8 bricks; cubes drawn):
+
+  | to (voxels) | no pruning | flat ground | hills | hills with caves |
+  |---|---|---|---|---|
+  | 700 | 9,085 | 3,487 | 4,141 | 6,068 |
+  | 1,500 | 30,242 | 5,013 | 6,973 | 17,042 |
+  | 20,000 | 105,404 | 10,315 | 15,102 | 56,428 |
+  | 2 million | 233,248 | 19,595 | 29,062 | 124,992 |
+  | 100 million | 340,248 | 27,323 | 40,710 | 182,356 |
+
+  Without caves it is a sixth (flat) to a quarter (hills) of the cubes at a kilometre and a twelfth to an eighth at 100 million voxels, and the number grows by about 1,400 (flat) or 2,100 (hills) cubes for each doubling of the distance. **With caves it is half**: sheet caves 32 voxels apart run through all the
+  ground, so every cube underground is mixed and cannot be left out; this is the reason, again, for a far view without caves (9a). Of the cubes kept for hills to 1,500 voxels, 1,831 are mixed, 2,020 are ground (the shell one cube thick under the surface) and 370 are air
+  (the shell over it): **half of what is kept is the margin**, and a margin of a few cells instead of a cube's edge would halve the nodes again (it needs care where two levels meet, and a picture compared with the unpruned one to prove it; not done).
+- **What it costs** (one thread, release profile). The pruned walk asks about 6,595 (flat) to 18,811 (caves) cubes to 1,500 voxels and 66,000 to 224,000 to 100 million. A question is 40 to 75 ns for flat ground, 130 to 440 ns for hills and 180 to 650 ns with caves (the
+  tight bounds); the whole working out is 0.4 ms (flat), 4 ms (hills) or 10 ms (caves) to 1,500 voxels and 2.7 / 13 / 41 ms to 100 million, against 1 ms and 12 ms for the walk with nothing left out. Asking through `WorldTerrain` cost another 1.1 to 1.3 microseconds a
+  question, from an octave walk that looked at all eight children at every level (`RegionOctree::all_in_cube`); it now goes down the one that holds the cube, and costs 0.25 microseconds. And the view keeps the answers of the last two workings out
+  (`MayShowMemo`, forgotten when the terrain's `version` changes), so moving a brick asks only about the cubes that are new.
+- **Mutation experiments:** about 110 mutants over the new code. The first tests missed: the slope constant a little too small, a bound made from the first cell only on x or z, the cell of a position on a lattice line, cave bounds that forgot the octave a footprint
+  drops, the edges of the room round a cube (the low sides, one voxel short), a cube judged at level 0, and the bookkeeping of edits; each got a test. Left alone: a hair of rounding that no sample can show (1), and the server working out its leaves when nothing has
+  changed (it only saves time).
+- **Limits.** (1) The margin, above. (2) A viewer who is inside the ground sees nothing beyond the bricks, as before (nothing beyond is visible from there). (3) A node is meshed with no neighbours, so the faces of ground against ground are made and never seen; the
+  ground one cube thick that is kept has them on all sides (9, limitation 2).
 
 ## 6. Not here
 

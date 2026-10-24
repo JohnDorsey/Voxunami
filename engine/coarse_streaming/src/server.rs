@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use block_models::BlockTable;
-use coarse_cells::{CoarseCell, CoarseNode, ViewSelection, select_around_brick};
+use coarse_cells::{CoarseCell, CoarseNode, EditedCubes, ViewSelection, select_around_brick};
 use namespaced_id::NamespacedId;
 use player_presence::{SharedPresence, lock};
 use plugin_host::{HandlerSpec, Phase, PlayerLeft, Plugin, Registrar, SystemSpec};
@@ -123,6 +123,8 @@ struct ClientState {
     selected_from: Option<(LevelIndex, BrickCoordinate)>,
     selected_for: Option<SetDetail>,
     leaves: Vec<(GridId, BrickCube)>,
+    /// Which set of places with an override the leaves were last worked out for ([`State::edit_epoch`]).
+    selected_edit_epoch: u64,
     /// What the client has been sent: the version of each node.
     sent: BTreeMap<Key, u64>,
     /// What is left to send, coarsest first (a node with `None` is to be taken back).
@@ -140,9 +142,27 @@ struct State {
     epoch: u64,
     next_version: u64,
     clients: BTreeMap<ClientId, ClientState>,
+    /// Where the overrides are, to find the cubes with one in them without looking at the rest of the world.
+    edited: EditedCubes,
+    /// Counts up each time a place gets its first override or loses its last.
+    edit_epoch: u64,
 }
 
 impl State {
+    /// Keeps `stored` as the override of the cube of `key`.
+    fn store(&mut self, key: Key, stored: Stored) {
+        if self.overrides.insert(key, stored).is_none() && self.edited.add(key.1, cube_of(key)) {
+            self.edit_epoch += 1;
+        }
+    }
+
+    /// Takes back the override of the cube of `key`, if it has one.
+    fn forget(&mut self, key: Key) {
+        if self.overrides.remove(&key).is_some() && self.edited.remove(key.1, cube_of(key)) {
+            self.edit_epoch += 1;
+        }
+    }
+
     /// Marks the cube of detail level 1 that holds `brick`, and those that hold the bricks that touch it (an edit at the edge of a brick changes the
     /// surface of the brick beside it), as to be remade.
     fn mark_brick(&mut self, grid: GridId, brick: BrickCoordinate, maximum_level: u8) {
@@ -308,11 +328,9 @@ impl State {
                             self.next_version
                         }
                     };
-                    self.overrides.insert(key, Stored { node, version });
+                    self.store(key, Stored { node, version });
                 }
-                None => {
-                    self.overrides.remove(&key);
-                }
+                None => self.forget(key),
             }
             self.epoch += 1;
             if cube.level() < config.maximum_override_level {
@@ -345,10 +363,12 @@ impl State {
             return;
         };
         let from = (level, position.brick());
-        if state.selected_from != Some(from) || state.selected_for != Some(state.detail) {
-            state.leaves = select_leaves(config, level, position, &state.detail);
+        let moved = state.selected_from != Some(from) || state.selected_for != Some(state.detail);
+        if moved || state.selected_edit_epoch != self.edit_epoch {
+            state.leaves = select_leaves(config, &self.edited, level, position, &state.detail);
             state.selected_from = Some(from);
             state.selected_for = Some(state.detail);
+            state.selected_edit_epoch = self.edit_epoch;
             state.pending_epoch = u64::MAX;
         }
         if state.pending_epoch != self.epoch {
@@ -439,9 +459,13 @@ fn pending_updates(
         .collect()
 }
 
-/// The cubes of detail level 1 or more that a client at `position` in `level` is to draw: the selection with the bricks it holds left as bricks.
+/// The cubes of detail level 1 or more that a client at `position` in `level` is to draw and that have an override in them: the selection with the bricks it
+/// holds left as bricks, followed only to where there is an override. A cube without one is sent nothing, so whether the client draws it (it does not draw a
+/// cube that is empty or buried) does not matter here, and the terrain is not asked. What it does draw of these is the client's to work out: it adds the
+/// cubes of an override to those it keeps as it is told of them.
 fn select_leaves(
     config: &CoarseConfig,
+    edited: &EditedCubes,
     level: LevelIndex,
     position: WorldPosition,
     detail: &SetDetail,
@@ -453,9 +477,10 @@ fn select_leaves(
         fine_radius: u32::from(detail.fine_radius),
         maximum_distance: config.view_distance,
     };
-    select_around_brick(position.brick(), &view)
+    let may_hold = |cube: BrickCube| edited.holds(grid, cube);
+    select_around_brick(position.brick(), &view, &may_hold)
         .into_iter()
-        .filter(|cube| cube.level() >= 1 && cube.level() <= config.maximum_override_level)
+        .filter(|cube| cube.level() >= 1)
         .map(|cube| (grid, cube))
         .collect()
 }
@@ -567,6 +592,7 @@ impl Plugin for CoarseServerPlugin {
                             selected_from: None,
                             selected_for: None,
                             leaves: Vec::new(),
+                            selected_edit_epoch: 0,
                             sent: BTreeMap::new(),
                             pending: VecDeque::new(),
                             pending_epoch: u64::MAX,
@@ -783,11 +809,132 @@ mod tests {
             selected_from: None,
             selected_for: None,
             leaves: Vec::new(),
+            selected_edit_epoch: 0,
             sent: sent.into_iter().collect(),
             pending: pending.into(),
             pending_epoch: 0,
             credit: 0.0,
         }
+    }
+
+    #[test]
+    fn the_places_with_an_override_are_kept_in_step_with_the_overrides_and_counted_when_they_change()
+     {
+        let mut state = State::default();
+        let first = key(0, 1);
+        let beside = key(2, 1);
+        state.store(first, stored(1));
+        assert_eq!(state.edit_epoch, 1, "a place with its first override");
+        assert!(state.edited.holds(GridId::MAIN, cube(0, 1)));
+        assert!(
+            state.edited.holds(GridId::MAIN, cube(0, 2)),
+            "the cube that holds it"
+        );
+        // The same cube made again is not a new place, and neither is another in a cube that already holds one.
+        state.store(first, stored(2));
+        assert_eq!(state.edit_epoch, 1);
+        assert_eq!(state.overrides[&first].version, 2);
+        state.store(beside, stored(3));
+        assert_eq!(state.edit_epoch, 2, "its own cube had none");
+        state.store(key(0, 2), stored(4));
+        assert_eq!(
+            state.edit_epoch, 2,
+            "the cube of level 2 already held an override"
+        );
+        // Taking away what was never there changes nothing, even for a cube that has others in it.
+        state.forget(key(8, 1));
+        assert_eq!(state.edit_epoch, 2);
+        state.forget(key(0, 3));
+        assert_eq!(state.edit_epoch, 2);
+        assert!(
+            state.edited.holds(GridId::MAIN, cube(0, 3)),
+            "the overrides in it are still noted"
+        );
+        // The last override of a place is the end of it, and not the one before.
+        state.forget(first);
+        assert_eq!(state.edit_epoch, 3);
+        assert!(!state.edited.holds(GridId::MAIN, cube(0, 1)));
+        assert!(
+            state.edited.holds(GridId::MAIN, cube(0, 2)),
+            "others are in it"
+        );
+        state.forget(beside);
+        state.forget(key(0, 2));
+        assert_eq!(state.edit_epoch, 5);
+        assert!(state.edited.is_empty());
+        assert!(state.overrides.is_empty());
+        // A cube that holds an override but has none of its own is not an override to take back.
+        let mut other = State::default();
+        other.store(key(64, 1), stored(1));
+        other.forget(key(64, 2));
+        assert_eq!(other.edit_epoch, 1);
+        assert!(other.edited.holds(GridId::MAIN, cube(64, 2)));
+        assert!(other.overrides.contains_key(&key(64, 1)));
+    }
+
+    fn at(x: i64) -> WorldPosition {
+        WorldPosition::new(BrickCoordinate::new(x, 0, 0), [16.0; 3])
+    }
+
+    #[test]
+    fn the_leaves_are_those_of_the_selection_with_an_override_in_them_and_the_bricks_held_are_not_among_them()
+     {
+        let config = config();
+        let detail = SetDetail {
+            cell_pixels: 8.0,
+            pixel_size: 0.001,
+            bytes_per_second: 1_000_000,
+            fine_radius: 2,
+            zoom: None,
+        };
+        let mut edited = EditedCubes::new();
+        let none = select_leaves(&config, &edited, LevelIndex::MAIN, at(100), &detail);
+        assert!(none.is_empty(), "no override, no leaf: {none:?}");
+
+        // An override in the middle distance and one far off, and one in the ball of bricks the client holds.
+        edited.add(GridId::MAIN, cube(160, 1));
+        edited.add(GridId::MAIN, cube(5_000, 1));
+        edited.add(GridId::MAIN, cube(100, 1));
+        let leaves = select_leaves(&config, &edited, LevelIndex::MAIN, at(100), &detail);
+        assert!(
+            leaves
+                .iter()
+                .all(|(grid, cube)| *grid == GridId::MAIN && cube.level() >= 1)
+        );
+        // Each override is in exactly one leaf; and every leaf has one in it.
+        let leaf_of = |place: BrickCube| -> Vec<BrickCube> {
+            leaves
+                .iter()
+                .map(|(_, leaf)| *leaf)
+                .filter(|leaf| leaf.contains(place.origin()))
+                .collect()
+        };
+        for place in [cube(160, 1), cube(5_000, 1)] {
+            assert_eq!(leaf_of(place).len(), 1, "{place:?} in {leaves:?}");
+        }
+        assert!(
+            leaves
+                .iter()
+                .all(|(_, leaf)| edited.holds(GridId::MAIN, *leaf))
+        );
+        // The far one is in a bigger cube than the near one: the rule is coarser with distance.
+        assert!(leaf_of(cube(5_000, 1))[0].level() > leaf_of(cube(160, 1))[0].level());
+        // What is in the ball of bricks the client holds is bricks, and is sent no node.
+        assert!(leaf_of(cube(100, 1)).is_empty());
+
+        // The ones that are too far are not leaves: the distance limit of the configuration.
+        let mut near_sighted = config.clone();
+        near_sighted.view_distance = 1_000.0;
+        let near_leaves = select_leaves(&near_sighted, &edited, LevelIndex::MAIN, at(100), &detail);
+        assert!(
+            near_leaves
+                .iter()
+                .all(|(_, leaf)| leaf.origin().x() < 1_000)
+        );
+        assert!(near_leaves.len() < leaves.len());
+        // And not in another level.
+        let other = select_leaves(&config, &edited, LevelIndex::new(1), at(100), &detail);
+        assert!(other.is_empty());
     }
 
     #[test]

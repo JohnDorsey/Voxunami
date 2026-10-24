@@ -5,12 +5,13 @@
 //! from the terrain generators or from what the server has said differs, see [`LodView::set_override`]) and then swaps what is on the screen for what is
 //! wanted in groups ([`coarse_cells::plan_swaps`]), so that a cube and what replaces it change in one frame and are never both on the screen or neither.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 
 use coarse_cells::{
-    CoarseNode, DetailSettings, ViewSelection, Zoom, plan_swaps, select_around_brick,
+    CoarseNode, DetailSettings, EditedCubes, ViewSelection, Zoom, plan_swaps, select_around_brick,
 };
 use region_octree::BrickCube;
 use terrain::TerrainGenerator;
@@ -38,11 +39,56 @@ pub struct LodConfig {
     pub worker_count: usize,
 }
 
+/// The fewest updates between two times the cubes are worked out again because the server has told of an edit somewhere new (the cubes round an edit are not
+/// left out as empty or buried, so a new place can bring cubes in).
+const RESELECT_MINIMUM_UPDATES: u32 = 10;
+
 /// How many cubes that are to come may be put on the screen in one update: each is a buffer made on the GPU.
 const SHOWN_PER_UPDATE: usize = 64;
 
 /// How many nodes are being made at once for each thread.
 const JOBS_PER_WORKER: usize = 4;
+
+/// What the terrain said of whether a cube may show anything, kept for the next time the cubes are worked out, which asks about nearly the same cubes (moving a
+/// brick changes the cubes at the edges of the levels of detail and no others) and about a hundred thousand of them in a view to 100 million voxels. An answer
+/// that was not asked for in the latest working out or the one before is forgotten, so what is kept is no more than two views.
+#[derive(Default)]
+struct MayShowMemo {
+    /// The version of the terrain ([`terrain::WorldTerrain::version`]) the answers are for.
+    version: u64,
+    current: HashMap<BrickCube, bool>,
+    previous: HashMap<BrickCube, bool>,
+}
+
+impl MayShowMemo {
+    /// The kept answer for `cube`, or the one `ask` gives (which is then kept).
+    fn get_or_ask(&mut self, cube: BrickCube, ask: impl FnOnce() -> bool) -> bool {
+        if let Some(&answer) = self.current.get(&cube) {
+            return answer;
+        }
+        let answer = self.previous.remove(&cube).unwrap_or_else(ask);
+        self.current.insert(cube, answer);
+        answer
+    }
+
+    /// Forgets the answers of the working out before this one, as a working out ends.
+    fn finish_round(&mut self) {
+        self.previous = std::mem::take(&mut self.current);
+    }
+
+    /// Forgets everything if the terrain is not the version the answers are for.
+    fn keep_for(&mut self, version: u64) {
+        if self.version != version {
+            self.clear();
+            self.version = version;
+        }
+    }
+
+    fn clear(&mut self) {
+        self.current.clear();
+        self.previous.clear();
+    }
+}
 
 struct Override {
     node: Arc<CoarseNode>,
@@ -87,6 +133,13 @@ pub struct LodView {
     /// What the server has said differs from the generators', by grid and cube.
     overrides: HashMap<(GridId, BrickCube), Override>,
     next_version: u64,
+    /// Where the overrides are, for leaving out only the cubes that hold no edit and have none beside them.
+    edited: EditedCubes,
+    /// Whether an override has come for a place that had none, since the cubes were last worked out; and how many updates ago that was.
+    new_edits: bool,
+    updates_since_selection: u32,
+    /// What the terrain said of the cubes at the last working out.
+    may_show: MayShowMemo,
     /// What is to be drawn, bricks (cubes of level 0) and nodes, and for what it was worked out.
     wanted: HashSet<BrickCube>,
     wanted_for: Option<(BrickCoordinate, LodSettings)>,
@@ -161,6 +214,10 @@ impl LodView {
             grid: GridId::MAIN,
             overrides: HashMap::new(),
             next_version: 0,
+            edited: EditedCubes::new(),
+            new_edits: false,
+            updates_since_selection: 0,
+            may_show: MayShowMemo::default(),
             wanted: HashSet::new(),
             wanted_for: None,
             shown: HashSet::new(),
@@ -203,7 +260,7 @@ impl LodView {
 
     /// Whether anything is waiting to be made or swapped: the view is not yet what it is to be.
     pub fn is_settled(&self) -> bool {
-        self.pending_jobs() == 0 && self.queue.is_empty() && !self.plan_needed
+        self.pending_jobs() == 0 && self.queue.is_empty() && !self.plan_needed && !self.new_edits
     }
 
     /// The node the server says is the node of a cube instead of what the generators give (a `None` takes back what was said). Bricks have none, and
@@ -215,16 +272,23 @@ impl LodView {
         match node {
             Some(node) => {
                 self.next_version += 1;
-                self.overrides.insert(
+                let replaced = self.overrides.insert(
                     (grid, cube),
                     Override {
                         node: Arc::new(node),
                         version: self.next_version,
                     },
                 );
+                if replaced.is_none() && self.edited.add(grid, cube) {
+                    self.new_edits = true;
+                }
             }
             None => {
-                self.overrides.remove(&(grid, cube));
+                if self.overrides.remove(&(grid, cube)).is_some() && self.edited.remove(grid, cube)
+                {
+                    // Cubes that were kept for being beside the edit may be left out again.
+                    self.new_edits = true;
+                }
             }
         }
         if grid == self.grid && self.nodes.contains_key(&cube) {
@@ -250,6 +314,7 @@ impl LodView {
         updates.extend(uploaded.into_iter().map(MeshUpdate::RemoveCoarse));
         self.wanted.clear();
         self.wanted_for = None;
+        self.may_show.clear();
         self.shown.clear();
         self.nodes.clear();
         self.queue.clear();
@@ -272,8 +337,11 @@ impl LodView {
         let centre = viewer.brick();
         let mut updates = self.mesher.update(level, centre);
         self.collect_nodes(&mut updates);
-        if self.wanted_for != Some((centre, *settings)) {
-            self.reselect(centre, settings);
+        self.updates_since_selection = self.updates_since_selection.saturating_add(1);
+        let moved = self.wanted_for != Some((centre, *settings));
+        let new_edits = self.new_edits && self.updates_since_selection >= RESELECT_MINIMUM_UPDATES;
+        if moved || new_edits {
+            self.reselect(centre, settings, level);
         }
         self.start_jobs(level);
         let serial = self.mesher.ready_serial();
@@ -338,7 +406,16 @@ impl LodView {
         }
     }
 
-    fn reselect(&mut self, centre: BrickCoordinate, settings: &LodSettings) {
+    fn reselect(&mut self, centre: BrickCoordinate, settings: &LodSettings, level: &LevelData) {
+        // A cube that is all air or buried is left out, unless an edit is in it or beside it.
+        self.may_show.keep_for(level.terrain.version());
+        let (grid, edited) = (self.grid, &self.edited);
+        let memo = RefCell::new(&mut self.may_show);
+        let may_hold = |cube: BrickCube| {
+            memo.borrow_mut()
+                .get_or_ask(cube, || level.terrain.may_show(cube))
+                || edited.near(grid, cube)
+        };
         let cubes = select_around_brick(
             centre,
             &ViewSelection {
@@ -347,7 +424,11 @@ impl LodView {
                 fine_radius: u32::try_from(self.mesher.view_radius_bricks()).unwrap_or(0),
                 maximum_distance: settings.maximum_distance,
             },
+            &may_hold,
         );
+        self.may_show.finish_round();
+        self.new_edits = false;
+        self.updates_since_selection = 0;
         self.wanted = cubes.iter().copied().collect();
         self.wanted_for = Some((centre, *settings));
         for cube in cubes.iter().filter(|cube| cube.level() > 0) {
@@ -503,5 +584,79 @@ impl Drop for LodView {
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use voxel_space::BrickCoordinate;
+
+    use super::*;
+
+    fn cube(x: i64) -> BrickCube {
+        BrickCube::new(BrickCoordinate::new(x, 0, 0), 0).unwrap()
+    }
+
+    /// Asks the memo about the cube at `x`, noting in `asked` that the terrain was asked, and giving `answer` if it was.
+    fn ask(memo: &mut MayShowMemo, asked: &RefCell<Vec<i64>>, x: i64, answer: bool) -> bool {
+        memo.get_or_ask(cube(x), || {
+            asked.borrow_mut().push(x);
+            answer
+        })
+    }
+
+    #[test]
+    fn an_answer_is_asked_for_once_kept_for_the_next_round_and_forgotten_after_that() {
+        let mut memo = MayShowMemo::default();
+        let asked = RefCell::new(Vec::new());
+        assert!(ask(&mut memo, &asked, 1, true));
+        assert!(!ask(&mut memo, &asked, 2, false));
+        // Again in the same round it is the answer it had, whatever the terrain would say now.
+        assert!(ask(&mut memo, &asked, 1, false));
+        assert!(!ask(&mut memo, &asked, 2, true));
+        assert_eq!(*asked.borrow(), [1, 2]);
+
+        // In the next round, only the first is asked about: it is kept, and the second is forgotten with the round.
+        memo.finish_round();
+        assert!(ask(&mut memo, &asked, 1, false));
+        assert_eq!(*asked.borrow(), [1, 2]);
+        memo.finish_round();
+        assert!(
+            ask(&mut memo, &asked, 1, false),
+            "asked about in the round before"
+        );
+        assert!(
+            ask(&mut memo, &asked, 2, true),
+            "not asked about in the round before that, so asked again"
+        );
+        assert_eq!(*asked.borrow(), [1, 2, 2]);
+    }
+
+    #[test]
+    fn answers_are_kept_for_one_version_of_the_terrain_and_forgotten_when_it_is_another() {
+        let mut memo = MayShowMemo::default();
+        let asked = RefCell::new(Vec::new());
+        memo.keep_for(0);
+        assert!(ask(&mut memo, &asked, 1, true));
+        memo.finish_round();
+        memo.keep_for(0);
+        assert!(ask(&mut memo, &asked, 1, false), "the same version: kept");
+        assert_eq!(*asked.borrow(), [1]);
+        memo.keep_for(1);
+        assert!(
+            !ask(&mut memo, &asked, 1, false),
+            "another version: asked again"
+        );
+        assert_eq!(*asked.borrow(), [1, 1]);
+        memo.keep_for(1);
+        assert!(!ask(&mut memo, &asked, 1, true), "and kept for that");
+        assert_eq!(*asked.borrow(), [1, 1]);
+        memo.clear();
+        assert!(
+            ask(&mut memo, &asked, 1, true),
+            "a clear forgets everything"
+        );
     }
 }

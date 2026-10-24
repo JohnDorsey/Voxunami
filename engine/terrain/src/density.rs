@@ -14,6 +14,13 @@ pub trait DensityField: Debug + Send + Sync {
     fn sample(&self, position: VoxelCoordinate, footprint: LevelOfDetail) -> f64;
 
     fn bounds(&self, region: &VoxelBox, footprint: LevelOfDetail) -> Interval;
+
+    /// Bounds on `sample` over `region` at `footprint` and at every finer footprint (a smaller level of detail). For asking whether a whole cube, and everything
+    /// drawn inside it however finely, is air or ground. A field that cannot say gives no bound at all, which is the default.
+    fn bounds_through_finer(&self, region: &VoxelBox, footprint: LevelOfDetail) -> Interval {
+        let _ = (region, footprint);
+        Interval::new(f64::NEG_INFINITY, f64::INFINITY)
+    }
 }
 
 /// Ground whose surface height varies with x and z: solid below `base_height + hills(x, z)`.
@@ -41,6 +48,14 @@ impl DensityField for Heightfield {
         let height = Interval::new(region.min().y() as f64 + 0.5, region.max().y() as f64 + 0.5);
         self.hills
             .bounds(region, footprint)
+            .shifted(self.base_height)
+            .minus(height)
+    }
+
+    fn bounds_through_finer(&self, region: &VoxelBox, footprint: LevelOfDetail) -> Interval {
+        let height = Interval::new(region.min().y() as f64 + 0.5, region.max().y() as f64 + 0.5);
+        self.hills
+            .bounds_through_finer(region, footprint)
             .shifted(self.base_height)
             .minus(height)
     }
@@ -90,6 +105,21 @@ impl DensityField for ShellCaves {
             .shifted(-self.half_thickness)
             .scaled(self.strength)
     }
+
+    fn bounds_through_finer(&self, region: &VoxelBox, footprint: LevelOfDetail) -> Interval {
+        let caves = self
+            .noise
+            .bounds_through_finer(region, footprint)
+            .absolute()
+            .shifted(-self.half_thickness)
+            .scaled(self.strength);
+        // At a footprint where every octave is dropped there are no caves at all, and at a finer one there may be.
+        if self.noise.is_entirely_finer_than(footprint) {
+            caves.hull(Interval::point(NO_CAVES))
+        } else {
+            caves
+        }
+    }
 }
 
 /// Solid only where both fields are solid: the intersection of two shapes.
@@ -110,6 +140,12 @@ impl<A: DensityField, B: DensityField> DensityField for Minimum<A, B> {
         self.first
             .bounds(region, footprint)
             .minimum(self.second.bounds(region, footprint))
+    }
+
+    fn bounds_through_finer(&self, region: &VoxelBox, footprint: LevelOfDetail) -> Interval {
+        self.first
+            .bounds_through_finer(region, footprint)
+            .minimum(self.second.bounds_through_finer(region, footprint))
     }
 }
 
@@ -227,6 +263,74 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_minimum_is_bounded_by_the_lower_of_the_two_whichever_comes_first() {
+        let region = VoxelBox::new(voxel(0, 0, 0), voxel(0, 30, 0)).unwrap();
+        for (first, second) in [(10.0, 20.0), (20.0, 10.0)] {
+            let combined = Minimum {
+                first: flat_ground(first),
+                second: flat_ground(second),
+            };
+            let lower_ground = 10.0;
+            let expected = Interval::new(lower_ground - 30.5, lower_ground - 0.5);
+            assert_eq!(combined.bounds(&region, FULL), expected);
+            assert_eq!(combined.bounds_through_finer(&region, FULL), expected);
+        }
+    }
+
+    #[test]
+    fn cave_bounds_through_finer_hold_every_sample_at_every_finer_level_where_the_footprint_drops_an_octave()
+     {
+        // Octaves of 32 and 16 voxels, the second half as strong: a footprint of 5 drops the second, and it is there again at every finer level.
+        let caves = ShellCaves::new(
+            FractalNoise::standard(5, Dimensionality::Volumetric, 5, 2, 1.0, 0.5),
+            0.08,
+            16.0,
+        );
+        let level = |level| LevelOfDetail::new(level).unwrap();
+        let mut closer_than_without_the_octave = 0;
+        for x in (0..60).step_by(7) {
+            for y in (0..60).step_by(7) {
+                for z in (0..60).step_by(7) {
+                    let region = VoxelBox::new(voxel(x, y, z), voxel(x + 3, y + 3, z + 3)).unwrap();
+                    let bounds = caves.bounds_through_finer(&region, level(5));
+                    for finer in 0..=5 {
+                        for sx in x..=x + 3 {
+                            for sy in y..=y + 3 {
+                                for sz in z..=z + 3 {
+                                    let value = caves.sample(voxel(sx, sy, sz), level(finer));
+                                    assert!(
+                                        value >= bounds.lower() - 1e-9
+                                            && value <= bounds.upper() + 1e-9,
+                                        "{value} at {finer} outside {bounds:?} at {sx} {sy} {sz}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    // (The octave that comes back widens the bound: the one that leaves it out is narrower.)
+                    closer_than_without_the_octave += usize::from(
+                        caves.bounds(&region, level(5)).lower() > bounds.lower() + 1e-6,
+                    );
+                    // Where every octave is kept it is just the bounds, and where one is dropped it is not the value of no caves at all.
+                    assert_eq!(
+                        caves.bounds_through_finer(&region, level(4)),
+                        caves.bounds(&region, level(4))
+                    );
+                    assert!(bounds.upper() < 100.0, "{bounds:?}");
+                    // With every octave dropped there may be caves at a finer level or none.
+                    let none = caves.bounds_through_finer(&region, level(6));
+                    assert_eq!(none.upper(), NO_CAVES);
+                    assert!(none.lower() <= bounds.lower());
+                }
+            }
+        }
+        assert!(
+            closer_than_without_the_octave > 20,
+            "the dropped octave widens the bounds of {closer_than_without_the_octave} regions"
+        );
+    }
+
     fn component() -> impl Strategy<Value = i64> {
         prop_oneof![-500i64..500, ((1i64 << 40) - 300)..((1i64 << 40) + 300)]
     }
@@ -299,6 +403,48 @@ mod tests {
                     value >= bounds.lower() - 1e-9 && value <= bounds.upper() + 1e-9,
                     "{value} outside [{}, {}] at {point}", bounds.lower(), bounds.upper()
                 );
+            }
+        }
+
+        /// The bounds through finer levels of a composed field hold the samples at every level from the footprint down.
+        #[test]
+        fn composed_field_bounds_through_finer_contain_samples_at_every_finer_level(
+            seed in any::<u64>(),
+            base in [component(), component(), component()],
+            size in [0i64..40, 0..40, 0..40],
+            offsets in proptest::collection::vec([0.0f64..=1.0, 0.0..=1.0, 0.0..=1.0], 8),
+            detail in 0u8..8,
+        ) {
+            let field = Minimum {
+                first: Heightfield::new(
+                    base[1] as f64,
+                    FractalNoise::standard(seed, Dimensionality::Planar, 7, 4, 30.0, 0.5),
+                ),
+                second: ShellCaves::new(
+                    FractalNoise::standard(seed ^ 1, Dimensionality::Volumetric, 5, 2, 1.0, 0.5),
+                    0.08,
+                    16.0,
+                ),
+            };
+            let region = VoxelBox::new(
+                voxel(base[0], base[1], base[2]),
+                voxel(base[0] + size[0], base[1] + size[1], base[2] + size[2]),
+            ).unwrap();
+            let bounds = field.bounds_through_finer(&region, LevelOfDetail::new(detail).unwrap());
+            for finer in 0..=detail {
+                let finer = LevelOfDetail::new(finer).unwrap();
+                for fraction in &offsets {
+                    let point = voxel(
+                        base[0] + (fraction[0] * size[0] as f64) as i64,
+                        base[1] + (fraction[1] * size[1] as f64) as i64,
+                        base[2] + (fraction[2] * size[2] as f64) as i64,
+                    );
+                    let value = field.sample(point, finer);
+                    prop_assert!(
+                        value >= bounds.lower() - 1e-9 && value <= bounds.upper() + 1e-9,
+                        "{value} at {finer:?} outside [{}, {}] at {point}", bounds.lower(), bounds.upper()
+                    );
+                }
             }
         }
     }

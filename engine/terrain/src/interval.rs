@@ -57,6 +57,11 @@ impl Interval {
         }
     }
 
+    /// The smallest interval that holds both.
+    pub fn hull(self, other: Self) -> Self {
+        Self::new(self.lower.min(other.lower), self.upper.max(other.upper))
+    }
+
     /// The range of `min(a, b)` for `a` in `self` and `b` in `other`.
     pub fn minimum(self, other: Self) -> Self {
         Self::new(self.lower.min(other.lower), self.upper.min(other.upper))

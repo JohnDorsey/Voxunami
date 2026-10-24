@@ -32,7 +32,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 39 (planned, after 38; owner 2026-10-23) Planets are ships: a ship may have terrain generator versions and send them to the client, so that the client generates its unmodified bricks without downloading them (`lod-spec.md` 3.8): `GridTerrain` on
   `MovingGrid`, the ship-file section `engine:grid_terrain`, read-through generation on the server, the wire and the client, colliders from generated bricks, a sphere generator with analytic coarse cells, and then the ground of a level as a ship. Phase 38 is
   built to fit it.
-- 38 (in progress, owner 2026-10-23; before 33; 38a to 38i built; Cave waits for faster coarse cells, see `lod-spec.md` section 9) Levels of detail for terrain and ships alike (`lod-spec.md`, steps 38a to 38l): coarse cells (dominant block, fill, light), one octree
+- 38 (in progress, owner 2026-10-23; before 33; 38a to 38i built, and tight bounds with pruning of cubes that hold nothing (`lod-spec.md` 9b); Cave waits for faster coarse cells, see `lod-spec.md` section 9) Levels of detail for terrain and ships alike (`lod-spec.md`, steps 38a to 38l): coarse cells (dominant block, fill, light), one octree
   refinement rule by distance, hybrid streaming (the client derives unedited terrain, the server sends edits and ships' nodes), reverse-Z with an infinite far plane, orientations in `f64`
   (protocol 7), coarse nodes in the stream (protocol 8). Planets are a later phase that this one must leave room for.
 - 37 (far future) Learning NPCs: brains as data (a network in a fixed format plus a manifest of sensors and actions, in the content

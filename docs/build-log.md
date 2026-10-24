@@ -805,6 +805,20 @@ callers (ship creation, the bodies' terrain, the arrival look, the light-model s
 - Tests: the existing ones, rewritten by a tool for the calls (`regrid.py`, a scratch file) and by hand where a test expected an error for a level that is not there; two new for `detach_blocks` out of a
   ship and for `uniform_value` and `generated` on a ship. No pin moved. Windows 1745 and Linux 1746 tests pass; fmt and clippy clean.
 
+Phase 38 (levels of detail: tight bounds and pruning; 2026-10-24). See `lod-spec.md`, 9b.
+- *Tight bounds* (`terrain::noise`): the bound of an octave over a region is the narrower of the range of the lattice values and the value at the middle plus and minus the steepest slope of the blend times the reach; identical output, a node of hills 9 times
+  faster to make (9a). `bounds_through_finer` on `FractalNoise` and `DensityField` (all the finer levels at once), `Interval::hull`.
+- *Pruning:* `TerrainGenerator::may_show` / `WorldTerrain::may_show` (air all through, or ground all through with ground one cube's edge all round), `WorldTerrain::version`, `RegionOctree::all_in_cube` (which went from 1.1 microseconds a question to 0.25 when it
+  stopped looking at all eight children), `coarse_cells::EditedCubes`, `select_around_brick(.., may_hold)`. The client keeps the cubes with or beside an override and the cubes that have a brick of the fine region in them, remembers what the terrain said for two workings
+  out (`MayShowMemo`), and works the cubes out again, at most every 10 updates, when an edit comes in a new place. The server follows the selection only to the cubes with an override (it found that the terrain's say changed nothing it sent), and no longer needs a throttle.
+- *Found by a test:* the first version left out the air cubes that hold bricks of the fine region, so a block placed three bricks up was not drawn (`a_block_placed_high_in_the_air_among_the_bricks_is_drawn...`).
+- *Tests:* 35 more than before (1,907 to 1,942 on Windows), among them a dense scan of every small region across lattice borders and a sweep of the soundness of `may_show` against real bricks. **Mutation experiments:** about 110 mutants; the first tests missed 30, among them the slope constant a little too small, a bound made from the first cell only, caves bounds that forgot the octave a footprint drops, the room round a cube on its
+  low sides, a cube judged at level 0, the bookkeeping of edits and the rate limit of the client; each got a test, and the server's code that was left with nothing to do was removed. (A mutant of `cube_may_show` that cannot be told from the code except in a case of
+  exact zero makes a test run for ever; it is equivalent.)
+- *Measured:* a sixth to a quarter of the cubes to a kilometre without caves, half with them (table in 9b); no cube that was left out had anything in it (flat ground, hills, caves; 0 of about 150,000 checked); the pruned walk to 1,500 voxels is 0.4 ms (flat), 4 ms (hills),
+  10 ms (caves) and to 100 million voxels 2.7, 13 and 41 ms (release, one thread), before the memo.
+- Windows 1942 and Linux 1943 tests pass; fmt and clippy clean.
+
 Phase 38i (levels of detail, step 9: coarse nodes in the stream, and bricks and nodes drawn together; 2026-10-23). See `lod-spec.md`, 3.5, 3.6a and section 9.
 - *Messages and the server* (`coarse_streaming`): `SetDetail` and `CoarseNodes` as plugin messages (no protocol bump), `CoarseServerPlugin` keeping the overrides of every edited cube (levels 1 to 12) with the exact cells of edited bricks
   patched into the generator's node, remade finest first a few a tick, sent coarsest first within a rate in bytes. Pure pieces tested on their own: the order and the removals (`pending_updates`), the credit (`refilled`), the messages in groups of 256, the marking of a brick and its neighbours.

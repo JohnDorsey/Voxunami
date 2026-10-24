@@ -175,6 +175,25 @@ impl<V: Clone + PartialEq> RegionOctree<V> {
         assign(&mut self.root, ROOT_LEVEL, offset, cube.level(), value);
     }
 
+    /// Whether `holds` is true of the value of every leaf that has a brick in `cube`. A tree that is not collapsed (a branch of eight equal leaves) is looked
+    /// through all the same, so equal values are found equal whatever the tree's shape.
+    pub fn all_in_cube(&self, cube: BrickCube, mut holds: impl FnMut(&V) -> bool) -> bool {
+        let origin = cube.origin();
+        let cube_low = [
+            to_unsigned(origin.x()),
+            to_unsigned(origin.y()),
+            to_unsigned(origin.z()),
+        ];
+        all_leaves_in(
+            &self.root,
+            ROOT_LEVEL,
+            [0; 3],
+            cube_low,
+            cube.level(),
+            &mut holds,
+        )
+    }
+
     /// Every leaf cube with its value, in Morton (z-order) order. The leaves tile the whole
     /// coordinate space, and the order is the same for equal trees.
     pub fn leaves(&self) -> Vec<(BrickCube, &V)> {
@@ -192,6 +211,55 @@ impl<V: Clone + PartialEq> RegionOctree<V> {
             }
         }
         count(&self.root)
+    }
+}
+
+/// Whether `holds` is true of every leaf of `node` (a cube of `level` whose lowest brick is `node_low`) that has a brick in the cube of `cube_level` at `cube_low`.
+/// The node and the cube have a brick in common, and being aligned cubes, one holds the other.
+fn all_leaves_in<V>(
+    node: &Node<V>,
+    level: u8,
+    node_low: [u64; 3],
+    cube_low: [u64; 3],
+    cube_level: u8,
+    holds: &mut impl FnMut(&V) -> bool,
+) -> bool {
+    match node {
+        Node::Leaf(value) => holds(value),
+        Node::Branch(children) => {
+            let half = 1u64 << (level - 1);
+            let child_low = |index: usize| -> [u64; 3] {
+                std::array::from_fn(|axis| {
+                    node_low[axis] + if index >> axis & 1 == 1 { half } else { 0 }
+                })
+            };
+            if level > cube_level {
+                // The cube is inside the node, so inside one half of it along each axis: only that child has a brick in common with it.
+                let index = (0..3).fold(0usize, |index, axis| {
+                    index | usize::from(cube_low[axis] - node_low[axis] >= half) << axis
+                });
+                all_leaves_in(
+                    &children[index],
+                    level - 1,
+                    child_low(index),
+                    cube_low,
+                    cube_level,
+                    holds,
+                )
+            } else {
+                // The node is the cube: every child is in it.
+                children.iter().enumerate().all(|(index, child)| {
+                    all_leaves_in(
+                        child,
+                        level - 1,
+                        child_low(index),
+                        cube_low,
+                        cube_level,
+                        holds,
+                    )
+                })
+            }
+        }
     }
 }
 
@@ -332,6 +400,28 @@ mod tests {
     }
 
     #[test]
+    fn all_in_cube_asks_about_every_leaf_that_has_a_brick_in_the_cube_and_no_other() {
+        let mut tree = RegionOctree::new(0u8);
+        tree.set_cube(cube(0, 0, 0, 3), 1);
+        tree.set_cube(cube(8, 0, 0, 2), 2);
+        let mut asked = Vec::new();
+        assert!(tree.all_in_cube(cube(0, 0, 0, 3), |value| {
+            asked.push(*value);
+            *value == 1
+        }));
+        assert_eq!(asked, [1], "the one leaf that holds the cube");
+        assert!(tree.all_in_cube(cube(2, 2, 2, 1), |value| *value == 1));
+        assert!(tree.all_in_cube(cube(8, 0, 0, 2), |value| *value == 2));
+        assert!(!tree.all_in_cube(cube(0, 0, 0, 4), |value| *value == 1));
+        assert!(!tree.all_in_cube(cube(8, 0, 0, 3), |value| *value == 2));
+        assert!(tree.all_in_cube(cube(64, 64, 64, 3), |value| *value == 0));
+        // The whole space has every value in it.
+        let everything = BrickCube::containing(brick(0, 0, 0), ROOT_LEVEL);
+        assert!(!tree.all_in_cube(everything, |value| *value == 0));
+        assert!(tree.all_in_cube(everything, |value| *value <= 2));
+    }
+
+    #[test]
     fn covering_lists_the_cubes_that_touch_a_region() {
         let region = BrickBox::new(brick(-1, 0, 0), brick(8, 3, 1)).unwrap();
         // Cubes of 4 bricks: x spans -4..-1, 0..3, 4..7, 8..11; y and z need one cube each row.
@@ -351,6 +441,33 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn all_in_cube_is_the_same_as_looking_at_every_brick_of_the_cube(
+            sets in proptest::collection::vec(([0i64..16, 0..16, 0..16], 0u8..4, 0u8..3), 0..12),
+            at in [0i64..16, 0..16, 0..16],
+            level in 0u8..5,
+            wanted in 0u8..3,
+        ) {
+            let mut tree = RegionOctree::new(0u8);
+            for (origin, level, value) in sets {
+                let aligned = |component: i64| component >> level << level;
+                tree.set_cube(cube(aligned(origin[0]), aligned(origin[1]), aligned(origin[2]), level), value);
+            }
+            let aligned = |component: i64| component >> level << level;
+            let target = cube(aligned(at[0]), aligned(at[1]), aligned(at[2]), level);
+            let edge = 1i64 << level;
+            let mut every = true;
+            for x in 0..edge {
+                for y in 0..edge {
+                    for z in 0..edge {
+                        let origin = target.origin();
+                        every &= *tree.get(brick(origin.x() + x, origin.y() + y, origin.z() + z)) == wanted;
+                    }
+                }
+            }
+            prop_assert_eq!(tree.all_in_cube(target, |value| *value == wanted), every);
+        }
+
         #[test]
         fn covering_is_exactly_the_cubes_containing_the_regions_bricks(
             corner in (-12i64..12, -12i64..12, -12i64..12),

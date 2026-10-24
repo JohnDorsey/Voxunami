@@ -147,6 +147,10 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - Coarse nodes reach a client as plugin messages (`engine:set_detail`, `engine:coarse_nodes`), so the protocol does not change and recordings carry them. Client and server work out which cubes are drawn with one function from the brick the viewer is in
   (taken at its middle); bricks are drawn inside a ball round it (plus the cubes of two that touch it) and nodes outside, exchanged in groups so that nothing is drawn twice or dropped (`lod-spec.md` 3.5, 3.6a). Cave does not draw coarse terrain until the
   generators' coarse cells are fast enough (`lod-spec.md` section 9).
+- **Cubes that hold nothing are not drawn** (2026-10-24, `lod-spec.md` 9b): a cube of air all through, and a cube of ground all through with ground all round it (within one cube edge), is left out of what the client draws, with everything inside it. A generator says so
+  (`TerrainGenerator::may_show`, from conservative bounds, never from samples; a generator that cannot say says yes). Nothing is saved from it, but the picture depends on it, so it follows the hard rules for generators: IEEE operations only, and a released generator's answer is not
+  changed. A cube with an edit in it or beside it (`EditedCubes`, which the client keeps from the overrides it is sent) and every cube that has a brick of the fine region in it are never left out: a player can build in the air and dig in the ground. The server sends
+  overrides and nothing else, so it follows the selection only to the cubes that have one and does not ask the terrain.
 - Rendering uses reverse-Z with an infinite far plane. Orientations are `f64`. GPU-driven culling is built only if measurement says the CPU is the limit.
 
 ## Decided (the plugin host; built in Phase 23)

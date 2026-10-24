@@ -243,16 +243,27 @@ pub fn brick_centre(brick: BrickCoordinate) -> WorldPosition {
     WorldPosition::new(brick, [middle as f32; 3])
 }
 
-/// The cubes of the terrain of a level that are drawn for a viewer in `brick`: bricks near it and nodes beyond, with the settings in `view`. The same
-/// brick and settings give the same cubes on any machine.
-pub fn select_around_brick(brick: BrickCoordinate, view: &ViewSelection) -> Vec<BrickCube> {
+/// The cubes of the terrain of a level that are drawn for a viewer in `brick`: bricks near it and nodes beyond, with the settings in `view`. A cube that
+/// `may_hold` says no to is left out with everything inside it (a cube that is all air or buried in ground; see `TerrainGenerator::may_show`). The same
+/// brick, settings and answers give the same cubes on any machine. The bricks of the fine region are never left out, whatever `may_hold` says (so no cube that
+/// has one of them in it is either): a client holds them, and a player can build high in the air or dig in what looks buried.
+pub fn select_around_brick(
+    brick: BrickCoordinate,
+    view: &ViewSelection,
+    may_hold: &dyn Fn(BrickCube) -> bool,
+) -> Vec<BrickCube> {
     let reach = (view.maximum_distance / BRICK_EDGE)
         .ceil()
         .clamp(0.0, f64::from(u32::MAX - 1)) as u32
         + 1;
+    let fine_region = FineRegion::new(brick, view.fine_radius);
+    // (A brick is only reached by splitting a cube that touches the ball, and is then one of the bricks drawn as bricks, in the ball or in the fringe.)
+    let holds =
+        |cube: BrickCube| cube.level() == 0 || fine_region.touches_cube(cube) || may_hold(cube);
     let mut selection = Selection::new(brick_centre(brick), view.detail)
         .with_maximum_distance(view.maximum_distance)
-        .with_fine_region(FineRegion::new(brick, view.fine_radius));
+        .with_fine_region(fine_region)
+        .with_may_hold(&holds);
     if let Some(zoom) = view.zoom {
         selection = selection.with_zoom(zoom);
     }
@@ -848,6 +859,78 @@ mod tests {
             select_nodes(extent, &Selection::new(found, settings()).without_culling()),
             direct
         );
+    }
+
+    fn view_of_bricks(fine_radius: u32) -> ViewSelection {
+        ViewSelection {
+            detail: settings(),
+            zoom: None,
+            fine_radius,
+            maximum_distance: 1_500.0,
+        }
+    }
+
+    #[test]
+    fn what_may_hold_leaves_out_never_includes_a_brick_drawn_as_a_brick_or_a_cube_with_one_in_it() {
+        let centre = BrickCoordinate::new(5, -7, 2);
+        let view = view_of_bricks(3);
+        let region = FineRegion::new(centre, 3);
+        let everything = select_around_brick(centre, &view, &|_| true);
+        let nothing = select_around_brick(centre, &view, &|_| false);
+        // Said no to everywhere, what is left is the bricks drawn as bricks and no node at all.
+        let bricks: std::collections::HashSet<BrickCube> = everything
+            .iter()
+            .filter(|cube| cube.level() == 0)
+            .copied()
+            .collect();
+        assert!(bricks.len() > 100, "{} bricks", bricks.len());
+        assert_eq!(
+            nothing
+                .iter()
+                .copied()
+                .collect::<std::collections::HashSet<_>>(),
+            bricks
+        );
+        assert!(bricks.iter().all(|cube| region.wants_brick(cube.origin())));
+        // Said no to the cubes above the ground only (the cubes of the region are above it too, just over its top), and the region still has all its bricks,
+        // and the nodes beyond it are the ones the ground has.
+        let below = select_around_brick(centre, &view, &|cube| cube.origin().y() < -7);
+        let below_set: std::collections::HashSet<BrickCube> = below.iter().copied().collect();
+        assert!(bricks.is_subset(&below_set));
+        assert!(below.len() > bricks.len() && below.len() < everything.len());
+        for cube in below.iter().filter(|cube| cube.level() > 0) {
+            assert!(cube.origin().y() < -7, "{cube:?}");
+        }
+    }
+
+    #[test]
+    fn what_may_hold_leaves_out_is_left_out_with_everything_in_it_and_the_rest_is_chosen_as_before()
+    {
+        let centre = BrickCoordinate::new(0, 0, 0);
+        let view = view_of_bricks(3);
+        let region = FineRegion::new(centre, 3);
+        let everything = select_around_brick(centre, &view, &|_| true);
+        // Any rule will do that says yes to a cube whenever it says yes to a cube inside it, as one about where a cube begins: the cubes that begin before x = 40.
+        let rule = |cube: BrickCube| cube.origin().x() < 40;
+        let kept = select_around_brick(centre, &view, &rule);
+        // What is chosen is what was chosen, minus the cubes the rule says no to, minus those inside a cube it says no to; the region's cubes stay.
+        let expected: Vec<BrickCube> = everything
+            .iter()
+            .copied()
+            .filter(|cube| {
+                cube.level() == 0
+                    || region.touches_cube(*cube)
+                    || (cube.level()..=MAXIMUM_DETAIL_LEVEL)
+                        .map(|level| BrickCube::containing(cube.origin(), level))
+                        .all(|holder| {
+                            holder.level() == 0 || region.touches_cube(holder) || rule(holder)
+                        })
+            })
+            .collect();
+        assert_eq!(kept, expected);
+        assert!(kept.len() < everything.len());
+        // And the same brick, settings and answers give the same cubes in the same order.
+        assert_eq!(select_around_brick(centre, &view, &rule), kept);
     }
 
     #[test]

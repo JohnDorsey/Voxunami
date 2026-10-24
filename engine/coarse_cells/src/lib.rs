@@ -10,12 +10,14 @@
 //! ground is). They are for drawing only: nothing in the simulation reads them, and they are never saved.
 
 mod cell;
+mod edited;
 mod fine_region;
 mod node;
 mod selection;
 mod swap;
 
 pub use cell::{BRIGHTEST_LIGHT_UP_TO_LEVEL, CoarseCell, DRAWN_FILL, FULL_LIGHT, combine};
+pub use edited::EditedCubes;
 pub use fine_region::FineRegion;
 pub use node::{CELLS_PER_NODE, CoarseNode, NODE_EDGE};
 pub use selection::{

@@ -30,6 +30,16 @@ pub trait TerrainGenerator: Debug + Send + Sync {
         let _ = (cube, unlit);
         None
     }
+
+    /// Whether drawing the cube, or anything inside it at any level of detail, could show something: `false` for a cube that is all air and for one that is ground
+    /// all through with ground all round it (nobody can see into ground). A cube that is not drawn at all is neither generated, meshed, sent nor held, which is
+    /// most of a view. `true` when unsure, which is the default.
+    ///
+    /// This is not part of the file format of the world as the bricks are: it only says what need not be drawn. A generator whose answer is wrong shows too little or too much.
+    fn may_show(&self, cube: BrickCube) -> bool {
+        let _ = cube;
+        true
+    }
 }
 
 /// The material values a terrain generator writes into the material channel.
@@ -124,6 +134,10 @@ impl TerrainGenerator for FieldTerrainGenerator {
 
     fn coarse_node(&self, cube: BrickCube, unlit: u8) -> Option<CoarseNode> {
         crate::coarse::coarse_node_of_field(&*self.field, self.materials, cube, unlit)
+    }
+
+    fn may_show(&self, cube: BrickCube) -> bool {
+        crate::coarse::cube_may_show(&*self.field, cube)
     }
 }
 

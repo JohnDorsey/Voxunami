@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use coarse_cells::{CoarseCell, CoarseNode, DetailSettings};
+use coarse_cells::{CoarseCell, CoarseNode, DetailSettings, ViewSelection, select_around_brick};
 use region_octree::BrickCube;
 use voxel_meshing::{PackedBrickMesh, mesh_coarse_node};
 use voxel_space::{BrickCoordinate, GridId, LevelIndex, WorldPosition};
@@ -249,6 +249,7 @@ fn walking_never_leaves_a_hole_where_something_was_and_is_wanted_and_never_draws
                 fine_radius: 3,
                 maximum_distance: nearer().maximum_distance,
             },
+            &|cube| scene.world.main().terrain.may_show(cube),
         )
         .into_iter()
         .collect();
@@ -300,7 +301,9 @@ fn what_the_server_says_replaces_the_picture_of_a_node_where_it_is_and_taking_it
     );
     screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
     assert!(!screen.nodes.contains_key(&cube));
-    assert_eq!(view.shown(), &shown_before);
+    // (The cubes beside an edit are not left out as buried, so more may be drawn than were; none that were is gone.)
+    assert!(shown_before.is_subset(view.shown()));
+    assert!(view.shown().contains(&cube));
 
     // A node of one block: the picture of a cube of that block.
     let stone = scene.game.raw_block("base_blocks:stone");
@@ -310,7 +313,9 @@ fn what_the_server_says_replaces_the_picture_of_a_node_where_it_is_and_taking_it
         screen.nodes[&cube],
         mesh_coarse_node(&node_of(stone), &[None; 6]).pack()
     );
-    assert_eq!(view.shown(), &shown_before);
+    // (The cubes beside an edit are not left out as buried, so more may be drawn than were; none that were is gone.)
+    assert!(shown_before.is_subset(view.shown()));
+    assert!(view.shown().contains(&cube));
 
     // Taken back: what the generators give.
     view.set_override(GridId::MAIN, cube, None);
@@ -439,4 +444,273 @@ fn an_edit_to_a_brick_that_is_drawn_changes_its_picture_as_before() {
     screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
     assert_ne!(screen.bricks[&brick(0, 0, 0)], before);
     assert_nothing_overlaps(view.shown());
+}
+
+/// The cubes the rule gives for a viewer in `centre`, with or without leaving out those that hold nothing to see, in an order that does not change.
+fn selected(scene: &Scene, centre: BrickCoordinate, leave_out_empty: bool) -> Vec<BrickCube> {
+    let view = ViewSelection {
+        detail: settings().detail,
+        zoom: None,
+        fine_radius: 3,
+        maximum_distance: settings().maximum_distance,
+    };
+    let terrain = &scene.world.main().terrain;
+    let mut cubes = select_around_brick(centre, &view, &|cube| {
+        !leave_out_empty || terrain.may_show(cube)
+    });
+    cubes.sort_by_key(|cube| {
+        let origin = cube.origin();
+        (cube.level(), origin.x(), origin.y(), origin.z())
+    });
+    cubes
+}
+
+/// The 26 cubes of the size of `cube` that touch it.
+fn touching(cube: BrickCube) -> Vec<BrickCube> {
+    let edge = cube.edge_length() as i64;
+    let origin = cube.origin();
+    let mut touching = Vec::new();
+    for dx in -1..=1 {
+        for dy in -1..=1 {
+            for dz in -1..=1 {
+                if (dx, dy, dz) != (0, 0, 0) {
+                    let at = brick(
+                        origin.x() + dx * edge,
+                        origin.y() + dy * edge,
+                        origin.z() + dz * edge,
+                    );
+                    touching.push(BrickCube::new(at, cube.level()).unwrap());
+                }
+            }
+        }
+    }
+    touching
+}
+
+/// Whether a cube is the cube that holds an edit or touches it, as far as cubes of the size of the cube go.
+fn is_near(cube: BrickCube, edit: BrickCube) -> bool {
+    let holder = BrickCube::containing(edit.origin(), cube.level());
+    holder == cube || touching(cube).contains(&holder)
+}
+
+#[test]
+fn cubes_that_are_all_air_or_buried_in_ground_are_not_drawn_and_what_is_left_is_a_fraction() {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 10);
+    let pruned = selected(&scene, brick(0, 0, 0), true);
+    let all = selected(&scene, brick(0, 0, 0), false);
+    assert!(
+        pruned.len() * 5 < all.len(),
+        "{} of {} cubes",
+        pruned.len(),
+        all.len()
+    );
+
+    let mut view = view_of(&scene, 3);
+    let mut screen = Screen::default();
+    screen.apply(view.settle(
+        LevelIndex::MAIN,
+        scene.world.main(),
+        viewer_in(brick(0, 0, 0)),
+        &settings(),
+    ));
+    assert_eq!(view.wanted().len(), pruned.len());
+    assert_eq!(view.shown(), view.wanted());
+    for cube in view.shown().iter().filter(|cube| cube.level() > 0) {
+        assert!(
+            scene.world.main().terrain.may_show(*cube),
+            "{cube:?} was drawn though it holds nothing to see"
+        );
+    }
+    // What is drawn is where the ground is and next to it: no node is wholly under the ground, and none wholly over it.
+    for cube in screen.nodes.keys() {
+        let low = cube.origin().y() * 32;
+        let high = low + cube.edge_length() as i64 * 32;
+        assert!(
+            low < 10 && high > -(cube.edge_length() as i64 * 32),
+            "{cube:?}"
+        );
+    }
+    assert!(!screen.nodes.is_empty());
+    // Bricks are never left out: all of them are drawn, as for a view that leaves nothing out.
+    for cube in all.iter().filter(|cube| cube.level() == 0) {
+        assert!(view.wanted().contains(cube), "{cube:?}");
+    }
+}
+
+#[test]
+fn a_block_placed_high_in_the_air_among_the_bricks_is_drawn_though_the_nodes_round_it_are_air() {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 10);
+    let mut view = view_of(&scene, 3);
+    let mut screen = Screen::default();
+    let viewer = viewer_in(brick(0, 0, 0));
+    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+
+    // Three bricks up, the farthest the bricks go: there is only air there, and the cubes that hold it are air all through.
+    let edited = scene.edit([5, 3 * 32 + 5, 5], "base_blocks:stone");
+    assert_eq!(edited, brick(0, 3, 0));
+    view.mesher_mut().brick_changed(edited);
+    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    assert!(
+        view.shown()
+            .contains(&BrickCube::new(brick(0, 3, 0), 0).unwrap())
+    );
+    assert!(!screen.bricks[&brick(0, 3, 0)].is_empty());
+    assert_nothing_overlaps(view.shown());
+}
+
+#[test]
+fn a_flood_of_edits_in_new_places_is_one_reselect_after_a_few_updates_and_not_one_each() {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 10);
+    let mut view = view_of(&scene, 3);
+    let mut screen = Screen::default();
+    let viewer = viewer_in(brick(0, 0, 0));
+    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    let before = view.wanted().clone();
+    let stone = scene.game.raw_block("base_blocks:stone");
+    let all = selected(&scene, brick(0, 0, 0), false);
+    // Three cubes far enough from one another that none is beside another (a cube beside an edit is kept with it).
+    let mut in_the_sky: Vec<BrickCube> = Vec::new();
+    for cube in all
+        .iter()
+        .copied()
+        .filter(|cube| cube.level() == 1 && cube.origin().y() >= 8 && !before.contains(cube))
+    {
+        let apart = |other: &BrickCube| {
+            let (a, b) = (cube.origin(), other.origin());
+            (a.x() - b.x()).abs() >= 8 || (a.y() - b.y()).abs() >= 8 || (a.z() - b.z()).abs() >= 8
+        };
+        if in_the_sky.iter().all(apart) {
+            in_the_sky.push(cube);
+        }
+        if in_the_sky.len() == 3 {
+            break;
+        }
+    }
+    assert_eq!(in_the_sky.len(), 3);
+
+    // The first, after a quiet time, is taken in at once.
+    view.set_override(GridId::MAIN, in_the_sky[0], Some(node_of(stone)));
+    screen.apply(view.update(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    assert!(view.wanted().contains(&in_the_sky[0]));
+    // The next is not: the cubes are worked out again at most every few updates, and the view knows there is more to do.
+    view.set_override(GridId::MAIN, in_the_sky[1], Some(node_of(stone)));
+    screen.apply(view.update(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    assert!(!view.wanted().contains(&in_the_sky[1]), "not at once");
+    assert!(!view.is_settled());
+    // A third comes meanwhile. Some updates later both are in, from the one working out.
+    view.set_override(GridId::MAIN, in_the_sky[2], Some(node_of(stone)));
+    let mut updates = 2;
+    while !view.wanted().contains(&in_the_sky[1]) {
+        screen.apply(view.update(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+        updates += 1;
+        assert!(updates <= 30, "never worked out");
+    }
+    assert!((5..=15).contains(&updates), "after {updates} updates");
+    for cube in &in_the_sky {
+        assert!(view.wanted().contains(cube), "{cube:?}");
+    }
+    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    for cube in &in_the_sky {
+        assert_eq!(
+            screen.nodes[cube],
+            mesh_coarse_node(&node_of(stone), &[None; 6]).pack()
+        );
+    }
+}
+
+#[test]
+fn an_edit_in_the_sky_or_under_the_ground_brings_in_the_cubes_round_it_and_taking_it_back_lets_them_go()
+ {
+    let mut scene = scene();
+    scene.assign_around(brick(0, 0, 0), 10);
+    let mut view = view_of(&scene, 3);
+    let mut screen = Screen::default();
+    let viewer = viewer_in(brick(0, 0, 0));
+    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    let before = view.wanted().clone();
+
+    // A cube of the finest detail high over the ground and one deep under it, each with cubes of the same detail all round it: the rule would give them all, and
+    // only the terrain leaves them out.
+    let all = selected(&scene, brick(0, 0, 0), false);
+    let all_set: HashSet<BrickCube> = all.iter().copied().collect();
+    let surrounded = |cube: &&BrickCube| {
+        cube.level() == 1
+            && touching(**cube)
+                .iter()
+                .all(|beside| all_set.contains(beside))
+    };
+    let sky = *all
+        .iter()
+        .filter(surrounded)
+        .find(|cube| cube.origin().y() >= 8)
+        .expect("a cube in the sky");
+    let deep = *all
+        .iter()
+        .filter(surrounded)
+        .find(|cube| cube.origin().y() <= -8)
+        .expect("a cube deep in the ground");
+    assert!(!before.contains(&sky) && !before.contains(&deep));
+    for beside in touching(sky).into_iter().chain(touching(deep)) {
+        assert!(!before.contains(&beside), "{beside:?} is not left out");
+    }
+
+    // A block of stone floating in the sky is drawn, and so are the cubes round it, which have nothing in them. (It is said twice, the first time of a block
+    // of something else: a place is edited when it gets its first override and unedited when it loses its only one, however many times it was said.)
+    let stone = scene.game.raw_block("base_blocks:stone");
+    view.set_override(
+        GridId::MAIN,
+        sky,
+        Some(node_of(scene.game.raw_block("base_blocks:dirt"))),
+    );
+    view.set_override(GridId::MAIN, sky, Some(node_of(stone)));
+    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    assert_eq!(
+        screen.nodes[&sky],
+        mesh_coarse_node(&node_of(stone), &[None; 6]).pack()
+    );
+    for beside in touching(sky) {
+        assert!(view.wanted().contains(&beside), "{beside:?}");
+        assert!(!screen.nodes.contains_key(&beside), "{beside:?} is air");
+    }
+    assert!(before.is_subset(view.wanted()));
+    assert!(
+        view.wanted()
+            .difference(&before)
+            .all(|cube| is_near(*cube, sky))
+    );
+    assert_eq!(view.shown(), view.wanted());
+
+    // A hole dug deep under the ground: the cubes of stone round it are drawn, with the walls that face the hole, and the hole is not.
+    view.set_override(
+        GridId::MAIN,
+        deep,
+        Some(CoarseNode::uniform(CoarseCell::empty(scene.air, 0))),
+    );
+    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    assert!(view.wanted().contains(&deep));
+    assert!(!screen.nodes.contains_key(&deep));
+    for beside in touching(deep) {
+        assert!(view.wanted().contains(&beside), "{beside:?}");
+        assert!(screen.nodes.contains_key(&beside), "{beside:?} has no wall");
+    }
+    assert!(
+        view.wanted()
+            .difference(&before)
+            .all(|cube| is_near(*cube, sky) || is_near(*cube, deep))
+    );
+    assert_eq!(view.shown(), view.wanted());
+    assert_nothing_overlaps(view.shown());
+
+    // Both taken back: what was left out is left out again, once the cubes are worked out again.
+    view.set_override(GridId::MAIN, sky, None);
+    view.set_override(GridId::MAIN, deep, None);
+    screen.apply(view.settle(LevelIndex::MAIN, scene.world.main(), viewer, &settings()));
+    assert_eq!(view.wanted(), &before);
+    assert_eq!(view.shown(), &before);
+    for cube in screen.nodes.keys() {
+        assert!(before.contains(cube), "{cube:?} is still drawn");
+    }
 }

@@ -13,13 +13,40 @@ use std::collections::HashMap;
 
 use coarse_cells::{CELLS_PER_NODE, CoarseCell, CoarseNode, DRAWN_FILL, NODE_EDGE};
 use region_octree::BrickCube;
-use voxel_space::{LevelOfDetail, VoxelBox, VoxelCoordinate};
+use voxel_space::{BRICK_EDGE_LENGTH, LevelOfDetail, VoxelBox, VoxelCoordinate};
 
 use crate::density::DensityField;
 use crate::generator::{SURFACE_LAYER_DEPTH, TerrainMaterials};
 
 /// Points along an edge of a cell that the field is asked at when the bounds cannot say whether the cell is air or ground.
 const SAMPLES_PER_EDGE: i64 = 4;
+
+/// Whether a cube of bricks of a field could show anything (see `TerrainGenerator::may_show`): not if the field is air through the cube at its level of detail and
+/// at every finer one, nor if it is ground through the cube and the cube's neighbours, which are as many cubes all round it.
+pub(crate) fn cube_may_show(field: &dyn DensityField, cube: BrickCube) -> bool {
+    let Some(detail) = LevelOfDetail::new(cube.level()) else {
+        return true;
+    };
+    let edge = (cube.edge_length() * BRICK_EDGE_LENGTH as u64) as i64;
+    let origin = cube.origin().origin();
+    let Some(region) = origin
+        .checked_offset(edge - 1, edge - 1, edge - 1)
+        .and_then(|high| VoxelBox::new(origin, high))
+    else {
+        return true;
+    };
+    if field.bounds_through_finer(&region, detail).upper() <= 0.0 {
+        return false;
+    }
+    let Some(around) = origin
+        .checked_offset(-edge, -edge, -edge)
+        .zip(origin.checked_offset(2 * edge - 1, 2 * edge - 1, 2 * edge - 1))
+        .and_then(|(low, high)| VoxelBox::new(low, high))
+    else {
+        return true;
+    };
+    field.bounds_through_finer(&around, detail).lower() <= 0.0
+}
 
 /// The coarse node of a cube of bricks of a field, or `None` for detail level 0 (a node of level 0 is a brick, and a brick is generated).
 pub(crate) fn coarse_node_of_field(
@@ -335,6 +362,10 @@ mod tests {
                 self.0 - (region.min().y() as f64 + 0.5),
             )
         }
+
+        fn bounds_through_finer(&self, region: &VoxelBox, footprint: LevelOfDetail) -> Interval {
+            self.bounds(region, footprint)
+        }
     }
 
     fn node(field: &dyn DensityField, brick: [i64; 3], level: u8) -> Option<CoarseNode> {
@@ -474,6 +505,284 @@ mod tests {
         assert_eq!(
             Some(found),
             coarse_node_of_field_cell_by_cell(&field, materials(), cube, UNLIT)
+        );
+    }
+
+    fn cube_at(origin: [i64; 3], level: u8) -> BrickCube {
+        BrickCube::new(BrickCoordinate::new(origin[0], origin[1], origin[2]), level).unwrap()
+    }
+
+    /// Ground between two planes across one axis: a voxel is ground where the middle of it is between `low` and `high` along the axis, and air above and below.
+    #[derive(Debug)]
+    struct Plate {
+        axis: usize,
+        low: f64,
+        high: f64,
+    }
+
+    impl Plate {
+        fn at(&self, middle: f64) -> f64 {
+            (middle - self.low).min(self.high - middle)
+        }
+    }
+
+    impl DensityField for Plate {
+        fn sample(&self, position: VoxelCoordinate, _: LevelOfDetail) -> f64 {
+            let along = [position.x(), position.y(), position.z()][self.axis];
+            self.at(along as f64 + 0.5)
+        }
+
+        fn bounds(&self, region: &VoxelBox, _: LevelOfDetail) -> Interval {
+            let (low, high) = (region.min(), region.max());
+            let first = [low.x(), low.y(), low.z()][self.axis] as f64 + 0.5;
+            let last = [high.x(), high.y(), high.z()][self.axis] as f64 + 0.5;
+            let middle = (self.low + self.high) / 2.0;
+            let upper = if (first..=last).contains(&middle) {
+                (self.high - self.low) / 2.0
+            } else {
+                self.at(first).max(self.at(last))
+            };
+            Interval::new(self.at(first).min(self.at(last)), upper)
+        }
+
+        fn bounds_through_finer(&self, region: &VoxelBox, footprint: LevelOfDetail) -> Interval {
+            self.bounds(region, footprint)
+        }
+    }
+
+    #[test]
+    fn a_cube_is_judged_by_every_voxel_of_it_and_by_all_the_room_round_it_on_every_axis_and_both_sides()
+     {
+        for axis in 0..3 {
+            let along = |count: i64| {
+                let mut origin = [0i64; 3];
+                origin[axis] = count;
+                origin
+            };
+            let plate = |low, high| Plate { axis, low, high };
+            // The only ground is the last row of voxels of the brick at the origin: that is something to show.
+            assert!(
+                cube_may_show(&plate(31.0, 32.0), cube_at(along(0), 0)),
+                "axis {axis}"
+            );
+            // Ground through the brick above it, and through the ones beyond, with air under it: its underside is seen.
+            assert!(
+                cube_may_show(&plate(32.0, 200.0), cube_at(along(1), 0)),
+                "axis {axis}"
+            );
+            // The same with the air over it.
+            assert!(
+                cube_may_show(&plate(-200.0, 64.0), cube_at(along(1), 0)),
+                "axis {axis}"
+            );
+            // Ground all through the room, and not a thing to show.
+            assert!(
+                !cube_may_show(&plate(-200.0, 200.0), cube_at(along(1), 0)),
+                "axis {axis}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cliff_that_faces_either_way_is_seen_from_the_cubes_of_the_high_side_whichever_side_that_is()
+     {
+        // Ground 300 high on one side of a plane across x or z and 40 high on the other: a cube of the high side from height 0 to 127 is ground all through, with ground
+        // above and below it, and has air beside it across the plane (over 40).
+        #[derive(Debug)]
+        struct Cliff {
+            axis: usize,
+            high_side_is_positive: bool,
+        }
+        impl Cliff {
+            fn height(&self, along: i64) -> f64 {
+                if (along >= 0) == self.high_side_is_positive {
+                    300.0
+                } else {
+                    40.0
+                }
+            }
+        }
+        impl DensityField for Cliff {
+            fn sample(&self, position: VoxelCoordinate, _: LevelOfDetail) -> f64 {
+                let along = [position.x(), position.y(), position.z()][self.axis];
+                self.height(along) - (position.y() as f64 + 0.5)
+            }
+            fn bounds(&self, region: &VoxelBox, _: LevelOfDetail) -> Interval {
+                let (low, high) = (region.min(), region.max());
+                let first = self.height([low.x(), low.y(), low.z()][self.axis]);
+                let last = self.height([high.x(), high.y(), high.z()][self.axis]);
+                Interval::new(
+                    first.min(last) - (high.y() as f64 + 0.5),
+                    first.max(last) - (low.y() as f64 + 0.5),
+                )
+            }
+            fn bounds_through_finer(
+                &self,
+                region: &VoxelBox,
+                footprint: LevelOfDetail,
+            ) -> Interval {
+                self.bounds(region, footprint)
+            }
+        }
+        for axis in [0usize, 2] {
+            for high_side_is_positive in [false, true] {
+                let cliff = Cliff {
+                    axis,
+                    high_side_is_positive,
+                };
+                // A level 2 cube is 128 voxels: the one from 0 to 127 along the axis is on the positive side, the one from -128 to -1 on the negative.
+                let high_side = if high_side_is_positive { 0 } else { -4 };
+                let mut origin = [0i64; 3];
+                origin[axis] = high_side;
+                // Heights 0 to 127 (the cube is ground all through, as are the cubes over and under it), against the plane: across it the ground is only 40 high.
+                origin[1] = 0;
+                assert!(
+                    cube_may_show(&cliff, cube_at(origin, 2)),
+                    "axis {axis}, high side positive {high_side_is_positive}"
+                );
+                // Two cubes further from the plane on the high side, there is ground all round it.
+                origin[axis] = if high_side_is_positive { 8 } else { -12 };
+                assert!(
+                    !cube_may_show(&cliff, cube_at(origin, 2)),
+                    "axis {axis}, high side positive {high_side_is_positive}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_cube_is_judged_at_its_own_level_of_detail_and_every_finer_one() {
+        // A field whose ground is at 20 from detail level 4 up (a coarse octave that is there when the finer ones are dropped), and at 0 below that: a cube of
+        // 512 voxels at level 4 has ground in it at its own level, which the finest level does not show.
+        #[derive(Debug)]
+        struct Raised;
+        impl Raised {
+            fn height(footprint: LevelOfDetail) -> f64 {
+                if footprint.level() >= 4 { 20.0 } else { 0.0 }
+            }
+        }
+        impl DensityField for Raised {
+            fn sample(&self, position: VoxelCoordinate, footprint: LevelOfDetail) -> f64 {
+                Self::height(footprint) - (position.y() as f64 + 0.5)
+            }
+            fn bounds(&self, region: &VoxelBox, footprint: LevelOfDetail) -> Interval {
+                let height = Self::height(footprint);
+                Interval::new(
+                    height - (region.max().y() as f64 + 0.5),
+                    height - (region.min().y() as f64 + 0.5),
+                )
+            }
+            fn bounds_through_finer(
+                &self,
+                region: &VoxelBox,
+                footprint: LevelOfDetail,
+            ) -> Interval {
+                (0..=footprint.level())
+                    .map(|level| self.bounds(region, LevelOfDetail::new(level).unwrap()))
+                    .reduce(Interval::hull)
+                    .unwrap()
+            }
+        }
+        assert!(cube_may_show(&Raised, cube_at([0, 0, 0], 4)));
+        // At the finest levels it is air, as bounds at level 0 say.
+        assert!(!cube_may_show(&Raised, cube_at([0, 0, 0], 3)));
+    }
+
+    #[test]
+    fn a_cube_of_flat_ground_may_show_something_only_if_the_surface_or_the_air_is_in_it_or_beside_it()
+     {
+        let field = Flat(100.0);
+        // Level 2: cubes of 4 bricks, 128 voxels. The ground reaches 100, so the cube from voxel 0 to 127 holds the surface, the one above it (128 to 255) is all air.
+        assert!(cube_may_show(&field, cube_at([0, 0, 0], 2)));
+        assert!(!cube_may_show(&field, cube_at([0, 4, 0], 2)), "air");
+        assert!(!cube_may_show(&field, cube_at([0, 40, 0], 2)), "air");
+        // The cube from -128 to -1 has the surface in the cube above it: ground that has air one cube away is not buried.
+        assert!(cube_may_show(&field, cube_at([0, -4, 0], 2)));
+        // The one from -256 to -129 has ground all round it (the cube above is -128 to -1, below the surface).
+        assert!(!cube_may_show(&field, cube_at([0, -8, 0], 2)), "buried");
+        assert!(!cube_may_show(&field, cube_at([-12, -80, 40], 2)), "buried");
+        // Sideways it is the same all along.
+        assert!(cube_may_show(&field, cube_at([36, 0, -20], 2)));
+        // A brick is a cube too.
+        assert!(cube_may_show(&field, cube_at([3, 2, 3], 0)));
+        assert!(!cube_may_show(&field, cube_at([3, 20, 3], 0)));
+        assert!(!cube_may_show(&field, cube_at([3, -20, 3], 0)));
+        // At the edges: a voxel is air when the middle of it is at the surface or over it. With the surface at the middle of the lowest voxels of a brick, all of it is air.
+        assert!(!cube_may_show(&Flat(32.5), cube_at([0, 1, 0], 0)));
+        assert!(cube_may_show(&Flat(33.5), cube_at([0, 1, 0], 0)));
+        // And a brick is buried when the whole cube round it is ground: not when the middle of the top voxel of that is at the surface, which is air.
+        assert!(cube_may_show(&Flat(-0.5), cube_at([0, -2, 0], 0)));
+        assert!(!cube_may_show(&Flat(0.5), cube_at([0, -2, 0], 0)));
+        // A cube so far off that the room round it is not in the world may show something.
+        assert!(cube_may_show(
+            &field,
+            BrickCube::containing(BrickCoordinate::new(1 << 54, 0, 0), 40)
+        ));
+    }
+
+    #[test]
+    fn what_a_cube_that_may_show_nothing_holds_is_air_or_stone_all_through_at_every_level() {
+        use crate::generator::{RollingHillsSettings, TerrainGenerator, rolling_hills};
+        use voxel_grid::test_support::StandardTestLayout;
+        let fixture = StandardTestLayout::default();
+        let mut pruned = 0;
+        let mut kept = 0;
+        for caves in [false, true] {
+            let settings = RollingHillsSettings {
+                cave_half_thickness: if caves { 0.08 } else { 0.0 },
+                ..RollingHillsSettings::for_one_metre_voxels(2024)
+            };
+            let generator = rolling_hills(settings, fixture.material, materials());
+            for level in 0..=3u8 {
+                let width = 1i64 << level;
+                // Cubes from well under the surface (near 64 voxels, hills 100 either way) to well over it.
+                for x in 0..3 {
+                    for z in 0..3 {
+                        for y in -12..14 {
+                            let cube = cube_at([x * width * 2, y * width, z * width * 2], level);
+                            if generator.may_show(cube) {
+                                kept += 1;
+                                continue;
+                            }
+                            pruned += 1;
+                            let edge = cube.edge_length() as i64;
+                            let origin = cube.origin();
+                            for bx in 0..edge {
+                                for by in 0..edge {
+                                    for bz in 0..edge {
+                                        let brick = generator.generate_brick(
+                                            &fixture.layout,
+                                            BrickCoordinate::new(
+                                                origin.x() + bx,
+                                                origin.y() + by,
+                                                origin.z() + bz,
+                                            ),
+                                        );
+                                        let value = brick.channel(fixture.material).uniform_value();
+                                        assert!(
+                                            value == Some(AIR) || value == Some(STONE),
+                                            "{cube:?} may show nothing and has {value:?} in a brick"
+                                        );
+                                    }
+                                }
+                            }
+                            if level > 0 {
+                                let node = generator.coarse_node(cube, UNLIT).unwrap();
+                                let cell = node.uniform_cell();
+                                assert!(
+                                    cell.is_some_and(|cell| cell.fill == 0
+                                        || (cell.fill == 255 && cell.exposure == 0)),
+                                    "{cube:?} may show nothing and its node is {node:?}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            pruned > 100 && kept > 100,
+            "{pruned} pruned and {kept} kept"
         );
     }
 

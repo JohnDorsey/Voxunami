@@ -466,6 +466,43 @@ fn an_edit_too_small_to_change_the_cells_of_the_leaf_is_not_sent_and_does_not_ma
     );
 }
 
+#[test]
+fn an_edit_high_in_the_air_or_deep_in_the_ground_is_sent_though_the_cubes_it_is_in_are_otherwise_left_out()
+ {
+    let mut rig = rig();
+    rig.client.stand_at([0, 0, 0]);
+    rig.client.set_detail(&detail(1_000_000));
+    rig.step(5);
+    assert!(rig.client.coarse_nodes().1.is_empty(), "nothing is edited");
+
+    // A block of stone floating 25 bricks over the ground and 10 along, and a hole dug 13 bricks under it: the cubes round both are air all through, or
+    // ground all through with ground all round them, and are not drawn unless an edit is in them or beside them.
+    let sky = BrickCoordinate::new(10, 25, 0);
+    let hole = BrickCoordinate::new(0, -13, 0);
+    rig.place([320, 800, 0], [324, 804, 4], STONE);
+    rig.dig([0, -400, 0], [8, -392, 8]);
+    rig.settle();
+    // (The leaves are worked out again some ticks after an edit in a new place.)
+    rig.step(40);
+    let (_, updates) = rig.client.coarse_nodes();
+    for edit in [sky, hole] {
+        let [update] = &updates
+            .iter()
+            .filter(|update| update.cube.contains(edit))
+            .collect::<Vec<_>>()[..]
+        else {
+            panic!("{edit:?} in {updates:?}");
+        };
+        assert!(update.cube.level() >= 1);
+        let (held, _) = rig
+            .handle
+            .override_of(GridId::MAIN, update.cube)
+            .expect("it was sent from the overrides");
+        assert_eq!(update.node, Some(held.without_exposure()));
+    }
+    assert_eq!(updates.len(), 2, "{updates:?}");
+}
+
 /// Edits in four bricks a long way from each other, so that each is in a leaf of its own for a client a long way from all of them.
 fn dig_four_far_apart(rig: &mut Rig) {
     for brick in [0_i64, 64, 128, 192] {

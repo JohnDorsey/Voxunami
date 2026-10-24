@@ -163,6 +163,28 @@ impl FractalNoise {
         total
     }
 
+    /// Bounds on the samples of `region` at `footprint` and at every finer footprint (a smaller detail level): the octaves that `footprint` keeps are bounded as
+    /// they are, and each that it drops may or may not be there at a finer one, so it adds what it can add or nothing. For asking whether a whole cube, and
+    /// everything that will be drawn inside it however finely, holds nothing.
+    pub fn bounds_through_finer(&self, region: &VoxelBox, footprint: LevelOfDetail) -> Interval {
+        let mut total = Interval::point(0.0);
+        for (index, octave) in self.octaves.iter().enumerate() {
+            let unit = octave_bounds(
+                self.octave_seed(index),
+                octave.wavelength_log2,
+                self.dimensionality,
+                region,
+            )
+            .scaled(octave.amplitude);
+            total = total.plus(if Self::keeps(octave, footprint) {
+                unit
+            } else {
+                unit.hull(Interval::point(0.0))
+            });
+        }
+        total
+    }
+
     /// Whether the noise has octaves and every one of them is finer than `footprint`, so that it is dropped altogether (and the sample is 0 because there
     /// is nothing left, not because the noise happens to be zero there). Noise with no octaves at all is not "dropped".
     pub fn is_entirely_finer_than(&self, footprint: LevelOfDetail) -> bool {
@@ -234,9 +256,58 @@ fn sample_octave(
     }
 }
 
-/// Bounds of one octave's unit-amplitude value over `region`. A sample is a weighted average of
-/// the lattice values at the corners of its cell, so it lies between the smallest and largest
-/// lattice value among the cells the region touches.
+/// The cell of the lattice that a position holds and where in it, as `split_axis` says for a voxel, for a position given as twice its coordinate in voxels (so
+/// that the middle of a region, which can be half a voxel off, is exact at any distance from the origin).
+fn split_twice(twice: i128, wavelength_log2: u8) -> (i64, f64) {
+    let shift = u32::from(wavelength_log2) + 1;
+    let cell = twice >> shift;
+    let within = twice - (cell << shift);
+    (cell as i64, within as f64 / (1u128 << shift) as f64)
+}
+
+/// The value of an octave at a position that is twice the given numbers in voxels (see [`split_twice`]).
+fn sample_octave_between(
+    seed: u64,
+    wavelength_log2: u8,
+    dimensionality: Dimensionality,
+    twice: [i128; 3],
+) -> f64 {
+    let (cell_x, fraction_x) = split_twice(twice[0], wavelength_log2);
+    let (cell_z, fraction_z) = split_twice(twice[2], wavelength_log2);
+    let (weight_x, weight_z) = (fade(fraction_x), fade(fraction_z));
+    match dimensionality {
+        Dimensionality::Planar => {
+            let corner = |dx, dz| lattice_value(seed, cell_x + dx, 0, cell_z + dz);
+            lerp(
+                lerp(corner(0, 0), corner(1, 0), weight_x),
+                lerp(corner(0, 1), corner(1, 1), weight_x),
+                weight_z,
+            )
+        }
+        Dimensionality::Volumetric => {
+            let (cell_y, fraction_y) = split_twice(twice[1], wavelength_log2);
+            let weight_y = fade(fraction_y);
+            let corner = |dx, dy, dz| lattice_value(seed, cell_x + dx, cell_y + dy, cell_z + dz);
+            let along_x = |dy, dz| lerp(corner(0, dy, dz), corner(1, dy, dz), weight_x);
+            lerp(
+                lerp(along_x(0, 0), along_x(1, 0), weight_y),
+                lerp(along_x(0, 1), along_x(1, 1), weight_y),
+                weight_z,
+            )
+        }
+    }
+}
+
+/// The steepest the quintic blend of [`fade`] gets: its slope is greatest in the middle, 30 * (1/2)^2 * (1/2)^2.
+const STEEPEST_FADE: f64 = 1.875;
+
+/// Room for the rounding of the blend, so that a bound is never a hair under a value.
+const ROUNDING_ALLOWANCE: f64 = 1.0e-9;
+
+/// Bounds of one octave's unit-amplitude value over `region`. A sample is a weighted average of the lattice values at the corners of its cell, so it lies between
+/// the smallest and largest lattice value among the cells the region touches. Where the region is small beside the cell that is far too wide: the value cannot
+/// move from its value at the middle of the region by more than the steepest slope of the blend (the largest difference of two neighbouring lattice values times
+/// [`STEEPEST_FADE`], over the cell's size) times how far the region reaches from its middle, along each axis. The bound is the narrower of the two.
 fn octave_bounds(
     seed: u64,
     wavelength_log2: u8,
@@ -258,16 +329,70 @@ fn octave_bounds(
     }
     let mut lowest = f64::INFINITY;
     let mut highest = f64::NEG_INFINITY;
-    for x in x_first..=x_last {
-        for y in y_first..=y_last {
-            for z in z_first..=z_last {
+    // The lattice values of the corners, to find the largest step between neighbours along each axis.
+    let mut values = [[[0.0f64; 4]; 4]; 4];
+    for (i, x) in (x_first..=x_last).enumerate() {
+        for (j, y) in (y_first..=y_last).enumerate() {
+            for (k, z) in (z_first..=z_last).enumerate() {
                 let value = lattice_value(seed, x, y, z);
+                values[i][j][k] = value;
                 lowest = lowest.min(value);
                 highest = highest.max(value);
             }
         }
     }
-    Interval::new(lowest, highest)
+    let counts = [
+        (x_last - x_first + 1) as usize,
+        (y_last - y_first + 1) as usize,
+        (z_last - z_first + 1) as usize,
+    ];
+    let mut steepest = [0.0f64; 3];
+    for i in 0..counts[0] {
+        for j in 0..counts[1] {
+            for k in 0..counts[2] {
+                if i + 1 < counts[0] {
+                    steepest[0] = steepest[0].max((values[i + 1][j][k] - values[i][j][k]).abs());
+                }
+                if j + 1 < counts[1] {
+                    steepest[1] = steepest[1].max((values[i][j + 1][k] - values[i][j][k]).abs());
+                }
+                if k + 1 < counts[2] {
+                    steepest[2] = steepest[2].max((values[i][j][k + 1] - values[i][j][k]).abs());
+                }
+            }
+        }
+    }
+    let size = (1u128 << wavelength_log2) as f64;
+    let reach = [
+        (i128::from(region.max().x()) - i128::from(region.min().x())) as f64 / 2.0,
+        (i128::from(region.max().y()) - i128::from(region.min().y())) as f64 / 2.0,
+        (i128::from(region.max().z()) - i128::from(region.min().z())) as f64 / 2.0,
+    ];
+    let mut spread = ROUNDING_ALLOWANCE;
+    for axis in 0..3 {
+        let varies = axis != 1 || dimensionality == Dimensionality::Volumetric;
+        if varies {
+            spread += STEEPEST_FADE * steepest[axis] / size * reach[axis];
+        }
+    }
+    // Twice the position of the middle of the voxels of the region (a voxel's position is the middle of it, half a voxel in).
+    let twice_middle = |low: i64, high: i64| i128::from(low) + i128::from(high) + 1;
+    let centre = sample_octave_between(
+        seed,
+        wavelength_log2,
+        dimensionality,
+        [
+            twice_middle(region.min().x(), region.max().x()),
+            twice_middle(region.min().y(), region.max().y()),
+            twice_middle(region.min().z(), region.max().z()),
+        ],
+    );
+    let (lower, upper) = (lowest.max(centre - spread), highest.min(centre + spread));
+    if lower <= upper {
+        Interval::new(lower, upper)
+    } else {
+        Interval::new(lowest, highest)
+    }
 }
 
 #[cfg(test)]
@@ -415,22 +540,221 @@ mod tests {
         );
     }
 
+    /// The range of the lattice values of the corners of the cells a region touches: the bound before it was tightened.
+    fn corner_range(noise: &FractalNoise, region: &VoxelBox, octave: usize) -> Interval {
+        let wavelength_log2 = noise.octaves[octave].wavelength_log2;
+        let range = |low: i64, high: i64| (low >> wavelength_log2, (high >> wavelength_log2) + 1);
+        let (x_first, x_last) = range(region.min().x(), region.max().x());
+        let (z_first, z_last) = range(region.min().z(), region.max().z());
+        let (y_first, y_last) = match noise.dimensionality {
+            Dimensionality::Planar => (0, 0),
+            Dimensionality::Volumetric => range(region.min().y(), region.max().y()),
+        };
+        let mut found = Vec::new();
+        for x in x_first..=x_last {
+            for y in y_first..=y_last {
+                for z in z_first..=z_last {
+                    found.push(lattice_value(noise.octave_seed(octave), x, y, z));
+                }
+            }
+        }
+        Interval::new(
+            found.iter().copied().fold(f64::INFINITY, f64::min),
+            found.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        )
+    }
+
     #[test]
-    fn a_region_inside_one_voxel_cell_pair_collapses_the_bound_to_the_lattice_extremes() {
-        // With 2^20-voxel cells a 32-voxel box lies in a single cell, so its bound is the range
-        // of that cell's corner values, which the samples inside must straddle tightly.
+    fn a_region_inside_one_cell_is_bounded_by_where_it_can_get_to_and_not_by_the_corners_of_the_cell()
+     {
+        // With 2^20-voxel cells a 32-voxel box lies in a single cell, so its value hardly moves: a few parts in a million, not the range of the corners.
         let noise = FractalNoise::standard(5, Dimensionality::Planar, 20, 1, 1.0, 0.5);
         let region = VoxelBox::new(voxel(1000, 0, 1000), voxel(1031, 31, 1031)).unwrap();
         let bounds = noise.bounds(&region, LevelOfDetail::FULL_DETAIL);
-        let corners = [
-            lattice_value(noise.octave_seed(0), 0, 0, 0),
-            lattice_value(noise.octave_seed(0), 1, 0, 0),
-            lattice_value(noise.octave_seed(0), 0, 0, 1),
-            lattice_value(noise.octave_seed(0), 1, 0, 1),
-        ];
-        let lowest = corners.iter().copied().fold(f64::INFINITY, f64::min);
-        let highest = corners.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        assert_eq!(bounds, Interval::new(lowest, highest));
+        let corners = corner_range(&noise, &region, 0);
+        assert!(corners.upper() - corners.lower() > 0.3, "{corners:?}");
+        assert!(bounds.upper() - bounds.lower() < 1e-3, "{bounds:?}");
+        assert!(corners.lower() <= bounds.lower() && bounds.upper() <= corners.upper());
+        for point in points_in(&region, 50) {
+            assert!(bounds.contains(noise.sample(point, LevelOfDetail::FULL_DETAIL)));
+        }
+    }
+
+    #[test]
+    fn a_single_voxel_is_bounded_by_its_own_value() {
+        for (wavelength, dimensionality) in [
+            (2u8, Dimensionality::Planar),
+            (7, Dimensionality::Volumetric),
+            (30, Dimensionality::Planar),
+        ] {
+            let noise = FractalNoise::standard(77, dimensionality, wavelength, 1, 3.0, 0.5);
+            for at in [
+                voxel(5, 9, -3),
+                voxel(-1_000_003, 4, 70_000),
+                voxel(1 << 50, 3, -(1 << 40)),
+            ] {
+                let region = VoxelBox::new(at, at).unwrap();
+                let bounds = noise.bounds(&region, LevelOfDetail::FULL_DETAIL);
+                let value = noise.sample(at, LevelOfDetail::FULL_DETAIL);
+                assert!(bounds.contains(value), "{bounds:?} and {value}");
+                assert!(bounds.upper() - bounds.lower() < 1e-7, "{bounds:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_bounds_of_a_region_are_never_wider_than_the_corners_and_tighter_when_it_is_small() {
+        let noise = FractalNoise::standard(2024, Dimensionality::Planar, 7, 6, 40.0, 0.5);
+        let small = VoxelBox::new(voxel(100, 0, 200), voxel(101, 1, 201)).unwrap();
+        let tight = noise.bounds(&small, level(1));
+        let mut corners = Interval::point(0.0);
+        for (index, octave) in noise.octaves.iter().enumerate() {
+            if FractalNoise::keeps(octave, level(1)) {
+                corners =
+                    corners.plus(corner_range(&noise, &small, index).scaled(octave.amplitude));
+            }
+        }
+        assert!(tight.lower() >= corners.lower() && tight.upper() <= corners.upper());
+        assert!(
+            tight.upper() - tight.lower() < (corners.upper() - corners.lower()) / 4.0,
+            "{tight:?} against {corners:?}"
+        );
+    }
+
+    #[test]
+    fn bounds_through_finer_hold_what_the_octaves_a_footprint_drops_could_add() {
+        let noise = FractalNoise::standard(5, Dimensionality::Volumetric, 6, 4, 8.0, 0.5);
+        let region = VoxelBox::new(voxel(0, 0, 0), voxel(40, 40, 40)).unwrap();
+        for footprint in 0..9 {
+            let through = noise.bounds_through_finer(&region, level(footprint));
+            for finer in 0..=footprint {
+                let found = noise.bounds(&region, level(finer));
+                assert!(
+                    through.lower() <= found.lower() + TOLERANCE
+                        && found.upper() <= through.upper() + TOLERANCE,
+                    "{through:?} at {footprint} does not hold {found:?} at {finer}"
+                );
+            }
+        }
+        // Where nothing is dropped it is the bounds.
+        assert_eq!(
+            noise.bounds_through_finer(&region, level(0)),
+            noise.bounds(&region, level(0))
+        );
+    }
+
+    #[test]
+    fn the_steepest_slope_of_the_blend_is_the_constant_the_bounds_are_made_with() {
+        // The slope of the quintic blend is 30 t^2 (1 - t)^2, and it is greatest in the middle.
+        let slope = |t: f64| 30.0 * t * t * (1.0 - t) * (1.0 - t);
+        let mut steepest: f64 = 0.0;
+        for step in 0..=1000 {
+            let t = f64::from(step) / 1000.0;
+            steepest = steepest.max(slope(t));
+            if (0.001..=0.999).contains(&t) {
+                let h = 1.0e-6;
+                let measured = (fade(t + h) - fade(t - h)) / (2.0 * h);
+                assert!((measured - slope(t)).abs() < 1.0e-5, "at {t}");
+            }
+        }
+        // A smaller constant would not hold every region; a larger one would make every bound wider than it needs to be.
+        assert_eq!(steepest, STEEPEST_FADE);
+    }
+
+    #[test]
+    fn a_position_given_as_twice_its_value_splits_into_the_cell_it_is_in_and_where() {
+        // A wavelength of 8 voxels: a cell is 16 of these units, and the middle of a voxel is an odd number of them.
+        assert_eq!(split_twice(0, 3), (0, 0.0));
+        assert_eq!(split_twice(1, 3), (0, 1.0 / 16.0));
+        assert_eq!(split_twice(15, 3), (0, 15.0 / 16.0));
+        assert_eq!(
+            split_twice(16, 3),
+            (1, 0.0),
+            "a lattice line starts the cell after it"
+        );
+        assert_eq!(split_twice(-1, 3), (-1, 15.0 / 16.0));
+        assert_eq!(split_twice(-16, 3), (-1, 0.0));
+        assert_eq!(split_twice(-17, 3), (-2, 15.0 / 16.0));
+        // For the middle of a voxel it is what `split_axis` says.
+        for coordinate in [-17, -8, -1, 0, 1, 7, 8, 100] {
+            assert_eq!(
+                split_twice(2 * i128::from(coordinate) + 1, 3),
+                split_axis(coordinate, 3),
+                "voxel {coordinate}"
+            );
+        }
+        // And far out, where a float could not hold the place exactly.
+        assert_eq!(
+            split_twice((1i128 << 63) + 11, 3),
+            (1i64 << 59, 11.0 / 16.0)
+        );
+    }
+
+    /// Every sample of every small box on a lattice with small cells lies in the bounds of its box: boxes across the borders of cells are where the steepest step
+    /// between neighbours is a different one on each side, so a bound made from only some of the cells a box touches would fail here.
+    #[test]
+    fn the_tight_bounds_hold_every_sample_of_every_small_region_across_lattice_borders() {
+        let check = |seed: u64,
+                     dimensionality: Dimensionality,
+                     lows: &[i64],
+                     sizes: &[i64],
+                     ys: &[i64]| {
+            for &x in lows {
+                for &y in ys {
+                    for &z in lows {
+                        for &size_x in sizes {
+                            for &size_y in if ys.len() == 1 { &[0][..] } else { sizes } {
+                                for &size_z in sizes {
+                                    let region = VoxelBox::new(
+                                        voxel(x, y, z),
+                                        voxel(x + size_x, y + size_y, z + size_z),
+                                    )
+                                    .unwrap();
+                                    let bounds = octave_bounds(seed, 3, dimensionality, &region);
+                                    for sx in x..=x + size_x {
+                                        for sy in y..=y + size_y {
+                                            for sz in z..=z + size_z {
+                                                let value = sample_octave(
+                                                    seed,
+                                                    3,
+                                                    dimensionality,
+                                                    voxel(sx, sy, sz),
+                                                );
+                                                assert!(
+                                                    bounds.lower() <= value
+                                                        && value <= bounds.upper(),
+                                                    "{value} outside {bounds:?} of {region:?}, seed {seed}"
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        let planar_lows: Vec<i64> = (-4..20).collect();
+        for seed in [3, 99, 2024] {
+            check(
+                seed,
+                Dimensionality::Planar,
+                &planar_lows,
+                &[0, 1, 2, 3, 5],
+                &[0],
+            );
+        }
+        let volumetric_lows: Vec<i64> = (-2..10).collect();
+        for seed in [3, 2024] {
+            check(
+                seed,
+                Dimensionality::Volumetric,
+                &volumetric_lows,
+                &[0, 1, 3],
+                &volumetric_lows,
+            );
+        }
     }
 
     /// Pseudo-random positions inside a box, derived from the hash so tests need no extra state.
@@ -531,6 +855,50 @@ mod tests {
                     value >= bounds.lower() - TOLERANCE && value <= bounds.upper() + TOLERANCE,
                     "{value} outside [{}, {}] at {point}", bounds.lower(), bounds.upper()
                 );
+            }
+        }
+
+        #[test]
+        fn bounds_through_finer_contain_every_sample_at_every_finer_level(
+            noise in noises(),
+            region in regions(),
+            detail in 0u8..10,
+        ) {
+            let bounds = noise.bounds_through_finer(&region, level(detail));
+            for finer in 0..=detail {
+                for point in points_in(&region, 12) {
+                    let value = noise.sample(point, level(finer));
+                    prop_assert!(
+                        value >= bounds.lower() - TOLERANCE && value <= bounds.upper() + TOLERANCE,
+                        "{value} at {finer} outside [{}, {}] at {point}", bounds.lower(), bounds.upper()
+                    );
+                }
+            }
+        }
+
+        /// Small regions are where the tightening works hardest, so they are tried by themselves, at every corner and at many places.
+        #[test]
+        fn the_tight_bounds_of_small_regions_contain_every_sample(
+            noise in noises(),
+            base in [base_component(), base_component(), base_component()],
+            size in [0i64..6, 0..6, 0..6],
+            detail in 0u8..10,
+        ) {
+            let region = VoxelBox::new(
+                voxel(base[0], base[1], base[2]),
+                voxel(base[0] + size[0], base[1] + size[1], base[2] + size[2]),
+            ).unwrap();
+            let bounds = noise.bounds(&region, level(detail));
+            for x in base[0]..=base[0] + size[0] {
+                for y in base[1]..=base[1] + size[1] {
+                    for z in base[2]..=base[2] + size[2] {
+                        let value = noise.sample(voxel(x, y, z), level(detail));
+                        prop_assert!(
+                            value >= bounds.lower() - TOLERANCE && value <= bounds.upper() + TOLERANCE,
+                            "{value} outside [{}, {}] at {x} {y} {z}", bounds.lower(), bounds.upper()
+                        );
+                    }
+                }
             }
         }
 
