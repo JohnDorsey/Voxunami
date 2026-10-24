@@ -34,6 +34,13 @@ pub fn overworld_id() -> NamespacedId {
         .expect("constant identifier is valid")
 }
 
+/// The level of space with a planet in it (Phase 39). It has no pull of its own: what is there falls toward the planet.
+pub fn mini_cosmos_id() -> NamespacedId {
+    "voxunami_cave:mini_cosmos"
+        .parse()
+        .expect("constant identifier is valid")
+}
+
 pub fn game_id() -> NamespacedId {
     "voxunami_cave:game"
         .parse()

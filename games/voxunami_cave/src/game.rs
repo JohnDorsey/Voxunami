@@ -9,13 +9,13 @@ use physics::MoveInput;
 use plugin_host::Plugin;
 use renderer::Camera;
 use transport::Connection;
-use voxel_space::WorldPosition;
+use voxel_space::{GravitySettings, WorldPosition};
 
 use crate::client::{
     ClientBlockEditing, ClientItems, ClientLight, ClientMovement, place_block_request,
     set_block_request,
 };
-use crate::content::{CaveContent, game_id};
+use crate::content::{CaveContent, game_id, mini_cosmos_id};
 use crate::logic::REACH;
 use crate::messages::{MoveRequest, SetBlock, Spawn};
 use crate::multiscale_light::LightScheme;
@@ -97,11 +97,27 @@ pub fn light_scheme<C: Connection>(session: &CaveSession<C>) -> Option<LightSche
         .and_then(ClientLight::scheme)
 }
 
+/// The least mass, in kilograms, of a ship that pulls other things toward it: a moon, not a ship that someone built (a ship of a thousand tonnes, 10^6
+/// kilograms, pulls a player a metre from it by about two hundred-thousandths of a metre a second a second; this is ten million million times its mass).
+pub const PULLING_MASS: f32 = 1.0e19;
+
 impl GameDefinition for Cave {
     type Content = CaveContent;
 
     fn id() -> NamespacedId {
         game_id()
+    }
+
+    fn gravity() -> GravitySettings {
+        GravitySettings {
+            pull_mass_threshold: Some(PULLING_MASS),
+            ..GravitySettings::default()
+        }
+    }
+
+    /// Space has no pull of its own.
+    fn level_gravity() -> Vec<(NamespacedId, [f32; 3])> {
+        vec![(mini_cosmos_id(), [0.0; 3])]
     }
 
     fn title() -> &'static str {

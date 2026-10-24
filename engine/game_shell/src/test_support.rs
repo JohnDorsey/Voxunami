@@ -128,3 +128,63 @@ impl GameDefinition for ExampleGame {
         Vec::new()
     }
 }
+
+/// A game whose levels pull differently from the default: a moon of 10^20 kilograms pulls, and a level in space has no pull of its own.
+#[derive(Debug)]
+pub struct ExampleSpaceGame;
+
+impl GameDefinition for ExampleSpaceGame {
+    type Content = ExampleContent;
+
+    fn id() -> NamespacedId {
+        id("example:space_game")
+    }
+
+    fn title() -> &'static str {
+        ExampleGame::title()
+    }
+
+    fn command() -> &'static str {
+        ExampleGame::command()
+    }
+
+    fn summary() -> &'static str {
+        ExampleGame::summary()
+    }
+
+    fn controls() -> &'static str {
+        ExampleGame::controls()
+    }
+
+    fn default_seed() -> u64 {
+        ExampleGame::default_seed()
+    }
+
+    fn default_camera() -> CameraStart {
+        ExampleGame::default_camera()
+    }
+
+    fn reach() -> f32 {
+        ExampleGame::reach()
+    }
+
+    fn new_content() -> ExampleContent {
+        ExampleGame::new_content()
+    }
+
+    fn plugins(content: &ExampleContent) -> Vec<Box<dyn ServerPlugin>> {
+        ExampleGame::plugins(content)
+    }
+
+    fn gravity() -> voxel_space::GravitySettings {
+        voxel_space::GravitySettings {
+            base: [0.0, -9.0, 0.0],
+            pull_mass_threshold: Some(1.0e20),
+            ..voxel_space::GravitySettings::default()
+        }
+    }
+
+    fn level_gravity() -> Vec<(NamespacedId, [f32; 3])> {
+        vec![(id("example:space"), [0.0; 3])]
+    }
+}

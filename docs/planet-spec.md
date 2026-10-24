@@ -71,13 +71,24 @@ as of any ship, with the terrain, and then sends the **stored** bricks only; `sh
 a level, and `ShipTerrainMesher` is that mesher saying what it draws as bricks of the ship (`UploadGridBrick`), under the ship's pose. The `Session` keeps one for each planet, feeds it the camera in the planet's coordinates (`GridPose::world_to_local`), sends the changes of its stored bricks to it
 and not to the mesher of ships (which no longer meshes the stored bricks of a planet alone, without the neighbours the generator makes), aims the crosshair through it, and waits for it when it settles. The view summary a replay is compared with names the generator and the extent. A brick beyond the extent is empty and the face of the brick against it is drawn,
 so a planet cut off by its extent shows its side. **Golden sessions:** the four that pin a stream or a recording (2048, Eels, Cave, and the end-to-end recording) moved once, for the version in the welcome; each was checked by running the code of the commit before with only the version raised to 8, which gave the new hash and the same length, so none of them tells of a ship.
-**Not yet:** the levels of detail of a planet (39e), and what a planet does to bodies and gravity (39d).
+**Not yet:** the levels of detail of a planet (39e).
 
-**Bodies (39d).** The blocks of a ship near a player are colliders in the player's world (`update_foreign`) and what a body aboard collides with (`CollisionSource`): both read through the generator. A held ship with terrain has no body of its own and no
-collider of its own (a body made from every brick is not possible).
+**Bodies (built in 39d).** A walker meets a planet through the generator. `grid_bodies::collision::GeneratedHull` is a `CollisionSource` that reads a ship's voxels through the world (`ServerWorld::moving_voxel` and `moving_uniform_value`, now `&self` and public: the bricks a generator makes are
+remembered behind a cell, so a body can meet several ships at once while the world is borrowed shared). `ShipSource` is that or the `ShipHull` that reads a ship's stored voxels directly (kept as the fast path of an ordinary ship: the two agree for a ship without terrain, and a test cannot tell them apart,
+which is why one mutant of the choice stays). `SolidAt` is a blanket trait on `CollisionSource` that replaces `ShipHull::solid_at`, so the rules of being aboard (`stands_on`, `has_left`, in Cave's `aboard.rs`) take either. Cave's `Blocks::source` chooses by `ship.terrain`, and `step_in_a_level` (the ships near
+a walker, as foreign grids; standing on one; the leave rule) and `step_aboard` use it. What a block is to a body and what a whole brick is to it are two functions shared by `WorldTerrain` and `GeneratedHull` (`collision_of_voxel`, `hint_of_brick`), with unit tests; the hint no longer asks about orientations
+(whether a shape is empty, a whole cell or part of one does not depend on how it is turned), which changes nothing but that a brick of one block in one state and several orientations is known at once. A planet has no body of its own: `grid_bodies` leaves a ship with terrain out of its bodies, its weighing (the
+mass is what the terrain declares, `ServerWorld::set_grid_terrain`) and its splitting and vanishing (its stored bricks are edits of a ground that is not stored, so "no blocks left" and "in pieces" mean nothing for it). A walker dropped over a planet lands on it, is aboard it (in its coordinates), walks on the ground the
+generator makes, and falls into a hole that is dug (the edits are stored bricks); a slab put on it upside down is a ceiling slab to a walker.
 
-**Gravity.** A level's pull is its own setting (`mini_cosmos`: none). The planet is a ship with a declared mass, over the threshold of a pulling ship, so the field there is the pull toward its centre of mass: aboard it a vector that is fixed in the
-planet's axes, as 2.9 of `moving-grids-spec.md` says. The leave rule of a body aboard (a box of bricks) is the extent of the planet.
+**Gravity (built in 39d).** A level's own pull: `ServerWorld::set_level_gravity` (where it is not `GravitySettings::base`: none in space), `ServerConfig.level_gravity` by the level's identifier (a level the world lacks is ignored), and the game's `GameDefinition::{gravity, level_gravity}`. Cave: the base is 5 as it was,
+`PULLING_MASS = 10^19` kilograms is the least mass of a ship that pulls (a moon, not a raft), and `voxunami_cave:mini_cosmos` has none. The planet's declared mass is M = 10 R^2 / G = 6.08 x 10^20 kilograms for R = 63,710 and the real G, which pulls 10.004 m/s^2 at 15 voxels over the ground
+(measured in a test; the test asks for within a tenth). The field aboard is a vector fixed in the planet's axes, as 2.9 of `moving-grids-spec.md` says; the leave rule of a body aboard (a box of bricks) is the extent of the planet.
+
+**What it costs (measured, release, this machine).** A walker meeting the planet for the first time makes the server generate about 50 bricks at 9 ms: joining and settling took 480 ms, against 20 ms with no planet there (five runs, 479 to 486; three runs, 19 to 20). Walking on, a tick is 0.05 ms at the median and 0.1 ms at
+p99, and crossing into a new row of bricks costs one tick of 37 to 44 ms (about the size of the bricks of ground and stone below at 6 to 9 ms each; I did not count them). That is the whole of the hitch in 400 ticks of walking, and it is not spread over ticks (as 32h did for the terrain of a level). **Not done:**
+(a) spreading the first contact and the crossings over ticks; (b) a rigid-body ship (`grid_bodies`) has no collider against a planet, **verified:** a ship of 4 x 4 x 4 stone let go 40 voxels over the planet accelerated at 10 m/s^2, went through the surface and came to rest on the hills of the overworld 320 metres lower (the colliders that
+follow a ship are the level's terrain, and a planet is not that); (c) every brick below the surface that was probed (6 columns of 50 bricks each, from the surface to 1,600 voxels down) has air in it from a cave, so a brick of the planet is hardly ever one block and the hints seldom save a scan.
 
 **Levels of detail for a ship (38j, 39e).** The client makes the nodes of a ship with terrain from its generators, in the ship's own cubes, as it does for the terrain of a level; the **viewer is taken into the ship's axes** by the inverse of the pose, the
 selection's `may_hold` is the shell of the surface, the fine region is a ball of bricks round the viewer in the ship's bricks, and the nodes are drawn by `upload_grid_coarse_node` under the ship's pose (the renderer has that). A ship is **known**
@@ -91,7 +102,7 @@ while it would be a pixel (3.7 of the LOD spec); a planet is known from anywhere
 - **39a `GridTerrain` on `MovingGrid`**, the file section, save and load. **Built 2026-10-24.**
 - **39b The server reads through** and the replication of a ship with terrain. **Read-through built 2026-10-24; the replication is 39c's.**
 - **39c The wire (protocol 8) and the client generates.** A replay test. **Built 2026-10-24.**
-- **39d Colliders from generated bricks; gravity of a level; the planet's mass; boarding and leaving on a planet.**
+- **39d Colliders from generated bricks; gravity of a level; the planet's mass; boarding and leaving on a planet.** **Built 2026-10-24.**
 - **39e Levels of detail for a ship with terrain.**
 - **39f The level `mini_cosmos` in Cave**: the empty generator, the planet, the spawn, the default; the tests that start in the overworld; documents.
 

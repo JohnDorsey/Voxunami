@@ -21,7 +21,7 @@ use crate::aboard::{Extent, has_left, in_voxels, stands_on};
 use crate::block_properties;
 use block_models::BlockTable;
 use game_shell::PlayerPose;
-use grid_bodies::collision::{BlockCollisions, ShipHull, WorldTerrain};
+use grid_bodies::collision::{BlockCollisions, GeneratedHull, ShipHull, ShipSource, WorldTerrain};
 use physics::{CharacterBody, CharacterSettings, ForeignGrid, MoveInput};
 use protocol::ClientId;
 use server::ServerWorld;
@@ -111,6 +111,29 @@ impl Blocks {
             state_channel: self.state_channel,
             orientation_channel: Some(self.orientation_channel),
             collisions: &self.collisions,
+        }
+    }
+
+    /// What a body meets of a ship: its stored blocks, or for a planet (a ship with terrain) the blocks its generator makes as well, which are read through the
+    /// world.
+    fn source<'a>(
+        &'a self,
+        world: &'a ServerWorld,
+        id: GridId,
+        ship: &'a world_storage::MovingGrid,
+    ) -> ShipSource<'a> {
+        if ship.terrain.is_some() {
+            ShipSource::Generated(GeneratedHull {
+                world,
+                grid: id,
+                block_channel: self.block_channel,
+                state_channel: self.state_channel,
+                orientation_channel: Some(self.orientation_channel),
+                air: self.air,
+                collisions: &self.collisions,
+            })
+        } else {
+            ShipSource::Stored(self.hull(ship))
         }
     }
 
@@ -421,12 +444,13 @@ fn step_in_a_level(
         .map(|(id, _)| *id)
         .collect();
     {
-        let data = world.data();
+        let shared: &ServerWorld = world;
+        let data = shared.data();
         let mut hulls: Vec<_> = near
             .iter()
             .filter_map(|id| {
                 let ship = data.grids().get(*id)?;
-                Some((*id, ship.pose, blocks.hull(ship)))
+                Some((*id, ship.pose, blocks.source(shared, *id, ship)))
             })
             .collect();
         let mut grids: Vec<ForeignGrid<'_>> = hulls
@@ -457,12 +481,11 @@ fn step_in_a_level(
     if !player.body.is_flying() && player.body.is_grounded() {
         let feet = player.body.feet_position();
         let down = player.body.up().map(|axis| -axis);
+        let shared: &ServerWorld = world;
         let ship = near.iter().copied().find(|id| {
-            world
-                .data()
-                .grids()
-                .get(*id)
-                .is_some_and(|ship| stands_on(&mut blocks.hull(ship), ship, feet, down))
+            shared.data().grids().get(*id).is_some_and(|ship| {
+                stands_on(&mut blocks.source(shared, *id, ship), ship, feet, down)
+            })
         });
         if let Some(id) = ship {
             board(player, id, world);
@@ -517,7 +540,7 @@ fn step_aboard(
             // The ship is not there. The record of the player says so next tick and the body is put in the level then.
             return;
         };
-        let mut hull = blocks.hull(ship);
+        let mut hull = blocks.source(world, id, ship);
         for &(grid, brick) in changed {
             if grid == id {
                 player.body.brick_changed(&mut hull, brick);
@@ -541,7 +564,7 @@ fn step_aboard(
         (Some(ship), Some(bounds)) => {
             let down = player.body.up().map(|axis| -f64::from(axis));
             has_left(
-                &mut blocks.hull(ship),
+                &mut blocks.source(world, id, ship),
                 &bounds.extent,
                 in_voxels(player.body.middle_position()),
                 in_voxels(player.body.feet_position()),

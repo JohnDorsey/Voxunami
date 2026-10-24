@@ -6,7 +6,7 @@
 //! under their feet and the other none), so a player at the edge of a deck is not passed back and forth, and neither takes more than the
 //! one tick that the rules are looked at.
 
-use grid_bodies::collision::ShipHull;
+use grid_bodies::collision::SolidAt;
 use voxel_space::{BRICK_EDGE_LENGTH, WorldPosition};
 use world_storage::MovingGrid;
 
@@ -93,7 +93,7 @@ impl Extent {
 /// anywhere in the ship's extent: something to stand on, or to fall onto. A place above the ship is looked at from where the line enters
 /// the extent, so a player who jumps from a deck is still over it.
 pub fn is_supported(
-    hull: &mut ShipHull<'_>,
+    hull: &mut impl SolidAt,
     extent: &Extent,
     from: [f64; 3],
     down: [f64; 3],
@@ -115,7 +115,7 @@ pub fn is_supported(
 /// Whether a player whose feet are at `feet` in the world, with `down` the way the world pulls (a unit vector in the world's axes),
 /// stands on a block of the ship: one is just below the feet.
 pub fn stands_on(
-    hull: &mut ShipHull<'_>,
+    hull: &mut impl SolidAt,
     ship: &MovingGrid,
     feet: WorldPosition,
     down: [f32; 3],
@@ -133,7 +133,7 @@ pub fn stands_on(
 /// bricks, or they are in the air with nothing of the ship under their `feet` along `down` (all in the ship's own coordinates, `down` a
 /// unit vector). A player on the ground is standing on the ship, so there is no need to look.
 pub fn has_left(
-    hull: &mut ShipHull<'_>,
+    hull: &mut impl SolidAt,
     extent: &Extent,
     centre: [f64; 3],
     feet: [f64; 3],
@@ -149,7 +149,7 @@ mod tests {
     use std::sync::Arc;
 
     use block_models::BlockDefinition;
-    use grid_bodies::collision::BlockCollisions;
+    use grid_bodies::collision::{BlockCollisions, ShipHull};
     use voxel_grid::{ChannelDefinition, ChannelIndex, Grid, GridLayout};
     use voxel_space::{BrickCoordinate, GridPose, LevelIndex, Orientation, VoxelCoordinate};
     use world_storage::PilotLogout;

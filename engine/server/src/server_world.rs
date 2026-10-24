@@ -1,3 +1,4 @@
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -11,7 +12,8 @@ use voxel_space::{
     LocalVoxelIndex, MassPull, Orientation, VoxelCoordinate, WorldPosition, gravity_at,
 };
 use world_storage::{
-    MovingGrid, PilotLogout, ShipFiles, ShipFormat, ShipLoadError, ShipParkError, WorldData,
+    GridTerrain, MovingGrid, PilotLogout, ShipFiles, ShipFormat, ShipLoadError, ShipParkError,
+    WorldData,
 };
 
 use crate::GridView;
@@ -137,9 +139,11 @@ pub struct ServerWorld {
     catalog: Arc<EntityCatalog>,
     tick: Tick,
     clients: BTreeMap<ClientId, PlayerKey>,
-    generated: GeneratedBrickCache,
+    /// (Behind a cell so that reading a ship that has terrain needs only a shared borrow of the world: a body meets several grids at once, and the others are
+    /// borrowed from the world as well.)
+    generated: RefCell<GeneratedBrickCache>,
     /// How many times the terrain generator has made a brick (see [`ServerWorld::bricks_generated`]).
-    generations: u64,
+    generations: Cell<u64>,
     /// The bricks changed this tick, by grid. Only the root grids' edits are sent to clients so far (Phase 32c sends the rest).
     pub(crate) edits: BTreeMap<(GridId, BrickCoordinate), BrickEdits>,
     pub(crate) outgoing: Vec<OutgoingGameMessage>,
@@ -151,6 +155,8 @@ pub struct ServerWorld {
     grid_forces: Vec<GridForce>,
     grid_torques: Vec<GridTorque>,
     gravity: GravitySettings,
+    /// The pull of the levels whose own is not `gravity.base`.
+    level_gravity: BTreeMap<LevelIndex, [f32; 3]>,
     /// Where ships go when they are put away and come from when they are asked for; none in a world made without (see
     /// [`ServerWorld::set_ship_storage`]).
     ships: Option<ShipStorage>,
@@ -168,8 +174,8 @@ impl ServerWorld {
             catalog,
             tick: Tick::ZERO,
             clients: BTreeMap::new(),
-            generated: GeneratedBrickCache::default(),
-            generations: 0,
+            generated: RefCell::new(GeneratedBrickCache::default()),
+            generations: Cell::new(0),
             edits: BTreeMap::new(),
             outgoing: Vec::new(),
             replies: Vec::new(),
@@ -178,6 +184,7 @@ impl ServerWorld {
             grid_forces: Vec::new(),
             grid_torques: Vec::new(),
             gravity: GravitySettings::default(),
+            level_gravity: BTreeMap::new(),
             ships: None,
             woken: Vec::new(),
             ship_settings: ShipSettings::default(),
@@ -445,7 +452,7 @@ impl ServerWorld {
     /// How many times the terrain generator has made a brick since the world was made: what reading terrain nobody has edited costs
     /// (ten milliseconds or more a brick for natural terrain), for whoever wants to know what a rule or a body asks of it.
     pub fn bricks_generated(&self) -> u64 {
-        self.generations
+        self.generations.get()
     }
 
     /// The value that every voxel of a brick has in a channel, if they all have the same one: a way
@@ -541,9 +548,10 @@ impl ServerWorld {
     }
 
     /// The value of a voxel of a grid that is not the terrain of a level, in the grid's own coordinates: from the stored brick if there is one, else from the
-    /// generator of the ship's terrain (if it has any, and the brick is in its extent), else the channel's default.
-    pub(crate) fn moving_voxel(
-        &mut self,
+    /// generator of the ship's terrain (if it has any, and the brick is in its extent), else the channel's default. Needs only a shared borrow of the world, so that
+    /// a body can meet several ships at once (the bricks a generator makes are remembered behind a cell).
+    pub fn moving_voxel(
+        &self,
         grid: GridId,
         channel: ChannelIndex,
         at: VoxelCoordinate,
@@ -567,7 +575,7 @@ impl ServerWorld {
 
     /// The value a voxel of a ship has to begin with, whatever has been built there since: what the ship's terrain generator makes there, or the channel's default.
     pub(crate) fn moving_generated_voxel(
-        &mut self,
+        &self,
         grid: GridId,
         channel: ChannelIndex,
         at: VoxelCoordinate,
@@ -588,8 +596,8 @@ impl ServerWorld {
 
     /// The value that every voxel of a brick of a ship has in a channel, if they all have the same one: of the stored brick, else of what the terrain makes
     /// there, else the default.
-    pub(crate) fn moving_uniform_value(
-        &mut self,
+    pub fn moving_uniform_value(
+        &self,
         grid: GridId,
         channel: ChannelIndex,
         brick: BrickCoordinate,
@@ -814,6 +822,11 @@ impl ServerWorld {
         self.gravity = settings;
     }
 
+    /// Gives a level a pull of its own where it is not the base of [`GravitySettings`]: none, in a level in space, so that what is there falls toward what pulls.
+    pub fn set_level_gravity(&mut self, level: LevelIndex, base: [f32; 3]) {
+        self.level_gravity.insert(level, base);
+    }
+
     /// The acceleration of gravity at a place of a level, in the level's axes, in voxels per second per second: the level's own, and the
     /// pull of every ship of the level that weighs enough (see [`GravitySettings`]). A ship's own pull is nothing at its centre of mass, which
     /// is where it is pulled, so nothing needs to leave it out.
@@ -830,7 +843,11 @@ impl ServerWorld {
                     mass: ship.mass,
                 })
             });
-        gravity_at(&self.gravity, pulls, position)
+        let mut settings = self.gravity;
+        if let Some(base) = self.level_gravity.get(&level) {
+            settings.base = *base;
+        }
+        gravity_at(&settings, pulls, position)
     }
 
     /// The acceleration of gravity at a place of a grid, in the grid's own axes: for the terrain of a level the level's, and for a ship
@@ -857,6 +874,26 @@ impl ServerWorld {
                 Ok(ship.pose.direction_to_local(there))
             }
         }
+    }
+
+    /// Makes a ship a planet: its bricks inside `terrain.extent` are what the generator makes, unless it has a brick of its own there, it weighs what the terrain
+    /// says and its centre of mass is the origin of its coordinates, and it is held. Meant for a ship that has just been made, before any client is told of it (a
+    /// client is told of a ship's terrain when it is told of the ship). The bodies leave a planet alone: nothing is made of its stored bricks but the edits.
+    pub fn set_grid_terrain(
+        &mut self,
+        grid: GridId,
+        terrain: GridTerrain,
+    ) -> Result<(), AccessError> {
+        let ship = self
+            .data
+            .grids_mut()
+            .get_mut(grid)
+            .ok_or(AccessError::NoSuchGrid(grid))?;
+        ship.terrain = Some(terrain);
+        ship.mass = terrain.mass;
+        ship.centre_of_mass = [0.0; 3];
+        ship.held = true;
+        Ok(())
     }
 
     /// Says how much a ship weighs and where its centre of mass is (the bodies do this as they work it out from its blocks).
@@ -1188,7 +1225,11 @@ impl ServerWorld {
         level: LevelIndex,
         coordinate: BrickCoordinate,
     ) -> Result<Arc<Brick>, AccessError> {
-        if let Some(remembered) = self.generated.get((GridId::root(level), coordinate)) {
+        if let Some(remembered) = self
+            .generated
+            .borrow()
+            .get((GridId::root(level), coordinate))
+        {
             return Ok(Arc::clone(remembered));
         }
         let data = self
@@ -1199,9 +1240,10 @@ impl ServerWorld {
         // (What the generator makes, whether or not the brick has been edited: the edits are not asked about here.)
         match data.terrain.generate(data.overrides.layout(), coordinate) {
             GenerationOutcome::Generated(brick) => {
-                self.generations += 1;
+                self.generations.set(self.generations.get() + 1);
                 let brick = Arc::new(brick);
                 self.generated
+                    .borrow_mut()
                     .insert((GridId::root(level), coordinate), Arc::clone(&brick));
                 Ok(brick)
             }
@@ -1217,7 +1259,7 @@ impl ServerWorld {
     /// The brick the terrain of a ship makes at `coordinate`, in the ship's own coordinates: what its generator makes, if the brick is in the ship's extent, and
     /// the default brick if it is not or the ship has no terrain. Recently made bricks are remembered, with those of the terrain of the levels.
     fn generated_ship_brick(
-        &mut self,
+        &self,
         grid: GridId,
         coordinate: BrickCoordinate,
     ) -> Result<Arc<Brick>, AccessError> {
@@ -1233,7 +1275,7 @@ impl ServerWorld {
         else {
             return Ok(Arc::new(Brick::new(&layout)));
         };
-        if let Some(remembered) = self.generated.get((grid, coordinate)) {
+        if let Some(remembered) = self.generated.borrow().get((grid, coordinate)) {
             return Ok(Arc::clone(remembered));
         }
         // (The generators are the world's, one table for all its levels.)
@@ -1254,8 +1296,9 @@ impl ServerWorld {
                 generator: entry.identifier().clone(),
             })?;
         let brick = Arc::new(generator.generate_brick(&layout, coordinate));
-        self.generations += 1;
+        self.generations.set(self.generations.get() + 1);
         self.generated
+            .borrow_mut()
             .insert((grid, coordinate), Arc::clone(&brick));
         Ok(brick)
     }
@@ -1944,6 +1987,73 @@ pub(crate) mod tests {
 
     fn at(x: f32, y: f32, z: f32) -> WorldPosition {
         WorldPosition::new(BrickCoordinate::ORIGIN, [x, y, z])
+    }
+
+    #[test]
+    fn a_level_can_have_a_pull_of_its_own_and_a_planet_in_one_in_space_pulls_toward_its_centre_at_the_surface_gravity_it_was_given_its_mass_for()
+     {
+        let game = Game::new(&[Plugin::BaseBlocks]);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let level = counting_level(&game, &calls);
+        let mut data = WorldData::new(1, main_level_id(), level);
+        let space = data
+            .add_level(id("test_content:space"), counting_level(&game, &calls))
+            .unwrap();
+        let mut world = ServerWorld::new(data, Arc::default());
+        // A planet of 63,710 metres, whose mass is the one that pulls 10 metres a second a second at that distance (G in metres).
+        let radius = 63_710.0f64;
+        let mass = (10.0 * radius * radius / 6.674e-11) as f32;
+        world.set_gravity_settings(GravitySettings {
+            base: [0.0, -5.0, 0.0],
+            pull_strength: 6.674e-11,
+            pull_mass_threshold: Some(1.0e19),
+            softening: 1.0,
+        });
+        world.set_level_gravity(space, [0.0; 3]);
+        let planet = world.create_grid(space, GridPose::identity()).unwrap();
+        let terrain = GridTerrain {
+            generator: world.data().main().terrain.default_generator(),
+            extent: BrickBox::around(BrickCoordinate::ORIGIN, 2000),
+            mass,
+        };
+        world.set_grid_terrain(planet, terrain).unwrap();
+        let ship = world.data().grids().get(planet).unwrap();
+        assert_eq!(ship.terrain, Some(terrain));
+        assert_eq!(ship.mass, mass);
+        assert_eq!(ship.centre_of_mass, [0.0; 3]);
+        assert!(ship.held);
+
+        // Over the planet's top, in the level in space, the pull is the planet's alone: toward its centre, 10 and a hair under (the softening).
+        let over = |x: f32, y: f32, z: f32, brick: [i64; 3]| {
+            WorldPosition::new(
+                BrickCoordinate::new(brick[0], brick[1], brick[2]),
+                [x, y, z],
+            )
+        };
+        let top = world.gravity_at(space, over(0.0, 0.0, 0.0, [0, 1990, 0]));
+        let top_voxel_height = 1990.0 * 32.0;
+        let expected = 10.0 * (radius / top_voxel_height) * (radius / top_voxel_height);
+        assert!(top[0].abs() < 1e-3 && top[2].abs() < 1e-3, "{top:?}");
+        assert!(
+            (f64::from(-top[1]) - expected).abs() < 1e-3,
+            "{top:?} against {expected}"
+        );
+        // And on the far side, the other way.
+        let bottom = world.gravity_at(space, over(0.0, 0.0, 0.0, [0, -1990, 0]));
+        assert!(bottom[1] > 0.0 && (f64::from(bottom[1]) - expected).abs() < 1e-3);
+        // The main level keeps its own pull, and the planet in the level in space is no part of it.
+        assert_eq!(
+            world.gravity_at(LevelIndex::MAIN, over(0.0, 0.0, 0.0, [0, 1990, 0])),
+            [0.0, -5.0, 0.0]
+        );
+        // A grid in the level in space falls to the same field (toward the planet: from out on the +x side, along -x).
+        let pull = world
+            .gravity_in(GridId::root(space), over(0.0, 0.0, 0.0, [1990, 0, 0]))
+            .unwrap();
+        assert!(
+            pull[0] < -1.0 && pull[1].abs() < 1e-3 && pull[2].abs() < 1e-3,
+            "{pull:?}"
+        );
     }
 
     #[test]
@@ -2856,6 +2966,36 @@ pub(crate) mod tests {
                 (planet, stored_voxel.split().0),
                 (ship, VoxelCoordinate::new(1, 1, 1).split().0)
             ]
+        );
+    }
+
+    #[test]
+    fn a_planet_is_read_through_a_shared_borrow_of_the_world_alongside_other_readers_of_it() {
+        let (world, planet, block, calls) = world_with_a_planet();
+        // Two readers of the world at once, as a body that meets several ships has: the bricks that the generator makes are remembered all the same.
+        let shared: &ServerWorld = &world;
+        let ships = shared.data().grids();
+        let first = shared
+            .moving_voxel(planet, block, VoxelCoordinate::new(5, 2, 3))
+            .unwrap();
+        let second = shared
+            .moving_voxel(planet, block, VoxelCoordinate::new(40, 2, 3))
+            .unwrap();
+        let again = shared
+            .moving_voxel(planet, block, VoxelCoordinate::new(6, 2, 3))
+            .unwrap();
+        assert!(ships.get(planet).is_some());
+        assert_eq!((first, second), (again, again));
+        assert_ne!(first, 0);
+        // Two bricks made, and the third read came from what was remembered.
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        assert_eq!(world.bricks_generated(), 2);
+        // What a brick holds is known the same way.
+        assert_eq!(
+            shared
+                .moving_uniform_value(planet, block, BrickCoordinate::new(0, -1, 0))
+                .unwrap(),
+            Some(first)
         );
     }
 

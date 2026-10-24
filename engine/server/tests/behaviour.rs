@@ -21,7 +21,9 @@ use voxel_space::{
 };
 use world_storage::ParsedWorld;
 use world_storage::WorldData;
-use world_storage::test_support::{ALL_PLUGINS, Game, Plugin, brick, id, sample_world};
+use world_storage::test_support::{
+    ALL_PLUGINS, Game, Plugin, brick, id, main_level_id, sample_world,
+};
 
 fn game_id() -> NamespacedId {
     id("test_game:game")
@@ -424,6 +426,52 @@ fn a_client_that_never_says_hello_is_dropped_after_the_timeout() {
         &silent.received()[..],
         [ServerMessage::Disconnected { .. }]
     ));
+}
+
+/// The pull at the origin of the main level and of the second level of [`two_level_world`], as a server with this config works it out on its first tick.
+fn pulls_at_the_origins(game: &Game, config: ServerConfig) -> [[f32; 3]; 2] {
+    let (world, second) = two_level_world(game);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let slot = Arc::clone(&seen);
+    let logic = ScriptedLogic::new().on_tick(move |_, world| {
+        let origin = WorldPosition::new(BrickCoordinate::ORIGIN, [0.0; 3]);
+        slot.lock().unwrap().push([
+            world.gravity_at(LevelIndex::MAIN, origin),
+            world.gravity_at(second, origin),
+        ]);
+    });
+    let mut harness = Harness::with_logic(game, world, config, logic);
+    harness.server.step();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1, "the game logic ran for one tick");
+    seen[0]
+}
+
+#[test]
+fn the_pull_a_config_gives_a_level_is_the_pull_there_and_in_no_other_and_a_level_the_world_lacks_is_ignored()
+ {
+    let game = Game::new(&ALL_PLUGINS);
+    let mut config = ServerConfig::new(game_id());
+    config.gravity.base = [0.0, -7.0, 0.0];
+    let base = [0.0, -7.0, 0.0];
+    assert_eq!(pulls_at_the_origins(&game, config.clone()), [base, base]);
+
+    // A level the world does not have is ignored.
+    config.level_gravity = vec![(id("test_content:nowhere"), [0.0, 99.0, 0.0])];
+    assert_eq!(pulls_at_the_origins(&game, config.clone()), [base, base]);
+
+    // The pull of the second level is its own, and the main level keeps the base.
+    config
+        .level_gravity
+        .push((id("test_content:second"), [1.0, -3.0, 0.5]));
+    assert_eq!(
+        pulls_at_the_origins(&game, config.clone()),
+        [base, [1.0, -3.0, 0.5]]
+    );
+
+    // And the main level's, the other way round.
+    config.level_gravity = vec![(main_level_id(), [0.0; 3])];
+    assert_eq!(pulls_at_the_origins(&game, config), [[0.0; 3], base]);
 }
 
 #[test]

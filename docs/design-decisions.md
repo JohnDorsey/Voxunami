@@ -160,6 +160,9 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   to one (so the blend keeps the spread of the noise); the layers (grass, 3 of dirt, stone) are read from the depth under the surface, radially, so a cave under the ground does not turn the ground beside it to grass; bounds combine the faces by Cauchy-Schwarz, which is looser at
   the corners of the cube (404 wide at a brick against 134 to 151 elsewhere) and costs only work; the planet's coarse nodes are made by walking columns along the axis the node is nearest to and asking the field at the middle of each cell, with the layers looking outward along the axis
   (`coarse.rs` took the step "up" from a cell as a parameter for this). A planet's generator is a new version with its own ids; its output and its coarse nodes are file format like every generator's.
+- Mine, built in 39d: **a planet has no body.** `grid_bodies` leaves a ship with terrain out of its bodies, its weighing and its splitting: it weighs what its terrain declares (the pull at the surface fixes the mass: M = g R^2 / G), it is held, and the edits stored over its generator are not a ship that can come apart or be gone. A walker meets it through
+  the world's reads (`GeneratedHull`) with the same rules as any ship (`ShipSource`, `SolidAt`). **A level's pull is the level's own** (`set_level_gravity`, `ServerConfig.level_gravity`, `GameDefinition::level_gravity`), and **only a ship over `GravitySettings::pull_mass_threshold` pulls** (Cave: 10^19 kilograms), so a raft pulls nothing and a planet pulls the walker toward its centre.
+  Still open: a rigid-body ship has no collider against a planet.
 
 ## Decided (the plugin host; built in Phase 23)
 - A game's server rules are plugins run by `plugin_host::PluginHost` (the specification and its record are in `plugin-api-spec.md`). What a plugin

@@ -56,6 +56,54 @@ impl BlockCollisions {
     }
 }
 
+/// What the block at a voxel is to a body, given how to read the value a channel has there (`None` when it cannot be read: terrain that cannot be read is a wall, not
+/// a void). The sources below differ in where the values come from and in nothing else.
+fn collision_of_voxel(
+    collisions: &BlockCollisions,
+    block_channel: ChannelIndex,
+    state_channel: ChannelIndex,
+    orientation_channel: Option<ChannelIndex>,
+    mut read: impl FnMut(ChannelIndex) -> Option<u32>,
+) -> Collision {
+    let (Some(block), Some(state)) = (read(block_channel), read(state_channel)) else {
+        return Collision::Full;
+    };
+    let orientation = match orientation_channel {
+        Some(channel) => match read(channel) {
+            Some(orientation) => orientation,
+            None => return Collision::Full,
+        },
+        None => 0,
+    };
+    collisions.of(block, state, orientation)
+}
+
+/// What a brick is to a body without looking at its voxels, given how to ask for the value that every voxel of it has in a channel (`None` when they are not all the
+/// same, or it cannot be known): empty when it is all air, solid when it is all one block that fills its cell, and otherwise not known. (Whether a shape is empty, a
+/// whole cell or part of one does not depend on how it is turned, so the orientations are not asked about.)
+fn hint_of_brick(
+    collisions: &BlockCollisions,
+    air: u32,
+    block_channel: ChannelIndex,
+    state_channel: ChannelIndex,
+    mut uniform: impl FnMut(ChannelIndex) -> Option<u32>,
+) -> BrickHint {
+    let Some(block) = uniform(block_channel) else {
+        return BrickHint::Unknown;
+    };
+    if block == air {
+        return BrickHint::Empty;
+    }
+    let Some(state) = uniform(state_channel) else {
+        return BrickHint::Unknown;
+    };
+    match collisions.of(block, state, 0) {
+        Collision::Empty => BrickHint::Empty,
+        Collision::Full => BrickHint::Solid,
+        Collision::Partial(_) => BrickHint::Unknown,
+    }
+}
+
 /// One level of the server's world, as terrain for a body to move through. Terrain that cannot be read is a wall, not a void.
 #[derive(Debug)]
 pub struct WorldTerrain<'a> {
@@ -74,64 +122,96 @@ impl CollisionSource for WorldTerrain<'_> {
         let Ok(mut terrain) = self.world.grid(GridId::root(self.level)) else {
             return Collision::Full;
         };
-        let (Ok(block), Ok(state)) = (
-            terrain.get(self.block_channel, voxel),
-            terrain.get(self.state_channel, voxel),
-        ) else {
-            return Collision::Full;
-        };
-        let orientation = match self.orientation_channel {
-            Some(channel) => match terrain.get(channel, voxel) {
-                Ok(orientation) => orientation,
-                Err(_) => return Collision::Full,
-            },
-            None => 0,
-        };
-        self.collisions.of(block, state, orientation)
+        collision_of_voxel(
+            self.collisions,
+            self.block_channel,
+            self.state_channel,
+            self.orientation_channel,
+            |channel| terrain.get(channel, voxel).ok(),
+        )
     }
 
     fn brick_hint(&mut self, brick: BrickCoordinate) -> BrickHint {
         let Ok(mut terrain) = self.world.grid(GridId::root(self.level)) else {
             return BrickHint::Unknown;
         };
-        let Ok(Some(block)) = terrain.uniform_value(self.block_channel, brick) else {
-            return BrickHint::Unknown;
-        };
-        if block == self.air {
-            return BrickHint::Empty;
+        hint_of_brick(
+            self.collisions,
+            self.air,
+            self.block_channel,
+            self.state_channel,
+            |channel| terrain.uniform_value(channel, brick).ok().flatten(),
+        )
+    }
+}
+
+/// The blocks of a ship that has terrain (a planet), in the ship's own coordinates: the stored brick if there is one, else the brick its generator makes. Terrain that
+/// cannot be read is a wall. It needs only a shared borrow of the world, so a body can meet it alongside the other ships.
+#[derive(Debug)]
+pub struct GeneratedHull<'a> {
+    pub world: &'a ServerWorld,
+    pub grid: GridId,
+    pub block_channel: ChannelIndex,
+    pub state_channel: ChannelIndex,
+    pub orientation_channel: Option<ChannelIndex>,
+    pub air: u32,
+    pub collisions: &'a BlockCollisions,
+}
+
+impl CollisionSource for GeneratedHull<'_> {
+    fn collision_at(&mut self, voxel: VoxelCoordinate) -> Collision {
+        collision_of_voxel(
+            self.collisions,
+            self.block_channel,
+            self.state_channel,
+            self.orientation_channel,
+            |channel| self.world.moving_voxel(self.grid, channel, voxel).ok(),
+        )
+    }
+
+    fn brick_hint(&mut self, brick: BrickCoordinate) -> BrickHint {
+        hint_of_brick(
+            self.collisions,
+            self.air,
+            self.block_channel,
+            self.state_channel,
+            |channel| {
+                self.world
+                    .moving_uniform_value(self.grid, channel, brick)
+                    .ok()
+                    .flatten()
+            },
+        )
+    }
+}
+
+/// What a body meets of a ship: the blocks stored in its voxels, or for a ship with terrain the blocks its generator makes as well.
+#[derive(Debug)]
+pub enum ShipSource<'a> {
+    Stored(ShipHull<'a>),
+    Generated(GeneratedHull<'a>),
+}
+
+impl CollisionSource for ShipSource<'_> {
+    fn collision_at(&mut self, voxel: VoxelCoordinate) -> Collision {
+        match self {
+            Self::Stored(hull) => hull.collision_at(voxel),
+            Self::Generated(hull) => hull.collision_at(voxel),
         }
-        let orientation = match self.orientation_channel {
-            Some(channel) => match terrain.uniform_value(channel, brick) {
-                Ok(Some(orientation)) => orientation,
-                _ => return BrickHint::Unknown,
-            },
-            None => 0,
-        };
-        match terrain.uniform_value(self.state_channel, brick) {
-            Ok(Some(state)) => match self.collisions.of(block, state, orientation) {
-                Collision::Empty => BrickHint::Empty,
-                Collision::Full => BrickHint::Solid,
-                Collision::Partial(_) => BrickHint::Unknown,
-            },
-            _ => BrickHint::Unknown,
+    }
+
+    fn brick_hint(&mut self, brick: BrickCoordinate) -> BrickHint {
+        match self {
+            Self::Stored(hull) => hull.brick_hint(brick),
+            Self::Generated(hull) => hull.brick_hint(brick),
         }
     }
 }
 
-/// The voxels of a ship, in the ship's own coordinates: where nothing was put there is nothing.
-#[derive(Debug)]
-pub struct ShipHull<'a> {
-    pub voxels: &'a Grid,
-    pub block_channel: ChannelIndex,
-    pub state_channel: ChannelIndex,
-    pub orientation_channel: Option<ChannelIndex>,
-    pub collisions: &'a BlockCollisions,
-}
-
-impl ShipHull<'_> {
-    /// Whether a place in the ship's own coordinates, in voxels, is inside a block that something can stand on or bump into: the whole of
-    /// a cube, or one of the boxes of a block that fills only part of its cell. A place exactly on the top face of a box is not inside it.
-    pub fn solid_at(&mut self, place: [f64; 3]) -> bool {
+/// Whether a place in a source's own coordinates, in voxels, is inside a block that something can stand on or bump into: the whole of a cube, or one of the
+/// boxes of a block that fills only part of its cell. A place exactly on the top face of a box is not inside it.
+pub trait SolidAt: CollisionSource {
+    fn solid_at(&mut self, place: [f64; 3]) -> bool {
         let cell = place.map(f64::floor);
         let Ok(voxel) = VoxelCoordinate::try_new(cell[0] as i64, cell[1] as i64, cell[2] as i64)
         else {
@@ -149,6 +229,18 @@ impl ShipHull<'_> {
             }),
         }
     }
+}
+
+impl<T: CollisionSource + ?Sized> SolidAt for T {}
+
+/// The voxels of a ship, in the ship's own coordinates: where nothing was put there is nothing.
+#[derive(Debug)]
+pub struct ShipHull<'a> {
+    pub voxels: &'a Grid,
+    pub block_channel: ChannelIndex,
+    pub state_channel: ChannelIndex,
+    pub orientation_channel: Option<ChannelIndex>,
+    pub collisions: &'a BlockCollisions,
 }
 
 impl CollisionSource for ShipHull<'_> {
@@ -182,19 +274,54 @@ mod tests {
 
     const AIR: u32 = 0;
     const STONE: u32 = 1;
+    /// A block that is not air and that nothing touches.
+    const MIST: u32 = 2;
 
-    /// A table with air and a stone that has three shapes: whole, the bottom half, the top half.
+    /// A table with air, a stone that has four shapes (whole, the bottom half, the top half, the half on the +x side: no turn but none leaves all of them as
+    /// they were) and a mist that has no shape.
     fn collisions() -> BlockCollisions {
         let air = BlockDefinition::air();
         let stone = BlockDefinition::cube([0.5; 3]).with_shapes(vec![
             Shape::full(),
             Shape::half(FaceDirection::NegativeY),
             Shape::half(FaceDirection::PositiveY),
+            Shape::half(FaceDirection::PositiveX),
         ]);
+        let mist = BlockDefinition::cube([0.5; 3]).with_shapes(vec![Shape::empty()]);
         BlockCollisions::new(
-            BlockTable::from_definitions(&[Some(&air), Some(&stone)]),
+            BlockTable::from_definitions(&[Some(&air), Some(&stone), Some(&mist)]),
             None,
         )
+    }
+
+    /// The channels of a source: the block, the state and the orientation.
+    fn channels() -> (ChannelIndex, ChannelIndex, ChannelIndex) {
+        let layout = GridLayout::new(vec![
+            ChannelDefinition::number("test:block".parse().unwrap(), AIR),
+            ChannelDefinition::number("test:state".parse().unwrap(), 0),
+            ChannelDefinition::number("test:orientation".parse().unwrap(), 0),
+        ])
+        .unwrap();
+        let mut indices = layout.channel_indices();
+        (
+            indices.next().unwrap(),
+            indices.next().unwrap(),
+            indices.next().unwrap(),
+        )
+    }
+
+    /// Answers from these values, and notes which channels were asked about.
+    fn answering<'a>(
+        values: &'a [(ChannelIndex, u32)],
+        asked: &'a RefCell<Vec<ChannelIndex>>,
+    ) -> impl FnMut(ChannelIndex) -> Option<u32> + 'a {
+        move |channel| {
+            asked.borrow_mut().push(channel);
+            values
+                .iter()
+                .find(|(known, _)| *known == channel)
+                .map(|(_, value)| *value)
+        }
     }
 
     /// A grid with a whole stone at (3, 4, 5), a bottom half at (6, 4, 5) and a top half at (9, 4, 5).
@@ -256,5 +383,105 @@ mod tests {
             collisions: &collisions,
         };
         assert!(other.solid_at([3.5, 4.5, 5.5]) && hull.solid_at([3.5, 4.5, 5.5]));
+    }
+
+    #[test]
+    fn a_voxel_is_the_block_in_the_state_and_orientation_that_the_channels_hold_and_a_wall_where_one_cannot_be_read()
+     {
+        let collisions = collisions();
+        let (block, state, orientation) = channels();
+        let asked = RefCell::new(Vec::new());
+        let collision = |values: &[(ChannelIndex, u32)], with_orientation: bool| {
+            asked.borrow_mut().clear();
+            collision_of_voxel(
+                &collisions,
+                block,
+                state,
+                with_orientation.then_some(orientation),
+                answering(values, &asked),
+            )
+        };
+
+        assert_eq!(
+            collision(&[(block, STONE), (state, 0)], false),
+            Collision::Full
+        );
+        assert_eq!(
+            collision(&[(block, AIR), (state, 0)], false),
+            Collision::Empty
+        );
+        assert_eq!(
+            collision(&[(block, MIST), (state, 0)], false),
+            Collision::Empty
+        );
+        // Without a channel for orientations none is asked about, and a block is as it is made.
+        assert_eq!(*asked.borrow(), [block, state]);
+        for shape in 0..4 {
+            assert_eq!(
+                collision(&[(block, STONE), (state, shape)], false),
+                collisions.of(STONE, shape, 0),
+                "{shape}"
+            );
+        }
+
+        // A value that cannot be read is a wall, whichever it is (and air in the other channels is no reason to think otherwise).
+        assert_eq!(collision(&[(state, 0)], false), Collision::Full);
+        assert_eq!(collision(&[(block, AIR)], false), Collision::Full);
+        assert_eq!(
+            collision(&[(block, AIR), (state, 0)], true),
+            Collision::Full
+        );
+
+        // The orientation is the one the channel holds: no turn but none leaves all the shapes of the stone as they were.
+        for turn in 1..24 {
+            let mut changed = 0;
+            for shape in 0..4 {
+                let values = [(block, STONE), (state, shape), (orientation, turn)];
+                assert_eq!(
+                    collision(&values, true),
+                    collisions.of(STONE, shape, turn),
+                    "shape {shape} turned {turn}"
+                );
+                changed += usize::from(collision(&values, true) != collisions.of(STONE, shape, 0));
+            }
+            assert!(changed > 0, "turn {turn} changes some shape");
+            assert_eq!(*asked.borrow(), [block, state, orientation]);
+        }
+    }
+
+    #[test]
+    fn a_brick_is_known_to_be_empty_or_solid_when_all_of_it_is_one_block_that_says_so_and_unknown_otherwise()
+     {
+        let collisions = collisions();
+        let (block, state, orientation) = channels();
+        let asked = RefCell::new(Vec::new());
+        let hint = |values: &[(ChannelIndex, u32)]| {
+            asked.borrow_mut().clear();
+            hint_of_brick(&collisions, AIR, block, state, answering(values, &asked))
+        };
+
+        // All air is empty, and nothing else is asked once that is known.
+        assert_eq!(hint(&[(block, AIR)]), BrickHint::Empty);
+        assert_eq!(*asked.borrow(), [block]);
+        // All whole stone is solid; all of a block that is part of a cell is not known (however it is turned: the orientations are not asked about); all of a block
+        // with no shape is empty.
+        assert_eq!(hint(&[(block, STONE), (state, 0)]), BrickHint::Solid);
+        assert_eq!(*asked.borrow(), [block, state]);
+        for shape in 1..4 {
+            assert_eq!(
+                hint(&[(block, STONE), (state, shape), (orientation, 5)]),
+                BrickHint::Unknown,
+                "{shape}"
+            );
+        }
+        assert_eq!(
+            hint(&[(block, STONE), (state, 0), (orientation, 5)]),
+            BrickHint::Solid
+        );
+        assert_eq!(hint(&[(block, MIST), (state, 0)]), BrickHint::Empty);
+        // A brick whose voxels are not all the same block or not all in the same state is not known, whatever else is.
+        assert_eq!(hint(&[(state, 0)]), BrickHint::Unknown);
+        assert_eq!(hint(&[(block, STONE)]), BrickHint::Unknown);
+        assert_eq!(hint(&[(block, MIST)]), BrickHint::Unknown);
     }
 }

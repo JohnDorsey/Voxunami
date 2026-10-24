@@ -345,6 +345,10 @@ impl Bodies {
                 self.checks.remove(&id);
                 continue;
             };
+            if ship.terrain.is_some() {
+                // (Its stored bricks are edits of a ground that is not stored, not a ship that can come apart or be gone when the last of them is air.)
+                continue;
+            }
             let is_part = |voxel: VoxelCoordinate| ship.voxels.get(block_channel, voxel) != air;
             // The blocks beside a place where a block was taken out.
             let mut seeds: BTreeSet<VoxelCoordinate> = BTreeSet::new();
@@ -430,10 +434,12 @@ impl Bodies {
         let changed_voxels = std::mem::take(&mut self.changed_ship_voxels);
         self.dock(world);
         self.split_ships(world, changed_voxels);
+        // (A ship with terrain, a planet, has no body: its blocks are mostly not stored, it weighs what its terrain says and it is held where it is.)
         let present: Vec<(GridId, LevelIndex)> = world
             .data()
             .grids()
             .iter()
+            .filter(|(_, ship)| ship.terrain.is_none())
             .map(|(id, ship)| (id, ship.level))
             .collect();
 

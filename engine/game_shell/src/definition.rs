@@ -120,6 +120,16 @@ pub trait GameDefinition: Sized + 'static {
         20
     }
 
+    /// What gravity is in the game's worlds: the pull of a level and which bodies pull besides. The default is down at 5 metres a second a second and nothing pulls.
+    fn gravity() -> voxel_space::GravitySettings {
+        voxel_space::GravitySettings::default()
+    }
+
+    /// The levels whose own pull is not the base of [`GameDefinition::gravity`], by identifier (a level in space has none). A level a world does not have is ignored.
+    fn level_gravity() -> Vec<(NamespacedId, [f32; 3])> {
+        Vec::new()
+    }
+
     /// Whether the server also decides which way the player looks (a game that steers the player's
     /// avatar, such as a worm): the camera then turns to the angles the server says, smoothly, and
     /// the mouse does not turn it. Only meaningful with [`GameDefinition::server_moves_players`].

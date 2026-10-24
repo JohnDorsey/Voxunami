@@ -320,8 +320,11 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// Orientations are `f64` (Phase 38a, 2026-10-23; protocol 7, the sections that hold poses at version 2): a pose is 16 bytes longer. Measured by recording the stream of the script with the code before and after and comparing the frames one by one: the same number of frames, every frame the same except those that carry a pose, and the welcome (version 7, same length):
 /// 6,934 frames, 6,765 identical; 169 poses in 168 of the other 169 frames (3 spawns and 165 changes, one frame carrying two; the 169th is the welcome), 169 x 16 = 2,704: 7,187,429 to 7,190,133. The saved world changed (it holds the players' poses).
 /// Planets as ships (Phase 39c, 2026-10-24; protocol 8): the welcome says version 8 (same length) and a ship that is told of has a byte more for its terrain. The stream hash moved once, for the version: the code of the commit before with only the version raised to 8 gives this hash, and the length is the same, so none of the frames of this script tells of a ship. The saved world is the same.
+/// A planet generator in the table (Phase 39d, 2026-10-24; `base_blocks:small_planet_v1`, registered after the rolling hills so that the hills keep their number): the welcome lists the generators of the world, and so does the
+/// saved world. The stream grows by 28 bytes, 7,190,133 to 7,190,161, which is the identifier (a byte for its length and 27 for the name) and nothing else (measured by the length, not frame by frame);
+/// the saved world's hash changed with its table of generators. Taken on Windows; Linux is checked to agree.
 const PINNED: (u64, usize, u64) = (
-    7_813_833_146_985_245_576,
-    7_190_133,
-    5_952_411_052_594_281_229,
+    3_321_652_392_117_276_472,
+    7_190_161,
+    4_401_030_462_161_597_609,
 );

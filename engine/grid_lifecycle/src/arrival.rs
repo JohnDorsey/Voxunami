@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use grid_bodies::collision::{BlockCollisions, ShipHull};
+use grid_bodies::collision::{BlockCollisions, ShipHull, SolidAt};
 use physics::Collision;
 use server::{GridView, ServerWorld};
 use voxel_grid::{ChannelIndex, Grid};

@@ -27,6 +27,8 @@ pub struct ServerConfig {
     pub package: Vec<u8>,
     /// What gravity is: the level's pull and which bodies pull besides.
     pub gravity: GravitySettings,
+    /// The pull of a level that is not `gravity.base`, by the level's identifier (none in a level in space, say): a level the world does not have is ignored.
+    pub level_gravity: Vec<(NamespacedId, [f32; 3])>,
     /// How ships are kept: how near a player has to be for them to move, how far off for them to be put in files, and what a pilot's
     /// logout does to them.
     pub ships: ShipSettings,
@@ -45,6 +47,7 @@ impl ServerConfig {
             challenge_seed: None,
             package: Vec::new(),
             gravity: GravitySettings::default(),
+            level_gravity: Vec::new(),
             ships: ShipSettings::default(),
         }
     }

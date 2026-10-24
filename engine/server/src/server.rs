@@ -128,6 +128,11 @@ impl Server {
         let format = world.ship_format(registries)?;
         let mut world = ServerWorld::new(world, logic.entity_catalog());
         world.set_gravity_settings(config.gravity);
+        for (level, base) in &config.level_gravity {
+            if let Some(index) = world.level_index(level) {
+                world.set_level_gravity(index, *base);
+            }
+        }
         world.set_ship_settings(config.ships);
         // (A server keeps the files of its ships in memory until it is told where; see `Server::with_ship_files`.)
         world.set_ship_storage(format, Box::new(MemoryShipFiles::new()));

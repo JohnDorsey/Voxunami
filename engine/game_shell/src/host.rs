@@ -43,6 +43,8 @@ fn server_config<G: GameDefinition>(
         config = config.with_counted_challenges(1);
     }
     config.ticks_per_second = G::ticks_per_second();
+    config.gravity = G::gravity();
+    config.level_gravity = G::level_gravity();
     let edge = (2 * (view_radius_bricks + COARSE_WATCH_MARGIN_BRICKS) + 1) as u64;
     config.maximum_watched_bricks = edge * edge * edge;
     config
@@ -338,5 +340,26 @@ impl<G: GameDefinition> Drop for ServerThread<G> {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{ExampleGame, ExampleSpaceGame};
+
+    #[test]
+    fn the_server_is_configured_with_the_gravity_of_the_game() {
+        let plain = server_config::<ExampleGame>(Vec::new(), 3, true, ShipSettings::default());
+        assert_eq!(plain.gravity, voxel_space::GravitySettings::default());
+        assert!(plain.level_gravity.is_empty());
+
+        let space = server_config::<ExampleSpaceGame>(Vec::new(), 3, true, ShipSettings::default());
+        assert_eq!(space.gravity.base, [0.0, -9.0, 0.0]);
+        assert_eq!(space.gravity.pull_mass_threshold, Some(1.0e20));
+        assert_eq!(
+            space.level_gravity,
+            vec![("example:space".parse().unwrap(), [0.0; 3])]
+        );
     }
 }
