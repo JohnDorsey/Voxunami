@@ -6,6 +6,7 @@
 //! engine:channels      the layout of its voxels
 //! engine:ship          the name of the level it was in, and its edited bricks as a level's are written
 //! engine:grid_flight   optional: its pose, how fast it moved and turned, whether it was held, what its pilot's logout does
+//! engine:grid_terrain  optional: for a planet, the terrain generator version (by name) that makes the bricks the ship does not store, the bricks it makes, its mass
 //! (any other)          sections of plugins, kept as they are
 //! ```
 //!
@@ -19,8 +20,9 @@ use std::sync::Arc;
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
 use protocol::{PoseFormat, read_grid_pose_in, write_grid_pose};
+use terrain::GeneratorId;
 use voxel_grid::{Brick, ChannelValueKind, Grid, GridLayout};
-use voxel_space::{BrickCoordinate, GridPose};
+use voxel_space::{BrickBox, BrickCoordinate, GridPose};
 
 use crate::container::{ContainerError, Section, read_container, write_container};
 use crate::engine_sections::{
@@ -28,7 +30,7 @@ use crate::engine_sections::{
     decode_override_bricks, decode_registries, encode_channels, encode_header,
     encode_override_bricks, encode_registries,
 };
-use crate::moving_grids::{MovingGrid, PilotLogout};
+use crate::moving_grids::{GridTerrain, MovingGrid, PilotLogout};
 use crate::translation::{SourceTranslator, TranslationError};
 use crate::world::SaveError;
 
@@ -40,6 +42,11 @@ pub fn ship_id() -> NamespacedId {
 /// The section that says where the ship was and how it moved.
 pub fn flight_id() -> NamespacedId {
     NamespacedId::new("engine", "grid_flight").expect("engine section names are valid identifiers")
+}
+
+/// The section that says what makes the ship's bricks that are not stored, if anything does.
+pub fn terrain_id() -> NamespacedId {
+    NamespacedId::new("engine", "grid_terrain").expect("engine section names are valid identifiers")
 }
 
 /// Where a ship was, and how it was moving, when it was saved.
@@ -113,6 +120,54 @@ fn decode_flight(payload: &[u8], format: PoseFormat) -> Result<ShipFlight, Decod
     })
 }
 
+/// What the file says makes the bricks that are not stored: the generator by its name, the box of bricks, the mass.
+#[derive(Clone, Debug, PartialEq)]
+struct TerrainRecord {
+    generator: NamespacedId,
+    extent: BrickBox,
+    mass: f32,
+}
+
+fn encode_terrain(generator: &NamespacedId, terrain: &GridTerrain) -> Vec<u8> {
+    let mut writer = ByteWriter::new();
+    writer.write_identifier(generator);
+    for corner in [terrain.extent.min(), terrain.extent.max()] {
+        for component in [corner.x(), corner.y(), corner.z()] {
+            writer.write_signed_varint(component);
+        }
+    }
+    writer.write_u32(terrain.mass.to_bits());
+    writer.into_bytes()
+}
+
+fn decode_terrain(payload: &[u8]) -> Result<TerrainRecord, DecodeError> {
+    let mut reader = ByteReader::new(payload);
+    let generator = reader.read_identifier()?;
+    let mut corners = [[0i64; 3]; 2];
+    for corner in &mut corners {
+        for component in corner.iter_mut() {
+            *component = reader.read_signed_varint()?;
+        }
+    }
+    let mass = f32::from_bits(reader.read_u32()?);
+    if !mass.is_finite() || mass < 0.0 {
+        return Err(DecodeError::Invalid("a mass is not a weight"));
+    }
+    reader.finish()?;
+    let corner = |at: [i64; 3]| {
+        BrickCoordinate::try_new(at[0], at[1], at[2])
+            .map_err(|_| DecodeError::Invalid("a brick of the extent is out of range"))
+    };
+    let extent = BrickBox::new(corner(corners[0])?, corner(corners[1])?).ok_or(
+        DecodeError::Invalid("the extent has its corners the wrong way round"),
+    )?;
+    Ok(TerrainRecord {
+        generator,
+        extent,
+        mass,
+    })
+}
+
 fn encode_ship(level: &NamespacedId, bricks: &[(BrickCoordinate, &Brick)]) -> Vec<u8> {
     let mut writer = ByteWriter::new();
     writer.write_identifier(level);
@@ -159,6 +214,10 @@ pub enum ShipFileError {
     Translation(#[from] TranslationError),
     #[error("the ship's voxels are not laid out as the world's are")]
     LayoutMismatch,
+    #[error(
+        "the ship's terrain generator is number {0}, which the world's table of generators does not have"
+    )]
+    UnknownGenerator(u32),
 }
 
 /// A ship file read and checked, not yet put into a world's numbering.
@@ -170,6 +229,7 @@ pub struct ParsedShip {
     level: NamespacedId,
     bricks: Vec<(BrickCoordinate, Brick)>,
     flight: Option<ShipFlight>,
+    terrain: Option<TerrainRecord>,
     sections: Vec<Section>,
 }
 
@@ -180,6 +240,7 @@ impl ParsedShip {
         let mut channels = None;
         let mut ship = None;
         let mut flight = None;
+        let mut terrain = None;
         let mut opaque = Vec::new();
         for section in read_container(bytes)? {
             let known = [
@@ -188,6 +249,7 @@ impl ParsedShip {
                 sections::channels_id(),
                 ship_id(),
                 flight_id(),
+                terrain_id(),
             ]
             .contains(&section.identifier);
             if !known {
@@ -218,6 +280,8 @@ impl ParsedShip {
                 channels = Some(decode_channels(payload).map_err(wrap)?);
             } else if section.identifier == ship_id() {
                 ship = Some(decode_ship(payload).map_err(wrap)?);
+            } else if section.identifier == terrain_id() {
+                terrain = Some(decode_terrain(payload).map_err(wrap)?);
             } else {
                 let format = sections::pose_format_of(section.version).expect("a readable version");
                 flight = Some(decode_flight(payload, format).map_err(wrap)?);
@@ -235,6 +299,7 @@ impl ParsedShip {
             level,
             bricks,
             flight,
+            terrain,
             sections: opaque,
         })
     }
@@ -256,6 +321,16 @@ impl ParsedShip {
 
     /// The content its voxels can have, as (registry, identifier) in order: what a world must know before the ship can be read into it.
     pub fn referenced_content(&self) -> Vec<(NamespacedId, NamespacedId)> {
+        let generators: Vec<(NamespacedId, NamespacedId)> = self
+            .terrain
+            .iter()
+            .map(|terrain| {
+                (
+                    sections::terrain_generator_registry_kind(),
+                    terrain.generator.clone(),
+                )
+            })
+            .collect();
         let mut used: Vec<&NamespacedId> = Vec::new();
         for channel in &self.channels {
             if let ChannelValueKind::Content { registry } = &channel.value_kind
@@ -273,6 +348,7 @@ impl ParsedShip {
                     .iter()
                     .map(|entry| (table.kind.clone(), entry.clone()))
             })
+            .chain(generators)
             .collect()
     }
 
@@ -330,6 +406,23 @@ impl ParsedShip {
             mappings,
             Vec::new(),
         )?;
+        let terrain = self
+            .terrain
+            .map(|record| {
+                let kind = sections::terrain_generator_registry_kind();
+                let raw = resolve(&kind, &record.generator).ok_or_else(|| {
+                    ShipFileError::UnknownContent {
+                        registry: kind,
+                        identifier: record.generator.clone(),
+                    }
+                })?;
+                Ok::<_, ShipFileError>(GridTerrain {
+                    generator: GeneratorId::from_raw(raw),
+                    extent: record.extent,
+                    mass: record.mass,
+                })
+            })
+            .transpose()?;
         let mut voxels = Grid::new(Arc::clone(layout));
         for (coordinate, brick) in self.bricks {
             voxels
@@ -340,6 +433,7 @@ impl ParsedShip {
             level: self.level,
             voxels,
             flight: self.flight,
+            terrain,
             sections: self.sections,
         })
     }
@@ -352,6 +446,8 @@ pub struct ShipContents {
     pub level: NamespacedId,
     pub voxels: Grid,
     pub flight: Option<ShipFlight>,
+    /// What makes the bricks that are not stored, for a planet, with the generator as this world numbers it.
+    pub terrain: Option<GridTerrain>,
     /// The sections of plugins that the file had, as they were.
     pub sections: Vec<Section>,
 }
@@ -363,11 +459,14 @@ pub struct ShipFormat {
     /// For each registry the layout's channels use, the identifiers of its entries in order of their numbers.
     tables: BTreeMap<NamespacedId, Vec<NamespacedId>>,
     numbers: HashMap<(NamespacedId, NamespacedId), u32>,
+    /// The identifiers of the terrain generator versions in order of their numbers (empty if the world gave no table).
+    generators: Vec<NamespacedId>,
     layout: Arc<GridLayout>,
 }
 
 impl ShipFormat {
-    /// `tables` has an entry for every registry a channel of `layout` uses (more are fine, and ignored).
+    /// `tables` has an entry for every registry a channel of `layout` uses (more are fine, and ignored), and the table of terrain generator versions
+    /// (`engine:terrain_generator`) if a ship may have terrain.
     pub fn new(
         world_seed: u64,
         tables: &BTreeMap<NamespacedId, Vec<NamespacedId>>,
@@ -393,10 +492,24 @@ impl ShipFormat {
                 }
             }
         }
+        let generators = tables
+            .get(&sections::terrain_generator_registry_kind())
+            .cloned()
+            .unwrap_or_default();
+        for (number, generator) in generators.iter().enumerate() {
+            numbers.insert(
+                (
+                    sections::terrain_generator_registry_kind(),
+                    generator.clone(),
+                ),
+                u32::try_from(number).expect("a registry has fewer than 2^32 entries"),
+            );
+        }
         Ok(Self {
             world_seed,
             tables: used,
             numbers,
+            generators,
             layout,
         })
     }
@@ -446,6 +559,17 @@ impl ShipFormat {
                 )
             })
             .collect();
+        let terrain = ship
+            .terrain
+            .as_ref()
+            .map(|terrain| {
+                let generator = self
+                    .generators
+                    .get(terrain.generator.raw() as usize)
+                    .ok_or(ShipFileError::UnknownGenerator(terrain.generator.raw()))?;
+                Ok::<_, ShipFileError>(encode_terrain(generator, terrain))
+            })
+            .transpose()?;
         let section = |identifier, payload| Section {
             version: if identifier == flight_id() {
                 sections::POSES_VERSION
@@ -468,6 +592,9 @@ impl ShipFormat {
             section(ship_id(), encode_ship(level, &bricks)),
             section(flight_id(), encode_flight(&ShipFlight::of(ship))),
         ];
+        if let Some(payload) = terrain {
+            written.push(section(terrain_id(), payload));
+        }
         written.extend(ship.sections.iter().cloned());
         Ok(write_container(&written))
     }

@@ -12,13 +12,13 @@ use terrain::{
     WorldTerrain,
 };
 use voxel_grid::{Brick, ChannelDefinition, ChannelValueKind, Grid, GridLayout};
-use voxel_space::{BrickCoordinate, VoxelCoordinate};
+use voxel_space::{BrickBox, BrickCoordinate, VoxelCoordinate};
 
 use voxel_space::{GridPose, Orientation, WorldPosition};
 
 use crate::{
-    LevelData, LevelIndex, LoadContext, LoadError, LoadReport, MovingGrid, ParsedWorld,
-    PilotLogout, Section, ShipFiles, ShipFormat, WorldData, WorldSave,
+    GridTerrain, LevelData, LevelIndex, LoadContext, LoadError, LoadReport, MovingGrid,
+    ParsedWorld, PilotLogout, Section, ShipFiles, ShipFormat, WorldData, WorldSave,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -258,12 +258,38 @@ impl Game {
             frozen: false,
             on_pilot_logout: PilotLogout::Vanish,
             voxels,
+            terrain: None,
             sections: vec![Section {
                 identifier: id("unheard_of:ship_notes"),
                 version: 4,
                 payload: b"kept as they are".to_vec(),
             }],
         }
+    }
+
+    /// A planet: the ship of [`Game::sample_ship`] (its two bricks are the edits) with terrain, the game's `fancy_terrain:cliffs_v1` (`base_terrain:flat_v1` in a game
+    /// without that plugin) over 41 x 41 x 41 bricks about its origin, weighing as much as a planet of 63,710 metres does.
+    pub fn sample_planet(&self, world: &WorldData, shift: i64) -> MovingGrid {
+        let mut ship = self.sample_ship(world, shift);
+        let generator = if self.has(FancyTerrain) {
+            "fancy_terrain:cliffs_v1"
+        } else {
+            "base_terrain:flat_v1"
+        };
+        let terrain = GridTerrain {
+            generator: world
+                .main()
+                .terrain
+                .generators()
+                .runtime_id(&id(generator))
+                .unwrap(),
+            extent: BrickBox::around(BrickCoordinate::ORIGIN, 20),
+            mass: 6.07e20,
+        };
+        ship.mass = terrain.mass;
+        ship.centre_of_mass = [0.0; 3];
+        ship.terrain = Some(terrain);
+        ship
     }
 
     /// What it takes to make the files of the ships of this game's worlds and to read them.

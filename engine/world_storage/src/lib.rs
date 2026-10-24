@@ -26,9 +26,9 @@ mod world;
 
 pub use container::{ContainerError, Section};
 pub use grid_frame::GridFrame;
-pub use moving_grids::{GridStore, MovingGrid, ParkedGrid, PilotLogout};
+pub use moving_grids::{GridStore, GridTerrain, MovingGrid, ParkedGrid, PilotLogout};
 pub use ship_file::{
-    ParsedShip, ShipContents, ShipFileError, ShipFlight, ShipFormat, flight_id, ship_id,
+    ParsedShip, ShipContents, ShipFileError, ShipFlight, ShipFormat, flight_id, ship_id, terrain_id,
 };
 pub use ship_files::{
     DirectoryShipFiles, MemoryShipFiles, NotAShipFileName, ShipFileName, ShipFiles,

@@ -40,6 +40,10 @@ Everything else in the file refers to content by *file id*: an index into a regi
 
 The generator table is the registry kind `engine:terrain_generator`.
 
+**A ship file's `engine:grid_terrain`** (optional, version 1; Phase 39a): for a planet, the terrain generator version that makes the bricks the ship does not store, by name (an identifier, looked up in the reading world's generator table like the content of a
+channel), the box of bricks it makes (the lowest and the highest corner, each three zigzag varints) and the mass in kilograms (`f32` bits; finite and not negative). The ship's `engine:ship` section then holds only its edits. A file with no such section is a ship that
+nothing generates.
+
 A **brick** is its channel count (`u16`) then each channel's storage: tag `0` uniform (`u32`); tag `1` paletted (palette
 length `u16`, 2 to 256; index width `u8`: 1, 2, 4 or 8; palette `u32`s; `512 x width` packed `u64` index words); tag `2`
 dense (32768 `u32`s). Storage is always written in its minimal form, so equal contents give identical bytes.

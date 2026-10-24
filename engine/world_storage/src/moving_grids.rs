@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use terrain::GeneratorId;
 use voxel_grid::Grid;
 use voxel_space::{
     BrickBox, BrickCoordinate, GridId, GridPose, LatticeTransform, LevelIndex, WorldPosition,
@@ -16,6 +17,19 @@ pub enum PilotLogout {
     Stay,
     /// It is saved and put away with the pilot, and comes back, where it was, when they do.
     Vanish,
+}
+
+/// What makes the bricks of a ship that nobody has stored: a planet is a ship with terrain. The bricks of the ship inside `extent` are those the generator makes
+/// unless the ship's voxels have the brick (an edit, which wins); outside it there is nothing but what is stored. The clients make the same bricks from the same
+/// generator, so they are not sent.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GridTerrain {
+    /// The version of the terrain generator that makes the bricks, a number of the world's table of generators like a level's (a file names it).
+    pub generator: GeneratorId,
+    /// The bricks it makes, in the ship's own coordinates.
+    pub extent: BrickBox,
+    /// What the ship weighs in kilograms, declared: a ship whose bricks are not stored has no blocks to add up. The centre of mass is the ship's field of that name.
+    pub mass: f32,
 }
 
 /// A grid of voxels that is not the terrain of a level: a ship. Its voxels are in its own coordinates, and its pose says where
@@ -40,17 +54,22 @@ pub struct MovingGrid {
     pub frozen: bool,
     /// What its pilot's logout does to it.
     pub on_pilot_logout: PilotLogout,
-    /// The voxels. An absent brick is every channel at its default (nothing generates a ship).
+    /// The voxels that are stored: all of them for a ship someone built, the edits for a ship with terrain. An absent brick is every channel at its default, or
+    /// what the terrain generates there.
     pub voxels: Grid,
+    /// What generates the bricks nobody has stored, for a planet; `None` for a ship someone built (nothing generates it).
+    pub terrain: Option<GridTerrain>,
     /// Sections of plugins that the ship's file had and nobody here reads, kept as they were so that a ship saved again loses nothing.
     pub sections: Vec<Section>,
 }
 
 impl MovingGrid {
-    /// The lowest and the highest brick that has anything in it, along each axis, in the ship's own coordinates. `None` for a ship with
+    /// The lowest and the highest brick that has anything in it or that its terrain makes, along each axis, in the ship's own coordinates. `None` for a ship with
     /// no bricks.
     pub fn brick_extent(&self) -> Option<(BrickCoordinate, BrickCoordinate)> {
-        let mut bounds: Option<(BrickCoordinate, BrickCoordinate)> = None;
+        let mut bounds: Option<(BrickCoordinate, BrickCoordinate)> = self
+            .terrain
+            .map(|terrain| (terrain.extent.min(), terrain.extent.max()));
         for (brick, _) in self.voxels.bricks() {
             bounds = Some(match bounds {
                 None => (brick, brick),
@@ -421,6 +440,7 @@ mod tests {
             frozen: false,
             on_pilot_logout: PilotLogout::Stay,
             voxels,
+            terrain: None,
             sections: Vec::new(),
         }
     }
@@ -507,6 +527,35 @@ mod tests {
             let (min, max) = (bounds.min(), bounds.max());
             ([min.x(), min.y(), min.z()], [max.x(), max.y(), max.z()])
         })
+    }
+
+    #[test]
+    fn the_extent_of_a_ship_with_terrain_is_the_terrains_and_whatever_is_stored_beyond_it() {
+        let terrain = |low: [i64; 3], high: [i64; 3]| GridTerrain {
+            generator: terrain::GeneratorId::from_raw(3),
+            extent: BrickBox::new(
+                BrickCoordinate::new(low[0], low[1], low[2]),
+                BrickCoordinate::new(high[0], high[1], high[2]),
+            )
+            .unwrap(),
+            mass: 1.0e20,
+        };
+        let extent = |ship: &MovingGrid| {
+            ship.brick_extent()
+                .map(|(low, high)| ([low.x(), low.y(), low.z()], [high.x(), high.y(), high.z()]))
+        };
+        // A planet whose edits are not stored is all its terrain, and its bounds in the world are that.
+        let mut planet = ship_with_bricks(&[], GridPose::identity());
+        planet.terrain = Some(terrain([-20, -20, -20], [19, 19, 19]));
+        assert_eq!(extent(&planet), Some(([-20; 3], [19; 3])));
+        assert_eq!(bounds(&planet), Some(([-20; 3], [19; 3])));
+        // A brick stored inside it changes nothing; one beyond it (a block built in the sky over the planet) widens it.
+        let mut edited = ship_with_bricks(&[[0, 5, 0]], GridPose::identity());
+        edited.terrain = planet.terrain;
+        assert_eq!(extent(&edited), Some(([-20; 3], [19; 3])));
+        let mut built = ship_with_bricks(&[[0, 25, 0]], GridPose::identity());
+        built.terrain = planet.terrain;
+        assert_eq!(extent(&built), Some(([-20; 3], [19, 25, 19])));
     }
 
     #[test]

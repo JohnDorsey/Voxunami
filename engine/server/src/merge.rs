@@ -199,6 +199,7 @@ impl ServerWorld {
             frozen: base.frozen && other.frozen,
             on_pilot_logout: base.on_pilot_logout,
             voxels,
+            terrain: None,
             sections,
         };
         let (_, merged_id) = self

@@ -374,6 +374,7 @@ fn make_ship(world: &mut WorldData, pose: GridPose) -> GridId {
         frozen: false,
         on_pilot_logout: PilotLogout::Stay,
         voxels: Grid::new(layout),
+        terrain: None,
         sections: Vec::new(),
     })
 }

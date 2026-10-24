@@ -376,7 +376,7 @@ adds works on board any ship with no effort from its author. It holds by constru
   up cannot. `ShipFileName` can be made only from a ship and a number, or read in exactly that spelling (no sign, no leading zeros, no root grid), so a world
   file cannot send a program to another path.
 - *The file is a container* of `engine:header`, `engine:registries` (the tables of the registries its channels use), `engine:channels`, `engine:ship` (the name of
-  its level, and its bricks written as a level's edited bricks are) and `engine:grid_flight` (pose, both speeds, held, what its pilot's logout does). Sections of
+  its level, and its bricks written as a level's edited bricks are), `engine:grid_flight` (pose, both speeds, held, what its pilot's logout does) and, for a planet, `engine:grid_terrain` (Phase 39a: the generator by name, the box of bricks it makes, the mass). Sections of
   plugins that nobody here reads are carried in `MovingGrid::sections` and written back as they were. A file that names content the reading world lacks is
   refused, saying what (`ParsedShip::referenced_content` lists it, so that an importer registers it first); a channel the world has no place for is refused too.
   Every cut of a file and every changed byte of it is found (tested for each byte and four changes of it).

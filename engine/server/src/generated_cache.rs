@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 use voxel_grid::Brick;
-use voxel_space::{BrickCoordinate, LevelIndex};
+use voxel_space::{BrickCoordinate, GridId};
 
-/// A brick of a level.
-pub(crate) type BrickKey = (LevelIndex, BrickCoordinate);
+/// A brick of a grid: the root grid of a level (for its terrain) or a ship with terrain.
+pub(crate) type BrickKey = (GridId, BrickCoordinate);
 
 /// How many generated bricks a server remembers.
 const CAPACITY: usize = 128;
@@ -45,6 +45,7 @@ impl GeneratedBrickCache {
 #[cfg(test)]
 mod tests {
     use voxel_grid::test_support::StandardTestLayout;
+    use voxel_space::LevelIndex;
 
     use super::*;
 
@@ -52,7 +53,7 @@ mod tests {
     fn it_holds_a_limited_number_of_bricks_and_forgets_the_oldest_first() {
         let layout = StandardTestLayout::default().layout;
         let brick = Arc::new(Brick::new(&layout));
-        let key = |x: i64| (LevelIndex::MAIN, BrickCoordinate::new(x, 0, 0));
+        let key = |x: i64| (GridId::MAIN, BrickCoordinate::new(x, 0, 0));
         let mut cache = GeneratedBrickCache::default();
         for x in 0..CAPACITY as i64 + 5 {
             cache.insert(key(x), Arc::clone(&brick));
@@ -69,21 +70,28 @@ mod tests {
     }
 
     #[test]
-    fn the_same_brick_of_different_levels_is_remembered_separately() {
+    fn the_same_brick_of_different_grids_is_remembered_separately() {
+        // A level's terrain and a planet (or two levels) make the same coordinates differently.
         let layout = StandardTestLayout::default().layout;
         let (first, second) = (Arc::new(Brick::new(&layout)), Arc::new(Brick::new(&layout)));
         let coordinate = BrickCoordinate::new(1, 2, 3);
+        let level = GridId::root(LevelIndex::MAIN);
+        let other_level = GridId::root(LevelIndex::new(1));
+        let planet = GridId::new(GridId::FIRST_ALLOCATED);
         let mut cache = GeneratedBrickCache::default();
-        cache.insert((LevelIndex::MAIN, coordinate), Arc::clone(&first));
-        assert!(cache.get((LevelIndex::new(1), coordinate)).is_none());
-        cache.insert((LevelIndex::new(1), coordinate), Arc::clone(&second));
-        assert_eq!(cache.len(), 2);
+        cache.insert((level, coordinate), Arc::clone(&first));
+        assert!(cache.get((other_level, coordinate)).is_none());
+        assert!(cache.get((planet, coordinate)).is_none());
+        cache.insert((other_level, coordinate), Arc::clone(&second));
+        cache.insert((planet, coordinate), Arc::clone(&second));
+        assert_eq!(cache.len(), 3);
+        assert!(Arc::ptr_eq(cache.get((level, coordinate)).unwrap(), &first));
         assert!(Arc::ptr_eq(
-            cache.get((LevelIndex::MAIN, coordinate)).unwrap(),
-            &first
+            cache.get((other_level, coordinate)).unwrap(),
+            &second
         ));
         assert!(Arc::ptr_eq(
-            cache.get((LevelIndex::new(1), coordinate)).unwrap(),
+            cache.get((planet, coordinate)).unwrap(),
             &second
         ));
     }

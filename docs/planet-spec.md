@@ -51,11 +51,19 @@ it does not depend on the ground being a graph over the axis, and it agrees with
 octave). **Accuracy against the voxels** (the node's cell drawn when most of the voxels under it, on a lattice of 4 x 4 x 4, are ground): wrong in 17% of the cells with a surface in them at level 1 (a 2-voxel cell is one question about eight voxels) and 3% to 6%
 at levels 2 to 6; the lattice of 4 x 4 x 4 points of `coarse.rs` takes 20 to 29 ms for the fills of one node of this planet against 0.4 to 0.5 ms for the columns (40 to 55 times as much), and was not measured against the voxels here.
 
-**A ship with terrain (`world_storage`, 39a).** `MovingGrid.terrain: Option<GridTerrain>`: a `WorldTerrain` (generator versions and assignments over the ship's own bricks, shared registry), the **extent** (a `BrickBox`), and the **mass** it
-declares. A brick that is not stored is generated; an edited brick is stored and wins. The ship file gets the section `engine:grid_terrain` (version 1; ids as strings; a generator of a plugin that is not loaded is kept as it was, as for a level).
+**A ship with terrain (`world_storage`, built in 39a).** `MovingGrid.terrain: Option<GridTerrain>`: **one generator version** (a `GeneratorId` of the world's table, which all levels share), the **extent** (a `BrickBox` in the ship's own coordinates) and the
+**mass** it declares (`MovingGrid::mass` is set to it; the centre of mass is the ship's own field, the origin for a planet). I had planned a `WorldTerrain` with assignments over the ship's bricks; a planet is one generator version over one box, and a ship
+that wants another version is another generator id, so the section is version 1 and carries a name, a box and a weight, and assignments can be a version 2 if a moon ever needs them. A brick that is not stored is generated; an edited brick is stored in `voxels`
+and wins. `brick_extent` / `world_brick_bounds` are the hull of the extent and the stored bricks, so the bounds a parked ship is listed with, the leave rule and the box that replication meets are the planet's. The ship file gets the optional section
+`engine:grid_terrain` (version 1: the generator's identifier, the box as six zigzag varints, the mass as `f32` bits; a damaged one, a mass that is not a weight, corners the wrong way round or a brick out of range, is refused; a ship that nothing generates
+has no such section, so its file is byte for byte what it was). The generator is written by name and read by `ShipFormat` through the reading world's table (`engine:terrain_generator`, like the content of a channel): a world without the generator refuses the
+file saying which (`UnknownContent`), and a generator of a plugin that is not loaded is a placeholder in the table, so the planet is kept and saved as it was.
 
-**The server (39b).** Reads through the generator for a ship with terrain (`moving_voxel`, `generated`, `uniform_value`); the bound of the ship is its extent; replication sends the terrain once, with `GridsSpawned`, and after that
-the **stored** bricks only (a recording holds the generator ids and replays by regenerating).
+**The server (built in 39b).** `ServerWorld` reads through the generator for a ship with terrain: `moving_voxel`, `moving_generated_voxel` and `moving_uniform_value` (what `GridView::get`, `generated` and `uniform_value` call for a ship) take the stored brick if there is
+one, else the brick the generator makes if it is in the extent, else the channel's default. The bricks a planet's generator makes are remembered with a level's (`GeneratedBrickCache`, now keyed by `GridId`, so a level's root grid and each ship have their own), counted by
+`bricks_generated`, and a generator whose plugin is missing is `AccessError::TerrainUnavailable` naming it. An edit of a brick that is not stored stores the generated brick with the voxel changed (as a level's terrain does), noted for the clients as a created brick; setting a
+voxel to the value it has stores nothing. The bound of the ship is its extent (39a). **Until 39c a planet is left out of `ship_views`** (the wire cannot say what makes its bricks, and sending only its stored bricks would show a client the edits floating in nothing); 39c
+sends the terrain once, with `GridsSpawned`, and after that the **stored** bricks only (a recording holds the generator ids and replays by regenerating).
 
 **The wire and the client (39c).** Protocol 8: `GridState` carries the terrain. The client builds the ship's terrain from the generators it already has and generates the bricks it meshes. Golden sessions and wire pins that move get a justification.
 
@@ -74,8 +82,8 @@ while it would be a pixel (3.7 of the LOD spec); a planet is known from anywhere
 ## 4. Steps (each ends with tests, clippy, rustfmt, mutation experiments, docs, then a commit)
 
 - **39-1 The planet field and generator** (terrain): the shape, bounds, the generator, the planet's node from columns; tests (sphere, seams, determinism pinned, bounds sound, nodes against the voxels). **Built 2026-10-24** (section 3 says what it is and how it measured).
-- **39a `GridTerrain` on `MovingGrid`**, the file section, save and load.
-- **39b The server reads through** and the replication of a ship with terrain.
+- **39a `GridTerrain` on `MovingGrid`**, the file section, save and load. **Built 2026-10-24.**
+- **39b The server reads through** and the replication of a ship with terrain. **Read-through built 2026-10-24; the replication is 39c's.**
 - **39c The wire (protocol 8) and the client generates.** A replay test.
 - **39d Colliders from generated bricks; gravity of a level; the planet's mass; boarding and leaving on a planet.**
 - **39e Levels of detail for a ship with terrain.**

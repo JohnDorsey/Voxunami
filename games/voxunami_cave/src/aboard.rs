@@ -196,6 +196,7 @@ mod tests {
             frozen: false,
             on_pilot_logout: PilotLogout::Stay,
             voxels,
+            terrain: None,
             sections: Vec::new(),
         };
         (ship, block, state)

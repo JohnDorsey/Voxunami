@@ -560,12 +560,13 @@ impl WorldData {
             pose: flight.map_or(parked.pose, |flight| flight.pose),
             linear_velocity: flight.map_or([0.0; 3], |flight| flight.linear_velocity),
             angular_velocity: flight.map_or([0.0; 3], |flight| flight.angular_velocity),
-            mass: 0.0,
+            mass: contents.terrain.map_or(0.0, |terrain| terrain.mass),
             centre_of_mass: [0.0; 3],
             held: flight.is_some_and(|flight| flight.held),
             frozen: false,
             on_pilot_logout: flight.map_or(Default::default(), |flight| flight.on_pilot_logout),
             voxels: contents.voxels,
+            terrain: contents.terrain,
             sections: contents.sections,
         })
     }
@@ -647,9 +648,14 @@ impl WorldData {
         &self,
         registries: &[(NamespacedId, &dyn IdentifierRegistry)],
     ) -> Result<ShipFormat, SaveError> {
+        let mut tables = self.registry_tables(registries);
+        tables.insert(
+            sections::terrain_generator_registry_kind(),
+            generator_table(&self.main().terrain),
+        );
         ShipFormat::new(
             self.world_seed,
-            &self.registry_tables(registries),
+            &tables,
             Arc::clone(self.main().overrides.layout()),
         )
     }

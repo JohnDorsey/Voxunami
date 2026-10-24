@@ -540,19 +540,75 @@ impl ServerWorld {
         }
     }
 
-    /// The value of a voxel of a grid that is not the terrain of a level, in the grid's own coordinates.
+    /// The value of a voxel of a grid that is not the terrain of a level, in the grid's own coordinates: from the stored brick if there is one, else from the
+    /// generator of the ship's terrain (if it has any, and the brick is in its extent), else the channel's default.
     pub(crate) fn moving_voxel(
-        &self,
+        &mut self,
         grid: GridId,
         channel: ChannelIndex,
         at: VoxelCoordinate,
     ) -> Result<u32, AccessError> {
+        let (coordinate, local) = at.split();
         let moving = self
             .data
             .grids()
             .get(grid)
             .ok_or(AccessError::NoSuchGrid(grid))?;
-        Ok(moving.voxels.get(channel, at))
+        if let Some(stored) = moving.voxels.brick(coordinate) {
+            return Ok(stored.get(channel, local));
+        }
+        if moving.terrain.is_none() {
+            return Ok(moving.voxels.layout().default_value(channel));
+        }
+        Ok(self
+            .generated_ship_brick(grid, coordinate)?
+            .get(channel, local))
+    }
+
+    /// The value a voxel of a ship has to begin with, whatever has been built there since: what the ship's terrain generator makes there, or the channel's default.
+    pub(crate) fn moving_generated_voxel(
+        &mut self,
+        grid: GridId,
+        channel: ChannelIndex,
+        at: VoxelCoordinate,
+    ) -> Result<u32, AccessError> {
+        let (coordinate, local) = at.split();
+        let moving = self
+            .data
+            .grids()
+            .get(grid)
+            .ok_or(AccessError::NoSuchGrid(grid))?;
+        if moving.terrain.is_none() {
+            return Ok(moving.voxels.layout().default_value(channel));
+        }
+        Ok(self
+            .generated_ship_brick(grid, coordinate)?
+            .get(channel, local))
+    }
+
+    /// The value that every voxel of a brick of a ship has in a channel, if they all have the same one: of the stored brick, else of what the terrain makes
+    /// there, else the default.
+    pub(crate) fn moving_uniform_value(
+        &mut self,
+        grid: GridId,
+        channel: ChannelIndex,
+        brick: BrickCoordinate,
+    ) -> Result<Option<u32>, AccessError> {
+        let moving = self
+            .data
+            .grids()
+            .get(grid)
+            .ok_or(AccessError::NoSuchGrid(grid))?;
+        if let Some(stored) = moving.voxels.brick(brick) {
+            return Ok(stored.channel(channel).uniform_value());
+        }
+        if moving.terrain.is_none() {
+            return Ok(Some(moving.voxels.layout().default_value(channel)));
+        }
+        Ok(self
+            .generated_ship_brick(grid, brick)?
+            .channel(channel)
+            .uniform_value())
     }
 
     pub(crate) fn set_moving_voxel(
@@ -562,13 +618,34 @@ impl ServerWorld {
         at: VoxelCoordinate,
         value: u32,
     ) -> Result<bool, AccessError> {
+        let (coordinate, _) = at.split();
         let moving = self
+            .data
+            .grids()
+            .get(grid)
+            .ok_or(AccessError::NoSuchGrid(grid))?;
+        let created = moving.voxels.brick(coordinate).is_none();
+        if created && moving.terrain.is_some() {
+            // The edit is stored as the brick the generator makes with the voxel changed, as for the terrain of a level.
+            let mut generated = Brick::clone(&*self.generated_ship_brick(grid, coordinate)?);
+            if !generated.set(channel, at.split().1, value) {
+                return Ok(false);
+            }
+            self.data
+                .grids_mut()
+                .get_mut(grid)
+                .expect("the ship exists")
+                .voxels
+                .insert_brick(coordinate, Arc::new(generated))
+                .expect("the generated brick has the grid's channels");
+        } else if !self
             .data
             .grids_mut()
             .get_mut(grid)
-            .ok_or(AccessError::NoSuchGrid(grid))?;
-        let created = moving.voxels.brick(at.split().0).is_none();
-        if !moving.voxels.set(channel, at, value) {
+            .expect("the ship exists")
+            .voxels
+            .set(channel, at, value)
+        {
             return Ok(false);
         }
         self.record_edit(grid, created, channel, at, value);
@@ -961,6 +1038,7 @@ impl ServerWorld {
                     frozen: old.frozen,
                     on_pilot_logout: old.on_pilot_logout,
                     voxels,
+                    terrain: None,
                     sections: old.sections.clone(),
                 }
             })
@@ -1079,6 +1157,7 @@ impl ServerWorld {
             frozen: false,
             on_pilot_logout: PilotLogout::Stay,
             voxels: Grid::new(layout),
+            terrain: None,
             sections: Vec::new(),
         }))
     }
@@ -1109,7 +1188,7 @@ impl ServerWorld {
         level: LevelIndex,
         coordinate: BrickCoordinate,
     ) -> Result<Arc<Brick>, AccessError> {
-        if let Some(remembered) = self.generated.get((level, coordinate)) {
+        if let Some(remembered) = self.generated.get((GridId::root(level), coordinate)) {
             return Ok(Arc::clone(remembered));
         }
         let data = self
@@ -1123,7 +1202,7 @@ impl ServerWorld {
                 self.generations += 1;
                 let brick = Arc::new(brick);
                 self.generated
-                    .insert((level, coordinate), Arc::clone(&brick));
+                    .insert((GridId::root(level), coordinate), Arc::clone(&brick));
                 Ok(brick)
             }
             GenerationOutcome::MissingGenerator(generator) => {
@@ -1133,6 +1212,52 @@ impl ServerWorld {
                 unreachable!("the brick was just assigned a generator")
             }
         }
+    }
+
+    /// The brick the terrain of a ship makes at `coordinate`, in the ship's own coordinates: what its generator makes, if the brick is in the ship's extent, and
+    /// the default brick if it is not or the ship has no terrain. Recently made bricks are remembered, with those of the terrain of the levels.
+    fn generated_ship_brick(
+        &mut self,
+        grid: GridId,
+        coordinate: BrickCoordinate,
+    ) -> Result<Arc<Brick>, AccessError> {
+        let ship = self
+            .data
+            .grids()
+            .get(grid)
+            .ok_or(AccessError::NoSuchGrid(grid))?;
+        let layout = Arc::clone(ship.voxels.layout());
+        let Some(terrain) = ship
+            .terrain
+            .filter(|terrain| terrain.extent.contains(coordinate))
+        else {
+            return Ok(Arc::new(Brick::new(&layout)));
+        };
+        if let Some(remembered) = self.generated.get((grid, coordinate)) {
+            return Ok(Arc::clone(remembered));
+        }
+        // (The generators are the world's, one table for all its levels.)
+        let entry = self
+            .data
+            .main()
+            .terrain
+            .generators()
+            .entry(terrain.generator)
+            .ok_or_else(|| AccessError::TerrainUnavailable {
+                generator: "unknown:generator"
+                    .parse()
+                    .expect("constant identifier is valid"),
+            })?;
+        let generator = entry
+            .content()
+            .ok_or_else(|| AccessError::TerrainUnavailable {
+                generator: entry.identifier().clone(),
+            })?;
+        let brick = Arc::new(generator.generate_brick(&layout, coordinate));
+        self.generations += 1;
+        self.generated
+            .insert((grid, coordinate), Arc::clone(&brick));
+        Ok(brick)
     }
 }
 
@@ -1145,8 +1270,9 @@ pub(crate) mod tests {
     use voxel_space::voxel_in_other;
 
     use crate::GridView;
-    use world_storage::LevelData;
+    use voxel_space::BrickBox;
     use world_storage::test_support::{Game, Plugin, id, main_level_id};
+    use world_storage::{GridTerrain, LevelData};
 
     use super::*;
 
@@ -1166,6 +1292,15 @@ pub(crate) mod tests {
 
     /// A level of flat ground whose generator counts its calls.
     fn counting_level(game: &Game, calls: &Arc<AtomicUsize>) -> LevelData {
+        counting_level_with_missing(game, calls, &[])
+    }
+
+    /// The same, with generators in the table that are placeholders for plugins that are not here.
+    fn counting_level_with_missing(
+        game: &Game,
+        calls: &Arc<AtomicUsize>,
+        missing: &[&NamespacedId],
+    ) -> LevelData {
         let flat = game.generator_registry();
         let inner = Arc::clone(
             flat.entry(flat.runtime_id(&id("base_terrain:flat_v1")).unwrap())
@@ -1181,6 +1316,9 @@ pub(crate) mod tests {
         let default = generators
             .register(id("base_terrain:flat_v1"), counting)
             .unwrap();
+        for identifier in missing {
+            generators.register_missing((*identifier).clone());
+        }
         let terrain = WorldTerrain::new(generators, default, 3).unwrap();
         let layout = Arc::new(GridLayout::new(game.channel_definitions()).unwrap());
         LevelData::new(terrain, Grid::new(layout))
@@ -2402,5 +2540,281 @@ pub(crate) mod tests {
             ),
             Err(AccessError::NoSuchGrid(_))
         ));
+    }
+
+    // ---- a ship with terrain (a planet): its bricks are what its generator makes, unless they are stored ----
+
+    /// The counting world with a ship whose terrain is the world's generator over the bricks within 3 of its origin.
+    fn world_with_a_planet() -> (ServerWorld, GridId, ChannelIndex, Arc<AtomicUsize>) {
+        let (mut world, block, calls) = counting_world();
+        let ship = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        let generator = world.data().main().terrain.default_generator();
+        world.data_mut().grids_mut().get_mut(ship).unwrap().terrain = Some(GridTerrain {
+            generator,
+            extent: BrickBox::around(BrickCoordinate::ORIGIN, 3),
+            mass: 1.0e20,
+        });
+        (world, ship, block, calls)
+    }
+
+    #[test]
+    fn a_planet_reads_what_its_generator_makes_inside_its_extent_and_the_default_outside() {
+        let (mut world, planet, block, _) = world_with_a_planet();
+        let default = world.data().main().overrides.layout().default_value(block);
+        // The flat ground of the level is the same ground here: stone below height 10 (and dirt and grass on it), the default above, in the bricks it makes.
+        for at in [
+            VoxelCoordinate::new(5, 2, 3),
+            VoxelCoordinate::new(-40, -50, 70),
+            VoxelCoordinate::new(5, 9, 3),
+            VoxelCoordinate::new(5, 10, 3),
+            VoxelCoordinate::new(-96, 0, 95),
+        ] {
+            let from_the_planet = world.grid(planet).unwrap().get(block, at).unwrap();
+            let from_the_level = world
+                .grid(GridId::root(LevelIndex::MAIN))
+                .unwrap()
+                .get(block, at)
+                .unwrap();
+            assert_eq!(from_the_planet, from_the_level, "{at:?}");
+        }
+        assert_ne!(
+            world
+                .grid(planet)
+                .unwrap()
+                .get(block, VoxelCoordinate::new(5, 2, 3))
+                .unwrap(),
+            default
+        );
+        // Outside the extent (the bricks within 3 of the origin are voxels -96 to 127) there is nothing, though the generator would make ground.
+        for at in [
+            VoxelCoordinate::new(5, 2, 128),
+            VoxelCoordinate::new(-97, 2, 3),
+            VoxelCoordinate::new(5, -97, 3),
+        ] {
+            assert_eq!(world.grid(planet).unwrap().get(block, at).unwrap(), default);
+        }
+    }
+
+    #[test]
+    fn a_planets_bricks_are_made_once_each_and_none_outside_the_extent() {
+        let (mut world, planet, block, calls) = world_with_a_planet();
+        for x in 0..32 {
+            world
+                .grid(planet)
+                .unwrap()
+                .get(block, VoxelCoordinate::new(x, 2, 3))
+                .unwrap();
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        world
+            .grid(planet)
+            .unwrap()
+            .get(block, VoxelCoordinate::new(40, 2, 3))
+            .unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        // The world counts them as it does for terrain; the bricks outside the extent are not asked for.
+        assert_eq!(world.bricks_generated(), 2);
+        world
+            .grid(planet)
+            .unwrap()
+            .get(block, VoxelCoordinate::new(500, 2, 3))
+            .unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        // The terrain of the level and the planet make the same brick separately: they do not share what they remember.
+        world
+            .grid(GridId::root(LevelIndex::MAIN))
+            .unwrap()
+            .get(block, VoxelCoordinate::new(5, 2, 3))
+            .unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn an_edit_of_a_planet_is_stored_over_the_generated_brick_and_wins_and_the_rest_of_the_brick_is_as_generated()
+     {
+        let (mut world, planet, block, _) = world_with_a_planet();
+        let at = VoxelCoordinate::new(5, 2, 3);
+        let neighbour = VoxelCoordinate::new(6, 2, 3);
+        let before = world.grid(planet).unwrap().get(block, at).unwrap();
+        let beside = world.grid(planet).unwrap().get(block, neighbour).unwrap();
+        let new_value = before + 7;
+        assert!(
+            world
+                .grid(planet)
+                .unwrap()
+                .set(block, at, new_value)
+                .unwrap()
+        );
+        assert_eq!(
+            world.grid(planet).unwrap().get(block, at).unwrap(),
+            new_value
+        );
+        assert_eq!(
+            world.grid(planet).unwrap().get(block, neighbour).unwrap(),
+            beside
+        );
+        // The generator's value is still the generator's, and the brick is stored.
+        assert_eq!(
+            world.grid(planet).unwrap().generated(block, at).unwrap(),
+            before
+        );
+        assert_eq!(
+            world
+                .data()
+                .grids()
+                .get(planet)
+                .unwrap()
+                .voxels
+                .brick_count(),
+            1
+        );
+        // The edit is noted for the clients as that of a brick that was not stored before, and the second edit of the brick as one that was.
+        let (brick, _) = at.split();
+        assert!(world.edits[&(planet, brick)].created);
+        assert!(
+            world
+                .grid(planet)
+                .unwrap()
+                .set(block, neighbour, beside + 1)
+                .unwrap()
+        );
+        assert!(world.edits[&(planet, brick)].created);
+        assert_eq!(world.edits[&(planet, brick)].changes.len(), 2);
+        // Setting a voxel to what it has stores nothing and says nothing.
+        let elsewhere = VoxelCoordinate::new(5, 2, 40);
+        let value = world.grid(planet).unwrap().get(block, elsewhere).unwrap();
+        assert!(
+            !world
+                .grid(planet)
+                .unwrap()
+                .set(block, elsewhere, value)
+                .unwrap()
+        );
+        assert_eq!(
+            world
+                .data()
+                .grids()
+                .get(planet)
+                .unwrap()
+                .voxels
+                .brick_count(),
+            1
+        );
+        assert!(!world.edits.contains_key(&(planet, elsewhere.split().0)));
+    }
+
+    #[test]
+    fn what_a_brick_of_a_planet_holds_is_known_from_the_stored_brick_or_else_the_generated_one() {
+        let (mut world, planet, block, _) = world_with_a_planet();
+        let uniform = |world: &mut ServerWorld, grid: GridId, brick: [i64; 3]| {
+            world
+                .grid(grid)
+                .unwrap()
+                .uniform_value(block, BrickCoordinate::new(brick[0], brick[1], brick[2]))
+                .unwrap()
+        };
+        let level = GridId::root(LevelIndex::MAIN);
+        // Deep ground, the sky, a brick with the surface in it, and a brick beyond the extent: as the level says for the first three, the default for the last.
+        for brick in [[0, -2, 0], [1, 2, 1], [0, 0, 0]] {
+            let from_the_level = uniform(&mut world, level, brick);
+            assert_eq!(
+                uniform(&mut world, planet, brick),
+                from_the_level,
+                "{brick:?}"
+            );
+        }
+        assert_eq!(uniform(&mut world, planet, [0, 0, 0]), None);
+        let default = world.data().main().overrides.layout().default_value(block);
+        assert_eq!(uniform(&mut world, planet, [9, 0, 0]), Some(default));
+        // An edit that makes a brick of the sky not uniform is seen.
+        let sky = VoxelCoordinate::new(40, 70, 40);
+        assert_eq!(uniform(&mut world, planet, [1, 2, 1]), Some(default));
+        world.grid(planet).unwrap().set(block, sky, 9).unwrap();
+        assert_eq!(uniform(&mut world, planet, [1, 2, 1]), None);
+    }
+
+    #[test]
+    fn a_planet_whose_generator_is_missing_cannot_be_read_and_says_which() {
+        let game = Game::new(&[Plugin::BaseBlocks]);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let missing = id("gone_plugin:planet_v1");
+        let level = counting_level_with_missing(&game, &calls, &[&missing]);
+        let block = block_channel(&level);
+        let generator = level.terrain.generators().runtime_id(&missing).unwrap();
+        let mut world = ServerWorld::new(WorldData::new(1, main_level_id(), level), Arc::default());
+        let planet = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        world
+            .data_mut()
+            .grids_mut()
+            .get_mut(planet)
+            .unwrap()
+            .terrain = Some(GridTerrain {
+            generator,
+            extent: BrickBox::around(BrickCoordinate::ORIGIN, 3),
+            mass: 1.0e20,
+        });
+        let at = VoxelCoordinate::new(5, 2, 3);
+        assert_eq!(
+            world.grid(planet).unwrap().get(block, at),
+            Err(AccessError::TerrainUnavailable { generator: missing })
+        );
+        // Writing needs the brick the generator makes, so it is refused too, and nothing is stored.
+        assert!(world.grid(planet).unwrap().set(block, at, 1).is_err());
+        assert_eq!(
+            world
+                .data()
+                .grids()
+                .get(planet)
+                .unwrap()
+                .voxels
+                .brick_count(),
+            0
+        );
+    }
+
+    #[test]
+    fn a_planet_is_not_among_the_ships_told_to_clients_until_the_wire_can_say_what_makes_its_bricks()
+     {
+        let (mut world, planet, block, _) = world_with_a_planet();
+        let ship = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        world
+            .grid(ship)
+            .unwrap()
+            .set(block, VoxelCoordinate::new(1, 1, 1), 2)
+            .unwrap();
+        world
+            .grid(planet)
+            .unwrap()
+            .set(block, VoxelCoordinate::new(1, 1, 1), 2)
+            .unwrap();
+        let shown = crate::grid_replication::ship_views(&world);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].id(), ship);
+    }
+
+    #[test]
+    fn a_ship_that_nothing_generates_still_reads_its_default_and_its_stored_bricks_only() {
+        let (mut world, block, calls) = counting_world();
+        let ship = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        let default = world.data().main().overrides.layout().default_value(block);
+        let at = VoxelCoordinate::new(5, 2, 3);
+        assert_eq!(world.grid(ship).unwrap().get(block, at).unwrap(), default);
+        assert_eq!(
+            world.grid(ship).unwrap().generated(block, at).unwrap(),
+            default
+        );
+        world.grid(ship).unwrap().set(block, at, 4).unwrap();
+        assert_eq!(world.grid(ship).unwrap().get(block, at).unwrap(), 4);
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        let (brick, _) = at.split();
+        assert!(world.edits[&(ship, brick)].created);
     }
 }

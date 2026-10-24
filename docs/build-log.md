@@ -805,6 +805,21 @@ callers (ship creation, the bodies' terrain, the arrival look, the light-model s
 - Tests: the existing ones, rewritten by a tool for the calls (`regrid.py`, a scratch file) and by hand where a test expected an error for a level that is not there; two new for `detach_blocks` out of a
   ship and for `uniform_value` and `generated` on a ship. No pin moved. Windows 1745 and Linux 1746 tests pass; fmt and clippy clean.
 
+Phase 39b (planets as ships, step 3: the server reads a ship through its generator; 2026-10-24). See `planet-spec.md`.
+- `ServerWorld::{moving_voxel (now `&mut self`), moving_generated_voxel, moving_uniform_value, set_moving_voxel}` and `GridView` for a ship read the stored brick, else the generator's brick in the extent, else the default; edits store the generated brick with the voxel
+  changed. `GeneratedBrickCache` is keyed by `GridId` (a level's root grid or a ship). A planet is not in `ship_views` until the wire can carry its terrain (39c).
+- Tests: 7 in `server_world` (a planet reads the level's ground inside its extent and the default outside; each brick made once, none outside the extent, a level and a planet not sharing what they remember; an edit stored over the generated brick, wins, and leaves the rest as generated;
+  uniform values from the stored or the generated brick; a missing generator named in the error and nothing stored; a ship nothing generates unchanged; a planet not replicated), 1 for the cache keyed by grid (it replaces the one keyed by level). **Mutation experiments:** 16 mutants, all caught the first time.
+- One GPU screen test of Cave (`a_replay_draws_the_form_exactly_as_it_was_drawn_live...`, adapter 3) differed by one pixel once in a full run and passed on its own straight away, and in the next full run. Nothing in 39a or 39b draws.
+- Windows 1994 and Linux 1995 tests pass (the one more on Linux is a test of a file's permissions, which only Unix has); the planet's file hash agrees on both; fmt and clippy clean.
+
+Phase 39a (planets as ships, step 2: a ship with terrain, and its file; 2026-10-24). See `planet-spec.md`.
+- `world_storage::GridTerrain { generator, extent, mass }` and `MovingGrid::terrain: Option<GridTerrain>`; `brick_extent` and `world_brick_bounds` take in the extent. The ship file's optional section `engine:grid_terrain` (see `world-file-format.md`); `ShipFormat` takes
+  the world's table of generators (`WorldData::ship_format` supplies it), writes the generator by name and reads it back through the reading world's numbers (`resolve` is asked for `engine:terrain_generator`, as for content); `ParsedShip::referenced_content` lists the generator;
+  `ShipFileError::UnknownGenerator` for a number the table lacks. Every place that built a `MovingGrid` has `terrain: None` (8 sites, found by the compiler and a script). A ship that nothing generates writes the file it wrote before: the existing pinned ship file and world file did not move.
+- Tests: 9 in `tests/ship_terrain.rs` (round trip and the file the same every time, pinned by hash, 17,126 bytes; no section for a ship that nothing generates; the generator by name through another world's numbers; refusal naming the generator; a number the table lacks; seven kinds of
+  damage to the section; parked and brought back; saved with a world and loaded; a generator of a missing plugin kept through two saves) and 1 for the extent. **Mutation experiments:** 18 mutants of the codec, the format, the loader and the extent, all caught the first time.
+
 Phase 39-1 (planets as ships, step 1: the planet's ground, bricks and coarse nodes; 2026-10-24). See `planet-spec.md`.
 - `terrain::{PlanetSettings, PlanetGround, PlanetGenerator, planet}` (`planet.rs`, `planet_node.rs`): a cube-sphere of six heightmaps blended with weights whose squares add to one; bounds (Cauchy-Schwarz over the faces that can count); bricks with the layers read radially and the
   overworld's sheet caves; `may_show` from the ground; coarse nodes made by walking columns along the axis the node is nearest to (asking about every cell for nodes that reach the plane through the centre). `coarse.rs` gained `coarse_node_from_fills` (the layering of a node, with the step

@@ -2,8 +2,8 @@
 //! the ones it already has.
 //!
 //! A client watches a box of bricks of one level. A ship is in its picture if the ship is in that level and the bricks its box touches
-//! (the bound [`MovingGrid::world_brick_bounds`] gives) meet the box. Nothing generates a ship's voxels, so a client that is told of a ship
-//! is sent every brick of it, and is told to forget it all when the ship leaves.
+//! (the bound [`MovingGrid::world_brick_bounds`] gives) meet the box. A client that is told of a ship is sent every brick of it, and is told to
+//! forget it all when the ship leaves. (A ship with terrain, a planet, is not told of yet: the wire cannot say what generates its bricks, which Phase 39c adds.)
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -36,6 +36,7 @@ pub(crate) fn ship_views(world: &ServerWorld) -> Vec<ShipView> {
         .data()
         .grids()
         .iter()
+        .filter(|(_, ship)| ship.terrain.is_none())
         .filter_map(|(id, ship)| {
             Some(ShipView {
                 id,
@@ -46,6 +47,13 @@ pub(crate) fn ship_views(world: &ServerWorld) -> Vec<ShipView> {
             })
         })
         .collect()
+}
+
+impl ShipView {
+    #[cfg(test)]
+    pub(crate) fn id(&self) -> GridId {
+        self.id
+    }
 }
 
 /// What one client has been told of the ships, by id: where each was when it was last told.

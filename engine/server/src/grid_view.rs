@@ -26,16 +26,16 @@ pub trait GridView {
     ) -> Result<bool, AccessError>;
 
     /// The value that every voxel of a brick has in a channel, if they all have the same one: a way to know what a brick holds without looking at
-    /// its voxels. A brick that nothing has been built in is every voxel at what the grid has there to begin with (a ship's default; the terrain
-    /// generator's value).
+    /// its voxels. A brick that nothing has been built in is every voxel at what the grid has there to begin with (a ship's default, or what the generator of
+    /// its terrain makes if it has one; the terrain generator's value for a level).
     fn uniform_value(
         &mut self,
         channel: ChannelIndex,
         brick: BrickCoordinate,
     ) -> Result<Option<u32>, AccessError>;
 
-    /// The value a voxel has to begin with, whatever has been built there since: the terrain generator's for the terrain of a level (a way to tell
-    /// what a player built from the ground it stands on), and the channel's default for a ship, which nothing generates.
+    /// The value a voxel has to begin with, whatever has been built there since: the terrain generator's for the terrain of a level or a ship with terrain (a way
+    /// to tell what a player built from the ground it stands on), and the channel's default for a ship that nothing generates.
     fn generated(&mut self, channel: ChannelIndex, at: VoxelCoordinate)
     -> Result<u32, AccessError>;
 }
@@ -94,18 +94,7 @@ impl GridView for ServerGrid<'_> {
     ) -> Result<Option<u32>, AccessError> {
         match self.grid.root_level() {
             Some(level) => self.world.root_uniform_value(level, channel, brick),
-            None => {
-                let ship = self
-                    .world
-                    .data()
-                    .grids()
-                    .get(self.grid)
-                    .ok_or(AccessError::NoSuchGrid(self.grid))?;
-                Ok(match ship.voxels.brick(brick) {
-                    Some(contents) => contents.channel(channel).uniform_value(),
-                    None => Some(ship.voxels.layout().default_value(channel)),
-                })
-            }
+            None => self.world.moving_uniform_value(self.grid, channel, brick),
         }
     }
 
@@ -116,15 +105,7 @@ impl GridView for ServerGrid<'_> {
     ) -> Result<u32, AccessError> {
         match self.grid.root_level() {
             Some(level) => self.world.root_generated_voxel(level, channel, at),
-            None => {
-                let ship = self
-                    .world
-                    .data()
-                    .grids()
-                    .get(self.grid)
-                    .ok_or(AccessError::NoSuchGrid(self.grid))?;
-                Ok(ship.voxels.layout().default_value(channel))
-            }
+            None => self.world.moving_generated_voxel(self.grid, channel, at),
         }
     }
 }
