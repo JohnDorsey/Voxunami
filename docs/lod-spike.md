@@ -11,9 +11,11 @@ of it as far as it goes.
    12 threads. *Measured; confidence high.* It needs a generator that can say its ground is a height field (a new coarse path, so a new generator version) and it leaves the caves out of the far view, which
    9a already recommended.
 2. **Keep the pruning as built**, and later tighten its margin (a few cells instead of a cube's edge) once there is a picture comparison to prove it is safe. *Measured; margin: argued.*
-3. **Occlusion culling is worth much more than I thought on this terrain, and no cheap sound method gets it.** In the rolling hills, from a valley or an ordinary place, 99 to 100% of the far surface is hidden
-   behind nearer ground; from the highest ridge, half. A horizon made only of what the generator can *promise* (its bounds) is sound and takes 13 ms but culls two thirds from a valley and nothing from an
-   ordinary place. What would get it all is a horizon from the heights as drawn, worked out off the main thread and used to **build hidden nodes last**, not to skip them. *Potential: measured with rays. The method: argued, not built.*
+3. **Occlusion culling is worth much more than I thought on this terrain, and a horizon swept over the column heights as the nodes are made gets nearly all of it.** In the rolling hills, from a valley or an ordinary place,
+   97 to 99% of the nodes are hidden behind nearer ground (93% from a high place, 71% from the highest ridge), and none that was hidden was seen by rays through the columns as drawn (0 of 12,000 nodes, at all five places). The sweep
+   costs 13 to 30 ms of one thread beyond making the heights, and is what decides which nodes are meshed, uploaded and drawn. A horizon made of the generator's bounds instead is sound and cheap but culls two thirds from a valley and
+   nothing from an ordinary place. *Measured, one terrain; confidence medium-high that it carries to others with relief, none for flat ground (nothing is hidden). Not yet in the engine: it needs the eye's room (the eye is
+   anywhere in a brick), edits (a dug tunnel must not hide things behind it), and the near bricks.*
 4. **Draw with one indirect call over one arena when more than about 5,000 nodes are in view**: 8 to 23 times less CPU time on the RTX 3090 (0.5 ms against 11.6 ms for 25,500 nodes); below that the draws
    as they are cost under a millisecond. The integrated GPU is limited by quads, not draws (5 ns a quad), so there the setting that matters is the pixels a cell is drawn at. *Measured; confidence high.*
 5. **Not built, and why:** a ray-marched far field (the noise has no stored max pyramid, so the bounds of a big box are the whole amplitude, and baking one is the clipmap design; for the cost of all the far
@@ -88,7 +90,7 @@ place is seen at, but far ground is drawn in cells that have no such bump. The n
 This terrain is steep (a hill 40 high on 128 voxels, and finer ones on it): the steepest ground seen in a direction from an ordinary place is a slope of 0.16 in the middle of directions (9 degrees), up to 0.35. A world with gentler
 ground would hide less; one with mountains, more.
 
-*The sound horizon* (`horizon`): the cubes of the pruned view to 20,000 voxels are taken near to far; a cube is hidden if its highest possible point (the generator's upper bound over the piece of its footprint) is under the
+*The horizon from bounds* (`horizon`): the cubes of the pruned view to 20,000 voxels are taken near to far; a cube is hidden if its highest possible point (the generator's upper bound over the piece of its footprint) is under the
 horizon of every direction it spans, and each cube that is kept adds to the horizon the steepest ray it is certain to stop (the lower bound). A cube is tested and the horizon is made in pieces of the footprint, a quadtree to a depth.
 Of the cubes **with surface**, culled (and ms for about 12,600 cubes); every culled cube was checked against the rays and **none was wrong**:
 
@@ -102,8 +104,26 @@ Of the cubes **with surface**, culled (and ms for about 12,600 cubes); every cul
 It is sound and cheap and it is nearly useless away from a valley. Why: the horizon it builds has a middle slope of 0.004 where the rays say 0.164. A bound over a piece of 32 voxels or more is the whole range of the finer octaves (the
 bound gives up beyond 4 lattice points), so the lowest the ground can be in a piece is far under the ridge it is part of, and the ridge is what hides things. Bounds are good for small regions (that is what tightening them did) and
 this question is asked about the ground at the resolution of a cell near the eye. **What it takes is a horizon made from the heights themselves**, a ray for each of a few thousand directions through the ground as drawn (I
-estimate 100 to 200 ms; not built), which is not a bound and so can be wrong by a cell: I would use it to **order** the building (hidden nodes last, and never before the rest), with the GPU culling by depth what is drawn,
-rather than to leave nodes out.
+estimate 100 to 200 ms; not built), which is not a bound and so can be wrong by a cell. The next section does exactly that, with the heights that are made anyway.
+
+*The sweep* (`sweep`): the nodes are taken near to far, as above (the nodes only, with no bricks, so the nearest ground is a node too). For each, the heights of its columns are made as they are for the mesh. The whole node is tested first
+(its highest possible point, as near as the node comes, against the horizon of every direction it can be seen in); if that fails, each column is. A node with nothing seen is not meshed and not sent; the others add each of their columns to the
+horizon: a column is certain to stop every ray in the directions (bins of 0.044 degree) that lie wholly inside the circle in its cell, under the height of its top. The horizon of a direction is kept for buckets of distance that double,
+and only buckets wholly nearer than a column count against it, so that a column is never hidden by one beside it or behind it. Checked against rays through the columns **exactly as drawn** (each at the level of the node that is really
+there, in steps of half a cell, sixteen columns of each node that was hidden):
+
+| eye | height | nodes with something | hidden | kept | the sweep beyond the heights | seen by the rays |
+|---|---|---|---|---|---|---|
+| valley | 11 | 12,292 | 12,226 (**99%**) | 64 | 13 ms | 0 |
+| | 40 | 12,176 | 12,058 (99%) | 114 | 15 ms | 0 |
+| ordinary | 67 | 12,367 | 11,936 (**97%**) | 424 | 29 ms | 0 |
+| | 93 | 12,357 | 11,447 (93%) | 889 | 74 ms | 0 |
+| ridge | 121 | 12,238 | 8,741 (**71%**) | 3,457 | 167 ms | 0 |
+
+(Making the heights of all 12,900 nodes is 68 ms on one thread, about 6 ms on twelve if it scales as the nodes did; the sweep itself cannot be spread over threads, but the heights can. A hidden node costs a few microseconds: its heights and a look at the horizon.) The first version of this had a flaw
+that the rays found, at the ridge only: it counted a column as stopping the rays of the bins it only partly covered, so a ray in the uncovered part of an edge bin was said to be stopped; the bins a column stops are now those wholly inside its circle, and
+the bins it can be seen in are all those it touches. An oracle that is stricter than the horizon is the way to find that sort of mistake, and the first oracle (rays through smooth heights, a half cell of room) was not: it still finds 37 nodes at the ridge, which I take to be its own margin (half a cell of room makes it call seen what the drawn column hides). What this does not do yet: the eye is anywhere in a brick, so the room of the eye must be taken off every column's reach and put on its height; a node that holds or has beside it an edit must not be an occluder (a dug tunnel lets
+the rays through) and must not be hidden; and the near bricks are not in it.
 
 ## 4. Drawing very many nodes (`gpu`)
 
@@ -137,6 +157,6 @@ not needed before 50,000 nodes. (The 1.3 microseconds a node that I gave you ear
 
 ## What would settle what is left
 
-- Occlusion: a horizon scanned from the heights as drawn, off the main thread, ordering the nodes to build (the potential is measured, the method is not).
+- Occlusion: the sweep in the engine (the room of the eye, edits, the near bricks), and how it behaves on terrain with less relief than these hills.
 - A picture comparison of the view with and without pruning at many places, to prove the margin of a few cells (9b, limits).
 - Columns in the engine: a field says it is a height field and gives the heights of a batch of columns; the generator makes nodes from them as a new version (`lod-spec.md`, order of work). The mesher from heights belongs with `mesh_coarse_node`.

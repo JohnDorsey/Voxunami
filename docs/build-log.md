@@ -807,7 +807,8 @@ callers (ship creation, the bodies' terrain, the arrival look, the light-model s
 
 Phase 38 (levels of detail: experiments; 2026-10-24). See `lod-spike.md` and `spikes/lod/`.
 - *Columns:* a node of hills made from its height columns (a batch of the same noise, bit for bit; the mesh made straight from the heights) takes 25 microseconds against 14 to 38 milliseconds, and a whole view out to 100 million voxels is made from nothing in 0.1 second on 12 threads.
-- *Occlusion:* from a valley or an ordinary place 99 to 100% of the far surface of the rolling hills is hidden (rays); a horizon from the generator's bounds is sound (0 wrong) and gets two thirds from a valley and nothing from an ordinary place.
+- *Occlusion:* from a valley or an ordinary place 97 to 99% of the nodes of the rolling hills are hidden behind nearer ground, and a horizon swept over the heights of the columns as the nodes are made (13 to 30 ms beyond the heights) finds them with none wrong
+  (rays through the columns as drawn); a horizon made of the generator's bounds is sound but gets two thirds from a valley and nothing from an ordinary place. The sweep's first version had a flaw (occluders in bins they only partly cover) that a stricter oracle found.
 - *Drawing:* one indirect call over one arena is 8 to 23 times less CPU than a draw for each node on the RTX 3090 (0.5 ms against 11.6 for 25,500 nodes); the integrated GPU is limited by quads (5 ns each).
 - *Not built:* a ray-marched far field, a cubemap of the far field, column meshes read from a height buffer (reasons in the report).
 - Nothing in the engine changed; the experiments are a standalone project like the other spikes.

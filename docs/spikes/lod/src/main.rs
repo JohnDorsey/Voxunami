@@ -8,6 +8,7 @@ mod horizon;
 mod occlusion;
 mod picture;
 mod pruning;
+mod sweep;
 
 fn main() {
     let name = std::env::args()
@@ -37,6 +38,7 @@ fn main() {
             horizon::how_many_cubes_does_the_horizon_of_the_eyes_place_cull();
             horizon::debug_what_the_horizon_looks_like_from_a_middling_eye();
         }
+        "sweep" => sweep::a_horizon_swept_over_the_columns_as_they_are_made(),
         "gpu" => gpu::what_submitting_very_many_nodes_costs(),
         "picture" => picture::draw_the_far_terrain_made_from_columns(),
         _ => {
@@ -49,7 +51,8 @@ fn main() {
                  occlusion  how much of what is drawn is hidden behind nearer ground (rays)\n\
                  horizon    horizon culling from the eye's place, against the rays\n\
                  gpu        what drawing very many nodes costs by how they are submitted\n\
-                 picture    draws the far terrain made from columns to picture_*.png"
+                 sweep      a horizon swept over the columns as they are made, against the rays
+\n                 picture    draws the far terrain made from columns to picture_*.png"
             );
         }
     }
