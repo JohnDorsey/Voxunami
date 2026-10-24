@@ -295,6 +295,44 @@ used in 62 files) first and alone, so that nothing else is mixed into it.
 - **Decisions made on the way:** the viewer is taken to be at the middle of its brick, on both ends; the messages are plugin messages and the protocol stays at 7; an override's version only counts up when what is *sent* of it changes (exposure
   changes, which nobody sees, do not make it sent again: measured, a one-voxel dig below the surface changed the exposure of six levels and the cells of two); the server lets a client watch `R + 4` bricks beyond the radius.
 
+### 9a. Where the time of a coarse node goes, and variants (profiled 2026-10-23, not adopted)
+
+Measured on the rolling hills of Cave (seed 2024, hills 40 high, sheet caves), in the test profile, one thread, nodes around the surface. The throwaway code (a counting wrapper round the field, the variants, the
+comparison with nodes made from the bricks) is kept as a patch and three files outside the repository; it can be put back for a rerun.
+
+- **One call.** A sample of the field costs 80 to 150 ns and the bounds of one cell 180 to 300 ns (the caves cost about as much as the hills again).
+- **The baseline.** A level 1 node with caves takes 262 ms: 1.77 million samples (95% of the time) and 31,800 bounds calls (4%). 84% of its 32,768 cells are *undecided* by the bounds and go to the lattice of 64 samples,
+  because the bounds of a noise are the range of the lattice values of the corners of the cells the region touches, which for a region of 2 voxels is still the octave's whole amplitude: the hills' bound is +-78 voxels, wider than the node.
+- **Tight bounds change nothing but the time.** The value of an octave cannot move from its value at the middle of the region by more than the steepest slope of the quintic blend (1.875 times the largest difference of two neighbouring lattice values,
+  over the cell's size) times how far the region reaches: take the narrower of that and the corner range. The output is identical (the bound only has to be sound), the property tests of soundness pass, and one test that pinned the corner range as the exact bound is the one that changes.
+  Hills alone, level 1: 166 ms to 18 ms; with caves 265 ms to 94 ms (the caves keep wide bounds: |noise| - 0.08 near a sheet, and a worst-case slope on three axes).
+- **Variants** (ms per node at levels 1 / 2 / 3 / 4, tight bounds on; the surface error is the mean difference in the height of the top of the ground in a column of cells against the nodes made from the bricks of the world *with* caves, in voxels):
+
+  | variant | caves | ms | surface error | cells drawn alike (own field) |
+  |---|---|---|---|---|
+  | baseline (4x4x4 lattice, layered blocks) | yes | 94 / 201 / 122 / 70 | 0 / 0 / 0.6 / 0.8 | 99.9% |
+  | lattice 2x2x2 | yes | 26 / 47 / 27 / 15 | 0 / 0.9 / 1.0 / 1.8 | 98.0% |
+  | baseline | no | 18 / 43 / 35 / 21 | 1.3 / 1.5 / 1.7 / 1.4 | 99.9% |
+  | lattice 2x2x2 | no | 7 / 14 / 10 / 6 | 1.3 / 1.7 / 1.9 / 2.4 | 99.7% |
+  | one sample in the middle of the cell | no | 5.9 / 10 / 7.4 / 4.2 | 1.7 / 1.8 / 1.8 / 1.6 | 98.8% |
+  | one sample per cell as a distance, bounds down to blocks of 2 | no | 2.2 / 3.4 / 2.4 / 1.4 | 1.7 / 1.8 / 1.8 / 1.6 | 98.8% |
+  | the same, blocks by priority (grass on top, else stone), surface only on top | no | 1.5 / 2.6 / 1.9 / 1.1 | 1.7 / 1.8 / 1.8 / 1.6 | 98.8% |
+  | the same, with caves | yes | 3.4 / 4.9 / 3.0 / 1.6 | 1.1 / 1.2 / 1.7 / 2.8 | 94.1% |
+  | **one sample per column of cells** (the field is the height of a surface), blocks by priority | no | **0.30 / 0.30 / 0.29 / 0.28** | 1.6 / 1.8 / 1.8 / 1.8 | 99.3% |
+  | the same, layered blocks and exact surface | no | 1.0 / 1.2 / 0.8 / 0.6 | same | 99.3% |
+
+- **The caves are the cost twice.** They are the slow bounds, and they are geometry: a view out to 700 voxels is 6,648 cubes of which 3,185 are not uniform with the caves and 734 without, and the meshes have **12.2 million quads against 0.5 million**
+  (cave walls inside ground that nobody can see). Leaving them out costs 1.3 to 1.8 voxels of surface height (a level 1 cell is 2 voxels, three pixels at the distance it is chosen at) and the cave mouths in hillsides.
+  What a coarse view should be made from is the *outer skin* of the world, which a generator can say (a second, simpler field for far away: the hills without the caves).
+- **Material by priority.** For the cells the generator makes, "grass if the cell is the top of the ground, else stone" costs 30% less time than the layered rule and is no different to look at beyond 4 voxels. For cells made from bricks (edits, ships),
+  taking the block of highest priority among the children that have a surface (stone < dirt < grass, a number each block would carry) instead of the block with the most exposure raises the grass on top of hills with caves from 80.8% to 89.7% of top cells
+  (the cave *floors* are grass too, so "buried grass" is real: 4.8% to 9.7%, 90% at level 4). The caves no longer outvote the grass; a cell of cliff with one grass voxel in it shows grass, which is the accepted loss.
+- **What a view is made of.** To 700 voxels: 6,648 cubes, 3,463 air, 2,451 solid, 734 mixed (11%). To 2,000: 38,031 cubes, 19,437 air, 16,349 solid, 2,245 mixed (6%). A mixed node costs about 1 ms to mesh as well. With the column variant and the
+  tight bounds the whole 700-voxel view would be about 734 x (0.3 + 1.3) ms, a second on one thread; pruning the air and the buried solid leaves a tenth of the jobs, draw calls and uploads.
+- **Order of the work, by what it buys:** (1) tight bounds (identical output, 9x for hills, helps brick generation too); (2) a far field for generators and the column fill for fields that are heights (a trait method `surface_height`, with the
+  per-cell distance as the fallback for other fields, which must then be roughly distances in voxels; a planet's analytic cells in 39e are the same idea); (3) pruning cubes that hold nothing visible (`may_hold`); (4) priority for blocks, with a
+  `coarse_priority` property on blocks; (5) a cache of generator nodes on the server, and a faster mesher for nodes that are surfaces of columns.
+
 ## 6. Not here
 
 Planets and a ground that is a ship; the sphere generator; the telescope; fading between detail levels; a block per direction (optional upgrade,
