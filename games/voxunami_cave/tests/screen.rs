@@ -8,11 +8,11 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use common::{Player, Rig, SEED, VIEW_RADIUS};
+use game_shell::Identity;
 use game_shell::files::{open_recording, record_connection};
 use game_shell::screen::{Screen, ScreenKey, ScreenText, Source};
 use game_shell::session::{Mode, Session};
 use game_shell::view::{camera_at, configure_renderer, show_screen};
-use game_shell::{GameContent, Identity};
 use namespaced_id::NamespacedId;
 use plugin_host::{
     CommandSpec, FormId, HandlerSpec, Plugin, PromptAnswered, Registrar, UiAction, UiResponded,
@@ -116,7 +116,7 @@ struct Setup {
 
 fn setup() -> Setup {
     let content = CaveContent::new();
-    let world = content.new_world(SEED);
+    let world = content.new_overworld_world(SEED);
     let (heard, answers) = (Heard::default(), Answers::default());
     let mut plugins = cave_plugins(&content);
     plugins.push(Box::new(Shower {

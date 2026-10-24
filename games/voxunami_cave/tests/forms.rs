@@ -6,7 +6,6 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use common::{Player, Rig, SEED, VIEW_RADIUS};
-use game_shell::GameContent;
 use game_shell::Identity;
 use game_shell::files::{open_recording, record_connection};
 use game_shell::session::{Mode, Session};
@@ -87,7 +86,7 @@ impl Plugin for Shower {
 
 fn rig_with_shower() -> (Rig, Heard) {
     let content = CaveContent::new();
-    let world = content.new_world(SEED);
+    let world = content.new_overworld_world(SEED);
     let heard = Heard::default();
     let mut plugins = cave_plugins(&content);
     plugins.push(Box::new(Shower {

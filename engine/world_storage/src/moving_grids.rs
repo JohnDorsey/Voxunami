@@ -164,6 +164,9 @@ pub struct ParkedGrid {
     pub checksum: u32,
     /// It went away with its pilot and comes back with whoever is aboard it, not when a player comes near.
     pub waits_for_those_aboard: bool,
+    /// It has terrain: it is a planet, which a client draws from as far as there is anything to see of it, so it is not put in a file for good and is brought back
+    /// whatever the distance.
+    pub has_terrain: bool,
 }
 
 /// The grids that are not the root grids of levels, and the ids they had before they were split or merged.

@@ -105,7 +105,20 @@ the ground, per direction, which a generator would have to give. The setting tha
 on a screen yet (39f does).
 
 
-**The level and the game (Cave).** `voxunami_cave:mini_cosmos`, the generator of an empty level (all air), a planet made when the world is made; a new world has it first. An overworld-first constructor is kept for the tests that start in the overworld.
+**The level and the game (built in 39f).** `terrain::empty` (a generator that makes air everywhere and says nothing may show; registered as `base_blocks:empty_v1` after the hills and the planet, so that the numbers of every older world's generators stand) is the generator of `voxunami_cave:mini_cosmos`, which
+`CaveContent::new_world` makes first, with the overworld second (`ContentPackage::new_world_of` makes a world of several levels, each with its own default generator); the planet is made with the world: a ship in the first level at its origin, held, made by `base_blocks:small_planet_v1`, over 2,100 bricks each way (67,200 voxels,
+which holds the ground with the highest hills it can have), of the mass that pulls 10 m/s^2 at 63,710 (`10 R^2 / G`, in `content.rs`). `CaveContent::new_overworld_world` is the world Cave began with (the overworld alone, no planet), which the tests that start in the overworld use (and the golden session); a world that was saved before there was a planet is
+loaded as it was. **Where a player arrives:** `voxunami_cave::landing::on_a_planet` (the ground at the top of the first planet of a level, found by looking down the column of its +y axis through the bricks that are not all air, with what has been dug or built counted) is where a new player stands if their client began where the game says players
+start (a client started with `--camera` is put where it asked), and where `/level go` puts a player in a level that has a planet; `/level go` from a level with a planet to one without puts them where players start there (the places of one are nowhere in the other), and otherwise they are at the same place, as always. For that
+`player_presence::Presence::set_level_arrival` (a rule given the world, the level a player is in and the level they are sent to) and the bodies of Cave follow the record when the level changes (they kept their own place before). **A planet is always in memory:** the world file says which of its ships are planets (the flags byte of a ship in
+`engine:grids`: bit 0 waits for those aboard, as before, bit 1 has terrain), and the lifecycle brings a planet back from its file whatever the distance (a world that was saved comes back with every ship in a file, and a client has to be told of the planet from anywhere).
+
+**Seen (2026-10-24, headless screenshots of the real game, ambient light raised for the picture: Cave's is 0, so terrain is black unless the player says `.ambient`):** the surface at the pole (rolling green hills, cave sheets breaking the ground, the far hills as nodes to the horizon); the horizon from 2.8 km up; the planet as a round disc from 400 km and 230 km (a view from the side needs the pitch of the local
+horizon: a player's up is away from the planet, so a pitch of 0 looks along the ground wherever they are). From the ground the first picture took 8.7 s in the dev profile (9,171 bricks); from 400 km 1 s.
+
+**Not done, and known:** (a) a rigid-body ship has no collider against a planet (39d); (b) the first contact with the planet costs about half a second and a row of new bricks 40 ms at the server (39d); (c) the server does not correct the nodes of a planet (39e), so a hole dug in it shows in the bricks round the player and not in the far nodes; (d) the horizon of the core is generous (39e); (e) a player whose ship is lost and who asks for the world's
+spawn is put at the constant (16, 110, 16) of the level the ship was in, which in space is inside the planet, near its centre (the lifecycle's spawn is a constant, not a place on the planet); (f) nothing lights the planet (Cave has no sky light yet), so it is as dark as the overworld unless `.ambient` is raised; (g) the planet's own seed makes its hills (the world's seed), so no two worlds have the same pole and a client cannot know the height
+of the pole before the server says (a client that asks for `--camera` over it is put there, in the air or in the ground).
 
 ## 4. Steps (each ends with tests, clippy, rustfmt, mutation experiments, docs, then a commit)
 
@@ -115,7 +128,7 @@ on a screen yet (39f does).
 - **39c The wire (protocol 8) and the client generates.** A replay test. **Built 2026-10-24.**
 - **39d Colliders from generated bricks; gravity of a level; the planet's mass; boarding and leaving on a planet.** **Built 2026-10-24.**
 - **39e Levels of detail for a ship with terrain.** **Built 2026-10-24.**
-- **39f The level `mini_cosmos` in Cave**: the empty generator, the planet, the spawn, the default; the tests that start in the overworld; documents.
+- **39f The level `mini_cosmos` in Cave**: the empty generator, the planet, the spawn, the default; the tests that start in the overworld; documents. **Built 2026-10-24** (the three steps before it, 39d, 39e and this, are the owner's request of 2026-10-24: a level `mini_cosmos` with a planet of 1% of the Earth's radius, a ship with a spherical terrain generator made from a heightmap, in levels of detail, and the default level).
 
 ## 5. Questions
 

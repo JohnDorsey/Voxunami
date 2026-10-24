@@ -41,6 +41,23 @@ impl PlayersPlugin {
         }
     }
 
+    /// The same, where players arrive in a level they are sent to (`/level go`) being what `rule` says of the level they come from and the one they are sent to: a
+    /// place in the world's axes, or `None` for the place they were at (see [`Presence::set_level_arrival`]).
+    pub fn with_level_arrival(
+        self,
+        rule: impl Fn(
+            &server::ServerWorld,
+            voxel_space::LevelIndex,
+            voxel_space::LevelIndex,
+        ) -> Option<voxel_space::WorldPosition>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        lock(&self.presence).set_level_arrival(rule);
+        self
+    }
+
     /// The presence, to give to the plugins that use it.
     pub fn presence(&self) -> SharedPresence {
         Arc::clone(&self.presence)

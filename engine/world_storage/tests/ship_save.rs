@@ -722,6 +722,7 @@ fn sample_record() -> GridsRecord {
         serial: 17,
         checksum: 0xdead_beef,
         waits_for_those_aboard: raw.is_multiple_of(2),
+        has_terrain: raw.is_multiple_of(3),
     };
     GridsRecord {
         next: FIRST + 9,
@@ -856,6 +857,7 @@ proptest! {
                 serial,
                 checksum,
                 waits_for_those_aboard: waits,
+                has_terrain: number % 3 == 1,
             }).collect(),
             tombstones: (0..retired as u64).map(|number| (
                 GridId::new(FIRST + number),
@@ -879,6 +881,7 @@ fn a_parked_record_is_what_a_world_needs_to_find_a_ship_without_its_file() {
         file: name(first, 1),
         checksum: 0,
         waits_for_those_aboard: false,
+        has_terrain: false,
     };
     let taken = world.grids_mut().park(first, record.clone()).unwrap();
     assert_eq!(taken, ship);
@@ -886,4 +889,48 @@ fn a_parked_record_is_what_a_world_needs_to_find_a_ship_without_its_file() {
     assert!(world.grids_mut().park(first, record).is_none());
     assert!(world.grids_mut().unpark(first, taken.clone()).is_some());
     assert!(world.grids_mut().unpark(first, taken).is_none());
+}
+
+#[test]
+fn the_flags_of_a_ship_in_the_world_file_are_one_byte_whose_first_bit_is_the_old_flag_and_whose_second_is_that_it_has_terrain()
+ {
+    let record = |waits, terrain| GridsRecord {
+        next: FIRST + 2,
+        next_serial: 5,
+        ships: vec![GridRecord {
+            id: GridId::new(FIRST),
+            level: main_level_id(),
+            pose: sample_record().ships[0].pose,
+            bounds: None,
+            serial: 3,
+            checksum: 7,
+            waits_for_those_aboard: waits,
+            has_terrain: terrain,
+        }],
+        tombstones: Vec::new(),
+    };
+    // (The byte is the last but the count of the retired ids, which is none.)
+    let flags_of = |waits, terrain| {
+        let bytes = encode_grids(&record(waits, terrain));
+        assert_eq!(bytes[bytes.len() - 1], 0);
+        bytes[bytes.len() - 2]
+    };
+    // A ship that is not a planet is written as it always was: the flag is 0 or 1.
+    assert_eq!(flags_of(false, false), 0);
+    assert_eq!(flags_of(true, false), 1);
+    assert_eq!(flags_of(false, true), 2);
+    assert_eq!(flags_of(true, true), 3);
+    for (waits, terrain) in [(false, false), (true, false), (false, true), (true, true)] {
+        assert_eq!(
+            decode_grids(&encode_grids(&record(waits, terrain))).unwrap(),
+            record(waits, terrain)
+        );
+    }
+    // A byte with another bit set is refused.
+    let mut bytes = encode_grids(&record(true, true));
+    let at = bytes.len() - 2;
+    bytes[at] = 4;
+    assert!(decode_grids(&bytes).is_err());
+    bytes[at] = 0xFF;
+    assert!(decode_grids(&bytes).is_err());
 }

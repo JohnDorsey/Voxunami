@@ -42,8 +42,15 @@ pub fn cave_plugins_reporting(
     Vec<Box<dyn Plugin>>,
     impl Fn() -> BodiesReport + Send + Sync + 'static + use<>,
 ) {
-    // The server moves the players, so what a client says about where it is is not believed.
-    let players = PlayersPlugin::new(false);
+    // The server moves the players, so what a client says about where it is is not believed. A player sent to a level arrives on the ground at the top of the
+    // planet that is in it; a player sent from a level with a planet in it to one that has none arrives where players start (the places of the one are nowhere in
+    // the other); and otherwise they are at the same place.
+    let (block_channel, air) = (content.block_channel(), content.blocks.air);
+    let players = PlayersPlugin::new(false).with_level_arrival(move |world, from, to| {
+        crate::landing::on_a_planet(world, to, block_channel, air).or_else(|| {
+            crate::landing::on_a_planet(world, from, block_channel, air).map(|_| world_spawn())
+        })
+    });
     let presence = players.presence();
     let movement = MovementPlugin::new(content, presence.clone());
     // Ships with docking ports are drawn together and joined by the one that moves them, and undocked by the command; they share what docking is.
@@ -85,7 +92,7 @@ pub fn cave_plugins_reporting(
 }
 
 /// Where players start: the world's spawn.
-fn world_spawn() -> WorldPosition {
+pub(crate) fn world_spawn() -> WorldPosition {
     let [x, y, z] = Cave::default_camera().position;
     WorldPosition::new(BrickCoordinate::ORIGIN, [x as f32, y as f32, z as f32])
 }

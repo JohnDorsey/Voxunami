@@ -569,7 +569,8 @@ fn update(world: &mut ServerWorld, presence: &SharedPresence, state: &Mutex<Stat
                 Some(bounds) => squared_distance_to_bricks(player, bounds),
                 None => squared_distance(player, parked.pose.position),
             });
-        if away <= simulate {
+        // (A planet is brought back whatever the distance: a client draws it from as far as there is anything to see of it.)
+        if away <= simulate || parked.has_terrain {
             actions.push((id, Action::BringIn));
         }
     }

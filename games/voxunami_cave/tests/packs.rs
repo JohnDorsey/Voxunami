@@ -65,7 +65,7 @@ fn content_with_the_pack() -> CaveContent {
 
 fn rig_with_the_pack() -> Rig {
     let content = content_with_the_pack();
-    let world = content.new_world(SEED);
+    let world = content.new_overworld_world(SEED);
     Rig::with_world(content, world)
 }
 
@@ -269,7 +269,7 @@ fn the_placeable_pack() -> Vec<RawPack> {
 fn rig_with_the_placeable_pack() -> Rig {
     let mut content = CaveContent::new();
     content.apply_packs(&the_placeable_pack()).unwrap();
-    let world = content.new_world(SEED);
+    let world = content.new_overworld_world(SEED);
     Rig::with_world(content, world)
 }
 

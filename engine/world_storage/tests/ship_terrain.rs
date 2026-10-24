@@ -6,6 +6,7 @@ use std::sync::Arc;
 use binary_codec::ByteWriter;
 use content_registry::IdentifierRegistry;
 use world_storage::container::{Section, read_container, write_container};
+use world_storage::engine_sections::{decode_grids, grids_id};
 use world_storage::test_support::{ALL_PLUGINS, Game, Plugin, id, main_level_id, sample_world};
 use world_storage::{
     MemoryShipFiles, MovingGrid, ParsedShip, ShipFileError, ShipFiles, WorldData, terrain_id,
@@ -359,4 +360,52 @@ fn a_generator_whose_plugin_is_missing_is_kept_by_the_planet_that_names_it() {
     let (mut last, _) = restored.load(&save_again.world).unwrap();
     restored.load_all_ships(&mut last, &files_again);
     assert_eq!(last.grids().get(planet_id).unwrap().terrain, planet.terrain);
+}
+
+#[test]
+fn the_world_file_says_which_of_its_ships_are_planets_whether_they_were_in_memory_or_in_files() {
+    let game = Game::new(&ALL_PLUGINS);
+    let mut world = sample_world(&game);
+    let (made_planet, made_ship) = (game.sample_planet(&world, 0), game.sample_ship(&world, 100));
+    let planet = world.grids_mut().create(made_planet);
+    let ship = world.grids_mut().create(made_ship);
+    let listed = |world_file: &[u8]| {
+        let section = read_container(world_file)
+            .unwrap()
+            .into_iter()
+            .find(|section| section.identifier == grids_id())
+            .expect("the file has ships");
+        decode_grids(&section.payload)
+            .unwrap()
+            .ships
+            .into_iter()
+            .map(|record| (record.id, record.has_terrain))
+            .collect::<Vec<_>>()
+    };
+
+    // Saved from memory.
+    let save = game.save_with_ships(&mut world);
+    assert_eq!(listed(&save.world), [(planet, true), (ship, false)]);
+    let mut files = MemoryShipFiles::new();
+    for (file, bytes) in &save.new_ship_files {
+        files.write(file, bytes).unwrap();
+    }
+
+    // Read back, both are in files, and the world knows which is a planet without reading them.
+    let mut other = Game::new(&ALL_PLUGINS);
+    let (mut loaded, _) = other.load(&save.world).unwrap();
+    assert!(loaded.grids().get_parked(planet).unwrap().has_terrain);
+    assert!(!loaded.grids().get_parked(ship).unwrap().has_terrain);
+
+    // And put away from memory, one by one, the same.
+    other.load_all_ships(&mut loaded, &files);
+    let format = other.ship_format(&loaded);
+    loaded
+        .park_ship(planet, false, &mut files, &format)
+        .unwrap();
+    loaded.park_ship(ship, false, &mut files, &format).unwrap();
+    assert!(loaded.grids().get_parked(planet).unwrap().has_terrain);
+    assert!(!loaded.grids().get_parked(ship).unwrap().has_terrain);
+    let again = other.save_with_ships(&mut loaded);
+    assert_eq!(listed(&again.world), [(planet, true), (ship, false)]);
 }

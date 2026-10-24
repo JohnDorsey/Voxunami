@@ -16,7 +16,8 @@ use block_models::{
 use content_registry::{Registry, RuntimeId};
 use namespaced_id::NamespacedId;
 use terrain::{
-    PlanetSettings, RollingHillsSettings, TerrainGenerator, TerrainMaterials, planet, rolling_hills,
+    PlanetSettings, RollingHillsSettings, TerrainGenerator, TerrainMaterials, empty, planet,
+    rolling_hills,
 };
 use voxel_grid::{ChannelDefinition, ChannelIndex};
 use voxel_space::FaceDirection;
@@ -160,6 +161,11 @@ pub fn small_planet_generator_identifier() -> NamespacedId {
     identifier("base_blocks:small_planet_v1")
 }
 
+/// The terrain generator version of space: air everywhere, for a level with nothing in it but what is put there (`terrain::empty`).
+pub fn empty_generator_identifier() -> NamespacedId {
+    identifier("base_blocks:empty_v1")
+}
+
 /// What each state of a solid block of this plugin looks like, by name; the position is the state.
 pub const SHAPE_NAMES: [&str; 7] = [
     "whole",
@@ -263,6 +269,12 @@ impl BaseBlockIds {
         ));
         generators
             .register(small_planet_generator_identifier(), small_planet)
+            .expect("the identifier is new");
+        // (After the planet, for the same reason.)
+        let nothing: Arc<dyn TerrainGenerator> =
+            Arc::new(empty(block_channel, self.terrain_materials().air));
+        generators
+            .register(empty_generator_identifier(), nothing)
             .expect("the identifier is new");
         generators
     }
@@ -565,6 +577,32 @@ mod tests {
         assert_eq!(
             (surface.content_digest(), underground.content_digest()),
             (PINNED_SURFACE_DIGEST, PINNED_UNDERGROUND_DIGEST)
+        );
+    }
+
+    #[test]
+    fn the_empty_generator_is_third_in_the_table_and_makes_this_plugins_air() {
+        let blocks = BaseBlocks::new();
+        let fixture = StandardTestLayout::default();
+        let generators = blocks.terrain_generators(2024, fixture.material);
+        // The numbers of the generators of the worlds made before it do not move.
+        let numbers: Vec<_> = [
+            rolling_hills_generator_identifier(),
+            small_planet_generator_identifier(),
+            empty_generator_identifier(),
+        ]
+        .iter()
+        .map(|identifier| generators.runtime_id(identifier).unwrap().raw())
+        .collect();
+        assert_eq!(numbers, [0, 1, 2]);
+        let id = generators
+            .runtime_id(&empty_generator_identifier())
+            .unwrap();
+        let generator = generators.entry(id).unwrap().content().unwrap();
+        let brick = generator.generate_brick(&fixture.layout, BrickCoordinate::new(5, -7, 9));
+        assert_eq!(
+            brick.channel(fixture.material).uniform_value(),
+            Some(blocks.terrain_materials().air)
         );
     }
 

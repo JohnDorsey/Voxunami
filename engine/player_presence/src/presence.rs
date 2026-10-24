@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use entities::{ComponentBag, Entity, EntityError, EntityKindSpec, Hidden, Inventory};
 use namespaced_id::NamespacedId;
@@ -49,11 +50,40 @@ pub struct Presence {
     entities: BTreeMap<ClientId, EntityId>,
     /// Only players who have asked to move before their first pose; everyone else is in the main level.
     pending_levels: BTreeMap<ClientId, LevelIndex>,
+    /// Where the game says players arrive in a level they are sent to, if it says.
+    level_arrival: Option<LevelArrival>,
+}
+
+/// Where the game puts a player who is sent from one level to another (the arguments, in that order): a place in the world's axes, or `None` to leave them at the
+/// place they were at, in the other level.
+type ArrivalRule =
+    dyn Fn(&ServerWorld, LevelIndex, LevelIndex) -> Option<WorldPosition> + Send + Sync;
+
+#[derive(Clone)]
+struct LevelArrival(Arc<ArrivalRule>);
+
+impl std::fmt::Debug for LevelArrival {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("LevelArrival")
+    }
 }
 
 impl Presence {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Says where a player arrives in a level they are sent to (by `/level go` or [`Presence::move_to_level`]): `rule` is given the world, the level they are in
+    /// and the level they are sent to, and answers a place in the world's axes, or `None` to leave them where they were. Without a rule they always are: a level is
+    /// another world at the same places.
+    pub fn set_level_arrival(
+        &mut self,
+        rule: impl Fn(&ServerWorld, LevelIndex, LevelIndex) -> Option<WorldPosition>
+        + Send
+        + Sync
+        + 'static,
+    ) {
+        self.level_arrival = Some(LevelArrival(Arc::new(rule)));
     }
 
     /// A player has connected: if the world holds the player entity of their key from before, they take it
@@ -244,8 +274,13 @@ impl Presence {
                 let Some(current) = world.entities().get(entity) else {
                     return;
                 };
-                // A player aboard a ship leaves it: they are where they are in the world, in the other level.
-                let (_, position, orientation) = world_placement(world.data(), current);
+                // A player aboard a ship leaves it: they are where they are in the world, in the other level, or where the game puts them there.
+                let (from, position, orientation) = world_placement(world.data(), current);
+                let position = self
+                    .level_arrival
+                    .as_ref()
+                    .and_then(|arrival| (arrival.0)(world, from, level))
+                    .unwrap_or(position);
                 let pose = EntityPose::new(GridId::root(level), position, orientation);
                 update(world, entity, |world, entity| {
                     world.set_entity_pose(entity, pose)

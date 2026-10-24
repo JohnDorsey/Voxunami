@@ -105,7 +105,7 @@ fn block_at(content: &CaveContent, at: VoxelCoordinate) -> u32 {
 
 /// A world with the platform and the lamp in it as edits, for a server to start from.
 fn scene_world(content: &CaveContent) -> world_storage::WorldData {
-    let mut world = content.new_world(7);
+    let mut world = content.new_overworld_world(7);
     let channel = content.block_channel();
     let overrides = &mut world.main_mut().overrides;
     for x in 0..SIZE {

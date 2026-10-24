@@ -80,7 +80,7 @@ fn session(name: &str, arrangement: usize) -> (u64, usize, u64) {
     let path: PathBuf = directory.join("session.voxreplay");
 
     let content = CaveContent::new();
-    let world = content.new_world(common::SEED);
+    let world = content.new_overworld_world(common::SEED);
     let plugins = arranged(cave_plugins(&content), arrangement);
     let mut rig = Rig::with_plugins(content, world, plugins);
     let connection = rig.connector.connect().unwrap();
@@ -323,8 +323,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// A planet generator in the table (Phase 39d, 2026-10-24; `base_blocks:small_planet_v1`, registered after the rolling hills so that the hills keep their number): the welcome lists the generators of the world, and so does the
 /// saved world. The stream grows by 28 bytes, 7,190,133 to 7,190,161, which is the identifier (a byte for its length and 27 for the name) and nothing else (measured by the length, not frame by frame);
 /// the saved world's hash changed with its table of generators. Taken on Windows; Linux is checked to agree.
+/// The empty generator in the table (Phase 39f, 2026-10-24; `base_blocks:empty_v1`, after the planet's, for the space of a new world): the same again, 21 bytes more, 7,190,161 to 7,190,182, which is the identifier (20 characters and a byte
+/// for their number) and nothing else (measured by the length, not frame by frame). The script runs in the overworld alone (`new_overworld_world`), as it always did: a new world is space with a planet in it.
 const PINNED: (u64, usize, u64) = (
-    3_321_652_392_117_276_472,
-    7_190_161,
-    4_401_030_462_161_597_609,
+    14_690_758_500_541_840_281,
+    7_190_182,
+    15_130_642_089_215_889_701,
 );

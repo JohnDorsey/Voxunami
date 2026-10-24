@@ -49,7 +49,7 @@ pub struct Rig {
 impl Rig {
     pub fn new() -> Self {
         let content = CaveContent::new();
-        let world = content.new_world(SEED);
+        let world = content.new_overworld_world(SEED);
         Self::with_world(content, world)
     }
 
@@ -584,7 +584,7 @@ impl Scene {
     /// A scene, and a way to ask what the plugin that moves ships has done with the colliders of terrain.
     pub fn reporting() -> (Self, impl Fn() -> grid_bodies::BodiesReport) {
         let content = CaveContent::new();
-        let world = content.new_world(SEED);
+        let world = content.new_overworld_world(SEED);
         let actions: Arc<Mutex<VecDeque<Action>>> = Arc::default();
         let (mut plugins, report) = voxunami_cave::plugins::cave_plugins_reporting(&content);
         plugins.push(Box::new(Script {
@@ -596,10 +596,25 @@ impl Scene {
         (Self { rig, actions }, report)
     }
 
-    /// A scene whose server keeps ship files through the disk `disk` makes of the memory they are in.
-    pub fn with_disk(disk: impl FnOnce(MemoryShipFiles) -> Box<dyn ShipFiles>) -> Self {
+    /// A scene in the world a new game starts in: space with the planet in it, and the overworld second.
+    pub fn in_a_new_world() -> Self {
         let content = CaveContent::new();
         let world = content.new_world(SEED);
+        Self::in_world(content, world, |files| Box::new(files))
+    }
+
+    /// A scene in the overworld alone, whose server keeps ship files through the disk `disk` makes of the memory they are in.
+    pub fn with_disk(disk: impl FnOnce(MemoryShipFiles) -> Box<dyn ShipFiles>) -> Self {
+        let content = CaveContent::new();
+        let world = content.new_overworld_world(SEED);
+        Self::in_world(content, world, disk)
+    }
+
+    fn in_world(
+        content: CaveContent,
+        world: world_storage::WorldData,
+        disk: impl FnOnce(MemoryShipFiles) -> Box<dyn ShipFiles>,
+    ) -> Self {
         let actions: Arc<Mutex<VecDeque<Action>>> = Arc::default();
         let mut plugins = cave_plugins(&content);
         plugins.push(Box::new(Script {
@@ -657,4 +672,34 @@ impl Scene {
             actions,
         }
     }
+}
+
+/// The height, in the planet's own coordinates, of the highest block that is not air in the column of voxels at `x` and `z`, as the planet's generator makes it
+/// (caves and all).
+pub fn top_of_the_column(x: i64, z: i64) -> i64 {
+    let content = CaveContent::new();
+    let world = content.new_overworld_world(SEED);
+    let layout = Arc::clone(world.main().overrides.layout());
+    let generator = content
+        .blocks
+        .terrain_generators(SEED, content.block_channel());
+    let id = generator
+        .runtime_id(&base_blocks::small_planet_generator_identifier())
+        .unwrap();
+    let generator = generator.entry(id).unwrap().content().unwrap();
+    for brick_y in (1900..2010).rev() {
+        let coordinate = BrickCoordinate::new(x.div_euclid(32), brick_y, z.div_euclid(32));
+        let brick = generator.generate_brick(&layout, coordinate);
+        for local_y in (0..32).rev() {
+            let local = voxel_space::LocalVoxelIndex::new(
+                x.rem_euclid(32) as u8,
+                local_y,
+                z.rem_euclid(32) as u8,
+            );
+            if brick.get(content.block_channel(), local) != content.blocks.air {
+                return brick_y * 32 + i64::from(local_y);
+            }
+        }
+    }
+    panic!("no ground in the column");
 }

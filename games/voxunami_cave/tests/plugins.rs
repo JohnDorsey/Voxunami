@@ -4,7 +4,6 @@
 mod common;
 
 use common::{Rig, SEED};
-use game_shell::GameContent;
 use namespaced_id::NamespacedId;
 use plugin_host::{HandlerSpec, Phase, Plugin, Registrar, SystemSpec, Verdict};
 use server::GridView;
@@ -18,7 +17,7 @@ const GROUND: i64 = 102;
 /// A rig whose server runs Cave's plugins and these others.
 fn rig_with(others: Vec<Box<dyn Plugin>>) -> Rig {
     let content = CaveContent::new();
-    let world = content.new_world(SEED);
+    let world = content.new_overworld_world(SEED);
     let mut plugins = cave_plugins(&content);
     plugins.extend(others);
     Rig::with_plugins(content, world, plugins)

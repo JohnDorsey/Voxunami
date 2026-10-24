@@ -138,6 +138,7 @@ fn the_ships_of_an_older_file_are_the_same_turn_and_what_is_written_now_is_read_
             serial: 4,
             checksum: 0xDEAD_BEEF,
             waits_for_those_aboard: true,
+            has_terrain: true,
         }],
         tombstones: Vec::new(),
     };

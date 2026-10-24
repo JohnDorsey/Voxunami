@@ -292,7 +292,7 @@ impl Plugin for Filler {
 #[test]
 fn an_item_that_does_not_fit_stays_on_the_ground_and_a_partly_fitting_one_leaves_the_rest() {
     let content = CaveContent::new();
-    let world = content.new_world(SEED);
+    let world = content.new_overworld_world(SEED);
     let mut plugins = cave_plugins(&content);
     plugins.push(Box::new(Filler));
     let mut rig = Rig::with_plugins(content, world, plugins);
@@ -461,7 +461,7 @@ fn an_item_on_the_ground_is_drawn_as_a_small_box_of_its_blocks_colour_standing_o
 #[test]
 fn a_stack_that_fits_in_part_is_taken_in_part_and_the_rest_stays_on_the_ground() {
     let content = CaveContent::new();
-    let world = content.new_world(SEED);
+    let world = content.new_overworld_world(SEED);
     let mut plugins = cave_plugins(&content);
     plugins.push(Box::new(Filler));
     let mut rig = Rig::with_plugins(content, world, plugins);

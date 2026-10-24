@@ -17,6 +17,7 @@ pub mod content;
 pub mod fire;
 pub mod game;
 pub mod items;
+pub mod landing;
 pub mod lighting;
 pub mod logic;
 pub mod messages;

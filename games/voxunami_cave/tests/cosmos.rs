@@ -1,0 +1,455 @@
+//! The world a new game starts in (Phase 39f): a level of space with a planet in it, first, and the overworld second. And the world the tests of the overworld start in.
+
+mod common;
+
+use base_blocks::{
+    empty_generator_identifier, rolling_hills_generator_identifier,
+    small_planet_generator_identifier,
+};
+use std::sync::{Arc, Mutex};
+
+use common::{
+    PlayerExt, SEED, Scene, player_pose, say, ship_id, tick_and_follow, top_of_the_column,
+};
+use game_shell::{GameContent, GameDefinition};
+use server::GridView;
+use terrain::PlanetSettings;
+use voxel_space::{
+    BrickCoordinate, GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate, WorldPosition,
+};
+use voxunami_cave::Cave;
+use voxunami_cave::aboard::in_voxels;
+use voxunami_cave::content::{CaveContent, mini_cosmos_id, overworld_id};
+use voxunami_cave::game::{break_block, place_block};
+use voxunami_cave::landing::on_a_planet;
+
+/// The levels of a world, each with its identifier and the generator that is the default of its regions.
+fn levels_of(world: &world_storage::WorldData) -> Vec<(String, String)> {
+    world
+        .levels()
+        .map(|(_, id, level)| {
+            (
+                id.to_string(),
+                level.preferred_default_generator().to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_new_world_is_space_first_and_the_overworld_second_with_a_planet_in_space() {
+    let content = CaveContent::new();
+    let world = content.new_world(SEED);
+    assert_eq!(
+        levels_of(&world),
+        [
+            (
+                mini_cosmos_id().to_string(),
+                empty_generator_identifier().to_string()
+            ),
+            (
+                overworld_id().to_string(),
+                rolling_hills_generator_identifier().to_string()
+            ),
+        ]
+    );
+    // Players start in the first.
+    assert_eq!(world.level_id(LevelIndex::MAIN), Some(&mini_cosmos_id()));
+
+    // One ship, the planet: in space, at its origin, not moving, with nothing stored, made by the planet's generator, and as heavy as it must be to pull ten metres a
+    // second a second at its surface.
+    assert_eq!(world.grids().len(), 1);
+    let planet = world
+        .grids()
+        .get(ship_id(0))
+        .expect("the planet is the first ship");
+    assert_eq!(planet.level, LevelIndex::MAIN);
+    assert_eq!(planet.pose, GridPose::identity());
+    assert!(planet.held && !planet.frozen);
+    assert_eq!(planet.centre_of_mass, [0.0; 3]);
+    assert_eq!(planet.voxels.brick_count(), 0);
+    let terrain = planet.terrain.expect("the planet has terrain");
+    let generators = world.main().terrain.generators();
+    assert_eq!(
+        generators.entry(terrain.generator).unwrap().identifier(),
+        &small_planet_generator_identifier()
+    );
+    let radius = PlanetSettings::one_percent_of_earth(SEED).radius;
+    let mass_for_ten = 10.0 * radius * radius / 6.674e-11;
+    assert!((f64::from(planet.mass) / mass_for_ten - 1.0).abs() < 1.0e-6);
+    assert_eq!(terrain.mass, planet.mass);
+    // The extent holds the ground, hills and all: the hills of a face are 320 voxels at the most and the blend of three can be 1.8 times that.
+    let extent = terrain.extent;
+    let reach = |brick: i64| brick.abs() as f64 * 32.0;
+    for coordinate in [extent.min(), extent.max()] {
+        for axis in [coordinate.x(), coordinate.y(), coordinate.z()] {
+            assert!(reach(axis) > radius + 600.0, "{extent:?}");
+        }
+    }
+    // Space itself has nothing in it: not a brick stored, and the overworld none either.
+    assert_eq!(world.main().overrides.brick_count(), 0);
+    assert_eq!(
+        world
+            .level(LevelIndex::new(1))
+            .expect("the overworld is the second level")
+            .overrides
+            .brick_count(),
+        0
+    );
+}
+
+#[test]
+fn the_world_the_tests_of_the_overworld_start_in_is_the_overworld_alone() {
+    let content = CaveContent::new();
+    let world = content.new_overworld_world(SEED);
+    assert_eq!(
+        levels_of(&world),
+        [(
+            overworld_id().to_string(),
+            rolling_hills_generator_identifier().to_string()
+        )]
+    );
+    assert!(world.grids().is_empty());
+    assert_eq!(world.level_id(LevelIndex::MAIN), Some(&overworld_id()));
+}
+
+#[test]
+fn the_planet_of_a_new_world_is_still_there_with_what_was_dug_in_it_after_a_restart() {
+    let mut scene = Scene::in_a_new_world();
+    // Dig out a block of voxels of the planet deep under its surface (stone, with a cave here and there), as a rule of a game would.
+    let content = CaveContent::new();
+    let (block_channel, air) = (content.block_channel(), content.blocks.air);
+    scene.run(move |world| {
+        let mut planet = world.grid(ship_id(0)).unwrap();
+        for x in 0..3 {
+            for y in 63_000..63_003 {
+                for z in 0..3 {
+                    planet
+                        .set(block_channel, VoxelCoordinate::new(x, y, z), air)
+                        .unwrap();
+                }
+            }
+        }
+    });
+    let before = scene.rig.server.world().grids().get(ship_id(0)).unwrap();
+    let (stored, digest, mass, terrain) = (
+        before.voxels.brick_count(),
+        before.voxels.content_digest(),
+        before.mass,
+        before.terrain,
+    );
+    assert!(stored > 0, "the dig is stored");
+
+    // The world comes back with the planet in its file, as it does for every ship, and the first look at the ships brings it in, with no player anywhere near.
+    let mut scene = scene.restarted();
+    assert!(scene.rig.server.world().grids().get(ship_id(0)).is_none());
+    scene.ticks(1);
+    let after = scene
+        .rig
+        .server
+        .world()
+        .grids()
+        .get(ship_id(0))
+        .expect("the planet came back");
+    assert_eq!(after.mass, mass);
+    assert_eq!(after.terrain, terrain);
+    assert_eq!(after.voxels.brick_count(), stored);
+    assert_eq!(after.voxels.content_digest(), digest);
+    assert!(after.held);
+    assert_eq!(after.level, LevelIndex::MAIN);
+    assert_eq!(
+        scene.rig.server.world().level_id(LevelIndex::MAIN),
+        Some(&mini_cosmos_id())
+    );
+}
+
+/// Where a player's eyes land on the first planet of `level`, and on that of the overworld, as the server works it out.
+fn landings(scene: &mut Scene) -> (Option<[f64; 3]>, Option<[f64; 3]>) {
+    let content = CaveContent::new();
+    let (channel, air) = (content.block_channel(), content.blocks.air);
+    let found = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&found);
+    scene.run(move |world| {
+        let place = |level| on_a_planet(world, level, channel, air).map(in_voxels);
+        *slot.lock().unwrap() = Some((place(LevelIndex::MAIN), place(LevelIndex::new(1))));
+    });
+    let places = found.lock().unwrap().take();
+    places.unwrap()
+}
+
+#[test]
+fn a_player_lands_on_top_of_a_whole_brick_of_stone_that_was_built_over_the_pole_and_not_inside_it()
+{
+    let mut scene = Scene::in_a_new_world();
+    let (ground, _) = landings(&mut scene);
+    let ground = ground.unwrap();
+    // A brick of stone, all of it, two bricks over the ground: not a block in the column but a brick that is one value all through, which the landing passes in one look
+    // and must not pass by.
+    let top = top_of_the_column(0, 0);
+    let brick_y = top.div_euclid(32) + 2;
+    let content = CaveContent::new();
+    let (channel, stone) = (content.block_channel(), content.blocks.stone);
+    scene.run(move |world| {
+        let mut planet = world.grid(ship_id(0)).unwrap();
+        for x in 0..32 {
+            for y in brick_y * 32..(brick_y + 1) * 32 {
+                for z in 0..32 {
+                    planet
+                        .set(channel, VoxelCoordinate::new(x, y, z), stone)
+                        .unwrap();
+                }
+            }
+        }
+    });
+    let (built, _) = landings(&mut scene);
+    let [_, y, _] = built.expect("the planet has a pole");
+    assert!(
+        (y - (((brick_y + 1) * 32) as f64 + 1.64)).abs() < 1.0e-3,
+        "{y} over the stone brick that ends at {} (the ground was at {})",
+        (brick_y + 1) * 32,
+        ground[1]
+    );
+}
+
+#[test]
+fn a_player_lands_where_the_planet_is_and_on_a_planet_and_not_on_a_ship_that_was_there_first() {
+    let mut scene = Scene::in_a_new_world();
+    let (at_the_origin, _) = landings(&mut scene);
+    let at_the_origin = at_the_origin.unwrap();
+    // The planet is somewhere else in space, and an ordinary ship, made before it was put back, is the first ship of the level.
+    scene.run(|world| {
+        let terrain = world
+            .data()
+            .grids()
+            .get(ship_id(0))
+            .unwrap()
+            .terrain
+            .unwrap();
+        world.remove_grid(ship_id(0)).unwrap();
+        world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        let moved = world
+            .create_grid(
+                LevelIndex::MAIN,
+                GridPose::new(
+                    WorldPosition::new(BrickCoordinate::ORIGIN, [100.0, 50.0, -20.0]),
+                    Orientation::IDENTITY,
+                ),
+            )
+            .unwrap();
+        world.set_grid_terrain(moved, terrain).unwrap();
+    });
+    let (elsewhere, _) = landings(&mut scene);
+    let elsewhere = elsewhere.expect("the second ship is a planet");
+    // The same place on it, a hundred along, fifty up and twenty back.
+    assert!(
+        (elsewhere[0] - (at_the_origin[0] + 100.0)).abs() < 1.0e-3,
+        "{elsewhere:?}"
+    );
+    assert!(
+        (elsewhere[1] - (at_the_origin[1] + 50.0)).abs() < 1.0e-3,
+        "{elsewhere:?}"
+    );
+    assert!(
+        (elsewhere[2] - (at_the_origin[2] - 20.0)).abs() < 1.0e-3,
+        "{elsewhere:?}"
+    );
+}
+
+#[test]
+fn a_player_lands_on_the_ground_at_the_top_of_the_planet_with_what_was_dug_there_counted_and_no_other_level_has_such_a_place()
+ {
+    let mut scene = Scene::in_a_new_world();
+    let top = top_of_the_column(0, 0);
+    let (planet, overworld) = landings(&mut scene);
+    // In the middle of the column of voxels at the top of the planet, with the eyes over the top voxel.
+    let [x, y, z] = planet.expect("the planet has a pole");
+    assert!(
+        (x - 0.5).abs() < 1.0e-4 && (z - 0.5).abs() < 1.0e-4,
+        "{x} {z}"
+    );
+    assert!(
+        (y - ((top + 1) as f64 + 1.64)).abs() < 1.0e-3,
+        "{y} over {top}"
+    );
+    assert_eq!(overworld, None, "the overworld has no planet");
+
+    // Dig the top voxel out, and the next two, and they land lower.
+    let content = CaveContent::new();
+    let (channel, air) = (content.block_channel(), content.blocks.air);
+    scene.run(move |world| {
+        let mut planet = world.grid(ship_id(0)).unwrap();
+        for y in top - 2..=top {
+            planet
+                .set(channel, VoxelCoordinate::new(0, y, 0), air)
+                .unwrap();
+        }
+    });
+    let (dug, _) = landings(&mut scene);
+    let [_, dug_y, _] = dug.unwrap();
+    assert!((dug_y - (y - 3.0)).abs() < 1.0e-3, "{dug_y} against {y}");
+}
+
+#[test]
+fn the_first_player_of_a_new_world_arrives_standing_on_the_planet_wherever_their_client_said_it_started()
+ {
+    let mut scene = Scene::in_a_new_world();
+    // The client starts where the game says (16, 110, 16), which is under the ground of the planet, near its middle.
+    let start = Cave::default_camera().position;
+    let mut player = scene.rig.join_walking(start, 0.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    tick_and_follow(&mut scene, &mut player, 60);
+
+    let pose = player_pose(&scene, 1);
+    assert_eq!(pose.grid, ship_id(0), "aboard the planet");
+    let [x, y, z] = in_voxels(pose.position);
+    let top = top_of_the_column(0, 0);
+    assert!((x - 0.5).abs() < 0.05 && (z - 0.5).abs() < 0.05, "{x} {z}");
+    assert!(
+        (y - ((top + 1) as f64 + 1.62)).abs() < 0.05,
+        "{y} over the ground at {top}"
+    );
+}
+
+#[test]
+fn a_player_who_asked_for_another_place_than_where_players_start_is_put_there_even_in_a_level_with_a_planet()
+ {
+    let mut scene = Scene::in_a_new_world();
+    // Flying, over the planet and farther from its middle than any ground of it: where a client that was started with `--camera` is put.
+    let asked = [100.5, 70_000.0, 200.5];
+    let mut player = scene.rig.join(asked, 0.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    tick_and_follow(&mut scene, &mut player, 20);
+    let pose = player_pose(&scene, 1);
+    assert_eq!(pose.grid, GridId::root(LevelIndex::MAIN), "in space");
+    let [x, y, z] = in_voxels(pose.position);
+    assert!(
+        (x - asked[0]).abs() < 0.01 && (y - asked[1]).abs() < 0.01 && (z - asked[2]).abs() < 0.01,
+        "{x} {y} {z}"
+    );
+}
+
+#[test]
+fn level_go_takes_a_player_to_the_overworld_at_where_players_start_there_and_back_to_the_pole_of_the_planet()
+ {
+    let mut scene = Scene::in_a_new_world();
+    let start = Cave::default_camera().position;
+    let mut player = scene.rig.join_walking(start, 0.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    tick_and_follow(&mut scene, &mut player, 60);
+    assert_eq!(player_pose(&scene, 1).grid, ship_id(0));
+
+    // To the overworld: at the place players start in it (not 64 kilometres over it, where the pole of the planet is).
+    let reply = say(&mut scene, &mut player, "/level go overworld");
+    assert!(
+        reply.contains("you are now in voxunami_cave:overworld"),
+        "{reply}"
+    );
+    let overworld = GridId::root(LevelIndex::new(1));
+    let pose = player_pose(&scene, 1);
+    assert_eq!(pose.grid, overworld);
+    let [x, y, z] = in_voxels(pose.position);
+    assert!(
+        (x - start[0]).abs() < 0.5 && (z - start[2]).abs() < 0.5,
+        "{x} {z}"
+    );
+    assert!((y - start[1]).abs() < 5.0, "{y}");
+
+    // And back, on the planet.
+    let reply = say(&mut scene, &mut player, "/level go mini_cosmos");
+    assert!(
+        reply.contains("you are now in voxunami_cave:mini_cosmos"),
+        "{reply}"
+    );
+    tick_and_follow(&mut scene, &mut player, 60);
+    let pose = player_pose(&scene, 1);
+    assert_eq!(pose.grid, ship_id(0));
+    let [x, y, z] = in_voxels(pose.position);
+    let top = top_of_the_column(0, 0);
+    assert!((x - 0.5).abs() < 0.05 && (z - 0.5).abs() < 0.05, "{x} {z}");
+    assert!((y - ((top + 1) as f64 + 1.62)).abs() < 0.05, "{y}");
+}
+
+#[test]
+fn a_player_standing_on_the_planet_breaks_the_ground_under_them_and_the_planet_stores_the_hole_and_they_stand_lower()
+ {
+    let mut scene = Scene::in_a_new_world();
+    let start = Cave::default_camera().position;
+    let mut player = scene.rig.join_walking(start, 0.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    tick_and_follow(&mut scene, &mut player, 60);
+    let top = top_of_the_column(0, 0);
+
+    // Looking straight down at the voxel they stand on.
+    player.camera.pitch = (-89.0f32).to_radians();
+    player.hold(&[]);
+    tick_and_follow(&mut scene, &mut player, 3);
+    scene.rig.settle(&mut [&mut player]);
+    let hit = player.target().expect("the ground is within reach");
+    assert_eq!(
+        hit.grid,
+        ship_id(0),
+        "the ground they look at is the planet's"
+    );
+    assert_eq!(hit.voxel, VoxelCoordinate::new(0, top, 0));
+    assert_eq!(
+        scene
+            .rig
+            .server
+            .world()
+            .grids()
+            .get(ship_id(0))
+            .unwrap()
+            .voxels
+            .brick_count(),
+        0,
+        "nothing is stored of the planet before the edit"
+    );
+
+    break_block(&mut player);
+    tick_and_follow(&mut scene, &mut player, 3);
+    // The planet stores the brick with the hole in it, and the player has it.
+    let planet = scene.rig.server.world().grids().get(ship_id(0)).unwrap();
+    assert_eq!(planet.voxels.brick_count(), 1);
+    // They fall into the hole and stand on what is under it, a voxel lower.
+    tick_and_follow(&mut scene, &mut player, 40);
+    let pose = player_pose(&scene, 1);
+    assert_eq!(pose.grid, ship_id(0));
+    let [_, y, _] = in_voxels(pose.position);
+    assert!((y - (top as f64 + 1.62)).abs() < 0.05, "{y}");
+}
+
+#[test]
+fn a_player_standing_on_the_planet_places_a_block_on_the_ground_ahead_of_them_and_the_planet_has_it()
+ {
+    let mut scene = Scene::in_a_new_world();
+    let start = Cave::default_camera().position;
+    let mut player = scene.rig.join_walking(start, 0.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    tick_and_follow(&mut scene, &mut player, 60);
+
+    // Looking down at the ground a voxel or two ahead.
+    player.camera.pitch = (-45.0f32).to_radians();
+    player.hold(&[]);
+    tick_and_follow(&mut scene, &mut player, 3);
+    scene.rig.settle(&mut [&mut player]);
+    let hit = player.target().expect("the ground is within reach");
+    assert_eq!(hit.grid, ship_id(0));
+    let above = VoxelCoordinate::new(hit.voxel.x(), hit.voxel.y() + 1, hit.voxel.z());
+
+    place_block(&mut player, "base_blocks:stone");
+    tick_and_follow(&mut scene, &mut player, 3);
+    let content = CaveContent::new();
+    let planet = scene.rig.server.world().grids().get(ship_id(0)).unwrap();
+    assert_eq!(planet.voxels.brick_count(), 1, "the brick the block is in");
+    let (brick, local) = above.split();
+    assert_eq!(
+        planet
+            .voxels
+            .brick(brick)
+            .expect("the brick is stored")
+            .get(content.block_channel(), local),
+        content.blocks.stone
+    );
+}

@@ -472,3 +472,64 @@ fn a_player_who_comes_back_in_the_level_they_left_is_told_which_level_it_is() {
         LevelIndex::new(1)
     );
 }
+
+#[test]
+fn a_game_that_says_where_players_arrive_in_a_level_puts_them_there_when_they_are_sent_to_it_and_not_in_a_level_it_says_nothing_of()
+ {
+    let mut rig = Rig::new();
+    // The game says where players arrive in the second level when they come from the first (a place in the world's axes), and nothing of any other trip.
+    let arrival_place = WorldPosition::new(BrickCoordinate::new(4, 5, 6), [7.0, 8.0, 9.0]);
+    rig.presence
+        .lock()
+        .unwrap()
+        .set_level_arrival(move |_, from, to| {
+            (from == LevelIndex::MAIN && to == LevelIndex::new(1)).then_some(arrival_place)
+        });
+    let mut player = rig.join();
+    player.pose_at(3.0);
+    rig.server.step();
+    let at = |rig: &Rig| {
+        rig.presence
+            .lock()
+            .unwrap()
+            .pose_of(rig.server.world(), ClientId::new(1))
+            .unwrap()
+            .position
+    };
+    let before = at(&rig);
+    assert_eq!(
+        before,
+        WorldPosition::new(BrickCoordinate::ORIGIN, [3.0, 1.0, 1.0])
+    );
+
+    player.command("/level go test_content:second");
+    rig.server.step();
+    assert_eq!(rig.level_of(1), LevelIndex::new(1));
+    assert_eq!(at(&rig), arrival_place);
+
+    // A level the game says nothing of: where they were, in the other level.
+    player.command("/level go other_game:second");
+    rig.server.step();
+    assert_eq!(rig.level_of(1), LevelIndex::new(2));
+    assert_eq!(at(&rig), arrival_place);
+    player.command("/level go test_content:main");
+    rig.server.step();
+    assert_eq!(rig.level_of(1), LevelIndex::MAIN);
+    assert_eq!(at(&rig), arrival_place);
+
+    // The rule is given the level they come from: from the third level to the second is not the trip it has a place for, so they stay where they are.
+    player.command("/level go other_game:second");
+    rig.server.step();
+    player.pose_at(5.0);
+    rig.server.step();
+    assert_eq!(rig.level_of(1), LevelIndex::new(2));
+    let here = at(&rig);
+    assert_eq!(
+        here,
+        WorldPosition::new(BrickCoordinate::ORIGIN, [5.0, 1.0, 1.0])
+    );
+    player.command("/level go test_content:second");
+    rig.server.step();
+    assert_eq!(rig.level_of(1), LevelIndex::new(1));
+    assert_eq!(at(&rig), here);
+}

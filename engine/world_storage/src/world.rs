@@ -445,10 +445,11 @@ impl WorldData {
                 level.clone(),
                 ship.pose,
                 ship.world_brick_bounds(),
+                ship.terrain.is_some(),
                 bytes,
             ));
         }
-        for (id, level, pose, bounds, bytes) in made {
+        for (id, level, pose, bounds, has_terrain, bytes) in made {
             let serial = self.grids.take_serial();
             loaded.push(GridRecord {
                 id,
@@ -458,6 +459,7 @@ impl WorldData {
                 serial,
                 checksum: crc32fast::hash(&bytes),
                 waits_for_those_aboard: false,
+                has_terrain,
             });
             new_ship_files.push((ShipFileName::new(id, serial), bytes));
         }
@@ -490,6 +492,7 @@ impl WorldData {
                 serial: parked.file.serial,
                 checksum: parked.checksum,
                 waits_for_those_aboard: parked.waits_for_those_aboard,
+                has_terrain: parked.has_terrain,
             }
         }));
         ships.sort_by_key(|ship| ship.id);
@@ -612,6 +615,7 @@ impl WorldData {
             file,
             checksum: crc32fast::hash(&bytes),
             waits_for_those_aboard,
+            has_terrain: ship.terrain.is_some(),
         };
         self.grids
             .park(id, parked)
@@ -1336,6 +1340,7 @@ impl ParsedWorld {
                             file: ShipFileName::new(ship.id, ship.serial),
                             checksum: ship.checksum,
                             waits_for_those_aboard: ship.waits_for_those_aboard,
+                            has_terrain: ship.has_terrain,
                         },
                     ));
                 }

@@ -7,7 +7,7 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use block_models::Shape;
-use common::{PlayerExt, Scene, player_pose, ship_id, tick_and_follow};
+use common::{PlayerExt, Scene, player_pose, ship_id, tick_and_follow, top_of_the_column};
 use game_shell::{GameContent, GameDefinition, KeyCode};
 use server::GridView;
 use voxel_space::{
@@ -20,7 +20,6 @@ use voxunami_cave::content::{CaveContent, mini_cosmos_id};
 use voxunami_cave::game::PULLING_MASS;
 use world_storage::GridTerrain;
 
-const SEED: u64 = common::SEED;
 /// The radius of the planet, in voxels (metres).
 const RADIUS: f64 = 63_710.0;
 /// The mass that pulls 10 metres a second a second at that distance from the centre, with the real G.
@@ -30,36 +29,6 @@ const TOP_OF_THE_PLANET: f64 = 400.0;
 
 fn planet() -> GridId {
     ship_id(0)
-}
-
-/// The height, in the planet's own coordinates, of the highest block that is not air in the column of voxels at `x` and `z`, as the planet's generator makes it
-/// (caves and all).
-fn top_of_the_column(x: i64, z: i64) -> i64 {
-    let content = CaveContent::new();
-    let world = content.new_world(SEED);
-    let layout = Arc::clone(world.main().overrides.layout());
-    let generator = content
-        .blocks
-        .terrain_generators(SEED, content.block_channel());
-    let id = generator
-        .runtime_id(&base_blocks::small_planet_generator_identifier())
-        .unwrap();
-    let generator = generator.entry(id).unwrap().content().unwrap();
-    for brick_y in (1900..2010).rev() {
-        let coordinate = BrickCoordinate::new(x.div_euclid(32), brick_y, z.div_euclid(32));
-        let brick = generator.generate_brick(&layout, coordinate);
-        for local_y in (0..32).rev() {
-            let local = voxel_space::LocalVoxelIndex::new(
-                x.rem_euclid(32) as u8,
-                local_y,
-                z.rem_euclid(32) as u8,
-            );
-            if brick.get(content.block_channel(), local) != content.blocks.air {
-                return brick_y * 32 + i64::from(local_y);
-            }
-        }
-    }
-    panic!("no ground in the column");
 }
 
 /// The planet, made in the overworld with the overworld's pull taken away so that the planet's is all there is, with its centre so far down that the top of it is at

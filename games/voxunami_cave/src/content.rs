@@ -4,16 +4,20 @@ use std::sync::Arc;
 
 use base_blocks::{
     BaseBlockIds, BaseBlocks, block_channel_identifier, block_registry_kind,
-    light_channel_identifier, orientation_channel_identifier, rolling_hills_generator_identifier,
+    empty_generator_identifier, light_channel_identifier, orientation_channel_identifier,
+    rolling_hills_generator_identifier, small_planet_generator_identifier,
     state_channel_identifier,
 };
 use block_models::BlockDefinition;
 use content_registry::{IdentifierRegistry, Registry};
-use game_shell::{ContentPackage, GameContent, PackErrors, PackageData, PackageSpec, RawPack};
+use game_shell::{
+    ContentPackage, GameContent, GameDefinition, PackErrors, PackageData, PackageSpec, RawPack,
+};
 use namespaced_id::NamespacedId;
-use voxel_grid::{ChannelDefinition, ChannelIndex};
-use voxel_space::FaceDirection;
-use world_storage::{LoadContext, WorldData};
+use terrain::PlanetSettings;
+use voxel_grid::{ChannelDefinition, ChannelIndex, Grid};
+use voxel_space::{BrickBox, BrickCoordinate, FaceDirection, GridPose, LevelIndex};
+use world_storage::{GridTerrain, LoadContext, MovingGrid, PilotLogout, WorldData};
 use world_view::ViewChannels;
 
 use crate::items::{CREATIVE_ONLY, CREATIVE_ONLY_BY_DEFAULT, PLACEABLE, PLACEABLE_BY_DEFAULT};
@@ -34,7 +38,7 @@ pub fn overworld_id() -> NamespacedId {
         .expect("constant identifier is valid")
 }
 
-/// The level of space with a planet in it (Phase 39). It has no pull of its own: what is there falls toward the planet.
+/// The level of space with a planet in it (Phase 39), where players start in a new world. It has no pull of its own: what is there falls toward the planet.
 pub fn mini_cosmos_id() -> NamespacedId {
     "voxunami_cave:mini_cosmos"
         .parse()
@@ -109,7 +113,52 @@ impl Default for CaveContent {
     }
 }
 
+/// How hard the planet of a new world pulls at its surface, in voxels a second a second (the owner, 2026-10-24: ten; the overworld's pull is five).
+pub const PLANET_SURFACE_GRAVITY: f64 = 10.0;
+
+/// How many bricks from its centre, each way along each axis, the planet is made: enough to hold its ground with the highest hills it can have (those of a face
+/// reach 320 voxels, and the blend of the faces up to 1.8 times that, over a radius of 63,710).
+const PLANET_REACH_BRICKS: u32 = 2_100;
+
+/// The planet of a new world: a ship in the first level, centred on its origin and held there, made by the planet's generator, as heavy as it must be to pull
+/// [`PLANET_SURFACE_GRAVITY`] at its surface with the pull of Cave's gravity. Nothing is stored for it.
+fn planet(world: &WorldData, seed: u64) -> MovingGrid {
+    let radius = PlanetSettings::one_percent_of_earth(seed).radius;
+    let pull = f64::from(crate::game::Cave::gravity().pull_strength);
+    let mass = (PLANET_SURFACE_GRAVITY * radius * radius / pull) as f32;
+    let first = world.main();
+    let generator = first
+        .terrain
+        .generators()
+        .runtime_id(&small_planet_generator_identifier())
+        .expect("the package has the planet's generator");
+    MovingGrid {
+        level: LevelIndex::MAIN,
+        pose: GridPose::identity(),
+        linear_velocity: [0.0; 3],
+        angular_velocity: [0.0; 3],
+        mass,
+        centre_of_mass: [0.0; 3],
+        held: true,
+        frozen: false,
+        on_pilot_logout: PilotLogout::Stay,
+        voxels: Grid::new(std::sync::Arc::clone(first.overrides.layout())),
+        terrain: Some(GridTerrain {
+            generator,
+            extent: BrickBox::around(BrickCoordinate::ORIGIN, PLANET_REACH_BRICKS),
+            mass,
+        }),
+        sections: Vec::new(),
+    }
+}
+
 impl CaveContent {
+    /// A new world with the overworld alone in it, which is the world Cave began with (rolling hills everywhere, nothing edited): the world the tests of the
+    /// overworld start in. A new game starts in [`GameContent::new_world`].
+    pub fn new_overworld_world(&self, seed: u64) -> WorldData {
+        self.package.new_world(seed)
+    }
+
     pub fn new() -> Self {
         let base = BaseBlocks::new();
         let ids = base.ids();
@@ -205,9 +254,19 @@ impl GameContent for CaveContent {
         self.package.apply_packs(packs)
     }
 
-    /// A new world with this seed: rolling hills everywhere, nothing edited.
+    /// A new world with this seed: a level of space first, with the planet in it, and the overworld (rolling hills everywhere) second. Nothing is edited. A world
+    /// that was saved before there was a planet is loaded as it was: with the overworld as its only level.
     fn new_world(&self, seed: u64) -> WorldData {
-        self.package.new_world(seed)
+        let mut world = self.package.new_world_of(
+            seed,
+            &[
+                (mini_cosmos_id(), empty_generator_identifier()),
+                (overworld_id(), rolling_hills_generator_identifier()),
+            ],
+        );
+        let planet = planet(&world, seed);
+        world.grids_mut().create(planet);
+        world
     }
 
     /// What loading a world file, or a server's description of a world, needs. `seed` is the
@@ -231,9 +290,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_new_world_saves_and_loads_back_as_the_same_world() {
+    fn a_new_overworld_world_saves_and_loads_back_as_the_same_world() {
         let content = CaveContent::new();
-        let world = content.new_world(77);
+        let world = content.new_overworld_world(77);
         let bytes = world.save(&content.registries()).unwrap();
 
         let mut later = CaveContent::new();

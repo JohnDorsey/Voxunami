@@ -223,6 +223,8 @@ pub struct GridRecord {
     pub serial: u64,
     pub checksum: u32,
     pub waits_for_those_aboard: bool,
+    /// The ship is a planet (has terrain).
+    pub has_terrain: bool,
 }
 
 /// The section of ships: the counter, the ships, and the ids that were retired.
@@ -259,7 +261,8 @@ pub fn encode_grids(record: &GridsRecord) -> Vec<u8> {
         }
         writer.write_varint(ship.serial);
         writer.write_u32(ship.checksum);
-        writer.write_u8(u8::from(ship.waits_for_those_aboard));
+        // The flags of the ship: the first is that it waits for those aboard, the second that it has terrain. (A file from before the second reads as it is.)
+        writer.write_u8(u8::from(ship.waits_for_those_aboard) | (u8::from(ship.has_terrain) << 1));
     }
     writer.write_varint(record.tombstones.len() as u64);
     for (id, successors) in &record.tombstones {
@@ -295,7 +298,7 @@ pub fn decode_grids_in(payload: &[u8], format: PoseFormat) -> Result<GridsRecord
         ));
     }
     let next_serial = reader.read_varint()?;
-    // An id, a level, a pose, a flag, a serial number, a checksum and a flag.
+    // An id, a level, a pose, a flag, a serial number, a checksum and the flags.
     let count = reader.read_count(40)?;
     let mut ships: Vec<GridRecord> = Vec::with_capacity(count);
     for _ in 0..count {
@@ -324,11 +327,13 @@ pub fn decode_grids_in(payload: &[u8], format: PoseFormat) -> Result<GridsRecord
             ));
         }
         let checksum = reader.read_u32()?;
-        let waits_for_those_aboard = match reader.read_u8()? {
-            0 => false,
-            1 => true,
-            _ => return Err(DecodeError::Invalid("a waiting flag is neither 0 nor 1")),
-        };
+        let flags = reader.read_u8()?;
+        if flags > 0b11 {
+            return Err(DecodeError::Invalid(
+                "the flags of a ship are more than the two there are",
+            ));
+        }
+        let (waits_for_those_aboard, has_terrain) = (flags & 0b01 != 0, flags & 0b10 != 0);
         ships.push(GridRecord {
             id,
             level,
@@ -337,6 +342,7 @@ pub fn decode_grids_in(payload: &[u8], format: PoseFormat) -> Result<GridsRecord
             serial,
             checksum,
             waits_for_those_aboard,
+            has_terrain,
         });
     }
     // An id, and a count of the ships that took its place.

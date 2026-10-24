@@ -24,6 +24,7 @@ use crate::movement::{Movement, Placement};
 pub struct MovementPlugin {
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
+    air: u32,
     players: SharedPresence,
     movement: SharedMovement,
 }
@@ -43,6 +44,7 @@ impl MovementPlugin {
         Self {
             block_channel: content.block_channel(),
             state_channel: content.state_channel(),
+            air: content.blocks.air,
             players,
             movement: Arc::new(Mutex::new(movement)),
         }
@@ -155,6 +157,7 @@ impl Plugin for MovementPlugin {
         let movement = Arc::clone(&self.movement);
 
         let (bodies, players) = (Arc::clone(&movement), Arc::clone(&self.players));
+        let (block_channel, air) = (self.block_channel, self.air);
         registrar.message(move |context, client, Spawn(pose)| {
             let mut movement = locked(&bodies);
             if !movement.has_body(client) {
@@ -173,10 +176,18 @@ impl Plugin for MovementPlugin {
                     },
                     None => {
                         let level = presence.level_of(world.data(), client);
+                        // A new player in a level that has a planet in it stands on the ground at the top of it if their client began where the game says players
+                        // start (which is not a place on a planet), and is put where it asked to be otherwise (`--camera`).
+                        let landing = if pose.position == super::world_spawn() {
+                            crate::landing::on_a_planet(world, level, block_channel, air)
+                        } else {
+                            None
+                        };
+                        let position = landing.unwrap_or(pose.position);
                         Placement {
                             frame: GridId::root(level),
                             level,
-                            position: pose.position,
+                            position,
                             orientation: Orientation::from_yaw_pitch(pose.yaw, pose.pitch),
                             yaw: pose.yaw,
                             pitch: pose.pitch,

@@ -166,6 +166,10 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - Mine, built in 39e: **a planet is known from anywhere in its level** (every client that watches the level is told of it, and the lifecycle never puts it in a file), **drawn in detail by the same view that draws a level** (`LodView` over a `CoarseTerrainSource`), and **its nodes are the generator's and are not corrected by the server** (an edit shows in the bricks near the viewer only; a decision for later,
   with the messages already keyed by grid). **A generator may give a solid core** (`TerrainGenerator::solid_core`), and a view leaves out the cubes behind it from a viewer outside it. Cave's planet is drawn out to 10^7 voxels in cells of 3 pixels; the terrain of a level is not drawn beyond its bricks yet (`coarse_detail` is still none).
 
+- Mine, built in 39f: **a new world is space first and the overworld second**, with the planet made with it; **the world the tests of the overworld start in is the overworld alone** (`new_overworld_world`), and a saved world loads as it was. **The planet is 2,100 bricks each way, held, of the mass `10 R^2 / G`**; **an empty level is a generator** (`base_blocks:empty_v1`), not a level with no terrain.
+  **A new player stands on the ground at the pole of the planet** if their client began where the game says players start, and is where they asked to be otherwise (`--camera`); **a level has a place players arrive at** (a rule the game gives the presence: the pole of a planet, or where players start when they come from a level with a planet), instead of the same coordinates in another world.
+  **A planet is always in memory** (a flag in the world file's ship list; the lifecycle brings it back whatever the distance). Still open: see the list at the end of 39f in `planet-spec.md`.
+
 ## Decided (the plugin host; built in Phase 23)
 - A game's server rules are plugins run by `plugin_host::PluginHost` (the specification and its record are in `plugin-api-spec.md`). What a plugin
   registers, and when: systems in the phases `Decide`, `Controllers`, `Physics`, `Settle` and `Rules`; handlers of events, delivered first in first

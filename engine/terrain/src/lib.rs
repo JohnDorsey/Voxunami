@@ -18,6 +18,7 @@
 
 mod coarse;
 mod density;
+mod empty;
 mod generator;
 mod interval;
 mod noise;
@@ -26,6 +27,7 @@ mod planet_node;
 mod world_terrain;
 
 pub use density::{DensityField, Heightfield, Minimum, ShellCaves};
+pub use empty::{EmptyTerrain, empty};
 pub use generator::{
     FieldTerrainGenerator, RollingHillsSettings, SolidBall, TerrainGenerator, TerrainMaterials,
     rolling_hills,

@@ -118,6 +118,34 @@ impl ContentPackage {
         (self.spec.generators)(seed, &self.layout())
     }
 
+    /// A level that starts with nothing edited and `default` for the generator of its regions.
+    fn new_level(&self, seed: u64, default: &NamespacedId) -> LevelData {
+        let generators = self.generators(seed);
+        let default = generators
+            .runtime_id(default)
+            .expect("the package's generators include the default of every level");
+        let terrain = WorldTerrain::new(generators, default, self.spec.assignment_cube_level)
+            .expect("the default generator is available");
+        LevelData::new(terrain, Grid::new(self.layout()))
+    }
+
+    /// A new world with these levels, each with its identifier and the generator that is the default of its regions, in this order: the first is the main level,
+    /// where players start. Nothing is edited. (The world of [`GameContent::new_world`] is the one level of the spec, with the spec's default generator.)
+    ///
+    /// Panics with no levels, or with a generator the package does not have, which are mistakes in the game's declaration.
+    pub fn new_world_of(&self, seed: u64, levels: &[(NamespacedId, NamespacedId)]) -> WorldData {
+        let [(first_id, first_default), rest @ ..] = levels else {
+            panic!("a world has at least one level");
+        };
+        let mut world = WorldData::new(seed, first_id.clone(), self.new_level(seed, first_default));
+        for (level_id, default) in rest {
+            world
+                .add_level(level_id.clone(), self.new_level(seed, default))
+                .expect("the levels of a package have distinct identifiers and the same channels");
+        }
+        world
+    }
+
     /// Adds the blocks of data packs and applies their patches (see the `data_packs` crate). The game's own blocks
     /// keep their numbers and the packs' blocks follow them. Returns what was skipped on purpose, one line each.
     /// Nothing changes if there is an error: the packs are not loaded at all. Call it before a world is loaded,
@@ -226,16 +254,9 @@ impl GameContent for ContentPackage {
     }
 
     fn new_world(&self, seed: u64) -> WorldData {
-        let generators = self.generators(seed);
-        let default = generators
-            .runtime_id(&self.spec.default_generator)
-            .expect("the package's generators include its default");
-        let terrain = WorldTerrain::new(generators, default, self.spec.assignment_cube_level)
-            .expect("the default generator is available");
-        WorldData::new(
+        self.new_world_of(
             seed,
-            self.spec.level.clone(),
-            LevelData::new(terrain, Grid::new(self.layout())),
+            &[(self.spec.level.clone(), self.spec.default_generator.clone())],
         )
     }
 
@@ -353,6 +374,61 @@ mod tests {
             &id("test_game:empty_v1")
         );
         assert_eq!(loaded.save(&later.registries()).unwrap(), bytes);
+    }
+
+    #[test]
+    fn a_new_world_of_several_levels_has_them_in_that_order_each_with_the_default_generator_it_was_given()
+     {
+        let mut content = package();
+        content.spec.generators = Arc::new(|_seed, _layout| {
+            let mut generators: Registry<Arc<dyn TerrainGenerator>> = Registry::new();
+            generators
+                .register(id("test_game:empty_v1"), Arc::new(Empty))
+                .unwrap();
+            generators
+                .register(id("test_game:other_v1"), Arc::new(Empty))
+                .unwrap();
+            generators
+        });
+        let world = content.new_world_of(
+            7,
+            &[
+                (id("test_game:space"), id("test_game:other_v1")),
+                (id("test_game:main"), id("test_game:empty_v1")),
+            ],
+        );
+        let levels: Vec<(String, String)> = world
+            .levels()
+            .map(|(_, level_id, level)| {
+                (
+                    level_id.to_string(),
+                    level.preferred_default_generator().to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            levels,
+            [
+                (
+                    "test_game:space".to_owned(),
+                    "test_game:other_v1".to_owned()
+                ),
+                ("test_game:main".to_owned(), "test_game:empty_v1".to_owned()),
+            ]
+        );
+        // The first is where players start: the main level.
+        assert_eq!(
+            world.level_id(voxel_space::LevelIndex::MAIN),
+            Some(&id("test_game:space"))
+        );
+        assert_eq!(world.world_seed, 7);
+        // And it saves and loads back the same, with both levels.
+        let bytes = world.save(&content.registries()).unwrap();
+        let parsed = ParsedWorld::parse(&bytes).unwrap();
+        let (loaded, report) = parsed.load(content.load_context(7)).unwrap();
+        assert!(report.missing_content.is_empty());
+        assert_eq!(loaded.levels().count(), 2);
+        assert_eq!(loaded.save(&content.registries()).unwrap(), bytes);
     }
 
     #[test]

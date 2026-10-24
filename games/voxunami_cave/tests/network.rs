@@ -4,7 +4,7 @@ mod common;
 
 use std::io::Write;
 use std::net::{SocketAddr, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use common::{Player, PlayerExt, VIEW_RADIUS, above_ground, ground_height};
 use game_shell::GameContent;
 use game_shell::Identity;
-use game_shell::files::{open_recording, open_world, record_connection};
+use game_shell::files::{open_recording, open_world, record_connection, save_world};
 use game_shell::host::{HostSettings, ServerThread};
 use game_shell::options::ServeOptions;
 use game_shell::serve::serve_until;
@@ -32,6 +32,14 @@ fn scratch_directory(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("voxunami_cave_{name}_{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     directory
+}
+
+/// A world file with the overworld alone in it, at `path`: the tests that join the overworld start a server from it, because a new world is space with a planet in
+/// it.
+fn write_an_overworld(path: &Path) {
+    let content = CaveContent::new();
+    let mut world = content.new_overworld_world(SEED);
+    save_world(&content, &mut world, path).unwrap();
 }
 
 /// A dedicated server on a free local port, running until dropped.
@@ -128,7 +136,10 @@ fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
 
 #[test]
 fn players_on_a_dedicated_server_see_each_others_edits_and_positions() {
-    let server = DedicatedServer::start(None, 60.0);
+    let directory = scratch_directory("together");
+    let path = directory.join("world.voxunami");
+    write_an_overworld(&path);
+    let server = DedicatedServer::start(Some(path), 60.0);
     let mut breaker = join(server.connect(), [16.5, 110.0, 16.5]);
     let mut watcher = join(server.connect(), [20.5, 110.0, 20.5]);
     settle(&mut breaker);
@@ -165,6 +176,7 @@ fn players_on_a_dedicated_server_see_each_others_edits_and_positions() {
 fn a_dedicated_server_saves_its_world_while_running_and_when_stopped() {
     let directory = scratch_directory("serve");
     let path = directory.join("world.voxunami");
+    write_an_overworld(&path);
     let server = DedicatedServer::start(Some(path.clone()), 0.3);
     let mut player = join(server.connect(), [16.5, 110.0, 16.5]);
     settle(&mut player);
@@ -210,7 +222,7 @@ fn a_dedicated_server_saves_its_world_while_running_and_when_stopped() {
 #[test]
 fn a_hosted_game_has_the_local_player_and_network_players_in_one_world() {
     let content = CaveContent::new();
-    let world = content.new_world(SEED);
+    let world = content.new_overworld_world(SEED);
     let listener = TcpServerListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_address().unwrap();
     let mut settings = HostSettings::local(VIEW_RADIUS);
@@ -250,7 +262,9 @@ fn a_hosted_game_has_the_local_player_and_network_players_in_one_world() {
 fn a_recording_made_over_the_network_replays_the_same_view() {
     let directory = scratch_directory("recorded");
     let path = directory.join("remote.voxreplay");
-    let server = DedicatedServer::start(None, 60.0);
+    let world_path = directory.join("world.voxunami");
+    write_an_overworld(&world_path);
+    let server = DedicatedServer::start(Some(world_path), 60.0);
     let mut player = join(
         record_connection(
             TcpConnection::connect(server.address, Duration::from_secs(5)).unwrap(),
@@ -384,11 +398,11 @@ fn a_player_who_asks_to_watch_more_than_the_server_allows_is_refused_with_a_reas
 #[test]
 fn a_player_over_the_network_goes_to_another_level_with_a_command_and_changes_only_that_level() {
     let content = CaveContent::new();
-    let mut world = content.new_world(SEED);
+    let mut world = content.new_overworld_world(SEED);
     let cellar = world
         .add_level(
             "voxunami_cave:cellar".parse().unwrap(),
-            content.new_world(SEED).into_main(),
+            content.new_overworld_world(SEED).into_main(),
         )
         .unwrap();
     let listener = TcpServerListener::bind("127.0.0.1:0").unwrap();

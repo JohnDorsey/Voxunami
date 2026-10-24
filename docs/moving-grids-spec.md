@@ -380,8 +380,8 @@ adds works on board any ship with no effort from its author. It holds by constru
   plugins that nobody here reads are carried in `MovingGrid::sections` and written back as they were. A file that names content the reading world lacks is
   refused, saying what (`ParsedShip::referenced_content` lists it, so that an importer registers it first); a channel the world has no place for is refused too.
   Every cut of a file and every changed byte of it is found (tested for each byte and four changes of it).
-- *The world file's `engine:grids`* lists, in order of id, each ship's level, pose, the bricks it touches, the number and the checksum of its file, and whether it
-  waits for those aboard; then the counter of ids, the counter of file numbers, and the retired ids with what took their places and the lattice turn between
+- *The world file's `engine:grids`* lists, in order of id, each ship's level, pose, the bricks it touches, the number and the checksum of its file, and its flags (one byte: bit 0, it
+  waits for those aboard; bit 1, it is a planet, which has terrain; Phase 39f: a world from before reads the byte as 0 or 1, as it was); then the counter of ids, the counter of file numbers, and the retired ids with what took their places and the lattice turn between
   (one of the 24). A world that never had a ship writes none, and saves to the bytes it always had.
 - *After a load every ship is in its file* (`GridStore::parked`), and the world knows where it is, in which level and which bricks it touches, without reading
   it. `ServerWorld::load_ship` brings one into memory (the checksum is checked first); `park_ship` puts one away (the file is written first); each changes

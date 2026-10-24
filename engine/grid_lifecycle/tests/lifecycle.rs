@@ -335,3 +335,34 @@ fn a_planet_is_frozen_when_no_player_is_near_but_is_never_put_away_so_that_it_ca
     rig.player_at(-50.0);
     assert!(rig.in_memory(planet) && !rig.frozen(planet));
 }
+
+#[test]
+fn a_planet_that_is_in_a_file_is_brought_back_whatever_the_distance_and_an_ordinary_ship_is_not() {
+    let (mut rig, ships) = Rig::new(settings(), &[0, 10]);
+    let (planet, ordinary) = (ships[0], ships[1]);
+    rig.in_a_tick(move |world| {
+        let generator = world.data().main().terrain.default_generator();
+        world
+            .set_grid_terrain(
+                planet,
+                GridTerrain {
+                    generator,
+                    extent: BrickBox::around(BrickCoordinate::ORIGIN, 1),
+                    mass: 1.0e20,
+                },
+            )
+            .unwrap();
+    });
+    // Far from both. The ordinary ship is put away by the lifecycle; the planet is put away by something else (a world that was saved and loaded has all its ships in
+    // files, and a rule may put one away).
+    rig.player_at(-5000.0);
+    rig.tick();
+    rig.tick();
+    assert!(rig.in_a_file(ordinary));
+    rig.in_a_tick(move |world| world.park_ship(planet, false).unwrap());
+    // The look at the ships comes later in the same tick: it brings the planet back, and the report says so; the ordinary ship stays where it is.
+    assert!(rig.in_memory(planet) && !rig.in_a_file(planet));
+    assert!(rig.in_a_file(ordinary));
+    assert_eq!(rig.report().brought_in, 1);
+    assert!(rig.report().problems.is_empty());
+}

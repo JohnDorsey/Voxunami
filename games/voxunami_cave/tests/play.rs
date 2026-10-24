@@ -476,7 +476,7 @@ fn a_session_that_is_watching_a_replay_asks_the_server_for_nothing() {
 #[test]
 fn the_integrated_server_ticks_by_itself_and_hands_back_the_world() {
     let content = CaveContent::new();
-    let world = content.new_world(SEED);
+    let world = content.new_overworld_world(SEED);
     let host =
         ServerThread::<Cave>::start(content, world, HostSettings::local(VIEW_RADIUS)).unwrap();
     let connection = host.connect().unwrap();
@@ -513,11 +513,11 @@ fn the_integrated_server_ticks_by_itself_and_hands_back_the_world() {
 /// players do. (Levels of one world share its seed; they would differ by terrain generator version.)
 fn two_level_rig() -> (Rig, voxel_space::LevelIndex) {
     let content = CaveContent::new();
-    let mut world = content.new_world(SEED);
+    let mut world = content.new_overworld_world(SEED);
     let second = world
         .add_level(
             "voxunami_cave:cellar".parse().unwrap(),
-            content.new_world(SEED).into_main(),
+            content.new_overworld_world(SEED).into_main(),
         )
         .unwrap();
     (Rig::with_world(content, world), second)

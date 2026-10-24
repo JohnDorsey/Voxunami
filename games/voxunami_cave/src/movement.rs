@@ -363,18 +363,17 @@ fn ship_bounds(world: &ServerWorld) -> BTreeMap<GridId, ShipBounds> {
 }
 
 /// Makes the body agree with what the record of the player says, when it does not: the player was put in another level (the same place,
-/// another terrain), or a ship was taken from under them, or they came back aboard one. The record is where they are; the body is made to
+/// another terrain, or the place the game sends players to in it), or a ship was taken from under them, or they came back aboard one. The record is where they are; the body is made to
 /// be there, in the frame the record names.
 fn agree_with(player: &mut PlayerBody, placement: &Placement) {
     if placement.frame == player.frame && placement.level == player.level {
         return;
     }
     if placement.frame.root_level().is_some() && player.frame.root_level().is_some() {
-        // Another level, at the same place: its terrain is another's.
+        // Another level: its terrain is another's. The record says where they are in it (the place they were at, unless the game put them somewhere).
         player.level = placement.level;
         player.frame = placement.frame;
-        let eyes = player.body.eye_position();
-        player.body.teleport(eyes);
+        player.body.teleport(placement.position);
         return;
     }
     // In or out of a ship. Out of one that is gone, the player is where the record says in the world, at rest: nothing is known of how
