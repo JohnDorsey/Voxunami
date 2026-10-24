@@ -319,8 +319,9 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// differs: 74 + 545 = 619.
 /// Orientations are `f64` (Phase 38a, 2026-10-23; protocol 7, the sections that hold poses at version 2): a pose is 16 bytes longer. Measured by recording the stream of the script with the code before and after and comparing the frames one by one: the same number of frames, every frame the same except those that carry a pose, and the welcome (version 7, same length):
 /// 6,934 frames, 6,765 identical; 169 poses in 168 of the other 169 frames (3 spawns and 165 changes, one frame carrying two; the 169th is the welcome), 169 x 16 = 2,704: 7,187,429 to 7,190,133. The saved world changed (it holds the players' poses).
+/// Planets as ships (Phase 39c, 2026-10-24; protocol 8): the welcome says version 8 (same length) and a ship that is told of has a byte more for its terrain. The stream hash moved once, for the version: the code of the commit before with only the version raised to 8 gives this hash, and the length is the same, so none of the frames of this script tells of a ship. The saved world is the same.
 const PINNED: (u64, usize, u64) = (
-    15_876_146_309_874_477_616,
+    7_813_833_146_985_245_576,
     7_190_133,
     5_952_411_052_594_281_229,
 );

@@ -3,12 +3,14 @@
 //!
 //! A client watches a box of bricks of one level. A ship is in its picture if the ship is in that level and the bricks its box touches
 //! (the bound [`MovingGrid::world_brick_bounds`] gives) meet the box. A client that is told of a ship is sent every brick of it, and is told to
-//! forget it all when the ship leaves. (A ship with terrain, a planet, is not told of yet: the wire cannot say what generates its bricks, which Phase 39c adds.)
+//! forget it all when the ship leaves. A ship with terrain, a planet, is told of with the generator and the extent, and only the bricks that are stored (the
+//! edits) are sent: the client makes the others itself, and the bricks edited later arrive as the edits of a brick it has, or as a whole brick when the
+//! edit stored it.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use protocol::{GridChange, GridState, ServerMessage};
+use protocol::{GridChange, GridState, GridTerrainState, ServerMessage};
 use voxel_space::{BrickBox, BrickCoordinate, GridId, GridPose, LevelIndex};
 
 use crate::server_world::ServerWorld;
@@ -27,7 +29,9 @@ pub(crate) struct ShipView {
     level: LevelIndex,
     pose: GridPose,
     bounds: BrickBox,
+    /// The bricks that are stored, which are all the client is sent.
     brick_count: u64,
+    terrain: Option<GridTerrainState>,
 }
 
 /// The ships that have anything to show: those with bricks, and a place in the world. In order of id.
@@ -36,7 +40,6 @@ pub(crate) fn ship_views(world: &ServerWorld) -> Vec<ShipView> {
         .data()
         .grids()
         .iter()
-        .filter(|(_, ship)| ship.terrain.is_none())
         .filter_map(|(id, ship)| {
             Some(ShipView {
                 id,
@@ -44,16 +47,13 @@ pub(crate) fn ship_views(world: &ServerWorld) -> Vec<ShipView> {
                 pose: ship.pose,
                 bounds: ship.world_brick_bounds()?,
                 brick_count: ship.voxels.brick_count() as u64,
+                terrain: ship.terrain.map(|terrain| GridTerrainState {
+                    generator: terrain.generator.raw(),
+                    extent: terrain.extent,
+                }),
             })
         })
         .collect()
-}
-
-impl ShipView {
-    #[cfg(test)]
-    pub(crate) fn id(&self) -> GridId {
-        self.id
-    }
 }
 
 /// What one client has been told of the ships, by id: where each was when it was last told.
@@ -120,6 +120,7 @@ pub(crate) fn grid_messages(
                     id: view.id,
                     level: view.level,
                     pose: view.pose,
+                    terrain: view.terrain,
                 })
                 .collect(),
         ));

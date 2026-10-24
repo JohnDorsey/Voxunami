@@ -10,8 +10,12 @@ mod grid_mesher;
 mod lod;
 mod mesher;
 mod ray;
+mod ship_terrain_mesher;
 
 pub use grid_mesher::GridMesher;
 pub use lod::{LodConfig, LodSettings, LodView};
-pub use mesher::{BrickLight, BulkLight, MeshUpdate, ViewChannels, ViewSettings, WorldMesher};
+pub use mesher::{
+    BrickLight, BulkLight, MeshUpdate, TerrainSource, ViewChannels, ViewSettings, WorldMesher,
+};
 pub use ray::{RayHit, cast_ray};
+pub use ship_terrain_mesher::{ShipTerrainMesher, ShipTerrainSource};

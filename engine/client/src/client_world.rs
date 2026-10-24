@@ -63,6 +63,8 @@ pub struct GridSummary {
     pub pose: GridPose,
     /// `Grid::content_digest` of the bricks the client holds of the ship.
     pub bricks: u64,
+    /// What generates the rest of its bricks, if anything does: the generator by its identifier, and the box of bricks.
+    pub terrain: Option<(NamespacedId, BrickBox)>,
 }
 
 /// Everything that identifies a client's view, for comparing two views (a live client and a replay
@@ -204,6 +206,19 @@ impl ClientWorld {
                     level: grid.level,
                     pose: grid.pose,
                     bricks: grid.voxels.content_digest(),
+                    terrain: grid.terrain.map(|terrain| {
+                        (
+                            self.world
+                                .main()
+                                .terrain
+                                .generators()
+                                .entry(terrain.generator)
+                                .expect("a ship's generator comes from this registry")
+                                .identifier()
+                                .clone(),
+                            terrain.extent,
+                        )
+                    }),
                 })
                 .collect(),
             levels: self
@@ -277,8 +292,11 @@ impl ClientWorld {
             }
             ServerMessage::GridsSpawned(states) => {
                 let layout = Arc::clone(self.world.main().overrides.layout());
-                self.grids
-                    .spawn(states, || Grid::new(Arc::clone(&layout)))?;
+                self.grids.spawn(
+                    states,
+                    || Grid::new(Arc::clone(&layout)),
+                    |source_id| Ok(self.translator.translate_generator(source_id)?),
+                )?;
                 Ok(Some(ClientEvent::GridsChanged))
             }
             ServerMessage::GridsChanged(changes) => {

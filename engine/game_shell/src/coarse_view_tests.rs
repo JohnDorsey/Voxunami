@@ -71,12 +71,29 @@ fn detail() -> CoarseDetail {
     }
 }
 
-/// Digs out the voxels it is given, when the server ticks, as a rule of the game would.
+/// Digs out the voxels it is given (of one grid), when the server ticks, as a rule of the game would.
 #[derive(Debug)]
-struct Digger {
+pub(crate) struct Digger {
+    grid: GridId,
     block: ChannelIndex,
     air: u32,
     queue: Arc<Mutex<Vec<VoxelCoordinate>>>,
+}
+
+impl Digger {
+    pub(crate) fn new(
+        grid: GridId,
+        block: ChannelIndex,
+        air: u32,
+        queue: Arc<Mutex<Vec<VoxelCoordinate>>>,
+    ) -> Self {
+        Self {
+            grid,
+            block,
+            air,
+            queue,
+        }
+    }
 }
 
 impl Plugin for Digger {
@@ -85,7 +102,7 @@ impl Plugin for Digger {
     }
 
     fn register(&self, registrar: &mut Registrar<'_>) {
-        let (block, air) = (self.block, self.air);
+        let (grid, block, air) = (self.grid, self.block, self.air);
         let queue = Arc::clone(&self.queue);
         registrar.system(
             SystemSpec::new("test:digger", Phase::Rules).writes(&[block]),
@@ -94,7 +111,7 @@ impl Plugin for Digger {
                 if voxels.is_empty() {
                     return;
                 }
-                let mut grid = context.grid(GridId::MAIN).expect("the main level is there");
+                let mut grid = context.grid(grid).expect("the grid is there");
                 for voxel in voxels {
                     grid.set(block, voxel, air).expect("a block of the game");
                 }
@@ -126,11 +143,7 @@ impl Rig {
         );
         config.view_distance = detail().maximum_distance;
         let queue: Arc<Mutex<Vec<VoxelCoordinate>>> = Arc::default();
-        let digger = Digger {
-            block,
-            air,
-            queue: Arc::clone(&queue),
-        };
+        let digger = Digger::new(GridId::MAIN, block, air, Arc::clone(&queue));
         let plugins: Vec<Box<dyn Plugin>> = vec![
             Box::new(players),
             Box::new(CoarseServerPlugin::new(config)),

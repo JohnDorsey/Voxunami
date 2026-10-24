@@ -23,6 +23,35 @@ use voxel_meshing::{BrickChannels, BrickNeighbourhood, PackedBrickMesh, mesh_bri
 use voxel_space::{BrickCoordinate, FaceDirection, GridId, GridPose, VoxelCoordinate};
 use world_storage::LevelData;
 
+/// Where the bricks around a viewer come from: the terrain of a level, or the terrain of a ship (a planet). A brick is either known as it is (an edited one) or
+/// made by a generator, which the mesher has done on its worker threads.
+pub trait TerrainSource {
+    /// The brick if it needs no generating: an edited one, or for a ship the empty brick beyond what its generator makes.
+    fn known(&self, coordinate: BrickCoordinate) -> Option<Arc<Brick>>;
+
+    /// The generator that makes the brick if it is not known, if there is one in this program.
+    fn generator_for(&self, coordinate: BrickCoordinate) -> Option<Arc<dyn TerrainGenerator>>;
+
+    /// The channels the bricks have.
+    fn layout(&self) -> &Arc<GridLayout>;
+}
+
+impl TerrainSource for LevelData {
+    fn known(&self, coordinate: BrickCoordinate) -> Option<Arc<Brick>> {
+        self.overrides.brick(coordinate).cloned()
+    }
+
+    /// The generator the level assigns to a brick's region, if the level has assigned one and this program has it.
+    fn generator_for(&self, coordinate: BrickCoordinate) -> Option<Arc<dyn TerrainGenerator>> {
+        let id = self.terrain.assigned_generator(coordinate)?;
+        self.terrain.generators().entry(id)?.content().cloned()
+    }
+
+    fn layout(&self) -> &Arc<GridLayout> {
+        self.overrides.layout()
+    }
+}
+
 /// How far to keep bricks loaded around the viewer, and how much work to run at once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ViewSettings {
@@ -529,8 +558,12 @@ impl WorldMesher {
     }
 
     /// Collects finished jobs, unloads far bricks and schedules nearby work around `center`, reading
-    /// from `level`. Returns what the renderer should change.
-    pub fn update(&mut self, level: &LevelData, center: BrickCoordinate) -> Vec<MeshUpdate> {
+    /// from `source` (a level's terrain, or a ship's). Returns what the renderer should change.
+    pub fn update(
+        &mut self,
+        source: &impl TerrainSource,
+        center: BrickCoordinate,
+    ) -> Vec<MeshUpdate> {
         let mut updates = Vec::new();
         let view_radius = self.settings.view_radius_bricks;
         let keep_radius = view_radius + if self.held_back { 4 } else { 2 };
@@ -606,10 +639,10 @@ impl WorldMesher {
                 continue;
             };
             if let Entry::Vacant(slot) = self.bricks.entry(coordinate) {
-                if let Some(edited) = level.overrides.brick(coordinate) {
-                    slot.insert(Arc::clone(edited));
+                if let Some(known) = source.known(coordinate) {
+                    slot.insert(known);
                 } else if !self.generating.contains(&coordinate)
-                    && let Some(generator) = Self::generator_for(level, coordinate)
+                    && let Some(generator) = source.generator_for(coordinate)
                 {
                     self.generating.insert(coordinate);
                     self.jobs
@@ -619,7 +652,7 @@ impl WorldMesher {
                             epoch: self.epoch,
                             coordinate,
                             generator,
-                            layout: Arc::clone(level.overrides.layout()),
+                            layout: Arc::clone(source.layout()),
                         })
                         .expect("workers are running");
                     scheduled += 1;
@@ -658,16 +691,6 @@ impl WorldMesher {
         updates
     }
 
-    /// The generator the level assigns to a brick's region, if the level has assigned one and this
-    /// program has it.
-    fn generator_for(
-        level: &LevelData,
-        coordinate: BrickCoordinate,
-    ) -> Option<Arc<dyn TerrainGenerator>> {
-        let id = level.terrain.assigned_generator(coordinate)?;
-        level.terrain.generators().entry(id)?.content().cloned()
-    }
-
     /// The brick and its six neighbours, if all of them are loaded.
     fn snapshot_of(&self, coordinate: BrickCoordinate) -> Option<NeighbourhoodSnapshot> {
         let center = Arc::clone(self.bricks.get(&coordinate)?);
@@ -684,10 +707,14 @@ impl WorldMesher {
 
     /// Updates until no work is pending or schedulable, returning every change. For headless
     /// rendering and tests; an interactive viewer calls [`WorldMesher::update`] once per frame.
-    pub fn settle(&mut self, level: &LevelData, center: BrickCoordinate) -> Vec<MeshUpdate> {
+    pub fn settle(
+        &mut self,
+        source: &impl TerrainSource,
+        center: BrickCoordinate,
+    ) -> Vec<MeshUpdate> {
         let mut updates = Vec::new();
         loop {
-            updates.extend(self.update(level, center));
+            updates.extend(self.update(source, center));
             if self.pending_jobs() == 0 && self.scheduled_last_update == 0 {
                 return updates;
             }

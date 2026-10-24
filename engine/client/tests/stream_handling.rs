@@ -1019,7 +1019,55 @@ fn spawn_a_ship(rig: &mut Rig) {
         id: a_ship(),
         level: LevelIndex::MAIN,
         pose: pose_at(0),
+        terrain: None,
     }]));
+}
+
+#[test]
+fn a_ship_with_terrain_is_known_by_its_generator_in_this_clients_numbering_and_has_only_the_bricks_it_is_sent()
+ {
+    let mut rig = Rig::new();
+    rig.watch_origin(1);
+    let generator = rig
+        .client
+        .world()
+        .world()
+        .main()
+        .terrain
+        .generators()
+        .runtime_id(&id("base_terrain:flat_v1"))
+        .unwrap();
+    let extent = BrickBox::around(BrickCoordinate::new(0, 0, 0), 40);
+    rig.send(ServerMessage::GridsSpawned(vec![protocol::GridState {
+        id: a_ship(),
+        level: LevelIndex::MAIN,
+        pose: pose_at(0),
+        terrain: Some(protocol::GridTerrainState {
+            generator: generator.raw(),
+            extent,
+        }),
+    }]));
+    let contents = rig.edited_brick([1, 2, 3], "fancy_blocks:marble");
+    rig.send(ServerMessage::BrickContents {
+        grid: a_ship(),
+        brick: brick(2, 0, 1),
+        contents,
+    });
+    rig.tick(6);
+    rig.client.poll_tick().unwrap().unwrap();
+    let ship = rig.client.world().grids().get(a_ship()).unwrap();
+    assert_eq!(
+        ship.terrain,
+        Some(client::ClientGridTerrain { generator, extent })
+    );
+    // Only the brick it was sent is held; the others are the generator's to make.
+    assert_eq!(ship.voxels.brick_count(), 1);
+    // The summary of the view, which a replay is compared with, names the generator.
+    let summary = rig.client.world().summary();
+    assert_eq!(
+        summary.grids[0].terrain,
+        Some((id("base_terrain:flat_v1"), extent))
+    );
 }
 
 #[test]
@@ -1147,8 +1195,28 @@ fn what_the_server_says_of_a_ship_it_never_described_or_described_twice_is_a_mis
                 id: a_ship(),
                 level: LevelIndex::MAIN,
                 pose: pose_at(0),
+                terrain: None,
             }]),
             |error| matches!(error, ClientError::GridAlreadyKnown(grid) if *grid == a_ship()),
+        ),
+        (
+            "a ship with a generator the world description has no number for",
+            false,
+            ServerMessage::GridsSpawned(vec![protocol::GridState {
+                id: a_ship(),
+                level: LevelIndex::MAIN,
+                pose: pose_at(0),
+                terrain: Some(protocol::GridTerrainState {
+                    generator: 99,
+                    extent: BrickBox::around(BrickCoordinate::ORIGIN, 3),
+                }),
+            }]),
+            |error| {
+                matches!(
+                    error,
+                    ClientError::Translation(TranslationError::GeneratorOutsideTable(99))
+                )
+            },
         ),
         (
             "a move of a ship never told of",

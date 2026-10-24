@@ -7,11 +7,28 @@ use std::sync::Arc;
 
 use block_models::BlockTable;
 use region_octree::BrickCube;
-use voxel_grid::ChannelIndex;
+use voxel_grid::{Brick, ChannelIndex, ChannelStorage};
 use voxel_space::{BrickBox, BrickCoordinate, VoxelCoordinate};
 use world_storage::WorldData;
 use world_storage::test_support::{Game, Plugin, id};
 use world_view::{BrickLight, BulkLight, ViewChannels, ViewSettings, WorldMesher};
+
+/// A hook that lights one brick as bright as `brightness` and leaves the rest dark.
+#[derive(Debug)]
+pub struct LitBrick {
+    pub lit: BrickCoordinate,
+    pub brightness: u32,
+}
+
+impl BrickLight for LitBrick {
+    fn brightness(&self, _brick: &Brick, coordinate: BrickCoordinate) -> Option<ChannelStorage> {
+        Some(ChannelStorage::uniform(if coordinate == self.lit {
+            self.brightness
+        } else {
+            0
+        }))
+    }
+}
 
 pub struct Scene {
     pub game: Game,

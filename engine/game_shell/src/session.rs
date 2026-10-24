@@ -25,8 +25,8 @@ use voxel_space::{
 };
 use winit::keyboard::KeyCode;
 use world_view::{
-    GridMesher, LodConfig, LodSettings, LodView, MeshUpdate, RayHit, ViewChannels, ViewSettings,
-    WorldMesher, cast_ray,
+    GridMesher, LodConfig, LodSettings, LodView, MeshUpdate, RayHit, ShipTerrainMesher,
+    ShipTerrainSource, ViewChannels, ViewSettings, WorldMesher, cast_ray,
 };
 
 use crate::client_commands::ClientSettings;
@@ -127,6 +127,8 @@ pub struct Session<C: Connection, G: GameDefinition> {
     viewport_height: f32,
     /// The meshes of the ships the server has told this client of, and what the renderer was last told of where each is.
     grid_mesher: GridMesher,
+    /// The bricks around the camera of each planet (a ship with terrain), which the client generates; the stored bricks of such a ship are not meshed by `grid_mesher`.
+    planets: BTreeMap<GridId, ShipTerrainMesher>,
     sent_poses: BTreeMap<GridId, GridPose>,
     pub camera: Camera,
     /// The client halves of the game's plugins, and what they registered.
@@ -235,6 +237,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             view_settings,
             viewport_height: DEFAULT_VIEWPORT_HEIGHT,
             grid_mesher,
+            planets: BTreeMap::new(),
             sent_poses: BTreeMap::new(),
             camera: start,
             client_plugins,
@@ -413,7 +416,11 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                     self.terrain.mesher_mut().brick_changed(brick);
                 }
                 ClientEvent::BrickChanged { grid, brick } => {
-                    self.grid_mesher.brick_changed(grid, brick);
+                    match self.planets.get_mut(&grid) {
+                        // The mesher of a planet makes the bricks from the stored ones and the generator.
+                        Some(planet) => planet.brick_changed(brick),
+                        None => self.grid_mesher.brick_changed(grid, brick),
+                    }
                 }
                 // Where ships are and which are gone is read from the client's picture when the view is updated.
                 ClientEvent::GridsChanged => players_changed = true,
@@ -487,6 +494,9 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         }
         let channels = self.client_host.view(self.view_channels.clone());
         self.terrain.mesher_mut().set_channels(channels.clone());
+        for planet in self.planets.values_mut() {
+            planet.set_channels(channels.clone());
+        }
         self.grid_mesher.set_channels(channels);
         if self.mode == Mode::Replaying {
             self.follow_recorded_player();
@@ -683,6 +693,8 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         for id in gone {
             self.sent_poses.remove(&id);
             self.grid_mesher.forget_grid(id);
+            // (Dropping its mesher ends its threads; the renderer drops the ship whole.)
+            self.planets.remove(&id);
             updates.push(MeshUpdate::RemoveGrid(id));
         }
         for (id, ship) in ships.iter() {
@@ -694,8 +706,40 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                 });
             }
         }
+        // The planets: the bricks around the camera, in the planet's own coordinates, made from its generator and the bricks the server stored.
+        let world = self.client.world().world();
+        for (id, ship) in ships.iter() {
+            let Some(terrain) = ship.terrain else {
+                continue;
+            };
+            let Some(local) = ship.pose.world_to_local(self.camera.position) else {
+                continue;
+            };
+            let planet = self.planets.entry(id).or_insert_with(|| {
+                ShipTerrainMesher::new(
+                    id,
+                    self.view_settings,
+                    self.view_channels.clone(),
+                    Arc::clone(&self.block_table),
+                )
+            });
+            let generator = world
+                .main()
+                .terrain
+                .generators()
+                .entry(terrain.generator)
+                .and_then(|entry| entry.content().cloned());
+            let source = ShipTerrainSource::new(&ship.voxels, generator, terrain.extent);
+            updates.extend(planet.update(&source, local.brick()));
+        }
+        // (The stored bricks of a planet are meshed with the rest of it, by its own mesher.)
         updates.extend(self.grid_mesher.update(
-            |id| ships.get(id).map(|ship| &ship.voxels),
+            |id| {
+                ships
+                    .get(id)
+                    .filter(|ship| ship.terrain.is_none())
+                    .map(|ship| &ship.voxels)
+            },
             SHIP_BRICKS_PER_UPDATE,
         ));
         updates
@@ -725,7 +769,11 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                     .watched()
                     .is_some_and(|(level, _)| level == self.level),
             };
-            if updates.is_empty() && loaded && self.terrain.is_settled() {
+            if updates.is_empty()
+                && loaded
+                && self.terrain.is_settled()
+                && self.planets.values().all(ShipTerrainMesher::is_settled)
+            {
                 quiet_rounds += 1;
             } else {
                 quiet_rounds = 0;
@@ -794,7 +842,11 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                 let start = ship.pose.world_to_local(self.camera.position)?;
                 let direction = ship.pose.direction_to_local(forward);
                 cast_ray(id, start, direction, G::reach(), |voxel| {
-                    Some(self.ship_voxel_is_solid(&ship.voxels, voxel))
+                    match self.planets.get(&id) {
+                        // A planet is what its generator makes where the server has not stored a brick, which the mesher around the camera has.
+                        Some(planet) => planet.is_solid_at(voxel),
+                        None => Some(self.ship_voxel_is_solid(&ship.voxels, voxel)),
+                    }
                 })
             });
         terrain
@@ -818,13 +870,22 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         self.block_table.is_solid(model)
     }
 
+    /// How many planets (ships with terrain) the session is making the bricks of.
+    #[cfg(test)]
+    pub(crate) fn planet_count(&self) -> usize {
+        self.planets.len()
+    }
+
     /// The block and state in the voxel a target is of, if the client knows them.
-    fn target_content_of(&self, hit: &RayHit) -> Option<(u32, u32)> {
+    pub(crate) fn target_content_of(&self, hit: &RayHit) -> Option<(u32, u32)> {
         if hit.grid.root_level().is_some() {
             return Some((
                 self.mesher().material_at(hit.voxel)?,
                 self.mesher().state_at(hit.voxel)?,
             ));
+        }
+        if let Some(planet) = self.planets.get(&hit.grid) {
+            return Some((planet.material_at(hit.voxel)?, planet.state_at(hit.voxel)?));
         }
         let voxels = &self.client.world().grids().get(hit.grid)?.voxels;
         Some((

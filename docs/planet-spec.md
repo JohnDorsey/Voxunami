@@ -65,7 +65,13 @@ one, else the brick the generator makes if it is in the extent, else the channel
 voxel to the value it has stores nothing. The bound of the ship is its extent (39a). **Until 39c a planet is left out of `ship_views`** (the wire cannot say what makes its bricks, and sending only its stored bricks would show a client the edits floating in nothing); 39c
 sends the terrain once, with `GridsSpawned`, and after that the **stored** bricks only (a recording holds the generator ids and replays by regenerating).
 
-**The wire and the client (39c).** Protocol 8: `GridState` carries the terrain. The client builds the ship's terrain from the generators it already has and generates the bricks it meshes. Golden sessions and wire pins that move get a justification.
+**The wire and the client (built in 39c).** Protocol 8: `GridState` carries `terrain: Option<GridTerrainState { generator: u32, extent: BrickBox }>` (the generator as a number of the world description's table, as in an assignment; the mass is not sent, nothing on a client reads it). The server tells of a planet
+as of any ship, with the terrain, and then sends the **stored** bricks only; `ship_views` no longer leaves it out. The client (`ClientGrid.terrain: Option<ClientGridTerrain { generator, extent }>`, translated through the same translator as an assignment) makes the rest:
+`world_view::TerrainSource` (a trait that the mesher of the bricks of a level reads from, which `LevelData` and a ship's `ShipTerrainSource` now both are; `known` is a stored brick, or the empty brick beyond the extent, and `generator_for` is the generator) lets a `WorldMesher` do for a ship what it did for
+a level, and `ShipTerrainMesher` is that mesher saying what it draws as bricks of the ship (`UploadGridBrick`), under the ship's pose. The `Session` keeps one for each planet, feeds it the camera in the planet's coordinates (`GridPose::world_to_local`), sends the changes of its stored bricks to it
+and not to the mesher of ships (which no longer meshes the stored bricks of a planet alone, without the neighbours the generator makes), aims the crosshair through it, and waits for it when it settles. The view summary a replay is compared with names the generator and the extent. A brick beyond the extent is empty and the face of the brick against it is drawn,
+so a planet cut off by its extent shows its side. **Golden sessions:** the four that pin a stream or a recording (2048, Eels, Cave, and the end-to-end recording) moved once, for the version in the welcome; each was checked by running the code of the commit before with only the version raised to 8, which gave the new hash and the same length, so none of them tells of a ship.
+**Not yet:** the levels of detail of a planet (39e), and what a planet does to bodies and gravity (39d).
 
 **Bodies (39d).** The blocks of a ship near a player are colliders in the player's world (`update_foreign`) and what a body aboard collides with (`CollisionSource`): both read through the generator. A held ship with terrain has no body of its own and no
 collider of its own (a body made from every brick is not possible).
@@ -84,7 +90,7 @@ while it would be a pixel (3.7 of the LOD spec); a planet is known from anywhere
 - **39-1 The planet field and generator** (terrain): the shape, bounds, the generator, the planet's node from columns; tests (sphere, seams, determinism pinned, bounds sound, nodes against the voxels). **Built 2026-10-24** (section 3 says what it is and how it measured).
 - **39a `GridTerrain` on `MovingGrid`**, the file section, save and load. **Built 2026-10-24.**
 - **39b The server reads through** and the replication of a ship with terrain. **Read-through built 2026-10-24; the replication is 39c's.**
-- **39c The wire (protocol 8) and the client generates.** A replay test.
+- **39c The wire (protocol 8) and the client generates.** A replay test. **Built 2026-10-24.**
 - **39d Colliders from generated bricks; gravity of a level; the planet's mass; boarding and leaving on a planet.**
 - **39e Levels of detail for a ship with terrain.**
 - **39f The level `mini_cosmos` in Cave**: the empty generator, the planet, the spawn, the default; the tests that start in the overworld; documents.

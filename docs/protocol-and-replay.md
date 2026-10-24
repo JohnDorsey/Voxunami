@@ -1,4 +1,4 @@
-# The message stream and replays (protocol version 7)
+# The message stream and replays (protocol version 8)
 
 Implemented by `engine/protocol` (messages), `engine/transport` (carrying frames), `engine/server`, `engine/client`
 and `engine/replay`; scenarios that run them together are in `engine/end_to_end_tests`.
@@ -92,7 +92,7 @@ Server to client:
 | 10 | `EntitiesChanged` | count, then per entity: id, a byte (1 if a pose follows, else 0) and the pose, components. Only what changed |
 | 11 | `EntitiesDespawned` | count, then ids (varints): entities that left the watched region or no longer exist |
 | 12 | `Challenge` | nonce (32 bytes): what the client must sign to say it holds the private key of the key it announced |
-| 13 | `GridsSpawned` | count, then per ship: grid id (varint, never a level's number), level (varint), pose without a grid (the position and orientation as in a pose). Ships that came into the watched region, in order of id; each is followed in the same tick by a `BrickContents` of every brick it has |
+| 13 | `GridsSpawned` | count, then per ship: grid id (varint, never a level's number), level (varint), pose without a grid (the position and orientation as in a pose), and a byte that is 0 or 1; if 1, the ship has terrain (a planet): the generator (a varint, the number it has in the world description's table of generators, as in a `GeneratorAssignment`) and the box of bricks it makes (two bricks as three zigzag varints each). Ships that came into the watched region, in order of id; each is followed in the same tick by a `BrickContents` of every brick it has: of every brick for a ship that nothing generates, and of the stored (edited) bricks only for a ship with terrain, whose other bricks the client makes |
 | 14 | `GridsChanged` | count, then per ship: grid id, pose without a grid. Ships the client knows that moved |
 | 15 | `GridsDespawned` | count, then ids: ships that left the watched region or no longer exist; the client forgets their bricks |
 
@@ -193,7 +193,7 @@ guarantees.
 
 A client watches a box of bricks of one level, as before. A **ship** is in its picture if it is in that level and the box of bricks its
 turned bricks touch meets the watched box (the bound is `MovingGrid::world_brick_bounds`; a ship with no bricks is in nobody's picture).
-Nothing generates a ship's voxels, so a client is sent every brick of a ship it is newly told of, and forgets them all when told the ship is gone.
+A client is sent every brick of a ship it is newly told of (every brick that is stored, for a ship with terrain, whose other bricks inside its box the client generates from the generator the message names; a brick that an edit stores later is sent whole, as for terrain, and then edited in place), and forgets them all when told the ship is gone. (Protocol 8, Phase 39c, is the byte and what follows it in `GridsSpawned`; nothing else changed.)
 Per tick, after the change of region and the edits of the terrain and before the entities and the messages of the game: the ships that left
 (`GridsDespawned`), the ones that came in (`GridsSpawned`, then their bricks), the ones that moved (`GridsChanged`), then the edits to ships the
 client already had (a brick the ship did not have is sent whole, as for terrain; a ship told of this tick has its bricks in their final

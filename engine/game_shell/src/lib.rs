@@ -21,6 +21,8 @@ pub mod options;
 pub mod package;
 mod package_data;
 mod packs;
+#[cfg(test)]
+mod planet_view_tests;
 mod player_identity;
 pub mod screen;
 pub mod serve;

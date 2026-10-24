@@ -1270,6 +1270,7 @@ pub(crate) mod tests {
     use voxel_space::voxel_in_other;
 
     use crate::GridView;
+    use protocol::ServerMessage;
     use voxel_space::BrickBox;
     use world_storage::test_support::{Game, Plugin, id, main_level_id};
     use world_storage::{GridTerrain, LevelData};
@@ -2777,9 +2778,30 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_planet_is_not_among_the_ships_told_to_clients_until_the_wire_can_say_what_makes_its_bricks()
-     {
-        let (mut world, planet, block, _) = world_with_a_planet();
+    fn a_planet_is_told_of_with_its_generator_and_extent_and_sent_only_the_bricks_that_are_stored()
+    {
+        // (Its generator is the second of the table, so that its number is not 0 by accident; the placeholder of a plugin that is not here is told of all the same.)
+        let game = Game::new(&[Plugin::BaseBlocks]);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let second = id("gone_plugin:planet_v1");
+        let level = counting_level_with_missing(&game, &calls, &[&second]);
+        let block = block_channel(&level);
+        let generator = level.terrain.generators().runtime_id(&second).unwrap();
+        assert_eq!(generator.raw(), 1);
+        let mut world = ServerWorld::new(WorldData::new(1, main_level_id(), level), Arc::default());
+        let planet = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        world
+            .data_mut()
+            .grids_mut()
+            .get_mut(planet)
+            .unwrap()
+            .terrain = Some(GridTerrain {
+            generator,
+            extent: BrickBox::around(BrickCoordinate::ORIGIN, 3),
+            mass: 1.0e20,
+        });
         let ship = world
             .create_grid(LevelIndex::MAIN, GridPose::identity())
             .unwrap();
@@ -2788,14 +2810,53 @@ pub(crate) mod tests {
             .unwrap()
             .set(block, VoxelCoordinate::new(1, 1, 1), 2)
             .unwrap();
-        world
-            .grid(planet)
-            .unwrap()
-            .set(block, VoxelCoordinate::new(1, 1, 1), 2)
-            .unwrap();
-        let shown = crate::grid_replication::ship_views(&world);
-        assert_eq!(shown.len(), 1);
-        assert_eq!(shown[0].id(), ship);
+        // The planet has one stored brick (its generator is missing, so the brick is put in as it would be stored; the others in its extent are not sent).
+        let stored_voxel = VoxelCoordinate::new(40, 1, 1);
+        let layout = Arc::clone(world.data().main().overrides.layout());
+        let mut stored = Grid::new(layout);
+        stored.set(block, stored_voxel, 2);
+        world.data_mut().grids_mut().get_mut(planet).unwrap().voxels = stored;
+        let views = crate::grid_replication::ship_views(&world);
+        assert_eq!(views.len(), 2);
+        let mut known = crate::grid_replication::KnownGrids::default();
+        let region = BrickBox::around(BrickCoordinate::ORIGIN, 5);
+        let messages = crate::grid_replication::grid_messages(
+            &world,
+            &views,
+            &mut known,
+            Some((LevelIndex::MAIN, region)),
+            1000,
+            &[],
+        );
+        let ServerMessage::GridsSpawned(states) = &messages[0] else {
+            panic!("the first message tells of the ships: {:?}", messages[0]);
+        };
+        let terrain = world.data().grids().get(planet).unwrap().terrain.unwrap();
+        assert_eq!(states.len(), 2);
+        assert_eq!(states[0].id, planet);
+        assert_eq!(
+            states[0].terrain,
+            Some(protocol::GridTerrainState {
+                generator: terrain.generator.raw(),
+                extent: terrain.extent
+            })
+        );
+        assert_eq!(states[1].terrain, None);
+        // The bricks that follow are the ones that are stored, one for each ship, and not the planet's generated ones.
+        let sent: Vec<(GridId, BrickCoordinate)> = messages
+            .iter()
+            .filter_map(|message| match message {
+                ServerMessage::BrickContents { grid, brick, .. } => Some((*grid, *brick)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                (planet, stored_voxel.split().0),
+                (ship, VoxelCoordinate::new(1, 1, 1).split().0)
+            ]
+        );
     }
 
     #[test]

@@ -91,13 +91,25 @@ pub struct EntityChange {
     pub components: Vec<(NamespacedId, Vec<u8>)>,
 }
 
-/// A ship a client has just been told of: which level it is in and where it is. Its bricks follow as `BrickContents` of the ship.
+/// What makes the bricks of a ship that are not sent (a planet: Phase 39). The client generates them itself, as it does the terrain of a level.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GridTerrainState {
+    /// An index into the world description's generator table, as in a `GeneratorAssignment`.
+    pub generator: u32,
+    /// The bricks the generator makes, in the ship's own coordinates; the ship has nothing generated outside it.
+    pub extent: BrickBox,
+}
+
+/// A ship a client has just been told of: which level it is in and where it is. Its bricks follow as `BrickContents` of the ship: all of them, or for a ship
+/// with terrain only the ones that were edited (the others the client generates).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GridState {
     /// Never the root grid of a level, which a client knows from the world description.
     pub id: GridId,
     pub level: LevelIndex,
     pub pose: GridPose,
+    /// What generates the bricks that are not sent, if anything does.
+    pub terrain: Option<GridTerrainState>,
 }
 
 /// A ship the client knows that moved.
@@ -292,6 +304,14 @@ impl ServerMessage {
                     write_grid(&mut writer, grid.id);
                     write_level(&mut writer, grid.level);
                     write_grid_pose(&mut writer, &grid.pose);
+                    match grid.terrain {
+                        None => writer.write_u8(0),
+                        Some(terrain) => {
+                            writer.write_u8(1);
+                            writer.write_varint(u64::from(terrain.generator));
+                            write_brick_box(&mut writer, terrain.extent);
+                        }
+                    }
                 }
             }
             Self::GridsChanged(changes) => {
@@ -460,15 +480,32 @@ impl ServerMessage {
                 Self::EntitiesDespawned(ids)
             }
             KIND_GRIDS_SPAWNED => {
-                // An id, a level, and a pose (at least 29 bytes).
-                let count = reader.read_count(31)?;
+                // An id, a level, a pose, and whether there is terrain (at least 32 bytes).
+                let count = reader.read_count(32)?;
                 let mut grids = Vec::with_capacity(count);
                 for _ in 0..count {
                     let id = read_ship(&mut reader)?;
+                    let level = read_level(&mut reader)?;
+                    let pose = read_grid_pose(&mut reader)?;
+                    let terrain = match reader.read_u8()? {
+                        0 => None,
+                        1 => Some(GridTerrainState {
+                            generator: u32::try_from(reader.read_varint()?).map_err(|_| {
+                                DecodeError::Invalid("a generator number is too large")
+                            })?,
+                            extent: read_brick_box(&mut reader)?,
+                        }),
+                        _ => {
+                            return Err(
+                                DecodeError::Invalid("a terrain flag is neither 0 nor 1").into()
+                            );
+                        }
+                    };
                     grids.push(GridState {
                         id,
-                        level: read_level(&mut reader)?,
-                        pose: read_grid_pose(&mut reader)?,
+                        level,
+                        pose,
+                        terrain,
                     });
                 }
                 Self::GridsSpawned(grids)
@@ -680,11 +717,16 @@ mod tests {
                     id: ship(),
                     level: LevelIndex::new(1),
                     pose: sample_grid_pose(3),
+                    terrain: None,
                 },
                 GridState {
                     id: GridId::new(u64::MAX),
                     level: LevelIndex::MAIN,
                     pose: sample_grid_pose(-9),
+                    terrain: Some(GridTerrainState {
+                        generator: 2,
+                        extent: BrickBox::around(BrickCoordinate::new(0, -3, 7), 2000),
+                    }),
                 },
             ]),
             ServerMessage::GridsSpawned(Vec::new()),
@@ -886,6 +928,75 @@ mod tests {
     }
 
     #[test]
+    fn a_ship_with_terrain_is_told_of_with_the_generator_and_the_extent_and_a_bad_one_is_refused() {
+        let frame = |terrain: &dyn Fn(&mut ByteWriter)| {
+            let mut writer = ByteWriter::new();
+            writer.write_u8(KIND_GRIDS_SPAWNED);
+            writer.write_varint(1);
+            write_grid(&mut writer, ship());
+            write_level(&mut writer, LevelIndex::MAIN);
+            write_grid_pose(&mut writer, &sample_grid_pose(0));
+            terrain(&mut writer);
+            writer.into_bytes()
+        };
+        let box_of = |low: [i64; 3], high: [i64; 3]| {
+            move |writer: &mut ByteWriter| {
+                for corner in [low, high] {
+                    for component in corner {
+                        writer.write_signed_varint(component);
+                    }
+                }
+            }
+        };
+        // The right bytes are read as the terrain they say.
+        let good = frame(&|writer| {
+            writer.write_u8(1);
+            writer.write_varint(5);
+            box_of([-20; 3], [19; 3])(writer);
+        });
+        let ServerMessage::GridsSpawned(grids) = ServerMessage::decode(&good).unwrap() else {
+            panic!("not the message that was written");
+        };
+        assert_eq!(
+            grids[0].terrain,
+            Some(GridTerrainState {
+                generator: 5,
+                extent: BrickBox::new(
+                    BrickCoordinate::new(-20, -20, -20),
+                    BrickCoordinate::new(19, 19, 19)
+                )
+                .unwrap()
+            })
+        );
+        // A flag that is neither 0 nor 1, a generator beyond 32 bits, corners the wrong way round and a message cut short are not.
+        assert!(
+            ServerMessage::decode(&frame(&|writer| {
+                writer.write_u8(2);
+                writer.write_varint(0);
+                box_of([0; 3], [1; 3])(writer);
+            }))
+            .is_err()
+        );
+        assert!(
+            ServerMessage::decode(&frame(&|writer| {
+                writer.write_u8(1);
+                writer.write_varint(u64::from(u32::MAX) + 1);
+                box_of([0; 3], [1; 3])(writer);
+            }))
+            .is_err()
+        );
+        assert!(
+            ServerMessage::decode(&frame(&|writer| {
+                writer.write_u8(1);
+                writer.write_varint(0);
+                box_of([1; 3], [0; 3])(writer);
+            }))
+            .is_err()
+        );
+        assert!(ServerMessage::decode(&good[..good.len() - 1]).is_err());
+    }
+
+    #[test]
     fn the_root_grid_of_a_level_is_never_told_of_as_a_ship() {
         let root = GridId::root(LevelIndex::new(1));
         for message in [
@@ -893,6 +1004,7 @@ mod tests {
                 id: root,
                 level: LevelIndex::MAIN,
                 pose: sample_grid_pose(0),
+                terrain: None,
             }]),
             ServerMessage::GridsChanged(vec![GridChange {
                 id: root,

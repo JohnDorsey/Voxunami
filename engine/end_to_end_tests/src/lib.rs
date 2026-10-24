@@ -159,6 +159,39 @@ fn ship_at_tick(count: u64, world: &mut ServerWorld, marble: u32, glass: u32) {
     }
 }
 
+/// The planet of [`Fixture::with_planet`] at this tick: edits to bricks it generates (the first one stores a brick), more to the brick that is stored, one to a
+/// brick that was stored from the start, and then it goes.
+fn planet_at_tick(count: u64, world: &mut ServerWorld, marble: u32, glass: u32) {
+    let planet = GridId::new(GridId::FIRST_ALLOCATED);
+    let block = world
+        .data()
+        .main()
+        .overrides
+        .layout()
+        .channel_index(&id("core:block"))
+        .unwrap();
+    let edit = |world: &mut ServerWorld, at: [i64; 3], value: u32| {
+        world
+            .grid(planet)
+            .unwrap()
+            .set(block, VoxelCoordinate::new(at[0], at[1], at[2]), value)
+            .unwrap();
+    };
+    match count {
+        // In bricks the generator makes, so each edit stores a whole brick.
+        8 => edit(world, [100, 41, -3], marble),
+        10 | 12 => edit(world, [100 + count as i64, 41, -3], glass),
+        // In the brick that is stored, and in one of the two the planet was made with.
+        14 => edit(world, [101, 42, -3], glass),
+        16 => edit(world, [2, 1, 1], glass),
+        20 => edit(world, [-70, 30, 90], marble),
+        40 => {
+            assert!(world.remove_grid(planet).is_some());
+        }
+        _ => {}
+    }
+}
+
 /// A running server with the pretend game, and a way for players to connect to it.
 #[derive(Debug)]
 pub struct Fixture {
@@ -196,11 +229,26 @@ impl Fixture {
         Self::build(game, world, false, true)
     }
 
+    /// A server for a world that has a planet from the start (the ship of [`Game::sample_planet`]: terrain, and two bricks that are edits), edited
+    /// on ticks 8 to 20 (see `planet_at_tick`) and removed on tick 40.
+    pub fn with_planet() -> Self {
+        let game = Game::new(&ALL_PLUGINS);
+        let mut world = game.new_world();
+        let planet = game.sample_planet(&world, 0);
+        let made = world.grids_mut().create(planet);
+        assert_eq!(made, GridId::new(GridId::FIRST_ALLOCATED));
+        Self::build_with(game, world, false, false, true)
+    }
+
     pub fn with_world(game: Game, world: WorldData) -> Self {
         Self::build(game, world, false, false)
     }
 
     fn build(game: Game, world: WorldData, herd: bool, ship: bool) -> Self {
+        Self::build_with(game, world, herd, ship, false)
+    }
+
+    fn build_with(game: Game, world: WorldData, herd: bool, ship: bool, planet: bool) -> Self {
         let block_ids: HashMap<NamespacedId, u32> = (0..)
             .map_while(|raw| {
                 game.blocks
@@ -266,6 +314,9 @@ impl Fixture {
                     let count = tick.get();
                     if ship {
                         ship_at_tick(count, world, marble, glass);
+                    }
+                    if planet {
+                        planet_at_tick(count, world, marble, glass);
                     }
                     if herd {
                         if count % 7 == 0 && wisps.len() < 6 {
@@ -610,6 +661,33 @@ fn ship_differences<C: Connection>(
             (true, Some(theirs)) => {
                 if theirs.pose != ship.pose || theirs.level != ship.level {
                     differences.push(format!("{id} is somewhere else on the client"));
+                }
+                // What generates the rest of its bricks: the same generator (by name) over the same bricks.
+                let names = |generator| {
+                    server_world
+                        .main()
+                        .terrain
+                        .generators()
+                        .entry(generator)
+                        .map(|entry| entry.identifier().clone())
+                };
+                let ours = ship
+                    .terrain
+                    .map(|terrain| (names(terrain.generator), terrain.extent));
+                let theirs_terrain = theirs.terrain.map(|terrain| {
+                    (
+                        world
+                            .world()
+                            .main()
+                            .terrain
+                            .generators()
+                            .entry(terrain.generator)
+                            .map(|entry| entry.identifier().clone()),
+                        terrain.extent,
+                    )
+                });
+                if ours != theirs_terrain {
+                    differences.push(format!("{id} is generated differently on the client"));
                 }
                 if world.verifies_edit_digests()
                     && theirs.voxels.content_digest() != ship.voxels.content_digest()

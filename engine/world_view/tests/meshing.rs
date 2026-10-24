@@ -8,16 +8,16 @@ use content_registry::Registry;
 use terrain::{TerrainGenerator, WorldTerrain};
 
 use region_octree::BrickCube;
-use voxel_grid::{Brick, ChannelStorage, Grid, GridLayout};
+use voxel_grid::{Brick, Grid, GridLayout};
 use voxel_meshing::{FULL_LIGHT, PackedBrickMesh, Quad};
 use voxel_space::{BrickBox, BrickCoordinate, FaceDirection, VoxelCoordinate};
 use world_storage::test_support::{Game, Plugin, brick, id};
 use world_storage::{LevelData, WorldData};
-use world_view::{BrickLight, MeshUpdate};
+use world_view::MeshUpdate;
 
 mod common;
 
-use common::{Scene, scene};
+use common::{LitBrick, Scene, scene};
 
 /// Applies updates the way a renderer would.
 fn apply(live: &mut HashMap<BrickCoordinate, PackedBrickMesh>, updates: Vec<MeshUpdate>) {
@@ -467,23 +467,6 @@ fn bricks_generated_for_a_level_before_a_reset_never_reach_the_next_levels_pictu
     let mut expected = HashMap::new();
     apply(&mut expected, scene.mesher(3).settle(level, brick(0, 0, 0)));
     assert_eq!(live, expected);
-}
-
-/// A hook that lights one brick as bright as `brightness` and leaves the rest dark.
-#[derive(Debug)]
-struct LitBrick {
-    lit: BrickCoordinate,
-    brightness: u32,
-}
-
-impl BrickLight for LitBrick {
-    fn brightness(&self, _brick: &Brick, coordinate: BrickCoordinate) -> Option<ChannelStorage> {
-        Some(ChannelStorage::uniform(if coordinate == self.lit {
-            self.brightness
-        } else {
-            0
-        }))
-    }
 }
 
 #[test]

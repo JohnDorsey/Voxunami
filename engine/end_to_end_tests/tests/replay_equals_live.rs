@@ -156,6 +156,62 @@ fn a_replay_of_a_session_with_a_ship_that_turns_moves_grows_and_goes_rebuilds_ev
 }
 
 #[test]
+fn a_replay_of_a_session_with_a_planet_rebuilds_every_view_of_it_and_the_live_view_was_the_servers_truth()
+ {
+    let session = play_session(Fixture::with_planet(), 60);
+    let mut replayed = replay_player(session.recording.contents(), &ALL_PLUGINS).unwrap();
+    play_to_the_end(&mut replayed);
+    assert_eq!(replayed.updates, session.alice.updates, "events differ");
+    assert_eq!(replayed.summaries, session.alice.summaries, "views differ");
+
+    // The planet was really there: from the start, by its generator and its extent, with only the bricks that are stored, and the stored ones grew.
+    let planet_views: Vec<_> = session
+        .alice
+        .summaries
+        .iter()
+        .filter_map(|summary| summary.grids.first())
+        .collect();
+    assert!(
+        planet_views.len() >= 20,
+        "{} views had the planet",
+        planet_views.len()
+    );
+    for grid in &planet_views {
+        let (generator, extent) = grid.terrain.clone().expect("the planet has terrain");
+        assert_eq!(generator.to_string(), "fancy_terrain:cliffs_v1");
+        assert_eq!(extent, BrickBox::around(BrickCoordinate::ORIGIN, 20));
+    }
+    let digests: std::collections::BTreeSet<u64> =
+        planet_views.iter().map(|grid| grid.bricks).collect();
+    assert!(
+        digests.len() >= 4,
+        "{} different sets of stored bricks",
+        digests.len()
+    );
+
+    // It went on tick 40, and the views after that have no ship.
+    assert!(session.alice.summaries.last().unwrap().grids.is_empty());
+
+    // The live client agrees with the server about the planet gone as it did about the planet there (and so does the replay of it).
+    assert_eq!(
+        differences_from_server(
+            &session.alice,
+            session.fixture.server.world(),
+            &session.fixture.game
+        ),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        differences_from_server(
+            &replayed,
+            session.fixture.server.world(),
+            &session.fixture.game
+        ),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
 fn the_scenario_exercises_every_kind_of_message() {
     // Guards the test above against passing because nothing happened.
     let session = play_session(Fixture::new(), 60);
@@ -249,7 +305,9 @@ const PINNED_RECORDING_LENGTH: usize = 84_807;
 // Phase 28: the welcome has a package (here empty: one byte for its length) and the version is 5: 84,806 to 84,807 bytes.
 // Phase 38a: the checksum changed once, for the protocol version in the welcome (7, was 6: the orientation of a pose is four `f64`); the length did not (this recording
 // has no pose in it), and setting the version back to 6 gave the old checksum.
-const PINNED_RECORDING_CHECKSUM: u32 = 2_100_474_641;
+// Phase 39c: the checksum changed once, for the protocol version in the welcome (8, was 7: a ship that is told of says whether it has terrain); the length did not (no ship is
+// told of in this recording), and the code of the commit before with only the version raised to 8 gives the new checksum.
+const PINNED_RECORDING_CHECKSUM: u32 = 4_219_080_669;
 
 #[test]
 fn identical_sessions_make_byte_identical_recordings() {
