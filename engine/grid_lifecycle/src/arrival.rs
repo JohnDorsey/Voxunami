@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use grid_bodies::collision::{BlockCollisions, ShipHull, SolidAt};
+use grid_bodies::collision::{BlockCollisions, GeneratedHull, ShipHull, SolidAt};
 use physics::Collision;
 use server::{GridView, ServerWorld};
 use voxel_grid::{ChannelIndex, Grid};
@@ -169,7 +169,8 @@ pub fn is_inside(collision: &Collision, inside: [f64; 3]) -> bool {
     }
 }
 
-/// What a ship can land in: the terrain of its level, and the other ships there. Terrain that cannot be read is a wall.
+/// What a ship can land in: the terrain of its level, the ground of the planets there (ships with terrain, whose ground is the generator's wherever it has not been
+/// built on or dug out), and the other ships there. Terrain that cannot be read is a wall.
 #[derive(Debug)]
 pub struct Obstacles<'a> {
     world: &'a mut ServerWorld,
@@ -177,9 +178,13 @@ pub struct Obstacles<'a> {
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
     orientation_channel: Option<ChannelIndex>,
+    /// The block that is air.
+    air: u32,
     collisions: &'a BlockCollisions,
     /// What the terrain is at the voxels asked about, which a search asks about again and again.
     terrain: HashMap<VoxelCoordinate, Collision>,
+    /// The planets of the level as they are now: which and where.
+    planets: Vec<(GridId, GridPose)>,
     /// The other ships of the level as they are now: where each is, and its voxels.
     ships: Vec<(GridPose, Grid)>,
 }
@@ -191,13 +196,21 @@ impl<'a> Obstacles<'a> {
         block_channel: ChannelIndex,
         state_channel: ChannelIndex,
         orientation_channel: Option<ChannelIndex>,
+        air: u32,
         collisions: &'a BlockCollisions,
     ) -> Self {
-        let ships = world
+        let (planets, ships) = world
             .data()
             .grids()
             .iter()
             .filter(|(_, ship)| ship.level == level)
+            .partition::<Vec<_>, _>(|(_, ship)| ship.terrain.is_some());
+        let planets = planets
+            .into_iter()
+            .map(|(id, ship)| (id, ship.pose))
+            .collect();
+        let ships = ships
+            .into_iter()
             .map(|(_, ship)| (ship.pose, ship.voxels.clone()))
             .collect();
         Self {
@@ -206,8 +219,10 @@ impl<'a> Obstacles<'a> {
             block_channel,
             state_channel,
             orientation_channel,
+            air,
             collisions,
             terrain: HashMap::new(),
+            planets,
             ships,
         }
     }
@@ -243,6 +258,30 @@ impl<'a> Obstacles<'a> {
         is_inside(&self.terrain_at(voxel), inside)
     }
 
+    /// The voxel of the ground of a planet that a place of the world is inside, if it is (the planet, and the voxel in its own coordinates): the planet's blocks
+    /// where it has any, else the generator's.
+    pub fn in_a_planet(&self, place: WorldPosition) -> Option<(GridId, VoxelCoordinate)> {
+        self.planets.iter().find_map(|&(grid, pose)| {
+            let local = pose.world_to_local(place)?;
+            let (brick, offset) = (local.brick(), local.offset());
+            let here = [0, 1, 2].map(|axis| {
+                let brick_start = [brick.x(), brick.y(), brick.z()][axis] * 32;
+                brick_start as f64 + f64::from(offset[axis])
+            });
+            GeneratedHull {
+                world: &*self.world,
+                grid,
+                block_channel: self.block_channel,
+                state_channel: self.state_channel,
+                orientation_channel: self.orientation_channel,
+                air: self.air,
+                collisions: self.collisions,
+            }
+            .solid_at(here)
+            .then(|| (grid, voxel_of(local)))
+        })
+    }
+
     /// Whether a place of the world is inside a block of another ship.
     pub fn in_a_ship(&self, place: WorldPosition) -> bool {
         self.ships.iter().any(|(pose, voxels)| {
@@ -267,30 +306,38 @@ impl<'a> Obstacles<'a> {
 
     /// Whether a place of the world is inside anything a ship cannot be in.
     pub fn solid_at(&mut self, place: WorldPosition) -> bool {
-        self.in_terrain(place) || self.in_a_ship(place)
+        self.in_terrain(place) || self.in_a_planet(place).is_some() || self.in_a_ship(place)
     }
 
-    /// The solid voxels of the terrain that the given cells of the hull are in when the ship is at `pose`, in order, each once.
+    /// The solid voxels of the terrain (the level's, and the ground of its planets) that the given cells of the hull are in when the ship is at `pose`, each once,
+    /// with the grid each is in and in that grid's own coordinates.
     pub fn terrain_in_the_way(
         &mut self,
         hull: &Hull,
         cells: &[usize],
         pose: &GridPose,
-    ) -> BTreeSet<VoxelCoordinate> {
+    ) -> BTreeSet<(GridId, VoxelCoordinate)> {
+        let level = GridId::root(self.level);
         cells
             .iter()
             .filter_map(|&cell| hull.centre_at(cell, pose))
-            .filter(|&place| self.in_terrain(place))
-            .map(voxel_of)
+            .filter_map(|place| {
+                if self.in_terrain(place) {
+                    Some((level, voxel_of(place)))
+                } else {
+                    self.in_a_planet(place)
+                }
+            })
             .collect()
     }
 }
 
-/// Breaks the terrain at these voxels of a level: every channel goes to its default there. Returns how many voxels it changed.
+/// Breaks the terrain at these voxels of a level and its planets (each with the grid it is in): every channel goes to its default there. Returns how many voxels it
+/// changed.
 pub fn break_terrain(
     world: &mut ServerWorld,
     level: LevelIndex,
-    voxels: &BTreeSet<VoxelCoordinate>,
+    voxels: &BTreeSet<(GridId, VoxelCoordinate)>,
 ) -> usize {
     let Some(layout) = world
         .data()
@@ -299,11 +346,11 @@ pub fn break_terrain(
     else {
         return 0;
     };
-    let Ok(mut terrain) = world.grid(GridId::root(level)) else {
-        return 0;
-    };
     let mut changed = 0;
-    for &voxel in voxels {
+    for &(grid, voxel) in voxels {
+        let Ok(mut terrain) = world.grid(grid) else {
+            continue;
+        };
         let mut any = false;
         for channel in layout.channel_indices() {
             if let Ok(true) = terrain.set(channel, voxel, layout.default_value(channel)) {

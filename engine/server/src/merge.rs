@@ -54,6 +54,10 @@ pub enum MergeError {
     #[error("the ships are not in the same level")]
     DifferentLevels,
     #[error(
+        "{0:?} has terrain, a planet: a ship that meets one is written into it (its identifier does not change), and two planets are not joined"
+    )]
+    HasTerrain(GridId),
+    #[error(
         "the ships are not on one lattice: their turns or places differ from a whole number of quarter turns and voxels"
     )]
     NotOnOneLattice,
@@ -103,6 +107,12 @@ impl ServerWorld {
         let second = self.data.grids().get(b).ok_or(AccessError::NoSuchGrid(b))?;
         if first.level != second.level {
             return Err(MergeError::DifferentLevels);
+        }
+        // (The blocks of a planet are mostly not stored, and a new ship in its place would be one with no terrain: it is not the ship that is made new here.)
+        for (id, ship) in [(a, first), (b, second)] {
+            if ship.terrain.is_some() {
+                return Err(MergeError::HasTerrain(id));
+            }
         }
         // The larger keeps its coordinates (of two as large, the one with the lower id).
         let (base_id, other_id) =
@@ -647,6 +657,52 @@ mod tests {
         let (_, transform) = world.data().grids().resolve(small)[0];
         let there = transform.apply(VoxelCoordinate::ORIGIN).unwrap();
         assert_eq!(world.grid(merged).unwrap().get(channel, there).unwrap(), 99);
+    }
+
+    #[test]
+    fn a_ship_with_terrain_is_merged_with_nothing_in_either_order_and_nothing_changes() {
+        let (mut world, _) = world_with_a_walker();
+        let ordinary = ship(&mut world, pose(3.0, 40.0, 3.0, 0.0), &[[0, 0, 0]], None);
+        let planet = ship(&mut world, pose(4.0, 40.0, 3.0, 0.0), &[[0, 1, 0]], None);
+        let generator = world.data().main().terrain.default_generator();
+        world
+            .set_grid_terrain(
+                planet,
+                world_storage::GridTerrain {
+                    generator,
+                    extent: voxel_space::BrickBox::around(BrickCoordinate::ORIGIN, 1),
+                    mass: 1.0e20,
+                },
+            )
+            .unwrap();
+        let before = world.data().grids().get(planet).unwrap().clone();
+        assert_eq!(
+            world.merge_grids(ordinary, planet, &plan(&world, &nothing_turns)),
+            Err(MergeError::HasTerrain(planet))
+        );
+        assert_eq!(
+            world.merge_grids(planet, ordinary, &plan(&world, &nothing_turns)),
+            Err(MergeError::HasTerrain(planet))
+        );
+        // Two planets: the first is the one named.
+        let other = ship(&mut world, pose(5.0, 40.0, 3.0, 0.0), &[], None);
+        world
+            .set_grid_terrain(
+                other,
+                world_storage::GridTerrain {
+                    generator,
+                    extent: voxel_space::BrickBox::around(BrickCoordinate::ORIGIN, 1),
+                    mass: 1.0e20,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            world.merge_grids(planet, other, &plan(&world, &nothing_turns)),
+            Err(MergeError::HasTerrain(planet))
+        );
+        assert_eq!(world.data().grids().len(), 3);
+        assert_eq!(world.data().grids().tombstones().count(), 0);
+        assert_eq!(world.data().grids().get(planet), Some(&before));
     }
 
     #[test]

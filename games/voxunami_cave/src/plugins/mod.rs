@@ -65,16 +65,19 @@ pub fn cave_plugins_reporting(
     // Ships move while a player is near, wait farther off, and are put in files farther still. A player whose ship is lost can go to where
     // players start, and one whose ship went away with them and finds something in its place is asked what to do.
     let table = content.block_table();
-    let lifecycle =
-        GridLifecyclePlugin::new(presence.clone(), world_spawn()).with_arrivals(ArrivalConfig {
-            collisions: BlockCollisions::new(
-                table.clone(),
-                Some(crate::block_properties::passable(&table)),
-            ),
-            block_channel: content.block_channel(),
-            state_channel: content.state_channel(),
-            orientation_channel: Some(content.orientation_channel()),
-        });
+    let lifecycle = GridLifecyclePlugin::new(presence.clone(), move |world, level| {
+        crate::landing::spawn_in(world, level, block_channel, air)
+    })
+    .with_arrivals(ArrivalConfig {
+        collisions: BlockCollisions::new(
+            table.clone(),
+            Some(crate::block_properties::passable(&table)),
+        ),
+        block_channel: content.block_channel(),
+        state_channel: content.state_channel(),
+        orientation_channel: Some(content.orientation_channel()),
+        air: content.blocks.air,
+    });
     let bodies = ships(content, docking);
     let report = bodies.report_handle();
     let plugins: Vec<Box<dyn Plugin>> = vec![
@@ -92,7 +95,7 @@ pub fn cave_plugins_reporting(
 }
 
 /// Where players start: the world's spawn.
-pub(crate) fn world_spawn() -> WorldPosition {
+pub fn world_spawn() -> WorldPosition {
     let [x, y, z] = Cave::default_camera().position;
     WorldPosition::new(BrickCoordinate::ORIGIN, [x as f32, y as f32, z as f32])
 }

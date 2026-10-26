@@ -74,7 +74,7 @@ the spike:
   of their cell are boxes, one compound per brick that has any. (The first draft of this section had a compound of merged boxes per brick, as terrain has; the spike's
   collider is simpler and cheaper to edit.) **Mass** is the sum of `engine:density` of its blocks, kept as moments per brick (`MassMoments`, summed in brick order, in
   `f64`), from which come the centre of mass and the tensor of inertia that Rapier is given as they are.
-- Terrain is collidable by ships through the terrain colliders the character already uses, built for the bricks near a ship's bounds only.
+- Terrain is collidable by ships through the terrain colliders the character already uses, built for the bricks near a ship's bounds only. The ground of a planet (a ship with terrain) is met the same way since 39g: a fixed body for the planet with colliders for the bricks near a free ship, made from the stored brick or else the generator (`planet-spec.md`, "Ships meet a planet").
 - Two ships collide with each other. Ships and characters collide: a character in the world frame is a kinematic capsule against a ship's
   colliders.
 - Forces on a ship come from: the gravity field (section 2.9), plugin forces (`apply_force(grid, local point, vector)` in the pre-physics
@@ -446,7 +446,7 @@ adds works on board any ship with no effort from its author. It holds by constru
   to keep ships or the disk fails, it stays and goes on as it was, its speeds given back. Players who are away do not count as aboard: their entities stay in the ship's frame, hidden,
   and whichever of them joins first has the ship brought in, as the pilot would. A server that is stopped (a singleplayer window closing, Ctrl-C on a dedicated server) does not run the
   logout of the players who are connected, so nothing vanishes then: the ships are saved where they are, and the players are aboard them when they join (an open point, in `plan.md`).
-- *Coming back.* The game gives the lifecycle the world's spawn (`GridLifecyclePlugin::new`; Cave: the start of its default camera) and, to have it look at where a ship that went away
+- *Coming back.* The game gives the lifecycle the world's spawn, a rule of the world and the level (`GridLifecyclePlugin::new`; Cave: the ground at the pole of the planet of the level if it has one, else the start of its default camera; a constant before 39g, which in a level with a planet was inside it) and, to have it look at where a ship that went away
   lands, what blocks are to a body and which channels are blocks and states (`with_arrivals(ArrivalConfig { .. })`; without it such a ship is brought in where it was). When a player joins
   aboard a ship that waits for those aboard, the ship is read from its file, not yet admitted, and its **hull** is made: the cells whose block is not empty to a body, each as the place of its
   centre (the empty cells of its bricks are not in it). The hull is *free* at the ship's saved pose if no centre is inside the terrain of the ship's level or inside a block of another ship

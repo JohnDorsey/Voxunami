@@ -7,7 +7,10 @@ mod common;
 use std::sync::{Arc, Mutex};
 
 use block_models::Shape;
-use common::{PlayerExt, Scene, player_pose, ship_id, tick_and_follow, top_of_the_column};
+use common::{
+    PlayerExt, Scene, make_ship, player_pose, pose_at, ship_id, ship_pose, tick_and_follow,
+    top_of_the_column,
+};
 use game_shell::{GameContent, GameDefinition, KeyCode};
 use server::GridView;
 use voxel_space::{
@@ -36,6 +39,23 @@ fn planet() -> GridId {
 fn make_the_planet(scene: &mut Scene) -> f64 {
     let top = top_of_the_column(0, 0) + 1;
     let centre = TOP_OF_THE_PLANET - top as f64;
+    make_a_planet(
+        scene,
+        GridPose::new(
+            WorldPosition::new(BrickCoordinate::ORIGIN, [0.0, centre as f32, 0.0]),
+            Orientation::IDENTITY,
+        ),
+    );
+    centre
+}
+
+/// The planet, made in the overworld at `pose`, with the overworld's pull taken away so that the planet's is all there is.
+fn make_a_planet(scene: &mut Scene, pose: GridPose) {
+    make_a_planet_that_reaches(scene, pose, 2000);
+}
+
+/// The same, with a planet whose generator makes the bricks this many bricks either way of its origin (and nothing past them but what is built there).
+fn make_a_planet_that_reaches(scene: &mut Scene, pose: GridPose, reach: u32) {
     scene.run(move |world| {
         world.set_level_gravity(LevelIndex::MAIN, [0.0; 3]);
         let generator = world
@@ -45,10 +65,6 @@ fn make_the_planet(scene: &mut Scene) -> f64 {
             .generators()
             .runtime_id(&base_blocks::small_planet_generator_identifier())
             .expect("the world has the planet's generator");
-        let pose = GridPose::new(
-            WorldPosition::new(BrickCoordinate::ORIGIN, [0.0, centre as f32, 0.0]),
-            Orientation::IDENTITY,
-        );
         let grid = world.create_grid(LevelIndex::MAIN, pose).unwrap();
         assert_eq!(grid, planet());
         world
@@ -56,13 +72,12 @@ fn make_the_planet(scene: &mut Scene) -> f64 {
                 grid,
                 GridTerrain {
                     generator,
-                    extent: BrickBox::around(BrickCoordinate::ORIGIN, 2000),
+                    extent: BrickBox::around(BrickCoordinate::ORIGIN, reach),
                     mass: MASS,
                 },
             )
             .unwrap();
     });
-    centre
 }
 
 #[test]
@@ -379,5 +394,365 @@ fn a_slab_put_on_a_planet_upside_down_is_a_ceiling_to_a_walker_and_not_a_floor()
         (eyes - ((air_above + 1) as f64 + 1.62)).abs() < 0.05,
         "{eyes} against {}",
         (air_above + 1) as f64 + 1.62
+    );
+}
+
+/// The side of the cubes the ships below are, and the columns they stand over: a patch of the planet's pole where the ground is flat for a few voxels (its top voxel
+/// is 63,679 in the planet's coordinates from x = -2 to 5 and z = 5 to 9, and one higher at x = 2 and 3 just before z = 5, which is why the cubes are put half a voxel
+/// from the step: a cube flush against a step and pulled sideways into it keeps moving a hundredth of a metre a second and does not go to sleep).
+const CUBE: i64 = 4;
+const PLACE: [f32; 2] = [0.5, 5.5];
+/// The columns, in the planet's coordinates, that a cube put at [`PLACE`] has under it.
+const COLUMNS_X: std::ops::Range<i64> = 0..5;
+const COLUMNS_Z: std::ops::Range<i64> = 5..10;
+
+/// The height in the planet's coordinates of the ground (the top of the highest voxel that is not air) under the cube's columns.
+fn ground_under_the_cube() -> i64 {
+    COLUMNS_X
+        .flat_map(|x| COLUMNS_Z.map(move |z| (x, z)))
+        .map(|(x, z)| top_of_the_column(x, z) + 1)
+        .max()
+        .unwrap()
+}
+
+/// Where the origin of a ship is, in the world, in voxels.
+fn place_of_the_ship(scene: &Scene, number: u64) -> [f64; 3] {
+    let position = ship_pose(scene, number).position;
+    let brick = position.brick();
+    let offset = position.offset();
+    [brick.x(), brick.y(), brick.z()]
+        .into_iter()
+        .zip(offset)
+        .map(|(index, offset)| index as f64 * 32.0 + f64::from(offset))
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap()
+}
+
+/// A cube of stone, at rest, that has the planet's ground under it: it is put this many voxels over the ground at [`PLACE`].
+fn drop_a_cube_over_the_ground(scene: &mut Scene, ground: f64, height: f64) {
+    make_ship(
+        scene,
+        pose_at(PLACE[0], (ground + height) as f32, PLACE[1]),
+        false,
+        [CUBE; 3],
+        |_| true,
+    );
+}
+
+#[test]
+fn a_ship_released_over_a_planet_falls_onto_the_ground_it_generates_and_rests_on_it() {
+    let mut scene = Scene::new();
+    let centre = make_the_planet(&mut scene);
+    let ground = ground_under_the_cube() as f64 + centre;
+    // Ten voxels over the ground, where nothing of the planet has ever been stored: all of it is made by the generator.
+    drop_a_cube_over_the_ground(&mut scene, ground, 10.0);
+    assert_eq!(
+        scene
+            .rig
+            .server
+            .world()
+            .grids()
+            .get(planet())
+            .unwrap()
+            .voxels
+            .brick_count(),
+        0
+    );
+    scene.ticks(120);
+
+    let [x, height, z] = place_of_the_ship(&scene, 1);
+    assert!(
+        (height - ground).abs() < 0.05,
+        "the ship is at {height}, the ground at {ground}"
+    );
+    assert!(
+        (x - f64::from(PLACE[0])).abs() < 0.1 && (z - f64::from(PLACE[1])).abs() < 0.1,
+        "it stayed where it fell: {x} {z}"
+    );
+    // At rest, and so it stays, to the bit.
+    let resting = ship_pose(&scene, 1);
+    assert_eq!(
+        scene
+            .rig
+            .server
+            .world()
+            .grids()
+            .get(ship_id(1))
+            .unwrap()
+            .linear_velocity,
+        [0.0; 3]
+    );
+    scene.ticks(40);
+    assert_eq!(ship_pose(&scene, 1), resting);
+    // Nothing of the planet was stored by any of it.
+    assert_eq!(
+        scene
+            .rig
+            .server
+            .world()
+            .grids()
+            .get(planet())
+            .unwrap()
+            .voxels
+            .brick_count(),
+        0
+    );
+}
+
+#[test]
+fn a_ship_resting_on_a_planet_falls_into_a_hole_dug_under_it_and_rests_on_the_bottom_of_it() {
+    let mut scene = Scene::new();
+    let centre = make_the_planet(&mut scene);
+    let ground = ground_under_the_cube();
+    drop_a_cube_over_the_ground(&mut scene, ground as f64 + centre, 2.0);
+    scene.ticks(80);
+    let resting = place_of_the_ship(&scene, 1)[1];
+    assert!(
+        (resting - (ground as f64 + centre)).abs() < 0.05,
+        "{resting}"
+    );
+
+    // The server digs out the ground under it and around it, five voxels deep: edits of the planet, which the ship had colliders of before.
+    let content = CaveContent::new();
+    scene.run(move |world| {
+        let mut planet_view = world.grid(planet()).unwrap();
+        for x in (COLUMNS_X.start - 1)..(COLUMNS_X.end + 1) {
+            for z in (COLUMNS_Z.start - 1)..(COLUMNS_Z.end + 1) {
+                for y in (ground - 5)..(ground + 3) {
+                    planet_view
+                        .set(
+                            content.block_channel(),
+                            VoxelCoordinate::new(x, y, z),
+                            content.blocks.air,
+                        )
+                        .unwrap();
+                }
+            }
+        }
+    });
+    scene.ticks(120);
+    let [x, fallen, z] = place_of_the_ship(&scene, 1);
+    assert!(
+        (fallen - (resting - 5.0)).abs() < 0.05,
+        "it rested at {resting} and is at {fallen}"
+    );
+    assert!(
+        (x - f64::from(PLACE[0])).abs() < 0.1 && (z - f64::from(PLACE[1])).abs() < 0.1,
+        "{x} {z}"
+    );
+}
+
+#[test]
+fn a_ship_released_over_a_planet_that_is_turned_and_far_from_the_origin_rests_on_its_ground_wherever_that_is()
+ {
+    let mut scene = Scene::new();
+    // A quarter turn about the x axis takes the planet's +y (its pole) to the world's +z, and its +z to the world's -y: a place at (x, y, z) in the planet is at
+    // (x, -z, y) from its centre. The centre is put where the ground of the patch is at z = 700.
+    let quarter = std::f64::consts::FRAC_1_SQRT_2;
+    let turned = Orientation::from_components([quarter, 0.0, 0.0, quarter]).unwrap();
+    let ground = ground_under_the_cube();
+    make_a_planet(
+        &mut scene,
+        GridPose::new(
+            WorldPosition::new(BrickCoordinate::ORIGIN, [0.0, 300.0, (700 - ground) as f32]),
+            turned,
+        ),
+    );
+    // The planet's z from 5.5 to 9.5 is the world's y from 294.5 down to 290.5, and its x is the world's.
+    make_ship(
+        &mut scene,
+        GridPose::new(
+            WorldPosition::new(BrickCoordinate::ORIGIN, [0.5, 290.5, 710.0]),
+            Orientation::IDENTITY,
+        ),
+        false,
+        [CUBE; 3],
+        |_| true,
+    );
+    scene.ticks(150);
+    let [x, y, z] = place_of_the_ship(&scene, 1);
+    assert!((z - 700.0).abs() < 0.05, "the ship is at z = {z}");
+    assert!(
+        (x - 0.5).abs() < 0.1 && (y - 290.5).abs() < 0.1,
+        "it stayed where it fell: {x} {y}"
+    );
+}
+
+#[test]
+fn a_planet_that_is_moved_has_its_ground_where_it_is_put_and_one_that_is_gone_has_none() {
+    let mut scene = Scene::new();
+    let centre = make_the_planet(&mut scene);
+    let ground = ground_under_the_cube();
+    // A ship held out in the sky keeps the frame of the bodies, with the planet in it.
+    make_ship(
+        &mut scene,
+        pose_at(500.0, 3000.0, 500.0),
+        true,
+        [1; 3],
+        |_| true,
+    );
+    scene.ticks(3);
+    // The planet is moved: 7 along x and 100 up.
+    let moved = GridPose::new(
+        WorldPosition::new(BrickCoordinate::ORIGIN, [7.0, (centre + 100.0) as f32, 0.0]),
+        Orientation::IDENTITY,
+    );
+    scene.run(move |world| world.set_grid_pose(planet(), moved).unwrap());
+    let ground = ground as f64 + centre + 100.0;
+    // A cube over the same patch of the moved planet.
+    make_ship(
+        &mut scene,
+        pose_at(PLACE[0] + 7.0, (ground + 10.0) as f32, PLACE[1]),
+        false,
+        [CUBE; 3],
+        |_| true,
+    );
+    scene.ticks(120);
+    let [x, height, _] = place_of_the_ship(&scene, 2);
+    assert!(
+        (height - ground).abs() < 0.05,
+        "the ship is at {height}, the ground at {ground}"
+    );
+    assert!((x - (f64::from(PLACE[0]) + 7.0)).abs() < 0.1, "{x}");
+
+    // The planet goes, and the pull of the level comes back: nothing is under the ship.
+    scene.run(|world| {
+        world.remove_grid(planet()).unwrap();
+        world.set_level_gravity(LevelIndex::MAIN, [0.0, -10.0, 0.0]);
+    });
+    scene.ticks(40);
+    let [_, fallen, _] = place_of_the_ship(&scene, 2);
+    // (Two seconds at ten is twenty voxels; the overworld is far below.)
+    assert!(fallen < ground - 15.0, "{fallen} against {ground}");
+}
+
+/// Bricks of terrain that got colliders over `ticks` ticks (the level's and the planet's together) when a cube of stone is put `height` voxels over the ground of the
+/// patch (where the ground of the planet is, if there is a planet), held or free, and the most in one tick.
+fn bricks_made_by_a_cube(height: f64, held: bool, with_a_planet: bool, ticks: usize) -> (u64, u64) {
+    let (mut scene, report) = Scene::reporting();
+    let ground = ground_under_the_cube() as f64;
+    let centre = if with_a_planet {
+        make_the_planet(&mut scene)
+    } else {
+        TOP_OF_THE_PLANET - (top_of_the_column(0, 0) + 1) as f64
+    };
+    make_ship(
+        &mut scene,
+        pose_at(PLACE[0], (ground + centre + height) as f32, PLACE[1]),
+        held,
+        [CUBE; 3],
+        |_| true,
+    );
+    scene.ticks(ticks);
+    let report = report();
+    (
+        report.terrain_bricks_made,
+        report.terrain_bricks_made_most_in_a_tick,
+    )
+}
+
+#[test]
+fn a_planet_has_colliders_only_for_the_bricks_near_the_ships_that_can_hit_it() {
+    // The same cube ten voxels over the ground, and 4,992 (156 bricks) higher: the level's own bricks near it are the same in number.
+    let high = 10.0 + 32.0 * 156.0;
+    let near_held = bricks_made_by_a_cube(10.0, true, true, 60);
+    let far_held = bricks_made_by_a_cube(high, true, true, 60);
+    let near_free = bricks_made_by_a_cube(10.0, false, true, 60);
+    let far_free = bricks_made_by_a_cube(high, false, true, 60);
+    // A ship that is held cannot hit a planet, which is fixed too: nothing of the planet is made for it, near it or not (it is the same as with no planet there).
+    assert_eq!(near_held, far_held);
+    assert_eq!(near_held, bricks_made_by_a_cube(10.0, true, false, 60));
+    // One that is free has the bricks of the planet near it made (the bricks it falls through on the way to the ground are made as it comes to them): a few
+    // for the one on the ground, and for the one in the sky the bricks of the air around it (which have none of the cost of a brick of ground, but are counted).
+    assert!(near_free.0 > near_held.0, "{near_free:?} {near_held:?}");
+    assert!(far_free.0 > far_held.0, "{far_free:?} {far_held:?}");
+    // And never many, and never many in one tick, however large the planet is.
+    for (total, most) in [near_free, far_free] {
+        assert!(total <= 24 && most <= 12, "{total} {most}");
+    }
+}
+
+#[test]
+fn a_ship_that_goes_away_from_a_planet_and_comes_back_finds_its_ground_where_it_was() {
+    let mut scene = Scene::new();
+    let centre = make_the_planet(&mut scene);
+    let ground = ground_under_the_cube() as f64 + centre;
+    drop_a_cube_over_the_ground(&mut scene, ground, 4.0);
+    scene.ticks(80);
+    assert!((place_of_the_ship(&scene, 1)[1] - ground).abs() < 0.05);
+    // It is taken a hundred voxels up and kept there for a while (the colliders of the ground it left are let go), and put back where it was, at rest.
+    let away = pose_at(PLACE[0], (ground + 100.0) as f32, PLACE[1]);
+    scene.run(move |world| {
+        world.set_grid_pose(ship_id(1), away).unwrap();
+        world
+            .set_grid_velocity(ship_id(1), [0.0; 3], [0.0; 3])
+            .unwrap();
+    });
+    scene.ticks(10);
+    let back = pose_at(PLACE[0], (ground + 3.0) as f32, PLACE[1]);
+    scene.run(move |world| {
+        world.set_grid_pose(ship_id(1), back).unwrap();
+        world
+            .set_grid_velocity(ship_id(1), [0.0; 3], [0.0; 3])
+            .unwrap();
+    });
+    scene.ticks(100);
+    let [_, height, _] = place_of_the_ship(&scene, 1);
+    assert!(
+        (height - ground).abs() < 0.05,
+        "the ship is at {height}, the ground at {ground}"
+    );
+}
+
+#[test]
+fn a_ship_rests_on_what_is_built_on_a_planet_past_the_bricks_its_generator_makes() {
+    let mut scene = Scene::new();
+    // A planet whose bricks reach to the one that holds the ground (the voxels to 63,711 are made, and the ground of the patch is at 63,680), put where the
+    // ground of the patch is at 400. A slab of stone is built over the patch, 40 voxels higher: in the bricks past the ones that are made.
+    let ground = ground_under_the_cube();
+    let centre = 400.0 - ground as f64;
+    make_a_planet_that_reaches(
+        &mut scene,
+        GridPose::new(
+            WorldPosition::new(BrickCoordinate::ORIGIN, [0.0, centre as f32, 0.0]),
+            Orientation::IDENTITY,
+        ),
+        1990,
+    );
+    let content = CaveContent::new();
+    let slab = ground + 40;
+    assert!(
+        slab > 1990 * 32 + 31,
+        "the slab is past the bricks that are made"
+    );
+    scene.run(move |world| {
+        let mut planet_view = world.grid(planet()).unwrap();
+        for x in -2..10 {
+            for z in 3..15 {
+                planet_view
+                    .set(
+                        content.block_channel(),
+                        VoxelCoordinate::new(x, slab, z),
+                        content.blocks.stone,
+                    )
+                    .unwrap();
+            }
+        }
+    });
+    // A cube twelve voxels over the slab, which is a voxel thick.
+    let top_of_the_slab = (slab + 1) as f64 + centre;
+    make_ship(
+        &mut scene,
+        pose_at(PLACE[0], (top_of_the_slab + 12.0) as f32, PLACE[1]),
+        false,
+        [CUBE; 3],
+        |_| true,
+    );
+    scene.ticks(120);
+    let [_, height, _] = place_of_the_ship(&scene, 1);
+    assert!(
+        (height - top_of_the_slab).abs() < 0.05,
+        "the ship is at {height}, the top of the slab at {top_of_the_slab}"
     );
 }

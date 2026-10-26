@@ -4,18 +4,19 @@
 
 mod common;
 
-use common::{Rig, answer, hear, second, spawn};
+use common::{Rig, answer, hear, second, second_spawn, spawn};
 use player_presence::{PlayerPose, lock};
 use plugin_host::{Prompt, PromptClosed};
 use protocol::{ClientId, ClientMessage};
-use server::ShipSettings;
+use server::{GridView, ShipSettings};
 use transport::Connection;
 use transport::loopback::LoopbackConnection;
 use voxel_space::{
-    BrickCoordinate, GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate, WorldPosition,
+    BrickBox, BrickCoordinate, GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate,
+    WorldPosition,
 };
 use world_storage::test_support::{Game, id};
-use world_storage::{ShipFiles, WorldData};
+use world_storage::{GridTerrain, PilotLogout, ShipFiles, WorldData};
 
 /// Where the ship of these tests is when it goes away and where it comes back to: above the ground (which is solid below 10), with the
 /// cells of its deck (one layer) at height 13.
@@ -837,7 +838,27 @@ fn a_player_whose_ship_was_in_another_level_goes_to_the_spawn_of_that_level() {
     let question = hear(&mut rig.connection).questions().remove(0);
     answer(&mut rig.connection, question.id, GO_TO_THE_SPAWN);
     rig.tick();
-    assert_eq!(place_of_the_player(&rig), (GridId::root(second()), spawn()));
+    assert_eq!(
+        place_of_the_player(&rig),
+        (GridId::root(second()), second_spawn())
+    );
+}
+
+#[test]
+fn a_player_who_leaves_a_blocked_ship_behind_in_another_level_goes_to_the_spawn_of_that_level() {
+    // The second level has stone where the ship lands, and a spawn of its own.
+    let (mut rig, ships) = Rig::for_arrivals(
+        ShipSettings::everywhere(),
+        world_with_a_ship_in_the_second_level(vec![IN_THE_WAY]),
+    );
+    let ship = ships[0];
+    let question = asked_after_coming_back(&mut rig, ship);
+    answer(&mut rig.connection, question.id, WARP_TO_THE_SPAWN);
+    rig.tick();
+    assert_eq!(
+        place_of_the_player(&rig),
+        (GridId::root(second()), second_spawn())
+    );
 }
 
 #[test]
@@ -858,4 +879,142 @@ fn a_player_who_leaves_without_answering_is_not_waited_for_and_is_asked_again_wh
     rig.tick();
     assert!(rig.in_memory(ship));
     assert_eq!(rig.report().waiting, 0);
+}
+
+/// A world with the ship at `landing()` and a planet in the main level: a ship with terrain, held, made by the level's own generator (solid below height 10 in the
+/// planet's own coordinates), with its origin `planet_height` up. Nothing is stored in the planet and nothing is in the level but its ground.
+fn world_with_a_ship_and_a_planet(
+    planet_height: f32,
+) -> impl FnOnce(&Game, &mut WorldData) -> Vec<GridId> {
+    move |game, world| {
+        let mut ship = game.sample_ship(world, 0);
+        ship.pose = landing();
+        let ship = world.grids_mut().create(ship);
+        let mut planet = game.sample_ship(world, 100);
+        planet.voxels =
+            voxel_grid::Grid::new(std::sync::Arc::clone(world.main().overrides.layout()));
+        planet.pose = GridPose::new(
+            WorldPosition::new(BrickCoordinate::ORIGIN, [0.0, planet_height, 0.0]),
+            Orientation::IDENTITY,
+        );
+        planet.linear_velocity = [0.0; 3];
+        planet.angular_velocity = [0.0; 3];
+        planet.sections = Vec::new();
+        planet.on_pilot_logout = PilotLogout::Stay;
+        planet.terrain = Some(GridTerrain {
+            generator: world.main().terrain.default_generator(),
+            extent: BrickBox::around(BrickCoordinate::ORIGIN, 1),
+            mass: 1.0e20,
+        });
+        vec![ship, world.grids_mut().create(planet)]
+    }
+}
+
+/// The blocks in these voxels of the planet, as the planet has them: what was stored over its ground, else its ground. (Asked in a tick of the server, which is one
+/// more tick of the world.)
+fn blocks_of_the_planet(rig: &mut Rig, planet: GridId, at: &[[i64; 3]]) -> Vec<u32> {
+    let channel = rig
+        .server
+        .world()
+        .main()
+        .overrides
+        .layout()
+        .channel_index(&id("core:block"))
+        .unwrap();
+    let found = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (slot, at) = (std::sync::Arc::clone(&found), at.to_vec());
+    rig.in_a_tick(move |world| {
+        let mut view = world.grid(planet).unwrap();
+        *slot.lock().unwrap() = at
+            .iter()
+            .map(|at| {
+                view.get(channel, VoxelCoordinate::new(at[0], at[1], at[2]))
+                    .unwrap()
+            })
+            .collect();
+    });
+    std::mem::take(&mut *found.lock().unwrap())
+}
+
+#[test]
+fn the_ground_of_a_planet_that_nobody_has_touched_is_where_a_ship_cannot_land_as_any_ground_is() {
+    // The planet's ground is solid below 10 in its own coordinates, and its origin is at 10, so its ground reaches 20 in the world: the deck of the ship, at 13, is in
+    // it. (The level's own ground reaches 10, and the deck is above it.)
+    let (mut rig, ships) = Rig::for_arrivals(
+        ShipSettings::everywhere(),
+        world_with_a_ship_and_a_planet(10.0),
+    );
+    let ship = ships[0];
+    let question = asked_after_coming_back(&mut rig, ship);
+    assert_eq!(question.title, QUESTION);
+    for _ in 0..30 {
+        rig.tick();
+    }
+    assert!(rig.in_a_file(ship) && !rig.in_memory(ship));
+    assert_eq!(rig.report().waiting, 1);
+    assert_eq!(rig.report().brought_in, 0);
+}
+
+#[test]
+fn a_ship_over_the_ground_of_a_planet_or_beside_it_comes_in_without_a_question() {
+    // The planet is lower, so that its ground reaches 12: the deck at 13 rests on it.
+    let (mut rig, ships) = Rig::for_arrivals(
+        ShipSettings::everywhere(),
+        world_with_a_ship_and_a_planet(2.0),
+    );
+    let ship = ships[0];
+    go_away_aboard(&mut rig, ship);
+    rig.log_in_again(1);
+    assert!(rig.in_memory(ship));
+    assert_eq!(ship_pose(&rig, ship), landing());
+    assert_eq!(hear(&mut rig.connection).questions(), []);
+    assert_eq!(rig.report().waiting, 0);
+}
+
+#[test]
+fn a_ship_that_would_land_in_the_ground_of_a_planet_can_be_moved_to_the_nearest_free_place_above_it()
+ {
+    let (mut rig, ships) = Rig::for_arrivals(
+        ShipSettings::everywhere(),
+        world_with_a_ship_and_a_planet(10.0),
+    );
+    let ship = ships[0];
+    let question = asked_after_coming_back(&mut rig, ship);
+    answer(&mut rig.connection, question.id, MOVE_THE_SHIP);
+    rig.tick();
+    assert!(rig.in_memory(ship));
+    // The deck's centres are 13.5 over the ground of the level and the planet's ground reaches 20: seven up is the first place where they are above it.
+    assert_eq!(
+        ship_pose(&rig, ship).position,
+        landing().position.translated([0.0, 7.0, 0.0])
+    );
+}
+
+#[test]
+fn the_ground_of_a_planet_that_is_in_the_way_can_be_broken_and_only_that() {
+    let (mut rig, ships) = Rig::for_arrivals(
+        ShipSettings::everywhere(),
+        world_with_a_ship_and_a_planet(10.0),
+    );
+    let (ship, planet) = (ships[0], ships[1]);
+    let question = asked_after_coming_back(&mut rig, ship);
+    let stone = stone(&rig);
+    // The deck's cell (1, 1, 1) is in the voxel (9, 13, 9) of the world, which is (9, 3, 9) in the planet; the voxel beside it is no cell of the ship's.
+    let in_the_way = [9, 3, 9];
+    let beside = [20, 3, 20];
+    assert_eq!(
+        blocks_of_the_planet(&mut rig, planet, &[in_the_way]),
+        [stone]
+    );
+    answer(&mut rig.connection, question.id, BREAK_THE_TERRAIN);
+    rig.tick();
+    assert!(rig.in_memory(ship));
+    assert_eq!(ship_pose(&rig, ship), landing());
+    let air = air(&rig);
+    let cells = [[8, 3, 8], [9, 3, 9], [10, 3, 8], [11, 3, 10]];
+    assert_eq!(blocks_of_the_planet(&mut rig, planet, &cells), [air; 4]);
+    assert_eq!(blocks_of_the_planet(&mut rig, planet, &[beside]), [stone]);
+    // The ship is whole, and nothing was dug out of the ground of the level (nothing is stored of it).
+    assert_eq!(block_of_the_ship(&rig, ship, [1, 1, 1]), stone);
+    assert_eq!(rig.server.world().main().overrides.brick_count(), 0);
 }

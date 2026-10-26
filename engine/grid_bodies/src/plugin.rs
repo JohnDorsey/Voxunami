@@ -13,13 +13,18 @@ use voxel_space::{
 };
 use world_storage::MovingGrid;
 
-use crate::collision::{BlockCollisions, ShipHull, WorldTerrain};
+use crate::collision::{BlockCollisions, GeneratedHull, ShipHull, WorldTerrain};
 use crate::connectivity::{Connectivity, Outcome};
 use crate::docking::{Docking, Port, PortView, approach, docked_pose, torque_of_force};
 
 /// How far, in bricks, from the origin of a level's frame a ship may be to be simulated: `f32` is exact enough within it. A ship farther
 /// from the first ship of its level than this stays where it is (the simulation distance and a frame for each place will replace this).
 pub const FRAME_RADIUS_BRICKS: i64 = 500;
+
+/// How far from the origin of a level's frame the origin of a planet may be, in bricks (4,096 is 131,072 voxels, where an `f32` is exact to a hundredth of one):
+/// the planet's voxels are in its own coordinates, which are as far from the frame as it is. A planet farther than this has no body, and the ships over it fall
+/// through it (a planet that large needs a frame of its own).
+pub const PLANET_REACH_BRICKS: i64 = 4096;
 
 /// How far from a ship's bounds terrain has colliders, in voxels: a few, and the way the ship goes in a few ticks. (A brick of natural terrain
 /// costs ten milliseconds or more to generate and make colliders of, on the thread of the tick, so a ship that has colliders for all the bricks
@@ -72,8 +77,9 @@ pub struct GridBodiesConfig {
 }
 
 /// Moves the grids of a world as rigid bodies: gravity, the forces asked with [`ServerWorld::apply_grid_force`], and collisions with the
-/// terrain of their level, with each other and with the ships that are held. Edits to a ship change its colliders and its mass; a ship put
-/// somewhere by anything else is simulated from there.
+/// terrain of their level, with the ground of the planets in it (ships with terrain: bodies that stay where they are, with colliders for the
+/// bricks near the ships, made from the stored bricks or else the generator's), with each other and with the ships that are held. Edits to a ship
+/// change its colliders and its mass; a ship put somewhere by anything else is simulated from there.
 #[derive(Debug)]
 pub struct GridBodiesPlugin {
     config: Arc<Mutex<Option<GridBodiesConfig>>>,
@@ -183,12 +189,29 @@ struct Ship {
     written: (GridPose, [f32; 3], [f32; 3]),
 }
 
+/// A planet (a ship with terrain) in the simulation: a body that is fixed, whose colliders are only of the bricks that ships are near.
+struct Planet {
+    /// The bricks, in the planet's own coordinates, that have colliders (made from what is stored there, or else from the generator).
+    bricks: BTreeSet<BrickCoordinate>,
+    /// Where the planet was last put in the bodies: if the world says other, something else moved it.
+    written: GridPose,
+}
+
 /// The bodies of one level of the world, in one frame.
 struct LevelBodies {
     bodies: BodyWorld,
     ships: BTreeMap<GridId, Ship>,
+    /// The planets of the level that have a body. (They are no ships here: they weigh what their terrain says, are held, and do not keep a frame alive.)
+    planets: BTreeMap<GridId, Planet>,
     /// The bricks of terrain that have colliders.
     terrain: BTreeSet<BrickCoordinate>,
+}
+
+/// Terrain that has colliders: the level's own, whose bricks are the frame's, or the ground of a planet, whose bricks are the planet's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ground {
+    Level,
+    Planet(GridId),
 }
 
 struct Bodies {
@@ -230,6 +253,13 @@ const FACES: [[i64; 3]; 6] = [
 
 fn pose_of(state: &BodyState) -> GridPose {
     GridPose::new(state.position, state.orientation)
+}
+
+/// Whether two bricks are more than `radius` bricks apart along any axis.
+fn farther_than(radius: i64, first: BrickCoordinate, second: BrickCoordinate) -> bool {
+    (first.x() - second.x()).abs() > radius
+        || (first.y() - second.y()).abs() > radius
+        || (first.z() - second.z()).abs() > radius
 }
 
 impl Bodies {
@@ -434,7 +464,8 @@ impl Bodies {
         let changed_voxels = std::mem::take(&mut self.changed_ship_voxels);
         self.dock(world);
         self.split_ships(world, changed_voxels);
-        // (A ship with terrain, a planet, has no body: its blocks are mostly not stored, it weighs what its terrain says and it is held where it is.)
+        // (A ship with terrain, a planet, is no ship here: its blocks are mostly not stored, it weighs what its terrain says and it is held where it is.
+        // It is a fixed body, which ships collide with, below.)
         let present: Vec<(GridId, LevelIndex)> = world
             .data()
             .grids()
@@ -461,7 +492,8 @@ impl Bodies {
         for (id, level_index) in present {
             self.sync_ship(world, id, level_index, &changed_ships);
         }
-        self.keep_terrain(world, &changed_terrain);
+        self.sync_planets(world);
+        self.keep_terrain(world, &changed_terrain, &changed_ships);
 
         for (id, (mass, centre)) in std::mem::take(&mut self.weighed) {
             let _ = world.set_grid_mass(id, mass, centre);
@@ -538,12 +570,7 @@ impl Bodies {
                 Some(level) => level.bodies.origin(),
                 None => ship.pose.position.brick(),
             };
-            let far = |a: i64, b: i64| (a - b).abs() > FRAME_RADIUS_BRICKS;
-            let brick = ship.pose.position.brick();
-            if far(brick.x(), origin.x())
-                || far(brick.y(), origin.y())
-                || far(brick.z(), origin.z())
-            {
+            if farther_than(FRAME_RADIUS_BRICKS, ship.pose.position.brick(), origin) {
                 return;
             }
             let level = self
@@ -558,6 +585,7 @@ impl Bodies {
                         },
                     ),
                     ships: BTreeMap::new(),
+                    planets: BTreeMap::new(),
                     terrain: BTreeSet::new(),
                 });
             if level
@@ -640,104 +668,149 @@ impl Bodies {
             .insert(id, (record.mass, record.centre_of_mass));
     }
 
-    /// Terrain has colliders where ships are, and not far from them.
+    /// Gives the planets of the levels that have bodies a body each, puts those that were moved where they are, and lets those that are gone go.
+    fn sync_planets(&mut self, world: &ServerWorld) {
+        let planets: Vec<(GridId, LevelIndex)> = world
+            .data()
+            .grids()
+            .iter()
+            .filter(|(_, ship)| ship.terrain.is_some())
+            .map(|(id, ship)| (id, ship.level))
+            .collect();
+        for (level_index, level) in &mut self.levels {
+            let gone: Vec<GridId> = level
+                .planets
+                .keys()
+                .filter(|id| !planets.contains(&(**id, *level_index)))
+                .copied()
+                .collect();
+            for id in gone {
+                level.planets.remove(&id);
+                let _ = level.bodies.remove_body(BodyId(id.get()));
+            }
+        }
+        for (id, level_index) in planets {
+            let (Some(planet), Some(level)) = (
+                world.data().grids().get(id),
+                self.levels.get_mut(&level_index),
+            ) else {
+                continue;
+            };
+            let state = BodyState {
+                position: planet.pose.position,
+                orientation: planet.pose.orientation,
+                linear_velocity: planet.linear_velocity,
+                angular_velocity: planet.angular_velocity,
+            };
+            match level.planets.get_mut(&id) {
+                Some(record) => {
+                    if record.written != planet.pose {
+                        let _ = level.bodies.set_state(BodyId(id.get()), state);
+                        record.written = planet.pose;
+                    }
+                }
+                None => {
+                    let origin = level.bodies.origin();
+                    if farther_than(PLANET_REACH_BRICKS, planet.pose.position.brick(), origin) {
+                        continue;
+                    }
+                    if level
+                        .bodies
+                        .add_body(BodyId(id.get()), state, BodyKind::Fixed)
+                        .is_ok()
+                    {
+                        level.planets.insert(
+                            id,
+                            Planet {
+                                bricks: BTreeSet::new(),
+                                written: planet.pose,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Terrain has colliders where ships are, and not far from them: the level's, and the generated ground of its planets.
     fn keep_terrain(
         &mut self,
         world: &mut ServerWorld,
-        changed: &BTreeSet<(LevelIndex, BrickCoordinate)>,
+        changed_terrain: &BTreeSet<(LevelIndex, BrickCoordinate)>,
+        changed_ships: &BTreeSet<(GridId, BrickCoordinate)>,
     ) {
         let level_indices: Vec<LevelIndex> = self.levels.keys().copied().collect();
         let mut made_this_tick = 0u64;
         for level_index in level_indices {
-            // The bricks that are needed now, those that are wanted (with how many rings from a ship), and those that are kept.
-            let mut needed: BTreeSet<BrickCoordinate> = BTreeSet::new();
-            let mut wanted: BTreeMap<BrickCoordinate, usize> = BTreeMap::new();
-            let mut kept: BTreeSet<BrickCoordinate> = BTreeSet::new();
-            let ship_ids: Vec<GridId> = self.levels[&level_index].ships.keys().copied().collect();
-            for id in ship_ids {
-                let level = &self.levels[&level_index];
-                let body = BodyId(id.get());
-                let Some(state) = level.bodies.state(body) else {
-                    continue;
-                };
-                let [vx, vy, vz] = state.linear_velocity;
-                let speed = (vx * vx + vy * vy + vz * vz).sqrt();
-                let lookahead = TERRAIN_LOOKAHEAD_VOXELS + TERRAIN_LOOKAHEAD_SECONDS * speed;
-                let needed_margin = TERRAIN_NEEDED_VOXELS + TERRAIN_NEEDED_SECONDS * speed;
-                if let Some(bricks) = level.bodies.bricks_near(body, needed_margin) {
-                    needed.extend(bricks.bricks());
-                }
-                let mut ring = 0;
-                let mut margin = needed_margin;
-                while margin < lookahead {
-                    margin = (margin + TERRAIN_RING_VOXELS).min(lookahead);
-                    ring += 1;
-                    if let Some(bricks) = level.bodies.bricks_near(body, margin) {
-                        for brick in bricks.bricks() {
-                            let nearest = wanted.entry(brick).or_insert(ring);
-                            *nearest = (*nearest).min(ring);
-                        }
-                    }
-                }
-                if let Some(bricks) = level
-                    .bodies
-                    .bricks_near(body, lookahead + TERRAIN_KEEP_EXTRA_VOXELS)
-                {
-                    kept.extend(bricks.bricks());
-                }
-            }
-            kept.extend(needed.iter().copied());
-            let loaded: Vec<BrickCoordinate> =
-                self.levels[&level_index].terrain.iter().copied().collect();
-            let to_drop: Vec<BrickCoordinate> = loaded
-                .iter()
-                .copied()
-                .filter(|brick| !kept.contains(brick))
-                .collect();
-            // Everything needed; of the wanted, the nearest few that are not made yet (ties by coordinate: the map is in order).
-            let mut missing_wanted: Vec<(usize, BrickCoordinate)> = wanted
-                .iter()
-                .filter(|(brick, _)| !needed.contains(brick) && !loaded.contains(brick))
-                .map(|(brick, ring)| (*ring, *brick))
-                .collect();
-            missing_wanted.sort();
-            let to_make: Vec<BrickCoordinate> = needed
-                .iter()
-                .copied()
-                .filter(|brick| !loaded.contains(brick))
-                .chain(
-                    missing_wanted
-                        .into_iter()
-                        .take(TERRAIN_WANTED_BRICKS_PER_TICK)
-                        .map(|(_, brick)| brick),
-                )
-                .chain(
-                    changed
+            let planets: Vec<GridId> = self.levels[&level_index].planets.keys().copied().collect();
+            for ground in
+                std::iter::once(Ground::Level).chain(planets.into_iter().map(Ground::Planet))
+            {
+                // The bricks of it that were edited, and so are made again if they have colliders.
+                let changed: BTreeSet<BrickCoordinate> = match ground {
+                    Ground::Level => changed_terrain
                         .iter()
                         .filter(|(level, _)| *level == level_index)
                         .map(|(_, brick)| *brick)
-                        .filter(|brick| loaded.contains(brick)),
-                )
-                .collect();
-            for brick in to_drop {
-                let level = self.levels.get_mut(&level_index).expect("the level exists");
-                level.bodies.remove_terrain_brick(brick);
-                level.terrain.remove(&brick);
-            }
-            for brick in to_make {
-                made_this_tick += u64::from(!self.levels[&level_index].terrain.contains(&brick));
-                let mut source = WorldTerrain {
-                    world,
-                    level: level_index,
-                    block_channel: self.config.block_channel,
-                    state_channel: self.config.state_channel,
-                    orientation_channel: self.config.orientation_channel,
-                    air: self.config.air,
-                    collisions: &mut self.collisions,
+                        .collect(),
+                    Ground::Planet(id) => changed_ships
+                        .iter()
+                        .filter(|(grid, _)| *grid == id)
+                        .map(|(_, brick)| *brick)
+                        .collect(),
                 };
-                let level = self.levels.get_mut(&level_index).expect("the level exists");
-                level.bodies.set_terrain_brick(brick, &mut source);
-                level.terrain.insert(brick);
+                let (to_drop, to_make) = self.bricks_to_change(level_index, ground, &changed);
+                for brick in to_drop {
+                    let level = self.levels.get_mut(&level_index).expect("the level exists");
+                    match ground {
+                        Ground::Level => {
+                            level.bodies.remove_terrain_brick(brick);
+                            level.terrain.remove(&brick);
+                        }
+                        Ground::Planet(id) => {
+                            let _ = level.bodies.remove_brick(BodyId(id.get()), brick);
+                            if let Some(planet) = level.planets.get_mut(&id) {
+                                planet.bricks.remove(&brick);
+                            }
+                        }
+                    }
+                }
+                for brick in to_make {
+                    let level = self.levels.get_mut(&level_index).expect("the level exists");
+                    match ground {
+                        Ground::Level => {
+                            made_this_tick += u64::from(!level.terrain.contains(&brick));
+                            let mut source = WorldTerrain {
+                                world,
+                                level: level_index,
+                                block_channel: self.config.block_channel,
+                                state_channel: self.config.state_channel,
+                                orientation_channel: self.config.orientation_channel,
+                                air: self.config.air,
+                                collisions: &mut self.collisions,
+                            };
+                            level.bodies.set_terrain_brick(brick, &mut source);
+                            level.terrain.insert(brick);
+                        }
+                        Ground::Planet(id) => {
+                            let Some(planet) = level.planets.get_mut(&id) else {
+                                continue;
+                            };
+                            made_this_tick += u64::from(!planet.bricks.contains(&brick));
+                            let mut source = GeneratedHull {
+                                world,
+                                grid: id,
+                                block_channel: self.config.block_channel,
+                                state_channel: self.config.state_channel,
+                                orientation_channel: self.config.orientation_channel,
+                                air: self.config.air,
+                                collisions: &self.collisions,
+                            };
+                            let _ = level.bodies.set_brick(BodyId(id.get()), brick, &mut source);
+                            planet.bricks.insert(brick);
+                        }
+                    }
+                }
             }
         }
         let mut report = self
@@ -749,6 +822,98 @@ impl Bodies {
             .terrain_bricks_made_most_in_a_tick
             .max(made_this_tick);
         report.terrain_bricks_made += made_this_tick;
+    }
+
+    /// Which bricks of a ground are to lose their colliders and which are to get them (or get them again, if `changed` has them and they had), this tick.
+    fn bricks_to_change(
+        &self,
+        level_index: LevelIndex,
+        ground: Ground,
+        changed: &BTreeSet<BrickCoordinate>,
+    ) -> (Vec<BrickCoordinate>, Vec<BrickCoordinate>) {
+        let level = &self.levels[&level_index];
+        // Which bricks of the ground have colliders, and how a body's bounds are seen in its bricks. (A planet's colliders are asked for wherever a ship is
+        // near, and not only in the bricks its generator makes: what is built past them is the planet's too.)
+        let loaded = match ground {
+            Ground::Level => &level.terrain,
+            Ground::Planet(id) => {
+                let Some(planet) = level.planets.get(&id) else {
+                    return (Vec::new(), Vec::new());
+                };
+                &planet.bricks
+            }
+        };
+        let bricks_near = |body: BodyId, margin: f32| match ground {
+            Ground::Level => level.bodies.bricks_near(body, margin),
+            Ground::Planet(id) => level.bodies.bricks_near_in(body, margin, BodyId(id.get())),
+        };
+        // The bricks that are needed now, those that are wanted (with how many rings from a ship), and those that are kept. A planet is fixed, so the ships
+        // that would be held against it need nothing of it.
+        let mut needed: BTreeSet<BrickCoordinate> = BTreeSet::new();
+        let mut wanted: BTreeMap<BrickCoordinate, usize> = BTreeMap::new();
+        let mut kept: BTreeSet<BrickCoordinate> = BTreeSet::new();
+        for (id, record) in &level.ships {
+            if ground != Ground::Level && record.kind == BodyKind::Fixed {
+                continue;
+            }
+            let body = BodyId(id.get());
+            let Some(state) = level.bodies.state(body) else {
+                continue;
+            };
+            let [vx, vy, vz] = state.linear_velocity;
+            let speed = (vx * vx + vy * vy + vz * vz).sqrt();
+            let lookahead = TERRAIN_LOOKAHEAD_VOXELS + TERRAIN_LOOKAHEAD_SECONDS * speed;
+            let needed_margin = TERRAIN_NEEDED_VOXELS + TERRAIN_NEEDED_SECONDS * speed;
+            if let Some(bricks) = bricks_near(body, needed_margin) {
+                needed.extend(bricks.bricks());
+            }
+            let mut ring = 0;
+            let mut margin = needed_margin;
+            while margin < lookahead {
+                margin = (margin + TERRAIN_RING_VOXELS).min(lookahead);
+                ring += 1;
+                if let Some(bricks) = bricks_near(body, margin) {
+                    for brick in bricks.bricks() {
+                        let nearest = wanted.entry(brick).or_insert(ring);
+                        *nearest = (*nearest).min(ring);
+                    }
+                }
+            }
+            if let Some(bricks) = bricks_near(body, lookahead + TERRAIN_KEEP_EXTRA_VOXELS) {
+                kept.extend(bricks.bricks());
+            }
+        }
+        kept.extend(needed.iter().copied());
+        let to_drop: Vec<BrickCoordinate> = loaded
+            .iter()
+            .copied()
+            .filter(|brick| !kept.contains(brick))
+            .collect();
+        // Everything needed; of the wanted, the nearest few that are not made yet (ties by coordinate: the map is in order).
+        let mut missing_wanted: Vec<(usize, BrickCoordinate)> = wanted
+            .iter()
+            .filter(|(brick, _)| !needed.contains(brick) && !loaded.contains(brick))
+            .map(|(brick, ring)| (*ring, *brick))
+            .collect();
+        missing_wanted.sort();
+        let to_make = needed
+            .iter()
+            .copied()
+            .filter(|brick| !loaded.contains(brick))
+            .chain(
+                missing_wanted
+                    .into_iter()
+                    .take(TERRAIN_WANTED_BRICKS_PER_TICK)
+                    .map(|(_, brick)| brick),
+            )
+            .chain(
+                changed
+                    .iter()
+                    .copied()
+                    .filter(|brick| loaded.contains(brick)),
+            )
+            .collect();
+        (to_drop, to_make)
     }
 
     /// Pulls every ship that moves with the gravity there is at its centre of mass: the level's, and the pull of the other ships that weigh enough.
@@ -1255,4 +1420,25 @@ fn has_blocks(ship: &MovingGrid, block_channel: ChannelIndex, air: u32) -> bool 
             let contents = ship.voxels.brick(brick).expect("a listed brick exists");
             LocalVoxelIndex::all().any(|local| contents.get(block_channel, local) != air)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn two_bricks_are_farther_apart_than_a_radius_when_any_axis_is_past_it() {
+        let at = |x, y, z| BrickCoordinate::new(x, y, z);
+        let origin = at(10, -20, 30);
+        assert!(!farther_than(5, at(10, -20, 30), origin));
+        // On the radius is not past it; one more is, on any axis and either side.
+        assert!(!farther_than(5, at(15, -15, 35), origin));
+        assert!(!farther_than(5, at(5, -25, 25), origin));
+        assert!(farther_than(5, at(16, -20, 30), origin));
+        assert!(farther_than(5, at(4, -20, 30), origin));
+        assert!(farther_than(5, at(10, -14, 30), origin));
+        assert!(farther_than(5, at(10, -26, 30), origin));
+        assert!(farther_than(5, at(10, -20, 36), origin));
+        assert!(farther_than(5, at(10, -20, 24), origin));
+    }
 }

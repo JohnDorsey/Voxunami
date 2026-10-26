@@ -69,6 +69,19 @@ pub enum BodyError {
     BrickOutOfRange,
 }
 
+/// A source in which there is nothing to touch.
+struct Nothing;
+
+impl CollisionSource for Nothing {
+    fn collision_at(&mut self, _: VoxelCoordinate) -> Collision {
+        Collision::Empty
+    }
+
+    fn brick_hint(&mut self, _: BrickCoordinate) -> BrickHint {
+        BrickHint::Empty
+    }
+}
+
 /// One row of 32 voxels of a brick, as bits.
 type Rows = Box<[u32; EDGE * EDGE]>;
 
@@ -455,6 +468,11 @@ impl BodyWorld {
         Ok(())
     }
 
+    /// Takes the colliders of one brick (in the body's own coordinates) from a body: it has nothing there any more.
+    pub fn remove_brick(&mut self, id: BodyId, brick: BrickCoordinate) -> Result<(), BodyError> {
+        self.set_brick(id, brick, &mut Nothing)
+    }
+
     /// Makes the collider of one brick of the terrain (in the frame's coordinates) from what `source` says of it, replacing the one it had.
     pub fn set_terrain_brick(&mut self, brick: BrickCoordinate, source: &mut impl CollisionSource) {
         self.remove_terrain_brick(brick);
@@ -468,6 +486,39 @@ impl BodyWorld {
     /// turned body, so a little more than it fills if it is turned), or `None` for a body with no blocks yet or one that is not there. It
     /// is what terrain a body needs colliders of, as far ahead as it can get in the time that is wanted.
     pub fn bricks_near(&self, id: BodyId, margin: f32) -> Option<voxel_space::BrickBox> {
+        let (low, high) = self.bounds_of(id)?;
+        Self::bricks_between(low, high, margin, self.origin)
+    }
+
+    /// The same bricks, but of another body's own coordinates (the bricks of a planet that a ship is near, however the planet is placed and turned), or
+    /// `None` if either body is not there or `id` has no blocks yet. The box is the one around the turned bounds of `id`, seen from `frame`, so it
+    /// takes in a little more than it needs if the two are turned against each other.
+    pub fn bricks_near_in(
+        &self,
+        id: BodyId,
+        margin: f32,
+        frame: BodyId,
+    ) -> Option<voxel_space::BrickBox> {
+        let (low, high) = self.bounds_of(id)?;
+        let frame = self.bodies.get(self.by_id.get(&frame)?.handle)?;
+        let (translation, turn) = (frame.translation(), frame.rotation().inverse());
+        let mut seen_low = Vector::splat(f32::INFINITY);
+        let mut seen_high = Vector::splat(f32::NEG_INFINITY);
+        for corner in 0..8u8 {
+            let point = Vector::new(
+                if corner & 1 == 0 { low.x } else { high.x },
+                if corner & 2 == 0 { low.y } else { high.y },
+                if corner & 4 == 0 { low.z } else { high.z },
+            );
+            let seen = turn * (point - translation);
+            seen_low = seen_low.min(seen);
+            seen_high = seen_high.max(seen);
+        }
+        Self::bricks_between(seen_low, seen_high, margin, BrickCoordinate::ORIGIN)
+    }
+
+    /// The box around the bounds of all the colliders of a body, in the frame, or `None` for a body that is not there or has none.
+    fn bounds_of(&self, id: BodyId) -> Option<(Vector, Vector)> {
         let body = self.by_id.get(&id)?;
         let mut low = Vector::splat(f32::INFINITY);
         let mut high = Vector::splat(f32::NEG_INFINITY);
@@ -476,23 +527,30 @@ impl BodyWorld {
             low = low.min(bounds.mins);
             high = high.max(bounds.maxs);
         }
-        if !(low.x <= high.x && low.y <= high.y && low.z <= high.z) {
-            return None;
-        }
+        (low.x <= high.x && low.y <= high.y && low.z <= high.z).then_some((low, high))
+    }
+
+    /// The bricks that a box, widened by `margin`, reaches, in coordinates whose origin is the corner of `origin`.
+    fn bricks_between(
+        low: Vector,
+        high: Vector,
+        margin: f32,
+        origin: BrickCoordinate,
+    ) -> Option<voxel_space::BrickBox> {
         let brick = |value: f32, origin: i64| {
             origin.saturating_add((f64::from(value) / EDGE as f64).floor() as i64)
         };
         let (low, high) = (low - Vector::splat(margin), high + Vector::splat(margin));
         voxel_space::BrickBox::new(
             BrickCoordinate::new(
-                brick(low.x, self.origin.x()),
-                brick(low.y, self.origin.y()),
-                brick(low.z, self.origin.z()),
+                brick(low.x, origin.x()),
+                brick(low.y, origin.y()),
+                brick(low.z, origin.z()),
             ),
             BrickCoordinate::new(
-                brick(high.x, self.origin.x()),
-                brick(high.y, self.origin.y()),
-                brick(high.z, self.origin.z()),
+                brick(high.x, origin.x()),
+                brick(high.y, origin.y()),
+                brick(high.z, origin.z()),
             ),
         )
     }
@@ -965,6 +1023,144 @@ mod tests {
             ),
             (1, 1, 0, 1)
         );
+    }
+
+    #[test]
+    fn the_bricks_near_a_body_in_the_coordinates_of_another_follow_the_place_and_the_turn_of_both()
+    {
+        use voxel_space::BrickBox;
+        let bricks = |low: [i64; 3], high: [i64; 3]| {
+            Some(
+                BrickBox::new(
+                    BrickCoordinate::new(low[0], low[1], low[2]),
+                    BrickCoordinate::new(high[0], high[1], high[2]),
+                )
+                .unwrap(),
+            )
+        };
+        // The frame's origin is the brick (2, 0, 0). A cube of 4 with its corner at (110, 10, 10) in the world is, for a body at (100, 0, 0) that is not
+        // turned, at (10, 10, 10) in that body's own coordinates: in its brick (0, 0, 0), though the world brick of the cube is (3, 0, 0).
+        let mut world = BodyWorld::new(BrickCoordinate::new(2, 0, 0), BodySettings::default());
+        let hull = Hull::cube(4);
+        world
+            .add_body(
+                BodyId(1),
+                resting_at(at(110.0, 10.0, 10.0)),
+                BodyKind::Dynamic,
+            )
+            .unwrap();
+        world
+            .set_brick(BodyId(1), BrickCoordinate::ORIGIN, &mut &hull)
+            .unwrap();
+        world
+            .add_body(BodyId(2), resting_at(at(100.0, 0.0, 0.0)), BodyKind::Fixed)
+            .unwrap();
+        assert_eq!(
+            world.bricks_near_in(BodyId(1), 0.0, BodyId(2)),
+            bricks([0; 3], [0; 3])
+        );
+        assert_eq!(
+            world.bricks_near(BodyId(1), 0.0),
+            bricks([3, 0, 0], [3, 0, 0])
+        );
+        // A margin takes in the bricks of that body beside it: 10 from the corner of the cube to the brick's, so 11 reaches the one below, and 19 the one above.
+        assert_eq!(
+            world.bricks_near_in(BodyId(1), 11.0, BodyId(2)),
+            bricks([-1; 3], [0; 3])
+        );
+        assert_eq!(
+            world.bricks_near_in(BodyId(1), 19.0, BodyId(2)),
+            bricks([-1; 3], [1; 3])
+        );
+        // A body that is not there, either way, and a body with no blocks yet.
+        assert_eq!(world.bricks_near_in(BodyId(1), 0.0, BodyId(7)), None);
+        assert_eq!(world.bricks_near_in(BodyId(7), 0.0, BodyId(2)), None);
+        assert_eq!(world.bricks_near_in(BodyId(2), 0.0, BodyId(1)), None);
+
+        // A body at the origin turned a quarter about the vertical axis takes its +x to the world's -z and its +z to the world's +x, so that a place at
+        // (10, 10, -50) in the world is at (50, 10, 10) in its coordinates: the brick (1, 0, 0), and not the (0, 0, -2) of the world.
+        let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, BodySettings::default());
+        world
+            .add_body(
+                BodyId(1),
+                resting_at(at(10.0, 10.0, -50.0)),
+                BodyKind::Dynamic,
+            )
+            .unwrap();
+        world
+            .set_brick(BodyId(1), BrickCoordinate::ORIGIN, &mut &Hull::cube(1))
+            .unwrap();
+        world
+            .add_body(
+                BodyId(2),
+                BodyState {
+                    orientation: Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0),
+                    ..resting_at(at(0.0, 0.0, 0.0))
+                },
+                BodyKind::Fixed,
+            )
+            .unwrap();
+        assert_eq!(
+            world.bricks_near_in(BodyId(1), 0.0, BodyId(2)),
+            bricks([1, 0, 0], [1, 0, 0])
+        );
+        assert_eq!(
+            world.bricks_near(BodyId(1), 0.0),
+            bricks([0, 0, -2], [0, 0, -2])
+        );
+    }
+
+    #[test]
+    fn a_brick_taken_from_a_fixed_body_lets_what_sleeps_on_it_fall_and_one_that_is_not_there_changes_nothing()
+     {
+        let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, BodySettings::default());
+        ship_of(
+            &mut world,
+            1,
+            &Hull::cube(8),
+            resting_at(at(0.0, 0.0, 0.0)),
+            BodyKind::Fixed,
+        );
+        ship_of(
+            &mut world,
+            2,
+            &Hull::cube(2),
+            resting_at(at(3.0, 10.0, 3.0)),
+            BodyKind::Dynamic,
+        );
+        run(&mut world, 80);
+        assert!((height_of(&world, 2) - 8.0).abs() < 0.02);
+        assert!(world.is_asleep(BodyId(2)));
+        // Nothing to take from a brick the body has no voxels in, or from a body that is not there.
+        assert_eq!(
+            world.remove_brick(BodyId(1), BrickCoordinate::new(1, 0, 0)),
+            Ok(())
+        );
+        assert_eq!(
+            world.remove_brick(BodyId(9), BrickCoordinate::ORIGIN),
+            Err(BodyError::UnknownBody(BodyId(9)))
+        );
+        run(&mut world, 20);
+        assert!(world.is_asleep(BodyId(2)));
+        assert!((height_of(&world, 2) - 8.0).abs() < 0.02);
+        // The brick it rests on goes, and it is woken and falls.
+        world
+            .remove_brick(BodyId(1), BrickCoordinate::ORIGIN)
+            .unwrap();
+        run(&mut world, 40);
+        // (Free fall at 5 for two seconds is 10 voxels.)
+        let fallen = height_of(&world, 2);
+        assert!((fallen - (8.0 - 10.0)).abs() < 0.1, "{fallen}");
+        // And the place is empty, not filled: another that is let go over it falls through where the brick was.
+        ship_of(
+            &mut world,
+            3,
+            &Hull::cube(2),
+            resting_at(at(3.0, 40.0, 3.0)),
+            BodyKind::Dynamic,
+        );
+        run(&mut world, 120);
+        assert!(height_of(&world, 3) < 0.0, "{}", height_of(&world, 3));
     }
 
     #[test]

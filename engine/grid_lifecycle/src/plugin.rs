@@ -71,6 +71,20 @@ pub struct ArrivalConfig {
     pub state_channel: ChannelIndex,
     /// Where the game keeps the orientation of its blocks, if it has any.
     pub orientation_channel: Option<ChannelIndex>,
+    /// The block that is air.
+    pub air: u32,
+}
+
+/// Where a player goes who chooses the world's spawn, in a level: given the world, so that a game can put them on the ground of a planet it has there.
+type SpawnRule = dyn Fn(&ServerWorld, LevelIndex) -> WorldPosition + Send + Sync;
+
+#[derive(Clone)]
+struct Spawn(Arc<SpawnRule>);
+
+impl std::fmt::Debug for Spawn {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Spawn")
+    }
 }
 
 /// Keeps ships by how near the players are: see the crate documentation.
@@ -78,7 +92,7 @@ pub struct ArrivalConfig {
 pub struct GridLifecyclePlugin {
     presence: SharedPresence,
     /// Where a player goes who chooses the world's spawn, in the level they were in.
-    spawn: WorldPosition,
+    spawn: Spawn,
     arrivals: Mutex<Option<ArrivalConfig>>,
     state: Arc<Mutex<State>>,
 }
@@ -131,11 +145,14 @@ fn locked(state: &Mutex<State>) -> MutexGuard<'_, State> {
 }
 
 impl GridLifecyclePlugin {
-    /// `spawn` is where a player goes who chooses the world's spawn when their ship cannot be found, in the level they were in.
-    pub fn new(presence: SharedPresence, spawn: WorldPosition) -> Self {
+    /// `spawn` is where a player goes who chooses the world's spawn when their ship cannot be found, in the level they were in (given the world and the level).
+    pub fn new(
+        presence: SharedPresence,
+        spawn: impl Fn(&ServerWorld, LevelIndex) -> WorldPosition + Send + Sync + 'static,
+    ) -> Self {
         Self {
             presence,
-            spawn,
+            spawn: Spawn(Arc::new(spawn)),
             arrivals: Mutex::new(None),
             state: Arc::default(),
         }
@@ -198,11 +215,11 @@ impl Plugin for GridLifecyclePlugin {
         let (presence, state, spawn) = (
             Arc::clone(&self.presence),
             Arc::clone(&self.state),
-            self.spawn,
+            self.spawn.clone(),
         );
         registrar.on::<PromptAnswered>(
             HandlerSpec::new("engine:grid_lifecycle_hear_what_to_do_with_a_ship"),
-            move |event, context| answered(context, &presence, &state, spawn, event),
+            move |event, context| answered(context, &presence, &state, &spawn, event),
         );
 
         // A player who goes is no longer asked.
@@ -288,6 +305,7 @@ fn arrive(
             arrivals.block_channel,
             arrivals.state_channel,
             arrivals.orientation_channel,
+            arrivals.air,
             &arrivals.collisions,
         );
         hull.is_free(&ship.pose, &mut |place| obstacles.solid_at(place))
@@ -379,7 +397,7 @@ fn answered(
     context: &mut Context<'_>,
     presence: &SharedPresence,
     state: &Mutex<State>,
-    spawn: WorldPosition,
+    spawn: &Spawn,
     event: &PromptAnswered,
 ) {
     let mut guard = locked(state);
@@ -410,7 +428,10 @@ fn answered(
     let Some(mut landing) = waiting.landing.take() else {
         // A ship that could not be found.
         match event.choice {
-            GO_TO_SPAWN => put_in_the_level(context, presence, client, level, spawn),
+            GO_TO_SPAWN => {
+                let spawn = (spawn.0)(context.world(), level);
+                put_in_the_level(context, presence, client, level, spawn);
+            }
             APPEAR_IN_THE_AIR => {
                 if let Some(here) = here {
                     put_in_the_level(context, presence, client, level, here.position);
@@ -441,6 +462,7 @@ fn answered(
         arrivals.block_channel,
         arrivals.state_channel,
         arrivals.orientation_channel,
+        arrivals.air,
         &arrivals.collisions,
     );
     let blocked = hull.blocked_cells(&landing.pose, &mut |place| obstacles.solid_at(place));
@@ -478,6 +500,7 @@ fn answered(
             drop(obstacles);
             // The ship is left where it is, and is nobody's to wait for any more: whoever comes near it finds it.
             let _ = context.world().set_parked_ship_waits(ship, false);
+            let spawn = (spawn.0)(context.world(), level);
             put_in_the_level(context, presence, client, level, spawn);
             return;
         }

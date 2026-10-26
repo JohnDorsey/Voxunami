@@ -49,3 +49,14 @@ pub fn on_a_planet(
     }
     None
 }
+
+/// Where a player goes who chooses the world's spawn in `level`: the ground at the top of the planet that is in it, else where players start (which in a level with a
+/// planet would be inside the rock of it).
+pub fn spawn_in(
+    world: &ServerWorld,
+    level: LevelIndex,
+    block_channel: ChannelIndex,
+    air: u32,
+) -> WorldPosition {
+    on_a_planet(world, level, block_channel, air).unwrap_or_else(crate::plugins::world_spawn)
+}

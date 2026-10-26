@@ -136,6 +136,11 @@ pub fn spawn() -> WorldPosition {
     WorldPosition::new(BrickCoordinate::new(0, 4, 0), [16.0, 8.0, 16.0])
 }
 
+/// Where a player goes who chooses the spawn of the second level, which is not the same place (a game's levels do not all have ground at the same height).
+pub fn second_spawn() -> WorldPosition {
+    WorldPosition::new(BrickCoordinate::new(3, 1, 0), [4.0, 20.0, 9.0])
+}
+
 pub fn second() -> LevelIndex {
     LevelIndex::new(1)
 }
@@ -234,7 +239,13 @@ impl Rig {
         let made = prepare(&game, &mut world);
         let players = PlayersPlugin::new(true);
         let presence = players.presence();
-        let lifecycle = GridLifecyclePlugin::new(presence.clone(), spawn());
+        let lifecycle = GridLifecyclePlugin::new(presence.clone(), |_, level| {
+            if level == second() {
+                second_spawn()
+            } else {
+                spawn()
+            }
+        });
         let lifecycle = if arrivals {
             let layout = world.main().overrides.layout();
             lifecycle.with_arrivals(ArrivalConfig {
@@ -242,6 +253,7 @@ impl Rig {
                 block_channel: layout.channel_index(&id("core:block")).unwrap(),
                 state_channel: layout.channel_index(&id("core:temperature")).unwrap(),
                 orientation_channel: None,
+                air: game.raw_block("base_blocks:air"),
             })
         } else {
             lifecycle

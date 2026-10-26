@@ -9,7 +9,8 @@ use base_blocks::{
 use std::sync::{Arc, Mutex};
 
 use common::{
-    PlayerExt, SEED, Scene, player_pose, say, ship_id, tick_and_follow, top_of_the_column,
+    PlayerExt, SEED, Scene, make_ship, player_pose, pose_at, say, ship_id, tick_and_follow,
+    top_of_the_column,
 };
 use game_shell::{GameContent, GameDefinition};
 use server::GridView;
@@ -21,7 +22,9 @@ use voxunami_cave::Cave;
 use voxunami_cave::aboard::in_voxels;
 use voxunami_cave::content::{CaveContent, mini_cosmos_id, overworld_id};
 use voxunami_cave::game::{break_block, place_block};
-use voxunami_cave::landing::on_a_planet;
+use voxunami_cave::landing::{on_a_planet, spawn_in};
+use voxunami_cave::plugins::world_spawn;
+use world_storage::ShipFiles;
 
 /// The levels of a world, each with its identifier and the generator that is the default of its regions.
 fn levels_of(world: &world_storage::WorldData) -> Vec<(String, String)> {
@@ -452,4 +455,80 @@ fn a_player_standing_on_the_planet_places_a_block_on_the_ground_ahead_of_them_an
             .get(content.block_channel(), local),
         content.blocks.stone
     );
+}
+
+#[test]
+fn a_pilot_whose_ship_cannot_be_found_and_who_goes_to_the_world_spawn_of_a_level_with_a_planet_stands_on_its_ground()
+ {
+    let mut scene = Scene::in_a_new_world();
+    let ground = (top_of_the_column(0, 0) + 1) as f64;
+    // A deck of stone three over the ground at the pole, held; a pilot who lands on it, takes the controls and tells it to go with them.
+    make_ship(
+        &mut scene,
+        pose_at(-10.0, (ground + 3.0) as f32, -4.0),
+        true,
+        [30, 2, 8],
+        |_| true,
+    );
+    let mut pilot = scene
+        .rig
+        .join_walking([0.5, ground + 5.0 + 8.0, 0.5], 0.0, 0.0);
+    scene.rig.settle(&mut [&mut pilot]);
+    tick_and_follow(&mut scene, &mut pilot, 60);
+    assert_eq!(player_pose(&scene, 1).grid, ship_id(1), "aboard the deck");
+    assert!(say(&mut scene, &mut pilot, "/ship pilot").starts_with("you pilot ship 1"));
+    assert!(say(&mut scene, &mut pilot, "/ship vanish on").contains("will go away with its pilot"));
+    drop(pilot);
+    scene.ticks(3);
+    // The file of the ship is lost.
+    let mut files = scene.rig.files.clone();
+    for name in files.names().unwrap() {
+        files.remove(&name).unwrap();
+    }
+    assert_eq!(scene.rig.files.len(), 0);
+    // The pilot comes back, is asked, and chooses the first: to go to the world spawn.
+    let mut back = scene
+        .rig
+        .join_walking_as(1, [0.5, ground + 100.0, 0.5], 0.0, 0.0);
+    scene.rig.settle(&mut [&mut back]);
+    tick_and_follow(&mut scene, &mut back, 3);
+    assert!(
+        back.hud_text()
+            .starts_with("The ship you were aboard cannot be found."),
+        "{}",
+        back.hud_text()
+    );
+    back.client_command(".choose 1");
+    tick_and_follow(&mut scene, &mut back, 60);
+    // They stand on the ground of the planet, at its pole: aboard the planet, with their eyes over the ground.
+    let pose = player_pose(&scene, 2);
+    assert_eq!(pose.grid, ship_id(0));
+    let [x, y, z] = in_voxels(pose.position);
+    assert!(
+        (x - 0.5).abs() < 0.1 && (z - 0.5).abs() < 0.1 && (y - (ground + 1.62)).abs() < 0.1,
+        "{x} {y} {z} over {ground}"
+    );
+}
+
+#[test]
+fn the_world_spawn_of_a_level_is_the_ground_at_the_pole_of_its_planet_or_where_players_start_if_it_has_none()
+ {
+    let mut scene = Scene::in_a_new_world();
+    let content = CaveContent::new();
+    let (channel, air) = (content.block_channel(), content.blocks.air);
+    let found = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&found);
+    scene.run(move |world| {
+        let landing = on_a_planet(world, LevelIndex::MAIN, channel, air);
+        *slot.lock().unwrap() = Some((
+            landing,
+            spawn_in(world, LevelIndex::MAIN, channel, air),
+            spawn_in(world, LevelIndex::new(1), channel, air),
+        ));
+    });
+    let (landing, space, overworld) = found.lock().unwrap().take().unwrap();
+    assert!(landing.is_some());
+    assert_eq!(Some(space), landing, "the level with a planet");
+    assert_eq!(overworld, world_spawn(), "the level without one");
+    assert_ne!(space, world_spawn());
 }
