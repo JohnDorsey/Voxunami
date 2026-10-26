@@ -442,6 +442,31 @@ fn step_in_a_level(
         .filter(|(_, bounds)| in_reach(bounds, level, here))
         .map(|(id, _)| *id)
         .collect();
+    // The bricks round the player in the ground of a planet that is near, if the player is coming to it, are made by a worker before they are met.
+    for id in &near {
+        let Some(planet) = world
+            .data()
+            .grids()
+            .get(*id)
+            .filter(|ship| ship.terrain.is_some())
+        else {
+            continue;
+        };
+        let Some(there) = planet.pose.world_to_local(player.body.middle_position()) else {
+            continue;
+        };
+        let there = there.brick();
+        let bricks: Vec<BrickCoordinate> = (-2..=2)
+            .flat_map(|x| {
+                (-2..=2).flat_map(move |y| {
+                    (-2..=2).map(move |z| {
+                        BrickCoordinate::new(there.x() + x, there.y() + y, there.z() + z)
+                    })
+                })
+            })
+            .collect();
+        world.prefetch_ship_bricks(*id, bricks);
+    }
     {
         let shared: &ServerWorld = world;
         let data = shared.data();

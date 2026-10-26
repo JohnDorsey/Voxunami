@@ -470,6 +470,7 @@ impl ServerWorld {
     /// How many bricks the worker of [`ServerWorld::prefetch_ship_bricks`] has made and the world has taken in (the reads that found one made are not in
     /// [`ServerWorld::bricks_generated`]).
     pub fn bricks_prefetched(&self) -> u64 {
+        self.take_prefetched();
         self.prefetched.get()
     }
 

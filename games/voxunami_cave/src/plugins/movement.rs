@@ -263,10 +263,15 @@ impl Plugin for MovementPlugin {
         // The bodies move after the ships do, so that what the players do this tick is from where they and the ships are; the
         // entities that are the players move with them, and clients are told at the end of the tick.
         let (bodies, players) = (movement, Arc::clone(&self.players));
+        let warmed = std::sync::atomic::AtomicBool::new(false);
         registrar.system(
             SystemSpec::new("voxunami_cave:move_the_bodies", Phase::Physics)
                 .after("engine:grid_bodies_move"),
             move |context| {
+                // The first time, the bricks where players arrive on a planet are asked for, to be made meanwhile.
+                if !warmed.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    crate::landing::warm_up_the_poles(context.world(), block_channel, air);
+                }
                 let mut presence = lock(&players);
                 // Where each player is, by their record: the frame and the place in it, and the level.
                 let placements: BTreeMap<ClientId, Placement> = presence

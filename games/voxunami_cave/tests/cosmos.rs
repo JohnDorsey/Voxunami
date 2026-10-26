@@ -711,3 +711,21 @@ fn an_item_on_the_side_of_the_planet_falls_toward_its_centre_and_one_under_it_do
         );
     }
 }
+
+#[test]
+fn the_bricks_where_players_arrive_on_a_planet_are_made_before_anyone_arrives() {
+    let mut scene = Scene::in_a_new_world();
+    // (The worker is a thread: the ticks are given the time of a server's.)
+    for _ in 0..40 {
+        scene.ticks(1);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let found = Arc::new(Mutex::new((0, 0)));
+    let slot = Arc::clone(&found);
+    scene.run(move |world| {
+        *slot.lock().unwrap() = (world.bricks_prefetched(), world.bricks_generated())
+    });
+    let (prefetched, _) = *found.lock().unwrap();
+    // The 5 x 5 x 5 bricks round the pole, those of them that are in the planet's extent (all are).
+    assert!(prefetched >= 100, "{prefetched} made ahead");
+}

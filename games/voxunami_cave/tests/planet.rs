@@ -939,3 +939,30 @@ fn a_ship_rests_on_a_second_planet_two_hundred_kilometres_from_the_first_and_bot
         );
     }
 }
+
+#[test]
+fn the_bricks_under_a_player_who_falls_toward_a_planet_are_made_by_a_worker_as_they_come() {
+    let mut scene = Scene::new();
+    make_the_planet(&mut scene);
+    // (The bricks round the pole were asked for when the planet was made, and the worker is given the time to make them.)
+    for _ in 0..60 {
+        scene.ticks(1);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+    }
+    let before = prefetched_so_far(&mut scene);
+    // Away from the pole, a hundred voxels over the ground.
+    let mut player = scene.rig.join_walking([3000.5, 450.0, 0.5], 0.0, 0.0);
+    for _ in 0..60 {
+        tick_and_follow(&mut scene, &mut player, 1);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let made = prefetched_so_far(&mut scene) - before;
+    assert!(made >= 40, "the worker made {made} for the fall");
+}
+
+fn prefetched_so_far(scene: &mut Scene) -> u64 {
+    let found = std::sync::Arc::new(std::sync::Mutex::new(0));
+    let slot = std::sync::Arc::clone(&found);
+    scene.run(move |world| *slot.lock().unwrap() = world.bricks_prefetched());
+    std::mem::take(&mut *found.lock().unwrap())
+}

@@ -2,7 +2,9 @@
 
 use server::ServerWorld;
 use voxel_grid::ChannelIndex;
-use voxel_space::{BRICK_EDGE_LENGTH, BrickCoordinate, LevelIndex, VoxelCoordinate, WorldPosition};
+use voxel_space::{
+    BRICK_EDGE_LENGTH, BrickCoordinate, GridId, LevelIndex, VoxelCoordinate, WorldPosition,
+};
 
 /// How far over the ground, in voxels, the eyes of a player standing are (`physics::CharacterSettings::eye_height`), and a little more so that the body is not put
 /// in the ground by the rounding of an `f32`.
@@ -59,4 +61,40 @@ pub fn spawn_in(
     air: u32,
 ) -> WorldPosition {
     on_a_planet(world, level, block_channel, air).unwrap_or_else(crate::plugins::world_spawn)
+}
+
+/// Asks the world to have the bricks round the pole of each planet made ahead (see `ServerWorld::prefetch_ship_bricks`): a player arrives there, and the first
+/// contact with a planet costs a good part of a second if every brick of it is made when it is first met.
+pub fn warm_up_the_poles(world: &ServerWorld, block_channel: ChannelIndex, air: u32) {
+    let planets: Vec<(GridId, LevelIndex)> = world
+        .data()
+        .grids()
+        .iter()
+        .filter(|(_, ship)| ship.terrain.is_some())
+        .map(|(id, ship)| (id, ship.level))
+        .collect();
+    for (id, level) in planets {
+        let Some(pole) = on_a_planet(world, level, block_channel, air) else {
+            continue;
+        };
+        let Some(there) = world
+            .data()
+            .grids()
+            .get(id)
+            .and_then(|planet| planet.pose.world_to_local(pole))
+        else {
+            continue;
+        };
+        let there = there.brick();
+        world.prefetch_ship_bricks(
+            id,
+            (-2..=2).flat_map(|x| {
+                (-2..=2).flat_map(move |y| {
+                    (-2..=2).map(move |z| {
+                        BrickCoordinate::new(there.x() + x, there.y() + y, there.z() + z)
+                    })
+                })
+            }),
+        );
+    }
 }
