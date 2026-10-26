@@ -437,6 +437,16 @@ fn step_in_a_level(
 
     // The ships near the player are in their world as colliders that stand where the ships are.
     let here = player.body.middle_position().brick();
+    // The terrain of the level round them is made by a worker before they walk into it.
+    world.prefetch_level_bricks(
+        level,
+        (-2..=2).flat_map(|x| {
+            (-1..=1).flat_map(move |y| {
+                (-2..=2)
+                    .map(move |z| BrickCoordinate::new(here.x() + x, here.y() + y, here.z() + z))
+            })
+        }),
+    );
     let near: Vec<GridId> = ships
         .iter()
         .filter(|(_, bounds)| in_reach(bounds, level, here))

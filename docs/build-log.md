@@ -805,6 +805,13 @@ callers (ship creation, the bodies' terrain, the arrival look, the light-model s
 - Tests: the existing ones, rewritten by a tool for the calls (`regrid.py`, a scratch file) and by hand where a test expected an error for a level that is not there; two new for `detach_blocks` out of a
   ship and for `uniform_value` and `generated` on a ship. No pin moved. Windows 1745 and Linux 1746 tests pass; fmt and clippy clean.
 
+The terrain of levels made ahead by the worker (after 39g; 2026-10-26). See `planet-spec.md`, "Bricks made ahead by a worker".
+- *Asked:* "continue" (the next thing I had said: the worker could serve the terrain of levels).
+- *Built:* `ServerWorld::prefetch_level_bricks` (takes `&mut`, because it gives an unassigned region its generator, as the first read would; the worker's bricks are keyed by the level's root grid like those of reads) and `generated_brick` takes in finished bricks before it runs the generator; Cave's `step_in_a_level` asks for the 5 x 3 x 5 bricks round the player.
+- *Measured before building (release):* a walk over the hills for 400 ticks cost no tick over 1 ms but the first: the walker moved too little (54 voxels) to say anything. Hops of thirty voxels, twelve of them: the worst ticks 23, 18 and 14 ms without the request and 4 ms with. So the gain is real and small: the overworld's bricks are cheap (a planet's are 5 ms each and a hop was 100 ms).
+- *Tests:* `server` 1 (once, remembered not asked again, a read finds them made), Cave `level_prefetch` 1. **Mutation experiments:** 4 mutants, all caught or not buildable (one named a key the type does not allow); the test of the read took the worker's bricks in itself at first, which hid that a read does: it polls the generator's counter now.
+- Windows 2127 tests pass and Linux 2128 (the one more is the test of a file's permissions); fmt and clippy clean.
+
 First contact with a planet made ahead (after 39g; 2026-10-26). See `planet-spec.md`, "Bricks made ahead by a worker".
 - *Asked:* "continue", on the wait the first time anyone meets a planet (about 0.5 s, from 39d).
 - *Built:* `landing::warm_up_the_poles` (the first run of the walkers' system asks for the 5 x 5 x 5 bricks round the pole of each planet) and, in `step_in_a_level`, the 5 x 5 x 5 bricks round a player in a level in the planet's coordinates for each planet in their reach; `ServerWorld::bricks_prefetched` takes in what the worker has finished before it answers (it counted 0 until the next request otherwise: a test found it).

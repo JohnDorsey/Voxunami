@@ -512,6 +512,37 @@ impl ServerWorld {
         }
     }
 
+    /// The same for the terrain of a level: asks the worker for these bricks, giving a region that has no generator the one it would be given when a brick of it
+    /// is first read (as that read would, so it is a matter of when and not of what). The bricks are taken into the cache as those of ships are.
+    pub fn prefetch_level_bricks(
+        &mut self,
+        level: LevelIndex,
+        bricks: impl IntoIterator<Item = BrickCoordinate>,
+    ) {
+        self.take_prefetched();
+        let grid = GridId::root(level);
+        let Some(data) = self.data.level_mut(level) else {
+            return;
+        };
+        let layout = Arc::clone(data.overrides.layout());
+        let mut prefetcher = self.prefetcher.borrow_mut();
+        for coordinate in bricks {
+            if self.generated.borrow().get((grid, coordinate)).is_some() {
+                continue;
+            }
+            let generator = data.terrain.assign_unassigned(coordinate);
+            let Some(generator) = data
+                .terrain
+                .generators()
+                .entry(generator)
+                .and_then(|entry| entry.content())
+            else {
+                continue;
+            };
+            prefetcher.ask((grid, coordinate), generator, &layout);
+        }
+    }
+
     /// Takes the bricks the worker has finished into the cache.
     pub fn take_prefetched(&self) {
         let made = self.prefetcher.borrow_mut().finished();
@@ -1300,6 +1331,15 @@ impl ServerWorld {
         level: LevelIndex,
         coordinate: BrickCoordinate,
     ) -> Result<Arc<Brick>, AccessError> {
+        if let Some(remembered) = self
+            .generated
+            .borrow()
+            .get((GridId::root(level), coordinate))
+        {
+            return Ok(Arc::clone(remembered));
+        }
+        // (A brick the worker has finished is taken in before the generator is run again.)
+        self.take_prefetched();
         if let Some(remembered) = self
             .generated
             .borrow()
@@ -2849,6 +2889,48 @@ pub(crate) mod tests {
                 expected
             );
         }
+        assert_eq!(plain.bricks_generated(), 2);
+    }
+
+    #[test]
+    fn bricks_of_a_level_asked_for_ahead_are_made_by_a_worker_once_and_a_read_finds_them_made() {
+        let (mut world, block, calls) = counting_world();
+        let level = LevelIndex::MAIN;
+        let (a, b) = (BrickCoordinate::new(0, 0, 0), BrickCoordinate::new(1, 0, 0));
+        world.prefetch_level_bricks(level, [a, b, a]);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        // (The generator has run twice; nothing has been taken into the cache by anything the world was asked.)
+        while calls.load(Ordering::Relaxed) < 2 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the worker did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        let read = |world: &mut ServerWorld, block| -> Vec<u32> {
+            [[5, 2, 3], [40, 2, 3]]
+                .iter()
+                .map(|at| {
+                    world
+                        .grid(GridId::root(level))
+                        .unwrap()
+                        .get(block, VoxelCoordinate::new(at[0], at[1], at[2]))
+                        .unwrap()
+                })
+                .collect()
+        };
+        let found = read(&mut world, block);
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        assert_eq!(world.bricks_generated(), 0);
+        // Remembered, they are not asked for again; a read makes nothing and finds what a world that made them where it read them finds.
+        world.prefetch_level_bricks(level, [a, b]);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        world.take_prefetched();
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        let (mut plain, plain_block, _) = counting_world();
+        assert_eq!(read(&mut plain, plain_block), found);
         assert_eq!(plain.bricks_generated(), 2);
     }
 
