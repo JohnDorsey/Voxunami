@@ -29,6 +29,8 @@
 //!   ids that were retired by a split or a merge and
 //!   the ships that took their places. The voxels of the ships are in files of their own. Written only when the world has had ships (so a
 //!   world without them is byte for byte what it was before ships).
+//! - `engine:clock`: the ticks since the world was made (a varint), a twentieth of a second each. Written only when it is not zero (so a world that has not
+//!   ticked is byte for byte what it was before the clock), and not in a world description. Planets on rails are a function of it.
 //! - `engine:override_bricks`: the bricks that replace generated terrain, sorted by coordinate. (Files
 //!   written before levels existed; newer files keep them inside `engine:levels`.)
 
@@ -104,6 +106,23 @@ pub fn entities_id() -> NamespacedId {
 }
 pub fn grids_id() -> NamespacedId {
     engine_id("grids")
+}
+pub fn clock_id() -> NamespacedId {
+    engine_id("clock")
+}
+
+/// The payload of `engine:clock`: the ticks since the world was made, as a varint.
+pub fn encode_clock(ticks: u64) -> Vec<u8> {
+    let mut writer = ByteWriter::new();
+    writer.write_varint(ticks);
+    writer.into_bytes()
+}
+
+pub fn decode_clock(payload: &[u8]) -> Result<u64, DecodeError> {
+    let mut reader = ByteReader::new(payload);
+    let ticks = reader.read_varint()?;
+    reader.finish()?;
+    Ok(ticks)
 }
 
 /// Whether a world's entities are worth a section: it has some, or has had some (the counter says so).

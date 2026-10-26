@@ -405,6 +405,12 @@ impl ServerWorld {
         self.tick
     }
 
+    /// The time of the world: whole ticks since it was made, a twentieth of a second each. Unlike [`ServerWorld::tick`] it is saved with the world, so it goes on
+    /// across a restart; planets on rails are a function of it, and nothing that depends on time may read any other.
+    pub fn world_tick(&self) -> u64 {
+        self.data.clock()
+    }
+
     pub(crate) fn set_tick(&mut self, tick: Tick) {
         self.tick = tick;
     }

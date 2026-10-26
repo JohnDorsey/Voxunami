@@ -199,5 +199,5 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 const PINNED: (u64, usize, u64) = (
     3_648_276_859_566_548_920,
     80_780,
-    16_297_960_288_978_290_439,
+    17_292_949_185_848_696_485,
 );

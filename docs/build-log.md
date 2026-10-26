@@ -805,6 +805,14 @@ callers (ship creation, the bodies' terrain, the arrival look, the light-model s
 - Tests: the existing ones, rewritten by a tool for the calls (`regrid.py`, a scratch file) and by hand where a test expected an error for a level that is not there; two new for `detach_blocks` out of a
   ship and for `uniform_value` and `generated` on a ship. No pin moved. Windows 1745 and Linux 1746 tests pass; fmt and clippy clean.
 
+Phase 40a (planets on rails and from data, step 1: the world clock; 2026-10-26). See `rails-and-recipes-spec.md`.
+- *Asked (owner):* "work on planets on rails and data-driven planets". I wrote the design first (`rails-and-recipes-spec.md`: the clock, generator recipes, bodies in data, rails, kinematic frames, six steps, five questions with my defaults, the risks); this is its first step.
+- *Built:* `WorldData::{clock, set_clock, advance_clock}` (whole ticks, saturating), the section `engine:clock` (one varint; written only when the clock is not 0, after the entities; refused when damaged or newer), `Server::step` advances it once a tick, `ServerWorld::world_tick()` reads it. The server's own `tick` is still the count since the start; nothing in the stream, the messages or a recording changed.
+- *The one visible change:* every golden session pins the hash of the saved world, and a world that has ticked now has a clock section, so the third number of the 2048, Cave and Eels goldens moved (the first two, the stream's hash and length, did not: that is the check that nothing else did).
+- *Tests:* `world_storage/tests/clock.rs` 5 (starts at 0 and advances by whole ticks with saturation; no section at 0 and a resave is the same bytes; not in a description; one number and a damaged one is refused; a newer version is refused), Cave `clock.rs` 1 (a world ticks once a tick and a saved and loaded world goes on from there). **Mutation experiments:** 8 mutants (two ticks a step, none, written at zero, written in a description, wrapping, not loaded, not parsed, trailing bytes accepted), all caught.
+- *My mistake from the commit before:* `level_prefetch.rs` was committed with an import it did not use (clippy `-D warnings` fails on that test target); found when the gates ran here, removed.
+- Windows 2133 tests pass and Linux 2134 (the one more is the test of a file's permissions); fmt and clippy clean.
+
 The terrain of levels made ahead by the worker (after 39g; 2026-10-26). See `planet-spec.md`, "Bricks made ahead by a worker".
 - *Asked:* "continue" (the next thing I had said: the worker could serve the terrain of levels).
 - *Built:* `ServerWorld::prefetch_level_bricks` (takes `&mut`, because it gives an unassigned region its generator, as the first read would; the worker's bricks are keyed by the level's root grid like those of reads) and `generated_brick` takes in finished bricks before it runs the generator; Cave's `step_in_a_level` asks for the 5 x 3 x 5 bricks round the player.

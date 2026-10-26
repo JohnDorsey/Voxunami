@@ -325,8 +325,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// the saved world's hash changed with its table of generators. Taken on Windows; Linux is checked to agree.
 /// The empty generator in the table (Phase 39f, 2026-10-24; `base_blocks:empty_v1`, after the planet's, for the space of a new world): the same again, 21 bytes more, 7,190,161 to 7,190,182, which is the identifier (20 characters and a byte
 /// for their number) and nothing else (measured by the length, not frame by frame). The script runs in the overworld alone (`new_overworld_world`), as it always did: a new world is space with a planet in it.
+/// The clock (`engine:clock`, 2026-10-26, Phase 40a): the saved world hash moved once more, because a world that has ticked writes its time, and these sessions end at a tick. The stream
+/// (its hash and its length) did not move: the clock is not in any message. Windows and Linux agree.
 const PINNED: (u64, usize, u64) = (
     14_690_758_500_541_840_281,
     7_190_182,
-    15_130_642_089_215_889_701,
+    17_602_854_914_436_767_752,
 );

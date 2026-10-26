@@ -50,6 +50,8 @@ pub struct WorldData {
     entities: EntityStore,
     /// The ships: in memory, or in files of their own that the world file lists.
     grids: GridStore,
+    /// Whole ticks since the world was made: the time that planets on rails are a function of (see `engine:clock`).
+    clock: u64,
 }
 
 /// Where the voxels of a brick come from.
@@ -271,6 +273,7 @@ impl WorldData {
             opaque_sections: Vec::new(),
             entities: EntityStore::new(),
             grids: GridStore::new(),
+            clock: 0,
         }
     }
 
@@ -386,6 +389,20 @@ impl WorldData {
     }
 
     /// Sections of plugins, in file order. Never interpreted here.
+    /// Whole ticks since the world was made, a twentieth of a second each.
+    pub fn clock(&self) -> u64 {
+        self.clock
+    }
+
+    pub fn set_clock(&mut self, ticks: u64) {
+        self.clock = ticks;
+    }
+
+    /// Lets time pass: a tick, or many at once in a time warp. The clock stops at the greatest number it can hold.
+    pub fn advance_clock(&mut self, ticks: u64) {
+        self.clock = self.clock.saturating_add(ticks);
+    }
+
     pub fn opaque_sections(&self) -> &[Section] {
         &self.opaque_sections
     }
@@ -793,6 +810,13 @@ impl WorldData {
                 }),
             ));
         }
+        // The clock is contents, and a world that has not ticked does not write the section.
+        if with_contents && self.clock != 0 {
+            written.push(Self::section(
+                sections::clock_id(),
+                sections::encode_clock(self.clock),
+            ));
+        }
         // Ships are contents as well, and a world that never had one does not write the section.
         if let Some(record) = grids
             && self.grids.is_worth_saving()
@@ -954,6 +978,7 @@ pub struct ParsedWorld {
     /// Where the entities in the frames of ships fall back to if their ships are lost.
     entity_fallbacks: BTreeMap<EntityId, EntityPose>,
     grids: Option<GridsRecord>,
+    clock: u64,
     opaque_sections: Vec<Section>,
 }
 
@@ -968,6 +993,7 @@ impl ParsedWorld {
         let mut entities = EntityStore::new();
         let mut entity_fallbacks = BTreeMap::new();
         let mut grids = None;
+        let mut clock = 0;
         let mut opaque_sections = Vec::new();
         for section in read_container(bytes)? {
             let known = [
@@ -979,6 +1005,7 @@ impl ParsedWorld {
                 sections::override_bricks_id(),
                 sections::entities_id(),
                 sections::grids_id(),
+                sections::clock_id(),
             ]
             .contains(&section.identifier);
             if !known {
@@ -1011,6 +1038,8 @@ impl ParsedWorld {
             } else if section.identifier == sections::grids_id() {
                 let format = sections::pose_format_of(section.version).expect("a readable version");
                 grids = Some(sections::decode_grids_in(payload, format).map_err(wrap)?);
+            } else if section.identifier == sections::clock_id() {
+                clock = sections::decode_clock(payload).map_err(wrap)?;
             } else if section.identifier == sections::generators_id() {
                 legacy_generators =
                     Some(sections::decode_generators(payload, section.version).map_err(wrap)?);
@@ -1038,6 +1067,7 @@ impl ParsedWorld {
             entities,
             entity_fallbacks,
             grids,
+            clock,
             opaque_sections,
         })
     }
@@ -1387,6 +1417,7 @@ impl ParsedWorld {
             opaque_sections: self.opaque_sections,
             entities,
             grids,
+            clock: self.clock,
         };
         Ok((world, report, translator))
     }

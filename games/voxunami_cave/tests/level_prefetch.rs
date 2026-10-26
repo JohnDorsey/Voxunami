@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{PlayerExt, Scene, tick_and_follow};
+use common::{Scene, tick_and_follow};
 use std::sync::{Arc, Mutex};
 
 fn prefetched_so_far(scene: &mut Scene) -> u64 {

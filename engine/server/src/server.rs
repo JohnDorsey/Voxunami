@@ -247,6 +247,8 @@ impl Server {
     pub fn step(&mut self) -> StepReport {
         let tick = self.world.tick().next();
         self.world.set_tick(tick);
+        // (The time of the world, which is saved with it, passes a tick at the start of each: what runs in this tick sees it.)
+        self.world.data.advance_clock(1);
         let mut report = StepReport {
             tick,
             joined: Vec::new(),
