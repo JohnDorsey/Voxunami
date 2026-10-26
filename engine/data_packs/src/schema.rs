@@ -201,6 +201,10 @@ fn body(context: &BodyContext<'_>) -> Value {
         "required": ["level", "terrain", "extent_bricks"],
         "additionalProperties": false,
         "oneOf": [{ "required": ["mass"] }, { "required": ["surface_gravity"] }],
+        "allOf": [{
+            "if": { "required": ["rail"], "properties": { "rail": { "required": ["orbit"] } } },
+            "then": { "not": { "required": ["position"] } }
+        }],
         "properties": {
             "$schema": { "type": "string" },
             "level": {
@@ -240,9 +244,50 @@ fn body(context: &BodyContext<'_>) -> Value {
                 "type": "number",
                 "exclusiveMinimum": 0,
                 "description": "as heavy as it must be to pull this hard at its surface, in metres a second a second (give this or mass)"
+            },
+            "rail": {
+                "type": "object",
+                "minProperties": 1,
+                "additionalProperties": false,
+                "description": "how it moves, as a function of the time of the world: a spin, an orbit or both. A body that goes round has its place from its orbit and gives no position",
+                "properties": {
+                    "spin": {
+                        "type": "object",
+                        "required": ["axis", "period"],
+                        "additionalProperties": false,
+                        "properties": {
+                            "axis": { "$ref": "#/$defs/direction", "description": "the pole: where the body's own up goes" },
+                            "period": { "$ref": "#/$defs/period", "description": "seconds for one turn; negative turns the other way" },
+                            "angle": { "type": "number", "default": 0, "description": "how far it has turned at time 0, in degrees" }
+                        }
+                    },
+                    "orbit": {
+                        "type": "object",
+                        "required": ["around", "radius", "period"],
+                        "additionalProperties": false,
+                        "properties": {
+                            "around": {
+                                "description": "what it goes round: a body of the world made before it (such as `my_pack:star`), or a point of the level in voxels",
+                                "oneOf": [
+                                    { "type": "string", "pattern": identifier_pattern() },
+                                    { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "number" } }
+                                ]
+                            },
+                            "normal": { "$ref": "#/$defs/direction", "default": [0, 1, 0], "description": "the circle goes counter-clockwise looking down this (up if left out)" },
+                            "radius": { "type": "number", "exclusiveMinimum": 0, "maximum": POSITION_LIMIT, "description": "voxels" },
+                            "period": { "$ref": "#/$defs/period", "description": "seconds to go once round; negative goes the other way" },
+                            "phase": { "type": "number", "default": 0, "description": "how far round it is at time 0, in degrees" }
+                        }
+                    }
+                }
             }
         },
-        "$defs": { "level": level, "family": family }
+        "$defs": {
+            "level": level,
+            "family": family,
+            "direction": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "number" }, "not": { "const": [0, 0, 0] }, "description": "x, y, z" },
+            "period": { "type": "number", "not": { "const": 0 } }
+        }
     })
 }
 

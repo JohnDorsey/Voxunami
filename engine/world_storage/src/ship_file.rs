@@ -7,6 +7,7 @@
 //! engine:ship          the name of the level it was in, and its edited bricks as a level's are written
 //! engine:grid_flight   optional: its pose, how fast it moved and turned, whether it was held, what its pilot's logout does
 //! engine:grid_terrain  optional: for a planet, the terrain generator version (by name) that makes the bricks the ship does not store, the bricks it makes, its mass
+//! engine:rail          optional: for a ship on rails, how it moves: a spin and/or an orbit, as a function of the time of the world (`crate::rail`)
 //! (any other)          sections of plugins, kept as they are
 //! ```
 //!
@@ -31,6 +32,7 @@ use crate::engine_sections::{
     encode_override_bricks, encode_registries,
 };
 use crate::moving_grids::{GridTerrain, MovingGrid, PilotLogout};
+use crate::rail::{Rail, decode_rail, encode_rail};
 use crate::translation::{SourceTranslator, TranslationError};
 use crate::world::SaveError;
 
@@ -47,6 +49,11 @@ pub fn flight_id() -> NamespacedId {
 /// The section that says what makes the ship's bricks that are not stored, if anything does.
 pub fn terrain_id() -> NamespacedId {
     NamespacedId::new("engine", "grid_terrain").expect("engine section names are valid identifiers")
+}
+
+/// The section that says how the ship moves if it is on rails.
+pub fn rail_id() -> NamespacedId {
+    NamespacedId::new("engine", "rail").expect("engine section names are valid identifiers")
 }
 
 /// Where a ship was, and how it was moving, when it was saved.
@@ -230,6 +237,7 @@ pub struct ParsedShip {
     bricks: Vec<(BrickCoordinate, Brick)>,
     flight: Option<ShipFlight>,
     terrain: Option<TerrainRecord>,
+    rail: Option<Rail>,
     sections: Vec<Section>,
 }
 
@@ -241,6 +249,7 @@ impl ParsedShip {
         let mut ship = None;
         let mut flight = None;
         let mut terrain = None;
+        let mut rail = None;
         let mut opaque = Vec::new();
         for section in read_container(bytes)? {
             let known = [
@@ -250,6 +259,7 @@ impl ParsedShip {
                 ship_id(),
                 flight_id(),
                 terrain_id(),
+                rail_id(),
             ]
             .contains(&section.identifier);
             if !known {
@@ -282,6 +292,8 @@ impl ParsedShip {
                 ship = Some(decode_ship(payload).map_err(wrap)?);
             } else if section.identifier == terrain_id() {
                 terrain = Some(decode_terrain(payload).map_err(wrap)?);
+            } else if section.identifier == rail_id() {
+                rail = Some(decode_rail(payload).map_err(wrap)?);
             } else {
                 let format = sections::pose_format_of(section.version).expect("a readable version");
                 flight = Some(decode_flight(payload, format).map_err(wrap)?);
@@ -300,6 +312,7 @@ impl ParsedShip {
             bricks,
             flight,
             terrain,
+            rail,
             sections: opaque,
         })
     }
@@ -434,6 +447,7 @@ impl ParsedShip {
             voxels,
             flight: self.flight,
             terrain,
+            rail: self.rail,
             sections: self.sections,
         })
     }
@@ -448,6 +462,8 @@ pub struct ShipContents {
     pub flight: Option<ShipFlight>,
     /// What makes the bricks that are not stored, for a planet, with the generator as this world numbers it.
     pub terrain: Option<GridTerrain>,
+    /// How the ship moves, if it is on rails.
+    pub rail: Option<Rail>,
     /// The sections of plugins that the file had, as they were.
     pub sections: Vec<Section>,
 }
@@ -594,6 +610,9 @@ impl ShipFormat {
         ];
         if let Some(payload) = terrain {
             written.push(section(terrain_id(), payload));
+        }
+        if let Some(rail) = &ship.rail {
+            written.push(section(rail_id(), encode_rail(rail)));
         }
         written.extend(ship.sections.iter().cloned());
         Ok(write_container(&written))

@@ -188,6 +188,7 @@ impl ServerWorld {
             on_pilot_logout: base.on_pilot_logout,
             voxels,
             terrain: None,
+            rail: None,
             sections,
         };
         let (_, merged_id) = self

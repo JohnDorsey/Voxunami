@@ -326,6 +326,7 @@ impl Game {
             on_pilot_logout: PilotLogout::Vanish,
             voxels,
             terrain: None,
+            rail: None,
             sections: vec![Section {
                 identifier: id("unheard_of:ship_notes"),
                 version: 4,

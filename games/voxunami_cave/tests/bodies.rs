@@ -187,6 +187,232 @@ fn a_walker_dropped_over_the_moon_of_a_pack_lands_on_it_and_stands_on_its_ground
     assert_eq!(player_pose(&scene, 1), standing);
 }
 
+// ---- planets on rails (Phase 40d) ----
+
+/// A pack with a planet of 10,000 voxels that goes round the home planet at 400,000 voxels once in 200,000 seconds (12.6 metres a second, two thirds of a voxel a
+/// tick: slow enough that a view of it can settle between the bricks it crosses) and turns once in 116 days (a faster spin sweeps a camera far from it round it in its
+/// own coordinates, a brick every tick or two, and a view that is made of bricks round the camera is never quiet).
+fn wanderers() -> Vec<RawPack> {
+    vec![RawPack {
+        folder: "sky".to_owned(),
+        manifest: r#"{ "id": "sky" }"#.to_owned(),
+        blocks: Vec::new(),
+        patches: Vec::new(),
+        bodies: vec![file(
+            "wanderer",
+            r#"{
+                "level": "voxunami_cave:mini_cosmos",
+                "terrain": {
+                    "family": "base_blocks:planet_v1",
+                    "parameters": { "seed": 99, "radius": 10000, "hill_height": 20,
+                        "largest_hill_wavelength_log2": 7, "hill_octave_count": 4 }
+                },
+                "extent_bricks": 340,
+                "surface_gravity": 8,
+                "rail": {
+                    "spin": { "axis": [0, 1, 0], "period": 10000000 },
+                    "orbit": { "around": "voxunami_cave:planet", "radius": 400000, "period": 200000 }
+                }
+            }"#,
+        )],
+    }]
+}
+
+fn a_scene_with_a_wanderer() -> Scene {
+    let mut content = CaveContent::new();
+    content.apply_packs(&wanderers()).unwrap();
+    let world = content.new_world(SEED);
+    Scene::in_this_world(content, world)
+}
+
+/// Where the wanderer is at the given tick of the world, from nothing but the numbers of its file (the home planet is at the origin and still):
+/// 400,000 voxels from it, `tick / (20 * 200,000)` of the way round, from +x toward -z.
+fn the_wanderer_at(tick: u64) -> [f64; 3] {
+    let turns = tick as f64 / (20.0 * 200_000.0);
+    let angle = std::f64::consts::TAU * turns;
+    [
+        400_000.0 * libm::cos(angle),
+        0.0,
+        -400_000.0 * libm::sin(angle),
+    ]
+}
+
+fn wanderer_in_voxels(scene: &Scene) -> [f64; 3] {
+    scene
+        .rig
+        .server
+        .world()
+        .grids()
+        .get(ship_id(1))
+        .expect("the wanderer is the second ship")
+        .pose
+        .position
+        .in_voxels()
+}
+
+#[test]
+fn a_planet_on_a_rail_is_where_the_clock_says_every_tick_and_a_client_sees_it_go() {
+    let mut scene = a_scene_with_a_wanderer();
+    let mut player = scene.rig.join([0.5, 70_000.0, 0.5], 0.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    for _ in 0..4 {
+        tick_and_follow(&mut scene, &mut player, 50);
+        let tick = scene.rig.server.world().clock();
+        let found = wanderer_in_voxels(&scene);
+        let expected = the_wanderer_at(tick);
+        for axis in 0..3 {
+            assert!(
+                (found[axis] - expected[axis]).abs() < 1.0e-3,
+                "at tick {tick}: {found:?} against {expected:?}"
+            );
+        }
+        // The client was told where it is.
+        let seen = player
+            .client()
+            .world()
+            .grids()
+            .get(ship_id(1))
+            .expect("the client knows the wanderer")
+            .pose;
+        assert_eq!(
+            seen,
+            scene
+                .rig
+                .server
+                .world()
+                .grids()
+                .get(ship_id(1))
+                .unwrap()
+                .pose
+        );
+    }
+    // How fast it goes: the circumference over the period, 12.57 metres a second.
+    let ship = scene.rig.server.world().grids().get(ship_id(1)).unwrap();
+    let speed: f64 = ship
+        .linear_velocity
+        .iter()
+        .map(|component| f64::from(*component) * f64::from(*component))
+        .sum::<f64>()
+        .sqrt();
+    assert!(
+        (speed - std::f64::consts::TAU * 400_000.0 / 200_000.0).abs() < 1e-3,
+        "{speed}"
+    );
+    // The home planet stays where it is.
+    let home = scene.rig.server.world().grids().get(ship_id(0)).unwrap();
+    assert_eq!(home.pose, GridPose::identity());
+    assert_eq!(home.linear_velocity, [0.0; 3]);
+}
+
+#[test]
+fn what_runs_in_a_tick_sees_the_planet_where_the_rail_has_it_for_that_tick() {
+    let mut scene = a_scene_with_a_wanderer();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    for _ in 0..3 {
+        let seen = std::sync::Arc::clone(&seen);
+        scene.run(move |world| {
+            let tick = world.world_tick();
+            let place = world
+                .data()
+                .grids()
+                .get(ship_id(1))
+                .expect("the wanderer")
+                .pose
+                .position
+                .in_voxels();
+            seen.lock().unwrap().push((tick, place));
+        });
+    }
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 3);
+    for (tick, place) in seen.iter() {
+        let expected = the_wanderer_at(*tick);
+        for axis in 0..3 {
+            assert!(
+                (place[axis] - expected[axis]).abs() < 1.0e-3,
+                "in tick {tick}: {place:?} against {expected:?}"
+            );
+        }
+    }
+    // (And the ticks differ, so the places do.)
+    assert!(seen[0].1 != seen[1].1 && seen[1].1 != seen[2].1);
+}
+
+#[test]
+fn the_clock_and_so_the_planets_go_on_across_a_restart() {
+    let mut scene = a_scene_with_a_wanderer();
+    scene.ticks(250);
+    let before = scene.rig.server.world().clock();
+    assert_eq!(before, 250);
+    let mut scene = scene.restarted();
+    // The world is at the time it was saved at, and the first tick brings the planet in where its rail has it.
+    assert_eq!(scene.rig.server.world().clock(), before);
+    scene.ticks(1);
+    let tick = scene.rig.server.world().clock();
+    assert_eq!(tick, before + 1);
+    let found = wanderer_in_voxels(&scene);
+    let expected = the_wanderer_at(tick);
+    for axis in 0..3 {
+        assert!(
+            (found[axis] - expected[axis]).abs() < 1.0e-3,
+            "{found:?} against {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn a_walker_aboard_a_planet_on_a_rail_goes_with_it_and_stands_still_on_it() {
+    let mut scene = a_scene_with_a_wanderer();
+    let mut player = scene.rig.join_walking([0.5, 70_000.0, 0.5], 0.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    // Put the walker aboard the wanderer, on its pole, a little above the ground: it lands, in the planet's own coordinates, as on any planet.
+    scene.run(|world| {
+        let entity = world
+            .entities()
+            .iter()
+            .find(|entity| entity.kind == player_presence::player_kind())
+            .expect("the player has an entity")
+            .id;
+        world
+            .set_entity_pose(
+                entity,
+                voxel_space::EntityPose::new(
+                    ship_id(1),
+                    voxel_space::WorldPosition::from_voxels([0.5, 10_040.0, 0.5]),
+                    voxel_space::Orientation::IDENTITY,
+                ),
+            )
+            .unwrap();
+    });
+    tick_and_follow(&mut scene, &mut player, 200);
+    let standing = player_pose(&scene, 1);
+    assert_eq!(standing.grid, ship_id(1), "aboard the wanderer");
+    let [x, y, z] = in_voxels(standing.position);
+    assert!((x - 0.5).abs() < 0.5 && (z - 0.5).abs() < 0.5, "{x} {z}");
+    assert!((9_950.0..=10_060.0).contains(&y), "{y}");
+    let planet_before = wanderer_in_voxels(&scene);
+    // Many ticks on, the planet has moved some sixty voxels and the walker has not moved on it: to the bit.
+    tick_and_follow(&mut scene, &mut player, 100);
+    let planet_after = wanderer_in_voxels(&scene);
+    let apart = [0, 1, 2].map(|axis| planet_after[axis] - planet_before[axis]);
+    let moved = (apart[0] * apart[0] + apart[1] * apart[1] + apart[2] * apart[2]).sqrt();
+    assert!(
+        moved > 50.0,
+        "the planet went {moved} voxels in five seconds"
+    );
+    let later = player_pose(&scene, 1);
+    assert_eq!(later.grid, standing.grid);
+    assert_eq!(later.position, standing.position, "not a bit of the place");
+    // (The turn of the planet is put into the walker's own turn every tick, and the last digits of that are noise.)
+    let (before, after) = (
+        standing.orientation.components(),
+        later.orientation.components(),
+    );
+    for component in 0..4 {
+        assert!((before[component] - after[component]).abs() < 1.0e-9);
+    }
+}
+
 // ---- check-pack and pack-schema ----
 
 /// A folder of the tests' own that goes away when dropped.

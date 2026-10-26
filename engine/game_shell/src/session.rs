@@ -784,8 +784,8 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         updates
     }
 
-    /// Runs until the world around the camera is fully loaded and meshed, returning every mesh
-    /// change on the way. `step_server` is called between rounds, and is where a program that ticks
+    /// Runs until the world around the camera is fully loaded and meshed (the places of ships are no part of that: they may change in every tick), returning every
+    /// mesh change on the way. `step_server` is called between rounds, and is where a program that ticks
     /// its own server steps it. A replay is not advanced: it stays at the tick it is at.
     pub fn settle(
         &mut self,
@@ -808,7 +808,11 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
                     .watched()
                     .is_some_and(|(level, _)| level == self.level),
             };
-            if updates.is_empty()
+            // (A ship that moves, or a planet on a rail, is told of in every tick: where something is says nothing of whether the world around the camera is loaded.)
+            let only_poses = updates
+                .iter()
+                .all(|update| matches!(update, MeshUpdate::GridPose { .. }));
+            if only_poses
                 && loaded
                 && self.terrain.is_settled()
                 && self.planets.values().all(ShipTerrainMesher::is_settled)

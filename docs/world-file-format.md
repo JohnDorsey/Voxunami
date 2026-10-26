@@ -46,6 +46,8 @@ The generator table is the registry kind `engine:terrain_generator`.
 channel), the box of bricks it makes (the lowest and the highest corner, each three zigzag varints) and the mass in kilograms (`f32` bits; finite and not negative). The ship's `engine:ship` section then holds only its edits. A file with no such section is a ship that
 nothing generates.
 
+**A ship file's `engine:rail`** (optional, version 1; Phase 40d): for a ship on rails, how it moves, as a function of the time of the world (`engine:clock`): a byte of flags (1 a spin, 2 an orbit); the spin's axis (a unit vector), period and angle; the orbit's centre (a byte, 0 and a point of the level or 1 and the number of another ship, which has a lower number), normal, radius, period and phase; every number the bits of an `f64`, little-endian. Seconds and radians; a negative period goes the other way. A ship with no rail has no such section, so its file is what it was; a ship file is refused if the section is damaged, has a direction that is not a unit vector, a period of nothing, or is of a newer version. The place in the file's flight section is where the ship was when it was saved; a ship on a rail is put where its rail says in the first tick after it is in memory.
+
 **The world file's list of ships** (`engine:grids`) gives each ship a flags byte after its file's checksum: bit 0 is that it waits for those aboard, bit 1 is that it has terrain (a planet; Phase 39f). A byte over 3 is refused. A world from before the second bit reads as it always did (0 or 1), and a world with a planet is not read by a program from before it.
 
 A **brick** is its channel count (`u16`) then each channel's storage: tag `0` uniform (`u32`); tag `1` paletted (palette

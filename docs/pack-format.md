@@ -122,6 +122,25 @@ in this same format (`games/voxunami_cave/data/bodies/planet.json`).
 - **`surface_gravity`** (metres a second a second) **or `mass`** (kilograms): one of them. A planet given its pull weighs what that takes at its radius with the
   game's gravity. (In Cave a body pulls at all only if it weighs at least 10^19 kilograms, which is a pull of ten at a radius of some eight kilometres.)
 
+**`rail`** (optional) says how the body moves, as a function of the time of the world (seconds from when the world was made, counted in ticks of a twentieth of a
+second in Cave; it is saved with the world, so a restart goes on from where it was):
+
+```json
+"rail": {
+  "spin":  { "axis": [0, 1, 0], "period": 86400, "angle": 15 },
+  "orbit": { "around": "my_pack:star", "normal": [0, 1, 0], "radius": 1.5e9, "period": 31557600, "phase": 90 }
+}
+```
+
+- **`spin`**: the body turns once in `period` seconds (negative the other way) about `axis`, which is where its own up goes (a tilt is an axis that is not `[0, 1, 0]`); `angle` is
+  how far it has turned at time 0, in degrees (0).
+- **`orbit`**: it goes round `around` on a circle of `radius` voxels (at most 10^15), once in `period` seconds (negative the other way), counter-clockwise looking down `normal`
+  (up if left out), from `phase` degrees at time 0 (0). The circle starts toward the +x axis taken into its plane. `around` is a point of the level (`[x, y, z]`) or another body
+  (`"my_pack:star"`), which must be made before this one (bodies are made in the order of the packs and then of their files' names, so name them to sort). A body that goes round
+  has its place from the orbit, and gives no `position`; a body that only spins stays where it was put. A moon goes round a planet that goes round a star.
+- A body on a rail is in free fall with what it goes round: what stands on it feels its pull and not the pull of what it goes round.
+- *Not yet:* ships and players in the air near a planet that moves are not carried with it (those standing on it are), and ellipses. `docs/rails-and-recipes-spec.md`.
+
 A body is made when a *world* is made: the planets of a world that exists are not changed by a pack added later, and do not go if the pack is taken away (the
 world keeps the recipe of each planet's generator, so it makes the same ground). A body stands still; planets that move are later (`docs/rails-and-recipes-spec.md`).
 Bodies come into a new world after the game's own, in the order the packs load.

@@ -11,6 +11,7 @@ use voxel_space::{
     BrickCoordinate, EntityPose, GravitySettings, GridId, GridPose, LatticeTransform, LevelIndex,
     LocalVoxelIndex, MassPull, Orientation, VoxelCoordinate, WorldPosition, gravity_at,
 };
+use world_storage::rail::{Centre, Rail};
 use world_storage::{
     GridTerrain, MovingGrid, PilotLogout, ShipFiles, ShipFormat, ShipLoadError, ShipParkError,
     WorldData,
@@ -940,11 +941,21 @@ impl ServerWorld {
     /// pull of every ship of the level that weighs enough (see [`GravitySettings`]). A ship's own pull is nothing at its centre of mass, which
     /// is where it is pulled, so nothing needs to leave it out.
     pub fn gravity_at(&self, level: LevelIndex, position: WorldPosition) -> [f32; 3] {
+        self.gravity_at_without(level, position, &[])
+    }
+
+    /// The same, leaving out the pull of these ships.
+    fn gravity_at_without(
+        &self,
+        level: LevelIndex,
+        position: WorldPosition,
+        left_out: &[GridId],
+    ) -> [f32; 3] {
         let pulls = self
             .data
             .grids()
             .iter()
-            .filter(|(_, ship)| ship.level == level && ship.mass > 0.0)
+            .filter(|(id, ship)| ship.level == level && ship.mass > 0.0 && !left_out.contains(id))
             .filter_map(|(_, ship)| {
                 let centre = WorldPosition::new(BrickCoordinate::ORIGIN, ship.centre_of_mass);
                 Some(MassPull {
@@ -957,6 +968,28 @@ impl ServerWorld {
             settings.base = *base;
         }
         gravity_at(&settings, pulls, position)
+    }
+
+    /// The ships that a ship on a rail goes round, and those they go round in turn, nearest first: none for a ship on no rail or one that goes round a point.
+    fn what_it_goes_round(&self, grid: GridId) -> Vec<GridId> {
+        let mut chain = Vec::new();
+        let mut current = grid;
+        while let Some(Centre::Grid(parent)) = self
+            .data
+            .grids()
+            .get(current)
+            .and_then(|ship| ship.rail)
+            .and_then(|rail| rail.orbit)
+            .map(|orbit| orbit.around)
+        {
+            // (A rail that goes round itself, or round a ship that goes round it, is not followed round again.)
+            if parent == grid || chain.contains(&parent) {
+                break;
+            }
+            chain.push(parent);
+            current = parent;
+        }
+        chain
     }
 
     /// The acceleration of gravity at a place of a grid, in the grid's own axes: for the terrain of a level the level's, and for a ship
@@ -979,7 +1012,9 @@ impl ServerWorld {
                 let Some(world) = ship.pose.local_to_world(local) else {
                     return Ok(self.gravity.base);
                 };
-                let there = self.gravity_at(ship.level, world);
+                // (A ship on a rail falls with what it goes round, and so does what is on it: it feels the pull of the ship and not of what the ship goes round.)
+                let there =
+                    self.gravity_at_without(ship.level, world, &self.what_it_goes_round(grid));
                 Ok(ship.pose.direction_to_local(there))
             }
         }
@@ -1108,6 +1143,26 @@ impl ServerWorld {
         Ok(())
     }
 
+    /// Puts a ship on a rail, or takes it off one (`None`): from the next tick its place and its turn are what the rail says at the time of the world, whatever else
+    /// moves it. A ship on a rail that goes round another must have a number higher than the other's, so that the other's place is worked out first.
+    pub fn set_grid_rail(&mut self, grid: GridId, rail: Option<Rail>) -> Result<(), AccessError> {
+        let ship = self
+            .data
+            .grids_mut()
+            .get_mut(grid)
+            .ok_or(AccessError::NoSuchGrid(grid))?;
+        ship.rail = rail;
+        Ok(())
+    }
+
+    /// Puts every ship that is on a rail where its rail says at the time of the world: `ticks_per_second` of the world's clock make a second (see
+    /// [`WorldData::put_ships_on_their_rails`]). Its place is the same bits on every machine: the time is one division, the rest the arithmetic of
+    /// [`world_storage::rail`]. A ship the world cannot place is left where it is.
+    pub(crate) fn apply_rails(&mut self, ticks_per_second: u32) {
+        let seconds = self.data.clock() as f64 / f64::from(ticks_per_second);
+        let _ = self.data.put_ships_on_their_rails(seconds);
+    }
+
     /// Removes a ship for good, as when it is destroyed, and returns it. Clients that watch it are told it is gone. What was aboard it
     /// (every entity whose frame it was, those of players who are away too) is put in the level the ship was in, where it was in the
     /// world and turned as it was, so it does not lose its place with the ship.
@@ -1188,6 +1243,7 @@ impl ServerWorld {
                     on_pilot_logout: old.on_pilot_logout,
                     voxels,
                     terrain: None,
+                    rail: None,
                     sections: old.sections.clone(),
                 }
             })
@@ -1307,6 +1363,7 @@ impl ServerWorld {
             on_pilot_logout: PilotLogout::Stay,
             voxels: Grid::new(layout),
             terrain: None,
+            rail: None,
             sections: Vec::new(),
         }))
     }
@@ -2113,6 +2170,392 @@ pub(crate) mod tests {
 
     fn at(x: f32, y: f32, z: f32) -> WorldPosition {
         WorldPosition::new(BrickCoordinate::ORIGIN, [x, y, z])
+    }
+
+    // ---- rails ----
+
+    use world_storage::rail::{Centre, Orbit, Rail, Spin};
+
+    /// A world with one level and ships to put on rails.
+    fn world_for_rails() -> ServerWorld {
+        let game = Game::new(&[Plugin::BaseBlocks]);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let data = WorldData::new(1, main_level_id(), counting_level(&game, &calls));
+        ServerWorld::new(data, Arc::default())
+    }
+
+    fn orbit_about(centre: Centre, radius: f64, period: f64) -> Rail {
+        Rail {
+            spin: None,
+            orbit: Some(Orbit::new(centre, [0.0, 1.0, 0.0], radius, period, 0.0).unwrap()),
+        }
+    }
+
+    #[test]
+    fn a_ship_on_a_rail_is_put_where_the_rail_says_at_the_time_of_the_world_every_tick() {
+        let mut world = world_for_rails();
+        let planet = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        let rail = Rail {
+            spin: Some(Spin::new([0.0, 1.0, 0.0], 3600.0, 0.5).unwrap()),
+            orbit: Some(
+                Orbit::new(
+                    Centre::Point([1000.0, 0.0, -50.0]),
+                    [0.0, 1.0, 0.0],
+                    2.0e6,
+                    40_000.0,
+                    1.0,
+                )
+                .unwrap(),
+            ),
+        };
+        world.set_grid_rail(planet, Some(rail)).unwrap();
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            // (A tick is a twentieth of a second at this rate.)
+            world.data.advance_clock(7);
+            world.apply_rails(20);
+            let seconds = world.world_tick() as f64 / 20.0;
+            let state = rail.state(seconds, [1000.0, 0.0, -50.0], [0.0; 3]);
+            let ship = world.data().grids().get(planet).unwrap();
+            assert_eq!(
+                ship.pose.position,
+                WorldPosition::from_voxels(state.position.unwrap())
+            );
+            assert_eq!(ship.pose.orientation, state.orientation.unwrap());
+            assert_eq!(
+                ship.linear_velocity,
+                state.velocity.map(|component| component as f32)
+            );
+            assert_eq!(
+                ship.angular_velocity,
+                state.angular_velocity.map(|component| component as f32)
+            );
+            seen.push(ship.pose.position);
+        }
+        // It moved, and does not stand where it began.
+        assert!(seen[0] != seen[1] && seen[1] != seen[2]);
+    }
+
+    #[test]
+    fn the_time_of_a_rail_is_the_clock_over_the_rate_of_the_ticks() {
+        let mut world = world_for_rails();
+        let planet = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        let rail = orbit_about(Centre::Point([0.0; 3]), 1000.0, 100.0);
+        world.set_grid_rail(planet, Some(rail)).unwrap();
+        // 30 ticks at 30 a second is one second, and at 20 a second a second and a half.
+        world.data.set_clock(30);
+        world.apply_rails(30);
+        let at_thirty = world.data().grids().get(planet).unwrap().pose.position;
+        assert_eq!(
+            at_thirty,
+            WorldPosition::from_voxels(rail.state(1.0, [0.0; 3], [0.0; 3]).position.unwrap())
+        );
+        world.apply_rails(20);
+        let at_twenty = world.data().grids().get(planet).unwrap().pose.position;
+        assert_eq!(
+            at_twenty,
+            WorldPosition::from_voxels(rail.state(1.5, [0.0; 3], [0.0; 3]).position.unwrap())
+        );
+    }
+
+    #[test]
+    fn a_ship_that_goes_round_another_is_where_the_other_is_and_moves_with_it() {
+        let mut world = world_for_rails();
+        let star_point = [5000.0, 0.0, 0.0];
+        let planet = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        let moon = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        assert!(
+            planet < moon,
+            "the planet is made first, so its place is worked out first"
+        );
+        world
+            .set_grid_rail(
+                planet,
+                Some(orbit_about(Centre::Point(star_point), 1.0e6, 40_000.0)),
+            )
+            .unwrap();
+        world
+            .set_grid_rail(moon, Some(orbit_about(Centre::Grid(planet), 2.0e4, 500.0)))
+            .unwrap();
+        for ticks in [0u64, 333, 12_345] {
+            world.data.set_clock(ticks);
+            world.apply_rails(20);
+            let planet_ship = world.data().grids().get(planet).unwrap();
+            let moon_ship = world.data().grids().get(moon).unwrap();
+            let (planet_at, moon_at) = (
+                planet_ship.pose.position.in_voxels(),
+                moon_ship.pose.position.in_voxels(),
+            );
+            // Twenty thousand voxels from the planet, wherever the planet is.
+            let apart = [0, 1, 2].map(|axis| moon_at[axis] - planet_at[axis]);
+            let distance = (apart[0] * apart[0] + apart[1] * apart[1] + apart[2] * apart[2]).sqrt();
+            assert!((distance - 2.0e4).abs() < 1e-2, "{distance} at {ticks}");
+            // And its speed is the planet's and its own.
+            let own = 2.0 * std::f64::consts::PI * 2.0e4 / 500.0;
+            let relative = [0, 1, 2].map(|axis| {
+                f64::from(moon_ship.linear_velocity[axis])
+                    - f64::from(planet_ship.linear_velocity[axis])
+            });
+            let speed =
+                (relative[0] * relative[0] + relative[1] * relative[1] + relative[2] * relative[2])
+                    .sqrt();
+            assert!((speed - own).abs() < 1e-2, "{speed} against {own}");
+        }
+    }
+
+    #[test]
+    fn what_stands_on_a_body_on_a_rail_does_not_feel_what_it_goes_round_since_it_falls_with_it() {
+        let mut world = world_for_rails();
+        world.set_gravity_settings(GravitySettings {
+            base: [0.0; 3],
+            pull_strength: 6.674e-11,
+            pull_mass_threshold: Some(1.0e19),
+            softening: 1.0,
+        });
+        // A planet that weighs 6 x 10^20 kilograms at the origin, and a moon of 10^19 that goes round it 400,000 voxels out (at the start, along +x).
+        let planet = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        let moon = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        world.data.grids_mut().get_mut(planet).unwrap().mass = 6.0e20;
+        world.data.grids_mut().get_mut(moon).unwrap().mass = 1.0e19;
+        world
+            .set_grid_rail(
+                moon,
+                Some(orbit_about(Centre::Grid(planet), 400_000.0, 200_000.0)),
+            )
+            .unwrap();
+        world.apply_rails(20);
+        assert_eq!(
+            world
+                .data()
+                .grids()
+                .get(moon)
+                .unwrap()
+                .pose
+                .position
+                .in_voxels(),
+            [400_000.0, 0.0, 0.0]
+        );
+        // A hundred voxels over the moon's middle: in the moon's own axes (it does not turn), straight down at the moon's pull, and nothing sideways.
+        let local = at(0.0, 100.0, 0.0);
+        let own = 6.674e-11 * 1.0e19 * 100.0 / (10_001.0f64 * 10_001.0f64.sqrt());
+        let felt = world.gravity_in(moon, local).unwrap();
+        assert!(felt[0].abs() < 1e-3 && felt[2].abs() < 1e-3, "{felt:?}");
+        assert!(
+            (f64::from(-felt[1]) - own).abs() < 1e-2 * own.max(1.0),
+            "{felt:?} against {own}"
+        );
+        // In the level the planet's pull is there: 6.674e-11 * 6e20 / 400,000^2 = 0.25 toward -x, at that place.
+        let world_place = world
+            .data()
+            .grids()
+            .get(moon)
+            .unwrap()
+            .pose
+            .local_to_world(local)
+            .unwrap();
+        let in_the_level = world.gravity_at(LevelIndex::MAIN, world_place);
+        assert!((in_the_level[0] + 0.25).abs() < 1e-2, "{in_the_level:?}");
+        // The planet it goes round, which goes round nothing, is pulled by the moon and by nothing taken away.
+        let over_the_planet = world.gravity_in(planet, at(0.0, 100.0, 0.0)).unwrap();
+        assert_eq!(
+            over_the_planet,
+            world.gravity_at(LevelIndex::MAIN, at(0.0, 100.0, 0.0))
+        );
+        // A ship that is on no rail feels everything, wherever it is.
+        let raft = world
+            .create_grid(
+                LevelIndex::MAIN,
+                GridPose::new(world_place, Orientation::IDENTITY),
+            )
+            .unwrap();
+        assert_eq!(
+            world.gravity_in(raft, at(0.0, 0.0, 0.0)).unwrap(),
+            world.gravity_at(LevelIndex::MAIN, world_place)
+        );
+    }
+
+    #[test]
+    fn what_stands_on_a_moon_of_a_moon_feels_neither_of_the_bodies_it_goes_round_and_a_rail_in_a_loop_ends()
+     {
+        let mut world = world_for_rails();
+        world.set_gravity_settings(GravitySettings {
+            base: [0.0; 3],
+            pull_strength: 6.674e-11,
+            pull_mass_threshold: Some(1.0e19),
+            softening: 1.0,
+        });
+        let planet = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        let moon = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        let small_moon = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        for (ship, mass) in [(planet, 6.0e20f32), (moon, 6.0e19), (small_moon, 1.0e19)] {
+            world.data.grids_mut().get_mut(ship).unwrap().mass = mass;
+        }
+        world
+            .set_grid_rail(
+                moon,
+                Some(orbit_about(Centre::Grid(planet), 400_000.0, 200_000.0)),
+            )
+            .unwrap();
+        world
+            .set_grid_rail(
+                small_moon,
+                Some(orbit_about(Centre::Grid(moon), 20_000.0, 5_000.0)),
+            )
+            .unwrap();
+        world.apply_rails(20);
+        // On the small moon: its own pull alone (straight down, 100 voxels from its middle), not the moon's, which it goes round, and not the planet's.
+        let felt = world.gravity_in(small_moon, at(0.0, 100.0, 0.0)).unwrap();
+        let own = 6.674e-11 * 1.0e19 * 100.0 / (10_001.0f64 * 10_001.0f64.sqrt());
+        assert!(felt[0].abs() < 1e-3 && felt[2].abs() < 1e-3, "{felt:?}");
+        assert!(
+            (f64::from(-felt[1]) - own).abs() < 1e-2 * own.max(1.0),
+            "{felt:?}"
+        );
+        // On the moon: its own pull, and the small moon's, which goes round the moon and pulls the moon with it (6.674e-11 x 10^19 / 20,000^2 = 1.67 toward +x);
+        // and not the planet's 0.25 toward -x, which the moon goes round.
+        let on_the_moon = world.gravity_in(moon, at(0.0, 100.0, 0.0)).unwrap();
+        assert!((on_the_moon[0] - 1.668).abs() < 0.01, "{on_the_moon:?}");
+
+        // Two ships that go round each other, and one that goes round itself: the chain ends.
+        let first = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        let second = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        world
+            .set_grid_rail(
+                first,
+                Some(orbit_about(Centre::Grid(second), 1000.0, 100.0)),
+            )
+            .unwrap();
+        world
+            .set_grid_rail(
+                second,
+                Some(orbit_about(Centre::Grid(first), 1000.0, 100.0)),
+            )
+            .unwrap();
+        assert_eq!(world.what_it_goes_round(first), vec![second]);
+        assert_eq!(world.what_it_goes_round(second), vec![first]);
+        world
+            .set_grid_rail(first, Some(orbit_about(Centre::Grid(first), 1000.0, 100.0)))
+            .unwrap();
+        assert_eq!(world.what_it_goes_round(first), Vec::<GridId>::new());
+        assert!(world.gravity_in(first, at(0.0, 0.0, 0.0)).is_ok());
+        // The chain, nearest first.
+        assert_eq!(world.what_it_goes_round(small_moon), vec![moon, planet]);
+        assert_eq!(world.what_it_goes_round(moon), vec![planet]);
+        assert_eq!(world.what_it_goes_round(planet), Vec::<GridId>::new());
+    }
+
+    #[test]
+    fn a_ship_whose_rail_puts_it_past_the_end_of_the_world_is_left_where_it_is_and_named() {
+        let mut world = world_for_rails();
+        let there = GridPose::new(at(1.0, 2.0, 3.0), Orientation::IDENTITY);
+        let lost = world.create_grid(LevelIndex::MAIN, there).unwrap();
+        let fine = world.create_grid(LevelIndex::MAIN, there).unwrap();
+        world
+            .set_grid_rail(
+                lost,
+                Some(orbit_about(Centre::Point([0.0; 3]), 1.0e300, 100.0)),
+            )
+            .unwrap();
+        world
+            .set_grid_rail(
+                fine,
+                Some(orbit_about(Centre::Point([0.0; 3]), 1000.0, 100.0)),
+            )
+            .unwrap();
+        assert_eq!(world.data.put_ships_on_their_rails(0.0), vec![lost]);
+        assert_eq!(world.data().grids().get(lost).unwrap().pose, there);
+        // Nor is it given the speed of a place it was not put in.
+        assert_eq!(
+            world.data().grids().get(lost).unwrap().linear_velocity,
+            [0.0; 3]
+        );
+        // The others were put in their places all the same.
+        assert_ne!(world.data().grids().get(fine).unwrap().pose, there);
+        // A ship that goes round one that is not there stays where it is, and is not named as lost.
+        world
+            .set_grid_rail(
+                lost,
+                Some(orbit_about(
+                    Centre::Grid(GridId::new(GridId::FIRST_ALLOCATED + 999)),
+                    10.0,
+                    10.0,
+                )),
+            )
+            .unwrap();
+        assert_eq!(
+            world.data.put_ships_on_their_rails(0.0),
+            Vec::<GridId>::new()
+        );
+        assert_eq!(world.data().grids().get(lost).unwrap().pose, there);
+    }
+
+    #[test]
+    fn a_ship_that_only_turns_stays_where_it_is_and_one_with_no_rail_is_left_alone() {
+        let mut world = world_for_rails();
+        let there = GridPose::new(at(10.0, 20.0, 30.0), Orientation::from_yaw_pitch(0.3, 0.0));
+        let turning = world.create_grid(LevelIndex::MAIN, there).unwrap();
+        let plain = world.create_grid(LevelIndex::MAIN, there).unwrap();
+        world
+            .set_grid_rail(
+                turning,
+                Some(Rail {
+                    spin: Some(Spin::new([0.0, 1.0, 0.0], 3600.0, 0.0).unwrap()),
+                    orbit: None,
+                }),
+            )
+            .unwrap();
+        world
+            .set_grid_velocity(plain, [1.0, 2.0, 3.0], [0.0; 3])
+            .unwrap();
+        world.data.set_clock(900 * 20);
+        world.apply_rails(20);
+        let turned = world.data().grids().get(turning).unwrap();
+        assert_eq!(turned.pose.position, there.position);
+        assert_ne!(turned.pose.orientation, there.orientation);
+        assert_eq!(turned.linear_velocity, [0.0; 3]);
+        let alone = world.data().grids().get(plain).unwrap();
+        assert_eq!(alone.pose, there);
+        assert_eq!(alone.linear_velocity, [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn a_rail_can_be_given_and_taken_off_and_a_ship_that_is_not_there_has_none() {
+        let mut world = world_for_rails();
+        let ship = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        let rail = orbit_about(Centre::Point([0.0; 3]), 100.0, 10.0);
+        world.set_grid_rail(ship, Some(rail)).unwrap();
+        assert_eq!(world.data().grids().get(ship).unwrap().rail, Some(rail));
+        world.set_grid_rail(ship, None).unwrap();
+        assert_eq!(world.data().grids().get(ship).unwrap().rail, None);
+        let nowhere = GridId::new(GridId::FIRST_ALLOCATED + 999);
+        assert_eq!(
+            world.set_grid_rail(nowhere, Some(rail)),
+            Err(AccessError::NoSuchGrid(nowhere))
+        );
     }
 
     #[test]

@@ -4119,6 +4119,7 @@ dependencies = [
  "content_registry",
  "crc32fast",
  "entities",
+ "libm",
  "namespaced_id",
  "proptest",
  "protocol",

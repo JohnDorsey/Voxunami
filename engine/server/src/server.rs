@@ -249,6 +249,8 @@ impl Server {
         self.world.set_tick(tick);
         // (The time of the world, which is saved with it, passes a tick at the start of each: what runs in this tick sees it.)
         self.world.data.advance_clock(1);
+        // (And what is on rails is where its rail says it is at that time, before anything in the tick looks at it.)
+        self.world.apply_rails(self.config.ticks_per_second);
         let mut report = StepReport {
             tick,
             joined: Vec::new(),
@@ -257,6 +259,8 @@ impl Server {
         self.accept_new_connections();
         self.receive_messages(&mut report);
         self.logic.tick(tick, &mut self.world);
+        // (A ship that came into memory in this tick is on its rail before anyone is told where it is. Where a rail has put a ship already, this puts it again, and nothing changes.)
+        self.world.apply_rails(self.config.ticks_per_second);
         self.send_away(&mut report);
         self.send_updates(tick, &mut report);
         self.world.edits.clear();

@@ -7,6 +7,7 @@ use voxel_space::{
 };
 
 use crate::container::Section;
+use crate::rail::Rail;
 use crate::ship_files::ShipFileName;
 
 /// What happens to a ship when its pilot logs out (a ship's own wish; a server setting can override it).
@@ -59,6 +60,9 @@ pub struct MovingGrid {
     pub voxels: Grid,
     /// What generates the bricks nobody has stored, for a planet; `None` for a ship someone built (nothing generates it).
     pub terrain: Option<GridTerrain>,
+    /// How the ship moves if it is on rails: its place and turn are a function of the time of the world, put there at the start of each tick (see
+    /// `crate::rail`); `None` for a ship that is moved by forces or by hand.
+    pub rail: Option<Rail>,
     /// Sections of plugins that the ship's file had and nobody here reads, kept as they were so that a ship saved again loses nothing.
     pub sections: Vec<Section>,
 }
@@ -460,6 +464,7 @@ mod tests {
             on_pilot_logout: PilotLogout::Stay,
             voxels,
             terrain: None,
+            rail: None,
             sections: Vec::new(),
         }
     }

@@ -7,6 +7,7 @@
 //! the blocks look. [`ContentPackage`] builds worlds and loads them from it. This is the shape a
 //! data-driven mod will fill in later, so what a spec holds is what a mod's manifest will need.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -16,8 +17,9 @@ use namespaced_id::NamespacedId;
 use terrain::{GeneratorFamily, GeneratorId, TerrainGenerator, WorldTerrain};
 use voxel_grid::{ChannelDefinition, ChannelIndex, Grid, GridLayout};
 use voxel_space::{
-    BRICK_EDGE_LENGTH, BrickBox, BrickCoordinate, GridPose, LevelIndex, Orientation, WorldPosition,
+    BrickBox, BrickCoordinate, GridId, GridPose, LevelIndex, Orientation, WorldPosition,
 };
+use world_storage::rail::{Centre, Orbit, Rail, Spin};
 use world_storage::{
     GeneratorRecipe, GridTerrain, LevelData, LoadContext, MovingGrid, PilotLogout, RecipeError,
     WorldData,
@@ -27,7 +29,8 @@ use world_view::ViewChannels;
 use crate::definition::GameContent;
 use crate::package_data::{PackageData, check_materials};
 use data_packs::{
-    Body, BodySupport, PackErrors, RawPack, Weight, load_packs, read_body, read_family_parameters,
+    Around, Body, BodyRail, BodySupport, PackErrors, RawPack, Weight, load_packs, read_body,
+    read_family_parameters,
 };
 
 /// Makes a game's terrain generators for a world seed. The layout is the world's, for finding the
@@ -225,6 +228,18 @@ impl ContentPackage {
                     "{mass} kilograms is not a weight a ship can have"
                 )));
             }
+            if let Some(rail) = &body.rail {
+                if let Some(orbit) = &rail.orbit
+                    && let Around::Body(centre) = &orbit.around
+                    && !ready.iter().any(|earlier| earlier.identifier == *centre)
+                {
+                    return Err(trouble(format!(
+                        "it goes round {centre}, which is no body made before it"
+                    )));
+                }
+                // (What it goes round is a body made before it, which is not a ship yet: the rest of the rail is made right here for what it can say.)
+                rail_of(rail, |_| Centre::Point([0.0; 3])).map_err(trouble)?;
+            }
             ready.push(Ready {
                 identifier: identifier.clone(),
                 recipe: GeneratorRecipe {
@@ -238,6 +253,7 @@ impl ContentPackage {
             });
         }
         let layout = Arc::clone(world.main().overrides.layout());
+        let mut made: BTreeMap<NamespacedId, GridId> = BTreeMap::new();
         for Ready {
             identifier,
             recipe,
@@ -249,9 +265,22 @@ impl ContentPackage {
             let generator = self
                 .add_generator_recipe(world, recipe)
                 .map_err(|error| format!("{identifier}: {error}"))?;
-            world.grids_mut().create(MovingGrid {
+            let rail = body
+                .rail
+                .as_ref()
+                .map(|rail| {
+                    rail_of(rail, |name| {
+                        Centre::Grid(*made.get(name).expect("it was found to be made before"))
+                    })
+                })
+                .transpose()
+                .map_err(|error| format!("{identifier}: {error}"))?;
+            let ship = world.grids_mut().create(MovingGrid {
                 level,
-                pose: GridPose::new(world_position(body.position), Orientation::IDENTITY),
+                pose: GridPose::new(
+                    WorldPosition::from_voxels(body.position),
+                    Orientation::IDENTITY,
+                ),
                 linear_velocity: [0.0; 3],
                 angular_velocity: [0.0; 3],
                 mass,
@@ -265,8 +294,16 @@ impl ContentPackage {
                     extent: BrickBox::around(BrickCoordinate::ORIGIN, body.extent_bricks),
                     mass,
                 }),
+                rail,
                 sections: Vec::new(),
             });
+            made.insert(identifier, ship);
+        }
+        // The ships that are on rails are where their rails say at the start of the world (a new world is at time 0).
+        if let Some(grid) = world.put_ships_on_their_rails(0.0).first() {
+            return Err(format!(
+                "the rail of ship {grid} puts it where the world cannot hold it"
+            ));
         }
         Ok(())
     }
@@ -396,12 +433,35 @@ impl ContentPackage {
     }
 }
 
-/// The place in a level at `position`, in voxels.
-fn world_position(position: [f64; 3]) -> WorldPosition {
-    let edge = BRICK_EDGE_LENGTH as f64;
-    let brick = position.map(|component| (component / edge).floor() as i64);
-    let offset = [0, 1, 2].map(|axis| (position[axis] - brick[axis] as f64 * edge) as f32);
-    WorldPosition::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), offset)
+/// A rail as the world holds it, from the numbers of a body file (seconds, degrees, bodies by name): the centre an orbit goes round, when it is a body, is
+/// what `centre_of` makes of its name.
+fn rail_of(data: &BodyRail, centre_of: impl Fn(&NamespacedId) -> Centre) -> Result<Rail, String> {
+    let radians = |degrees: f64| degrees * (std::f64::consts::PI / 180.0);
+    let spin = data
+        .spin
+        .as_ref()
+        .map(|spin| Spin::new(spin.axis, spin.period, radians(spin.angle_degrees)))
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let orbit = data
+        .orbit
+        .as_ref()
+        .map(|orbit| {
+            let around = match &orbit.around {
+                Around::Point(point) => Centre::Point(*point),
+                Around::Body(name) => centre_of(name),
+            };
+            Orbit::new(
+                around,
+                orbit.normal,
+                orbit.radius,
+                orbit.period,
+                radians(orbit.phase_degrees),
+            )
+        })
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    Ok(Rail { spin, orbit })
 }
 
 fn pack_problem(message: String) -> PackErrors {
@@ -1027,6 +1087,232 @@ mod tests {
             "{error}"
         );
         // Nothing of it is in.
+        assert_eq!(content.body_names(), [id("test_game:boulder")]);
+    }
+
+    // ---- bodies on rails ----
+
+    /// A pack of bodies, each with the text of its file.
+    fn pack_of_bodies(bodies: &[(&str, &str)]) -> RawPack {
+        RawPack {
+            folder: "my_pack".to_owned(),
+            manifest: r#"{ "id": "my_pack" }"#.to_owned(),
+            blocks: Vec::new(),
+            patches: Vec::new(),
+            bodies: bodies
+                .iter()
+                .map(|(name, text)| RawFile {
+                    name: (*name).to_owned(),
+                    text: (*text).to_owned(),
+                })
+                .collect(),
+        }
+    }
+
+    /// A body of the package's family in the package's level, with this rail (and this other text before it) written in.
+    fn body_with(extra: &str, rail: &str) -> String {
+        format!(
+            r#"{{ "level": "test_game:main", {extra}
+                "terrain": {{ "family": "test_game:nothing_family_v1", "parameters": {{ "radius": 50 }} }},
+                "extent_bricks": 3, "mass": 1e20, "rail": {rail} }}"#
+        )
+    }
+
+    fn degrees(angle: f64) -> f64 {
+        angle * (std::f64::consts::PI / 180.0)
+    }
+
+    #[test]
+    fn a_body_with_a_rail_is_made_on_it_and_put_where_the_rail_says_at_the_start_of_the_world() {
+        let mut content = package();
+        content
+            .apply_packs(&[pack_of_bodies(&[
+                (
+                    "planet",
+                    &body_with(
+                        "",
+                        r#"{ "spin": { "axis": [0, 1, 0], "period": 3600, "angle": 90 },
+                            "orbit": { "around": [1000, 0, -50], "normal": [0, 1, 0], "radius": 2e6, "period": 40000, "phase": 90 } }"#,
+                    ),
+                ),
+                (
+                    "rock",
+                    &body_with(
+                        r#""position": [7, 8, 9],"#,
+                        r#"{ "spin": { "axis": [1, 0, 0], "period": -60 } }"#,
+                    ),
+                ),
+            ])])
+            .unwrap();
+        let mut world = content.new_world(5);
+        content.add_bodies(&mut world).unwrap();
+        // [the boulder, the planet, the rock]
+        let ships: Vec<_> = world
+            .grids()
+            .iter()
+            .map(|(id, ship)| (id, ship.clone()))
+            .collect();
+        assert_eq!(ships.len(), 3);
+        let (_, boulder) = &ships[0];
+        assert_eq!(boulder.rail, None, "a body with no rail has none");
+
+        let (_, planet) = &ships[1];
+        let rail = planet.rail.expect("the planet is on a rail");
+        let spin = rail.spin.unwrap();
+        assert_eq!(spin.period, 3600.0);
+        assert!((spin.angle - degrees(90.0)).abs() < 1e-12, "{}", spin.angle);
+        let orbit = rail.orbit.unwrap();
+        assert_eq!(
+            orbit.around,
+            world_storage::rail::Centre::Point([1000.0, 0.0, -50.0])
+        );
+        assert_eq!((orbit.radius, orbit.period), (2.0e6, 40_000.0));
+        assert!((orbit.phase - degrees(90.0)).abs() < 1e-12);
+        // At the start it is where the rail puts it, and moving as the rail says, not where the file's nothing put it.
+        let state = rail.state(0.0, [1000.0, 0.0, -50.0], [0.0; 3]);
+        assert_eq!(
+            planet.pose.position,
+            voxel_space::WorldPosition::from_voxels(state.position.unwrap())
+        );
+        assert_eq!(planet.pose.orientation, state.orientation.unwrap());
+        assert_eq!(
+            planet.linear_velocity,
+            state.velocity.map(|component| component as f32)
+        );
+        assert_ne!(planet.linear_velocity, [0.0; 3]);
+
+        // A body that only turns stays where the file put it and does not move.
+        let (_, rock) = &ships[2];
+        assert_eq!(
+            rock.pose.position,
+            voxel_space::WorldPosition::from_voxels([7.0, 8.0, 9.0])
+        );
+        assert_eq!(rock.linear_velocity, [0.0; 3]);
+        assert!(rock.rail.unwrap().orbit.is_none());
+        assert_ne!(rock.angular_velocity, [0.0; 3]);
+    }
+
+    #[test]
+    fn a_body_that_goes_round_another_body_goes_round_the_ship_that_was_made_for_it() {
+        let mut content = package();
+        content
+            .apply_packs(&[pack_of_bodies(&[
+                (
+                    "planet",
+                    &body_with(
+                        "",
+                        r#"{ "orbit": { "around": [0, 0, 0], "radius": 1e6, "period": 40000 } }"#,
+                    ),
+                ),
+                (
+                    "zmoon",
+                    &body_with(
+                        "",
+                        r#"{ "orbit": { "around": "my_pack:planet", "radius": 2e4, "period": 500 } }"#,
+                    ),
+                ),
+            ])])
+            .unwrap();
+        let mut world = content.new_world(5);
+        content.add_bodies(&mut world).unwrap();
+        let ships: Vec<_> = world
+            .grids()
+            .iter()
+            .map(|(id, ship)| (id, ship.clone()))
+            .collect();
+        let (planet_id, planet) = &ships[1];
+        let (_, moon) = &ships[2];
+        assert_eq!(
+            moon.rail.unwrap().orbit.unwrap().around,
+            world_storage::rail::Centre::Grid(*planet_id)
+        );
+        // Twenty thousand voxels from the planet at the start, and with its speed and its own.
+        let apart: Vec<f64> = (0..3)
+            .map(|axis| {
+                moon.pose.position.in_voxels()[axis] - planet.pose.position.in_voxels()[axis]
+            })
+            .collect();
+        let distance = (apart[0] * apart[0] + apart[1] * apart[1] + apart[2] * apart[2]).sqrt();
+        assert!((distance - 2.0e4).abs() < 1e-2, "{distance}");
+        let own = std::f64::consts::TAU * 2.0e4 / 500.0;
+        let relative: Vec<f64> = (0..3)
+            .map(|axis| {
+                f64::from(moon.linear_velocity[axis]) - f64::from(planet.linear_velocity[axis])
+            })
+            .collect();
+        let speed =
+            (relative[0] * relative[0] + relative[1] * relative[1] + relative[2] * relative[2])
+                .sqrt();
+        assert!((speed - own).abs() < 1e-3, "{speed} against {own}");
+    }
+
+    #[test]
+    fn a_body_cannot_go_round_a_body_that_is_not_there_or_not_there_yet_or_itself() {
+        let orbit_around = |name: &str| {
+            body_with(
+                "",
+                &format!(r#"{{ "orbit": {{ "around": "{name}", "radius": 100, "period": 60 }} }}"#),
+            )
+        };
+        for (about, files, message) in [
+            (
+                "nothing",
+                vec![("moon", orbit_around("my_pack:nothing"))],
+                "my_pack:moon: it goes round my_pack:nothing, which is no body made before it",
+            ),
+            (
+                "itself",
+                vec![("moon", orbit_around("my_pack:moon"))],
+                "my_pack:moon: it goes round my_pack:moon, which is no body made before it",
+            ),
+            (
+                "a body that comes after it (bodies are made in the order of their files' names)",
+                vec![
+                    ("amoon", orbit_around("my_pack:planet")),
+                    (
+                        "planet",
+                        body_with(
+                            "",
+                            r#"{ "orbit": { "around": [0, 0, 0], "radius": 100, "period": 60 } }"#,
+                        ),
+                    ),
+                ],
+                "my_pack:amoon: it goes round my_pack:planet, which is no body made before it",
+            ),
+        ] {
+            let mut content = package();
+            let files: Vec<(&str, &str)> = files
+                .iter()
+                .map(|(name, text)| (*name, text.as_str()))
+                .collect();
+            let error = content.apply_packs(&[pack_of_bodies(&files)]).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("the packs together: {message}"),
+                "{about}"
+            );
+            // Nothing of the pack is in.
+            assert_eq!(content.body_names(), [id("test_game:boulder")]);
+        }
+    }
+
+    #[test]
+    fn a_rail_whose_numbers_make_no_motion_is_refused_when_the_pack_is_loaded() {
+        // A radius so great that the place is no place the world can hold.
+        let mut content = package();
+        let error = content
+            .apply_packs(&[pack_of_bodies(&[(
+                "far",
+                &body_with(
+                    "",
+                    r#"{ "orbit": { "around": [0, 0, 0], "radius": 1e300, "period": 60 } }"#,
+                ),
+            )])])
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "my_pack/bodies/far.json: /rail/orbit/radius: 1e+300 is more than 1000000000000000 voxels"
+        );
         assert_eq!(content.body_names(), [id("test_game:boulder")]);
     }
 

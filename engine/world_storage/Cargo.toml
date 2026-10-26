@@ -14,6 +14,7 @@ test-support = []
 binary_codec.workspace = true
 content_registry.workspace = true
 entities.workspace = true
+libm = "0.2"
 namespaced_id.workspace = true
 protocol.workspace = true
 region_octree.workspace = true

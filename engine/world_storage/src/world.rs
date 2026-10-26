@@ -12,7 +12,7 @@ use terrain::{
     WorldTerrainError,
 };
 use voxel_grid::{Brick, ChannelDefinition, ChannelValueKind, Grid, GridLayout, GridLayoutError};
-use voxel_space::{BrickCoordinate, EntityPose, GridId, LevelIndex};
+use voxel_space::{BrickCoordinate, EntityPose, GridId, LevelIndex, WorldPosition};
 
 use crate::container::{ContainerError, Section, read_container, write_container};
 use crate::engine_sections::{
@@ -20,6 +20,7 @@ use crate::engine_sections::{
     Header, LevelRecord, LevelToWrite, RegistryTable,
 };
 use crate::moving_grids::{GridStore, MovingGrid, ParkedGrid};
+use crate::rail::Centre;
 use crate::ship_file::{ShipFileError, ShipFormat};
 use crate::ship_files::{ShipFileName, ShipFiles};
 use crate::translation::{SourceTranslator, TranslationError};
@@ -330,6 +331,54 @@ impl WorldData {
             clock: 0,
             recipes: Vec::new(),
         }
+    }
+
+    /// Puts every ship that is on a rail where its rail says `seconds` into the life of the world (see [`crate::rail`]): its place, its turn, how fast it moves
+    /// and how fast it turns. Ships are taken in order of their numbers, so what a ship goes round (a ship with a lower number) has been put in its place already,
+    /// and its place and speed are what the ship that goes round it starts from. A ship that only turns stays where it is. Returns the ships whose place the world
+    /// cannot hold (an orbit past the end of the coordinates), which are left where they were; and ships that go round one that is not there stay as they are.
+    pub fn put_ships_on_their_rails(&mut self, seconds: f64) -> Vec<GridId> {
+        let on_rails: Vec<GridId> = self
+            .grids
+            .iter()
+            .filter(|(_, ship)| ship.rail.is_some())
+            .map(|(id, _)| id)
+            .collect();
+        let mut not_placed = Vec::new();
+        for id in on_rails {
+            let ship = self.grids.get(id).expect("the ship was just listed");
+            let rail = ship.rail.expect("the ship was listed for its rail");
+            let (centre, centre_velocity) = match rail.orbit.map(|orbit| orbit.around) {
+                Some(Centre::Point(point)) => (point, [0.0; 3]),
+                Some(Centre::Grid(parent)) => match self.grids.get(parent) {
+                    Some(parent) => (
+                        parent.pose.position.in_voxels(),
+                        parent.linear_velocity.map(f64::from),
+                    ),
+                    None => continue,
+                },
+                None => ([0.0; 3], [0.0; 3]),
+            };
+            let state = rail.state(seconds, centre, centre_velocity);
+            let position = match state.position.map(WorldPosition::try_from_voxels) {
+                Some(None) => {
+                    not_placed.push(id);
+                    continue;
+                }
+                Some(Some(position)) => Some(position),
+                None => None,
+            };
+            let ship = self.grids.get_mut(id).expect("the ship was just found");
+            if let Some(position) = position {
+                ship.pose.position = position;
+            }
+            if let Some(orientation) = state.orientation {
+                ship.pose.orientation = orientation;
+            }
+            ship.linear_velocity = state.velocity.map(|component| component as f32);
+            ship.angular_velocity = state.angular_velocity.map(|component| component as f32);
+        }
+        not_placed
     }
 
     /// The recipes of the terrain generators that are data, in the order they were added.
@@ -686,6 +735,7 @@ impl WorldData {
             on_pilot_logout: flight.map_or(Default::default(), |flight| flight.on_pilot_logout),
             voxels: contents.voxels,
             terrain: contents.terrain,
+            rail: contents.rail,
             sections: contents.sections,
         })
     }

@@ -17,8 +17,8 @@ mod walk;
 
 pub use block::read_block;
 pub use body::{
-    Body, BodyContext, BodySupport, GREATEST_EXTENT_BRICKS, POSITION_LIMIT, Weight, read_body,
-    read_family_parameters,
+    Around, Body, BodyContext, BodyRail, BodySupport, GREATEST_EXTENT_BRICKS, OrbitData,
+    POSITION_LIMIT, SpinData, Weight, read_body, read_family_parameters,
 };
 pub use directory::read_directory;
 pub use error::{PackError, PackErrors};

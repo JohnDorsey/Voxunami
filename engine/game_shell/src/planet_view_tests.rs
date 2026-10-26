@@ -117,6 +117,7 @@ fn planet(world: &world_storage::WorldData, block: ChannelIndex, stone: u32) -> 
             extent: BrickBox::around(BrickCoordinate::ORIGIN, 8),
             mass: 1.0e20,
         }),
+        rail: None,
         sections: Vec::new(),
     }
 }

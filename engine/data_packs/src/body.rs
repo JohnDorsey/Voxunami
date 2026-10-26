@@ -10,15 +10,19 @@ use crate::error::PackErrors;
 use crate::family::{FamilyData, FamilyParameters};
 use crate::walk::{Path, Walk, quoted};
 
-const KEYS: [&str; 6] = [
+const KEYS: [&str; 7] = [
     "level",
     "position",
     "terrain",
     "extent_bricks",
     "mass",
     "surface_gravity",
+    "rail",
 ];
 const TERRAIN_KEYS: [&str; 2] = ["family", "parameters"];
+const RAIL_KEYS: [&str; 2] = ["spin", "orbit"];
+const SPIN_KEYS: [&str; 3] = ["axis", "period", "angle"];
+const ORBIT_KEYS: [&str; 5] = ["around", "normal", "radius", "period", "phase"];
 
 /// The farthest a body may be from the origin of its level along an axis, in voxels.
 pub const POSITION_LIMIT: f64 = 1.0e15;
@@ -36,6 +40,38 @@ pub enum Weight {
     SurfaceGravity(f64),
 }
 
+/// A steady turn about an axis, as a file says it: seconds and degrees, the axis as written (any direction).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpinData {
+    pub axis: [f64; 3],
+    pub period: f64,
+    pub angle_degrees: f64,
+}
+
+/// What an orbit goes round: a point of the level, or another body of the world (by name; that it is there and was made before is for the world to say).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Around {
+    Point([f64; 3]),
+    Body(NamespacedId),
+}
+
+/// A circle gone round at a steady rate, as a file says it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OrbitData {
+    pub around: Around,
+    pub normal: [f64; 3],
+    pub radius: f64,
+    pub period: f64,
+    pub phase_degrees: f64,
+}
+
+/// How a body moves (`docs/rails-and-recipes-spec.md`, section 3.4).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BodyRail {
+    pub spin: Option<SpinData>,
+    pub orbit: Option<OrbitData>,
+}
+
 /// A body as a file describes it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Body {
@@ -49,6 +85,8 @@ pub struct Body {
     /// How many bricks either way of its centre its ground reaches.
     pub extent_bricks: u32,
     pub weight: Weight,
+    /// How it moves, if it does (a body with an orbit has its place from it, and the position above is where it stands only if it does not).
+    pub rail: Option<BodyRail>,
 }
 
 /// What a body needs to know about the game it is for.
@@ -168,6 +206,20 @@ fn read_definition(
         })
         .map(|extent| extent as u32);
     let weight = read_weight(walk, object, path);
+    let rail = match object.get("rail") {
+        Some(rail) => read_rail(walk, rail, &path.key("rail")).map(Some),
+        None => Some(None),
+    };
+    if object.contains_key("position")
+        && rail
+            .as_ref()
+            .is_some_and(|rail| rail.as_ref().is_some_and(|rail| rail.orbit.is_some()))
+    {
+        walk.fail(
+            &path.key("position"),
+            "a body that goes round has its place from its orbit",
+        );
+    }
     let (family, parameters) = terrain?;
     Some(Body {
         level: level?,
@@ -176,6 +228,7 @@ fn read_definition(
         parameters,
         extent_bricks: extent_bricks?,
         weight: weight?,
+        rail: rail?,
     })
 }
 
@@ -287,6 +340,118 @@ fn read_family(
                 format!(
                     "no family \"{text}\" is loaded; the families are {}",
                     quoted(&names)
+                ),
+            );
+            None
+        }
+    }
+}
+
+fn read_rail(walk: &mut Walk, value: &Value, path: &Path) -> Option<BodyRail> {
+    let object = walk.object(value, path, &RAIL_KEYS)?;
+    if object.is_empty() {
+        walk.fail(path, "a rail has a spin, an orbit or both");
+        return None;
+    }
+    let spin = match object.get("spin") {
+        Some(spin) => read_spin(walk, spin, &path.key("spin")).map(Some),
+        None => Some(None),
+    };
+    let orbit = match object.get("orbit") {
+        Some(orbit) => read_orbit(walk, orbit, &path.key("orbit")).map(Some),
+        None => Some(None),
+    };
+    Some(BodyRail {
+        spin: spin?,
+        orbit: orbit?,
+    })
+}
+
+fn read_spin(walk: &mut Walk, value: &Value, path: &Path) -> Option<SpinData> {
+    let object = walk.object(value, path, &SPIN_KEYS)?;
+    let axis = walk
+        .require(object, "axis", path)
+        .and_then(|axis| walk.direction(axis, &path.key("axis")));
+    let period = walk
+        .require(object, "period", path)
+        .and_then(|period| walk.period(period, &path.key("period")));
+    let angle = match object.get("angle") {
+        Some(angle) => walk.number(angle, &path.key("angle")),
+        None => Some(0.0),
+    };
+    Some(SpinData {
+        axis: axis?,
+        period: period?,
+        angle_degrees: angle?,
+    })
+}
+
+fn read_orbit(walk: &mut Walk, value: &Value, path: &Path) -> Option<OrbitData> {
+    let object = walk.object(value, path, &ORBIT_KEYS)?;
+    let around = walk
+        .require(object, "around", path)
+        .and_then(|around| read_around(walk, around, &path.key("around")));
+    let normal = match object.get("normal") {
+        Some(normal) => walk.direction(normal, &path.key("normal")),
+        None => Some([0.0, 1.0, 0.0]),
+    };
+    let radius_path = path.key("radius");
+    let radius = walk.require(object, "radius", path).and_then(|radius| {
+        let number = walk.positive_number(radius, &radius_path)?;
+        if number > POSITION_LIMIT {
+            walk.fail(
+                &radius_path,
+                format!("{radius} is more than {POSITION_LIMIT:.0} voxels"),
+            );
+            return None;
+        }
+        Some(number)
+    });
+    let period = walk
+        .require(object, "period", path)
+        .and_then(|period| walk.period(period, &path.key("period")));
+    let phase = match object.get("phase") {
+        Some(phase) => walk.number(phase, &path.key("phase")),
+        None => Some(0.0),
+    };
+    Some(OrbitData {
+        around: around?,
+        normal: normal?,
+        radius: radius?,
+        period: period?,
+        phase_degrees: phase?,
+    })
+}
+
+fn read_around(walk: &mut Walk, value: &Value, path: &Path) -> Option<Around> {
+    match value {
+        Value::String(text) => match text.parse::<NamespacedId>() {
+            Ok(name) => Some(Around::Body(name)),
+            Err(error) => {
+                walk.fail(path, format!("\"{text}\" is not a body name: {error}"));
+                None
+            }
+        },
+        Value::Array(list) if list.len() == 3 => {
+            let mut point = [0.0; 3];
+            let mut good = true;
+            for (index, (slot, component)) in point.iter_mut().zip(list).enumerate() {
+                match walk.number(component, &path.index(index)) {
+                    Some(number) => *slot = number,
+                    None => good = false,
+                }
+            }
+            good.then_some(Around::Point(point))
+        }
+        other => {
+            let found = match other {
+                Value::Array(list) => format!("a list of {}", list.len()),
+                other => crate::walk::kind_of(other).to_owned(),
+            };
+            walk.fail(
+                path,
+                format!(
+                    "a centre is a body (\"my_pack:star\") or a point of the level (3 numbers), found {found}"
                 ),
             );
             None

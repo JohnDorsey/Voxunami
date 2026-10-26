@@ -611,6 +611,96 @@ fn corpus() -> Vec<Case> {
             "a misspelt key",
             r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_brick": 2, "mass": 1 }"#,
         ),
+        ok(
+            Body,
+            "a spin and a place",
+            r#"{ "level": "test_game:space", "position": [1, 2, 3], "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "spin": { "axis": [0, 1, 0], "period": 3600 } } }"#,
+        ),
+        ok(
+            Body,
+            "an orbit about a point with every key and no place",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": [0, 0, 0], "normal": [1, 1, 0], "radius": 1e6, "period": -31557600, "phase": 90 } } }"#,
+        ),
+        ok(
+            Body,
+            "an orbit about a body and a spin together",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "spin": { "axis": [0, 1, 0], "period": 3600, "angle": 15 }, "orbit": { "around": "test_game:star", "radius": 100, "period": 60 } } }"#,
+        ),
+        bad(
+            Body,
+            "an orbit and a place",
+            r#"{ "level": "test_game:space", "position": [1, 2, 3], "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": [0, 0, 0], "radius": 100, "period": 60 } } }"#,
+        ),
+        bad(
+            Body,
+            "a rail of nothing",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": {} }"#,
+        ),
+        bad(
+            Body,
+            "a rail with a key it has not",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "spinn": {} } }"#,
+        ),
+        bad(
+            Body,
+            "a spin with no axis",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "spin": { "period": 3600 } } }"#,
+        ),
+        bad(
+            Body,
+            "a spin about nothing",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "spin": { "axis": [0, 0, 0], "period": 3600 } } }"#,
+        ),
+        bad(
+            Body,
+            "a spin with an axis of two",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "spin": { "axis": [0, 1], "period": 3600 } } }"#,
+        ),
+        bad(
+            Body,
+            "a spin with a period of nothing",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "spin": { "axis": [0, 1, 0], "period": 0 } } }"#,
+        ),
+        bad(
+            Body,
+            "an orbit with no radius",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": [0, 0, 0], "period": 60 } } }"#,
+        ),
+        bad(
+            Body,
+            "an orbit with a radius of nothing",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": [0, 0, 0], "radius": 0, "period": 60 } } }"#,
+        ),
+        bad(
+            Body,
+            "an orbit of a radius past the greatest place",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": [0, 0, 0], "radius": 2e15, "period": 60 } } }"#,
+        ),
+        bad(
+            Body,
+            "an orbit about two numbers",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": [0, 0], "radius": 100, "period": 60 } } }"#,
+        ),
+        bad(
+            Body,
+            "an orbit about a name with no pack",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": "star", "radius": 100, "period": 60 } } }"#,
+        ),
+        bad(
+            Body,
+            "an orbit about a number",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": 7, "radius": 100, "period": 60 } } }"#,
+        ),
+        bad(
+            Body,
+            "an orbit in no plane",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": [0, 0, 0], "normal": [0, 0, 0], "radius": 100, "period": 60 } } }"#,
+        ),
+        bad(
+            Body,
+            "an orbit with a phase that is no number",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": [0, 0, 0], "radius": 100, "period": 60, "phase": null } } }"#,
+        ),
     ]
 }
 
@@ -687,7 +777,13 @@ const GOOD_BLOCK: &str = r#"{ "color": [0.5, 0.5, 0.5], "see_through": false,
     "state_properties": { "1": { "test:glow": 0 }, "3": { "test:sticky": false } } }"#;
 const GOOD_BODY: &str = r#"{ "level": "test_game:ground", "position": [1, 2, 3],
     "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 300, "seed": 99 } },
-    "extent_bricks": 12, "mass": 6.07e20 }"#;
+    "extent_bricks": 12, "mass": 6.07e20,
+    "rail": { "spin": { "axis": [0, 1, 0], "period": 3600 } } }"#;
+const GOOD_ORBITING_BODY: &str = r#"{ "level": "test_game:ground",
+    "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 300, "seed": 99 } },
+    "extent_bricks": 12, "surface_gravity": 3,
+    "rail": { "spin": { "axis": [0, 1, 0], "period": 3600, "angle": 15 },
+              "orbit": { "around": "test_game:star", "normal": [0, 1, 1], "radius": 1.5e6, "period": 31557600, "phase": 90 } } }"#;
 const GOOD_MANIFEST: &str = r#"{ "id": "my_pack", "depends_on": ["base_blocks", "other"] }"#;
 const GOOD_PATCH: &str = r#"{ "target": "base_blocks:lamp", "optional": true, "operations": [
     { "op": "set", "property": "test:glow", "state": 0, "value": 9 },
@@ -786,6 +882,13 @@ proptest! {
     fn a_body_damaged_in_one_place_is_judged_alike(damaged in damaged(GOOD_BODY)) {
         agree(Body, &damaged)?;
     }
+
+    #[test]
+    fn a_body_that_goes_round_damaged_in_one_place_is_judged_alike(
+        damaged in damaged(GOOD_ORBITING_BODY)
+    ) {
+        agree(Body, &damaged)?;
+    }
 }
 
 #[test]
@@ -796,6 +899,7 @@ fn the_good_files_the_damage_starts_from_are_good() {
         (Manifest, GOOD_MANIFEST),
         (Patch, GOOD_PATCH),
         (Body, GOOD_BODY),
+        (Body, GOOD_ORBITING_BODY),
     ] {
         let instance: Value = serde_json::from_str(text).unwrap();
         assert!(validators.schema_accepts(kind, &instance), "{kind:?}");

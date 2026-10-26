@@ -424,6 +424,7 @@ mod tests {
             on_pilot_logout: PilotLogout::Stay,
             voxels: grid,
             terrain: None,
+            rail: None,
             sections: Vec::new(),
         };
         (ship, block, state)

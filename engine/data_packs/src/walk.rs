@@ -166,6 +166,47 @@ impl Walk {
         found
     }
 
+    /// A period in seconds: a number that is not 0 (negative goes the other way).
+    pub(crate) fn period(&mut self, value: &Value, path: &Path) -> Option<f64> {
+        let number = self.number(value, path)?;
+        if number != 0.0 && number.is_finite() {
+            return Some(number);
+        }
+        self.fail(
+            path,
+            format!(
+                "a period is a number of seconds that is not 0, found {}",
+                describe(value)
+            ),
+        );
+        None
+    }
+
+    /// Three numbers that are not all 0: a direction.
+    pub(crate) fn direction(&mut self, value: &Value, path: &Path) -> Option<[f64; 3]> {
+        let list = self.array(value, path)?;
+        if list.len() != 3 {
+            self.fail(
+                path,
+                format!("a direction is 3 numbers (x, y, z), found {}", list.len()),
+            );
+            return None;
+        }
+        let mut direction = [0.0; 3];
+        let mut good = true;
+        for (index, (slot, component)) in direction.iter_mut().zip(list).enumerate() {
+            match self.number(component, &path.index(index)) {
+                Some(number) => *slot = number,
+                None => good = false,
+            }
+        }
+        if good && direction == [0.0; 3] {
+            self.fail(path, "a direction must point somewhere");
+            return None;
+        }
+        good.then_some(direction)
+    }
+
     /// A number above 0 (that is not infinite).
     pub(crate) fn positive_number(&mut self, value: &Value, path: &Path) -> Option<f64> {
         let number = self.number(value, path)?;

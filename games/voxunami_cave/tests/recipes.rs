@@ -78,6 +78,7 @@ fn world_with_a_moon(content: &CaveContent) -> WorldData {
             extent: BrickBox::around(BrickCoordinate::ORIGIN, MOON_REACH_BRICKS),
             mass,
         }),
+        rail: None,
         sections: Vec::new(),
     };
     let id = world.grids_mut().create(ship);

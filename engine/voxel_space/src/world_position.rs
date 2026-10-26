@@ -63,6 +63,37 @@ impl WorldPosition {
         self.offset
     }
 
+    /// This position as plain numbers, in voxels from the origin of its grid: exact to a bit of the sum (the brick is exact, and an `f32` offset in an `f64`).
+    pub fn in_voxels(self) -> [f64; 3] {
+        let edge = f64::from(EDGE);
+        [0, 1, 2].map(|axis| {
+            let brick = [self.brick.x(), self.brick.y(), self.brick.z()][axis];
+            brick as f64 * edge + f64::from(self.offset[axis])
+        })
+    }
+
+    /// The position at these voxels from the origin of the grid: the brick they are in, and the `f32` rest. `None` for numbers that are not finite or that leave the
+    /// supported coordinate range.
+    pub fn try_from_voxels(position: [f64; 3]) -> Option<Self> {
+        let edge = f64::from(EDGE);
+        let brick = position.map(|component| (component / edge).floor());
+        let offset = [0, 1, 2].map(|axis| (position[axis] - brick[axis] * edge) as f32);
+        // (A cast to an integer saturates, so a number past the end of the world is a brick past it, which the coordinate refuses; a number that is not one has an
+        // offset that is not, which `try_new` refuses.)
+        let brick =
+            BrickCoordinate::try_new(brick[0] as i64, brick[1] as i64, brick[2] as i64).ok()?;
+        Self::try_new(brick, offset)
+    }
+
+    /// The position at these voxels, as [`WorldPosition::try_from_voxels`]; panics where that is `None`, as [`WorldPosition::new`] does.
+    pub fn from_voxels(position: [f64; 3]) -> Self {
+        assert!(
+            position.iter().all(|component| component.is_finite()),
+            "position must be finite"
+        );
+        Self::try_from_voxels(position).expect("position is outside the supported coordinate range")
+    }
+
     /// This position moved by `delta` voxels.
     pub fn translated(self, delta: [f32; 3]) -> Self {
         Self::new(
@@ -112,6 +143,47 @@ mod tests {
 
     fn brick(x: i64, y: i64, z: i64) -> BrickCoordinate {
         BrickCoordinate::new(x, y, z)
+    }
+
+    #[test]
+    fn a_position_in_voxels_is_the_brick_and_the_offset_and_comes_back_from_them() {
+        let position = WorldPosition::new(brick(12_500, -3, 7), [4.5, 0.0, 31.75]);
+        assert_eq!(position.in_voxels(), [400_004.5, -96.0, 255.75]);
+        assert_eq!(WorldPosition::from_voxels(position.in_voxels()), position);
+        // Below zero the brick is the one below: -40 voxels is brick -2, 24 in.
+        let below = WorldPosition::from_voxels([100.0, 0.0, -40.0]);
+        assert_eq!(below.brick(), brick(3, 0, -2));
+        assert_eq!(below.offset(), [4.0, 0.0, 24.0]);
+        // The edge of a brick belongs to the brick above it.
+        assert_eq!(
+            WorldPosition::from_voxels([32.0, -32.0, 0.0]).brick(),
+            brick(1, -1, 0)
+        );
+        // Far from the origin the brick is exact: a billion voxels and a quarter.
+        let far = WorldPosition::from_voxels([1.0e9 + 0.25, 0.0, 0.0]);
+        assert_eq!(far.brick(), brick(31_250_000, 0, 0));
+        assert_eq!(far.offset()[0], 0.25);
+    }
+
+    #[test]
+    fn voxels_that_are_past_the_end_of_the_world_or_not_numbers_are_no_position_to_try() {
+        assert_eq!(
+            WorldPosition::try_from_voxels([100.0, 0.0, -40.0]),
+            Some(WorldPosition::from_voxels([100.0, 0.0, -40.0]))
+        );
+        assert_eq!(WorldPosition::try_from_voxels([f64::NAN, 0.0, 0.0]), None);
+        assert_eq!(
+            WorldPosition::try_from_voxels([0.0, f64::INFINITY, 0.0]),
+            None
+        );
+        assert_eq!(WorldPosition::try_from_voxels([0.0, 0.0, 1.0e300]), None);
+        assert_eq!(WorldPosition::try_from_voxels([-1.0e300, 0.0, 0.0]), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "position must be finite")]
+    fn voxels_that_are_not_numbers_are_not_a_position() {
+        let _ = WorldPosition::from_voxels([f64::NAN, 0.0, 0.0]);
     }
 
     #[test]
