@@ -17,8 +17,9 @@ use crate::collision::{BlockCollisions, GeneratedHull, ShipHull, WorldTerrain};
 use crate::connectivity::{Connectivity, Outcome};
 use crate::docking::{Docking, Port, PortView, approach, docked_pose, torque_of_force};
 
-/// How far, in bricks, from the origin of a level's frame a ship may be to be simulated: `f32` is exact enough within it. A ship farther
-/// from the first ship of its level than this stays where it is (the simulation distance and a frame for each place will replace this).
+/// How far, in bricks, from the origin of a frame a ship may be: `f32` is exact enough within it. A ship that is not within this of the origin of any
+/// frame of its level makes a frame of its own, centred on it, so ships far apart are all simulated; a ship that goes twice as far from the origin of
+/// its frame is taken out of it and put in another (a frame is a place, not a ship's).
 pub const FRAME_RADIUS_BRICKS: i64 = 500;
 
 /// How far from the origin of a level's frame the origin of a planet may be, in bricks (4,096 is 131,072 voxels, where an `f32` is exact to a hundredth of one):
@@ -97,6 +98,8 @@ pub struct BodiesReport {
     /// Ships made one by docking, and times two ships that were near enough and in line could not be (blocks of the two would be in one place).
     pub dockings_made: u64,
     pub dockings_refused: u64,
+    /// How many frames there are now: places in levels that have ships in them, each simulated in a frame of its own.
+    pub frames: u64,
 }
 
 impl GridBodiesPlugin {
@@ -197,8 +200,12 @@ struct Planet {
     written: GridPose,
 }
 
-/// The bodies of one level of the world, in one frame.
-struct LevelBodies {
+/// Which frame: the level it is in, and a number (a level has as many frames as it has places with ships in them).
+type FrameKey = (LevelIndex, u32);
+
+/// The bodies of one place in a level, in one frame: the frame's origin is the brick of the first ship that made it.
+struct Frame {
+    level: LevelIndex,
     bodies: BodyWorld,
     ships: BTreeMap<GridId, Ship>,
     /// The planets of the level that have a body. (They are no ships here: they weigh what their terrain says, are held, and do not keep a frame alive.)
@@ -217,7 +224,9 @@ enum Ground {
 struct Bodies {
     config: GridBodiesConfig,
     collisions: BlockCollisions,
-    levels: BTreeMap<LevelIndex, LevelBodies>,
+    frames: BTreeMap<FrameKey, Frame>,
+    /// The number the next frame is given.
+    next_frame: u32,
     /// The bricks of ships and of terrain changed since the last step.
     changed_ship_bricks: BTreeSet<(GridId, BrickCoordinate)>,
     /// The voxels of ships changed since the last step: where a ship may have been cut.
@@ -268,7 +277,8 @@ impl Bodies {
         Self {
             config,
             collisions,
-            levels: BTreeMap::new(),
+            frames: BTreeMap::new(),
+            next_frame: 0,
             changed_ship_bricks: BTreeSet::new(),
             changed_ship_voxels: BTreeMap::new(),
             checks: BTreeMap::new(),
@@ -278,6 +288,14 @@ impl Bodies {
             tick: 0,
             report,
         }
+    }
+
+    /// The frame a ship has a body in, if it has one.
+    fn frame_of(&self, id: GridId) -> Option<FrameKey> {
+        self.frames
+            .iter()
+            .find(|(_, frame)| frame.ships.contains_key(&id))
+            .map(|(key, _)| *key)
     }
 
     fn changed(&mut self, grid: GridId, voxel: VoxelCoordinate) {
@@ -299,7 +317,7 @@ impl Bodies {
     /// The colliders of a brick of a ship, and the mass in it.
     fn remake_brick(
         &mut self,
-        level: LevelIndex,
+        frame: FrameKey,
         id: GridId,
         brick: BrickCoordinate,
         ship: &MovingGrid,
@@ -309,7 +327,7 @@ impl Bodies {
             brick,
             self.config.docking.as_ref().map(Docking::table),
         );
-        let Some(bodies) = self.levels.get_mut(&level) else {
+        let Some(bodies) = self.frames.get_mut(&frame) else {
             return;
         };
         let mut hull = ShipHull {
@@ -474,20 +492,31 @@ impl Bodies {
             .map(|(id, ship)| (id, ship.level))
             .collect();
 
-        // Ships that are gone leave their bodies; a level with no ships has no frame.
-        for level in self.levels.values_mut() {
-            let gone: Vec<GridId> = level
+        // Ships that are gone, or that have gone twice as far from the origin of their frame as a ship may be in one, leave their bodies (the second are
+        // made bodies again below, in the frame of the place they are in); a frame with no ships is no more.
+        for frame in self.frames.values_mut() {
+            let origin = frame.bodies.origin();
+            let gone: Vec<GridId> = frame
                 .ships
                 .keys()
-                .filter(|id| !present.iter().any(|(held, _)| held == *id))
+                .filter(|id| {
+                    !present.iter().any(|(held, _)| held == *id)
+                        || world.data().grids().get(**id).is_none_or(|ship| {
+                            farther_than(
+                                2 * FRAME_RADIUS_BRICKS,
+                                ship.pose.position.brick(),
+                                origin,
+                            )
+                        })
+                })
                 .copied()
                 .collect();
             for id in gone {
-                level.ships.remove(&id);
-                let _ = level.bodies.remove_body(BodyId(id.get()));
+                frame.ships.remove(&id);
+                let _ = frame.bodies.remove_body(BodyId(id.get()));
             }
         }
-        self.levels.retain(|_, level| !level.ships.is_empty());
+        self.frames.retain(|_, frame| !frame.ships.is_empty());
 
         for (id, level_index) in present {
             self.sync_ship(world, id, level_index, &changed_ships);
@@ -501,40 +530,34 @@ impl Bodies {
         self.apply_gravity(world);
         self.attract(world);
         for force in world.take_grid_forces() {
-            let Some(level) = world
-                .data()
-                .grids()
-                .get(force.grid)
-                .and_then(|ship| self.levels.get_mut(&ship.level))
+            let Some(frame) = self
+                .frame_of(force.grid)
+                .and_then(|key| self.frames.get_mut(&key))
             else {
                 continue;
             };
-            if level.ships.contains_key(&force.grid) {
-                let _ = level
-                    .bodies
-                    .apply_force(BodyId(force.grid.get()), force.force, force.at);
-            }
+            let _ = frame
+                .bodies
+                .apply_force(BodyId(force.grid.get()), force.force, force.at);
         }
 
         for torque in world.take_grid_torques() {
-            let Some(level) = world
-                .data()
-                .grids()
-                .get(torque.grid)
-                .and_then(|ship| self.levels.get_mut(&ship.level))
+            let Some(frame) = self
+                .frame_of(torque.grid)
+                .and_then(|key| self.frames.get_mut(&key))
             else {
                 continue;
             };
-            if level.ships.contains_key(&torque.grid) {
-                let _ = level
-                    .bodies
-                    .apply_torque(BodyId(torque.grid.get()), torque.torque);
-            }
+            let _ = frame
+                .bodies
+                .apply_torque(BodyId(torque.grid.get()), torque.torque);
         }
 
-        for level in self.levels.values_mut() {
-            level.bodies.step();
+        for frame in self.frames.values_mut() {
+            frame.bodies.step();
         }
+        let frames = self.frames.len() as u64;
+        self.count(|report| report.frames = frames);
         self.write_back(world);
     }
 
@@ -560,42 +583,50 @@ impl Bodies {
             linear_velocity: ship.linear_velocity,
             angular_velocity: ship.angular_velocity,
         };
-        let known = self
-            .levels
-            .get(&level_index)
-            .is_some_and(|level| level.ships.contains_key(&id));
-        if !known {
-            // The first ship of a level sets the frame; one too far from it is not simulated.
-            let origin = match self.levels.get(&level_index) {
-                Some(level) => level.bodies.origin(),
-                None => ship.pose.position.brick(),
-            };
-            if farther_than(FRAME_RADIUS_BRICKS, ship.pose.position.brick(), origin) {
-                return;
-            }
-            let level = self
-                .levels
-                .entry(level_index)
-                .or_insert_with(|| LevelBodies {
-                    bodies: BodyWorld::new(
-                        origin,
-                        BodySettings {
-                            gravity: [0.0; 3],
-                            ..self.config.settings
+        let Some(key) = self.frame_of(id) else {
+            // A ship is put in the first frame of its level that it is near the origin of, and makes a frame of its own where it is if there is none.
+            let brick = ship.pose.position.brick();
+            let key = self
+                .frames
+                .iter()
+                .find(|(key, frame)| {
+                    key.0 == level_index
+                        && !farther_than(FRAME_RADIUS_BRICKS, brick, frame.bodies.origin())
+                })
+                .map(|(key, _)| *key);
+            let key = match key {
+                Some(key) => key,
+                None => {
+                    let key = (level_index, self.next_frame);
+                    self.next_frame += 1;
+                    self.frames.insert(
+                        key,
+                        Frame {
+                            level: level_index,
+                            bodies: BodyWorld::new(
+                                brick,
+                                BodySettings {
+                                    gravity: [0.0; 3],
+                                    ..self.config.settings
+                                },
+                            ),
+                            ships: BTreeMap::new(),
+                            planets: BTreeMap::new(),
+                            terrain: BTreeSet::new(),
                         },
-                    ),
-                    ships: BTreeMap::new(),
-                    planets: BTreeMap::new(),
-                    terrain: BTreeSet::new(),
-                });
-            if level
+                    );
+                    key
+                }
+            };
+            let frame = self.frames.get_mut(&key).expect("the frame was just found");
+            if frame
                 .bodies
                 .add_body(BodyId(id.get()), state, kind)
                 .is_err()
             {
                 return;
             }
-            level.ships.insert(
+            frame.ships.insert(
                 id,
                 Ship {
                     moments: BTreeMap::new(),
@@ -609,11 +640,11 @@ impl Bodies {
             );
             let bricks: Vec<BrickCoordinate> = ship.voxels.sorted_brick_coordinates();
             for brick in bricks {
-                self.remake_brick(level_index, id, brick, ship);
+                self.remake_brick(key, id, brick, ship);
             }
-            self.set_mass(level_index, id);
+            self.set_mass(key, id);
             return;
-        }
+        };
         // Bricks that changed.
         let mut remade = false;
         let bricks: Vec<BrickCoordinate> = changed
@@ -622,32 +653,32 @@ impl Bodies {
             .map(|(_, brick)| *brick)
             .collect();
         for brick in bricks {
-            self.remake_brick(level_index, id, brick, ship);
+            self.remake_brick(key, id, brick, ship);
             remade = true;
         }
         if remade {
-            self.set_mass(level_index, id);
+            self.set_mass(key, id);
         }
-        let Some(level) = self.levels.get_mut(&level_index) else {
+        let Some(frame) = self.frames.get_mut(&key) else {
             return;
         };
-        let Some(record) = level.ships.get_mut(&id) else {
+        let Some(record) = frame.ships.get_mut(&id) else {
             return;
         };
         if record.kind != kind {
             record.kind = kind;
-            let _ = level.bodies.set_kind(BodyId(id.get()), kind);
+            let _ = frame.bodies.set_kind(BodyId(id.get()), kind);
         }
         // Moved by anything but the simulation: it goes on from there.
         if record.written != (ship.pose, ship.linear_velocity, ship.angular_velocity) {
-            let _ = level.bodies.set_state(BodyId(id.get()), state);
+            let _ = frame.bodies.set_state(BodyId(id.get()), state);
             record.written = (ship.pose, ship.linear_velocity, ship.angular_velocity);
         }
     }
 
     /// Gives a body the mass of all its bricks.
-    fn set_mass(&mut self, level_index: LevelIndex, id: GridId) {
-        let Some(level) = self.levels.get_mut(&level_index) else {
+    fn set_mass(&mut self, key: FrameKey, id: GridId) {
+        let Some(level) = self.frames.get_mut(&key) else {
             return;
         };
         let Some(record) = level.ships.get_mut(&id) else {
@@ -668,7 +699,7 @@ impl Bodies {
             .insert(id, (record.mass, record.centre_of_mass));
     }
 
-    /// Gives the planets of the levels that have bodies a body each, puts those that were moved where they are, and lets those that are gone go.
+    /// Gives the planets of each level a body in each of its frames, puts those that were moved where they are, and lets those that are gone go.
     fn sync_planets(&mut self, world: &ServerWorld) {
         let planets: Vec<(GridId, LevelIndex)> = world
             .data()
@@ -677,55 +708,56 @@ impl Bodies {
             .filter(|(_, ship)| ship.terrain.is_some())
             .map(|(id, ship)| (id, ship.level))
             .collect();
-        for (level_index, level) in &mut self.levels {
-            let gone: Vec<GridId> = level
+        for frame in self.frames.values_mut() {
+            let level = frame.level;
+            let gone: Vec<GridId> = frame
                 .planets
                 .keys()
-                .filter(|id| !planets.contains(&(**id, *level_index)))
+                .filter(|id| !planets.contains(&(**id, level)))
                 .copied()
                 .collect();
             for id in gone {
-                level.planets.remove(&id);
-                let _ = level.bodies.remove_body(BodyId(id.get()));
+                frame.planets.remove(&id);
+                let _ = frame.bodies.remove_body(BodyId(id.get()));
             }
-        }
-        for (id, level_index) in planets {
-            let (Some(planet), Some(level)) = (
-                world.data().grids().get(id),
-                self.levels.get_mut(&level_index),
-            ) else {
-                continue;
-            };
-            let state = BodyState {
-                position: planet.pose.position,
-                orientation: planet.pose.orientation,
-                linear_velocity: planet.linear_velocity,
-                angular_velocity: planet.angular_velocity,
-            };
-            match level.planets.get_mut(&id) {
-                Some(record) => {
-                    if record.written != planet.pose {
-                        let _ = level.bodies.set_state(BodyId(id.get()), state);
-                        record.written = planet.pose;
+            for &(id, _) in planets
+                .iter()
+                .filter(|(_, planet_level)| *planet_level == level)
+            {
+                let Some(planet) = world.data().grids().get(id) else {
+                    continue;
+                };
+                let state = BodyState {
+                    position: planet.pose.position,
+                    orientation: planet.pose.orientation,
+                    linear_velocity: planet.linear_velocity,
+                    angular_velocity: planet.angular_velocity,
+                };
+                match frame.planets.get_mut(&id) {
+                    Some(record) => {
+                        if record.written != planet.pose {
+                            let _ = frame.bodies.set_state(BodyId(id.get()), state);
+                            record.written = planet.pose;
+                        }
                     }
-                }
-                None => {
-                    let origin = level.bodies.origin();
-                    if farther_than(PLANET_REACH_BRICKS, planet.pose.position.brick(), origin) {
-                        continue;
-                    }
-                    if level
-                        .bodies
-                        .add_body(BodyId(id.get()), state, BodyKind::Fixed)
-                        .is_ok()
-                    {
-                        level.planets.insert(
-                            id,
-                            Planet {
-                                bricks: BTreeSet::new(),
-                                written: planet.pose,
-                            },
-                        );
+                    None => {
+                        let origin = frame.bodies.origin();
+                        if farther_than(PLANET_REACH_BRICKS, planet.pose.position.brick(), origin) {
+                            continue;
+                        }
+                        if frame
+                            .bodies
+                            .add_body(BodyId(id.get()), state, BodyKind::Fixed)
+                            .is_ok()
+                        {
+                            frame.planets.insert(
+                                id,
+                                Planet {
+                                    bricks: BTreeSet::new(),
+                                    written: planet.pose,
+                                },
+                            );
+                        }
                     }
                 }
             }
@@ -739,10 +771,11 @@ impl Bodies {
         changed_terrain: &BTreeSet<(LevelIndex, BrickCoordinate)>,
         changed_ships: &BTreeSet<(GridId, BrickCoordinate)>,
     ) {
-        let level_indices: Vec<LevelIndex> = self.levels.keys().copied().collect();
+        let keys: Vec<FrameKey> = self.frames.keys().copied().collect();
         let mut made_this_tick = 0u64;
-        for level_index in level_indices {
-            let planets: Vec<GridId> = self.levels[&level_index].planets.keys().copied().collect();
+        for key in keys {
+            let level_index = self.frames[&key].level;
+            let planets: Vec<GridId> = self.frames[&key].planets.keys().copied().collect();
             for ground in
                 std::iter::once(Ground::Level).chain(planets.into_iter().map(Ground::Planet))
             {
@@ -759,9 +792,9 @@ impl Bodies {
                         .map(|(_, brick)| *brick)
                         .collect(),
                 };
-                let (to_drop, to_make) = self.bricks_to_change(level_index, ground, &changed);
+                let (to_drop, to_make) = self.bricks_to_change(key, ground, &changed);
                 for brick in to_drop {
-                    let level = self.levels.get_mut(&level_index).expect("the level exists");
+                    let level = self.frames.get_mut(&key).expect("the frame exists");
                     match ground {
                         Ground::Level => {
                             level.bodies.remove_terrain_brick(brick);
@@ -776,7 +809,7 @@ impl Bodies {
                     }
                 }
                 for brick in to_make {
-                    let level = self.levels.get_mut(&level_index).expect("the level exists");
+                    let level = self.frames.get_mut(&key).expect("the frame exists");
                     match ground {
                         Ground::Level => {
                             made_this_tick += u64::from(!level.terrain.contains(&brick));
@@ -827,11 +860,11 @@ impl Bodies {
     /// Which bricks of a ground are to lose their colliders and which are to get them (or get them again, if `changed` has them and they had), this tick.
     fn bricks_to_change(
         &self,
-        level_index: LevelIndex,
+        key: FrameKey,
         ground: Ground,
         changed: &BTreeSet<BrickCoordinate>,
     ) -> (Vec<BrickCoordinate>, Vec<BrickCoordinate>) {
-        let level = &self.levels[&level_index];
+        let level = &self.frames[&key];
         // Which bricks of the ground have colliders, and how a body's bounds are seen in its bricks. (A planet's colliders are asked for wherever a ship is
         // near, and not only in the bricks its generator makes: what is built past them is the planet's too.)
         let loaded = match ground {
@@ -918,7 +951,8 @@ impl Bodies {
 
     /// Pulls every ship that moves with the gravity there is at its centre of mass: the level's, and the pull of the other ships that weigh enough.
     fn apply_gravity(&mut self, world: &ServerWorld) {
-        for (level_index, level) in &mut self.levels {
+        for frame in self.frames.values_mut() {
+            let (level_index, level) = (frame.level, frame);
             for (id, record) in &mut level.ships {
                 if record.kind == BodyKind::Fixed || record.mass <= 0.0 {
                     continue;
@@ -930,7 +964,7 @@ impl Bodies {
                 let Some(there) = ship.pose.local_to_world(centre) else {
                     continue;
                 };
-                let gravity = world.gravity_at(*level_index, there);
+                let gravity = world.gravity_at(level_index, there);
                 let force = gravity.map(|component| component * record.mass);
                 // A change in gravity wakes a ship that is asleep (a heavy ship came near); the same gravity does not, so a ship at rest sleeps.
                 let change: f32 = (0..3)
@@ -950,7 +984,7 @@ impl Bodies {
 
     /// Puts the ships where the bodies are.
     fn write_back(&mut self, world: &mut ServerWorld) {
-        for level in self.levels.values_mut() {
+        for level in self.frames.values_mut() {
             for (id, record) in &mut level.ships {
                 let body = BodyId(id.get());
                 if record.kind == BodyKind::Fixed {
@@ -988,7 +1022,7 @@ impl Bodies {
 
 /// A pair of ships with a pair of ports that pull on each other: the closest such pair of ports of the two.
 struct PortPair {
-    level: LevelIndex,
+    frame: FrameKey,
     first: GridId,
     second: GridId,
     first_port: Port,
@@ -998,7 +1032,7 @@ struct PortPair {
 
 impl Bodies {
     /// Whether two ships are both held (or frozen): nothing would move them together.
-    fn both_fixed(&self, level: &LevelBodies, first: GridId, second: GridId) -> bool {
+    fn both_fixed(&self, level: &Frame, first: GridId, second: GridId) -> bool {
         [first, second].iter().all(|id| {
             level
                 .ships
@@ -1013,7 +1047,7 @@ impl Bodies {
         let settings = docking.settings;
         let released = docking.released();
         let mut pairs = Vec::new();
-        for (&level_index, level) in &self.levels {
+        for (&frame_key, level) in &self.frames {
             let ships: Vec<(GridId, &Ship, &MovingGrid)> = level
                 .ships
                 .iter()
@@ -1046,7 +1080,7 @@ impl Bodies {
                                     .is_none_or(|top| how.distance < top.approach.distance)
                             {
                                 best = Some(PortPair {
-                                    level: level_index,
+                                    frame: frame_key,
                                     first: *first_id,
                                     second: *second_id,
                                     first_port: *first_port,
@@ -1088,7 +1122,7 @@ impl Bodies {
 
     /// The ports of every ship that has any, for the docking that looks at what is near.
     fn levels_ports(&self) -> BTreeMap<GridId, Vec<Port>> {
-        self.levels
+        self.frames
             .values()
             .flat_map(|level| level.ships.iter())
             .map(|(id, ship)| (*id, ship.ports.values().flatten().copied().collect()))
@@ -1099,11 +1133,11 @@ impl Bodies {
     fn motion_of(
         &self,
         world: &ServerWorld,
-        level: LevelIndex,
+        frame: FrameKey,
         id: GridId,
         from: WorldPosition,
     ) -> Option<BodyMotion> {
-        let level = self.levels.get(&level)?;
+        let level = self.frames.get(&frame)?;
         let record = level.ships.get(&id)?;
         let state = level.bodies.state(BodyId(id.get()))?;
         let properties = MassMoments::sum(record.moments.values().copied()).properties()?;
@@ -1130,7 +1164,7 @@ impl Bodies {
     /// ship that goes as the two did together (the momentum of both). Whether it was done: it is not when blocks of the two would be in one place,
     /// and the pair is not tried again until one of them has moved.
     fn dock_pair(&mut self, world: &mut ServerWorld, docking: &Docking, pair: &PortPair) -> bool {
-        let Some(level) = self.levels.get(&pair.level) else {
+        let Some(level) = self.frames.get(&pair.frame) else {
             return false;
         };
         let (Some(first), Some(second)) =
@@ -1170,7 +1204,7 @@ impl Bodies {
         let from = still_pose.position;
         let held = first.kind == BodyKind::Fixed || second.kind == BodyKind::Fixed;
         // The motion of both, before one is moved.
-        let motions = [still, moving].map(|id| self.motion_of(world, pair.level, id, from));
+        let motions = [still, moving].map(|id| self.motion_of(world, pair.frame, id, from));
         let (linear, angular) = match (held, motions) {
             (false, [Some(one), Some(other)]) => match BodyMotion::join(&[one, other]) {
                 Some(whole) => (
@@ -1226,7 +1260,7 @@ impl Bodies {
         for pair in self.port_pairs(world, &docking) {
             let force = docking.settings.attraction(&pair.approach);
             let twist = docking.settings.twist(&pair.approach);
-            let Some(level) = self.levels.get_mut(&pair.level) else {
+            let Some(level) = self.frames.get_mut(&pair.frame) else {
                 continue;
             };
             for (id, port, sign) in [

@@ -209,7 +209,8 @@ impl ServerWorld {
         &self.ship_settings
     }
 
-    pub(crate) fn set_ship_settings(&mut self, settings: ShipSettings) {
+    /// Changes how ships are kept, from now on (a rule of a game may offer the host a command for it).
+    pub fn set_ship_settings(&mut self, settings: ShipSettings) {
         self.ship_settings = settings;
     }
 

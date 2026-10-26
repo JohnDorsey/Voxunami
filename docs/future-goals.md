@@ -291,3 +291,11 @@ then what it needs and what I found in the code.
   level with it; a way to make the level (`add_level` cannot be called while a server runs, `plan.md` Open, so this wants levels created at world
   creation or through the planned level commands); a released version of the generator is a file format and is never edited (a hard rule), so its layer
   list is part of what the world records for the level. Cave could offer it as a world type at creation (`serve cave --level superflat`).
+
+## Space exploration (owner, 2026-10-25)
+
+- **Voxunami Cave is to become a space-exploration game, like Kerbal Space Program and KSA.** Consequences the owner has named so far:
+  - **Ships on rails.** A ship that is too far from every player, or any ship while a time warp is in effect, is put on rails: its motion is the orbit (or the course) it is on, worked out from the time and not stepped by the bodies, as for the planets, which are on rails too (`planet-spec.md`, the owner's stance of 2026-10-25). *Needs:* a kinematic body or no body for a ship on rails; the conversion both ways (a ship that comes near
+    a player leaves its rails with the velocity the rails give it, and one that goes far, or is warped, takes a course from its velocity and the pulls of the planets); a game clock that can run faster than the ticks (time warp) and that simulation and cosmetics read (the hard rule against the wall clock already requires the game tick); what a ship on rails does when it meets a planet's ground (it cannot, on a course that is checked, or it lands). Until then ships
+    that are far from every player simply stop (`ShipSettings::simulation_distance`, 256 voxels by default, shown and changed by `/ship distance`).
+  - *Probably also:* orbits and maneuvers, patched conics or a sum of pulls, a solar system of planets and moons on rails, atmospheres and a sky that goes black with height, and ships that are far larger than a player's. None of these is asked for yet; they are listed so that the work in between (frames for each place, planets as ships) is chosen to leave room for them.

@@ -16,7 +16,7 @@ use plugin_host::{
     Argument, Arguments, CommandSpec, HandlerSpec, Phase, PlayerLeft, Plugin, Registrar, SystemSpec,
 };
 use protocol::ClientId;
-use server::{GridView, LogoutPolicy, ServerWorld};
+use server::{GridView, LogoutPolicy, ServerWorld, ShipSettings};
 use voxel_grid::ChannelIndex;
 use voxel_space::{
     BrickCoordinate, GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate, WorldPosition,
@@ -31,8 +31,61 @@ use crate::ships::{
     LOOK_REACH, MAXIMUM_BLOCKS, NEAR, PilotKeys, TICK_SECONDS, connected_blocks, pilot_force,
 };
 
-const USAGE: &str =
-    "usage: /ship create [all] | push X Y Z | hold on|off | pilot | undock | vanish on|off";
+const USAGE: &str = "usage: /ship create [all] | push X Y Z | hold on|off | pilot | undock | vanish on|off | distance [SIMULATE [UNLOAD]|everywhere]";
+
+/// A distance in a command: a number of voxels that is not below zero, or `everywhere` (or `nowhere`) for none.
+fn distance_word(word: &str) -> Option<f64> {
+    match word {
+        "everywhere" | "nowhere" => Some(f64::INFINITY),
+        _ => word
+            .parse::<f64>()
+            .ok()
+            .filter(|value| !value.is_nan() && *value >= 0.0),
+    }
+}
+
+/// What the server's settings say of how far ships are simulated and kept.
+fn describe(settings: &ShipSettings) -> String {
+    let simulated = if settings.simulation_distance.is_infinite() {
+        "everywhere".to_owned()
+    } else {
+        format!("within {} voxels of a player", settings.simulation_distance)
+    };
+    let kept = if settings.unload_distance.is_infinite() {
+        "nowhere".to_owned()
+    } else {
+        format!("beyond {}", settings.unload_distance)
+    };
+    format!("ships are simulated {simulated}, and put in files {kept}")
+}
+
+/// `/ship distance`: shows, or changes, how far from every player a ship is simulated (and, if said, put in a file): the server's setting, from now on.
+/// One distance changes the simulation distance, and the other with it only if it would be less.
+fn distance(world: &mut ServerWorld, words: &[&str]) -> String {
+    let current = *world.ship_settings();
+    let (simulation, unload) = match words {
+        [] => return describe(&current),
+        [one] => (distance_word(one), None),
+        [one, other] => (distance_word(one), Some(distance_word(other))),
+        _ => return USAGE.to_owned(),
+    };
+    let Some(simulation) = simulation else {
+        return USAGE.to_owned();
+    };
+    let unload = match unload {
+        Some(Some(unload)) => unload,
+        Some(None) => return USAGE.to_owned(),
+        None => current.unload_distance.max(simulation),
+    };
+    match ShipSettings::new(simulation, unload) {
+        Ok(settings) => {
+            let settings = settings.with_logout_policy(current.logout_policy);
+            world.set_ship_settings(settings);
+            describe(&settings)
+        }
+        Err(error) => error.to_string(),
+    }
+}
 
 /// The `/ship` command, and the system that flies the ships that have pilots.
 #[derive(Debug)]
@@ -160,6 +213,7 @@ impl Ships {
                 }
                 _ => "usage: /ship push X Y Z (the change of speed, in voxels a second)".to_owned(),
             },
+            ("distance", words) => distance(world, words),
             ("hold", ["on"]) => self.hold(world, client, true),
             ("hold", ["off"]) => self.hold(world, client, false),
             ("pilot", []) => self.pilot(world, client),

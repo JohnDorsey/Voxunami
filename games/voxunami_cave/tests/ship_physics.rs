@@ -359,25 +359,6 @@ fn flames_are_not_in_the_way_of_a_ship() {
     assert!(height_of(ship_pose(&scene, 0)) < FLOOR - 5.0);
 }
 
-#[test]
-fn a_ship_too_far_from_the_first_one_of_its_level_stays_where_it_is() {
-    let mut scene = Scene::new();
-    heavy_planet(&mut scene);
-    make_a_cube(&mut scene, 2, pose_at(0.0, 300.0, 0.0));
-    // A ship 2000 bricks away from the first would need more than the frame can hold.
-    let far = GridPose::new(
-        WorldPosition::new(BrickCoordinate::new(2000, 9, 0), [0.0; 3]),
-        Orientation::IDENTITY,
-    );
-    make_a_cube(&mut scene, 2, far);
-    scene.ticks(20);
-    assert!(
-        height_of(ship_pose(&scene, 0)) < 300.0 - 10.0,
-        "the first one falls"
-    );
-    assert_eq!(ship_pose(&scene, 1), far, "the far one does not");
-}
-
 /// Space: no gravity of the level, and a body of at least a million kilograms pulls at a strength that shows in a few ticks.
 fn pulling_space(threshold: Option<f32>) -> GravitySettings {
     GravitySettings {
@@ -875,4 +856,64 @@ fn a_big_ship_cut_in_two_is_whole_until_the_work_of_finding_out_is_done_and_the_
                 .held
         );
     }
+}
+
+#[test]
+fn ships_far_from_each_other_are_all_simulated_each_in_a_frame_of_its_own_place() {
+    let (mut scene, report) = Scene::reporting();
+    heavy_planet(&mut scene);
+    // Four ships, 0, 10, 40 and 400 kilometres along x, the first held. Under a pull of 32 the others fall; none is left hanging for being far from the
+    // first (it used to be, from 16 kilometres).
+    make_a_cube_that_may_be_held(&mut scene, 2, pose_at(0.0, 300.0, 0.0), true);
+    for x in [10_000.0, 40_000.0, 400_000.0] {
+        make_a_cube(&mut scene, 2, pose_at(x, 300.0, 0.0));
+    }
+    scene.ticks(40);
+    for number in 1..=3 {
+        let fallen = 300.0 - height_of(ship_pose(&scene, number));
+        // (Two seconds at 32 is 64 voxels, less the ticks before the ship was made.)
+        assert!(fallen > 50.0, "ship {number} fell {fallen}");
+    }
+    // The first two are within the radius of a frame of each other and share one; the others have one each.
+    assert_eq!(report().frames, 3);
+}
+
+#[test]
+fn a_ship_that_is_put_far_from_the_place_of_its_frame_is_moved_to_a_frame_of_the_place_it_is_in_and_goes_on_falling_from_there()
+ {
+    let (mut scene, report) = Scene::reporting();
+    heavy_planet(&mut scene);
+    make_a_cube(&mut scene, 2, pose_at(0.0, 300.0, 0.0));
+    make_a_cube_that_may_be_held(&mut scene, 2, pose_at(8.0, 300.0, 0.0), true);
+    scene.ticks(5);
+    assert_eq!(report().frames, 1);
+    let far = pose_at(60_000.0, 300.0, 0.0);
+    scene.run(move |world| world.set_grid_pose(id(0), far).unwrap());
+    scene.ticks(40);
+    // (Two frames: the one that stayed with the held ship, and one for the ship that was put 1,875 bricks away.)
+    assert_eq!(report().frames, 2);
+    let pose = ship_pose(&scene, 0);
+    assert_eq!(pose.position.brick().x(), 60_000 / 32);
+    assert!(height_of(pose) < 300.0 - 40.0, "{}", height_of(pose));
+}
+
+#[test]
+fn ships_at_the_same_place_in_different_levels_are_in_frames_of_their_own() {
+    let (mut scene, report) = Scene::reporting_in_a_new_world();
+    // The planet's level is first and the overworld second; a cube in each, at one place.
+    for level in [LevelIndex::MAIN, LevelIndex::new(1)] {
+        scene.run(move |world| {
+            let ship = world
+                .create_grid(level, pose_at(5000.0, 300.0, 0.0))
+                .unwrap();
+            let block = CaveContent::new().block_channel();
+            world
+                .grid(ship)
+                .unwrap()
+                .set(block, VoxelCoordinate::new(0, 0, 0), 1)
+                .unwrap();
+        });
+    }
+    scene.ticks(5);
+    assert_eq!(report().frames, 2);
 }

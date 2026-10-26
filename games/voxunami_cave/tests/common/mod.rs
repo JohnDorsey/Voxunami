@@ -585,6 +585,20 @@ impl Scene {
     pub fn reporting() -> (Self, impl Fn() -> grid_bodies::BodiesReport) {
         let content = CaveContent::new();
         let world = content.new_overworld_world(SEED);
+        Self::reporting_in(content, world)
+    }
+
+    /// The same, in the world a new game starts in (space with the planet, and the overworld second).
+    pub fn reporting_in_a_new_world() -> (Self, impl Fn() -> grid_bodies::BodiesReport) {
+        let content = CaveContent::new();
+        let world = content.new_world(SEED);
+        Self::reporting_in(content, world)
+    }
+
+    fn reporting_in(
+        content: CaveContent,
+        world: world_storage::WorldData,
+    ) -> (Self, impl Fn() -> grid_bodies::BodiesReport) {
         let actions: Arc<Mutex<VecDeque<Action>>> = Arc::default();
         let (mut plugins, report) = voxunami_cave::plugins::cave_plugins_reporting(&content);
         plugins.push(Box::new(Script {

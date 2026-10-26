@@ -496,3 +496,101 @@ fn a_pilot_of_a_ship_that_is_cut_apart_has_the_controls_of_the_part_they_are_abo
         )
     );
 }
+
+/// The distances the server keeps ships by: where they are simulated, and where they are put in files.
+fn distances(scene: &mut Scene) -> (f64, f64) {
+    let found = std::sync::Arc::new(std::sync::Mutex::new((0.0, 0.0)));
+    let slot = std::sync::Arc::clone(&found);
+    scene.run(move |world| {
+        let settings = world.ship_settings();
+        *slot.lock().unwrap() = (settings.simulation_distance, settings.unload_distance);
+    });
+    std::mem::take(&mut *found.lock().unwrap())
+}
+
+#[test]
+fn how_far_from_a_player_ships_are_simulated_is_a_setting_of_the_server_that_a_command_shows_and_changes()
+ {
+    let (mut scene, mut player) = raft_and_a_player_looking_at_it();
+    // The tests keep every ship going; the server was started so.
+    assert_eq!(
+        say(&mut scene, &mut player, "/ship distance"),
+        "ships are simulated everywhere, and put in files nowhere"
+    );
+    // (What a pilot's logout does is not the command's to change.)
+    scene.run(|world| {
+        let settings = world
+            .ship_settings()
+            .with_logout_policy(server::LogoutPolicy::AlwaysStay);
+        world.set_ship_settings(settings);
+    });
+    assert_eq!(
+        say(&mut scene, &mut player, "/ship distance 100"),
+        "ships are simulated within 100 voxels of a player, and put in files nowhere"
+    );
+    assert_eq!(distances(&mut scene).0, 100.0);
+    assert_eq!(
+        say(&mut scene, &mut player, "/ship distance 80 600"),
+        "ships are simulated within 80 voxels of a player, and put in files beyond 600"
+    );
+    // A smaller unload distance than the simulation distance is refused, and so are words that are no distance; nothing changes.
+    let refused = say(&mut scene, &mut player, "/ship distance 700 600");
+    assert!(refused.contains("put away farther off"), "{refused}");
+    assert!(say(&mut scene, &mut player, "/ship distance -5").starts_with("usage: /ship"));
+    assert!(say(&mut scene, &mut player, "/ship distance far").starts_with("usage: /ship"));
+    assert!(say(&mut scene, &mut player, "/ship distance 1 2 3").starts_with("usage: /ship"));
+    assert!(say(&mut scene, &mut player, "/ship distance 5 far").starts_with("usage: /ship"));
+    assert_eq!(distances(&mut scene), (80.0, 600.0));
+    let policy = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let slot = std::sync::Arc::clone(&policy);
+    scene.run(move |world| *slot.lock().unwrap() = Some(world.ship_settings().logout_policy));
+    assert_eq!(
+        *policy.lock().unwrap(),
+        Some(server::LogoutPolicy::AlwaysStay)
+    );
+    // A simulation distance above the unload distance takes it along; `everywhere` is both.
+    assert_eq!(
+        say(&mut scene, &mut player, "/ship distance 900"),
+        "ships are simulated within 900 voxels of a player, and put in files beyond 900"
+    );
+    assert_eq!(
+        say(&mut scene, &mut player, "/ship distance 30 nowhere"),
+        "ships are simulated within 30 voxels of a player, and put in files nowhere"
+    );
+    assert_eq!(
+        say(&mut scene, &mut player, "/ship distance everywhere"),
+        "ships are simulated everywhere, and put in files nowhere"
+    );
+}
+
+#[test]
+fn a_ship_beyond_the_distance_the_server_simulates_stops_and_goes_on_when_the_distance_grows() {
+    let (mut scene, mut player) = raft_and_a_player_looking_at_it();
+    assert!(say(&mut scene, &mut player, "/ship create").starts_with("made ship 0"));
+    // The player goes 270 voxels away and the server simulates ships within 50: the raft, which was falling, is where it is.
+    player.send_command(&format!("/tp 24 {} 300", FLOOR as i64 + 3));
+    tick_and_follow(&mut scene, &mut player, 5);
+    let said = say(&mut scene, &mut player, "/ship distance 50");
+    assert!(said.contains("ships are simulated within 50"), "{said}");
+    tick_and_follow(&mut scene, &mut player, 5);
+    let ship = |scene: &Scene| {
+        scene
+            .rig
+            .server
+            .world()
+            .grids()
+            .get(ship_id(0))
+            .unwrap()
+            .clone()
+    };
+    let stopped = ship(&scene);
+    assert!(stopped.frozen);
+    tick_and_follow(&mut scene, &mut player, 40);
+    assert_eq!(ship(&scene).pose, stopped.pose, "it does not move");
+    // Simulated everywhere again, it falls.
+    say(&mut scene, &mut player, "/ship distance everywhere");
+    tick_and_follow(&mut scene, &mut player, 40);
+    let going = ship(&scene);
+    assert!(!going.frozen);
+    assert_ne!(going.pose, stopped.pose, "it moves");
+}
