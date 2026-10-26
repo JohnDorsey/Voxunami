@@ -8,8 +8,8 @@ use std::sync::Arc;
 use content_registry::{IdentifierRegistry, Registry};
 use namespaced_id::NamespacedId;
 use terrain::{
-    FieldTerrainGenerator, FractalNoise, Heightfield, TerrainGenerator, TerrainMaterials,
-    WorldTerrain,
+    FamilyError, FieldTerrainGenerator, FractalNoise, GeneratorFamily, GeneratorId, Heightfield,
+    TerrainGenerator, TerrainMaterials, WorldTerrain,
 };
 use voxel_grid::{Brick, ChannelDefinition, ChannelValueKind, Grid, GridLayout};
 use voxel_space::{BrickBox, BrickCoordinate, VoxelCoordinate};
@@ -17,8 +17,9 @@ use voxel_space::{BrickBox, BrickCoordinate, VoxelCoordinate};
 use voxel_space::{GridPose, Orientation, WorldPosition};
 
 use crate::{
-    GridTerrain, LevelData, LevelIndex, LoadContext, LoadError, LoadReport, MovingGrid,
-    ParsedWorld, PilotLogout, Section, ShipFiles, ShipFormat, WorldData, WorldSave,
+    GeneratorRecipe, GridTerrain, LevelData, LevelIndex, LoadContext, LoadError, LoadReport,
+    MovingGrid, ParsedWorld, PilotLogout, RecipeError, Section, ShipFiles, ShipFormat, WorldData,
+    WorldSave,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,6 +52,34 @@ pub fn block_kind() -> NamespacedId {
 
 pub fn spell_kind() -> NamespacedId {
     id("magic:spell")
+}
+
+/// The family of the fancy terrain plugin: a flat world, whose height in voxels is its parameters (the bits of an `f64`, little-endian).
+pub fn flat_family_id() -> NamespacedId {
+    id("fancy_terrain:flat_family_v1")
+}
+
+#[derive(Debug)]
+struct FlatFamily {
+    material: voxel_grid::ChannelIndex,
+    materials: TerrainMaterials,
+}
+
+impl GeneratorFamily for FlatFamily {
+    fn build(&self, parameters: &[u8]) -> Result<Arc<dyn TerrainGenerator>, FamilyError> {
+        let bytes: [u8; 8] = parameters.try_into().map_err(|_| {
+            FamilyError::new(format!("a flat world is 8 bytes, not {}", parameters.len()))
+        })?;
+        let height = f64::from_bits(u64::from_le_bytes(bytes));
+        if !height.is_finite() {
+            return Err(FamilyError::new("the height of a flat world is a number"));
+        }
+        Ok(Arc::new(FieldTerrainGenerator::new(
+            Arc::new(Heightfield::new(height, FractalNoise::none())),
+            self.material,
+            self.materials,
+        )))
+    }
 }
 
 pub fn brick(x: i64, y: i64, z: i64) -> BrickCoordinate {
@@ -131,6 +160,42 @@ impl Game {
         channels
     }
 
+    /// The families of terrain generators this game has: the fancy terrain plugin's flat world, if the plugin is loaded.
+    pub fn families(&self) -> Vec<(NamespacedId, Arc<dyn GeneratorFamily>)> {
+        if !self.has(FancyTerrain) {
+            return Vec::new();
+        }
+        let layout = GridLayout::new(self.channel_definitions()).unwrap();
+        let family: Arc<dyn GeneratorFamily> = Arc::new(FlatFamily {
+            material: layout.channel_index(&id("core:block")).unwrap(),
+            materials: TerrainMaterials {
+                air: self.raw_block("base_blocks:air"),
+                stone: self.raw_block("base_blocks:stone"),
+                dirt: self.raw_block("base_blocks:dirt"),
+                grass: self.raw_block("base_blocks:grass"),
+            },
+        });
+        vec![(flat_family_id(), family)]
+    }
+
+    /// A recipe for a flat world `height` voxels high, called `instance`.
+    pub fn flat_recipe(&self, instance: &str, height: f64) -> GeneratorRecipe {
+        GeneratorRecipe {
+            instance: id(instance),
+            family: flat_family_id(),
+            parameters: height.to_bits().to_le_bytes().to_vec(),
+        }
+    }
+
+    /// Adds the recipe to the world, with this game's families.
+    pub fn add_recipe(
+        &self,
+        world: &mut WorldData,
+        recipe: GeneratorRecipe,
+    ) -> Result<GeneratorId, RecipeError> {
+        world.add_generator_recipe(recipe, &self.families())
+    }
+
     pub fn generator_registry(&self) -> Registry<Arc<dyn TerrainGenerator>> {
         let layout = GridLayout::new(self.channel_definitions()).unwrap();
         let material = layout.channel_index(&id("core:block")).unwrap();
@@ -175,6 +240,7 @@ impl Game {
     pub fn load_context(&mut self) -> LoadContext<'_> {
         let channels = self.channel_definitions();
         let generators = self.generator_registry();
+        let families = self.families();
         let mut registries: Vec<(NamespacedId, &mut dyn IdentifierRegistry)> =
             vec![(block_kind(), &mut self.blocks)];
         if let Some(spells) = self.spells.as_mut() {
@@ -184,6 +250,7 @@ impl Game {
             channels,
             registries,
             generators,
+            families,
             fallback_default_generator: id("base_terrain:flat_v1"),
             assignment_cube_level: 3,
             legacy_level: main_level_id(),

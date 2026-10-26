@@ -57,6 +57,25 @@ pub trait TerrainGenerator: Debug + Send + Sync {
     }
 }
 
+/// Why a family cannot make a generator from the parameters it was given.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct FamilyError(String);
+
+impl FamilyError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
+/// A kind of terrain generator whose settings are data: code that makes a [`TerrainGenerator`] from parameters, which are bytes whose form the family
+/// decides. The family is a file format like a generator is (the same parameters always make the same generator, on every machine, for as long as a world
+/// has used it); a world keeps a *recipe* (an instance name, a family and the parameters) and the generator is made from it when the world is loaded.
+pub trait GeneratorFamily: Debug + Send + Sync {
+    /// The generator these parameters make, or why they make none.
+    fn build(&self, parameters: &[u8]) -> Result<Arc<dyn TerrainGenerator>, FamilyError>;
+}
+
 /// The material values a terrain generator writes into the material channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TerrainMaterials {

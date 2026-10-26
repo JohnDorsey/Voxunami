@@ -15,6 +15,7 @@ voxel_grid.workspace = true
 voxel_space.workspace = true
 
 [dev-dependencies]
+region_octree.workspace = true
 voxel_grid = { workspace = true, features = ["test-support"] }
 
 [lints]

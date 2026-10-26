@@ -16,8 +16,8 @@ use block_models::{
 use content_registry::{Registry, RuntimeId};
 use namespaced_id::NamespacedId;
 use terrain::{
-    PlanetSettings, RollingHillsSettings, TerrainGenerator, TerrainMaterials, empty, planet,
-    rolling_hills,
+    GeneratorFamily, PlanetFamily, PlanetSettings, RollingHillsSettings, TerrainGenerator,
+    TerrainMaterials, empty, planet, rolling_hills,
 };
 use voxel_grid::{ChannelDefinition, ChannelIndex};
 use voxel_space::FaceDirection;
@@ -161,6 +161,13 @@ pub fn small_planet_generator_identifier() -> NamespacedId {
     identifier("base_blocks:small_planet_v1")
 }
 
+/// The family of planets, for a world to make planets from data: its parameters are the bytes of `terrain::PlanetSettings` (`PlanetSettings::to_bytes`), and what it
+/// makes from the settings of `PlanetSettings::one_percent_of_earth(seed)` is `base_blocks:small_planet_v1` (a test pins that). It is a file format like a
+/// generator: a changed design is a new family.
+pub fn planet_family_identifier() -> NamespacedId {
+    identifier("base_blocks:planet_v1")
+}
+
 /// The terrain generator version of space: air everywhere, for a level with nothing in it but what is put there (`terrain::empty`).
 pub fn empty_generator_identifier() -> NamespacedId {
     identifier("base_blocks:empty_v1")
@@ -243,6 +250,17 @@ impl BaseBlockIds {
     /// The channel definition for the light of each voxel; new voxels have none.
     pub fn light_channel(&self) -> ChannelDefinition {
         ChannelDefinition::number(light_channel_identifier(), 0)
+    }
+
+    /// The families of terrain generators this plugin provides, writing blocks into `block_channel` of the world's grid layout.
+    pub fn generator_families(
+        &self,
+        block_channel: ChannelIndex,
+    ) -> Vec<(NamespacedId, Arc<dyn GeneratorFamily>)> {
+        vec![(
+            planet_family_identifier(),
+            Arc::new(PlanetFamily::new(block_channel, self.terrain_materials())),
+        )]
     }
 
     /// The terrain generators this plugin provides for a world with this seed, writing blocks into
@@ -644,6 +662,59 @@ mod tests {
                 .any(|value| value == grass)
         );
         assert_eq!(digests, PINNED_PLANET_DIGESTS);
+    }
+
+    #[test]
+    fn a_planet_family_recipe_with_the_settings_of_the_small_planet_makes_the_small_planet_bit_for_bit()
+     {
+        let blocks = BaseBlocks::new();
+        let fixture = StandardTestLayout::default();
+        let generators = blocks.terrain_generators(2024, fixture.material);
+        let id = generators
+            .runtime_id(&small_planet_generator_identifier())
+            .unwrap();
+        let small_planet = generators.entry(id).unwrap().content().unwrap();
+
+        let families = blocks.generator_families(fixture.material);
+        assert_eq!(families.len(), 1);
+        assert_eq!(families[0].0, planet_family_identifier());
+        // (The name is in the recipes of every world that uses the family: a file format, so written out here.)
+        assert_eq!(planet_family_identifier().as_str(), "base_blocks:planet_v1");
+        let made = families[0]
+            .1
+            .build(&PlanetSettings::one_percent_of_earth(2024).to_bytes())
+            .unwrap();
+
+        // The same bricks (the top, the side, a seam and the inside), the same coarse nodes, the same core.
+        for coordinate in [
+            BrickCoordinate::new(0, 1990, 0),
+            BrickCoordinate::new(1989, 3, -2),
+            BrickCoordinate::new(-1147, 1147, 1147),
+            BrickCoordinate::new(40, 1000, -40),
+        ] {
+            assert_eq!(
+                made.generate_brick(&fixture.layout, coordinate),
+                small_planet.generate_brick(&fixture.layout, coordinate),
+                "at {coordinate:?}"
+            );
+        }
+        for cube in [
+            region_octree::BrickCube::containing(BrickCoordinate::new(0, 1984, 0), 5),
+            region_octree::BrickCube::containing(BrickCoordinate::new(0, 0, 0), 6),
+        ] {
+            assert_eq!(made.coarse_node(cube, 7), small_planet.coarse_node(cube, 7));
+        }
+        assert_eq!(made.solid_core(), small_planet.solid_core());
+        // And a planet of another seed is another planet.
+        let other = families[0]
+            .1
+            .build(&PlanetSettings::one_percent_of_earth(2025).to_bytes())
+            .unwrap();
+        let top = BrickCoordinate::new(0, 1990, 0);
+        assert_ne!(
+            other.generate_brick(&fixture.layout, top),
+            small_planet.generate_brick(&fixture.layout, top)
+        );
     }
 
     /// (The same as the bricks of the planet in `terrain`, which are pinned there: this plugin's air, stone, dirt and grass are the numbers 0 to 3.)

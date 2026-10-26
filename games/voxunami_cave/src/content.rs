@@ -14,10 +14,13 @@ use game_shell::{
     ContentPackage, GameContent, GameDefinition, PackErrors, PackageData, PackageSpec, RawPack,
 };
 use namespaced_id::NamespacedId;
+use terrain::GeneratorId;
 use terrain::PlanetSettings;
 use voxel_grid::{ChannelDefinition, ChannelIndex, Grid};
 use voxel_space::{BrickBox, BrickCoordinate, FaceDirection, GridPose, LevelIndex};
-use world_storage::{GridTerrain, LoadContext, MovingGrid, PilotLogout, WorldData};
+use world_storage::{
+    GeneratorRecipe, GridTerrain, LoadContext, MovingGrid, PilotLogout, RecipeError, WorldData,
+};
 use world_view::ViewChannels;
 
 use crate::items::{CREATIVE_ONLY, CREATIVE_ONLY_BY_DEFAULT, PLACEABLE, PLACEABLE_BY_DEFAULT};
@@ -204,6 +207,12 @@ impl CaveContent {
                     .expect("the layout has the block channel");
                 ids.terrain_generators(seed, block_channel)
             }),
+            families: Arc::new(move |layout| {
+                let block_channel = layout
+                    .channel_index(&block_channel_identifier())
+                    .expect("the layout has the block channel");
+                ids.generator_families(block_channel)
+            }),
             default_generator: rolling_hills_generator_identifier(),
             assignment_cube_level: ASSIGNMENT_CUBE_LEVEL,
             ambient_light: AMBIENT_LIGHT,
@@ -212,6 +221,16 @@ impl CaveContent {
             blocks: ids,
             package: ContentPackage::new(mark_placeable(blocks), spec),
         }
+    }
+
+    /// Adds a terrain generator that is data to a world of this game (a planet of another size or seed, for instance): `recipe` names the instance, the family
+    /// (`base_blocks:planet_v1` is the planets) and the parameters. The world keeps the recipe, and a client that joins makes the same generator from it.
+    pub fn add_generator_recipe(
+        &self,
+        world: &mut WorldData,
+        recipe: GeneratorRecipe,
+    ) -> Result<GeneratorId, RecipeError> {
+        self.package.add_generator_recipe(world, recipe)
     }
 
     /// The channel holding each voxel's block.

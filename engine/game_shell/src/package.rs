@@ -13,9 +13,9 @@ use std::sync::Arc;
 use block_models::{BlockDefinition, PropertyDeclaration, PropertySchema};
 use content_registry::{IdentifierRegistry, Registry};
 use namespaced_id::NamespacedId;
-use terrain::{TerrainGenerator, WorldTerrain};
+use terrain::{GeneratorFamily, GeneratorId, TerrainGenerator, WorldTerrain};
 use voxel_grid::{ChannelDefinition, ChannelIndex, Grid, GridLayout};
-use world_storage::{LevelData, LoadContext, WorldData};
+use world_storage::{GeneratorRecipe, LevelData, LoadContext, RecipeError, WorldData};
 use world_view::ViewChannels;
 
 use crate::definition::GameContent;
@@ -26,6 +26,15 @@ use data_packs::{PackErrors, RawPack, load_packs};
 /// channels a generator writes.
 pub type GeneratorFactory =
     Arc<dyn Fn(u64, &GridLayout) -> Registry<Arc<dyn TerrainGenerator>> + Send + Sync>;
+
+/// Makes a game's families of terrain generators, which a world's recipes are made with. The layout is the world's, for finding the channels a generator writes.
+pub type FamilyFactory =
+    Arc<dyn Fn(&GridLayout) -> Vec<(NamespacedId, Arc<dyn GeneratorFamily>)> + Send + Sync>;
+
+/// For a game that has no families: its generators are all code.
+pub fn no_families() -> FamilyFactory {
+    Arc::new(|_layout| Vec::new())
+}
 
 /// What a game declares about its world.
 #[derive(Clone)]
@@ -45,6 +54,8 @@ pub struct PackageSpec {
     /// The properties of blocks that the game's plugins declare, besides the engine's.
     pub properties: Vec<PropertyDeclaration>,
     pub generators: GeneratorFactory,
+    /// The families of terrain generators whose settings a world keeps as data (see [`WorldData::add_generator_recipe`]).
+    pub families: FamilyFactory,
     /// The generator new regions are given, and the one used if a world's own is missing.
     pub default_generator: NamespacedId,
     /// Generators are assigned to cubes of 8 to the power of this many bricks per side (see
@@ -116,6 +127,19 @@ impl ContentPackage {
 
     fn generators(&self, seed: u64) -> Registry<Arc<dyn TerrainGenerator>> {
         (self.spec.generators)(seed, &self.layout())
+    }
+
+    fn families(&self) -> Vec<(NamespacedId, Arc<dyn GeneratorFamily>)> {
+        (self.spec.families)(&self.layout())
+    }
+
+    /// Adds a terrain generator made from a recipe to a world of this package (see [`WorldData::add_generator_recipe`]), with the package's families.
+    pub fn add_generator_recipe(
+        &self,
+        world: &mut WorldData,
+        recipe: GeneratorRecipe,
+    ) -> Result<GeneratorId, RecipeError> {
+        world.add_generator_recipe(recipe, &self.families())
     }
 
     /// A level that starts with nothing edited and `default` for the generator of its regions.
@@ -262,10 +286,12 @@ impl GameContent for ContentPackage {
 
     fn load_context(&mut self, seed: u64) -> LoadContext<'_> {
         let generators = self.generators(seed);
+        let families = self.families();
         LoadContext {
             channels: self.spec.channels.clone(),
             registries: vec![(self.spec.block_registry_kind.clone(), &mut self.blocks)],
             generators,
+            families,
             fallback_default_generator: self.spec.default_generator.clone(),
             assignment_cube_level: self.spec.assignment_cube_level,
             legacy_level: self.spec.level.clone(),
@@ -327,11 +353,72 @@ mod tests {
                         .unwrap();
                     generators
                 }),
+                families: Arc::new(|_layout| {
+                    let family: Arc<dyn GeneratorFamily> = Arc::new(NothingFamily);
+                    vec![(id("test_game:nothing_family_v1"), family)]
+                }),
                 default_generator: id("test_game:empty_v1"),
                 assignment_cube_level: 3,
                 ambient_light: 90,
             },
         )
+    }
+
+    /// A family whose generators make nothing, however they are set.
+    #[derive(Debug)]
+    struct NothingFamily;
+
+    impl GeneratorFamily for NothingFamily {
+        fn build(
+            &self,
+            _parameters: &[u8],
+        ) -> Result<Arc<dyn TerrainGenerator>, terrain::FamilyError> {
+            Ok(Arc::new(Empty))
+        }
+    }
+
+    #[test]
+    fn a_recipe_made_with_the_packages_families_is_in_the_world_and_is_made_again_when_it_is_loaded()
+     {
+        let content = package();
+        let mut world = content.new_world(42);
+        let recipe = GeneratorRecipe {
+            instance: id("test_game:the_moon"),
+            family: id("test_game:nothing_family_v1"),
+            parameters: vec![1, 2, 3],
+        };
+        let made = content
+            .add_generator_recipe(&mut world, recipe.clone())
+            .unwrap();
+        assert_eq!(
+            world
+                .main()
+                .terrain
+                .generators()
+                .runtime_id(&id("test_game:the_moon")),
+            Some(made)
+        );
+        // A family the package does not have is refused.
+        let mut stranger = recipe.clone();
+        stranger.instance = id("test_game:the_sun");
+        stranger.family = id("somebody_else:star_family_v1");
+        assert_eq!(
+            content.add_generator_recipe(&mut world, stranger),
+            Err(RecipeError::UnknownFamily(id(
+                "somebody_else:star_family_v1"
+            )))
+        );
+
+        let bytes = world.save(&content.registries()).unwrap();
+        let mut later = package();
+        let parsed = ParsedWorld::parse(&bytes).unwrap();
+        let (loaded, report) = parsed.load(later.load_context(42)).unwrap();
+        assert!(report.missing_content.is_empty() && report.refused_recipes.is_empty());
+        assert_eq!(loaded.generator_recipes(), &[recipe]);
+        let generators = loaded.main().terrain.generators();
+        let number = generators.runtime_id(&id("test_game:the_moon")).unwrap();
+        assert!(!generators.entry(number).unwrap().is_missing());
+        assert_eq!(loaded.save(&later.registries()).unwrap(), bytes);
     }
 
     #[test]

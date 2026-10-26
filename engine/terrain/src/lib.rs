@@ -23,16 +23,18 @@ mod generator;
 mod interval;
 mod noise;
 mod planet;
+mod planet_family;
 mod planet_node;
 mod world_terrain;
 
 pub use density::{DensityField, Heightfield, Minimum, ShellCaves};
 pub use empty::{EmptyTerrain, empty};
 pub use generator::{
-    FieldTerrainGenerator, RollingHillsSettings, SolidBall, TerrainGenerator, TerrainMaterials,
-    rolling_hills,
+    FamilyError, FieldTerrainGenerator, GeneratorFamily, RollingHillsSettings, SolidBall,
+    TerrainGenerator, TerrainMaterials, rolling_hills,
 };
 pub use interval::Interval;
 pub use noise::{Dimensionality, FractalNoise, Octave, lattice_hash, lattice_value, mix};
 pub use planet::{PlanetGenerator, PlanetGround, PlanetSettings, planet};
+pub use planet_family::PlanetFamily;
 pub use world_terrain::{GenerationOutcome, GeneratorId, WorldTerrain, WorldTerrainError};

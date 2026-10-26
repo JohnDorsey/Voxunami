@@ -617,6 +617,11 @@ impl Scene {
         Self::in_world(content, world, |files| Box::new(files))
     }
 
+    /// A scene in this world of this content.
+    pub fn in_this_world(content: CaveContent, world: world_storage::WorldData) -> Self {
+        Self::in_world(content, world, |files| Box::new(files))
+    }
+
     /// A scene in the overworld alone, whose server keeps ship files through the disk `disk` makes of the memory they are in.
     pub fn with_disk(disk: impl FnOnce(MemoryShipFiles) -> Box<dyn ShipFiles>) -> Self {
         let content = CaveContent::new();

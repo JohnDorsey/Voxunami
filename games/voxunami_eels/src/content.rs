@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use block_models::BlockDefinition;
 use content_registry::{IdentifierRegistry, Registry};
-use game_shell::{ContentPackage, GameContent, PackErrors, PackageData, PackageSpec, RawPack};
+use game_shell::{
+    ContentPackage, GameContent, PackErrors, PackageData, PackageSpec, RawPack, no_families,
+};
 use namespaced_id::NamespacedId;
 use terrain::TerrainGenerator;
 use voxel_grid::{ChannelDefinition, ChannelIndex};
@@ -156,6 +158,7 @@ impl ContentEels {
                     .expect("the registry is empty");
                 generators
             }),
+            families: no_families(),
             default_generator: arena_generator_identifier(),
             assignment_cube_level: ASSIGNMENT_CUBE_LEVEL,
             ambient_light: 0,

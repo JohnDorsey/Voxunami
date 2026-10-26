@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use content_registry::{Registry, RuntimeId};
+use content_registry::{AlreadyRegistered, Registry, RuntimeId};
 use namespaced_id::NamespacedId;
 use region_octree::{BrickCube, ROOT_LEVEL, RegionOctree};
 use voxel_grid::{Brick, GridLayout};
@@ -83,6 +83,16 @@ impl WorldTerrain {
 
     pub fn generators(&self) -> &Registry<Arc<dyn TerrainGenerator>> {
         &self.generators
+    }
+
+    /// Adds a generator to the table, after the others, so that the numbers of the others do not move. Nothing is assigned it and the default does not change: a
+    /// region has it only when something gives it to the region. The name must be new (a placeholder holds its name too).
+    pub fn register_generator(
+        &mut self,
+        identifier: NamespacedId,
+        generator: Arc<dyn TerrainGenerator>,
+    ) -> Result<GeneratorId, AlreadyRegistered> {
+        self.generators.register(identifier, generator)
     }
 
     pub fn default_generator(&self) -> GeneratorId {
@@ -194,6 +204,8 @@ impl WorldTerrain {
 #[cfg(test)]
 mod tests {
     use voxel_grid::test_support::StandardTestLayout;
+
+    use content_registry::AlreadyRegistered;
 
     use super::*;
     use crate::density::Heightfield;
@@ -521,6 +533,63 @@ mod tests {
             WorldTerrain::new(generators, only, ROOT_LEVEL + 1).err(),
             Some(WorldTerrainError::AssignmentLevelTooLarge(ROOT_LEVEL + 1))
         );
+    }
+
+    #[test]
+    fn a_generator_added_to_the_table_comes_after_the_others_and_changes_nothing_that_was() {
+        let mut fixture = fixture(3);
+        let before = fixture.terrain.generators().len();
+        let cube = BrickCube::containing(brick(40, 0, 0), 3);
+        fixture.terrain.set_assignment(cube, Some(fixture.high));
+        let version = fixture.terrain.version();
+
+        let added = fixture
+            .terrain
+            .register_generator(id("test_terrain:added"), fixture_generator())
+            .unwrap();
+        assert_eq!(added.raw() as usize, before);
+        assert_eq!(fixture.terrain.generators().len(), before + 1);
+        assert_eq!(
+            fixture
+                .terrain
+                .generators()
+                .runtime_id(&id("test_terrain:added")),
+            Some(added)
+        );
+        // What made any region before makes it still, and nothing says that what makes a region could have changed.
+        assert_eq!(
+            fixture.terrain.assigned_generator(brick(41, 2, 3)),
+            Some(fixture.high)
+        );
+        assert_eq!(fixture.terrain.default_generator(), fixture.low);
+        assert_eq!(fixture.terrain.version(), version);
+        // It can be given a region like any other.
+        let other = BrickCube::containing(brick(80, 0, 0), 3);
+        fixture.terrain.set_assignment(other, Some(added));
+        assert!(matches!(
+            fixture
+                .terrain
+                .generate(&fixture.layout.layout, brick(81, 0, 0)),
+            GenerationOutcome::Generated(_)
+        ));
+    }
+
+    #[test]
+    fn a_name_that_is_taken_cannot_be_added_again_not_even_as_a_placeholder() {
+        let mut fixture = fixture(3);
+        let before = fixture.terrain.generators().len();
+        for taken in ["test_terrain:flat_low", "gone_plugin:ghost_terrain"] {
+            assert_eq!(
+                fixture
+                    .terrain
+                    .register_generator(id(taken), fixture_generator())
+                    .err(),
+                Some(AlreadyRegistered {
+                    identifier: id(taken)
+                })
+            );
+        }
+        assert_eq!(fixture.terrain.generators().len(), before);
     }
 
     fn fixture_generator() -> Arc<dyn TerrainGenerator> {

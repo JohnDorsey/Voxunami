@@ -10,7 +10,7 @@ use voxel_space::{LevelOfDetail, VoxelBox, VoxelCoordinate};
 use crate::interval::Interval;
 
 /// The most octave wavelength supported (2^56 voxels).
-const MAXIMUM_WAVELENGTH_LOG2: u8 = 56;
+pub(crate) const MAXIMUM_WAVELENGTH_LOG2: u8 = 56;
 
 /// Most lattice points per axis a box may touch before bounds fall back to the full range.
 const MAXIMUM_BOUNDED_LATTICE_POINTS_PER_AXIS: i64 = 4;

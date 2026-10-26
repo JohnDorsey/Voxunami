@@ -24,7 +24,7 @@ both ends), client plugins (code), and the registries' *kinds* (to load a descri
    properties by key). A block whose plugin the server lacks is not in it: the client already shows such blocks as unknown.
 3. The identifiers of the channels the view reads (block, state, light), and the ambient light.
 
-It holds no items, entity appearances or generators in this phase (question 5).
+It holds no items, entity appearances or generators in this phase (question 5). *(Phase 40b, 2026-10-26: the families of generators are still code, but the settings of a generator can be data: a world's recipes are in the description of the world, not in the package; `rails-and-recipes-spec.md`.)*
 
 **Where it travels.** Protocol version 5: `Welcome` gains `package: Vec<u8>`, the package bytes, right after `world_description`. A recording
 is the frames a client received, so it carries the package with no further work, and a replay needs no installed definitions.

@@ -15,6 +15,10 @@
 //!   the generator-assignment octree. Version 2 lists each leaf as one number (generator file id plus
 //!   one, 0 = none, times 64, plus the cube level), in Morton order: the leaves tile the whole space, so
 //!   where each one is follows from the levels before it. Version 1 also gave each leaf's origin.
+//! - `engine:generator_recipes`: the terrain generators that are data: for each, in the order they were added to the world, its instance name (the name it has in
+//!   the table of generators), its family (code that makes generators from parameters) and the parameters as bytes whose form the family decides. Written only
+//!   when the world has any (so a world without them is byte for byte what it was before recipes), and also in a world description, since a client makes the same
+//!   generators from them. A generator whose family is not here is a placeholder, and its recipe is kept.
 //! - `engine:levels`: the world's levels in order, the first being the main level where players start.
 //!   Per level: its identifier, its generator setup (as the payload of `engine:generators`, version 2) and
 //!   its edited bricks (as the payload of `engine:override_bricks`).
@@ -109,6 +113,53 @@ pub fn grids_id() -> NamespacedId {
 }
 pub fn clock_id() -> NamespacedId {
     engine_id("clock")
+}
+pub fn generator_recipes_id() -> NamespacedId {
+    engine_id("generator_recipes")
+}
+
+/// A terrain generator that is data: the name it has in the world's table of generators, the family that makes it, and the parameters it makes it from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeneratorRecipe {
+    pub instance: NamespacedId,
+    pub family: NamespacedId,
+    pub parameters: Vec<u8>,
+}
+
+/// The payload of `engine:generator_recipes`: a count, then for each recipe its instance name, its family and its parameters (length-prefixed bytes).
+pub fn encode_generator_recipes(recipes: &[GeneratorRecipe]) -> Vec<u8> {
+    let mut writer = ByteWriter::new();
+    writer.write_varint(recipes.len() as u64);
+    for recipe in recipes {
+        writer.write_identifier(&recipe.instance);
+        writer.write_identifier(&recipe.family);
+        writer.write_bytes(&recipe.parameters);
+    }
+    writer.into_bytes()
+}
+
+/// The recipes of a payload, in the order they were written. Two recipes for one instance are refused.
+pub fn decode_generator_recipes(payload: &[u8]) -> Result<Vec<GeneratorRecipe>, DecodeError> {
+    let mut reader = ByteReader::new(payload);
+    // (An instance name and a family name are at least a byte each, and the parameters' length is one.)
+    let count = reader.read_count(3)?;
+    let mut recipes: Vec<GeneratorRecipe> = Vec::with_capacity(count);
+    for _ in 0..count {
+        let recipe = GeneratorRecipe {
+            instance: reader.read_identifier()?,
+            family: reader.read_identifier()?,
+            parameters: reader.read_bytes()?.to_vec(),
+        };
+        if recipes
+            .iter()
+            .any(|earlier| earlier.instance == recipe.instance)
+        {
+            return Err(DecodeError::Invalid("a generator has two recipes"));
+        }
+        recipes.push(recipe);
+    }
+    reader.finish()?;
+    Ok(recipes)
 }
 
 /// The payload of `engine:clock`: the ticks since the world was made, as a varint.

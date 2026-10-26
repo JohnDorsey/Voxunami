@@ -35,7 +35,7 @@ mod windowed;
 pub use data_packs::{PackErrors, RawFile, RawPack};
 pub use definition::{CameraStart, CoarseDetail, GameContent, GameDefinition};
 pub use identity::Identity;
-pub use package::{ContentPackage, GeneratorFactory, PackageSpec};
+pub use package::{ContentPackage, FamilyFactory, GeneratorFactory, PackageSpec, no_families};
 pub use package_data::{PackageData, PackageError, check_materials};
 pub use player_presence::{PlayerPose, Presence};
 pub use winit::keyboard::KeyCode;

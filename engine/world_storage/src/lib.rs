@@ -25,6 +25,7 @@ mod translation;
 mod world;
 
 pub use container::{ContainerError, Section};
+pub use engine_sections::GeneratorRecipe;
 pub use grid_frame::GridFrame;
 pub use moving_grids::{GridStore, GridTerrain, MovingGrid, ParkedGrid, PilotLogout};
 pub use ship_file::{
@@ -36,6 +37,6 @@ pub use ship_files::{
 pub use translation::{SourceTranslator, TranslationError};
 pub use voxel_space::LevelIndex;
 pub use world::{
-    BrickSource, LevelData, LevelError, LoadContext, LoadError, LoadReport, ParsedWorld, SaveError,
-    ShipLoadError, ShipParkError, WorldData, WorldSave,
+    BrickSource, LevelData, LevelError, LoadContext, LoadError, LoadReport, ParsedWorld,
+    RecipeError, SaveError, ShipLoadError, ShipParkError, WorldData, WorldSave,
 };

@@ -148,6 +148,7 @@ dependencies = [
  "block_models",
  "content_registry",
  "namespaced_id",
+ "region_octree",
  "terrain",
  "voxel_grid",
  "voxel_space",
