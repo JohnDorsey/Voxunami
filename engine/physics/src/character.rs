@@ -390,6 +390,14 @@ impl CharacterBody {
         }
     }
 
+    /// Moves the character by `delta` voxels, in the axes of its frame, with no break in its motion: it keeps its velocity (against whatever carried it) and whether it
+    /// stands or flies. It is for a character that the world has carried, as a planet that goes round carries what is in the air near it. The terrain stays where it
+    /// is and the character goes through it: the next [`CharacterBody::update_terrain`] makes the terrain where the character is now, and [`CharacterBody::keep_clear`]
+    /// (which a game calls each tick) lifts it out of what it was moved into, as out of what is built into it.
+    pub fn displace(&mut self, delta: [f32; 3]) {
+        self.center += Vector::from_array(delta);
+    }
+
     /// Puts the character with its eyes at a position, at rest and in the air. If that is inside the
     /// terrain, the next [`CharacterBody::update_terrain`] lifts it straight up onto the surface above.
     pub fn teleport(&mut self, eye: WorldPosition) {

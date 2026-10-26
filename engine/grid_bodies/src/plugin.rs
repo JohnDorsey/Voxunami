@@ -8,8 +8,8 @@ use plugin_host::{HandlerSpec, Phase, Plugin, Registrar, SystemSpec};
 use server::{MergePlan, ServerWorld, SplitPart};
 use voxel_grid::ChannelIndex;
 use voxel_space::{
-    AlignmentTolerance, BRICK_EDGE_LENGTH, BrickCoordinate, GridId, GridPose, LevelIndex,
-    LocalVoxelIndex, VoxelCoordinate, WorldPosition,
+    AlignmentTolerance, BRICK_EDGE_LENGTH, BrickCoordinate, Displacement, GridId, GridPose,
+    LevelIndex, LocalVoxelIndex, Orientation, VoxelCoordinate, WorldPosition,
 };
 use world_storage::MovingGrid;
 
@@ -55,6 +55,10 @@ const REFUSED_RETRY_TICKS: u64 = 20;
 
 /// How much gravity may change, as a share of its size (or of one voxel a second squared, if that is more), before it wakes a ship that sleeps.
 const GRAVITY_CHANGE_THAT_WAKES: f32 = 1e-3;
+
+/// How near two places of a frame must be to be the same one, in voxels: a ship that a planet carried is where the frame has it to within the rounding of the
+/// arithmetic of carrying it, which is millionths of a voxel; one that someone moved is at least this far from it.
+const SAME_PLACE_VOXELS: f64 = 1e-3;
 
 /// What the plugin needs to know of a game's blocks.
 #[derive(Debug)]
@@ -198,6 +202,8 @@ struct Planet {
     bricks: BTreeSet<BrickCoordinate>,
     /// Where the planet was last put in the bodies: if the world says other, something else moved it.
     written: GridPose,
+    /// Fixed for a planet that stands still in a frame that does; kinematic for one on a rail, and for every planet in a frame that goes with a planet.
+    kind: BodyKind,
     /// The docking ports in each brick of the planet that has any: only blocks that were built there are ports, so only its stored bricks are looked at.
     ports: BTreeMap<BrickCoordinate, Vec<Port>>,
     /// Whether the stored bricks have been looked at for ports (after that, the bricks that change).
@@ -210,12 +216,144 @@ type FrameKey = (LevelIndex, u32);
 /// The bodies of one place in a level, in one frame: the frame's origin is the brick of the first ship that made it.
 struct Frame {
     level: LevelIndex,
+    /// The planet the frame goes with, if it does (see [`Follow`]).
+    follow: Option<Follow>,
     bodies: BodyWorld,
     ships: BTreeMap<GridId, Ship>,
     /// The planets of the level that have a body. (They are no ships here: they weigh what their terrain says, are held, and do not keep a frame alive.)
     planets: BTreeMap<GridId, Planet>,
     /// The bricks of terrain that have colliders.
     terrain: BTreeSet<BrickCoordinate>,
+}
+
+/// What a frame goes with: the planet on a rail that carries the ships in it (see `ServerWorld::carrier_of`). The places of such a frame are the world's less how far
+/// the planet has gone since the frame was made, and the velocities in it are the world's less the planet's: a ship that rests on the planet rests in the frame
+/// whatever the planet's speed, and a ship in orbit round the planet moves as if the planet stood still and only turned. The frame is in free fall with the
+/// planet, so the gravity in it leaves out the pull of what the planet goes round (`ServerWorld::gravity_in_the_free_fall_of`), and it has no terrain of the
+/// level, which stands still in the world (blocks built in space near a planet on a rail are not solid to what goes with the planet).
+#[derive(Clone, Copy, Debug)]
+struct Follow {
+    planet: GridId,
+    /// Where the planet was when the frame was made.
+    anchor: WorldPosition,
+    /// How far it has gone since, as of this tick.
+    shift: Displacement,
+    /// How fast it goes in the world, as of this tick.
+    velocity: [f32; 3],
+}
+
+impl Follow {
+    fn local(&self, world: WorldPosition) -> Option<WorldPosition> {
+        world.displaced(self.shift.negated())
+    }
+
+    fn world(&self, local: WorldPosition) -> Option<WorldPosition> {
+        local.displaced(self.shift)
+    }
+}
+
+/// Where a place of the world is in a frame that goes with `follow`, or in one that goes with nothing (where it is the same); `None` where the world cannot hold it.
+fn local_in(follow: Option<Follow>, world: WorldPosition) -> Option<WorldPosition> {
+    match follow {
+        None => Some(world),
+        Some(follow) => follow.local(world),
+    }
+}
+
+/// How fast something goes in such a frame, from how fast it goes in the world.
+fn velocity_in(follow: Option<Follow>, world: [f32; 3]) -> [f32; 3] {
+    match follow {
+        None => world,
+        Some(follow) => [0, 1, 2].map(|axis| world[axis] - follow.velocity[axis]),
+    }
+}
+
+/// How fast something goes in the world, from how fast it goes in such a frame.
+fn velocity_from(follow: Option<Follow>, local: [f32; 3]) -> [f32; 3] {
+    match follow {
+        None => local,
+        Some(follow) => [0, 1, 2].map(|axis| local[axis] + follow.velocity[axis]),
+    }
+}
+
+/// Whether two places of a frame are the same (see [`SAME_PLACE_VOXELS`]).
+fn same_place(first: WorldPosition, second: WorldPosition) -> bool {
+    first
+        .displacement_to(second)
+        .in_voxels()
+        .iter()
+        .all(|apart| apart.abs() < SAME_PLACE_VOXELS)
+}
+
+/// The state of a ship's body in a frame, from its pose and velocities in the world; `None` where the world cannot give it a place. A ship that is held is at
+/// rest in a frame that goes with a planet, as it is in one that does not: it goes with the planet.
+fn ship_state_in(
+    follow: Option<Follow>,
+    kind: BodyKind,
+    pose: GridPose,
+    linear_velocity: [f32; 3],
+    angular_velocity: [f32; 3],
+) -> Option<BodyState> {
+    Some(BodyState {
+        position: local_in(follow, pose.position)?,
+        orientation: pose.orientation,
+        linear_velocity: if follow.is_some() && kind == BodyKind::Fixed {
+            [0.0; 3]
+        } else {
+            velocity_in(follow, linear_velocity)
+        },
+        angular_velocity,
+    })
+}
+
+/// Where a body that is at `state` at the end of a step of `time_step` seconds was at the start of it, going as it goes. A kinematic body is set to this before the
+/// step, so that it ends the step where the world says it is, and what rests on it is carried as the planet turns and goes, and not a step ahead of it.
+fn state_before(state: BodyState, time_step: f32) -> BodyState {
+    let position = state
+        .position
+        .translated(state.linear_velocity.map(|speed| -speed * time_step));
+    let [x, y, z] = state.angular_velocity.map(f64::from);
+    let speed = libm::sqrt(x * x + y * y + z * z);
+    let orientation = if speed > 0.0 {
+        let half = 0.5 * speed * f64::from(time_step);
+        let (sine, cosine) = (libm::sin(half) / speed, libm::cos(half));
+        match Orientation::from_components([x * sine, y * sine, z * sine, cosine]) {
+            Some(turn) => turn.inverse().compose(state.orientation),
+            None => state.orientation,
+        }
+    } else {
+        state.orientation
+    };
+    BodyState {
+        position,
+        orientation,
+        linear_velocity: state.linear_velocity,
+        angular_velocity: state.angular_velocity,
+    }
+}
+
+/// The state a planet's body is given before the step of a tick, from the pose and velocities the world has the planet at (the end of the tick): a planet that moves,
+/// set as it was at the start of the step (see [`state_before`]), and one that stands still, as it is. In the frame it is in: its place there, and its velocities
+/// against the frame. `None` where the world cannot give it a place there.
+fn planet_state(
+    follow: Option<Follow>,
+    moves: bool,
+    pose: GridPose,
+    linear_velocity: [f32; 3],
+    angular_velocity: [f32; 3],
+    time_step: f32,
+) -> Option<BodyState> {
+    let end_of_tick = BodyState {
+        position: local_in(follow, pose.position)?,
+        orientation: pose.orientation,
+        linear_velocity: velocity_in(follow, linear_velocity),
+        angular_velocity,
+    };
+    Some(if moves {
+        state_before(end_of_tick, time_step)
+    } else {
+        end_of_tick
+    })
 }
 
 /// Terrain that has colliders: the level's own, whose bricks are the frame's, or the ground of a planet, whose bricks are the planet's.
@@ -486,6 +624,7 @@ impl Bodies {
         let changed_voxels = std::mem::take(&mut self.changed_ship_voxels);
         self.dock(world);
         self.split_ships(world, changed_voxels);
+        self.follow_planets(world);
         // (A ship with terrain, a planet, is no ship here: its blocks are mostly not stored, it weighs what its terrain says and it is held where it is.
         // It is a fixed body, which ships collide with, below.)
         let present: Vec<(GridId, LevelIndex)> = world
@@ -496,21 +635,22 @@ impl Bodies {
             .map(|(id, ship)| (id, ship.level))
             .collect();
 
-        // Ships that are gone, or that have gone twice as far from the origin of their frame as a ship may be in one, leave their bodies (the second are
-        // made bodies again below, in the frame of the place they are in); a frame with no ships is no more.
+        // Ships that are gone, or that are carried by another planet than the one their frame goes with (or by none, or by one when it goes with none), or that have
+        // gone twice as far from the origin of their frame as a ship may be in one, leave their bodies (the last two kinds are made bodies again below, in the frame of
+        // the place they are in); a frame with no ships is no more.
         for frame in self.frames.values_mut() {
             let origin = frame.bodies.origin();
+            let follow = frame.follow;
             let gone: Vec<GridId> = frame
                 .ships
                 .keys()
                 .filter(|id| {
                     !present.iter().any(|(held, _)| held == *id)
+                        || world.carrier_of(**id) != follow.map(|follow| follow.planet)
                         || world.data().grids().get(**id).is_none_or(|ship| {
-                            farther_than(
-                                2 * FRAME_RADIUS_BRICKS,
-                                ship.pose.position.brick(),
-                                origin,
-                            )
+                            local_in(follow, ship.pose.position).is_none_or(|place| {
+                                farther_than(2 * FRAME_RADIUS_BRICKS, place.brick(), origin)
+                            })
                         })
                 })
                 .copied()
@@ -582,32 +722,44 @@ impl Bodies {
         } else {
             BodyKind::Dynamic
         };
-        let state = BodyState {
-            position: ship.pose.position,
-            orientation: ship.pose.orientation,
-            linear_velocity: ship.linear_velocity,
-            angular_velocity: ship.angular_velocity,
-        };
+        let carrier = world.carrier_of(id);
         let Some(key) = self.frame_of(id) else {
-            // A ship is put in the first frame of its level that it is near the origin of, and makes a frame of its own where it is if there is none.
+            // A ship is put in the first frame of its level that goes with the planet that carries it (or with none, if none does) and that it is near the origin of,
+            // and makes a frame of its own where it is if there is none.
             let brick = ship.pose.position.brick();
             let key = self
                 .frames
                 .iter()
                 .find(|(key, frame)| {
                     key.0 == level_index
-                        && !farther_than(FRAME_RADIUS_BRICKS, brick, frame.bodies.origin())
+                        && frame.follow.map(|follow| follow.planet) == carrier
+                        && local_in(frame.follow, ship.pose.position).is_some_and(|place| {
+                            !farther_than(FRAME_RADIUS_BRICKS, place.brick(), frame.bodies.origin())
+                        })
                 })
                 .map(|(key, _)| *key);
             let key = match key {
                 Some(key) => key,
                 None => {
+                    let follow = match carrier {
+                        None => None,
+                        Some(planet) => match world.data().grids().get(planet) {
+                            Some(grid) => Some(Follow {
+                                planet,
+                                anchor: grid.pose.position,
+                                shift: Displacement::NONE,
+                                velocity: grid.linear_velocity,
+                            }),
+                            None => return,
+                        },
+                    };
                     let key = (level_index, self.next_frame);
                     self.next_frame += 1;
                     self.frames.insert(
                         key,
                         Frame {
                             level: level_index,
+                            follow,
                             bodies: BodyWorld::new(
                                 brick,
                                 BodySettings {
@@ -624,6 +776,15 @@ impl Bodies {
                 }
             };
             let frame = self.frames.get_mut(&key).expect("the frame was just found");
+            let Some(state) = ship_state_in(
+                frame.follow,
+                kind,
+                ship.pose,
+                ship.linear_velocity,
+                ship.angular_velocity,
+            ) else {
+                return;
+            };
             if frame
                 .bodies
                 .add_body(BodyId(id.get()), state, kind)
@@ -674,9 +835,35 @@ impl Bodies {
             record.kind = kind;
             let _ = frame.bodies.set_kind(BodyId(id.get()), kind);
         }
-        // Moved by anything but the simulation: it goes on from there.
-        if record.written != (ship.pose, ship.linear_velocity, ship.angular_velocity) {
-            let _ = frame.bodies.set_state(BodyId(id.get()), state);
+        // Moved by anything but the simulation: it goes on from there. (In a frame that goes with a planet, a ship that the planet carried is where it was from the
+        // planet, which is not where it was in the world, so its place is compared in the frame.)
+        let follow = frame.follow;
+        let written = record.written;
+        let moved = match follow {
+            None => written != (ship.pose, ship.linear_velocity, ship.angular_velocity),
+            Some(_) => {
+                written.0.orientation != ship.pose.orientation
+                    || written.1 != ship.linear_velocity
+                    || written.2 != ship.angular_velocity
+                    || match (
+                        local_in(follow, ship.pose.position),
+                        frame.bodies.state(BodyId(id.get())),
+                    ) {
+                        (Some(place), Some(body)) => !same_place(place, body.position),
+                        _ => true,
+                    }
+            }
+        };
+        if moved {
+            if let Some(state) = ship_state_in(
+                follow,
+                kind,
+                ship.pose,
+                ship.linear_velocity,
+                ship.angular_velocity,
+            ) {
+                let _ = frame.bodies.set_state(BodyId(id.get()), state);
+            }
             record.written = (ship.pose, ship.linear_velocity, ship.angular_velocity);
         }
     }
@@ -704,8 +891,25 @@ impl Bodies {
             .insert(id, (record.mass, record.centre_of_mass));
     }
 
-    /// Gives the planets of each level a body in each of its frames, puts those that were moved where they are, and lets those that are gone go.
+    /// Where each frame that goes with a planet is, and how fast it goes: the planet's displacement since the frame was made, and its velocity.
+    fn follow_planets(&mut self, world: &ServerWorld) {
+        for frame in self.frames.values_mut() {
+            let Some(follow) = &mut frame.follow else {
+                continue;
+            };
+            let Some(planet) = world.data().grids().get(follow.planet) else {
+                continue;
+            };
+            follow.shift = follow.anchor.displacement_to(planet.pose.position);
+            follow.velocity = planet.linear_velocity;
+        }
+    }
+
+    /// Gives the planets of each level a body in each of its frames, puts those that were moved where they are, and lets those that are gone go. A planet on a rail is
+    /// a kinematic body that goes at the velocity its rail gives it, and so is every planet in a frame that goes with a planet (they move against it), set every tick
+    /// to where it was at the start of the tick (the world has it where it is at the end), so that what rests on it is carried with it.
     fn sync_planets(&mut self, world: &ServerWorld) {
+        let time_step = self.config.settings.time_step;
         let planets: Vec<(GridId, LevelIndex)> = world
             .data()
             .grids()
@@ -714,7 +918,7 @@ impl Bodies {
             .map(|(id, ship)| (id, ship.level))
             .collect();
         for frame in self.frames.values_mut() {
-            let level = frame.level;
+            let (level, follow) = (frame.level, frame.follow);
             let gone: Vec<GridId> = frame
                 .planets
                 .keys()
@@ -732,34 +936,53 @@ impl Bodies {
                 let Some(planet) = world.data().grids().get(id) else {
                     continue;
                 };
-                let state = BodyState {
-                    position: planet.pose.position,
-                    orientation: planet.pose.orientation,
-                    linear_velocity: planet.linear_velocity,
-                    angular_velocity: planet.angular_velocity,
+                let moves = planet.rail.is_some() || follow.is_some();
+                let kind = if moves {
+                    BodyKind::Kinematic
+                } else {
+                    BodyKind::Fixed
                 };
+                let Some(state) = planet_state(
+                    follow,
+                    moves,
+                    planet.pose,
+                    planet.linear_velocity,
+                    planet.angular_velocity,
+                    time_step,
+                ) else {
+                    continue;
+                };
+                let origin = frame.bodies.origin();
                 match frame.planets.get_mut(&id) {
                     Some(record) => {
-                        if record.written != planet.pose {
+                        // A planet that moves is let go when it is far from the frame (it comes back when it is near: the colliders it had are made again).
+                        if moves
+                            && farther_than(2 * PLANET_REACH_BRICKS, state.position.brick(), origin)
+                        {
+                            frame.planets.remove(&id);
+                            let _ = frame.bodies.remove_body(BodyId(id.get()));
+                            continue;
+                        }
+                        if record.kind != kind {
+                            let _ = frame.bodies.set_kind(BodyId(id.get()), kind);
+                            record.kind = kind;
+                        }
+                        if moves || record.written != planet.pose {
                             let _ = frame.bodies.set_state(BodyId(id.get()), state);
                             record.written = planet.pose;
                         }
                     }
                     None => {
-                        let origin = frame.bodies.origin();
-                        if farther_than(PLANET_REACH_BRICKS, planet.pose.position.brick(), origin) {
+                        if farther_than(PLANET_REACH_BRICKS, state.position.brick(), origin) {
                             continue;
                         }
-                        if frame
-                            .bodies
-                            .add_body(BodyId(id.get()), state, BodyKind::Fixed)
-                            .is_ok()
-                        {
+                        if frame.bodies.add_body(BodyId(id.get()), state, kind).is_ok() {
                             frame.planets.insert(
                                 id,
                                 Planet {
                                     bricks: BTreeSet::new(),
                                     written: planet.pose,
+                                    kind,
                                     ports: BTreeMap::new(),
                                     scanned: false,
                                 },
@@ -828,8 +1051,12 @@ impl Bodies {
         for key in keys {
             let level_index = self.frames[&key].level;
             let planets: Vec<GridId> = self.frames[&key].planets.keys().copied().collect();
-            for ground in
-                std::iter::once(Ground::Level).chain(planets.into_iter().map(Ground::Planet))
+            // (The terrain of the level stands still in the world, and a frame that goes with a planet does not.)
+            let level_ground = self.frames[&key].follow.is_none();
+            for ground in level_ground
+                .then_some(Ground::Level)
+                .into_iter()
+                .chain(planets.into_iter().map(Ground::Planet))
             {
                 // The bricks of it that were edited, and so are made again if they have colliders.
                 let changed: BTreeSet<BrickCoordinate> = match ground {
@@ -1021,9 +1248,10 @@ impl Bodies {
     }
 
     /// Pulls every ship that moves with the gravity there is at its centre of mass: the level's, and the pull of the other ships that weigh enough.
+    /// (In a frame that goes with a planet it is the planet's, and everything's but that of what the planet goes round: the frame falls with the planet.)
     fn apply_gravity(&mut self, world: &ServerWorld) {
         for frame in self.frames.values_mut() {
-            let (level_index, level) = (frame.level, frame);
+            let (level_index, follow, level) = (frame.level, frame.follow, frame);
             for (id, record) in &mut level.ships {
                 if record.kind == BodyKind::Fixed || record.mass <= 0.0 {
                     continue;
@@ -1035,7 +1263,10 @@ impl Bodies {
                 let Some(there) = ship.pose.local_to_world(centre) else {
                     continue;
                 };
-                let gravity = world.gravity_at(level_index, there);
+                let gravity = match follow {
+                    None => world.gravity_at(level_index, there),
+                    Some(follow) => world.gravity_in_the_free_fall_of(follow.planet, there),
+                };
                 let force = gravity.map(|component| component * record.mass);
                 // A change in gravity wakes a ship that is asleep (a heavy ship came near); the same gravity does not, so a ship at rest sleeps.
                 let change: f32 = (0..3)
@@ -1056,6 +1287,32 @@ impl Bodies {
     /// Puts the ships where the bodies are.
     fn write_back(&mut self, world: &mut ServerWorld) {
         for level in self.frames.values_mut() {
+            if let Some(follow) = level.follow {
+                // In a frame that goes with a planet every ship is written, the held and the sleeping too: where it is in the world is where it is in the frame and the
+                // planet's displacement, which changes every tick, and it goes at the planet's velocity and what it has against the planet (nothing, for a body that
+                // is held: `ship_state_in` gives it no velocity).
+                for (id, record) in &mut level.ships {
+                    let Some(state) = level.bodies.state(BodyId(id.get())) else {
+                        continue;
+                    };
+                    let Some(position) = follow.world(state.position) else {
+                        continue;
+                    };
+                    let now = (
+                        GridPose::new(position, state.orientation),
+                        velocity_from(Some(follow), state.linear_velocity),
+                        state.angular_velocity,
+                    );
+                    if now == record.written {
+                        continue;
+                    }
+                    if world.set_grid_pose(*id, now.0).is_ok() {
+                        let _ = world.set_grid_velocity(*id, now.1, now.2);
+                        record.written = now;
+                    }
+                }
+                continue;
+            }
             for (id, record) in &mut level.ships {
                 let body = BodyId(id.get());
                 if record.kind == BodyKind::Fixed {
@@ -1237,7 +1494,9 @@ impl Bodies {
     ) -> Option<BodyMotion> {
         let level = self.frames.get(&frame)?;
         let record = level.ships.get(&id)?;
-        let state = level.bodies.state(BodyId(id.get()))?;
+        let mut state = level.bodies.state(BodyId(id.get()))?;
+        // (Its velocity in the world, and not against the planet the frame goes with.)
+        state.linear_velocity = velocity_from(level.follow, state.linear_velocity);
         let properties = MassMoments::sum(record.moments.values().copied()).properties()?;
         let pose = world.data().grids().get(id)?.pose;
         let rotation = pose.rotation_matrix();
@@ -1645,5 +1904,251 @@ mod tests {
         assert!(farther_than(5, at(10, -26, 30), origin));
         assert!(farther_than(5, at(10, -20, 36), origin));
         assert!(farther_than(5, at(10, -20, 24), origin));
+    }
+
+    fn body_at(
+        brick: (i64, i64, i64),
+        offset: [f32; 3],
+        orientation: Orientation,
+        linear: [f32; 3],
+        angular: [f32; 3],
+    ) -> BodyState {
+        BodyState {
+            position: WorldPosition::new(BrickCoordinate::new(brick.0, brick.1, brick.2), offset),
+            orientation,
+            linear_velocity: linear,
+            angular_velocity: angular,
+        }
+    }
+
+    fn follows(shift_bricks: [i64; 3], shift_offset: [f32; 3], velocity: [f32; 3]) -> Follow {
+        Follow {
+            planet: GridId::new(GridId::FIRST_ALLOCATED + 1),
+            anchor: WorldPosition::new(BrickCoordinate::new(7, 8, 9), [1.0; 3]),
+            shift: Displacement {
+                bricks: shift_bricks,
+                offset: shift_offset,
+            },
+            velocity,
+        }
+    }
+
+    /// The turn of `angle` radians about the axis of `direction` (any length).
+    fn turn_about(direction: [f64; 3], angle: f64) -> Orientation {
+        let length = libm::sqrt(direction.iter().map(|part| part * part).sum::<f64>());
+        let (sine, cosine) = (libm::sin(angle / 2.0), libm::cos(angle / 2.0));
+        let [x, y, z] = direction.map(|part| part / length * sine);
+        Orientation::from_components([x, y, z, cosine]).unwrap()
+    }
+
+    fn same_turn(first: Orientation, second: Orientation) -> bool {
+        // (A quaternion and its negative are the same turn.)
+        let (a, b) = (first.components(), second.components());
+        let direct = (0..4).all(|index| (a[index] - b[index]).abs() < 1e-9);
+        let opposite = (0..4).all(|index| (a[index] + b[index]).abs() < 1e-9);
+        direct || opposite
+    }
+
+    #[test]
+    fn a_body_at_the_end_of_a_tick_was_at_the_start_of_it_one_tick_of_its_velocity_before() {
+        let state = body_at(
+            (100, -3, 7),
+            [4.0, 5.0, 6.0],
+            Orientation::IDENTITY,
+            [10.0, -20.0, 4.0],
+            [0.0; 3],
+        );
+        let before = state_before(state, 0.05);
+        // A twentieth of a second at (10, -20, 4): half a voxel back along x, a voxel forward along y, a fifth of a voxel back along z.
+        let moved = before.position.displacement_to(state.position).in_voxels();
+        assert!((moved[0] - 0.5).abs() < 1e-5, "{moved:?}");
+        assert!((moved[1] + 1.0).abs() < 1e-5, "{moved:?}");
+        assert!((moved[2] - 0.2).abs() < 1e-5, "{moved:?}");
+        assert_eq!(before.linear_velocity, state.linear_velocity);
+        assert_eq!(before.angular_velocity, state.angular_velocity);
+        assert!(same_turn(before.orientation, state.orientation));
+    }
+
+    #[test]
+    fn a_body_at_the_end_of_a_tick_was_turned_one_tick_of_its_spin_back_about_the_axis_of_it() {
+        // Two radians a second about y for a twentieth of a second is a tenth of a radian: it was a tenth of a radian back about y.
+        let state = body_at(
+            (0, 0, 0),
+            [0.0; 3],
+            Orientation::IDENTITY,
+            [0.0; 3],
+            [0.0, 2.0, 0.0],
+        );
+        let before = state_before(state, 0.05);
+        assert!(same_turn(
+            before.orientation,
+            turn_about([0.0, 1.0, 0.0], -0.1)
+        ));
+        assert_eq!(before.position, state.position);
+        // Any axis and any orientation to begin with: a step of the same spin forward from where it was is where it is.
+        let oblique = body_at(
+            (0, 0, 0),
+            [0.0; 3],
+            turn_about([1.0, -2.0, 0.5], 1.1),
+            [0.0; 3],
+            [1.0, 2.0, 2.0],
+        );
+        let before = state_before(oblique, 0.05);
+        let step = turn_about([1.0, 2.0, 2.0], 3.0 * 0.05);
+        assert!(same_turn(
+            step.compose(before.orientation),
+            oblique.orientation
+        ));
+        assert!(!same_turn(before.orientation, oblique.orientation));
+    }
+
+    #[test]
+    fn a_body_that_does_not_move_or_turn_was_where_it_is() {
+        let state = body_at(
+            (5, 6, 7),
+            [1.0, 2.0, 3.0],
+            turn_about([0.0, 1.0, 0.0], 0.7),
+            [0.0; 3],
+            [0.0; 3],
+        );
+        assert_eq!(state_before(state, 0.05), state);
+    }
+
+    #[test]
+    fn places_and_velocities_in_a_frame_that_goes_with_a_planet_are_the_worlds_less_the_planets_and_come_back()
+     {
+        let planet = follows([2, -1, 0], [0.5, 3.0, 4.0], [100.0, 0.0, -50.0]);
+        let world = WorldPosition::new(BrickCoordinate::new(10, 11, 12), [8.0, 9.0, 10.0]);
+        let local = local_in(Some(planet), world).unwrap();
+        // The planet has gone two bricks along x and a brick back along y, and 0.5, 3 and 4 voxels more.
+        let moved = local.displacement_to(world).in_voxels();
+        assert_eq!(moved, [2.0 * 32.0 + 0.5, -32.0 + 3.0, 4.0]);
+        assert!(same_place(planet.world(local).unwrap(), world));
+        assert_eq!(
+            velocity_in(Some(planet), [130.0, 5.0, -50.0]),
+            [30.0, 5.0, 0.0]
+        );
+        assert_eq!(
+            velocity_from(Some(planet), [30.0, 5.0, 0.0]),
+            [130.0, 5.0, -50.0]
+        );
+        // A frame that goes with nothing is the world.
+        assert_eq!(local_in(None, world), Some(world));
+        assert_eq!(velocity_in(None, [1.0, 2.0, 3.0]), [1.0, 2.0, 3.0]);
+        assert_eq!(velocity_from(None, [1.0, 2.0, 3.0]), [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn two_places_are_the_same_within_a_thousandth_of_a_voxel_on_every_axis() {
+        let at =
+            |x: f32, y: f32, z: f32| WorldPosition::new(BrickCoordinate::new(3, 4, 5), [x, y, z]);
+        let place = at(10.0, 10.0, 10.0);
+        assert!(same_place(place, place));
+        assert!(same_place(place, at(10.0009, 9.9991, 10.0)));
+        for moved in [
+            at(10.0011, 10.0, 10.0),
+            at(10.0, 9.9989, 10.0),
+            at(10.0, 10.0, 10.0011),
+        ] {
+            assert!(!same_place(place, moved));
+            assert!(!same_place(moved, place));
+        }
+        // A brick apart is not the same place, however near the offsets.
+        let next_brick = WorldPosition::new(BrickCoordinate::new(4, 4, 5), [10.0; 3]);
+        assert!(!same_place(place, next_brick));
+    }
+
+    #[test]
+    fn a_ship_that_is_held_has_no_speed_against_a_frame_that_goes_with_a_planet_and_in_one_that_does_not_it_has_the_worlds()
+     {
+        let planet = follows([0; 3], [0.0; 3], [100.0, 0.0, 0.0]);
+        let pose = GridPose::new(
+            WorldPosition::new(BrickCoordinate::new(1, 2, 3), [4.0, 5.0, 6.0]),
+            Orientation::IDENTITY,
+        );
+        let (moving, turning) = ([100.0, 7.0, 0.0], [0.0, 0.5, 0.0]);
+        let free = ship_state_in(Some(planet), BodyKind::Dynamic, pose, moving, turning).unwrap();
+        assert_eq!(free.linear_velocity, [0.0, 7.0, 0.0]);
+        assert_eq!(free.angular_velocity, turning);
+        let held = ship_state_in(Some(planet), BodyKind::Fixed, pose, moving, turning).unwrap();
+        assert_eq!(held.linear_velocity, [0.0; 3]);
+        assert_eq!(held.position, free.position);
+        // (In a frame that goes with nothing a held ship has the velocity it is given: a held ship has none, and the bodies leave it alone.)
+        let still = ship_state_in(None, BodyKind::Fixed, pose, moving, turning).unwrap();
+        assert_eq!(still.linear_velocity, moving);
+    }
+
+    #[test]
+    fn a_planet_that_stands_still_is_given_its_state_as_it_is_and_one_that_moves_its_state_a_tick_before()
+     {
+        let pose = GridPose::new(
+            WorldPosition::new(BrickCoordinate::new(40, 0, -3), [8.0, 9.0, 10.0]),
+            turn_about([0.0, 1.0, 0.0], 0.3),
+        );
+        let (linear, angular) = ([0.0, 0.0, -100.0], [0.0, 2.0, 0.0]);
+        let standing = planet_state(None, false, pose, linear, angular, 0.05).unwrap();
+        assert_eq!(standing.position, pose.position);
+        assert_eq!(standing.orientation, pose.orientation);
+        assert_eq!(
+            (standing.linear_velocity, standing.angular_velocity),
+            (linear, angular)
+        );
+        let moving = planet_state(None, true, pose, linear, angular, 0.05).unwrap();
+        // Five voxels back along its way (a twentieth of a second at a hundred), and a tenth of a radian back about its axis; with the velocities it has.
+        let back = moving.position.displacement_to(pose.position).in_voxels();
+        assert!(
+            (back[2] + 5.0).abs() < 1e-4 && back[0].abs() < 1e-6 && back[1].abs() < 1e-6,
+            "{back:?}"
+        );
+        assert!(same_turn(
+            moving.orientation,
+            turn_about([0.0, 1.0, 0.0], 0.3 - 0.1)
+        ));
+        assert_eq!(
+            (moving.linear_velocity, moving.angular_velocity),
+            (linear, angular)
+        );
+    }
+
+    #[test]
+    fn a_planet_in_a_frame_that_goes_with_a_planet_is_given_its_place_and_velocity_there_and_a_tick_before()
+     {
+        // The frame has gone two bricks along x; the planet it goes with is this one, which goes at (100, 0, -50) in the world: against the frame it does not move.
+        let frame = follows([2, 0, 0], [0.0; 3], [100.0, 0.0, -50.0]);
+        let pose = GridPose::new(
+            WorldPosition::new(BrickCoordinate::new(12, 0, 0), [8.0, 9.0, 10.0]),
+            Orientation::IDENTITY,
+        );
+        let this =
+            planet_state(Some(frame), true, pose, [100.0, 0.0, -50.0], [0.0; 3], 0.05).unwrap();
+        assert_eq!(this.linear_velocity, [0.0; 3]);
+        assert_eq!(
+            this.position,
+            WorldPosition::new(BrickCoordinate::new(10, 0, 0), [8.0, 9.0, 10.0])
+        );
+        // Another planet that stands still in the world goes against the frame at minus the frame's velocity, (-100, 0, 50), and was a tick of that before: it is five
+        // voxels along x and two and a half back along z of where it was put, so the place it was put is (-5, 0, 2.5) from it.
+        let other = planet_state(Some(frame), true, pose, [0.0; 3], [0.0; 3], 0.05).unwrap();
+        assert_eq!(other.linear_velocity, [-100.0, 0.0, 50.0]);
+        let back = other.position.displacement_to(this.position).in_voxels();
+        assert!(
+            (back[0] + 5.0).abs() < 1e-4 && back[1].abs() < 1e-6 && (back[2] - 2.5).abs() < 1e-4,
+            "{back:?}"
+        );
+    }
+
+    #[test]
+    fn a_planet_the_world_cannot_place_in_a_frame_is_given_no_state() {
+        use voxel_space::BRICK_COORDINATE_MAXIMUM;
+        let frame = follows([-1, 0, 0], [0.0; 3], [0.0; 3]);
+        let last = GridPose::new(
+            WorldPosition::new(
+                BrickCoordinate::new(BRICK_COORDINATE_MAXIMUM, 0, 0),
+                [0.0; 3],
+            ),
+            Orientation::IDENTITY,
+        );
+        assert!(planet_state(Some(frame), false, last, [0.0; 3], [0.0; 3], 0.05).is_none());
+        assert!(planet_state(None, false, last, [0.0; 3], [0.0; 3], 0.05).is_some());
     }
 }

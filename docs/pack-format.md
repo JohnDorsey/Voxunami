@@ -139,10 +139,16 @@ second in Cave; it is saved with the world, so a restart goes on from where it w
   (`"my_pack:star"`), which must be made before this one (bodies are made in the order of the packs and then of their files' names, so name them to sort). A body that goes round
   has its place from the orbit, and gives no `position`; a body that only spins stays where it was put. A moon goes round a planet that goes round a star.
 - A body on a rail is in free fall with what it goes round: what stands on it feels its pull and not the pull of what it goes round.
-- *Not yet:* ships and players in the air near a planet that moves are not carried with it (those standing on it are), and ellipses. `docs/rails-and-recipes-spec.md`.
+- **What a planet on a rail carries.** Everything within one and a half times the reach of its ground (`extent_bricks`; at most 120,000 voxels) of its middle goes with it:
+  players and items in the air, and ships, free or held. Ships are simulated in a frame that goes with the planet, so they fall to it, rest on it and are carried round by its
+  turn however fast it goes, and a ship that leaves goes on in the world at the speed it had. Where spheres overlap (a moon in its planet's) the smallest carries; what is
+  carried stays so a quarter farther out than it was taken in. Blocks built in space, which stand still in the world, are not solid to what a planet carries (blocks built on
+  the planet are). A ship made empty near a planet that moves starts at rest in the world, so it is going at the planet's speed against it; one carved from a planet or from
+  another ship has the speed of the blocks it was carved from. No ship goes faster than 400 metres a second against its frame (the physics engine's limit).
+- *Not yet:* ellipses; ships on rails of their own; time faster than real. `docs/rails-and-recipes-spec.md`.
 
 A body is made when a *world* is made: the planets of a world that exists are not changed by a pack added later, and do not go if the pack is taken away (the
-world keeps the recipe of each planet's generator, so it makes the same ground). A body stands still; planets that move are later (`docs/rails-and-recipes-spec.md`).
+world keeps the recipe of each planet's generator, so it makes the same ground). A body with no `rail` stands still (`docs/rails-and-recipes-spec.md`).
 Bodies come into a new world after the game's own, in the order the packs load.
 
 ## Checking a pack

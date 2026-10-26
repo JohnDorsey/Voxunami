@@ -6,6 +6,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use block_models::Shape;
+use common::docking::{Look, PLAIN, Placed, a_pair, facing, make, port_block, stone};
 use common::{Scene, ship_id};
 use game_shell::GameContent;
 use server::GridView;
@@ -14,70 +15,12 @@ use voxel_space::{
     Orientation, VoxelCoordinate, WorldPosition,
 };
 use voxunami_cave::content::{CaveContent, dev_docking_port_id};
-use voxunami_cave::placement::turn_carrying;
-
-/// How a block is made in a ship: its state, and which way it is turned (the number of a turn of the lattice).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Look {
-    state: u32,
-    orientation: u32,
-}
-
-/// A block as it is made, not turned.
-const PLAIN: Look = Look {
-    state: 0,
-    orientation: 0,
-};
-
-/// A dev docking port turned so that its yellow face (the east, as it is made) is this one.
-fn facing(face: FaceDirection) -> Look {
-    Look {
-        state: 0,
-        orientation: u32::from(turn_carrying(FaceDirection::PositiveX, face).index()),
-    }
-}
-
-fn port_block() -> u32 {
-    CaveContent::new().registries()[0]
-        .1
-        .raw_id_of(&dev_docking_port_id())
-        .expect("Cave has the dev docking port")
-}
-
-fn stone() -> u32 {
-    CaveContent::new().blocks.stone
-}
-
-/// A block of a ship: where it is in the ship, which block, and how it is made.
-type Placed = ([i64; 3], u32, Look);
-
-fn stones(from: i64, to: i64) -> Vec<Placed> {
-    (from..to).map(|x| ([x, 0, 0], stone(), PLAIN)).collect()
-}
 
 fn pose(x: f32, y: f32, z: f32, orientation: Orientation) -> GridPose {
     GridPose::new(
         WorldPosition::new(BrickCoordinate::ORIGIN, [x, y, z]),
         orientation,
     )
-}
-
-/// Makes a ship of these blocks at this pose, held if asked.
-fn make(scene: &mut Scene, at: GridPose, held: bool, blocks: Vec<Placed>) {
-    let content = CaveContent::new();
-    scene.run(move |world| {
-        let grid = world.create_grid(LevelIndex::MAIN, at).unwrap();
-        world.set_grid_held(grid, held).unwrap();
-        let mut view = world.grid(grid).unwrap();
-        for ([x, y, z], block, look) in blocks {
-            let voxel = VoxelCoordinate::new(x, y, z);
-            view.set(content.state_channel(), voxel, look.state)
-                .unwrap();
-            view.set(content.orientation_channel(), voxel, look.orientation)
-                .unwrap();
-            view.set(content.block_channel(), voxel, block).unwrap();
-        }
-    });
 }
 
 /// No gravity: ships hang in the air where they are put.
@@ -115,15 +58,6 @@ fn velocity_of(scene: &Scene, id: GridId) -> [f64; 3] {
         .unwrap()
         .linear_velocity
         .map(f64::from)
-}
-
-/// A ship with a port on its east face at the end of a row of stone, and one with a port on its west face at the start: 4 and 3 blocks.
-fn a_pair() -> (Vec<Placed>, Vec<Placed>) {
-    let mut first = stones(0, 3);
-    first.push(([3, 0, 0], port_block(), facing(FaceDirection::PositiveX)));
-    let mut second = vec![([0, 0, 0], port_block(), facing(FaceDirection::NegativeX))];
-    second.extend(stones(1, 3));
-    (first, second)
 }
 
 #[test]

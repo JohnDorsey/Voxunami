@@ -2,6 +2,7 @@
 
 //! A server ticked by the test, and players connected to it.
 
+pub mod docking;
 pub mod parity;
 
 use std::collections::VecDeque;
@@ -595,7 +596,7 @@ impl Scene {
         Self::reporting_in(content, world)
     }
 
-    fn reporting_in(
+    pub fn reporting_in(
         content: CaveContent,
         world: world_storage::WorldData,
     ) -> (Self, impl Fn() -> grid_bodies::BodiesReport) {

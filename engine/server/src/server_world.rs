@@ -8,8 +8,8 @@ use protocol::{ClientId, EntityId, MAXIMUM_COMMAND_LENGTH, Message, PlayerKey, T
 use terrain::GenerationOutcome;
 use voxel_grid::{Brick, ChannelIndex, Grid};
 use voxel_space::{
-    BrickCoordinate, EntityPose, GravitySettings, GridId, GridPose, LatticeTransform, LevelIndex,
-    LocalVoxelIndex, MassPull, Orientation, VoxelCoordinate, WorldPosition, gravity_at,
+    BrickCoordinate, Displacement, EntityPose, GravitySettings, GridId, GridPose, LatticeTransform,
+    LevelIndex, LocalVoxelIndex, MassPull, Orientation, VoxelCoordinate, WorldPosition, gravity_at,
 };
 use world_storage::rail::{Centre, Rail};
 use world_storage::{
@@ -136,6 +136,46 @@ pub(crate) struct OutgoingGameMessage {
     pub payload: Vec<u8>,
 }
 
+/// How far from the middle of a planet on a rail it carries what is near it, as a multiple of the reach of its ground.
+const INFLUENCE_PER_REACH: f64 = 1.5;
+/// The most a planet carries, in voxels: what `f32` is exact in.
+const GREATEST_INFLUENCE: f64 = 120_000.0;
+/// What a planet carries it keeps carrying out to this many times its sphere.
+const INFLUENCE_LEAVING: f64 = 1.25;
+
+/// A planet on a rail, for the choice of which one carries a place.
+struct Carrier {
+    id: GridId,
+    level: LevelIndex,
+    position: WorldPosition,
+    /// How far it carries, in voxels.
+    radius: f64,
+}
+
+/// The planet among `carriers` that carries a place of a level: the one whose sphere the place is in, and if it is in several, the smallest (a moon's before its
+/// planet's); the one that carried it, a quarter farther out.
+fn pick_carrier(
+    carriers: &[Carrier],
+    level: LevelIndex,
+    position: WorldPosition,
+    carried_by: Option<GridId>,
+) -> Option<GridId> {
+    let mut best: Option<(f64, GridId)> = None;
+    for carrier in carriers.iter().filter(|carrier| carrier.level == level) {
+        let limit = if carried_by == Some(carrier.id) {
+            carrier.radius * INFLUENCE_LEAVING
+        } else {
+            carrier.radius
+        };
+        let apart = carrier.position.displacement_to(position).in_voxels();
+        let distance = (apart[0] * apart[0] + apart[1] * apart[1] + apart[2] * apart[2]).sqrt();
+        if distance <= limit && best.is_none_or(|(smallest, _)| carrier.radius < smallest) {
+            best = Some((carrier.radius, carrier.id));
+        }
+    }
+    best.map(|(_, id)| id)
+}
+
 /// The world as game logic sees it during a tick: the terrain and edits of every level, and the way to
 /// change them and to talk to clients. Everything done here is replicated to the clients that watch it.
 #[derive(Debug)]
@@ -175,6 +215,12 @@ pub struct ServerWorld {
     ship_settings: ShipSettings,
     /// The clients the game has sent away this tick, with what they are told.
     disconnects: Vec<(ClientId, String)>,
+    /// The entities in a level that a planet on a rail carried in the last tick, by the planet (see [`ServerWorld::planet_carrying`]).
+    carried_by: BTreeMap<EntityId, GridId>,
+    /// The ships that a planet on a rail carried in the last tick, by the planet (see [`ServerWorld::carrier_of`]).
+    carried_ships: BTreeMap<GridId, GridId>,
+    /// How far the world moved each entity in the last call of `apply_rails`, for those it did (see [`ServerWorld::carried_by_rails`]).
+    carried_entities: BTreeMap<EntityId, Displacement>,
 }
 
 impl ServerWorld {
@@ -201,6 +247,9 @@ impl ServerWorld {
             woken: Vec::new(),
             ship_settings: ShipSettings::default(),
             disconnects: Vec::new(),
+            carried_by: BTreeMap::new(),
+            carried_ships: BTreeMap::new(),
+            carried_entities: BTreeMap::new(),
         }
     }
 
@@ -371,6 +420,7 @@ impl ServerWorld {
     /// Moves an entity, to another place in its frame or into another (a ship that exists, or a level).
     pub fn set_entity_pose(&mut self, id: EntityId, pose: EntityPose) -> Result<(), EntityError> {
         self.check_frame(pose.grid)?;
+        self.carried_entities.remove(&id);
         self.data.entities_mut().set_pose(id, pose)
     }
 
@@ -1001,7 +1051,11 @@ impl ServerWorld {
                 if self.data.level(level).is_none() {
                     return Err(AccessError::NoSuchGrid(grid));
                 }
-                Ok(self.gravity_at(level, local))
+                // (What is within the sphere of a planet on a rail falls with the planet: it feels the planet's pull and not that of what the planet goes round.)
+                Ok(match self.planet_carrying(level, local, None) {
+                    Some(planet) => self.gravity_in_the_free_fall_of(planet, local),
+                    None => self.gravity_at(level, local),
+                })
             }
             None => {
                 let ship = self
@@ -1158,9 +1212,165 @@ impl ServerWorld {
     /// Puts every ship that is on a rail where its rail says at the time of the world: `ticks_per_second` of the world's clock make a second (see
     /// [`WorldData::put_ships_on_their_rails`]). Its place is the same bits on every machine: the time is one division, the rest the arithmetic of
     /// [`world_storage::rail`]. A ship the world cannot place is left where it is.
+    ///
+    /// What is in a level near a planet on a rail goes with the planet: a player or an item (in the level's own coordinates) and a ship, whether it is free or
+    /// held, are moved by the planet's displacement, so that each stays where it is from the planet, and a player there falls to it and stands on it however
+    /// fast the planet goes. (A ship's body is the plugin's: it simulates the ships a planet carries in a frame that goes with the planet, and puts them where
+    /// they are against it. What this does for them is that they are with the planet in every tick before the bodies move, and not a tick behind it.) A ship's
+    /// velocity and an entity's are left as they are; they are against the planet. See [`ServerWorld::planet_carrying`].
     pub(crate) fn apply_rails(&mut self, ticks_per_second: u32) {
         let seconds = self.data.clock() as f64 / f64::from(ticks_per_second);
+        self.carried_entities.clear();
+        if !self
+            .data
+            .grids()
+            .iter()
+            .any(|(_, ship)| ship.rail.is_some())
+        {
+            self.carried_by.clear();
+            self.carried_ships.clear();
+            return;
+        }
+        // Who is carried by which planet, by where the planets are before they move.
+        let carriers = self.carriers();
+        let mut carried_entities: Vec<(EntityId, GridId)> = Vec::new();
+        let mut now_carried: BTreeMap<EntityId, GridId> = BTreeMap::new();
+        for entity in self.data.entities().iter() {
+            let Some(level) = entity.pose.grid.root_level() else {
+                continue;
+            };
+            if let Some(planet) = pick_carrier(
+                &carriers,
+                level,
+                entity.pose.position,
+                self.carried_by.get(&entity.id).copied(),
+            ) {
+                carried_entities.push((entity.id, planet));
+                now_carried.insert(entity.id, planet);
+            }
+        }
+        self.carried_by = now_carried;
+        let mut carried_ships: Vec<(GridId, GridId)> = Vec::new();
+        for (id, ship) in self.data.grids().iter() {
+            if ship.terrain.is_some() || ship.rail.is_some() {
+                continue;
+            }
+            if let Some(planet) = pick_carrier(
+                &carriers,
+                ship.level,
+                ship.pose.position,
+                self.carried_ships.get(&id).copied(),
+            ) {
+                carried_ships.push((id, planet));
+            }
+        }
+        self.carried_ships = carried_ships.iter().copied().collect();
         let _ = self.data.put_ships_on_their_rails(seconds);
+        let displacement_of = |world: &Self, planet: GridId| {
+            let from = carriers
+                .iter()
+                .find(|carrier| carrier.id == planet)?
+                .position;
+            let to = world.data.grids().get(planet)?.pose.position;
+            Some(from.displacement_to(to))
+                .filter(|displacement| *displacement != Displacement::NONE)
+        };
+        for (entity, planet) in carried_entities {
+            let Some(displacement) = displacement_of(self, planet) else {
+                continue;
+            };
+            let Some(mut pose) = self.data.entities().get(entity).map(|entity| entity.pose) else {
+                continue;
+            };
+            if let Some(position) = pose.position.displaced(displacement) {
+                pose.position = position;
+                if self.data.entities_mut().set_pose(entity, pose).is_ok() {
+                    self.carried_entities.insert(entity, displacement);
+                }
+            }
+        }
+        for (ship, planet) in carried_ships {
+            let Some(displacement) = displacement_of(self, planet) else {
+                continue;
+            };
+            let Some(grid) = self.data.grids_mut().get_mut(ship) else {
+                continue;
+            };
+            if let Some(position) = grid.pose.position.displaced(displacement) {
+                grid.pose.position = position;
+            }
+        }
+    }
+
+    /// The planet that carried a ship in the last tick, if one did: the planet on a rail whose sphere of influence the ship was in (see
+    /// [`ServerWorld::planet_carrying`]; a planet and a ship on a rail are carried by none). The bodies of a ship it carries are simulated in a frame that goes
+    /// with it.
+    pub fn carrier_of(&self, ship: GridId) -> Option<GridId> {
+        self.carried_ships.get(&ship).copied()
+    }
+
+    /// How far the world moved an entity in this tick by carrying it with a planet on a rail (see [`ServerWorld::planet_carrying`]), if it did; the same displacement
+    /// that it was moved by. A system that keeps a state of its own for an entity, as the body of a player is, moves that state by the same, so that it goes with the
+    /// entity. It is told in the tick that the world carried the entity, to whatever runs after (the rules and the bodies), and is gone in the next call; and it is
+    /// forgotten when the entity is put somewhere ([`ServerWorld::set_entity_pose`]): a pose put on it after is not carried.
+    pub fn carried_by_rails(&self, entity: EntityId) -> Option<Displacement> {
+        self.carried_entities.get(&entity).copied()
+    }
+
+    /// The planets on a rail, with where each is and how far it carries.
+    fn carriers(&self) -> Vec<Carrier> {
+        self.data
+            .grids()
+            .iter()
+            .filter_map(|(id, ship)| {
+                Some(Carrier {
+                    id,
+                    level: ship.level,
+                    position: ship.pose.position,
+                    radius: self.influence_radius(id)?,
+                })
+            })
+            .collect()
+    }
+
+    /// How far from the middle of a planet on a rail it carries what is near it, in voxels: one and a half times the reach of its ground (the farthest brick
+    /// its terrain makes, from the middle), and no more than the bodies of ships are exact in (`f32` is exact to a hundredth within 131 km). `None` for a ship that
+    /// is not a planet or is not on a rail: it carries nothing.
+    pub fn influence_radius(&self, planet: GridId) -> Option<f64> {
+        let ship = self.data.grids().get(planet)?;
+        ship.rail?;
+        let extent = ship.terrain?.extent;
+        let reach_in_bricks = [extent.min(), extent.max()]
+            .into_iter()
+            .flat_map(|corner| [corner.x(), corner.y(), corner.z()])
+            .map(i64::abs)
+            .max()
+            .unwrap_or(0);
+        let edge = voxel_space::BRICK_EDGE_LENGTH as f64;
+        Some((reach_in_bricks as f64 * edge * INFLUENCE_PER_REACH).min(GREATEST_INFLUENCE))
+    }
+
+    /// The planet on a rail in a level that carries a place: the one whose sphere of influence ([`ServerWorld::influence_radius`]) it is in, and if it is in
+    /// several, the smallest (a moon's before its planet's). What `carried_by` was carried by keeps carrying it a quarter farther out than its sphere, so that
+    /// something at the edge is not taken and let go in turn.
+    pub fn planet_carrying(
+        &self,
+        level: LevelIndex,
+        position: WorldPosition,
+        carried_by: Option<GridId>,
+    ) -> Option<GridId> {
+        pick_carrier(&self.carriers(), level, position, carried_by)
+    }
+
+    /// The acceleration of gravity at a place of the level of a planet on a rail for what falls with the planet: everything's pull but that of what the planet
+    /// goes round (see [`ServerWorld::gravity_in`]).
+    pub fn gravity_in_the_free_fall_of(&self, planet: GridId, position: WorldPosition) -> [f32; 3] {
+        let level = self
+            .data
+            .grids()
+            .get(planet)
+            .map_or(LevelIndex::MAIN, |ship| ship.level);
+        self.gravity_at_without(level, position, &self.what_it_goes_round(planet))
     }
 
     /// Removes a ship for good, as when it is destroyed, and returns it. Clients that watch it are told it is gone. What was aboard it
@@ -2464,6 +2674,438 @@ pub(crate) mod tests {
         assert_eq!(world.what_it_goes_round(small_moon), vec![moon, planet]);
         assert_eq!(world.what_it_goes_round(moon), vec![planet]);
         assert_eq!(world.what_it_goes_round(planet), Vec::<GridId>::new());
+    }
+
+    // ---- the sphere of influence of a planet on a rail ----
+
+    /// A planet whose ground reaches `reach` bricks either way, weighing `mass`, in the main level, on this rail.
+    fn planet_on(world: &mut ServerWorld, reach: u32, mass: f32, rail: Option<Rail>) -> GridId {
+        let planet = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        let terrain = GridTerrain {
+            generator: world.data().main().terrain.default_generator(),
+            extent: BrickBox::around(BrickCoordinate::ORIGIN, reach),
+            mass,
+        };
+        world.set_grid_terrain(planet, terrain).unwrap();
+        world.set_grid_rail(planet, rail).unwrap();
+        planet
+    }
+
+    fn voxels_from(world: &ServerWorld, planet: GridId, voxels: [f64; 3]) -> WorldPosition {
+        let centre = world
+            .data()
+            .grids()
+            .get(planet)
+            .unwrap()
+            .pose
+            .position
+            .in_voxels();
+        WorldPosition::from_voxels([0, 1, 2].map(|axis| centre[axis] + voxels[axis]))
+    }
+
+    #[test]
+    fn a_planet_on_a_rail_carries_what_is_within_one_and_a_half_times_the_reach_of_its_ground_and_no_other_ship_carries_anything()
+     {
+        let (mut world, _) = world_with_a_walker();
+        let rail = orbit_about(Centre::Point([0.0; 3]), 1.0e6, 1.0e5);
+        // A hundred bricks either way is 3,200 voxels, and one and a half times that 4,800.
+        let planet = planet_on(&mut world, 100, 1.0e20, Some(rail));
+        assert_eq!(world.influence_radius(planet), Some(4_800.0));
+        // Enormous ground is cut to what the numbers of the bodies are exact in (131 km, a little less).
+        let vast = planet_on(&mut world, 100_000, 1.0e20, Some(rail));
+        assert_eq!(world.influence_radius(vast), Some(120_000.0));
+        // Not a planet that stands still, not a ship on a rail with no ground, not a ship.
+        let still = planet_on(&mut world, 100, 1.0e20, None);
+        assert_eq!(world.influence_radius(still), None);
+        let star = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        world.set_grid_rail(star, Some(rail)).unwrap();
+        assert_eq!(world.influence_radius(star), None);
+        let nothing = GridId::new(GridId::FIRST_ALLOCATED + 99);
+        assert_eq!(world.influence_radius(nothing), None);
+    }
+
+    #[test]
+    fn the_planet_that_carries_a_place_is_the_one_with_the_smallest_sphere_round_it_and_one_that_carries_keeps_what_it_had_a_little_farther()
+     {
+        let (mut world, _) = world_with_a_walker();
+        // A planet with a sphere of 4,800 voxels, and a moon of it with one of 1,200 (reach 25 bricks), 2,000 voxels from its middle.
+        let planet = planet_on(
+            &mut world,
+            100,
+            1.0e20,
+            Some(orbit_about(Centre::Point([0.0; 3]), 1.0e6, 1.0e5)),
+        );
+        let moon = planet_on(
+            &mut world,
+            25,
+            1.0e19,
+            Some(orbit_about(Centre::Grid(planet), 2_000.0, 500.0)),
+        );
+        world.apply_rails(20);
+        let main = LevelIndex::MAIN;
+        // In both spheres: the moon's. In the planet's only: the planet's. In neither: none.
+        let near_the_moon = voxels_from(&world, moon, [500.0, 0.0, 0.0]);
+        assert_eq!(world.planet_carrying(main, near_the_moon, None), Some(moon));
+        let beside = voxels_from(&world, planet, [0.0, 1_000.0, 0.0]);
+        assert_eq!(world.planet_carrying(main, beside, None), Some(planet));
+        let far = voxels_from(&world, planet, [0.0, 10_000.0, 0.0]);
+        assert_eq!(world.planet_carrying(main, far, None), None);
+        // Just outside the moon's sphere (1,300 of 1,200): not carried by it, unless it was; and not farther than a quarter more (1,500).
+        let outside = voxels_from(&world, moon, [0.0, 1_300.0, 0.0]);
+        assert_eq!(world.planet_carrying(main, outside, None), Some(planet));
+        assert_eq!(world.planet_carrying(main, outside, Some(moon)), Some(moon));
+        let well_outside = voxels_from(&world, moon, [0.0, 1_600.0, 0.0]);
+        assert_eq!(
+            world.planet_carrying(main, well_outside, Some(moon)),
+            Some(planet)
+        );
+        // Another level has none of these planets.
+        assert_eq!(
+            world.planet_carrying(LevelIndex::new(9), near_the_moon, None),
+            None
+        );
+    }
+
+    fn walker_in_the_level(
+        world: &mut ServerWorld,
+        walker: &NamespacedId,
+        at: WorldPosition,
+    ) -> EntityId {
+        world
+            .spawn_entity(
+                walker,
+                EntityPose::new(GridId::MAIN, at, Orientation::IDENTITY),
+                ComponentBag::new(),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn what_is_in_the_level_near_a_planet_on_a_rail_goes_with_it_and_what_is_aboard_or_far_is_left_alone()
+     {
+        let (mut world, walker) = world_with_a_walker();
+        let planet = planet_on(
+            &mut world,
+            100,
+            1.0e20,
+            Some(orbit_about(Centre::Point([0.0; 3]), 1.0e6, 1.0e5)),
+        );
+        world.apply_rails(20);
+        let near = voxels_from(&world, planet, [100.0, 3_000.0, -50.0]);
+        let far = voxels_from(&world, planet, [100.0, 30_000.0, -50.0]);
+        let near_walker = walker_in_the_level(&mut world, &walker, near);
+        let far_walker = walker_in_the_level(&mut world, &walker, far);
+        // One aboard a ship that is near the planet in the level: the ship's, not the planet's, to carry.
+        let ship = world
+            .create_grid(LevelIndex::MAIN, GridPose::new(near, Orientation::IDENTITY))
+            .unwrap();
+        let aboard_walker = world
+            .spawn_entity(
+                &walker,
+                aboard(ship, [0, 0, 0], [1.0; 3], Orientation::IDENTITY),
+                ComponentBag::new(),
+            )
+            .unwrap();
+        let before = world.entities().get(near_walker).unwrap().pose.position;
+        let planet_before = world.data().grids().get(planet).unwrap().pose.position;
+        for ticks in 1..=5u64 {
+            world.data.set_clock(ticks * 20);
+            world.apply_rails(20);
+            let planet_now = world.data().grids().get(planet).unwrap().pose.position;
+            let moved = planet_before.displacement_to(planet_now).in_voxels();
+            assert!(
+                moved[0].abs() + moved[1].abs() + moved[2].abs() > 1.0,
+                "the planet goes"
+            );
+            // The walker near it is where it was from the planet: the planet's displacement since the start.
+            let now = world.entities().get(near_walker).unwrap().pose.position;
+            let carried = before.displacement_to(now).in_voxels();
+            for axis in 0..3 {
+                assert!(
+                    (carried[axis] - moved[axis]).abs() < 1e-3,
+                    "tick {ticks}: carried {carried:?} against the planet's {moved:?}"
+                );
+            }
+        }
+        // The far one, and the one aboard a ship, were not moved at all.
+        assert_eq!(world.entities().get(far_walker).unwrap().pose.position, far);
+        assert_eq!(
+            world.entities().get(aboard_walker).unwrap().pose,
+            aboard(ship, [0, 0, 0], [1.0; 3], Orientation::IDENTITY)
+        );
+    }
+
+    fn a_ship_at(world: &mut ServerWorld, place: WorldPosition) -> GridId {
+        world
+            .create_grid(
+                LevelIndex::MAIN,
+                GridPose::new(place, Orientation::IDENTITY),
+            )
+            .unwrap()
+    }
+
+    fn place_of(world: &ServerWorld, ship: GridId) -> WorldPosition {
+        world.data().grids().get(ship).unwrap().pose.position
+    }
+
+    #[test]
+    fn how_far_the_world_carried_an_entity_this_tick_is_told_to_whoever_keeps_a_state_of_its_own_for_it()
+     {
+        let (mut world, walker) = world_with_a_walker();
+        let planet = planet_on(
+            &mut world,
+            100,
+            1.0e20,
+            Some(orbit_about(Centre::Point([0.0; 3]), 1.0e6, 1.0e5)),
+        );
+        world.apply_rails(20);
+        let near = voxels_from(&world, planet, [100.0, 3_000.0, -50.0]);
+        let far = voxels_from(&world, planet, [100.0, 30_000.0, -50.0]);
+        let near_walker = walker_in_the_level(&mut world, &walker, near);
+        let far_walker = walker_in_the_level(&mut world, &walker, far);
+        let ship = a_ship_at(&mut world, near);
+        let aboard_walker = world
+            .spawn_entity(
+                &walker,
+                aboard(ship, [0, 0, 0], [1.0; 3], Orientation::IDENTITY),
+                ComponentBag::new(),
+            )
+            .unwrap();
+        // Nothing has been carried yet: the planet has not moved since it was put on its rail.
+        assert_eq!(world.carried_by_rails(near_walker), None);
+        let before = place_of(&world, planet);
+        world.data.set_clock(20);
+        world.apply_rails(20);
+        let moved = before.displacement_to(place_of(&world, planet));
+        assert_ne!(moved, Displacement::NONE);
+        // What was carried is told, with the displacement it was carried by: the planet's. Not what is far, nor what is aboard a ship.
+        assert_eq!(world.carried_by_rails(near_walker), Some(moved));
+        assert_eq!(world.carried_by_rails(far_walker), None);
+        assert_eq!(world.carried_by_rails(aboard_walker), None);
+        // A pose put on it afterwards (a teleport, a landing) is not carried: the carry is forgotten, so that no one moves what was put somewhere by it.
+        world
+            .set_entity_pose(
+                near_walker,
+                EntityPose::new(GridId::MAIN, far, Orientation::IDENTITY),
+            )
+            .unwrap();
+        assert_eq!(world.carried_by_rails(near_walker), None);
+        // The call the server makes again after the rules of the tick moves nothing, and so tells of nothing: the tick's carry is for what runs in the tick.
+        let other = walker_in_the_level(&mut world, &walker, near);
+        world.data.set_clock(40);
+        world.apply_rails(20);
+        assert!(world.carried_by_rails(other).is_some());
+        world.apply_rails(20);
+        assert_eq!(world.carried_by_rails(other), None);
+    }
+
+    #[test]
+    fn a_ship_in_the_sphere_of_a_planet_on_a_rail_goes_with_it_held_or_free_and_one_beyond_it_or_with_a_rail_of_its_own_does_not()
+     {
+        let (mut world, _) = world_with_a_walker();
+        let planet = planet_on(
+            &mut world,
+            100,
+            1.0e20,
+            Some(orbit_about(Centre::Point([0.0; 3]), 1.0e6, 1.0e5)),
+        );
+        world.apply_rails(20);
+        let near = voxels_from(&world, planet, [100.0, 3_000.0, -50.0]);
+        let far = voxels_from(&world, planet, [100.0, 30_000.0, -50.0]);
+        let free = a_ship_at(&mut world, near);
+        let held = a_ship_at(&mut world, near);
+        world.set_grid_held(held, true).unwrap();
+        let distant = a_ship_at(&mut world, far);
+        let on_its_own_rail = a_ship_at(&mut world, near);
+        let own_rail = orbit_about(Centre::Point([0.0; 3]), 5.0e5, 1.0e5);
+        world
+            .set_grid_rail(on_its_own_rail, Some(own_rail))
+            .unwrap();
+        world
+            .set_grid_velocity(free, [1.0, 2.0, 3.0], [0.0, 0.5, 0.0])
+            .unwrap();
+        world.apply_rails(20);
+        // The first call only learns who is where (a ship is carried by the planet whose sphere it is in before the planet moves).
+        assert_eq!(world.carrier_of(free), Some(planet));
+        assert_eq!(world.carrier_of(held), Some(planet));
+        assert_eq!(world.carrier_of(distant), None);
+        assert_eq!(
+            world.carrier_of(on_its_own_rail),
+            None,
+            "a ship on a rail is placed by it"
+        );
+        assert_eq!(
+            world.carrier_of(planet),
+            None,
+            "a planet is carried by no planet"
+        );
+
+        let (planet_before, free_before, held_before, distant_before) = (
+            place_of(&world, planet),
+            place_of(&world, free),
+            place_of(&world, held),
+            place_of(&world, distant),
+        );
+        world.data.set_clock(20);
+        world.apply_rails(20);
+        let moved = planet_before
+            .displacement_to(place_of(&world, planet))
+            .in_voxels();
+        assert!(
+            moved[0].abs() + moved[1].abs() + moved[2].abs() > 1.0,
+            "the planet goes"
+        );
+        for (ship, before) in [(free, free_before), (held, held_before)] {
+            let carried = before.displacement_to(place_of(&world, ship)).in_voxels();
+            for axis in 0..3 {
+                assert!(
+                    (carried[axis] - moved[axis]).abs() < 1e-3,
+                    "{ship:?} carried {carried:?} against the planet's {moved:?}"
+                );
+            }
+        }
+        assert_eq!(
+            place_of(&world, distant),
+            distant_before,
+            "beyond the sphere"
+        );
+        // What is carried keeps its own velocity: the planet's is the planet's, and the ship's speed against it is the ship's.
+        let carried_ship = world.data().grids().get(free).unwrap();
+        assert_eq!(carried_ship.linear_velocity, [1.0, 2.0, 3.0]);
+        assert_eq!(carried_ship.angular_velocity, [0.0, 0.5, 0.0]);
+        // Told again in the same tick (the server does, after the rules), nothing moves it twice.
+        let (once_planet, once_free) = (place_of(&world, planet), place_of(&world, free));
+        world.apply_rails(20);
+        assert_eq!(place_of(&world, planet), once_planet);
+        assert_eq!(place_of(&world, free), once_free);
+    }
+
+    #[test]
+    fn a_ship_that_goes_out_of_the_sphere_is_let_go_a_quarter_farther_out_and_a_world_without_rails_carries_nothing()
+     {
+        let (mut world, _) = world_with_a_walker();
+        let still = a_ship_at(&mut world, at(5.0, 5.0, 5.0));
+        world.apply_rails(20);
+        assert_eq!(world.carrier_of(still), None);
+        assert_eq!(place_of(&world, still), at(5.0, 5.0, 5.0));
+
+        let planet = planet_on(
+            &mut world,
+            100,
+            1.0e20,
+            Some(orbit_about(Centre::Point([0.0; 3]), 1.0e6, 1.0e5)),
+        );
+        world.apply_rails(20);
+        // 4,700 of 4,800: inside. It is carried; then it is put at 5,500, beyond the sphere but not a quarter beyond: still carried, as it was. At 6,500 it is let go.
+        let inside = voxels_from(&world, planet, [0.0, 4_700.0, 0.0]);
+        let ship = a_ship_at(&mut world, inside);
+        world.apply_rails(20);
+        assert_eq!(world.carrier_of(ship), Some(planet));
+        let beyond = voxels_from(&world, planet, [0.0, 5_500.0, 0.0]);
+        world
+            .set_grid_pose(ship, GridPose::new(beyond, Orientation::IDENTITY))
+            .unwrap();
+        world.apply_rails(20);
+        assert_eq!(world.carrier_of(ship), Some(planet));
+        let outside = voxels_from(&world, planet, [0.0, 6_500.0, 0.0]);
+        world
+            .set_grid_pose(ship, GridPose::new(outside, Orientation::IDENTITY))
+            .unwrap();
+        world.apply_rails(20);
+        assert_eq!(world.carrier_of(ship), None);
+        world.data.set_clock(40);
+        world.apply_rails(20);
+        assert_eq!(place_of(&world, ship), outside, "let go, it stays");
+        // And a ship that is not in the world is carried by none.
+        assert_eq!(
+            world.carrier_of(GridId::new(GridId::FIRST_ALLOCATED + 999)),
+            None
+        );
+    }
+
+    #[test]
+    fn an_entity_that_leaves_the_sphere_is_let_go_and_is_not_carried_after_and_a_world_with_no_rails_carries_nothing()
+     {
+        let (mut world, walker) = world_with_a_walker();
+        let still = walker_in_the_level(&mut world, &walker, at(5.0, 5.0, 5.0));
+        world.apply_rails(20);
+        assert_eq!(
+            world.entities().get(still).unwrap().pose.position,
+            at(5.0, 5.0, 5.0)
+        );
+
+        let planet = planet_on(
+            &mut world,
+            100,
+            1.0e20,
+            Some(orbit_about(Centre::Point([0.0; 3]), 1.0e6, 1.0e5)),
+        );
+        world.apply_rails(20);
+        let inside = voxels_from(&world, planet, [0.0, 4_700.0, 0.0]);
+        let walker_id = walker_in_the_level(&mut world, &walker, inside);
+        world.data.set_clock(20);
+        world.apply_rails(20);
+        let carried_to = world.entities().get(walker_id).unwrap().pose.position;
+        assert_ne!(carried_to, inside, "carried while inside");
+        // It walks out beyond the sphere and a quarter more (4,800 and 6,000), and is let go: the planet goes on without it.
+        let outside = voxels_from(&world, planet, [0.0, 6_500.0, 0.0]);
+        world
+            .set_entity_pose(
+                walker_id,
+                EntityPose::new(GridId::MAIN, outside, Orientation::IDENTITY),
+            )
+            .unwrap();
+        world.data.set_clock(40);
+        world.apply_rails(20);
+        assert_eq!(
+            world.entities().get(walker_id).unwrap().pose.position,
+            outside
+        );
+        world.data.set_clock(60);
+        world.apply_rails(20);
+        assert_eq!(
+            world.entities().get(walker_id).unwrap().pose.position,
+            outside
+        );
+    }
+
+    #[test]
+    fn what_is_in_the_level_within_the_sphere_of_a_planet_on_a_rail_falls_with_it_and_feels_nothing_of_what_it_goes_round()
+     {
+        let (mut world, walker) = world_with_a_walker();
+        world.set_gravity_settings(GravitySettings {
+            base: [0.0; 3],
+            pull_strength: 6.674e-11,
+            pull_mass_threshold: Some(1.0e19),
+            softening: 1.0,
+        });
+        let star = planet_on(&mut world, 10, 6.0e20, None);
+        let planet = planet_on(
+            &mut world,
+            100,
+            1.0e19,
+            Some(orbit_about(Centre::Grid(star), 400_000.0, 200_000.0)),
+        );
+        world.apply_rails(20);
+        let inside = voxels_from(&world, planet, [0.0, 100.0, 0.0]);
+        let outside = voxels_from(&world, planet, [0.0, 50_000.0, 0.0]);
+        let _ = walker;
+        // Inside the sphere: the planet's own pull alone, straight down (it does not turn), and nothing sideways from the star 400,000 voxels away.
+        let own = 6.674e-11 * 1.0e19 * 100.0 / (10_001.0f64 * 10_001.0f64.sqrt());
+        let felt = world.gravity_in(GridId::MAIN, inside).unwrap();
+        assert!(felt[0].abs() < 1e-3 && felt[2].abs() < 1e-3, "{felt:?}");
+        assert!(
+            (f64::from(-felt[1]) - own).abs() < 1e-2 * own.max(1.0),
+            "{felt:?} against {own}"
+        );
+        // Outside it, the pull is the level's: the star's is felt (0.25 toward it, on the -x side, 6.674e-11 x 6e20 / 400,000^2).
+        let there = world.gravity_in(GridId::MAIN, outside).unwrap();
+        assert!(there[0] < -0.2, "{there:?}");
+        assert_eq!(there, world.gravity_at(LevelIndex::MAIN, outside));
     }
 
     #[test]

@@ -39,7 +39,7 @@ pub use level_of_detail::LevelOfDetail;
 pub use local_voxel_index::LocalVoxelIndex;
 pub use orientation::Orientation;
 pub use voxel_box::VoxelBox;
-pub use world_position::WorldPosition;
+pub use world_position::{Displacement, WorldPosition};
 
 /// Base-2 logarithm of [`BRICK_EDGE_LENGTH`], used for shifts.
 pub const BRICK_EDGE_LENGTH_LOG2: u32 = 5;

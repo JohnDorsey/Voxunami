@@ -21,6 +21,9 @@ pub enum BodyKind {
     Dynamic,
     /// It stays where it is, and everything else collides with it.
     Fixed,
+    /// It goes at its velocity, whatever is on it or pushes it: gravity and collisions do not move it, and what rests on it is carried (a planet on a rail, a
+    /// platform that is moved by hand). The velocities are the ones it is given with [`BodyWorld::set_state`] or when it is added.
+    Kinematic,
 }
 
 /// Where a body is and how it moves, in the world: the position of its origin, its orientation, and its velocities (per second; the angular one
@@ -209,6 +212,7 @@ impl BodyWorld {
         let builder = match kind {
             BodyKind::Dynamic => RigidBodyBuilder::dynamic(),
             BodyKind::Fixed => RigidBodyBuilder::fixed(),
+            BodyKind::Kinematic => RigidBodyBuilder::kinematic_velocity_based(),
         }
         .pose(Pose::from_parts(
             self.local(state.position),
@@ -247,7 +251,8 @@ impl BodyWorld {
         Ok(())
     }
 
-    /// Whether a body moves or stays; one made to move again starts from rest.
+    /// Whether a body moves, stays or is moved by its velocity alone; a fixed body made to move again starts from rest, and a kinematic one goes on at the speed
+    /// it had.
     pub fn set_kind(&mut self, id: BodyId, kind: BodyKind) -> Result<(), BodyError> {
         let body = self.by_id.get_mut(&id).ok_or(BodyError::UnknownBody(id))?;
         if body.kind == kind {
@@ -258,6 +263,9 @@ impl BodyWorld {
         match kind {
             BodyKind::Fixed => rapier.set_body_type(RigidBodyType::Fixed, true),
             BodyKind::Dynamic => rapier.set_body_type(RigidBodyType::Dynamic, true),
+            BodyKind::Kinematic => {
+                rapier.set_body_type(RigidBodyType::KinematicVelocityBased, true)
+            }
         }
         Ok(())
     }
@@ -1387,6 +1395,211 @@ mod tests {
         assert_eq!(speed_of(&world, 3), 0.0);
         run(&mut world, 2);
         assert!(height_of(&world, 3) < held);
+    }
+
+    // ---- kinematic bodies: ones that go where their velocity says, whatever is on them ----
+
+    /// A world with gravity and no ground, in which a body can be shown to move or not.
+    fn world_without_ground() -> BodyWorld {
+        BodyWorld::new(BrickCoordinate::ORIGIN, heavy_planet())
+    }
+
+    fn place_of(world: &BodyWorld, id: u64) -> [f32; 3] {
+        let state = world.state(BodyId(id)).unwrap();
+        let (brick, offset) = (state.position.brick(), state.position.offset());
+        [
+            brick.x() as f32 * 32.0 + offset[0],
+            brick.y() as f32 * 32.0 + offset[1],
+            brick.z() as f32 * 32.0 + offset[2],
+        ]
+    }
+
+    fn moving(position: WorldPosition, linear: [f32; 3], angular: [f32; 3]) -> BodyState {
+        BodyState {
+            position,
+            orientation: Orientation::IDENTITY,
+            linear_velocity: linear,
+            angular_velocity: angular,
+        }
+    }
+
+    #[test]
+    fn a_kinematic_body_goes_at_its_velocity_and_gravity_does_not_move_it() {
+        let mut world = world_without_ground();
+        ship_of(
+            &mut world,
+            1,
+            &Hull::cube(4),
+            moving(at(0.0, 100.0, 0.0), [3.0, 0.0, -1.0], [0.0; 3]),
+            BodyKind::Kinematic,
+        );
+        run(&mut world, 100);
+        // Five seconds at (3, 0, -1) a second, and not a bit fallen.
+        let [x, y, z] = place_of(&world, 1);
+        assert!(
+            (x - 15.0).abs() < 1e-3 && (y - 100.0).abs() < 1e-3 && (z + 5.0).abs() < 1e-3,
+            "{x} {y} {z}"
+        );
+        assert_eq!(
+            world.state(BodyId(1)).unwrap().linear_velocity,
+            [3.0, 0.0, -1.0]
+        );
+    }
+
+    #[test]
+    fn a_kinematic_body_that_turns_keeps_turning_at_its_angular_velocity() {
+        let mut world = world_without_ground();
+        ship_of(
+            &mut world,
+            1,
+            &Hull::cube(4),
+            moving(at(0.0, 100.0, 0.0), [0.0; 3], [0.0, 0.5, 0.0]),
+            BodyKind::Kinematic,
+        );
+        run(&mut world, 40);
+        // Two seconds at half a radian a second is a radian: the quaternion of a turn about y by one radian is (0, sin 1/2, 0, cos 1/2).
+        let [x, y, z, w] = world.state(BodyId(1)).unwrap().orientation.components();
+        assert!(x.abs() < 1e-6 && z.abs() < 1e-6, "{x} {z}");
+        assert!(
+            (y - libm::sin(0.5)).abs() < 1e-4 && (w - libm::cos(0.5)).abs() < 1e-4,
+            "{y} {w}"
+        );
+    }
+
+    #[test]
+    fn a_ship_resting_on_a_kinematic_body_that_moves_is_carried_with_it_and_does_not_slide_off() {
+        let mut world = world_without_ground();
+        // A slab of 16 by 2 by 16, moving along x at 4 metres a second, with a cube of 2 on it.
+        let mut slab = Hull::default();
+        for x in 0..16 {
+            for y in 0..2 {
+                for z in 0..16 {
+                    slab.0
+                        .insert(VoxelCoordinate::new(x, y, z), Collision::Full);
+                }
+            }
+        }
+        ship_of(
+            &mut world,
+            1,
+            &slab,
+            moving(at(0.0, 100.0, 0.0), [4.0, 0.0, 0.0], [0.0; 3]),
+            BodyKind::Kinematic,
+        );
+        ship_of(
+            &mut world,
+            2,
+            &Hull::cube(2),
+            moving(at(7.0, 102.01, 7.0), [4.0, 0.0, 0.0], [0.0; 3]),
+            BodyKind::Dynamic,
+        );
+        run(&mut world, 120);
+        // Six seconds: the slab is 24 along, and the cube is still on it (above its top at 102, over its middle) and has gone as far.
+        let slab_at = place_of(&world, 1);
+        let cube_at = place_of(&world, 2);
+        assert!((slab_at[0] - 24.0).abs() < 1e-3, "{slab_at:?}");
+        assert!(
+            (cube_at[0] - slab_at[0] - 7.0).abs() < 0.2,
+            "{cube_at:?} on {slab_at:?}"
+        );
+        assert!((cube_at[1] - 102.0).abs() < 0.05, "{cube_at:?}");
+        assert!((cube_at[2] - 7.0).abs() < 0.2, "{cube_at:?}");
+    }
+
+    #[test]
+    fn a_ship_resting_on_a_kinematic_body_that_turns_is_carried_round_with_it() {
+        let mut world = world_without_ground();
+        // A slab of 16 by 2 by 16 turning about the vertical line through its middle (8, 8) at a fifth of a radian a second, with a cube 6 voxels from the middle.
+        let mut slab = Hull::default();
+        for x in 0..16 {
+            for y in 0..2 {
+                for z in 0..16 {
+                    slab.0
+                        .insert(VoxelCoordinate::new(x, y, z), Collision::Full);
+                }
+            }
+        }
+        let middle = BodyMass {
+            centre_of_mass: [8.0, 1.0, 8.0],
+            ..slab.mass(1.0)
+        };
+        world
+            .add_body(
+                BodyId(1),
+                moving(at(0.0, 100.0, 0.0), [0.0; 3], [0.0, 0.2, 0.0]),
+                BodyKind::Kinematic,
+            )
+            .unwrap();
+        world
+            .set_brick(BodyId(1), BrickCoordinate::ORIGIN, &mut &slab)
+            .unwrap();
+        world.set_mass(BodyId(1), middle).unwrap();
+        ship_of(
+            &mut world,
+            2,
+            &Hull::cube(2),
+            resting_at(at(13.0, 102.01, 7.0)),
+            BodyKind::Dynamic,
+        );
+        run(&mut world, 100);
+        // Five seconds at 0.2 a second is a radian, about the middle of the slab (its centre of mass): the cube has turned the radian with it, still sits on it
+        // (its height is the slab's top) and is about six voxels from its axis, where it was put.
+        let [x, y, z, w] = world.state(BodyId(2)).unwrap().orientation.components();
+        assert!(
+            x.abs() < 0.02
+                && z.abs() < 0.02
+                && (y - libm::sin(0.5f64)).abs() < 0.03
+                && (w - libm::cos(0.5f64)).abs() < 0.03,
+            "{x} {y} {z} {w}"
+        );
+        let [cube_x, cube_y, cube_z] = place_of(&world, 2);
+        assert!((cube_y - 102.0).abs() < 0.1, "{cube_y}");
+        let apart = ((cube_x - 8.0) * (cube_x - 8.0) + (cube_z - 8.0) * (cube_z - 8.0)).sqrt();
+        assert!(
+            (3.0..9.0).contains(&apart),
+            "{apart} from the axis at {cube_x} {cube_z}"
+        );
+        // And it has moved round: it began at x = 13 on the +x side.
+        assert!(cube_x < 12.0, "{cube_x}");
+    }
+
+    #[test]
+    fn a_body_can_be_made_kinematic_and_made_to_move_again_and_set_state_gives_it_a_place_and_a_velocity()
+     {
+        let mut world = world_without_ground();
+        ship_of(
+            &mut world,
+            1,
+            &Hull::cube(2),
+            resting_at(at(0.0, 100.0, 0.0)),
+            BodyKind::Dynamic,
+        );
+        run(&mut world, 4);
+        let fallen = height_of(&world, 1);
+        assert!(fallen < 100.0);
+        world.set_kind(BodyId(1), BodyKind::Kinematic).unwrap();
+        world
+            .set_state(
+                BodyId(1),
+                moving(at(10.0, 50.0, 0.0), [0.0, 2.0, 0.0], [0.0; 3]),
+            )
+            .unwrap();
+        run(&mut world, 20);
+        // One second at 2 a second up, from where it was put.
+        assert!((height_of(&world, 1) - 52.0).abs() < 1e-3);
+        // Made to move by forces again, it goes on at the speed it had (a fixed body has none, and starts from rest), and then gravity has it.
+        world.set_kind(BodyId(1), BodyKind::Dynamic).unwrap();
+        assert_eq!(
+            world.state(BodyId(1)).unwrap().linear_velocity,
+            [0.0, 2.0, 0.0]
+        );
+        run(&mut world, 40);
+        assert!(
+            speed_of(&world, 1) > 20.0,
+            "falling at 32 a second a second"
+        );
+        // The same kind twice changes nothing.
+        world.set_kind(BodyId(1), BodyKind::Dynamic).unwrap();
     }
 
     #[test]

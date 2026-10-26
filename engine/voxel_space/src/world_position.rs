@@ -2,6 +2,37 @@ use crate::{BRICK_EDGE_LENGTH, BrickCoordinate};
 
 const EDGE: f32 = BRICK_EDGE_LENGTH as f32;
 
+/// The vector from one position to another, as whole bricks and an `f32` rest: exact in bricks however far apart the positions are and however far both are from
+/// the origin, which an `f32` vector of voxels cannot be. A thing that moves with something else (a frame that follows a planet) is moved by one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Displacement {
+    pub bricks: [i64; 3],
+    /// In voxels; any size (the difference of two offsets is less than a brick, and the sum of several may be more).
+    pub offset: [f32; 3],
+}
+
+impl Displacement {
+    /// Going nowhere.
+    pub const NONE: Self = Self {
+        bricks: [0; 3],
+        offset: [0.0; 3],
+    };
+
+    /// The displacement the other way.
+    pub fn negated(self) -> Self {
+        Self {
+            bricks: self.bricks.map(|bricks| -bricks),
+            offset: self.offset.map(|component| -component),
+        }
+    }
+
+    /// As plain numbers, in voxels.
+    pub fn in_voxels(self) -> [f64; 3] {
+        let edge = f64::from(EDGE);
+        [0, 1, 2].map(|axis| self.bricks[axis] as f64 * edge + f64::from(self.offset[axis]))
+    }
+}
+
 /// A continuous position in a grid: a whole brick plus an `f32` offset inside it.
 ///
 /// A single `f32` loses precision far from the origin (a quarter-millimetre at 1 km, a whole metre
@@ -94,6 +125,31 @@ impl WorldPosition {
         Self::try_from_voxels(position).expect("position is outside the supported coordinate range")
     }
 
+    /// What it takes to go from this position to `other`.
+    pub fn displacement_to(self, other: Self) -> Displacement {
+        Displacement {
+            bricks: [
+                other.brick.x() - self.brick.x(),
+                other.brick.y() - self.brick.y(),
+                other.brick.z() - self.brick.z(),
+            ],
+            offset: [0, 1, 2].map(|axis| other.offset[axis] - self.offset[axis]),
+        }
+    }
+
+    /// This position moved by a displacement; `None` where that leaves the supported coordinate range (or the displacement is not a number).
+    pub fn displaced(self, displacement: Displacement) -> Option<Self> {
+        let brick = self.brick.checked_offset(
+            displacement.bricks[0],
+            displacement.bricks[1],
+            displacement.bricks[2],
+        )?;
+        Self::try_new(
+            brick,
+            [0, 1, 2].map(|axis| self.offset[axis] + displacement.offset[axis]),
+        )
+    }
+
     /// This position moved by `delta` voxels.
     pub fn translated(self, delta: [f32; 3]) -> Self {
         Self::new(
@@ -143,6 +199,68 @@ mod tests {
 
     fn brick(x: i64, y: i64, z: i64) -> BrickCoordinate {
         BrickCoordinate::new(x, y, z)
+    }
+
+    #[test]
+    fn a_displacement_is_the_whole_bricks_between_two_positions_and_the_rest_and_takes_the_one_to_the_other()
+     {
+        let a = WorldPosition::new(brick(3, 4, 5), [1.0, 2.0, 3.0]);
+        let b = WorldPosition::new(brick(-9, 0, 5), [30.0, 2.5, 0.0]);
+        let d = a.displacement_to(b);
+        assert_eq!(d.bricks, [-12, -4, 0]);
+        assert_eq!(d.offset, [29.0, 0.5, -3.0]);
+        assert_eq!(
+            d.in_voxels(),
+            [-12.0 * 32.0 + 29.0, -4.0 * 32.0 + 0.5, -3.0]
+        );
+        assert_eq!(a.displaced(d), Some(b));
+        // And back the other way.
+        assert_eq!(b.displaced(d.negated()), Some(a));
+        assert_eq!(d.negated().bricks, [12, 4, 0]);
+        assert_eq!(d.negated().offset, [-29.0, -0.5, 3.0]);
+        // No displacement leaves a position where it is.
+        assert_eq!(a.displaced(Displacement::NONE), Some(a));
+        assert_eq!(a.displacement_to(a), Displacement::NONE);
+    }
+
+    #[test]
+    fn a_displacement_is_exact_in_bricks_however_far_apart_the_positions_are() {
+        // A hundred billion bricks and a thousand voxels: the bricks are exact and the rest is the rest.
+        let near = WorldPosition::new(brick(0, 0, 0), [0.5, 0.5, 0.5]);
+        let far = WorldPosition::new(
+            brick(100_000_000_000, -100_000_000_000, 7),
+            [31.5, 0.25, 0.5],
+        );
+        let d = near.displacement_to(far);
+        assert_eq!(d.bricks, [100_000_000_000, -100_000_000_000, 7]);
+        assert_eq!(d.offset, [31.0, -0.25, 0.0]);
+        assert_eq!(near.displaced(d), Some(far));
+    }
+
+    #[test]
+    fn a_displacement_past_the_end_of_the_world_gives_no_position() {
+        use crate::BRICK_COORDINATE_MAXIMUM;
+        let last = WorldPosition::new(brick(BRICK_COORDINATE_MAXIMUM, 0, 0), [0.0; 3]);
+        let one_brick = Displacement {
+            bricks: [1, 0, 0],
+            offset: [0.0; 3],
+        };
+        assert_eq!(last.displaced(one_brick), None);
+        let a_voxel_short = Displacement {
+            bricks: [0, 0, 0],
+            offset: [31.0, 0.0, 0.0],
+        };
+        assert!(last.displaced(a_voxel_short).is_some());
+        let too_many_bricks = Displacement {
+            bricks: [i64::MAX, 0, 0],
+            offset: [0.0; 3],
+        };
+        assert_eq!(last.displaced(too_many_bricks), None);
+        let not_a_number = Displacement {
+            bricks: [0; 3],
+            offset: [f32::NAN, 0.0, 0.0],
+        };
+        assert_eq!(last.displaced(not_a_number), None);
     }
 
     #[test]
@@ -281,6 +399,22 @@ mod tests {
         let forward = a.relative_to(b);
         let backward = b.relative_to(a);
         assert_eq!([-forward[0], -forward[1], -forward[2]], backward);
+    }
+
+    proptest! {
+        #[test]
+        fn a_position_displaced_by_the_displacement_to_another_is_that_other_to_within_a_hair(
+            base in [-1000i64..1000, -1000..1000, -1000..1000],
+            offset in [0.0f32..32.0, 0.0..32.0, 0.0..32.0],
+            other_base in [-1000i64..1000, -1000..1000, -1000..1000],
+            other_offset in [0.0f32..32.0, 0.0..32.0, 0.0..32.0],
+        ) {
+            let a = WorldPosition::new(brick(base[0], base[1], base[2]), offset);
+            let b = WorldPosition::new(brick(other_base[0], other_base[1], other_base[2]), other_offset);
+            let there = a.displaced(a.displacement_to(b)).expect("the world is large");
+            let miss = there.relative_to(b);
+            prop_assert!(miss.iter().all(|component| component.abs() < 1e-4), "{miss:?}");
+        }
     }
 
     proptest! {

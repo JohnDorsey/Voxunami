@@ -12,7 +12,7 @@ use plugin_host::{
 use protocol::ClientId;
 use server::ServerWorld;
 use voxel_grid::ChannelIndex;
-use voxel_space::{GridId, LevelIndex, Orientation, VoxelCoordinate, WorldPosition};
+use voxel_space::{Displacement, GridId, LevelIndex, Orientation, VoxelCoordinate, WorldPosition};
 
 use crate::content::CaveContent;
 use crate::messages::{MoveRequest, Spawn};
@@ -293,8 +293,19 @@ impl Plugin for MovementPlugin {
                         ))
                     })
                     .collect();
-                let moved = locked(&bodies)
-                    .step(context.world(), |client| placements.get(&client).copied());
+                // What the world carried each player by this tick (a planet that goes round), for their bodies to go with.
+                let carried: BTreeMap<ClientId, Displacement> = placements
+                    .keys()
+                    .filter_map(|&client| {
+                        let entity = presence.entity_of(client)?;
+                        Some((client, context.world().carried_by_rails(entity)?))
+                    })
+                    .collect();
+                let moved = locked(&bodies).step(
+                    context.world(),
+                    |client| placements.get(&client).copied(),
+                    |client| carried.get(&client).copied(),
+                );
                 for update in moved {
                     // (A ship that is gone since the body was made: the record says where the player is, and the body is made to agree
                     // next tick.)

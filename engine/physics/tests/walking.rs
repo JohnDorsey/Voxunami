@@ -1418,3 +1418,88 @@ fn a_jump_is_one_impulse_whatever_the_key_does_and_the_speed_up_falls_at_the_pul
     };
     assert!((top - 1.296).abs() < 0.06, "{top}");
 }
+
+#[test]
+fn a_character_in_the_air_that_is_displaced_is_there_at_once_and_goes_on_with_the_speed_it_had() {
+    // (What the world carries along, a planet that goes round: the character is in the air near it and the planet's displacement of the tick is theirs.)
+    let mut scene = Scene::with_floor(9);
+    let mut body = spawn(16.5, 60.0, 16.5);
+    run(&mut body, &mut scene, STILL, 20);
+    assert!(!body.is_grounded());
+    let (before, speed) = (eye(&body), body.velocity());
+    assert!(speed[1] < -1.0, "falling: {speed:?}");
+    body.displace([100.0, 5.0, -30.0]);
+    let after = eye(&body);
+    for (axis, change) in [100.0, 5.0, -30.0].into_iter().enumerate() {
+        assert!(
+            (after[axis] - before[axis] - change).abs() < 1e-3,
+            "axis {axis}: {before:?} then {after:?}"
+        );
+    }
+    assert_eq!(body.velocity(), speed);
+    assert!(!body.is_grounded());
+    // It goes on falling from there at the speed it had: a step on (a sixtieth of a second), it is lower by that speed after the pull of the step (gravity over
+    // sixty) over sixty.
+    run(&mut body, &mut scene, STILL, 1);
+    let next = eye(&body);
+    let pull = f64::from(CharacterSettings::default().gravity) / 60.0;
+    let expected = (f64::from(speed[1]) - pull) / 60.0;
+    assert!(
+        (next[1] - after[1] - expected).abs() < 1e-3,
+        "{after:?} then {next:?} at {speed:?}, wanted {expected}"
+    );
+}
+
+#[test]
+fn a_character_that_is_displaced_sideways_along_a_floor_goes_on_standing_and_one_put_into_it_is_lifted_out()
+ {
+    let (mut body, mut scene) = standing_on_a_floor();
+    let standing = eye(&body);
+    body.displace([6.0, 0.0, -4.0]);
+    run(&mut body, &mut scene, STILL, 30);
+    let there = eye(&body);
+    assert!(body.is_grounded());
+    assert!(
+        (there[0] - standing[0] - 6.0).abs() < 1e-3
+            && (there[2] - standing[2] + 4.0).abs() < 1e-3
+            && (there[1] - standing[1]).abs() < 0.03,
+        "{standing:?} then {there:?}"
+    );
+    // Down into the floor, by a few hundredths of a voxel, one, three and seven voxels: it is lifted onto it, as a character put there would be.
+    for depth in [0.05_f32, 1.0, 3.0, 7.0] {
+        let (mut body, mut scene) = standing_on_a_floor();
+        body.displace([0.0, -depth, 0.0]);
+        run(&mut body, &mut scene, STILL, 90);
+        assert!(body.is_grounded(), "depth {depth}");
+        assert!(
+            (eye(&body)[1] - STANDING_EYE_HEIGHT).abs() < 0.05,
+            "depth {depth}: eyes at {}",
+            eye(&body)[1]
+        );
+    }
+}
+
+#[test]
+fn a_character_displaced_a_little_each_tick_for_a_long_way_keeps_its_terrain_and_its_speed() {
+    // A fall of 290 voxels carried along the floor at six voxels a tick (a planet that goes round at 120 metres a second): the character's frame is rebuilt on the way,
+    // and it comes down on the floor as far along as the displacements took it and no farther (the fall does not move it sideways).
+    let mut scene = Scene::with_floor(9);
+    let mut body = spawn(16.5, 300.0, 16.5);
+    let start = eye(&body);
+    let mut ticks = 0;
+    while !body.is_grounded() && ticks < 1_000 {
+        body.displace([6.0, 0.0, 0.0]);
+        run(&mut body, &mut scene, STILL, 1);
+        ticks += 1;
+    }
+    let end = eye(&body);
+    assert!(body.is_grounded(), "still in the air after {ticks} ticks");
+    assert!(ticks > 100, "it fell 290 voxels in {ticks} ticks");
+    assert!((end[1] - STANDING_EYE_HEIGHT).abs() < 0.1, "{end:?}");
+    let along = end[0] - start[0];
+    assert!(
+        (along - 6.0 * f64::from(ticks)).abs() < 0.05,
+        "{along} voxels along in {ticks} ticks"
+    );
+    assert!((end[2] - start[2]).abs() < 1e-3);
+}

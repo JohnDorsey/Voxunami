@@ -26,7 +26,9 @@ use physics::{CharacterBody, CharacterSettings, ForeignGrid, MoveInput};
 use protocol::ClientId;
 use server::ServerWorld;
 use voxel_grid::ChannelIndex;
-use voxel_space::{BrickBox, BrickCoordinate, GridId, LevelIndex, Orientation, WorldPosition};
+use voxel_space::{
+    BrickBox, BrickCoordinate, Displacement, GridId, LevelIndex, Orientation, WorldPosition,
+};
 
 use crate::messages::MoveRequest;
 
@@ -313,11 +315,13 @@ impl Movement {
     }
 
     /// One tick: every body takes its steps, in the order of the players' ids, in the frame the player's record says they are in now
-    /// (`placement_of`; a player with none does not move). Returns where each player is.
+    /// (`placement_of`; a player with none does not move), carried first by what the world carried the player by this tick (`carried_by_rails`). Returns where
+    /// each player is.
     pub fn step(
         &mut self,
         world: &mut ServerWorld,
         placement_of: impl Fn(ClientId) -> Option<Placement>,
+        carried_by_rails: impl Fn(ClientId) -> Option<Displacement>,
     ) -> Vec<Moved> {
         let changed = std::mem::take(&mut self.changed);
         let ships = if self.bodies.is_empty() {
@@ -330,7 +334,7 @@ impl Movement {
             let Some(placement) = placement_of(client) else {
                 continue;
             };
-            agree_with(player, &placement);
+            agree_with(player, &placement, carried_by_rails(client));
             match player.frame.root_level() {
                 Some(level) => {
                     step_in_a_level(player, &self.blocks, world, &changed, &ships, level)
@@ -365,8 +369,16 @@ fn ship_bounds(world: &ServerWorld) -> BTreeMap<GridId, ShipBounds> {
 /// Makes the body agree with what the record of the player says, when it does not: the player was put in another level (the same place,
 /// another terrain, or the place the game sends players to in it), or a ship was taken from under them, or they came back aboard one. The record is where they are; the body is made to
 /// be there, in the frame the record names.
-fn agree_with(player: &mut PlayerBody, placement: &Placement) {
+fn agree_with(player: &mut PlayerBody, placement: &Placement, carried: Option<Displacement>) {
     if placement.frame == player.frame && placement.level == player.level {
+        // In a level, the world may have carried the record of the player this tick: a planet that goes round carries what is in the air near it (`apply_rails`, and
+        // `ServerWorld::carried_by_rails` says by how much). The body is carried by the same, and keeps its velocity (which is against whatever carried it). (A record
+        // that is not the body's is not always the newer: a player who has just come in is where the body was put, and the record catches up when the body has stepped.)
+        if let Some(carried) = carried {
+            player
+                .body
+                .displace(carried.in_voxels().map(|part| part as f32));
+        }
         return;
     }
     if placement.frame.root_level().is_some() && player.frame.root_level().is_some() {
