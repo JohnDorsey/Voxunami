@@ -594,3 +594,20 @@ fn a_ship_beyond_the_distance_the_server_simulates_stops_and_goes_on_when_the_di
     assert!(!going.frozen);
     assert_ne!(going.pose, stopped.pose, "it moves");
 }
+
+#[test]
+fn blocks_of_a_ship_that_the_player_looks_at_can_be_made_a_ship_of_their_own() {
+    let (mut scene, mut player) = raft_and_a_player_looking_at_it();
+    assert!(say(&mut scene, &mut player, "/ship create").starts_with("made ship 0 of 64"));
+    say(&mut scene, &mut player, "/ship hold on");
+    // The raft is a ship now, held where it was, and the player looks at it as before: what they look at is a block of a ship, and is made a ship.
+    let reply = say(&mut scene, &mut player, "/ship create");
+    assert!(reply.contains("made ship 1 of 64 blocks"), "{reply}");
+    // It is where the blocks were, not turned, and the first ship has none left.
+    let at = in_voxels(ship_pose(&scene, 1).position);
+    assert!(at[0] == 20.0 && at[2] == 22.0, "{at:?}");
+    assert_eq!(
+        ship_pose(&scene, 1).orientation,
+        voxel_space::Orientation::IDENTITY
+    );
+}

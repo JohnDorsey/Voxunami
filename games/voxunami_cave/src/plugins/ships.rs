@@ -18,9 +18,7 @@ use plugin_host::{
 use protocol::ClientId;
 use server::{GridView, LogoutPolicy, ServerWorld, ShipSettings};
 use voxel_grid::ChannelIndex;
-use voxel_space::{
-    BrickCoordinate, GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate, WorldPosition,
-};
+use voxel_space::{BrickCoordinate, GridId, GridPose, Orientation, VoxelCoordinate, WorldPosition};
 use world_storage::PilotLogout;
 use world_view::cast_ray;
 
@@ -224,24 +222,25 @@ impl Ships {
         }
     }
 
-    /// Whether a voxel of a level is something a ship is made of: a block bodies cannot pass through. `None` where the world cannot say.
+    /// Whether a voxel of a grid (the terrain of a level, or a ship, a planet too) is something a ship is made of: a block bodies cannot pass through.
+    /// `None` where the world cannot say.
     fn solid(
         &self,
         world: &mut ServerWorld,
-        level: LevelIndex,
+        grid: GridId,
         collisions: &BlockCollisions,
         voxel: VoxelCoordinate,
     ) -> Option<bool> {
-        let mut terrain = world.grid(GridId::root(level)).ok()?;
+        let mut terrain = world.grid(grid).ok()?;
         let block = terrain.get(self.block_channel, voxel).ok()?;
         let state = terrain.get(self.state_channel, voxel).ok()?;
         let orientation = terrain.get(self.orientation_channel, voxel).ok()?;
         Some(collisions.of(block, state, orientation) != Collision::Empty)
     }
 
-    /// Whether the block at a voxel is not what the terrain made there: someone built it.
-    fn built(&self, world: &mut ServerWorld, level: LevelIndex, voxel: VoxelCoordinate) -> bool {
-        let Ok(mut terrain) = world.grid(GridId::root(level)) else {
+    /// Whether the block at a voxel of a grid is not what its terrain made there: someone built it (every block of a ship that has none is).
+    fn built(&self, world: &mut ServerWorld, grid: GridId, voxel: VoxelCoordinate) -> bool {
+        let Ok(mut terrain) = world.grid(grid) else {
             return false;
         };
         match (
@@ -253,7 +252,8 @@ impl Ships {
         }
     }
 
-    /// `/ship create`: the blocks joined to the one the player looks at, that they built (or any, with `all`), become a ship where they are.
+    /// `/ship create`: the blocks joined to the one the player looks at, in the terrain of the level or in a ship (a planet too), that they built (or any, with
+    /// `all`), become a ship where they are.
     fn create(&self, world: &mut ServerWorld, client: ClientId, everything: bool) -> String {
         let (eyes, view, level) = {
             let presence = lock(&self.presence);
@@ -268,14 +268,35 @@ impl Ships {
             self.table.clone(),
             Some(crate::block_properties::passable(&self.table)),
         );
-        let Some(hit) = cast_ray(GridId::root(level), eyes, direction, LOOK_REACH, |voxel| {
-            self.solid(world, level, &collisions, voxel)
-        }) else {
+        // The first block along the look in the terrain of the level or in any ship of it (the ray is cast in each grid's own coordinates).
+        let mut grids: Vec<(GridId, WorldPosition, [f32; 3])> =
+            vec![(GridId::root(level), eyes, direction)];
+        for (id, ship) in world.data().grids().iter() {
+            if ship.level != level {
+                continue;
+            }
+            if let Some(here) = ship.pose.world_to_local(eyes) {
+                grids.push((id, here, ship.pose.direction_to_local(direction)));
+            }
+        }
+        let mut nearest: Option<world_view::RayHit> = None;
+        for (grid, start, direction) in grids {
+            let hit = cast_ray(grid, start, direction, LOOK_REACH, |voxel| {
+                self.solid(world, grid, &collisions, voxel)
+            });
+            if let Some(hit) = hit
+                && nearest.is_none_or(|best| hit.distance < best.distance)
+            {
+                nearest = Some(hit);
+            }
+        }
+        let Some(hit) = nearest else {
             return "you are not looking at a block".to_owned();
         };
+        let grid = hit.grid;
         let blocks = connected_blocks(hit.voxel, MAXIMUM_BLOCKS, |voxel| {
-            self.solid(world, level, &collisions, voxel) == Some(true)
-                && (everything || self.built(world, level, voxel))
+            self.solid(world, grid, &collisions, voxel) == Some(true)
+                && (everything || self.built(world, grid, voxel))
         });
         let Some(blocks) = blocks else {
             return format!(
@@ -291,7 +312,7 @@ impl Ships {
             return "that was not built by anyone; /ship create all takes what is there, ground and all"
                 .to_owned();
         }
-        match world.detach_blocks(GridId::root(level), &blocks) {
+        match world.detach_blocks(grid, &blocks) {
             Ok(ship) => format!(
                 "made ship {} of {} blocks (it falls unless you /ship hold on)",
                 number(ship),

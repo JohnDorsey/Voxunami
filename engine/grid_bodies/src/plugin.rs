@@ -198,6 +198,10 @@ struct Planet {
     bricks: BTreeSet<BrickCoordinate>,
     /// Where the planet was last put in the bodies: if the world says other, something else moved it.
     written: GridPose,
+    /// The docking ports in each brick of the planet that has any: only blocks that were built there are ports, so only its stored bricks are looked at.
+    ports: BTreeMap<BrickCoordinate, Vec<Port>>,
+    /// Whether the stored bricks have been looked at for ports (after that, the bricks that change).
+    scanned: bool,
 }
 
 /// Which frame: the level it is in, and a number (a level has as many frames as it has places with ships in them).
@@ -522,6 +526,7 @@ impl Bodies {
             self.sync_ship(world, id, level_index, &changed_ships);
         }
         self.sync_planets(world);
+        self.scan_planets_for_ports(world, &changed_ships);
         self.keep_terrain(world, &changed_terrain, &changed_ships);
 
         for (id, (mass, centre)) in std::mem::take(&mut self.weighed) {
@@ -755,9 +760,56 @@ impl Bodies {
                                 Planet {
                                     bricks: BTreeSet::new(),
                                     written: planet.pose,
+                                    ports: BTreeMap::new(),
+                                    scanned: false,
                                 },
                             );
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Looks at the stored bricks of each planet for docking ports: all of them the first time, and then the ones that changed. (A planet's ground has no
+    /// ports; they are blocks someone built.)
+    fn scan_planets_for_ports(
+        &mut self,
+        world: &ServerWorld,
+        changed: &BTreeSet<(GridId, BrickCoordinate)>,
+    ) {
+        let Some(docking) = &self.config.docking else {
+            return;
+        };
+        let weigher = Weigher {
+            table: &self.config.table,
+            density: self.config.density,
+            block_channel: self.config.block_channel,
+            state_channel: self.config.state_channel,
+            orientation_channel: self.config.orientation_channel,
+            air: self.config.air,
+        };
+        for frame in self.frames.values_mut() {
+            for (&id, planet) in &mut frame.planets {
+                let Some(grid) = world.data().grids().get(id) else {
+                    continue;
+                };
+                let bricks: Vec<BrickCoordinate> = if planet.scanned {
+                    changed
+                        .iter()
+                        .filter(|(held, _)| *held == id)
+                        .map(|(_, brick)| *brick)
+                        .collect()
+                } else {
+                    grid.voxels.sorted_brick_coordinates()
+                };
+                planet.scanned = true;
+                for brick in bricks {
+                    let (_, ports) = weigher.scan_brick(grid, brick, Some(docking.table()));
+                    if ports.is_empty() {
+                        planet.ports.remove(&brick);
+                    } else {
+                        planet.ports.insert(brick, ports);
                     }
                 }
             }
@@ -1039,6 +1091,15 @@ impl Bodies {
     }
 }
 
+/// What `port_pairs` needs of a ship or a planet that has docking ports.
+struct Bearer<'a> {
+    id: GridId,
+    /// Whether it can move: a ship that is free does, a ship that is held and a planet do not.
+    moves: bool,
+    ports: &'a BTreeMap<BrickCoordinate, Vec<Port>>,
+    ship: &'a MovingGrid,
+}
+
 /// A pair of ships with a pair of ports that pull on each other: the closest such pair of ports of the two.
 struct PortPair {
     frame: FrameKey,
@@ -1050,34 +1111,43 @@ struct PortPair {
 }
 
 impl Bodies {
-    /// Whether two ships are both held (or frozen): nothing would move them together.
-    fn both_fixed(&self, level: &Frame, first: GridId, second: GridId) -> bool {
-        [first, second].iter().all(|id| {
-            level
-                .ships
-                .get(id)
-                .is_some_and(|ship| ship.kind == BodyKind::Fixed)
-        })
-    }
-
-    /// For every two ships of a level that have ports that pull on each other, the closest pair of ports, in order of ship. Ships that are
-    /// frozen, pairs that were undocked and have not yet come apart, and pairs that could not be docked where they are, have none.
+    /// For every two ships of a frame (a planet is one, for this, fixed and with the ports someone built on it) that have ports that pull on each other, the
+    /// closest pair of ports, in order of ship. Ships that are frozen, pairs that were undocked and have not yet come apart, pairs of which neither can move, and
+    /// pairs that could not be docked where they are, have none.
     fn port_pairs(&self, world: &ServerWorld, docking: &Docking) -> Vec<PortPair> {
         let settings = docking.settings;
         let released = docking.released();
         let mut pairs = Vec::new();
-        for (&frame_key, level) in &self.frames {
-            let ships: Vec<(GridId, &Ship, &MovingGrid)> = level
+        for (&frame_key, frame) in &self.frames {
+            // Those that have ports, in order of identifier: whether each can move, its ports, and the grid.
+            let mut bearers: Vec<Bearer<'_>> = frame
                 .ships
                 .iter()
                 .filter_map(|(id, record)| {
                     let ship = world.data().grids().get(*id)?;
-                    (!ship.frozen && !record.ports.is_empty()).then_some((*id, record, ship))
+                    (!ship.frozen && !record.ports.is_empty()).then_some(Bearer {
+                        id: *id,
+                        moves: record.kind != BodyKind::Fixed,
+                        ports: &record.ports,
+                        ship,
+                    })
                 })
                 .collect();
-            for (index, (first_id, first, first_ship)) in ships.iter().enumerate() {
-                for (second_id, second, second_ship) in &ships[index + 1..] {
-                    if self.both_fixed(level, *first_id, *second_id)
+            bearers.extend(frame.planets.iter().filter_map(|(id, planet)| {
+                let grid = world.data().grids().get(*id)?;
+                (!planet.ports.is_empty()).then_some(Bearer {
+                    id: *id,
+                    moves: false,
+                    ports: &planet.ports,
+                    ship: grid,
+                })
+            }));
+            bearers.sort_by_key(|bearer| bearer.id);
+            for (index, first) in bearers.iter().enumerate() {
+                for second in &bearers[index + 1..] {
+                    let (first_id, second_id) = (&first.id, &second.id);
+                    let (first_ship, second_ship) = (first.ship, second.ship);
+                    if !(first.moves || second.moves)
                         || released.contains(&(*first_id, *second_id))
                         || self
                             .refused
@@ -1186,6 +1256,22 @@ impl Bodies {
         let Some(level) = self.frames.get(&pair.frame) else {
             return false;
         };
+        // A ship that docks with a planet is written into it.
+        if let Some((planet, planet_port, ship, ship_port)) = [
+            (pair.first, pair.first_port, pair.second, pair.second_port),
+            (pair.second, pair.second_port, pair.first, pair.first_port),
+        ]
+        .into_iter()
+        .find(|(planet, ..)| level.planets.contains_key(planet))
+        {
+            return self.dock_into_planet(
+                world,
+                docking,
+                pair,
+                (planet, planet_port),
+                (ship, ship_port),
+            );
+        }
         let (Some(first), Some(second)) =
             (level.ships.get(&pair.first), level.ships.get(&pair.second))
         else {
@@ -1262,6 +1348,63 @@ impl Bodies {
             }
             Err(_) => {
                 let _ = world.set_grid_pose(moving, moving_pose);
+                self.refused
+                    .insert((pair.first, pair.second), self.tick + REFUSED_RETRY_TICKS);
+                self.count(|report| report.dockings_refused += 1);
+                false
+            }
+        }
+    }
+
+    /// Docks a ship with a port of a planet: the ship is put exactly where it docks and its blocks are written into the planet (see
+    /// [`ServerWorld::dock_into`]), which keeps its identifier. Whether it was done: it is not when blocks of the ship would be where the planet has blocks,
+    /// its ground's too, and the pair is not tried again until a while has gone.
+    fn dock_into_planet(
+        &mut self,
+        world: &mut ServerWorld,
+        docking: &Docking,
+        pair: &PortPair,
+        (planet, planet_port): (GridId, Port),
+        (ship, ship_port): (GridId, Port),
+    ) -> bool {
+        let (Some(planet_grid), Some(ship_grid)) = (
+            world.data().grids().get(planet),
+            world.data().grids().get(ship),
+        ) else {
+            return false;
+        };
+        // The ports must still be there (an edit this tick may have taken one away).
+        if !docking.has_port(planet_grid, planet_port) || !docking.has_port(ship_grid, ship_port) {
+            return false;
+        }
+        let (still_pose, moving_pose) = (planet_grid.pose, ship_grid.pose);
+        let from = still_pose.position;
+        let still_view = PortView::of(planet_port, &still_pose, from);
+        let moving_view = PortView::of(ship_port, &moving_pose, from);
+        let turn = approach(&still_view, &moving_view).turn;
+        let Some((docked, _)) = docked_pose(&still_pose, planet_port, ship_port, turn) else {
+            return false;
+        };
+        if world.set_grid_pose(ship, docked).is_err() {
+            return false;
+        }
+        let turn_values = |_: &mut Vec<(ChannelIndex, u32)>, _: voxel_space::LatticeRotation| {};
+        let plan = MergePlan {
+            block_channel: self.config.block_channel,
+            orientation_channel: self.config.orientation_channel,
+            tolerance: AlignmentTolerance::default(),
+            turn: &turn_values,
+            linear_velocity: [0.0; 3],
+            angular_velocity: [0.0; 3],
+        };
+        match world.dock_into(planet, ship, &plan) {
+            Ok(()) => {
+                self.refused.remove(&(pair.first, pair.second));
+                self.count(|report| report.dockings_made += 1);
+                true
+            }
+            Err(_) => {
+                let _ = world.set_grid_pose(ship, moving_pose);
                 self.refused
                     .insert((pair.first, pair.second), self.tick + REFUSED_RETRY_TICKS);
                 self.count(|report| report.dockings_refused += 1);

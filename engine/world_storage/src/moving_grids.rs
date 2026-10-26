@@ -391,6 +391,22 @@ impl GridStore {
         Some((old, merged_id))
     }
 
+    /// Removes a grid whose blocks were written into another, which keeps its own id: the removed id leaves a tombstone naming `into` with the transform from
+    /// its voxels to the other's. Returns the removed grid, or `None`, changing nothing, if either is not a grid or they are one.
+    pub fn absorb(
+        &mut self,
+        id: GridId,
+        into: GridId,
+        transform: LatticeTransform,
+    ) -> Option<MovingGrid> {
+        if id == into || !self.grids.contains_key(&into) {
+            return None;
+        }
+        let old = self.grids.remove(&id)?;
+        self.tombstones.insert(id, vec![(into, transform)]);
+        Some(old)
+    }
+
     /// The grids that now hold what the grid with this id held, each with the transform from the old id's voxels to its own: the
     /// grid itself (with no transform) if it still exists, the parts it was split into or the grid it was merged into (following
     /// further splits and merges), or nothing if the grid is gone.
@@ -709,6 +725,30 @@ mod tests {
             transform.apply(voxel),
             Some(VoxelCoordinate::new(208, 2, 3))
         );
+    }
+
+    #[test]
+    fn a_grid_absorbed_into_another_leaves_a_tombstone_naming_the_other_which_keeps_its_id() {
+        let mut store = GridStore::new();
+        let (planet, ship) = (store.create(grid(1)), store.create(grid(2)));
+        let before = store.clone();
+        let missing = GridId::new(GridId::FIRST_ALLOCATED + 50);
+        // Into itself, from a grid that is not there, into one that is not there: nothing changes.
+        assert_eq!(store.absorb(ship, ship, shift(0)), None);
+        assert_eq!(store.absorb(missing, planet, shift(0)), None);
+        assert_eq!(store.absorb(ship, missing, shift(0)), None);
+        assert_eq!(store, before);
+        // The ship is written into the planet, which is the lower id: the planet is still there, and the ship's id leads to it.
+        assert_eq!(store.absorb(ship, planet, shift(7)), Some(grid(2)));
+        assert_eq!(store.len(), 1);
+        assert_eq!(store.get(planet), Some(&grid(1)));
+        assert_eq!(store.resolve(ship), [(planet, shift(7))]);
+        assert_eq!(
+            store.resolve(planet),
+            [(planet, LatticeTransform::IDENTITY)]
+        );
+        // It cannot be absorbed twice.
+        assert_eq!(store.absorb(ship, planet, shift(0)), None);
     }
 
     #[test]

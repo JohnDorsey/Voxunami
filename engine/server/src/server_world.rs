@@ -72,6 +72,10 @@ pub enum SplitError {
     NotTwoParts,
     #[error("a voxel is in two of the parts")]
     Overlap,
+    #[error(
+        "a ship with terrain, a planet, is not cut into parts: its blocks are mostly not stored, and a part would have none of its ground"
+    )]
+    HasTerrain,
 }
 
 /// Why a ship could not be put into a file or brought out of one.
@@ -1104,6 +1108,9 @@ impl ServerWorld {
             .grids()
             .get(grid)
             .ok_or(AccessError::NoSuchGrid(grid))?;
+        if old.terrain.is_some() {
+            return Err(SplitError::HasTerrain);
+        }
         if parts.len() < 2 || parts.iter().any(|part| part.voxels.is_empty()) {
             return Err(SplitError::NotTwoParts);
         }
@@ -2393,6 +2400,17 @@ pub(crate) mod tests {
             world.split_grid(ship, with_nothing),
             Err(SplitError::NotTwoParts)
         );
+        // A planet is never cut, whatever the parts.
+        world.data_mut().grids_mut().get_mut(ship).unwrap().terrain = Some(GridTerrain {
+            generator: world.data().main().terrain.default_generator(),
+            extent: BrickBox::around(BrickCoordinate::ORIGIN, 1),
+            mass: 1.0e20,
+        });
+        assert_eq!(
+            world.split_grid(ship, halves()),
+            Err(SplitError::HasTerrain)
+        );
+        world.data_mut().grids_mut().get_mut(ship).unwrap().terrain = None;
         let mut overlapping = halves();
         overlapping[1].voxels.insert(VoxelCoordinate::new(4, 0, 0));
         assert_eq!(

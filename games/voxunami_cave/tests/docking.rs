@@ -968,3 +968,206 @@ fn fire_crosses_what_was_the_boundary_between_two_docked_ships_and_does_not_betw
         "touching but not docked: nothing crosses between ships"
     );
 }
+
+/// The planet of Cave's small-planet generator in the overworld, with the overworld's pull taken away so that its own is all there is, put so that the
+/// top of the ground of the patch at x 0 to 3 and z 5 to 8 (flat there, top voxel 63,679) is at height 399. Returns the height of the planet's centre.
+fn a_planet_under_the_patch(scene: &mut Scene) -> f64 {
+    let centre = 399.0 - 63_680.0;
+    scene.run(move |world| {
+        world.set_level_gravity(LevelIndex::MAIN, [0.0; 3]);
+        let generator = world
+            .data()
+            .main()
+            .terrain
+            .generators()
+            .runtime_id(&base_blocks::small_planet_generator_identifier())
+            .expect("the world has the planet's generator");
+        let planet = world
+            .create_grid(
+                LevelIndex::MAIN,
+                pose(0.0, centre as f32, 0.0, Orientation::IDENTITY),
+            )
+            .unwrap();
+        world
+            .set_grid_terrain(
+                planet,
+                world_storage::GridTerrain {
+                    generator,
+                    extent: voxel_space::BrickBox::around(BrickCoordinate::ORIGIN, 2000),
+                    mass: (10.0 * 63_710.0f64 * 63_710.0 / 6.674e-11) as f32,
+                },
+            )
+            .unwrap();
+    });
+    centre
+}
+
+/// A docking port on the ground of the planet at x 1, z 6, facing up.
+fn build_a_port_on_the_planet(scene: &mut Scene) {
+    let content = CaveContent::new();
+    let look = facing(FaceDirection::PositiveY);
+    scene.run(move |world| {
+        let mut view = world.grid(ship_id(0)).unwrap();
+        let at = VoxelCoordinate::new(1, 63_680, 6);
+        view.set(content.state_channel(), at, look.state).unwrap();
+        view.set(content.orientation_channel(), at, look.orientation)
+            .unwrap();
+        view.set(content.block_channel(), at, port_block()).unwrap();
+    });
+}
+
+fn block_of_the_planet(scene: &mut Scene, at: [i64; 3]) -> u32 {
+    let found = std::sync::Arc::new(std::sync::Mutex::new(u32::MAX));
+    let slot = std::sync::Arc::clone(&found);
+    let channel = CaveContent::new().block_channel();
+    scene.run(move |world| {
+        *slot.lock().unwrap() = world
+            .grid(ship_id(0))
+            .unwrap()
+            .get(channel, VoxelCoordinate::new(at[0], at[1], at[2]))
+            .unwrap();
+    });
+    std::mem::take(&mut *found.lock().unwrap())
+}
+
+#[test]
+fn a_ship_with_a_port_that_comes_to_a_port_built_on_a_planet_is_written_into_the_planet_which_keeps_its_identifier()
+ {
+    let (mut scene, report) = Scene::reporting();
+    let centre = a_planet_under_the_patch(&mut scene);
+    let planet = ship_id(0);
+    // A ship of a port facing down and three stones above it, a metre and a half over where the port will be on the ground, in the pull of the planet.
+    let blocks = vec![
+        ([0, 0, 0], port_block(), facing(FaceDirection::NegativeY)),
+        ([0, 1, 0], stone(), PLAIN),
+        ([1, 1, 0], stone(), PLAIN),
+        ([0, 1, 1], stone(), PLAIN),
+    ];
+    make(
+        &mut scene,
+        pose(
+            1.0,
+            (centre + 63_681.0 + 1.5) as f32,
+            6.0,
+            Orientation::IDENTITY,
+        ),
+        false,
+        blocks,
+    );
+    // The port is built on the ground of the planet after the planet has a body (the ship made it): facing up, a stored block of the planet over its air.
+    build_a_port_on_the_planet(&mut scene);
+    let ship = ship_id(1);
+    for _ in 0..200 {
+        scene.ticks(1);
+        if scene.rig.server.world().grids().get(ship).is_none() {
+            break;
+        }
+    }
+    // The ship is gone, its id leads to the planet, and the planet has its blocks: the port beside the one built on the ground, and the stones above.
+    assert!(scene.rig.server.world().grids().get(ship).is_none());
+    assert_eq!(scene.rig.server.world().grids().resolve(ship)[0].0, planet);
+    assert!(
+        scene
+            .rig
+            .server
+            .world()
+            .grids()
+            .get(planet)
+            .unwrap()
+            .terrain
+            .is_some()
+    );
+    assert_eq!(
+        block_of_the_planet(&mut scene, [1, 63_681, 6]),
+        port_block()
+    );
+    for at in [[1, 63_682, 6], [2, 63_682, 6], [1, 63_682, 7]] {
+        assert_eq!(block_of_the_planet(&mut scene, at), stone(), "{at:?}");
+    }
+    // The ground is as it was.
+    assert_ne!(block_of_the_planet(&mut scene, [1, 63_679, 6]), 0);
+    assert_eq!(report().dockings_made, 1);
+    // A world that is saved and loaded has the planet with its new blocks, and the old id of the ship still leads to the planet.
+    let mut scene = scene.restarted();
+    // (A planet comes out of its file in the tick after the world is loaded.)
+    scene.ticks(2);
+    assert_eq!(scene.rig.server.world().grids().resolve(ship)[0].0, planet);
+    assert_eq!(block_of_the_planet(&mut scene, [1, 63_682, 6]), stone());
+}
+
+#[test]
+fn a_ship_whose_blocks_would_be_in_blocks_of_the_planet_is_not_written_into_it_and_is_tried_again_only_now_and_then()
+ {
+    let (mut scene, report) = Scene::reporting();
+    let centre = a_planet_under_the_patch(&mut scene);
+    let planet = ship_id(0);
+    build_a_port_on_the_planet(&mut scene);
+    let content = CaveContent::new();
+    scene.run(move |world| {
+        let mut view = world.grid(planet).unwrap();
+        // A flame where a stone of the ship would be (bodies pass through flames, so nothing pushes the ship away from it).
+        view.set(
+            content.block_channel(),
+            VoxelCoordinate::new(2, 63_682, 6),
+            content.blocks.fire,
+        )
+        .unwrap();
+    });
+    let blocks = vec![
+        ([0, 0, 0], port_block(), facing(FaceDirection::NegativeY)),
+        ([0, 1, 0], stone(), PLAIN),
+        ([1, 1, 0], stone(), PLAIN),
+    ];
+    make(
+        &mut scene,
+        pose(
+            1.0,
+            (centre + 63_681.0 + 1.5) as f32,
+            6.0,
+            Orientation::IDENTITY,
+        ),
+        false,
+        blocks,
+    );
+    scene.ticks(100);
+    // Neither ship nor planet changed, and the dockings that were refused are counted.
+    assert!(scene.rig.server.world().grids().get(ship_id(1)).is_some());
+    assert_eq!(block_of_the_planet(&mut scene, [1, 63_682, 6]), 0);
+    let report = report();
+    assert_eq!(report.dockings_made, 0);
+    assert!(report.dockings_refused >= 1, "{report:?}");
+    // Tried again after a second (20 ticks), not every tick: a few in five seconds.
+    assert!(report.dockings_refused <= 6, "{report:?}");
+}
+
+#[test]
+fn a_held_ship_a_tenth_of_a_metre_from_a_port_of_a_planet_is_not_docked_for_nothing_would_move_them()
+ {
+    let (mut scene, report) = Scene::reporting();
+    let centre = a_planet_under_the_patch(&mut scene);
+    let blocks = vec![
+        ([0, 0, 0], port_block(), facing(FaceDirection::NegativeY)),
+        ([0, 1, 0], stone(), PLAIN),
+    ];
+    let at = pose(
+        1.0,
+        (centre + 63_681.0 + 0.1) as f32,
+        6.0,
+        Orientation::IDENTITY,
+    );
+    make(&mut scene, at, true, blocks);
+    build_a_port_on_the_planet(&mut scene);
+    scene.ticks(100);
+    assert_eq!(
+        scene
+            .rig
+            .server
+            .world()
+            .grids()
+            .get(ship_id(1))
+            .unwrap()
+            .pose,
+        at
+    );
+    assert_eq!(report().dockings_made + report().dockings_refused, 0);
+}

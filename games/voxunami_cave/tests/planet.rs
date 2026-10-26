@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use block_models::Shape;
 use common::{
-    PlayerExt, Scene, make_ship, player_pose, pose_at, ship_id, ship_pose, tick_and_follow,
+    PlayerExt, Scene, make_ship, player_pose, pose_at, say, ship_id, ship_pose, tick_and_follow,
     top_of_the_column,
 };
 use game_shell::{GameContent, GameDefinition, KeyCode};
@@ -804,4 +804,46 @@ fn the_bricks_round_a_walker_on_a_planet_are_made_by_a_worker_before_they_walk_i
     scene.run(move |world| *slot.lock().unwrap() = world.bricks_prefetched());
     let prefetched = *counts.lock().unwrap();
     assert!(prefetched >= 1, "the worker made {prefetched}");
+}
+
+#[test]
+fn a_block_built_on_a_planet_that_the_player_looks_at_can_be_made_a_ship() {
+    let mut scene = Scene::new();
+    make_the_planet(&mut scene);
+    let top = top_of_the_column(0, -3);
+    let mut player = scene
+        .rig
+        .join_walking([0.5, TOP_OF_THE_PLANET + 15.0, 0.5], 0.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    tick_and_follow(&mut scene, &mut player, 80);
+    // A block of stone three voxels ahead of them (they look along -z), at the height of their eyes, stored in the planet over air.
+    let content = CaveContent::new();
+    let eyes = in_voxels(player_pose(&scene, 1).position)[1];
+    let at = VoxelCoordinate::new(0, eyes.floor() as i64, -3);
+    assert!(at.y() > top, "the block is over the ground there");
+    scene.run(move |world| {
+        world
+            .grid(planet())
+            .unwrap()
+            .set(content.block_channel(), at, content.blocks.stone)
+            .unwrap();
+    });
+    let reply = say(&mut scene, &mut player, "/ship create");
+    assert!(reply.contains("made ship 1 of 1 blocks"), "{reply}");
+    // Taken out of the planet, and the ground under it is still there.
+    let found = std::sync::Arc::new(std::sync::Mutex::new((u32::MAX, u32::MAX)));
+    let slot = std::sync::Arc::clone(&found);
+    let content = CaveContent::new();
+    let below = VoxelCoordinate::new(0, top, -3);
+    scene.run(move |world| {
+        let mut view = world.grid(planet()).unwrap();
+        let channel = content.block_channel();
+        *slot.lock().unwrap() = (
+            view.get(channel, at).unwrap(),
+            view.get(channel, below).unwrap(),
+        );
+    });
+    let (block, ground) = *found.lock().unwrap();
+    assert_eq!(block, CaveContent::new().blocks.air);
+    assert_ne!(ground, CaveContent::new().blocks.air);
 }

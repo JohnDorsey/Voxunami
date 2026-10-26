@@ -61,6 +61,8 @@ pub enum MergeError {
         "the ships are not on one lattice: their turns or places differ from a whole number of quarter turns and voxels"
     )]
     NotOnOneLattice,
+    #[error("{0:?} is not a ship with terrain, a planet, which a ship is written into")]
+    NotAPlanet(GridId),
     #[error("the ships have a block in the same place ({0:?} of the larger)")]
     Overlap(VoxelCoordinate),
     #[error("the merged ship would reach outside what the world can hold")]
@@ -142,31 +144,7 @@ impl ServerWorld {
                 if base.voxels.get(plan.block_channel, target) != default_block {
                     return Err(MergeError::Overlap(target));
                 }
-                let mut values: Vec<(ChannelIndex, u32)> = channels
-                    .iter()
-                    .map(|&channel| (channel, contents.get(channel, local)))
-                    .filter(|(channel, value)| *value != layout.default_value(*channel))
-                    .collect();
-                if transform.rotation != LatticeRotation::IDENTITY {
-                    if let Some(channel) = plan.orientation_channel {
-                        let position = values.iter().position(|(found, _)| *found == channel);
-                        let own = position.map_or_else(
-                            || layout.default_value(channel),
-                            |position| values[position].1,
-                        );
-                        // (A number that is not a turn is left as it is: a world is read as it is found.)
-                        if let Some(own) =
-                            u8::try_from(own).ok().and_then(LatticeRotation::from_index)
-                        {
-                            let turned = u32::from(own.then(transform.rotation).index());
-                            match position {
-                                Some(position) => values[position].1 = turned,
-                                None => values.push((channel, turned)),
-                            }
-                        }
-                    }
-                    (plan.turn)(&mut values, transform.rotation);
-                }
+                let values = carried_values(contents, local, &channels, &layout, plan, transform);
                 for (channel, value) in values {
                     voxels.set(channel, target, value);
                 }
@@ -229,6 +207,128 @@ impl ServerWorld {
         self.woken.push(merged_id);
         Ok(merged_id)
     }
+
+    /// Writes a ship into a planet (a ship with terrain), which keeps its identifier: every block of the ship is carried onto the lattice of the planet by
+    /// the exact turn and offset that put the ship on it (see [`voxel_space::lattice_alignment`]), and stored there, over the planet's ground, as an edit is. The
+    /// ship is gone, leaving a tombstone that names the planet with that transform, and whatever was aboard it is aboard the planet, on the same block and turned
+    /// the same. A block of the ship where the planet has a block, stored or its ground's, is an overlap, and nothing changes. The planet is held and stays
+    /// where it is; the ship's speed is not carried (the planet is not moved by it).
+    pub fn dock_into(
+        &mut self,
+        planet: GridId,
+        ship: GridId,
+        plan: &MergePlan<'_>,
+    ) -> Result<(), MergeError> {
+        if planet == ship {
+            return Err(MergeError::SameShip);
+        }
+        let base = self
+            .data
+            .grids()
+            .get(planet)
+            .ok_or(AccessError::NoSuchGrid(planet))?;
+        let other = self
+            .data
+            .grids()
+            .get(ship)
+            .ok_or(AccessError::NoSuchGrid(ship))?;
+        if base.level != other.level {
+            return Err(MergeError::DifferentLevels);
+        }
+        if base.terrain.is_none() {
+            return Err(MergeError::NotAPlanet(planet));
+        }
+        if other.terrain.is_some() {
+            return Err(MergeError::HasTerrain(ship));
+        }
+        let transform = lattice_alignment(&other.pose, &base.pose, plan.tolerance)
+            .ok_or(MergeError::NotOnOneLattice)?;
+        let layout = other.voxels.layout().clone();
+        let channels: Vec<ChannelIndex> = layout.channel_indices().collect();
+        let default_block = layout.default_value(plan.block_channel);
+        // Everything is worked out before anything is changed.
+        let mut writes: Vec<(VoxelCoordinate, Vec<(ChannelIndex, u32)>)> = Vec::new();
+        for (brick, contents) in other.voxels.bricks() {
+            for local in LocalVoxelIndex::all() {
+                if contents.get(plan.block_channel, local) == default_block {
+                    continue;
+                }
+                let target = transform
+                    .apply(brick.voxel_at(local))
+                    .ok_or(MergeError::OutOfRange)?;
+                if self.moving_voxel(planet, plan.block_channel, target)? != default_block {
+                    return Err(MergeError::Overlap(target));
+                }
+                writes.push((
+                    target,
+                    carried_values(contents, local, &channels, &layout, plan, transform),
+                ));
+            }
+        }
+        let turn = transform.rotation.orientation();
+        let mut aboard: Vec<(protocol::EntityId, WorldPosition, Orientation)> = Vec::new();
+        for id in self.data.entities().in_grid(ship) {
+            let Some(entity) = self.data.entities().get(id) else {
+                continue;
+            };
+            let point = transform.apply_point(point_of(entity.pose.position));
+            let position = position_of(point).ok_or(MergeError::OutOfRange)?;
+            aboard.push((id, position, turn.compose(entity.pose.orientation)));
+        }
+
+        for (target, values) in writes {
+            for (channel, value) in values {
+                self.set_moving_voxel(planet, channel, target, value)?;
+            }
+        }
+        for (id, position, orientation) in aboard {
+            let _ = self
+                .data
+                .entities_mut()
+                .set_pose(id, EntityPose::new(planet, position, orientation));
+        }
+        self.data
+            .grids_mut()
+            .absorb(ship, planet, transform)
+            .expect("both are there and are two");
+        Ok(())
+    }
+}
+
+/// The values a voxel of the ship that is carried has once it is on the lattice of the other: the ones that are not the channel's default, with the orientation
+/// of the block turned by the turn that carries it and `plan.turn` applied (the same for a merge and for a ship that docks with a planet).
+fn carried_values(
+    contents: &voxel_grid::Brick,
+    local: LocalVoxelIndex,
+    channels: &[ChannelIndex],
+    layout: &voxel_grid::GridLayout,
+    plan: &MergePlan<'_>,
+    transform: LatticeTransform,
+) -> Vec<(ChannelIndex, u32)> {
+    let mut values: Vec<(ChannelIndex, u32)> = channels
+        .iter()
+        .map(|&channel| (channel, contents.get(channel, local)))
+        .filter(|(channel, value)| *value != layout.default_value(*channel))
+        .collect();
+    if transform.rotation != LatticeRotation::IDENTITY {
+        if let Some(channel) = plan.orientation_channel {
+            let position = values.iter().position(|(found, _)| *found == channel);
+            let own = position.map_or_else(
+                || layout.default_value(channel),
+                |position| values[position].1,
+            );
+            // (A number that is not a turn is left as it is: a world is read as it is found.)
+            if let Some(own) = u8::try_from(own).ok().and_then(LatticeRotation::from_index) {
+                let turned = u32::from(own.then(transform.rotation).index());
+                match position {
+                    Some(position) => values[position].1 = turned,
+                    None => values.push((channel, turned)),
+                }
+            }
+        }
+        (plan.turn)(&mut values, transform.rotation);
+    }
+    values
 }
 
 #[cfg(test)]
@@ -657,6 +757,178 @@ mod tests {
         let (_, transform) = world.data().grids().resolve(small)[0];
         let there = transform.apply(VoxelCoordinate::ORIGIN).unwrap();
         assert_eq!(world.grid(merged).unwrap().get(channel, there).unwrap(), 99);
+    }
+
+    /// A planet at the origin: a ship with terrain, made by the world's generator (ground below height 10) over the bricks within 3 of its origin.
+    fn a_planet(world: &mut ServerWorld) -> GridId {
+        let planet = world
+            .create_grid(voxel_space::LevelIndex::MAIN, pose(0.0, 0.0, 0.0, 0.0))
+            .unwrap();
+        let generator = world.data().main().terrain.default_generator();
+        world
+            .set_grid_terrain(
+                planet,
+                world_storage::GridTerrain {
+                    generator,
+                    extent: voxel_space::BrickBox::around(BrickCoordinate::ORIGIN, 3),
+                    mass: 1.0e20,
+                },
+            )
+            .unwrap();
+        planet
+    }
+
+    #[test]
+    fn a_ship_written_into_a_planet_is_blocks_of_the_planet_and_the_planet_keeps_its_identifier() {
+        let (mut world, walker) = world_with_a_walker();
+        let planet = a_planet(&mut world);
+        let docked = ship(
+            &mut world,
+            pose(4.0, 40.0, 3.0, 0.0),
+            &[[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+            Some(30),
+        );
+        let on_it = world
+            .spawn_entity(
+                &walker,
+                aboard(docked, [0, 0, 0], [1.5, 2.0, 0.5], Orientation::IDENTITY),
+                ComponentBag::new(),
+            )
+            .unwrap();
+        let block = block_channel(world.data().main());
+        let temperature = temperature_channel(&world);
+        world
+            .dock_into(planet, docked, &plan(&world, &nothing_turns))
+            .unwrap();
+        // The blocks are the planet's, where they were in the world (the planet's coordinates are the world's here), with what else they held.
+        for at in [[4, 40, 3], [5, 40, 3], [4, 41, 3]] {
+            let voxel = VoxelCoordinate::new(at[0], at[1], at[2]);
+            assert_eq!(
+                world.grid(planet).unwrap().get(block, voxel).unwrap(),
+                BLOCK
+            );
+            assert_eq!(
+                world.grid(planet).unwrap().get(temperature, voxel).unwrap(),
+                30
+            );
+        }
+        // Nothing else: the ground is as it was, and so is the air beside the blocks.
+        assert_eq!(
+            world
+                .grid(planet)
+                .unwrap()
+                .get(block, VoxelCoordinate::new(6, 40, 3))
+                .unwrap(),
+            0
+        );
+        // The planet is the same grid, with its terrain; the ship is gone and its id resolves to the planet, by the offset that put it there.
+        assert!(world.data().grids().get(planet).unwrap().terrain.is_some());
+        assert!(world.data().grids().get(docked).is_none());
+        let resolved = world.data().grids().resolve(docked);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].0, planet);
+        assert_eq!(
+            resolved[0].1.apply(VoxelCoordinate::ORIGIN),
+            VoxelCoordinate::new(4, 40, 3).into()
+        );
+        // What was aboard is aboard the planet, on the same block.
+        let pose_aboard = world.entities().get(on_it).unwrap().pose;
+        assert_eq!(pose_aboard.grid, planet);
+        assert_eq!(pose_aboard.position, at(5.5, 42.0, 3.5));
+    }
+
+    #[test]
+    fn a_ship_turned_a_quarter_to_the_planet_is_written_in_turned_and_those_aboard_are_turned_with_it()
+     {
+        let (mut world, walker) = world_with_a_walker();
+        let planet = a_planet(&mut world);
+        // A row of three along the ship's x, turned a quarter about the vertical axis: along -z in the planet (a positive turn takes +x to -z), so the voxels are the cells 9, 8 and 7 of z.
+        let docked = ship(
+            &mut world,
+            pose(4.0, 40.0, 10.0, 1.0),
+            &[[0, 0, 0], [1, 0, 0], [2, 0, 0]],
+            None,
+        );
+        let on_it = world
+            .spawn_entity(
+                &walker,
+                aboard(docked, [0, 0, 0], [1.5, 2.0, 0.5], Orientation::IDENTITY),
+                ComponentBag::new(),
+            )
+            .unwrap();
+        let block = block_channel(world.data().main());
+        world
+            .dock_into(planet, docked, &plan(&world, &nothing_turns))
+            .unwrap();
+        let stored = |world: &mut ServerWorld, z: i64| {
+            world
+                .grid(planet)
+                .unwrap()
+                .get(block, VoxelCoordinate::new(4, 40, z))
+                .unwrap()
+        };
+        for z in [9, 8, 7] {
+            assert_eq!(stored(&mut world, z), BLOCK, "z = {z}");
+        }
+        assert_eq!(stored(&mut world, 10), 0);
+        // The walker is turned the quarter, and stands on the same block.
+        let found = world.entities().get(on_it).unwrap().pose;
+        assert_eq!(found.grid, planet);
+        let turned = Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0).components();
+        for (a, b) in found.orientation.components().iter().zip(turned) {
+            assert!(
+                (a - b).abs() < 1e-6,
+                "{:?} against {turned:?}",
+                found.orientation
+            );
+        }
+    }
+
+    #[test]
+    fn a_ship_is_not_written_into_the_ground_of_a_planet_nor_off_its_lattice_nor_into_what_is_not_a_planet()
+     {
+        let (mut world, _) = world_with_a_walker();
+        let planet = a_planet(&mut world);
+        let nothing = &nothing_turns;
+        // In the generated ground (below height 10), which nothing has stored: an overlap, and nothing changes.
+        let low = ship(&mut world, pose(4.0, 5.0, 3.0, 0.0), &[[0, 0, 0]], None);
+        assert!(matches!(
+            world.dock_into(planet, low, &plan(&world, nothing)),
+            Err(MergeError::Overlap(_))
+        ));
+        assert!(world.data().grids().get(low).is_some());
+        assert_eq!(
+            world
+                .data()
+                .grids()
+                .get(planet)
+                .unwrap()
+                .voxels
+                .brick_count(),
+            0
+        );
+        // Half a voxel off the lattice of the planet.
+        let off = ship(&mut world, pose(4.5, 40.0, 3.0, 0.0), &[[0, 0, 0]], None);
+        assert_eq!(
+            world.dock_into(planet, off, &plan(&world, nothing)),
+            Err(MergeError::NotOnOneLattice)
+        );
+        // A ship that is not a planet, and a planet that is written into another.
+        let other = ship(&mut world, pose(8.0, 40.0, 3.0, 0.0), &[[0, 0, 0]], None);
+        assert_eq!(
+            world.dock_into(other, off, &plan(&world, nothing)),
+            Err(MergeError::NotAPlanet(other))
+        );
+        let second_planet = a_planet(&mut world);
+        assert_eq!(
+            world.dock_into(planet, second_planet, &plan(&world, nothing)),
+            Err(MergeError::HasTerrain(second_planet))
+        );
+        assert_eq!(
+            world.dock_into(planet, planet, &plan(&world, nothing)),
+            Err(MergeError::SameShip)
+        );
+        assert_eq!(world.data().grids().tombstones().count(), 0);
     }
 
     #[test]
