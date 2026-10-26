@@ -1171,3 +1171,271 @@ fn a_held_ship_a_tenth_of_a_metre_from_a_port_of_a_planet_is_not_docked_for_noth
     );
     assert_eq!(report().dockings_made + report().dockings_refused, 0);
 }
+
+/// A planet with a ship docked to a port built on its ground (see the first test of a planet above), and a player standing on the ground beside them.
+fn a_planet_with_a_ship_docked_and_a_player() -> (Scene, common::Player) {
+    use common::tick_and_follow;
+    let mut scene = Scene::new();
+    let centre = a_planet_under_the_patch(&mut scene);
+    let blocks = vec![
+        ([0, 0, 0], port_block(), facing(FaceDirection::NegativeY)),
+        ([0, 1, 0], stone(), PLAIN),
+        ([1, 1, 0], stone(), PLAIN),
+        ([0, 1, 1], stone(), PLAIN),
+    ];
+    make(
+        &mut scene,
+        pose(
+            1.0,
+            (centre + 63_681.0 + 1.5) as f32,
+            6.0,
+            Orientation::IDENTITY,
+        ),
+        false,
+        blocks,
+    );
+    build_a_port_on_the_planet(&mut scene);
+    for _ in 0..200 {
+        scene.ticks(1);
+        if scene.rig.server.world().grids().get(ship_id(1)).is_none() {
+            break;
+        }
+    }
+    assert!(scene.rig.server.world().grids().get(ship_id(1)).is_none());
+    let mut player = scene.rig.join_walking([0.5, 399.0 + 6.0, 3.0], 0.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    tick_and_follow(&mut scene, &mut player, 60);
+    (scene, player)
+}
+
+#[test]
+fn a_ship_docked_to_a_planet_can_be_undocked_and_leaves_with_its_blocks_and_does_not_dock_again() {
+    use common::{say, tick_and_follow};
+    let (mut scene, mut player) = a_planet_with_a_ship_docked_and_a_player();
+    let planet = ship_id(0);
+    let reply = say(&mut scene, &mut player, "/ship undock");
+    assert!(
+        reply.contains("ship 0 came apart into ships 0 and 2"),
+        "{reply}"
+    );
+    // The planet keeps its identifier, its ground and the port built on it; the ship that left has the port that was its own and its three stones.
+    assert!(
+        scene
+            .rig
+            .server
+            .world()
+            .grids()
+            .get(planet)
+            .unwrap()
+            .terrain
+            .is_some()
+    );
+    assert_eq!(
+        block_of_the_planet(&mut scene, [1, 63_680, 6]),
+        port_block()
+    );
+    for at in [
+        [1, 63_681, 6],
+        [1, 63_682, 6],
+        [2, 63_682, 6],
+        [1, 63_682, 7],
+    ] {
+        assert_eq!(block_of_the_planet(&mut scene, at), 0, "{at:?}");
+    }
+    assert_ne!(block_of_the_planet(&mut scene, [1, 63_679, 6]), 0);
+    let ship = ship_id(2);
+    let left = scene.rig.server.world().grids().get(ship).unwrap();
+    assert!(!left.held && left.terrain.is_none());
+    assert_eq!(left.voxels.brick_count(), 1);
+    // It moves away from the port, slowly, and the planet and it are not drawn together again for as long as they are near.
+    tick_and_follow(&mut scene, &mut player, 3);
+    assert!(velocity_of(&scene, ship)[1] > 0.0);
+    tick_and_follow(&mut scene, &mut player, 200);
+    assert!(scene.rig.server.world().grids().get(ship).is_some());
+    assert_eq!(block_of_the_planet(&mut scene, [1, 63_682, 6]), 0);
+    // Once it has been taken out of range of the port it may dock again: put back a metre and a half over the port at rest, it is written into the planet.
+    let here = scene.rig.server.world().grids().get(ship).unwrap().pose;
+    let far = GridPose::new(here.position.translated([0.0, 0.0, 30.0]), here.orientation);
+    scene.run(move |world| {
+        world.set_grid_pose(ship, far).unwrap();
+        world.set_grid_velocity(ship, [0.0; 3], [0.0; 3]).unwrap();
+    });
+    tick_and_follow(&mut scene, &mut player, 5);
+    let again = pose(
+        1.0,
+        (centre_of_the_patch() + 63_681.0 + 1.5) as f32,
+        6.0,
+        Orientation::IDENTITY,
+    );
+    scene.run(move |world| {
+        world.set_grid_pose(ship, again).unwrap();
+        world.set_grid_velocity(ship, [0.0; 3], [0.0; 3]).unwrap();
+    });
+    for _ in 0..200 {
+        tick_and_follow(&mut scene, &mut player, 1);
+        if scene.rig.server.world().grids().get(ship).is_none() {
+            break;
+        }
+    }
+    assert!(scene.rig.server.world().grids().get(ship).is_none());
+    assert_eq!(block_of_the_planet(&mut scene, [1, 63_682, 6]), stone());
+}
+
+/// The height of the centre of the planet that `a_planet_under_the_patch` makes.
+fn centre_of_the_patch() -> f64 {
+    399.0 - 63_680.0
+}
+
+#[test]
+fn two_ports_built_on_the_ground_of_a_planet_cannot_be_undocked_for_neither_side_would_leave() {
+    use common::{say, tick_and_follow};
+    let mut scene = Scene::new();
+    a_planet_under_the_patch(&mut scene);
+    let content = CaveContent::new();
+    scene.run(move |world| {
+        let mut view = world.grid(ship_id(0)).unwrap();
+        for (x, face) in [(1, FaceDirection::PositiveX), (2, FaceDirection::NegativeX)] {
+            let at = VoxelCoordinate::new(x, 63_680, 6);
+            let look = facing(face);
+            view.set(content.state_channel(), at, look.state).unwrap();
+            view.set(content.orientation_channel(), at, look.orientation)
+                .unwrap();
+            view.set(content.block_channel(), at, port_block()).unwrap();
+        }
+    });
+    let mut player = scene.rig.join_walking([0.5, 399.0 + 6.0, 3.0], 0.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    tick_and_follow(&mut scene, &mut player, 60);
+    let reply = say(&mut scene, &mut player, "/ship undock");
+    assert!(reply.contains("stand on the ground"), "{reply}");
+    assert_eq!(
+        block_of_the_planet(&mut scene, [2, 63_680, 6]),
+        port_block()
+    );
+    assert_eq!(scene.rig.server.world().grids().len(), 1);
+}
+
+#[test]
+fn a_pilot_aboard_a_ship_that_docks_with_a_planet_stands_on_the_planet_and_does_not_pilot_it() {
+    use common::{PlayerExt, player_pose, say, tick_and_follow};
+    let mut scene = Scene::new();
+    let centre = a_planet_under_the_patch(&mut scene);
+    build_a_port_on_the_planet(&mut scene);
+    // A ship with a port facing down and a deck of 3 by 3 stones over it, held a metre and a half over the port while the player lands on it and takes the
+    // controls; then let go, it falls and docks.
+    let mut blocks = vec![([1, 0, 1], port_block(), facing(FaceDirection::NegativeY))];
+    for x in 0..3 {
+        for z in 0..3 {
+            blocks.push(([x, 1, z], stone(), PLAIN));
+        }
+    }
+    make(
+        &mut scene,
+        pose(
+            0.0,
+            (centre + 63_681.0 + 1.5) as f32,
+            5.0,
+            Orientation::IDENTITY,
+        ),
+        true,
+        blocks,
+    );
+    // (The port of the ship is at x 1, z 6 like the one on the ground: the deck is the 3 by 3 round it.)
+    let mut player = scene.rig.join_walking([1.5, 399.0 + 6.0, 6.5], 0.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    tick_and_follow(&mut scene, &mut player, 60);
+    assert_eq!(player_pose(&scene, 1).grid, ship_id(1), "aboard the ship");
+    assert!(say(&mut scene, &mut player, "/ship pilot").starts_with("you pilot ship 1"));
+    scene.run(|world| world.set_grid_held(ship_id(1), false).unwrap());
+    for _ in 0..200 {
+        tick_and_follow(&mut scene, &mut player, 1);
+        if scene.rig.server.world().grids().get(ship_id(1)).is_none() {
+            break;
+        }
+    }
+    assert!(scene.rig.server.world().grids().get(ship_id(1)).is_none());
+    tick_and_follow(&mut scene, &mut player, 10);
+    // They are on the planet, and walk: the keys are theirs again.
+    let before = in_voxels_of(&scene);
+    player.hold(&[game_shell::KeyCode::KeyW]);
+    tick_and_follow(&mut scene, &mut player, 40);
+    let after = in_voxels_of(&scene);
+    assert_eq!(player_pose(&scene, 1).grid, ship_id(0));
+    let (across, along) = (after[0] - before[0], after[2] - before[2]);
+    let moved = libm::sqrt(across * across + along * along);
+    assert!(moved > 2.0, "walked {moved}");
+}
+
+fn in_voxels_of(scene: &Scene) -> [f64; 3] {
+    voxunami_cave::aboard::in_voxels(common::player_pose(scene, 1).position)
+}
+
+#[test]
+fn the_player_beside_a_planet_sees_a_ship_dock_with_it_and_leave_it() {
+    use common::{say, tick_and_follow};
+    let (mut scene, mut player) = a_planet_with_a_ship_docked_and_a_player();
+    let channel = CaveContent::new().block_channel();
+    let seen = |player: &common::Player, at: [i64; 3]| {
+        player
+            .client()
+            .world()
+            .grids()
+            .get(ship_id(0))
+            .map(|planet| {
+                planet
+                    .voxels
+                    .get(channel, VoxelCoordinate::new(at[0], at[1], at[2]))
+            })
+    };
+    // The ship that docked is not in the world of the client, and the planet has its blocks.
+    tick_and_follow(&mut scene, &mut player, 5);
+    assert!(player.client().world().grids().get(ship_id(1)).is_none());
+    assert_eq!(seen(&player, [1, 63_682, 6]), Some(stone()));
+    // It leaves: the stones are gone from the planet and the ship is there.
+    assert!(say(&mut scene, &mut player, "/ship undock").contains("came apart"));
+    tick_and_follow(&mut scene, &mut player, 10);
+    assert_eq!(seen(&player, [1, 63_682, 6]), Some(0));
+    assert!(player.client().world().grids().get(ship_id(2)).is_some());
+}
+
+#[test]
+fn of_two_docked_sides_that_float_over_the_ground_of_a_planet_the_smaller_leaves() {
+    use common::{say, tick_and_follow};
+    let mut scene = Scene::new();
+    a_planet_under_the_patch(&mut scene);
+    let content = CaveContent::new();
+    // Thirty voxels over the ground: a port facing east with two stones over it (three blocks), and the port facing west that it is docked to with one
+    // under it (two blocks), all stored in the planet and joined to nothing else.
+    scene.run(move |world| {
+        let mut view = world.grid(ship_id(0)).unwrap();
+        let mut put = |at: [i64; 3], block: u32, face: Option<FaceDirection>| {
+            let voxel = VoxelCoordinate::new(at[0], at[1], at[2]);
+            if let Some(face) = face {
+                let look = facing(face);
+                view.set(content.state_channel(), voxel, look.state)
+                    .unwrap();
+                view.set(content.orientation_channel(), voxel, look.orientation)
+                    .unwrap();
+            }
+            view.set(content.block_channel(), voxel, block).unwrap();
+        };
+        put([1, 63_710, 6], port_block(), Some(FaceDirection::PositiveX));
+        put([1, 63_711, 6], stone(), None);
+        put([1, 63_712, 6], stone(), None);
+        put([2, 63_710, 6], port_block(), Some(FaceDirection::NegativeX));
+        put([2, 63_709, 6], stone(), None);
+    });
+    let mut player = scene.rig.join_walking([0.5, 399.0 + 6.0, 3.0], 0.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    tick_and_follow(&mut scene, &mut player, 60);
+    let reply = say(&mut scene, &mut player, "/ship undock");
+    assert!(reply.contains("came apart"), "{reply}");
+    // The side with the fewer blocks is the ship that left; the other is still in the planet.
+    assert_eq!(block_of_the_planet(&mut scene, [2, 63_710, 6]), 0);
+    assert_eq!(block_of_the_planet(&mut scene, [2, 63_709, 6]), 0);
+    assert_eq!(
+        block_of_the_planet(&mut scene, [1, 63_710, 6]),
+        port_block()
+    );
+    assert_eq!(block_of_the_planet(&mut scene, [1, 63_712, 6]), stone());
+}

@@ -202,6 +202,20 @@ impl Ships {
         arguments: &Arguments<'_>,
     ) -> String {
         let details = arguments.rest(1);
+        // A planet stays where it is and nobody flies it: what moves, holds or steers a ship is not for it.
+        if matches!(arguments.word(0), "push" | "hold" | "pilot" | "vanish")
+            && let Ok(ship) = self.target(world, &lock(&self.presence), client)
+            && world
+                .data()
+                .grids()
+                .get(ship)
+                .is_some_and(|ship| ship.terrain.is_some())
+        {
+            return format!(
+                "ship {} is a planet: it stays where it is, and nobody flies it",
+                number(ship)
+            );
+        }
         match (arguments.word(0), details) {
             ("create", []) => self.create(world, client, false),
             ("create", ["all"]) => self.create(world, client, true),
@@ -525,6 +539,12 @@ impl Ships {
                     .resolve(*ship)
                     .iter()
                     .any(|(part, _)| *part == frame)
+                // (Not a planet that the ship was written into: nobody flies a planet.)
+                && world
+                    .data()
+                    .grids()
+                    .get(frame)
+                    .is_some_and(|frame| frame.terrain.is_none())
             {
                 *ship = frame;
             }

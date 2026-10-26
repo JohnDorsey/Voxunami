@@ -1213,8 +1213,17 @@ impl Bodies {
     fn levels_ports(&self) -> BTreeMap<GridId, Vec<Port>> {
         self.frames
             .values()
-            .flat_map(|level| level.ships.iter())
-            .map(|(id, ship)| (*id, ship.ports.values().flatten().copied().collect()))
+            .flat_map(|frame| {
+                let ships = frame
+                    .ships
+                    .iter()
+                    .map(|(id, ship)| (*id, ship.ports.values().flatten().copied().collect()));
+                let planets = frame
+                    .planets
+                    .iter()
+                    .map(|(id, planet)| (*id, planet.ports.values().flatten().copied().collect()));
+                ships.chain(planets)
+            })
             .collect()
     }
 

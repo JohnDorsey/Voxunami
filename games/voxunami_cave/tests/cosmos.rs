@@ -532,3 +532,182 @@ fn the_world_spawn_of_a_level_is_the_ground_at_the_pole_of_its_planet_or_where_p
     assert_eq!(overworld, world_spawn(), "the level without one");
     assert_ne!(space, world_spawn());
 }
+
+#[test]
+fn in_survival_a_block_broken_on_the_planet_leaves_its_item_and_the_player_standing_there_picks_it_up()
+ {
+    let mut scene = Scene::in_a_new_world();
+    let start = Cave::default_camera().position;
+    let mut player = scene.rig.join_walking(start, 0.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    tick_and_follow(&mut scene, &mut player, 60);
+    assert!(say(&mut scene, &mut player, "/gamemode survival").contains("survival"));
+    // Looking straight down at the voxel they stand on, they break it.
+    player.camera.pitch = (-89.0f32).to_radians();
+    player.hold(&[]);
+    tick_and_follow(&mut scene, &mut player, 3);
+    scene.rig.settle(&mut [&mut player]);
+    break_block(&mut player);
+    tick_and_follow(&mut scene, &mut player, 40);
+    // The item is theirs: none is lying in the planet, and the inventory has a block of the planet's ground.
+    let lying = scene
+        .rig
+        .server
+        .world()
+        .entities()
+        .iter()
+        .filter(|entity| entity.kind == voxunami_cave::items::dropped_item_kind())
+        .count();
+    assert_eq!(lying, 0);
+    let inventory = scene
+        .rig
+        .server
+        .world()
+        .entities()
+        .iter()
+        .find_map(|entity| {
+            entity
+                .components
+                .get::<entities::Inventory>()
+                .ok()
+                .flatten()
+        })
+        .expect("a player has an inventory");
+    let held: u32 = inventory
+        .slots()
+        .iter()
+        .flatten()
+        .map(|stack| stack.count)
+        .sum();
+    assert_eq!(held, 1);
+}
+
+/// A dropped item of stone in this voxel of this grid.
+fn spawn_an_item(scene: &mut Scene, grid: GridId, at: VoxelCoordinate) {
+    let stack = entities::ItemStack::new("base_blocks:stone".parse().unwrap(), 1);
+    scene.run(move |world| {
+        let mut components = entities::ComponentBag::new();
+        components.set(&stack);
+        world
+            .spawn_entity(
+                &voxunami_cave::items::dropped_item_kind(),
+                voxunami_cave::items::drop_pose(grid, at),
+                components,
+            )
+            .unwrap();
+    });
+}
+
+/// Where the dropped items are, as (grid, voxel).
+fn items_lying(scene: &Scene) -> Vec<(GridId, VoxelCoordinate)> {
+    scene
+        .rig
+        .server
+        .world()
+        .entities()
+        .iter()
+        .filter(|entity| entity.kind == voxunami_cave::items::dropped_item_kind())
+        .map(|entity| {
+            (
+                entity.pose.grid,
+                voxunami_cave::items::voxel_of(entity.pose.position),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn an_item_in_space_far_from_every_pull_does_not_fall_and_one_far_off_to_the_side_of_the_planet_is_not_removed_for_being_low()
+ {
+    let mut scene = Scene::in_a_new_world();
+    let space = GridId::root(LevelIndex::MAIN);
+    // Thirty million voxels from the planet its pull is a twentieth of a thousandth: none. And nine hundred kilometres along -x and two thousand under the
+    // origin, the pull is toward the planet along +x, and the item is not at the bottom of the world.
+    let far = VoxelCoordinate::new(30_000_000, 0, 0);
+    let low = VoxelCoordinate::new(-900_000, -2_000, 0);
+    spawn_an_item(&mut scene, space, far);
+    spawn_an_item(&mut scene, space, low);
+    scene.ticks(80);
+    let lying = items_lying(&scene);
+    assert!(lying.contains(&(space, far)), "{lying:?}");
+    assert_eq!(lying.len(), 2, "{lying:?}");
+    let moved = lying.iter().find(|(_, voxel)| *voxel != far).unwrap().1;
+    assert!(moved.x() > low.x() && moved.y() == low.y(), "{moved:?}");
+}
+
+#[test]
+fn an_item_under_the_bottom_of_a_level_is_removed_and_one_far_from_the_ship_it_fell_off_is_too() {
+    let mut scene = Scene::new();
+    let level = GridId::root(LevelIndex::MAIN);
+    spawn_an_item(&mut scene, level, VoxelCoordinate::new(0, -1_001, 0));
+    // A ship of one block, held; an item a long way under it, and one near.
+    common::make_ship(
+        &mut scene,
+        common::pose_at(0.0, 300.0, 0.0),
+        true,
+        [1; 3],
+        |_| true,
+    );
+    let ship = ship_id(0);
+    spawn_an_item(&mut scene, ship, VoxelCoordinate::new(0, -1_100, 0));
+    spawn_an_item(&mut scene, ship, VoxelCoordinate::new(0, -500, 0));
+    scene.ticks(12);
+    let lying = items_lying(&scene);
+    assert_eq!(lying.len(), 1, "{lying:?}");
+    assert_eq!(lying[0].0, ship);
+    assert!((-510..=-495).contains(&lying[0].1.y()), "{lying:?}");
+}
+
+#[test]
+fn an_item_on_the_side_of_the_planet_falls_toward_its_centre_and_one_under_it_does_not_vanish() {
+    let mut scene = Scene::in_a_new_world();
+    let planet = ship_id(0);
+    spawn_an_item(&mut scene, planet, VoxelCoordinate::new(63_900, 0, 0));
+    spawn_an_item(&mut scene, planet, VoxelCoordinate::new(0, -63_900, 0));
+    // (It falls a voxel every 4 ticks: three hundred voxels would be twelve hundred ticks. The ground is 190 voxels down at most.)
+    scene.ticks(1_000);
+    let content = CaveContent::new();
+    let channel = content.block_channel();
+    let found = Arc::new(Mutex::new(Vec::new()));
+    let slot = Arc::clone(&found);
+    scene.run(move |world| {
+        let items: Vec<VoxelCoordinate> = world
+            .entities()
+            .iter()
+            .filter(|entity| entity.kind == voxunami_cave::items::dropped_item_kind())
+            .map(|entity| voxunami_cave::items::voxel_of(entity.pose.position))
+            .collect();
+        let mut view = world.grid(planet).unwrap();
+        // What is under each (along the planet's down for it) and in its place.
+        let mut rows = Vec::new();
+        for voxel in items {
+            let (down, here) = if voxel.x().abs() > voxel.y().abs() {
+                (
+                    VoxelCoordinate::new(voxel.x() - 1, voxel.y(), voxel.z()),
+                    voxel,
+                )
+            } else {
+                (
+                    VoxelCoordinate::new(voxel.x(), voxel.y() + 1, voxel.z()),
+                    voxel,
+                )
+            };
+            rows.push((
+                voxel,
+                view.get(channel, down).unwrap(),
+                view.get(channel, here).unwrap(),
+            ));
+        }
+        *slot.lock().unwrap() = rows;
+    });
+    let rows = found.lock().unwrap().clone();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    for (voxel, under, here) in rows {
+        assert!(under != content.blocks.air, "{voxel:?} hangs over air");
+        assert_eq!(here, content.blocks.air, "{voxel:?} is in the ground");
+        assert!(
+            voxel.x().abs() < 63_900 && voxel.y().abs() < 63_900,
+            "{voxel:?} has not fallen"
+        );
+    }
+}

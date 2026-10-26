@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use block_models::{BlockTable, PropertyHandle};
-use server::{AccessError, ServerWorld, SplitError};
+use server::{AccessError, DetachError, GridView, ServerWorld, SplitError};
 use voxel_grid::ChannelIndex;
 use voxel_space::{
     FaceDirection, GridId, GridPose, LatticeRotation, LatticeTransform, VoxelCoordinate,
@@ -312,7 +312,18 @@ pub enum UndockError {
     Welded,
     #[error(transparent)]
     Split(#[from] SplitError),
+    #[error(
+        "both sides of those ports stand on the ground of the planet: neither would leave (undock a ship that is above the ground, or dig the ground from under one side)"
+    )]
+    BothSidesOnTheGround,
+    #[error("more than {PLANET_UNDOCK_BLOCKS} blocks are joined to those ports")]
+    TooManyBlocks,
+    #[error(transparent)]
+    Detach(#[from] DetachError),
 }
+
+/// The most blocks of a planet that a side of a docked pair of ports may have to be told from the rest: it is looked at block by block.
+const PLANET_UNDOCK_BLOCKS: usize = 100_000;
 
 /// Docking, as a game sets it up: how ships are drawn together, the blocks that tell where the ports are, and the pairs of ships that were
 /// undocked and have not yet come apart (which do not pull on each other until they have). Clones share that record, so the plugin that moves ships
@@ -481,6 +492,9 @@ impl Docking {
         if !self.docked_pairs(moving).contains(&pair) {
             return Err(UndockError::NotDocked);
         }
+        if moving.terrain.is_some() {
+            return self.undock_from_planet(world, ship, pair);
+        }
         let is_part =
             |voxel: VoxelCoordinate| moving.voxels.get(self.block_channel, voxel) != self.air;
         // The first side: everything joined to the first port without crossing between the two ports.
@@ -540,6 +554,131 @@ impl Docking {
         };
         self.released_set().insert(released);
         Ok([first_side, second_side])
+    }
+}
+
+impl Docking {
+    /// Undocks what is docked to a planet. The blocks of a planet that someone built (a block that is not the planet's ground at that place) join into sides at a
+    /// docked pair of ports, as the blocks of a ship do; the side that does not stand on the ground of the planet (none of its blocks is in, or beside, ground that
+    /// has not been dug or built on) leaves, as a ship of its own that begins at rest in the planet's frame and is set going away from the other side at
+    /// `separation_speed`; if neither stands on the ground the smaller leaves, and if both do, nothing does. The planet keeps its identifier. Returns the
+    /// side of the first port and the side of the second, as for a ship: the planet is the one that stayed.
+    fn undock_from_planet(
+        &self,
+        world: &mut ServerWorld,
+        planet: GridId,
+        pair: DockedPair,
+    ) -> Result<[GridId; 2], UndockError> {
+        let mut sides: Vec<(BTreeSet<VoxelCoordinate>, bool)> = Vec::new();
+        for (start, other) in [(pair.first, pair.second), (pair.second, pair.first)] {
+            let side = self.built_side(world, planet, start.voxel, other.voxel)?;
+            if side.contains(&other.voxel) {
+                return Err(UndockError::Welded);
+            }
+            let grounded = self.stands_on_the_ground(world, planet, &side)?;
+            sides.push((side, grounded));
+        }
+        let leaving = match (sides[0].1, sides[1].1) {
+            (true, true) => return Err(UndockError::BothSidesOnTheGround),
+            (false, true) => 0,
+            (true, false) => 1,
+            (false, false) => usize::from(sides[1].0.len() < sides[0].0.len()),
+        };
+        let staying_port = if leaving == 0 {
+            pair.second
+        } else {
+            pair.first
+        };
+        let voxels: Vec<VoxelCoordinate> = sides[leaving].0.iter().copied().collect();
+        let pose = world
+            .data()
+            .grids()
+            .get(planet)
+            .ok_or(AccessError::NoSuchGrid(planet))?
+            .pose;
+        let ship = world.detach_blocks(planet, &voxels)?;
+        // Away from the side that stays: the way the face of its port looks, which is toward the side that leaves.
+        let direction =
+            pose.direction_to_world(staying_port.face.offset().map(|component| component as f32));
+        let speed = self.settings.separation_speed as f32;
+        let _ =
+            world.set_grid_velocity(ship, direction.map(|component| component * speed), [0.0; 3]);
+        let released = if planet < ship {
+            (planet, ship)
+        } else {
+            (ship, planet)
+        };
+        self.released_set().insert(released);
+        Ok(if leaving == 0 {
+            [ship, planet]
+        } else {
+            [planet, ship]
+        })
+    }
+
+    /// The voxels with a built block (see above) joined to this one without crossing to the other voxel, which is where the other port is.
+    fn built_side(
+        &self,
+        world: &mut ServerWorld,
+        planet: GridId,
+        start: VoxelCoordinate,
+        other: VoxelCoordinate,
+    ) -> Result<BTreeSet<VoxelCoordinate>, UndockError> {
+        let mut view = world.grid(planet)?;
+        let mut side: BTreeSet<VoxelCoordinate> = BTreeSet::from([start]);
+        let mut queue = VecDeque::from([start]);
+        while let Some(voxel) = queue.pop_front() {
+            for face in FaceDirection::ALL {
+                let step = face.offset();
+                let Some(next) = voxel.checked_offset(step[0], step[1], step[2]) else {
+                    continue;
+                };
+                let between_the_ports =
+                    (voxel == start && next == other) || (voxel == other && next == start);
+                if between_the_ports || side.contains(&next) {
+                    continue;
+                }
+                let now = view.get(self.block_channel, next)?;
+                if now == self.air || now == view.generated(self.block_channel, next)? {
+                    continue;
+                }
+                if side.len() >= PLANET_UNDOCK_BLOCKS {
+                    return Err(UndockError::TooManyBlocks);
+                }
+                side.insert(next);
+                queue.push_back(next);
+            }
+        }
+        Ok(side)
+    }
+
+    /// Whether a block of the side is in ground the planet's generator made, or beside ground that is as it made it.
+    fn stands_on_the_ground(
+        &self,
+        world: &mut ServerWorld,
+        planet: GridId,
+        side: &BTreeSet<VoxelCoordinate>,
+    ) -> Result<bool, UndockError> {
+        let mut view = world.grid(planet)?;
+        for &voxel in side {
+            if view.generated(self.block_channel, voxel)? != self.air {
+                return Ok(true);
+            }
+            for face in FaceDirection::ALL {
+                let step = face.offset();
+                let Some(next) = voxel.checked_offset(step[0], step[1], step[2]) else {
+                    continue;
+                };
+                if side.contains(&next) {
+                    continue;
+                }
+                let now = view.get(self.block_channel, next)?;
+                if now != self.air && now == view.generated(self.block_channel, next)? {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 }
 

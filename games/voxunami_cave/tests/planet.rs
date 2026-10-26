@@ -847,3 +847,95 @@ fn a_block_built_on_a_planet_that_the_player_looks_at_can_be_made_a_ship() {
     assert_eq!(block, CaveContent::new().blocks.air);
     assert_ne!(ground, CaveContent::new().blocks.air);
 }
+
+#[test]
+fn a_planet_is_not_held_pushed_piloted_or_told_to_vanish_for_it_is_none_of_those() {
+    let mut scene = Scene::new();
+    make_the_planet(&mut scene);
+    let mut player = scene
+        .rig
+        .join_walking([0.5, TOP_OF_THE_PLANET + 6.0, 0.5], 0.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    tick_and_follow(&mut scene, &mut player, 60);
+    for command in [
+        "/ship push 0 5 0",
+        "/ship hold off",
+        "/ship hold on",
+        "/ship pilot",
+        "/ship vanish on",
+        "/ship vanish off",
+    ] {
+        let reply = say(&mut scene, &mut player, command);
+        assert!(reply.contains("ship 0 is a planet"), "{command}: {reply}");
+    }
+    let planet_ship = scene.rig.server.world().grids().get(planet()).unwrap();
+    assert!(planet_ship.held);
+    assert_eq!(
+        planet_ship.on_pilot_logout,
+        world_storage::PilotLogout::Stay
+    );
+    // Piloting it did not begin: a player who then says "pilot" is told the same, and the keys fly nothing.
+    assert!(say(&mut scene, &mut player, "/ship pilot").contains("is a planet"));
+}
+
+#[test]
+fn a_ship_rests_on_a_second_planet_two_hundred_kilometres_from_the_first_and_both_are_simulated() {
+    let mut scene = Scene::new();
+    let centre = make_the_planet(&mut scene);
+    let ground = ground_under_the_cube() as f64 + centre;
+    // A second planet, the same generator, 200 km along x (past the reach of a frame centred at the first, and so in a frame of its own), with its pole at the
+    // same height; a cube over the first and a cube over the second, the same way.
+    let second_centre = centre;
+    scene.run(move |world| {
+        let generator = world
+            .data()
+            .main()
+            .terrain
+            .generators()
+            .runtime_id(&base_blocks::small_planet_generator_identifier())
+            .unwrap();
+        let grid = world
+            .create_grid(
+                LevelIndex::MAIN,
+                GridPose::new(
+                    WorldPosition::new(
+                        BrickCoordinate::new(200_000 / 32, 0, 0),
+                        [0.0, second_centre as f32, 0.0],
+                    ),
+                    Orientation::IDENTITY,
+                ),
+            )
+            .unwrap();
+        world
+            .set_grid_terrain(
+                grid,
+                GridTerrain {
+                    generator,
+                    extent: BrickBox::around(BrickCoordinate::ORIGIN, 2000),
+                    mass: MASS,
+                },
+            )
+            .unwrap();
+    });
+    drop_a_cube_over_the_ground(&mut scene, ground, 10.0);
+    make_ship(
+        &mut scene,
+        pose_at(
+            (200_000 / 32 * 32) as f32 + PLACE[0],
+            (ground + 10.0) as f32,
+            PLACE[1],
+        ),
+        false,
+        [CUBE; 3],
+        |_| true,
+    );
+    scene.ticks(150);
+    // (Ship 0 is the first planet, 1 the second, 2 and 3 the cubes.)
+    for number in [2, 3] {
+        let [_, height, _] = place_of_the_ship(&scene, number);
+        assert!(
+            (height - ground).abs() < 0.05,
+            "cube {number} is at {height}, the ground at {ground}"
+        );
+    }
+}

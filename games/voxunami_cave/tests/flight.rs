@@ -611,3 +611,50 @@ fn blocks_of_a_ship_that_the_player_looks_at_can_be_made_a_ship_of_their_own() {
         voxel_space::Orientation::IDENTITY
     );
 }
+
+#[test]
+fn in_survival_a_block_broken_from_a_ship_leaves_its_item_in_the_ship_and_a_player_near_it_picks_it_up()
+ {
+    let (mut scene, mut player) = raft_and_a_player_looking_at_it();
+    assert!(say(&mut scene, &mut player, "/ship create").starts_with("made ship 0"));
+    say(&mut scene, &mut player, "/ship hold on");
+    assert!(say(&mut scene, &mut player, "/gamemode survival").contains("survival"));
+    // The player stands under the middle of the raft, looking straight up at it: the block they break is a couple of voxels from their eyes.
+    player.send_command(&format!("/tp 24 {} 26", FLOOR as i64 + 3));
+    tick_and_follow(&mut scene, &mut player, 5);
+    player.camera.pitch = 89.0f32.to_radians();
+    player.hold(&[]);
+    tick_and_follow(&mut scene, &mut player, 3);
+    scene.rig.settle(&mut [&mut player]);
+    voxunami_cave::game::break_block(&mut player);
+    tick_and_follow(&mut scene, &mut player, 10);
+    let lying = scene
+        .rig
+        .server
+        .world()
+        .entities()
+        .iter()
+        .filter(|entity| entity.kind == voxunami_cave::items::dropped_item_kind())
+        .count();
+    assert_eq!(lying, 0, "the item was picked up");
+    let held: u32 = scene
+        .rig
+        .server
+        .world()
+        .entities()
+        .iter()
+        .find_map(|entity| {
+            entity
+                .components
+                .get::<entities::Inventory>()
+                .ok()
+                .flatten()
+        })
+        .expect("the player has an inventory")
+        .slots()
+        .iter()
+        .flatten()
+        .map(|stack| stack.count)
+        .sum();
+    assert_eq!(held, 1);
+}

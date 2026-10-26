@@ -25,6 +25,12 @@ pub const PICKUP_RADIUS: f32 = 3.0;
 /// An item that has fallen below this height is gone (it fell out of the world).
 pub const LOWEST_DROP_VOXEL: i64 = -1000;
 
+/// How far, in voxels, from the ship it fell off an item is removed (the ship's own void: a level has the lowest voxel above).
+pub const LOWEST_DROP_DISTANCE: f64 = 1000.0;
+
+/// A pull of gravity this weak or less (in voxels a second a second) is none: an item does not fall in it.
+pub const MOST_GRAVITY_THAT_IS_NONE: f32 = 1.0e-3;
+
 fn identifier(text: &str) -> NamespacedId {
     text.parse().expect("constant identifier is valid")
 }

@@ -23,12 +23,14 @@ use voxel_grid::ChannelIndex;
 use voxel_space::{GridId, VoxelCoordinate};
 
 use super::block_editing::{BlockBroken, BlockEditRequested, BlockPlaced};
+use crate::aboard::{Extent, in_voxels};
 use crate::block_properties;
 use crate::content::CaveContent;
 use crate::items::{
-    GameMode, LOWEST_DROP_VOXEL, PICKUP_RADIUS, STACK_SIZE, creative_only_blocks, drop_pose,
-    dropped_item_kind, dropped_item_kind_spec, falls_this_tick, game_mode_section, item_for_block,
-    item_specs, placeable_blocks, read_game_mode, voxel_of,
+    GameMode, LOWEST_DROP_DISTANCE, LOWEST_DROP_VOXEL, MOST_GRAVITY_THAT_IS_NONE, PICKUP_RADIUS,
+    STACK_SIZE, centre_of, creative_only_blocks, drop_pose, dropped_item_kind,
+    dropped_item_kind_spec, falls_this_tick, game_mode_section, item_for_block, item_specs,
+    placeable_blocks, read_game_mode, voxel_of,
 };
 use crate::messages::GameModeIs;
 
@@ -372,14 +374,59 @@ impl ItemsRun {
             return;
         }
         for item in self.lying(context) {
-            if item.voxel.y() < LOWEST_DROP_VOXEL {
+            // Down is where gravity pulls at the item, in the axes of the grid it is in (the planet's pull is toward its centre, so an item on the side of a
+            // planet falls along x or z); where there is none, nothing falls.
+            let Some(down) = self.down_for(context, &item) else {
+                continue;
+            };
+            if self.fell_out_of_the_world(context, &item, down) {
                 context.despawn(item.id);
                 continue;
             }
-            let below = VoxelCoordinate::new(item.voxel.x(), item.voxel.y() - 1, item.voxel.z());
+            let below = VoxelCoordinate::new(
+                item.voxel.x() + down[0],
+                item.voxel.y() + down[1],
+                item.voxel.z() + down[2],
+            );
             if !self.holds_up(context, item.grid, below) {
                 let _ = context.set_pose(item.id, drop_pose(item.grid, below));
             }
+        }
+    }
+
+    /// The step an item takes when it falls: one voxel along the axis gravity is strongest on, the way it pulls; `None` where it is not pulled.
+    fn down_for(&self, context: &mut Context<'_>, item: &Lying) -> Option<[i64; 3]> {
+        let gravity = context
+            .world()
+            .gravity_in(item.grid, centre_of(item.voxel))
+            .ok()?;
+        let axis = (0..3).max_by(|a, b| gravity[*a].abs().total_cmp(&gravity[*b].abs()))?;
+        if gravity[axis].abs() <= MOST_GRAVITY_THAT_IS_NONE {
+            return None;
+        }
+        let mut step = [0; 3];
+        step[axis] = if gravity[axis] < 0.0 { -1 } else { 1 };
+        Some(step)
+    }
+
+    /// Whether an item has fallen out of the world: below the lowest voxel in a level, or a long way from the ship it was on when it fell off it.
+    fn fell_out_of_the_world(
+        &self,
+        context: &mut Context<'_>,
+        item: &Lying,
+        down: [i64; 3],
+    ) -> bool {
+        match item.grid.root_level() {
+            Some(_) => item.voxel.y() < LOWEST_DROP_VOXEL && down == [0, -1, 0],
+            None => context
+                .world()
+                .data()
+                .grids()
+                .get(item.grid)
+                .and_then(Extent::of)
+                .is_none_or(|extent| {
+                    extent.distance_to(in_voxels(centre_of(item.voxel))) > LOWEST_DROP_DISTANCE
+                }),
         }
     }
 
@@ -423,7 +470,20 @@ impl ItemsRun {
         let kind = dropped_item_kind();
         let players = lock(&self.players).players(context.world().data());
         for (client, pose, level) in players {
-            self.pick_up_for(context, client, pose.position, GridId::root(level), &kind);
+            // Items lie in the grid of the block they were broken from: the level's terrain, a ship, a planet; the player picks up those near them in each.
+            let mut places = vec![(GridId::root(level), pose.position)];
+            places.extend(
+                context
+                    .world()
+                    .data()
+                    .grids()
+                    .iter()
+                    .filter(|(_, ship)| ship.level == level)
+                    .filter_map(|(id, ship)| Some((id, ship.pose.world_to_local(pose.position)?))),
+            );
+            for (grid, position) in places {
+                self.pick_up_for(context, client, position, grid, &kind);
+            }
         }
     }
 
