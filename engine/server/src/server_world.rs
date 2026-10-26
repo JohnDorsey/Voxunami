@@ -18,6 +18,7 @@ use world_storage::{
 
 use crate::GridView;
 use crate::generated_cache::GeneratedBrickCache;
+use crate::prefetch::Prefetcher;
 use crate::ship_settings::ShipSettings;
 
 /// Who receives a game message.
@@ -144,6 +145,10 @@ pub struct ServerWorld {
     generated: RefCell<GeneratedBrickCache>,
     /// How many times the terrain generator has made a brick (see [`ServerWorld::bricks_generated`]).
     generations: Cell<u64>,
+    /// The worker that makes the bricks of planets that are asked for ahead (see [`ServerWorld::prefetch_ship_bricks`]).
+    prefetcher: RefCell<Prefetcher>,
+    /// The bricks the worker made that were taken into the cache.
+    prefetched: Cell<u64>,
     /// The bricks changed this tick, by grid. Only the root grids' edits are sent to clients so far (Phase 32c sends the rest).
     pub(crate) edits: BTreeMap<(GridId, BrickCoordinate), BrickEdits>,
     pub(crate) outgoing: Vec<OutgoingGameMessage>,
@@ -176,6 +181,8 @@ impl ServerWorld {
             clients: BTreeMap::new(),
             generated: RefCell::new(GeneratedBrickCache::default()),
             generations: Cell::new(0),
+            prefetcher: RefCell::new(Prefetcher::default()),
+            prefetched: Cell::new(0),
             edits: BTreeMap::new(),
             outgoing: Vec::new(),
             replies: Vec::new(),
@@ -454,6 +461,65 @@ impl ServerWorld {
     /// (ten milliseconds or more a brick for natural terrain), for whoever wants to know what a rule or a body asks of it.
     pub fn bricks_generated(&self) -> u64 {
         self.generations.get()
+    }
+
+    /// How many bricks the worker of [`ServerWorld::prefetch_ship_bricks`] has made and the world has taken in (the reads that found one made are not in
+    /// [`ServerWorld::bricks_generated`]).
+    pub fn bricks_prefetched(&self) -> u64 {
+        self.prefetched.get()
+    }
+
+    /// Asks a worker thread to make these bricks of a ship with terrain (a planet) before they are read: the bricks of its extent that are not remembered and
+    /// not already asked for. What the world reads is the same whether a brick was made by the worker or where it was read (a generator makes the same
+    /// brick every time), so asking changes no result, only whether a tick has to wait for the generator; and the worker's bricks are taken into the
+    /// cache the next time the world reads a brick of a ship or [`ServerWorld::take_prefetched`] is called.
+    pub fn prefetch_ship_bricks(
+        &self,
+        grid: GridId,
+        bricks: impl IntoIterator<Item = BrickCoordinate>,
+    ) {
+        self.take_prefetched();
+        let Some(ship) = self.data.grids().get(grid) else {
+            return;
+        };
+        let Some(terrain) = ship.terrain else {
+            return;
+        };
+        let Some(generator) = self
+            .data
+            .main()
+            .terrain
+            .generators()
+            .entry(terrain.generator)
+            .and_then(|entry| entry.content())
+        else {
+            return;
+        };
+        let layout = Arc::clone(ship.voxels.layout());
+        let mut prefetcher = self.prefetcher.borrow_mut();
+        for coordinate in bricks {
+            if !terrain.extent.contains(coordinate)
+                || self.generated.borrow().get((grid, coordinate)).is_some()
+            {
+                continue;
+            }
+            prefetcher.ask((grid, coordinate), generator, &layout);
+        }
+    }
+
+    /// Takes the bricks the worker has finished into the cache.
+    pub fn take_prefetched(&self) {
+        let made = self.prefetcher.borrow_mut().finished();
+        if made.is_empty() {
+            return;
+        }
+        let mut cache = self.generated.borrow_mut();
+        for (key, brick) in made {
+            if cache.get(key).is_none() {
+                cache.insert(key, Arc::new(brick));
+                self.prefetched.set(self.prefetched.get() + 1);
+            }
+        }
     }
 
     /// The value that every voxel of a brick has in a channel, if they all have the same one: a way
@@ -1276,6 +1342,11 @@ impl ServerWorld {
         else {
             return Ok(Arc::new(Brick::new(&layout)));
         };
+        if let Some(remembered) = self.generated.borrow().get((grid, coordinate)) {
+            return Ok(Arc::clone(remembered));
+        }
+        // (Only when it is not there: this is the path of every voxel a body reads.)
+        self.take_prefetched();
         if let Some(remembered) = self.generated.borrow().get((grid, coordinate)) {
             return Ok(Arc::clone(remembered));
         }
@@ -2707,6 +2778,59 @@ pub(crate) mod tests {
         ] {
             assert_eq!(world.grid(planet).unwrap().get(block, at).unwrap(), default);
         }
+    }
+
+    #[test]
+    fn bricks_of_a_planet_asked_for_ahead_are_made_by_a_worker_and_a_read_finds_them_made() {
+        let (mut world, planet, block, calls) = world_with_a_planet();
+        let a_brick = BrickCoordinate::new(0, 0, 0);
+        let another = BrickCoordinate::new(1, 0, 0);
+        let outside = BrickCoordinate::new(50, 0, 0);
+        // Asked twice, and one past the extent: the worker makes two.
+        world.prefetch_ship_bricks(planet, [a_brick, another, a_brick, outside]);
+        world.prefetch_ship_bricks(planet, [another]);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while world.bricks_prefetched() < 2 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the worker did not finish"
+            );
+            world.take_prefetched();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        // Bricks that are remembered are not asked for again.
+        world.prefetch_ship_bricks(planet, [a_brick, another]);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        world.take_prefetched();
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        // Reading them makes nothing more, and the voxels are what the generator makes: the same as a world that made them where it read them.
+        let found: Vec<u32> = [[5, 2, 3], [40, 2, 3]]
+            .iter()
+            .map(|at| {
+                world
+                    .grid(planet)
+                    .unwrap()
+                    .get(block, VoxelCoordinate::new(at[0], at[1], at[2]))
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        assert_eq!(world.bricks_generated(), 0);
+        assert_eq!(world.bricks_prefetched(), 2);
+        let (mut plain, plain_planet, plain_block, _) = world_with_a_planet();
+        for (at, expected) in [[5, 2, 3], [40, 2, 3]].iter().zip(found) {
+            let voxel = VoxelCoordinate::new(at[0], at[1], at[2]);
+            assert_eq!(
+                plain
+                    .grid(plain_planet)
+                    .unwrap()
+                    .get(plain_block, voxel)
+                    .unwrap(),
+                expected
+            );
+        }
+        assert_eq!(plain.bricks_generated(), 2);
     }
 
     #[test]

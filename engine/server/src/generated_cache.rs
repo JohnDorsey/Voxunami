@@ -8,7 +8,7 @@ use voxel_space::{BrickCoordinate, GridId};
 pub(crate) type BrickKey = (GridId, BrickCoordinate);
 
 /// How many generated bricks a server remembers.
-const CAPACITY: usize = 128;
+const CAPACITY: usize = 256;
 
 /// Recently generated bricks, so that game logic reading voxels of terrain nobody has edited does
 /// not regenerate a whole brick for every read. A generated brick never changes once its region has

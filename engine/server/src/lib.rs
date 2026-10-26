@@ -16,6 +16,7 @@ mod generated_cache;
 mod grid_replication;
 mod grid_view;
 mod merge;
+mod prefetch;
 mod replication;
 mod server;
 mod server_world;

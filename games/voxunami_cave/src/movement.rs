@@ -534,6 +534,18 @@ fn step_aboard(
     ships: &BTreeMap<GridId, ShipBounds>,
 ) {
     let id = player.frame;
+    // The bricks round the walker, if the ship has terrain that is made as it is read (a planet), are made by a worker before they are walked into: the ones
+    // the body will want colliders of are within a brick, and a collider is made looking at the voxels beside its brick, which are the next ring.
+    let here = player.body.eye_position().brick();
+    world.prefetch_ship_bricks(
+        id,
+        (-2..=2).flat_map(|x| {
+            (-1..=1).flat_map(move |y| {
+                (-2..=2)
+                    .map(move |z| BrickCoordinate::new(here.x() + x, here.y() + y, here.z() + z))
+            })
+        }),
+    );
     {
         let Some(ship) = world.data().grids().get(id) else {
             // The ship is not there. The record of the player says so next tick and the body is put in the level then.

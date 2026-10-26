@@ -756,3 +756,52 @@ fn a_ship_rests_on_what_is_built_on_a_planet_past_the_bricks_its_generator_makes
         "the ship is at {height}, the top of the slab at {top_of_the_slab}"
     );
 }
+
+#[test]
+fn the_ground_a_ship_falling_toward_a_planet_will_want_is_made_by_a_worker_meanwhile() {
+    let mut scene = Scene::new();
+    let centre = make_the_planet(&mut scene);
+    let ground = ground_under_the_cube() as f64 + centre;
+    // A hundred and fifty voxels up: a fall of about five seconds, in which the bricks of the ground come into the ship's lookahead one ring after another.
+    drop_a_cube_over_the_ground(&mut scene, ground, 150.0);
+    // (Ticks take microseconds here and a brick takes milliseconds, so the ticks are given the time a server's have.)
+    for _ in 0..140 {
+        scene.ticks(1);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let [_, height, _] = place_of_the_ship(&scene, 1);
+    assert!((height - ground).abs() < 0.05, "{height} against {ground}");
+    let counts = std::sync::Arc::new(std::sync::Mutex::new((0, 0)));
+    let slot = std::sync::Arc::clone(&counts);
+    scene.run(move |world| {
+        *slot.lock().unwrap() = (world.bricks_prefetched(), world.bricks_generated())
+    });
+    let (prefetched, generated) = *counts.lock().unwrap();
+    assert!(
+        prefetched >= 1,
+        "the worker made {prefetched} and the ticks {generated}"
+    );
+}
+
+#[test]
+fn the_bricks_round_a_walker_on_a_planet_are_made_by_a_worker_before_they_walk_into_them() {
+    let mut scene = Scene::new();
+    make_the_planet(&mut scene);
+    let mut player = scene
+        .rig
+        .join_walking([0.5, TOP_OF_THE_PLANET + 15.0, 0.5], 180.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    tick_and_follow(&mut scene, &mut player, 80);
+    player.hold(&[KeyCode::KeyW]);
+    // (Ticks take microseconds here and a brick takes milliseconds, so the ticks are given the time a server's have.)
+    // (Eleven seconds of walking is more than the thirty-odd voxels to the next row of bricks.)
+    for _ in 0..230 {
+        tick_and_follow(&mut scene, &mut player, 1);
+        std::thread::sleep(std::time::Duration::from_millis(3));
+    }
+    let counts = std::sync::Arc::new(std::sync::Mutex::new(0));
+    let slot = std::sync::Arc::clone(&counts);
+    scene.run(move |world| *slot.lock().unwrap() = world.bricks_prefetched());
+    let prefetched = *counts.lock().unwrap();
+    assert!(prefetched >= 1, "the worker made {prefetched}");
+}

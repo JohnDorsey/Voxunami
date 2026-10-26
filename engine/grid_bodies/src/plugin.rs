@@ -792,7 +792,20 @@ impl Bodies {
                         .map(|(_, brick)| *brick)
                         .collect(),
                 };
-                let (to_drop, to_make) = self.bricks_to_change(key, ground, &changed);
+                let (to_drop, to_make, ahead) = self.bricks_to_change(key, ground, &changed);
+                if let Ground::Planet(id) = ground {
+                    // The wanted bricks that are not made this tick are made by a worker meanwhile, so that they are there when they are, with the bricks
+                    // beside them and beside those that are made now (a collider is made looking at the voxels next to its brick).
+                    let beside = ahead.iter().chain(&to_make).flat_map(|brick| {
+                        FACES.map(|[x, y, z]| {
+                            BrickCoordinate::new(brick.x() + x, brick.y() + y, brick.z() + z)
+                        })
+                    });
+                    world.prefetch_ship_bricks(
+                        id,
+                        ahead.iter().copied().chain(beside).collect::<Vec<_>>(),
+                    );
+                }
                 for brick in to_drop {
                     let level = self.frames.get_mut(&key).expect("the frame exists");
                     match ground {
@@ -857,13 +870,18 @@ impl Bodies {
         report.terrain_bricks_made += made_this_tick;
     }
 
-    /// Which bricks of a ground are to lose their colliders and which are to get them (or get them again, if `changed` has them and they had), this tick.
+    /// Which bricks of a ground are to lose their colliders, which are to get them (or get them again, if `changed` has them and they had) this tick, and which are
+    /// wanted and left for a later tick, nearest first.
     fn bricks_to_change(
         &self,
         key: FrameKey,
         ground: Ground,
         changed: &BTreeSet<BrickCoordinate>,
-    ) -> (Vec<BrickCoordinate>, Vec<BrickCoordinate>) {
+    ) -> (
+        Vec<BrickCoordinate>,
+        Vec<BrickCoordinate>,
+        Vec<BrickCoordinate>,
+    ) {
         let level = &self.frames[&key];
         // Which bricks of the ground have colliders, and how a body's bounds are seen in its bricks. (A planet's colliders are asked for wherever a ship is
         // near, and not only in the bricks its generator makes: what is built past them is the planet's too.)
@@ -871,7 +889,7 @@ impl Bodies {
             Ground::Level => &level.terrain,
             Ground::Planet(id) => {
                 let Some(planet) = level.planets.get(&id) else {
-                    return (Vec::new(), Vec::new());
+                    return (Vec::new(), Vec::new(), Vec::new());
                 };
                 &planet.bricks
             }
@@ -929,6 +947,7 @@ impl Bodies {
             .map(|(brick, ring)| (*ring, *brick))
             .collect();
         missing_wanted.sort();
+        let ahead = missing_wanted.iter().map(|(_, brick)| *brick).collect();
         let to_make = needed
             .iter()
             .copied()
@@ -946,7 +965,7 @@ impl Bodies {
                     .filter(|brick| loaded.contains(brick)),
             )
             .collect();
-        (to_drop, to_make)
+        (to_drop, to_make, ahead)
     }
 
     /// Pulls every ship that moves with the gravity there is at its centre of mass: the level's, and the pull of the other ships that weigh enough.
