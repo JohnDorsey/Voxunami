@@ -15,12 +15,20 @@ use content_registry::{IdentifierRegistry, Registry};
 use namespaced_id::NamespacedId;
 use terrain::{GeneratorFamily, GeneratorId, TerrainGenerator, WorldTerrain};
 use voxel_grid::{ChannelDefinition, ChannelIndex, Grid, GridLayout};
-use world_storage::{GeneratorRecipe, LevelData, LoadContext, RecipeError, WorldData};
+use voxel_space::{
+    BRICK_EDGE_LENGTH, BrickBox, BrickCoordinate, GridPose, LevelIndex, Orientation, WorldPosition,
+};
+use world_storage::{
+    GeneratorRecipe, GridTerrain, LevelData, LoadContext, MovingGrid, PilotLogout, RecipeError,
+    WorldData,
+};
 use world_view::ViewChannels;
 
 use crate::definition::GameContent;
 use crate::package_data::{PackageData, check_materials};
-use data_packs::{PackErrors, RawPack, load_packs};
+use data_packs::{
+    Body, BodySupport, PackErrors, RawPack, Weight, load_packs, read_body, read_family_parameters,
+};
 
 /// Makes a game's terrain generators for a world seed. The layout is the world's, for finding the
 /// channels a generator writes.
@@ -56,6 +64,13 @@ pub struct PackageSpec {
     pub generators: GeneratorFactory,
     /// The families of terrain generators whose settings a world keeps as data (see [`WorldData::add_generator_recipe`]).
     pub families: FamilyFactory,
+    /// How the parameters of those families are written in the body files of packs, and the levels a new world has (the names a body's `level` may take).
+    pub body_support: BodySupport,
+    /// The bodies a new world has before any pack adds its own: the name of each and the text of its file (as a pack's `bodies/` folder holds them).
+    pub builtin_bodies: Vec<(NamespacedId, &'static str)>,
+    /// How hard gravity pulls between bodies (the game's gravity constant, `GravitySettings::pull_strength`): what a body that is told how hard it pulls at its
+    /// surface weighs is worked out with it.
+    pub pull_strength: f64,
     /// The generator new regions are given, and the one used if a world's own is missing.
     pub default_generator: NamespacedId,
     /// Generators are assigned to cubes of 8 to the power of this many bricks per side (see
@@ -81,11 +96,40 @@ impl fmt::Debug for PackageSpec {
 pub struct ContentPackage {
     blocks: Registry<BlockDefinition>,
     spec: PackageSpec,
+    /// The bodies a new world has: the game's own, then the packs', in the order they are made.
+    bodies: Vec<(NamespacedId, Body)>,
 }
 
 impl ContentPackage {
+    /// Panics if one of the game's own bodies is not a good body file, which is a mistake in the game's declaration.
     pub fn new(blocks: Registry<BlockDefinition>, spec: PackageSpec) -> Self {
-        Self { blocks, spec }
+        let bodies = spec
+            .builtin_bodies
+            .iter()
+            .map(|(identifier, text)| {
+                let file = format!(
+                    "{}/bodies/{}.json",
+                    identifier.namespace(),
+                    identifier.name()
+                );
+                let (_, body) = read_body(
+                    &file,
+                    identifier.namespace(),
+                    identifier.name(),
+                    text,
+                    &spec.body_support.context(),
+                )
+                .unwrap_or_else(|errors| {
+                    panic!("the game's own body {identifier} is wrong:\n{errors}")
+                });
+                (identifier.clone(), body)
+            })
+            .collect();
+        Self {
+            blocks,
+            spec,
+            bodies,
+        }
     }
 
     fn layout(&self) -> Arc<GridLayout> {
@@ -133,6 +177,115 @@ impl ContentPackage {
         (self.spec.families)(&self.layout())
     }
 
+    /// Makes the package's bodies in a world that is being made, each as a held ship with the ground of its own generator (a recipe, named as the body is), in the
+    /// order of the package: the game's own, then those of the packs. A body that is told how hard it pulls at its surface weighs what that takes at the game's
+    /// pull strength: `g * r * r / pull_strength`, with `r` the radius its family reads. Nothing is made if any of them cannot be: the message names the body.
+    pub fn add_bodies(&self, world: &mut WorldData) -> Result<(), String> {
+        let pull_strength = self.spec.pull_strength;
+        if !(pull_strength > 0.0 && pull_strength.is_finite()) {
+            return Err(format!(
+                "the pull of gravity is above nothing, not {pull_strength}"
+            ));
+        }
+        struct Ready {
+            identifier: NamespacedId,
+            recipe: GeneratorRecipe,
+            level: LevelIndex,
+            body: Body,
+            mass: f32,
+        }
+        let mut ready: Vec<Ready> = Vec::new();
+        for (identifier, body) in &self.bodies {
+            let trouble = |why: String| format!("{identifier}: {why}");
+            let level = world
+                .level_index(&body.level)
+                .ok_or_else(|| trouble(format!("the world has no level {}", body.level)))?;
+            let parameters =
+                read_family_parameters(&self.spec.body_support.families, body, world.world_seed)
+                    .map_err(trouble)?;
+            let taken = world
+                .main()
+                .terrain
+                .generators()
+                .runtime_id(identifier)
+                .is_some();
+            if taken {
+                return Err(trouble(
+                    RecipeError::NameTaken(identifier.clone()).to_string(),
+                ));
+            }
+            let mass = match body.weight {
+                Weight::Mass(mass) => mass,
+                Weight::SurfaceGravity(gravity) => {
+                    gravity * parameters.surface_radius * parameters.surface_radius / pull_strength
+                }
+            };
+            if !(mass > 0.0 && mass <= f64::from(f32::MAX)) {
+                return Err(trouble(format!(
+                    "{mass} kilograms is not a weight a ship can have"
+                )));
+            }
+            ready.push(Ready {
+                identifier: identifier.clone(),
+                recipe: GeneratorRecipe {
+                    instance: identifier.clone(),
+                    family: body.family.clone(),
+                    parameters: parameters.bytes,
+                },
+                level,
+                body: body.clone(),
+                mass: mass as f32,
+            });
+        }
+        let layout = Arc::clone(world.main().overrides.layout());
+        for Ready {
+            identifier,
+            recipe,
+            level,
+            body,
+            mass,
+        } in ready
+        {
+            let generator = self
+                .add_generator_recipe(world, recipe)
+                .map_err(|error| format!("{identifier}: {error}"))?;
+            world.grids_mut().create(MovingGrid {
+                level,
+                pose: GridPose::new(world_position(body.position), Orientation::IDENTITY),
+                linear_velocity: [0.0; 3],
+                angular_velocity: [0.0; 3],
+                mass,
+                centre_of_mass: [0.0; 3],
+                held: true,
+                frozen: false,
+                on_pilot_logout: PilotLogout::Stay,
+                voxels: Grid::new(Arc::clone(&layout)),
+                terrain: Some(GridTerrain {
+                    generator,
+                    extent: BrickBox::around(BrickCoordinate::ORIGIN, body.extent_bricks),
+                    mass,
+                }),
+                sections: Vec::new(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Whether the bodies of the package can be made in a new world: makes them in one with the levels the package says it has, and throws it away.
+    fn check_bodies(&self) -> Result<(), String> {
+        if self.bodies.is_empty() {
+            return Ok(());
+        }
+        let levels: Vec<(NamespacedId, NamespacedId)> = self
+            .spec
+            .body_support
+            .levels
+            .iter()
+            .map(|level| (level.clone(), self.spec.default_generator.clone()))
+            .collect();
+        self.add_bodies(&mut self.new_world_of(0, &levels))
+    }
+
     /// Adds a terrain generator made from a recipe to a world of this package (see [`WorldData::add_generator_recipe`]), with the package's families.
     pub fn add_generator_recipe(
         &self,
@@ -154,7 +307,8 @@ impl ContentPackage {
     }
 
     /// A new world with these levels, each with its identifier and the generator that is the default of its regions, in this order: the first is the main level,
-    /// where players start. Nothing is edited. (The world of [`GameContent::new_world`] is the one level of the spec, with the spec's default generator.)
+    /// where players start. Nothing is edited, and there are no bodies yet ([`ContentPackage::add_bodies`]). (The world of [`GameContent::new_world`] is the one
+    /// level of the spec, with the spec's default generator.)
     ///
     /// Panics with no levels, or with a generator the package does not have, which are mistakes in the game's declaration.
     pub fn new_world_of(&self, seed: u64, levels: &[(NamespacedId, NamespacedId)]) -> WorldData {
@@ -181,7 +335,12 @@ impl ContentPackage {
             .iter()
             .filter_map(|(identifier, definition)| Some((identifier.clone(), definition.clone()?)))
             .collect();
-        let loaded = load_packs(packs, &base, &package.properties)?;
+        let loaded = load_packs(
+            packs,
+            &base,
+            &package.properties,
+            &self.spec.body_support.context(),
+        )?;
 
         let mut blocks = Registry::new();
         let changed: std::collections::HashMap<&NamespacedId, &BlockDefinition> = loaded
@@ -217,6 +376,12 @@ impl ContentPackage {
         let candidate = Self {
             blocks,
             spec: self.spec.clone(),
+            bodies: self
+                .bodies
+                .iter()
+                .cloned()
+                .chain(loaded.bodies.iter().cloned())
+                .collect(),
         };
         // The renderer cannot draw more colours than it has: say so now, not when a window opens.
         let table = candidate
@@ -224,9 +389,19 @@ impl ContentPackage {
             .block_table()
             .map_err(|error| pack_problem(error.to_string()))?;
         check_materials(&table).map_err(|error| pack_problem(error.to_string()))?;
+        // The bodies must be makeable, which only a world can say (their weight, the names of their generators): in a world of no seed that is thrown away.
+        candidate.check_bodies().map_err(pack_problem)?;
         *self = candidate;
         Ok(loaded.warnings)
     }
+}
+
+/// The place in a level at `position`, in voxels.
+fn world_position(position: [f64; 3]) -> WorldPosition {
+    let edge = BRICK_EDGE_LENGTH as f64;
+    let brick = position.map(|component| (component / edge).floor() as i64);
+    let offset = [0, 1, 2].map(|axis| (position[axis] - brick[axis] as f64 * edge) as f32);
+    WorldPosition::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), offset)
 }
 
 fn pack_problem(message: String) -> PackErrors {
@@ -301,6 +476,17 @@ impl GameContent for ContentPackage {
     fn registries(&self) -> Vec<(NamespacedId, &dyn IdentifierRegistry)> {
         vec![(self.spec.block_registry_kind.clone(), &self.blocks)]
     }
+
+    fn body_support(&self) -> BodySupport {
+        self.spec.body_support.clone()
+    }
+
+    fn body_names(&self) -> Vec<NamespacedId> {
+        self.bodies
+            .iter()
+            .map(|(identifier, _)| identifier.clone())
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -357,12 +543,52 @@ mod tests {
                     let family: Arc<dyn GeneratorFamily> = Arc::new(NothingFamily);
                     vec![(id("test_game:nothing_family_v1"), family)]
                 }),
+                body_support: BodySupport {
+                    families: vec![(id("test_game:nothing_family_v1"), Arc::new(RockData))],
+                    levels: vec![id("test_game:main")],
+                },
+                builtin_bodies: vec![(id("test_game:boulder"), BOULDER)],
+                pull_strength: 2.0e-10,
                 default_generator: id("test_game:empty_v1"),
                 assignment_cube_level: 3,
                 ambient_light: 90,
             },
         )
     }
+
+    /// The data side of the same family: the radius is all it takes, and the bytes are the radius and the seed of the world.
+    #[derive(Debug)]
+    struct RockData;
+
+    impl data_packs::FamilyData for RockData {
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object" })
+        }
+
+        fn read(
+            &self,
+            parameters: &serde_json::Value,
+            world_seed: u64,
+        ) -> Result<data_packs::FamilyParameters, Vec<data_packs::FamilyProblem>> {
+            let radius = parameters["radius"].as_f64().ok_or_else(|| {
+                vec![data_packs::FamilyProblem {
+                    path: "/radius".to_owned(),
+                    message: "a radius".to_owned(),
+                }]
+            })?;
+            let mut bytes = radius.to_bits().to_le_bytes().to_vec();
+            bytes.extend_from_slice(&world_seed.to_le_bytes());
+            Ok(data_packs::FamilyParameters {
+                bytes,
+                surface_radius: radius,
+            })
+        }
+    }
+
+    /// The package's own body: a boulder of 50 voxels, at (100, 0, -40) in the level of the package.
+    const BOULDER: &str = r#"{ "level": "test_game:main", "position": [100, 0, -40],
+        "terrain": { "family": "test_game:nothing_family_v1", "parameters": { "radius": 50 } },
+        "extent_bricks": 3, "surface_gravity": 4 }"#;
 
     /// A family whose generators make nothing, however they are set.
     #[derive(Debug)]
@@ -541,6 +767,322 @@ mod tests {
         assert_eq!(*seen.lock().unwrap(), [(7, 2), (7, 2)]);
     }
 
+    // ---- bodies ----
+
+    fn pull() -> f64 {
+        package().spec.pull_strength
+    }
+
+    #[test]
+    fn the_bodies_of_a_package_are_ships_in_a_new_world_with_a_generator_a_weight_and_a_place() {
+        let content = package();
+        let mut world = content.new_world(42);
+        assert!(
+            world.grids().is_empty(),
+            "a new world has no bodies until they are made"
+        );
+        content.add_bodies(&mut world).unwrap();
+
+        assert_eq!(world.grids().len(), 1);
+        let (_, ship) = world.grids().iter().next().unwrap();
+        assert_eq!(ship.level, voxel_space::LevelIndex::MAIN);
+        assert!(ship.held && !ship.frozen);
+        assert_eq!(ship.centre_of_mass, [0.0; 3]);
+        assert_eq!(ship.linear_velocity, [0.0; 3]);
+        assert_eq!(ship.angular_velocity, [0.0; 3]);
+        assert_eq!(ship.voxels.brick_count(), 0);
+        // 100 voxels along x is 3 bricks and 4 voxels; -40 along z is brick -2 and 24 voxels.
+        assert_eq!(
+            ship.pose,
+            voxel_space::GridPose::new(
+                voxel_space::WorldPosition::new(
+                    voxel_space::BrickCoordinate::new(3, 0, -2),
+                    [4.0, 0.0, 24.0]
+                ),
+                voxel_space::Orientation::IDENTITY
+            )
+        );
+        // As heavy as it must be to pull 4 metres a second a second at its surface, 50 voxels from its middle.
+        let mass = (4.0f64 * 50.0 * 50.0 / pull()) as f32;
+        assert_eq!(ship.mass, mass);
+        let terrain = ship.terrain.expect("a body has terrain");
+        assert_eq!(terrain.mass, mass);
+        assert_eq!(
+            terrain.extent,
+            voxel_space::BrickBox::around(voxel_space::BrickCoordinate::ORIGIN, 3)
+        );
+        // Its generator is the recipe of the body, made for the seed of this world.
+        let generators = world.main().terrain.generators();
+        assert_eq!(
+            generators.entry(terrain.generator).unwrap().identifier(),
+            &id("test_game:boulder")
+        );
+        let mut parameters = 50.0f64.to_bits().to_le_bytes().to_vec();
+        parameters.extend_from_slice(&42u64.to_le_bytes());
+        assert_eq!(
+            world.generator_recipes(),
+            &[GeneratorRecipe {
+                instance: id("test_game:boulder"),
+                family: id("test_game:nothing_family_v1"),
+                parameters,
+            }]
+        );
+        // Another world is another seed.
+        let mut other = content.new_world(43);
+        content.add_bodies(&mut other).unwrap();
+        assert_ne!(other.generator_recipes(), world.generator_recipes());
+    }
+
+    #[test]
+    fn a_world_with_bodies_saves_and_loads_with_them_and_a_load_does_not_make_them_again() {
+        let content = package();
+        let mut world = content.new_world(42);
+        content.add_bodies(&mut world).unwrap();
+        let bytes = world.save_with_ships(&content.registries()).unwrap();
+        let mut file = Vec::new();
+        let mut ships = world_storage::MemoryShipFiles::new();
+        bytes
+            .write_with(&mut ships, |written| {
+                file = written.to_vec();
+                Ok(())
+            })
+            .unwrap();
+
+        let mut later = package();
+        let parsed = ParsedWorld::parse(&file).unwrap();
+        let (loaded, report) = parsed.load(later.load_context(42)).unwrap();
+        assert!(report.missing_content.is_empty() && report.refused_recipes.is_empty());
+        assert_eq!(loaded.generator_recipes(), world.generator_recipes());
+        // One ship, in its file (none in memory), and the load did not add the package's bodies to it.
+        assert_eq!(loaded.grids().len(), 0);
+        assert_eq!(loaded.grids().parked().count(), 1);
+    }
+
+    #[test]
+    fn the_bodies_of_packs_follow_the_games_own_and_may_weigh_what_they_say() {
+        let mut content = package();
+        content
+            .apply_packs(&[RawPack {
+                folder: "my_pack".to_owned(),
+                manifest: r#"{ "id": "my_pack" }"#.to_owned(),
+                blocks: Vec::new(),
+                patches: Vec::new(),
+                bodies: vec![RawFile {
+                    name: "pebble".to_owned(),
+                    text: r#"{ "level": "test_game:main",
+                        "terrain": { "family": "test_game:nothing_family_v1", "parameters": { "radius": 2 } },
+                        "extent_bricks": 1, "mass": 12 }"#
+                        .to_owned(),
+                }],
+            }])
+            .unwrap();
+        let mut world = content.new_world(5);
+        content.add_bodies(&mut world).unwrap();
+        let names: Vec<String> = world
+            .generator_recipes()
+            .iter()
+            .map(|recipe| recipe.instance.to_string())
+            .collect();
+        assert_eq!(names, ["test_game:boulder", "my_pack:pebble"]);
+        let ships: Vec<f32> = world.grids().iter().map(|(_, ship)| ship.mass).collect();
+        assert_eq!(ships.len(), 2);
+        assert_eq!(ships[1], 12.0);
+        // At the origin, because the file said no place.
+        let (_, pebble) = world.grids().iter().nth(1).unwrap();
+        assert_eq!(
+            pebble.pose.position.brick(),
+            voxel_space::BrickCoordinate::ORIGIN
+        );
+    }
+
+    #[test]
+    fn a_pack_that_puts_a_body_in_a_level_the_game_does_not_have_is_refused_and_nothing_is_loaded()
+    {
+        let mut content = package();
+        let error = content
+            .apply_packs(&[RawPack {
+                folder: "my_pack".to_owned(),
+                manifest: r#"{ "id": "my_pack" }"#.to_owned(),
+                blocks: vec![RawFile {
+                    name: "marble".to_owned(),
+                    text: r#"{ "color": [1, 1, 1] }"#.to_owned(),
+                }],
+                patches: Vec::new(),
+                bodies: vec![RawFile {
+                    name: "pebble".to_owned(),
+                    text: r#"{ "level": "test_game:below",
+                        "terrain": { "family": "test_game:nothing_family_v1", "parameters": { "radius": 2 } },
+                        "extent_bricks": 1, "mass": 12 }"#
+                        .to_owned(),
+                }],
+            }])
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "my_pack/bodies/pebble.json: /level: the game has no level \"test_game:below\"; its levels are \"test_game:main\""
+        );
+        // (Neither the block nor the body of the pack is in.)
+        assert_eq!(block_names(&content), ["test_game:air", "test_game:rock"]);
+        let mut world = content.new_world(5);
+        content.add_bodies(&mut world).unwrap();
+        assert_eq!(world.grids().len(), 1);
+    }
+
+    #[test]
+    fn bodies_that_cannot_be_made_in_a_world_change_nothing_and_say_why() {
+        let content = package();
+        // A world that has not the level the body is in.
+        let mut elsewhere =
+            content.new_world_of(5, &[(id("test_game:elsewhere"), id("test_game:empty_v1"))]);
+        let error = content.add_bodies(&mut elsewhere).unwrap_err();
+        assert_eq!(
+            error,
+            "test_game:boulder: the world has no level test_game:main"
+        );
+        assert!(elsewhere.grids().is_empty() && elsewhere.generator_recipes().is_empty());
+        // A world that already has them.
+        let mut world = content.new_world(5);
+        content.add_bodies(&mut world).unwrap();
+        let error = content.add_bodies(&mut world).unwrap_err();
+        assert_eq!(
+            error,
+            "test_game:boulder: the world already has a terrain generator called test_game:boulder"
+        );
+        assert_eq!(world.grids().len(), 1);
+        assert_eq!(world.generator_recipes().len(), 1);
+        // A pull that is no pull.
+        let mut no_pull = package();
+        no_pull.spec.pull_strength = 0.0;
+        let mut third =
+            no_pull.new_world_of(5, &[(id("test_game:main"), id("test_game:empty_v1"))]);
+        assert_eq!(
+            no_pull.add_bodies(&mut third).unwrap_err(),
+            "the pull of gravity is above nothing, not 0"
+        );
+        assert!(third.grids().is_empty());
+    }
+
+    #[test]
+    fn a_body_that_cannot_be_made_stops_the_others_from_being_made_before_it() {
+        let mut content = package();
+        content
+            .apply_packs(&[RawPack {
+                folder: "my_pack".to_owned(),
+                manifest: r#"{ "id": "my_pack" }"#.to_owned(),
+                blocks: Vec::new(),
+                patches: Vec::new(),
+                bodies: vec![RawFile {
+                    name: "pebble".to_owned(),
+                    text: r#"{ "level": "test_game:main",
+                        "terrain": { "family": "test_game:nothing_family_v1", "parameters": { "radius": 2 } },
+                        "extent_bricks": 1, "mass": 12 }"#
+                        .to_owned(),
+                }],
+            }])
+            .unwrap();
+        // A world in which the second body's name is already taken (by a recipe that is not a body's).
+        let mut world = content.new_world(5);
+        let taken = GeneratorRecipe {
+            instance: id("my_pack:pebble"),
+            family: id("test_game:nothing_family_v1"),
+            parameters: Vec::new(),
+        };
+        content
+            .add_generator_recipe(&mut world, taken.clone())
+            .unwrap();
+        let error = content.add_bodies(&mut world).unwrap_err();
+        assert_eq!(
+            error,
+            "my_pack:pebble: the world already has a terrain generator called my_pack:pebble"
+        );
+        // The first body, which could have been made, was not.
+        assert!(world.grids().is_empty());
+        assert_eq!(world.generator_recipes(), &[taken]);
+    }
+
+    #[test]
+    fn a_pack_whose_body_is_too_heavy_to_be_a_ship_is_refused_when_it_is_loaded() {
+        let mut content = package();
+        let error = content
+            .apply_packs(&[RawPack {
+                folder: "my_pack".to_owned(),
+                manifest: r#"{ "id": "my_pack" }"#.to_owned(),
+                blocks: Vec::new(),
+                patches: Vec::new(),
+                bodies: vec![RawFile {
+                    name: "dense".to_owned(),
+                    text: r#"{ "level": "test_game:main",
+                        "terrain": { "family": "test_game:nothing_family_v1", "parameters": { "radius": 2 } },
+                        "extent_bricks": 1, "surface_gravity": 1e40 }"#
+                        .to_owned(),
+                }],
+            }])
+            .unwrap_err();
+        assert_eq!(error.0.len(), 1);
+        assert!(
+            error.to_string().contains("my_pack:dense: ")
+                && error
+                    .to_string()
+                    .contains("is not a weight a ship can have"),
+            "{error}"
+        );
+        // Nothing of it is in.
+        assert_eq!(content.body_names(), [id("test_game:boulder")]);
+    }
+
+    #[test]
+    fn a_pack_cannot_make_a_body_that_has_the_name_of_one_the_game_has() {
+        let mut content = package();
+        // (A pack of the game's own namespace, which nothing forbids.)
+        let error = content
+            .apply_packs(&[RawPack {
+                folder: "test_game".to_owned(),
+                manifest: r#"{ "id": "test_game" }"#.to_owned(),
+                blocks: Vec::new(),
+                patches: Vec::new(),
+                bodies: vec![RawFile {
+                    name: "boulder".to_owned(),
+                    text: BOULDER.to_owned(),
+                }],
+            }])
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "the packs together: test_game:boulder: the world already has a terrain generator called test_game:boulder"
+        );
+        assert_eq!(content.body_names(), [id("test_game:boulder")]);
+    }
+
+    #[test]
+    fn a_package_with_no_bodies_takes_packs_as_it_did_and_says_what_its_bodies_may_name() {
+        let mut spec = package().spec;
+        spec.builtin_bodies.clear();
+        spec.body_support = BodySupport::default();
+        let mut bare = ContentPackage::new(Registry::new(), spec);
+        assert!(bare.body_names().is_empty());
+        assert!(bare.body_support().families.is_empty() && bare.body_support().levels.is_empty());
+        bare.apply_packs(&[pack("my_pack", "", &[], &[])]).unwrap();
+        // And a package that has some says what a body of a pack may name.
+        let support = package().body_support();
+        assert_eq!(support.levels, [id("test_game:main")]);
+        assert_eq!(
+            support
+                .families
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect::<Vec<_>>(),
+            [id("test_game:nothing_family_v1")]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "the game's own body test_game:bad is wrong")]
+    fn a_game_whose_own_body_is_wrong_is_a_loud_mistake() {
+        let mut content = package();
+        content.spec.builtin_bodies = vec![(id("test_game:bad"), "{}")];
+        let _ = ContentPackage::new(Registry::new(), content.spec);
+    }
+
     // ---- data packs ----
 
     use data_packs::RawFile;
@@ -564,6 +1106,7 @@ mod tests {
             manifest: format!(r#"{{ "id": "{folder}", "depends_on": [{depends_on}] }}"#),
             blocks: files(blocks),
             patches: files(patches),
+            bodies: Vec::new(),
         }
     }
 

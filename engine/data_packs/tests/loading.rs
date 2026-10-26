@@ -1,7 +1,7 @@
 //! Loading packs on top of a game's blocks: order, adding, patching, and what is refused.
 
 use block_models::{BlockDefinition, PropertyDeclaration, PropertyKind, PropertySchema, Shape};
-use data_packs::{Loaded, RawFile, RawPack, load_packs};
+use data_packs::{BodyContext, Loaded, RawFile, RawPack, load_packs};
 use namespaced_id::NamespacedId;
 use proptest::prelude::*;
 use voxel_space::FaceDirection;
@@ -69,11 +69,12 @@ fn pack(
         manifest: format!(r#"{{ "id": "{folder}", "depends_on": [{dependencies}] }}"#),
         blocks: files(blocks),
         patches: files(patches),
+        bodies: Vec::new(),
     }
 }
 
 fn load(packs: &[RawPack]) -> Result<Loaded, Vec<String>> {
-    load_packs(packs, &base(), &schema())
+    load_packs(packs, &base(), &schema(), &BodyContext::NONE)
         .map_err(|errors| errors.0.iter().map(ToString::to_string).collect())
 }
 

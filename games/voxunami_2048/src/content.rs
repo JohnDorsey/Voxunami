@@ -6,11 +6,13 @@ use std::sync::Arc;
 use block_models::BlockDefinition;
 use content_registry::{IdentifierRegistry, Registry};
 use game_shell::{
-    ContentPackage, GameContent, PackErrors, PackageData, PackageSpec, RawPack, no_families,
+    BodySupport, ContentPackage, GameContent, PackErrors, PackageData, PackageSpec, RawPack,
+    no_families,
 };
 use namespaced_id::NamespacedId;
 use terrain::TerrainGenerator;
 use voxel_grid::{ChannelDefinition, ChannelIndex};
+use voxel_space::GravitySettings;
 use world_storage::{LoadContext, WorldData};
 use world_view::ViewChannels;
 
@@ -161,6 +163,9 @@ impl Content2048 {
                 generators
             }),
             families: no_families(),
+            body_support: BodySupport::default(),
+            builtin_bodies: Vec::new(),
+            pull_strength: f64::from(GravitySettings::default().pull_strength),
             default_generator: numbered_hills_generator_identifier(),
             assignment_cube_level: ASSIGNMENT_CUBE_LEVEL,
             ambient_light: 0,
@@ -199,6 +204,14 @@ impl GameContent for Content2048 {
 
     fn apply_packs(&mut self, packs: &[RawPack]) -> Result<Vec<String>, PackErrors> {
         self.package.apply_packs(packs)
+    }
+
+    fn body_support(&self) -> BodySupport {
+        self.package.body_support()
+    }
+
+    fn body_names(&self) -> Vec<NamespacedId> {
+        self.package.body_names()
     }
 
     /// A new world: numbered hills as far as anyone goes, with nothing changed yet.

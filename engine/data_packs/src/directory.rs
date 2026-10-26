@@ -1,5 +1,4 @@
-//! Finding packs on disk: a directory of folders, each with a `pack.json`, a `blocks` folder and a `patches`
-//! folder.
+//! Finding packs on disk: a directory of folders, each with a `pack.json` and the folders `blocks`, `patches` and `bodies`.
 
 use std::fs;
 use std::path::Path;
@@ -116,11 +115,13 @@ pub fn read_directory(root: &Path) -> Result<Vec<RawPack>, PackErrors> {
         };
         let blocks = files_in(&pack, &folder, "blocks", &mut errors);
         let patches = files_in(&pack, &folder, "patches", &mut errors);
+        let bodies = files_in(&pack, &folder, "bodies", &mut errors);
         packs.push(RawPack {
             folder,
             manifest,
             blocks,
             patches,
+            bodies,
         });
     }
     if errors.is_empty() {

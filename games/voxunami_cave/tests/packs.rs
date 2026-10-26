@@ -53,6 +53,7 @@ fn the_pack() -> Vec<RawPack> {
                 { "op": "test", "property": "base_blocks:emission", "value": 64 },
                 { "op": "set", "property": "base_blocks:emission", "value": 90 } ] }"#,
         )],
+        bodies: Vec::new(),
     }]
 }
 
@@ -263,6 +264,7 @@ fn the_placeable_pack() -> Vec<RawPack> {
             file("marble", r#"{ "color": [0.9, 0.9, 0.95] }"#),
         ],
         patches: Vec::new(),
+        bodies: Vec::new(),
     }]
 }
 

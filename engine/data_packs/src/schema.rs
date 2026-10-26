@@ -9,9 +9,10 @@
 use block_models::{PropertyKind, PropertySchema};
 use serde_json::{Value, json};
 
+use crate::body::{BodyContext, GREATEST_EXTENT_BRICKS, POSITION_LIMIT};
 use crate::shape::{FACE_NAMES, SHAPE_NAMES};
 
-/// The schemas of the three kinds of file a pack has.
+/// The schemas of the four kinds of file a pack has.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PackSchemas {
     /// For `pack.json`.
@@ -20,6 +21,8 @@ pub struct PackSchemas {
     pub block: Value,
     /// For the files in `patches/`.
     pub patch: Value,
+    /// For the files in `bodies/`.
+    pub body: Value,
 }
 
 const DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
@@ -162,6 +165,87 @@ fn block(schema: &PropertySchema) -> Value {
     })
 }
 
+fn body(context: &BodyContext<'_>) -> Value {
+    let level = if context.levels.is_empty() {
+        json!({ "type": "string", "pattern": identifier_pattern() })
+    } else {
+        let names: Vec<&str> = context.levels.iter().map(|level| level.as_str()).collect();
+        json!({ "enum": names })
+    };
+    let family = if context.families.is_empty() {
+        json!({ "type": "string", "pattern": identifier_pattern() })
+    } else {
+        let names: Vec<&str> = context
+            .families
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        json!({ "enum": names })
+    };
+    // Each family says how its own parameters are written.
+    let parameters: Vec<Value> = context
+        .families
+        .iter()
+        .map(|(name, data)| {
+            json!({
+                "if": { "properties": { "family": { "const": name.as_str() } }, "required": ["family"] },
+                "then": { "properties": { "parameters": data.schema() } }
+            })
+        })
+        .collect();
+    json!({
+        "$schema": DIALECT,
+        "title": "A Voxunami body",
+        "description": "one body of a pack, a planet in a level of the world; its name is the file's name",
+        "type": "object",
+        "required": ["level", "terrain", "extent_bricks"],
+        "additionalProperties": false,
+        "oneOf": [{ "required": ["mass"] }, { "required": ["surface_gravity"] }],
+        "properties": {
+            "$schema": { "type": "string" },
+            "level": {
+                "description": "the level it is in, such as `my_game:space`",
+                "$ref": "#/$defs/level"
+            },
+            "position": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": { "type": "number", "minimum": -POSITION_LIMIT, "maximum": POSITION_LIMIT },
+                "description": "where its centre is in the level, in voxels: x, y, z (the origin if left out)"
+            },
+            "terrain": {
+                "type": "object",
+                "required": ["family", "parameters"],
+                "additionalProperties": false,
+                "properties": {
+                    "family": { "$ref": "#/$defs/family", "description": "the family of terrain generators that makes its ground" },
+                    "parameters": { "type": "object", "description": "what the family takes" }
+                },
+                "allOf": parameters
+            },
+            "extent_bricks": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": GREATEST_EXTENT_BRICKS,
+                "description": "how many bricks (32 voxels) either way of its centre its ground reaches"
+            },
+            "mass": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": f64::from(f32::MAX),
+                "description": "how heavy it is, in kilograms (give this or surface_gravity)"
+            },
+            "surface_gravity": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "description": "as heavy as it must be to pull this hard at its surface, in metres a second a second (give this or mass)"
+            }
+        },
+        "$defs": { "level": level, "family": family }
+    })
+}
+
 fn patch() -> Value {
     let identifier = json!({ "type": "string", "pattern": identifier_pattern() });
     let property_value = json!({ "type": ["boolean", "integer"] });
@@ -240,7 +324,7 @@ fn patch() -> Value {
 
 impl PackSchemas {
     /// The files to write for editors to read: each name with the schema's text.
-    pub fn files(&self) -> [(&'static str, String); 3] {
+    pub fn files(&self) -> [(&'static str, String); 4] {
         let text = |schema: &Value| {
             let mut text = serde_json::to_string_pretty(schema).expect("a schema is JSON");
             text.push('\n');
@@ -250,15 +334,17 @@ impl PackSchemas {
             ("pack.schema.json", text(&self.manifest)),
             ("block.schema.json", text(&self.block)),
             ("patch.schema.json", text(&self.patch)),
+            ("body.schema.json", text(&self.body)),
         ]
     }
 }
 
-/// The schemas for a game that declares these properties.
-pub fn pack_schemas(schema: &PropertySchema) -> PackSchemas {
+/// The schemas for a game that declares these properties and has these families of generators and levels.
+pub fn pack_schemas(schema: &PropertySchema, bodies: &BodyContext<'_>) -> PackSchemas {
     PackSchemas {
         manifest: manifest(),
         block: block(schema),
         patch: patch(),
+        body: body(bodies),
     }
 }

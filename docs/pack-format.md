@@ -13,10 +13,11 @@ packs/                      the folder you give the server: --packs packs
     blocks/marble.json      a block, named by its file: my_pack:marble
     blocks/glow_stone.json
     patches/dim_lamps.json  a change to blocks that already exist
+    bodies/moon.json        a planet in the world: my_pack:moon
 ```
 
 Names are lowercase letters, digits and `_`, starting with a letter, at most 64 characters. A file's name without `.json` is
-the block's or patch's name. Names that start with `.` and files that are not `.json` are left alone.
+the block's, patch's or body's name. Names that start with `.` and files that are not `.json` are left alone.
 
 ## `pack.json`
 
@@ -88,11 +89,48 @@ Only `color` is needed. A block is one whole cube unless `states` says more.
   property the game does not declare (the plugin is not loaded). This is how a pack improves another mod's blocks when that
   mod is installed, and does nothing when it is not. Without it, either is an error (so a typo is never silent).
 
+## A body
+
+A body is a planet: a ship in a level of the world that is held where it is put and has ground of its own, which a *family* of terrain
+generators makes from a few numbers (so a planet of another size or seed is a file, not a change of code). Cave's own planet is a body, written
+in this same format (`games/voxunami_cave/data/bodies/planet.json`).
+
+```json
+{
+  "level": "voxunami_cave:mini_cosmos",
+  "position": [400000, 0, 0],
+  "terrain": {
+    "family": "base_blocks:planet_v1",
+    "parameters": { "seed": 99, "radius": 10000, "hill_height": 20, "largest_hill_wavelength_log2": 7,
+                    "hill_octave_count": 4, "cave_wavelength_log2": 5, "cave_half_thickness": 0.05 }
+  },
+  "extent_bricks": 340,
+  "surface_gravity": 8
+}
+```
+
+- **`level`**: the level it is in. Cave has `voxunami_cave:mini_cosmos` (space, where its planet is) and `voxunami_cave:overworld`.
+- **`position`**: where its centre is in the level, in voxels (x, y, z). The origin if left out.
+- **`terrain.family`**: the family of generators that makes its ground. Cave has one, `base_blocks:planet_v1`: a ball whose surface is hills (noise bent
+  round it) with sheet caves under it. `pack-schema` lists the families a game has.
+- **`terrain.parameters`**: what the family takes. For planets: `seed` (a whole number, or `"world"` for the seed of the world it is made in, which makes
+  the planet the world's own) and `radius` (voxels, from the centre to the surface where the hills add nothing) are required; `hill_height` (voxels, the height
+  of the largest hills), `largest_hill_wavelength_log2` (the largest hills are 2 to this power voxels across; 10), `hill_octave_count` (how many sizes of hill,
+  each half the one before; 0), `cave_wavelength_log2` (5) and `cave_half_thickness` (0 for no caves) make a smooth ball if left out.
+- **`extent_bricks`**: how many bricks (32 voxels) either way of its centre its ground reaches. Ground beyond is not made, so this wants to be the radius and the
+  height of the hills, with a brick or two to spare.
+- **`surface_gravity`** (metres a second a second) **or `mass`** (kilograms): one of them. A planet given its pull weighs what that takes at its radius with the
+  game's gravity. (In Cave a body pulls at all only if it weighs at least 10^19 kilograms, which is a pull of ten at a radius of some eight kilometres.)
+
+A body is made when a *world* is made: the planets of a world that exists are not changed by a pack added later, and do not go if the pack is taken away (the
+world keeps the recipe of each planet's generator, so it makes the same ground). A body stands still; planets that move are later (`docs/rails-and-recipes-spec.md`).
+Bodies come into a new world after the game's own, in the order the packs load.
+
 ## Checking a pack
 
 ```
 voxunami check-pack cave packs        what the server would say, for every pack in `packs`
-voxunami pack-schema cave schemas     writes pack.schema.json, block.schema.json, patch.schema.json
+voxunami pack-schema cave schemas     writes pack.schema.json, block.schema.json, patch.schema.json, body.schema.json
 ```
 
 `check-pack` loads the packs exactly as a server does and prints *every* problem, each with the file and the place in it:
@@ -102,7 +140,7 @@ my_pack/blocks/marble.json: /properties/base_blocks:emission: 300 is outside 0 t
 my_pack/patches/dim.json: /operations/0: the test failed: base_blocks:emission is 64, not 65
 ```
 
-The schemas are made from the properties the game declares, never written by hand. Put one in a file's `$schema` key (a path
+The schemas are made from the properties, the families of generators and the levels the game declares, never written by hand. Put one in a file's `$schema` key (a path
 relative to the file works in most editors) and the editor completes and checks it as you type:
 
 ```json

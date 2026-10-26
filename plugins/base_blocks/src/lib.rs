@@ -8,6 +8,8 @@
 //! The terrain generator `base_blocks:rolling_hills_v1` is part of every world's file format: its
 //! output for a seed must never change. Better terrain is a new generator with a new name.
 
+mod planet_data;
+
 use std::sync::Arc;
 
 use block_models::{
@@ -166,6 +168,16 @@ pub fn small_planet_generator_identifier() -> NamespacedId {
 /// generator: a changed design is a new family.
 pub fn planet_family_identifier() -> NamespacedId {
     identifier("base_blocks:planet_v1")
+}
+
+/// How the parameters of the planet family are written in a body file of a data pack (the family's data side; [`planet_family_identifier`] names both).
+pub fn planet_family_data() -> Arc<dyn data_packs::FamilyData> {
+    planet_data::PlanetData::shared()
+}
+
+/// The families of terrain generators this plugin has, as a body file may name them.
+pub fn family_data() -> Vec<(NamespacedId, Arc<dyn data_packs::FamilyData>)> {
+    vec![(planet_family_identifier(), planet_family_data())]
 }
 
 /// The terrain generator version of space: air everywhere, for a level with nothing in it but what is put there (`terrain::empty`).

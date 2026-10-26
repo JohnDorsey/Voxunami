@@ -2,10 +2,7 @@
 
 mod common;
 
-use base_blocks::{
-    empty_generator_identifier, rolling_hills_generator_identifier,
-    small_planet_generator_identifier,
-};
+use base_blocks::{empty_generator_identifier, rolling_hills_generator_identifier};
 use std::sync::{Arc, Mutex};
 
 use common::{
@@ -75,7 +72,7 @@ fn a_new_world_is_space_first_and_the_overworld_second_with_a_planet_in_space() 
     let generators = world.main().terrain.generators();
     assert_eq!(
         generators.entry(terrain.generator).unwrap().identifier(),
-        &small_planet_generator_identifier()
+        &"voxunami_cave:planet".parse().unwrap()
     );
     let radius = PlanetSettings::one_percent_of_earth(SEED).radius;
     let mass_for_ten = 10.0 * radius * radius / 6.674e-11;

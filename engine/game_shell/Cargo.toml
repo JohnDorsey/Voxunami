@@ -40,6 +40,7 @@ winit = "0.30.13"
 [dev-dependencies]
 entities.workspace = true
 region_octree.workspace = true
+serde_json.workspace = true
 voxel_meshing.workspace = true
 proptest.workspace = true
 server = { workspace = true, features = ["test-support"] }

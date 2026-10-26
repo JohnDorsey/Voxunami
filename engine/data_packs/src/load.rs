@@ -7,6 +7,7 @@ use block_models::{BlockDefinition, PropertyDeclaration, PropertyKind, PropertyS
 use namespaced_id::NamespacedId;
 
 use crate::block::read_block;
+use crate::body::{Body, BodyContext, read_body};
 use crate::error::{PackError, PackErrors};
 use crate::manifest::{PackManifest, read_manifest};
 use crate::patch::{Operation, Patch, PatchValue, Place, PropertyValue, read_patch};
@@ -30,6 +31,8 @@ pub struct RawPack {
     pub blocks: Vec<RawFile>,
     /// The files of `patches/`.
     pub patches: Vec<RawFile>,
+    /// The files of `bodies/`.
+    pub bodies: Vec<RawFile>,
 }
 
 /// Every block there is after the packs are in, and what was left undone on purpose.
@@ -38,6 +41,8 @@ pub struct Loaded {
     /// The blocks the game had (patched where a pack said so), in their order, then the blocks the packs
     /// added, in the order the packs were applied.
     pub blocks: Vec<(NamespacedId, BlockDefinition)>,
+    /// The bodies the packs added (the game's own are not here), in the order the packs were applied and by file name in each.
+    pub bodies: Vec<(NamespacedId, Body)>,
     /// What was skipped because a patch said it was optional, one line each. Show them to whoever runs the
     /// server.
     pub warnings: Vec<String>,
@@ -49,9 +54,11 @@ struct ReadPack {
     manifest_file: String,
     blocks: Vec<(String, NamespacedId, BlockDefinition)>,
     patches: Vec<(String, Patch)>,
+    bodies: Vec<(String, NamespacedId, Body)>,
 }
 
-/// Loads `packs` on top of `base`, the blocks the game has. `schema` says which properties exist.
+/// Loads `packs` on top of `base`, the blocks the game has. `schema` says which properties exist, and `bodies` what the packs' bodies may name (the families
+/// of generators the game has and the levels of its worlds).
 ///
 /// The files of a pack are applied in order of their names and the packs in dependency order, ties by the pack's
 /// id, so the result does not depend on the order `packs` is given in.
@@ -59,11 +66,12 @@ pub fn load_packs(
     packs: &[RawPack],
     base: &[(NamespacedId, BlockDefinition)],
     schema: &PropertySchema,
+    bodies: &BodyContext<'_>,
 ) -> Result<Loaded, PackErrors> {
     let mut errors = Vec::new();
     let read: Vec<ReadPack> = packs
         .iter()
-        .filter_map(|pack| read_pack(pack, schema, &mut errors))
+        .filter_map(|pack| read_pack(pack, schema, bodies, &mut errors))
         .collect();
     if !errors.is_empty() {
         return Err(PackErrors(errors));
@@ -80,6 +88,7 @@ pub fn load_packs(
         .map(|(position, (identifier, _))| (identifier.clone(), position))
         .collect();
     let mut warnings = Vec::new();
+    let mut loaded_bodies = Vec::new();
     // For each pack, the namespaces whose blocks it may patch: its own, and the ones it names as needs, and
     // what those packs name in turn.
     let mut named: HashMap<&str, BTreeSet<String>> = HashMap::new();
@@ -111,6 +120,12 @@ pub fn load_packs(
             working.push((identifier.clone(), definition.clone()));
         }
 
+        let mut bodies: Vec<&(String, NamespacedId, Body)> = pack.bodies.iter().collect();
+        bodies.sort_by(|first, second| first.0.cmp(&second.0));
+        for (_, identifier, body) in bodies {
+            loaded_bodies.push((identifier.clone(), body.clone()));
+        }
+
         let mut patches: Vec<&(String, Patch)> = pack.patches.iter().collect();
         patches.sort_by(|first, second| first.0.cmp(&second.0));
         for (file, patch) in patches {
@@ -126,6 +141,7 @@ pub fn load_packs(
     }
     Ok(Loaded {
         blocks: working,
+        bodies: loaded_bodies,
         warnings,
     })
 }
@@ -133,6 +149,7 @@ pub fn load_packs(
 fn read_pack(
     pack: &RawPack,
     schema: &PropertySchema,
+    bodies_context: &BodyContext<'_>,
     errors: &mut Vec<PackError>,
 ) -> Option<ReadPack> {
     let manifest_file = format!("{}/pack.json", pack.folder);
@@ -177,11 +194,23 @@ fn read_pack(
             }
         }
     }
+    let mut bodies = Vec::new();
+    for file in &pack.bodies {
+        let name = format!("{}/bodies/{}.json", pack.folder, file.name);
+        match read_body(&name, &manifest.id, &file.name, &file.text, bodies_context) {
+            Ok((identifier, body)) => bodies.push((name, identifier, body)),
+            Err(found) => {
+                errors.extend(found.0);
+                good = false;
+            }
+        }
+    }
     good.then_some(ReadPack {
         manifest,
         manifest_file,
         blocks,
         patches,
+        bodies,
     })
 }
 

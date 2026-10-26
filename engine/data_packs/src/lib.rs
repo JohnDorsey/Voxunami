@@ -4,8 +4,10 @@
 //! use. See `docs/data-packs-spec.md`.
 
 mod block;
+mod body;
 mod directory;
 mod error;
+mod family;
 mod load;
 mod manifest;
 mod patch;
@@ -14,8 +16,13 @@ mod shape;
 mod walk;
 
 pub use block::read_block;
+pub use body::{
+    Body, BodyContext, BodySupport, GREATEST_EXTENT_BRICKS, POSITION_LIMIT, Weight, read_body,
+    read_family_parameters,
+};
 pub use directory::read_directory;
 pub use error::{PackError, PackErrors};
+pub use family::{FamilyData, FamilyParameters, FamilyProblem};
 pub use load::{Loaded, RawFile, RawPack, load_packs};
 pub use manifest::{PackManifest, read_manifest};
 pub use patch::{Operation, Patch, PatchValue, Place, PropertyValue, read_patch};

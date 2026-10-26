@@ -1,6 +1,6 @@
 # Phase 29: data packs (JSON blocks and patches), the generated schema, `check-pack`
 
-Status: built (29a to 29e). The owner answered section 6: serde_json (and a JSON Schema validator for tests only), a patch to a missing
+Status: built (29a to 29e). *Phase 40c (2026-10-26) added a fourth kind of file, bodies (planets): `rails-and-recipes-spec.md` section 3.3 and `pack-format.md`; they read, load, are checked and have a schema as the rest do.* The owner answered section 6: serde_json (and a JSON Schema validator for tests only), a patch to a missing
 property is an error with `"optional": true` to skip it *and the skip is logged*, one block per file named by the file, a pack adds blocks only in its
 own namespace, and the placeable property is in. For writing a pack see `pack-format.md`. What changed from the design below while building:
 - Reading goes through `serde_json::Value` with a path-tracking walk of our own, not serde derive, so every problem in a file is reported (derive

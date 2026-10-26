@@ -1,0 +1,17 @@
+{
+  "level": "voxunami_cave:mini_cosmos",
+  "terrain": {
+    "family": "base_blocks:planet_v1",
+    "parameters": {
+      "seed": "world",
+      "radius": 63710,
+      "hill_height": 160,
+      "largest_hill_wavelength_log2": 10,
+      "hill_octave_count": 9,
+      "cave_wavelength_log2": 5,
+      "cave_half_thickness": 0.08
+    }
+  },
+  "extent_bricks": 2100,
+  "surface_gravity": 10
+}

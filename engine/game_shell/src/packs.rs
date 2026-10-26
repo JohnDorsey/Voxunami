@@ -23,6 +23,7 @@ pub fn content_with_packs<G: GameDefinition>(packs: Option<&Path>) -> Result<G::
 struct Summary {
     packs: usize,
     blocks_added: usize,
+    bodies_added: usize,
     patches: usize,
     warnings: Vec<String>,
 }
@@ -30,6 +31,7 @@ struct Summary {
 fn load_into(content: &mut impl GameContent, directory: &Path) -> Result<Summary, String> {
     let raw = read_directory(directory).map_err(|errors| problems(&errors.to_string(), None))?;
     let blocks_before = content.package_data().blocks.len();
+    let bodies_before = content.body_names().len();
     let warnings = content
         .apply_packs(&raw)
         .map_err(|errors| problems(&errors.to_string(), Some(raw.len())))?;
@@ -39,6 +41,7 @@ fn load_into(content: &mut impl GameContent, directory: &Path) -> Result<Summary
     Ok(Summary {
         packs: raw.len(),
         blocks_added: content.package_data().blocks.len() - blocks_before,
+        bodies_added: content.body_names().len() - bodies_before,
         patches: raw.iter().map(|pack| pack.patches.len()).sum(),
         warnings,
     })
@@ -58,15 +61,15 @@ fn problems(text: &str, packs: Option<usize>) -> String {
 const CHECK_USAGE: &str = "Check data packs the way a server loads them.
 
 Usage: voxunami check-pack GAME DIRECTORY
-  DIRECTORY holds a folder for each pack, each with a pack.json, a blocks folder and a patches folder.
+  DIRECTORY holds a folder for each pack, each with a pack.json and the folders blocks, patches and bodies.
   Every problem found is printed with its file and the place in it; the exit status says whether there were any.
   `voxunami pack-schema GAME DIRECTORY` writes the JSON Schemas that editors use to check the files as you type.";
 
 const SCHEMA_USAGE: &str = "Write the JSON Schemas of pack files for a game.
 
 Usage: voxunami pack-schema GAME DIRECTORY
-  Writes pack.schema.json, block.schema.json and patch.schema.json into DIRECTORY (made if it is not there),
-  made from the properties the game declares. Name them in the `$schema` key of a pack's files, or give them to
+  Writes pack.schema.json, block.schema.json, patch.schema.json and body.schema.json into DIRECTORY (made if it is not there),
+  made from the properties, families of generators and levels the game declares. Name them in the `$schema` key of a pack's files, or give them to
   an editor, to complete and check the files as you type.";
 
 /// Checks the packs in the directory named by the arguments against game `G`. `arguments` are the command line after
@@ -80,12 +83,18 @@ pub fn run_check_packs<G: GameDefinition>(
     let mut content = G::new_content();
     let summary = load_into(&mut content, &directory)?;
     println!(
-        "{}: {} pack{}, {} block{} added, {} patch file{}{}",
+        "{}: {} pack{}, {} block{} added, {} bod{} added, {} patch file{}{}",
         G::command(),
         summary.packs,
         plural(summary.packs),
         summary.blocks_added,
         plural(summary.blocks_added),
+        summary.bodies_added,
+        if summary.bodies_added == 1 {
+            "y"
+        } else {
+            "ies"
+        },
         summary.patches,
         plural(summary.patches),
         if summary.warnings.is_empty() {
@@ -107,7 +116,11 @@ pub fn run_pack_schemas<G: GameDefinition>(
     let Some(directory) = one_directory(arguments, SCHEMA_USAGE)? else {
         return Ok(());
     };
-    let schemas = pack_schemas(&G::new_content().package_data().properties);
+    let content = G::new_content();
+    let schemas = pack_schemas(
+        &content.package_data().properties,
+        &content.body_support().context(),
+    );
     std::fs::create_dir_all(&directory)
         .map_err(|error| format!("cannot make {}: {error}", directory.display()))?;
     for (name, text) in schemas.files() {

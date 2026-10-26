@@ -15,7 +15,7 @@ use world_view::ViewChannels;
 
 use crate::client_plugin::ClientPlugin;
 use crate::package_data::PackageData;
-use data_packs::{PackErrors, RawPack};
+use data_packs::{BodySupport, PackErrors, RawPack};
 
 /// A game's plugins, as the shell needs them to show and build worlds. Both the server and every
 /// client have one.
@@ -54,6 +54,17 @@ pub trait GameContent: Debug + Send {
             path: String::new(),
             message: "this game does not take packs".to_owned(),
         }]))
+    }
+
+    /// What packs may put in the bodies of this game's worlds: the families of terrain generators they may name, and the levels they may put bodies in. A
+    /// game with no bodies says nothing.
+    fn body_support(&self) -> BodySupport {
+        BodySupport::default()
+    }
+
+    /// The bodies a new world of this game has: its own and those of the packs loaded, by name.
+    fn body_names(&self) -> Vec<NamespacedId> {
+        Vec::new()
     }
 
     /// A new world with this seed.

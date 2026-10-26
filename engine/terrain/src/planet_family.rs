@@ -29,9 +29,58 @@ impl PlanetSettings {
         bytes
     }
 
-    /// The settings that [`PlanetSettings::to_bytes`] wrote. Refuses the wrong length and numbers that are no planet (the generator would panic or make nonsense):
-    /// a radius that is not above nothing and at most [`GREATEST_RADIUS`], a negative or not finite height of the hills or thickness of the caves, a wavelength
-    /// past the greatest the noise takes.
+    /// Everything that makes these settings no planet, each as the name of the field and why: a radius that is not above nothing and at most
+    /// [`GREATEST_RADIUS`], a negative or not finite height of the hills or thickness of the caves, a wavelength past the greatest the noise takes (where the
+    /// generator would panic or make nonsense). In the order of the fields.
+    pub fn problems(&self) -> Vec<(&'static str, String)> {
+        let mut problems = Vec::new();
+        if !(self.radius > 0.0 && self.radius <= GREATEST_RADIUS) {
+            problems.push((
+                "radius",
+                format!(
+                    "the radius of a planet is above nothing and at most {GREATEST_RADIUS} voxels, not {}",
+                    self.radius
+                ),
+            ));
+        }
+        if !(self.hill_height.is_finite() && self.hill_height >= 0.0) {
+            problems.push((
+                "hill_height",
+                format!(
+                    "the height of the hills of a planet is not negative and finite, not {}",
+                    self.hill_height
+                ),
+            ));
+        }
+        for (field, wavelength_log2) in [
+            (
+                "largest_hill_wavelength_log2",
+                self.largest_hill_wavelength_log2,
+            ),
+            ("cave_wavelength_log2", self.cave_wavelength_log2),
+        ] {
+            if wavelength_log2 > MAXIMUM_WAVELENGTH_LOG2 {
+                problems.push((
+                    field,
+                    format!(
+                        "a wavelength of 2^{wavelength_log2} voxels is more than the noise takes (2^{MAXIMUM_WAVELENGTH_LOG2})"
+                    ),
+                ));
+            }
+        }
+        if !(self.cave_half_thickness.is_finite() && self.cave_half_thickness >= 0.0) {
+            problems.push((
+                "cave_half_thickness",
+                format!(
+                    "the half thickness of the caves of a planet is not negative and finite, not {}",
+                    self.cave_half_thickness
+                ),
+            ));
+        }
+        problems
+    }
+
+    /// The settings that [`PlanetSettings::to_bytes`] wrote. Refuses the wrong length and settings that are no planet ([`PlanetSettings::problems`]).
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, FamilyError> {
         let bytes: &[u8; SETTINGS_LENGTH] = bytes.try_into().map_err(|_| {
             FamilyError::new(format!(
@@ -53,33 +102,8 @@ impl PlanetSettings {
             cave_wavelength_log2: bytes[26],
             cave_half_thickness: float(27),
         };
-        if !(settings.radius > 0.0 && settings.radius <= GREATEST_RADIUS) {
-            return Err(FamilyError::new(format!(
-                "the radius of a planet is above nothing and at most {GREATEST_RADIUS} voxels, not {}",
-                settings.radius
-            )));
-        }
-        if !(settings.hill_height.is_finite() && settings.hill_height >= 0.0) {
-            return Err(FamilyError::new(format!(
-                "the height of the hills of a planet is not negative and finite, not {}",
-                settings.hill_height
-            )));
-        }
-        if !(settings.cave_half_thickness.is_finite() && settings.cave_half_thickness >= 0.0) {
-            return Err(FamilyError::new(format!(
-                "the half thickness of the caves of a planet is not negative and finite, not {}",
-                settings.cave_half_thickness
-            )));
-        }
-        for wavelength_log2 in [
-            settings.largest_hill_wavelength_log2,
-            settings.cave_wavelength_log2,
-        ] {
-            if wavelength_log2 > MAXIMUM_WAVELENGTH_LOG2 {
-                return Err(FamilyError::new(format!(
-                    "a wavelength of 2^{wavelength_log2} voxels is more than the noise takes (2^{MAXIMUM_WAVELENGTH_LOG2})"
-                )));
-            }
+        if let Some((_, message)) = settings.problems().into_iter().next() {
+            return Err(FamilyError::new(message));
         }
         Ok(settings)
     }
@@ -210,6 +234,38 @@ mod tests {
         assert!(
             PlanetSettings::from_bytes(&with(&|s| s.largest_hill_wavelength_log2 = 56)).is_ok()
         );
+    }
+
+    #[test]
+    fn settings_that_are_no_planet_say_every_field_that_is_wrong_in_the_order_of_the_fields() {
+        assert!(small_planet(5).problems().is_empty());
+        let nonsense = PlanetSettings {
+            seed: 1,
+            radius: -1.0,
+            hill_height: f64::NAN,
+            largest_hill_wavelength_log2: 60,
+            hill_octave_count: 3,
+            cave_wavelength_log2: 57,
+            cave_half_thickness: f64::INFINITY,
+        };
+        let fields: Vec<&str> = nonsense
+            .problems()
+            .iter()
+            .map(|(field, _)| *field)
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                "radius",
+                "hill_height",
+                "largest_hill_wavelength_log2",
+                "cave_wavelength_log2",
+                "cave_half_thickness"
+            ]
+        );
+        // The bytes say the first.
+        let error = PlanetSettings::from_bytes(&nonsense.to_bytes()).unwrap_err();
+        assert_eq!(error.to_string(), nonsense.problems()[0].1);
     }
 
     #[test]

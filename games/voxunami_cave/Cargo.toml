@@ -33,6 +33,7 @@ world_view.workspace = true
 
 [dev-dependencies]
 libm = "0.2"
+serde_json.workspace = true
 proptest.workspace = true
 wgpu = "30.0.1"
 replay.workspace = true

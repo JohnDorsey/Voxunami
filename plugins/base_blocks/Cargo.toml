@@ -9,12 +9,15 @@ description = "Plugin: air, stone, dirt and grass, and the rolling hills terrain
 [dependencies]
 block_models.workspace = true
 content_registry.workspace = true
+data_packs.workspace = true
 namespaced_id.workspace = true
+serde_json.workspace = true
 terrain.workspace = true
 voxel_grid.workspace = true
 voxel_space.workspace = true
 
 [dev-dependencies]
+jsonschema.workspace = true
 region_octree.workspace = true
 voxel_grid = { workspace = true, features = ["test-support"] }
 

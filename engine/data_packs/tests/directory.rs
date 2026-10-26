@@ -48,6 +48,8 @@ fn packs_are_read_from_their_folders_sorted_by_name() {
     scratch.write("zeta/blocks/a.json", "A");
     scratch.write("zeta/blocks/notes.txt", "not a block");
     scratch.write("zeta/patches/p.json", "P");
+    scratch.write("zeta/bodies/moon.json", "M");
+    scratch.write("zeta/bodies/sun.json", "S");
     scratch.write("alpha/pack.json", "{\"id\":\"alpha\"}");
     scratch.write(".hidden/pack.json", "ignored");
     scratch.write("loose_file.json", "a file in the root is not a pack");
@@ -59,7 +61,10 @@ fn packs_are_read_from_their_folders_sorted_by_name() {
     assert_eq!(zeta.manifest, "{\"id\":\"zeta\"}");
     assert_eq!(zeta.blocks, [file("a", "A"), file("b", "B")]);
     assert_eq!(zeta.patches, [file("p", "P")]);
-    assert!(packs[0].blocks.is_empty() && packs[0].patches.is_empty());
+    assert_eq!(zeta.bodies, [file("moon", "M"), file("sun", "S")]);
+    assert!(
+        packs[0].blocks.is_empty() && packs[0].patches.is_empty() && packs[0].bodies.is_empty()
+    );
 }
 
 #[test]

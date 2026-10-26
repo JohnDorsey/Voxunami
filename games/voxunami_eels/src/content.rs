@@ -8,11 +8,13 @@ use std::sync::Arc;
 use block_models::BlockDefinition;
 use content_registry::{IdentifierRegistry, Registry};
 use game_shell::{
-    ContentPackage, GameContent, PackErrors, PackageData, PackageSpec, RawPack, no_families,
+    BodySupport, ContentPackage, GameContent, PackErrors, PackageData, PackageSpec, RawPack,
+    no_families,
 };
 use namespaced_id::NamespacedId;
 use terrain::TerrainGenerator;
 use voxel_grid::{ChannelDefinition, ChannelIndex};
+use voxel_space::GravitySettings;
 use world_storage::{LoadContext, WorldData};
 use world_view::ViewChannels;
 
@@ -159,6 +161,9 @@ impl ContentEels {
                 generators
             }),
             families: no_families(),
+            body_support: BodySupport::default(),
+            builtin_bodies: Vec::new(),
+            pull_strength: f64::from(GravitySettings::default().pull_strength),
             default_generator: arena_generator_identifier(),
             assignment_cube_level: ASSIGNMENT_CUBE_LEVEL,
             ambient_light: 0,
@@ -190,6 +195,14 @@ impl GameContent for ContentEels {
 
     fn apply_packs(&mut self, packs: &[RawPack]) -> Result<Vec<String>, PackErrors> {
         self.package.apply_packs(packs)
+    }
+
+    fn body_support(&self) -> BodySupport {
+        self.package.body_support()
+    }
+
+    fn body_names(&self) -> Vec<NamespacedId> {
+        self.package.body_names()
     }
 
     /// A new world: the arena, with nobody's body in it yet. The seed changes nothing.

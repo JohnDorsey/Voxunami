@@ -33,6 +33,11 @@ impl Path {
         Self(format!("{}/{index}", self.0))
     }
 
+    /// This path with a JSON pointer inside the value it is the path of (`/radius`, or nothing).
+    pub(crate) fn appended(&self, pointer: &str) -> Self {
+        Self(format!("{}{pointer}", self.0))
+    }
+
     fn is_root(&self) -> bool {
         self.0.is_empty()
     }
@@ -151,6 +156,27 @@ impl Walk {
             self.fail(path, format!("expected a list, found {}", kind_of(value)));
         }
         found
+    }
+
+    pub(crate) fn number(&mut self, value: &Value, path: &Path) -> Option<f64> {
+        let found = value.as_f64();
+        if found.is_none() {
+            self.fail(path, format!("expected a number, found {}", kind_of(value)));
+        }
+        found
+    }
+
+    /// A number above 0 (that is not infinite).
+    pub(crate) fn positive_number(&mut self, value: &Value, path: &Path) -> Option<f64> {
+        let number = self.number(value, path)?;
+        if number > 0.0 && number.is_finite() {
+            return Some(number);
+        }
+        self.fail(
+            path,
+            format!("expected a number above 0, found {}", describe(value)),
+        );
+        None
     }
 
     /// A whole number from `minimum` to `maximum`.

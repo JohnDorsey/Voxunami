@@ -2,8 +2,12 @@
 //! files that are beyond what a schema can say are listed, with the reason, and the schema must accept them while the
 //! loader refuses.
 
+mod common;
+
 use block_models::{PropertyDeclaration, PropertyKind, PropertySchema};
-use data_packs::{PackSchemas, pack_schemas, read_block, read_manifest, read_patch};
+use data_packs::{
+    BodyContext, PackSchemas, pack_schemas, read_block, read_body, read_manifest, read_patch,
+};
 use jsonschema::Validator;
 use namespaced_id::NamespacedId;
 use proptest::prelude::*;
@@ -42,12 +46,14 @@ enum Kind {
     Manifest,
     Block,
     Patch,
+    Body,
 }
 
 struct Validators {
     manifest: Validator,
     block: Validator,
     patch: Validator,
+    body: Validator,
     schema: PropertySchema,
 }
 
@@ -58,17 +64,27 @@ fn validators() -> &'static Validators {
 
 fn build_validators() -> Validators {
     let schema = properties();
+    let families = common::families();
+    let levels = common::levels();
     let PackSchemas {
         manifest,
         block,
         patch,
-    } = pack_schemas(&schema);
+        body,
+    } = pack_schemas(
+        &schema,
+        &BodyContext {
+            families: &families,
+            levels: &levels,
+        },
+    );
     let build =
         |value: &Value| jsonschema::validator_for(value).expect("the schema is a valid schema");
     Validators {
         manifest: build(&manifest),
         block: build(&block),
         patch: build(&patch),
+        body: build(&body),
         schema,
     }
 }
@@ -79,6 +95,7 @@ impl Validators {
             Kind::Manifest => self.manifest.is_valid(instance),
             Kind::Block => self.block.is_valid(instance),
             Kind::Patch => self.patch.is_valid(instance),
+            Kind::Body => self.body.is_valid(instance),
         }
     }
 
@@ -87,6 +104,21 @@ impl Validators {
             Kind::Manifest => read_manifest("p/pack.json", text).is_ok(),
             Kind::Block => read_block("p/blocks/b.json", "p", "b", text, &self.schema).is_ok(),
             Kind::Patch => read_patch("p/patches/x.json", text).is_ok(),
+            Kind::Body => {
+                let families = common::families();
+                let levels = common::levels();
+                read_body(
+                    "p/bodies/b.json",
+                    "p",
+                    "b",
+                    text,
+                    &BodyContext {
+                        families: &families,
+                        levels: &levels,
+                    },
+                )
+                .is_ok()
+            }
         }
     }
 }
@@ -131,7 +163,7 @@ const fn beyond(kind: Kind, why: &'static str, text: &'static str, reason: &'sta
     }
 }
 
-use Kind::{Block, Manifest, Patch};
+use Kind::{Block, Body, Manifest, Patch};
 
 fn corpus() -> Vec<Case> {
     vec![
@@ -469,8 +501,122 @@ fn corpus() -> Vec<Case> {
             "a remove with a value",
             r#"{ "target": "a:b", "operations": [{ "op": "remove", "property": "x:y", "value": 1 }] }"#,
         ),
+        // ---- bodies ----
+        ok(Body, "the smallest", MINIMAL_BODY),
+        ok(
+            Body,
+            "with a mass, a place, a seed that is the one of the world and the greatest numbers",
+            r#"{ "$schema": "../../body.schema.json", "level": "test_game:ground", "position": [0, -5.5, 1e9],
+            "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 0.5, "seed": "world" } },
+            "extent_bricks": 1000000, "mass": 3.4e38 }"#,
+        ),
+        bad(Body, "nothing", r#"{}"#),
+        bad(
+            Body,
+            "no level",
+            r#"{ "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1 }"#,
+        ),
+        bad(
+            Body,
+            "a level the game does not have",
+            r#"{ "level": "test_game:below", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1 }"#,
+        ),
+        bad(
+            Body,
+            "no terrain",
+            r#"{ "level": "test_game:space", "extent_bricks": 2, "mass": 1 }"#,
+        ),
+        bad(
+            Body,
+            "terrain with no parameters",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1" }, "extent_bricks": 2, "mass": 1 }"#,
+        ),
+        bad(
+            Body,
+            "a family nobody has",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:cube_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1 }"#,
+        ),
+        bad(
+            Body,
+            "parameters the family refuses",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": -5 } }, "extent_bricks": 2, "mass": 1 }"#,
+        ),
+        bad(
+            Body,
+            "parameters with a key the family does not have",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5, "colour": 1 } }, "extent_bricks": 2, "mass": 1 }"#,
+        ),
+        bad(
+            Body,
+            "no extent",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "mass": 1 }"#,
+        ),
+        bad(
+            Body,
+            "an extent of nothing",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 0, "mass": 1 }"#,
+        ),
+        bad(
+            Body,
+            "an extent past the greatest",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 1000001, "mass": 1 }"#,
+        ),
+        bad(
+            Body,
+            "an extent with a fraction",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 1.5, "mass": 1 }"#,
+        ),
+        bad(
+            Body,
+            "no weight",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2 }"#,
+        ),
+        bad(
+            Body,
+            "two weights",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "surface_gravity": 1 }"#,
+        ),
+        bad(
+            Body,
+            "a mass of nothing",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 0 }"#,
+        ),
+        bad(
+            Body,
+            "a mass too great for the ship it is",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 3.5e38 }"#,
+        ),
+        bad(
+            Body,
+            "a pull below nothing",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "surface_gravity": -9.8 }"#,
+        ),
+        bad(
+            Body,
+            "a pull of nothing",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "surface_gravity": 0 }"#,
+        ),
+        bad(
+            Body,
+            "a position of two numbers",
+            r#"{ "level": "test_game:space", "position": [0, 0], "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1 }"#,
+        ),
+        bad(
+            Body,
+            "a position past the limit",
+            r#"{ "level": "test_game:space", "position": [0, 2e15, 0], "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1 }"#,
+        ),
+        bad(
+            Body,
+            "a misspelt key",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_brick": 2, "mass": 1 }"#,
+        ),
     ]
 }
+
+const MINIMAL_BODY: &str = r#"{ "level": "test_game:space",
+    "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } },
+    "extent_bricks": 2, "surface_gravity": 9.8 }"#;
 
 #[test]
 fn the_schema_and_the_loader_agree_about_every_file_that_is_only_a_matter_of_shape() {
@@ -495,7 +641,7 @@ fn the_schema_and_the_loader_agree_about_every_file_that_is_only_a_matter_of_sha
 
 #[test]
 fn the_schema_names_every_declared_property_with_its_kind_range_default_and_doc() {
-    let PackSchemas { block, .. } = pack_schemas(&properties());
+    let PackSchemas { block, .. } = pack_schemas(&properties(), &BodyContext::NONE);
     let glow = &block["properties"]["properties"]["properties"]["test:glow"];
     assert_eq!(glow["type"], "integer");
     assert_eq!(glow["minimum"], 0);
@@ -526,7 +672,7 @@ fn a_game_with_another_property_gets_a_schema_with_that_property() {
             doc: "warmth".to_owned(),
         })
         .unwrap();
-    let schemas = pack_schemas(&other);
+    let schemas = pack_schemas(&other, &BodyContext::NONE);
     let validator = jsonschema::validator_for(&schemas.block).unwrap();
     assert!(validator.is_valid(&json!({ "color": [0,0,0], "properties": { "other:heat": -5 } })));
     assert!(!validator.is_valid(&json!({ "color": [0,0,0], "properties": { "other:heat": 6 } })));
@@ -539,6 +685,9 @@ const GOOD_BLOCK: &str = r#"{ "color": [0.5, 0.5, 0.5], "see_through": false,
     "states": ["full", "half:negative_y", "stair:positive_x", { "boxes": [[0,0,0,8,8,8], [0,0,0,4,4,4]] }],
     "state_colors": [[0,0,0], [1,1,1]], "properties": { "test:glow": 3, "test:sticky": true },
     "state_properties": { "1": { "test:glow": 0 }, "3": { "test:sticky": false } } }"#;
+const GOOD_BODY: &str = r#"{ "level": "test_game:ground", "position": [1, 2, 3],
+    "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 300, "seed": 99 } },
+    "extent_bricks": 12, "mass": 6.07e20 }"#;
 const GOOD_MANIFEST: &str = r#"{ "id": "my_pack", "depends_on": ["base_blocks", "other"] }"#;
 const GOOD_PATCH: &str = r#"{ "target": "base_blocks:lamp", "optional": true, "operations": [
     { "op": "set", "property": "test:glow", "state": 0, "value": 9 },
@@ -632,6 +781,11 @@ proptest! {
     fn a_patch_damaged_in_one_place_is_judged_alike(damaged in damaged(GOOD_PATCH)) {
         agree(Patch, &damaged)?;
     }
+
+    #[test]
+    fn a_body_damaged_in_one_place_is_judged_alike(damaged in damaged(GOOD_BODY)) {
+        agree(Body, &damaged)?;
+    }
 }
 
 #[test]
@@ -641,6 +795,7 @@ fn the_good_files_the_damage_starts_from_are_good() {
         (Block, GOOD_BLOCK),
         (Manifest, GOOD_MANIFEST),
         (Patch, GOOD_PATCH),
+        (Body, GOOD_BODY),
     ] {
         let instance: Value = serde_json::from_str(text).unwrap();
         assert!(validators.schema_accepts(kind, &instance), "{kind:?}");

@@ -58,7 +58,8 @@ fn world_with_a_moon(content: &CaveContent) -> WorldData {
     let generator = content
         .add_generator_recipe(&mut world, moon_recipe())
         .expect("the planet family is Cave's");
-    // Twice the least a ship can weigh and still pull: about 15 metres a second a second at the surface of a moon of 300 voxels.
+    // Twice the least a ship can weigh and still pull (10^19 kilograms: a moon this small has to be very dense to pull at all, some 15,000 metres a second
+    // a second at its surface; a pull of ten at the surface wants a radius of some eight kilometres).
     let mass = voxunami_cave::game::PULLING_MASS * 2.0;
     let first = world.main();
     let ship = MovingGrid {
@@ -112,7 +113,7 @@ fn a_planet_made_from_a_recipe_is_a_ship_whose_generator_the_world_names_and_kee
         ("voxunami_cave:test_moon".to_owned(), false)
     );
     assert_eq!(
-        scene.rig.server.world().generator_recipes(),
+        &scene.rig.server.world().generator_recipes()[1..],
         &[moon_recipe()]
     );
     // It is the generator of the settings: the brick at the pole of the moon is the brick a planet with those settings makes.
@@ -182,7 +183,12 @@ fn a_client_that_joins_makes_the_same_generator_from_the_description_of_the_worl
         .runtime_id(&"voxunami_cave:test_moon".parse().unwrap())
         .expect("the client has the generator");
     assert!(!generators.entry(number).unwrap().is_missing());
-    assert_eq!(client.world().generator_recipes(), &[moon_recipe()]);
+    // (The planet of the world is the first recipe, from Cave's own data; the moon is the second.)
+    assert_eq!(
+        client.world().generator_recipes()[0].instance.as_str(),
+        "voxunami_cave:planet"
+    );
+    assert_eq!(&client.world().generator_recipes()[1..], &[moon_recipe()]);
     let layout = std::sync::Arc::clone(client.world().main().overrides.layout());
     let at = BrickCoordinate::new(2, 9, -1);
     let on_the_client = generators
@@ -249,7 +255,7 @@ fn a_restart_finds_the_recipe_the_generator_and_the_moon_where_they_were() {
     scene.ticks(1);
 
     assert_eq!(
-        scene.rig.server.world().generator_recipes(),
+        &scene.rig.server.world().generator_recipes()[1..],
         &[moon_recipe()]
     );
     assert_eq!(
