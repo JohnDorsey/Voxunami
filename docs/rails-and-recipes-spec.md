@@ -72,10 +72,17 @@ same numbers (a test pins the generator's output for it, bit for bit, against `s
   and tests and are rounded to 2^-20 s), and the part of a turn gone is worked out in whole numbers, `units / (units_per_second x mantissa x 2^exponent)` with the period as an exact
   mantissa and power of two, so only the remainder after the whole turns is divided. (Before, `seconds / period` in `f64` lost a digit for every ten turns: a planet of a
   52,700 s year was a metre out after twelve thousand years of world time. Measured in a script and then in a test.) A body that goes round another body is placed at the other's
-  `WorldPosition` plus its `f64` offset from it with `WorldPosition::translated_by_voxels` (whole bricks of the offset added to the brick, one rounding in the `f32` offset), not at the
-  `f64` sum of the other's `in_voxels()` and the offset: at 10^18 voxels from the origin an `f64` is a hundred voxels from the next, and the old sum put a moon about that far from its planet.
-  What remains: a rail's own `f64` offset has the precision of its radius, which is fine for every orbit but the topmost of a galaxy (a radius of 2.5x10^20 m is 32 km to the `f64`); see
-  "A universe of 93 billion light years" in `future-goals.md`.
+  `WorldPosition` plus its offset from it with `WorldPosition::translated_by_bricks` (whole bricks of the offset added to the brick; the rest added to the `f32` offset and carried into the
+  bricks before it is rounded to an `f32`), not at the `f64` sum of the other's `in_voxels()` and the offset: at 10^18 voxels from the origin an `f64` is a hundred voxels from the next, and the old
+  sum put a moon about that far from its planet.
+- **An orbit in 128-bit fixed point (after 40f, 2026-10-27, `engine/world_storage/src/exact_circle.rs`).** The offset of an orbit from its centre is `ExactOffset`, whole bricks (`i128`) and a
+  rest in steps of 2^-32 voxel, and is worked out in whole numbers: the angle is the part of a turn gone (a fraction of 128 bits) plus the phase (radians to turns with one over two pi
+  to 192 bits), the sine and cosine come from CORDIC steps in 126 bits (shifts and adds, no multiplication), the plane of the orbit is made orthonormal in 126 bits (Newton's method from an
+  `f64` guess, in whole numbers), and the radius (an `f64`, a mantissa and a power of two) multiplies them in 256 bits. Measured against `mpmath` at 120 digits: sine and cosine within 22 of
+  2^-126, a plane within 8, an offset within 2^-33 voxel at radii up to 8.8x10^26 (the universe in metres, where the `f64` of the radius alone is 1.4x10^11 apart from the next). The same
+  bits on every machine (integers; the `f64` is only a first guess that Newton's method corrects). The velocity is worked out from the same sine, cosine and plane in `f64`. **Limits, refused
+  when a rail is made or read:** a radius of at most 2^120 voxels, a period of at most 2^80 seconds, a phase of at most 2^63 radians, either way. Rails built before this (never released)
+  that were far out are somewhere else now (they were wrong); a rail near the origin is where it was, to a bit in a few (two pinned bits moved, to the correctly rounded value).
 - A **rails system** (Physics phase, before the bodies) sets the pose and velocities of every planet that has a rail from the clock. A planet's pose then changes every tick,
   and the replication of poses already tells clients of a changed pose (**[belief]**; I will check it first).
 

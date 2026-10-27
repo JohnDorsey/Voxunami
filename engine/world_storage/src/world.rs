@@ -336,8 +336,8 @@ impl WorldData {
     /// Puts every ship that is on a rail where its rail says at `time` into the life of the world (see [`crate::rail`]): its place, its turn, how fast it moves
     /// and how fast it turns. Ships are taken in order of their numbers, so what a ship goes round (a ship with a lower number) has been put in its place already,
     /// and its place and speed are what the ship that goes round it starts from. A ship that goes round another is put at the other's place and its offset from it
-    /// added to the place itself (exact in bricks), not to the other's place as plain numbers, which at a hundred thousand times the distance of the Sun is not
-    /// enough to say where a moon is. A ship that only turns stays where it is. Returns the ships whose place the world cannot hold (an orbit past the end of the
+    /// added to the place itself (exact in bricks, and the offset itself exact to a small fraction of a voxel: see [`crate::rail::ExactOffset`]), not to the other's place as plain
+    /// numbers, which at a hundred thousand times the distance of the Sun is not enough to say where a moon is. A ship that only turns stays where it is. Returns the ships whose place the world cannot hold (an orbit past the end of the
     /// coordinates), which are left where they were; and ships that go round one that is not there stay as they are.
     pub fn put_ships_on_their_rails(&mut self, time: impl Into<RailTime>) -> Vec<GridId> {
         let time = time.into();
@@ -362,12 +362,13 @@ impl WorldData {
                 },
                 None => (None, [0.0; 3]),
             };
-            // (The rail is asked from the origin, so its place is its offset from its centre.)
             let state = rail.state(time, [0.0; 3], centre_velocity);
-            let position = match (centre, state.position) {
-                (Some(Centre::Point(point)), Some(offset)) => Some(WorldPosition::try_from_voxels(
-                    [0, 1, 2].map(|axis| point[axis] + offset[axis]),
-                )),
+            let position = match (centre, state.offset) {
+                (Some(Centre::Point(point)), Some(offset)) => Some(
+                    WorldPosition::try_from_voxels(point).and_then(|centre_position| {
+                        centre_position.translated_by_bricks(offset.bricks, offset.rest)
+                    }),
+                ),
                 (Some(Centre::Grid(parent)), Some(offset)) => {
                     let parent_position = self
                         .grids
@@ -375,7 +376,7 @@ impl WorldData {
                         .expect("the parent was just found")
                         .pose
                         .position;
-                    Some(parent_position.translated_by_voxels(offset))
+                    Some(parent_position.translated_by_bricks(offset.bricks, offset.rest))
                 }
                 _ => None,
             };

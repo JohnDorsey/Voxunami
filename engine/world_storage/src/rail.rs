@@ -1,7 +1,8 @@
 //! Rails: how a body moves, as a function of the time of the world and nothing else (`docs/rails-and-recipes-spec.md`, section 3.4).
 //!
-//! A planet on rails is not integrated: its place and its turn at a time are worked out from the time alone, with `libm` in `f64`, so they are the same
-//! bits on every machine, there is nothing to drift, and a world that is saved and loaded has its planets where the clock says without having saved them.
+//! A planet on rails is not integrated: its place and its turn at a time are worked out from the time alone, so they are the same bits on every machine, there is
+//! nothing to drift, and a world that is saved and loaded has its planets where the clock says without having saved them. A spin is worked out with `libm` in
+//! `f64`; an orbit, which has to be right to a fraction of a voxel however far out it goes, in whole numbers of 128 bits ([`ExactOffset`]).
 //! Two motions, each optional and independent:
 //!
 //! - a **spin**: the body turns steadily about an axis, once in `period` seconds (a negative period turns it the other way), from `angle` at time 0; the body's own
@@ -16,6 +17,9 @@ use std::f64::consts::TAU;
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use voxel_space::{GridId, Orientation};
+
+use crate::exact_circle;
+pub use crate::exact_circle::ExactOffset;
 
 /// Why a spin or an orbit cannot be made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -70,8 +74,10 @@ pub struct Rail {
 /// Where a rail has a body at a time. What the rail says nothing of is `None`, or still.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RailState {
-    /// Where its centre is, in voxels of the level, if it has an orbit.
+    /// Where it is, in voxels of the level, if it has an orbit: the centre and the offset from it added as `f64`s, which is exact only as far as an `f64` is.
     pub position: Option<[f64; 3]>,
+    /// Where it is from its centre, if it has an orbit: exact to a small fraction of a voxel however far out it is. This is what to add to the centre's place.
+    pub offset: Option<ExactOffset>,
     /// How fast it moves, in voxels a second (the centre's speed and its own); still if it has no orbit.
     pub velocity: [f64; 3],
     /// How it is turned, if it has a spin.
@@ -104,16 +110,25 @@ fn is_unit(vector: [f64; 3]) -> bool {
     finite(&vector) && (length(vector) - 1.0).abs() <= 1.0e-9
 }
 
-fn nonzero(period: f64) -> bool {
-    period.is_finite() && period != 0.0
+/// The longest period of a spin or an orbit, in seconds: 2^80, a little over 10^24 or 4 x 10^16 years, so that the part of a turn gone is worked out in whole numbers of
+/// at most 112 bits.
+const LONGEST_PERIOD: f64 = (1u128 << 80) as f64;
+
+/// The largest radius of an orbit, in voxels: 2^120, a million times the distance across the universe in metres, so that its offset in bricks is an `i128`.
+const LARGEST_RADIUS: f64 = (1u128 << 120) as f64;
+
+/// The largest phase of an orbit, in radians either way: 2^63 (a million times the age of the universe, if it were a number of seconds), so that it is a fraction of a
+/// turn to the last of 128 bits.
+const LARGEST_PHASE: f64 = (1u64 << 63) as f64;
+
+/// Whether `period` is one a rail can have: a number that is not nothing and not above [`LONGEST_PERIOD`], either way.
+fn usable_period(period: f64) -> bool {
+    period.is_finite() && period != 0.0 && period.abs() <= LONGEST_PERIOD
 }
 
-fn cross(first: [f64; 3], second: [f64; 3]) -> [f64; 3] {
-    [
-        first[1] * second[2] - first[2] * second[1],
-        first[2] * second[0] - first[0] * second[2],
-        first[0] * second[1] - first[1] * second[0],
-    ]
+/// Whether an orbit can have this radius and phase.
+fn usable_circle(radius: f64, phase: f64) -> bool {
+    radius > 0.0 && radius <= LARGEST_RADIUS && phase.abs() <= LARGEST_PHASE
 }
 
 /// A time of the world, as a whole number of units and how many make a second, so that it is exact however long the world has run: a tick of the clock, or a time
@@ -150,27 +165,21 @@ impl From<f64> for RailTime {
 
 /// `period.abs()` as a whole number times a power of two, `(mantissa, exponent)`, with the mantissa odd. Exact for every period that is a number and not nothing.
 fn mantissa_and_exponent(period: f64) -> (u64, i32) {
-    let bits = period.abs().to_bits();
-    let exponent_bits = ((bits >> 52) & 0x7ff) as i32;
-    let fraction_bits = bits & ((1 << 52) - 1);
-    let (mantissa, exponent) = if exponent_bits == 0 {
-        (fraction_bits, -1074)
-    } else {
-        (fraction_bits | (1 << 52), exponent_bits - 1075)
-    };
+    let (mantissa, exponent) = exact_circle::split(period);
     let even = mantissa.trailing_zeros();
     (mantissa >> even, exponent + even as i32)
 }
 
-/// How far round a thing is that goes once round in `period` seconds, in radians (from 0 up to a whole turn), `time` after it was at the start; a negative period
-/// goes the other way.
+/// How much of a turn a thing that goes once round in `period` seconds has gone, `time` after it was at the start, as a fraction `(numerator, denominator)` below one;
+/// a negative period goes the other way.
 ///
-/// The part of a turn is worked out in whole numbers, so it is exact (to the one rounding of an `f64`) however long the world has run: `time` is a count of units and
-/// `period` is a whole number times a power of two, so the turns are `units / (units_per_second x mantissa x 2^exponent)` and only the remainder after the whole turns
-/// is divided. (An `f64` of seconds divided by an `f64` period loses a digit for every ten turns: after twelve thousand years of a planet's years it is a metre out.)
-fn fraction_of_a_turn(time: RailTime, period: f64) -> f64 {
-    if !nonzero(period) {
-        return 0.0;
+/// It is worked out in whole numbers, so it is exact however long the world has run: `time` is a count of units and `period` is a whole number times a power of two, so
+/// the turns are `units / (units_per_second x mantissa x 2^exponent)` and only the remainder after the whole turns is divided. (An `f64` of seconds divided by an `f64`
+/// period loses a digit for every ten turns: after twelve thousand years of a planet's years it is a metre out.) The denominator is below 2^112 for every period a rail
+/// can have.
+fn turn_fraction(time: RailTime, period: f64) -> (u128, u128) {
+    if !usable_period(period) {
+        return (0, 1);
     }
     let (mantissa, exponent) = mantissa_and_exponent(period);
     // A thing that goes once round in `mantissa x 2^exponent` seconds has gone `units / (per_second x mantissa x 2^exponent)` turns; `per_second x mantissa` is
@@ -186,34 +195,31 @@ fn fraction_of_a_turn(time: RailTime, period: f64) -> f64 {
             doublings -= step;
         }
         (remainder, modulus)
-    } else if exponent <= 40 {
+    } else {
+        // (Below 2^112: a period is at most 2^80 seconds and a second at most 2^32 units.)
         let whole_turn = modulus << exponent;
         (time.units.rem_euclid(whole_turn), whole_turn)
-    } else {
-        // A period of more than 2^93 seconds: no clock of 2^64 ticks has run for a turn of it, so the part is the number of turns, which is below one.
-        let turns = time.units as f64 / libm::ldexp(modulus as f64, exponent);
-        let part = turns - libm::floor(turns);
-        return TAU
-            * if period < 0.0 && part != 0.0 {
-                1.0 - part
-            } else {
-                part
-            };
     };
     let remainder = if period < 0.0 && remainder != 0 {
         whole_turn - remainder
     } else {
         remainder
     };
+    (remainder as u128, whole_turn as u128)
+}
+
+/// How far round a thing is that goes once round in `period` seconds, in radians (from 0 up to a whole turn), as [`turn_fraction`] puts it, rounded once to an `f64`.
+fn fraction_of_a_turn(time: RailTime, period: f64) -> f64 {
+    let (remainder, whole_turn) = turn_fraction(time, period);
     TAU * (remainder as f64 / whole_turn as f64)
 }
 
 impl Spin {
     /// A spin about `axis` (any vector that is not nothing: it is made a unit vector).
     pub fn new(axis: [f64; 3], period: f64, angle: f64) -> Result<Self, RailError> {
-        if !nonzero(period) {
+        if !usable_period(period) {
             return Err(RailError::Invalid(
-                "a spin has a period that is not nothing",
+                "a spin has a period that is not nothing and not above 2^80 seconds",
             ));
         }
         if !angle.is_finite() {
@@ -275,16 +281,20 @@ impl Orbit {
                 "the centre of an orbit is made of numbers",
             ));
         }
-        if !(radius > 0.0 && radius.is_finite()) {
-            return Err(RailError::Invalid("an orbit has a radius above nothing"));
-        }
-        if !nonzero(period) {
+        if !(radius.is_finite() && phase.is_finite()) {
             return Err(RailError::Invalid(
-                "an orbit has a period that is not nothing",
+                "the radius and the phase of an orbit are numbers",
             ));
         }
-        if !phase.is_finite() {
-            return Err(RailError::Invalid("the phase of an orbit is a number"));
+        if !usable_circle(radius, phase) {
+            return Err(RailError::Invalid(
+                "an orbit has a radius above nothing and not above 2^120 voxels, and a phase not above 2^63 radians",
+            ));
+        }
+        if !usable_period(period) {
+            return Err(RailError::Invalid(
+                "an orbit has a period that is not nothing and not above 2^80 seconds",
+            ));
         }
         Ok(Self {
             around,
@@ -295,30 +305,25 @@ impl Orbit {
         })
     }
 
-    /// The two directions in the plane the circle starts toward and then goes toward.
-    fn plane(&self) -> ([f64; 3], [f64; 3]) {
-        let reference = if self.normal[0].abs() < 0.9 {
-            [1.0, 0.0, 0.0]
-        } else {
-            [0.0, 0.0, 1.0]
-        };
-        let along = reference[0] * self.normal[0]
-            + reference[1] * self.normal[1]
-            + reference[2] * self.normal[2];
-        let inside = [0, 1, 2].map(|axis| reference[axis] - self.normal[axis] * along);
-        let size = length(inside);
-        let first = inside.map(|component| component / size);
-        (first, cross(self.normal, first))
-    }
-
-    /// Where the body is from the centre at `time`, and how fast it moves round it.
-    fn at(&self, time: RailTime) -> ([f64; 3], [f64; 3]) {
-        let angle = self.phase + fraction_of_a_turn(time, self.period);
-        let (sine, cosine) = (libm::sin(angle), libm::cos(angle));
-        let (first, second) = self.plane();
+    /// Where the body is from the centre at `time`, exact, and how fast it moves round it. The angle is the phase and the part of a turn gone, added as fractions of a turn
+    /// of 128 bits; the sine and cosine, the plane and the radius multiplied in are whole numbers too (see [`crate::exact_circle`]).
+    fn at(&self, time: RailTime) -> (ExactOffset, [f64; 3]) {
+        let (remainder, whole_turn) = turn_fraction(time, self.period);
+        let turns = exact_circle::fraction_in_turns(remainder, whole_turn)
+            .wrapping_add(exact_circle::turns_of_radians(self.phase));
+        let angle = exact_circle::sine_and_cosine(turns);
+        let (first, second) = exact_circle::plane(self.normal);
+        let offset = exact_circle::circle_point(self.radius, angle, first, second);
+        // The speed is worked out from the same sine, cosine and plane, as plain numbers: it is as large as a radius a period, and a part in 10^16 of that is nothing.
+        let (sine, cosine) = (
+            exact_circle::float_of(angle.0),
+            exact_circle::float_of(angle.1),
+        );
+        let first = first.map(exact_circle::float_of);
+        let second = second.map(exact_circle::float_of);
         let speed = self.radius * (TAU / self.period);
         (
-            [0, 1, 2].map(|axis| self.radius * (cosine * first[axis] + sine * second[axis])),
+            offset,
             [0, 1, 2].map(|axis| speed * (cosine * second[axis] - sine * first[axis])),
         )
     }
@@ -327,8 +332,8 @@ impl Orbit {
 impl Rail {
     /// Where the body is, how fast it moves and how it is turned `time` into the life of the world (a [`RailTime`], or seconds as an `f64`). `centre_position` and
     /// `centre_velocity` are those of what the orbit goes round (the point, and still, for a point), which the caller knows; a rail with no orbit does not look at
-    /// them. The position is the centre's and the body's offset from it added in `f64`, which is exact only as far as an `f64` is: give the origin as the centre to get
-    /// the offset alone, and add it to a [`voxel_space::WorldPosition`] with `translated_by_voxels`, which is how the world places a body that goes round a body.
+    /// them. The position is the centre's and the body's offset from it added in `f64`, which is exact only as far as an `f64` is; the `offset` is exact, and is what to
+    /// add to a [`voxel_space::WorldPosition`] with `translated_by_bricks`, which is how the world places a body that goes round a body.
     pub fn state(
         &self,
         time: impl Into<RailTime>,
@@ -338,13 +343,17 @@ impl Rail {
         let time = time.into();
         let mut state = RailState {
             position: None,
+            offset: None,
             velocity: [0.0; 3],
             orientation: None,
             angular_velocity: [0.0; 3],
         };
         if let Some(orbit) = &self.orbit {
             let (offset, speed) = orbit.at(time);
-            state.position = Some([0, 1, 2].map(|axis| centre_position[axis] + offset[axis]));
+            let offset_in_voxels = offset.in_voxels();
+            state.offset = Some(offset);
+            state.position =
+                Some([0, 1, 2].map(|axis| centre_position[axis] + offset_in_voxels[axis]));
             state.velocity = [0, 1, 2].map(|axis| centre_velocity[axis] + speed[axis]);
         }
         if let Some(spin) = &self.spin {
@@ -424,7 +433,7 @@ pub fn decode_rail(payload: &[u8]) -> Result<Rail, DecodeError> {
             period: read_number(&mut reader)?,
             angle: read_number(&mut reader)?,
         };
-        if !is_unit(spin.axis) || !nonzero(spin.period) || !spin.angle.is_finite() {
+        if !is_unit(spin.axis) || !usable_period(spin.period) || !spin.angle.is_finite() {
             return Err(DecodeError::Invalid("a spin that is no spin"));
         }
         Some(spin)
@@ -454,10 +463,10 @@ pub fn decode_rail(payload: &[u8]) -> Result<Rail, DecodeError> {
         };
         if !(centre_is_good
             && is_unit(orbit.normal)
-            && orbit.radius > 0.0
             && orbit.radius.is_finite()
-            && nonzero(orbit.period)
-            && orbit.phase.is_finite())
+            && orbit.phase.is_finite()
+            && usable_circle(orbit.radius, orbit.phase)
+            && usable_period(orbit.period))
         {
             return Err(DecodeError::Invalid("an orbit that is no orbit"));
         }

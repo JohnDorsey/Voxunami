@@ -187,6 +187,13 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   `WorldPosition::translated_by_voxels`. Not changed: the unit of a position (an `i64` brick and an `f32` offset), the format of a rail (the `f64`s of a period and a radius), the hard rule
   (`libm`, no wall clock). Why: the arithmetic was exact only while the world was small and young (measured: a moon 7 km from where it should be round a star 2.5x10^20 m out; a planet 1.3 m out at
   twelve thousand years), and the fix costs nothing at the scale of today's worlds.
+- Mine, built after that (2026-10-27; the owner asked for accurate orbit radii "even if it requires fixed point 128 bit"): **the offset of an orbit is worked out in 128-bit fixed point and kept as
+  whole bricks and a rest (`ExactOffset`), not as `f64`s.** `exact_circle.rs`: CORDIC sine and cosine in 126 bits, the plane in 126 bits, the radius multiplied in 256 bits (`u128` pairs; no
+  dependency). Chosen over `f128` (unstable on the stable toolchain, no `libm` functions for it) and over double-double (two `f64`s: about 106 bits, whose bit-identity across machines would
+  need arguing): the destination is an integer lattice of bricks, the precision wanted is absolute rather than relative, and integers are the same bits everywhere by construction. The format of a
+  rail is the same (the `f64`s of a radius, a period and a phase); what changed is the meaning of those numbers at large radii (they are now exact). New limits, refused at make and read: a radius of at
+  most 2^120 voxels, a period of at most 2^80 seconds, a phase of at most 2^63 radians. `WorldPosition::translated_by_bricks` carries the sum of the two offsets into the bricks before rounding to an
+  `f32`, as `translated_by_voxels` did not (it lost up to 2 x 2^-19 voxel when the sum passed a brick's edge). Reference values and tables: `engine/world_storage/tools/exact_circle_reference.py`.
 
 ## Decided (the plugin host; built in Phase 23)
 - A game's server rules are plugins run by `plugin_host::PluginHost` (the specification and its record are in `plugin-api-spec.md`). What a plugin

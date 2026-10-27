@@ -2585,6 +2585,54 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_ship_5_x_10_to_the_17_voxels_from_what_it_goes_round_is_where_the_turn_worked_out_at_120_digits_puts_it_to_the_last_bit_of_an_f32()
+     {
+        // The radius of an orbit that is as far as a coordinate goes (a ninth of 2^60 voxels): an f64 of it is 64 voxels from the next, so an f64 orbit is that far out
+        // however well the turn is worked out. Round a ship at brick (1000, -2000, 3000) and offset (3.5, 7.25, 30), a year of 9 x 10^8 seconds, a phase of one radian,
+        // 123,456,789 ticks at twenty a second: the expected place is `exact_circle_reference.py`'s, at 120 digits.
+        let mut world = world_for_rails();
+        let centre = world
+            .create_grid(
+                LevelIndex::MAIN,
+                GridPose::new(
+                    WorldPosition::new(BrickCoordinate::new(1000, -2000, 3000), [3.5, 7.25, 30.0]),
+                    Orientation::IDENTITY,
+                ),
+            )
+            .unwrap();
+        let body = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        let rail = Rail {
+            spin: None,
+            orbit: Some(
+                Orbit::new(Centre::Grid(centre), [0.6, 0.8, 0.0], 5.0e17, 9.0e8, 1.0).unwrap(),
+            ),
+        };
+        world.set_grid_rail(body, Some(rail)).unwrap();
+        world.data.set_clock(123_456_789);
+        world.apply_rails(20);
+        let found = world.data().grids().get(body).unwrap().pose.position;
+        assert_eq!(
+            [found.brick().x(), found.brick().y(), found.brick().z()],
+            [
+                6_294_363_568_489_132,
+                -4_720_772_676_368_099,
+                -13_499_478_419_764_357
+            ]
+        );
+        let expected = [18.927409849581174, 9.655737331008694, 1.4475123486614843];
+        for axis in 0..3 {
+            // (Half a step of an f32 between 16 and 32 is 0.95 x 10^-6.)
+            assert!(
+                (f64::from(found.offset()[axis]) - expected[axis]).abs() < 1.0e-6,
+                "{:?} against {expected:?}",
+                found.offset()
+            );
+        }
+    }
+
+    #[test]
     fn what_stands_on_a_body_on_a_rail_does_not_feel_what_it_goes_round_since_it_falls_with_it() {
         let mut world = world_for_rails();
         world.set_gravity_settings(GravitySettings {
@@ -3180,7 +3228,7 @@ pub(crate) mod tests {
         world
             .set_grid_rail(
                 lost,
-                Some(orbit_about(Centre::Point([0.0; 3]), 1.0e300, 100.0)),
+                Some(orbit_about(Centre::Point([0.0; 3]), 1.0e36, 100.0)),
             )
             .unwrap();
         world

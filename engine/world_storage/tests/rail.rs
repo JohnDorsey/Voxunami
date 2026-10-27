@@ -667,6 +667,252 @@ fn the_place_of_a_planet_on_an_orbit_is_pinned_to_the_bit() {
     );
 }
 
-const PINNED_POSITION: [u64; 3] = [4740055739430465340, 0, 13966461261688665696];
-const PINNED_VELOCITY: [u64; 3] = [13866432095420009626, 0, 13863231759238159557];
+// (The x moved by one bit when orbits were made exact: 4740055739430465341 is the correctly rounded f64 of the true 807348616.6088635310619857..., which the f64 sine
+// before it was a bit short of. Checked at 80 digits.)
+const PINNED_POSITION: [u64; 3] = [4740055739430465341, 0, 13966461261688665696];
+// (The z moved by one bit for the same reason: the cosine in it is now the correctly rounded one.)
+const PINNED_VELOCITY: [u64; 3] = [13866432095420009626, 0, 13863231759238159558];
 const PINNED_ORIENTATION: [u64; 4] = [0, 4603970075599681472, 0, 4605070818266441370];
+
+// ---- an orbit exact to a small fraction of a voxel however far out it is
+
+/// Orbits worked out at 120 digits by `engine/world_storage/tools/exact_circle_reference.py`, from the numbers as the program keeps them (the normal made a unit vector
+/// in `f64`, as `Orbit::new` does): `(normal, radius, period, phase, tick, ticks a second, bricks, rest)` for the offset from the centre at that tick.
+type PinnedOffset = ([f64; 3], f64, f64, f64, u64, u32, [i128; 3], [f64; 3]);
+
+const OFFSETS: [PinnedOffset; 6] = [
+    (
+        [0.0, 1.0, 0.0],
+        6e+26,
+        31560000.0,
+        0.7,
+        12345,
+        20,
+        [14339306547934188300487885, 0, -12080843833291269939764885],
+        [11.966872680635376, 0.0, 9.108164604075284],
+    ),
+    (
+        [0.3333333333333333, 0.6666666666666666, 0.6666666666666666],
+        2.5e+20,
+        7000000000000000.0,
+        2.0,
+        7600000000037,
+        20,
+        [
+            -3067495228514122961,
+            5789295454149192556,
+            -4255547839892131076,
+        ],
+        [1.7770357827473051, 9.13664181291128, 5.974840295715066],
+    ),
+    (
+        [0.6, 0.8, 0.0],
+        1e+18,
+        5000000000.0,
+        -1.25,
+        333,
+        20,
+        [7883059556272012, -5912294667204010, 29655769148690437],
+        [23.8304434911537, 31.63107582936384, 3.986664094268062],
+    ),
+    (
+        [0.0, 1.0, 0.0],
+        150000000000.0,
+        31560000.0,
+        0.0,
+        0,
+        20,
+        [4687500000, 0, 0],
+        [0.0, 0.0, 0.0],
+    ),
+    (
+        [0.2672612419124244, -0.5345224838248488, 0.8017837257372732],
+        8.8e+26,
+        -6300000000000.0,
+        3.0,
+        99999999999,
+        20,
+        [
+            -26215493239689928224895128,
+            -691212763326508729217752,
+            8277689237678970255486541,
+        ],
+        [11.622089691483545, 10.716784407513616, 13.937159707847895],
+    ),
+    (
+        [0.0, 0.0, 1.0],
+        384000000.0,
+        2360000.0,
+        5.5,
+        18446744073709551615,
+        20,
+        [7324252, 9505541, 0],
+        [22.22546345251247, 21.484324766636632, 0.0],
+    ),
+];
+
+/// How far, in voxels, a found offset may be from the one worked out: a step of 2^-32 voxel, to which both are rounded, and the few bits of 126 that the sine, cosine and
+/// plane lose, times a radius of up to 2^90. Measured over the cases above: see the test that prints it.
+const OFFSET_TOLERANCE: f64 = 1.0 / 2_147_483_648.0;
+
+fn offset_error(found: world_storage::rail::ExactOffset, bricks: [i128; 3], rest: [f64; 3]) -> f64 {
+    (0..3)
+        .map(|axis| {
+            let apart =
+                (found.bricks[axis] - bricks[axis]) as f64 * 32.0 + (found.rest[axis] - rest[axis]);
+            apart.abs()
+        })
+        .fold(0.0, f64::max)
+}
+
+#[test]
+fn an_orbit_a_very_long_way_out_is_where_the_exact_turn_puts_it_to_a_small_fraction_of_a_voxel() {
+    let mut worst = 0.0f64;
+    for (normal, radius, period, phase, tick, ticks_per_second, bricks, rest) in OFFSETS {
+        let rail = orbit(normal, radius, period, phase);
+        let state = rail.state(RailTime::of_tick(tick, ticks_per_second), NOWHERE, NOWHERE);
+        let found = state.offset.expect("an orbit has an offset");
+        let error = offset_error(found, bricks, rest);
+        worst = worst.max(error);
+        assert!(
+            error <= OFFSET_TOLERANCE,
+            "radius {radius} at tick {tick}: found {found:?}, expected {bricks:?} {rest:?} ({error} voxels out)"
+        );
+        // The position as plain numbers is that, to the rounding of an f64.
+        let position = state.position.unwrap();
+        let in_voxels = found.in_voxels();
+        for axis in 0..3 {
+            assert_eq!(position[axis], in_voxels[axis]);
+        }
+    }
+    println!("worst offset error: {worst} voxels");
+}
+
+#[test]
+fn an_orbit_at_the_start_of_its_circle_is_at_exactly_its_radius() {
+    // The circle starts toward +x for a normal along +y: a radius of 1.5 x 10^11 voxels is 4,687,500,000 bricks, with nothing over, on the dot.
+    let found = orbit([0.0, 1.0, 0.0], 1.5e11, 3.156e7, 0.0)
+        .state(0.0, NOWHERE, NOWHERE)
+        .offset
+        .unwrap();
+    assert_eq!(
+        (found.bricks, found.rest),
+        ([4_687_500_000, 0, 0], [0.0; 3])
+    );
+}
+
+#[test]
+fn an_orbit_in_the_plane_z_equals_0_stays_in_it_however_far_out_it_goes() {
+    // 8.8 x 10^26 voxels, the size of the universe in metres: an f64 of the radius is 1.4 x 10^11 apart from the next, and an f64 circle there is that far out of its plane.
+    let rail = orbit([0.0, 0.0, 1.0], 8.8e26, 1.0e12, 0.3);
+    for step in 0..100 {
+        let found = rail
+            .state(
+                RailTime::of_tick(step * 200_000_000_000, 20),
+                NOWHERE,
+                NOWHERE,
+            )
+            .offset
+            .unwrap();
+        assert_eq!((found.bricks[2], found.rest[2]), (0, 0.0), "step {step}");
+    }
+}
+
+/// 2^120 voxels, 2^80 seconds and 2^63 radians: the most an orbit has of each.
+const LARGEST_RADIUS: f64 = (1u128 << 120) as f64;
+const LONGEST_PERIOD: f64 = (1u128 << 80) as f64;
+const LARGEST_PHASE: f64 = (1u64 << 63) as f64;
+
+fn just_above(value: f64) -> f64 {
+    f64::from_bits(value.to_bits() + 1)
+}
+
+#[test]
+fn what_the_arithmetic_cannot_hold_is_refused_when_made_and_what_it_can_is_kept_to_the_end() {
+    let make = |radius: f64, period: f64, phase: f64| {
+        Orbit::new(
+            Centre::Point(NOWHERE),
+            [0.0, 1.0, 0.0],
+            radius,
+            period,
+            phase,
+        )
+    };
+    assert!(make(LARGEST_RADIUS, LONGEST_PERIOD, LARGEST_PHASE).is_ok());
+    assert!(make(LARGEST_RADIUS, -LONGEST_PERIOD, -LARGEST_PHASE).is_ok());
+    assert!(make(just_above(LARGEST_RADIUS), 100.0, 0.0).is_err());
+    assert!(make(1.0e300, 100.0, 0.0).is_err());
+    assert!(make(1.0, just_above(LONGEST_PERIOD), 0.0).is_err());
+    assert!(make(1.0, -just_above(LONGEST_PERIOD), 0.0).is_err());
+    assert!(make(1.0, 100.0, just_above(LARGEST_PHASE)).is_err());
+    assert!(make(1.0, 100.0, -just_above(LARGEST_PHASE)).is_err());
+    assert!(Spin::new([0.0, 1.0, 0.0], LONGEST_PERIOD, 0.0).is_ok());
+    assert!(Spin::new([0.0, 1.0, 0.0], just_above(LONGEST_PERIOD), 0.0).is_err());
+    assert!(Spin::new([0.0, 1.0, 0.0], -just_above(LONGEST_PERIOD), 0.0).is_err());
+
+    // And the most there is of each is worked out, at the last tick of the clock and the first, without a number past what it holds: the offset of the largest radius
+    // along +x is 2^115 bricks, to a quarter of a voxel (the sine and cosine are right to 2^-121, and 2^120 of that is 2^-1).
+    for (tick, ticks_per_second) in [(0, 1), (u64::MAX, 1), (u64::MAX, u32::MAX)] {
+        let found = orbit([0.0, 1.0, 0.0], LARGEST_RADIUS, LONGEST_PERIOD, 0.0)
+            .state(RailTime::of_tick(tick, ticks_per_second), NOWHERE, NOWHERE)
+            .offset
+            .unwrap();
+        let length = |bricks: [i128; 3], rest: [f64; 3]| {
+            let [x, y, z] = [0, 1, 2].map(|axis| bricks[axis] as f64 * 32.0 + rest[axis]);
+            (x * x + y * y + z * z).sqrt()
+        };
+        // (An f64 of the length is 2^67 voxels from the next, so the bricks are looked at instead: the sum of the squares of the bricks is the radius squared in bricks, to what an f64 shows.)
+        let bricks_length = length(found.bricks, [0.0; 3]) / 32.0;
+        assert!(
+            (bricks_length / (LARGEST_RADIUS / 32.0) - 1.0).abs() < 1.0e-15,
+            "{found:?} at tick {tick}"
+        );
+    }
+}
+
+#[test]
+fn a_rail_that_is_read_with_a_number_too_large_for_the_arithmetic_is_refused_as_one_that_is_made_is()
+ {
+    let rail = |radius: f64, period: f64, phase: f64| Rail {
+        spin: Some(Spin::new([0.0, 1.0, 0.0], 3600.0, 0.0).unwrap()),
+        orbit: Some(
+            Orbit::new(Centre::Point(NOWHERE), [0.0, 1.0, 0.0], 1.0, 1.0, 0.0)
+                .map(|mut orbit| {
+                    orbit.radius = radius;
+                    orbit.period = period;
+                    orbit.phase = phase;
+                    orbit
+                })
+                .unwrap(),
+        ),
+    };
+    assert!(
+        decode_rail(&encode_rail(&rail(
+            LARGEST_RADIUS,
+            LONGEST_PERIOD,
+            LARGEST_PHASE
+        )))
+        .is_ok()
+    );
+    for (what, bad) in [
+        ("a radius", rail(just_above(LARGEST_RADIUS), 1.0, 0.0)),
+        ("a period", rail(1.0, just_above(LONGEST_PERIOD), 0.0)),
+        ("a phase", rail(1.0, 1.0, just_above(LARGEST_PHASE))),
+        (
+            "a period of a spin",
+            Rail {
+                spin: Some(Spin {
+                    axis: [0.0, 1.0, 0.0],
+                    period: just_above(LONGEST_PERIOD),
+                    angle: 0.0,
+                }),
+                orbit: None,
+            },
+        ),
+    ] {
+        assert!(
+            decode_rail(&encode_rail(&bad)).is_err(),
+            "{what} too large to be held"
+        );
+    }
+}

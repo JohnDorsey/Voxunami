@@ -308,8 +308,9 @@ then what it needs and what I found in the code.
   that, or the same universe with voxels of picometres. Today's range is +-2^60 voxels (about +-122 light years), with body files limited to 1e15 voxels.
 - **Measured (2026-10-27, scripts and a copy of the repository; `build-log.md`, "Rails in exact arithmetic").** (1) A sum of orbits through absolute `f64` positions breaks long before the integers do: at a star
   2.5e20 m out the moon was a median 7.6 km from where it should be round its planet. Done: rails now add the offset to the parent's `WorldPosition` (exact in bricks), and the turn is worked out from whole ticks.
-  (2) The topmost rail of a galaxy still has an `f64` radius: the star's place moves in 32 km steps. Probably harmless (everything in its system moves together; other systems are light years away) but not checked;
-  if it matters, evaluate the top levels in 128-bit fixed point (integers only, bit-identical everywhere; `f128` is unstable on the stable toolchain and `libm` has no `f128` functions). (3) `i64` to `i128` is not only
+  (2) The topmost rail of a galaxy had an `f64` radius: the star's place moved in 32 km steps. Done (the owner asked for accurate radii): an orbit is worked out in 128-bit fixed point, exact to 2^-33 voxel
+  at radii up to the size of the universe (`exact_circle.rs`; `f128` is unstable on the stable toolchain and `libm` has no `f128` functions). What it still cannot do: the position of a ship is
+  an `i64` brick, so an orbit past 2^60 voxels is refused at placement (`put_ships_on_their_rails` names it) until the coordinates are `i128`. (3) `i64` to `i128` is not only
   mechanical: the types widen with the compiler's help, but arithmetic that depends on the width (the octree's root level and `u64` keys, squares of distances in `world_view/src/lod.rs`, counts) and the formats (the
   wire's signed varint, the saves, JSON numbers, which hold 53 bits) are decisions.
 - **Where C still earns its place with `i128` coordinates.** (a) *Levels of the same grid* (coarse summaries: "this cube of 2^40 bricks is empty or all one material"): the real prerequisite for structures that span
@@ -320,4 +321,11 @@ then what it needs and what I found in the code.
   active vessel near the origin; only vessels within about 2.2 km are physically loaded and the rest are on rails; patched conics with a sphere of influence per body; a solar system at a tenth of real size; no
   interstellar space. The sacrifices: no Lagrange points, jumps at a sphere's edge, nothing simulated off screen, stations larger than the physics range impossible, time warp that is hard for many players. Our rails (a
   body is a function of the clock) and ships that feel every nearby body avoid the first two (to be checked: that gravity sums over all pulling bodies); the others are ours to decide.
-- **Open.** Who carries a free ship in a star's frame (only planets carry things today); `i128` coordinates (a phase of its own, starting from the wire format); the generator's summaries; the topmost orbits; time warp and ships on rails.
+- **Open.** Who carries a free ship in a star's frame (only planets carry things today); `i128` coordinates (a phase of its own, starting from the wire format: see below); the generator's summaries; time warp and ships on rails.
+- **The wire format for `i128` coordinates (options, not decided).** Today a coordinate is a signed varint of an `i64` (zigzag, 7 bits a byte: 1 byte near the origin, 9 or 10 at the ends). (a) *The same varint, widened*:
+  LEB128 of a zigzag `i128`, up to 19 bytes; small near the origin, so nothing changes for a game that stays in a solar system; a decoder must refuse an encoding that is not the shortest, or that has more than
+  19 bytes or bits past the 128th, so that a value has one encoding (the saves and the replays compare bytes). (b) *A length-prefixed integer* (a byte for the number of bytes, then those bytes): the same size
+  as (a) for small values, simpler to decode without a loop, a canonical form to check. (c) *A prefix varint* (the length in the first byte's leading ones, as in the Matroska and QUIC integers): fewer branches and
+  the length known from the first byte, but 128-bit values need a nine-byte-plus escape of our own. (d) *Fixed 16 bytes*: simple, 8 to 16 times larger near the origin, which is where almost all the traffic is.
+  (e) *Delta from the last*: a coordinate sent as a difference from the previous (or from the viewer's brick), small whatever the distance from the origin, which also fits a stream of bricks near one another; the largest
+  saving, but the decoder carries state and a lost message would matter on an unreliable transport. My lean is (a) with the canonical-form rules, and (e) later where traffic needs it.
