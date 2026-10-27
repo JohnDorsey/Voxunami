@@ -64,6 +64,17 @@ impl ByteWriter {
         self.write_varint(((value << 1) ^ (value >> 63)) as u64);
     }
 
+    /// A signed integer of up to 128 bits (a coordinate): a byte for the number of bytes that follow,
+    /// then the zigzag value in that many little-endian bytes, the fewest that hold it (zero takes
+    /// none). The length byte is the whole reason this is not a varint: a wider coordinate type later
+    /// (256 bits, 512 bits) needs no new format, only a reader that accepts a longer length.
+    pub fn write_wide_signed(&mut self, value: i128) {
+        let zigzag = ((value << 1) ^ (value >> 127)) as u128;
+        let length = (128 - zigzag.leading_zeros() as usize).div_ceil(8);
+        self.write_u8(length as u8);
+        self.write_raw(&zigzag.to_le_bytes()[..length]);
+    }
+
     pub fn write_raw(&mut self, bytes: &[u8]) {
         self.bytes.extend_from_slice(bytes);
     }
@@ -157,6 +168,23 @@ impl<'a> ByteReader<'a> {
         Ok((zigzag >> 1) as i64 ^ -((zigzag & 1) as i64))
     }
 
+    /// The counterpart of [`ByteWriter::write_wide_signed`]. A number has one encoding (saves and
+    /// replays are compared byte for byte), so a length over 16 and a top byte of zero are errors.
+    pub fn read_wide_signed(&mut self) -> Result<i128, DecodeError> {
+        let length = usize::from(self.read_u8()?);
+        if length > 16 {
+            return Err(DecodeError::InvalidVarint);
+        }
+        let digits = self.read_raw(length)?;
+        if digits.last() == Some(&0) {
+            return Err(DecodeError::InvalidVarint);
+        }
+        let mut bytes = [0u8; 16];
+        bytes[..length].copy_from_slice(digits);
+        let zigzag = u128::from_le_bytes(bytes);
+        Ok((zigzag >> 1) as i128 ^ -((zigzag & 1) as i128))
+    }
+
     /// A varint that is used as a length or count: it must be representable and, because every
     /// counted item takes at least `minimum_item_bytes`, cannot exceed what is left to read.
     pub fn read_count(&mut self, minimum_item_bytes: usize) -> Result<usize, DecodeError> {
@@ -231,6 +259,51 @@ mod tests {
         );
     }
 
+    fn wide_bytes(value: i128) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        writer.write_wide_signed(value);
+        writer.into_bytes()
+    }
+
+    #[test]
+    fn wide_integers_are_a_length_then_that_many_zigzag_bytes() {
+        assert_eq!(wide_bytes(0), [0]);
+        assert_eq!(wide_bytes(-1), [1, 1]);
+        assert_eq!(wide_bytes(1), [1, 2]);
+        assert_eq!(wide_bytes(63), [1, 126]);
+        assert_eq!(wide_bytes(-64), [1, 127]);
+        assert_eq!(wide_bytes(64), [1, 128]);
+        assert_eq!(wide_bytes(-65), [1, 129]);
+        assert_eq!(wide_bytes(128), [2, 0, 1]);
+        assert_eq!(wide_bytes(1 << 62), [8, 0, 0, 0, 0, 0, 0, 0, 0x80]);
+        assert_eq!(wide_bytes(1 << 63), [9, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        let mut largest = vec![16];
+        largest.extend_from_slice(&[0xFE; 1]);
+        largest.extend_from_slice(&[0xFF; 15]);
+        assert_eq!(wide_bytes(i128::MAX), largest);
+        let mut smallest = vec![16];
+        smallest.extend_from_slice(&[0xFF; 16]);
+        assert_eq!(wide_bytes(i128::MIN), smallest);
+    }
+
+    #[test]
+    fn malformed_wide_integers_are_rejected() {
+        let read = |bytes: &[u8]| ByteReader::new(bytes).read_wide_signed();
+        // Not the shortest form: a zero where the top byte should be.
+        assert_eq!(read(&[1, 0]), Err(DecodeError::InvalidVarint));
+        assert_eq!(read(&[2, 5, 0]), Err(DecodeError::InvalidVarint));
+        assert_eq!(
+            read(&[16, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            Err(DecodeError::InvalidVarint)
+        );
+        // Wider than 128 bits.
+        assert_eq!(read(&[17; 18]), Err(DecodeError::InvalidVarint));
+        assert_eq!(read(&[255]), Err(DecodeError::InvalidVarint));
+        // The data ends inside the number.
+        assert_eq!(read(&[]), Err(DecodeError::UnexpectedEnd));
+        assert_eq!(read(&[3, 1, 2]), Err(DecodeError::UnexpectedEnd));
+    }
+
     #[test]
     fn strings_and_identifiers_round_trip_and_validate() {
         let mut writer = ByteWriter::new();
@@ -280,6 +353,18 @@ mod tests {
 
     proptest! {
         #[test]
+        fn wide_integers_round_trip_in_the_fewest_bytes(value in any::<i128>(), small in -70_000i128..70_000) {
+            for value in [value, small, value >> 64, value >> 100] {
+                let bytes = wide_bytes(value);
+                let zigzag = ((value << 1) ^ (value >> 127)) as u128;
+                prop_assert_eq!(bytes.len(), 1 + (128 - zigzag.leading_zeros() as usize).div_ceil(8));
+                let mut reader = ByteReader::new(&bytes);
+                prop_assert_eq!(reader.read_wide_signed(), Ok(value));
+                prop_assert_eq!(reader.finish(), Ok(()));
+            }
+        }
+
+        #[test]
         fn numbers_round_trip(unsigned in any::<u64>(), signed in any::<i64>(), small in any::<u32>()) {
             let mut writer = ByteWriter::new();
             writer.write_varint(unsigned);
@@ -300,6 +385,7 @@ mod tests {
             let mut reader = ByteReader::new(&bytes);
             let _ = reader.read_varint();
             let _ = reader.read_signed_varint();
+            let _ = reader.read_wide_signed();
             let _ = reader.read_string();
             let _ = reader.read_identifier();
             let _ = reader.read_count(3);

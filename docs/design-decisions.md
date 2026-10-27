@@ -187,6 +187,9 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   `WorldPosition::translated_by_voxels`. Not changed: the unit of a position (an `i64` brick and an `f32` offset), the format of a rail (the `f64`s of a period and a radius), the hard rule
   (`libm`, no wall clock). Why: the arithmetic was exact only while the world was small and young (measured: a moon 7 km from where it should be round a star 2.5x10^20 m out; a planet 1.3 m out at
   twelve thousand years), and the fix costs nothing at the scale of today's worlds.
+- Owner's, 2026-10-27: **a coordinate of more than 64 bits goes on the wire as a length-prefixed integer** (a byte for the number of bytes, then the zigzag value in that many little-endian bytes, the fewest that hold it;
+  zero is one byte), not as a wider LEB128 varint. A number has one encoding: a length over the width, or a top byte of zero, is a decode error. The reason is growth: 256- or 512-bit coordinates (if shrinking ships
+  become a large part of play) need only a reader that accepts a longer length. `ByteWriter::write_wide_signed` / `ByteReader::read_wide_signed` (`i128` today). The existing varints are unchanged.
 - Mine, built after that (2026-10-27; the owner asked for accurate orbit radii "even if it requires fixed point 128 bit"): **the offset of an orbit is worked out in 128-bit fixed point and kept as
   whole bricks and a rest (`ExactOffset`), not as `f64`s.** `exact_circle.rs`: CORDIC sine and cosine in 126 bits, the plane in 126 bits, the radius multiplied in 256 bits (`u128` pairs; no
   dependency). Chosen over `f128` (unstable on the stable toolchain, no `libm` functions for it) and over double-double (two `f64`s: about 106 bits, whose bit-identity across machines would

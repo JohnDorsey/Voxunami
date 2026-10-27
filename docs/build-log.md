@@ -805,6 +805,15 @@ callers (ship creation, the bodies' terrain, the arrival look, the light-model s
 - Tests: the existing ones, rewritten by a tool for the calls (`regrid.py`, a scratch file) and by hand where a test expected an error for a level that is not there; two new for `detach_blocks` out of a
   ship and for `uniform_value` and `generated` on a ship. No pin moved. Windows 1745 and Linux 1746 tests pass; fmt and clippy clean.
 
+The wire format for wide coordinates (2026-10-27, `i128` migration, phase 1; the owner chose option (b), a length-prefixed integer). See `future-goals.md` and `design-decisions.md`.
+- *Tests first, then built:* `binary_codec` gained `write_wide_signed` / `read_wide_signed`: a length byte, then the zigzag value in that many little-endian bytes (zero is the length byte alone). Tests: the layout pinned for 0, -1, 1, 63, -64, 64,
+  -65, 128, 2^62, 2^63, `i128::MAX` and `i128::MIN`; every malformed form refused (a zero top byte, a length of 17 or 255, data that ends inside the number); a property that any `i128` (and any near the origin, and shifted
+  right to every size) round-trips in exactly 1 + ceil(bits / 8) bytes; and the reader added to the never-panics property.
+- *Mutation experiments* (`PROPTEST_DISABLE_FAILURE_PERSISTENCE=1`; the file restored and compared): the canonical-form check off (the malformed test fails), the length cap at 17 (that and the never-panics property fail), the zigzag sign dropped
+  (the layout and round-trip tests fail). A first attempt at these wrote its mutants to the wrong directory and so tested nothing; it was noticed because the results were all passes, and was redone.
+- Windows 2315 tests pass and Linux 2316; fmt and clippy clean.
+- Nothing uses it yet: this phase adds the format only. Next: widen `voxel_space`'s coordinates, then every caller of `write_signed_varint` that carries a coordinate.
+
 Orbits in 128-bit fixed point (2026-10-27, after "Rails in exact arithmetic"; the owner asked for accurate orbit radii "even if it requires fixed point 128 bit"). See `rails-and-recipes-spec.md` (3.4), `design-decisions.md`, `future-goals.md`.
 - *Tests first:* the reference values come from `engine/world_storage/tools/exact_circle_reference.py` (mpmath, 120 digits; its tables and expected values are the ones pasted into the Rust source, checked by comparing the
   script's output with the source). `exact_circle/tests.rs`: 48 sines and cosines (within 22 of 2^-126, tolerance 100), 8 planes (within 8, tolerance 16), 14 angles in radians, fractions of a turn, `scaled`; properties
