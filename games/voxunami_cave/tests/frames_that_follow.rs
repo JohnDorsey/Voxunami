@@ -300,7 +300,7 @@ fn greatest_kink(path: &[[f64; 3]]) -> f64 {
 fn a_ship_that_flies_away_from_a_planet_on_a_fast_orbit_goes_on_in_the_world_at_the_speed_it_had() {
     let mut scene = a_scene(None);
     scene.ticks(1);
-    // Thrown up from 200 voxels over the pole at 400 metres a second against the planet (a ship goes no faster than that in a frame: the solver's limit): it is out
+    // Thrown up from 200 voxels over the pole at 400 metres a second against the planet: it is out
     // of the sphere (16,320) in some 12 seconds and out of the distance at which it is let go (20,400) in 25.
     let (path, offsets) = follow_a_raft(&mut scene, [0.0, 10_200.0, 0.0], [0.0, 400.0, 0.0], 800);
     let distances: Vec<f64> = offsets.iter().map(|offset| length(*offset)).collect();

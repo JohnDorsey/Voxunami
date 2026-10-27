@@ -144,7 +144,7 @@ second in Cave; it is saved with the world, so a restart goes on from where it w
   turn however fast it goes, and a ship that leaves goes on in the world at the speed it had. Where spheres overlap (a moon in its planet's) the smallest carries; what is
   carried stays so a quarter farther out than it was taken in. Blocks built in space, which stand still in the world, are not solid to what a planet carries (blocks built on
   the planet are). A ship made empty near a planet that moves starts at rest in the world, so it is going at the planet's speed against it; one carved from a planet or from
-  another ship has the speed of the blocks it was carved from. No ship goes faster than 400 metres a second against its frame (the physics engine's limit).
+  another ship has the speed of the blocks it was carved from. There is no speed limit (Rapier's default of 400 metres a second is turned off); past some 380 voxels a second a tick can no longer be cut finely enough to keep a ship from going through thin ground, and the result is not promised to be the same on every machine.
 - *Not yet:* ellipses; ships on rails of their own; time faster than real. `docs/rails-and-recipes-spec.md`.
 
 A body is made when a *world* is made: the planets of a world that exists are not changed by a pack added later, and do not go if the pack is taken away (the

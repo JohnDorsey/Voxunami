@@ -215,6 +215,8 @@ impl CharacterBody {
     pub fn new(eye: WorldPosition, settings: CharacterSettings) -> Self {
         let parameters = IntegrationParameters {
             dt: settings.time_step,
+            // No speed limit (the default is 400 metres a second).
+            normalized_max_linear_velocity: f32::MAX,
             ..IntegrationParameters::default()
         };
         let mut body = Self {

@@ -117,6 +117,6 @@ Each ends with tests (first), clippy, rustfmt, the Windows and Linux suites, mut
   tens of kilometres of its origin, so a frame follows a planet and does not use world coordinates. **[belief]** this works; the proof is the test that a ship rests on a planet
   that is moving at 30 km/s for a minute, and is where it should be.
 - **Rapier and a fast kinematic body.** The planet turns and carries its ground; at the equator of a 63 km planet that turns once an hour the ground moves at 110 m/s, which
-  is fast for the contact solver (Rapier caps a body at 400 m/s and the plugin cuts a tick into steps for a fast one). **[belief]** I will measure before choosing a default spin.
+  is fast for the contact solver (the plugin cuts a tick into steps for a fast one, up to 24; Rapier's own default cap of 400 m/s is turned off). **[belief]** I will measure before choosing a default spin.
 - **The wire.** A planet whose pose changes every tick is a pose in every tick's messages for every client that watches the level (a few dozen bytes). The nodes of a planet
   are drawn from its pose, so the client re-poses its meshes every tick; **[belief]** that costs nothing, as a ship's does.

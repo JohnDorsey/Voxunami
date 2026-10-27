@@ -38,7 +38,8 @@ pub struct BodyState {
 
 /// The farthest, in voxels, that the fastest point of a body is let move in one solver step.
 const MOST_A_STEP_MOVES: f32 = 0.8;
-/// The most solver steps a tick is cut into (Rapier caps a body at 400 voxels a second, which is 20 a tick and 0.8 a step at 24).
+/// The most solver steps a tick is cut into, which bounds the cost of a fast body: 24 keep a body to 0.8 voxels a step up to 384 voxels a second
+/// (at 20 ticks a second); faster, a step is longer than that.
 const MOST_STEPS: u32 = 24;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -141,6 +142,9 @@ impl BodyWorld {
     pub fn new(origin: BrickCoordinate, settings: BodySettings) -> Self {
         let parameters = IntegrationParameters {
             dt: settings.time_step / settings.substeps.max(1) as f32,
+            // No speed limit (the default is 400 metres a second). Past what `MOST_STEPS` can cut a tick for, a body may go through thin ground, and the
+            // result is not promised to be the same on every machine; below it, it is.
+            normalized_max_linear_velocity: f32::MAX,
             ..IntegrationParameters::default()
         };
         Self {
@@ -910,6 +914,29 @@ mod tests {
         faster.linear_velocity = [0.0, -4000.0, 0.0];
         world.set_state(BodyId(1), faster).unwrap();
         assert_eq!(world.steps_for_this_tick(), 24);
+    }
+
+    #[test]
+    fn no_speed_is_clamped() {
+        // Rapier clamps a body at 400 metres a second by default; a ship in free fall, with the ground far below, keeps any speed it is given.
+        for speed in [399.0f32, 401.0, 2_000.0, 20_000.0] {
+            let mut world = BodyWorld::new(
+                BrickCoordinate::ORIGIN,
+                BodySettings {
+                    gravity: [0.0; 3],
+                    ..BodySettings::default()
+                },
+            );
+            let mut state = resting_at(at(2.0, 20.0, 2.0));
+            state.linear_velocity = [speed, 0.0, 0.0];
+            ship_of(&mut world, 1, &Hull::cube(2), state, BodyKind::Dynamic);
+            world.step();
+            assert_eq!(
+                world.state(BodyId(1)).unwrap().linear_velocity[0],
+                speed,
+                "a ship given {speed} metres a second"
+            );
+        }
     }
 
     fn ship_of(world: &mut BodyWorld, id: u64, hull: &Hull, state: BodyState, kind: BodyKind) {
