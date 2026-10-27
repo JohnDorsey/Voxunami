@@ -558,6 +558,74 @@ pub fn make_ship(
     });
 }
 
+pub fn length(vector: [f64; 3]) -> f64 {
+    (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt()
+}
+
+pub fn minus(first: [f64; 3], second: [f64; 3]) -> [f64; 3] {
+    [
+        first[0] - second[0],
+        first[1] - second[1],
+        first[2] - second[2],
+    ]
+}
+
+/// Where the middle of a ship is, in voxels.
+pub fn ship_voxels(scene: &Scene, number: u64) -> [f64; 3] {
+    ship_pose(scene, number).position.in_voxels()
+}
+
+/// A raft of stone, 6 by 1 by 6, made `offset` voxels (in the world's axes) from the middle of ship `planet`, free or held, going `against` the ground there: at
+/// rest on it for no `against`, as a ship made by someone who stands on it would be. (It is put there in the tick after it is made, from the planet where the
+/// planet is in that tick, so that it is where it is said to be from the planet however far the planet has gone since the test looked.) Its number.
+pub fn raft_over(
+    scene: &mut Scene,
+    planet: u64,
+    offset: [f64; 3],
+    held: bool,
+    against: [f32; 3],
+) -> u64 {
+    let number = scene.rig.server.world().grids().iter().count() as u64;
+    let middle = ship_voxels(scene, planet);
+    make_ship(
+        scene,
+        GridPose::new(
+            WorldPosition::from_voxels([0, 1, 2].map(|axis| middle[axis] + offset[axis])),
+            Orientation::IDENTITY,
+        ),
+        held,
+        [6, 1, 6],
+        |_| true,
+    );
+    scene.run(move |world| {
+        let planet = world
+            .data()
+            .grids()
+            .get(ship_id(planet))
+            .expect("the planet is there");
+        let place = planet
+            .pose
+            .position
+            .translated(offset.map(|part| part as f32));
+        // The ground goes at the planet's velocity and the turn of the planet about its middle: omega cross offset.
+        let turn = planet.angular_velocity.map(f64::from);
+        let round = [
+            turn[1] * offset[2] - turn[2] * offset[1],
+            turn[2] * offset[0] - turn[0] * offset[2],
+            turn[0] * offset[1] - turn[1] * offset[0],
+        ];
+        let speed =
+            [0, 1, 2].map(|axis| planet.linear_velocity[axis] + round[axis] as f32 + against[axis]);
+        world
+            .set_grid_pose(ship_id(number), GridPose::new(place, Orientation::IDENTITY))
+            .unwrap();
+        world
+            .set_grid_velocity(ship_id(number), speed, [0.0; 3])
+            .unwrap();
+    });
+    number
+}
+
 /// The planet most of the ship tests were written for: it pulls at 32 metres a second a second, six times as hard as Cave's (5, the owner's
 /// choice of 2026-10-22). Those tests are about ships that fall fast, stop on thin ground, and are found where the numbers put them in a few ticks,
 /// and not about the planet; one test says what the default planet does (`ships_fall_at_the_pull_of_cave`).

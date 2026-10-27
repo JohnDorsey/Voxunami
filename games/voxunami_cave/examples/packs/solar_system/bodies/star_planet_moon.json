@@ -1,0 +1,13 @@
+{
+  "level": "voxunami_cave:mini_cosmos",
+  "terrain": {
+    "family": "base_blocks:planet_v1",
+    "parameters": { "seed": 9, "radius": 9000, "hill_height": 30, "largest_hill_wavelength_log2": 9, "hill_octave_count": 3 }
+  },
+  "extent_bricks": 285,
+  "surface_gravity": 10,
+  "rail": {
+    "spin": { "axis": [0, 1, 0], "period": 2565 },
+    "orbit": { "around": "solar_system:star_planet", "normal": [0.1, 1, 0], "radius": 80000, "period": 2565 }
+  }
+}

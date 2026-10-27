@@ -4,7 +4,7 @@
 mod common;
 
 use common::docking::{a_pair, make};
-use common::{SEED, Scene, make_ship, player_pose, ship_id, ship_pose, tick_and_follow};
+use common::{SEED, Scene, length, minus, player_pose, ship_id, ship_pose, tick_and_follow};
 use game_shell::{GameContent, RawFile, RawPack};
 use server::GridView;
 use voxel_space::{GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate, WorldPosition};
@@ -85,66 +85,14 @@ fn velocity(scene: &Scene, number: u64) -> [f64; 3] {
         .map(f64::from)
 }
 
-fn length(vector: [f64; 3]) -> f64 {
-    (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt()
-}
-
-fn minus(first: [f64; 3], second: [f64; 3]) -> [f64; 3] {
-    [
-        first[0] - second[0],
-        first[1] - second[1],
-        first[2] - second[2],
-    ]
-}
-
 /// Where a ship is from the middle of the wanderer, in the world's axes.
 fn from_the_middle(scene: &Scene, number: u64) -> [f64; 3] {
     minus(voxels(scene, number), voxels(scene, WANDERER))
 }
 
-/// A raft of stone, 6 by 1 by 6, made `offset` voxels (in the world's axes) from the middle of the wanderer, free or held, going `against` the ground there: at
-/// rest on it for no `against`, as a ship made by someone who stands on it would be. (It is put there in the tick after it is made, from the planet where the
-/// planet is in that tick, so that it is where it is said to be from the planet however far the planet has gone since the test looked.) Its number.
+/// A raft of stone over the wanderer (`common::raft_over`).
 fn raft_over(scene: &mut Scene, offset: [f64; 3], held: bool, against: [f32; 3]) -> u64 {
-    let number = scene.rig.server.world().grids().iter().count() as u64;
-    let planet = voxels(scene, WANDERER);
-    make_ship(
-        scene,
-        GridPose::new(
-            WorldPosition::from_voxels([0, 1, 2].map(|axis| planet[axis] + offset[axis])),
-            Orientation::IDENTITY,
-        ),
-        held,
-        [6, 1, 6],
-        |_| true,
-    );
-    scene.run(move |world| {
-        let planet = world
-            .data()
-            .grids()
-            .get(ship_id(WANDERER))
-            .expect("the wanderer is there");
-        let place = planet
-            .pose
-            .position
-            .translated(offset.map(|part| part as f32));
-        // The ground goes at the planet's velocity and the turn of the planet about its middle: omega cross offset.
-        let turn = planet.angular_velocity.map(f64::from);
-        let round = [
-            turn[1] * offset[2] - turn[2] * offset[1],
-            turn[2] * offset[0] - turn[0] * offset[2],
-            turn[0] * offset[1] - turn[1] * offset[0],
-        ];
-        let speed =
-            [0, 1, 2].map(|axis| planet.linear_velocity[axis] + round[axis] as f32 + against[axis]);
-        world
-            .set_grid_pose(ship_id(number), GridPose::new(place, Orientation::IDENTITY))
-            .unwrap();
-        world
-            .set_grid_velocity(ship_id(number), speed, [0.0; 3])
-            .unwrap();
-    });
-    number
+    common::raft_over(scene, WANDERER, offset, held, against)
 }
 
 /// The raft over the wanderer, followed for `ticks`: where it is each tick in the world, and from the middle of the planet.

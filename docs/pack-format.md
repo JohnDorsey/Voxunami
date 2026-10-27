@@ -146,6 +146,7 @@ second in Cave; it is saved with the world, so a restart goes on from where it w
   the planet are). A ship made empty near a planet that moves starts at rest in the world, so it is going at the planet's speed against it; one carved from a planet or from
   another ship has the speed of the blocks it was carved from. There is no speed limit (Rapier's default of 400 metres a second is turned off); past some 380 voxels a second a tick can no longer be cut finely enough to keep a ship from going through thin ground, and the result is not promised to be the same on every machine.
 - *Not yet:* ellipses; ships on rails of their own; time faster than real. `docs/rails-and-recipes-spec.md`.
+- **A solar system** is a few bodies that go round each other: `games/voxunami_cave/examples/packs/solar_system` has a star, a planet and a moon (the star is a large planet: a ball of ground, with no light of its own yet). Periods there are those the game's pull would keep, `T = 2 pi sqrt(r^3 / (G M))` with `G` 6.674e-11 and the mass the file's `surface_gravity` gives (`g r r / G`). Name the files so that what is gone round sorts first (`star`, `star_planet`, `star_planet_moon`).
 
 A body is made when a *world* is made: the planets of a world that exists are not changed by a pack added later, and do not go if the pack is taken away (the
 world keeps the recipe of each planet's generator, so it makes the same ground). A body with no `rail` stands still (`docs/rails-and-recipes-spec.md`).

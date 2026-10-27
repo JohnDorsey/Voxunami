@@ -1,0 +1,11 @@
+{
+  "level": "voxunami_cave:mini_cosmos",
+  "position": [-3000000, 0, 0],
+  "terrain": {
+    "family": "base_blocks:planet_v1",
+    "parameters": { "seed": 7, "radius": 40000 }
+  },
+  "extent_bricks": 1252,
+  "surface_gravity": 30,
+  "rail": { "spin": { "axis": [0, 1, 0], "period": 250000 } }
+}
