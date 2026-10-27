@@ -53,9 +53,9 @@ mod tests {
     fn it_holds_a_limited_number_of_bricks_and_forgets_the_oldest_first() {
         let layout = StandardTestLayout::default().layout;
         let brick = Arc::new(Brick::new(&layout));
-        let key = |x: i64| (GridId::MAIN, BrickCoordinate::new(x, 0, 0));
+        let key = |x: i128| (GridId::MAIN, BrickCoordinate::new(x, 0, 0));
         let mut cache = GeneratedBrickCache::default();
-        for x in 0..CAPACITY as i64 + 5 {
+        for x in 0..CAPACITY as i128 + 5 {
             cache.insert(key(x), Arc::clone(&brick));
         }
         assert_eq!(cache.len(), CAPACITY);

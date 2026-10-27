@@ -72,8 +72,8 @@ impl TerrainSource for ShipTerrainSource<'_> {
 /// Whether any brick of the cube is inside the extent.
 fn meets(extent: BrickBox, cube: BrickCube) -> bool {
     let origin = cube.origin();
-    let last = i64::try_from(cube.edge_length() - 1).unwrap_or(i64::MAX);
-    let far = |coordinate: i64| coordinate.saturating_add(last);
+    let last = i128::try_from(cube.edge_length() - 1).unwrap_or(i128::MAX);
+    let far = |coordinate: i128| coordinate.saturating_add(last);
     BrickBox::new(
         origin,
         BrickCoordinate::new(far(origin.x()), far(origin.y()), far(origin.z())),

@@ -15,13 +15,13 @@ use voxel_space::{BRICK_VOXEL_COUNT, BrickCoordinate, LocalVoxelIndex};
 use crate::content::blocks;
 
 /// How many cells the arena is wide, tall and deep.
-pub const ARENA_EDGE: i64 = 64;
+pub const ARENA_EDGE: i128 = 64;
 
 /// How far apart the lines of the wall's grid are.
-pub const LINE_SPACING: i64 = 8;
+pub const LINE_SPACING: i128 = 8;
 
 /// A voxel, as its three coordinates.
-pub type Cell = [i64; 3];
+pub type Cell = [i128; 3];
 
 /// Whether a cell is inside the arena (not in its wall, and not outside it).
 pub fn is_inside(cell: Cell) -> bool {
@@ -44,7 +44,7 @@ pub fn wall_at(cell: Cell) -> Option<Wall> {
     {
         return None;
     }
-    let on_face = |coordinate: i64| coordinate == -1 || coordinate == ARENA_EDGE;
+    let on_face = |coordinate: i128| coordinate == -1 || coordinate == ARENA_EDGE;
     let faces = cell
         .iter()
         .filter(|&&coordinate| on_face(coordinate))
@@ -66,8 +66,8 @@ pub fn wall_at(cell: Cell) -> Option<Wall> {
 /// Whether a brick holds any of the wall.
 fn brick_touches_wall(brick: BrickCoordinate) -> bool {
     let origin = [brick.x() * 32, brick.y() * 32, brick.z() * 32];
-    let overlaps = |start: i64| start <= ARENA_EDGE && start + 31 >= -1;
-    let holds_a_face = |start: i64| (start..start + 32).any(|c| c == -1 || c == ARENA_EDGE);
+    let overlaps = |start: i128| start <= ARENA_EDGE && start + 31 >= -1;
+    let holds_a_face = |start: i128| (start..start + 32).any(|c| c == -1 || c == ARENA_EDGE);
     origin.iter().all(|&start| overlaps(start)) && origin.iter().any(|&start| holds_a_face(start))
 }
 

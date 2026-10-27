@@ -41,9 +41,9 @@ pub fn stone() -> u32 {
 }
 
 /// A block of a ship: where it is in the ship, which block, and how it is made.
-pub type Placed = ([i64; 3], u32, Look);
+pub type Placed = ([i128; 3], u32, Look);
 
-pub fn stones(from: i64, to: i64) -> Vec<Placed> {
+pub fn stones(from: i128, to: i128) -> Vec<Placed> {
     (from..to).map(|x| ([x, 0, 0], stone(), PLAIN)).collect()
 }
 

@@ -496,9 +496,9 @@ fn nearer_geometry_hides_farther_geometry_whatever_the_upload_order() {
 fn the_image_is_identical_a_hundred_billion_bricks_from_the_origin() {
     for context in contexts() {
         let name = adapter_name(&context);
-        let render_at = |shift: [i64; 3]| {
+        let render_at = |shift: [i128; 3]| {
             let mut renderer = new_renderer(&context);
-            let at = |x: i64, y: i64, z: i64| {
+            let at = |x: i128, y: i128, z: i128| {
                 BrickCoordinate::new(x + shift[0], y + shift[1], z + shift[2])
             };
             place_voxels(
@@ -651,7 +651,7 @@ fn many_bricks_beyond_the_initial_placement_capacity_all_draw() {
 /// from its low z end) and last when not; a depth test that does not tell them apart shows green in one of the two. Returns the pixel in the middle.
 fn depth_of_two_walls(
     context: &GraphicsContext,
-    distance_in_bricks: i64,
+    distance_in_bricks: i128,
     gap: u8,
     nearer_first: bool,
 ) -> [u8; 4] {
@@ -747,7 +747,7 @@ fn coarse_mesh(
     voxel_meshing::mesh_coarse_node(&CoarseNode::from_cells(cells), &[None; 6]).pack()
 }
 
-fn cube_of_bricks(origin: [i64; 3], level: u8) -> region_octree::BrickCube {
+fn cube_of_bricks(origin: [i128; 3], level: u8) -> region_octree::BrickCube {
     region_octree::BrickCube::new(BrickCoordinate::new(origin[0], origin[1], origin[2]), level)
         .unwrap()
 }
@@ -765,7 +765,7 @@ fn renderer_without_fog(context: &GraphicsContext) -> VoxelRenderer {
 }
 
 /// A camera at a place given in voxels, looking along -z.
-fn camera_in_voxels(position: [i64; 3]) -> Camera {
+fn camera_in_voxels(position: [i128; 3]) -> Camera {
     camera_at(
         BrickCoordinate::new(
             position[0].div_euclid(32),
@@ -781,14 +781,14 @@ fn camera_in_voxels(position: [i64; 3]) -> Camera {
 }
 
 /// Uploads, as bricks of a renderer, the voxels of material `block` inside the box `low` to `high` (voxels, from the origin of the bricks).
-fn fine_bricks_of_a_box(renderer: &mut VoxelRenderer, low: [i64; 3], high: [i64; 3], block: u32) {
+fn fine_bricks_of_a_box(renderer: &mut VoxelRenderer, low: [i128; 3], high: [i128; 3], block: u32) {
     for bz in low[2].div_euclid(32)..=(high[2] - 1).div_euclid(32) {
         for by in low[1].div_euclid(32)..=(high[1] - 1).div_euclid(32) {
             for bx in low[0].div_euclid(32)..=(high[0] - 1).div_euclid(32) {
                 let mut voxels = Vec::new();
-                for z in 0..32i64 {
-                    for y in 0..32i64 {
-                        for x in 0..32i64 {
+                for z in 0..32i128 {
+                    for y in 0..32i128 {
+                        for x in 0..32i128 {
                             let at = [bx * 32 + x, by * 32 + y, bz * 32 + z];
                             if (0..3).all(|axis| (low[axis]..high[axis]).contains(&at[axis])) {
                                 voxels.push(([x as u8, y as u8, z as u8], block));
@@ -809,14 +809,14 @@ fn a_coarse_node_is_drawn_as_the_bricks_it_stands_for_at_every_detail_level() {
     for context in contexts() {
         let name = adapter_name(&context);
         for level in 1u8..=3 {
-            let cell = 1i64 << level;
+            let cell = 1i128 << level;
             // A block of cells (8 by 8 by 8, a little off the corner of the node) of the red block.
-            let (low_cell, high_cell) = ([8i64, 0, 8], [16i64, 8, 16]);
+            let (low_cell, high_cell) = ([8i128, 0, 8], [16i128, 8, 16]);
             let mut coarse = new_renderer(&context);
             coarse.upload_coarse_node(
                 cube_of_bricks([0, 0, 0], level),
                 &coarse_mesh(|x, y, z| {
-                    let at = [x as i64, y as i64, z as i64];
+                    let at = [x as i128, y as i128, z as i128];
                     (0..3)
                         .all(|axis| (low_cell[axis]..high_cell[axis]).contains(&at[axis]))
                         .then_some(RED)
@@ -933,7 +933,7 @@ fn a_cell_of_a_node_of_the_coarsest_detail_a_thousand_kilometres_off_is_drawn_to
             cube_of_bricks([0, 0, 0], 18),
             &coarse_mesh(|x, y, z| (x == 0 && y == 0 && z == 0).then_some(RED)),
         );
-        let edge = 1i64 << 18;
+        let edge = 1i128 << 18;
         // Looking at the face toward +z from 1,000 kilometres in front of it, in line with its middle: it is 2 * atan(131072 / 10^6) = 15 degrees wide in a
         // view of 70, about 12 pixels of 64.
         let mut camera = camera_in_voxels([edge / 2, edge / 2, edge + 1_000_000]);
@@ -966,7 +966,7 @@ fn the_far_corner_of_a_huge_node_is_not_culled_for_being_far_from_the_middle_of_
             &coarse_mesh(|x, y, z| (x == 31 && y == 31 && z == 31).then_some(RED)),
         );
         // The last cell: voxels 31 * 2^18 up to 32 * 2^18 along each axis. Seen from 1,000 kilometres in front of its +z face, in line with its middle.
-        let edge = 1i64 << 18;
+        let edge = 1i128 << 18;
         let camera = camera_in_voxels([
             31 * edge + edge / 2,
             31 * edge + edge / 2,
@@ -987,7 +987,7 @@ fn coarse_nodes_are_held_counted_culled_replaced_and_removed_like_bricks() {
     for context in contexts() {
         let name = adapter_name(&context);
         let mut renderer = new_renderer(&context);
-        let node = |origin: [i64; 3]| cube_of_bricks(origin, 2);
+        let node = |origin: [i128; 3]| cube_of_bricks(origin, 2);
         let cell = coarse_mesh(|x, y, z| (x < 4 && y < 4 && z < 4).then_some(RED));
         renderer.upload_coarse_node(node([0, 0, 0]), &cell);
         // A node behind the camera.
@@ -1709,7 +1709,7 @@ fn a_ship() -> GridId {
 }
 
 /// A ship at this voxel (given as brick and offset), turned this way.
-fn pose(brick: [i64; 3], offset: [f32; 3], orientation: Orientation) -> GridPose {
+fn pose(brick: [i128; 3], offset: [f32; 3], orientation: Orientation) -> GridPose {
     GridPose::new(
         WorldPosition::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), offset),
         orientation,
@@ -1839,7 +1839,7 @@ fn a_ship_turned_45_degrees_shows_the_diagonal_of_its_block() {
 fn a_ship_far_from_the_origin_is_drawn_exactly_as_one_at_it() {
     for context in contexts() {
         let name = adapter_name(&context);
-        let seen = |brick: [i64; 3], local_brick: BrickCoordinate| {
+        let seen = |brick: [i128; 3], local_brick: BrickCoordinate| {
             let mut renderer = new_renderer(&context);
             // The ship's origin is `brick`, and its block is `local_brick` along: both far, one the negative of the other, so that the
             // block is at the origin of the world.

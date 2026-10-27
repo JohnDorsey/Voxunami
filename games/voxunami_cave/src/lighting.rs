@@ -209,7 +209,7 @@ mod tests {
     /// A whole lamp of the greatest light there is.
     const BRIGHTEST_LAMP: u32 = 6;
 
-    const EDGE: i64 = 9;
+    const EDGE: i128 = 9;
 
     fn table() -> BlockTable {
         let air = BlockDefinition::air();
@@ -274,7 +274,7 @@ mod tests {
         }
     }
 
-    fn at(x: i64, y: i64, z: i64) -> VoxelCoordinate {
+    fn at(x: i128, y: i128, z: i128) -> VoxelCoordinate {
         VoxelCoordinate::new(x, y, z)
     }
 
@@ -292,7 +292,7 @@ mod tests {
             lighting.voxel_changed(MAIN, voxel);
         }
 
-        fn light_at(&self, x: i64, y: i64, z: i64) -> u8 {
+        fn light_at(&self, x: i128, y: i128, z: i128) -> u8 {
             self.light.get(&(MAIN, at(x, y, z))).copied().unwrap_or(0)
         }
 
@@ -712,13 +712,13 @@ mod tests {
     }
 
     /// A scene of blocks in the box: (position, block, state).
-    fn scene() -> impl Strategy<Value = Vec<(i64, i64, i64, u32, u32)>> {
+    fn scene() -> impl Strategy<Value = Vec<(i128, i128, i128, u32, u32)>> {
         proptest::collection::vec((0..EDGE, 0..EDGE, 0..EDGE, 0u32..6, 0u32..4), 0..120)
     }
 
     fn build(
-        scene: &[(i64, i64, i64, u32, u32)],
-        shift: [i64; 3],
+        scene: &[(i128, i128, i128, u32, u32)],
+        shift: [i128; 3],
         lighting: &mut Lighting,
         world: &mut Box3,
     ) {
@@ -785,7 +785,7 @@ mod tests {
         /// The offset is a multiple of the size of the box's own world, so the scene is moved inside a
         /// larger world with the same unreadable edge.
         #[test]
-        fn light_does_not_depend_on_where_the_bricks_fall(scene in scene(), shift in (0i64..32, 0i64..32, 0i64..32)) {
+        fn light_does_not_depend_on_where_the_bricks_fall(scene in scene(), shift in (0i128..32, 0i128..32, 0i128..32)) {
             let shift = [shift.0, shift.1, shift.2];
             let mut lighting = Lighting::new(table());
             let mut world = Box3::default();
@@ -824,7 +824,7 @@ mod tests {
     /// that the rule sees the scene at another place in the world.
     struct ShiftedBox {
         inner: Box3,
-        shift: [i64; 3],
+        shift: [i128; 3],
     }
 
     impl ShiftedBox {

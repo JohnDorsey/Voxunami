@@ -68,11 +68,11 @@ impl Scene {
         }
     }
 
-    pub fn mesher(&self, radius: i64) -> WorldMesher {
+    pub fn mesher(&self, radius: i128) -> WorldMesher {
         self.mesher_seeing(radius, ViewChannels::new(self.material, None, None))
     }
 
-    pub fn mesher_seeing(&self, radius: i64, channels: ViewChannels) -> WorldMesher {
+    pub fn mesher_seeing(&self, radius: i128, channels: ViewChannels) -> WorldMesher {
         // Air is see-through; every other block of the fixtures is an opaque cube.
         let mut opaque = vec![true; 16];
         opaque[self.air as usize] = false;
@@ -93,7 +93,7 @@ impl Scene {
         channels
     }
 
-    pub fn edit(&mut self, at: [i64; 3], block: &str) -> BrickCoordinate {
+    pub fn edit(&mut self, at: [i128; 3], block: &str) -> BrickCoordinate {
         let coordinate = VoxelCoordinate::new(at[0], at[1], at[2]);
         let (brick_coordinate, local) = coordinate.split();
         if self

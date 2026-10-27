@@ -146,7 +146,7 @@ pub fn second() -> LevelIndex {
 }
 
 /// A ship of two bricks (the box from 0 to 64 along x and y and from 0 to 32 along z) at brick (`brick`, 0, 0).
-pub fn ship_at(game: &Game, world: &WorldData, brick: i64) -> MovingGrid {
+pub fn ship_at(game: &Game, world: &WorldData, brick: i128) -> MovingGrid {
     let mut ship = game.sample_ship(world, 0);
     ship.pose = GridPose::new(
         WorldPosition::new(BrickCoordinate::new(brick, 0, 0), [0.0; 3]),
@@ -176,13 +176,13 @@ pub fn collisions(game: &Game) -> BlockCollisions {
 
 impl Rig {
     /// A server with these settings, whose world has ships at these bricks along x (in the main level), and one player who has joined.
-    pub fn new(settings: ShipSettings, ships: &[i64]) -> (Self, Vec<GridId>) {
+    pub fn new(settings: ShipSettings, ships: &[i128]) -> (Self, Vec<GridId>) {
         Self::with_files(settings, ships, MemoryShipFiles::new(), None)
     }
 
     pub fn with_files(
         settings: ShipSettings,
-        ships: &[i64],
+        ships: &[i128],
         files: MemoryShipFiles,
         flaky: Option<Flaky>,
     ) -> (Self, Vec<GridId>) {
@@ -319,7 +319,7 @@ impl Rig {
 
     /// The player reports being this many voxels along x from the origin (and a little way up and along z), and a tick passes.
     pub fn player_at(&mut self, x: f64) {
-        let brick = (x / 32.0).floor() as i64;
+        let brick = (x / 32.0).floor() as i128;
         let offset = (x - (brick * 32) as f64) as f32;
         self.connection
             .send(

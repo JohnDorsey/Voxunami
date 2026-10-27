@@ -1343,7 +1343,7 @@ impl ServerWorld {
         let reach_in_bricks = [extent.min(), extent.max()]
             .into_iter()
             .flat_map(|corner| [corner.x(), corner.y(), corner.z()])
-            .map(i64::abs)
+            .map(i128::abs)
             .max()
             .unwrap_or(0);
         let edge = voxel_space::BRICK_EDGE_LENGTH as f64;
@@ -1516,9 +1516,9 @@ impl ServerWorld {
                 for step in 1..=8 {
                     let t = f64::from(step) * 0.5;
                     let voxel = VoxelCoordinate::new(
-                        (at[0] + gravity[0] / length * t).floor() as i64,
-                        (at[1] + gravity[1] / length * t).floor() as i64,
-                        (at[2] + gravity[2] / length * t).floor() as i64,
+                        (at[0] + gravity[0] / length * t).floor() as i128,
+                        (at[1] + gravity[1] / length * t).floor() as i128,
+                        (at[2] + gravity[2] / length * t).floor() as i128,
                     );
                     if let Some(&part) = owner.get(&voxel) {
                         return part;
@@ -2587,8 +2587,8 @@ pub(crate) mod tests {
     #[test]
     fn a_ship_5_x_10_to_the_17_voxels_from_what_it_goes_round_is_where_the_turn_worked_out_at_120_digits_puts_it_to_the_last_bit_of_an_f32()
      {
-        // The radius of an orbit that is as far as a coordinate goes (a ninth of 2^60 voxels): an f64 of it is 64 voxels from the next, so an f64 orbit is that far out
-        // however well the turn is worked out. Round a ship at brick (1000, -2000, 3000) and offset (3.5, 7.25, 30), a year of 9 x 10^8 seconds, a phase of one radian,
+        // The radius of an orbit that was as far as a coordinate went before coordinates were 128 bits (a ninth of 2^60 voxels): an f64 of it is 64 voxels from the next, so an f64
+        // orbit is that far out however well the turn is worked out. Round a ship at brick (1000, -2000, 3000) and offset (3.5, 7.25, 30), a year of 9 x 10^8 seconds, a phase of one radian,
         // 123,456,789 ticks at twenty a second: the expected place is `exact_circle_reference.py`'s, at 120 digits.
         let mut world = world_for_rails();
         let centre = world
@@ -2624,6 +2624,52 @@ pub(crate) mod tests {
         let expected = [18.927409849581174, 9.655737331008694, 1.4475123486614843];
         for axis in 0..3 {
             // (Half a step of an f32 between 16 and 32 is 0.95 x 10^-6.)
+            assert!(
+                (f64::from(found.offset()[axis]) - expected[axis]).abs() < 1.0e-6,
+                "{:?} against {expected:?}",
+                found.offset()
+            );
+        }
+    }
+
+    #[test]
+    fn a_ship_6_x_10_to_the_26_voxels_from_what_it_goes_round_is_where_the_turn_worked_out_at_120_digits_puts_it_to_the_last_bit_of_an_f32()
+     {
+        // The size of the universe in metres, for voxels of a metre: a brick position of 10^25, which an `i64` could not hold (it ends at 9 x 10^18). The same ship and the
+        // same turn as the test before, a radius of 6 x 10^26; the expected place is `exact_circle_reference.py`'s, at 120 digits.
+        let mut world = world_for_rails();
+        let centre = world
+            .create_grid(
+                LevelIndex::MAIN,
+                GridPose::new(
+                    WorldPosition::new(BrickCoordinate::new(1000, -2000, 3000), [3.5, 7.25, 30.0]),
+                    Orientation::IDENTITY,
+                ),
+            )
+            .unwrap();
+        let body = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        let rail = Rail {
+            spin: None,
+            orbit: Some(
+                Orbit::new(Centre::Grid(centre), [0.6, 0.8, 0.0], 6.0e26, 9.0e8, 1.0).unwrap(),
+            ),
+        };
+        world.set_grid_rail(body, Some(rail)).unwrap();
+        world.data.set_clock(123_456_789);
+        world.apply_rails(20);
+        let found = world.data().grids().get(body).unwrap().pose.position;
+        assert_eq!(
+            [found.brick().x(), found.brick().y(), found.brick().z()],
+            [
+                7_553_236_282_185_758_905_874_764,
+                -5_664_927_211_639_318_655_296_271,
+                -16_199_374_103_720_829_314_894_525
+            ]
+        );
+        let expected = [6.879435126977078, 2.548914014534149, 24.42621732003802];
+        for axis in 0..3 {
             assert!(
                 (f64::from(found.offset()[axis]) - expected[axis]).abs() < 1.0e-6,
                 "{:?} against {expected:?}",
@@ -3228,7 +3274,13 @@ pub(crate) mod tests {
         world
             .set_grid_rail(
                 lost,
-                Some(orbit_about(Centre::Point([0.0; 3]), 1.0e36, 100.0)),
+                // (The edge of the world is 2^120 voxels, 1.3 x 10^36, and no orbit is wider than that, so it takes a centre near the edge to go past it: at tick 0 the ship is a
+                // radius along x from the centre, 2.2 x 10^36.)
+                Some(orbit_about(
+                    Centre::Point([1.2e36, 0.0, 0.0]),
+                    1.0e36,
+                    100.0,
+                )),
             )
             .unwrap();
         world
@@ -3346,7 +3398,7 @@ pub(crate) mod tests {
         assert!(ship.held);
 
         // Over the planet's top, in the level in space, the pull is the planet's alone: toward its centre, 10 and a hair under (the softening).
-        let over = |x: f32, y: f32, z: f32, brick: [i64; 3]| {
+        let over = |x: f32, y: f32, z: f32, brick: [i128; 3]| {
             WorldPosition::new(
                 BrickCoordinate::new(brick[0], brick[1], brick[2]),
                 [x, y, z],
@@ -3536,7 +3588,7 @@ pub(crate) mod tests {
     }
 
     fn halves() -> Vec<SplitPart> {
-        let part = |range: std::ops::Range<i64>, x: f32| SplitPart {
+        let part = |range: std::ops::Range<i128>, x: f32| SplitPart {
             voxels: range.map(|x| VoxelCoordinate::new(x, 0, 0)).collect(),
             centre_of_mass: [x, 0.5, 0.5],
         };
@@ -3573,7 +3625,7 @@ pub(crate) mod tests {
                 moving.pose.position,
                 WorldPosition::new(BrickCoordinate::ORIGIN, [3.0, 40.0, 3.0])
             );
-            let own: Vec<i64> = (0..10)
+            let own: Vec<i128> = (0..10)
                 .filter(|&x| moving.voxels.get(block, VoxelCoordinate::new(x, 0, 0)) == 7)
                 .collect();
             assert_eq!(
@@ -3755,7 +3807,7 @@ pub(crate) mod tests {
 
     pub(crate) fn aboard(
         ship: GridId,
-        brick: [i64; 3],
+        brick: [i128; 3],
         offset: [f32; 3],
         turn: Orientation,
     ) -> EntityPose {
@@ -4247,7 +4299,7 @@ pub(crate) mod tests {
     #[test]
     fn what_a_brick_of_a_planet_holds_is_known_from_the_stored_brick_or_else_the_generated_one() {
         let (mut world, planet, block, _) = world_with_a_planet();
-        let uniform = |world: &mut ServerWorld, grid: GridId, brick: [i64; 3]| {
+        let uniform = |world: &mut ServerWorld, grid: GridId, brick: [i128; 3]| {
             world
                 .grid(grid)
                 .unwrap()

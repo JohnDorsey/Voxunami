@@ -84,7 +84,7 @@ fn viewer_in(at: BrickCoordinate) -> WorldPosition {
     WorldPosition::new(at, [16.0, 20.0, 16.0])
 }
 
-fn view_of(scene: &Scene, radius: i64) -> LodView {
+fn view_of(scene: &Scene, radius: i128) -> LodView {
     LodView::new(scene.mesher(radius), config())
 }
 
@@ -572,7 +572,7 @@ fn selected(scene: &Scene, centre: BrickCoordinate, leave_out_empty: bool) -> Ve
 
 /// The 26 cubes of the size of `cube` that touch it.
 fn touching(cube: BrickCube) -> Vec<BrickCube> {
-    let edge = cube.edge_length() as i64;
+    let edge = cube.edge_length() as i128;
     let origin = cube.origin();
     let mut touching = Vec::new();
     for dx in -1..=1 {
@@ -630,9 +630,9 @@ fn cubes_that_are_all_air_or_buried_in_ground_are_not_drawn_and_what_is_left_is_
     // What is drawn is where the ground is and next to it: no node is wholly under the ground, and none wholly over it.
     for cube in screen.nodes.keys() {
         let low = cube.origin().y() * 32;
-        let high = low + cube.edge_length() as i64 * 32;
+        let high = low + cube.edge_length() as i128 * 32;
         assert!(
-            low < 10 && high > -(cube.edge_length() as i64 * 32),
+            low < 10 && high > -(cube.edge_length() as i128 * 32),
             "{cube:?}"
         );
     }

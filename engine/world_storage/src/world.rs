@@ -1223,19 +1223,16 @@ impl ParsedWorld {
             } else if section.identifier == sections::levels_id() {
                 listed_levels = Some(sections::decode_levels(payload).map_err(wrap)?);
             } else if section.identifier == sections::entities_id() {
-                let format = sections::pose_format_of(section.version).expect("a readable version");
                 (entities, entity_fallbacks) =
-                    sections::decode_entities_with_fallbacks_in(payload, format).map_err(wrap)?;
+                    sections::decode_entities_with_fallbacks(payload).map_err(wrap)?;
             } else if section.identifier == sections::grids_id() {
-                let format = sections::pose_format_of(section.version).expect("a readable version");
-                grids = Some(sections::decode_grids_in(payload, format).map_err(wrap)?);
+                grids = Some(sections::decode_grids(payload).map_err(wrap)?);
             } else if section.identifier == sections::clock_id() {
                 clock = sections::decode_clock(payload).map_err(wrap)?;
             } else if section.identifier == sections::generator_recipes_id() {
                 recipes = sections::decode_generator_recipes(payload).map_err(wrap)?;
             } else if section.identifier == sections::generators_id() {
-                legacy_generators =
-                    Some(sections::decode_generators(payload, section.version).map_err(wrap)?);
+                legacy_generators = Some(sections::decode_generators(payload).map_err(wrap)?);
             } else {
                 legacy_bricks = Some(sections::decode_override_bricks(payload).map_err(wrap)?);
             }

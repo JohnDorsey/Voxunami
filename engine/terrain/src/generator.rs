@@ -126,7 +126,7 @@ impl TerrainGenerator for FieldTerrainGenerator {
                 .fill(self.materials.air);
             return brick;
         }
-        let with_surface_layer = region.extended_upper(0, SURFACE_LAYER_DEPTH as i64, 0);
+        let with_surface_layer = region.extended_upper(0, SURFACE_LAYER_DEPTH as i128, 0);
         if self.field.bounds(&with_surface_layer, detail).lower() > 0.0 {
             brick
                 .channel_mut(self.material_channel)
@@ -142,7 +142,7 @@ impl TerrainGenerator for FieldTerrainGenerator {
                 // One column, including the voxels above the brick that decide the surface layers.
                 for (height, is_solid) in solid.iter_mut().enumerate() {
                     *is_solid = origin
-                        .checked_offset(x as i64, height as i64, z as i64)
+                        .checked_offset(x as i128, height as i128, z as i128)
                         .is_some_and(|position| self.field.sample(position, detail) > 0.0);
                 }
                 for y in 0..BRICK_EDGE_LENGTH {
@@ -396,7 +396,7 @@ mod tests {
         position: VoxelCoordinate,
         materials: TerrainMaterials,
     ) -> u32 {
-        let solid_at = |height_above: i64| {
+        let solid_at = |height_above: i128| {
             position
                 .checked_offset(0, height_above, 0)
                 .is_some_and(|above| field.sample(above, LevelOfDetail::FULL_DETAIL) > 0.0)
@@ -405,7 +405,7 @@ mod tests {
             return materials.air;
         }
         let mut solid_above = 0;
-        while solid_above < SURFACE_LAYER_DEPTH as i64 && solid_at(solid_above + 1) {
+        while solid_above < SURFACE_LAYER_DEPTH as i128 && solid_at(solid_above + 1) {
             solid_above += 1;
         }
         match solid_above {
@@ -417,7 +417,7 @@ mod tests {
 
     /// Bricks whose surfaces the default hills pass through.
     fn surface_brick() -> impl Strategy<Value = BrickCoordinate> {
-        (-40i64..40, -3i64..6, -40i64..40).prop_map(|(x, y, z)| BrickCoordinate::new(x, y, z))
+        (-40i128..40, -3i128..6, -40i128..40).prop_map(|(x, y, z)| BrickCoordinate::new(x, y, z))
     }
 
     proptest! {

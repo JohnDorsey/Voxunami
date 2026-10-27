@@ -37,7 +37,7 @@ pub const PHYSICS_STEPS_PER_TICK: u32 = 3;
 
 /// How many bricks of the world a player may be from the bricks of a ship for the ship to be in their world: its blocks are colliders
 /// there, so the player walks on it and is stopped by it.
-const SHIP_REACH_BRICKS: i64 = 2;
+const SHIP_REACH_BRICKS: i128 = 2;
 
 /// What the world says a player is: where, in which frame, and which way they look. The record of the player is the truth about this
 /// (the entity), and the body is made to agree with it when it does not.

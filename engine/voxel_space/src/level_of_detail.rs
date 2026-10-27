@@ -18,7 +18,7 @@ impl LevelOfDetail {
         self.0
     }
 
-    pub fn edge_length_in_voxels(self) -> i64 {
+    pub fn edge_length_in_voxels(self) -> i128 {
         1 << self.0
     }
 }

@@ -247,7 +247,7 @@ fn an_edit_far_away_shows_in_the_coarse_view_of_a_player_who_is_far_from_it_and_
     assert!(!changed.is_empty(), "the crater is not in the picture");
     for cube in &changed {
         let origin = cube.origin();
-        let edge = cube.edge_length() as i64 * 32;
+        let edge = cube.edge_length() as i128 * 32;
         let (x, y, z) = (origin.x() * 32, origin.y() * 32, origin.z() * 32);
         assert!(
             x < 16 && x + edge > 0 && z < 16 && z + edge > 0 && y < 10 && y + edge > 0,

@@ -33,8 +33,9 @@ use world_storage::Section;
 /// Tells chance of this rule apart from chance made for anything else at the same voxel and tick.
 const PURPOSE: u64 = 0x4669_7265; // "Fire"
 
-/// The version of the saved fire this program writes.
-const SAVED_VERSION: u32 = 1;
+/// The version of the saved fire this program writes and reads: 2, in which the coordinates of the fires are three wide integers (up to 128 bits each; see
+/// `ActiveVoxels`). A section of version 1 would be misread as coordinates, so it is not read.
+const SAVED_VERSION: u32 = 2;
 
 pub fn section_id() -> NamespacedId {
     "voxunami_cave:fire"
@@ -264,10 +265,10 @@ mod tests {
         ])
     }
 
-    const EDGE: i64 = 7;
+    const EDGE: i128 = 7;
     const MAIN: GridId = GridId::MAIN;
 
-    fn at(x: i64, y: i64, z: i64) -> VoxelCoordinate {
+    fn at(x: i128, y: i128, z: i128) -> VoxelCoordinate {
         VoxelCoordinate::new(x, y, z)
     }
 
@@ -300,7 +301,7 @@ mod tests {
     }
 
     impl Box3 {
-        fn block(&self, x: i64, y: i64, z: i64) -> (u32, u32) {
+        fn block(&self, x: i128, y: i128, z: i128) -> (u32, u32) {
             self.blocks
                 .get(&(MAIN, at(x, y, z)))
                 .copied()
@@ -663,11 +664,16 @@ mod tests {
         fire.ignite(MAIN, at(1, 2, 3));
         let good = fire.to_section(&levels);
         assert!(Fire::read_section(std::slice::from_ref(&good), index_of).is_some());
-        let newer = Section {
-            version: SAVED_VERSION + 1,
-            ..good.clone()
-        };
-        assert!(Fire::read_section(&[newer], index_of).is_none());
+        for version in [0, SAVED_VERSION - 1, SAVED_VERSION + 1] {
+            let other = Section {
+                version,
+                ..good.clone()
+            };
+            assert!(
+                Fire::read_section(&[other], index_of).is_none(),
+                "version {version}"
+            );
+        }
         for length in 0..good.payload.len() {
             let damaged = Section {
                 payload: good.payload[..length].to_vec(),
@@ -684,7 +690,7 @@ mod tests {
         assert!(Fire::read_section(&[], index_of).is_none());
     }
 
-    fn scene() -> impl Strategy<Value = Vec<(i64, i64, i64, u32)>> {
+    fn scene() -> impl Strategy<Value = Vec<(i128, i128, i128, u32)>> {
         proptest::collection::vec((0..EDGE, 0..EDGE, 0..EDGE, 0u32..5), 0..80)
     }
 

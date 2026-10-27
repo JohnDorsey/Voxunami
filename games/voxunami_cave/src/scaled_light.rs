@@ -125,10 +125,10 @@ pub fn combined_light(
         .scales
         .iter()
         .map(|scale| {
-            let width = i64::from(scale.cell_width);
+            let width = i128::from(scale.cell_width);
             let table = std::array::from_fn(|axis| {
                 std::array::from_fn(|local| {
-                    let at = origin[axis] + local as i64;
+                    let at = origin[axis] + local as i128;
                     (at.div_euclid(width) * width - origin[axis]).max(0) as u8
                 })
             });

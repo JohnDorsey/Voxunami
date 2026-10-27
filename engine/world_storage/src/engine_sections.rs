@@ -1,10 +1,10 @@
 //! The sections the engine itself defines. Every other section in a world file belongs to a plugin
 //! and is carried as opaque bytes.
 //!
-//! All of them are at version 1, except `engine:generators`, which is at version 2 (version 1 files still
-//! load). A file has either `engine:levels`, or (every file written before levels existed) a
-//! `engine:generators` and an `engine:override_bricks`, which describe its one level. They are listed
-//! here in the order they are written.
+//! All of them are at version 2, except `engine:entities` and `engine:grids`, which are at version 3 (the sections that hold poses), and
+//! `engine:generators`, which is at version 3. A coordinate in any of them is three wide integers (up to 128 bits each), which is what changed in these
+//! versions; a file from before is refused, not read (nothing was released, and nothing older is kept readable). A file has either `engine:levels`, or a
+//! `engine:generators` and an `engine:override_bricks`, which describe its one level. They are listed here in the order they are written.
 //!
 //! - `engine:header`: world seed (`u64`), engine version text.
 //! - `engine:registries`: for each registry kind, the identifiers of its entries in file-id order.
@@ -12,15 +12,15 @@
 //! - `engine:channels`: the grid layout: for each channel its identifier, default value and what its
 //!   values mean (a plain number, or an id from a named registry).
 //! - `engine:generators`: the default terrain generator, the assignment cube level and the leaves of
-//!   the generator-assignment octree. Version 2 lists each leaf as one number (generator file id plus
-//!   one, 0 = none, times 64, plus the cube level), in Morton order: the leaves tile the whole space, so
-//!   where each one is follows from the levels before it. Version 1 also gave each leaf's origin.
+//!   the generator-assignment octree. Each leaf is one number (generator file id plus
+//!   one, 0 = none, times 128, plus the cube level), in Morton order: the leaves tile the whole space, so
+//!   where each one is follows from the levels before it.
 //! - `engine:generator_recipes`: the terrain generators that are data: for each, in the order they were added to the world, its instance name (the name it has in
 //!   the table of generators), its family (code that makes generators from parameters) and the parameters as bytes whose form the family decides. Written only
 //!   when the world has any (so a world without them is byte for byte what it was before recipes), and also in a world description, since a client makes the same
 //!   generators from them. A generator whose family is not here is a placeholder, and its recipe is kept.
 //! - `engine:levels`: the world's levels in order, the first being the main level where players start.
-//!   Per level: its identifier, its generator setup (as the payload of `engine:generators`, version 2) and
+//!   Per level: its identifier, its generator setup (as the payload of `engine:generators`) and
 //!   its edited bricks (as the payload of `engine:override_bricks`).
 //! - `engine:entities`: the entity counter, then every entity in order of id: its id, kind, pose, a byte that says whether
 //!   a world-space fallback pose follows (1 for an entity in the frame of a ship: where it is in the world, so that it is not lost if
@@ -48,43 +48,31 @@ use std::collections::BTreeMap;
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use entities::{ComponentBag, Entity, EntityError, EntityStore};
 use protocol::{
-    EntityId, PoseFormat, read_brick_box, read_entity_pose_in, read_grid_pose_in, write_brick_box,
-    write_entity_pose, write_grid_pose,
+    EntityId, read_brick_box, read_brick_coordinate, read_entity_pose, read_grid_pose,
+    write_brick_box, write_brick_coordinate, write_entity_pose, write_grid_pose,
 };
 use voxel_space::{BrickBox, EntityPose, GridId, GridPose, LatticeRotation, LatticeTransform};
 
-pub const SUPPORTED_VERSION: u32 = 1;
+/// The version of the sections that hold no pose and no assignment of generators (the header, the registries, the channels, the levels, the clock, the
+/// override bricks and the recipes) that this program writes and reads: 2, in which a coordinate in them is three wide integers.
+pub const SUPPORTED_VERSION: u32 = 2;
 
-/// The version of the sections that hold poses (`engine:entities`, `engine:grids` and a ship file's flight) that this program writes: 2, in
-/// which an orientation is four `f64`. Version 1 had four `f32`, and is still read, as the same turn.
-pub const POSES_VERSION: u32 = 2;
+/// The version of the sections that hold poses (`engine:entities`, `engine:grids` and a ship file's flight) that this program writes and reads: 3, in which a
+/// coordinate is three wide integers (2 had `f64` orientations; 1 had `f32`).
+pub const POSES_VERSION: u32 = 3;
 
-/// How the poses of a section are stored at this version, if it is one that holds poses and this program reads it.
-pub fn pose_format_of(version: u32) -> Option<PoseFormat> {
-    match version {
-        1 => Some(PoseFormat::Single),
-        POSES_VERSION => Some(PoseFormat::Double),
-        _ => None,
-    }
-}
+/// The version of `engine:generators` that this program writes and reads: 3, in which a leaf's level has seven bits (levels run to 116).
+pub const GENERATORS_VERSION: u32 = 3;
 
 /// Whether this program can read the section `identifier` at this version.
 pub fn reads_version(identifier: &NamespacedId, version: u32) -> bool {
     if *identifier == generators_id() {
-        reads_generators_version(version)
+        version == GENERATORS_VERSION
     } else if *identifier == entities_id() || *identifier == grids_id() {
-        pose_format_of(version).is_some()
+        version == POSES_VERSION
     } else {
         version == SUPPORTED_VERSION
     }
-}
-
-/// The version of `engine:generators` this program writes.
-pub const GENERATORS_VERSION: u32 = 2;
-
-/// Whether this program can read `engine:generators` at this version.
-pub fn reads_generators_version(version: u32) -> bool {
-    (1..=GENERATORS_VERSION).contains(&version)
 }
 
 pub fn header_id() -> NamespacedId {
@@ -223,14 +211,6 @@ pub fn decode_entities(payload: &[u8]) -> Result<EntityStore, DecodeError> {
 pub fn decode_entities_with_fallbacks(
     payload: &[u8],
 ) -> Result<(EntityStore, BTreeMap<EntityId, EntityPose>), DecodeError> {
-    decode_entities_with_fallbacks_in(payload, PoseFormat::CURRENT)
-}
-
-/// [`decode_entities_with_fallbacks`] for a section written with poses in `format` (see [`pose_format_of`]).
-pub fn decode_entities_with_fallbacks_in(
-    payload: &[u8],
-    format: PoseFormat,
-) -> Result<(EntityStore, BTreeMap<EntityId, EntityPose>), DecodeError> {
     let mut reader = ByteReader::new(payload);
     let next_id = reader.read_varint()?;
     // An id, a kind, a pose, the fallback byte and a component count.
@@ -240,11 +220,11 @@ pub fn decode_entities_with_fallbacks_in(
     for _ in 0..count {
         let id = EntityId::new(reader.read_varint()?);
         let kind = reader.read_identifier()?;
-        let pose = read_entity_pose_in(&mut reader, format)?;
+        let pose = read_entity_pose(&mut reader)?;
         match reader.read_u8()? {
             0 => {}
             1 => {
-                let place = read_entity_pose_in(&mut reader, format)?;
+                let place = read_entity_pose(&mut reader)?;
                 if place.grid.root_level().is_none() {
                     return Err(DecodeError::Invalid(
                         "the place an entity falls back to is not in a level",
@@ -346,7 +326,7 @@ pub fn encode_grids(record: &GridsRecord) -> Vec<u8> {
                 .expect("every rotation is one of the 24");
             writer.write_u8(rotation as u8);
             for component in transform.offset {
-                writer.write_signed_varint(component);
+                writer.write_wide_signed(component);
             }
         }
     }
@@ -354,11 +334,6 @@ pub fn encode_grids(record: &GridsRecord) -> Vec<u8> {
 }
 
 pub fn decode_grids(payload: &[u8]) -> Result<GridsRecord, DecodeError> {
-    decode_grids_in(payload, PoseFormat::CURRENT)
-}
-
-/// [`decode_grids`] for a section written with poses in `format` (see [`pose_format_of`]).
-pub fn decode_grids_in(payload: &[u8], format: PoseFormat) -> Result<GridsRecord, DecodeError> {
     let rotations = LatticeRotation::all();
     let mut reader = ByteReader::new(payload);
     let next = reader.read_varint()?;
@@ -384,7 +359,7 @@ pub fn decode_grids_in(payload: &[u8], format: PoseFormat) -> Result<GridsRecord
             ));
         }
         let level = reader.read_identifier()?;
-        let pose = read_grid_pose_in(&mut reader, format)?;
+        let pose = read_grid_pose(&mut reader)?;
         let bounds = match reader.read_u8()? {
             0 => None,
             1 => Some(read_brick_box(&mut reader)?),
@@ -455,9 +430,9 @@ pub fn decode_grids_in(payload: &[u8], format: PoseFormat) -> Result<GridsRecord
                 .get(usize::from(reader.read_u8()?))
                 .ok_or(DecodeError::Invalid("a lattice turn is not one of the 24"))?;
             let offset = [
-                reader.read_signed_varint()?,
-                reader.read_signed_varint()?,
-                reader.read_signed_varint()?,
+                reader.read_wide_signed()?,
+                reader.read_wide_signed()?,
+                reader.read_wide_signed()?,
             ];
             successors.push((successor, LatticeTransform { rotation, offset }));
         }
@@ -597,7 +572,7 @@ pub struct GeneratorsRecord {
     pub leaves: Vec<(BrickCube, Option<u32>)>,
 }
 
-/// Version 2 of the section. A world's own leaves tile the space; a description of a world's shape has none.
+/// The section. A world's own leaves tile the space; a description of a world's shape has none.
 /// Panics for any other list.
 pub fn encode_generators(record: &GeneratorsRecord) -> Vec<u8> {
     let levels: Vec<u8> = record.leaves.iter().map(|(cube, _)| cube.level()).collect();
@@ -618,19 +593,11 @@ pub fn encode_generators(record: &GeneratorsRecord) -> Vec<u8> {
     writer.into_bytes()
 }
 
-/// How many low bits of a leaf's number hold its level (levels run to 56).
-const LEVEL_BITS: u32 = 6;
+/// How many low bits of a leaf's number hold its level (levels run to 116, which is seven bits).
+const LEVEL_BITS: u32 = 7;
 
-/// Reads the section at the given version (1 or 2; see [`reads_generators_version`]).
-pub fn decode_generators(payload: &[u8], version: u32) -> Result<GeneratorsRecord, DecodeError> {
-    match version {
-        1 => decode_generators_version_1(payload),
-        2 => decode_generators_version_2(payload),
-        _ => Err(DecodeError::Invalid("unknown generators section version")),
-    }
-}
-
-fn decode_generators_version_2(payload: &[u8]) -> Result<GeneratorsRecord, DecodeError> {
+/// Reads the section (at [`GENERATORS_VERSION`]; see [`reads_version`]).
+pub fn decode_generators(payload: &[u8]) -> Result<GeneratorsRecord, DecodeError> {
     let mut reader = ByteReader::new(payload);
     let default_generator = reader.read_identifier()?;
     let assignment_cube_level = reader.read_u8()?;
@@ -664,44 +631,6 @@ fn decode_generators_version_2(payload: &[u8]) -> Result<GeneratorsRecord, Decod
         assignment_cube_level,
         leaves: cubes.into_iter().zip(generators).collect(),
     })
-}
-
-fn decode_generators_version_1(payload: &[u8]) -> Result<GeneratorsRecord, DecodeError> {
-    let mut reader = ByteReader::new(payload);
-    let default_generator = reader.read_identifier()?;
-    let assignment_cube_level = reader.read_u8()?;
-    let count = reader.read_count(5)?;
-    let mut leaves = Vec::with_capacity(count);
-    for _ in 0..count {
-        let origin = read_brick_coordinate(&mut reader)?;
-        let level = reader.read_u8()?;
-        let cube = BrickCube::new(origin, level)
-            .map_err(|_| DecodeError::Invalid("an assignment cube is misaligned or too large"))?;
-        let generator = match reader.read_varint()? {
-            0 => None,
-            plus_one => Some(
-                u32::try_from(plus_one - 1)
-                    .map_err(|_| DecodeError::Invalid("a generator file id is too large"))?,
-            ),
-        };
-        leaves.push((cube, generator));
-    }
-    reader.finish()?;
-    Ok(GeneratorsRecord {
-        default_generator,
-        assignment_cube_level,
-        leaves,
-    })
-}
-
-fn read_brick_coordinate(reader: &mut ByteReader<'_>) -> Result<BrickCoordinate, DecodeError> {
-    let (x, y, z) = (
-        reader.read_signed_varint()?,
-        reader.read_signed_varint()?,
-        reader.read_signed_varint()?,
-    );
-    BrickCoordinate::try_new(x, y, z)
-        .map_err(|_| DecodeError::Invalid("a brick coordinate is out of range"))
 }
 
 /// One level as it is written to a file.
@@ -744,7 +673,7 @@ pub fn decode_levels(payload: &[u8]) -> Result<Vec<LevelRecord>, DecodeError> {
         if levels.iter().any(|level| level.id == id) {
             return Err(DecodeError::Invalid("a level is listed twice"));
         }
-        let generators = decode_generators(reader.read_bytes()?, GENERATORS_VERSION)?;
+        let generators = decode_generators(reader.read_bytes()?)?;
         let bricks = decode_override_bricks(reader.read_bytes()?)?;
         levels.push(LevelRecord {
             id,
@@ -762,9 +691,7 @@ pub fn encode_override_bricks(bricks: &[(BrickCoordinate, &Brick)]) -> Vec<u8> {
     writer.write_varint(bricks.len() as u64);
     let mut encoded = Vec::new();
     for (coordinate, brick) in bricks {
-        writer.write_signed_varint(coordinate.x());
-        writer.write_signed_varint(coordinate.y());
-        writer.write_signed_varint(coordinate.z());
+        write_brick_coordinate(&mut writer, *coordinate);
         encoded.clear();
         brick.encode(&mut encoded);
         writer.write_bytes(&encoded);
@@ -887,25 +814,8 @@ mod tests {
         }
     }
 
-    /// The section as version 1 wrote it, which still has to load.
-    fn encode_generators_version_1(record: &GeneratorsRecord) -> Vec<u8> {
-        let mut writer = ByteWriter::new();
-        writer.write_identifier(&record.default_generator);
-        writer.write_u8(record.assignment_cube_level);
-        writer.write_varint(record.leaves.len() as u64);
-        for (cube, generator) in &record.leaves {
-            let origin = cube.origin();
-            writer.write_signed_varint(origin.x());
-            writer.write_signed_varint(origin.y());
-            writer.write_signed_varint(origin.z());
-            writer.write_u8(cube.level());
-            writer.write_varint(generator.map_or(0, |id| u64::from(id) + 1));
-        }
-        writer.into_bytes()
-    }
-
     #[test]
-    fn generator_assignments_round_trip_in_both_versions() {
+    fn generator_assignments_round_trip() {
         let record = sample_generators();
         assert!(
             record
@@ -914,57 +824,65 @@ mod tests {
                 .any(|(_, generator)| *generator == Some(41))
         );
         assert_eq!(
-            decode_generators(&encode_generators(&record), 2),
+            decode_generators(&encode_generators(&record)),
             Ok(record.clone())
         );
-        assert_eq!(
-            decode_generators(&encode_generators_version_1(&record), 1),
-            Ok(record)
-        );
-        assert!(reads_generators_version(1) && reads_generators_version(2));
-        assert!(!reads_generators_version(0) && !reads_generators_version(3));
-        assert!(decode_generators(&[], 3).is_err());
+        assert!(decode_generators(&[]).is_err());
     }
 
     #[test]
-    fn the_new_version_is_several_times_smaller() {
-        let record = sample_generators();
-        let version_1 = encode_generators_version_1(&record).len();
-        let version_2 = encode_generators(&record).len();
-        // The identifier and level take the same space in both; the leaves take 1 byte, not about 10.
-        assert!(
-            version_2 * 3 < version_1 * 2,
-            "{version_2} against {version_1}"
+    fn assignments_of_cubes_up_to_the_whole_space_round_trip_and_a_leaf_is_one_number() {
+        // A cube of the highest levels is in the tree (the level is seven bits: 116 does not fit in six).
+        let cube =
+            |x: i128, y, z, level| BrickCube::new(BrickCoordinate::new(x, y, z), level).unwrap();
+        let mut tree = RegionOctree::new(None);
+        tree.set_cube(cube(1 << 100, 0, 0, 100), Some(7u32));
+        tree.set_cube(cube(-(1 << 110), -(1 << 110), 0, 110), Some(300));
+        let record = GeneratorsRecord {
+            default_generator: id("base_terrain:hills_v1"),
+            assignment_cube_level: 3,
+            leaves: tree
+                .leaves()
+                .into_iter()
+                .map(|(cube, generator)| (cube, *generator))
+                .collect(),
+        };
+        assert!(record.leaves.iter().any(|(cube, _)| cube.level() == 110));
+        assert_eq!(
+            decode_generators(&encode_generators(&record)),
+            Ok(record.clone())
         );
+        // The whole space is one leaf, the root, with a generator: (generator + 1) times 128, plus 116.
+        let whole = GeneratorsRecord {
+            default_generator: id("a:b"),
+            assignment_cube_level: 0,
+            leaves: vec![(BrickCube::containing(BrickCoordinate::ORIGIN, 116), Some(2))],
+        };
+        let mut expected = ByteWriter::new();
+        expected.write_identifier(&id("a:b"));
+        expected.write_u8(0);
+        expected.write_varint(1);
+        expected.write_varint(3 * 128 + 116);
+        assert_eq!(encode_generators(&whole), expected.into_bytes());
+    }
+
+    #[test]
+    fn a_leaf_takes_about_a_byte() {
+        let record = sample_generators();
+        let bytes = encode_generators(&record).len();
         let identifier_bytes = 1 + "base_terrain:hills_v1".len() + 1 + 2;
+        // (A generator beyond 63 or so takes a second byte for the leaf, as 41 does here.)
         assert!(
-            version_2 <= identifier_bytes + record.leaves.len() + record.leaves.len() / 8,
-            "{version_2} bytes for {} leaves",
+            bytes <= identifier_bytes + 2 * record.leaves.len(),
+            "{bytes} bytes for {} leaves",
             record.leaves.len()
         );
     }
 
     #[test]
-    fn misaligned_or_non_tiling_assignments_are_refused() {
-        // Version 1: the first leaf's level made large enough that its origin is not aligned.
-        let mut writer = ByteWriter::new();
-        writer.write_identifier(&id("base_terrain:hills_v1"));
-        writer.write_u8(5);
-        writer.write_varint(1);
-        for value in [-64i64, 0, 32] {
-            writer.write_signed_varint(value);
-        }
-        writer.write_u8(40);
-        writer.write_varint(0);
-        assert_eq!(
-            decode_generators(&writer.into_bytes(), 1),
-            Err(DecodeError::Invalid(
-                "an assignment cube is misaligned or too large"
-            ))
-        );
-
-        // Version 2: levels that do not cover the space exactly.
-        let version_2 = |numbers: &[u64]| {
+    fn non_tiling_assignments_are_refused() {
+        // Levels that do not cover the space exactly.
+        let levels = |numbers: &[u64]| {
             let mut writer = ByteWriter::new();
             writer.write_identifier(&id("base_terrain:hills_v1"));
             writer.write_u8(3);
@@ -972,21 +890,23 @@ mod tests {
             for number in numbers {
                 writer.write_varint(*number);
             }
-            decode_generators(&writer.into_bytes(), 2)
+            decode_generators(&writer.into_bytes())
         };
         let refused = Err(DecodeError::Invalid(
             "the assignment cubes do not tile the world",
         ));
-        assert_eq!(version_2(&[56]).map(|record| record.leaves.len()), Ok(1));
+        assert_eq!(levels(&[116]).map(|record| record.leaves.len()), Ok(1));
         assert_eq!(
-            version_2(&[]).map(|record| record.leaves.len()),
+            levels(&[]).map(|record| record.leaves.len()),
             Ok(0),
             "a description"
         );
-        assert_eq!(version_2(&[55]), refused, "half the space is missing");
-        assert_eq!(version_2(&[56, 56]), refused);
-        assert_eq!(version_2(&[57]), refused, "bigger than the whole space");
-        assert_eq!(version_2(&[63]), refused);
+        assert_eq!(levels(&[115]), refused, "half the space is missing");
+        assert_eq!(levels(&[116, 116]), refused);
+        assert_eq!(levels(&[117]), refused, "bigger than the whole space");
+        assert_eq!(levels(&[127]), refused);
+        // The old root: a lone cube of 56 is a small cube in a corner now, and most of the space is missing.
+        assert_eq!(levels(&[56]), refused);
     }
 
     #[test]

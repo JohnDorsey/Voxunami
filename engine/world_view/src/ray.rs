@@ -44,7 +44,7 @@ pub fn cast_ray(
     ));
     let fraction: [f32; 3] = std::array::from_fn(|axis| offset[axis] - cell[axis]);
 
-    let mut step = [0i64; 3];
+    let mut step = [0i128; 3];
     let mut next_boundary = [f32::INFINITY; 3];
     let mut boundary_spacing = [f32::INFINITY; 3];
     for axis in 0..3 {
@@ -95,7 +95,7 @@ mod tests {
 
     fn at(x: f32, y: f32, z: f32) -> WorldPosition {
         // Positions given in voxels around the origin; split into a brick and an offset.
-        let brick = |value: f32| (value / 32.0).floor() as i64;
+        let brick = |value: f32| (value / 32.0).floor() as i128;
         let b = BrickCoordinate::new(brick(x), brick(y), brick(z));
         WorldPosition::new(
             b,
@@ -107,12 +107,12 @@ mod tests {
         )
     }
 
-    fn voxel(x: i64, y: i64, z: i64) -> VoxelCoordinate {
+    fn voxel(x: i128, y: i128, z: i128) -> VoxelCoordinate {
         VoxelCoordinate::new(x, y, z)
     }
 
     fn world_with(
-        solids: &'static [(i64, i64, i64)],
+        solids: &'static [(i128, i128, i128)],
     ) -> impl FnMut(VoxelCoordinate) -> Option<bool> {
         move |at| Some(solids.contains(&(at.x(), at.y(), at.z())))
     }
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn the_range_is_respected_and_the_starting_voxel_is_ignored() {
-        let solids: &'static [(i64, i64, i64)] = &[(0, 0, 0), (7, 0, 0)];
+        let solids: &'static [(i128, i128, i128)] = &[(0, 0, 0), (7, 0, 0)];
         assert_eq!(
             cast_ray(
                 GridId::MAIN,
@@ -292,11 +292,11 @@ mod tests {
         #[test]
         fn aiming_at_a_lone_voxel_hits_it(
             origin in [-30.0f32..30.0, -30.0f32..30.0, -30.0f32..30.0],
-            target in [-8i64..8, -8i64..8, -8i64..8],
+            target in [-8i128..8, -8i128..8, -8i128..8],
         ) {
             let center = [target[0] as f32 + 0.5, target[1] as f32 + 0.5, target[2] as f32 + 0.5];
             let direction = [center[0] - origin[0], center[1] - origin[1], center[2] - origin[2]];
-            let start_voxel = voxel(origin[0].floor() as i64, origin[1].floor() as i64, origin[2].floor() as i64);
+            let start_voxel = voxel(origin[0].floor() as i128, origin[1].floor() as i128, origin[2].floor() as i128);
             prop_assume!(start_voxel != voxel(target[0], target[1], target[2]));
             let distance = (direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2]).sqrt();
             let hit = cast_ray(

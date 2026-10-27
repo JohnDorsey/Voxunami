@@ -27,13 +27,13 @@ const FIRST_GUESS_ITERATIONS: usize = 2;
 
 /// Cells along the axis, beyond the node on each side, that a column keeps (the layers of the surface look a few cells outward, and the fills of the cells
 /// beside the node are needed for the surface it shows).
-const MARGIN: i64 = 6;
+const MARGIN: i128 = 6;
 
 /// Cells in a column as it is kept.
 const COLUMN_LENGTH: usize = NODE_EDGE + 2 * MARGIN as usize;
 
 /// Columns across the node and the ring of them round it.
-const COLUMNS_ACROSS: i64 = NODE_EDGE as i64 + 2;
+const COLUMNS_ACROSS: i128 = NODE_EDGE as i128 + 2;
 
 /// The most cells a walk goes on for, either way, before it gives up and takes the rest of the column as it is going (air outward, ground inward).
 const WALK_LIMIT: usize = 64;
@@ -94,12 +94,12 @@ fn fill_from_depth(depth: f64, width: f64) -> u8 {
 struct Frame {
     detail: LevelOfDetail,
     /// Voxels along an edge of a cell.
-    edge: i64,
+    edge: i128,
     /// The axis the columns run along, and whether outward is toward its positive end.
     axis: usize,
     outward_positive: bool,
     /// The voxel at the lowest corner of the node, along each axis.
-    origin: [i64; 3],
+    origin: [i128; 3],
 }
 
 impl Frame {
@@ -109,10 +109,10 @@ impl Frame {
             return None;
         }
         let detail = LevelOfDetail::new(level)?;
-        let edge = 1i64 << level;
+        let edge = 1i128 << level;
         let corner = cube.origin().origin();
         let origin = [corner.x(), corner.y(), corner.z()];
-        let width = (NODE_EDGE as i64 * edge) as f64;
+        let width = (NODE_EDGE as i128 * edge) as f64;
         let middle = origin.map(|component| component as f64 + 0.5 * width);
         let axis = (0..3)
             .max_by(|&a, &b| middle[a].abs().total_cmp(&middle[b].abs()))
@@ -127,7 +127,7 @@ impl Frame {
     }
 
     /// The step along the axis, from a cell to the one outward of it.
-    fn outward(&self) -> i64 {
+    fn outward(&self) -> i128 {
         if self.outward_positive { 1 } else { -1 }
     }
 
@@ -137,13 +137,13 @@ impl Frame {
         let first_outward = if self.outward_positive {
             self.origin[self.axis] - MARGIN * self.edge
         } else {
-            -(self.origin[self.axis] + (NODE_EDGE as i64 + MARGIN) * self.edge)
+            -(self.origin[self.axis] + (NODE_EDGE as i128 + MARGIN) * self.edge)
         };
         first_outward <= 0
     }
 
     /// The position across the axis of the middle of the column with these numbers, counted from the node's (-1 and 32 are in the ring round the node).
-    fn lateral(&self, i: i64, j: i64) -> [f64; 2] {
+    fn lateral(&self, i: i128, j: i128) -> [f64; 2] {
         let [first, second] = lateral_axes(self.axis);
         [
             self.origin[first] as f64 + (i as f64 + 0.5) * self.edge as f64,
@@ -152,15 +152,15 @@ impl Frame {
     }
 
     /// The number along the axis of the cell where the first guess puts the end of the ground in the column at `lateral`; `None` if the line misses the ground.
-    fn guess_cell(&self, ground: &PlanetGround, lateral: [f64; 2]) -> Option<i64> {
+    fn guess_cell(&self, ground: &PlanetGround, lateral: [f64; 2]) -> Option<i128> {
         let end =
             ground.guess_surface_along(self.axis, lateral, self.outward_positive, self.detail)?;
         let signed = if self.outward_positive { end } else { -end };
-        Some(((signed - self.origin[self.axis] as f64) / self.edge as f64).floor() as i64)
+        Some(((signed - self.origin[self.axis] as f64) / self.edge as f64).floor() as i128)
     }
 
     /// How full the cell with number `m` along the axis in the column at `lateral` is, from the value of the field at its middle.
-    fn cell_fill(&self, ground: &PlanetGround, lateral: [f64; 2], m: i64) -> u8 {
+    fn cell_fill(&self, ground: &PlanetGround, lateral: [f64; 2], m: i128) -> u8 {
         let [first, second] = lateral_axes(self.axis);
         let mut position = [0.0; 3];
         position[self.axis] = self.origin[self.axis] as f64 + (m as f64 + 0.5) * self.edge as f64;
@@ -180,9 +180,15 @@ impl Frame {
 
     /// Fills `column` (the cells -MARGIN.. along the axis) by walking from cell `start`: asking about the cells outward until one is clearly air, and inward until
     /// one is clearly ground; the cells beyond are taken to be as those are. Returns a cell in the middle of what was walked, to start the next column from.
-    fn walk(&self, ground: &PlanetGround, lateral: [f64; 2], start: i64, column: &mut [u8]) -> i64 {
-        let (lowest, highest) = (-MARGIN, NODE_EDGE as i64 + MARGIN - 1);
-        let slot = |m: i64| (m + MARGIN) as usize;
+    fn walk(
+        &self,
+        ground: &PlanetGround,
+        lateral: [f64; 2],
+        start: i128,
+        column: &mut [u8],
+    ) -> i128 {
+        let (lowest, highest) = (-MARGIN, NODE_EDGE as i128 + MARGIN - 1);
+        let slot = |m: i128| (m + MARGIN) as usize;
         let outward = self.outward();
         let start = start.clamp(lowest, highest);
         column[slot(start)] = self.cell_fill(ground, lateral, start);
@@ -236,10 +242,10 @@ impl NodeColumns {
             return Some(Self::asking_every_cell_of(frame, ground));
         }
         let mut fills = vec![0u8; (COLUMNS_ACROSS * COLUMNS_ACROSS) as usize * COLUMN_LENGTH];
-        for j in -1..=NODE_EDGE as i64 {
+        for j in -1..=NODE_EDGE as i128 {
             // A column ends about where its neighbour's does; the first of a row is guessed.
-            let mut previous: Option<i64> = None;
-            for i in -1..=NODE_EDGE as i64 {
+            let mut previous: Option<i128> = None;
+            for i in -1..=NODE_EDGE as i128 {
                 let lateral = frame.lateral(i, j);
                 let start = previous.or_else(|| frame.guess_cell(ground, lateral));
                 let at = (((j + 1) * COLUMNS_ACROSS + i + 1) as usize) * COLUMN_LENGTH;
@@ -260,10 +266,10 @@ impl NodeColumns {
     fn asking_every_cell_of(frame: Frame, ground: &PlanetGround) -> Self {
         let mut fills =
             Vec::with_capacity((COLUMNS_ACROSS * COLUMNS_ACROSS) as usize * COLUMN_LENGTH);
-        for j in -1..=NODE_EDGE as i64 {
-            for i in -1..=NODE_EDGE as i64 {
+        for j in -1..=NODE_EDGE as i128 {
+            for i in -1..=NODE_EDGE as i128 {
                 let lateral = frame.lateral(i, j);
-                for m in -MARGIN..NODE_EDGE as i64 + MARGIN {
+                for m in -MARGIN..NODE_EDGE as i128 + MARGIN {
                     fills.push(frame.cell_fill(ground, lateral, m));
                 }
             }
@@ -273,14 +279,14 @@ impl NodeColumns {
 
     /// How full the cell with these numbers (counted from the node's, and in the ring of columns round it) is, 0 to 255; 0 for a cell in a column beyond that
     /// ring, and the nearest cell that is kept for one beyond the margin.
-    pub(crate) fn fill(&self, cell: [i64; 3]) -> u8 {
+    pub(crate) fn fill(&self, cell: [i128; 3]) -> u8 {
         let [first, second] = lateral_axes(self.frame.axis);
         let (i, j) = (cell[first], cell[second]);
-        let range = -1..=NODE_EDGE as i64;
+        let range = -1..=NODE_EDGE as i128;
         if !range.contains(&i) || !range.contains(&j) {
             return 0;
         }
-        let m = cell[self.frame.axis].clamp(-MARGIN, NODE_EDGE as i64 + MARGIN - 1);
+        let m = cell[self.frame.axis].clamp(-MARGIN, NODE_EDGE as i128 + MARGIN - 1);
         self.fills
             [((j + 1) * COLUMNS_ACROSS + i + 1) as usize * COLUMN_LENGTH + (m + MARGIN) as usize]
     }
@@ -288,9 +294,9 @@ impl NodeColumns {
     /// The fill of every cell of the node, x fastest.
     pub(crate) fn fills(&self) -> Vec<u8> {
         let mut fills = Vec::with_capacity(CELLS_PER_NODE);
-        for z in 0..NODE_EDGE as i64 {
-            for y in 0..NODE_EDGE as i64 {
-                for x in 0..NODE_EDGE as i64 {
+        for z in 0..NODE_EDGE as i128 {
+            for y in 0..NODE_EDGE as i128 {
+                for x in 0..NODE_EDGE as i128 {
                     fills.push(self.fill([x, y, z]));
                 }
             }
@@ -299,7 +305,7 @@ impl NodeColumns {
     }
 
     /// The step to the cell outward of a cell.
-    fn outward(&self) -> [i64; 3] {
+    fn outward(&self) -> [i128; 3] {
         let mut step = [0; 3];
         step[self.frame.axis] = self.frame.outward();
         step
@@ -317,12 +323,12 @@ pub(crate) fn coarse_node_of_planet(
         return None;
     }
     let detail = LevelOfDetail::new(cube.level())?;
-    let edge = 1i64 << cube.level();
+    let edge = 1i128 << cube.level();
     let corner = cube.origin().origin();
-    let width = NODE_EDGE as i64 * edge;
+    let width = NODE_EDGE as i128 * edge;
     // The reach of what the surface of a cell looks at: the cells beside it, and over it as far as the layers of the surface go.
-    let reach = edge * (1 + (SURFACE_LAYER_DEPTH as i64 + edge - 1) / edge);
-    let region = |margin: i64| {
+    let reach = edge * (1 + (SURFACE_LAYER_DEPTH as i128 + edge - 1) / edge);
+    let region = |margin: i128| {
         let low = corner.checked_offset(-margin, -margin, -margin)?;
         let high =
             corner.checked_offset(width + margin - 1, width + margin - 1, width + margin - 1)?;
@@ -376,9 +382,9 @@ mod tests {
             + direction[1] * direction[1]
             + direction[2] * direction[2])
             .sqrt();
-        let edge = 1i64 << level;
+        let edge = 1i128 << level;
         let brick =
-            direction.map(|component| ((component / length * radius) / 32.0).floor() as i64);
+            direction.map(|component| ((component / length * radius) / 32.0).floor() as i128);
         let aligned = brick.map(|component| component.div_euclid(edge) * edge);
         BrickCube::new(
             BrickCoordinate::new(aligned[0], aligned[1], aligned[2]),
@@ -453,8 +459,8 @@ mod tests {
     /// The cube that a symmetry of the planet moves a cube to.
     fn cube_moved(cube: BrickCube, permutation: [usize; 3], flips: [bool; 3]) -> BrickCube {
         let old = [cube.origin().x(), cube.origin().y(), cube.origin().z()];
-        let edge = cube.edge_length() as i64;
-        let mut new = [0i64; 3];
+        let edge = cube.edge_length() as i128;
+        let mut new = [0i128; 3];
         for axis in 0..3 {
             let coordinate = old[permutation[axis]];
             new[axis] = if flips[axis] {
@@ -468,7 +474,7 @@ mod tests {
 
     /// Whether the middle of the cube is as far along two axes as the greatest.
     fn axes_tie(cube: BrickCube) -> bool {
-        let width = (cube.edge_length() * 32) as i64;
+        let width = (cube.edge_length() * 32) as i128;
         let corner = cube.origin().origin();
         let mut distances = [corner.x(), corner.y(), corner.z()].map(|c| (2 * c + width).abs());
         distances.sort();
@@ -523,7 +529,7 @@ mod tests {
         // the axis points.
         let settings = ball(500.0);
         for (level, dirt_cells) in [(1u8, 2usize), (2, 1), (3, 0)] {
-            let edge = 1i64 << level;
+            let edge = 1i128 << level;
             for axis in 0..3 {
                 for outward_positive in [true, false] {
                     let mut direction = [0.01, 0.02, 0.03];
@@ -533,8 +539,9 @@ mod tests {
                     // The column of cells through the voxel at the pole, from outside in.
                     let origin = cube.origin().origin();
                     let origin = [origin.x(), origin.y(), origin.z()];
-                    let cell_of = |voxel: i64, axis: usize| (voxel - origin[axis]).div_euclid(edge);
-                    let mut position = [0i64; 3];
+                    let cell_of =
+                        |voxel: i128, axis: usize| (voxel - origin[axis]).div_euclid(edge);
+                    let mut position = [0i128; 3];
                     position[axis] = if outward_positive { 499 } else { -500 };
                     let cells = [0, 1, 2].map(|each| cell_of(position[each], each));
                     let outward = if outward_positive { 1 } else { -1 };
@@ -616,17 +623,17 @@ mod tests {
             for direction in &DIRECTIONS[..6] {
                 let cube = cube_at_the_surface(*direction, radius, level);
                 let frame = Frame::of(cube).unwrap();
-                for j in [-1i64, 7, 20, 32] {
+                for j in [-1i128, 7, 20, 32] {
                     let lateral = frame.lateral(-1, j);
                     let Some(guess) = frame.guess_cell(&ground, lateral) else {
                         continue;
                     };
-                    let outermost = (-MARGIN..NODE_EDGE as i64 + MARGIN)
+                    let outermost = (-MARGIN..NODE_EDGE as i128 + MARGIN)
                         .filter(|&m| frame.cell_fill(&ground, lateral, m) > 0)
                         .max_by_key(|&m| m * frame.outward());
                     // (A column whose surface is outside what a column keeps has nothing to compare.)
                     let Some(outermost) = outermost
-                        .filter(|&m| (-MARGIN + 1..NODE_EDGE as i64 + MARGIN - 1).contains(&m))
+                        .filter(|&m| (-MARGIN + 1..NODE_EDGE as i128 + MARGIN - 1).contains(&m))
                     else {
                         continue;
                     };
@@ -647,7 +654,7 @@ mod tests {
     fn nodes_far_from_the_ground_or_deep_in_it_are_one_cell() {
         let fixture = voxel_grid::test_support::StandardTestLayout::default();
         let generator = planet(small_planet(4), fixture.material, MATERIALS);
-        let cube = |origin: [i64; 3], level: u8| {
+        let cube = |origin: [i128; 3], level: u8| {
             BrickCube::new(BrickCoordinate::new(origin[0], origin[1], origin[2]), level).unwrap()
         };
         let node = |origin, level| {
@@ -675,7 +682,7 @@ mod tests {
         // The cells are anchored at the origin, which is the centre of the planet: eight nodes meet there, each holding an eighth of a ball, and the columns of
         // each have the far side of the planet beside them (they reach the plane through the centre).
         let settings = ball(300.0);
-        let node_at = |origin: [i64; 3]| {
+        let node_at = |origin: [i128; 3]| {
             let cube =
                 BrickCube::new(BrickCoordinate::new(origin[0], origin[1], origin[2]), 5).unwrap();
             planet_node(settings, cube)
@@ -774,15 +781,15 @@ mod tests {
     }
 
     /// The share of the voxels of a cell (on a lattice of up to 4 x 4 x 4) that are ground at full detail.
-    fn share_that_is_ground(ground: &PlanetGround, cube: BrickCube, cell: [i64; 3]) -> f64 {
-        let edge = 1i64 << cube.level();
+    fn share_that_is_ground(ground: &PlanetGround, cube: BrickCube, cell: [i128; 3]) -> f64 {
+        let edge = 1i128 << cube.level();
         let origin = cube.origin().origin();
         let samples = edge.min(4);
         let mut count = 0;
         for z in 0..samples {
             for y in 0..samples {
                 for x in 0..samples {
-                    let at = |origin: i64, cell: i64, sample: i64| {
+                    let at = |origin: i128, cell: i128, sample: i128| {
                         origin + cell * edge + (2 * sample + 1) * edge / (2 * samples)
                     };
                     let position = VoxelCoordinate::new(
@@ -822,9 +829,9 @@ mod tests {
                             continue;
                         }
                         let cell = [
-                            (index % 32) as i64,
-                            ((index / 32) % 32) as i64,
-                            (index / 1024) as i64,
+                            (index % 32) as i128,
+                            ((index / 32) % 32) as i128,
+                            (index / 1024) as i128,
                         ];
                         surface_cells += 1;
                         let most_are_ground = share_that_is_ground(ground, cube, cell) >= 0.5;
@@ -881,7 +888,7 @@ mod tests {
     #[test]
     fn the_coarse_nodes_of_the_planet_are_pinned() {
         let settings = PlanetSettings::one_percent_of_earth(2024);
-        let centre = |origin: [i64; 3]| {
+        let centre = |origin: [i128; 3]| {
             BrickCube::new(BrickCoordinate::new(origin[0], origin[1], origin[2]), 5).unwrap()
         };
         let cubes = [

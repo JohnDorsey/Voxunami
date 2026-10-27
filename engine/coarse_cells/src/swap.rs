@@ -18,7 +18,7 @@ pub struct Swap {
 }
 
 /// The order cubes are put in: the biggest first, then by place.
-fn order(cube: &BrickCube) -> (std::cmp::Reverse<u8>, [i64; 3]) {
+fn order(cube: &BrickCube) -> (std::cmp::Reverse<u8>, [i128; 3]) {
     let origin = cube.origin();
     (
         std::cmp::Reverse(cube.level()),
@@ -94,7 +94,7 @@ mod tests {
 
     use super::*;
 
-    fn cube(x: i64, y: i64, z: i64, level: u8) -> BrickCube {
+    fn cube(x: i128, y: i128, z: i128, level: u8) -> BrickCube {
         BrickCube::new(BrickCoordinate::new(x, y, z), level).expect("aligned")
     }
 
@@ -104,7 +104,7 @@ mod tests {
 
     /// The eight halves of a cube.
     fn halves(parent: BrickCube) -> Vec<BrickCube> {
-        let half = 1i64 << (parent.level() - 1);
+        let half = 1i128 << (parent.level() - 1);
         let origin = parent.origin();
         (0..8)
             .map(|octant| {
@@ -223,7 +223,7 @@ mod tests {
     fn bricks_of(cubes: &HashSet<BrickCube>) -> HashSet<BrickCoordinate> {
         let mut bricks = HashSet::new();
         for cube in cubes {
-            let edge = cube.edge_length() as i64;
+            let edge = cube.edge_length() as i128;
             for x in 0..edge {
                 for y in 0..edge {
                     for z in 0..edge {
@@ -253,9 +253,9 @@ mod tests {
             let wanted: HashSet<BrickCube> = tiling(level, wanted_seed, wanted_splits).into_iter().collect();
             let ready = |cube: BrickCube| {
                 let origin = cube.origin();
-                let mixed = (origin.x() * 31 + origin.y() * 17 + origin.z() * 7 + i64::from(cube.level()) * 101
-                    + ready_seed as i64).unsigned_abs();
-                mixed % 100 < ready_share
+                let mixed = (origin.x() * 31 + origin.y() * 17 + origin.z() * 7 + i128::from(cube.level()) * 101
+                    + ready_seed as i128).unsigned_abs();
+                mixed % 100 < u128::from(ready_share)
             };
             let swaps = plan_swaps(&shown, &wanted, ready);
 
@@ -292,9 +292,9 @@ mod tests {
         ) {
             let keep = |cube: &BrickCube, seed: u64, share: u64| {
                 let origin = cube.origin();
-                let mixed = (origin.x() * 13 + origin.y() * 29 + origin.z() * 3 + i64::from(cube.level()) * 7
-                    + seed as i64).unsigned_abs();
-                mixed % 100 < share
+                let mixed = (origin.x() * 13 + origin.y() * 29 + origin.z() * 3 + i128::from(cube.level()) * 7
+                    + seed as i128).unsigned_abs();
+                mixed % 100 < u128::from(share)
             };
             let shown: HashSet<BrickCube> = tiling(level, shown_seed, 50)
                 .into_iter()

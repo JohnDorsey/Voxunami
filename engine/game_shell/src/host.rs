@@ -19,11 +19,11 @@ use world_storage::{DirectoryShipFiles, MemoryShipFiles, ShipFiles, WorldData};
 use crate::definition::{GameContent, GameDefinition};
 
 /// How far beyond the drawn distance a client watches, so every drawn brick has its neighbours.
-pub const WATCH_MARGIN_BRICKS: i64 = 2;
+pub const WATCH_MARGIN_BRICKS: i128 = 2;
 
 /// The same for a client that draws coarse nodes too (a server allows a client to watch as much as it may need to): the bricks it draws reach less than two bricks beyond its view radius (the cubes of two bricks that touch
 /// it), and their neighbours one more.
-pub const COARSE_WATCH_MARGIN_BRICKS: i64 = 4;
+pub const COARSE_WATCH_MARGIN_BRICKS: i128 = 4;
 
 /// The port servers listen on, and clients connect to, unless told otherwise.
 pub const DEFAULT_PORT: u16 = 24816;
@@ -33,7 +33,7 @@ pub const DEFAULT_PORT: u16 = 24816;
 /// get challenges they cannot predict.
 fn server_config<G: GameDefinition>(
     package: Vec<u8>,
-    view_radius_bricks: i64,
+    view_radius_bricks: i128,
     counted_challenges: bool,
     ships: ShipSettings,
 ) -> ServerConfig {
@@ -59,7 +59,7 @@ struct ShipKeeping {
 fn new_server<G: GameDefinition>(
     content: &G::Content,
     world: WorldData,
-    view_radius_bricks: i64,
+    view_radius_bricks: i128,
     listener: Box<dyn Listener>,
     plugins: Vec<Box<dyn Plugin>>,
     counted_challenges: bool,
@@ -94,7 +94,7 @@ fn new_server<G: GameDefinition>(
 pub fn build_server<G: GameDefinition>(
     content: &G::Content,
     world: WorldData,
-    view_radius_bricks: i64,
+    view_radius_bricks: i128,
 ) -> Result<(Server, LoopbackConnector), ServerError> {
     build_server_with_plugins::<G>(content, world, view_radius_bricks, G::plugins(content))
 }
@@ -103,7 +103,7 @@ pub fn build_server<G: GameDefinition>(
 pub fn build_server_with_ship_files<G: GameDefinition>(
     content: &G::Content,
     world: WorldData,
-    view_radius_bricks: i64,
+    view_radius_bricks: i128,
     ship_files: Box<dyn ShipFiles>,
 ) -> Result<(Server, LoopbackConnector), ServerError> {
     build_server_with::<G>(
@@ -119,7 +119,7 @@ pub fn build_server_with_ship_files<G: GameDefinition>(
 pub fn build_server_with<G: GameDefinition>(
     content: &G::Content,
     world: WorldData,
-    view_radius_bricks: i64,
+    view_radius_bricks: i128,
     plugins: Vec<Box<dyn Plugin>>,
     ship_files: Box<dyn ShipFiles>,
 ) -> Result<(Server, LoopbackConnector), ServerError> {
@@ -144,7 +144,7 @@ pub fn build_server_with<G: GameDefinition>(
 pub fn build_server_with_plugins<G: GameDefinition>(
     content: &G::Content,
     world: WorldData,
-    view_radius_bricks: i64,
+    view_radius_bricks: i128,
     plugins: Vec<Box<dyn Plugin>>,
 ) -> Result<(Server, LoopbackConnector), ServerError> {
     build_server_with::<G>(
@@ -181,7 +181,7 @@ pub struct Autosave {
 /// How a server thread is set up beyond its world.
 pub struct HostSettings {
     /// How far its players see; it limits how much of the world one player may watch.
-    pub view_radius_bricks: i64,
+    pub view_radius_bricks: i128,
     /// Where players on other machines connect, if anywhere.
     pub network: Option<Box<dyn Listener>>,
     /// The file the world is kept in, if it is kept in one. The files of its ships are in the folder beside it, and an autosave
@@ -197,7 +197,7 @@ pub struct HostSettings {
 
 impl HostSettings {
     /// A server for the player at this computer only.
-    pub fn local(view_radius_bricks: i64) -> Self {
+    pub fn local(view_radius_bricks: i128) -> Self {
         Self {
             view_radius_bricks,
             network: None,

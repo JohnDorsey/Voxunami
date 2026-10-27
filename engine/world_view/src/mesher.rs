@@ -56,7 +56,7 @@ impl TerrainSource for LevelData {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ViewSettings {
     /// Bricks within this distance (in brick units, as a sphere) are meshed.
-    pub view_radius_bricks: i64,
+    pub view_radius_bricks: i128,
     pub worker_count: usize,
 }
 
@@ -231,7 +231,7 @@ pub(crate) fn brick_channels<'a>(
 }
 
 /// Integer offsets within `radius` of the origin, nearest first.
-fn offsets_within(radius: i64) -> Vec<[i64; 3]> {
+fn offsets_within(radius: i128) -> Vec<[i128; 3]> {
     let mut offsets = Vec::new();
     for x in -radius..=radius {
         for y in -radius..=radius {
@@ -246,14 +246,22 @@ fn offsets_within(radius: i64) -> Vec<[i64; 3]> {
     offsets
 }
 
-fn distance_squared(a: BrickCoordinate, b: BrickCoordinate) -> i128 {
-    let component = |p: i64, q: i64| i128::from(p) - i128::from(q);
-    let (dx, dy, dz) = (
-        component(a.x(), b.x()),
-        component(a.y(), b.y()),
-        component(a.z(), b.z()),
-    );
-    dx * dx + dy * dy + dz * dz
+/// Whether `a` is farther from `b` than `radius` bricks (a ball, not a box). Bricks are as far apart as the range of coordinates (2^116), so the squares of the
+/// distances would not fit: a distance beyond the radius along one axis is farther whatever the others are, which is checked first, and after it each is at most
+/// the radius.
+fn is_farther_than(a: BrickCoordinate, b: BrickCoordinate, radius: i128) -> bool {
+    let radius = radius.unsigned_abs();
+    let distances = [
+        a.x().abs_diff(b.x()),
+        a.y().abs_diff(b.y()),
+        a.z().abs_diff(b.z()),
+    ];
+    distances.iter().any(|&distance| distance > radius)
+        || distances
+            .iter()
+            .map(|&distance| distance * distance)
+            .sum::<u128>()
+            > radius * radius
 }
 
 pub struct WorldMesher {
@@ -272,7 +280,7 @@ pub struct WorldMesher {
     /// Bumped when a brick or a neighbour of it changes; results from older versions are stale.
     versions: HashMap<BrickCoordinate, u64>,
     /// Offsets of bricks to load: the view sphere plus a one-brick shell for neighbours.
-    load_offsets: Vec<[i64; 3]>,
+    load_offsets: Vec<[i128; 3]>,
     /// Whether the pictures are kept until they are asked for (see [`WorldMesher::with_held_back_display`]).
     held_back: bool,
     /// The pictures of bricks that are up to date and not shown, when held back.
@@ -419,7 +427,7 @@ impl WorldMesher {
     }
 
     /// The radius of the ball of bricks that are drawn as bricks.
-    pub fn view_radius_bricks(&self) -> i64 {
+    pub fn view_radius_bricks(&self) -> i128 {
         self.settings.view_radius_bricks
     }
 
@@ -577,7 +585,6 @@ impl WorldMesher {
         let mut updates = Vec::new();
         let view_radius = self.settings.view_radius_bricks;
         let keep_radius = view_radius + if self.held_back { 4 } else { 2 };
-        let keep_radius_squared = i128::from(keep_radius * keep_radius);
         let fine_region = FineRegion::new(center, u32::try_from(view_radius).unwrap_or(0));
 
         while let Ok(result) = self.results.try_recv() {
@@ -627,7 +634,7 @@ impl WorldMesher {
             .bricks
             .keys()
             .copied()
-            .filter(|&coordinate| distance_squared(coordinate, center) > keep_radius_squared)
+            .filter(|&coordinate| is_farther_than(coordinate, center, keep_radius))
             .collect();
         for coordinate in too_far {
             self.bricks.remove(&coordinate);
@@ -740,5 +747,61 @@ impl Drop for WorldMesher {
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use voxel_space::{BRICK_COORDINATE_MAXIMUM, BRICK_COORDINATE_MINIMUM};
+
+    use super::*;
+
+    fn brick(x: i128, y: i128, z: i128) -> BrickCoordinate {
+        BrickCoordinate::new(x, y, z)
+    }
+
+    #[test]
+    fn a_brick_is_farther_than_a_radius_when_the_squares_of_its_distances_add_to_more_than_the_square_of_it()
+     {
+        let centre = brick(10, -4, 7);
+        assert!(!is_farther_than(centre, centre, 0));
+        // 3, 4, 0 is exactly 5, and not farther than 5; 3, 4, 1 is.
+        assert!(!is_farther_than(brick(13, -8, 7), centre, 5));
+        assert!(is_farther_than(brick(13, -8, 8), centre, 5));
+        assert!(!is_farther_than(brick(15, -4, 7), centre, 5));
+        assert!(is_farther_than(brick(16, -4, 7), centre, 5));
+        assert!(is_farther_than(brick(4, -4, 7), centre, 5));
+        assert!(!is_farther_than(brick(5, -4, 7), centre, 5));
+    }
+
+    #[test]
+    fn bricks_at_opposite_ends_of_the_range_are_far_apart_and_nothing_overflows() {
+        // The squares of these distances (2^116) would not fit in 128 bits.
+        let (low, high) = (BRICK_COORDINATE_MINIMUM, BRICK_COORDINATE_MAXIMUM);
+        assert!(is_farther_than(
+            brick(low, low, low),
+            brick(high, high, high),
+            10
+        ));
+        assert!(is_farther_than(
+            brick(low, 0, 0),
+            brick(high, 0, 0),
+            i128::from(u32::MAX)
+        ));
+        assert!(!is_farther_than(
+            brick(high, low, 0),
+            brick(high, low, 0),
+            0
+        ));
+        assert!(!is_farther_than(
+            brick(high - 3, low + 4, 0),
+            brick(high, low, 0),
+            5
+        ));
+        assert!(is_farther_than(
+            brick(high - 3, low + 4, 1),
+            brick(high, low, 0),
+            5
+        ));
     }
 }

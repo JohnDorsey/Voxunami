@@ -68,23 +68,26 @@ impl LatticeRotation {
     }
 
     /// The axis and sign (`1` or `-1`) the `axis`th basis vector is carried onto.
-    fn image(self, axis: usize) -> (usize, i64) {
+    fn image(self, axis: usize) -> (usize, i128) {
         let image = self.images[axis];
-        (image.unsigned_abs() as usize - 1, i64::from(image.signum()))
+        (
+            image.unsigned_abs() as usize - 1,
+            i128::from(image.signum()),
+        )
     }
 
     /// The rotation as a matrix: `matrix()[row][column]`, each entry 0, 1 or -1.
-    pub fn matrix(self) -> [[i64; 3]; 3] {
+    pub fn matrix(self) -> [[i128; 3]; 3] {
         let mut matrix = [[0; 3]; 3];
         for (column, image) in self.images.iter().enumerate() {
             let row = image.unsigned_abs() as usize - 1;
-            matrix[row][column] = i64::from(image.signum());
+            matrix[row][column] = i128::from(image.signum());
         }
         matrix
     }
 
     /// The vector turned. Components must be within the voxel coordinate range, so that flipping one cannot overflow.
-    pub fn apply(self, vector: [i64; 3]) -> [i64; 3] {
+    pub fn apply(self, vector: [i128; 3]) -> [i128; 3] {
         let mut turned = [0; 3];
         for (axis, component) in vector.into_iter().enumerate() {
             let (target, sign) = self.image(axis);
@@ -192,7 +195,7 @@ impl LatticeRotation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct LatticeTransform {
     pub rotation: LatticeRotation,
-    pub offset: [i64; 3],
+    pub offset: [i128; 3],
 }
 
 impl LatticeTransform {
@@ -263,8 +266,8 @@ mod tests {
         (0..24usize).prop_map(|index| LatticeRotation::all()[index])
     }
 
-    fn vector() -> impl Strategy<Value = [i64; 3]> {
-        prop::array::uniform3(-1_000_000i64..1_000_000)
+    fn vector() -> impl Strategy<Value = [i128; 3]> {
+        prop::array::uniform3(-1_000_000i128..1_000_000)
     }
 
     fn transform() -> impl Strategy<Value = LatticeTransform> {
@@ -275,7 +278,7 @@ mod tests {
         #[test]
         fn a_point_goes_where_the_voxel_it_is_in_goes(
             transform in transform(),
-            voxel in prop::array::uniform3(-100_000i64..100_000),
+            voxel in prop::array::uniform3(-100_000i128..100_000),
             inside in prop::array::uniform3(0.0f64..1.0),
         ) {
             let from = VoxelCoordinate::new(voxel[0], voxel[1], voxel[2]);
@@ -291,7 +294,7 @@ mod tests {
         }
     }
 
-    fn determinant(m: [[i64; 3]; 3]) -> i64 {
+    fn determinant(m: [[i128; 3]; 3]) -> i128 {
         m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
             - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
             + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
@@ -406,7 +409,7 @@ mod tests {
                 let turned: Vec<f64> = (0..3)
                     .map(|i| basis[i] + 2.0 * w * first[i] + 2.0 * second[i])
                     .collect();
-                let mut unit = [0i64; 3];
+                let mut unit = [0i128; 3];
                 unit[axis] = 1;
                 let expected = rotation.apply(unit);
                 for i in 0..3 {
@@ -456,7 +459,7 @@ mod tests {
         #[test]
         fn rotations_keep_lengths_and_inverses_undo_them(rotation in rotation(), v in vector()) {
             let turned = rotation.apply(v);
-            let square = |v: [i64; 3]| v.iter().map(|c| c * c).sum::<i64>();
+            let square = |v: [i128; 3]| v.iter().map(|c| c * c).sum::<i128>();
             prop_assert_eq!(square(turned), square(v));
             prop_assert_eq!(rotation.inverse().apply(turned), v);
             prop_assert_eq!(rotation.then(rotation.inverse()), LatticeRotation::IDENTITY);
@@ -491,7 +494,7 @@ mod tests {
         assert_eq!(shift.apply(far), None);
         assert_eq!(
             LatticeTransform {
-                offset: [i64::MAX, 0, 0],
+                offset: [i128::MAX, 0, 0],
                 ..LatticeTransform::IDENTITY
             }
             .then(shift),

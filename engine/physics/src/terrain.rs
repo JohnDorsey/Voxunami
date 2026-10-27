@@ -78,7 +78,7 @@ pub(crate) fn build_brick(
                     continue; // every voxel is known to be a whole cube
                 }
                 let voxel = first
-                    .checked_offset(x as i64, y as i64, z as i64)
+                    .checked_offset(x as i128, y as i128, z as i128)
                     .expect("the voxels of a brick are within range");
                 cells[index(x, y, z)] = match source.collision_at(voxel) {
                     Collision::Empty => Cell::Empty,
@@ -97,10 +97,10 @@ pub(crate) fn build_brick(
     // Whether the voxel next to a local one is a whole cube, looking outside the brick if it has to.
     let mut full_beside = |x: usize, y: usize, z: usize, face: FaceDirection| -> bool {
         let [dx, dy, dz] = face.offset();
-        let (nx, ny, nz) = (x as i64 + dx, y as i64 + dy, z as i64 + dz);
-        if (0..EDGE as i64).contains(&nx)
-            && (0..EDGE as i64).contains(&ny)
-            && (0..EDGE as i64).contains(&nz)
+        let (nx, ny, nz) = (x as i128 + dx, y as i128 + dy, z as i128 + dz);
+        if (0..EDGE as i128).contains(&nx)
+            && (0..EDGE as i128).contains(&ny)
+            && (0..EDGE as i128).contains(&nz)
         {
             matches!(
                 cells[index(nx as usize, ny as usize, nz as usize)],
@@ -284,9 +284,9 @@ pub(crate) fn build_brick(
     }
     let at = |brick: BrickCoordinate| {
         Vector::new(
-            ((brick.x() - origin.x()) * BRICK_EDGE_LENGTH as i64) as f32,
-            ((brick.y() - origin.y()) * BRICK_EDGE_LENGTH as i64) as f32,
-            ((brick.z() - origin.z()) * BRICK_EDGE_LENGTH as i64) as f32,
+            ((brick.x() - origin.x()) * BRICK_EDGE_LENGTH as i128) as f32,
+            ((brick.y() - origin.y()) * BRICK_EDGE_LENGTH as i128) as f32,
+            ((brick.z() - origin.z()) * BRICK_EDGE_LENGTH as i128) as f32,
         )
     };
     BrickColliders {
@@ -303,7 +303,7 @@ mod tests {
     use super::*;
 
     /// A random number from a place and a seed: the same everywhere.
-    fn mix(seed: u64, x: i64, y: i64, z: i64) -> u64 {
+    fn mix(seed: u64, x: i128, y: i128, z: i128) -> u64 {
         let mut state = seed
             ^ (x as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
             ^ (y as u64).wrapping_mul(0xc2b2_ae3d_27d4_eb4f)
@@ -338,7 +338,7 @@ mod tests {
             match self.kind {
                 Kind::Hills => {
                     let height =
-                        40 + (mix(self.seed, x.div_euclid(3), 0, z.div_euclid(3)) % 9) as i64;
+                        40 + (mix(self.seed, x.div_euclid(3), 0, z.div_euclid(3)) % 9) as i128;
                     if y <= height {
                         Collision::Full
                     } else {

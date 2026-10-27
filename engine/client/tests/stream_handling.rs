@@ -107,7 +107,7 @@ impl Rig {
         self.client.poll_tick().unwrap().unwrap();
     }
 
-    fn edited_brick(&self, at: [i64; 3], block: &str) -> Arc<Brick> {
+    fn edited_brick(&self, at: [i128; 3], block: &str) -> Arc<Brick> {
         let mut world = self.game.new_world();
         self.game.set_block(&mut world, at, block);
         let coordinate = VoxelCoordinate::new(at[0], at[1], at[2]).split().0;
@@ -1007,7 +1007,7 @@ fn a_ship() -> GridId {
     GridId::new(GridId::FIRST_ALLOCATED + 3)
 }
 
-fn pose_at(brick_x: i64) -> GridPose {
+fn pose_at(brick_x: i128) -> GridPose {
     GridPose::new(
         WorldPosition::new(BrickCoordinate::new(brick_x, 0, 0), [1.0, 2.0, 3.0]),
         Orientation::IDENTITY,

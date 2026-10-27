@@ -169,8 +169,8 @@ impl PlanetGround {
     }
 
     /// Where on the heightmap of a face a point at `ratio` times the distance along the face's axis across the face is read: in whole voxels.
-    fn heightmap_coordinate(&self, ratio: f64) -> i64 {
-        (self.radius * arctangent(ratio)).floor() as i64
+    fn heightmap_coordinate(&self, ratio: f64) -> i128 {
+        (self.radius * arctangent(ratio)).floor() as i128
     }
 
     /// The share of each axis's face in the height at `position` (a point, not a direction), `weights[axis]`, with the squares adding to one.
@@ -302,8 +302,8 @@ impl PlanetGround {
             return None;
         }
         let (low, high) = corners;
-        let mut heightmap_low = [0i64; 2];
-        let mut heightmap_high = [0i64; 2];
+        let mut heightmap_low = [0i128; 2];
+        let mut heightmap_high = [0i128; 2];
         for (slot, axis) in face.lateral_axes().into_iter().enumerate() {
             // The ratio is least where a negative number is divided by the least distance and a positive one by the greatest, and greatest the other way.
             let least = low[axis]
@@ -449,7 +449,8 @@ impl TerrainGenerator for PlanetGenerator {
         for z in 0..BRICK_EDGE_LENGTH {
             for y in 0..BRICK_EDGE_LENGTH {
                 for x in 0..BRICK_EDGE_LENGTH {
-                    let Some(position) = origin.checked_offset(x as i64, y as i64, z as i64) else {
+                    let Some(position) = origin.checked_offset(x as i128, y as i128, z as i128)
+                    else {
                         continue;
                     };
                     if may_have_caves && self.caves.sample(position, detail) <= 0.0 {
@@ -535,7 +536,7 @@ mod tests {
 
     const FULL: LevelOfDetail = LevelOfDetail::FULL_DETAIL;
 
-    fn voxel(x: i64, y: i64, z: i64) -> VoxelCoordinate {
+    fn voxel(x: i128, y: i128, z: i128) -> VoxelCoordinate {
         VoxelCoordinate::new(x, y, z)
     }
 
@@ -594,9 +595,9 @@ mod tests {
     fn without_hills_the_ground_is_the_ball_of_voxels_whose_middles_are_inside_the_radius() {
         let radius = 60;
         let ground = PlanetGround::new(&ball(radius as f64));
-        for z in -66i64..66 {
-            for y in -66i64..66 {
-                for x in -66i64..66 {
+        for z in -66i128..66 {
+            for y in -66i128..66 {
+                for x in -66i128..66 {
                     // The middle of a voxel is `coordinate + 1/2`, so twice its distance squared is an integer.
                     let twice_squared =
                         (2 * x + 1).pow(2) + (2 * y + 1).pow(2) + (2 * z + 1).pow(2);
@@ -628,7 +629,7 @@ mod tests {
         // The amplitudes are 20, 10, 5 and 2.5, so a face reaches 37.5 either way, and the blend of three faces (squares of weights adding to one)
         // reaches the square root of three times that.
         let (mut highest, mut lowest) = (f64::MIN, f64::MAX);
-        for step in 0..6000i64 {
+        for step in 0..6000i128 {
             // Points on a spiral of directions, on the radius where the hills contribute nothing.
             let t = step as f64 / 6000.0;
             let direction = [
@@ -758,7 +759,7 @@ mod tests {
         };
         let ground = PlanetGround::new(&settings);
         let (mut near_seam, mut far_from_seam) = (Vec::new(), Vec::new());
-        let grid = 500i64;
+        let grid = 500i128;
         for face_axis in 0..3 {
             for s in 0..grid {
                 for t in 0..grid {
@@ -803,7 +804,7 @@ mod tests {
     // ---- bounds ----
 
     /// A box about `center` with the given edges, if the world has the room.
-    fn box_around(center: [i64; 3], edges: [i64; 3]) -> VoxelBox {
+    fn box_around(center: [i128; 3], edges: [i128; 3]) -> VoxelBox {
         let low = voxel(
             center[0] - edges[0] / 2,
             center[1] - edges[1] / 2,
@@ -829,8 +830,9 @@ mod tests {
             ));
         }
         for probe in probes {
-            let at =
-                |axis: usize, low: i64, high: i64| low + ((high - low) as f64 * probe[axis]) as i64;
+            let at = |axis: usize, low: i128, high: i128| {
+                low + ((high - low) as f64 * probe[axis]) as i128
+            };
             positions.push(voxel(
                 at(0, low.x(), high.x()),
                 at(1, low.y(), high.y()),
@@ -842,14 +844,14 @@ mod tests {
 
     /// A centre near a seam between two faces of the cube, or the corner where three meet, within 70 voxels of the surface of the small planet: the share of
     /// one axis is within 0.12 of the other's.
-    fn near_a_seam() -> impl Strategy<Value = [i64; 3]> {
+    fn near_a_seam() -> impl Strategy<Value = [i128; 3]> {
         (
             0usize..3,
             [any::<bool>(), any::<bool>()],
             0.3f64..1.0,
             -0.12f64..0.12,
             -1.0f64..1.0,
-            -70i64..70,
+            -70i128..70,
         )
             .prop_map(|(axis, negative, magnitude, difference, third, depth)| {
                 let mut direction = [0.0; 3];
@@ -864,22 +866,24 @@ mod tests {
                     + direction[1] * direction[1]
                     + direction[2] * direction[2])
                     .sqrt();
-                direction.map(|component| (component / length * (500.0 + depth as f64)) as i64)
+                direction.map(|component| (component / length * (500.0 + depth as f64)) as i128)
             })
     }
 
     /// A centre near the surface of the small planet, in any direction.
-    fn near_the_surface() -> impl Strategy<Value = [i64; 3]> {
-        ([-1000i64..1000, -1000i64..1000, -1000i64..1000], -70i64..70).prop_filter_map(
-            "a direction",
-            |(direction, depth)| {
+    fn near_the_surface() -> impl Strategy<Value = [i128; 3]> {
+        (
+            [-1000i128..1000, -1000i128..1000, -1000i128..1000],
+            -70i128..70,
+        )
+            .prop_filter_map("a direction", |(direction, depth)| {
                 let length = ((direction[0].pow(2) + direction[1].pow(2) + direction[2].pow(2))
                     as f64)
                     .sqrt();
-                (length > 50.0)
-                    .then(|| direction.map(|c| (c as f64 / length * (500.0 + depth as f64)) as i64))
-            },
-        )
+                (length > 50.0).then(|| {
+                    direction.map(|c| (c as f64 / length * (500.0 + depth as f64)) as i128)
+                })
+            })
     }
 
     proptest! {
@@ -889,7 +893,7 @@ mod tests {
         fn the_bounds_hold_every_sample_in_the_box_at_every_detail(
             seed in any::<u64>(),
             center in near_the_surface(),
-            edges in [1i64..120, 1i64..120, 1i64..120],
+            edges in [1i128..120, 1i128..120, 1i128..120],
             probes in proptest::collection::vec([0.0f64..1.0, 0.0f64..1.0, 0.0f64..1.0], 24),
             level in 0u8..5,
         ) {
@@ -917,7 +921,7 @@ mod tests {
         fn the_bounds_of_tiny_boxes_at_the_seams_hold_the_samples_at_every_detail(
             seed in any::<u64>(),
             center in near_a_seam(),
-            edges in [1i64..7, 1i64..7, 1i64..7],
+            edges in [1i128..7, 1i128..7, 1i128..7],
             level in 0u8..8,
         ) {
             let ground = PlanetGround::new(&small_planet(seed));
@@ -941,8 +945,8 @@ mod tests {
         #[test]
         fn the_bounds_of_boxes_that_hold_the_centre_or_stretch_far_still_hold(
             seed in any::<u64>(),
-            center in [-3000i64..3000, -3000i64..3000, -3000i64..3000],
-            edges in [1i64..4000, 1i64..4000, 1i64..4000],
+            center in [-3000i128..3000, -3000i128..3000, -3000i128..3000],
+            edges in [1i128..4000, 1i128..4000, 1i128..4000],
             probes in proptest::collection::vec([0.0f64..1.0, 0.0f64..1.0, 0.0f64..1.0], 24),
         ) {
             let ground = PlanetGround::new(&small_planet(seed));
@@ -964,7 +968,7 @@ mod tests {
         fn the_part_of_the_heightmap_a_box_is_read_from_holds_every_point_of_it(
             seed in any::<u64>(),
             center in near_the_surface(),
-            edges in [1i64..200, 1i64..200, 1i64..200],
+            edges in [1i128..200, 1i128..200, 1i128..200],
             probes in proptest::collection::vec([0.0f64..1.0, 0.0f64..1.0, 0.0f64..1.0], 24),
         ) {
             let ground = PlanetGround::new(&small_planet(seed));
@@ -1051,7 +1055,7 @@ mod tests {
         }
     }
 
-    fn brick_of(center: [i64; 3]) -> BrickCoordinate {
+    fn brick_of(center: [i128; 3]) -> BrickCoordinate {
         BrickCoordinate::new(
             center[0].div_euclid(32),
             center[1].div_euclid(32),
@@ -1086,10 +1090,10 @@ mod tests {
         let fixture = StandardTestLayout::default();
         let generator = generator_of(ball(300.0), &fixture);
         let mut checked = 0;
-        for z in -11i64..11 {
-            for y in -11i64..11 {
-                for x in -11i64..11 {
-                    let far = |brick: i64| {
+        for z in -11i128..11 {
+            for y in -11i128..11 {
+                for x in -11i128..11 {
+                    let far = |brick: i128| {
                         (32.0 * brick as f64 + 0.5)
                             .abs()
                             .max((32.0 * brick as f64 + 31.5).abs())
@@ -1120,7 +1124,7 @@ mod tests {
         let fixture = StandardTestLayout::default();
         let generator = generator_of(ball(300.0), &fixture);
         // Straight down from the top of the ball along +y: the middles are at 299.5 and so on from the surface at 300.
-        let column = |y: i64, x: i64, z: i64| {
+        let column = |y: i128, x: i128, z: i128| {
             let coordinate = brick_of([x, y, z]);
             let local = LocalVoxelIndex::new(
                 x.rem_euclid(32) as u8,
@@ -1287,9 +1291,9 @@ mod tests {
                     let at = direction.map(|axis| axis * core.radius * share);
                     let value = generator.ground().sample(
                         voxel(
-                            at[0].floor() as i64,
-                            at[1].floor() as i64,
-                            at[2].floor() as i64,
+                            at[0].floor() as i128,
+                            at[1].floor() as i128,
+                            at[2].floor() as i128,
                         ),
                         FULL,
                     );
@@ -1322,8 +1326,8 @@ mod tests {
         let generator = generator_of(small_planet(9), &fixture);
         let (mut hidden, mut shown) = (0, 0);
         for level in 1..=3u8 {
-            let edge = 1i64 << level;
-            let range = (-20i64).div_euclid(edge)..=(20i64).div_euclid(edge);
+            let edge = 1i128 << level;
+            let range = (-20i128).div_euclid(edge)..=(20i128).div_euclid(edge);
             for x in range.clone() {
                 for y in range.clone() {
                     for z in range.clone() {
@@ -1332,7 +1336,7 @@ mod tests {
                             level,
                         )
                         .unwrap();
-                        let sampled = |box_edge_in_voxels: i64, low: i64| {
+                        let sampled = |box_edge_in_voxels: i128, low: i128| {
                             // A lattice of 5 x 5 x 5 voxels over the box from `low` bricks on from the cube's, at every detail from the cube's down to full.
                             let first = cube.origin().origin();
                             let step = (box_edge_in_voxels - 1) / 4;
@@ -1387,7 +1391,7 @@ mod tests {
     // ---- the file format ----
 
     /// Where the pins look: on the axes, near the seams between faces and the corners where three meet, at negative coordinates, and at random.
-    const PINNED_VOXELS: [[i64; 3]; 9] = [
+    const PINNED_VOXELS: [[i128; 3]; 9] = [
         [0, 63_700, 0],
         [63_650, 100, -40],
         [-20, -63_720, 15],

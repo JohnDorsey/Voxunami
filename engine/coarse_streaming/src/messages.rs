@@ -9,7 +9,7 @@ use coarse_cells::{
     CELLS_PER_NODE, CoarseCell, CoarseNode, DetailSettings, MAXIMUM_DETAIL_LEVEL, Zoom,
 };
 use namespaced_id::NamespacedId;
-use protocol::Message;
+use protocol::{Message, read_brick_coordinate, write_brick_coordinate};
 use region_octree::BrickCube;
 use voxel_space::{BrickCoordinate, GridId};
 
@@ -307,10 +307,7 @@ impl Message for CoarseNodes {
         writer.write_varint(self.0.len() as u64);
         for update in &self.0 {
             writer.write_varint(update.grid.get());
-            let origin = update.cube.origin();
-            for component in [origin.x(), origin.y(), origin.z()] {
-                writer.write_signed_varint(component);
-            }
+            write_brick_coordinate(&mut writer, update.cube.origin());
             writer.write_u8(update.cube.level());
             match &update.node {
                 None => writer.write_u8(NO_NODE),
@@ -330,12 +327,7 @@ impl Message for CoarseNodes {
         let mut updates = Vec::with_capacity(count);
         for _ in 0..count {
             let grid = GridId::new(reader.read_varint()?);
-            let origin = BrickCoordinate::try_new(
-                reader.read_signed_varint()?,
-                reader.read_signed_varint()?,
-                reader.read_signed_varint()?,
-            )
-            .map_err(|_| DecodeError::Invalid("a brick coordinate is out of range"))?;
+            let origin = read_brick_coordinate(&mut reader)?;
             let level = reader.read_u8()?;
             if level == 0 || level > MAXIMUM_DETAIL_LEVEL {
                 return Err(DecodeError::Invalid(
@@ -357,7 +349,7 @@ impl Message for CoarseNodes {
     }
 
     fn samples() -> Vec<Self> {
-        let cube = |origin: [i64; 3], level: u8| {
+        let cube = |origin: [i128; 3], level: u8| {
             BrickCube::new(BrickCoordinate::new(origin[0], origin[1], origin[2]), level).unwrap()
         };
         let cell = |block: u32, fill: u8, light: u8| CoarseCell {
@@ -507,8 +499,8 @@ mod tests {
             writer.write_varint(count as u64);
             for _ in 0..count {
                 writer.write_varint(0);
-                for component in [0i64, 0, 0] {
-                    writer.write_signed_varint(component);
+                for component in [0i128, 0, 0] {
+                    writer.write_wide_signed(component);
                 }
                 writer.write_u8(1);
                 writer.write_u8(NO_NODE);
@@ -530,9 +522,9 @@ mod tests {
             change(&mut writer);
             writer.into_bytes()
         };
-        let cube = |writer: &mut ByteWriter, x: i64, level: u8| {
+        let cube = |writer: &mut ByteWriter, x: i128, level: u8| {
             for component in [x, 0, 0] {
-                writer.write_signed_varint(component);
+                writer.write_wide_signed(component);
             }
             writer.write_u8(level);
         };

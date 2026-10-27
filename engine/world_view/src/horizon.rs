@@ -92,7 +92,7 @@ mod tests {
         }
     }
 
-    fn cube_at(x: i64, y: i64, z: i64, level: u8) -> BrickCube {
+    fn cube_at(x: i128, y: i128, z: i128, level: u8) -> BrickCube {
         BrickCube::containing(BrickCoordinate::new(x, y, z), level)
     }
 
@@ -338,7 +338,7 @@ mod tests {
             viewer[1] + distance * (axis[1] * cosine + sideways[1] * sine),
             viewer[2] + distance * (axis[2] * cosine + sideways[2] * sine),
         ];
-        let brick = |coordinate: f64| (coordinate / BRICK_EDGE_LENGTH as f64).floor() as i64;
+        let brick = |coordinate: f64| (coordinate / BRICK_EDGE_LENGTH as f64).floor() as i128;
         Some(BrickCube::containing(
             BrickCoordinate::new(brick(point[0]), brick(point[1]), brick(point[2])),
             level,
@@ -352,7 +352,7 @@ mod tests {
         #[test]
         fn a_cube_that_is_hidden_has_every_place_of_it_behind_the_core(
             viewer in (-4000.0f64..4000.0, -4000.0f64..4000.0, -4000.0f64..4000.0),
-            origin in (-100i64..100, -100i64..100, -100i64..100),
+            origin in (-100i128..100, -100i128..100, -100i128..100),
             level in 0u8..9,
             shares in proptest::collection::vec((0.0f64..1.0, 0.0f64..1.0, 0.0f64..1.0), 12),
         ) {
@@ -394,7 +394,7 @@ mod tests {
                 while y < 640 {
                     let mut z = -160;
                     while z < 160 {
-                        let brick = |coordinate: i64| coordinate.div_euclid(32);
+                        let brick = |coordinate: i128| coordinate.div_euclid(32);
                         let cube = BrickCube::containing(
                             BrickCoordinate::new(brick(x), brick(y), brick(z)),
                             level,

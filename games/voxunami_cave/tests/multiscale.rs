@@ -30,7 +30,7 @@ fn ticks(rig: &mut Rig, count: usize) {
     }
 }
 
-fn above(voxel: VoxelCoordinate, height: i64) -> VoxelCoordinate {
+fn above(voxel: VoxelCoordinate, height: i128) -> VoxelCoordinate {
     VoxelCoordinate::new(voxel.x(), voxel.y() + height, voxel.z())
 }
 

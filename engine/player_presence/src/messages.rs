@@ -2,7 +2,7 @@
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
-use protocol::{ClientId, Message, PlayerKey};
+use protocol::{ClientId, Message, PlayerKey, read_brick_coordinate, write_brick_coordinate};
 use voxel_space::{
     BRICK_EDGE_LENGTH, BrickCoordinate, LevelIndex, Orientation, VoxelCoordinate, WorldPosition,
 };
@@ -59,8 +59,8 @@ impl PlayerPose {
     pub fn distance_to_voxel(&self, voxel: VoxelCoordinate) -> f64 {
         let brick = self.position.brick();
         let offset = self.position.offset();
-        let along = |voxel: i64, brick: i64, offset: f32| {
-            (voxel - brick * BRICK_EDGE_LENGTH as i64) as f64 + 0.5 - f64::from(offset)
+        let along = |voxel: i128, brick: i128, offset: f32| {
+            (voxel - brick * BRICK_EDGE_LENGTH as i128) as f64 + 0.5 - f64::from(offset)
         };
         let (dx, dy, dz) = (
             along(voxel.x(), brick.x(), offset[0]),
@@ -74,8 +74,8 @@ impl PlayerPose {
     pub fn distance_to_position(&self, position: WorldPosition) -> f64 {
         let (brick, offset) = (self.position.brick(), self.position.offset());
         let (other_brick, other_offset) = (position.brick(), position.offset());
-        let along = |other: i64, this: i64, other_offset: f32, offset: f32| {
-            ((other - this) * BRICK_EDGE_LENGTH as i64) as f64
+        let along = |other: i128, this: i128, other_offset: f32, offset: f32| {
+            ((other - this) * BRICK_EDGE_LENGTH as i128) as f64
                 + (f64::from(other_offset) - f64::from(offset))
         };
         let (dx, dy, dz) = (
@@ -88,22 +88,14 @@ impl PlayerPose {
 }
 
 fn write_position(writer: &mut ByteWriter, position: WorldPosition) {
-    let brick = position.brick();
-    for component in [brick.x(), brick.y(), brick.z()] {
-        writer.write_signed_varint(component);
-    }
+    write_brick_coordinate(writer, position.brick());
     for component in position.offset() {
         writer.write_u32(component.to_bits());
     }
 }
 
 fn read_position(reader: &mut ByteReader<'_>) -> Result<WorldPosition, DecodeError> {
-    let brick = BrickCoordinate::try_new(
-        reader.read_signed_varint()?,
-        reader.read_signed_varint()?,
-        reader.read_signed_varint()?,
-    )
-    .map_err(|_| DecodeError::Invalid("a brick coordinate is out of range"))?;
+    let brick = read_brick_coordinate(reader)?;
     let mut offset = [0f32; 3];
     for component in &mut offset {
         *component = f32::from_bits(reader.read_u32()?);
@@ -159,7 +151,7 @@ impl Message for PoseReport {
     }
 
     fn samples() -> Vec<Self> {
-        let pose = |x: i64, offset: [f32; 3], yaw: f32, pitch: f32| {
+        let pose = |x: i128, offset: [f32; 3], yaw: f32, pitch: f32| {
             Self(PlayerPose {
                 position: WorldPosition::new(BrickCoordinate::new(x, -2, 7), offset),
                 yaw,
@@ -346,7 +338,7 @@ mod tests {
 
     use super::*;
 
-    fn pose(x: i64, offset: [f32; 3], yaw: f32, pitch: f32) -> PlayerPose {
+    fn pose(x: i128, offset: [f32; 3], yaw: f32, pitch: f32) -> PlayerPose {
         PlayerPose {
             position: WorldPosition::new(BrickCoordinate::new(x, -2, 7), offset),
             yaw,
@@ -470,7 +462,8 @@ mod tests {
     #[test]
     fn distance_is_measured_to_the_centre_of_the_voxel_across_bricks() {
         let standing = pose(1, [4.0, 6.0, 8.0], 0.0, 0.0); // brick (1, -2, 7)
-        let at = |x: i64, y: i64, z: i64| standing.distance_to_voxel(VoxelCoordinate::new(x, y, z));
+        let at =
+            |x: i128, y: i128, z: i128| standing.distance_to_voxel(VoxelCoordinate::new(x, y, z));
         // The voxel holding the player is half a voxel from them along each axis.
         assert_eq!(at(32 + 4, -64 + 6, 224 + 8), 0.75_f64.sqrt());
         assert_eq!(
@@ -517,8 +510,8 @@ mod tests {
     /// A pose message built by hand, so values `WorldPosition` would refuse can be sent.
     fn encode_raw_pose(offset: [f32; 3], yaw: f32, pitch: f32) -> Vec<u8> {
         let mut writer = ByteWriter::new();
-        for component in [0i64, 0, 0] {
-            writer.write_signed_varint(component);
+        for component in [0i128, 0, 0] {
+            writer.write_wide_signed(component);
         }
         for component in offset {
             writer.write_u32(component.to_bits());

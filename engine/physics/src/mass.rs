@@ -25,7 +25,7 @@ impl MassMoments {
 
     /// The moments of a block of this mass that fills the voxel with this lowest corner: a unit cube whose mass is spread evenly, so it is
     /// the mass at its middle and the spread of a cube about it.
-    pub fn of_voxel(voxel: [i64; 3], mass: f64) -> Self {
+    pub fn of_voxel(voxel: [i128; 3], mass: f64) -> Self {
         let centre = voxel.map(|corner| corner as f64 + 0.5);
         // A unit cube has a twelfth of its mass as its second moment about its own middle on each axis, and nothing across them.
         let spread = mass / 12.0;
@@ -102,7 +102,7 @@ mod tests {
 
     use super::*;
 
-    fn bar(length: i64, mass: f64) -> MassMoments {
+    fn bar(length: i128, mass: f64) -> MassMoments {
         MassMoments::sum((0..length).map(|x| MassMoments::of_voxel([x, 0, 0], mass)))
     }
 
@@ -158,7 +158,7 @@ mod tests {
 
     /// The centre and the tensor about it, computed directly from the voxels: for each cube, the trace of its second moment times the
     /// identity less the second moment.
-    fn directly(voxels: &[([i64; 3], f64)]) -> ([f64; 3], [[f64; 3]; 3]) {
+    fn directly(voxels: &[([i128; 3], f64)]) -> ([f64; 3], [[f64; 3]; 3]) {
         let mass: f64 = voxels.iter().map(|(_, mass)| mass).sum();
         let centre = [0, 1, 2].map(|axis| {
             voxels
@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn a_lopsided_body_has_the_products_of_inertia_its_voxels_give() {
         // An L: its axes of inertia are not those of its box.
-        let voxels: Vec<([i64; 3], f64)> = [
+        let voxels: Vec<([i128; 3], f64)> = [
             [0, 0, 0],
             [1, 0, 0],
             [2, 0, 0],
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn mass_is_summed_by_brick_or_all_at_once_to_the_same_properties() {
-        let voxels: Vec<([i64; 3], f64)> = (0..40)
+        let voxels: Vec<([i128; 3], f64)> = (0..40)
             .map(|index| {
                 (
                     [index % 5, index / 5 % 4, index / 20],
@@ -257,9 +257,9 @@ mod tests {
     proptest! {
         #[test]
         fn the_properties_of_any_body_are_those_its_voxels_give_directly(
-            voxels in proptest::collection::vec(([-6i64..6, -6i64..6, -6i64..6], 1u32..9), 1..30),
+            voxels in proptest::collection::vec(([-6i128..6, -6i128..6, -6i128..6], 1u32..9), 1..30),
         ) {
-            let voxels: Vec<([i64; 3], f64)> =
+            let voxels: Vec<([i128; 3], f64)> =
                 voxels.into_iter().map(|(voxel, mass)| (voxel, f64::from(mass))).collect();
             let properties = MassMoments::sum(
                 voxels.iter().map(|&(voxel, mass)| MassMoments::of_voxel(voxel, mass)),

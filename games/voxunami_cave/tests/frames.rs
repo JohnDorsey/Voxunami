@@ -14,10 +14,10 @@ use voxel_space::{
 use voxunami_cave::content::CaveContent;
 
 /// How big the room is: voxels 0 to 6 on each axis, with walls on the outside layer.
-const SIZE: i64 = 7;
+const SIZE: i128 = 7;
 
 /// A closed stone room with a lamp in the middle, built in the grid at this offset from the grid's origin.
-fn build_room(world: &mut ServerWorld, grid: GridId, content: &CaveContent, offset: [i64; 3]) {
+fn build_room(world: &mut ServerWorld, grid: GridId, content: &CaveContent, offset: [i128; 3]) {
     let (block, stone, lamp) = (
         content.block_channel(),
         content.blocks.stone,
@@ -42,7 +42,7 @@ fn build_room(world: &mut ServerWorld, grid: GridId, content: &CaveContent, offs
 }
 
 /// The light in and around the room, voxel by voxel in the grid's own coordinates.
-fn light_of(rig: &Rig, grid: GridId, offset: [i64; 3]) -> Vec<u32> {
+fn light_of(rig: &Rig, grid: GridId, offset: [i128; 3]) -> Vec<u32> {
     let light = rig.content.light_channel();
     let world = rig.server.world();
     let mut values = Vec::new();
@@ -86,7 +86,7 @@ fn light_in_a_ship(pose: GridPose) -> Vec<u32> {
     light_of(&scene.rig, grid, [0, 0, 0])
 }
 
-fn pose(brick: [i64; 3], offset: [f32; 3], rotation: LatticeRotation) -> GridPose {
+fn pose(brick: [i128; 3], offset: [f32; 3], rotation: LatticeRotation) -> GridPose {
     GridPose::new(
         WorldPosition::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), offset),
         rotation.orientation(),

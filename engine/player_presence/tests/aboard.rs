@@ -121,7 +121,7 @@ fn second() -> LevelIndex {
     LevelIndex::new(1)
 }
 
-fn at(brick: [i64; 3], offset: [f32; 3]) -> WorldPosition {
+fn at(brick: [i128; 3], offset: [f32; 3]) -> WorldPosition {
     WorldPosition::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), offset)
 }
 

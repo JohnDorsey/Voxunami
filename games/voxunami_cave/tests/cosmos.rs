@@ -80,7 +80,7 @@ fn a_new_world_is_space_first_and_the_overworld_second_with_a_planet_in_space() 
     assert_eq!(terrain.mass, planet.mass);
     // The extent holds the ground, hills and all: the hills of a face are 320 voxels at the most and the blend of three can be 1.8 times that.
     let extent = terrain.extent;
-    let reach = |brick: i64| brick.abs() as f64 * 32.0;
+    let reach = |brick: i128| brick.abs() as f64 * 32.0;
     for coordinate in [extent.min(), extent.max()] {
         for axis in [coordinate.x(), coordinate.y(), coordinate.z()] {
             assert!(reach(axis) > radius + 600.0, "{extent:?}");

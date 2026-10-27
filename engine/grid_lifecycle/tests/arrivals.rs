@@ -38,7 +38,7 @@ fn place_of_passenger(number: usize) -> WorldPosition {
 }
 
 /// The voxel of the world that the cell (1, 1, 1) of the deck is in when the ship is at `landing()`: the one stone that is put in its way.
-const IN_THE_WAY: [i64; 3] = [9, 13, 9];
+const IN_THE_WAY: [i128; 3] = [9, 13, 9];
 
 const QUESTION: &str = "Something is where your ship was left.";
 const OPTIONS: [&str; 5] = [
@@ -65,14 +65,14 @@ const APPEAR_IN_THE_AIR: u32 = 1;
 const QUIT: u32 = 2;
 
 /// A world with one ship (held, as `sample_ship` has it) at `landing()`, with stone at these voxels of the main level.
-fn world_with_a_ship(stone: Vec<[i64; 3]>) -> impl FnOnce(&Game, &mut WorldData) -> Vec<GridId> {
+fn world_with_a_ship(stone: Vec<[i128; 3]>) -> impl FnOnce(&Game, &mut WorldData) -> Vec<GridId> {
     world_with_a_ship_at(landing(), stone)
 }
 
 /// The same, with the ship at this pose.
 fn world_with_a_ship_at(
     pose: GridPose,
-    stone: Vec<[i64; 3]>,
+    stone: Vec<[i128; 3]>,
 ) -> impl FnOnce(&Game, &mut WorldData) -> Vec<GridId> {
     move |game, world| {
         for at in stone {
@@ -86,7 +86,7 @@ fn world_with_a_ship_at(
 
 /// A world with one ship in the second level, with stone at these voxels of that level (and none anywhere in the main one).
 fn world_with_a_ship_in_the_second_level(
-    stone: Vec<[i64; 3]>,
+    stone: Vec<[i128; 3]>,
 ) -> impl FnOnce(&Game, &mut WorldData) -> Vec<GridId> {
     move |game, world| {
         let block = game.raw_block("base_blocks:stone");
@@ -165,12 +165,12 @@ fn place_in_the_world(rig: &Rig) -> WorldPosition {
 }
 
 /// The block in a voxel of the main level, as the world has it written.
-fn block_at(rig: &Rig, at: [i64; 3]) -> u32 {
+fn block_at(rig: &Rig, at: [i128; 3]) -> u32 {
     block_in(rig, LevelIndex::MAIN, at)
 }
 
 /// The block in a voxel of a level, as the world has it written.
-fn block_in(rig: &Rig, level: LevelIndex, at: [i64; 3]) -> u32 {
+fn block_in(rig: &Rig, level: LevelIndex, at: [i128; 3]) -> u32 {
     let level = rig.server.world().level(level).unwrap();
     let channel = level
         .overrides
@@ -182,7 +182,7 @@ fn block_in(rig: &Rig, level: LevelIndex, at: [i64; 3]) -> u32 {
         .get(channel, VoxelCoordinate::new(at[0], at[1], at[2]))
 }
 
-fn block_of_the_ship(rig: &Rig, ship: GridId, at: [i64; 3]) -> u32 {
+fn block_of_the_ship(rig: &Rig, ship: GridId, at: [i128; 3]) -> u32 {
     let ship = rig.server.world().grids().get(ship).unwrap();
     let channel = ship
         .voxels
@@ -434,7 +434,9 @@ fn the_player_can_leave_the_ship_behind_and_go_to_the_spawn_and_the_ship_is_then
 /// A world with the ship at `landing()` in a block of stone: the box from (-30, -25, -30) to (50, `top`, 50). The ship is in it, and so
 /// is every place it could be moved to within 32 voxels, except the ones that are higher than `top` (the lowest voxel of its deck is
 /// at height 13, so one that is moved up by `n` has its deck at 13 + n).
-fn world_with_a_ship_in_stone_up_to(top: i64) -> impl FnOnce(&Game, &mut WorldData) -> Vec<GridId> {
+fn world_with_a_ship_in_stone_up_to(
+    top: i128,
+) -> impl FnOnce(&Game, &mut WorldData) -> Vec<GridId> {
     move |game, world| {
         let stone = game.raw_block("base_blocks:stone");
         let level = world.level_mut(LevelIndex::MAIN).unwrap();
@@ -744,7 +746,7 @@ fn when_one_of_two_players_aboard_answers_the_other_is_not_asked_any_more() {
 #[test]
 fn an_answer_about_one_ship_withdraws_the_questions_about_that_ship_and_no_other() {
     // Two ships, a hundred voxels apart, each with something in the way of its own, and a player aboard each.
-    const APART: i64 = 100;
+    const APART: i128 = 100;
     let (mut rig, ships) = Rig::for_arrivals(ShipSettings::everywhere(), |game, world| {
         game.set_block(world, IN_THE_WAY, "base_blocks:stone");
         game.set_block(
@@ -912,7 +914,7 @@ fn world_with_a_ship_and_a_planet(
 
 /// The blocks in these voxels of the planet, as the planet has them: what was stored over its ground, else its ground. (Asked in a tick of the server, which is one
 /// more tick of the world.)
-fn blocks_of_the_planet(rig: &mut Rig, planet: GridId, at: &[[i64; 3]]) -> Vec<u32> {
+fn blocks_of_the_planet(rig: &mut Rig, planet: GridId, at: &[[i128; 3]]) -> Vec<u32> {
     let channel = rig
         .server
         .world()

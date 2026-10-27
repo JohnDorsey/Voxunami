@@ -122,16 +122,16 @@ fn the_server_refuses_what_is_out_of_reach_unknown_or_from_a_player_with_no_posi
     let mut player = player_above_ground(&mut rig);
     let own = position_of(&player.camera);
     let near = VoxelCoordinate::new(
-        own.brick().x() * 32 + own.offset()[0] as i64,
-        own.brick().y() * 32 + own.offset()[1] as i64 - 3,
-        own.brick().z() * 32 + own.offset()[2] as i64,
+        own.brick().x() * 32 + own.offset()[0] as i128,
+        own.brick().y() * 32 + own.offset()[1] as i128 - 3,
+        own.brick().z() * 32 + own.offset()[2] as i128,
     );
 
     // Too far, a block nobody has heard of, and (from a second player who is far away) a perfectly
     // reasonable request: none changes the world.
     request_block(
         &mut player,
-        VoxelCoordinate::new(near.x() + (REACH as i64) + 5, near.y(), near.z()),
+        VoxelCoordinate::new(near.x() + (REACH as i128) + 5, near.y(), near.z()),
         "base_blocks:stone",
     );
     request_block(&mut player, near, "nonexistent:block");
@@ -695,9 +695,9 @@ fn the_server_refuses_states_a_block_does_not_have_and_air_has_only_the_first() 
     let mut player = player_above_ground(&mut rig);
     let own = position_of(&player.camera);
     let near = VoxelCoordinate::new(
-        own.brick().x() * 32 + own.offset()[0] as i64,
-        own.brick().y() * 32 + own.offset()[1] as i64 - 3,
-        own.brick().z() * 32 + own.offset()[2] as i64,
+        own.brick().x() * 32 + own.offset()[0] as i128,
+        own.brick().y() * 32 + own.offset()[1] as i128 - 3,
+        own.brick().z() * 32 + own.offset()[2] as i128,
     );
     // Stone has the seven shapes (how they stand is the orientation, which every block has): state 7 is the first it does not have.
     let shapes = rig
@@ -838,7 +838,7 @@ fn seen_light(rig: &Rig, player: &Player, voxel: VoxelCoordinate) -> u32 {
         .get(rig.content.light_channel(), voxel)
 }
 
-fn above(voxel: VoxelCoordinate, height: i64) -> VoxelCoordinate {
+fn above(voxel: VoxelCoordinate, height: i128) -> VoxelCoordinate {
     VoxelCoordinate::new(voxel.x(), voxel.y() + height, voxel.z())
 }
 
@@ -1328,7 +1328,7 @@ fn a_wall_built_in_the_way_stops_the_player_against_it() {
     let mut rig = Rig::new();
     let mut player = standing_walker(&mut rig);
     let standing = voxels_of(&player.camera);
-    let feet = (standing[1] - 1.62).round() as i64;
+    let feet = (standing[1] - 1.62).round() as i128;
     // A wall three blocks high, three voxels ahead (toward -z), wider than the player.
     for height in 0..3 {
         for x in 14..=18 {
@@ -1392,7 +1392,8 @@ fn flying_hovers_and_the_commands_for_it_and_for_teleporting_answer() {
     assert!((moved[1] - 200.0).abs() < 0.1);
     player.send_command("/tp 1 2");
     player.send_command("/tp a b c");
-    player.send_command("/tp 1 2 99999999999999999999");
+    // (Beyond the edge of the world, which is 2^120 voxels, about 1.3e36, from the origin.)
+    player.send_command("/tp 1 2 9999999999999999999999999999999999999999");
     player.send_command("/fly");
     tick_and_follow(&mut rig, &mut player, 2);
     assert_eq!(
@@ -1480,7 +1481,7 @@ fn walkers_pass_through_flames_and_the_cellar_has_the_same_ground() {
     let mut player = standing_walker(&mut rig);
     let standing = voxels_of(&player.camera);
     // Flames on the ground ahead of them do not stop them.
-    let feet = (standing[1] - 1.62).round() as i64;
+    let feet = (standing[1] - 1.62).round() as i128;
     for z in 13..16 {
         request_block(
             &mut player,
@@ -1516,14 +1517,14 @@ fn walkers_pass_through_flames_and_the_cellar_has_the_same_ground() {
 
 /// Whether anything solid is where the player's body is (0.6 by 1.8, the feet 1.62 below the eyes), by more than
 /// a hair, as the player's picture of the terrain shows it.
-fn is_inside_solid(player: &Player) -> Vec<(i64, i64, i64)> {
+fn is_inside_solid(player: &Player) -> Vec<(i128, i128, i128)> {
     let eyes = voxels_of(&player.camera);
     let feet = eyes[1] - 1.62;
-    let inside = |centre: f64| (centre - 0.28).floor() as i64..=(centre + 0.28).floor() as i64;
+    let inside = |centre: f64| (centre - 0.28).floor() as i128..=(centre + 0.28).floor() as i128;
     let mut solid = Vec::new();
     for x in inside(eyes[0]) {
         for z in inside(eyes[2]) {
-            for y in (feet + 0.02).floor() as i64..=(feet + 1.78).floor() as i64 {
+            for y in (feet + 0.02).floor() as i128..=(feet + 1.78).floor() as i128 {
                 if player.mesher().is_opaque_at(VoxelCoordinate::new(x, y, z)) == Some(true) {
                     solid.push((x, y, z));
                 }
@@ -1543,8 +1544,8 @@ fn assert_standing(player: &Player, label: &str) {
     let tops = |reach: f64| -> Vec<f64> {
         let columns = |centre: f64| {
             [
-                (centre - reach).floor() as i64,
-                (centre + reach).floor() as i64,
+                (centre - reach).floor() as i128,
+                (centre + reach).floor() as i128,
             ]
         };
         columns(eyes[0])
@@ -1574,8 +1575,8 @@ fn a_player_teleported_into_the_terrain_is_moved_out_of_it_and_never_left_inside
     let mut player = standing_walker(&mut rig);
     let columns = |centre: f64| {
         [
-            (centre - 0.28).floor() as i64,
-            (centre + 0.28).floor() as i64,
+            (centre - 0.28).floor() as i128,
+            (centre + 0.28).floor() as i128,
         ]
     };
     for (x, z) in [

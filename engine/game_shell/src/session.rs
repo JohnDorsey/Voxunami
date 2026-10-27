@@ -155,7 +155,7 @@ pub struct Session<C: Connection, G: GameDefinition> {
     /// The forms the server has shown and not closed, in the order they were first shown: what the screen has besides the world.
     forms: Vec<(FormId, ui::Ui)>,
     mode: Mode,
-    view_radius_bricks: i64,
+    view_radius_bricks: i128,
     /// The level the player is in, and so the one they ask to watch.
     level: LevelIndex,
     /// Where and in which level the server was last asked to send what the player sees.
@@ -181,7 +181,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         connection: C,
         identity: &Identity,
         mode: Mode,
-        view_radius_bricks: i64,
+        view_radius_bricks: i128,
         start: Camera,
         mut wait: impl FnMut(),
     ) -> Result<Self, SessionError> {
@@ -338,7 +338,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             return;
         }
         // (The server is told the radius as a byte.)
-        self.view_radius_bricks = self.view_radius_bricks.min(i64::from(u8::MAX));
+        self.view_radius_bricks = self.view_radius_bricks.min(i128::from(u8::MAX));
         self.view_settings.view_radius_bricks = self.view_radius_bricks;
         let mesher = WorldMesher::new(
             self.view_settings,
@@ -368,7 +368,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     }
 
     /// How far beyond the radius of the view the player watches, so that what is drawn has its neighbours.
-    fn watch_margin_bricks(&self) -> i64 {
+    fn watch_margin_bricks(&self) -> i128 {
         match self.terrain {
             TerrainView::Bricks(_) => WATCH_MARGIN_BRICKS,
             TerrainView::Coarse(_) => COARSE_WATCH_MARGIN_BRICKS,
@@ -381,9 +381,9 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     }
 
     /// The radius, in bricks, the fog is set for: the distance terrain is drawn to.
-    pub fn fog_radius_bricks(&self) -> i64 {
+    pub fn fog_radius_bricks(&self) -> i128 {
         let distance_in_bricks =
-            |detail: &CoarseDetail| (detail.maximum_distance / 32.0).ceil() as i64;
+            |detail: &CoarseDetail| (detail.maximum_distance / 32.0).ceil() as i128;
         let terrain = match &self.terrain {
             TerrainView::Bricks(_) => self.view_radius_bricks,
             TerrainView::Coarse(coarse) => {

@@ -395,7 +395,7 @@ impl ItemsRun {
     }
 
     /// The step an item takes when it falls: one voxel along the axis gravity is strongest on, the way it pulls; `None` where it is not pulled.
-    fn down_for(&self, context: &mut Context<'_>, item: &Lying) -> Option<[i64; 3]> {
+    fn down_for(&self, context: &mut Context<'_>, item: &Lying) -> Option<[i128; 3]> {
         let gravity = context
             .world()
             .gravity_in(item.grid, centre_of(item.voxel))
@@ -414,7 +414,7 @@ impl ItemsRun {
         &self,
         context: &mut Context<'_>,
         item: &Lying,
-        down: [i64; 3],
+        down: [i128; 3],
     ) -> bool {
         match item.grid.root_level() {
             Some(_) => item.voxel.y() < LOWEST_DROP_VOXEL && down == [0, -1, 0],
@@ -432,7 +432,7 @@ impl ItemsRun {
 
     /// Items of one kind in one voxel become one stack, as far as a stack goes.
     fn join(&self, context: &mut Context<'_>) {
-        let mut voxels: BTreeMap<(GridId, [i64; 3]), Vec<Lying>> = BTreeMap::new();
+        let mut voxels: BTreeMap<(GridId, [i128; 3]), Vec<Lying>> = BTreeMap::new();
         for item in self.lying(context) {
             let key = (item.grid, [item.voxel.x(), item.voxel.y(), item.voxel.z()]);
             voxels.entry(key).or_default().push(item);

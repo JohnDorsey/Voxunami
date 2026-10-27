@@ -81,7 +81,7 @@ fn point_of(position: WorldPosition) -> [f64; 3] {
 }
 
 fn position_of(point: [f64; 3]) -> Option<WorldPosition> {
-    let whole = point.map(|value| (value / 32.0).floor() as i64);
+    let whole = point.map(|value| (value / 32.0).floor() as i128);
     let brick = BrickCoordinate::try_new(whole[0], whole[1], whole[2]).ok()?;
     WorldPosition::try_new(
         brick,
@@ -348,7 +348,7 @@ mod tests {
     fn ship(
         world: &mut ServerWorld,
         pose: GridPose,
-        voxels: &[[i64; 3]],
+        voxels: &[[i128; 3]],
         temperature: Option<u32>,
     ) -> GridId {
         let ship = world
@@ -420,8 +420,8 @@ mod tests {
         dot.abs() > 1.0 - 1e-5
     }
 
-    const FIVE: [[i64; 3]; 5] = [[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0], [4, 0, 0]];
-    const THREE: [[i64; 3]; 3] = [[0, 0, 0], [1, 0, 0], [2, 0, 0]];
+    const FIVE: [[i128; 3]; 5] = [[0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0], [4, 0, 0]];
+    const THREE: [[i128; 3]; 3] = [[0, 0, 0], [1, 0, 0], [2, 0, 0]];
 
     #[test]
     fn two_ships_become_one_with_every_block_where_it_was_in_the_world_and_a_tombstone_for_each() {
@@ -861,7 +861,7 @@ mod tests {
         world
             .dock_into(planet, docked, &plan(&world, &nothing_turns))
             .unwrap();
-        let stored = |world: &mut ServerWorld, z: i64| {
+        let stored = |world: &mut ServerWorld, z: i128| {
             world
                 .grid(planet)
                 .unwrap()

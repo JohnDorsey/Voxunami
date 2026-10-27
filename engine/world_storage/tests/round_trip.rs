@@ -170,7 +170,7 @@ fn engine_sections_from_a_newer_format_are_refused_but_plugin_sections_never_are
 
     for section in &mut sections {
         if section.identifier == id("engine:channels") {
-            section.version = 2;
+            section.version = engine_sections::SUPPORTED_VERSION + 1;
         }
     }
     let error = Game::new(&ALL_PLUGINS)
@@ -179,7 +179,8 @@ fn engine_sections_from_a_newer_format_are_refused_but_plugin_sections_never_are
     assert!(
         matches!(
             error,
-            LoadError::UnsupportedEngineSection { version: 2, .. }
+            LoadError::UnsupportedEngineSection { version, .. }
+                if version == engine_sections::SUPPORTED_VERSION + 1
         ),
         "{error}"
     );
@@ -585,7 +586,7 @@ proptest! {
     #[test]
     fn random_worlds_survive_any_plugin_subset(
         edits in proptest::collection::vec(
-            ([-70i64..130, -5i64..70, -40i64..40], 0usize..6, 0u32..300),
+            ([-70i128..130, -5i128..70, -40i128..40], 0usize..6, 0u32..300),
             1..30,
         ),
         subset in plugin_subset(),

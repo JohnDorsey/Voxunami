@@ -483,18 +483,9 @@ impl LodView {
         self.nodes
             .retain(|cube, _| wanted.contains(cube) || shown.contains(cube));
         // The nearest are made first: they are the last in the queue.
-        let nearest_last = |cube: &BrickCube| {
-            let origin = cube.origin();
-            let half = (cube.edge_length() / 2) as i64;
-            let distance = |own: i64, at: i64| (own + half - at).unsigned_abs();
-            std::cmp::Reverse(
-                u128::from(distance(origin.x(), centre.x())).pow(2)
-                    + u128::from(distance(origin.y(), centre.y())).pow(2)
-                    + u128::from(distance(origin.z(), centre.z())).pow(2),
-            )
-        };
         self.queue = cubes.into_iter().filter(|cube| cube.level() > 0).collect();
-        self.queue.sort_by_key(nearest_last);
+        self.queue
+            .sort_by_key(|cube| std::cmp::Reverse(squared_distance_to_middle(*cube, centre)));
         self.plan_needed = true;
     }
 
@@ -632,6 +623,24 @@ impl Drop for LodView {
     }
 }
 
+/// The square of the distance in bricks from `centre` to the middle of `cube` (the order in which cubes are made: nearest first). It saturates, since the square
+/// of a distance across the range of coordinates (2^117) does not fit in 128 bits: exact for every cube nearer than 2^63 bricks, and for the farther ones only
+/// as an order that puts them after.
+fn squared_distance_to_middle(cube: BrickCube, centre: BrickCoordinate) -> u128 {
+    let origin = cube.origin();
+    let half = (cube.edge_length() / 2) as i128;
+    let distance = |own: i128, at: i128| (own + half - at).unsigned_abs();
+    [
+        distance(origin.x(), centre.x()),
+        distance(origin.y(), centre.y()),
+        distance(origin.z(), centre.z()),
+    ]
+    .into_iter()
+    .fold(0u128, |sum, distance| {
+        sum.saturating_add(distance.saturating_mul(distance))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -640,16 +649,51 @@ mod tests {
 
     use super::*;
 
-    fn cube(x: i64) -> BrickCube {
+    fn cube(x: i128) -> BrickCube {
         BrickCube::new(BrickCoordinate::new(x, 0, 0), 0).unwrap()
     }
 
     /// Asks the memo about the cube at `x`, noting in `asked` that the terrain was asked, and giving `answer` if it was.
-    fn ask(memo: &mut MayShowMemo, asked: &RefCell<Vec<i64>>, x: i64, answer: bool) -> bool {
+    fn ask(memo: &mut MayShowMemo, asked: &RefCell<Vec<i128>>, x: i128, answer: bool) -> bool {
         memo.get_or_ask(cube(x), || {
             asked.borrow_mut().push(x);
             answer
         })
+    }
+
+    #[test]
+    fn cubes_are_made_nearest_first_by_the_square_of_the_distance_to_their_middle_and_a_far_one_does_not_overflow()
+     {
+        let centre = BrickCoordinate::new(0, 0, 0);
+        let at = |x, y, z, level| BrickCube::new(BrickCoordinate::new(x, y, z), level).unwrap();
+        // A cube of 2 bricks at (4, 0, 0) has its middle at (5, 1, 1): 25 + 1 + 1.
+        assert_eq!(squared_distance_to_middle(at(4, 0, 0, 1), centre), 27);
+        // A brick at (-3, -4, 0) has its middle at (-3 + 0, -4 + 0, 0), half being 0 for a brick: 9 + 16.
+        assert_eq!(squared_distance_to_middle(at(-3, -4, 0, 0), centre), 25);
+        assert!(
+            squared_distance_to_middle(at(4, 0, 0, 1), centre)
+                < squared_distance_to_middle(at(8, 0, 0, 1), centre)
+        );
+        // Across the whole range, the square is too large for 128 bits: it saturates rather than wrapping round to a small number that would sort as near.
+        let far = BrickCoordinate::new(
+            voxel_space::BRICK_COORDINATE_MAXIMUM,
+            voxel_space::BRICK_COORDINATE_MAXIMUM,
+            voxel_space::BRICK_COORDINATE_MAXIMUM,
+        );
+        let across = BrickCube::containing(far, 0);
+        let from_the_other_end = BrickCoordinate::new(
+            voxel_space::BRICK_COORDINATE_MINIMUM,
+            voxel_space::BRICK_COORDINATE_MINIMUM,
+            voxel_space::BRICK_COORDINATE_MINIMUM,
+        );
+        assert_eq!(
+            squared_distance_to_middle(across, from_the_other_end),
+            u128::MAX
+        );
+        assert!(
+            squared_distance_to_middle(across, from_the_other_end)
+                > squared_distance_to_middle(at(4, 0, 0, 1), centre)
+        );
     }
 
     #[test]

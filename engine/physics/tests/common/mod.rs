@@ -14,12 +14,12 @@ use voxel_space::{BrickCoordinate, VoxelCoordinate, WorldPosition};
 #[derive(Default)]
 pub struct Scene {
     /// Everything at or below this height is a whole cube. `None` for no floor.
-    pub floor: Option<i64>,
+    pub floor: Option<i128>,
     pub cubes: HashMap<VoxelCoordinate, Collision>,
     /// Voxels beyond this distance along +x are not available: whole cubes, as the contract says.
-    pub unavailable_beyond_x: Option<i64>,
+    pub unavailable_beyond_x: Option<i128>,
     /// Voxels below this height are not available either.
-    pub unavailable_below_y: Option<i64>,
+    pub unavailable_below_y: Option<i128>,
     /// Which voxels are whole cubes, for a scene that is not a floor with things on it (a wall, a floor turned over). Where it says no,
     /// the voxel is air, whatever else the scene has.
     pub solid: Option<Box<dyn Fn(VoxelCoordinate) -> bool>>,
@@ -29,7 +29,7 @@ pub struct Scene {
 }
 
 impl Scene {
-    pub fn with_floor(top_voxel: i64) -> Self {
+    pub fn with_floor(top_voxel: i128) -> Self {
         Self {
             floor: Some(top_voxel),
             ..Self::default()
@@ -44,17 +44,17 @@ impl Scene {
         }
     }
 
-    pub fn cube(&mut self, x: i64, y: i64, z: i64) {
+    pub fn cube(&mut self, x: i128, y: i128, z: i128) {
         self.dirty = true;
         self.cubes.insert(at(x, y, z), Collision::Full);
     }
 
-    pub fn remove(&mut self, x: i64, y: i64, z: i64) {
+    pub fn remove(&mut self, x: i128, y: i128, z: i128) {
         self.dirty = true;
         self.cubes.insert(at(x, y, z), Collision::Empty);
     }
 
-    pub fn shape(&mut self, x: i64, y: i64, z: i64, shape: &Shape) {
+    pub fn shape(&mut self, x: i128, y: i128, z: i128, shape: &Shape) {
         let boxes: Arc<[ShapeBox]> = shape.boxes().to_vec().into();
         self.dirty = true;
         self.cubes.insert(at(x, y, z), Collision::Partial(boxes));
@@ -109,7 +109,7 @@ impl CollisionSource for Scene {
     }
 }
 
-pub fn at(x: i64, y: i64, z: i64) -> VoxelCoordinate {
+pub fn at(x: i128, y: i128, z: i128) -> VoxelCoordinate {
     VoxelCoordinate::new(x, y, z)
 }
 

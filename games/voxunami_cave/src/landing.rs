@@ -25,7 +25,7 @@ pub fn on_a_planet(
         .iter()
         .find(|(_, ship)| ship.level == level && ship.terrain.is_some())?;
     let extent = planet.terrain?.extent;
-    let edge = BRICK_EDGE_LENGTH as i64;
+    let edge = BRICK_EDGE_LENGTH as i128;
     for brick_y in (extent.min().y()..=extent.max().y()).rev() {
         // A brick of air all through is passed in one look: the sky over a planet is most of the column.
         let brick = BrickCoordinate::new(0, brick_y, 0);

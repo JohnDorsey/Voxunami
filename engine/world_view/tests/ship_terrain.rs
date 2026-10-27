@@ -20,7 +20,7 @@ use common::{LitBrick, Scene, scene};
 const PLANET: GridId = GridId::new(GridId::FIRST_ALLOCATED + 2);
 
 /// A viewer in the middle of a brick.
-fn at(x: i64, y: i64, z: i64) -> WorldPosition {
+fn at(x: i128, y: i128, z: i128) -> WorldPosition {
     WorldPosition::new(brick(x, y, z), [16.0; 3])
 }
 
@@ -62,7 +62,7 @@ fn generator_of(scene: &Scene) -> Arc<dyn TerrainGenerator> {
     )
 }
 
-fn planet_mesher(scene: &Scene, radius: i64) -> ShipTerrainMesher {
+fn planet_mesher(scene: &Scene, radius: i128) -> ShipTerrainMesher {
     let mut opaque = vec![true; 16];
     opaque[scene.air as usize] = false;
     ShipTerrainMesher::new(

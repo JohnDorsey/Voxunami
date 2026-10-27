@@ -10,12 +10,16 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("coordinate component {value} is outside the supported range {minimum}..={maximum}")]
 pub struct CoordinateOutOfRange {
-    pub value: i64,
-    pub minimum: i64,
-    pub maximum: i64,
+    pub value: i128,
+    pub minimum: i128,
+    pub maximum: i128,
 }
 
-fn checked_component(value: i64, minimum: i64, maximum: i64) -> Result<i64, CoordinateOutOfRange> {
+fn checked_component(
+    value: i128,
+    minimum: i128,
+    maximum: i128,
+) -> Result<i128, CoordinateOutOfRange> {
     if (minimum..=maximum).contains(&value) {
         Ok(value)
     } else {
@@ -30,9 +34,9 @@ fn checked_component(value: i64, minimum: i64, maximum: i64) -> Result<i64, Coor
 /// The position of one voxel within a grid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VoxelCoordinate {
-    x: i64,
-    y: i64,
-    z: i64,
+    x: i128,
+    y: i128,
+    z: i128,
 }
 
 impl VoxelCoordinate {
@@ -40,11 +44,11 @@ impl VoxelCoordinate {
 
     /// Panics if a component is outside `VOXEL_COORDINATE_MINIMUM..=VOXEL_COORDINATE_MAXIMUM`.
     /// Use [`VoxelCoordinate::try_new`] for untrusted input.
-    pub fn new(x: i64, y: i64, z: i64) -> Self {
+    pub fn new(x: i128, y: i128, z: i128) -> Self {
         Self::try_new(x, y, z).unwrap_or_else(|error| panic!("invalid voxel coordinate: {error}"))
     }
 
-    pub fn try_new(x: i64, y: i64, z: i64) -> Result<Self, CoordinateOutOfRange> {
+    pub fn try_new(x: i128, y: i128, z: i128) -> Result<Self, CoordinateOutOfRange> {
         let check =
             |value| checked_component(value, VOXEL_COORDINATE_MINIMUM, VOXEL_COORDINATE_MAXIMUM);
         Ok(Self {
@@ -54,22 +58,22 @@ impl VoxelCoordinate {
         })
     }
 
-    pub fn x(self) -> i64 {
+    pub fn x(self) -> i128 {
         self.x
     }
 
-    pub fn y(self) -> i64 {
+    pub fn y(self) -> i128 {
         self.y
     }
 
-    pub fn z(self) -> i64 {
+    pub fn z(self) -> i128 {
         self.z
     }
 
     /// The brick containing this voxel and the voxel's position inside it. Negative coordinates
     /// floor toward negative infinity, so voxel -1 is the last voxel of brick -1.
     pub fn split(self) -> (BrickCoordinate, LocalVoxelIndex) {
-        let mask = BRICK_EDGE_LENGTH as i64 - 1;
+        let mask = BRICK_EDGE_LENGTH as i128 - 1;
         let brick = BrickCoordinate {
             x: self.x >> BRICK_EDGE_LENGTH_LOG2,
             y: self.y >> BRICK_EDGE_LENGTH_LOG2,
@@ -84,7 +88,7 @@ impl VoxelCoordinate {
     }
 
     /// `None` if the result would leave the supported range.
-    pub fn checked_offset(self, dx: i64, dy: i64, dz: i64) -> Option<Self> {
+    pub fn checked_offset(self, dx: i128, dy: i128, dz: i128) -> Option<Self> {
         Self::try_new(
             self.x.checked_add(dx)?,
             self.y.checked_add(dy)?,
@@ -103,9 +107,9 @@ impl fmt::Display for VoxelCoordinate {
 /// The position of one brick within a grid, in units of whole bricks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BrickCoordinate {
-    x: i64,
-    y: i64,
-    z: i64,
+    x: i128,
+    y: i128,
+    z: i128,
 }
 
 impl BrickCoordinate {
@@ -113,11 +117,11 @@ impl BrickCoordinate {
 
     /// Panics if a component is outside `BRICK_COORDINATE_MINIMUM..=BRICK_COORDINATE_MAXIMUM`.
     /// Use [`BrickCoordinate::try_new`] for untrusted input.
-    pub fn new(x: i64, y: i64, z: i64) -> Self {
+    pub fn new(x: i128, y: i128, z: i128) -> Self {
         Self::try_new(x, y, z).unwrap_or_else(|error| panic!("invalid brick coordinate: {error}"))
     }
 
-    pub fn try_new(x: i64, y: i64, z: i64) -> Result<Self, CoordinateOutOfRange> {
+    pub fn try_new(x: i128, y: i128, z: i128) -> Result<Self, CoordinateOutOfRange> {
         let check =
             |value| checked_component(value, BRICK_COORDINATE_MINIMUM, BRICK_COORDINATE_MAXIMUM);
         Ok(Self {
@@ -127,15 +131,15 @@ impl BrickCoordinate {
         })
     }
 
-    pub fn x(self) -> i64 {
+    pub fn x(self) -> i128 {
         self.x
     }
 
-    pub fn y(self) -> i64 {
+    pub fn y(self) -> i128 {
         self.y
     }
 
-    pub fn z(self) -> i64 {
+    pub fn z(self) -> i128 {
         self.z
     }
 
@@ -146,16 +150,16 @@ impl BrickCoordinate {
 
     /// The grid-wide coordinate of the voxel at `local` inside this brick.
     pub fn voxel_at(self, local: LocalVoxelIndex) -> VoxelCoordinate {
-        // In range by construction: brick components are at most 2^55 in magnitude.
+        // In range by construction: brick components are at most 2^115 in magnitude.
         VoxelCoordinate {
-            x: (self.x << BRICK_EDGE_LENGTH_LOG2) + i64::from(local.x()),
-            y: (self.y << BRICK_EDGE_LENGTH_LOG2) + i64::from(local.y()),
-            z: (self.z << BRICK_EDGE_LENGTH_LOG2) + i64::from(local.z()),
+            x: (self.x << BRICK_EDGE_LENGTH_LOG2) + i128::from(local.x()),
+            y: (self.y << BRICK_EDGE_LENGTH_LOG2) + i128::from(local.y()),
+            z: (self.z << BRICK_EDGE_LENGTH_LOG2) + i128::from(local.z()),
         }
     }
 
     /// `None` if the result would leave the supported range.
-    pub fn checked_offset(self, dx: i64, dy: i64, dz: i64) -> Option<Self> {
+    pub fn checked_offset(self, dx: i128, dy: i128, dz: i128) -> Option<Self> {
         Self::try_new(
             self.x.checked_add(dx)?,
             self.y.checked_add(dy)?,
@@ -235,8 +239,8 @@ mod tests {
                 maximum
             })
         );
-        assert!(VoxelCoordinate::try_new(0, 0, i64::MAX).is_err());
-        assert!(VoxelCoordinate::try_new(i64::MIN, 0, 0).is_err());
+        assert!(VoxelCoordinate::try_new(0, 0, i128::MAX).is_err());
+        assert!(VoxelCoordinate::try_new(i128::MIN, 0, 0).is_err());
 
         let (brick_minimum, brick_maximum) = (BRICK_COORDINATE_MINIMUM, BRICK_COORDINATE_MAXIMUM);
         assert!(BrickCoordinate::try_new(brick_minimum, brick_maximum, 0).is_ok());
@@ -273,7 +277,7 @@ mod tests {
             Some(VoxelCoordinate::new(VOXEL_COORDINATE_MAXIMUM, -2, 3))
         );
         assert_eq!(near_edge.checked_offset(2, 0, 0), None);
-        assert_eq!(near_edge.checked_offset(i64::MAX, 0, 0), None);
+        assert_eq!(near_edge.checked_offset(i128::MAX, 0, 0), None);
 
         let brick = BrickCoordinate::new(BRICK_COORDINATE_MINIMUM, 0, 0);
         assert_eq!(brick.checked_offset(-1, 0, 0), None);
@@ -325,7 +329,7 @@ mod tests {
         ) {
             let (brick, _) = coordinate.split();
             let origin = brick.origin();
-            let edge = BRICK_EDGE_LENGTH as i64;
+            let edge = BRICK_EDGE_LENGTH as i128;
             prop_assert_eq!(origin.x().rem_euclid(edge), 0);
             prop_assert_eq!(origin.y().rem_euclid(edge), 0);
             prop_assert_eq!(origin.z().rem_euclid(edge), 0);

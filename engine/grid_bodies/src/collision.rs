@@ -213,7 +213,7 @@ impl CollisionSource for ShipSource<'_> {
 pub trait SolidAt: CollisionSource {
     fn solid_at(&mut self, place: [f64; 3]) -> bool {
         let cell = place.map(f64::floor);
-        let Ok(voxel) = VoxelCoordinate::try_new(cell[0] as i64, cell[1] as i64, cell[2] as i64)
+        let Ok(voxel) = VoxelCoordinate::try_new(cell[0] as i128, cell[1] as i128, cell[2] as i128)
         else {
             return false;
         };

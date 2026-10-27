@@ -416,7 +416,7 @@ fn a_ship_taken_from_under_a_walker_does_not_turn_their_view_and_they_walk_the_w
         .rig
         .join_walking([50.0, FLOOR as f64 + 3.0, 50.0], 30.0, -10.0);
     scene.rig.settle(&mut [&mut player]);
-    player.send_command(&format!("/tp 20 {} 24", FLOOR as i64 + 13));
+    player.send_command(&format!("/tp 20 {} 24", FLOOR as i128 + 13));
     tick_and_follow(&mut scene, &mut player, 80);
     assert_eq!(player_pose(&scene, 1).grid, ship_id(0), "aboard");
     // The ship turns on, about the same point, to 1.8 radians, while they are aboard: their view is carried with it, so that the way they
@@ -1062,7 +1062,7 @@ fn boarding_and_leaving_do_not_turn_the_view() {
         "they start in the level, away from the ship"
     );
     // Sent up over the deck (settling takes longer than a fall from there), they fall onto it.
-    player.send_command(&format!("/tp 20 {} 24", FLOOR as i64 + 13));
+    player.send_command(&format!("/tp 20 {} 24", FLOOR as i128 + 13));
     let mut views = Vec::new();
     let mut frames = Vec::new();
     for _ in 0..80 {
@@ -1224,7 +1224,7 @@ fn a_ship_that_falls_on_a_walker_lifts_them_onto_itself_and_does_not_press_them_
 /// A box `thickness` along x (8 along y and z) held on the floor with its west face 12 east of a walker who stands, which goes west by
 /// `step` voxels a tick until it is 12 past them. After each tick the walker is out of the box and above the floor. Returns whether they were
 /// west of the box, ahead of it, after every tick.
-fn sail_into_a_standing_walker(thickness: i64, step: f32) -> bool {
+fn sail_into_a_standing_walker(thickness: i128, step: f32) -> bool {
     let mut scene = Scene::new();
     flat_floor(&mut scene);
     make_ship(

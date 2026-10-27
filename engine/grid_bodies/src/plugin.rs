@@ -20,12 +20,12 @@ use crate::docking::{Docking, Port, PortView, approach, docked_pose, torque_of_f
 /// How far, in bricks, from the origin of a frame a ship may be: `f32` is exact enough within it. A ship that is not within this of the origin of any
 /// frame of its level makes a frame of its own, centred on it, so ships far apart are all simulated; a ship that goes twice as far from the origin of
 /// its frame is taken out of it and put in another (a frame is a place, not a ship's).
-pub const FRAME_RADIUS_BRICKS: i64 = 500;
+pub const FRAME_RADIUS_BRICKS: i128 = 500;
 
 /// How far from the origin of a level's frame the origin of a planet may be, in bricks (4,096 is 131,072 voxels, where an `f32` is exact to a hundredth of one):
 /// the planet's voxels are in its own coordinates, which are as far from the frame as it is. A planet farther than this has no body, and the ships over it fall
 /// through it (a planet that large needs a frame of its own).
-pub const PLANET_REACH_BRICKS: i64 = 4096;
+pub const PLANET_REACH_BRICKS: i128 = 4096;
 
 /// How far from a ship's bounds terrain has colliders, in voxels: a few, and the way the ship goes in a few ticks. (A brick of natural terrain
 /// costs ten milliseconds or more to generate and make colliders of, on the thread of the tick, so a ship that has colliders for all the bricks
@@ -393,7 +393,7 @@ struct Check {
     flood: Connectivity,
 }
 
-const FACES: [[i64; 3]; 6] = [
+const FACES: [[i128; 3]; 6] = [
     [-1, 0, 0],
     [1, 0, 0],
     [0, -1, 0],
@@ -407,7 +407,7 @@ fn pose_of(state: &BodyState) -> GridPose {
 }
 
 /// Whether two bricks are more than `radius` bricks apart along any axis.
-fn farther_than(radius: i64, first: BrickCoordinate, second: BrickCoordinate) -> bool {
+fn farther_than(radius: i128, first: BrickCoordinate, second: BrickCoordinate) -> bool {
     (first.x() - second.x()).abs() > radius
         || (first.y() - second.y()).abs() > radius
         || (first.z() - second.z()).abs() > radius
@@ -1741,7 +1741,7 @@ impl Weigher<'_> {
     /// The mass of one voxel of a ship, with the block and the state in it (`None` for air and the like).
     pub fn voxel_moments(
         &self,
-        voxel: [i64; 3],
+        voxel: [i128; 3],
         block: u32,
         state: u32,
         orientation: u32,
@@ -1793,9 +1793,9 @@ impl Weigher<'_> {
                         .orientation_channel
                         .map_or(0, |channel| contents.get(channel, local));
                     let voxel = [
-                        first.x() + x as i64,
-                        first.y() + y as i64,
-                        first.z() + z as i64,
+                        first.x() + x as i128,
+                        first.y() + y as i128,
+                        first.z() + z as i128,
                     ];
                     parts.extend(self.voxel_moments(voxel, block, state, orientation));
                     if let Some(table) = ports_by
@@ -1907,7 +1907,7 @@ mod tests {
     }
 
     fn body_at(
-        brick: (i64, i64, i64),
+        brick: (i128, i128, i128),
         offset: [f32; 3],
         orientation: Orientation,
         linear: [f32; 3],
@@ -1921,7 +1921,7 @@ mod tests {
         }
     }
 
-    fn follows(shift_bricks: [i64; 3], shift_offset: [f32; 3], velocity: [f32; 3]) -> Follow {
+    fn follows(shift_bricks: [i128; 3], shift_offset: [f32; 3], velocity: [f32; 3]) -> Follow {
         Follow {
             planet: GridId::new(GridId::FIRST_ALLOCATED + 1),
             anchor: WorldPosition::new(BrickCoordinate::new(7, 8, 9), [1.0; 3]),

@@ -18,7 +18,7 @@ use voxel_grid::ChannelIndex;
 use voxel_space::{GridId, VoxelCoordinate};
 use world_storage::{Section, WorldData};
 
-use crate::content::{Content2048, landscape_id};
+use crate::content::Content2048;
 use crate::messages::{
     Progress, PushRequest, SavedMover, SavedState, read_saved_state, saved_state_section,
 };
@@ -86,7 +86,7 @@ impl Logic2048 {
     /// The rules for the game in `world`, continuing from the state saved with it, if any.
     fn new(block_channel: ChannelIndex, number_channel: ChannelIndex, world: &WorldData) -> Self {
         let level_ids: Vec<NamespacedId> = world.levels().map(|(_, id, _)| id.clone()).collect();
-        let saved = read_saved_state(world.opaque_sections(), &landscape_id()).unwrap_or_default();
+        let saved = read_saved_state(world.opaque_sections()).unwrap_or_default();
         // A block saved in a level this world no longer has is not moving any more.
         let movers = saved.movers.into_iter().filter_map(|saved| {
             Some(Mover {

@@ -9,9 +9,9 @@ fn voxels(position: WorldPosition) -> [f64; 3] {
     let brick = position.brick();
     let offset = position.offset();
     [
-        (brick.x() * BRICK_EDGE_LENGTH as i64) as f64 + f64::from(offset[0]),
-        (brick.y() * BRICK_EDGE_LENGTH as i64) as f64 + f64::from(offset[1]),
-        (brick.z() * BRICK_EDGE_LENGTH as i64) as f64 + f64::from(offset[2]),
+        (brick.x() * BRICK_EDGE_LENGTH as i128) as f64 + f64::from(offset[0]),
+        (brick.y() * BRICK_EDGE_LENGTH as i128) as f64 + f64::from(offset[1]),
+        (brick.z() * BRICK_EDGE_LENGTH as i128) as f64 + f64::from(offset[2]),
     ]
 }
 
@@ -30,7 +30,7 @@ pub fn squared_distance(a: WorldPosition, b: WorldPosition) -> f64 {
 pub fn squared_distance_to_bricks(place: WorldPosition, bricks: BrickBox) -> f64 {
     let place = voxels(place);
     let (low, high) = (bricks.min(), bricks.max());
-    let edge = BRICK_EDGE_LENGTH as i64;
+    let edge = BRICK_EDGE_LENGTH as i128;
     let corners = [
         (low.x() * edge, (high.x() + 1) * edge),
         (low.y() * edge, (high.y() + 1) * edge),
@@ -51,11 +51,11 @@ mod tests {
 
     use super::*;
 
-    fn at(brick: [i64; 3], offset: [f32; 3]) -> WorldPosition {
+    fn at(brick: [i128; 3], offset: [f32; 3]) -> WorldPosition {
         WorldPosition::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), offset)
     }
 
-    fn bricks(low: [i64; 3], high: [i64; 3]) -> BrickBox {
+    fn bricks(low: [i128; 3], high: [i128; 3]) -> BrickBox {
         BrickBox::new(
             BrickCoordinate::new(low[0], low[1], low[2]),
             BrickCoordinate::new(high[0], high[1], high[2]),

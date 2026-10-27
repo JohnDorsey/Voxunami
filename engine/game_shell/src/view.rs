@@ -14,14 +14,14 @@ pub fn configure_renderer(
     renderer: &mut VoxelRenderer,
     block_table: &BlockTable,
     ambient_light: u8,
-    view_radius_bricks: i64,
+    view_radius_bricks: i128,
 ) {
     renderer.set_palette(&block_table.palette());
     renderer.set_atmosphere(atmosphere(view_radius_bricks, ambient_light));
 }
 
 /// The sky and fog for a view of this radius, with faces no light reaches drawn at `ambient_light`.
-pub fn atmosphere(view_radius_bricks: i64, ambient_light: u8) -> Atmosphere {
+pub fn atmosphere(view_radius_bricks: i128, ambient_light: u8) -> Atmosphere {
     let reach = (view_radius_bricks * 32) as f32;
     Atmosphere {
         fog_start: reach * 0.6,
@@ -117,11 +117,11 @@ pub fn binary_voxel_coordinates(position: WorldPosition) -> String {
     let brick = position.brick();
     let offset = position.offset();
     let coordinates = [
-        brick.x() * 32 + offset[0].floor() as i64,
-        brick.y() * 32 + offset[1].floor() as i64,
-        brick.z() * 32 + offset[2].floor() as i64,
+        brick.x() * 32 + offset[0].floor() as i128,
+        brick.y() * 32 + offset[1].floor() as i128,
+        brick.z() * 32 + offset[2].floor() as i128,
     ];
-    let binary = |value: i64| {
+    let binary = |value: i128| {
         let sign = if value < 0 { "-" } else { "" };
         format!("{sign}0b{:b}", value.unsigned_abs())
     };
@@ -136,9 +136,9 @@ pub fn binary_voxel_coordinates(position: WorldPosition) -> String {
 /// A camera at a position given in voxels, with angles in degrees.
 pub fn camera_at(position: [f64; 3], yaw_degrees: f32, pitch_degrees: f32) -> Camera {
     let brick = BrickCoordinate::new(
-        (position[0].floor() as i64).div_euclid(32),
-        (position[1].floor() as i64).div_euclid(32),
-        (position[2].floor() as i64).div_euclid(32),
+        (position[0].floor() as i128).div_euclid(32),
+        (position[1].floor() as i128).div_euclid(32),
+        (position[2].floor() as i128).div_euclid(32),
     );
     let offset = [
         (position[0] - (brick.x() * 32) as f64) as f32,

@@ -205,7 +205,7 @@ fn blending_lights_adds_them_up_and_never_goes_past_full_brightness() {
     assert_eq!(blend_brightness([0, 0]), 0);
     assert_eq!(blend_brightness([128]), 128);
     // Two of half brightness make three quarters.
-    assert!((i64::from(blend_brightness([128, 128])) - 192).abs() <= 1);
+    assert!((i128::from(blend_brightness([128, 128])) - 192).abs() <= 1);
     // Darkness adds nothing, and full brightness is full whatever else there is.
     assert_eq!(blend_brightness([77, 0, 0]), 77);
     assert_eq!(blend_brightness([255, 90, 200]), 255);

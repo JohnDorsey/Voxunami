@@ -29,14 +29,14 @@ use voxunami_2048::tool::Tool;
 use world_storage::WorldData;
 
 const SEED: u64 = 2048;
-const VIEW_RADIUS: i64 = 3;
+const VIEW_RADIUS: i128 = 3;
 /// Above the tallest hill the landscape makes.
-const SKY: i64 = 100;
+const SKY: i128 = 100;
 
 type Player = Session<Box<dyn Connection>, Game2048>;
 type Blocks = BTreeMap<VoxelCoordinate, NumberedBlock>;
 
-fn at(x: i64, y: i64, z: i64) -> VoxelCoordinate {
+fn at(x: i128, y: i128, z: i128) -> VoxelCoordinate {
     VoxelCoordinate::new(x, y, z)
 }
 
@@ -403,7 +403,7 @@ fn spring_ice_bounces_back_across_brick_boundaries_until_its_range_is_used_up() 
     assert_eq!(rig.blocks().get(&at(10, SKY, 7)), Some(&spring_ice(1)));
     rig.step(COASTING_RANGE - 4 + 10);
     rig.settle(&mut [&mut player]);
-    let end = 7 + i64::from(COASTING_RANGE) - 4;
+    let end = 7 + i128::from(COASTING_RANGE) - 4;
     assert!(end > 32, "the journey crosses into the next brick");
     let expected = blocks_of(&[(at(10, SKY, end), spring_ice(1)), (wall, stone(3))]);
     assert_eq!(rig.blocks(), expected);
@@ -413,7 +413,7 @@ fn spring_ice_bounces_back_across_brick_boundaries_until_its_range_is_used_up() 
 #[test]
 fn pushes_that_are_out_of_reach_or_not_of_a_block_or_malformed_are_ignored() {
     let near = at(10, SKY, 10);
-    let far = at(10, SKY, 10 - REACH as i64 - 8);
+    let far = at(10, SKY, 10 - REACH as i128 - 8);
     let mut rig = Rig::with_blocks(&[(near, stone(2)), (far, stone(2))]);
     let mut player = rig.join([10.5, SKY as f64 + 0.5, 14.5], 0.0, 0.0);
     rig.settle(&mut [&mut player]);
@@ -532,7 +532,7 @@ fn the_ground_is_made_of_blocks_that_can_be_pushed_like_any_other() {
     rig.settle(&mut [&mut player]);
 
     // Stone moved one step, and ice of either kind coasted its whole range through the air.
-    let landed = at(8, top.y() + i64::from(block.material.motion().range), 8);
+    let landed = at(8, top.y() + i128::from(block.material.motion().range), 8);
     for (what, found) in [
         (
             "the server",
@@ -567,8 +567,8 @@ proptest! {
     /// and merging never loses or creates value.
     #[test]
     fn the_players_view_always_matches_the_server_and_value_is_conserved(
-        scene in proptest::collection::vec((0i64..5, 0i64..5, 0i64..5, block_strategy()), 0..50),
-        pushes in proptest::collection::vec((0i64..5, 0i64..5, 0i64..5, direction_strategy()), 0..8),
+        scene in proptest::collection::vec((0i128..5, 0i128..5, 0i128..5, block_strategy()), 0..50),
+        pushes in proptest::collection::vec((0i128..5, 0i128..5, 0i128..5, direction_strategy()), 0..8),
     ) {
         let list: Vec<_> = scene
             .into_iter()
@@ -626,8 +626,7 @@ fn a_world_saved_while_blocks_are_moving_carries_on_exactly_as_if_it_never_stopp
         content, server, ..
     } = interrupted;
     let world = server.into_world();
-    let saved = read_saved_state(world.opaque_sections(), &landscape_id())
-        .expect("the game saved its state");
+    let saved = read_saved_state(world.opaque_sections()).expect("the game saved its state");
     assert_eq!(saved.movers.len(), 2, "both blocks were in motion");
     assert_eq!(saved.progress.pushes, 2);
     let bytes = world.save(&content.registries()).unwrap();
@@ -804,7 +803,7 @@ fn a_block_moving_in_another_level_when_the_world_is_saved_is_still_moving_there
             content, server, ..
         } = rig;
         let world = server.into_world();
-        let saved = read_saved_state(world.opaque_sections(), &landscape_id()).unwrap();
+        let saved = read_saved_state(world.opaque_sections()).unwrap();
         assert_eq!(saved.movers.len(), 1);
         assert_eq!(saved.movers[0].level.to_string(), "voxunami_2048:underside");
         let bytes = world.save(&content.registries()).unwrap();
@@ -838,19 +837,20 @@ fn a_block_moving_in_another_level_when_the_world_is_saved_is_still_moving_there
 }
 
 #[test]
-fn a_saved_state_from_before_levels_had_moving_blocks_without_a_level_and_they_go_to_the_main_one()
-{
+fn a_saved_state_of_an_older_version_is_not_read_and_the_blocks_it_named_are_not_moving() {
     use voxunami_2048::messages::saved_state_section_id;
-    // Version 1 of the section: progress, then movers as position, direction, steps.
+    // Version 4 of the section, which had a position as three varints of 64 bits: progress, then movers as level, position, direction, tool and steps.
     let mut payload = binary_codec::ByteWriter::new();
     payload.write_varint(40); // score
     payload.write_varint(3); // pushes
-    payload.write_u8(2); // largest merge
+    payload.write_varint(4); // largest merge
     payload.write_varint(1); // one mover
-    for component in [10i64, SKY, 10] {
-        payload.write_signed_varint(component);
+    payload.write_identifier(&landscape_id());
+    for component in [10i128, SKY, 10] {
+        payload.write_varint(((component << 1) ^ (component >> 127)) as u64);
     }
     payload.write_u8(FaceDirection::NegativeZ.index());
+    payload.write_u8(0);
     payload.write_varint(30);
     let content = Content2048::new();
     let mut world = content.new_world(SEED);
@@ -862,12 +862,13 @@ fn a_saved_state_from_before_levels_had_moving_blocks_without_a_level_and_they_g
     );
     world.set_opaque_section(world_storage::Section {
         identifier: saved_state_section_id(),
-        version: 1,
+        version: 4,
         payload: payload.into_bytes(),
     });
     let mut rig = Rig::with_world(content, world);
     rig.step(40);
-    assert_eq!(rig.blocks(), blocks_of(&[(at(10, SKY, 10 - 30), ice(1))]));
+    // Not read: the block stays where it was put, as it would for a world with no state.
+    assert_eq!(rig.blocks(), blocks_of(&[(at(10, SKY, 10), ice(1))]));
 }
 
 fn numbered(material: Material, number: u32) -> NumberedBlock {
@@ -1017,7 +1018,7 @@ fn a_block_moving_with_a_tool_when_the_world_is_saved_still_has_that_tool_when_i
         content, server, ..
     } = interrupted;
     let world = server.into_world();
-    let saved = read_saved_state(world.opaque_sections(), &landscape_id()).unwrap();
+    let saved = read_saved_state(world.opaque_sections()).unwrap();
     assert_eq!(saved.movers.len(), 1);
     assert_eq!(saved.movers[0].tool, Tool::Subtract);
     let bytes = world.save(&content.registries()).unwrap();

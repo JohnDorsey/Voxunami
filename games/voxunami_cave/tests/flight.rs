@@ -18,7 +18,7 @@ use voxunami_cave::aboard::in_voxels;
 fn raft_and_a_player_looking_at_it() -> (Scene, Player) {
     let mut scene = Scene::new();
     flat_floor(&mut scene);
-    build_raft(&mut scene, 20, FLOOR as i64 + 6, 22, 8);
+    build_raft(&mut scene, 20, FLOOR as i128 + 6, 22, 8);
     let mut player = scene
         .rig
         .join_walking([24.0, FLOOR as f64 + 3.0, 34.0], 0.0, 30.0);
@@ -58,7 +58,7 @@ fn a_ship_is_made_of_the_built_blocks_joined_to_the_one_the_player_looks_at_and_
     // Nobody holds it, so it falls the five voxels and lies on the floor.
     tick_and_follow(&mut scene, &mut player, 120);
     scene.rig.settle(&mut [&mut player]);
-    let middle = VoxelCoordinate::new(24, FLOOR as i64 + 6, 26);
+    let middle = VoxelCoordinate::new(24, FLOOR as i128 + 6, 26);
     assert_eq!(player.mesher().is_opaque_at(middle), Some(false));
     let at = in_voxels(ship_pose(&scene, 0).position);
     assert!((at[1] - FLOOR as f64).abs() < 0.1, "{at:?}");
@@ -102,7 +102,7 @@ fn what_is_not_a_ship_to_make_is_said_so_and_nothing_changes() {
     tick_and_follow(&mut scene, &mut player, 3);
     assert!(say(&mut scene, &mut player, "/ship create").contains("not looking at a block"));
     // The floor was built, as far as the world knows, and is bigger than any ship: refused, and it says what it counted.
-    player.send_command(&format!("/tp 40 {} 40", FLOOR as i64 + 3));
+    player.send_command(&format!("/tp 40 {} 40", FLOOR as i128 + 3));
     tick_and_follow(&mut scene, &mut player, 20);
     player.camera.look_by(0.0, -3.0);
     player.hold(&[]);
@@ -225,7 +225,7 @@ fn a_player_on_a_held_ship() -> (Scene, Player) {
     let (mut scene, mut player) = raft_and_a_player_looking_at_it();
     say(&mut scene, &mut player, "/ship create");
     say(&mut scene, &mut player, "/ship hold on");
-    player.send_command(&format!("/tp 24 {} 26", FLOOR as i64 + 12));
+    player.send_command(&format!("/tp 24 {} 26", FLOOR as i128 + 12));
     tick_and_follow(&mut scene, &mut player, 60);
     assert_eq!(player_pose(&scene, 1).grid, ship_id(0), "aboard");
     player.take_command_replies();
@@ -383,7 +383,7 @@ fn scripted_flight() -> u64 {
         let command = match tick {
             0 => Some("/ship create".to_owned()),
             4 => Some("/ship hold on".to_owned()),
-            8 => Some(format!("/tp 24 {} 26", FLOOR as i64 + 12)),
+            8 => Some(format!("/tp 24 {} 26", FLOOR as i128 + 12)),
             70 => Some("/ship pilot".to_owned()),
             72 => Some("/ship hold off".to_owned()),
             250 => Some("/ship push 5 0 3".to_owned()),
@@ -568,7 +568,7 @@ fn a_ship_beyond_the_distance_the_server_simulates_stops_and_goes_on_when_the_di
     let (mut scene, mut player) = raft_and_a_player_looking_at_it();
     assert!(say(&mut scene, &mut player, "/ship create").starts_with("made ship 0"));
     // The player goes 270 voxels away and the server simulates ships within 50: the raft, which was falling, is where it is.
-    player.send_command(&format!("/tp 24 {} 300", FLOOR as i64 + 3));
+    player.send_command(&format!("/tp 24 {} 300", FLOOR as i128 + 3));
     tick_and_follow(&mut scene, &mut player, 5);
     let said = say(&mut scene, &mut player, "/ship distance 50");
     assert!(said.contains("ships are simulated within 50"), "{said}");
@@ -620,7 +620,7 @@ fn in_survival_a_block_broken_from_a_ship_leaves_its_item_in_the_ship_and_a_play
     say(&mut scene, &mut player, "/ship hold on");
     assert!(say(&mut scene, &mut player, "/gamemode survival").contains("survival"));
     // The player stands under the middle of the raft, looking straight up at it: the block they break is a couple of voxels from their eyes.
-    player.send_command(&format!("/tp 24 {} 26", FLOOR as i64 + 3));
+    player.send_command(&format!("/tp 24 {} 26", FLOOR as i128 + 3));
     tick_and_follow(&mut scene, &mut player, 5);
     player.camera.pitch = 89.0f32.to_radians();
     player.hold(&[]);

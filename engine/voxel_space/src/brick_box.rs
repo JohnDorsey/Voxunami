@@ -18,9 +18,9 @@ impl BrickBox {
     /// The cube of bricks within `radius` of `center` along every axis, cut off at the limits of the
     /// coordinate range.
     pub fn around(center: BrickCoordinate, radius: u32) -> Self {
-        let radius = i64::from(radius);
-        let low = |value: i64| value.saturating_sub(radius).max(BRICK_COORDINATE_MINIMUM);
-        let high = |value: i64| value.saturating_add(radius).min(BRICK_COORDINATE_MAXIMUM);
+        let radius = i128::from(radius);
+        let low = |value: i128| value.saturating_sub(radius).max(BRICK_COORDINATE_MINIMUM);
+        let high = |value: i128| value.saturating_add(radius).min(BRICK_COORDINATE_MAXIMUM);
         Self {
             min: BrickCoordinate::new(low(center.x()), low(center.y()), low(center.z())),
             max: BrickCoordinate::new(high(center.x()), high(center.y()), high(center.z())),
@@ -59,7 +59,7 @@ impl BrickBox {
 
     /// How many bricks the box holds, saturating at `u128::MAX` for boxes too large to count.
     pub fn brick_count(self) -> u128 {
-        let edge = |low: i64, high: i64| (high - low) as u128 + 1;
+        let edge = |low: i128, high: i128| (high - low) as u128 + 1;
         edge(self.min.x(), self.max.x())
             .saturating_mul(edge(self.min.y(), self.max.y()))
             .saturating_mul(edge(self.min.z(), self.max.z()))
@@ -82,7 +82,7 @@ impl BrickBox {
             return vec![self];
         };
         let mut remaining = Vec::with_capacity(6);
-        let mut slab = |min: [i64; 3], max: [i64; 3]| {
+        let mut slab = |min: [i128; 3], max: [i128; 3]| {
             // Checked before building coordinates: an empty slab beside a box touching the limit of
             // the coordinate range would have a corner outside it.
             if (0..3).all(|axis| min[axis] <= max[axis]) {
@@ -130,11 +130,11 @@ mod tests {
     use super::*;
     use crate::test_support::brick_coordinate;
 
-    fn brick(x: i64, y: i64, z: i64) -> BrickCoordinate {
+    fn brick(x: i128, y: i128, z: i128) -> BrickCoordinate {
         BrickCoordinate::new(x, y, z)
     }
 
-    fn boxed(min: [i64; 3], max: [i64; 3]) -> BrickBox {
+    fn boxed(min: [i128; 3], max: [i128; 3]) -> BrickBox {
         BrickBox::new(brick(min[0], min[1], min[2]), brick(max[0], max[1], max[2])).unwrap()
     }
 
@@ -225,9 +225,9 @@ mod tests {
 
     fn small_box() -> impl Strategy<Value = BrickBox> {
         (brick_coordinate(), (0u32..6, 0u32..6, 0u32..6)).prop_map(|(corner, (dx, dy, dz))| {
-            let high = |value: i64, extra: u32| {
+            let high = |value: i128, extra: u32| {
                 value
-                    .saturating_add(i64::from(extra))
+                    .saturating_add(i128::from(extra))
                     .min(BRICK_COORDINATE_MAXIMUM)
             };
             BrickBox::new(
@@ -244,8 +244,11 @@ mod tests {
 
     /// A box near a given brick, so two random boxes overlap often enough to be interesting.
     fn nearby_box() -> impl Strategy<Value = BrickBox> {
-        ((-6i64..6, -6i64..6, -6i64..6), (0i64..7, 0i64..7, 0i64..7)).prop_map(
-            |(corner, extent)| {
+        (
+            (-6i128..6, -6i128..6, -6i128..6),
+            (0i128..7, 0i128..7, 0i128..7),
+        )
+            .prop_map(|(corner, extent)| {
                 boxed(
                     [corner.0, corner.1, corner.2],
                     [
@@ -254,8 +257,7 @@ mod tests {
                         corner.2 + extent.2,
                     ],
                 )
-            },
-        )
+            })
     }
 
     proptest! {

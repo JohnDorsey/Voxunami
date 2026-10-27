@@ -12,12 +12,12 @@ use voxel_space::{
 use voxunami_cave::content::CaveContent;
 
 /// Makes a ship that is a cube of stone with this many voxels along an edge.
-fn make_a_cube(scene: &mut Scene, size: i64, pose: GridPose) {
+fn make_a_cube(scene: &mut Scene, size: i128, pose: GridPose) {
     make_a_cube_that_may_be_held(scene, size, pose, false);
 }
 
 /// The same, held still from the tick it is made in if it is to be.
-fn make_a_cube_that_may_be_held(scene: &mut Scene, size: i64, pose: GridPose, held: bool) {
+fn make_a_cube_that_may_be_held(scene: &mut Scene, size: i128, pose: GridPose, held: bool) {
     make_ship(scene, pose, held, [size; 3], |_| true);
 }
 
@@ -533,7 +533,7 @@ fn the_same_ships_move_the_same_bits_every_time_and_on_every_machine() {
 /// the ground is at its middle. Returns how many bricks the terrain generator made in each of `ticks` ticks from the one before the cube was
 /// made.
 fn bricks_generated_each_tick_by_a_ship_falling_to_natural_ground(
-    height: i64,
+    height: i128,
     ticks: usize,
 ) -> Vec<u64> {
     bricks_generated_each_tick_by_a_block_of_ship_falling_to_natural_ground([4; 3], height, ticks)
@@ -541,8 +541,8 @@ fn bricks_generated_each_tick_by_a_ship_falling_to_natural_ground(
 
 /// The same for a ship that is a box of stone of this size.
 fn bricks_generated_each_tick_by_a_block_of_ship_falling_to_natural_ground(
-    size: [i64; 3],
-    height: i64,
+    size: [i128; 3],
+    height: i128,
     ticks: usize,
 ) -> Vec<u64> {
     let mut scene = Scene::new();
@@ -673,7 +673,7 @@ fn a_big_raft_falling_to_natural_ground_makes_the_world_generate_a_few_bricks_a_
 }
 
 /// How many blocks a ship has in a box of its coordinates.
-fn blocks_of(scene: &Scene, number: u64, size: [i64; 3]) -> usize {
+fn blocks_of(scene: &Scene, number: u64, size: [i128; 3]) -> usize {
     let content = CaveContent::new();
     let ship = scene
         .rig
@@ -697,7 +697,7 @@ fn blocks_of(scene: &Scene, number: u64, size: [i64; 3]) -> usize {
 }
 
 /// Takes the blocks of a ship at these voxels away (in the next tick).
-fn cut(scene: &mut Scene, number: u64, voxels: Vec<[i64; 3]>) {
+fn cut(scene: &mut Scene, number: u64, voxels: Vec<[i128; 3]>) {
     let content = CaveContent::new();
     scene.run(move |world| {
         for [x, y, z] in voxels {
@@ -803,7 +803,7 @@ fn a_ship_with_every_block_taken_out_is_gone_and_a_ship_with_one_left_is_not() {
     );
     scene.ticks(3);
     assert_eq!(ship_numbers(&scene), [0, 1]);
-    let everything: Vec<[i64; 3]> = (0..3)
+    let everything: Vec<[i128; 3]> = (0..3)
         .flat_map(|x| (0..3).map(move |z| [x, 0, z]))
         .collect();
     // The first loses all nine, the second all but its corner.

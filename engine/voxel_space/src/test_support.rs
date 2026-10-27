@@ -10,11 +10,11 @@ use crate::{
 
 /// One voxel coordinate component, biased toward where bugs live: small values around zero, values
 /// hugging brick boundaries, and the extremes of the valid range.
-pub fn voxel_coordinate_component() -> impl Strategy<Value = i64> {
-    let edge_length = BRICK_EDGE_LENGTH as i64;
+pub fn voxel_coordinate_component() -> impl Strategy<Value = i128> {
+    let edge_length = BRICK_EDGE_LENGTH as i128;
     prop_oneof![
-        4 => -100i64..100,
-        3 => (-4i64..4, -1i64..=1).prop_map(move |(brick, delta)| brick * edge_length + delta),
+        4 => -100i128..100,
+        3 => (-4i128..4, -1i128..=1).prop_map(move |(brick, delta)| brick * edge_length + delta),
         2 => VOXEL_COORDINATE_MINIMUM..=VOXEL_COORDINATE_MAXIMUM,
         1 => prop_oneof![
             Just(VOXEL_COORDINATE_MINIMUM),
@@ -37,13 +37,13 @@ pub fn voxel_coordinate() -> impl Strategy<Value = VoxelCoordinate> {
 /// Coordinates within a few bricks of the origin, so random operations land in the same bricks
 /// and the same voxels often enough to exercise overwriting.
 pub fn nearby_voxel_coordinate() -> impl Strategy<Value = VoxelCoordinate> {
-    (-70i64..70, -70i64..70, -70i64..70).prop_map(|(x, y, z)| VoxelCoordinate::new(x, y, z))
+    (-70i128..70, -70i128..70, -70i128..70).prop_map(|(x, y, z)| VoxelCoordinate::new(x, y, z))
 }
 
 pub fn brick_coordinate() -> impl Strategy<Value = BrickCoordinate> {
     let component = || {
         prop_oneof![
-            5 => -4i64..4,
+            5 => -4i128..4,
             2 => BRICK_COORDINATE_MINIMUM..=BRICK_COORDINATE_MAXIMUM,
             1 => Just(BRICK_COORDINATE_MINIMUM),
             1 => Just(BRICK_COORDINATE_MAXIMUM),

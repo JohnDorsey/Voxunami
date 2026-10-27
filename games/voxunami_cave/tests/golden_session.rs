@@ -31,7 +31,7 @@ use voxunami_cave::plugins::cave_plugins;
 /// The height of the highest solid voxel in the column (16, 16) of the world of seed 2024. The
 /// terrain generator is frozen, so it does not change; `the_script_assumes_the_ground_it_is_built_on`
 /// checks it.
-const GROUND: i64 = 102;
+const GROUND: i128 = 102;
 
 /// The same plugins in another order: 0 as listed, 1 reversed, 2 rotated. The order must change nothing.
 fn arranged(
@@ -65,7 +65,7 @@ fn ticks(rig: &mut Rig, player: &mut common::Player, count: usize) {
     }
 }
 
-fn at(x: i64, y: i64, z: i64) -> VoxelCoordinate {
+fn at(x: i128, y: i128, z: i128) -> VoxelCoordinate {
     VoxelCoordinate::new(x, y, z)
 }
 
@@ -235,7 +235,7 @@ fn the_script_assumes_the_ground_it_is_built_on() {
     rig.settle(&mut [&mut player]);
     let camera = above_ground(&player, 16, 16, 3.0);
     // The camera is 3 above the voxel over the ground.
-    assert_eq!(common::voxels_of(&camera)[1].floor() as i64 - 4, GROUND);
+    assert_eq!(common::voxels_of(&camera)[1].floor() as i128 - 4, GROUND);
 }
 
 #[test]
@@ -327,8 +327,14 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// for their number) and nothing else (measured by the length, not frame by frame). The script runs in the overworld alone (`new_overworld_world`), as it always did: a new world is space with a planet in it.
 /// The clock (`engine:clock`, 2026-10-26, Phase 40a): the saved world hash moved once more, because a world that has ticked writes its time, and these sessions end at a tick. The stream
 /// (its hash and its length) did not move: the clock is not in any message. Windows and Linux agree.
+/// Coordinates of up to 128 bits (2026-10-27; protocol 9, the plain sections at version 2, the sections that hold poses and the generators at version 3): a coordinate is a length byte and
+/// the bytes of its zigzag value, and the octree of generator assignments is 116 levels deep where it was 56. Measured as the 2048 script was: the stream recorded with the code of the
+/// commit before and with this, and every message decoded and compared: 6,934 messages in both, 6,927 the same value for value; the welcome (it says version 9 and carries the world
+/// description, whose sections are the new versions) and six `player_presence:placed` messages (a game message, whose payload holds a brick: one byte longer for each coordinate,
+/// `6, 0, 0` before and `1, 6, 0, 0` after) differ. The bytes 7,190,182 to 7,203,981, 13,799 more, are the same values written longer. The saved world is different (the same sections, at
+/// the new versions). Windows and Linux agree.
 const PINNED: (u64, usize, u64) = (
-    14_690_758_500_541_840_281,
-    7_190_182,
-    17_602_854_914_436_767_752,
+    11_928_037_873_098_961_244,
+    7_203_981,
+    16_296_814_061_143_019_322,
 );

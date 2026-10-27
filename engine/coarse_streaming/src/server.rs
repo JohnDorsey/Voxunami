@@ -30,7 +30,7 @@ use world_storage::{BrickSource, LevelData, WorldData};
 use crate::messages::{CoarseNodeUpdate, CoarseNodes, MAXIMUM_UPDATES, SetDetail};
 
 /// A node: its grid, its detail level and the origin of its cube, which is a total order that has the finest first when sorted by level.
-type Key = (u8, GridId, [i64; 3]);
+type Key = (u8, GridId, [i128; 3]);
 
 fn key_of(grid: GridId, cube: BrickCube) -> Key {
     let origin = cube.origin();
@@ -267,14 +267,14 @@ fn remake(
         .terrain
         .coarse_node(cube, config.unlit)
         .unwrap_or_else(|| CoarseNode::uniform(CoarseCell::empty(config.air, config.unlit)));
-    let half = (cube.edge_length() / 2) as i64;
+    let half = (cube.edge_length() / 2) as i128;
     let origin = cube.origin();
     let mut touched = false;
     for octant in 0..8usize {
         let (dx, dy, dz) = (
-            (octant & 1) as i64,
-            ((octant >> 1) & 1) as i64,
-            (octant >> 2) as i64,
+            (octant & 1) as i128,
+            ((octant >> 1) & 1) as i128,
+            (octant >> 2) as i128,
         );
         let child_origin = BrickCoordinate::new(
             origin.x() + dx * half,
@@ -662,7 +662,7 @@ mod tests {
 
     use super::*;
 
-    fn cube(x: i64, level: u8) -> BrickCube {
+    fn cube(x: i128, level: u8) -> BrickCube {
         BrickCube::new(BrickCoordinate::new(x, 0, 0), level).expect("the origin is aligned")
     }
 
@@ -673,7 +673,7 @@ mod tests {
         }
     }
 
-    fn key(x: i64, level: u8) -> Key {
+    fn key(x: i128, level: u8) -> Key {
         key_of(GridId::MAIN, cube(x, level))
     }
 
@@ -872,7 +872,7 @@ mod tests {
         assert!(other.overrides.contains_key(&key(64, 1)));
     }
 
-    fn at(x: i64) -> WorldPosition {
+    fn at(x: i128) -> WorldPosition {
         WorldPosition::new(BrickCoordinate::new(x, 0, 0), [16.0; 3])
     }
 
@@ -970,7 +970,7 @@ mod tests {
     fn a_brick_at_the_edge_of_its_cube_marks_the_cubes_on_both_sides() {
         let mut state = State::default();
         state.mark_brick(GridId::MAIN, BrickCoordinate::new(1, 1, 1), 12);
-        let origins: Vec<[i64; 3]> = state.dirty.iter().map(|key| key.2).collect();
+        let origins: Vec<[i128; 3]> = state.dirty.iter().map(|key| key.2).collect();
         assert_eq!(origins, [[0, 0, 0], [0, 0, 2], [0, 2, 0], [2, 0, 0]]);
     }
 
@@ -1009,13 +1009,13 @@ mod tests {
 
     #[test]
     fn updates_are_put_in_messages_of_at_most_the_limit_in_order() {
-        let update = |x: i64| CoarseNodeUpdate {
+        let update = |x: i128| CoarseNodeUpdate {
             grid: GridId::MAIN,
             cube: cube(x * 2, 1),
             node: None,
         };
         assert!(in_messages(Vec::new()).is_empty());
-        let updates: Vec<_> = (0..(2 * MAXIMUM_UPDATES as i64 + 3)).map(update).collect();
+        let updates: Vec<_> = (0..(2 * MAXIMUM_UPDATES as i128 + 3)).map(update).collect();
         let messages = in_messages(updates.clone());
         let decoded: Vec<Vec<CoarseNodeUpdate>> = messages
             .iter()

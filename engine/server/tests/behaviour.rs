@@ -113,9 +113,9 @@ impl Harness {
                     .channel_index(&id("core:block"))
                     .unwrap();
                 let at = VoxelCoordinate::new(
-                    i64::from(payload[0] as i8),
-                    i64::from(payload[1] as i8),
-                    i64::from(payload[2] as i8),
+                    i128::from(payload[0] as i8),
+                    i128::from(payload[1] as i8),
+                    i128::from(payload[2] as i8),
                 );
                 world
                     .grid(GridId::root(LevelIndex::MAIN))
@@ -1250,9 +1250,9 @@ fn level_placing_logic() -> ScriptedLogic {
                 .channel_index(&id("core:block"))
                 .unwrap();
             let at = VoxelCoordinate::new(
-                i64::from(payload[1] as i8),
-                i64::from(payload[2] as i8),
-                i64::from(payload[3] as i8),
+                i128::from(payload[1] as i8),
+                i128::from(payload[2] as i8),
+                i128::from(payload[3] as i8),
             );
             world
                 .grid(GridId::root(LevelIndex::new(u32::from(payload[0]))))
@@ -1776,7 +1776,7 @@ fn cow_catalog() -> EntityCatalog {
     catalog
 }
 
-fn pose_in(brick_x: i64, offset_x: f32) -> EntityPose {
+fn pose_in(brick_x: i128, offset_x: f32) -> EntityPose {
     EntityPose::new(
         GridId::MAIN,
         WorldPosition::new(BrickCoordinate::new(brick_x, 0, 0), [offset_x, 5.0, 5.0]),
@@ -2157,7 +2157,7 @@ fn replication_benchmark() {
         let (_game, mut harness) = herd_harness(move |tick, world| {
             if tick.get() == 1 {
                 for index in 0..ENTITIES {
-                    let brick_x = (index % 8) as i64 - 4;
+                    let brick_x = (index % 8) as i128 - 4;
                     world
                         .spawn_entity(
                             &id("test:cow"),
@@ -2169,7 +2169,7 @@ fn replication_benchmark() {
             } else if moving_every > 0 {
                 for index in 0..ENTITIES {
                     if (index + tick.get()) % moving_every == 0 {
-                        let brick_x = (index % 8) as i64 - 4;
+                        let brick_x = (index % 8) as i128 - 4;
                         let offset = ((index + tick.get()) % 30) as f32;
                         world
                             .set_entity_pose(EntityId::new(index + 1), pose_in(brick_x, offset))
@@ -2439,7 +2439,7 @@ fn a_hidden_entity_is_told_to_nobody_and_showing_it_again_tells_those_who_can_se
 
 // ---- ships ----
 
-fn ship_pose(brick_x: i64) -> GridPose {
+fn ship_pose(brick_x: i128) -> GridPose {
     GridPose::new(
         WorldPosition::new(BrickCoordinate::new(brick_x, 0, 0), [0.0; 3]),
         Orientation::IDENTITY,
@@ -2447,7 +2447,7 @@ fn ship_pose(brick_x: i64) -> GridPose {
 }
 
 /// Sets voxels of a ship (block values), in the ship's own coordinates.
-fn build(world: &mut server::ServerWorld, ship: GridId, voxels: &[([i64; 3], u32)]) {
+fn build(world: &mut server::ServerWorld, ship: GridId, voxels: &[([i128; 3], u32)]) {
     let block = world
         .data()
         .main()
@@ -2839,7 +2839,7 @@ fn a_ship_removed_in_the_tick_it_was_edited_is_gone_from_the_picture_without_tro
 // ---- entities aboard ships ----
 
 /// A pose in the frame of a ship at a brick and an offset of its own coordinates.
-fn aboard_at(ship: GridId, brick_x: i64, offset_x: f32) -> EntityPose {
+fn aboard_at(ship: GridId, brick_x: i128, offset_x: f32) -> EntityPose {
     EntityPose::new(
         ship,
         WorldPosition::new(BrickCoordinate::new(brick_x, 0, 0), [offset_x, 5.0, 5.0]),

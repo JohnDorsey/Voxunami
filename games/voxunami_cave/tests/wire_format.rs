@@ -45,7 +45,8 @@ fn cave_messages_have_their_pinned_bytes() {
         (
             "a spawn",
             Spawn(pose).encode(),
-            "06030e0000c03f85ebff41000000000000803e000080bf",
+            // (Protocol 9: a coordinate is a length and the bytes of its zigzag value: the brick (3, -2, 7) is 01 06, 01 03, 01 0e.)
+            "01060103010e0000c03f85ebff41000000000000803e000080bf",
         ),
         (
             "a movement request",
@@ -55,12 +56,14 @@ fn cave_messages_have_their_pinned_bytes() {
         (
             "a block to set",
             set_block.encode(),
-            "004f90030a10626173655f626c6f636b733a6c616d700306",
+            // (The voxel (-40, 200, 5) is 01 4f, 02 90 01, 01 0a.)
+            "00014f029001010a10626173655f626c6f636b733a6c616d700306",
         ),
         (
             "a block to set in a ship",
             set_block_in_a_ship.encode(),
-            "878080801002040603613a620000",
+            // (The voxel (1, 2, 3) is 01 02, 01 04, 01 06.)
+            "878080801001020104010603613a620000",
         ),
         ("no light scheme", LightSchemeChanged(None).encode(), "00"),
         (

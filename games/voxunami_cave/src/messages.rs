@@ -9,7 +9,7 @@ use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
 use physics::MoveInput;
 use player_presence::{PlayerPose, PoseReport};
-use protocol::Message;
+use protocol::{Message, read_voxel_coordinate, write_voxel_coordinate};
 use voxel_space::{FaceDirection, GridId, VoxelCoordinate};
 
 use crate::multiscale_light::LightScheme;
@@ -149,9 +149,7 @@ impl Message for SetBlock {
     fn encode(&self) -> Vec<u8> {
         let mut writer = ByteWriter::new();
         writer.write_varint(self.grid.get());
-        for component in [self.at.x(), self.at.y(), self.at.z()] {
-            writer.write_signed_varint(component);
-        }
+        write_voxel_coordinate(&mut writer, self.at);
         writer.write_identifier(&self.block);
         writer.write_varint(u64::from(self.state));
         // 0 for none, else 1 plus the face's index.
@@ -162,12 +160,7 @@ impl Message for SetBlock {
     fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = ByteReader::new(payload);
         let grid = GridId::new(reader.read_varint()?);
-        let at = VoxelCoordinate::try_new(
-            reader.read_signed_varint()?,
-            reader.read_signed_varint()?,
-            reader.read_signed_varint()?,
-        )
-        .map_err(|_| DecodeError::Invalid("a voxel coordinate is out of range"))?;
+        let at = read_voxel_coordinate(&mut reader)?;
         let block = reader.read_identifier()?;
         let state = u32::try_from(reader.read_varint()?)
             .map_err(|_| DecodeError::Invalid("a block state is out of range"))?;

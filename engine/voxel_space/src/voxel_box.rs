@@ -51,13 +51,13 @@ impl VoxelBox {
 
     /// Moves the upper corner outward by non-negative amounts, stopping at the coordinate range
     /// limit. Panics if an amount is negative.
-    pub fn extended_upper(self, dx: i64, dy: i64, dz: i64) -> Self {
+    pub fn extended_upper(self, dx: i128, dy: i128, dz: i128) -> Self {
         assert!(
             dx >= 0 && dy >= 0 && dz >= 0,
             "extension must not be negative"
         );
         let extend =
-            |value: i64, amount: i64| value.saturating_add(amount).min(VOXEL_COORDINATE_MAXIMUM);
+            |value: i128, amount: i128| value.saturating_add(amount).min(VOXEL_COORDINATE_MAXIMUM);
         Self {
             min: self.min,
             max: VoxelCoordinate::new(
@@ -76,7 +76,7 @@ mod tests {
     use super::*;
     use crate::test_support::{brick_coordinate, voxel_coordinate};
 
-    fn voxel(x: i64, y: i64, z: i64) -> VoxelCoordinate {
+    fn voxel(x: i128, y: i128, z: i128) -> VoxelCoordinate {
         VoxelCoordinate::new(x, y, z)
     }
 
@@ -131,7 +131,7 @@ mod tests {
             VOXEL_COORDINATE_MAXIMUM
         );
         assert_eq!(
-            near_limit.extended_upper(0, i64::MAX, 0).max().y(),
+            near_limit.extended_upper(0, i128::MAX, 0).max().y(),
             VOXEL_COORDINATE_MAXIMUM
         );
     }

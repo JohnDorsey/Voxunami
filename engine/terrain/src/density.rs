@@ -156,7 +156,7 @@ mod tests {
     use super::*;
     use crate::noise::Dimensionality;
 
-    fn voxel(x: i64, y: i64, z: i64) -> VoxelCoordinate {
+    fn voxel(x: i128, y: i128, z: i128) -> VoxelCoordinate {
         VoxelCoordinate::new(x, y, z)
     }
 
@@ -331,8 +331,8 @@ mod tests {
         );
     }
 
-    fn component() -> impl Strategy<Value = i64> {
-        prop_oneof![-500i64..500, ((1i64 << 40) - 300)..((1i64 << 40) + 300)]
+    fn component() -> impl Strategy<Value = i128> {
+        prop_oneof![-500i128..500, ((1i128 << 40) - 300)..((1i128 << 40) + 300)]
     }
 
     proptest! {
@@ -343,7 +343,7 @@ mod tests {
         fn cave_bounds_contain_samples_and_use_the_absolute_value(
             seed in any::<u64>(),
             base in [component(), component(), component()],
-            size in [0i64..40, 0..40, 0..40],
+            size in [0i128..40, 0..40, 0..40],
         ) {
             let caves = ShellCaves::new(
                 FractalNoise::standard(seed, Dimensionality::Volumetric, 9, 1, 1.0, 0.5),
@@ -371,7 +371,7 @@ mod tests {
         fn composed_field_bounds_contain_samples(
             seed in any::<u64>(),
             base in [component(), component(), component()],
-            size in [0i64..40, 0..40, 0..40],
+            size in [0i128..40, 0..40, 0..40],
             offsets in proptest::collection::vec([0.0f64..=1.0, 0.0..=1.0, 0.0..=1.0], 16),
             detail in 0u8..6,
         ) {
@@ -394,9 +394,9 @@ mod tests {
             let bounds = field.bounds(&region, detail);
             for fraction in offsets {
                 let point = voxel(
-                    base[0] + (fraction[0] * size[0] as f64) as i64,
-                    base[1] + (fraction[1] * size[1] as f64) as i64,
-                    base[2] + (fraction[2] * size[2] as f64) as i64,
+                    base[0] + (fraction[0] * size[0] as f64) as i128,
+                    base[1] + (fraction[1] * size[1] as f64) as i128,
+                    base[2] + (fraction[2] * size[2] as f64) as i128,
                 );
                 let value = field.sample(point, detail);
                 prop_assert!(
@@ -411,7 +411,7 @@ mod tests {
         fn composed_field_bounds_through_finer_contain_samples_at_every_finer_level(
             seed in any::<u64>(),
             base in [component(), component(), component()],
-            size in [0i64..40, 0..40, 0..40],
+            size in [0i128..40, 0..40, 0..40],
             offsets in proptest::collection::vec([0.0f64..=1.0, 0.0..=1.0, 0.0..=1.0], 8),
             detail in 0u8..8,
         ) {
@@ -435,9 +435,9 @@ mod tests {
                 let finer = LevelOfDetail::new(finer).unwrap();
                 for fraction in &offsets {
                     let point = voxel(
-                        base[0] + (fraction[0] * size[0] as f64) as i64,
-                        base[1] + (fraction[1] * size[1] as f64) as i64,
-                        base[2] + (fraction[2] * size[2] as f64) as i64,
+                        base[0] + (fraction[0] * size[0] as f64) as i128,
+                        base[1] + (fraction[1] * size[1] as f64) as i128,
+                        base[2] + (fraction[2] * size[2] as f64) as i128,
                     );
                     let value = field.sample(point, finer);
                     prop_assert!(

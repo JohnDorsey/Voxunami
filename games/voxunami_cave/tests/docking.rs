@@ -779,7 +779,7 @@ fn a_command_to_undock_on_a_ship_with_nothing_docked_says_so() {
 }
 
 /// Stone blocks along x from `from` to `to` (not including it), at this height and depth.
-fn stones_at_height(from: i64, to: i64, y: i64, z: i64) -> Vec<Placed> {
+fn stones_at_height(from: i128, to: i128, y: i128, z: i128) -> Vec<Placed> {
     (from..to).map(|x| ([x, y, z], stone(), PLAIN)).collect()
 }
 
@@ -950,7 +950,7 @@ fn build_a_port_on_the_planet(scene: &mut Scene) {
     });
 }
 
-fn block_of_the_planet(scene: &mut Scene, at: [i64; 3]) -> u32 {
+fn block_of_the_planet(scene: &mut Scene, at: [i128; 3]) -> u32 {
     let found = std::sync::Arc::new(std::sync::Mutex::new(u32::MAX));
     let slot = std::sync::Arc::clone(&found);
     let channel = CaveContent::new().block_channel();
@@ -1309,7 +1309,7 @@ fn the_player_beside_a_planet_sees_a_ship_dock_with_it_and_leave_it() {
     use common::{say, tick_and_follow};
     let (mut scene, mut player) = a_planet_with_a_ship_docked_and_a_player();
     let channel = CaveContent::new().block_channel();
-    let seen = |player: &common::Player, at: [i64; 3]| {
+    let seen = |player: &common::Player, at: [i128; 3]| {
         player
             .client()
             .world()
@@ -1342,7 +1342,7 @@ fn of_two_docked_sides_that_float_over_the_ground_of_a_planet_the_smaller_leaves
     // under it (two blocks), all stored in the planet and joined to nothing else.
     scene.run(move |world| {
         let mut view = world.grid(ship_id(0)).unwrap();
-        let mut put = |at: [i64; 3], block: u32, face: Option<FaceDirection>| {
+        let mut put = |at: [i128; 3], block: u32, face: Option<FaceDirection>| {
             let voxel = VoxelCoordinate::new(at[0], at[1], at[2]);
             if let Some(face) = face {
                 let look = facing(face);

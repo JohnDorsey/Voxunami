@@ -106,7 +106,7 @@ impl GridPose {
 
     /// `origin` moved by a vector of voxels, with whole bricks carried exactly.
     fn displaced(origin: WorldPosition, vector: [f64; 3]) -> Option<WorldPosition> {
-        let mut bricks = [0i64; 3];
+        let mut bricks = [0i128; 3];
         let mut offset = [0.0f32; 3];
         let origin_offset = origin.offset();
         for axis in 0..3 {
@@ -115,7 +115,7 @@ impl GridPose {
             }
             let whole = (vector[axis] / EDGE).floor();
             // The cast saturates, and an out-of-range brick is refused below.
-            bricks[axis] = whole as i64;
+            bricks[axis] = whole as i128;
             offset[axis] = (f64::from(origin_offset[axis]) + (vector[axis] - whole * EDGE)) as f32;
         }
         let brick = origin
@@ -221,9 +221,9 @@ pub fn voxel_in_other(
     let world = from.local_to_world(centre)?;
     let local = GridPose::turn_back(to.rotation_matrix(), to.world_vector_from_origin(world));
     VoxelCoordinate::try_new(
-        local[0].floor() as i64,
-        local[1].floor() as i64,
-        local[2].floor() as i64,
+        local[0].floor() as i128,
+        local[1].floor() as i128,
+        local[2].floor() as i128,
     )
     .ok()
 }
@@ -248,13 +248,13 @@ pub fn lattice_alignment(
         to.rotation_matrix(),
         to.world_vector_from_origin(from.position),
     );
-    let mut offset = [0i64; 3];
+    let mut offset = [0i128; 3];
     for axis in 0..3 {
         let whole = origin[axis].round();
         if (origin[axis] - whole).abs() > tolerance.maximum_offset || whole.abs() > 1e18 {
             return None;
         }
-        offset[axis] = whole as i64;
+        offset[axis] = whole as i128;
     }
     // A voxel's own centre is half a voxel from its corner, and a turn moves that half voxel: the offset of voxel numbers is the
     // offset of origins plus (R * (1, 1, 1) - (1, 1, 1)) / 2, which is 0 or -1 on each axis.
@@ -272,7 +272,7 @@ mod tests {
     use super::*;
     use crate::{BRICK_COORDINATE_MAXIMUM, BRICK_COORDINATE_MINIMUM};
 
-    fn at(x: i64, y: i64, z: i64, offset: [f32; 3]) -> WorldPosition {
+    fn at(x: i128, y: i128, z: i128, offset: [f32; 3]) -> WorldPosition {
         WorldPosition::new(BrickCoordinate::new(x, y, z), offset)
     }
 
@@ -304,7 +304,7 @@ mod tests {
     }
 
     /// A pose on the lattice of the world: a lattice turn and a whole-voxel position.
-    fn lattice_pose(rotation: LatticeRotation, voxel: [i64; 3]) -> GridPose {
+    fn lattice_pose(rotation: LatticeRotation, voxel: [i128; 3]) -> GridPose {
         let position = WorldPosition::new(
             VoxelCoordinate::new(voxel[0], voxel[1], voxel[2]).split().0,
             {
@@ -402,7 +402,7 @@ mod tests {
 
     #[test]
     fn positions_a_long_way_from_the_origin_keep_their_precision() {
-        let far = 1i64 << 44;
+        let far = 1i128 << 44;
         let grid = pose(
             at(far, -far, far / 3, [10.25, 20.5, 30.75]),
             Orientation::from_yaw_pitch(0.7, 0.3),
@@ -494,7 +494,7 @@ mod tests {
         #[test]
         fn a_position_survives_a_trip_into_the_world_and_back(
             orientation in any_orientation(),
-            origin in prop::array::uniform3(-1000i64..1000),
+            origin in prop::array::uniform3(-1000i128..1000),
             local in prop::array::uniform3(-5000.0f32..5000.0),
         ) {
             let grid = pose(at(origin[0], origin[1], origin[2], [3.0, 9.0, 27.0]), orientation);
@@ -535,9 +535,9 @@ mod tests {
         fn grids_on_a_lattice_agree_on_where_every_voxel_goes_in_both_directions(
             from_rotation in any_lattice_rotation(),
             to_rotation in any_lattice_rotation(),
-            from_voxel in prop::array::uniform3(-200i64..200),
-            to_voxel in prop::array::uniform3(-200i64..200),
-            voxel in prop::array::uniform3(-100i64..100),
+            from_voxel in prop::array::uniform3(-200i128..200),
+            to_voxel in prop::array::uniform3(-200i128..200),
+            voxel in prop::array::uniform3(-100i128..100),
         ) {
             let from = lattice_pose(from_rotation, from_voxel);
             let to = lattice_pose(to_rotation, to_voxel);
@@ -591,7 +591,7 @@ mod tests {
         fn a_thing_survives_a_trip_into_the_world_and_back(
             grid_turn in any_orientation(),
             thing_turn in any_orientation(),
-            origin in prop::array::uniform3(-1000i64..1000),
+            origin in prop::array::uniform3(-1000i128..1000),
             local in prop::array::uniform3(-5000.0f32..5000.0),
         ) {
             let grid = pose(at(origin[0], origin[1], origin[2], [3.0, 9.0, 27.0]), grid_turn);

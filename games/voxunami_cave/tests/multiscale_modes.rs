@@ -62,22 +62,22 @@ fn file_label(scheme: LightScheme) -> String {
 }
 
 /// Where the platform's ground starts, and how high the flat side of it is.
-const BASE: i64 = 296;
-const FLAT: i64 = 304;
+const BASE: i128 = 296;
+const FLAT: i128 = 304;
 /// The platform is this many voxels along x and z.
-const SIZE: i64 = 96;
+const SIZE: i128 = 96;
 /// The lamp, over the middle of the platform: flat ground to one side (x below this), hills to the other.
-const LAMP: [i64; 3] = [48, 306, 48];
+const LAMP: [i128; 3] = [48, 306, 48];
 
 /// The height of the ground at a column: flat for the half of the platform on the lamp's low-x side, and for
 /// the other half hills that rise from flat at the lamp to 14 voxels over the flat across 24 voxels,
 /// as two triangle waves (no noise, so every scheme gets the same terrain on every machine).
-fn ground(x: i64, z: i64) -> i64 {
+fn ground(x: i128, z: i128) -> i128 {
     if x < LAMP[0] {
         return FLAT;
     }
     let ramp = (x - LAMP[0]).min(24);
-    let wave = |value: i64, period: i64| {
+    let wave = |value: i128, period: i128| {
         let phase = value.rem_euclid(2 * period);
         let distance = if phase < period {
             phase
@@ -125,11 +125,11 @@ fn scene_world(content: &CaveContent) -> world_storage::WorldData {
 
 #[test]
 fn the_terrain_is_flat_on_one_side_of_the_lamp_and_hilly_on_the_other() {
-    let flat: Vec<i64> = (0..LAMP[0])
+    let flat: Vec<i128> = (0..LAMP[0])
         .flat_map(|x| (0..SIZE).map(move |z| ground(x, z)))
         .collect();
     assert!(flat.iter().all(|&height| height == FLAT));
-    let hilly: Vec<i64> = (LAMP[0]..SIZE)
+    let hilly: Vec<i128> = (LAMP[0]..SIZE)
         .flat_map(|x| (0..SIZE).map(move |z| ground(x, z)))
         .collect();
     let (lowest, highest) = (*hilly.iter().min().unwrap(), *hilly.iter().max().unwrap());

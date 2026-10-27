@@ -248,7 +248,7 @@ pub fn docked_pose(
     ];
     // Where the second's origin is in the first's axes: the transform's offset, less what the turn does to the half voxel to a voxel's middle.
     let corner = turn.apply([1, 1, 1]);
-    let origin: [i64; 3] = [0, 1, 2].map(|axis| offset[axis] - (corner[axis] - 1) / 2);
+    let origin: [i128; 3] = [0, 1, 2].map(|axis| offset[axis] - (corner[axis] - 1) / 2);
     let place = {
         let (brick, local) = VoxelCoordinate::new(origin[0], origin[1], origin[2]).split();
         WorldPosition::new(brick, [local.x(), local.y(), local.z()].map(f32::from))
@@ -691,7 +691,7 @@ mod tests {
     const EAST: FaceDirection = FaceDirection::PositiveX;
     const WEST: FaceDirection = FaceDirection::NegativeX;
 
-    fn port(x: i64, y: i64, z: i64, face: FaceDirection) -> Port {
+    fn port(x: i128, y: i128, z: i128, face: FaceDirection) -> Port {
         Port {
             voxel: VoxelCoordinate::new(x, y, z),
             face,

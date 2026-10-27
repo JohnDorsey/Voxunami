@@ -19,7 +19,7 @@ use crate::density::DensityField;
 use crate::generator::{SURFACE_LAYER_DEPTH, TerrainMaterials};
 
 /// Points along an edge of a cell that the field is asked at when the bounds cannot say whether the cell is air or ground.
-const SAMPLES_PER_EDGE: i64 = 4;
+const SAMPLES_PER_EDGE: i128 = 4;
 
 /// Whether a cube of bricks of a field could show anything (see `TerrainGenerator::may_show`): not if the field is air through the cube at its level of detail and
 /// at every finer one, nor if it is ground through the cube and the cube's neighbours, which are as many cubes all round it.
@@ -27,7 +27,7 @@ pub(crate) fn cube_may_show(field: &dyn DensityField, cube: BrickCube) -> bool {
     let Some(detail) = LevelOfDetail::new(cube.level()) else {
         return true;
     };
-    let edge = (cube.edge_length() * BRICK_EDGE_LENGTH as u64) as i64;
+    let edge = (cube.edge_length() * BRICK_EDGE_LENGTH as u128) as i128;
     let origin = cube.origin().origin();
     let Some(region) = origin
         .checked_offset(edge - 1, edge - 1, edge - 1)
@@ -90,7 +90,7 @@ pub(crate) fn fills_of_field_cell_by_cell(
 ) -> Option<Vec<u8>> {
     let sampler = sampler_of(field, cube)?;
     let mut fills = vec![0u8; CELLS_PER_NODE];
-    sampler.fill_block([0, 0, 0], NODE_EDGE as i64, &mut fills);
+    sampler.fill_block([0, 0, 0], NODE_EDGE as i128, &mut fills);
     Some(fills)
 }
 
@@ -102,7 +102,7 @@ fn sampler_of(field: &dyn DensityField, cube: BrickCube) -> Option<Sampler<'_>> 
     Some(Sampler {
         field,
         detail: LevelOfDetail::new(level)?,
-        edge: 1i64 << level,
+        edge: 1i128 << level,
         origin: cube.origin().origin(),
         halo: RefCell::new(HashMap::new()),
     })
@@ -117,7 +117,7 @@ fn coarse_node_by_cells(
 
     // The fill of every cell of the node, found a block at a time where the bounds say the whole block is air or ground.
     let mut fills = vec![0u8; CELLS_PER_NODE];
-    sampler.fill_block([0, 0, 0], NODE_EDGE as i64, &mut fills);
+    sampler.fill_block([0, 0, 0], NODE_EDGE as i128, &mut fills);
     if fills.iter().all(|&fill| fill == 0) {
         return CoarseNode::uniform(CoarseCell::empty(air, unlit));
     }
@@ -136,19 +136,19 @@ fn coarse_node_by_cells(
 /// surface layer of ground over it, stone otherwise) and the surface it shows. `up` is the step to the cell over a cell: the layers look along it, outward.
 pub(crate) fn coarse_node_from_fills(
     fills: &[u8],
-    fill_outside: &dyn Fn([i64; 3]) -> u8,
-    up: [i64; 3],
-    edge: i64,
+    fill_outside: &dyn Fn([i128; 3]) -> u8,
+    up: [i128; 3],
+    edge: i128,
     materials: TerrainMaterials,
     unlit: u8,
 ) -> CoarseNode {
     let air = materials.air;
-    let index = |cell: [i64; 3]| (cell[0] + 32 * cell[1] + 1024 * cell[2]) as usize;
+    let index = |cell: [i128; 3]| (cell[0] + 32 * cell[1] + 1024 * cell[2]) as usize;
     // What a cell is, inside the node or beside it.
-    let fill_at = |cell: [i64; 3]| {
+    let fill_at = |cell: [i128; 3]| {
         if cell
             .iter()
-            .all(|&component| (0..NODE_EDGE as i64).contains(&component))
+            .all(|&component| (0..NODE_EDGE as i128).contains(&component))
         {
             fills[index(cell)]
         } else {
@@ -157,9 +157,9 @@ pub(crate) fn coarse_node_from_fills(
     };
 
     let mut cells = Vec::with_capacity(CELLS_PER_NODE);
-    for z in 0..NODE_EDGE as i64 {
-        for y in 0..NODE_EDGE as i64 {
-            for x in 0..NODE_EDGE as i64 {
+    for z in 0..NODE_EDGE as i128 {
+        for y in 0..NODE_EDGE as i128 {
+            for x in 0..NODE_EDGE as i128 {
                 let cell = [x, y, z];
                 let fill = fills[index(cell)];
                 if fill == 0 {
@@ -221,16 +221,16 @@ struct Sampler<'a> {
     field: &'a dyn DensityField,
     detail: LevelOfDetail,
     /// Voxels along an edge of a cell.
-    edge: i64,
+    edge: i128,
     /// The lowest corner of the node.
     origin: VoxelCoordinate,
     /// Cells beside the node that were asked about.
-    halo: RefCell<HashMap<[i64; 3], u8>>,
+    halo: RefCell<HashMap<[i128; 3], u8>>,
 }
 
 impl Sampler<'_> {
     /// The box of `size` cells along an edge whose lowest cell is `cell` (numbered from the node's), if the world has the room for it.
-    fn region(&self, cell: [i64; 3], size: i64) -> Option<VoxelBox> {
+    fn region(&self, cell: [i128; 3], size: i128) -> Option<VoxelBox> {
         let low = self.origin.checked_offset(
             cell[0] * self.edge,
             cell[1] * self.edge,
@@ -248,14 +248,14 @@ impl Sampler<'_> {
     /// cell of the node is stone, whole and with no surface.
     fn is_sealed_ground(&self) -> bool {
         // The layers look up until the ground over a cell is as deep as the surface layer.
-        let above = (SURFACE_LAYER_DEPTH as i64 + self.edge - 1) / self.edge;
+        let above = (SURFACE_LAYER_DEPTH as i128 + self.edge - 1) / self.edge;
         let low = self
             .origin
             .checked_offset(-self.edge, -self.edge, -self.edge);
         let high = self.origin.checked_offset(
-            (NODE_EDGE as i64 + 1) * self.edge - 1,
-            (NODE_EDGE as i64 + above) * self.edge - 1,
-            (NODE_EDGE as i64 + 1) * self.edge - 1,
+            (NODE_EDGE as i128 + 1) * self.edge - 1,
+            (NODE_EDGE as i128 + above) * self.edge - 1,
+            (NODE_EDGE as i128 + 1) * self.edge - 1,
         );
         let Some(region) = low
             .zip(high)
@@ -268,7 +268,7 @@ impl Sampler<'_> {
 
     /// Fills `out` (the fills of the node, x fastest) for the block of `size` cells along an edge from `base`: all of it at once where the bounds say
     /// the whole block is air or ground, and a cell at a time otherwise.
-    fn fill_block(&self, base: [i64; 3], size: i64, out: &mut [u8]) {
+    fn fill_block(&self, base: [i128; 3], size: i128, out: &mut [u8]) {
         let set = |value: u8, out: &mut [u8]| {
             for z in base[2]..base[2] + size {
                 for y in base[1]..base[1] + size {
@@ -308,7 +308,7 @@ impl Sampler<'_> {
     }
 
     /// The fill of a cell beside the node, remembered.
-    fn fill_outside(&self, cell: [i64; 3]) -> u8 {
+    fn fill_outside(&self, cell: [i128; 3]) -> u8 {
         if let Some(&fill) = self.halo.borrow().get(&cell) {
             return fill;
         }
@@ -319,7 +319,7 @@ impl Sampler<'_> {
 
     /// How full one cell is, 0 to 255: 0 if the bounds say it is all air and 255 if they say it is all ground; for a cell that is neither, the share of a
     /// lattice of points in it where the field says ground (1 to 254 if some are and some are not).
-    fn fill_of_cell(&self, cell: [i64; 3]) -> u8 {
+    fn fill_of_cell(&self, cell: [i128; 3]) -> u8 {
         let Some(region) = self.region(cell, 1) else {
             return 0;
         };
@@ -337,7 +337,7 @@ impl Sampler<'_> {
         for z in 0..SAMPLES_PER_EDGE {
             for y in 0..SAMPLES_PER_EDGE {
                 for x in 0..SAMPLES_PER_EDGE {
-                    let at = |sample: i64, origin: i64| {
+                    let at = |sample: i128, origin: i128| {
                         origin + (2 * sample + 1) * self.edge / (2 * SAMPLES_PER_EDGE)
                     };
                     let position = VoxelCoordinate::try_new(
@@ -424,7 +424,7 @@ mod tests {
         }
     }
 
-    fn node(field: &dyn DensityField, brick: [i64; 3], level: u8) -> Option<CoarseNode> {
+    fn node(field: &dyn DensityField, brick: [i128; 3], level: u8) -> Option<CoarseNode> {
         let cube =
             BrickCube::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), level).unwrap();
         coarse_node_of_field(field, materials(), cube, UNLIT)
@@ -438,13 +438,13 @@ mod tests {
     /// what asking about every cell gives.
     fn assert_the_shortcut_changes_nothing(
         field: &dyn DensityField,
-        bricks: std::ops::Range<i64>,
+        bricks: std::ops::Range<i128>,
         at_least_solid: usize,
     ) {
         let mut sealed = 0;
         for level in 1..=6u8 {
-            let edge = 1i64 << level;
-            let aligned = |range: &std::ops::Range<i64>| {
+            let edge = 1i128 << level;
+            let aligned = |range: &std::ops::Range<i128>| {
                 (range.start.div_euclid(edge)..=(range.end.div_euclid(edge))).map(move |n| n * edge)
             };
             for x in aligned(&bricks) {
@@ -564,7 +564,7 @@ mod tests {
         );
     }
 
-    fn cube_at(origin: [i64; 3], level: u8) -> BrickCube {
+    fn cube_at(origin: [i128; 3], level: u8) -> BrickCube {
         BrickCube::new(BrickCoordinate::new(origin[0], origin[1], origin[2]), level).unwrap()
     }
 
@@ -610,8 +610,8 @@ mod tests {
     fn a_cube_is_judged_by_every_voxel_of_it_and_by_all_the_room_round_it_on_every_axis_and_both_sides()
      {
         for axis in 0..3 {
-            let along = |count: i64| {
-                let mut origin = [0i64; 3];
+            let along = |count: i128| {
+                let mut origin = [0i128; 3];
                 origin[axis] = count;
                 origin
             };
@@ -650,7 +650,7 @@ mod tests {
             high_side_is_positive: bool,
         }
         impl Cliff {
-            fn height(&self, along: i64) -> f64 {
+            fn height(&self, along: i128) -> f64 {
                 if (along >= 0) == self.high_side_is_positive {
                     300.0
                 } else {
@@ -688,7 +688,7 @@ mod tests {
                 };
                 // A level 2 cube is 128 voxels: the one from 0 to 127 along the axis is on the positive side, the one from -128 to -1 on the negative.
                 let high_side = if high_side_is_positive { 0 } else { -4 };
-                let mut origin = [0i64; 3];
+                let mut origin = [0i128; 3];
                 origin[axis] = high_side;
                 // Heights 0 to 127 (the cube is ground all through, as are the cubes over and under it), against the plane: across it the ground is only 40 high.
                 origin[1] = 0;
@@ -790,7 +790,7 @@ mod tests {
             };
             let generator = rolling_hills(settings, fixture.material, materials());
             for level in 0..=3u8 {
-                let width = 1i64 << level;
+                let width = 1i128 << level;
                 // Cubes from well under the surface (near 64 voxels, hills 100 either way) to well over it.
                 for x in 0..3 {
                     for z in 0..3 {
@@ -801,7 +801,7 @@ mod tests {
                                 continue;
                             }
                             pruned += 1;
-                            let edge = cube.edge_length() as i64;
+                            let edge = cube.edge_length() as i128;
                             let origin = cube.origin();
                             for bx in 0..edge {
                                 for by in 0..edge {

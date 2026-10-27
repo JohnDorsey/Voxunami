@@ -524,9 +524,9 @@ fn blocks_built_in_space_near_a_planet_on_a_fast_orbit_are_not_solid_to_what_goe
     // A slab of stone, 40 by 40, in the level (not on the planet) eighty voxels over the pole, where the world is: it stands still in the world.
     let planet = voxels(&scene, WANDERER);
     let corner = [
-        planet[0] as i64 - 20,
-        planet[1] as i64 + 10_100,
-        planet[2] as i64 - 20,
+        planet[0] as i128 - 20,
+        planet[1] as i128 + 10_100,
+        planet[2] as i128 - 20,
     ];
     let content = CaveContent::new();
     scene.run(move |world| {

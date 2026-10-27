@@ -742,12 +742,12 @@ mod tests {
         GridId::new(GridId::FIRST_ALLOCATED + 5)
     }
 
-    fn sample_grid_pose(brick_x: i64) -> GridPose {
+    fn sample_grid_pose(brick_x: i128) -> GridPose {
         let pose = sample_pose(brick_x);
         GridPose::new(pose.position, pose.orientation)
     }
 
-    fn sample_pose(brick_x: i64) -> EntityPose {
+    fn sample_pose(brick_x: i128) -> EntityPose {
         EntityPose::new(
             voxel_space::GridId::root(LevelIndex::new(1)),
             voxel_space::WorldPosition::new(BrickCoordinate::new(brick_x, 0, 1), [0.5, 31.0, 2.0]),
@@ -857,7 +857,7 @@ mod tests {
                 resulting_digest: 1,
             }
             .encode(),
-            [4, 1, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0xAC, 2, 5]
+            [4, 1, 1, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0xAC, 2, 5]
         );
         assert_eq!(
             ServerMessage::InterestChanged {
@@ -869,7 +869,7 @@ mod tests {
                 }],
             }
             .encode(),
-            [2, 2, 1, 1, 1, 2, 2, 2, 1, 0, 0, 0, 0, 3]
+            [2, 2, 1, 1, 1, 1, 1, 1, 1, 2, 1, 2, 1, 2, 1, 0, 0, 0, 0, 3]
         );
     }
 
@@ -912,7 +912,7 @@ mod tests {
             writer.write_u8(KIND_VOXEL_EDITS);
             writer.write_varint(0); // level
             for coordinate in [0, 0, 0] {
-                writer.write_signed_varint(coordinate);
+                writer.write_wide_signed(coordinate);
             }
             writer.write_u64(0); // digest
             writer.write_varint(1); // one change
@@ -939,11 +939,11 @@ mod tests {
             terrain(&mut writer);
             writer.into_bytes()
         };
-        let box_of = |low: [i64; 3], high: [i64; 3]| {
+        let box_of = |low: [i128; 3], high: [i128; 3]| {
             move |writer: &mut ByteWriter| {
                 for corner in [low, high] {
                     for component in corner {
-                        writer.write_signed_varint(component);
+                        writer.write_wide_signed(component);
                     }
                 }
             }

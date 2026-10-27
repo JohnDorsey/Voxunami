@@ -300,10 +300,10 @@ mod tests {
                     ribbon[2][1] - ribbon[0][1],
                     ribbon[2][2] - ribbon[0][2],
                 ];
-                assert_eq!(across.iter().map(|c| c.abs()).sum::<i64>(), 2, "{start:?}");
+                assert_eq!(across.iter().map(|c| c.abs()).sum::<i128>(), 2, "{start:?}");
                 let along = start.offset();
                 assert_eq!(
-                    (0..3).map(|axis| across[axis] * along[axis]).sum::<i64>(),
+                    (0..3).map(|axis| across[axis] * along[axis]).sum::<i128>(),
                     0,
                     "{start:?} {rolled}"
                 );

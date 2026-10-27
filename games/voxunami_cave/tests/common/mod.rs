@@ -32,7 +32,7 @@ use voxunami_cave::game::Cave;
 use voxunami_cave::plugins::cave_plugins;
 use world_storage::{MemoryShipFiles, ParsedWorld, ShipFileName, ShipFiles};
 
-pub const VIEW_RADIUS: i64 = 3;
+pub const VIEW_RADIUS: i128 = 3;
 pub const SEED: u64 = 2024;
 
 pub type Player = Session<Box<dyn Connection>, Cave>;
@@ -210,7 +210,7 @@ impl Rig {
 }
 
 /// The height of the highest solid voxel in the column holding `at`, as the player sees it.
-pub fn ground_height(player: &Player, x: i64, z: i64) -> i64 {
+pub fn ground_height(player: &Player, x: i128, z: i128) -> i128 {
     (-100..400)
         .rev()
         .find(|&y| player.mesher().is_opaque_at(VoxelCoordinate::new(x, y, z)) == Some(true))
@@ -218,7 +218,7 @@ pub fn ground_height(player: &Player, x: i64, z: i64) -> i64 {
 }
 
 /// A camera `height` voxels above the ground of a column, looking straight down.
-pub fn above_ground(player: &Player, x: i64, z: i64, height: f32) -> Camera {
+pub fn above_ground(player: &Player, x: i128, z: i128, height: f32) -> Camera {
     let ground = ground_height(player, x, z) as f32 + 1.0;
     let mut camera = camera_at(
         [x as f64 + 0.5, f64::from(ground + height), z as f64 + 0.5],
@@ -323,7 +323,7 @@ pub fn flat_floor(scene: &mut Scene) {
 
 /// A deck of stone `length` along x, 8 along z and 2 thick, held, with its origin at `(x, height above the floor, 20)`: its top is
 /// `height + 2` above the floor.
-pub fn deck(scene: &mut Scene, x: f32, height: f32, length: i64) {
+pub fn deck(scene: &mut Scene, x: f32, height: f32, length: i128) {
     make_ship(
         scene,
         pose_at(x, FLOOR + height, 20.0),
@@ -385,7 +385,7 @@ pub fn eyes_in_their_frame(scene: &Scene, number: u32) -> [f64; 3] {
 
 /// A raft of stone, one thick and `size` by `size` voxels, built in the air with its lowest corner at the voxel `(x, y, z)`: blocks
 /// that were built and are joined to nothing else, which `/ship create` makes a ship of.
-pub fn build_raft(scene: &mut Scene, x: i64, y: i64, z: i64, size: i64) {
+pub fn build_raft(scene: &mut Scene, x: i128, y: i128, z: i128, size: i128) {
     let content = CaveContent::new();
     scene.run(move |world| {
         for across in 0..size {
@@ -452,7 +452,7 @@ pub fn say(scene: &mut Scene, player: &mut Player, command: &str) -> String {
 }
 
 /// The block in a voxel of the main level, as the server has it (this takes a tick).
-pub fn block_at(scene: &mut Scene, at: [i64; 3]) -> u32 {
+pub fn block_at(scene: &mut Scene, at: [i128; 3]) -> u32 {
     let content = CaveContent::new();
     let found = Arc::new(Mutex::new(None));
     let slot = Arc::clone(&found);
@@ -471,7 +471,7 @@ pub fn block_at(scene: &mut Scene, at: [i64; 3]) -> u32 {
 }
 
 /// Stone at a voxel of the main level (this takes a tick).
-pub fn put_stone(scene: &mut Scene, at: [i64; 3]) {
+pub fn put_stone(scene: &mut Scene, at: [i128; 3]) {
     let content = CaveContent::new();
     scene.run(move |world| {
         world
@@ -533,8 +533,8 @@ pub fn make_ship(
     scene: &mut Scene,
     pose: GridPose,
     held: bool,
-    size: [i64; 3],
-    solid: impl Fn([i64; 3]) -> bool + Send + 'static,
+    size: [i128; 3],
+    solid: impl Fn([i128; 3]) -> bool + Send + 'static,
 ) {
     let content = CaveContent::new();
     scene.run(move |world| {
@@ -764,7 +764,7 @@ impl Scene {
 
 /// The height, in the planet's own coordinates, of the highest block that is not air in the column of voxels at `x` and `z`, as the planet's generator makes it
 /// (caves and all).
-pub fn top_of_the_column(x: i64, z: i64) -> i64 {
+pub fn top_of_the_column(x: i128, z: i128) -> i128 {
     let content = CaveContent::new();
     let world = content.new_overworld_world(SEED);
     let layout = Arc::clone(world.main().overrides.layout());
@@ -785,7 +785,7 @@ pub fn top_of_the_column(x: i64, z: i64) -> i64 {
                 z.rem_euclid(32) as u8,
             );
             if brick.get(content.block_channel(), local) != content.blocks.air {
-                return brick_y * 32 + i64::from(local_y);
+                return brick_y * 32 + i128::from(local_y);
             }
         }
     }

@@ -471,7 +471,7 @@ fn planet_detail(maximum_distance: f64) -> CoarseDetail {
 /// Whether any brick of the cube is in the box.
 fn meets(extent: BrickBox, cube: BrickCube) -> bool {
     let origin = cube.origin();
-    let last = cube.edge_length() as i64 - 1;
+    let last = cube.edge_length() as i128 - 1;
     BrickBox::new(
         origin,
         BrickCoordinate::new(origin.x() + last, origin.y() + last, origin.z() + last),
@@ -574,7 +574,7 @@ fn a_recording_of_a_player_who_saw_a_planet_in_detail_shows_the_same_nodes() {
 fn distance_to_node(cube: BrickCube, from: [f64; 3]) -> f64 {
     let edge = cube.edge_length() as f64 * 32.0;
     let origin = cube.origin();
-    let along = |first: i64, at: f64| {
+    let along = |first: i128, at: f64| {
         let low = first as f64 * 32.0;
         (low - at).max(at - (low + edge)).max(0.0)
     };

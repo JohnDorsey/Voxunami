@@ -34,7 +34,7 @@ fn without_the_fancy_terrain() -> Game {
 }
 
 /// The brick the generator `instance` makes at `at`, got by giving the whole cube round it to that generator in the world's main level.
-fn brick_of(world: &mut world_storage::WorldData, instance: &str, at: [i64; 3]) -> Brick {
+fn brick_of(world: &mut world_storage::WorldData, instance: &str, at: [i128; 3]) -> Brick {
     let layout = std::sync::Arc::clone(world.main().overrides.layout());
     let generator = world
         .main()
@@ -369,7 +369,7 @@ fn a_recipes_section_of_a_newer_version_is_refused_not_dropped() {
     let mut sections = sections_of(&game.save(&world));
     for section in &mut sections {
         if section.identifier == generator_recipes_id() {
-            section.version = 2;
+            section.version = world_storage::engine_sections::SUPPORTED_VERSION + 1;
         }
     }
     assert!(matches!(

@@ -32,7 +32,7 @@ pub fn voxel_random(
 mod tests {
     use super::*;
 
-    fn voxel(x: i64, y: i64, z: i64) -> VoxelCoordinate {
+    fn voxel(x: i128, y: i128, z: i128) -> VoxelCoordinate {
         VoxelCoordinate::new(x, y, z)
     }
 
@@ -94,7 +94,7 @@ mod tests {
         let mut agreements = 0u32;
         let samples = 20_000u32;
         for index in 0..samples {
-            let x = i64::from(index % 40) - 20;
+            let x = i128::from(index % 40) - 20;
             let tick = u64::from(index / 40);
             let here = voxel_random(1, tick, GridId::MAIN, voxel(x, 3, -9), 0);
             let next = voxel_random(1, tick, GridId::MAIN, voxel(x + 1, 3, -9), 0);

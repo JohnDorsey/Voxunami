@@ -25,7 +25,7 @@ struct Session {
 
 /// Two players, one recorded, in a busy world: edits by both players and by the game itself, regions
 /// that move, messages to everyone and to those nearby. `ticks` ticks are played after both joined.
-fn play_session(mut fixture: Fixture, ticks: i64) -> Session {
+fn play_session(mut fixture: Fixture, ticks: i128) -> Session {
     let (mut alice, recording) = fixture.join_recorded(&ALL_PLUGINS);
     let mut bob = fixture.join(&ALL_PLUGINS);
     alice.watch(BrickBox::around(brick(0, 0, 0), 2));
@@ -297,7 +297,7 @@ fn the_standard_session_makes_the_same_recording_on_every_platform() {
     );
 }
 
-const PINNED_RECORDING_LENGTH: usize = 84_807;
+const PINNED_RECORDING_LENGTH: usize = 84_915;
 // Phase 27c: the checksum changed once, for the protocol version in the welcome (3, was 2); the length did not, and
 // setting the version back to 2 gave the old checksum.
 // Phase 27e: both changed: the challenge is in the stream, the welcome says version 4, and joins take longer, so the game's own
@@ -307,7 +307,9 @@ const PINNED_RECORDING_LENGTH: usize = 84_807;
 // has no pose in it), and setting the version back to 6 gave the old checksum.
 // Phase 39c: the checksum changed once, for the protocol version in the welcome (8, was 7: a ship that is told of says whether it has terrain); the length did not (no ship is
 // told of in this recording), and the code of the commit before with only the version raised to 8 gives the new checksum.
-const PINNED_RECORDING_CHECKSUM: u32 = 4_219_080_669;
+// Coordinates of 128 bits (2026-10-27; protocol 9): the checksum and the length (84,807 to 84,915, 108 more) moved because a coordinate is a length byte and its bytes. Not compared frame by frame
+// with the code before (as the comment above says of this recording); the three golden sessions of the games were, and show the values the same and only the bytes longer.
+const PINNED_RECORDING_CHECKSUM: u32 = 905_310_838;
 
 #[test]
 fn identical_sessions_make_byte_identical_recordings() {

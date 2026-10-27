@@ -72,7 +72,7 @@ impl Client {
         self.send_game_message(SetDetail::kind(), detail.encode());
     }
 
-    fn stand_at(&mut self, brick: [i64; 3]) {
+    fn stand_at(&mut self, brick: [i128; 3]) {
         let pose = PlayerPose {
             position: WorldPosition::new(
                 BrickCoordinate::new(brick[0], brick[1], brick[2]),
@@ -222,17 +222,17 @@ impl Rig {
     }
 
     /// Queues the digging of every voxel in the box (to air), for the editor to do at the next tick.
-    fn dig(&self, from: [i64; 3], to: [i64; 3]) {
+    fn dig(&self, from: [i128; 3], to: [i128; 3]) {
         self.place(from, to, AIR);
     }
 
     /// Queues the filling of every voxel in the box with a block.
-    fn place(&self, from: [i64; 3], to: [i64; 3], block: u32) {
+    fn place(&self, from: [i128; 3], to: [i128; 3], block: u32) {
         self.set_channel(from, to, self.block, block);
     }
 
     /// Queues the setting of a channel to a value in every voxel in the box.
-    fn set_channel(&self, from: [i64; 3], to: [i64; 3], channel: ChannelIndex, value: u32) {
+    fn set_channel(&self, from: [i128; 3], to: [i128; 3], channel: ChannelIndex, value: u32) {
         let mut edits = self.edits.lock().unwrap();
         for x in from[0]..to[0] {
             for y in from[1]..to[1] {
@@ -254,7 +254,7 @@ impl Rig {
         panic!("the nodes are still being remade after 200 ticks");
     }
 
-    fn dig_and_settle(&mut self, from: [i64; 3], to: [i64; 3]) {
+    fn dig_and_settle(&mut self, from: [i128; 3], to: [i128; 3]) {
         self.dig(from, to);
         self.settle();
     }
@@ -505,7 +505,7 @@ fn an_edit_high_in_the_air_or_deep_in_the_ground_is_sent_though_the_cubes_it_is_
 
 /// Edits in four bricks a long way from each other, so that each is in a leaf of its own for a client a long way from all of them.
 fn dig_four_far_apart(rig: &mut Rig) {
-    for brick in [0_i64, 64, 128, 192] {
+    for brick in [0_i128, 64, 128, 192] {
         let x = brick * 32;
         rig.dig([x, 0, 0], [x + 8, 4, 8]);
     }

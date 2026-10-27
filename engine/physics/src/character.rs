@@ -11,7 +11,7 @@ use crate::terrain::{Collision, CollisionSource, build_brick};
 
 /// How far, in bricks, from its frame's origin a character may get before the frame is rebuilt
 /// around it. `f32` is exact enough far beyond this; the limit only keeps every number small.
-const FRAME_RADIUS_BRICKS: i64 = 6;
+const FRAME_RADIUS_BRICKS: i128 = 6;
 
 /// How far from the character terrain has colliders, in voxels: a few, and the way it goes in a few steps. (A brick of natural terrain costs ten
 /// milliseconds or more to generate and make colliders of, on the thread of the tick, so the 27 bricks around the one a character is in, as it first
@@ -22,7 +22,7 @@ const TERRAIN_LOOKAHEAD_SECONDS: f32 = 0.25;
 const TERRAIN_KEEP_EXTRA_VOXELS: f32 = 16.0;
 
 /// The same for the bricks of a grid that is not the one the character's frame belongs to, counted in that grid's bricks.
-const FOREIGN_RADIUS_BRICKS: i64 = 1;
+const FOREIGN_RADIUS_BRICKS: i128 = 1;
 
 /// How far, in voxels, a character that is put inside terrain is moved at most to find room, and how far
 /// at a time. An eighth is the finest a block's shape goes, so no ledge is stepped over. Two bricks is far
@@ -418,7 +418,7 @@ impl CharacterBody {
 
     fn local_position(&self, position: WorldPosition) -> Vector {
         let brick = position.brick();
-        let edge = BRICK_EDGE_LENGTH as i64;
+        let edge = BRICK_EDGE_LENGTH as i128;
         let offset = position.offset();
         Vector::new(
             ((brick.x() - self.origin.x()) * edge) as f32 + offset[0],
@@ -574,11 +574,11 @@ impl CharacterBody {
                 })
             }
         };
-        let edge = BRICK_EDGE_LENGTH as i64;
+        let edge = BRICK_EDGE_LENGTH as i128;
         let origin = [self.origin.x(), self.origin.y(), self.origin.z()].map(|brick| brick * edge);
         let center = center.to_array().map(f64::from);
-        let low = [0, 1, 2].map(|axis| (center[axis] - half[axis]).floor() as i64);
-        let high = [0, 1, 2].map(|axis| (center[axis] + half[axis]).floor() as i64);
+        let low = [0, 1, 2].map(|axis| (center[axis] - half[axis]).floor() as i128);
+        let high = [0, 1, 2].map(|axis| (center[axis] + half[axis]).floor() as i128);
         for x in low[0]..=high[0] {
             for y in low[1]..=high[1] {
                 for z in low[2]..=high[2] {
@@ -631,8 +631,8 @@ impl CharacterBody {
         let lookahead =
             TERRAIN_LOOKAHEAD_VOXELS + TERRAIN_LOOKAHEAD_SECONDS * self.velocity.length();
         let bricks_within = |distance: f32| {
-            let brick = |value: f32, origin: i64| {
-                origin.saturating_add((f64::from(value) / BRICK_EDGE_LENGTH as f64).floor() as i64)
+            let brick = |value: f32, origin: i128| {
+                origin.saturating_add((f64::from(value) / BRICK_EDGE_LENGTH as f64).floor() as i128)
             };
             let (low, high) = (
                 self.center - Vector::splat(distance),
@@ -717,7 +717,7 @@ impl CharacterBody {
             let Some(there) = grid.pose.world_to_local(here).map(|place| place.brick()) else {
                 continue;
             };
-            let near = |brick: &BrickCoordinate, radius: i64| {
+            let near = |brick: &BrickCoordinate, radius: i128| {
                 (brick.x() - there.x()).abs() <= radius
                     && (brick.y() - there.y()).abs() <= radius
                     && (brick.z() - there.z()).abs() <= radius

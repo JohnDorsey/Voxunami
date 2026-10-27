@@ -1211,9 +1211,9 @@ mod tests {
 
     impl World<'_> {
         /// The model and light at a position at most one voxel outside the centre brick.
-        fn at(&self, p: [i64; 3]) -> Option<(ModelId, u8)> {
+        fn at(&self, p: [i128; 3]) -> Option<(ModelId, u8)> {
             let outside: Vec<usize> = (0..3)
-                .filter(|&a| !(0..EDGE as i64).contains(&p[a]))
+                .filter(|&a| !(0..EDGE as i128).contains(&p[a]))
                 .collect();
             let (blocks, states, light, wrapped) = match outside[..] {
                 [] => (self.center, self.states, self.light, p),
@@ -1224,7 +1224,7 @@ mod tests {
                     let (blocks, states, light) =
                         self.neighbours[usize::from(face.index())].as_ref()?;
                     let mut wrapped = p;
-                    wrapped[axis] = p[axis].rem_euclid(EDGE as i64);
+                    wrapped[axis] = p[axis].rem_euclid(EDGE as i128);
                     (
                         blocks.as_slice(),
                         states.as_slice(),
@@ -1262,7 +1262,7 @@ mod tests {
                     let shape = world.table.shape(model);
                     for face in FaceDirection::ALL {
                         let [dx, dy, dz] = face.offset();
-                        let front = world.at([x as i64 + dx, y as i64 + dy, z as i64 + dz]);
+                        let front = world.at([x as i128 + dx, y as i128 + dy, z as i128 + dz]);
                         let hides = front.map_or(0, |(neighbour, _)| {
                             world.table.hidden_by_neighbour(model, face, neighbour)
                         });

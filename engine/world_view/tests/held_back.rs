@@ -12,7 +12,7 @@ use common::{Scene, scene};
 /// The bricks of a region that are to be drawn as bricks, in the order they are looked at.
 fn wanted_around(centre: BrickCoordinate, radius: u32) -> Vec<BrickCoordinate> {
     let region = FineRegion::new(centre, radius);
-    let reach = i64::from(radius) + 3;
+    let reach = i128::from(radius) + 3;
     let mut wanted = Vec::new();
     for x in -reach..=reach {
         for y in -reach..=reach {
@@ -27,7 +27,7 @@ fn wanted_around(centre: BrickCoordinate, radius: u32) -> Vec<BrickCoordinate> {
     wanted
 }
 
-fn held_back_mesher(scene: &Scene, radius: i64) -> WorldMesher {
+fn held_back_mesher(scene: &Scene, radius: i128) -> WorldMesher {
     scene.mesher(radius).with_held_back_display()
 }
 

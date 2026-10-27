@@ -167,7 +167,7 @@ mod tests {
     const IDENTITY: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
     /// A body of unit cubes at these voxels, each of this mass, upright, with its centre where it is, moving as given.
-    fn body(voxels: &[[i64; 3]], mass: f64, linear: [f64; 3], angular: [f64; 3]) -> BodyMotion {
+    fn body(voxels: &[[i128; 3]], mass: f64, linear: [f64; 3], angular: [f64; 3]) -> BodyMotion {
         let properties = MassMoments::sum(
             voxels
                 .iter()
@@ -224,7 +224,7 @@ mod tests {
     fn bodies_that_move_as_parts_of_one_turning_rigid_body_join_into_that_body_turning_as_it_did() {
         // A rigid body turning at w about a point p and going at v0 there: every part has the turn w and moves at v0 + w x (c - p).
         let (w, v0, p) = ([0.3, -0.7, 0.5], [2.0, -1.0, 0.5], [1.0, 4.0, -2.0]);
-        let part = |voxels: &[[i64; 3]], mass: f64| {
+        let part = |voxels: &[[i128; 3]], mass: f64| {
             let unmoving = body(voxels, mass, [0.0; 3], w);
             let arm = [0, 1, 2].map(|axis| unmoving.centre[axis] - p[axis]);
             let carried = cross(w, arm);
@@ -253,8 +253,8 @@ mod tests {
     proptest! {
         #[test]
         fn joining_loses_no_linear_and_no_angular_momentum_about_any_point(
-            first in proptest::collection::vec([-4i64..4, -4i64..4, -4i64..4], 1..8),
-            second in proptest::collection::vec([6i64..12, -4i64..4, -4i64..4], 1..8),
+            first in proptest::collection::vec([-4i128..4, -4i128..4, -4i128..4], 1..8),
+            second in proptest::collection::vec([6i128..12, -4i128..4, -4i128..4], 1..8),
             speeds in proptest::array::uniform12(-5.0f64..5.0),
             point in proptest::array::uniform3(-20.0f64..20.0),
         ) {

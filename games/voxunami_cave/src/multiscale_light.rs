@@ -153,13 +153,13 @@ impl LightScheme {
     }
 
     /// The width of the cells of a scale, in voxels.
-    pub fn width(self, scale: usize) -> i64 {
+    pub fn width(self, scale: usize) -> i128 {
         assert!(scale < self.scales(), "the scheme has no scale {scale}");
-        i64::from(self.widths[scale])
+        i128::from(self.widths[scale])
     }
 
     /// The width of the biggest cells, in voxels.
-    pub fn largest_cell(self) -> i64 {
+    pub fn largest_cell(self) -> i128 {
         self.width(self.scales() - 1)
     }
 
@@ -215,7 +215,7 @@ pub fn emission_level(emission: u8, scheme: LightScheme) -> u8 {
 /// reads 512 voxels and a cell of 32 reads 32 768), so a scale's share of the voxels looked at in a
 /// tick buys fewer of them. About 20 ms of looking at voxels.
 pub fn default_budgets(scheme: LightScheme) -> Vec<usize> {
-    const VOXELS_PER_SCALE_AND_TICK: i64 = 150_000;
+    const VOXELS_PER_SCALE_AND_TICK: i128 = 150_000;
     (0..scheme.scales())
         .map(|scale| {
             let width = scheme.width(scale);
@@ -319,14 +319,14 @@ pub fn channel_identifier(scale: usize) -> NamespacedId {
 }
 
 /// The anchor of the cell, of cells of this width, that holds a voxel.
-pub fn anchor_of(width: i64, voxel: VoxelCoordinate) -> VoxelCoordinate {
-    let start = |coordinate: i64| coordinate.div_euclid(width) * width;
+pub fn anchor_of(width: i128, voxel: VoxelCoordinate) -> VoxelCoordinate {
+    let start = |coordinate: i128| coordinate.div_euclid(width) * width;
     VoxelCoordinate::new(start(voxel.x()), start(voxel.y()), start(voxel.z()))
 }
 
 /// The anchor of the cell next to a cell of this width on `face`, if it is within the world's range.
 fn neighbour_anchor(
-    width: i64,
+    width: i128,
     anchor: VoxelCoordinate,
     face: FaceDirection,
 ) -> Option<VoxelCoordinate> {
@@ -338,9 +338,9 @@ fn neighbour_anchor(
 /// cell is in, the first voxel of the cell in that brick (the anchor, or the brick's own edge where
 /// the cell began in the brick before). A brick is drawn from the words in it alone, so a cell that
 /// is in several bricks has its word in each. Voxels outside the world's range are left out.
-pub fn word_homes(width: i64, anchor: VoxelCoordinate) -> Vec<VoxelCoordinate> {
-    let edge = voxel_space::BRICK_EDGE_LENGTH as i64;
-    let along = |first: i64| -> Vec<i64> {
+pub fn word_homes(width: i128, anchor: VoxelCoordinate) -> Vec<VoxelCoordinate> {
+    let edge = voxel_space::BRICK_EDGE_LENGTH as i128;
+    let along = |first: i128| -> Vec<i128> {
         let last = first.saturating_add(width - 1);
         let mut starts = vec![first];
         let mut boundary = (first.div_euclid(edge) + 1) * edge;
@@ -636,7 +636,7 @@ impl MultiScaleLighting {
         for x in 0..width {
             for y in 0..width {
                 for z in 0..width {
-                    let at = anchor.checked_offset(x as i64, y as i64, z as i64);
+                    let at = anchor.checked_offset(x as i128, y as i128, z as i128);
                     let read = at.and_then(|at| world.block_and_state(grid, at));
                     // What cannot be read lets no light in.
                     let (Some(at), Some((block, state))) = (at, read) else {
@@ -703,8 +703,8 @@ impl MultiScaleLighting {
                         }
                         for direction in FaceDirection::ALL {
                             let [dx, dy, dz] = direction.offset();
-                            let next = [at[0] as i64 + dx, at[1] as i64 + dy, at[2] as i64 + dz];
-                            if next.iter().any(|&c| c < 0 || c >= width as i64) {
+                            let next = [at[0] as i128 + dx, at[1] as i128 + dy, at[2] as i128 + dz];
+                            if next.iter().any(|&c| c < 0 || c >= width as i128) {
                                 continue;
                             }
                             let next = next.map(|c| c as usize);
@@ -808,7 +808,7 @@ mod tests {
 
     /// Voxels along each side of the box the tests are in: a whole number of cells of the largest
     /// scale, so no cell is part in and part out of it.
-    const EDGE: i64 = 16;
+    const EDGE: i128 = 16;
 
     fn table() -> BlockTable {
         let air = BlockDefinition::air();
@@ -828,7 +828,7 @@ mod tests {
     const MAIN: GridId = GridId::MAIN;
 
     /// The offsets of the eight voxels of a cell of 2.
-    const CELL_OF_EIGHT: [(i64, i64, i64); 8] = [
+    const CELL_OF_EIGHT: [(i128, i128, i128); 8] = [
         (0, 0, 0),
         (1, 0, 0),
         (0, 1, 0),
@@ -839,14 +839,14 @@ mod tests {
         (1, 1, 1),
     ];
 
-    fn at(x: i64, y: i64, z: i64) -> VoxelCoordinate {
+    fn at(x: i128, y: i128, z: i128) -> VoxelCoordinate {
         VoxelCoordinate::new(x, y, z)
     }
 
     /// A box of `EDGE` voxels along each side in which everything not set is air; outside it there is
     /// nothing to read.
     struct Box3 {
-        edge: i64,
+        edge: i128,
         blocks: HashMap<VoxelCoordinate, u32>,
         words: [HashMap<VoxelCoordinate, u32>; MAXIMUM_SCALES],
     }
@@ -873,7 +873,7 @@ mod tests {
     }
 
     impl Box3 {
-        fn with_edge(edge: i64) -> Self {
+        fn with_edge(edge: i128) -> Self {
             Self {
                 edge,
                 blocks: HashMap::new(),
@@ -895,8 +895,8 @@ mod tests {
         /// The block at a voxel, and the filling of a whole box of voxels with one block.
         fn fill(
             &mut self,
-            from: (i64, i64, i64),
-            to: (i64, i64, i64),
+            from: (i128, i128, i128),
+            to: (i128, i128, i128),
             block: u32,
             lighting: &mut MultiScaleLighting,
         ) {
@@ -909,7 +909,7 @@ mod tests {
             }
         }
 
-        fn level_at(&self, scale: usize, x: i64, y: i64, z: i64) -> u8 {
+        fn level_at(&self, scale: usize, x: i128, y: i128, z: i128) -> u8 {
             level_of_word(self.words[scale].get(&at(x, y, z)).copied().unwrap_or(0))
         }
 
@@ -1288,7 +1288,7 @@ mod tests {
             assert_eq!(LightScheme::from_levels(scheme.levels()), Some(scheme));
             assert!(scheme.scales() <= MAXIMUM_SCALES);
             assert_eq!(
-                scheme.widths().last().map(|&width| i64::from(width)),
+                scheme.widths().last().map(|&width| i128::from(width)),
                 Some(scheme.largest_cell())
             );
         }
@@ -1606,7 +1606,7 @@ mod tests {
         assert_eq!(world.level_at(1, 8, 4, 4), 0);
         assert_eq!(world.level_at(1, 10, 4, 4), 0);
         for scale in 2..SCALES {
-            let width = 1i64 << scale;
+            let width = 1i128 << scale;
             assert!(
                 world
                     .lit(scale)
@@ -1838,7 +1838,7 @@ mod tests {
         for (dx, dy, dz) in CELL_OF_EIGHT {
             world.place(at(dx, dy, dz), LAMP, &mut lighting);
         }
-        for tick in 1..=4i64 {
+        for tick in 1..=4i128 {
             lighting.step(&mut world);
             // The lamps are voxels 0 and 1 along x, and the cell of 2 that holds them is at 0. After
             // `tick` ticks the light has gone `tick` cells beyond them, at a level one less for each.
@@ -1889,7 +1889,7 @@ mod tests {
 
     #[derive(Clone, Debug)]
     enum Edit {
-        Place(i64, i64, i64, u32),
+        Place(i128, i128, i128, u32),
     }
 
     fn edits() -> impl Strategy<Value = Vec<Edit>> {
@@ -2047,8 +2047,8 @@ mod tests {
         #[test]
         fn custom_widths_settle_to_what_the_equations_say(
             scheme_index in 0usize..4,
-            solid in prop::collection::vec((0..32i64, 0..32i64, 0..32i64), 30..200),
-            lamps in prop::collection::vec((0..32i64, 0..32i64, 0..32i64), 1..3),
+            solid in prop::collection::vec((0..32i128, 0..32i128, 0..32i128), 30..200),
+            lamps in prop::collection::vec((0..32i128, 0..32i128, 0..32i128), 1..3),
         ) {
             let scheme = custom_schemes()[scheme_index];
             let table = table();
@@ -2088,8 +2088,8 @@ mod tests {
         #[test]
         fn every_scheme_settles_to_what_the_equations_say(
             scheme_index in 0usize..4,
-            solid in prop::collection::vec((0..32i64, 0..32i64, 0..32i64), 30..200),
-            lamps in prop::collection::vec((0..32i64, 0..32i64, 0..32i64), 1..3),
+            solid in prop::collection::vec((0..32i128, 0..32i128, 0..32i128), 30..200),
+            lamps in prop::collection::vec((0..32i128, 0..32i128, 0..32i128), 1..3),
         ) {
             let scheme = LightScheme::ALL[scheme_index];
             let table = table();

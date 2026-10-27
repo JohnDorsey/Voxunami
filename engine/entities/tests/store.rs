@@ -67,7 +67,7 @@ fn kinds() -> EntityKinds {
     kinds
 }
 
-fn pose_at(level: u32, brick: [i64; 3], offset: [f32; 3]) -> EntityPose {
+fn pose_at(level: u32, brick: [i128; 3], offset: [f32; 3]) -> EntityPose {
     EntityPose::new(
         GridId::root(LevelIndex::new(level)),
         WorldPosition::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), offset),
@@ -137,7 +137,7 @@ fn what_the_kind_does_not_declare_is_refused_naming_both() {
 }
 
 /// A pose in the frame of a ship (an allocated grid), at a brick and an offset of its own coordinates.
-fn pose_aboard(ship: GridId, brick: [i64; 3], offset: [f32; 3]) -> EntityPose {
+fn pose_aboard(ship: GridId, brick: [i128; 3], offset: [f32; 3]) -> EntityPose {
     EntityPose::new(
         ship,
         WorldPosition::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), offset),
@@ -355,9 +355,9 @@ fn the_entities_in_a_region_are_those_of_its_bricks_in_that_grid() {
 proptest! {
     #[test]
     fn the_entities_in_a_region_are_exactly_those_asked_one_by_one(
-        placed in proptest::collection::vec((0u32..2, -3i64..4, -3i64..4, -3i64..4), 0..40),
-        low in (-3i64..4, -3i64..4, -3i64..4),
-        size in (0i64..4, 0i64..4, 0i64..4),
+        placed in proptest::collection::vec((0u32..2, -3i128..4, -3i128..4, -3i128..4), 0..40),
+        low in (-3i128..4, -3i128..4, -3i128..4),
+        size in (0i128..4, 0i128..4, 0i128..4),
         grid in 0u32..2,
     ) {
         let mut store = EntityStore::new();
@@ -381,10 +381,10 @@ proptest! {
     #[test]
     fn near_is_exactly_the_entities_asked_one_by_one(
         placed in proptest::collection::vec(
-            (0u32..2, -2i64..3, -2i64..3, -2i64..3, 0.0f32..32.0, 0.0f32..32.0, 0.0f32..32.0),
+            (0u32..2, -2i128..3, -2i128..3, -2i128..3, 0.0f32..32.0, 0.0f32..32.0, 0.0f32..32.0),
             0..40,
         ),
-        centre in (-2i64..3, -2i64..3, -2i64..3, 0.0f32..32.0, 0.0f32..32.0, 0.0f32..32.0),
+        centre in (-2i128..3, -2i128..3, -2i128..3, 0.0f32..32.0, 0.0f32..32.0, 0.0f32..32.0),
         radius in 0.0f32..90.0,
         grid in 0u32..2,
     ) {

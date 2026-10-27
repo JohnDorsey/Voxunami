@@ -89,7 +89,7 @@ impl Exact {
         if cube.level() == 0 {
             return self.brick_node(cube.origin());
         }
-        let half = 1i64 << (cube.level() - 1);
+        let half = 1i128 << (cube.level() - 1);
         let origin = cube.origin();
         let children: Vec<CoarseNode> = (0..8)
             .map(|octant| {
@@ -195,8 +195,8 @@ impl Agreement {
 }
 
 /// The cubes of a level that the surface of the world goes through, at a few places.
-fn cubes_around_the_surface(level: u8, places: i64) -> Vec<BrickCube> {
-    let width = 1i64 << level;
+fn cubes_around_the_surface(level: u8, places: i128) -> Vec<BrickCube> {
+    let width = 1i128 << level;
     let mut cubes = Vec::new();
     // Rows of cubes in height covering about 0 to 160 voxels (the surface is near 64, hills up to ~100 higher).
     let rows = ((160 / 32) / width).max(1);
@@ -220,7 +220,7 @@ fn cubes_around_the_surface(level: u8, places: i64) -> Vec<BrickCube> {
 fn measure(settings: RollingHillsSettings) -> Vec<(u8, Agreement)> {
     let mut exact = Exact::new(settings);
     let mut found = Vec::new();
-    for (level, places) in [(1u8, 2i64), (2, 2), (3, 1), (4, 1)] {
+    for (level, places) in [(1u8, 2i128), (2, 2), (3, 1), (4, 1)] {
         let mut total = Agreement::default();
         for cube in cubes_around_the_surface(level, places) {
             let coarse = exact

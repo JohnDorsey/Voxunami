@@ -56,7 +56,7 @@ fn tp_moves_the_player_and_explains_what_it_cannot_do() {
         );
     }
     assert_eq!(
-        reply_to(&mut rig, &mut player, "/tp 1e30 0 0"),
+        reply_to(&mut rig, &mut player, "/tp 1e37 0 0"),
         ["that is outside the world"]
     );
 }

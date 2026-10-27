@@ -43,7 +43,7 @@ impl CollisionSource for &Hull {
     }
 }
 
-fn cube(x: i64, y: i64, z: i64) -> Hull {
+fn cube(x: i128, y: i128, z: i128) -> Hull {
     let mut voxels = HashSet::new();
     for a in 0..x {
         for b in 0..y {
@@ -83,7 +83,7 @@ fn start(x: f32, y: f32, z: f32) -> BodyState {
     }
 }
 
-fn world_with_ground(radius: i64) -> BodyWorld {
+fn world_with_ground(radius: i128) -> BodyWorld {
     let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, BodySettings::default());
     for x in -radius..=radius {
         for z in -radius..=radius {
@@ -97,7 +97,7 @@ fn milliseconds(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
 }
 
-fn one_ship(label: &str, x: i64, y: i64, z: i64) {
+fn one_ship(label: &str, x: i128, y: i128, z: i128) {
     let mut world = world_with_ground(4);
     let hull = cube(x, y, z);
     let blocks = hull.0.len();

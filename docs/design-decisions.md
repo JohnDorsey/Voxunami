@@ -190,6 +190,28 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - Owner's, 2026-10-27: **a coordinate of more than 64 bits goes on the wire as a length-prefixed integer** (a byte for the number of bytes, then the zigzag value in that many little-endian bytes, the fewest that hold it;
   zero is one byte), not as a wider LEB128 varint. A number has one encoding: a length over the width, or a top byte of zero, is a decode error. The reason is growth: 256- or 512-bit coordinates (if shrinking ships
   become a large part of play) need only a reader that accepts a longer length. `ByteWriter::write_wide_signed` / `ByteReader::read_wide_signed` (`i128` today). The existing varints are unchanged.
+- **Coordinates of 128 bits (owner's wish 2026-10-27, built the same day; "A universe of 93 billion light years" in `future-goals.md`).** `VoxelCoordinate` and `BrickCoordinate` are `i128` per axis,
+  within +-2^120 voxels (+-2^115 bricks, which is 2^116 bricks across, so `region_octree::ROOT_LEVEL` is 116, not 56); `WorldPosition` is an `i128` brick and an `f32` offset; the octree keys are `u128`.
+  The orbit limit (a radius of at most 2^120 voxels) is the edge of the world, so no orbit is refused for its size any more, only a place past the edge. Chosen over keeping `i64` with nested frames
+  only because the owner wants one block grid that spans the universe. What was decided on the way, and why:
+  - *Wire.* A coordinate is three length-prefixed integers (`ByteWriter::write_wide_signed`; owner's choice (b): 256- and 512-bit coordinates need only a reader that accepts a longer length). `protocol::{read,write}_{brick,voxel}_coordinate` are
+    the one place a coordinate is written, and game messages use them too. Protocol 9.
+  - *Saves: a clean break (owner's choice).* The plain sections are version 2, `engine:entities`, `engine:grids` and a ship's flight version 3, `engine:generators` version 3 (a leaf's level is seven bits), the pending work
+    of `lattice` version 2, Cave's fire version 2, 2048's saved state version 5. A section of any other version is refused (an engine section) or counts as none (a game's, which is kept in the file as it is), never misread. The
+    readers of older versions, which these had (`PoseFormat::Single`, generators 1 and 2, 2048's versions 1 to 3), were deleted, not left dead.
+  - *Digests.* `Grid::content_digest` hashes a coordinate as 16 bytes; it is not a stored value. A brick's digest has no coordinate in it and did not move.
+  - *Terrain stays the same to the bit.* The noise hash of a lattice point is the old one for any coordinate that fits an `i64` (the upper 64 bits are mixed in only for one that does not), checked against an independent
+    computation and by the checksum of 2,400 generated bricks being the same before and after. Generator versions are file formats: nothing in a released one changed for any place that could be reached before.
+  - *Speed is a requirement, found by measuring.* The first working version made terrain 2.2 times slower (29.0 s against 13.1 s for the same 2,400 bricks): a sample takes dozens of lattice hashes, and a 128-bit value in each of
+    them costs. The fix keeps the hot path in 64-bit arithmetic: `FractalNoise::sample` checks once whether a position is within 2^62 and then every octave runs on `i64`, exactly as before (`NarrowPosition`), with a test that
+    the two paths agree to the bit at the boundary. Now 12.7 s, and Cave's whole golden session 48.2 s against 49.0 s. *Any new per-voxel loop must do the same: check once, then work in 64 bits.*
+  - *Arithmetic that depended on the width* (found by reading, each with a test at the ends of the range): squares of distances (`FineRegion`, the mesher's range of bricks, the order cubes are made in) overflow `i128` across the range
+    and are compared exactly after a check per axis, or saturate where only an order is wanted; the level at which one cube covers a grid; a `1u64 << level`; the octree's cost (isolating one assigned cube costs 7 leaves a level, so
+    420 more leaves, one byte each, in the generators of a world).
+  - *Not widened, still limits.* Coarse nodes stop at detail level 40 (`MAXIMUM_DETAIL_LEVEL`) and `LevelOfDetail` at 60, so a structure that spans the universe has no summary above 2^40 bricks yet (the generator's coarse
+    levels: the next piece of work for this wish); a noise octave's wavelength is at most 2^56; a grid that is turned is converted through `f64`, so is exact only within 2^53 voxels of its own origin (as it always was).
+  - *Tests whose premise was a limit.* `/tp` far out, a ship carried past the end of the world, and a coarse-assignment test that compared costs relative to a root of 56 were changed in their inputs (not their assertions) to
+    stay beyond the new edge or relative to the new root.
 - Mine, built after that (2026-10-27; the owner asked for accurate orbit radii "even if it requires fixed point 128 bit"): **the offset of an orbit is worked out in 128-bit fixed point and kept as
   whole bricks and a rest (`ExactOffset`), not as `f64`s.** `exact_circle.rs`: CORDIC sine and cosine in 126 bits, the plane in 126 bits, the radius multiplied in 256 bits (`u128` pairs; no
   dependency). Chosen over `f128` (unstable on the stable toolchain, no `libm` functions for it) and over double-double (two `f64`s: about 106 bits, whose bit-identity across machines would
@@ -513,7 +535,7 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   (owner, 2026-10-23, `lod-spec.md`; this replaces the earlier "nested clipmap LOD shells", and "GPU-driven" rendering is built only if measurement shows the CPU is the limit).
 - Everything with voxels is a `Grid`: sparse, chunked, with a rigid transform. Terrain is the infinite root grid
   (procedural base plus saved overrides); structures, creatures and tiles are finite grids.
-- Voxel coordinates are i64 per axis within +-2^60; rendering is camera-relative.
+- Voxel coordinates are `i128` per axis within +-2^120 (bricks within +-2^115); rendering is camera-relative. (They were `i64` within +-2^60 until 2026-10-27; see "Coordinates of 128 bits" below.)
 - A saved brick is stored whole and replaces the generated one, only when its content differs from generated.
 - Server sends per-brick content hashes so a client whose generated terrain differs notices and requests the data.
 - Generator version assignment: the first time a region is generated it is assigned the world's current default

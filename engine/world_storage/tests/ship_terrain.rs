@@ -55,7 +55,10 @@ fn a_planet_comes_back_from_its_file_with_its_terrain_and_its_edits_and_the_file
 }
 
 /// The hash of the file of the planet above (17,126 bytes: the ship of `ship_files.rs` with the terrain section, 60 bytes, and its stored bricks as edits).
-const PINNED_PLANET_FILE: u64 = 9_544_620_368_787_940_474;
+///
+/// Moved on purpose (coordinates of up to 128 bits, 2026-10-27): 9_544_620_368_787_940_474 before, 17,126 bytes, now 17,137: the 5 of the ship (see `ship_files.rs`) and the 6 coordinates of the
+/// extent (-20 and 20), a byte more each. Taken on Windows; Linux is checked to agree.
+const PINNED_PLANET_FILE: u64 = 9_689_798_688_269_038_243;
 
 #[test]
 fn a_ship_that_nothing_generates_has_no_terrain_section() {
@@ -190,12 +193,15 @@ fn file_with_terrain_section(
     write_container(&sections)
 }
 
-fn terrain_payload(extent: [[i64; 3]; 2], mass: f32, trailing: bool) -> Vec<u8> {
+/// The version this program writes the plain sections at.
+const CURRENT: u32 = world_storage::engine_sections::SUPPORTED_VERSION;
+
+fn terrain_payload(extent: [[i128; 3]; 2], mass: f32, trailing: bool) -> Vec<u8> {
     let mut writer = ByteWriter::new();
     writer.write_identifier(&id("fancy_terrain:cliffs_v1"));
     for corner in extent {
         for component in corner {
-            writer.write_signed_varint(component);
+            writer.write_wide_signed(component);
         }
     }
     writer.write_u32(mass.to_bits());
@@ -215,39 +221,47 @@ fn a_damaged_terrain_section_is_found_not_believed() {
     };
     // The right bytes are read ...
     let good = terrain_payload([[-20; 3], [20; 3]], 6.07e20, false);
-    assert!(read(1, good.clone()).is_ok());
+    assert!(read(CURRENT, good.clone()).is_ok());
     // ... the corners the wrong way round, a weight that is not one, a byte too many, a number too few, and a version from the future are not.
     for (what, version, payload) in [
         (
             "corners the wrong way round",
-            1,
+            CURRENT,
             terrain_payload([[20; 3], [-20; 3]], 1.0, false),
         ),
         (
             "a mass that is not a number",
-            1,
+            CURRENT,
             terrain_payload([[-20; 3], [20; 3]], f32::NAN, false),
         ),
         (
             "a negative mass",
-            1,
+            CURRENT,
             terrain_payload([[-20; 3], [20; 3]], -1.0, false),
         ),
         (
             "an infinite mass",
-            1,
+            CURRENT,
             terrain_payload([[-20; 3], [20; 3]], f32::INFINITY, false),
         ),
         (
             "a byte too many",
-            1,
+            CURRENT,
             terrain_payload([[-20; 3], [20; 3]], 1.0, true),
         ),
-        ("a section cut short", 1, good[..good.len() - 2].to_vec()),
+        (
+            "a section cut short",
+            CURRENT,
+            good[..good.len() - 2].to_vec(),
+        ),
         (
             "a brick out of range",
-            1,
-            terrain_payload([[-20; 3], [i64::MAX, 0, 0]], 1.0, false),
+            CURRENT,
+            terrain_payload(
+                [[-20; 3], [voxel_space::BRICK_COORDINATE_MAXIMUM + 1, 0, 0]],
+                1.0,
+                false,
+            ),
         ),
     ] {
         let error = read(version, payload).expect_err(what);

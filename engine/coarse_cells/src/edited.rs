@@ -69,7 +69,7 @@ impl EditedCubes {
         if self.counts.is_empty() {
             return false;
         }
-        let edge = cube.edge_length() as i64;
+        let edge = cube.edge_length() as i128;
         let origin = cube.origin();
         for dx in -1..=1 {
             for dy in -1..=1 {
@@ -101,7 +101,7 @@ mod tests {
 
     use super::*;
 
-    fn cube(x: i64, y: i64, z: i64, level: u8) -> BrickCube {
+    fn cube(x: i128, y: i128, z: i128, level: u8) -> BrickCube {
         BrickCube::new(BrickCoordinate::new(x, y, z), level).unwrap()
     }
 

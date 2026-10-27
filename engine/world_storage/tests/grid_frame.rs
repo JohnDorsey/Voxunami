@@ -6,7 +6,7 @@ use voxel_space::{
 use world_storage::GridFrame;
 use world_storage::test_support::{ALL_PLUGINS, Game};
 
-fn at(x: i64, y: i64, z: i64) -> VoxelCoordinate {
+fn at(x: i128, y: i128, z: i128) -> VoxelCoordinate {
     VoxelCoordinate::new(x, y, z)
 }
 

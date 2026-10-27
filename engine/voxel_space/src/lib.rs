@@ -4,7 +4,7 @@
 //! addressed either by a [`VoxelCoordinate`] (grid-wide) or by a [`BrickCoordinate`] plus a
 //! [`LocalVoxelIndex`] (position inside one brick); [`VoxelCoordinate::split`] converts.
 //!
-//! Coordinates are `i64` per axis, restricted to a range that leaves headroom so ordinary
+//! Coordinates are `i128` per axis, restricted to a range that leaves headroom so ordinary
 //! arithmetic on valid coordinates cannot overflow. There is no practical world edge. A world has
 //! several levels, each with its own grid, named by a [`LevelIndex`].
 
@@ -51,13 +51,13 @@ pub const BRICK_EDGE_LENGTH: usize = 1 << BRICK_EDGE_LENGTH_LOG2;
 pub const BRICK_VOXEL_COUNT: usize = BRICK_EDGE_LENGTH * BRICK_EDGE_LENGTH * BRICK_EDGE_LENGTH;
 
 /// Smallest valid voxel coordinate component (inclusive).
-pub const VOXEL_COORDINATE_MINIMUM: i64 = -(1 << 60);
+pub const VOXEL_COORDINATE_MINIMUM: i128 = -(1 << 120);
 
 /// Largest valid voxel coordinate component (inclusive).
-pub const VOXEL_COORDINATE_MAXIMUM: i64 = (1 << 60) - 1;
+pub const VOXEL_COORDINATE_MAXIMUM: i128 = (1 << 120) - 1;
 
 /// Smallest valid brick coordinate component (inclusive).
-pub const BRICK_COORDINATE_MINIMUM: i64 = VOXEL_COORDINATE_MINIMUM >> BRICK_EDGE_LENGTH_LOG2;
+pub const BRICK_COORDINATE_MINIMUM: i128 = VOXEL_COORDINATE_MINIMUM >> BRICK_EDGE_LENGTH_LOG2;
 
 /// Largest valid brick coordinate component (inclusive).
-pub const BRICK_COORDINATE_MAXIMUM: i64 = VOXEL_COORDINATE_MAXIMUM >> BRICK_EDGE_LENGTH_LOG2;
+pub const BRICK_COORDINATE_MAXIMUM: i128 = VOXEL_COORDINATE_MAXIMUM >> BRICK_EDGE_LENGTH_LOG2;

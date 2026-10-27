@@ -311,13 +311,13 @@ impl Shape {
     /// The shape of the same block when its grid is turned by a whole number of quarter turns: every box turned about the middle of the
     /// voxel.
     pub fn turned(&self, rotation: LatticeRotation) -> Self {
-        let middle = (SUBDIVISIONS / 2) as i64;
+        let middle = (SUBDIVISIONS / 2) as i128;
         let boxes: Vec<ShapeBox> = self
             .boxes
             .iter()
             .map(|shape_box| {
-                let low = rotation.apply(shape_box.min.map(|corner| i64::from(corner) - middle));
-                let high = rotation.apply(shape_box.max.map(|corner| i64::from(corner) - middle));
+                let low = rotation.apply(shape_box.min.map(|corner| i128::from(corner) - middle));
+                let high = rotation.apply(shape_box.max.map(|corner| i128::from(corner) - middle));
                 ShapeBox {
                     min: [0, 1, 2].map(|axis| (low[axis].min(high[axis]) + middle) as u8),
                     max: [0, 1, 2].map(|axis| (low[axis].max(high[axis]) + middle) as u8),
@@ -467,7 +467,7 @@ mod tests {
                     for y in 0..8usize {
                         for x in 0..8usize {
                             // The middle of a sub-cell, in sixteenths from the middle of the voxel, carried and put back in a cell.
-                            let centre = [x, y, z].map(|cell| 2 * cell as i64 + 1 - 8);
+                            let centre = [x, y, z].map(|cell| 2 * cell as i128 + 1 - 8);
                             let carried = rotation
                                 .apply(centre)
                                 .map(|value| ((value + 8 - 1) / 2) as usize);
@@ -769,7 +769,7 @@ mod tests {
                     for y in 0..8usize {
                         for x in 0..8usize {
                             let cell = [x, y, z];
-                            let behind = [x as i64 + dx, y as i64 + dy, z as i64 + dz];
+                            let behind = [x as i128 + dx, y as i128 + dy, z as i128 + dz];
                             let behind_filled = behind.iter().all(|&c| (0..8).contains(&c))
                                 && shape.fills([behind[0] as usize, behind[1] as usize, behind[2] as usize]);
                             let expected = shape.fills(cell) && !behind_filled;

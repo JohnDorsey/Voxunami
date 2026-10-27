@@ -262,7 +262,7 @@ impl Rig {
         client
     }
 
-    fn voxel(&mut self, channel: ChannelIndex, x: i64) -> u32 {
+    fn voxel(&mut self, channel: ChannelIndex, x: i128) -> u32 {
         self.server
             .world()
             .main()
@@ -271,7 +271,7 @@ impl Rig {
     }
 }
 
-fn at(x: i64) -> VoxelCoordinate {
+fn at(x: i128) -> VoxelCoordinate {
     VoxelCoordinate::new(x, 100, 0)
 }
 
@@ -377,7 +377,7 @@ fn busy_plugins(log: &Log, block: ChannelIndex) -> Vec<Box<dyn Plugin>> {
             registrar.system(spec, move |context| {
                 note(&system_log, format!("{system_name} system"));
                 // Everyone writes a different voxel, which every handler hears of.
-                let x = i64::from(system_name.len() as u8);
+                let x = i128::from(system_name.len() as u8);
                 context
                     .grid(GridId::MAIN)
                     .unwrap()

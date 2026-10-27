@@ -22,11 +22,11 @@ use voxunami_2048::numbered_block::NumberedBlock;
 use voxunami_2048::tool::Tool;
 
 const SEED: u64 = 2048;
-const VIEW_RADIUS: i64 = 3;
+const VIEW_RADIUS: i128 = 3;
 /// Above the tallest hill the landscape makes.
-const SKY: i64 = 100;
+const SKY: i128 = 100;
 
-fn at(x: i64, y: i64, z: i64) -> VoxelCoordinate {
+fn at(x: i128, y: i128, z: i128) -> VoxelCoordinate {
     VoxelCoordinate::new(x, y, z)
 }
 
@@ -282,4 +282,9 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// Measured by recording the stream of the script with the code before and after and comparing the frames one by one: the same number of frames, every frame the same except those that carry a pose, and the welcome, which says version 7 (same length): here 303 frames, 301 identical, the welcome and the one spawn of the player, which is 16 bytes longer: 58,927 to 58,943.
 /// The saved world changed (it holds the player, whose pose is longer, in a section of version 2).
 /// Planets as ships (Phase 39c, 2026-10-24; protocol 8): the welcome says version 8 (same length) and a ship that is told of has a byte more for its terrain. The stream hash moved once, for the version: the code of the commit before with only the version raised to 8 gives this hash, and the length is the same, so none of the frames of this script tells of a ship. The saved world is the same.
-const PINNED: (u64, usize, u64) = (12_348_203_508_637_287_643, 58_943, 356_818_673_503_339_816);
+/// Coordinates of up to 128 bits (2026-10-27; protocol 9, the plain sections at version 2, the sections that hold poses and the generators at version 3): a coordinate is a length byte and
+/// the bytes of its zigzag value, one byte more than a varint for every coordinate that is not zero and small, and the octree of generator assignments is 116 levels deep where it was 56.
+/// Measured as the stage before did: the stream of the script recorded with the code of the commit before and with this, and the frames decoded and compared one by one: 303 frames in both, 302
+/// the same value for value, the welcome different (it says version 9, and carries the world description, whose sections are the new versions); and the bytes 58,943 to 59,080, 137
+/// more, for the same values written longer. The saved world is different (the same sections, written at the new versions).
+const PINNED: (u64, usize, u64) = (2_045_406_350_182_023_027, 59_080, 170_123_486_067_092_622);

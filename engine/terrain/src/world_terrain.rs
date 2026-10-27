@@ -158,7 +158,7 @@ impl WorldTerrain {
 
     /// The generator that makes the coarse cells of a cube (see [`WorldTerrain::coarse_node`]), for handing to a thread that makes them.
     pub fn coarse_generator(&self, cube: BrickCube) -> Option<Arc<dyn TerrainGenerator>> {
-        let half = (cube.edge_length() / 2) as i64;
+        let half = (cube.edge_length() / 2) as i128;
         let origin = cube.origin();
         let middle = BrickCoordinate::new(origin.x() + half, origin.y() + half, origin.z() + half);
         let generator = self
@@ -223,7 +223,7 @@ mod tests {
         text.parse().unwrap()
     }
 
-    fn brick(x: i64, y: i64, z: i64) -> BrickCoordinate {
+    fn brick(x: i128, y: i128, z: i128) -> BrickCoordinate {
         BrickCoordinate::new(x, y, z)
     }
 
@@ -300,7 +300,7 @@ mod tests {
     fn a_cube_may_show_something_unless_the_one_generator_that_makes_all_of_it_says_it_need_not_be_drawn()
      {
         let mut fixture = fixture(3);
-        let cube = |origin: [i64; 3], level: u8| {
+        let cube = |origin: [i128; 3], level: u8| {
             BrickCube::new(brick(origin[0], origin[1], origin[2]), level).unwrap()
         };
         // Nothing is assigned: the default ground, to 10 voxels. A cube of 8 bricks from voxel 256 up is air, and one from 0 holds the surface.
@@ -335,7 +335,7 @@ mod tests {
     fn the_coarse_cells_of_a_cube_are_those_of_the_generator_in_its_middle_the_default_where_nothing_is_assigned_and_none_where_it_is_missing()
      {
         let mut fixture = fixture(3);
-        let cube = |origin: [i64; 3], level: u8| {
+        let cube = |origin: [i128; 3], level: u8| {
             BrickCube::new(brick(origin[0], origin[1], origin[2]), level).unwrap()
         };
         // Flat ground at 10 (the default) and at 40: a cube of level 3 from y = 0 holds voxels 0 to 255, and its cells (8 voxels) are the ground below
@@ -472,7 +472,7 @@ mod tests {
     #[test]
     fn coarse_assignment_cubes_keep_the_tree_small_however_many_bricks_are_generated() {
         let walk = |terrain: &mut WorldTerrain| {
-            for step in 0..1000i64 {
+            for step in 0..1000i128 {
                 terrain.assign_unassigned(brick(step % 50 * 4, step % 7, step / 50));
             }
             terrain.assignments().leaves().len()
@@ -481,13 +481,16 @@ mod tests {
         let mut fine = fixture(0);
 
         // The walk stays inside one level-8 cube. Isolating a single cube from the unassigned
-        // rest of the world costs seven extra leaves for each of the 48 levels above it.
+        // rest of the world costs seven extra leaves for each of the 108 levels above it.
         assert_eq!(
             walk(&mut coarse.terrain),
             1 + 7 * (usize::from(ROOT_LEVEL) - 8)
         );
-        // One cube per brick is far more expensive.
-        assert!(walk(&mut fine.terrain) > 20 * (1 + 7 * (usize::from(ROOT_LEVEL) - 8)));
+        // One cube per brick is far more expensive. Past the spine that isolates the first brick from the rest of the world (which gets longer
+        // with the depth of the tree, so it is taken out rather than compared with), each of the 1000 bricks costs more than eight leaves
+        // (nine and a half were measured).
+        let spine_to_a_brick = 1 + 7 * usize::from(ROOT_LEVEL);
+        assert!(walk(&mut fine.terrain) > spine_to_a_brick + 8 * 1000);
     }
 
     #[test]

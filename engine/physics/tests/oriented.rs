@@ -11,7 +11,7 @@ use voxel_space::VoxelCoordinate;
 /// the same turn.
 #[derive(Clone, Copy)]
 struct Turn {
-    matrix: [[i64; 3]; 3],
+    matrix: [[i128; 3]; 3],
     quaternion: [f32; 4],
 }
 
@@ -61,13 +61,13 @@ fn same_turn(a: [f32; 4], b: [f32; 4]) -> bool {
 /// turn, is a cube of the unturned scene, and this is its lowest corner.
 fn taken_back(turn: Turn, voxel: VoxelCoordinate) -> VoxelCoordinate {
     let voxel = [voxel.x(), voxel.y(), voxel.z()];
-    let corner: Vec<i64> = (0..3)
+    let corner: Vec<i128> = (0..3)
         .map(|axis| {
             (0..3)
                 .map(|from| {
                     // The transpose: the turn undone.
                     let entry = turn.matrix[from][axis];
-                    entry * (voxel[from] + i64::from(entry < 0))
+                    entry * (voxel[from] + i128::from(entry < 0))
                 })
                 .sum()
         })

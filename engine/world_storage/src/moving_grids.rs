@@ -138,7 +138,7 @@ impl MovingGrid {
         for corner in &corners {
             let brick = corner.brick();
             let offset = corner.offset();
-            let upper = |value: i64, offset: f32| if offset != 0.0 { value } else { value - 1 };
+            let upper = |value: i128, offset: f32| if offset != 0.0 { value } else { value - 1 };
             min = BrickCoordinate::new(
                 min.x().min(brick.x()),
                 min.y().min(brick.y()),
@@ -526,7 +526,7 @@ mod tests {
         assert_eq!(ship.velocity_at(place), [7.0, 26.0, 27.0]);
     }
 
-    fn shift(x: i64) -> LatticeTransform {
+    fn shift(x: i128) -> LatticeTransform {
         LatticeTransform {
             offset: [x, 0, 0],
             ..LatticeTransform::IDENTITY
@@ -534,7 +534,7 @@ mod tests {
     }
 
     /// A ship with a brick at each of these places and this pose.
-    fn ship_with_bricks(bricks: &[[i64; 3]], pose: GridPose) -> MovingGrid {
+    fn ship_with_bricks(bricks: &[[i128; 3]], pose: GridPose) -> MovingGrid {
         let mut ship = grid(1);
         ship.voxels = Grid::new(Arc::clone(ship.voxels.layout()));
         let channel = ship.voxels.layout().channel_indices().next().unwrap();
@@ -546,7 +546,7 @@ mod tests {
         ship
     }
 
-    fn bounds(ship: &MovingGrid) -> Option<([i64; 3], [i64; 3])> {
+    fn bounds(ship: &MovingGrid) -> Option<([i128; 3], [i128; 3])> {
         ship.world_brick_bounds().map(|bounds| {
             let (min, max) = (bounds.min(), bounds.max());
             ([min.x(), min.y(), min.z()], [max.x(), max.y(), max.z()])
@@ -555,7 +555,7 @@ mod tests {
 
     #[test]
     fn the_extent_of_a_ship_with_terrain_is_the_terrains_and_whatever_is_stored_beyond_it() {
-        let terrain = |low: [i64; 3], high: [i64; 3]| GridTerrain {
+        let terrain = |low: [i128; 3], high: [i128; 3]| GridTerrain {
             generator: terrain::GeneratorId::from_raw(3),
             extent: BrickBox::new(
                 BrickCoordinate::new(low[0], low[1], low[2]),
@@ -584,7 +584,7 @@ mod tests {
 
     #[test]
     fn the_bricks_a_ship_touches_in_the_world_are_found_for_a_move_a_turn_and_a_ship_with_none() {
-        let at = |x: i64, offset: [f32; 3]| {
+        let at = |x: i128, offset: [f32; 3]| {
             GridPose::new(
                 WorldPosition::new(BrickCoordinate::new(x, 0, 0), offset),
                 voxel_space::Orientation::IDENTITY,

@@ -75,11 +75,11 @@ pub fn wisp_kind() -> NamespacedId {
 }
 
 /// Where a wisp is `step` ticks after it was made at `start`: it drifts along x, crossing bricks.
-fn wisp_pose(start: i64, step: u64) -> EntityPose {
+fn wisp_pose(start: i128, step: u64) -> EntityPose {
     EntityPose::new(
         GridId::MAIN,
         WorldPosition::new(
-            BrickCoordinate::new(start + (step * 3 / 32) as i64, 0, 0),
+            BrickCoordinate::new(start + (step * 3 / 32) as i128, 0, 0),
             [(step * 3 % 32) as f32, 5.0, 5.0],
         ),
         Orientation::IDENTITY,
@@ -109,7 +109,7 @@ fn ship_at_tick(count: u64, world: &mut ServerWorld, marble: u32, glass: u32) {
         .channel_index(&id("core:block"))
         .unwrap();
     let pose = |count: u64| {
-        let along = count as i64 - 8;
+        let along = count as i128 - 8;
         GridPose::new(
             WorldPosition::new(BrickCoordinate::new(0, 0, 0), [0.0, 4.0, 0.0]).translated([
                 along as f32,
@@ -143,11 +143,11 @@ fn ship_at_tick(count: u64, world: &mut ServerWorld, marble: u32, glass: u32) {
             world.set_grid_pose(ship, pose(count)).unwrap();
             if count.is_multiple_of(6) {
                 let mut view = world.grid(ship).unwrap();
-                let at = VoxelCoordinate::new(count as i64 % 5, 2, 2);
+                let at = VoxelCoordinate::new(count as i128 % 5, 2, 2);
                 view.set(block, at, glass).unwrap();
                 if count.is_multiple_of(12) {
                     // A voxel in a brick the ship did not have.
-                    view.set(block, VoxelCoordinate::new(-20, 1, count as i64), glass)
+                    view.set(block, VoxelCoordinate::new(-20, 1, count as i128), glass)
                         .unwrap();
                 }
             }
@@ -170,7 +170,7 @@ fn planet_at_tick(count: u64, world: &mut ServerWorld, marble: u32, glass: u32) 
         .layout()
         .channel_index(&id("core:block"))
         .unwrap();
-    let edit = |world: &mut ServerWorld, at: [i64; 3], value: u32| {
+    let edit = |world: &mut ServerWorld, at: [i128; 3], value: u32| {
         world
             .grid(planet)
             .unwrap()
@@ -180,7 +180,7 @@ fn planet_at_tick(count: u64, world: &mut ServerWorld, marble: u32, glass: u32) 
     match count {
         // In bricks the generator makes, so each edit stores a whole brick.
         8 => edit(world, [100, 41, -3], marble),
-        10 | 12 => edit(world, [100 + count as i64, 41, -3], glass),
+        10 | 12 => edit(world, [100 + count as i128, 41, -3], glass),
         // In the brick that is stored, and in one of the two the planet was made with.
         14 => edit(world, [101, 42, -3], glass),
         16 => edit(world, [2, 1, 1], glass),
@@ -265,7 +265,7 @@ impl Fixture {
                 .expect("the kind is new");
         }
         // The tick on which each wisp was made, and where, by id.
-        let mut wisps: std::collections::BTreeMap<EntityId, (u64, i64)> = Default::default();
+        let mut wisps: std::collections::BTreeMap<EntityId, (u64, i128)> = Default::default();
         let logic = ScriptedLogic::new()
             .with_entity_catalog(catalog)
             .on_message(move |_, kind, payload, world| {
@@ -274,11 +274,7 @@ impl Fixture {
                 }
                 let mut reader = ByteReader::new(payload);
                 let level = LevelIndex::new(reader.read_varint().unwrap() as u32);
-                let at = VoxelCoordinate::new(
-                    reader.read_signed_varint().unwrap(),
-                    reader.read_signed_varint().unwrap(),
-                    reader.read_signed_varint().unwrap(),
-                );
+                let at = protocol::read_voxel_coordinate(&mut reader).unwrap();
                 let block = reader.read_identifier().unwrap();
                 let Some(&raw) = block_ids.get(&block) else {
                     return; // a block this server does not have: ignored
@@ -297,9 +293,7 @@ impl Fixture {
                     == Ok(true)
                 {
                     let mut announcement = ByteWriter::new();
-                    announcement.write_signed_varint(at.x());
-                    announcement.write_signed_varint(at.y());
-                    announcement.write_signed_varint(at.z());
+                    protocol::write_voxel_coordinate(&mut announcement, at);
                     world.send(
                         Audience::Watching(level, at.split().0),
                         block_placed_kind(),
@@ -320,7 +314,7 @@ impl Fixture {
                     }
                     if herd {
                         if count % 7 == 0 && wisps.len() < 6 {
-                            let start = (count % 5) as i64 - 2;
+                            let start = (count % 5) as i128 - 2;
                             let id = world
                                 .spawn_entity(
                                     &wisp_kind(),
@@ -356,9 +350,9 @@ impl Fixture {
                             .channel_index(&id("core:block"))
                             .unwrap();
                         let at = VoxelCoordinate::new(
-                            ((count * 7) % 61) as i64 - 30,
+                            ((count * 7) % 61) as i128 - 30,
                             2,
-                            ((count * 13) % 61) as i64 - 30,
+                            ((count * 13) % 61) as i128 - 30,
                         );
                         let block = if count % 10 == 0 { marble } else { glass };
                         world
@@ -512,16 +506,14 @@ impl<C: Connection> Player<C> {
     }
 
     /// Asks the server to place a block in the main level.
-    pub fn place(&mut self, at: [i64; 3], block: &str) {
+    pub fn place(&mut self, at: [i128; 3], block: &str) {
         self.place_in(LevelIndex::MAIN, at, block);
     }
 
-    pub fn place_in(&mut self, level: LevelIndex, at: [i64; 3], block: &str) {
+    pub fn place_in(&mut self, level: LevelIndex, at: [i128; 3], block: &str) {
         let mut payload = ByteWriter::new();
         payload.write_varint(u64::from(level.get()));
-        for component in at {
-            payload.write_signed_varint(component);
-        }
+        protocol::write_voxel_coordinate(&mut payload, VoxelCoordinate::new(at[0], at[1], at[2]));
         payload.write_identifier(&id(block));
         self.client
             .send_game_message(place_block_kind(), payload.into_bytes())

@@ -11,16 +11,16 @@
 
 use voxel_space::{BRICK_COORDINATE_MAXIMUM, BRICK_COORDINATE_MINIMUM, BrickBox, BrickCoordinate};
 
-/// Level of the root cube, which spans every valid brick coordinate (2^56 bricks per axis).
-pub const ROOT_LEVEL: u8 = 56;
+/// Level of the root cube, which spans every valid brick coordinate (2^116 bricks per axis).
+pub const ROOT_LEVEL: u8 = 116;
 
 /// Bricks are shifted so the valid range starts at zero; all tree arithmetic is unsigned.
-fn to_unsigned(coordinate: i64) -> u64 {
-    (coordinate - BRICK_COORDINATE_MINIMUM) as u64
+fn to_unsigned(coordinate: i128) -> u128 {
+    (coordinate - BRICK_COORDINATE_MINIMUM) as u128
 }
 
-fn from_unsigned(offset: u64) -> i64 {
-    offset as i64 + BRICK_COORDINATE_MINIMUM
+fn from_unsigned(offset: u128) -> i128 {
+    offset as i128 + BRICK_COORDINATE_MINIMUM
 }
 
 /// An aligned cube of `2^level` bricks per edge. The origin is a multiple of the edge length,
@@ -44,7 +44,7 @@ impl BrickCube {
         if level > ROOT_LEVEL {
             return Err(InvalidBrickCube::LevelTooLarge { level });
         }
-        let alignment_mask = (1u64 << level) - 1;
+        let alignment_mask = (1u128 << level) - 1;
         let aligned = [origin.x(), origin.y(), origin.z()]
             .into_iter()
             .all(|component| to_unsigned(component) & alignment_mask == 0);
@@ -61,7 +61,7 @@ impl BrickCube {
             level <= ROOT_LEVEL,
             "cube level {level} exceeds {ROOT_LEVEL}"
         );
-        let align = |component: i64| from_unsigned(to_unsigned(component) >> level << level);
+        let align = |component: i128| from_unsigned(to_unsigned(component) >> level << level);
         Self {
             origin: BrickCoordinate::new(align(brick.x()), align(brick.y()), align(brick.z())),
             level,
@@ -77,7 +77,7 @@ impl BrickCube {
     }
 
     /// Bricks along each edge.
-    pub fn edge_length(self) -> u64 {
+    pub fn edge_length(self) -> u128 {
         1 << self.level
     }
 
@@ -86,8 +86,8 @@ impl BrickCube {
     pub fn covering(region: BrickBox, level: u8) -> impl Iterator<Item = BrickCube> {
         let first = Self::containing(region.min(), level).origin();
         let last = Self::containing(region.max(), level).origin();
-        let edge = 1i64 << level;
-        let count = |first: i64, last: i64| ((last - first) >> level) + 1;
+        let edge = 1i128 << level;
+        let count = |first: i128, last: i128| ((last - first) >> level) + 1;
         let (columns, rows, layers) = (
             count(first.x(), last.x()),
             count(first.y(), last.y()),
@@ -108,8 +108,9 @@ impl BrickCube {
     }
 
     pub fn contains(self, brick: BrickCoordinate) -> bool {
-        let offset =
-            |component: i64, origin: i64| to_unsigned(component).wrapping_sub(to_unsigned(origin));
+        let offset = |component: i128, origin: i128| {
+            to_unsigned(component).wrapping_sub(to_unsigned(origin))
+        };
         [
             offset(brick.x(), self.origin.x()),
             offset(brick.y(), self.origin.y()),
@@ -133,7 +134,7 @@ pub struct RegionOctree<V> {
 }
 
 /// Which child of a node at `node_level` holds the point `offset` (unsigned, per axis).
-fn child_index(offset: [u64; 3], node_level: u8) -> usize {
+fn child_index(offset: [u128; 3], node_level: u8) -> usize {
     let bit = |axis: usize| ((offset[axis] >> (node_level - 1)) & 1) as usize;
     bit(0) | (bit(1) << 1) | (bit(2) << 2)
 }
@@ -219,16 +220,16 @@ impl<V: Clone + PartialEq> RegionOctree<V> {
 fn all_leaves_in<V>(
     node: &Node<V>,
     level: u8,
-    node_low: [u64; 3],
-    cube_low: [u64; 3],
+    node_low: [u128; 3],
+    cube_low: [u128; 3],
     cube_level: u8,
     holds: &mut impl FnMut(&V) -> bool,
 ) -> bool {
     match node {
         Node::Leaf(value) => holds(value),
         Node::Branch(children) => {
-            let half = 1u64 << (level - 1);
-            let child_low = |index: usize| -> [u64; 3] {
+            let half = 1u128 << (level - 1);
+            let child_low = |index: usize| -> [u128; 3] {
                 std::array::from_fn(|axis| {
                     node_low[axis] + if index >> axis & 1 == 1 { half } else { 0 }
                 })
@@ -266,7 +267,7 @@ fn all_leaves_in<V>(
 fn assign<V: Clone + PartialEq>(
     node: &mut Node<V>,
     node_level: u8,
-    target_offset: [u64; 3],
+    target_offset: [u128; 3],
     target_level: u8,
     value: V,
 ) {
@@ -305,7 +306,7 @@ fn assign<V: Clone + PartialEq>(
 fn collect_leaves<'tree, V>(
     node: &'tree Node<V>,
     level: u8,
-    origin_offset: [u64; 3],
+    origin_offset: [u128; 3],
     leaves: &mut Vec<(BrickCube, &'tree V)>,
 ) {
     match node {
@@ -319,7 +320,7 @@ fn collect_leaves<'tree, V>(
         }
         Node::Branch(children) => {
             for (index, child) in children.iter().enumerate() {
-                let half = 1u64 << (level - 1);
+                let half = 1u128 << (level - 1);
                 let child_origin = std::array::from_fn(|axis| {
                     origin_offset[axis] + if index >> axis & 1 == 1 { half } else { 0 }
                 });
@@ -346,7 +347,7 @@ pub fn tile_from_levels(levels: &[u8]) -> Result<Vec<BrickCube>, TilingError> {
     fn tile(
         levels: &mut std::slice::Iter<'_, u8>,
         level: u8,
-        origin_offset: [u64; 3],
+        origin_offset: [u128; 3],
         cubes: &mut Vec<BrickCube>,
     ) -> Result<(), TilingError> {
         let next = *levels.as_slice().first().ok_or(TilingError::Incomplete)?;
@@ -363,7 +364,7 @@ pub fn tile_from_levels(levels: &[u8]) -> Result<Vec<BrickCube>, TilingError> {
             cubes.push(BrickCube { origin, level });
             return Ok(());
         }
-        let half = 1u64 << (level - 1);
+        let half = 1u128 << (level - 1);
         for index in 0..8 {
             let child_origin = std::array::from_fn(|axis| {
                 origin_offset[axis] + if index >> axis & 1 == 1 { half } else { 0 }
@@ -391,11 +392,11 @@ mod tests {
 
     use super::*;
 
-    fn brick(x: i64, y: i64, z: i64) -> BrickCoordinate {
+    fn brick(x: i128, y: i128, z: i128) -> BrickCoordinate {
         BrickCoordinate::new(x, y, z)
     }
 
-    fn cube(x: i64, y: i64, z: i64, level: u8) -> BrickCube {
+    fn cube(x: i128, y: i128, z: i128, level: u8) -> BrickCube {
         BrickCube::new(brick(x, y, z), level).expect("test cubes are aligned")
     }
 
@@ -443,19 +444,19 @@ mod tests {
     proptest! {
         #[test]
         fn all_in_cube_is_the_same_as_looking_at_every_brick_of_the_cube(
-            sets in proptest::collection::vec(([0i64..16, 0..16, 0..16], 0u8..4, 0u8..3), 0..12),
-            at in [0i64..16, 0..16, 0..16],
+            sets in proptest::collection::vec(([0i128..16, 0..16, 0..16], 0u8..4, 0u8..3), 0..12),
+            at in [0i128..16, 0..16, 0..16],
             level in 0u8..5,
             wanted in 0u8..3,
         ) {
             let mut tree = RegionOctree::new(0u8);
             for (origin, level, value) in sets {
-                let aligned = |component: i64| component >> level << level;
+                let aligned = |component: i128| component >> level << level;
                 tree.set_cube(cube(aligned(origin[0]), aligned(origin[1]), aligned(origin[2]), level), value);
             }
-            let aligned = |component: i64| component >> level << level;
+            let aligned = |component: i128| component >> level << level;
             let target = cube(aligned(at[0]), aligned(at[1]), aligned(at[2]), level);
-            let edge = 1i64 << level;
+            let edge = 1i128 << level;
             let mut every = true;
             for x in 0..edge {
                 for y in 0..edge {
@@ -470,8 +471,8 @@ mod tests {
 
         #[test]
         fn covering_is_exactly_the_cubes_containing_the_regions_bricks(
-            corner in (-12i64..12, -12i64..12, -12i64..12),
-            extent in (0i64..10, 0i64..10, 0i64..10),
+            corner in (-12i128..12, -12i128..12, -12i128..12),
+            extent in (0i128..10, 0i128..10, 0i128..10),
             level in 0u8..4,
         ) {
             let region = BrickBox::new(
@@ -534,7 +535,7 @@ mod tests {
     fn isolating_a_single_brick_costs_seven_extra_leaves_per_level() {
         let mut tree = RegionOctree::new('a');
         tree.set_cube(cube(0, 0, 0, 0), 'b');
-        // Each of the 56 levels above the brick splits into 8 children, one of which is split further.
+        // Each of the 116 levels above the brick splits into 8 children, one of which is split further.
         assert_eq!(tree.node_count(), 1 + 8 * usize::from(ROOT_LEVEL));
         assert_eq!(tree.leaves().len(), 1 + 7 * usize::from(ROOT_LEVEL));
     }
@@ -542,17 +543,22 @@ mod tests {
     #[test]
     fn a_coarse_cube_costs_far_fewer_nodes_than_a_fine_one() {
         let mut coarse = RegionOctree::new('a');
-        coarse.set_cube(cube(0, 0, 0, 40), 'b');
+        // Sixteen levels below the root (the test was written for a root of 56, with this at 40).
+        let coarse_level = ROOT_LEVEL - 16;
+        coarse.set_cube(cube(0, 0, 0, coarse_level), 'b');
         let mut fine = RegionOctree::new('a');
         fine.set_cube(cube(0, 0, 0, 0), 'b');
-        assert_eq!(coarse.node_count(), 1 + 8 * usize::from(ROOT_LEVEL - 40));
+        assert_eq!(
+            coarse.node_count(),
+            1 + 8 * usize::from(ROOT_LEVEL - coarse_level)
+        );
         assert!(coarse.node_count() < fine.node_count() / 3);
     }
 
     #[test]
     fn filling_all_eight_children_collapses_the_parent_back_into_a_leaf() {
         let mut tree = RegionOctree::new('a');
-        for index in 0..8i64 {
+        for index in 0..8i128 {
             tree.set_cube(cube(index & 1, index >> 1 & 1, index >> 2 & 1, 0), 'b');
         }
         let mut expected = RegionOctree::new('a');
@@ -713,7 +719,7 @@ mod tests {
         let mut too_big = levels;
         too_big[1] = 20;
         assert_eq!(tile_from_levels(&too_big), Err(TilingError::TooLarge));
-        // Only the root cube can be a lone level 56; the next level cannot appear after it.
+        // Only the root cube can be a lone level 116; the next level cannot appear after it.
         assert_eq!(
             tile_from_levels(&[ROOT_LEVEL, ROOT_LEVEL]),
             Err(TilingError::Excess)
@@ -723,7 +729,7 @@ mod tests {
     proptest! {
         #[test]
         fn the_levels_of_any_tree_give_back_its_cubes(
-            assignments in proptest::collection::vec((-20i64..20, -20i64..20, -20i64..20, 0u8..5, 0u8..3), 0..12),
+            assignments in proptest::collection::vec((-20i128..20, -20i128..20, -20i128..20, 0u8..5, 0u8..3), 0..12),
         ) {
             let mut tree = RegionOctree::new(0u8);
             for (x, y, z, level, value) in assignments {
@@ -763,7 +769,7 @@ mod tests {
                     leaf_cube.origin().y(),
                     leaf_cube.origin().z(),
                 ]
-                .map(|component| (component - BRICK_COORDINATE_MINIMUM) as u64);
+                .map(|component| (component - BRICK_COORDINATE_MINIMUM) as u128);
                 (0..ROOT_LEVEL)
                     .rev()
                     .map(|bit| {
@@ -782,7 +788,7 @@ mod tests {
 
     #[derive(Debug, Clone)]
     struct Assignment {
-        origin: [i64; 3],
+        origin: [i128; 3],
         level: u8,
         value: u8,
     }
@@ -790,8 +796,8 @@ mod tests {
     fn assignments() -> impl Strategy<Value = Vec<Assignment>> {
         // Cubes of up to 16 bricks per edge, aligned within a 32-brick domain centred on the origin.
         let assignment =
-            (0u8..=4, [0i64..32, 0..32, 0..32], 0u8..4).prop_map(|(level, cell, value)| {
-                let size = 1i64 << level;
+            (0u8..=4, [0i128..32, 0..32, 0..32], 0u8..4).prop_map(|(level, cell, value)| {
+                let size = 1i128 << level;
                 Assignment {
                     origin: cell.map(|component| (component / size) * size - 16),
                     level,
@@ -807,11 +813,11 @@ mod tests {
         #[test]
         fn behaves_like_a_plain_map_and_stays_canonical(assignments in assignments()) {
             let mut tree = RegionOctree::new(0u8);
-            let mut model: HashMap<[i64; 3], u8> = HashMap::new();
+            let mut model: HashMap<[i128; 3], u8> = HashMap::new();
             for assignment in &assignments {
                 let origin = brick(assignment.origin[0], assignment.origin[1], assignment.origin[2]);
                 tree.set_cube(BrickCube::new(origin, assignment.level).unwrap(), assignment.value);
-                let size = 1i64 << assignment.level;
+                let size = 1i128 << assignment.level;
                 for dx in 0..size { for dy in 0..size { for dz in 0..size {
                     model.insert(
                         [assignment.origin[0] + dx, assignment.origin[1] + dy, assignment.origin[2] + dz],

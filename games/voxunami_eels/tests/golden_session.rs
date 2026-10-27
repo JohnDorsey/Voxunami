@@ -17,7 +17,7 @@ use voxunami_eels::eel::Steer;
 use voxunami_eels::game::{Eels, steer};
 use voxunami_eels::round::{COUNTDOWN_TICKS, OVER_TICKS, STEP_TICKS};
 
-const VIEW_RADIUS: i64 = 3;
+const VIEW_RADIUS: i128 = 3;
 
 type Player = Session<Box<dyn Connection>, Eels>;
 
@@ -196,8 +196,12 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// 1,274 frames, 1,007 identical; 531 poses in 266 of the other 267 frames (one spawn and 265 changes; the 267th is the welcome), 531 x 16 = 8,496, and 3 bytes for frames whose length now takes a byte more in the recording:
 /// 72,281 to 80,780. The saved world changed (it holds the players' poses).
 /// Planets as ships (Phase 39c, 2026-10-24; protocol 8): the welcome says version 8 (same length) and a ship that is told of has a byte more for its terrain. The stream hash moved once, for the version: the code of the commit before with only the version raised to 8 gives this hash, and the length is the same, so none of the frames of this script tells of a ship. The saved world is the same.
+/// Coordinates of up to 128 bits (2026-10-27; protocol 9, the plain sections at version 2, the sections that hold poses and the generators at version 3): a coordinate is a length byte and
+/// the bytes of its zigzag value. Measured as the 2048 script was: the stream recorded with the code of the commit before and with this, and every message decoded and compared: 1,274 in both,
+/// 1,273 the same value for value, the welcome different (version 9, and the world description, whose sections are the new versions). The bytes 80,780 to 82,541, 1,761 more, are the same
+/// values written longer. The saved world is different (the same sections, at the new versions).
 const PINNED: (u64, usize, u64) = (
-    3_648_276_859_566_548_920,
-    80_780,
-    17_292_949_185_848_696_485,
+    16_792_241_247_703_677_436,
+    82_541,
+    12_252_857_276_061_378_912,
 );

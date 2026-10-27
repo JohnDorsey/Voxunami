@@ -151,7 +151,7 @@ fn in_survival_an_item_out_of_reach_of_the_player_lies_there_falls_and_joins_ano
     let mut rig = Rig::new();
     // Eight above the ground: out of pickup range, within reach of the player's hand.
     let (mut player, ground) = hovering(&mut rig, 8.0);
-    let at = |height: i64| VoxelCoordinate::new(ground.x(), ground.y() + height, ground.z());
+    let at = |height: i128| VoxelCoordinate::new(ground.x(), ground.y() + height, ground.z());
     // Two blocks of stone, one on the other, built in creative, and then broken from the top, in survival.
     request_block(&mut player, at(1), "base_blocks:stone");
     request_block(&mut player, at(2), "base_blocks:stone");
@@ -205,7 +205,7 @@ fn in_survival_placing_needs_the_item_and_uses_it_up() {
     let mut rig = Rig::new();
     let (mut player, ground) = hovering(&mut rig, 1.5);
     let stone = id("base_blocks:stone");
-    let at = |height: i64, along: i64| {
+    let at = |height: i128, along: i128| {
         VoxelCoordinate::new(ground.x() + along, ground.y() + height, ground.z())
     };
 
@@ -336,7 +336,7 @@ fn reloaded(rig: Rig) -> Rig {
 fn the_game_mode_and_the_items_on_the_ground_are_saved_with_the_world() {
     let mut rig = Rig::new();
     let (mut player, ground) = hovering(&mut rig, 8.0);
-    let at = |height: i64| VoxelCoordinate::new(ground.x(), ground.y() + height, ground.z());
+    let at = |height: i128| VoxelCoordinate::new(ground.x(), ground.y() + height, ground.z());
     request_block(&mut player, at(1), "base_blocks:stone");
     tick(&mut rig, &mut player, 3);
     reply_to(&mut rig, &mut player, "/gamemode survival");
@@ -466,7 +466,7 @@ fn a_stack_that_fits_in_part_is_taken_in_part_and_the_rest_stays_on_the_ground()
     plugins.push(Box::new(Filler));
     let mut rig = Rig::with_plugins(content, world, plugins);
     let (mut player, ground) = hovering(&mut rig, 8.0);
-    let at = |height: i64| VoxelCoordinate::new(ground.x(), ground.y() + height, ground.z());
+    let at = |height: i128| VoxelCoordinate::new(ground.x(), ground.y() + height, ground.z());
     let stone = id("base_blocks:stone");
     // Two stones, built in creative and broken in survival, out of reach of picking up: they join on the ground.
     request_block(&mut player, at(1), "base_blocks:stone");

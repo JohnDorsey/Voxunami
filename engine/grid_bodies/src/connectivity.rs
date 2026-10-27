@@ -49,7 +49,7 @@ pub struct Connectivity {
     visited: u64,
 }
 
-const FACES: [[i64; 3]; 6] = [
+const FACES: [[i128; 3]; 6] = [
     [-1, 0, 0],
     [1, 0, 0],
     [0, -1, 0],
@@ -205,7 +205,7 @@ mod tests {
 
     use super::*;
 
-    fn at(x: i64, y: i64, z: i64) -> VoxelCoordinate {
+    fn at(x: i128, y: i128, z: i128) -> VoxelCoordinate {
         VoxelCoordinate::new(x, y, z)
     }
 
@@ -214,7 +214,7 @@ mod tests {
         voxels.into_iter().collect()
     }
 
-    fn row(length: i64) -> HashSet<VoxelCoordinate> {
+    fn row(length: i128) -> HashSet<VoxelCoordinate> {
         ship((0..length).map(|x| at(x, 0, 0)))
     }
 

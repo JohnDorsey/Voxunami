@@ -18,7 +18,8 @@ fn the_messages_of_2048_have_their_pinned_bytes() {
         largest_merge: 4096,
     };
     let pins: [(&str, Vec<u8>, &str); 3] = [
-        ("a push", push.encode(), "0550d00f0002"),
+        // The voxel is three length-prefixed integers (protocol 9): -3 is 01 05, 40 is 01 50, 1000 is 02 d0 07 (each the length and the zigzag value); then the direction and the tool.
+        ("a push", push.encode(), "0105015002d0070002"),
         ("some progress", progress.encode(), "c0c407638020"),
         ("no progress", Progress::default().encode(), "000000"),
     ];

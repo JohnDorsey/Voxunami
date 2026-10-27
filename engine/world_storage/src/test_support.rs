@@ -82,7 +82,7 @@ impl GeneratorFamily for FlatFamily {
     }
 }
 
-pub fn brick(x: i64, y: i64, z: i64) -> BrickCoordinate {
+pub fn brick(x: i128, y: i128, z: i128) -> BrickCoordinate {
     BrickCoordinate::new(x, y, z)
 }
 
@@ -283,7 +283,7 @@ impl Game {
     /// A ship of two bricks of this game's blocks (a deck of stone, and a marble block a brick away that is warm and, with the magic plugin,
     /// holds a spell), in flight and held, that vanishes with its pilot, with a section of a plugin nobody has. Its pose is `shift` voxels
     /// along x of where the first is, and so are its voxels, so that ships made with different shifts are different files.
-    pub fn sample_ship(&self, world: &WorldData, shift: i64) -> MovingGrid {
+    pub fn sample_ship(&self, world: &WorldData, shift: i128) -> MovingGrid {
         let layout = Arc::clone(world.main().overrides.layout());
         let mut voxels = Grid::new(Arc::clone(&layout));
         let block = layout.channel_index(&id("core:block")).unwrap();
@@ -337,7 +337,7 @@ impl Game {
 
     /// A planet: the ship of [`Game::sample_ship`] (its two bricks are the edits) with terrain, the game's `fancy_terrain:cliffs_v1` (`base_terrain:flat_v1` in a game
     /// without that plugin) over 41 x 41 x 41 bricks about its origin, weighing as much as a planet of 63,710 metres does.
-    pub fn sample_planet(&self, world: &WorldData, shift: i64) -> MovingGrid {
+    pub fn sample_planet(&self, world: &WorldData, shift: i128) -> MovingGrid {
         let mut ship = self.sample_ship(world, shift);
         let generator = if self.has(FancyTerrain) {
             "fancy_terrain:cliffs_v1"
@@ -374,7 +374,7 @@ impl Game {
         }
     }
 
-    pub fn set(&self, world: &mut WorldData, at: [i64; 3], channel: &str, value: u32) {
+    pub fn set(&self, world: &mut WorldData, at: [i128; 3], channel: &str, value: u32) {
         self.set_in_level(world, LevelIndex::MAIN, at, channel, value);
     }
 
@@ -382,7 +382,7 @@ impl Game {
         &self,
         world: &mut WorldData,
         level: LevelIndex,
-        at: [i64; 3],
+        at: [i128; 3],
         channel: &str,
         value: u32,
     ) {
@@ -397,7 +397,7 @@ impl Game {
             .set(index, VoxelCoordinate::new(at[0], at[1], at[2]), value);
     }
 
-    pub fn set_block(&self, world: &mut WorldData, at: [i64; 3], name: &str) {
+    pub fn set_block(&self, world: &mut WorldData, at: [i128; 3], name: &str) {
         self.set(world, at, "core:block", self.raw_block(name));
     }
 
@@ -522,7 +522,7 @@ impl Game {
 
 /// A brick as meaning: for each channel by identifier, runs of equal values and their lengths.
 pub type BrickMeaning = BTreeMap<String, Vec<(String, u32)>>;
-pub type Assignment = ((i64, i64, i64), u8, Option<String>);
+pub type Assignment = ((i128, i128, i128), u8, Option<String>);
 /// A channel's default value (as a name) and the voxels that differ from it.
 pub type ChannelChanges = (String, Vec<(usize, String)>);
 /// A plugin section: identifier, version, payload.

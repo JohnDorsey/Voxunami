@@ -40,7 +40,7 @@ impl Deck {
     }
 
     /// A solid box of `size` voxels standing from the ship's origin.
-    fn block(size: [i64; 3]) -> Self {
+    fn block(size: [i128; 3]) -> Self {
         Self {
             scene: Scene::of(move |voxel| {
                 (0..size[0]).contains(&voxel.x())
@@ -675,7 +675,7 @@ fn a_ship_that_sails_into_a_character_in_a_turned_frame_comes_as_near_as_the_wid
 /// A box of `thickness` along x (eight along y and z) that starts with its west face 12.5 east of a character who stands on the floor and
 /// goes west `speed` voxels a step, until it is 12 past the place the character stood. After each step the character is out of the box,
 /// and above the floor. Returns whether it was ahead of the box (to the west of it) after every step, and a hash of its state after every step.
-fn sail_into_a_standing_character(thickness: i64, speed: f32) -> (bool, u64) {
+fn sail_into_a_standing_character(thickness: i128, speed: f32) -> (bool, u64) {
     let mut level = Scene::with_floor(39);
     let mut ship = Deck::block([thickness, 8, 8]);
     let face_after = move |step: u32| 33.0 - speed * step as f32;

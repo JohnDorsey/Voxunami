@@ -119,16 +119,16 @@ fn in_front(
     face: FaceDirection,
 ) -> Option<(ModelId, u8)> {
     let step = face.offset();
-    let next = [0, 1, 2].map(|axis| at[axis] as i64 + step[axis]);
+    let next = [0, 1, 2].map(|axis| at[axis] as i128 + step[axis]);
     if next
         .iter()
-        .all(|&component| (0..EDGE as i64).contains(&component))
+        .all(|&component| (0..EDGE as i128).contains(&component))
     {
         let index = LocalVoxelIndex::new(next[0] as u8, next[1] as u8, next[2] as u8).index();
         return Some((models[index], lights[index]));
     }
     let neighbour = input.neighbours[usize::from(face.index())].as_ref()?;
-    let wrapped = next.map(|component| component.rem_euclid(EDGE as i64) as u8);
+    let wrapped = next.map(|component| component.rem_euclid(EDGE as i128) as u8);
     let voxel = LocalVoxelIndex::new(wrapped[0], wrapped[1], wrapped[2]);
     Some((model_at(neighbour, table, voxel), neighbour.light_at(voxel)))
 }
@@ -208,9 +208,9 @@ pub fn mesh_coarse_node(node: &CoarseNode, neighbours: &[Option<&CoarseNode>; 6]
                         &cells[LocalVoxelIndex::new(at[0] as u8, at[1] as u8, at[2] as u8).index()];
                     let mut key = None;
                     if drawn(cell) {
-                        let next = [0, 1, 2].map(|a| at[a] as i64 + step[a]);
+                        let next = [0, 1, 2].map(|a| at[a] as i128 + step[a]);
                         let beside =
-                            if next.iter().all(|&c| (0..EDGE as i64).contains(&c)) {
+                            if next.iter().all(|&c| (0..EDGE as i128).contains(&c)) {
                                 drawn(
                                     &cells[LocalVoxelIndex::new(
                                         next[0] as u8,
@@ -221,7 +221,7 @@ pub fn mesh_coarse_node(node: &CoarseNode, neighbours: &[Option<&CoarseNode>; 6]
                                 )
                             } else {
                                 neighbours[usize::from(face.index())].is_some_and(|other| {
-                                    let wrapped = next.map(|c| c.rem_euclid(EDGE as i64) as u8);
+                                    let wrapped = next.map(|c| c.rem_euclid(EDGE as i128) as u8);
                                     drawn(&other.cell(LocalVoxelIndex::new(
                                         wrapped[0], wrapped[1], wrapped[2],
                                     )))
@@ -838,8 +838,8 @@ mod tests {
                         if !cell.is_drawn() { continue; }
                         for face in FaceDirection::ALL {
                             let step = face.offset();
-                            let next = [x as i64 + step[0], y as i64 + step[1], z as i64 + step[2]];
-                            let covered = if next.iter().all(|&c| (0..EDGE as i64).contains(&c)) {
+                            let next = [x as i128 + step[0], y as i128 + step[1], z as i128 + step[2]];
+                            let covered = if next.iter().all(|&c| (0..EDGE as i128).contains(&c)) {
                                 node.cell(LocalVoxelIndex::new(next[0] as u8, next[1] as u8, next[2] as u8)).is_drawn()
                             } else if face == FaceDirection::NegativeZ && with_neighbour {
                                 other.cell(LocalVoxelIndex::new(next[0] as u8, next[1] as u8, next[2].rem_euclid(32) as u8)).is_drawn()

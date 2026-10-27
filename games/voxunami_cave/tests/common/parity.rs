@@ -25,12 +25,12 @@ pub const BOTH: [Place; 2] = [Place::Terrain, Place::Ship];
 #[derive(Clone, Copy, Debug)]
 pub struct Site {
     pub place: Place,
-    pub origin: [i64; 3],
+    pub origin: [i128; 3],
     pub grid: GridId,
 }
 
 impl Site {
-    pub fn new(scene: &mut Scene, place: Place, origin: [i64; 3]) -> Self {
+    pub fn new(scene: &mut Scene, place: Place, origin: [i128; 3]) -> Self {
         let grid = match place {
             Place::Terrain => GridId::MAIN,
             Place::Ship => {
@@ -62,7 +62,7 @@ impl Site {
     }
 
     /// The voxel of the site's grid at this offset: a ship's own coordinates start at its origin.
-    pub fn voxel(&self, offset: [i64; 3]) -> VoxelCoordinate {
+    pub fn voxel(&self, offset: [i128; 3]) -> VoxelCoordinate {
         match self.place {
             Place::Terrain => VoxelCoordinate::new(
                 self.origin[0] + offset[0],
@@ -74,12 +74,12 @@ impl Site {
     }
 
     /// Where the offset is in the world, as a point in voxels.
-    pub fn world_at(&self, offset: [i64; 3]) -> [f64; 3] {
+    pub fn world_at(&self, offset: [i128; 3]) -> [f64; 3] {
         [0, 1, 2].map(|axis| (self.origin[axis] + offset[axis]) as f64)
     }
 
     /// Sets these voxels in one tick.
-    pub fn set(&self, scene: &mut Scene, channel: ChannelIndex, voxels: Vec<([i64; 3], u32)>) {
+    pub fn set(&self, scene: &mut Scene, channel: ChannelIndex, voxels: Vec<([i128; 3], u32)>) {
         let (grid, site) = (self.grid, *self);
         scene.run(move |world| {
             let mut view = world.grid(grid).unwrap();
@@ -90,7 +90,12 @@ impl Site {
     }
 
     /// What these voxels hold in a channel (this takes a tick).
-    pub fn read(&self, scene: &mut Scene, channel: ChannelIndex, offsets: &[[i64; 3]]) -> Vec<u32> {
+    pub fn read(
+        &self,
+        scene: &mut Scene,
+        channel: ChannelIndex,
+        offsets: &[[i128; 3]],
+    ) -> Vec<u32> {
         let (grid, site, offsets) = (self.grid, *self, offsets.to_vec());
         let found = Arc::new(Mutex::new(Vec::new()));
         let slot = Arc::clone(&found);
@@ -140,8 +145,8 @@ impl Site {
         scene: &mut Scene,
         channel: ChannelIndex,
         value: u32,
-        low: [i64; 3],
-        high: [i64; 3],
+        low: [i128; 3],
+        high: [i128; 3],
     ) -> usize {
         let mut offsets = Vec::new();
         for x in low[0]..high[0] {

@@ -998,7 +998,7 @@ fn a_character_put_beside_a_step_that_is_not_a_whole_block_is_moved_out_of_it_to
 
 /// A floor topped at 10 with a room over part of it: a ceiling from 12 up to `roof_top` over `10..=22` in
 /// x and z (a tunnel two blocks high under it).
-fn tunnel_under(roof_top: i64) -> (CharacterBody, Scene) {
+fn tunnel_under(roof_top: i128) -> (CharacterBody, Scene) {
     let (mut body, mut scene) = standing_on_a_floor();
     for x in 10..=22 {
         for z in 10..=22 {
@@ -1014,7 +1014,7 @@ fn tunnel_under(roof_top: i64) -> (CharacterBody, Scene) {
 #[test]
 fn a_character_put_with_its_head_in_a_ceiling_goes_down_into_the_room_not_up_through_the_roof() {
     // Feet a little up, so that the head (1.8 above them) is in the roof; a thin roof and a very thick one.
-    for roof_top in [12_i64, 200] {
+    for roof_top in [12_i128, 200] {
         for feet in [10.3_f32, 10.5] {
             let (mut body, mut scene) = tunnel_under(roof_top);
             teleport_feet(&mut body, 16.5, feet, 16.5);
@@ -1054,7 +1054,7 @@ fn a_character_put_in_a_thin_wall_goes_out_sideways_not_up_over_it() {
 fn clearing_works_for_negative_coordinates_and_a_frame_that_is_not_at_the_origin() {
     // A step across the edge of a brick, and a character put in it, in bricks with negative coordinates and
     // far from the origin; the frame of its terrain is made around where it starts, not at the origin.
-    for (brick_x, brick_z) in [(-1_i64, -1_i64), (-3, -4), (4, 5)] {
+    for (brick_x, brick_z) in [(-1_i128, -1_i128), (-3, -4), (4, 5)] {
         let mut scene = Scene::with_floor(9);
         let base_x = brick_x * 32;
         let base_z = brick_z * 32;
@@ -1192,8 +1192,8 @@ fn is_inside_something(body: &CharacterBody, scene: &mut Scene) -> bool {
         f64::from(settings.radius),
     ];
     let tolerance = 0.06;
-    let low = [0, 1, 2].map(|axis| (center[axis] - half[axis]).floor() as i64);
-    let high = [0, 1, 2].map(|axis| (center[axis] + half[axis]).floor() as i64);
+    let low = [0, 1, 2].map(|axis| (center[axis] - half[axis]).floor() as i128);
+    let high = [0, 1, 2].map(|axis| (center[axis] + half[axis]).floor() as i128);
     for x in low[0]..=high[0] {
         for y in low[1]..=high[1] {
             for z in low[2]..=high[2] {
@@ -1233,13 +1233,13 @@ mod properties {
     use super::*;
 
     /// A random scene on a floor of height 10: whole cubes and slabs in a patch near the character.
-    fn scene() -> impl Strategy<Value = Vec<(i64, i64, i64, u8)>> {
-        proptest::collection::vec((10i64..24, 10i64..14, 10i64..24, 0u8..3), 0..60)
+    fn scene() -> impl Strategy<Value = Vec<(i128, i128, i128, u8)>> {
+        proptest::collection::vec((10i128..24, 10i128..14, 10i128..24, 0u8..3), 0..60)
     }
 
     /// The same, with a fourth kind of block: seven eighths of a cube, more than a character steps up.
-    fn scene_with_tall_blocks() -> impl Strategy<Value = Vec<(i64, i64, i64, u8)>> {
-        proptest::collection::vec((10i64..24, 10i64..16, 10i64..24, 0u8..4), 0..80)
+    fn scene_with_tall_blocks() -> impl Strategy<Value = Vec<(i128, i128, i128, u8)>> {
+        proptest::collection::vec((10i128..24, 10i128..16, 10i128..24, 0u8..4), 0..80)
     }
 
     fn input() -> impl Strategy<Value = MoveInput> {
@@ -1336,12 +1336,12 @@ mod properties {
         /// everything and is not carried further than the way straight out of where it was put.
         #[test]
         fn a_character_put_into_the_top_of_hills_is_moved_out_of_them(
-            heights in proptest::collection::vec(0i64..4, 15 * 15),
+            heights in proptest::collection::vec(0i128..4, 15 * 15),
             at in (14.0f32..20.0, 14.0f32..20.0),
             depth in prop_oneof![Just(0.3f32), Just(1.0f32), Just(1.7f32)],
         ) {
             let mut scene = Scene::with_floor(9);
-            let height_of = |x: i64, z: i64| heights[((z - 10) * 15 + (x - 10)) as usize];
+            let height_of = |x: i128, z: i128| heights[((z - 10) * 15 + (x - 10)) as usize];
             for x in 10..25 {
                 for z in 10..25 {
                     for y in 10..10 + height_of(x, z) {
@@ -1350,7 +1350,7 @@ mod properties {
                 }
             }
             let (x, z) = at;
-            let columns = |centre: f32| [(centre - 0.28).floor() as i64, (centre + 0.28).floor() as i64];
+            let columns = |centre: f32| [(centre - 0.28).floor() as i128, (centre + 0.28).floor() as i128];
             let tallest = columns(x)
                 .into_iter()
                 .flat_map(|cx| columns(z).map(move |cz| height_of(cx, cz)))

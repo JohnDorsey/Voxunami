@@ -63,8 +63,9 @@ enum Phase {
     Joined {
         /// The region of a level the client has been told it watches.
         watched: Option<(LevelIndex, BrickBox)>,
-        /// The latest region it asked for, not yet answered.
-        requested: Option<(LevelIndex, BrickBox)>,
+        /// The latest region it asked for, not yet answered. (Boxed: it is mostly none, and a region is two coordinates of 128 bits each, which would make this variant
+        /// much larger than the others.)
+        requested: Option<Box<(LevelIndex, BrickBox)>>,
         /// The entities it has been told of, and as what.
         known_entities: KnownEntities,
         /// The ships it has been told of.
@@ -383,7 +384,7 @@ impl Server {
                     .expect("the session exists")
                     .phase
                 {
-                    *requested = Some((level, region));
+                    *requested = Some(Box::new((level, region)));
                 }
                 None
             }
@@ -608,7 +609,7 @@ impl Server {
             unreachable!("only joined clients are sent updates");
         };
         let previous = *watched;
-        let current = match requested.take() {
+        let current = match requested.take().map(|asked| *asked) {
             Some(asked) if previous != Some(asked) => {
                 *watched = Some(asked);
                 Some(asked)

@@ -12,7 +12,7 @@ use voxunami_cave::content::CaveContent;
 use voxunami_cave::game::request_block;
 use voxunami_cave::plugins::{BlockEditRequested, cave_plugins};
 
-const GROUND: i64 = 102;
+const GROUND: i128 = 102;
 
 /// A rig whose server runs Cave's plugins and these others.
 fn rig_with(others: Vec<Box<dyn Plugin>>) -> Rig {
@@ -47,7 +47,7 @@ fn id(text: &str) -> NamespacedId {
     text.parse().unwrap()
 }
 
-fn at(x: i64, y: i64, z: i64) -> VoxelCoordinate {
+fn at(x: i128, y: i128, z: i128) -> VoxelCoordinate {
     VoxelCoordinate::new(x, y, z)
 }
 

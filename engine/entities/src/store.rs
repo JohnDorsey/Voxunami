@@ -210,8 +210,8 @@ impl EntityStore {
         let offset = position.offset();
         let reach = |axis: usize| {
             (
-                ((offset[axis] - radius) / edge).floor() as i64,
-                ((offset[axis] + radius) / edge).floor() as i64,
+                ((offset[axis] - radius) / edge).floor() as i128,
+                ((offset[axis] + radius) / edge).floor() as i128,
             )
         };
         let (x, y, z) = (reach(0), reach(1), reach(2));

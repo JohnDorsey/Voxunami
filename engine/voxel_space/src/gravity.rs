@@ -77,7 +77,7 @@ pub fn gravity_at(
 fn vector_between(from: WorldPosition, to: WorldPosition) -> [f64; 3] {
     let (a, b) = (from.brick(), to.brick());
     let (from_offset, to_offset) = (from.offset(), to.offset());
-    let along = |to: i64, from: i64, to_offset: f32, from_offset: f32| {
+    let along = |to: i128, from: i128, to_offset: f32, from_offset: f32| {
         (to - from) as f64 * BRICK_EDGE_LENGTH as f64
             + (f64::from(to_offset) - f64::from(from_offset))
     };

@@ -138,12 +138,12 @@ pub fn voxel_of(place: WorldPosition) -> VoxelCoordinate {
 /// with the lower x, then the lower z.
 fn offsets_within(radius: u32) -> Vec<[i32; 3]> {
     let reach = radius as i32;
-    let limit = i64::from(radius) * i64::from(radius);
+    let limit = i128::from(radius) * i128::from(radius);
     let mut offsets = Vec::new();
     for x in -reach..=reach {
         for y in -reach..=reach {
             for z in -reach..=reach {
-                let squared = i64::from(x).pow(2) + i64::from(y).pow(2) + i64::from(z).pow(2);
+                let squared = i128::from(x).pow(2) + i128::from(y).pow(2) + i128::from(z).pow(2);
                 if squared <= limit {
                     offsets.push((squared, [x, y, z]));
                 }
@@ -398,7 +398,7 @@ mod tests {
     }
 
     /// A ship of stone at these voxels (in its own coordinates), with the channels of the block and the state.
-    fn ship(voxels: &[[i64; 3]]) -> (MovingGrid, ChannelIndex, ChannelIndex) {
+    fn ship(voxels: &[[i128; 3]]) -> (MovingGrid, ChannelIndex, ChannelIndex) {
         let layout = Arc::new(
             GridLayout::new(vec![
                 ChannelDefinition::number("test:block".parse().unwrap(), AIR),
@@ -430,7 +430,7 @@ mod tests {
         (ship, block, state)
     }
 
-    fn hull(voxels: &[[i64; 3]]) -> Hull {
+    fn hull(voxels: &[[i128; 3]]) -> Hull {
         let (ship, block, state) = ship(voxels);
         Hull::of(&ship, &collisions(), block, state, None)
     }
@@ -447,7 +447,7 @@ mod tests {
         |place| solid.contains(&voxel_of(place))
     }
 
-    fn voxels_where(test: impl Fn([i64; 3]) -> bool) -> HashSet<VoxelCoordinate> {
+    fn voxels_where(test: impl Fn([i128; 3]) -> bool) -> HashSet<VoxelCoordinate> {
         let mut found = HashSet::new();
         for x in -40..40 {
             for y in -40..40 {
@@ -471,7 +471,7 @@ mod tests {
             [0, 0, 0],
             [40, 40, 40],
         ]);
-        let voxels: Vec<[i64; 3]> = (0..hull.len())
+        let voxels: Vec<[i128; 3]> = (0..hull.len())
             .map(|cell| {
                 let voxel = hull.voxel(cell);
                 [voxel.x(), voxel.y(), voxel.z()]

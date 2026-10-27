@@ -46,7 +46,7 @@ impl FaceDirection {
     }
 
     /// The unit step to the neighbouring voxel this face looks at.
-    pub fn offset(self) -> [i64; 3] {
+    pub fn offset(self) -> [i128; 3] {
         let mut offset = [0; 3];
         offset[self.axis()] = if self.is_positive() { 1 } else { -1 };
         offset

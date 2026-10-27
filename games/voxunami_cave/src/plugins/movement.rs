@@ -85,7 +85,8 @@ fn teleport(
 ) -> String {
     let [x, y, z] = [0, 1, 2].map(|position| arguments.number(position));
     // The position must be somewhere in the world.
-    let Ok(voxel) = VoxelCoordinate::try_new(x.floor() as i64, y.floor() as i64, z.floor() as i64)
+    let Ok(voxel) =
+        VoxelCoordinate::try_new(x.floor() as i128, y.floor() as i128, z.floor() as i128)
     else {
         return "that is outside the world".to_owned();
     };

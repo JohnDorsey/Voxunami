@@ -298,7 +298,7 @@ mod tests {
     }
 
     impl TestField {
-        fn with(blocks: &[((i64, i64, i64), NumberedBlock)]) -> Self {
+        fn with(blocks: &[((i128, i128, i128), NumberedBlock)]) -> Self {
             let mut field = Self::default();
             for &((x, y, z), block) in blocks {
                 field
@@ -308,7 +308,7 @@ mod tests {
             field
         }
 
-        fn at(&self, x: i64, y: i64, z: i64) -> Option<NumberedBlock> {
+        fn at(&self, x: i128, y: i128, z: i128) -> Option<NumberedBlock> {
             self.blocks
                 .get(&(GridId::MAIN, VoxelCoordinate::new(x, y, z)))
                 .copied()
@@ -322,7 +322,7 @@ mod tests {
         }
     }
 
-    fn at(x: i64, y: i64, z: i64) -> VoxelCoordinate {
+    fn at(x: i128, y: i128, z: i128) -> VoxelCoordinate {
         VoxelCoordinate::new(x, y, z)
     }
 
@@ -430,7 +430,7 @@ mod tests {
             let blocks: Vec<_> = (0..length)
                 .map(|position| {
                     (
-                        (i64::from(position), 0, 0),
+                        (i128::from(position), 0, 0),
                         block(Material::Stone, position + 1),
                     )
                 })
@@ -442,7 +442,7 @@ mod tests {
         assert_eq!(field.at(0, 0, 0), None);
         for position in 0..PUSH_LIMIT {
             assert_eq!(
-                field.at(i64::from(position) + 1, 0, 0),
+                field.at(i128::from(position) + 1, 0, 0),
                 Some(block(Material::Stone, position + 1)),
                 "block {position}"
             );
@@ -452,7 +452,7 @@ mod tests {
         push_origin_block(&mut field, Tool::Double);
         for position in 0..=PUSH_LIMIT {
             assert_eq!(
-                field.at(i64::from(position), 0, 0),
+                field.at(i128::from(position), 0, 0),
                 Some(block(Material::Stone, position + 1)),
                 "block {position} stayed"
             );
@@ -653,7 +653,7 @@ mod tests {
         assert_eq!(movers.len(), 1);
         movers.advance(&mut field);
         assert!(movers.is_empty());
-        let end = -i64::from(COASTING_RANGE);
+        let end = -i128::from(COASTING_RANGE);
         assert_eq!(field.at(0, end, 0), Some(ice(1)));
         assert_eq!(field.blocks.len(), 1);
     }
@@ -680,7 +680,7 @@ mod tests {
         assert_eq!(movers.as_slice()[0].steps_left, COASTING_RANGE - 5);
         let (ticks, merges) = run_to_rest(&mut movers, &mut field);
         assert_eq!((ticks, merges.len()), (COASTING_RANGE - 5, 0));
-        let end = 4 - i64::from(COASTING_RANGE - 5);
+        let end = 4 - i128::from(COASTING_RANGE - 5);
         assert_eq!(field.at(end, 0, 0), Some(spring_ice(1)));
         assert_eq!(field.at(5, 0, 0), Some(stone(3)), "the wall is not moved");
     }
@@ -1176,8 +1176,8 @@ mod tests {
         #[test]
         fn subtracting_never_grows_the_total_and_always_comes_to_rest(
             blocks in proptest::collection::vec(
-                (0i64..5, 0i64..5, 0i64..5, material_strategy(), 1u32..=9), 0..60),
-            pushes in proptest::collection::vec((0i64..5, 0i64..5, 0i64..5, 0u8..6), 0..10),
+                (0i128..5, 0i128..5, 0i128..5, material_strategy(), 1u32..=9), 0..60),
+            pushes in proptest::collection::vec((0i128..5, 0i128..5, 0i128..5, 0u8..6), 0..10),
         ) {
             let mut field = TestField::default();
             for (x, y, z, material, number) in blocks {
@@ -1208,8 +1208,8 @@ mod tests {
         #[test]
         fn pushes_conserve_value_and_always_come_to_rest(
             blocks in proptest::collection::vec(
-                (0i64..5, 0i64..5, 0i64..5, material_strategy(), 1u8..=3), 0..60),
-            pushes in proptest::collection::vec((0i64..5, 0i64..5, 0i64..5, 0u8..6), 0..10),
+                (0i128..5, 0i128..5, 0i128..5, material_strategy(), 1u8..=3), 0..60),
+            pushes in proptest::collection::vec((0i128..5, 0i128..5, 0i128..5, 0u8..6), 0..10),
             tool in tool_strategy().prop_filter("the total is kept", |tool| *tool != Tool::Subtract),
         ) {
             let mut field = TestField::default();

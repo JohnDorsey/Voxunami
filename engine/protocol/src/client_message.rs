@@ -199,7 +199,7 @@ mod tests {
                 .unwrap()
             }
             .encode(),
-            [2, 3, 1, 0, 4, 6, 8, 10]
+            [2, 3, 1, 1, 0, 1, 4, 1, 6, 1, 8, 1, 10]
         );
         assert_eq!(
             ClientMessage::Command {

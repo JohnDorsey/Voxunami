@@ -5,7 +5,7 @@ owner's decision. Read with `moving-grids-spec.md` (grids and ships), `future-go
 the code is marked **[code]**; what I believe and did not check is marked **[belief]**; the choices are mine unless marked *owner*.
 
 A word that means three things here: **level** alone is already a world level (`LevelIndex`, a dimension), and `region_octree` calls the size of a
-cube of bricks its "level" (`ROOT_LEVEL` 56). In this document the new idea is always a **detail level** (`LevelOfDetail`, which exists): detail level `n`
+cube of bricks its "level" (`ROOT_LEVEL` 116). In this document the new idea is always a **detail level** (`LevelOfDetail`, which exists): detail level `n`
 means a cell is `2^n` voxels along each edge. Detail level 0 is full detail.
 
 ## 1. What is true today
@@ -13,7 +13,7 @@ means a cell is `2^n` voxels along each edge. Detail level 0 is full detail.
 - **[code]** `voxel_space::LevelOfDetail` exists (a `u8`, 0 to 60, `edge_length_in_voxels() = 1 << n`), and `DensityField::sample` and `bounds`
   already take a footprint of that type, so the generators were designed with coarse sampling in mind. `TerrainGenerator` has one method,
   `generate_brick`, at full detail only.
-- **[code]** Voxel coordinates are `i64` within ±2^60, bricks are 32 voxels (2^5) per edge, `WorldPosition` is a brick plus an `f32` offset in it, and
+- **[code]** Voxel coordinates are `i128` within ±2^120 (they were `i64` within ±2^60 when this was written), bricks are 32 voxels (2^5) per edge, `WorldPosition` is a brick plus an `f32` offset in it, and
   rendering is camera-relative. A cell of detail level 40 (2^40 voxels, about 1.1 × 10^12 m at a metre a voxel) fits with room to spare.
 - **[code]** The renderer draws a brick as instanced packed quads (`voxel.wgsl`), placed by a per-brick `Placement` (an offset relative to the camera and a
   3 × 3 matrix for the grid's turn). Meshes are keyed `(grid, brick)` (`upload_grid_brick`, `remove_grid_brick`). There is no scale in `Placement`. The

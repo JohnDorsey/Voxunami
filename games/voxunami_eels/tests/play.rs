@@ -20,7 +20,7 @@ use voxunami_eels::round::{
     COUNTDOWN_TICKS, OVER_TICKS, Phase, STEP_TICKS, TICKS_PER_SECOND, start_of,
 };
 
-const VIEW_RADIUS: i64 = 3;
+const VIEW_RADIUS: i128 = 3;
 
 type Player = Session<Box<dyn Connection>, Eels>;
 
@@ -120,11 +120,11 @@ fn voxels_of(camera: &renderer::Camera) -> [f64; 3] {
     })
 }
 
-fn at(cell: [i64; 3]) -> VoxelCoordinate {
+fn at(cell: [i128; 3]) -> VoxelCoordinate {
     VoxelCoordinate::new(cell[0], cell[1], cell[2])
 }
 
-fn block_and_colour(player: &Player, cell: [i64; 3]) -> (Option<u32>, Option<u32>) {
+fn block_and_colour(player: &Player, cell: [i128; 3]) -> (Option<u32>, Option<u32>) {
     (
         player.mesher().material_at(at(cell)),
         player.mesher().state_at(at(cell)),

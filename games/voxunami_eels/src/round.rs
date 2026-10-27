@@ -78,11 +78,11 @@ pub enum Phase {
 /// Where each slot's eel starts and which way it heads. The first four meet in the middle if
 /// nobody turns, the others do the same a level above and below.
 pub fn start_of(slot: u8) -> (Cell, FaceDirection) {
-    const MIDDLE: i64 = ARENA_EDGE / 2;
-    const NEAR: i64 = 8;
-    const FAR: i64 = ARENA_EDGE - 1 - NEAR;
-    const LOW: i64 = ARENA_EDGE / 5;
-    const HIGH: i64 = ARENA_EDGE - 1 - LOW;
+    const MIDDLE: i128 = ARENA_EDGE / 2;
+    const NEAR: i128 = 8;
+    const FAR: i128 = ARENA_EDGE - 1 - NEAR;
+    const LOW: i128 = ARENA_EDGE / 5;
+    const HIGH: i128 = ARENA_EDGE - 1 - LOW;
     match slot % MAXIMUM_EELS as u8 {
         0 => ([MIDDLE, MIDDLE, NEAR], FaceDirection::PositiveZ),
         1 => ([FAR, MIDDLE, MIDDLE], FaceDirection::NegativeX),

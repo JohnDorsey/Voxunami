@@ -20,7 +20,7 @@ use voxunami_cave::content::CaveContent;
 const ORIGIN: [f32; 3] = [32.0, 224.0, 32.0];
 
 /// The box the light is looked at in: the ships are 12 by 12 on the floor, with room above for the light.
-const BOX: ([i64; 3], [i64; 3]) = ([0, 0, 0], [14, 7, 14]);
+const BOX: ([i128; 3], [i128; 3]) = ([0, 0, 0], [14, 7, 14]);
 
 fn pose() -> GridPose {
     GridPose::new(
@@ -30,7 +30,7 @@ fn pose() -> GridPose {
 }
 
 /// Makes a held ship of stone, with these lamps, at `pose()`: stone at the (x, z) pairs on the floor (y = 0).
-fn make(scene: &mut Scene, floor: Vec<(i64, i64)>, lamps: Vec<[i64; 3]>) {
+fn make(scene: &mut Scene, floor: Vec<(i128, i128)>, lamps: Vec<[i128; 3]>) {
     let content = CaveContent::new();
     scene.run(move |world| {
         let ship = world.create_grid(LevelIndex::MAIN, pose()).unwrap();
@@ -55,13 +55,13 @@ fn make(scene: &mut Scene, floor: Vec<(i64, i64)>, lamps: Vec<[i64; 3]>) {
     });
 }
 
-fn square(x: std::ops::Range<i64>, z: std::ops::Range<i64>) -> Vec<(i64, i64)> {
+fn square(x: std::ops::Range<i128>, z: std::ops::Range<i128>) -> Vec<(i128, i128)> {
     x.flat_map(|x| z.clone().map(move |z| (x, z))).collect()
 }
 
 /// The light in the box, ship by ship: each ship that has a block at the marker voxel (so that the same ship is looked at in both scenes), in
 /// the order of the markers.
-fn light_of_the_ships_with(scene: &mut Scene, markers: Vec<[i64; 3]>) -> Vec<Vec<u32>> {
+fn light_of_the_ships_with(scene: &mut Scene, markers: Vec<[i128; 3]>) -> Vec<Vec<u32>> {
     let content = CaveContent::new();
     let found = Arc::new(Mutex::new(Vec::new()));
     let slot = Arc::clone(&found);

@@ -92,7 +92,7 @@ impl TerrainGenerator for NumberedHills {
             for y in 0..BRICK_EDGE_LENGTH {
                 for x in 0..BRICK_EDGE_LENGTH {
                     let voxel = origin
-                        .checked_offset(x as i64, y as i64, z as i64)
+                        .checked_offset(x as i128, y as i128, z as i128)
                         .expect("the voxels of a brick are within range");
                     if all_solid || self.is_solid(voxel) {
                         let local = LocalVoxelIndex::new(x as u8, y as u8, z as u8);

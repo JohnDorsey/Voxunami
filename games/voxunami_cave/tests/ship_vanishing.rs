@@ -438,7 +438,7 @@ fn a_pilot_whose_ship_cannot_be_found_can_quit_instead() {
     assert_eq!(scene.rig.server.connected_clients().count(), 0);
 }
 
-const IN_THE_WAY: [i64; 3] = [20, FLOOR as i64 + 3, 24];
+const IN_THE_WAY: [i128; 3] = [20, FLOOR as i128 + 3, 24];
 const BLOCKED: &str = "Something is where your ship was left. 1) Move the ship to the nearest free place  2) Break the terrain that is in the way  3) Break the blocks of the ship that are in the way  4) Put the ship there anyway (it may be glitchy)  5) Go to the world spawn and leave the ship behind  (.choose N)";
 
 /// The pilot went away with the deck, someone built a block where the lowest layer of it was, and the pilot has come back and been asked.

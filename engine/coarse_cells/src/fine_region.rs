@@ -22,42 +22,47 @@ impl FineRegion {
         Self { centre, radius }
     }
 
-    fn radius_squared(&self) -> i128 {
-        i128::from(self.radius) * i128::from(self.radius)
+    /// Whether a ball of this radius holds the point at these distances along the three axes. A distance beyond the radius is out whatever the others are, which
+    /// is checked first: distances are as large as the range of bricks (2^116), whose squares would not fit, and after the check each is at most the radius (a `u32`).
+    fn holds_distances(&self, distances: [u128; 3]) -> bool {
+        let radius = u128::from(self.radius);
+        distances.iter().all(|&distance| distance <= radius)
+            && distances
+                .iter()
+                .map(|&distance| distance * distance)
+                .sum::<u128>()
+                <= radius * radius
     }
 
     /// Whether the brick is in the ball.
     pub fn contains_brick(&self, brick: BrickCoordinate) -> bool {
-        let difference = |own: i64, centre: i64| i128::from(own) - i128::from(centre);
-        let (dx, dy, dz) = (
-            difference(brick.x(), self.centre.x()),
-            difference(brick.y(), self.centre.y()),
-            difference(brick.z(), self.centre.z()),
-        );
-        dx * dx + dy * dy + dz * dz <= self.radius_squared()
+        self.holds_distances([
+            brick.x().abs_diff(self.centre.x()),
+            brick.y().abs_diff(self.centre.y()),
+            brick.z().abs_diff(self.centre.z()),
+        ])
     }
 
     /// Whether the cube has a brick in the ball.
     pub fn touches_cube(&self, cube: BrickCube) -> bool {
         let origin = cube.origin();
-        let last = |component: i64| i128::from(component) + i128::from(cube.edge_length()) - 1;
-        // Along each axis, the brick of the cube nearest the centre.
-        let gap = |origin: i64, last: i128, centre: i64| {
-            let centre = i128::from(centre);
-            if centre < i128::from(origin) {
-                i128::from(origin) - centre
+        // Along each axis, the distance from the centre to the brick of the cube nearest it.
+        let gap = |origin: i128, centre: i128| {
+            // (The last brick is at most 2^116 past the origin of a cube, and the coordinates are within 2^115 of zero: no overflow.)
+            let last = origin + cube.edge_length() as i128 - 1;
+            if centre < origin {
+                origin.abs_diff(centre)
             } else if centre > last {
-                centre - last
+                centre.abs_diff(last)
             } else {
                 0
             }
         };
-        let (dx, dy, dz) = (
-            gap(origin.x(), last(origin.x()), self.centre.x()),
-            gap(origin.y(), last(origin.y()), self.centre.y()),
-            gap(origin.z(), last(origin.z()), self.centre.z()),
-        );
-        dx * dx + dy * dy + dz * dz <= self.radius_squared()
+        self.holds_distances([
+            gap(origin.x(), self.centre.x()),
+            gap(origin.y(), self.centre.y()),
+            gap(origin.z(), self.centre.z()),
+        ])
     }
 
     /// Whether the brick is drawn as a brick: it is in a cube of 2 bricks (a node of detail level 1) that touches the ball.
@@ -72,7 +77,7 @@ mod tests {
 
     use super::*;
 
-    fn brick(x: i64, y: i64, z: i64) -> BrickCoordinate {
+    fn brick(x: i128, y: i128, z: i128) -> BrickCoordinate {
         BrickCoordinate::new(x, y, z)
     }
 
@@ -94,11 +99,32 @@ mod tests {
     }
 
     #[test]
+    fn a_ball_at_one_end_of_the_range_does_not_reach_the_other_and_nothing_overflows() {
+        // The squares of distances this large would not fit; the answer is still exact.
+        let low = BRICK_COORDINATE_MINIMUM;
+        let high = BRICK_COORDINATE_MAXIMUM;
+        let region = FineRegion::new(brick(low, low, low), u32::MAX);
+        assert!(region.contains_brick(brick(low, low, low)));
+        assert!(region.contains_brick(brick(low + 1000, low, low)));
+        assert!(!region.contains_brick(brick(high, high, high)));
+        assert!(!region.contains_brick(brick(low + i128::from(u32::MAX) + 1, low, low)));
+        assert!(region.contains_brick(brick(low + i128::from(u32::MAX), low, low)));
+        let everything = BrickCube::containing(brick(0, 0, 0), region_octree::ROOT_LEVEL);
+        assert!(region.touches_cube(everything));
+        let far_cube = BrickCube::containing(brick(high, high, high), 100);
+        assert!(!region.touches_cube(far_cube));
+        // Two axes each at the radius are out together, as in any size of grid.
+        let diagonal = FineRegion::new(brick(high, high, 0), 10);
+        assert!(!diagonal.contains_brick(brick(high - 8, high - 8, 0)));
+        assert!(diagonal.contains_brick(brick(high - 7, high - 7, 0)));
+    }
+
+    #[test]
     fn a_cube_touches_the_ball_exactly_when_one_of_its_bricks_is_in_it() {
         for radius in [0, 1, 2, 3, 5] {
             let region = FineRegion::new(brick(1, -2, 3), radius);
             for level in 0..=3u8 {
-                let edge = 1i64 << level;
+                let edge = 1i128 << level;
                 for x in (-16..=16).step_by(edge as usize) {
                     for y in (-16..=16).step_by(edge as usize) {
                         for z in (-16..=16).step_by(edge as usize) {

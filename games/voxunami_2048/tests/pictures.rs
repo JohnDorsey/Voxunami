@@ -14,7 +14,7 @@ use voxunami_2048::material::Material;
 use voxunami_2048::numbered_block::NumberedBlock;
 
 const SIZE: u32 = 64;
-const VIEW_RADIUS: i64 = 3;
+const VIEW_RADIUS: i128 = 3;
 
 fn contexts() -> Vec<GraphicsContext> {
     let contexts = GraphicsContext::all_physical_adapters();

@@ -134,7 +134,7 @@ impl Grid {
     }
 
     /// A 64-bit digest of which bricks exist and what they hold: FNV-1a over, for each brick in
-    /// coordinate order, its three coordinates (`i64`, little-endian) and its
+    /// coordinate order, its three coordinates (`i128`, 16 bytes each, little-endian) and its
     /// [`Brick::content_digest`]. Equal grids of the same layout give equal digests on every
     /// platform; the layout itself is not included.
     pub fn content_digest(&self) -> u64 {
@@ -170,14 +170,14 @@ mod tests {
     use super::*;
     use crate::test_support::{MATERIAL_DEFAULT, StandardTestLayout, TEMPERATURE_DEFAULT};
 
-    fn voxel(x: i64, y: i64, z: i64) -> VoxelCoordinate {
+    fn voxel(x: i128, y: i128, z: i128) -> VoxelCoordinate {
         VoxelCoordinate::new(x, y, z)
     }
 
     #[test]
     fn the_grid_digest_depends_on_where_bricks_are_and_what_they_hold_and_nothing_else() {
         let fixture = StandardTestLayout::default();
-        let build = |edits: &[(i64, u32)]| {
+        let build = |edits: &[(i128, u32)]| {
             let mut grid = Grid::new(Arc::clone(&fixture.layout));
             for &(x, value) in edits {
                 grid.set(fixture.material, voxel(x, 0, 0), value);
@@ -203,7 +203,7 @@ mod tests {
         assert_eq!(empty, 0xcbf2_9ce4_8422_2325);
     }
 
-    fn brick(x: i64, y: i64, z: i64) -> BrickCoordinate {
+    fn brick(x: i128, y: i128, z: i128) -> BrickCoordinate {
         BrickCoordinate::new(x, y, z)
     }
 

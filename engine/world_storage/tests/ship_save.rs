@@ -109,7 +109,12 @@ fn a_world_with_ships_is_a_world_file_and_a_file_for_each_ship_that_the_world_fi
 /// The hash of the world file of the scenario above. (Moved on purpose, Phase 38a: 3_028_195_094_562_407_983 before. The ships section is version 2 and each of the two
 /// poses has four `f64` for its turn where it had four `f32`: 16 bytes each, 34,105 to 34,137 (the length at the old commit measured, not assumed); the checksums of the ship files
 /// in the section changed with the files. Taken on Windows; Linux is checked to agree.)
-const PINNED_WORLD: u64 = 13_693_694_158_651_394_378;
+///
+/// Moved on purpose again (coordinates of up to 128 bits, 2026-10-27): 13_693_694_158_651_394_378 before, 34,137 bytes, now 34,580 (443 more, measured per section at the old commit and
+/// now): the levels section 428 more (the assignment tree is 116 levels deep, not 56, so the one assigned cube takes 420 more leaves of a byte each; a leaf number takes a seventh bit,
+/// which gives one leaf a second byte; and 7 coordinates of the 4 edited bricks that are not zero take a byte more each) and the ships section 15 more (poses, bounds and offsets, the
+/// same way). Taken on Windows; Linux is checked to agree.
+const PINNED_WORLD: u64 = 1_744_918_755_505_601_542;
 
 #[test]
 fn a_world_loaded_has_its_ships_in_their_files_and_asks_for_them_one_by_one_as_they_were() {
@@ -819,9 +824,9 @@ fn the_ships_section_round_trips_and_refuses_what_cannot_be_right() {
         .is_err(),
         "a retired id twice"
     );
-    // A turn that is not one of the 24: the byte after the successor's id.
+    // A turn that is not one of the 24: the byte after the successor's id, with the three offsets (1, -2 and 3: two bytes each) after it.
     let mut bad_turn = bytes.clone();
-    let turn_at = bad_turn.len() - 1 - 3;
+    let turn_at = bad_turn.len() - 1 - 6;
     assert!(LatticeRotation::all().len() == 24 && bad_turn[turn_at] == 17);
     bad_turn[turn_at] = 24;
     assert!(decode_grids(&bad_turn).is_err());
@@ -839,7 +844,7 @@ proptest! {
         retired in 0usize..4,
         serial in 0u64..1000,
         checksum in any::<u32>(),
-        offset in any::<[i64; 3]>(),
+        offset in any::<[i128; 3]>(),
         turn in 0usize..24,
         waits in any::<bool>(),
     ) {

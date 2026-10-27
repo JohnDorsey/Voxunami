@@ -173,7 +173,7 @@ fn level_screen(scene: &mut Scene) -> Screen {
 /// Whether any brick of the cube is in the box.
 fn meets(extent: BrickBox, cube: BrickCube) -> bool {
     let origin = cube.origin();
-    let last = cube.edge_length() as i64 - 1;
+    let last = cube.edge_length() as i128 - 1;
     BrickBox::new(
         origin,
         BrickCoordinate::new(origin.x() + last, origin.y() + last, origin.z() + last),
@@ -251,9 +251,9 @@ fn what_is_drawn_of_a_planet_with_an_extent_is_what_is_drawn_of_the_ground_witho
         assert_eq!(drawn, expected, "radius {radius}");
 
         for cube in screen.nodes.keys() {
-            let edge = cube.edge_length() as i64;
+            let edge = cube.edge_length() as i128;
             let origin = cube.origin();
-            let last = |coordinate: i64| coordinate + edge - 1;
+            let last = |coordinate: i128| coordinate + edge - 1;
             let along = [
                 (origin.x(), last(origin.x())),
                 (origin.y(), last(origin.y())),
@@ -450,7 +450,7 @@ fn round_planet(scene: &Scene) -> Arc<dyn TerrainGenerator> {
 fn distance_to_node(cube: BrickCube, from: [f64; 3]) -> f64 {
     let edge = cube.edge_length() as f64 * 32.0;
     let origin = cube.origin();
-    let along = |first: i64, at: f64| {
+    let along = |first: i128, at: f64| {
         let low = first as f64 * 32.0;
         (low - at).max(at - (low + edge)).max(0.0)
     };

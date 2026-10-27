@@ -101,7 +101,7 @@ The recording plays in real time, from the recorded player's point of view."
 #[derive(Clone, Debug, PartialEq)]
 pub struct ViewOptions {
     pub adapter: AdapterPreference,
-    pub view_radius: i64,
+    pub view_radius: i128,
     pub width: u32,
     pub height: u32,
     pub vsync: bool,
@@ -302,7 +302,7 @@ pub struct ServeOptions {
     /// A directory of data packs.
     pub packs: Option<PathBuf>,
     pub autosave_seconds: f32,
-    pub view_radius: i64,
+    pub view_radius: i128,
     /// How ships are kept.
     pub ships: server::ShipSettings,
 }

@@ -90,7 +90,7 @@ fn a_clock_section_of_a_newer_version_is_refused_not_dropped() {
     let mut sections = sections_of(&bytes);
     for section in &mut sections {
         if section.identifier == clock_id() {
-            section.version = 2;
+            section.version = world_storage::engine_sections::SUPPORTED_VERSION + 1;
         }
     }
     let rewritten = world_storage::container::write_container(&sections);

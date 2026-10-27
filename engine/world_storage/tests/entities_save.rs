@@ -53,7 +53,7 @@ fn kinds() -> EntityKinds {
     kinds
 }
 
-fn pose(level: u32, brick: [i64; 3], offset: [f32; 3]) -> EntityPose {
+fn pose(level: u32, brick: [i128; 3], offset: [f32; 3]) -> EntityPose {
     EntityPose::new(
         GridId::root(LevelIndex::new(level)),
         WorldPosition::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), offset),

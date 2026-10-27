@@ -11,8 +11,8 @@ use voxunami_cave::content::CaveContent;
 use voxunami_cave::messages::SetBlock;
 
 /// Where the sites are: three above the floor.
-fn origin() -> [i64; 3] {
-    [4, FLOOR as i64 + 3, 4]
+fn origin() -> [i128; 3] {
+    [4, FLOOR as i128 + 3, 4]
 }
 
 /// A plank of wood, 12 by 12 and one thick, with nine fires on it. (One fire sometimes burns out without catching anything: it ages one tick in four
@@ -21,7 +21,7 @@ fn origin() -> [i64; 3] {
 fn burning_plank(scene: &mut Scene, place: Place) -> Site {
     let content = CaveContent::new();
     let site = Site::new(scene, place, origin());
-    let mut blocks: Vec<([i64; 3], u32)> = Vec::new();
+    let mut blocks: Vec<([i128; 3], u32)> = Vec::new();
     for x in 0..12 {
         for z in 0..12 {
             blocks.push(([x, 0, z], content.blocks.wood));
@@ -94,7 +94,7 @@ fn a_fire_waits_while_no_player_is_near_and_burns_when_one_comes_in_the_terrain_
             "{place:?}: nothing burns with nobody near"
         );
         // The player comes to it: it burns.
-        player.send_command(&format!("/tp 10 {} 10", FLOOR as i64 + 6));
+        player.send_command(&format!("/tp 10 {} 10", FLOOR as i128 + 6));
         tick_and_follow(&mut scene, &mut player, 400);
         let (wood, fire) = plank_and_fire_left(&mut scene, &site);
         assert_eq!(fire, 0, "{place:?}");
@@ -110,7 +110,7 @@ fn light_of_a_lamp(place: Place, lamp_stays: bool, ticks_after: usize) -> Vec<u3
     let mut player = scene.rig.join([40.0, 232.0, 40.0], 0.0, 0.0);
     scene.rig.settle(&mut [&mut player]);
     let site = Site::new(&mut scene, place, [32, 224, 32]);
-    let mut blocks: Vec<([i64; 3], u32)> = Vec::new();
+    let mut blocks: Vec<([i128; 3], u32)> = Vec::new();
     for x in 0..12 {
         for z in 0..12 {
             blocks.push(([x, 0, z], content.blocks.stone));
@@ -187,7 +187,7 @@ fn a_player_can_change_a_block_within_reach_and_not_beyond_it_in_the_terrain_and
         );
         // The player is at (10, +6, 10), so the block at offset (6, 0, 6) is 6 away and the one at (6, 0, 11) is 6 as well; the reach is 10.
         // Put them within and beyond it by moving the player: first near, then 40 voxels along x.
-        let ask = |scene: &mut Scene, player: &mut common::Player, offset: [i64; 3]| {
+        let ask = |scene: &mut Scene, player: &mut common::Player, offset: [i128; 3]| {
             let message = SetBlock {
                 grid: site.grid,
                 at: site.voxel(offset),
@@ -204,7 +204,7 @@ fn a_player_can_change_a_block_within_reach_and_not_beyond_it_in_the_terrain_and
             [content.blocks.air],
             "{place:?}: a block within reach is broken"
         );
-        player.send_command(&format!("/tp 60 {} 10", FLOOR as i64 + 6));
+        player.send_command(&format!("/tp 60 {} 10", FLOOR as i128 + 6));
         tick_and_follow(&mut scene, &mut player, 5);
         ask(&mut scene, &mut player, [6, 0, 11]);
         assert_eq!(
@@ -223,7 +223,7 @@ fn light_after_changing_the_scheme(place: Place) -> Vec<u32> {
     let mut player = scene.rig.join([40.0, 232.0, 40.0], 0.0, 0.0);
     scene.rig.settle(&mut [&mut player]);
     let site = Site::new(&mut scene, place, [32, 224, 32]);
-    let mut blocks: Vec<([i64; 3], u32)> = Vec::new();
+    let mut blocks: Vec<([i128; 3], u32)> = Vec::new();
     for x in 0..12 {
         for z in 0..12 {
             blocks.push(([x, 0, z], content.blocks.stone));

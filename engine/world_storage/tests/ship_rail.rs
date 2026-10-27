@@ -61,6 +61,9 @@ fn a_ship_with_no_rail_has_no_rail_section_and_one_with_a_rail_comes_back_with_i
 }
 
 /// The file of a planet on a rail with its rail section replaced by these bytes (at this version).
+/// The version this program writes the plain sections at.
+const CURRENT: u32 = world_storage::engine_sections::SUPPORTED_VERSION;
+
 fn file_with_rail_section(game: &Game, version: u32, payload: Vec<u8>) -> Vec<u8> {
     let world = game.new_world();
     let planet = MovingGrid {
@@ -88,7 +91,7 @@ fn file_with_rail_section(game: &Game, version: u32, payload: Vec<u8>) -> Vec<u8
 fn a_damaged_rail_section_is_found_not_believed_and_one_of_a_newer_version_is_refused() {
     let game = Game::new(&ALL_PLUGINS);
     let good = encode_rail(&a_rail());
-    assert!(ParsedShip::parse(&file_with_rail_section(&game, 1, good.clone())).is_ok());
+    assert!(ParsedShip::parse(&file_with_rail_section(&game, CURRENT, good.clone())).is_ok());
     let mut longer = good.clone();
     longer.push(0);
     for (what, payload) in [
@@ -97,15 +100,16 @@ fn a_damaged_rail_section_is_found_not_believed_and_one_of_a_newer_version_is_re
         ("nothing", Vec::new()),
         ("a flag nobody knows", vec![0b1000]),
     ] {
-        let error = ParsedShip::parse(&file_with_rail_section(&game, 1, payload)).expect_err(what);
+        let error =
+            ParsedShip::parse(&file_with_rail_section(&game, CURRENT, payload)).expect_err(what);
         assert!(
             matches!(&error, ShipFileError::Section { section, .. } if *section == rail_id()),
             "{what}: {error}"
         );
     }
-    let error = ParsedShip::parse(&file_with_rail_section(&game, 2, good)).unwrap_err();
+    let error = ParsedShip::parse(&file_with_rail_section(&game, CURRENT + 1, good)).unwrap_err();
     assert!(
-        matches!(error, ShipFileError::UnsupportedSection { version: 2, .. }),
+        matches!(error, ShipFileError::UnsupportedSection { version, .. } if version == CURRENT + 1),
         "{error}"
     );
 }

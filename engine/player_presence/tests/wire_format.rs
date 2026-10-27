@@ -7,7 +7,7 @@ use player_presence::{
 use protocol::{ClientId, Message, PlayerKey};
 use voxel_space::{BrickCoordinate, WorldPosition};
 
-fn pose(x: i64, offset: [f32; 3], yaw: f32, pitch: f32) -> PlayerPose {
+fn pose(x: i128, offset: [f32; 3], yaw: f32, pitch: f32) -> PlayerPose {
     PlayerPose {
         position: WorldPosition::new(BrickCoordinate::new(x, -2, 7), offset),
         yaw,
@@ -23,7 +23,8 @@ fn the_presence_messages_have_their_pinned_bytes() {
         (
             "a pose",
             PoseReport(first).encode(),
-            "06030e0000c03f85ebff41000000000000803e000080bf",
+            // (Protocol 9: the brick (3, -2, 7) is three length-prefixed integers, 01 06, 01 03, 01 0e.)
+            "01060103010e0000c03f85ebff41000000000000803e000080bf",
         ),
         (
             "a level change",
@@ -33,7 +34,7 @@ fn the_presence_messages_have_their_pinned_bytes() {
         (
             "where a returning player is",
             PlayerPlaced(first.position).encode(),
-            "06030e0000c03f85ebff4100000000",
+            "01060103010e0000c03f85ebff4100000000",
         ),
         (
             "a player's connection",

@@ -3,7 +3,7 @@
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
-use protocol::Message;
+use protocol::{Message, read_voxel_coordinate, write_voxel_coordinate};
 use voxel_space::{FaceDirection, VoxelCoordinate};
 use world_storage::Section;
 
@@ -22,21 +22,6 @@ pub struct PushRequest {
     pub tool: Tool,
 }
 
-fn write_voxel(writer: &mut ByteWriter, voxel: VoxelCoordinate) {
-    for component in [voxel.x(), voxel.y(), voxel.z()] {
-        writer.write_signed_varint(component);
-    }
-}
-
-fn read_voxel(reader: &mut ByteReader<'_>) -> Result<VoxelCoordinate, DecodeError> {
-    VoxelCoordinate::try_new(
-        reader.read_signed_varint()?,
-        reader.read_signed_varint()?,
-        reader.read_signed_varint()?,
-    )
-    .map_err(|_| DecodeError::Invalid("a voxel coordinate is out of range"))
-}
-
 fn read_direction(reader: &mut ByteReader<'_>) -> Result<FaceDirection, DecodeError> {
     FaceDirection::from_index(reader.read_u8()?).ok_or(DecodeError::Invalid("no such direction"))
 }
@@ -52,7 +37,7 @@ impl Message for PushRequest {
 
     fn encode(&self) -> Vec<u8> {
         let mut writer = ByteWriter::new();
-        write_voxel(&mut writer, self.voxel);
+        write_voxel_coordinate(&mut writer, self.voxel);
         writer.write_u8(self.direction.index());
         writer.write_u8(self.tool.index());
         writer.into_bytes()
@@ -61,7 +46,7 @@ impl Message for PushRequest {
     fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = ByteReader::new(payload);
         let request = Self {
-            voxel: read_voxel(&mut reader)?,
+            voxel: read_voxel_coordinate(&mut reader)?,
             direction: read_direction(&mut reader)?,
             tool: read_tool(&mut reader)?,
         };
@@ -112,28 +97,6 @@ fn read_progress(reader: &mut ByteReader<'_>) -> Result<Progress, DecodeError> {
         pushes: reader.read_varint()?,
         largest_merge: u32::try_from(reader.read_varint()?)
             .map_err(|_| DecodeError::Invalid("a block is numbered beyond the largest"))?,
-    })
-}
-
-/// The progress as saved before numbers were unbounded: the largest merge was the exponent of a power
-/// of two, in a byte.
-fn read_progress_with_exponent(reader: &mut ByteReader<'_>) -> Result<Progress, DecodeError> {
-    let score = reader.read_varint()?;
-    let pushes = reader.read_varint()?;
-    let exponent = reader.read_u8()?;
-    let largest_merge = match exponent {
-        0 => 0,
-        1..=31 => 1 << exponent,
-        _ => {
-            return Err(DecodeError::Invalid(
-                "a block is numbered beyond the largest",
-            ));
-        }
-    };
-    Ok(Progress {
-        score,
-        pushes,
-        largest_merge,
     })
 }
 
@@ -191,11 +154,9 @@ pub struct SavedState {
     pub movers: Vec<SavedMover>,
 }
 
-/// The version of the saved state this program writes. Version 1, from before worlds had levels,
-/// did not say which level a moving block was in; versions 1 and 2 kept the largest merge as the
-/// exponent of a power of two; versions before 4 did not say which tool pushed a moving block, and
-/// those blocks were pushed with the doubling tool, the only one there was. All are still read.
-const SAVED_STATE_VERSION: u32 = 4;
+/// The version of the saved state this program writes, and the only one it reads: 5, in which the position of a moving block is three wide integers (up to 128
+/// bits each). Nothing was released and nothing older is kept readable: a state of an earlier version counts as none, and is kept in the file as it is.
+const SAVED_STATE_VERSION: u32 = 5;
 
 pub fn saved_state_section_id() -> NamespacedId {
     kind("voxunami_2048:progress")
@@ -207,7 +168,7 @@ pub fn saved_state_section(state: &SavedState) -> Section {
     writer.write_varint(state.movers.len() as u64);
     for mover in &state.movers {
         writer.write_identifier(&mover.level);
-        write_voxel(&mut writer, mover.position);
+        write_voxel_coordinate(&mut writer, mover.position);
         writer.write_u8(mover.direction.index());
         writer.write_u8(mover.tool.index());
         writer.write_varint(u64::from(mover.steps_left));
@@ -219,40 +180,18 @@ pub fn saved_state_section(state: &SavedState) -> Section {
     }
 }
 
-fn read_saved_state_payload(
-    payload: &[u8],
-    version: u32,
-    legacy_level: &NamespacedId,
-) -> Result<SavedState, DecodeError> {
+fn read_saved_state_payload(payload: &[u8]) -> Result<SavedState, DecodeError> {
     let mut reader = ByteReader::new(payload);
-    let progress = if version <= 2 {
-        read_progress_with_exponent(&mut reader)?
-    } else {
-        read_progress(&mut reader)?
-    };
-    // A moving block takes at least three bytes of position, one of direction, one of steps, from
-    // version 2 a level's name of at least three, and from version 4 one of its tool.
-    let count = reader.read_count(match version {
-        1 => 5,
-        2 | 3 => 8,
-        _ => 9,
-    })?;
+    let progress = read_progress(&mut reader)?;
+    // A moving block takes a level's name of at least three bytes, at least three bytes of position, one of direction, one of its tool and one of steps.
+    let count = reader.read_count(9)?;
     let mut movers = Vec::with_capacity(count);
     for _ in 0..count {
-        let level = if version == 1 {
-            legacy_level.clone()
-        } else {
-            reader.read_identifier()?
-        };
         movers.push(SavedMover {
-            level,
-            position: read_voxel(&mut reader)?,
+            level: reader.read_identifier()?,
+            position: read_voxel_coordinate(&mut reader)?,
             direction: read_direction(&mut reader)?,
-            tool: if version >= 4 {
-                read_tool(&mut reader)?
-            } else {
-                Tool::Double
-            },
+            tool: read_tool(&mut reader)?,
             steps_left: u32::try_from(reader.read_varint()?)
                 .map_err(|_| DecodeError::Invalid("a block has too many steps left"))?,
         });
@@ -261,15 +200,13 @@ fn read_saved_state_payload(
     Ok(SavedState { progress, movers })
 }
 
-/// The saved state in a world's sections, if the world has some this program can read. A newer
-/// version of the section is left alone (and so kept in the file) and counts as no state.
-/// `legacy_level` is the level that blocks saved before worlds had levels were in.
-pub fn read_saved_state(sections: &[Section], legacy_level: &NamespacedId) -> Option<SavedState> {
+/// The saved state in a world's sections, if the world has some this program can read. A section of another version (a newer program's, or an older one's) is left
+/// alone (and so kept in the file) and counts as no state.
+pub fn read_saved_state(sections: &[Section]) -> Option<SavedState> {
     let section = sections.iter().find(|section| {
-        section.identifier == saved_state_section_id()
-            && (1..=SAVED_STATE_VERSION).contains(&section.version)
+        section.identifier == saved_state_section_id() && section.version == SAVED_STATE_VERSION
     })?;
-    read_saved_state_payload(&section.payload, section.version, legacy_level).ok()
+    read_saved_state_payload(&section.payload).ok()
 }
 
 #[cfg(test)]
@@ -282,7 +219,7 @@ mod tests {
         format!("voxunami_2048:{name}").parse().unwrap()
     }
 
-    fn mover(x: i64, direction: FaceDirection, steps_left: u32) -> SavedMover {
+    fn mover(x: i128, direction: FaceDirection, steps_left: u32) -> SavedMover {
         SavedMover {
             level: level("landscape"),
             position: VoxelCoordinate::new(x, -40, 7),
@@ -325,9 +262,9 @@ mod tests {
         assert!(PushRequest::decode(&bad_tool).is_err());
         // A coordinate beyond the world's edge.
         let mut writer = ByteWriter::new();
-        writer.write_signed_varint(i64::MAX);
-        writer.write_signed_varint(0);
-        writer.write_signed_varint(0);
+        writer.write_wide_signed(voxel_space::VOXEL_COORDINATE_MAXIMUM + 1);
+        writer.write_wide_signed(0);
+        writer.write_wide_signed(0);
         writer.write_u8(0);
         writer.write_u8(0);
         assert!(PushRequest::decode(&writer.into_bytes()).is_err());
@@ -372,112 +309,45 @@ mod tests {
             movers: vec![
                 mover(3, FaceDirection::PositiveX, 40),
                 mover(-1_000_000_000_000, FaceDirection::NegativeZ, 1),
+                mover(1 << 100, FaceDirection::PositiveY, 2),
             ],
         };
         let section = saved_state_section(&state);
         assert_eq!(
-            read_saved_state(std::slice::from_ref(&section), &level("landscape")),
+            read_saved_state(std::slice::from_ref(&section)),
             Some(state)
         );
-        assert_eq!(read_saved_state(&[], &level("landscape")), None);
+        assert_eq!(read_saved_state(&[]), None);
         let newer = Section {
             version: SAVED_STATE_VERSION + 1,
             ..section.clone()
         };
-        assert_eq!(read_saved_state(&[newer], &level("landscape")), None);
+        assert_eq!(read_saved_state(&[newer]), None);
         let damaged = Section {
             payload: vec![0x80],
             ..section
         };
-        assert_eq!(read_saved_state(&[damaged], &level("landscape")), None);
+        assert_eq!(read_saved_state(&[damaged]), None);
     }
 
     #[test]
-    fn a_version_1_saved_state_has_movers_with_no_level_and_gives_them_the_one_asked_for() {
-        let mut writer = ByteWriter::new();
-        writer.write_varint(40); // score
-        writer.write_varint(3); // pushes
-        writer.write_u8(2); // largest merge
-        writer.write_varint(1); // one mover
-        write_voxel(&mut writer, VoxelCoordinate::new(5, 6, 7));
-        writer.write_u8(FaceDirection::NegativeX.index());
-        writer.write_varint(9);
-        let section = Section {
-            identifier: saved_state_section_id(),
-            version: 1,
-            payload: writer.into_bytes(),
+    fn a_saved_state_of_any_other_version_is_not_read() {
+        let state = SavedState {
+            progress: Progress {
+                score: 1,
+                pushes: 2,
+                largest_merge: 4,
+            },
+            movers: vec![mover(3, FaceDirection::PositiveX, 40)],
         };
-        let state = read_saved_state(&[section], &level("old")).unwrap();
-        assert_eq!(state.progress.score, 40);
-        assert_eq!(
-            state.progress.largest_merge, 4,
-            "an exponent of 2 is the number 4"
-        );
-        assert_eq!(
-            state.movers,
-            [SavedMover {
-                level: level("old"),
-                position: VoxelCoordinate::new(5, 6, 7),
-                direction: FaceDirection::NegativeX,
-                tool: Tool::Double,
-                steps_left: 9,
-            }]
-        );
-    }
-
-    #[test]
-    fn a_version_3_saved_state_has_movers_with_no_tool_and_they_were_pushed_with_the_doubling_one()
-    {
-        let mut writer = ByteWriter::new();
-        writer.write_varint(40); // score
-        writer.write_varint(3); // pushes
-        writer.write_varint(2048); // largest merge, as a number
-        writer.write_varint(1); // one mover
-        writer.write_identifier(&level("landscape"));
-        write_voxel(&mut writer, VoxelCoordinate::new(5, 6, 7));
-        writer.write_u8(FaceDirection::NegativeX.index());
-        writer.write_varint(9);
-        let section = Section {
-            identifier: saved_state_section_id(),
-            version: 3,
-            payload: writer.into_bytes(),
-        };
-        let state = read_saved_state(&[section], &level("old")).unwrap();
-        assert_eq!(state.progress.largest_merge, 2048);
-        assert_eq!(state.movers.len(), 1);
-        assert_eq!(state.movers[0].tool, Tool::Double);
-        assert_eq!(state.movers[0].steps_left, 9);
-    }
-
-    #[test]
-    fn a_version_2_saved_state_has_the_largest_merge_as_an_exponent_and_it_becomes_a_number() {
-        let version_2 = |exponent: u8| {
-            let mut writer = ByteWriter::new();
-            writer.write_varint(500); // score
-            writer.write_varint(9); // pushes
-            writer.write_u8(exponent); // largest merge
-            writer.write_varint(1); // one mover
-            writer.write_identifier(&level("landscape"));
-            write_voxel(&mut writer, VoxelCoordinate::new(5, 6, 7));
-            writer.write_u8(FaceDirection::NegativeX.index());
-            writer.write_varint(9);
-            Section {
-                identifier: saved_state_section_id(),
-                version: 2,
-                payload: writer.into_bytes(),
-            }
-        };
-        for (exponent, number) in [(0, 0), (1, 2), (11, 2048), (20, 1 << 20), (31, 1 << 31)] {
-            let state = read_saved_state(&[version_2(exponent)], &level("landscape")).unwrap();
-            assert_eq!(state.progress.largest_merge, number, "exponent {exponent}");
-            assert_eq!(state.progress.score, 500);
-            assert_eq!(state.movers.len(), 1);
+        let section = saved_state_section(&state);
+        for version in [0, 1, 2, 3, 4, SAVED_STATE_VERSION + 1] {
+            let other = Section {
+                version,
+                ..section.clone()
+            };
+            assert_eq!(read_saved_state(&[other]), None, "version {version}");
         }
-        // An exponent whose number does not fit is damage, not a number.
-        assert_eq!(
-            read_saved_state(&[version_2(32)], &level("landscape")),
-            None
-        );
     }
 
     #[test]
@@ -486,10 +356,7 @@ mod tests {
         let section = saved_state_section(&state);
         assert_eq!(section.payload.len(), 4);
         assert_eq!(section.version, SAVED_STATE_VERSION);
-        assert_eq!(
-            read_saved_state(&[section], &level("landscape")),
-            Some(state)
-        );
+        assert_eq!(read_saved_state(&[section]), Some(state));
     }
 
     #[test]
@@ -501,23 +368,17 @@ mod tests {
         let length = good.payload.len();
         let mut bad_direction = good.clone();
         bad_direction.payload[length - 3] = 9;
-        assert_eq!(
-            read_saved_state(&[bad_direction], &level("landscape")),
-            None
-        );
+        assert_eq!(read_saved_state(&[bad_direction]), None);
         let mut bad_tool = good.clone();
         bad_tool.payload[length - 2] = 7;
-        assert_eq!(read_saved_state(&[bad_tool], &level("landscape")), None);
+        assert_eq!(read_saved_state(&[bad_tool]), None);
         let mut too_many = good.payload[..length - 1].to_vec();
         too_many.extend([0xFF, 0xFF, 0xFF, 0xFF, 0x1F]); // 2^33 - 1 steps
         assert_eq!(
-            read_saved_state(
-                &[Section {
-                    payload: too_many,
-                    ..good
-                }],
-                &level("landscape")
-            ),
+            read_saved_state(&[Section {
+                payload: too_many,
+                ..good
+            }]),
             None
         );
     }
@@ -531,7 +392,7 @@ mod tests {
                 identifier: saved_state_section_id(),
                 version: 1,
                 payload: bytes,
-            }], &level("landscape"));
+            }]);
         }
     }
 }

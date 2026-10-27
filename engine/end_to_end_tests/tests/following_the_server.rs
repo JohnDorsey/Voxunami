@@ -13,12 +13,12 @@ use world_storage::test_support::{ALL_PLUGINS, Game, Plugin, brick, id};
 enum Action {
     Place {
         player: usize,
-        at: [i64; 3],
+        at: [i128; 3],
         block: &'static str,
     },
     Watch {
         player: usize,
-        center: [i64; 3],
+        center: [i128; 3],
         radius: u32,
     },
     Wait,
@@ -33,9 +33,9 @@ const BLOCKS: [&str; 4] = [
 
 fn action() -> impl Strategy<Value = Action> {
     prop_oneof![
-        6 => (0usize..3, [-70i64..70, 0i64..14, -70i64..70], 0usize..4)
+        6 => (0usize..3, [-70i128..70, 0i128..14, -70i128..70], 0usize..4)
             .prop_map(|(player, at, block)| Action::Place { player, at, block: BLOCKS[block] }),
-        2 => (0usize..3, [-3i64..3, -1i64..2, -3i64..3], 0u32..3)
+        2 => (0usize..3, [-3i128..3, -1i128..2, -3i128..3], 0u32..3)
             .prop_map(|(player, center, radius)| Action::Watch { player, center, radius }),
         1 => Just(Action::Wait),
     ]
@@ -184,13 +184,13 @@ enum LevelAction {
     Place {
         player: usize,
         level: u32,
-        at: [i64; 3],
+        at: [i128; 3],
         block: &'static str,
     },
     Watch {
         player: usize,
         level: u32,
-        center: [i64; 3],
+        center: [i128; 3],
         radius: u32,
     },
     Wait,
@@ -198,9 +198,9 @@ enum LevelAction {
 
 fn level_action() -> impl Strategy<Value = LevelAction> {
     prop_oneof![
-        6 => (0usize..3, 0u32..2, [-70i64..70, 0i64..14, -70i64..70], 0usize..4)
+        6 => (0usize..3, 0u32..2, [-70i128..70, 0i128..14, -70i128..70], 0usize..4)
             .prop_map(|(player, level, at, block)| LevelAction::Place { player, level, at, block: BLOCKS[block] }),
-        3 => (0usize..3, 0u32..2, [-3i64..3, -1i64..2, -3i64..3], 0u32..3)
+        3 => (0usize..3, 0u32..2, [-3i128..3, -1i128..2, -3i128..3], 0u32..3)
             .prop_map(|(player, level, center, radius)| LevelAction::Watch { player, level, center, radius }),
         1 => Just(LevelAction::Wait),
     ]

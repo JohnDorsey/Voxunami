@@ -805,6 +805,31 @@ callers (ship creation, the bodies' terrain, the arrival look, the light-model s
 - Tests: the existing ones, rewritten by a tool for the calls (`regrid.py`, a scratch file) and by hand where a test expected an error for a level that is not there; two new for `detach_blocks` out of a
   ship and for `uniform_value` and `generated` on a ship. No pin moved. Windows 1745 and Linux 1746 tests pass; fmt and clippy clean.
 
+Coordinates of 128 bits (2026-10-27, `i128` migration, phase 2; the owner chose a clean break for saves). See `design-decisions.md` ("Coordinates of 128 bits") and `future-goals.md`.
+- *Built:* `VoxelCoordinate`, `BrickCoordinate`, `WorldPosition`, `Displacement`, `LatticeTransform`, `FaceDirection::offset`, the grids' keys and every crate that did arithmetic on them are `i128` (range +-2^120 voxels); `region_octree` is 116
+  levels with `u128` keys; the wire writes a coordinate with `write_wide_signed` through `protocol::{read,write}_{brick,voxel}_coordinate` (protocol 9); the saved sections moved to the new versions and the readers of older ones were
+  removed. 157 files changed, mostly `i64` to `i128`; the compiler led, and what the compiler cannot see was found by reading (below).
+- *Width-dependent arithmetic, each with a test at the ends of the range, and a mutant that the test kills:* `FineRegion` and the mesher's `is_farther_than` (a square of a distance across the range overflows `i128`; now an exact
+  check per axis first), the queue order of `world_view/src/lod.rs` (saturating), `select_nodes`' covering level (`widest as u64` truncated; now `level_covering`, tested at 2^63, 2^64, 2^100, 2^116), `1u64 << level`, `ROOT_LEVEL`-relative
+  test constants, the noise hash (`component as u64` would alias points 2^64 apart; now the old hash for any coordinate that fits an `i64` and the upper half mixed in otherwise, against a Python computation).
+  A search that found no more of these is not a proof there are none: the places I did not look at are the ones that do arithmetic on coordinates and were not touched by the compiler (an `as u64` or `as f64`).
+- *Equivalence with the code before, measured and not assumed.* (1) Terrain: 2,400 bricks of the default hills checksum to 14171483864613281342 before and after, and 6 million samples of the density sum to the same `f64`. (2) Sessions: the
+  streams of the 2048, Cave and Eels golden scripts recorded with the commit before and with this and every message decoded and compared: 303, 6,934 and 1,274 messages; all but the welcome the same value for value in 2048
+  and Eels, and in Cave six `player_presence:placed` messages that carry a brick as raw bytes, one byte longer for the length. The pins moved because the bytes did: 2048 58,943 to 59,080 bytes, Cave 7,190,182 to 7,203,981, Eels 80,780 to
+  82,541. (3) A world file, itemised per section at both commits: 34,137 to 34,580 bytes; the levels section +428 (420 more leaves of a byte each for a tree 60 levels deeper, 1 for a leaf number that needs a seventh bit, 7 for the
+  non-zero coordinates of the four edited bricks) and the ships section +15. A ship file +5 and a planet file +11, as the format predicts.
+- *A slowdown, found and fixed.* The first version that passed its tests made terrain 2.2 times slower (29.0 s for 2,400 bricks against 13.1 s) and a Cave test that waits a fixed time for the planet's first bricks failed (81 made against 100).
+  Microbenchmarks (the first harness measured `black_box` of a 128-bit value, not the function: noticed because a change that should have helped did nothing) showed a lattice hash 3 times slower with a wide argument and the
+  conversion of a 128-bit integer to `f64` a library call. The fix is one check per sample and then 64-bit arithmetic (`NarrowPosition`): 12.7 s for the 2,400 bricks, 825 ms against 863 ms for 6 million samples, Cave's golden
+  session 48.2 s against 49.0 s. The checksums did not move at any step. A wider octree costs memory and bytes (7 leaves a level per isolated assigned cube) but not time that I could measure.
+- *Tests that changed their inputs, not their assertions:* `/tp 1e30` and `/tp 1 2 1e20` were beyond the old edge and are inside the new (now 1e37 and 1e40); a ship carried past the end of the world needs a centre near the new edge; the
+  octree's "a coarse cube costs far fewer nodes" compared against 20 times the cost of a spine that is now 757 leaves and not 337 (now: more than eight leaves for each of the 1,000 bricks past the spine; 9.5 measured); `i64::MAX` as a brick
+  "out of range" is in range (now one past the real limit). A test that wrote a hand-made old-format section under the new name would have kept passing and meant nothing: the 2048 version 1 to 3 tests were replaced by one that old
+  versions are not read.
+- *New:* `section_versions.rs` (replaces `older_poses.rs`: every section is read at one version and no other; a coordinate at the ends of the range survives each section; a ship file far out); a universe-scale placement test; mutation
+  experiments (`PROPTEST_DISABLE_FAILURE_PERSISTENCE=1`, files restored and compared) on the covering level, the early exit of the two distance checks, the saturation, and the narrow path (two mutants), each killed. (The wide hash is checked against a Python computation and not by a mutant.)
+- Windows 2327 tests pass and Linux 2328; fmt and clippy clean. Not done, listed in `future-goals.md`: coarse levels above detail 40, a delta form on the wire, noise wavelengths above 2^56.
+
 The wire format for wide coordinates (2026-10-27, `i128` migration, phase 1; the owner chose option (b), a length-prefixed integer). See `future-goals.md` and `design-decisions.md`.
 - *Tests first, then built:* `binary_codec` gained `write_wide_signed` / `read_wide_signed`: a length byte, then the zigzag value in that many little-endian bytes (zero is the length byte alone). Tests: the layout pinned for 0, -1, 1, 63, -64, 64,
   -65, 128, 2^62, 2^63, `i128::MAX` and `i128::MIN`; every malformed form refused (a zero top byte, a length of 17 or 255, data that ends inside the number); a property that any `i128` (and any near the origin, and shifted

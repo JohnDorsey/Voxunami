@@ -148,7 +148,7 @@ fn a_walker_on_a_planet_walks_on_the_ground_it_generates_and_stays_aboard() {
     make_the_planet(&mut scene);
     // The walk is toward +z (a yaw of 180 degrees), down a slope that the hills make there and that has no step in it of more than one voxel and no hole (the caves
     // that reach the surface are some way off: the generator's ground is pinned, so if it moves the setup says so here and not in the walker).
-    let slope: Vec<i64> = (0..=40).map(|z| top_of_the_column(0, z)).collect();
+    let slope: Vec<i128> = (0..=40).map(|z| top_of_the_column(0, z)).collect();
     assert!(
         slope
             .windows(2)
@@ -171,7 +171,7 @@ fn a_walker_on_a_planet_walks_on_the_ground_it_generates_and_stays_aboard() {
         let pose = player_pose(&scene, 1);
         assert_eq!(pose.grid, planet(), "still aboard");
         let [x, y, z] = in_voxels(pose.position);
-        let ground = top_of_the_column(x.floor() as i64, z.floor() as i64) + 1;
+        let ground = top_of_the_column(x.floor() as i128, z.floor() as i128) + 1;
         lowest_above_the_ground = lowest_above_the_ground.min(y - ground as f64);
         highest_above_the_ground = highest_above_the_ground.max(y - ground as f64);
     }
@@ -400,14 +400,14 @@ fn a_slab_put_on_a_planet_upside_down_is_a_ceiling_to_a_walker_and_not_a_floor()
 /// The side of the cubes the ships below are, and the columns they stand over: a patch of the planet's pole where the ground is flat for a few voxels (its top voxel
 /// is 63,679 in the planet's coordinates from x = -2 to 5 and z = 5 to 9, and one higher at x = 2 and 3 just before z = 5, which is why the cubes are put half a voxel
 /// from the step: a cube flush against a step and pulled sideways into it keeps moving a hundredth of a metre a second and does not go to sleep).
-const CUBE: i64 = 4;
+const CUBE: i128 = 4;
 const PLACE: [f32; 2] = [0.5, 5.5];
 /// The columns, in the planet's coordinates, that a cube put at [`PLACE`] has under it.
-const COLUMNS_X: std::ops::Range<i64> = 0..5;
-const COLUMNS_Z: std::ops::Range<i64> = 5..10;
+const COLUMNS_X: std::ops::Range<i128> = 0..5;
+const COLUMNS_Z: std::ops::Range<i128> = 5..10;
 
 /// The height in the planet's coordinates of the ground (the top of the highest voxel that is not air) under the cube's columns.
-fn ground_under_the_cube() -> i64 {
+fn ground_under_the_cube() -> i128 {
     COLUMNS_X
         .flat_map(|x| COLUMNS_Z.map(move |z| (x, z)))
         .map(|(x, z)| top_of_the_column(x, z) + 1)
@@ -819,7 +819,7 @@ fn a_block_built_on_a_planet_that_the_player_looks_at_can_be_made_a_ship() {
     // A block of stone three voxels ahead of them (they look along -z), at the height of their eyes, stored in the planet over air.
     let content = CaveContent::new();
     let eyes = in_voxels(player_pose(&scene, 1).position)[1];
-    let at = VoxelCoordinate::new(0, eyes.floor() as i64, -3);
+    let at = VoxelCoordinate::new(0, eyes.floor() as i128, -3);
     assert!(at.y() > top, "the block is over the ground there");
     scene.run(move |world| {
         world

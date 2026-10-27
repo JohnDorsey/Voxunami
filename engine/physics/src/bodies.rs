@@ -181,8 +181,8 @@ impl BodyWorld {
     /// Where a position is in the frame, in voxels from its origin.
     fn local(&self, position: WorldPosition) -> Vector {
         let (brick, offset) = (position.brick(), position.offset());
-        let along = |brick: i64, origin: i64, offset: f32| {
-            ((brick - origin) * EDGE as i64) as f64 + f64::from(offset)
+        let along = |brick: i128, origin: i128, offset: f32| {
+            ((brick - origin) * EDGE as i128) as f64 + f64::from(offset)
         };
         Vector::new(
             along(brick.x(), self.origin.x(), offset[0]) as f32,
@@ -342,10 +342,10 @@ impl BodyWorld {
         let first = brick.origin();
         let key = |x: usize, y: usize, z: usize| -> Result<IVector, BodyError> {
             let voxel = first
-                .checked_offset(x as i64, y as i64, z as i64)
+                .checked_offset(x as i128, y as i128, z as i128)
                 .ok_or(BodyError::BrickOutOfRange)?;
             let component =
-                |value: i64| i32::try_from(value).map_err(|_| BodyError::BrickOutOfRange);
+                |value: i128| i32::try_from(value).map_err(|_| BodyError::BrickOutOfRange);
             Ok(IVector::new(
                 component(voxel.x())?,
                 component(voxel.y())?,
@@ -362,9 +362,9 @@ impl BodyWorld {
                 for y in 0..EDGE {
                     for x in 0..EDGE {
                         let voxel = VoxelCoordinate::new(
-                            first.x() + x as i64,
-                            first.y() + y as i64,
-                            first.z() + z as i64,
+                            first.x() + x as i128,
+                            first.y() + y as i128,
+                            first.z() + z as i128,
                         );
                         match if hint == BrickHint::Solid {
                             Collision::Full
@@ -549,8 +549,8 @@ impl BodyWorld {
         margin: f32,
         origin: BrickCoordinate,
     ) -> Option<voxel_space::BrickBox> {
-        let brick = |value: f32, origin: i64| {
-            origin.saturating_add((f64::from(value) / EDGE as f64).floor() as i64)
+        let brick = |value: f32, origin: i128| {
+            origin.saturating_add((f64::from(value) / EDGE as f64).floor() as i128)
         };
         let (low, high) = (low - Vector::splat(margin), high + Vector::splat(margin));
         voxel_space::BrickBox::new(
@@ -693,9 +693,9 @@ impl BodyWorld {
     /// are more exact than they were.
     pub fn recentre(&mut self, origin: BrickCoordinate) {
         let shift = Vector::new(
-            ((origin.x() - self.origin.x()) * EDGE as i64) as f32,
-            ((origin.y() - self.origin.y()) * EDGE as i64) as f32,
-            ((origin.z() - self.origin.z()) * EDGE as i64) as f32,
+            ((origin.x() - self.origin.x()) * EDGE as i128) as f32,
+            ((origin.y() - self.origin.y()) * EDGE as i128) as f32,
+            ((origin.z() - self.origin.z()) * EDGE as i128) as f32,
         );
         for (_, body) in self.bodies.iter_mut() {
             let pose = *body.position();
@@ -755,7 +755,7 @@ mod tests {
 
     /// Ground: every voxel below `top` is a whole cube.
     struct Ground {
-        top: i64,
+        top: i128,
     }
 
     impl CollisionSource for Ground {
@@ -768,8 +768,8 @@ mod tests {
         }
 
         fn brick_hint(&mut self, brick: BrickCoordinate) -> BrickHint {
-            let low = brick.y() * EDGE as i64;
-            if low + EDGE as i64 <= self.top {
+            let low = brick.y() * EDGE as i128;
+            if low + EDGE as i128 <= self.top {
                 BrickHint::Solid
             } else if low >= self.top {
                 BrickHint::Empty
@@ -784,7 +784,7 @@ mod tests {
     struct Hull(HashMap<VoxelCoordinate, Collision>);
 
     impl Hull {
-        fn cube(size: i64) -> Self {
+        fn cube(size: i128) -> Self {
             let mut hull = Self::default();
             for x in 0..size {
                 for y in 0..size {
@@ -855,7 +855,7 @@ mod tests {
 
     /// A floor `thickness` voxels thick with its top at 0, as the colliders of the bricks around the origin.
     struct Floor {
-        thickness: i64,
+        thickness: i128,
     }
 
     impl CollisionSource for Floor {
@@ -967,7 +967,7 @@ mod tests {
     #[test]
     fn the_bricks_near_a_body_are_those_its_colliders_come_within_a_margin_of() {
         use voxel_space::BrickBox;
-        let bricks = |low: [i64; 3], high: [i64; 3]| {
+        let bricks = |low: [i128; 3], high: [i128; 3]| {
             Some(
                 BrickBox::new(
                     BrickCoordinate::new(low[0], low[1], low[2]),
@@ -1064,7 +1064,7 @@ mod tests {
     fn the_bricks_near_a_body_in_the_coordinates_of_another_follow_the_place_and_the_turn_of_both()
     {
         use voxel_space::BrickBox;
-        let bricks = |low: [i64; 3], high: [i64; 3]| {
+        let bricks = |low: [i128; 3], high: [i128; 3]| {
             Some(
                 BrickBox::new(
                     BrickCoordinate::new(low[0], low[1], low[2]),

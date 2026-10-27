@@ -151,7 +151,7 @@ fn span(cube: BrickCube, viewer: WorldPosition) -> [(f64, f64); 3] {
     let origin = cube.origin();
     let edge = cube.edge_length() as f64 * BRICK_EDGE;
     let (brick, offset) = (viewer.brick(), viewer.offset());
-    let along = |origin: i64, brick: i64, offset: f32| {
+    let along = |origin: i128, brick: i128, offset: f32| {
         let low = (origin - brick) as f64 * BRICK_EDGE - f64::from(offset);
         (low, low + edge)
     };
@@ -216,13 +216,19 @@ pub fn select_nodes(extent: BrickBox, selection: &Selection<'_>) -> Vec<BrickCub
             + 1
     };
     // The level at which a few cubes cover the extent, or the coarsest allowed if that is finer.
-    let covering_level = (u64::BITS - (widest as u64 - 1).leading_zeros()) as u8;
+    let covering_level = level_covering(widest as u128);
     let root_level = covering_level.min(selection.coarsest_level);
     let mut chosen = Vec::new();
     for root in BrickCube::covering(extent, root_level) {
         descend(root, selection, &mut chosen);
     }
     chosen
+}
+
+/// The lowest level at which one cube spans `bricks` bricks (at least one) along an axis: the smallest `level` with `2^level >= bricks`. The extent of a
+/// grid is as wide as the range of bricks, 2^116, so this is wider than a `u64`.
+fn level_covering(bricks: u128) -> u8 {
+    (u128::BITS - (bricks - 1).leading_zeros()) as u8
 }
 
 /// What a viewer asks for, as both ends of a connection know it: the server to work out which nodes to send, the client to work out which to draw.
@@ -296,7 +302,7 @@ fn descend(cube: BrickCube, selection: &Selection<'_>, chosen: &mut Vec<BrickCub
     if selection.cull_sub_pixel && edge < pixel_size * distance {
         return;
     }
-    let cell_edge = (1u64 << cube.level()) as f64;
+    let cell_edge = (1u128 << cube.level()) as f64;
     let (in_the_fine_region, has_a_fine_region) = match &selection.fine_region {
         Some(region) => (region.touches_cube(cube), true),
         None => (false, false),
@@ -310,9 +316,9 @@ fn descend(cube: BrickCube, selection: &Selection<'_>, chosen: &mut Vec<BrickCub
         chosen.push(cube);
         return;
     }
-    let half = 1i64 << (cube.level() - 1);
+    let half = 1i128 << (cube.level() - 1);
     let origin = cube.origin();
-    for octant in 0..8i64 {
+    for octant in 0..8i128 {
         let (dx, dy, dz) = (octant & 1, (octant >> 1) & 1, octant >> 2);
         let child = BrickCube::new(
             BrickCoordinate::new(
@@ -342,11 +348,11 @@ mod tests {
         }
     }
 
-    fn at(brick: [i64; 3], offset: [f32; 3]) -> WorldPosition {
+    fn at(brick: [i128; 3], offset: [f32; 3]) -> WorldPosition {
         WorldPosition::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), offset)
     }
 
-    fn box_of(low: [i64; 3], high: [i64; 3]) -> BrickBox {
+    fn box_of(low: [i128; 3], high: [i128; 3]) -> BrickBox {
         BrickBox::new(
             BrickCoordinate::new(low[0], low[1], low[2]),
             BrickCoordinate::new(high[0], high[1], high[2]),
@@ -355,17 +361,14 @@ mod tests {
     }
 
     /// A grid as wide as a planet: 10^8 voxels across, about 3.1 million bricks, from the origin.
-    const PLANET_BRICKS: i64 = 3_125_000;
+    const PLANET_BRICKS: i128 = 3_125_000;
 
     fn planet() -> BrickBox {
         box_of([0; 3], [PLANET_BRICKS - 1; 3])
     }
 
     fn volume(cubes: &[BrickCube]) -> u128 {
-        cubes
-            .iter()
-            .map(|cube| u128::from(cube.edge_length()).pow(3))
-            .sum()
+        cubes.iter().map(|cube| cube.edge_length().pow(3)).sum()
     }
 
     fn counts_by_level(cubes: &[BrickCube]) -> Vec<usize> {
@@ -374,6 +377,26 @@ mod tests {
             counts[usize::from(cube.level())] += 1;
         }
         counts
+    }
+
+    #[test]
+    fn the_level_that_covers_a_width_is_the_smallest_whose_cube_is_at_least_that_wide_at_any_width()
+    {
+        for (bricks, level) in [
+            (1u128, 0u8),
+            (2, 1),
+            (3, 2),
+            (4, 2),
+            (5, 3),
+            ((1 << 63) + 1, 64),
+            (1 << 64, 64),
+            ((1 << 64) + 1, 65),
+            (1 << 100, 100),
+            ((1 << 100) + 1, 101),
+            (1 << 116, 116),
+        ] {
+            assert_eq!(level_covering(bricks), level, "{bricks} bricks");
+        }
     }
 
     #[test]
@@ -425,7 +448,7 @@ mod tests {
         // Every brick of the extent is in exactly one cube.
         let mut seen = std::collections::HashSet::new();
         for cube in &cubes {
-            let edge = cube.edge_length() as i64;
+            let edge = cube.edge_length() as i128;
             for x in 0..edge {
                 for y in 0..edge {
                     for z in 0..edge {
@@ -461,7 +484,7 @@ mod tests {
         let ratio = selection.settings.cell_pixels * selection.settings.pixel_size;
         for cube in &cubes {
             let (distance, _) = distance_and_centre(&span(*cube, selection.viewer));
-            let cell = (1u64 << cube.level()) as f64;
+            let cell = (1u128 << cube.level()) as f64;
             if cube.level() > 0 {
                 assert!(cell <= ratio * distance, "{cube:?} is not fine enough");
             }
@@ -470,7 +493,7 @@ mod tests {
                 let parent = BrickCube::containing(cube.origin(), cube.level() + 1);
                 let (parent_distance, _) = distance_and_centre(&span(parent, selection.viewer));
                 assert!(
-                    (1u64 << parent.level()) as f64 > ratio * parent_distance,
+                    (1u128 << parent.level()) as f64 > ratio * parent_distance,
                     "{cube:?}: its parent was fine enough"
                 );
             }
@@ -479,10 +502,10 @@ mod tests {
 
     /// A sphere of this radius (in bricks) with its middle at (radius, radius, radius): whether the cube touches its surface, with room to spare. What a
     /// planet whose inside is solid and whose outside is air shows.
-    fn touches_the_surface_of_a_sphere(radius: i64) -> impl Fn(BrickCube) -> bool {
+    fn touches_the_surface_of_a_sphere(radius: i128) -> impl Fn(BrickCube) -> bool {
         move |cube: BrickCube| {
             let half = cube.edge_length() as f64 / 2.0;
-            let centre = |component: i64| component as f64 + half - radius as f64;
+            let centre = |component: i128| component as f64 + half - radius as f64;
             let (x, y, z) = (
                 centre(cube.origin().x()),
                 centre(cube.origin().y()),
@@ -633,7 +656,7 @@ mod tests {
         (
             box_of([-16_384, -4, -16_384], [16_383, 3, 16_383]),
             |cube: BrickCube| {
-                cube.origin().y() < 4 && cube.origin().y() + cube.edge_length() as i64 > -4
+                cube.origin().y() < 4 && cube.origin().y() + cube.edge_length() as i128 > -4
             },
         )
     }
@@ -794,7 +817,7 @@ mod tests {
         // Nothing is left out: the cubes tile the extent.
         let mut seen = std::collections::HashSet::new();
         for cube in &cubes {
-            let edge = cube.edge_length() as i64;
+            let edge = cube.edge_length() as i128;
             for x in 0..edge {
                 for y in 0..edge {
                     for z in 0..edge {

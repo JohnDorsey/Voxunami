@@ -13,7 +13,7 @@ use crate::interval::Interval;
 pub(crate) const MAXIMUM_WAVELENGTH_LOG2: u8 = 56;
 
 /// Most lattice points per axis a box may touch before bounds fall back to the full range.
-const MAXIMUM_BOUNDED_LATTICE_POINTS_PER_AXIS: i64 = 4;
+const MAXIMUM_BOUNDED_LATTICE_POINTS_PER_AXIS: i128 = 4;
 
 const GOLDEN_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
 
@@ -27,8 +27,28 @@ pub fn mix(value: u64) -> u64 {
 }
 
 /// A 64-bit hash of a seed and a lattice point. Negative coordinates hash as their two's
-/// complement bit pattern.
-pub fn lattice_hash(seed: u64, x: i64, y: i64, z: i64) -> u64 {
+/// complement bit pattern. A coordinate that fits an `i64` hashes as it always has (so terrain
+/// near the origin is the same as before coordinates were 128 bits); one that does not has its
+/// upper 64 bits mixed in as well, so that points 2^64 apart are not the same point.
+pub fn lattice_hash(seed: u64, x: i128, y: i128, z: i128) -> u64 {
+    if let (Ok(x), Ok(y), Ok(z)) = (i64::try_from(x), i64::try_from(y), i64::try_from(z)) {
+        return lattice_hash_narrow(seed, x, y, z);
+    }
+    let mut hash = mix(seed);
+    for component in [x, y, z] {
+        let low = component as u64;
+        hash = mix(hash ^ low);
+        if i128::from(low as i64) != component {
+            hash = mix(hash ^ (component >> 64) as u64);
+        }
+    }
+    hash
+}
+
+/// [`lattice_hash`] for a point whose coordinates all fit an `i64`, which is nearly every point there is and every one of a world not astronomically large: the same
+/// hash, without the wide arithmetic (which makes a hash three times as slow, and a voxel takes dozens).
+#[inline]
+pub fn lattice_hash_narrow(seed: u64, x: i64, y: i64, z: i64) -> u64 {
     let mut hash = mix(seed);
     for component in [x, y, z] {
         hash = mix(hash ^ component as u64);
@@ -38,9 +58,20 @@ pub fn lattice_hash(seed: u64, x: i64, y: i64, z: i64) -> u64 {
 
 /// The pseudo-random value at a lattice point, in `[-1, 1)`. Exact: 53 hash bits scaled by a
 /// power of two.
-pub fn lattice_value(seed: u64, x: i64, y: i64, z: i64) -> f64 {
+pub fn lattice_value(seed: u64, x: i128, y: i128, z: i128) -> f64 {
+    value_of_hash(lattice_hash(seed, x, y, z))
+}
+
+/// [`lattice_value`] for a point whose coordinates all fit an `i64` (see [`lattice_hash_narrow`]).
+#[inline]
+pub fn lattice_value_narrow(seed: u64, x: i64, y: i64, z: i64) -> f64 {
+    value_of_hash(lattice_hash_narrow(seed, x, y, z))
+}
+
+#[inline]
+fn value_of_hash(hash: u64) -> f64 {
     const SCALE: f64 = 1.0 / 4_503_599_627_370_496.0; // 2^-52
-    (lattice_hash(seed, x, y, z) >> 11) as f64 * SCALE - 1.0
+    (hash >> 11) as f64 * SCALE - 1.0
 }
 
 /// Which axes a noise varies along.
@@ -130,16 +161,22 @@ impl FractalNoise {
     }
 
     pub fn sample(&self, position: VoxelCoordinate, footprint: LevelOfDetail) -> f64 {
+        // Nearly every position there is has coordinates well within an `i64`, and then every octave is worked out in 64-bit arithmetic, as it was before coordinates were
+        // 128 bits (the wide arithmetic makes a sample take twice as long). The one check is for all the octaves.
+        let narrow = NarrowPosition::of(position);
         let mut total = 0.0;
         for (index, octave) in self.octaves.iter().enumerate() {
             if Self::keeps(octave, footprint) {
-                total += octave.amplitude
-                    * sample_octave(
-                        self.octave_seed(index),
-                        octave.wavelength_log2,
-                        self.dimensionality,
-                        position,
-                    );
+                let seed = self.octave_seed(index);
+                let unit = match narrow {
+                    Some(narrow) => {
+                        narrow.octave(seed, octave.wavelength_log2, self.dimensionality)
+                    }
+                    None => {
+                        sample_octave(seed, octave.wavelength_log2, self.dimensionality, position)
+                    }
+                };
+                total += octave.amplitude * unit;
             }
         }
         total
@@ -214,9 +251,11 @@ impl FractalNoise {
 
 /// The lattice cell of a coordinate and the position within it, strictly between 0 and 1 (the
 /// centre of the voxel).
-fn split_axis(coordinate: i64, wavelength_log2: u8) -> (i64, f64) {
+fn split_axis(coordinate: i128, wavelength_log2: u8) -> (i128, f64) {
     let cell = coordinate >> wavelength_log2;
-    let within = coordinate & ((1i64 << wavelength_log2) - 1);
+    // (The part within the cell is below the wavelength, at most 2^63: through a `u64` it converts to `f64` exactly and fast, where a 128-bit integer
+    // converts by a call to a library routine, which is the most of the cost of this in a loop over every voxel.)
+    let within = (coordinate & ((1i128 << wavelength_log2) - 1)) as u64;
     let fraction = (within as f64 + 0.5) / (1u64 << wavelength_log2) as f64;
     (cell, fraction)
 }
@@ -230,28 +269,24 @@ fn lerp(a: f64, b: f64, t: f64) -> f64 {
     a + (b - a) * t
 }
 
-fn sample_octave(
-    seed: u64,
-    wavelength_log2: u8,
+/// The value of an octave of noise at a position: the corner values of the lattice cell it is in, blended by where in the cell it is. `corner(dx, dy, dz)` is the value
+/// at the corner `dx`, `dy`, `dz` (each 0 or 1) along from the cell's lowest.
+#[inline]
+fn blend_corners(
     dimensionality: Dimensionality,
-    position: VoxelCoordinate,
+    fractions: [f64; 3],
+    corner: impl Fn(i64, i64, i64) -> f64,
 ) -> f64 {
-    let (cell_x, fraction_x) = split_axis(position.x(), wavelength_log2);
-    let (cell_z, fraction_z) = split_axis(position.z(), wavelength_log2);
+    let [fraction_x, fraction_y, fraction_z] = fractions;
     let (weight_x, weight_z) = (fade(fraction_x), fade(fraction_z));
     match dimensionality {
-        Dimensionality::Planar => {
-            let corner = |dx, dz| lattice_value(seed, cell_x + dx, 0, cell_z + dz);
-            lerp(
-                lerp(corner(0, 0), corner(1, 0), weight_x),
-                lerp(corner(0, 1), corner(1, 1), weight_x),
-                weight_z,
-            )
-        }
+        Dimensionality::Planar => lerp(
+            lerp(corner(0, 0, 0), corner(1, 0, 0), weight_x),
+            lerp(corner(0, 0, 1), corner(1, 0, 1), weight_x),
+            weight_z,
+        ),
         Dimensionality::Volumetric => {
-            let (cell_y, fraction_y) = split_axis(position.y(), wavelength_log2);
             let weight_y = fade(fraction_y);
-            let corner = |dx, dy, dz| lattice_value(seed, cell_x + dx, cell_y + dy, cell_z + dz);
             let along_x = |dy, dz| lerp(corner(0, dy, dz), corner(1, dy, dz), weight_x);
             lerp(
                 lerp(along_x(0, 0), along_x(1, 0), weight_y),
@@ -262,13 +297,91 @@ fn sample_octave(
     }
 }
 
+/// A position whose three coordinates are within 2^62 of the origin, so that a lattice cell of it and the one beyond, whatever the wavelength, fit an `i64`.
+#[derive(Clone, Copy)]
+struct NarrowPosition {
+    coordinates: [i64; 3],
+}
+
+impl NarrowPosition {
+    const LIMIT: i64 = 1 << 62;
+
+    fn of(position: VoxelCoordinate) -> Option<Self> {
+        let narrow = |coordinate: i128| {
+            i64::try_from(coordinate)
+                .ok()
+                .filter(|coordinate| (-Self::LIMIT..Self::LIMIT).contains(coordinate))
+        };
+        Some(Self {
+            coordinates: [
+                narrow(position.x())?,
+                narrow(position.y())?,
+                narrow(position.z())?,
+            ],
+        })
+    }
+
+    /// [`sample_octave`] of this position, in 64-bit arithmetic: the same value to the bit.
+    #[inline]
+    fn octave(self, seed: u64, wavelength_log2: u8, dimensionality: Dimensionality) -> f64 {
+        let [x, y, z] = self.coordinates;
+        let (cell_x, fraction_x) = split_axis_narrow(x, wavelength_log2);
+        let (cell_z, fraction_z) = split_axis_narrow(z, wavelength_log2);
+        let (cell_y, fraction_y) = match dimensionality {
+            Dimensionality::Planar => (0, 0.0),
+            Dimensionality::Volumetric => split_axis_narrow(y, wavelength_log2),
+        };
+        blend_corners(
+            dimensionality,
+            [fraction_x, fraction_y, fraction_z],
+            |dx, dy, dz| lattice_value_narrow(seed, cell_x + dx, cell_y + dy, cell_z + dz),
+        )
+    }
+}
+
+/// [`split_axis`] for a coordinate that fits an `i64`.
+#[inline]
+fn split_axis_narrow(coordinate: i64, wavelength_log2: u8) -> (i64, f64) {
+    let cell = coordinate >> wavelength_log2;
+    let within = (coordinate & ((1i64 << wavelength_log2) - 1)) as u64;
+    let fraction = (within as f64 + 0.5) / (1u64 << wavelength_log2) as f64;
+    (cell, fraction)
+}
+
+fn sample_octave(
+    seed: u64,
+    wavelength_log2: u8,
+    dimensionality: Dimensionality,
+    position: VoxelCoordinate,
+) -> f64 {
+    let (cell_x, fraction_x) = split_axis(position.x(), wavelength_log2);
+    let (cell_z, fraction_z) = split_axis(position.z(), wavelength_log2);
+    // A planar noise does not look at y: its cell is 0, as the corners below have it.
+    let (cell_y, fraction_y) = match dimensionality {
+        Dimensionality::Planar => (0, 0.0),
+        Dimensionality::Volumetric => split_axis(position.y(), wavelength_log2),
+    };
+    blend_corners(
+        dimensionality,
+        [fraction_x, fraction_y, fraction_z],
+        |dx, dy, dz| {
+            lattice_value(
+                seed,
+                cell_x + i128::from(dx),
+                cell_y + i128::from(dy),
+                cell_z + i128::from(dz),
+            )
+        },
+    )
+}
+
 /// The cell of the lattice that a position holds and where in it, as `split_axis` says for a voxel, for a position given as twice its coordinate in voxels (so
 /// that the middle of a region, which can be half a voxel off, is exact at any distance from the origin).
-fn split_twice(twice: i128, wavelength_log2: u8) -> (i64, f64) {
+fn split_twice(twice: i128, wavelength_log2: u8) -> (i128, f64) {
     let shift = u32::from(wavelength_log2) + 1;
     let cell = twice >> shift;
     let within = twice - (cell << shift);
-    (cell as i64, within as f64 / (1u128 << shift) as f64)
+    (cell, within as f64 / (1u128 << shift) as f64)
 }
 
 /// The value of an octave at a position that is twice the given numbers in voxels (see [`split_twice`]).
@@ -321,7 +434,7 @@ fn octave_bounds(
     region: &VoxelBox,
 ) -> Interval {
     let lattice_range =
-        |low: i64, high: i64| (low >> wavelength_log2, (high >> wavelength_log2) + 1);
+        |low: i128, high: i128| (low >> wavelength_log2, (high >> wavelength_log2) + 1);
     let (x_first, x_last) = lattice_range(region.min().x(), region.max().x());
     let (z_first, z_last) = lattice_range(region.min().z(), region.max().z());
     let (y_first, y_last) = match dimensionality {
@@ -329,7 +442,7 @@ fn octave_bounds(
         Dimensionality::Volumetric => lattice_range(region.min().y(), region.max().y()),
     };
     let too_wide =
-        |first: i64, last: i64| last - first + 1 > MAXIMUM_BOUNDED_LATTICE_POINTS_PER_AXIS;
+        |first: i128, last: i128| last - first + 1 > MAXIMUM_BOUNDED_LATTICE_POINTS_PER_AXIS;
     if too_wide(x_first, x_last) || too_wide(y_first, y_last) || too_wide(z_first, z_last) {
         return Interval::new(-1.0, 1.0);
     }
@@ -370,9 +483,9 @@ fn octave_bounds(
     }
     let size = (1u128 << wavelength_log2) as f64;
     let reach = [
-        (i128::from(region.max().x()) - i128::from(region.min().x())) as f64 / 2.0,
-        (i128::from(region.max().y()) - i128::from(region.min().y())) as f64 / 2.0,
-        (i128::from(region.max().z()) - i128::from(region.min().z())) as f64 / 2.0,
+        (region.max().x() - region.min().x()) as f64 / 2.0,
+        (region.max().y() - region.min().y()) as f64 / 2.0,
+        (region.max().z() - region.min().z()) as f64 / 2.0,
     ];
     let mut spread = ROUNDING_ALLOWANCE;
     for axis in 0..3 {
@@ -382,7 +495,7 @@ fn octave_bounds(
         }
     }
     // Twice the position of the middle of the voxels of the region (a voxel's position is the middle of it, half a voxel in).
-    let twice_middle = |low: i64, high: i64| i128::from(low) + i128::from(high) + 1;
+    let twice_middle = |low: i128, high: i128| low + high + 1;
     let centre = sample_octave_between(
         seed,
         wavelength_log2,
@@ -407,7 +520,7 @@ mod tests {
 
     use super::*;
 
-    fn voxel(x: i64, y: i64, z: i64) -> VoxelCoordinate {
+    fn voxel(x: i128, y: i128, z: i128) -> VoxelCoordinate {
         VoxelCoordinate::new(x, y, z)
     }
 
@@ -421,6 +534,128 @@ mod tests {
     #[test]
     fn mix_matches_the_published_splitmix64_first_output() {
         assert_eq!(mix(0), 0xE220_A839_7B1D_CDAF);
+    }
+
+    /// A coordinate of any size the range allows, with the ends of what a narrow position holds, and of an `i64`, well represented.
+    fn any_coordinate() -> impl Strategy<Value = i128> {
+        prop_oneof![
+            3 => -1000i128..1000,
+            2 => any::<i128>().prop_map(|value| value >> 8),
+            2 => (-3i128..3).prop_map(|delta| (1i128 << 62) + delta),
+            2 => (-3i128..3).prop_map(|delta| -(1i128 << 62) + delta),
+            1 => (-3i128..3).prop_map(|delta| (1i128 << 63) + delta),
+            1 => (-3i128..3).prop_map(|delta| -(1i128 << 63) + delta),
+            1 => (-3i128..3).prop_map(|delta| (1i128 << 119) + delta),
+        ]
+    }
+
+    proptest! {
+        /// The narrow path (64-bit arithmetic, taken for nearly every position) and the wide one give the same octave to the bit, at every wavelength and both
+        /// dimensionalities, wherever a position is narrow.
+        #[test]
+        fn the_narrow_and_wide_octaves_agree_to_the_bit(
+            seed in any::<u64>(),
+            x in any_coordinate(),
+            y in any_coordinate(),
+            z in any_coordinate(),
+            wavelength_log2 in 0u8..=40,
+            volumetric in any::<bool>(),
+        ) {
+            let dimensionality = if volumetric { Dimensionality::Volumetric } else { Dimensionality::Planar };
+            let position = VoxelCoordinate::new(x, y, z);
+            if let Some(narrow) = NarrowPosition::of(position) {
+                prop_assert_eq!(
+                    narrow.octave(seed, wavelength_log2, dimensionality).to_bits(),
+                    sample_octave(seed, wavelength_log2, dimensionality, position).to_bits()
+                );
+            } else {
+                // Not narrow means one coordinate is at 2^62 or beyond in size.
+                prop_assert!([x, y, z].iter().any(|c| c.unsigned_abs() >= 1 << 62));
+            }
+            // And whichever path a position takes, the sum of octaves is finite and within what the amplitudes allow.
+            let noise = FractalNoise::standard(seed, dimensionality, wavelength_log2.max(3), 3, 1.0, 0.5);
+            let value = noise.sample(position, LevelOfDetail::FULL_DETAIL);
+            prop_assert!(value.abs() <= noise.largest_magnitude() + 1e-12, "{value}");
+        }
+
+        #[test]
+        fn the_narrow_hash_is_the_wide_hash_wherever_the_point_fits_an_i64(
+            seed in any::<u64>(),
+            x in any::<i64>(),
+            y in any::<i64>(),
+            z in any::<i64>(),
+        ) {
+            prop_assert_eq!(
+                lattice_hash_narrow(seed, x, y, z),
+                lattice_hash(seed, i128::from(x), i128::from(y), i128::from(z))
+            );
+            prop_assert_eq!(
+                lattice_value_narrow(seed, x, y, z).to_bits(),
+                lattice_value(seed, i128::from(x), i128::from(y), i128::from(z)).to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn a_position_is_narrow_up_to_2_to_the_62_and_not_from_it() {
+        let at = |x: i128| VoxelCoordinate::new(x, 0, 0);
+        assert!(NarrowPosition::of(at((1 << 62) - 1)).is_some());
+        assert!(NarrowPosition::of(at(-(1 << 62))).is_some());
+        assert!(NarrowPosition::of(at(1 << 62)).is_none());
+        assert!(NarrowPosition::of(at(-(1 << 62) - 1)).is_none());
+        assert!(NarrowPosition::of(at(1 << 100)).is_none());
+        assert!(NarrowPosition::of(VoxelCoordinate::new(0, 1 << 70, 0)).is_none());
+    }
+
+    /// Reference values computed independently with arbitrary-precision integer arithmetic (the 128-bit rule: the upper 64 bits are mixed in
+    /// only for a coordinate that does not fit an `i64`).
+    #[test]
+    fn lattice_hashes_of_coordinates_beyond_64_bits_match_an_independent_computation() {
+        let cases = [
+            (0x1234, (1i128 << 64, 0, 0), 0x3BE8_552E_1C68_4859),
+            (0x1234, ((1 << 64) + 5, 0, 0), 0xFA04_8F3E_A3EB_6E85),
+            (
+                7,
+                (-(1 << 100), (1 << 119) + 12345, -1),
+                0x6D05_B9A5_54AD_1D86,
+            ),
+        ];
+        for (seed, (x, y, z), expected) in cases {
+            assert_eq!(
+                lattice_hash(seed, x, y, z),
+                expected,
+                "seed {seed:#x} at {x},{y},{z}"
+            );
+        }
+    }
+
+    #[test]
+    fn points_that_differ_only_above_64_bits_are_different_points() {
+        let near = lattice_hash(9, 5, 6, 7);
+        for shift in [64, 65, 100, 126] {
+            assert_ne!(
+                lattice_hash(9, 5 + (1 << shift), 6, 7),
+                near,
+                "x + 2^{shift}"
+            );
+            assert_ne!(
+                lattice_hash(9, 5, 6 - (1 << shift), 7),
+                near,
+                "y - 2^{shift}"
+            );
+            assert_ne!(
+                lattice_hash(9, 5, 6, 7 + (1 << shift)),
+                near,
+                "z + 2^{shift}"
+            );
+        }
+        // The edges of what an i64 holds are still hashed as they were.
+        let edge = i128::from(i64::MAX);
+        assert_ne!(lattice_hash(9, edge, 0, 0), lattice_hash(9, edge + 1, 0, 0));
+        assert_ne!(
+            lattice_hash(9, -edge - 1, 0, 0),
+            lattice_hash(9, -edge - 2, 0, 0)
+        );
     }
 
     /// Reference values computed independently with arbitrary-precision integer arithmetic.
@@ -563,7 +798,7 @@ mod tests {
     /// The range of the lattice values of the corners of the cells a region touches: the bound before it was tightened.
     fn corner_range(noise: &FractalNoise, region: &VoxelBox, octave: usize) -> Interval {
         let wavelength_log2 = noise.octaves[octave].wavelength_log2;
-        let range = |low: i64, high: i64| (low >> wavelength_log2, (high >> wavelength_log2) + 1);
+        let range = |low: i128, high: i128| (low >> wavelength_log2, (high >> wavelength_log2) + 1);
         let (x_first, x_last) = range(region.min().x(), region.max().x());
         let (z_first, z_last) = range(region.min().z(), region.max().z());
         let (y_first, y_last) = match noise.dimensionality {
@@ -698,7 +933,7 @@ mod tests {
         // For the middle of a voxel it is what `split_axis` says.
         for coordinate in [-17, -8, -1, 0, 1, 7, 8, 100] {
             assert_eq!(
-                split_twice(2 * i128::from(coordinate) + 1, 3),
+                split_twice(2 * coordinate + 1, 3),
                 split_axis(coordinate, 3),
                 "voxel {coordinate}"
             );
@@ -706,7 +941,7 @@ mod tests {
         // And far out, where a float could not hold the place exactly.
         assert_eq!(
             split_twice((1i128 << 63) + 11, 3),
-            (1i64 << 59, 11.0 / 16.0)
+            (1i128 << 59, 11.0 / 16.0)
         );
     }
 
@@ -716,9 +951,9 @@ mod tests {
     fn the_tight_bounds_hold_every_sample_of_every_small_region_across_lattice_borders() {
         let check = |seed: u64,
                      dimensionality: Dimensionality,
-                     lows: &[i64],
-                     sizes: &[i64],
-                     ys: &[i64]| {
+                     lows: &[i128],
+                     sizes: &[i128],
+                     ys: &[i128]| {
             for &x in lows {
                 for &y in ys {
                     for &z in lows {
@@ -755,7 +990,7 @@ mod tests {
                 }
             }
         };
-        let planar_lows: Vec<i64> = (-4..20).collect();
+        let planar_lows: Vec<i128> = (-4..20).collect();
         for seed in [3, 99, 2024] {
             check(
                 seed,
@@ -765,7 +1000,7 @@ mod tests {
                 &[0],
             );
         }
-        let volumetric_lows: Vec<i64> = (-2..10).collect();
+        let volumetric_lows: Vec<i128> = (-2..10).collect();
         for seed in [3, 2024] {
             check(
                 seed,
@@ -779,9 +1014,9 @@ mod tests {
 
     /// Pseudo-random positions inside a box, derived from the hash so tests need no extra state.
     fn points_in(region: &VoxelBox, count: u64) -> Vec<VoxelCoordinate> {
-        let span = |low: i64, high: i64, salt: u64, index: u64| {
-            low + (lattice_hash(99, salt as i64, index as i64, 0) % ((high - low) as u64 + 1))
-                as i64
+        let span = |low: i128, high: i128, salt: u64, index: u64| {
+            low + (lattice_hash(99, salt as i128, index as i128, 0) % ((high - low) as u64 + 1))
+                as i128
         };
         let (min, max) = (region.min(), region.max());
         (0..count)
@@ -796,11 +1031,11 @@ mod tests {
             .collect()
     }
 
-    fn base_component() -> impl Strategy<Value = i64> {
+    fn base_component() -> impl Strategy<Value = i128> {
         prop_oneof![
-            -300i64..300,
-            ((1i64 << 40) - 100)..((1i64 << 40) + 100),
-            (-(1i64 << 50))..(-(1i64 << 50) + 100),
+            -300i128..300,
+            ((1i128 << 40) - 100)..((1i128 << 40) + 100),
+            (-(1i128 << 50))..(-(1i128 << 50) + 100),
         ]
     }
 
@@ -823,7 +1058,7 @@ mod tests {
     fn regions() -> impl Strategy<Value = VoxelBox> {
         (
             [base_component(), base_component(), base_component()],
-            [0i64..70, 0..70, 0..70],
+            [0i128..70, 0..70, 0..70],
         )
             .prop_map(|(base, size)| {
                 VoxelBox::new(
@@ -836,7 +1071,7 @@ mod tests {
 
     proptest! {
         #[test]
-        fn lattice_values_stay_in_range(seed in any::<u64>(), x in any::<i64>(), y in any::<i64>(), z in any::<i64>()) {
+        fn lattice_values_stay_in_range(seed in any::<u64>(), x in any::<i128>(), y in any::<i128>(), z in any::<i128>()) {
             let value = lattice_value(seed, x, y, z);
             prop_assert!((-1.0..1.0).contains(&value));
         }
@@ -851,8 +1086,8 @@ mod tests {
             axis in 0usize..3,
             dimensionality in prop_oneof![Just(Dimensionality::Planar), Just(Dimensionality::Volumetric)],
         ) {
-            let step = [(axis == 0) as i64, (axis == 1) as i64, (axis == 2) as i64];
-            let at = |offset: i64| sample_octave(
+            let step = [(axis == 0) as i128, (axis == 1) as i128, (axis == 2) as i128];
+            let at = |offset: i128| sample_octave(
                 seed, wavelength_log2, dimensionality,
                 voxel(x + offset * step[0], y + offset * step[1], z + offset * step[2]),
             );
@@ -901,7 +1136,7 @@ mod tests {
         fn the_tight_bounds_of_small_regions_contain_every_sample(
             noise in noises(),
             base in [base_component(), base_component(), base_component()],
-            size in [0i64..6, 0..6, 0..6],
+            size in [0i128..6, 0..6, 0..6],
             detail in 0u8..10,
         ) {
             let region = VoxelBox::new(

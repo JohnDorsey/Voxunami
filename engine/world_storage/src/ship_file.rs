@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
-use protocol::{PoseFormat, read_grid_pose_in, write_grid_pose};
+use protocol::{read_brick_coordinate, read_grid_pose, write_brick_coordinate, write_grid_pose};
 use terrain::GeneratorId;
 use voxel_grid::{Brick, ChannelValueKind, Grid, GridLayout};
 use voxel_space::{BrickBox, BrickCoordinate, GridPose};
@@ -97,9 +97,9 @@ fn encode_flight(flight: &ShipFlight) -> Vec<u8> {
     writer.into_bytes()
 }
 
-fn decode_flight(payload: &[u8], format: PoseFormat) -> Result<ShipFlight, DecodeError> {
+fn decode_flight(payload: &[u8]) -> Result<ShipFlight, DecodeError> {
     let mut reader = ByteReader::new(payload);
-    let pose = read_grid_pose_in(&mut reader, format)?;
+    let pose = read_grid_pose(&mut reader)?;
     let mut components = [0f32; 6];
     for component in &mut components {
         *component = f32::from_bits(reader.read_u32()?);
@@ -139,9 +139,7 @@ fn encode_terrain(generator: &NamespacedId, terrain: &GridTerrain) -> Vec<u8> {
     let mut writer = ByteWriter::new();
     writer.write_identifier(generator);
     for corner in [terrain.extent.min(), terrain.extent.max()] {
-        for component in [corner.x(), corner.y(), corner.z()] {
-            writer.write_signed_varint(component);
-        }
+        write_brick_coordinate(&mut writer, corner);
     }
     writer.write_u32(terrain.mass.to_bits());
     writer.into_bytes()
@@ -150,24 +148,18 @@ fn encode_terrain(generator: &NamespacedId, terrain: &GridTerrain) -> Vec<u8> {
 fn decode_terrain(payload: &[u8]) -> Result<TerrainRecord, DecodeError> {
     let mut reader = ByteReader::new(payload);
     let generator = reader.read_identifier()?;
-    let mut corners = [[0i64; 3]; 2];
-    for corner in &mut corners {
-        for component in corner.iter_mut() {
-            *component = reader.read_signed_varint()?;
-        }
-    }
+    let corners = [
+        read_brick_coordinate(&mut reader)?,
+        read_brick_coordinate(&mut reader)?,
+    ];
     let mass = f32::from_bits(reader.read_u32()?);
     if !mass.is_finite() || mass < 0.0 {
         return Err(DecodeError::Invalid("a mass is not a weight"));
     }
     reader.finish()?;
-    let corner = |at: [i64; 3]| {
-        BrickCoordinate::try_new(at[0], at[1], at[2])
-            .map_err(|_| DecodeError::Invalid("a brick of the extent is out of range"))
-    };
-    let extent = BrickBox::new(corner(corners[0])?, corner(corners[1])?).ok_or(
-        DecodeError::Invalid("the extent has its corners the wrong way round"),
-    )?;
+    let extent = BrickBox::new(corners[0], corners[1]).ok_or(DecodeError::Invalid(
+        "the extent has its corners the wrong way round",
+    ))?;
     Ok(TerrainRecord {
         generator,
         extent,
@@ -267,7 +259,7 @@ impl ParsedShip {
                 continue;
             }
             let readable = if section.identifier == flight_id() {
-                sections::pose_format_of(section.version).is_some()
+                section.version == sections::POSES_VERSION
             } else {
                 section.version == sections::SUPPORTED_VERSION
             };
@@ -295,8 +287,7 @@ impl ParsedShip {
             } else if section.identifier == rail_id() {
                 rail = Some(decode_rail(payload).map_err(wrap)?);
             } else {
-                let format = sections::pose_format_of(section.version).expect("a readable version");
-                flight = Some(decode_flight(payload, format).map_err(wrap)?);
+                flight = Some(decode_flight(payload).map_err(wrap)?);
             }
         }
         let (level, bricks) = ship.ok_or_else(|| ShipFileError::MissingSection(ship_id()))?;

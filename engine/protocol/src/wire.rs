@@ -2,7 +2,8 @@
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use voxel_space::{
-    BrickBox, BrickCoordinate, EntityPose, GridId, GridPose, LevelIndex, Orientation, WorldPosition,
+    BrickBox, BrickCoordinate, EntityPose, GridId, GridPose, LevelIndex, Orientation,
+    VoxelCoordinate, WorldPosition,
 };
 
 pub fn write_level(writer: &mut ByteWriter, level: LevelIndex) {
@@ -15,20 +16,38 @@ pub fn read_level(reader: &mut ByteReader<'_>) -> Result<LevelIndex, DecodeError
         .map_err(|_| DecodeError::Invalid("a level number is too large"))
 }
 
+/// A brick coordinate: three wide integers (see [`ByteWriter::write_wide_signed`]), so that a coordinate of any size the supported range allows is exact.
 pub fn write_brick_coordinate(writer: &mut ByteWriter, coordinate: BrickCoordinate) {
-    writer.write_signed_varint(coordinate.x());
-    writer.write_signed_varint(coordinate.y());
-    writer.write_signed_varint(coordinate.z());
+    writer.write_wide_signed(coordinate.x());
+    writer.write_wide_signed(coordinate.y());
+    writer.write_wide_signed(coordinate.z());
 }
 
 pub fn read_brick_coordinate(reader: &mut ByteReader<'_>) -> Result<BrickCoordinate, DecodeError> {
     let (x, y, z) = (
-        reader.read_signed_varint()?,
-        reader.read_signed_varint()?,
-        reader.read_signed_varint()?,
+        reader.read_wide_signed()?,
+        reader.read_wide_signed()?,
+        reader.read_wide_signed()?,
     );
     BrickCoordinate::try_new(x, y, z)
         .map_err(|_| DecodeError::Invalid("a brick coordinate is out of range"))
+}
+
+/// A voxel coordinate, as [`write_brick_coordinate`] writes a brick's.
+pub fn write_voxel_coordinate(writer: &mut ByteWriter, coordinate: VoxelCoordinate) {
+    writer.write_wide_signed(coordinate.x());
+    writer.write_wide_signed(coordinate.y());
+    writer.write_wide_signed(coordinate.z());
+}
+
+pub fn read_voxel_coordinate(reader: &mut ByteReader<'_>) -> Result<VoxelCoordinate, DecodeError> {
+    let (x, y, z) = (
+        reader.read_wide_signed()?,
+        reader.read_wide_signed()?,
+        reader.read_wide_signed()?,
+    );
+    VoxelCoordinate::try_new(x, y, z)
+        .map_err(|_| DecodeError::Invalid("a voxel coordinate is out of range"))
 }
 
 pub fn write_brick_box(writer: &mut ByteWriter, region: BrickBox) {
@@ -55,21 +74,6 @@ pub fn read_grid(reader: &mut ByteReader<'_>) -> Result<GridId, DecodeError> {
     Ok(GridId::new(reader.read_varint()?))
 }
 
-/// How the four components of an orientation are stored in a pose. Files and messages written before the orientation was `f64`
-/// (protocol version 7, and the version 2 of the sections that hold poses) have `f32` ones; everything written now has `f64`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PoseFormat {
-    /// Four `f32`, as protocol versions up to 6 and version 1 of the sections that hold poses.
-    Single,
-    /// Four `f64`.
-    Double,
-}
-
-impl PoseFormat {
-    /// What is written now.
-    pub const CURRENT: Self = Self::Double;
-}
-
 /// A position and an orientation: the brick and the offset in it, and the four components of the orientation (as `f64`).
 fn write_placement(writer: &mut ByteWriter, position: WorldPosition, orientation: Orientation) {
     write_brick_coordinate(writer, position.brick());
@@ -83,7 +87,6 @@ fn write_placement(writer: &mut ByteWriter, position: WorldPosition, orientation
 
 fn read_placement(
     reader: &mut ByteReader<'_>,
-    format: PoseFormat,
 ) -> Result<(WorldPosition, Orientation), DecodeError> {
     let brick = read_brick_coordinate(reader)?;
     let mut offset = [0f32; 3];
@@ -97,10 +100,7 @@ fn read_placement(
     }
     let mut components = [0f64; 4];
     for component in &mut components {
-        *component = match format {
-            PoseFormat::Single => f64::from(f32::from_bits(reader.read_u32()?)),
-            PoseFormat::Double => f64::from_bits(reader.read_u64()?),
-        };
+        *component = f64::from_bits(reader.read_u64()?);
     }
     let orientation = Orientation::from_components(components)
         .ok_or(DecodeError::Invalid("an orientation is not a rotation"))?;
@@ -113,18 +113,10 @@ pub fn write_entity_pose(writer: &mut ByteWriter, pose: &EntityPose) {
     write_placement(writer, pose.position, pose.orientation);
 }
 
-/// An entity's pose as [`write_entity_pose`] writes it now.
+/// An entity's pose as [`write_entity_pose`] writes it.
 pub fn read_entity_pose(reader: &mut ByteReader<'_>) -> Result<EntityPose, DecodeError> {
-    read_entity_pose_in(reader, PoseFormat::CURRENT)
-}
-
-/// An entity's pose as an older program wrote it, in `format`.
-pub fn read_entity_pose_in(
-    reader: &mut ByteReader<'_>,
-    format: PoseFormat,
-) -> Result<EntityPose, DecodeError> {
     let grid = read_grid(reader)?;
-    let (position, orientation) = read_placement(reader, format)?;
+    let (position, orientation) = read_placement(reader)?;
     Ok(EntityPose::new(grid, position, orientation))
 }
 
@@ -133,17 +125,9 @@ pub fn write_grid_pose(writer: &mut ByteWriter, pose: &GridPose) {
     write_placement(writer, pose.position, pose.orientation);
 }
 
-/// A ship's pose as [`write_grid_pose`] writes it now.
+/// A ship's pose as [`write_grid_pose`] writes it.
 pub fn read_grid_pose(reader: &mut ByteReader<'_>) -> Result<GridPose, DecodeError> {
-    read_grid_pose_in(reader, PoseFormat::CURRENT)
-}
-
-/// A ship's pose as an older program wrote it, in `format`.
-pub fn read_grid_pose_in(
-    reader: &mut ByteReader<'_>,
-    format: PoseFormat,
-) -> Result<GridPose, DecodeError> {
-    let (position, orientation) = read_placement(reader, format)?;
+    let (position, orientation) = read_placement(reader)?;
     Ok(GridPose::new(position, orientation))
 }
 
@@ -209,7 +193,10 @@ mod tests {
         assert_eq!(
             hex,
             concat!(
-                "0206030e",
+                "02",
+                "0106",
+                "0103",
+                "010e",
                 "0000c03f",
                 "0000fc41",
                 "00000000",
@@ -222,53 +209,30 @@ mod tests {
     }
 
     #[test]
-    fn a_pose_written_when_orientations_were_f32_is_read_as_the_same_turn_and_the_new_layout_is_not_taken_for_it()
-     {
-        // What the program wrote before the orientation was f64 (the layout this test pinned then), with a turn that is not exact in f32.
-        let single = |components: [f32; 4]| {
-            let mut writer = ByteWriter::new();
-            write_grid(&mut writer, GridId::root(voxel_space::LevelIndex::new(2)));
-            write_brick_coordinate(&mut writer, BrickCoordinate::new(3, -2, 7));
-            for offset in [1.5f32, 31.5, 0.0] {
-                writer.write_u32(offset.to_bits());
-            }
-            for component in components {
-                writer.write_u32(component.to_bits());
-            }
-            writer.into_bytes()
-        };
-        let old = single([0.0, 0.0, 0.0, 1.0]);
-        assert_eq!(
-            old.iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>(),
-            "0206030e0000c03f0000fc41000000000000000000000000000000000000803f"
+    fn a_brick_at_the_edge_of_the_range_survives_encoding_and_one_beyond_it_is_refused() {
+        use voxel_space::{BRICK_COORDINATE_MAXIMUM, BRICK_COORDINATE_MINIMUM};
+        let far = EntityPose::new(
+            GridId::MAIN,
+            WorldPosition::new(
+                BrickCoordinate::new(BRICK_COORDINATE_MINIMUM, BRICK_COORDINATE_MAXIMUM, 1 << 100),
+                [1.0, 2.0, 3.0],
+            ),
+            Orientation::IDENTITY,
         );
-        let mut reader = ByteReader::new(&old);
-        let pose = read_entity_pose_in(&mut reader, PoseFormat::Single).unwrap();
-        reader.finish().unwrap();
-        assert_eq!(
-            pose,
-            EntityPose::new(
-                GridId::root(voxel_space::LevelIndex::new(2)),
-                WorldPosition::new(BrickCoordinate::new(3, -2, 7), [1.5, 31.5, 0.0]),
-                Orientation::IDENTITY,
-            )
-        );
-        // A turn written as f32 reads as exactly those f32 values.
-        let half = std::f32::consts::FRAC_1_SQRT_2;
-        let bytes = single([0.0, half, 0.0, half]);
-        let pose = read_entity_pose_in(&mut ByteReader::new(&bytes), PoseFormat::Single).unwrap();
-        assert_eq!(
-            pose.orientation.components(),
-            [0.0, f64::from(half), 0.0, f64::from(half)]
-        );
-        // The old bytes are too short to be the new layout, and the new layout is too long to be the old.
-        assert!(decoded(&old).is_err());
-        let new = encoded(&pose);
-        let mut reader = ByteReader::new(&new);
-        let read_as_old = read_entity_pose_in(&mut reader, PoseFormat::Single);
-        assert!(read_as_old.is_err() || reader.finish().is_err());
+        assert_eq!(decoded(&encoded(&far)), Ok(far));
+        // One beyond the range, written by hand: the coordinate is refused rather than wrapped or clamped.
+        let mut writer = ByteWriter::new();
+        write_grid(&mut writer, GridId::MAIN);
+        writer.write_wide_signed(BRICK_COORDINATE_MAXIMUM + 1);
+        writer.write_wide_signed(0);
+        writer.write_wide_signed(0);
+        for _ in 0..3 {
+            writer.write_u32(0f32.to_bits());
+        }
+        for component in [0.0f64, 0.0, 0.0, 1.0] {
+            writer.write_u64(component.to_bits());
+        }
+        assert!(decoded(&writer.into_bytes()).is_err());
     }
 
     #[test]
@@ -278,7 +242,7 @@ mod tests {
             WorldPosition::new(BrickCoordinate::ORIGIN, [1.0, 2.0, 3.0]),
             Orientation::IDENTITY,
         ));
-        // The grid is one byte and the brick three, so the first offset starts at byte 4.
+        // The grid is one byte and the brick three (a length byte alone is zero), so the first offset starts at byte 4.
         for bad in [-1.0f32, 32.0, f32::NAN, f32::INFINITY] {
             let mut bytes = good.clone();
             bytes[4..8].copy_from_slice(&bad.to_bits().to_le_bytes());

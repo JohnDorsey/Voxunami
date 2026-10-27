@@ -417,7 +417,7 @@ fn a_replay_draws_exactly_what_a_player_saw_who_made_a_ship_flew_it_turned_it_an
     // A raft built five above the floor, and a player looking up at it from the floor.
     let mut scene = common::Scene::new();
     common::flat_floor(&mut scene);
-    common::build_raft(&mut scene, 20, common::FLOOR as i64 + 6, 22, 8);
+    common::build_raft(&mut scene, 20, common::FLOOR as i128 + 6, 22, 8);
     let connection = scene.rig.connector.connect().unwrap();
     let recorded = record_connection(connection, &path).unwrap();
     let mut player = scene.rig.join_walking_over(
@@ -435,7 +435,7 @@ fn a_replay_draws_exactly_what_a_player_saw_who_made_a_ship_flew_it_turned_it_an
     let made = type_command(&mut scene, &mut player, &mut updates, "/ship create");
     assert!(made.starts_with("made ship 0 of 64 blocks"), "{made}");
     type_command(&mut scene, &mut player, &mut updates, "/ship hold on");
-    player.send_command(&format!("/tp 24 {} 26", common::FLOOR as i64 + 12));
+    player.send_command(&format!("/tp 24 {} 26", common::FLOOR as i128 + 12));
     step_drawing(&mut scene, &mut player, &mut updates, 60);
     assert_eq!(common::player_pose(&scene, 1).grid, common::ship_id(0));
     let piloting = type_command(&mut scene, &mut player, &mut updates, "/ship pilot");

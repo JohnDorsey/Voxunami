@@ -171,7 +171,7 @@ mod tests {
     }
 
     impl Fixture {
-        fn set(&mut self, at: [i64; 3], value: u32) {
+        fn set(&mut self, at: [i128; 3], value: u32) {
             let voxel = VoxelCoordinate::new(at[0], at[1], at[2]);
             self.ship.set(self.material, voxel, value);
             self.mesher.brick_changed(SHIP, voxel.split().0);

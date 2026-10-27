@@ -21,7 +21,7 @@ fn ship() -> GridId {
 }
 
 /// The pose of a ship whose origin is this voxel of the world.
-fn pose_at(voxel: [i64; 3], orientation: Orientation) -> GridPose {
+fn pose_at(voxel: [i128; 3], orientation: Orientation) -> GridPose {
     let (brick, local) = VoxelCoordinate::new(voxel[0], voxel[1], voxel[2]).split();
     GridPose::new(
         WorldPosition::new(brick, [local.x(), local.y(), local.z()].map(f32::from)),
@@ -58,7 +58,7 @@ fn looking(scene: &mut Scene, at: [f64; 3]) -> Player {
     player
 }
 
-fn block_in_the_ship(scene: &Scene, voxel: [i64; 3]) -> u32 {
+fn block_in_the_ship(scene: &Scene, voxel: [i128; 3]) -> u32 {
     scene
         .rig
         .server
@@ -73,7 +73,7 @@ fn block_in_the_ship(scene: &Scene, voxel: [i64; 3]) -> u32 {
         )
 }
 
-fn block_the_player_sees_in_the_ship(scene: &Scene, player: &Player, voxel: [i64; 3]) -> u32 {
+fn block_the_player_sees_in_the_ship(scene: &Scene, player: &Player, voxel: [i128; 3]) -> u32 {
     let _ = scene;
     player
         .client()
@@ -275,7 +275,7 @@ fn a_lamp_put_on_a_ship_lights_the_ship_and_leaves_the_terrain_alone() {
     );
     scene.ticks(30);
     scene.rig.settle(&mut [&mut player]);
-    let lit = |at: [i64; 3]| {
+    let lit = |at: [i128; 3]| {
         scene
             .rig
             .server

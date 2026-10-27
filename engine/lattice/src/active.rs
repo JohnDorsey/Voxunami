@@ -6,7 +6,8 @@ use voxel_space::{FaceDirection, GridId, LevelIndex, VoxelCoordinate};
 use world_storage::Section;
 
 /// The version of the saved form this program writes.
-const SAVED_VERSION: u32 = 1;
+/// 2: a coordinate is three wide integers (up to 128 bits each). Version 1 had varints of 64 bits, and a section of it counts as none (the work is made again).
+const SAVED_VERSION: u32 = 2;
 
 /// The voxels a rule still has to look at, in a fixed order (by grid, then by position), so that
 /// what a rule does with them never depends on how they got there.
@@ -126,7 +127,7 @@ impl ActiveVoxels {
                 .expect("every level was listed");
             writer.write_varint(position as u64);
             for component in [voxel.x(), voxel.y(), voxel.z()] {
-                writer.write_signed_varint(component);
+                writer.write_wide_signed(component);
             }
         }
     }
@@ -153,9 +154,9 @@ impl ActiveVoxels {
                 .get(position)
                 .ok_or(DecodeError::Invalid("no such level"))?;
             let voxel = VoxelCoordinate::try_new(
-                reader.read_signed_varint()?,
-                reader.read_signed_varint()?,
-                reader.read_signed_varint()?,
+                reader.read_wide_signed()?,
+                reader.read_wide_signed()?,
+                reader.read_wide_signed()?,
             )
             .map_err(|_| DecodeError::Invalid("a voxel coordinate is out of range"))?;
             // A voxel of a level this world no longer has is not looked at.
@@ -259,7 +260,7 @@ mod tests {
         format!("test_game:{text}").parse().unwrap()
     }
 
-    fn voxel(x: i64, y: i64, z: i64) -> VoxelCoordinate {
+    fn voxel(x: i128, y: i128, z: i128) -> VoxelCoordinate {
         VoxelCoordinate::new(x, y, z)
     }
 
@@ -371,7 +372,8 @@ mod tests {
     }
 
     #[test]
-    fn the_saved_bytes_of_a_root_grid_are_what_they_were_when_voxels_were_keyed_by_level() {
+    fn the_saved_bytes_of_a_root_grid_are_the_levels_named_once_then_each_voxel_by_its_level_and_three_wide_integers()
+     {
         // Written by hand, as the format was before grids: the levels that have voxels, named once,
         // then each voxel, in their fixed order, by the position of its level in that list and its three coordinates.
         let mut expected = ByteWriter::new();
@@ -380,9 +382,9 @@ mod tests {
         expected.write_varint(2);
         for voxel in [(-1, 0, 70_000), (3, -4, 5)] {
             expected.write_varint(0);
-            expected.write_signed_varint(voxel.0);
-            expected.write_signed_varint(voxel.1);
-            expected.write_signed_varint(voxel.2);
+            expected.write_wide_signed(voxel.0);
+            expected.write_wide_signed(voxel.1);
+            expected.write_wide_signed(voxel.2);
         }
         let active: ActiveVoxels = [(SECOND, voxel(3, -4, 5)), (SECOND, voxel(-1, 0, 70_000))]
             .into_iter()
@@ -425,6 +427,24 @@ mod tests {
     }
 
     #[test]
+    fn voxels_at_the_ends_of_the_range_are_saved_and_read_back() {
+        use voxel_space::{VOXEL_COORDINATE_MAXIMUM, VOXEL_COORDINATE_MINIMUM};
+        let identifier = name("pending");
+        let far: ActiveVoxels = [
+            (
+                MAIN,
+                voxel(VOXEL_COORDINATE_MINIMUM, VOXEL_COORDINATE_MAXIMUM, 1 << 100),
+            ),
+            (MAIN, voxel(-(1 << 90), 7, VOXEL_COORDINATE_MAXIMUM)),
+        ]
+        .into_iter()
+        .collect();
+        let section = far.to_section(&identifier, &levels());
+        let loaded = ActiveVoxels::from_sections(&[section], &identifier, index_of);
+        assert_eq!(loaded, Some(far));
+    }
+
+    #[test]
     fn a_newer_or_damaged_section_counts_as_none() {
         let identifier = name("pending");
         let good = [(MAIN, voxel(1, 2, 3))]
@@ -434,13 +454,16 @@ mod tests {
         let read =
             |section: Section| ActiveVoxels::from_sections(&[section], &identifier, index_of);
         assert!(read(good.clone()).is_some());
-        assert_eq!(
-            read(Section {
-                version: SAVED_VERSION + 1,
-                ..good.clone()
-            }),
-            None
-        );
+        for version in [0, SAVED_VERSION - 1, SAVED_VERSION + 1] {
+            assert_eq!(
+                read(Section {
+                    version,
+                    ..good.clone()
+                }),
+                None,
+                "version {version}"
+            );
+        }
         for length in 0..good.payload.len() {
             let damaged = Section {
                 payload: good.payload[..length].to_vec(),
@@ -471,7 +494,7 @@ mod tests {
 
         #[test]
         fn any_active_voxels_round_trip(
-            voxels in proptest::collection::vec((0u32..2, -1000i64..1000, -1000i64..1000, -1000i64..1000), 0..40)
+            voxels in proptest::collection::vec((0u32..2, -1000i128..1000, -1000i128..1000, -1000i128..1000), 0..40)
         ) {
             let identifier = name("pending");
             let active: ActiveVoxels = voxels

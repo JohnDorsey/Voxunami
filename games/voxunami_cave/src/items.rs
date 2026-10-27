@@ -23,7 +23,7 @@ pub const FALL_INTERVAL_TICKS: u64 = 4;
 pub const PICKUP_RADIUS: f32 = 3.0;
 
 /// An item that has fallen below this height is gone (it fell out of the world).
-pub const LOWEST_DROP_VOXEL: i64 = -1000;
+pub const LOWEST_DROP_VOXEL: i128 = -1000;
 
 /// How far, in voxels, from the ship it fell off an item is removed (the ship's own void: a level has the lowest voxel above).
 pub const LOWEST_DROP_DISTANCE: f64 = 1000.0;
@@ -124,9 +124,9 @@ pub fn voxel_of(position: WorldPosition) -> VoxelCoordinate {
     let brick = position.brick();
     let offset = position.offset();
     VoxelCoordinate::new(
-        brick.x() * 32 + offset[0].floor() as i64,
-        brick.y() * 32 + offset[1].floor() as i64,
-        brick.z() * 32 + offset[2].floor() as i64,
+        brick.x() * 32 + offset[0].floor() as i128,
+        brick.y() * 32 + offset[1].floor() as i128,
+        brick.z() * 32 + offset[2].floor() as i128,
     )
 }
 
