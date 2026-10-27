@@ -382,6 +382,24 @@ impl Message for CoarseNodes {
                     node: Some(CoarseNode::from_cells(cells)),
                 },
             ]),
+            // The coarsest nodes there are: the whole world (its origin is the lowest brick), and cubes past the levels of 40 and 64 that were once the limits.
+            Self(vec![
+                CoarseNodeUpdate {
+                    grid: GridId::MAIN,
+                    cube: cube([voxel_space::BRICK_COORDINATE_MINIMUM; 3], 116),
+                    node: Some(CoarseNode::uniform(cell(1, 128, 255))),
+                },
+                CoarseNodeUpdate {
+                    grid: GridId::MAIN,
+                    cube: cube([0, -(1 << 64), 1 << 70], 64),
+                    node: Some(CoarseNode::uniform(cell(2, 255, 7))),
+                },
+                CoarseNodeUpdate {
+                    grid: GridId::MAIN,
+                    cube: cube([1 << 41, 0, 0], 41),
+                    node: None,
+                },
+            ]),
         ]
     }
 }

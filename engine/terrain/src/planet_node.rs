@@ -522,6 +522,59 @@ mod tests {
     }
 
     #[test]
+    fn a_ball_a_power_of_two_times_as_wide_looks_the_same_in_nodes_that_many_times_as_big_even_past_a_level_of_64()
+     {
+        // Doubling everything (the radius, the cube's place and its size) changes nothing in the picture: the cells are the same fractions of the same ball.
+        // This takes the nodes to levels at which a cell is wider than a `u64` can count, and to a ball of 6 x 10^32 voxels across.
+        let (mut checked, mut with_surface) = (0, 0);
+        // (From level 3, where a cell is wider than the 4 voxels of the surface layer: the layers are measured in voxels, so finer cells have dirt that bigger
+        // ones do not.)
+        for level in 3..=5u8 {
+            for direction in DIRECTIONS {
+                let cube = cube_at_the_surface(direction, 500.0, level);
+                if axes_tie(cube) {
+                    continue;
+                }
+                let small = planet_node(ball(500.0), cube);
+                let surface = small.uniform_cell().is_none();
+                for doublings in [10u8, 40, 59, 60, 61, 70, 100] {
+                    let scale = 1i128 << doublings;
+                    let origin = cube.origin();
+                    let large_cube = BrickCube::new(
+                        BrickCoordinate::new(
+                            origin.x() * scale,
+                            origin.y() * scale,
+                            origin.z() * scale,
+                        ),
+                        level + doublings,
+                    )
+                    .unwrap();
+                    let large = planet_node(ball(500.0 * scale as f64), large_cube);
+                    let (large, small): (Vec<_>, Vec<_>) =
+                        (large.cells().collect(), small.cells().collect());
+                    let differing: Vec<_> =
+                        (0..large.len()).filter(|&i| large[i] != small[i]).collect();
+                    assert!(
+                        differing.is_empty(),
+                        "{cube:?} doubled {doublings} times: {} cells differ, the first {:?}: {:?} against {:?}",
+                        differing.len(),
+                        differing.first(),
+                        differing.first().map(|&i| large[i]),
+                        differing.first().map(|&i| small[i]),
+                    );
+                    checked += 1;
+                    with_surface += usize::from(surface);
+                }
+            }
+        }
+        assert!(checked >= 60, "only {checked} nodes were compared");
+        assert!(
+            with_surface >= 40,
+            "only {with_surface} of them had the surface in them"
+        );
+    }
+
+    #[test]
     fn the_outside_of_a_ball_is_grass_then_dirt_then_stone_at_every_pole() {
         // Looking down from outside along each axis at the middle of the node over a pole: the first cell that is drawn is grass, and what is under it is dirt
         // while less than the depth of the surface layer (4 voxels, so two cells of 2 voxels and one of 4 under the grass, which is almost full) of ground is

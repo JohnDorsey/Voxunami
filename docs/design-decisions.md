@@ -136,7 +136,7 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 
 ## Decided (levels of detail; Phase 38, owner 2026-10-23; specified in `lod-spec.md`)
 - One level-of-detail system for terrain and every grid, ships included, so that the ground can one day be a ship (a planet: a rough sphere of cubes in ordinary
-  space, no curved grids). It must scale to planets of 10^8 m and more; the maximum detail level is **40** (a cell of 2^40 voxels). Detail levels are counted in voxels; a game has one voxel size.
+  space, no curved grids). It must scale to planets of 10^8 m and more; the maximum detail level is **116** (a cell of 2^116 voxels; it was 40 until the coordinates were 128 bits, see "Coarse levels to the root"). Detail levels are counted in voxels; a game has one voxel size.
 - One grid shows several detail levels at once, by the distance of each part; the rule is an octree refinement by distance (cell size against distance and pixel size).
 - A coarse cell stores the dominant block (chosen among the blocks that touch air, so a layer of snow shows), a fill fraction and a light level (brightest child up to
   32 voxels, an exposure-weighted average above). Coarse cells are untextured always; a client setting gives the distance within which blocks are textured.
@@ -208,8 +208,7 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   - *Arithmetic that depended on the width* (found by reading, each with a test at the ends of the range): squares of distances (`FineRegion`, the mesher's range of bricks, the order cubes are made in) overflow `i128` across the range
     and are compared exactly after a check per axis, or saturate where only an order is wanted; the level at which one cube covers a grid; a `1u64 << level`; the octree's cost (isolating one assigned cube costs 7 leaves a level, so
     420 more leaves, one byte each, in the generators of a world).
-  - *Not widened, still limits.* Coarse nodes stop at detail level 40 (`MAXIMUM_DETAIL_LEVEL`) and `LevelOfDetail` at 60, so a structure that spans the universe has no summary above 2^40 bricks yet (the generator's coarse
-    levels: the next piece of work for this wish); a noise octave's wavelength is at most 2^56; a grid that is turned is converted through `f64`, so is exact only within 2^53 voxels of its own origin (as it always was).
+  - *Not widened, still limits.* (Coarse nodes stopped at detail level 40 and `LevelOfDetail` at 60 when this was written; both went to 116 in the entry below.) A noise octave's wavelength is at most 2^56; a grid that is turned is converted through `f64`, so is exact only within 2^53 voxels of its own origin (as it always was).
   - *Tests whose premise was a limit.* `/tp` far out, a ship carried past the end of the world, and a coarse-assignment test that compared costs relative to a root of 56 were changed in their inputs (not their assertions) to
     stay beyond the new edge or relative to the new root.
 - Mine, built after that (2026-10-27; the owner asked for accurate orbit radii "even if it requires fixed point 128 bit"): **the offset of an orbit is worked out in 128-bit fixed point and kept as
@@ -221,6 +220,19 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   `f32`, as `translated_by_voxels` did not (it lost up to 2 x 2^-19 voxel when the sum passed a brick's edge). Reference values and tables: `engine/world_storage/tools/exact_circle_reference.py`.
 
 ## Decided (the plugin host; built in Phase 23)
+- **Coarse levels to the root (owner's wish 2026-10-27, "the generator's coarse levels above detail 40"; built 2026-10-27).** `MAXIMUM_DETAIL_LEVEL` and `LevelOfDetail::MAXIMUM_LEVEL` are 116, the octree's `ROOT_LEVEL` (a cell of 2^116 voxels, and a node of the whole
+  world; a compile-time assertion keeps the three the same number). What was decided and found, tests first:
+  - *The machinery was nearly ready; the bugs were in what the old limit hid.* (1) The depth of ground over a cell, which gives dirt or stone, was counted in a `u64` of voxels times 255: from level 64 the width of a cell truncated to nothing, so every cell of a deep
+    node looked like the top of the ground (grass), and in a build that checks overflow it panicked. Now a `u128`. (2) A planet's bounds over a box that reaches far across a face (a cube beside the plane through its centre) read the heightmap at a ratio of millions, which overflowed the coordinate; the face
+    is never read past a ratio of 1.36 (`LARGEST_RATIO_READ` is 2, with a test of the 1.36), so the ratio is clamped, and a heightmap that does not fit the coordinates leaves the bound at the noise's whole range. (This was in the `i64` code too, out of reach
+    only because nodes stopped at level 40. The planet's pinned outputs did not move: a tighter valid bound changes no decision that was not already exact.) (3) The renderer's scale of a node was `1u64 << level`: now an exact `f32` power of two.
+    (4) The distance a view reaches was clamped to a `u32` of bricks (1.4 x 10^11 voxels): now a `u128` (`BrickBox::around_by`; `around` is its narrow form), so a lump 10^20 bricks away is drawn.
+  - *Checked by scale.* A flat field, a flat field with the surface through the middle of a row, and a planet's ball give the same node (to the cell) at every level from 2 or 3 to 114 or 115 when everything is scaled together: the radius times 2^k, the cube
+    moved and `k` levels coarser; and the explicit layers (grass on top, stone below, one row half full) at every level up to 115. At level 115 the node reaches the end of the world on two axes and the cells past it are air, so the surface shows at its edge: not equal, by design.
+  - *The cost of seeing everything.* Every size of cube has a ring of about 19,000 round the viewer with the usual settings, so a view of all the universe at every scale is about 2.2 million nodes (the whole-world walk in `selection.rs`); that is why a view has a
+    maximum distance, and nothing sends that many.
+  - *Not done, still limits.* No generator in the repository makes anything that needs a level above 40 (a planet may be up to a billion voxels across, a node of level 40 has cells of 10^12), so the levels above are checked with synthetic fields and a planet scaled up in the
+    tests, not seen in play; the first generator of a star cluster or a galaxy will be the first to use them. The renderer's depth range at these distances (squares of distance in an `f32` overflow past 10^19) is the open item (b) of `future-goals.md`.
 - A game's server rules are plugins run by `plugin_host::PluginHost` (the specification and its record are in `plugin-api-spec.md`). What a plugin
   registers, and when: systems in the phases `Decide`, `Controllers`, `Physics`, `Settle` and `Rules`; handlers of events, delivered first in first
   out right after the system or handler that caused them returns; handlers of client messages and commands; saved state.

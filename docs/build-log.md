@@ -805,6 +805,14 @@ callers (ship creation, the bodies' terrain, the arrival look, the light-model s
 - Tests: the existing ones, rewritten by a tool for the calls (`regrid.py`, a scratch file) and by hand where a test expected an error for a level that is not there; two new for `detach_blocks` out of a
   ship and for `uniform_value` and `generated` on a ship. No pin moved. Windows 1745 and Linux 1746 tests pass; fmt and clippy clean.
 
+Coarse levels to the root (2026-10-27, after the `i128` migration; the owner asked to continue with the next piece in `future-goals.md`). See `design-decisions.md` ("Coarse levels to the root"), `lod-spec.md` (decision 2).
+- *Tests first.* A walk over the whole world (every size of cube has a ring of about 19,000; 2.2 million nodes in all; the cubes tile the world, checked by merging eight into one upward because 2^348 bricks do not fit an integer), the cap is the octree's root, wire samples for
+  the whole-world node and nodes past 40 and 64, flat-ground nodes at every level 2 to 115 (explicit layers; the same digest to 114), a surface through a row at every level 5 to 115, may-show at levels up to 113, a planet's ball scaled by 2^10 to 2^100 giving the same cells (63 comparisons, all with
+  the surface in them), edited-cube holders up to the root, `BrickBox::around_by` past a `u32`, a view of a lump 10^20 bricks away, the renderer's scale at all 117 levels.
+- *Bugs found by them* (all hidden by the old cap of 40): the depth of ground over a cell in a `u64` (overflow, or truncation to nothing from level 64, which made every cell grass); a planet's bounds over a box beside its central plane overflowed an `i128` (a heightmap ratio of millions; clamped to 2, since a face is
+  read to 1.36 at most); the renderer's `1u64 << level`; a view's reach clamped to a `u32` of bricks. A mutation (the reach clamped again) fails the lump test. One test premise (`may_show` "so far off the room is not in the world" used a brick that is now well inside) changed its input to the world's end.
+- Windows 2340 tests pass and Linux 2341 (2327 and 2328 before); fmt and clippy clean. Not done: a generator that needs the levels above 40, the renderer's depth range at those distances.
+
 Coordinates of 128 bits (2026-10-27, `i128` migration, phase 2; the owner chose a clean break for saves). See `design-decisions.md` ("Coordinates of 128 bits") and `future-goals.md`.
 - *Built:* `VoxelCoordinate`, `BrickCoordinate`, `WorldPosition`, `Displacement`, `LatticeTransform`, `FaceDirection::offset`, the grids' keys and every crate that did arithmetic on them are `i128` (range +-2^120 voxels); `region_octree` is 116
   levels with `u128` keys; the wire writes a coordinate with `write_wide_signed` through `protocol::{read,write}_{brick,voxel}_coordinate` (protocol 9); the saved sections moved to the new versions and the readers of older ones were

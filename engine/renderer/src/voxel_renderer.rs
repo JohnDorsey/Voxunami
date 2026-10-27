@@ -260,6 +260,13 @@ struct Placement {
 
 const NO_TURN: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
+/// The width in voxels of a cell of a node of detail `level`, 2^level, as the exact `f32` it is (levels up to 116 are far inside the range of an `f32`, which
+/// reaches 2^127; a shift of an integer would not fit from level 64).
+fn cell_scale(level: u8) -> f32 {
+    assert!(level <= 127, "2^{level} is not an f32");
+    f32::from_bits((127 + u32::from(level)) << 23)
+}
+
 /// The sphere that holds a node whose lowest corner is at `corner` (relative to the camera) and whose mesh is in units of `scale` voxels: its middle
 /// and its radius, which are those of a brick times the scale.
 fn node_sphere(corner: Vec3, scale: f32) -> (Vec3, f32) {
@@ -838,7 +845,7 @@ impl VoxelRenderer {
         }
         // Coarse nodes of the terrain: a node of detail level `n` is `2^n` bricks along an edge, drawn from its mesh in cells of `2^n` voxels.
         for &cube in self.coarse_nodes.keys() {
-            let scale = (1u64 << cube.level()) as f32;
+            let scale = cell_scale(cube.level());
             let corner = Vec3::from_array(
                 WorldPosition::new(cube.origin(), [0.0; 3]).relative_to(camera.position),
             );
@@ -905,7 +912,7 @@ impl VoxelRenderer {
             let Some(frame) = frames.get(&grid) else {
                 continue;
             };
-            let scale = (1u64 << cube.level()) as f32;
+            let scale = cell_scale(cube.level());
             let place = |local: [f64; 3]| -> Vec3 {
                 Vec3::from_array(std::array::from_fn(|row| {
                     (frame.origin[row]
@@ -1365,6 +1372,18 @@ impl VoxelRenderer {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_scale_of_a_cell_is_two_to_its_level_exactly_at_every_level_there_is() {
+        let mut expected = 1.0f32;
+        for level in 0..=116u8 {
+            assert_eq!(cell_scale(level), expected, "level {level}");
+            expected *= 2.0;
+        }
+        assert!(cell_scale(116).is_finite());
+        // (The node is 32 cells wide, and a sphere round it a little more than that: still an `f32`.)
+        assert!((cell_scale(116) * 32.0 * 2.0).is_finite());
+    }
+
     #[test]
     fn the_sphere_of_a_node_is_that_of_a_brick_times_its_scale_from_its_corner() {
         let corner = Vec3::new(5.0, -7.0, 100.0);

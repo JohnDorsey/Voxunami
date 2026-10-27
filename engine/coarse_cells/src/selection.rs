@@ -9,12 +9,16 @@
 //! Only IEEE addition, subtraction, multiplication, division, comparison and square roots are used, so the answer is the same on every machine.
 
 use region_octree::BrickCube;
-use voxel_space::{BRICK_EDGE_LENGTH, BrickBox, BrickCoordinate, WorldPosition};
+use voxel_space::{BRICK_EDGE_LENGTH, BrickBox, BrickCoordinate, LevelOfDetail, WorldPosition};
 
 use crate::fine_region::FineRegion;
 
-/// The coarsest detail level there is (`lod-spec.md`, decision 2): a cell of 2^40 voxels.
-pub const MAXIMUM_DETAIL_LEVEL: u8 = 40;
+/// The coarsest detail level there is (`lod-spec.md`, decision 2): a cell of 2^116 voxels, and a node of the whole world. (It was 40 before the coordinates were
+/// 128 bits wide; a structure that spans the universe has no summary at a cell of 2^40.)
+pub const MAXIMUM_DETAIL_LEVEL: u8 = LevelOfDetail::MAXIMUM_LEVEL;
+
+// The octree's root cube is a node of the coarsest level, and no more.
+const _: () = assert!(MAXIMUM_DETAIL_LEVEL == region_octree::ROOT_LEVEL);
 
 /// Bricks and voxels: the length of an edge of a brick in `f64`.
 const BRICK_EDGE: f64 = BRICK_EDGE_LENGTH as f64;
@@ -258,10 +262,8 @@ pub fn select_around_brick(
     view: &ViewSelection,
     may_hold: &dyn Fn(BrickCube) -> bool,
 ) -> Vec<BrickCube> {
-    let reach = (view.maximum_distance / BRICK_EDGE)
-        .ceil()
-        .clamp(0.0, f64::from(u32::MAX - 1)) as u32
-        + 1;
+    // (As many bricks as the distance is long, and one more; a view of things light-years away reaches far past a `u32`. A float to an integer saturates.)
+    let reach = ((view.maximum_distance / BRICK_EDGE).ceil().max(0.0) as u128).saturating_add(1);
     let fine_region = FineRegion::new(brick, view.fine_radius);
     // (A brick is only reached by splitting a cube that touches the ball, and is then one of the bricks drawn as bricks, in the ball or in the fringe.)
     let holds =
@@ -273,7 +275,7 @@ pub fn select_around_brick(
     if let Some(zoom) = view.zoom {
         selection = selection.with_zoom(zoom);
     }
-    select_nodes(BrickBox::around(brick, reach), &selection)
+    select_nodes(BrickBox::around_by(brick, reach), &selection)
 }
 
 fn descend(cube: BrickCube, selection: &Selection<'_>, chosen: &mut Vec<BrickCube>) {
@@ -335,7 +337,9 @@ fn descend(cube: BrickCube, selection: &Selection<'_>, chosen: &mut Vec<BrickCub
 
 #[cfg(test)]
 mod tests {
-    use voxel_space::{GridPose, LatticeRotation, Orientation};
+    use voxel_space::{
+        BRICK_COORDINATE_MAXIMUM, BRICK_COORDINATE_MINIMUM, GridPose, LatticeRotation, Orientation,
+    };
 
     use super::*;
 
@@ -397,6 +401,75 @@ mod tests {
         ] {
             assert_eq!(level_covering(bricks), level, "{bricks} bricks");
         }
+    }
+
+    #[test]
+    fn the_whole_world_is_covered_by_the_nodes_of_a_walk_that_reaches_the_coarsest_level() {
+        // The extent is every brick there is: one root cube of 2^116 bricks. With a cap of 40 (the old limit) that would be 2^76 cubes along an axis.
+        let world = BrickBox::new(
+            BrickCoordinate::new(
+                BRICK_COORDINATE_MINIMUM,
+                BRICK_COORDINATE_MINIMUM,
+                BRICK_COORDINATE_MINIMUM,
+            ),
+            BrickCoordinate::new(
+                BRICK_COORDINATE_MAXIMUM,
+                BRICK_COORDINATE_MAXIMUM,
+                BRICK_COORDINATE_MAXIMUM,
+            ),
+        )
+        .unwrap();
+        let viewer = at([3, -7, 11], [5.0, 6.0, 7.0]);
+        let selection = Selection::new(viewer, settings()).without_culling();
+        let cubes = select_nodes(world, &selection);
+        let counts = counts_by_level(&cubes);
+        let coarsest = cubes.iter().map(|cube| cube.level()).max().unwrap();
+        eprintln!(
+            "WORLD {} cubes, coarsest {coarsest}, {counts:?}",
+            cubes.len()
+        );
+        // The viewer's own brick is a brick, and the far places are drawn with cells far past the old limit of 2^40 voxels.
+        let under = cubes
+            .iter()
+            .find(|cube| cube.contains(BrickCoordinate::new(3, -7, 11)))
+            .unwrap();
+        assert_eq!(under.level(), 0);
+        assert!(coarsest > 100, "{coarsest}");
+        // Every size of cube has its ring round the viewer (about 19,000 of each, with these settings), so seeing all of the universe at once at every scale is
+        // about 2.2 million nodes: why a view has a maximum distance.
+        assert!(counts.iter().all(|&count| count < 25_000), "{counts:?}");
+        assert!(cubes.len() < 2_500_000, "{}", cubes.len());
+        // They tile the world exactly. (Volumes up to 2^348 bricks do not fit an integer, so the cubes are merged upward instead: eight of a level make one of
+        // the next, and what is left at the top is the root alone.)
+        let mut carried = 0usize;
+        for (level, &count) in counts.iter().enumerate().take(116) {
+            let here = carried + count;
+            assert_eq!(
+                here % 8,
+                0,
+                "{here} cubes of level {level} are not whole parents"
+            );
+            carried = here / 8;
+        }
+        assert_eq!(carried + counts[116], 1, "{counts:?}");
+    }
+
+    #[test]
+    fn the_coarsest_level_is_the_octrees_root_and_one_more_is_refused() {
+        assert_eq!(MAXIMUM_DETAIL_LEVEL, region_octree::ROOT_LEVEL);
+        let selection = Selection::new(at([0; 3], [0.0; 3]), settings());
+        assert_eq!(
+            selection
+                .with_coarsest_level(MAXIMUM_DETAIL_LEVEL)
+                .coarsest_level,
+            116
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "detail level 117 is above the maximum")]
+    fn a_level_above_the_coarsest_is_refused() {
+        let _ = Selection::new(at([0; 3], [0.0; 3]), settings()).with_coarsest_level(117);
     }
 
     #[test]
@@ -891,6 +964,44 @@ mod tests {
             fine_radius,
             maximum_distance: 1_500.0,
         }
+    }
+
+    #[test]
+    fn a_view_reaches_a_ball_of_ground_a_hundred_quintillion_bricks_away_with_cells_far_past_the_old_limits()
+     {
+        // A planet-sized lump (radius 10^18 bricks) with its middle 10^20 bricks along x from the viewer, which is seen from a view that reaches 10^24 voxels:
+        // beyond what a u32 of bricks reaches, and with nodes whose cells are far wider than 2^40 voxels.
+        let middle = 100_000_000_000_000_000_000i128;
+        let radius = 1_000_000_000_000_000_000i128;
+        let lump = move |cube: BrickCube| {
+            let half = cube.edge_length() as f64 / 2.0;
+            let along = |component: i128, centre: i128| component as f64 + half - centre as f64;
+            let origin = cube.origin();
+            let (x, y, z) = (
+                along(origin.x(), middle),
+                along(origin.y(), 0),
+                along(origin.z(), 0),
+            );
+            (x * x + y * y + z * z).sqrt() <= radius as f64 + half * 1.733
+        };
+        let view = ViewSelection {
+            detail: settings(),
+            zoom: None,
+            fine_radius: 3,
+            maximum_distance: 1.0e24,
+        };
+        let cubes = select_around_brick(BrickCoordinate::new(0, 0, 0), &view, &lump);
+        let coarsest = cubes.iter().map(|cube| cube.level()).max().unwrap();
+        eprintln!("LUMP {} cubes, coarsest {coarsest}", cubes.len());
+        assert!(!cubes.is_empty());
+        // The lump is in the cubes: all of them are near it, and its middle is in one of them, a cube with a cell of far more than 2^40 voxels.
+        assert!(cubes.iter().all(|cube| cube.level() == 0 || lump(*cube)));
+        let holding = cubes
+            .iter()
+            .find(|cube| cube.contains(BrickCoordinate::new(middle, 0, 0)))
+            .expect("the middle of the lump is drawn");
+        assert!(holding.level() > 41, "{holding:?}");
+        assert!(cubes.len() < 100_000, "{}", cubes.len());
     }
 
     #[test]

@@ -31,6 +31,11 @@ use crate::noise::{Dimensionality, FractalNoise, mix};
 /// How far below the greatest a face's share of the direction can be and still count, as a share of the distance from the centre: the width of the seam.
 const BLEND_BAND: f64 = 0.15;
 
+/// The greatest ratio of the distance across a face to the distance along its axis that a face is read at. A face counts where its share of the direction is
+/// within [`BLEND_BAND`] of the greatest, and the greatest share is at least 1 / sqrt(3), so the ratio is under (1 / sqrt(3)) / (1 / sqrt(3) - 0.15), which is
+/// 1.36; a test checks that. (Bounds over a box ask no further than this.)
+const LARGEST_RATIO_READ: f64 = 2.0;
+
 /// Room for the rounding of the arithmetic of a bound, so that a bound is never a hair under a value.
 const BOUND_ALLOWANCE: f64 = 1.0e-6;
 
@@ -318,13 +323,20 @@ impl PlanetGround {
                 } else {
                     along_high
                 };
+            // Past the ratios a face is read at nothing is read, so a box that reaches far across a face (a cube as wide as the planet's distance from it, beside
+            // the plane through its centre) asks about the ratios there are, not about the million-fold ones that would not fit a coordinate.
+            let (least, greatest) = (
+                least.clamp(-LARGEST_RATIO_READ, LARGEST_RATIO_READ),
+                greatest.clamp(-LARGEST_RATIO_READ, LARGEST_RATIO_READ),
+            );
             // A voxel more to either side, for rounding.
-            heightmap_low[slot] = self.heightmap_coordinate(least) - 1;
-            heightmap_high[slot] = self.heightmap_coordinate(greatest) + 1;
+            heightmap_low[slot] = self.heightmap_coordinate(least).saturating_sub(1);
+            heightmap_high[slot] = self.heightmap_coordinate(greatest).saturating_add(1);
         }
+        // (A planet so wide that its heightmap does not fit the coordinates has no region to bound; the whole range of its noise stands for it.)
         VoxelBox::new(
-            VoxelCoordinate::new(heightmap_low[0], 0, heightmap_low[1]),
-            VoxelCoordinate::new(heightmap_high[0], 0, heightmap_high[1]),
+            VoxelCoordinate::try_new(heightmap_low[0], 0, heightmap_low[1]).ok()?,
+            VoxelCoordinate::try_new(heightmap_high[0], 0, heightmap_high[1]).ok()?,
         )
     }
 
@@ -577,6 +589,43 @@ mod tests {
         let second = arctangent(1.2) - arctangent(1.1);
         let third = arctangent(1.3) - arctangent(1.2);
         assert!((first - second).abs() < 1.0e-12 && (second - third).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn a_face_is_never_read_at_a_ratio_past_the_largest_that_bounds_ask_about() {
+        // The least the greatest share can be is the direction along a diagonal of the cube, 1 / sqrt(3); a face counts down to BLEND_BAND under it.
+        let least_greatest = 1.0 / 3.0f64.sqrt();
+        let most = least_greatest / (least_greatest - BLEND_BAND);
+        assert!(most < LARGEST_RATIO_READ, "{most}");
+        // And a scan of directions agrees: every face with weight has the ratio of its lateral distances to its own under the bound.
+        let steps = 40;
+        let mut counted = 0;
+        for i in 0..=steps {
+            for j in 0..=steps {
+                for k in 0..=steps {
+                    let at = |n: i32| f64::from(n) / f64::from(steps) * 2.0 - 1.0;
+                    let position = [at(i), at(j), at(k)];
+                    let distance = (position[0] * position[0]
+                        + position[1] * position[1]
+                        + position[2] * position[2])
+                        .sqrt();
+                    if distance == 0.0 {
+                        continue;
+                    }
+                    let weights = PlanetGround::blend_weights(position, distance);
+                    for axis in 0..3 {
+                        if weights[axis] > 0.0 {
+                            for lateral in [(axis + 1) % 3, (axis + 2) % 3] {
+                                let ratio = position[lateral].abs() / position[axis].abs();
+                                assert!(ratio <= most + 1e-9, "{ratio} at {position:?}");
+                                counted += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(counted > 10_000, "{counted}");
     }
 
     #[test]

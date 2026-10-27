@@ -18,7 +18,12 @@ impl BrickBox {
     /// The cube of bricks within `radius` of `center` along every axis, cut off at the limits of the
     /// coordinate range.
     pub fn around(center: BrickCoordinate, radius: u32) -> Self {
-        let radius = i128::from(radius);
+        Self::around_by(center, u128::from(radius))
+    }
+
+    /// The same for a radius of any size: a view of distant things reaches farther than `u32::MAX` bricks.
+    pub fn around_by(center: BrickCoordinate, radius: u128) -> Self {
+        let radius = i128::try_from(radius).unwrap_or(i128::MAX);
         let low = |value: i128| value.saturating_sub(radius).max(BRICK_COORDINATE_MINIMUM);
         let high = |value: i128| value.saturating_add(radius).min(BRICK_COORDINATE_MAXIMUM);
         Self {
@@ -159,6 +164,26 @@ mod tests {
                 .x(),
             BRICK_COORDINATE_MINIMUM
         );
+    }
+
+    #[test]
+    fn around_by_takes_a_radius_past_the_u32_and_past_the_world() {
+        // A radius of 10^20 bricks, more than a u32 holds by 10^10 times.
+        let big = 100_000_000_000_000_000_000u128;
+        let around = BrickBox::around_by(brick(7, -3, 0), big);
+        assert_eq!(around.min().x(), 7 - big as i128);
+        assert_eq!(around.max().z(), big as i128);
+        // The same cube as the narrow form where that one reaches.
+        assert_eq!(
+            BrickBox::around_by(brick(10, -3, 0), 2),
+            BrickBox::around(brick(10, -3, 0), 2)
+        );
+        // Past the world, and past what an `i128` holds: cut off at the limits.
+        for radius in [1u128 << 117, 1 << 127, u128::MAX] {
+            let all = BrickBox::around_by(brick(5, 0, -5), radius);
+            assert_eq!(all.min().x(), BRICK_COORDINATE_MINIMUM, "radius {radius}");
+            assert_eq!(all.max().y(), BRICK_COORDINATE_MAXIMUM, "radius {radius}");
+        }
     }
 
     #[test]

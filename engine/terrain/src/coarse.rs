@@ -186,21 +186,22 @@ pub(crate) fn coarse_node_from_fills(
                 };
                 // The layers: grass if there is open air over the cell, dirt if the ground over it is less than the depth of the surface layer,
                 // else stone. (The ground over it is counted in voxels, from the fill of the cells above.)
-                let mut covered = 0u64;
+                // (A cell is up to 2^116 voxels across, so this is counted in 128 bits.)
+                let mut covered = 0u128;
                 let over_the_cell = [x + up[0], y + up[1], z + up[2]];
                 let mut above = over_the_cell;
-                while covered < SURFACE_LAYER_DEPTH as u64 * 255 {
+                while covered < SURFACE_LAYER_DEPTH as u128 * 255 {
                     let over = fill_at(above);
                     if over < DRAWN_FILL {
                         break;
                     }
-                    covered += edge as u64 * u64::from(over);
+                    covered += edge as u128 * u128::from(over);
                     above = [above[0] + up[0], above[1] + up[1], above[2] + up[2]];
                 }
                 // A cell with air in it that has air over it, or a cell the ground goes through, is the top of the ground: grass.
                 let block = if covered == 0 || (mixed && fill_at(over_the_cell) < 254) {
                     materials.grass
-                } else if covered < SURFACE_LAYER_DEPTH as u64 * 255 {
+                } else if covered < SURFACE_LAYER_DEPTH as u128 * 255 {
                     materials.dirt
                 } else {
                     materials.stone
@@ -383,7 +384,7 @@ pub(crate) fn node_digest(node: &CoarseNode) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use voxel_space::{BrickCoordinate, VoxelBox};
+    use voxel_space::{BRICK_COORDINATE_MINIMUM, BrickCoordinate, VoxelBox};
 
     use super::*;
     use crate::interval::Interval;
@@ -769,11 +770,114 @@ mod tests {
         // And a brick is buried when the whole cube round it is ground: not when the middle of the top voxel of that is at the surface, which is air.
         assert!(cube_may_show(&Flat(-0.5), cube_at([0, -2, 0], 0)));
         assert!(!cube_may_show(&Flat(0.5), cube_at([0, -2, 0], 0)));
-        // A cube so far off that the room round it is not in the world may show something.
+        // A cube so far off that the room round it is not in the world may show something (the same cube a long way in from the end is buried).
+        let buried = |x: i128| BrickCube::containing(BrickCoordinate::new(x, -(1 << 41), 0), 40);
+        assert!(!cube_may_show(&field, buried(0)));
         assert!(cube_may_show(
             &field,
-            BrickCube::containing(BrickCoordinate::new(1 << 54, 0, 0), 40)
+            buried(voxel_space::BRICK_COORDINATE_MAXIMUM)
         ));
+    }
+
+    #[test]
+    fn a_cube_of_any_level_up_to_the_coarsest_is_judged_like_one_of_the_levels_below() {
+        let field = Flat(100.0);
+        for level in [41u8, 63, 64, 65, 80, 100, 113] {
+            let edge = 1i128 << level;
+            // The surface is in the cube that has the origin in its lowest corner; the cube over it is air, the cube under it is buried (the room round it is
+            // ground), and the one two under it is buried too.
+            assert!(cube_may_show(&field, cube_at([0, 0, 0], level)), "{level}");
+            assert!(
+                !cube_may_show(&field, cube_at([0, edge, 0], level)),
+                "{level} air"
+            );
+            assert!(
+                cube_may_show(&field, cube_at([0, -edge, 0], level)),
+                "{level} next to the surface"
+            );
+            assert!(
+                !cube_may_show(&field, cube_at([0, -2 * edge, 0], level)),
+                "{level} buried"
+            );
+        }
+    }
+
+    /// The node of flat ground at height 0 for the cube of `level` right under it (ground all through, air over it): the cells under the surface and the top row.
+    fn node_just_under_flat_ground(level: u8) -> CoarseNode {
+        node(&Flat(0.0), [0, -(1i128 << level), 0], level).unwrap()
+    }
+
+    #[test]
+    fn the_layers_of_ground_are_as_deep_as_they_are_at_every_level_from_2_to_115() {
+        // Grass on the top row (open air over it), stone under (a cell is deeper than the 4 voxels of the surface layer from level 2 up): the same node at every
+        // level, including those where a cell is wider than a `u64` can count (the depth of ground over a cell was once counted in one).
+        let expected = node_digest(&node_just_under_flat_ground(2));
+        for level in 2..=115u8 {
+            let found = node_just_under_flat_ground(level);
+            for (x, z) in [(0, 0), (13, 31), (31, 5)] {
+                for y in 0..31 {
+                    let below = cell(&found, x, y, z);
+                    assert_eq!(
+                        (below.block, below.fill),
+                        (STONE, 255),
+                        "level {level} row {y}"
+                    );
+                }
+                let top = cell(&found, x, 31, z);
+                assert_eq!((top.block, top.fill), (GRASS, 255), "level {level} top row");
+            }
+            // (At level 115 the node reaches the end of the world on the x and z axes, where the cells beside it are not there: air, and so more surface at the
+            // edge of the node; the layers above are the same.)
+            if level < 115 {
+                assert_eq!(node_digest(&found), expected, "level {level}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_cell_the_surface_goes_through_is_half_full_at_every_level_up_to_the_coarsest_that_has_room()
+     {
+        // The surface at the middle of the fourth row of cells (from the bottom of the node at the origin): three rows of ground, a row half full with grass on it,
+        // then air. Cells scale with the level and the answer must not.
+        let expected = node_digest(&node(&Flat(3.5 * 32.0), [0, 0, 0], 5).unwrap());
+        for level in 5..=115u8 {
+            let height = 3.5 * (1u128 << level) as f64;
+            let found = node(&Flat(height), [0, 0, 0], level).unwrap();
+            for y in 0..3 {
+                let below = cell(&found, 7, y, 9);
+                assert_eq!(
+                    (below.block, below.fill),
+                    (STONE, 255),
+                    "level {level} row {y}"
+                );
+            }
+            let through = cell(&found, 7, 3, 9);
+            assert_eq!((through.block, through.fill), (GRASS, 128), "level {level}");
+            assert_eq!(cell(&found, 7, 4, 9).fill, 0, "level {level} row 4");
+            assert_eq!(cell(&found, 7, 31, 9).fill, 0, "level {level} top");
+            // (Not at level 115, where the node reaches the end of the world and the cells beyond it are air.)
+            if level < 115 {
+                assert_eq!(node_digest(&found), expected, "level {level}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_node_of_the_whole_world_is_flat_ground_with_the_surface_in_its_middle() {
+        // The root cube: 32 cells of 2^116 voxels. The surface (height 100) is in the cell row just over the middle, so the lower half of the node is ground
+        // and the upper half air, and no cell is mixed more than the one the surface is in.
+        let found = node(&Flat(100.0), [BRICK_COORDINATE_MINIMUM; 3], 116).unwrap();
+        assert_eq!(cell(&found, 3, 15, 3).fill, 255);
+        assert_eq!(cell(&found, 3, 16, 3).fill, 0);
+        assert_eq!(
+            node(&Flat(100.0), [BRICK_COORDINATE_MINIMUM; 3], 116),
+            coarse_node_of_field_cell_by_cell(
+                &Flat(100.0),
+                materials(),
+                cube_at([BRICK_COORDINATE_MINIMUM; 3], 116),
+                UNLIT
+            )
+        );
     }
 
     #[test]

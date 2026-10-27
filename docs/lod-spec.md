@@ -10,11 +10,11 @@ means a cell is `2^n` voxels along each edge. Detail level 0 is full detail.
 
 ## 1. What is true today
 
-- **[code]** `voxel_space::LevelOfDetail` exists (a `u8`, 0 to 60, `edge_length_in_voxels() = 1 << n`), and `DensityField::sample` and `bounds`
+- **[code]** `voxel_space::LevelOfDetail` exists (a `u8`, 0 to 116, `edge_length_in_voxels() = 1 << n`; it was 0 to 60 until the coarse levels were taken to the octree's root), and `DensityField::sample` and `bounds`
   already take a footprint of that type, so the generators were designed with coarse sampling in mind. `TerrainGenerator` has one method,
   `generate_brick`, at full detail only.
 - **[code]** Voxel coordinates are `i128` within ±2^120 (they were `i64` within ±2^60 when this was written), bricks are 32 voxels (2^5) per edge, `WorldPosition` is a brick plus an `f32` offset in it, and
-  rendering is camera-relative. A cell of detail level 40 (2^40 voxels, about 1.1 × 10^12 m at a metre a voxel) fits with room to spare.
+  rendering is camera-relative. A cell of detail level 40 (2^40 voxels, about 1.1 × 10^12 m at a metre a voxel) fits with room to spare, and so does one of level 116 (2^116 voxels), in an `f32` scale of the renderer.
 - **[code]** The renderer draws a brick as instanced packed quads (`voxel.wgsl`), placed by a per-brick `Placement` (an offset relative to the camera and a
   3 × 3 matrix for the grid's turn). Meshes are keyed `(grid, brick)` (`upload_grid_brick`, `remove_grid_brick`). There is no scale in `Placement`. The
   depth buffer is `Depth32Float`. `Camera::far_plane` is 4096 by default and `game_shell/src/view.rs` sets it to twice the view radius.
@@ -32,7 +32,7 @@ means a cell is `2^n` voxels along each edge. Detail level 0 is full detail.
 1. The LOD system must work on ships exactly as on terrain. In the future the ground itself may be a ship, so that it can be a planet: a rough sphere of
    cubes in ordinary 3D space, no curved grids; jagged areas where corners point at the sky are accepted. Planets are as large as real ones, up to
    about 10^8 m across, possibly larger. A voxel of 2^32 m an edge (or more) would let stars be voxels that break into smaller ones on approach.
-2. Maximum detail level: **40**.
+2. Maximum detail level: **116** (a cell of 2^116 voxels, a node of the whole world: the octree's root level, `region_octree::ROOT_LEVEL`; checked at compile time). It was **40** while coordinates were 64 bits; a structure that spans the universe needs summaries above a cell of 2^40.
 3. A ship can set a **cap on how coarsely it is drawn** (a maximum voxel size), stored as a detail level. That is all it does: it does not stop a ship
    disappearing when it is too small to see (section 3.7).
 4. One ship shows **several detail levels at once**, by the distance of each part: falling toward a planet, the nearest part is at full detail first
@@ -118,7 +118,7 @@ with a small cap has very many nodes; the cap is the owner's to set, and a plane
   **This is approximate**: the coarse cell is not guaranteed equal to the summary of the fine cells under it, so a node can change a little when it
   is refined. I think that is acceptable for terrain, and the tests state the measured agreement instead of assuming it (step 38e).
 - **Edited terrain**: the server keeps, for each edited brick, its ancestors marked dirty, recomputes them lazily and rate-limited (an edit touches up
-  to 40 levels), computing exact summaries from the edited fine bricks and the generated bricks beside them, and sends `CoarseNodes` for the nodes the
+  to 116 levels), computing exact summaries from the edited fine bricks and the generated bricks beside them, and sends `CoarseNodes` for the nodes the
   client needs that contain edits. A client uses a node's override when it has one and its own generated cell otherwise, which is right except
   for the moment between the edit and the message.
 - **Ships**: nothing generates them, so the server sends the nodes (computed exactly from the ship's bricks). Small ships, wholly within full-detail

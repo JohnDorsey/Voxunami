@@ -113,7 +113,15 @@ mod tests {
         assert!(edited.holds(main, cube(4, 0, 2, 1)));
         assert!(edited.holds(main, cube(4, 0, 0, 2)));
         assert!(edited.holds(main, cube(0, 0, 0, 3)));
-        assert!(edited.holds(main, cube(0, 0, 0, MAXIMUM_DETAIL_LEVEL)));
+        // Up to the coarsest level there is, the root cube of the world, past the old limit of 40.
+        let around = |level| BrickCube::containing(BrickCoordinate::new(4, 0, 2), level);
+        for level in [40, 41, 64, 100, MAXIMUM_DETAIL_LEVEL] {
+            assert!(edited.holds(main, around(level)), "level {level}");
+        }
+        assert!(!edited.holds(
+            main,
+            BrickCube::containing(BrickCoordinate::new(-4, 0, 2), 100)
+        ));
         assert!(
             !edited.holds(main, cube(6, 0, 2, 1)),
             "the cube beside it holds nothing"
