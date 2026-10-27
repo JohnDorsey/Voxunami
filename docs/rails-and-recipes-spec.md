@@ -68,6 +68,14 @@ same numbers (a test pins the generator's output for it, bit for bit, against `s
   a `phase` at tick 0. *Circular only to begin with*; the type is an enum so that Kepler's ellipses (`eccentricity`, `argument of periapsis`) can be added without changing a file.
 - Position and orientation are **a pure function of the world clock**: `libm` sine and cosine in `f64`, the same bits on every machine; no state is integrated, so there
   is nothing to drift and nothing to save but the clock. The velocity is the analytic derivative.
+- **Exact in time and in place (after 40f, 2026-10-27).** The time of a rail is a `RailTime`, a whole number of units (the world gives the tick itself; seconds as an `f64` are for data
+  and tests and are rounded to 2^-20 s), and the part of a turn gone is worked out in whole numbers, `units / (units_per_second x mantissa x 2^exponent)` with the period as an exact
+  mantissa and power of two, so only the remainder after the whole turns is divided. (Before, `seconds / period` in `f64` lost a digit for every ten turns: a planet of a
+  52,700 s year was a metre out after twelve thousand years of world time. Measured in a script and then in a test.) A body that goes round another body is placed at the other's
+  `WorldPosition` plus its `f64` offset from it with `WorldPosition::translated_by_voxels` (whole bricks of the offset added to the brick, one rounding in the `f32` offset), not at the
+  `f64` sum of the other's `in_voxels()` and the offset: at 10^18 voxels from the origin an `f64` is a hundred voxels from the next, and the old sum put a moon about that far from its planet.
+  What remains: a rail's own `f64` offset has the precision of its radius, which is fine for every orbit but the topmost of a galaxy (a radius of 2.5x10^20 m is 32 km to the `f64`); see
+  "A universe of 93 billion light years" in `future-goals.md`.
 - A **rails system** (Physics phase, before the bodies) sets the pose and velocities of every planet that has a rail from the clock. A planet's pose then changes every tick,
   and the replication of poses already tells clients of a changed pose (**[belief]**; I will check it first).
 

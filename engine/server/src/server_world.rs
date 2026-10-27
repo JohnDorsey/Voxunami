@@ -11,7 +11,7 @@ use voxel_space::{
     BrickCoordinate, Displacement, EntityPose, GravitySettings, GridId, GridPose, LatticeTransform,
     LevelIndex, LocalVoxelIndex, MassPull, Orientation, VoxelCoordinate, WorldPosition, gravity_at,
 };
-use world_storage::rail::{Centre, Rail};
+use world_storage::rail::{Centre, Rail, RailTime};
 use world_storage::{
     GridTerrain, MovingGrid, PilotLogout, ShipFiles, ShipFormat, ShipLoadError, ShipParkError,
     WorldData,
@@ -1210,8 +1210,8 @@ impl ServerWorld {
     }
 
     /// Puts every ship that is on a rail where its rail says at the time of the world: `ticks_per_second` of the world's clock make a second (see
-    /// [`WorldData::put_ships_on_their_rails`]). Its place is the same bits on every machine: the time is one division, the rest the arithmetic of
-    /// [`world_storage::rail`]. A ship the world cannot place is left where it is.
+    /// [`WorldData::put_ships_on_their_rails`]). Its place is the same bits on every machine: the time is the tick itself, not a number of seconds, and the rest is the
+    /// arithmetic of [`world_storage::rail`]. A ship the world cannot place is left where it is.
     ///
     /// What is in a level near a planet on a rail goes with the planet: a player or an item (in the level's own coordinates) and a ship, whether it is free or
     /// held, are moved by the planet's displacement, so that each stays where it is from the planet, and a player there falls to it and stands on it however
@@ -1219,7 +1219,7 @@ impl ServerWorld {
     /// they are against it. What this does for them is that they are with the planet in every tick before the bodies move, and not a tick behind it.) A ship's
     /// velocity and an entity's are left as they are; they are against the planet. See [`ServerWorld::planet_carrying`].
     pub(crate) fn apply_rails(&mut self, ticks_per_second: u32) {
-        let seconds = self.data.clock() as f64 / f64::from(ticks_per_second);
+        let time = RailTime::of_tick(self.data.clock(), ticks_per_second);
         self.carried_entities.clear();
         if !self
             .data
@@ -1265,7 +1265,7 @@ impl ServerWorld {
             }
         }
         self.carried_ships = carried_ships.iter().copied().collect();
-        let _ = self.data.put_ships_on_their_rails(seconds);
+        let _ = self.data.put_ships_on_their_rails(time);
         let displacement_of = |world: &Self, planet: GridId| {
             let from = carriers
                 .iter()
@@ -2384,7 +2384,7 @@ pub(crate) mod tests {
 
     // ---- rails ----
 
-    use world_storage::rail::{Centre, Orbit, Rail, Spin};
+    use world_storage::rail::{Centre, Orbit, Rail, RailTime, Spin};
 
     /// A world with one level and ships to put on rails.
     fn world_for_rails() -> ServerWorld {
@@ -2426,8 +2426,8 @@ pub(crate) mod tests {
             // (A tick is a twentieth of a second at this rate.)
             world.data.advance_clock(7);
             world.apply_rails(20);
-            let seconds = world.world_tick() as f64 / 20.0;
-            let state = rail.state(seconds, [1000.0, 0.0, -50.0], [0.0; 3]);
+            let time = RailTime::of_tick(world.world_tick(), 20);
+            let state = rail.state(time, [1000.0, 0.0, -50.0], [0.0; 3]);
             let ship = world.data().grids().get(planet).unwrap();
             assert_eq!(
                 ship.pose.position,
@@ -2518,6 +2518,69 @@ pub(crate) mod tests {
                 (relative[0] * relative[0] + relative[1] * relative[1] + relative[2] * relative[2])
                     .sqrt();
             assert!((speed - own).abs() < 1e-2, "{speed} against {own}");
+        }
+    }
+
+    #[test]
+    fn a_moon_of_a_planet_of_a_star_10_to_the_18_voxels_out_keeps_its_distances_and_is_where_the_exact_turn_puts_it()
+     {
+        let mut world = world_for_rails();
+        // 10^18 voxels from the origin an f64 of voxels is a hundred voxels from the next, so a planet's 1.5 x 10^11 and a moon's 3.84 x 10^8 are lost in a sum of plain
+        // numbers; as bricks and an offset they are not.
+        let far = WorldPosition::new(BrickCoordinate::new(31_250_000_000_000_000, 0, 0), [0.0; 3]);
+        let star = world
+            .create_grid(LevelIndex::MAIN, GridPose::new(far, Orientation::IDENTITY))
+            .unwrap();
+        let planet = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        let moon = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        // A year of 3.156e7 seconds is 631,200,000 ticks at twenty a second.
+        world
+            .set_grid_rail(
+                planet,
+                Some(orbit_about(Centre::Grid(star), 1.5e11, 3.156e7)),
+            )
+            .unwrap();
+        world
+            .set_grid_rail(
+                moon,
+                Some(orbit_about(Centre::Grid(planet), 3.84e8, 2.36e6)),
+            )
+            .unwrap();
+        let from = |world: &ServerWorld, centre: GridId, body: GridId| {
+            let place = |ship: GridId| world.data().grids().get(ship).unwrap().pose.position;
+            place(centre).displacement_to(place(body)).in_voxels()
+        };
+        let length = |vector: [f64; 3]| {
+            (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt()
+        };
+        for ticks in [0u64, 1, 333, 12_345, 7_600_000_000_037] {
+            world.data.set_clock(ticks);
+            world.apply_rails(20);
+            let planet_from_star = from(&world, star, planet);
+            let moon_from_planet = from(&world, planet, moon);
+            assert!(
+                (length(planet_from_star) - 1.5e11).abs() < 1.0e-3,
+                "the planet is {} from the star at tick {ticks}",
+                length(planet_from_star)
+            );
+            assert!(
+                (length(moon_from_planet) - 3.84e8).abs() < 1.0e-3,
+                "the moon is {} from the planet at tick {ticks}",
+                length(moon_from_planet)
+            );
+            // The planet is where the part of a year gone says: a circle about +y from +x toward -z.
+            let angle = std::f64::consts::TAU * ((ticks % 631_200_000) as f64 / 631_200_000.0);
+            let expected = [1.5e11 * libm::cos(angle), 0.0, -1.5e11 * libm::sin(angle)];
+            for axis in 0..3 {
+                assert!(
+                    (planet_from_star[axis] - expected[axis]).abs() < 1.0e-3,
+                    "{planet_from_star:?} against {expected:?} at tick {ticks}"
+                );
+            }
         }
     }
 

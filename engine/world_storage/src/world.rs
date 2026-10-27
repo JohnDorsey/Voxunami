@@ -20,7 +20,7 @@ use crate::engine_sections::{
     Header, LevelRecord, LevelToWrite, RegistryTable,
 };
 use crate::moving_grids::{GridStore, MovingGrid, ParkedGrid};
-use crate::rail::Centre;
+use crate::rail::{Centre, RailTime};
 use crate::ship_file::{ShipFileError, ShipFormat};
 use crate::ship_files::{ShipFileName, ShipFiles};
 use crate::translation::{SourceTranslator, TranslationError};
@@ -333,11 +333,14 @@ impl WorldData {
         }
     }
 
-    /// Puts every ship that is on a rail where its rail says `seconds` into the life of the world (see [`crate::rail`]): its place, its turn, how fast it moves
+    /// Puts every ship that is on a rail where its rail says at `time` into the life of the world (see [`crate::rail`]): its place, its turn, how fast it moves
     /// and how fast it turns. Ships are taken in order of their numbers, so what a ship goes round (a ship with a lower number) has been put in its place already,
-    /// and its place and speed are what the ship that goes round it starts from. A ship that only turns stays where it is. Returns the ships whose place the world
-    /// cannot hold (an orbit past the end of the coordinates), which are left where they were; and ships that go round one that is not there stay as they are.
-    pub fn put_ships_on_their_rails(&mut self, seconds: f64) -> Vec<GridId> {
+    /// and its place and speed are what the ship that goes round it starts from. A ship that goes round another is put at the other's place and its offset from it
+    /// added to the place itself (exact in bricks), not to the other's place as plain numbers, which at a hundred thousand times the distance of the Sun is not
+    /// enough to say where a moon is. A ship that only turns stays where it is. Returns the ships whose place the world cannot hold (an orbit past the end of the
+    /// coordinates), which are left where they were; and ships that go round one that is not there stay as they are.
+    pub fn put_ships_on_their_rails(&mut self, time: impl Into<RailTime>) -> Vec<GridId> {
+        let time = time.into();
         let on_rails: Vec<GridId> = self
             .grids
             .iter()
@@ -349,18 +352,34 @@ impl WorldData {
             let ship = self.grids.get(id).expect("the ship was just listed");
             let rail = ship.rail.expect("the ship was listed for its rail");
             let (centre, centre_velocity) = match rail.orbit.map(|orbit| orbit.around) {
-                Some(Centre::Point(point)) => (point, [0.0; 3]),
+                Some(Centre::Point(point)) => (Some(Centre::Point(point)), [0.0; 3]),
                 Some(Centre::Grid(parent)) => match self.grids.get(parent) {
-                    Some(parent) => (
-                        parent.pose.position.in_voxels(),
-                        parent.linear_velocity.map(f64::from),
+                    Some(parent_ship) => (
+                        Some(Centre::Grid(parent)),
+                        parent_ship.linear_velocity.map(f64::from),
                     ),
                     None => continue,
                 },
-                None => ([0.0; 3], [0.0; 3]),
+                None => (None, [0.0; 3]),
             };
-            let state = rail.state(seconds, centre, centre_velocity);
-            let position = match state.position.map(WorldPosition::try_from_voxels) {
+            // (The rail is asked from the origin, so its place is its offset from its centre.)
+            let state = rail.state(time, [0.0; 3], centre_velocity);
+            let position = match (centre, state.position) {
+                (Some(Centre::Point(point)), Some(offset)) => Some(WorldPosition::try_from_voxels(
+                    [0, 1, 2].map(|axis| point[axis] + offset[axis]),
+                )),
+                (Some(Centre::Grid(parent)), Some(offset)) => {
+                    let parent_position = self
+                        .grids
+                        .get(parent)
+                        .expect("the parent was just found")
+                        .pose
+                        .position;
+                    Some(parent_position.translated_by_voxels(offset))
+                }
+                _ => None,
+            };
+            let position = match position {
                 Some(None) => {
                     not_placed.push(id);
                     continue;

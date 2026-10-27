@@ -26,6 +26,7 @@ world_storage.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+libm = "0.2"
 proptest.workspace = true
 server = { workspace = true, features = ["test-support"] }
 voxel_grid = { workspace = true, features = ["test-support"] }

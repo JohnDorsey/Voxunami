@@ -299,3 +299,25 @@ then what it needs and what I found in the code.
     a player leaves its rails with the velocity the rails give it, and one that goes far, or is warped, takes a course from its velocity and the pulls of the planets); a game clock that can run faster than the ticks (time warp) and that simulation and cosmetics read (the hard rule against the wall clock already requires the game tick); what a ship on rails does when it meets a planet's ground (it cannot, on a course that is checked, or it lands). Until then ships
     that are far from every player simply stop (`ShipSettings::simulation_distance`, 256 voxels by default, shown and changed by `/ship distance`).
   - *Probably also:* orbits and maneuvers, patched conics or a sum of pulls, a solar system of planets and moons on rails, atmospheres and a sky that goes black with height, and ships that are far larger than a player's. None of these is asked for yet; they are listed so that the work in between (frames for each place, planets as ships) is chosen to leave room for them.
+
+## A universe of 93 billion light years (owner, 2026-10-27)
+
+- **Wishes.** A player flies continuously from anywhere to anywhere, with no loading screens or warp commands. Continuous generated structures can span the whole universe *in the same block
+  grid*. The owner leans to nested frames (B) **and** wider coordinates (A: `i128` bricks), and wants scaled levels (C) considered because of a possible technology that makes ships grow or shrink.
+- **Sizes (arithmetic).** 93 billion light years is 8.8e26 m, about 2^89.5 voxels at 1 m. A brick is 32 voxels, so the brick needs 85 bits: an `i128` brick reaches about 2^132 voxels, trillions of times
+  that, or the same universe with voxels of picometres. Today's range is +-2^60 voxels (about +-122 light years), with body files limited to 1e15 voxels.
+- **Measured (2026-10-27, scripts and a copy of the repository; `build-log.md`, "Rails in exact arithmetic").** (1) A sum of orbits through absolute `f64` positions breaks long before the integers do: at a star
+  2.5e20 m out the moon was a median 7.6 km from where it should be round its planet. Done: rails now add the offset to the parent's `WorldPosition` (exact in bricks), and the turn is worked out from whole ticks.
+  (2) The topmost rail of a galaxy still has an `f64` radius: the star's place moves in 32 km steps. Probably harmless (everything in its system moves together; other systems are light years away) but not checked;
+  if it matters, evaluate the top levels in 128-bit fixed point (integers only, bit-identical everywhere; `f128` is unstable on the stable toolchain and `libm` has no `f128` functions). (3) `i64` to `i128` is not only
+  mechanical: the types widen with the compiler's help, but arithmetic that depends on the width (the octree's root level and `u64` keys, squares of distances in `world_view/src/lod.rs`, counts) and the formats (the
+  wire's signed varint, the saves, JSON numbers, which hold 53 bits) are decisions.
+- **Where C still earns its place with `i128` coordinates.** (a) *Levels of the same grid* (coarse summaries: "this cube of 2^40 bricks is empty or all one material"): the real prerequisite for structures that span
+  the universe, for the view of the far, for raycasts and flights at many times the speed of light; the generator should be able to say it (empty, solid, mixed) for any cube, and `region_octree` is already a hierarchy.
+  (b) *The renderer's depth range* (bands of distance, camera-relative). (c) *A scale per grid* (a ship that grows or shrinks; a universe in a bottle): a number on a grid, not a coordinate system. Docking a grid of another
+  scale into a planet is lossless only for scales that differ by a power of two and a grid that has levels finer and coarser than its voxel; that is the design question to settle before the technology.
+- **Other games (from memory, medium confidence; only the floating origin, the physics range and the sphere of influence were checked against sources).** Kerbal Space Program: a floating origin and Krakensbane keep the
+  active vessel near the origin; only vessels within about 2.2 km are physically loaded and the rest are on rails; patched conics with a sphere of influence per body; a solar system at a tenth of real size; no
+  interstellar space. The sacrifices: no Lagrange points, jumps at a sphere's edge, nothing simulated off screen, stations larger than the physics range impossible, time warp that is hard for many players. Our rails (a
+  body is a function of the clock) and ships that feel every nearby body avoid the first two (to be checked: that gravity sums over all pulling bodies); the others are ours to decide.
+- **Open.** Who carries a free ship in a star's frame (only planets carry things today); `i128` coordinates (a phase of its own, starting from the wire format); the generator's summaries; the topmost orbits; time warp and ships on rails.

@@ -3,7 +3,9 @@
 use std::f64::consts::{FRAC_PI_2, TAU};
 
 use voxel_space::GridId;
-use world_storage::rail::{Centre, Orbit, Rail, RailError, Spin, decode_rail, encode_rail};
+use world_storage::rail::{
+    Centre, Orbit, Rail, RailError, RailTime, Spin, decode_rail, encode_rail,
+};
 
 fn close(found: [f64; 3], expected: [f64; 3], tolerance: f64) {
     for axis in 0..3 {
@@ -332,6 +334,120 @@ fn a_world_that_has_run_for_years_is_where_one_just_a_period_younger_is() {
     assert_eq!(old.position, young.position);
     assert_eq!(old.orientation, young.orientation);
     assert_eq!(old.velocity, young.velocity);
+}
+
+// ---- time as whole ticks ----
+
+const TICKS_A_SECOND: u32 = 20;
+
+/// Where a circle of 10^6 voxels about +y is at `fraction` of a turn, worked out here (the same `libm` angle, from a fraction the test worked out in whole numbers).
+fn on_the_circle(fraction: f64) -> [f64; 3] {
+    let angle = TAU * fraction;
+    [1.0e6 * libm::cos(angle), 0.0, -1.0e6 * libm::sin(angle)]
+}
+
+#[test]
+fn a_planet_is_where_the_exact_turn_puts_it_however_many_ticks_the_world_has_run() {
+    // A hundred seconds is 2,000 ticks, so the part of a turn gone at tick T is (T mod 2,000) / 2,000, in whole numbers. 7.6 x 10^12 ticks is twelve thousand years;
+    // 3.8 x 10^18 is six billion; the last is the end of the clock. A turn worked out from the seconds as an f64 is out by whole voxels by the first of these.
+    let rail = orbit([0.0, 1.0, 0.0], 1.0e6, 100.0, 0.0);
+    for tick in [
+        0u64,
+        1,
+        1_999,
+        7_600_000_000_037,
+        3_800_000_000_000_000_001,
+        u64::MAX,
+    ] {
+        let found = rail
+            .state(RailTime::of_tick(tick, TICKS_A_SECOND), NOWHERE, NOWHERE)
+            .position
+            .unwrap();
+        let expected = on_the_circle((tick % 2_000) as f64 / 2_000.0);
+        close(found, expected, 1.0e-9);
+    }
+}
+
+#[test]
+fn a_planet_is_exactly_where_it_began_after_any_whole_number_of_periods() {
+    // 52,700 seconds is 1,054,000 ticks. Whole periods later, however many, is the same bits as time 0, for an orbit and a spin.
+    let rail = Rail {
+        spin: Some(Spin::new([0.0, 1.0, 0.0], 52_700.0, 0.4).unwrap()),
+        orbit: Some(
+            Orbit::new(
+                Centre::Point(NOWHERE),
+                [0.0, 1.0, 0.0],
+                1.0e6,
+                52_700.0,
+                0.7,
+            )
+            .unwrap(),
+        ),
+    };
+    let began = rail.state(RailTime::of_tick(0, TICKS_A_SECOND), NOWHERE, NOWHERE);
+    let a_tick_in = rail.state(RailTime::of_tick(1, TICKS_A_SECOND), NOWHERE, NOWHERE);
+    assert_ne!(began, a_tick_in);
+    for periods in [1u64, 12_345, 3_000_000_000_000, 17_000_000_000_000] {
+        let whole = periods * 1_054_000;
+        let later = rail.state(RailTime::of_tick(whole, TICKS_A_SECOND), NOWHERE, NOWHERE);
+        assert_eq!(later, began, "after {periods} periods");
+        // And a tick past them is a tick past the start (a time in seconds as an f64 could not say which tick: 20 ticks to the second, at 10^17 seconds).
+        let one_more = rail.state(
+            RailTime::of_tick(whole + 1, TICKS_A_SECOND),
+            NOWHERE,
+            NOWHERE,
+        );
+        assert_eq!(one_more, a_tick_in, "a tick after {periods} periods");
+    }
+}
+
+#[test]
+fn a_period_of_a_fraction_of_a_second_or_of_a_year_is_kept_exactly_too() {
+    // 2,565.5 seconds is 51,310 ticks, 0.25 s is 5 ticks, and 3.156e7 (a year) is 631,200,000.
+    for (period, ticks_a_period) in [(2_565.5, 51_310u64), (0.25, 5), (3.156e7, 631_200_000)] {
+        let rail = orbit([0.0, 1.0, 0.0], 1.0e6, period, 0.0);
+        let began = rail.state(RailTime::of_tick(0, TICKS_A_SECOND), NOWHERE, NOWHERE);
+        let later = rail.state(
+            RailTime::of_tick(ticks_a_period * 9_000_000_000, TICKS_A_SECOND),
+            NOWHERE,
+            NOWHERE,
+        );
+        assert_eq!(later, began, "period {period}");
+    }
+}
+
+#[test]
+fn an_orbit_the_other_way_is_the_mirror_of_one_the_right_way_at_any_tick() {
+    let forward = orbit([0.0, 1.0, 0.0], 1.0e6, 100.0, 0.0);
+    let backward = orbit([0.0, 1.0, 0.0], 1.0e6, -100.0, 0.0);
+    for tick in [1u64, 733, 7_600_000_000_037, u64::MAX] {
+        let time = RailTime::of_tick(tick, TICKS_A_SECOND);
+        let [x, y, z] = forward.state(time, NOWHERE, NOWHERE).position.unwrap();
+        let mirrored = backward.state(time, NOWHERE, NOWHERE).position.unwrap();
+        close(mirrored, [x, y, -z], 1.0e-9);
+    }
+}
+
+#[test]
+fn a_time_in_seconds_and_the_same_time_in_ticks_are_the_same_time() {
+    let rail = orbit([0.0, 1.0, 0.0], 1.0e6, 100.0, 0.3);
+    assert_eq!(
+        rail.state(RailTime::of_tick(30, 30), NOWHERE, NOWHERE),
+        rail.state(1.0, NOWHERE, NOWHERE)
+    );
+    assert_eq!(
+        rail.state(RailTime::of_tick(30, 20), NOWHERE, NOWHERE),
+        rail.state(1.5, NOWHERE, NOWHERE)
+    );
+    // And before the world began (a time that is not a tick of it), the circle is gone round backward from the start: a quarter of a turn back is a quarter short.
+    close(
+        rail.state(-25.0, NOWHERE, NOWHERE).position.unwrap(),
+        orbit([0.0, 1.0, 0.0], 1.0e6, 100.0, 0.3 - FRAC_PI_2)
+            .state(0.0, NOWHERE, NOWHERE)
+            .position
+            .unwrap(),
+        1.0e-9,
+    );
 }
 
 #[test]

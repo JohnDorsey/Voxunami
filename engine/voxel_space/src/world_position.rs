@@ -150,6 +150,29 @@ impl WorldPosition {
         )
     }
 
+    /// This position moved by `delta` voxels given as `f64`, which is what an orbit's offset from its centre is: the whole bricks of the delta are added to the brick
+    /// (exact however far the position is from the origin) and only the rest to the `f32` offset, which is rounded once. `None` for a delta that is not a number or that
+    /// leaves the supported coordinate range. (Working out `in_voxels` + `delta` in `f64` and making a position of it is not the same: at 10^18 voxels an `f64` is a
+    /// hundred voxels apart from the next, and a small delta is lost in the sum.)
+    pub fn translated_by_voxels(self, delta: [f64; 3]) -> Option<Self> {
+        let edge = f64::from(EDGE);
+        let mut bricks = [0i64; 3];
+        let mut offset = [0.0f32; 3];
+        for axis in 0..3 {
+            if !delta[axis].is_finite() {
+                return None;
+            }
+            let whole = (delta[axis] / edge).floor();
+            // Exact: the part of the delta below the brick is the same bits as in the delta.
+            let rest = delta[axis] - whole * edge;
+            bricks[axis] = whole as i64;
+            offset[axis] = (f64::from(self.offset[axis]) + rest) as f32;
+        }
+        // (A cast to an integer saturates, so a delta past the end of the world is bricks past it, which the coordinate refuses.)
+        let brick = self.brick.checked_offset(bricks[0], bricks[1], bricks[2])?;
+        Self::try_new(brick, offset)
+    }
+
     /// This position moved by `delta` voxels.
     pub fn translated(self, delta: [f32; 3]) -> Self {
         Self::new(
@@ -235,6 +258,44 @@ mod tests {
         assert_eq!(d.bricks, [100_000_000_000, -100_000_000_000, 7]);
         assert_eq!(d.offset, [31.0, -0.25, 0.0]);
         assert_eq!(near.displaced(d), Some(far));
+    }
+
+    #[test]
+    fn a_small_delta_in_f64_keeps_every_bit_of_it_10_to_the_18_voxels_from_the_origin() {
+        // 10^18 voxels from the origin, where an f64 of voxels is a hundred voxels apart from the next.
+        let far = WorldPosition::new(brick(31_250_000_000_000_000, 0, 0), [1.0, 2.0, 3.0]);
+        let moved = far
+            .translated_by_voxels([150_000_000_000.25, -384_000_000.5, 7.0])
+            .unwrap();
+        // x: 150,000,000,000 voxels is 4,687,500,000 bricks, and the quarter is added to 1.0. y: 2.0 - 384,000,000.5 = -383,999,998.5 = -12,000,000 bricks and 1.5.
+        // z: 3 + 7.
+        assert_eq!(moved.brick(), brick(31_250_004_687_500_000, -12_000_000, 0));
+        assert_eq!(moved.offset(), [1.25, 1.5, 10.0]);
+        // The same thing in f64 voxels from the origin loses the delta altogether.
+        let lost = WorldPosition::from_voxels(far.in_voxels().map(|voxels| voxels + 0.25));
+        assert_eq!(lost.brick(), far.brick());
+        assert_ne!(lost.offset(), [1.25, 2.25, 3.25]);
+    }
+
+    #[test]
+    fn a_delta_in_f64_gives_the_position_of_the_sum_where_the_sum_is_exact() {
+        let near = WorldPosition::new(brick(3, -4, 5), [1.5, 2.25, 30.0]);
+        let delta = [-100.5, 64.0, 5.75];
+        let sum = near.in_voxels();
+        assert_eq!(
+            near.translated_by_voxels(delta),
+            WorldPosition::try_from_voxels([0, 1, 2].map(|axis| sum[axis] + delta[axis]))
+        );
+        assert_eq!(near.translated_by_voxels([0.0; 3]), Some(near));
+    }
+
+    #[test]
+    fn a_delta_that_is_not_a_number_or_is_past_the_end_of_the_world_gives_no_position() {
+        let there = WorldPosition::new(brick(0, 0, 0), [0.0; 3]);
+        assert_eq!(there.translated_by_voxels([f64::NAN, 0.0, 0.0]), None);
+        assert_eq!(there.translated_by_voxels([0.0, f64::INFINITY, 0.0]), None);
+        assert_eq!(there.translated_by_voxels([0.0, 0.0, 1.0e300]), None);
+        assert_eq!(there.translated_by_voxels([-1.0e300, 0.0, 0.0]), None);
     }
 
     #[test]

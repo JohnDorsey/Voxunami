@@ -116,11 +116,96 @@ fn cross(first: [f64; 3], second: [f64; 3]) -> [f64; 3] {
     ]
 }
 
-/// How far round a thing is that goes once round in `period` seconds, in radians, `seconds` after it was at the start: the whole turns are taken out first, so that a
-/// world that has run for years loses nothing to the size of the number.
-fn fraction_of_a_turn(seconds: f64, period: f64) -> f64 {
-    let turns = seconds / period;
-    TAU * (turns - turns.floor())
+/// A time of the world, as a whole number of units and how many make a second, so that it is exact however long the world has run: a tick of the clock, or a time
+/// in seconds that is rounded to a millionth of one (for data and tests; the world always gives ticks). A time before the world began is allowed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RailTime {
+    units: i128,
+    units_per_second: u32,
+}
+
+/// A second in the units of a time given in seconds: 2^20, so that every time that is a whole number of those is exact in an `f64`.
+const UNITS_IN_A_SECOND_OF_SECONDS: u32 = 1 << 20;
+
+impl RailTime {
+    /// The time of tick `tick` of a clock that makes `ticks_per_second` ticks a second. Panics if that is nothing.
+    pub fn of_tick(tick: u64, ticks_per_second: u32) -> Self {
+        assert!(ticks_per_second > 0, "a clock makes ticks");
+        Self {
+            units: i128::from(tick),
+            units_per_second: ticks_per_second,
+        }
+    }
+}
+
+/// A time in seconds (for data and tests): rounded to the nearest millionth of a second. Not a number is the start of the world.
+impl From<f64> for RailTime {
+    fn from(seconds: f64) -> Self {
+        Self {
+            units: (seconds * f64::from(UNITS_IN_A_SECOND_OF_SECONDS)).round() as i128,
+            units_per_second: UNITS_IN_A_SECOND_OF_SECONDS,
+        }
+    }
+}
+
+/// `period.abs()` as a whole number times a power of two, `(mantissa, exponent)`, with the mantissa odd. Exact for every period that is a number and not nothing.
+fn mantissa_and_exponent(period: f64) -> (u64, i32) {
+    let bits = period.abs().to_bits();
+    let exponent_bits = ((bits >> 52) & 0x7ff) as i32;
+    let fraction_bits = bits & ((1 << 52) - 1);
+    let (mantissa, exponent) = if exponent_bits == 0 {
+        (fraction_bits, -1074)
+    } else {
+        (fraction_bits | (1 << 52), exponent_bits - 1075)
+    };
+    let even = mantissa.trailing_zeros();
+    (mantissa >> even, exponent + even as i32)
+}
+
+/// How far round a thing is that goes once round in `period` seconds, in radians (from 0 up to a whole turn), `time` after it was at the start; a negative period
+/// goes the other way.
+///
+/// The part of a turn is worked out in whole numbers, so it is exact (to the one rounding of an `f64`) however long the world has run: `time` is a count of units and
+/// `period` is a whole number times a power of two, so the turns are `units / (units_per_second x mantissa x 2^exponent)` and only the remainder after the whole turns
+/// is divided. (An `f64` of seconds divided by an `f64` period loses a digit for every ten turns: after twelve thousand years of a planet's years it is a metre out.)
+fn fraction_of_a_turn(time: RailTime, period: f64) -> f64 {
+    if !nonzero(period) {
+        return 0.0;
+    }
+    let (mantissa, exponent) = mantissa_and_exponent(period);
+    // A thing that goes once round in `mantissa x 2^exponent` seconds has gone `units / (per_second x mantissa x 2^exponent)` turns; `per_second x mantissa` is
+    // below 2^85.
+    let modulus = i128::from(time.units_per_second) * i128::from(mantissa);
+    let (remainder, whole_turn) = if exponent < 0 {
+        // The turns are `units x 2^-exponent / modulus`: the part after the whole turns, taking the remainder after each doubling so that nothing grows past 2^125.
+        let mut remainder = time.units.rem_euclid(modulus);
+        let mut doublings = -exponent;
+        while doublings > 0 {
+            let step = doublings.min(40);
+            remainder = (remainder << step) % modulus;
+            doublings -= step;
+        }
+        (remainder, modulus)
+    } else if exponent <= 40 {
+        let whole_turn = modulus << exponent;
+        (time.units.rem_euclid(whole_turn), whole_turn)
+    } else {
+        // A period of more than 2^93 seconds: no clock of 2^64 ticks has run for a turn of it, so the part is the number of turns, which is below one.
+        let turns = time.units as f64 / libm::ldexp(modulus as f64, exponent);
+        let part = turns - libm::floor(turns);
+        return TAU
+            * if period < 0.0 && part != 0.0 {
+                1.0 - part
+            } else {
+                part
+            };
+    };
+    let remainder = if period < 0.0 && remainder != 0 {
+        whole_turn - remainder
+    } else {
+        remainder
+    };
+    TAU * (remainder as f64 / whole_turn as f64)
 }
 
 impl Spin {
@@ -141,9 +226,9 @@ impl Spin {
         })
     }
 
-    /// The turn at `seconds` and how fast it turns.
-    fn at(&self, seconds: f64) -> (Orientation, [f64; 3]) {
-        let angle = self.angle + fraction_of_a_turn(seconds, self.period);
+    /// The turn at `time` and how fast it turns.
+    fn at(&self, time: RailTime) -> (Orientation, [f64; 3]) {
+        let angle = self.angle + fraction_of_a_turn(time, self.period);
         let half = angle * 0.5;
         let (sine, cosine) = (libm::sin(half), libm::cos(half));
         let [x, y, z] = self.axis;
@@ -226,9 +311,9 @@ impl Orbit {
         (first, cross(self.normal, first))
     }
 
-    /// Where the body is from the centre at `seconds`, and how fast it moves round it.
-    fn at(&self, seconds: f64) -> ([f64; 3], [f64; 3]) {
-        let angle = self.phase + fraction_of_a_turn(seconds, self.period);
+    /// Where the body is from the centre at `time`, and how fast it moves round it.
+    fn at(&self, time: RailTime) -> ([f64; 3], [f64; 3]) {
+        let angle = self.phase + fraction_of_a_turn(time, self.period);
         let (sine, cosine) = (libm::sin(angle), libm::cos(angle));
         let (first, second) = self.plane();
         let speed = self.radius * (TAU / self.period);
@@ -240,14 +325,17 @@ impl Orbit {
 }
 
 impl Rail {
-    /// Where the body is, how fast it moves and how it is turned `seconds` into the life of the world. `centre_position` and `centre_velocity` are those of what
-    /// the orbit goes round (the point, and still, for a point), which the caller knows; a rail with no orbit does not look at them.
+    /// Where the body is, how fast it moves and how it is turned `time` into the life of the world (a [`RailTime`], or seconds as an `f64`). `centre_position` and
+    /// `centre_velocity` are those of what the orbit goes round (the point, and still, for a point), which the caller knows; a rail with no orbit does not look at
+    /// them. The position is the centre's and the body's offset from it added in `f64`, which is exact only as far as an `f64` is: give the origin as the centre to get
+    /// the offset alone, and add it to a [`voxel_space::WorldPosition`] with `translated_by_voxels`, which is how the world places a body that goes round a body.
     pub fn state(
         &self,
-        seconds: f64,
+        time: impl Into<RailTime>,
         centre_position: [f64; 3],
         centre_velocity: [f64; 3],
     ) -> RailState {
+        let time = time.into();
         let mut state = RailState {
             position: None,
             velocity: [0.0; 3],
@@ -255,12 +343,12 @@ impl Rail {
             angular_velocity: [0.0; 3],
         };
         if let Some(orbit) = &self.orbit {
-            let (offset, speed) = orbit.at(seconds);
+            let (offset, speed) = orbit.at(time);
             state.position = Some([0, 1, 2].map(|axis| centre_position[axis] + offset[axis]));
             state.velocity = [0, 1, 2].map(|axis| centre_velocity[axis] + speed[axis]);
         }
         if let Some(spin) = &self.spin {
-            let (orientation, angular_velocity) = spin.at(seconds);
+            let (orientation, angular_velocity) = spin.at(time);
             state.orientation = Some(orientation);
             state.angular_velocity = angular_velocity;
         }

@@ -2848,6 +2848,7 @@ dependencies = [
  "content_registry",
  "entities",
  "identity",
+ "libm",
  "namespaced_id",
  "proptest",
  "protocol",
