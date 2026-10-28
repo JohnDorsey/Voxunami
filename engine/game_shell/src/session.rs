@@ -141,6 +141,8 @@ pub struct Session<C: Connection, G: GameDefinition> {
     planets: BTreeMap<GridId, ShipTerrainMesher>,
     /// How far, and how fine, the terrain of a planet is drawn beyond its bricks, if the game says.
     grid_detail: Option<CoarseDetail>,
+    /// Whether the terrain follows what the game says for each level (`GameDefinition::level_detail`): coarse nodes in a level it draws so, bricks only in another.
+    follows_level_detail: bool,
     sent_poses: BTreeMap<GridId, GridPose>,
     pub camera: Camera,
     /// The client halves of the game's plugins, and what they registered.
@@ -251,6 +253,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             grid_mesher,
             planets: BTreeMap::new(),
             grid_detail: None,
+            follows_level_detail: false,
             sent_poses: BTreeMap::new(),
             camera: start,
             client_plugins,
@@ -337,6 +340,24 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         if matches!(self.terrain, TerrainView::Coarse(_)) {
             return;
         }
+        self.terrain = self.coarse_terrain(detail);
+        self.watched_center = None;
+        self.meshed_level = None;
+    }
+
+    /// Makes the session draw each level as the game says (`GameDefinition::level_detail`): beyond its bricks in coarse nodes for a level it draws so, and bricks only
+    /// for another, changing over when the player goes from one to the other. Done before anything is drawn.
+    pub fn enable_level_detail(&mut self) {
+        self.follows_level_detail = true;
+    }
+
+    /// Whether the terrain of the level being watched is drawn beyond its bricks, in coarse nodes.
+    pub fn draws_coarse_terrain(&self) -> bool {
+        matches!(self.terrain, TerrainView::Coarse(_))
+    }
+
+    /// A view of terrain in coarse nodes beyond the bricks.
+    fn coarse_terrain(&mut self, detail: CoarseDetail) -> TerrainView {
         // (The server is told the radius as a byte.)
         self.view_radius_bricks = self.view_radius_bricks.min(i128::from(u8::MAX));
         self.view_settings.view_radius_bricks = self.view_radius_bricks;
@@ -345,7 +366,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             self.client_host.view(self.view_channels.clone()),
             Arc::clone(&self.block_table),
         );
-        self.terrain = TerrainView::Coarse(Box::new(CoarseTerrain {
+        TerrainView::Coarse(Box::new(CoarseTerrain {
             view: LodView::new(
                 mesher,
                 LodConfig {
@@ -355,9 +376,37 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             ),
             detail,
             asked: None,
-        }));
+        }))
+    }
+
+    /// Makes the view of the terrain what the game says for this level, if it is not that: what the old one drew is taken down (the updates are returned).
+    fn follow_level_detail(&mut self, level: LevelIndex) -> Vec<MeshUpdate> {
+        let wanted = self
+            .client
+            .world()
+            .world()
+            .level_id(level)
+            .and_then(G::level_detail);
+        let unchanged = match (&self.terrain, &wanted) {
+            (TerrainView::Bricks(_), None) => true,
+            (TerrainView::Coarse(coarse), Some(detail)) => coarse.detail == *detail,
+            _ => false,
+        };
+        if unchanged {
+            return Vec::new();
+        }
+        let taken_down = self.terrain.reset();
+        self.terrain = match wanted {
+            Some(detail) => self.coarse_terrain(detail),
+            None => TerrainView::Bricks(Box::new(WorldMesher::new(
+                self.view_settings,
+                self.view_channels.clone(),
+                Arc::clone(&self.block_table),
+            ))),
+        };
         self.watched_center = None;
         self.meshed_level = None;
+        taken_down
     }
 
     /// Makes the session draw the terrain of a planet beyond the bricks round the camera, as the nodes of the planet's generator (`docs/planet-spec.md`, 39e). Done
@@ -654,10 +703,15 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             let _ = self.client.watch(self.level, region);
             self.watched_center = Some((self.level, center));
         }
-        let Some((level, data)) = self.client.world().watched_level() else {
-            return Vec::new();
-        };
         let mut updates = Vec::new();
+        if self.follows_level_detail
+            && let Some((level, _)) = self.client.world().watched_level()
+        {
+            updates.extend(self.follow_level_detail(level));
+        }
+        let Some((level, data)) = self.client.world().watched_level() else {
+            return updates;
+        };
         if self.meshed_level != Some(level) {
             // Another level's bricks have nothing to do with the ones the meshes are of.
             updates.extend(self.terrain.reset());

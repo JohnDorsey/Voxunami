@@ -22,7 +22,7 @@ use crate::definition::{CoarseDetail, GameContent, GameDefinition};
 use crate::files::{open_recording, record_connection};
 use crate::host::build_server_with_plugins;
 use crate::session::{Mode, Session};
-use crate::test_support::{ExampleContent, ExampleGame};
+use crate::test_support::{ExampleContent, ExampleDetailGame, ExampleGame};
 use crate::view::camera_at;
 
 type Player = Session<Box<dyn Connection>, ExampleGame>;
@@ -297,4 +297,20 @@ fn a_recording_of_the_watcher_shows_what_the_watcher_saw() {
     assert!(replay_screen.nodes.len() > 50);
     assert_same_nodes(&replay_screen, &screen);
     std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn a_game_that_only_says_how_far_terrain_is_drawn_draws_every_level_so_and_one_that_says_nothing_draws_none()
+ {
+    let level = |name: &str| -> NamespacedId { name.parse().unwrap() };
+    for name in [
+        "example:main",
+        "example:elsewhere",
+        "voxunami_cave:overworld",
+    ] {
+        let said = ExampleDetailGame::level_detail(&level(name));
+        assert!(said.is_some(), "{name}");
+        assert_eq!(said, ExampleDetailGame::coarse_detail());
+        assert_eq!(ExampleGame::level_detail(&level(name)), None, "{name}");
+    }
 }

@@ -170,7 +170,7 @@ game message, so a replay needs nothing else, and a server without the plugin si
   `world_view::LodView` runs it: it asks the mesher for the bricks, makes nodes on threads of its own (from the override if there is one, else from the terrain generator of the middle brick of the cube),
   nearest first, and puts at most 64 cubes on the screen in an update. A node whose override changes is made again and replaced where it is.
 - The renderer is told by `MeshUpdate::UploadCoarse` and `RemoveCoarse`. A game turns it on with `Session::enable_coarse_detail(CoarseDetail { maximum_distance, unlit, cell_pixels, bytes_per_second })`
-  (the windows and screenshots do when `GameDefinition::coarse_detail()` says so; the default is no), and the fog is then set for the distance drawn (`Session::fog_radius_bricks`).
+  (the windows and screenshots do when `GameDefinition::coarse_detail()` says so, or, since 2026-10-28, for each level as `GameDefinition::level_detail` says: `Session::enable_level_detail`; the default is no), and the fog is then set for the distance drawn (`Session::fog_radius_bricks`).
 
 ### 3.7 Which ships a client knows (a gap that this phase has to close)
 
@@ -285,7 +285,7 @@ used in 62 files) first and alone, so that nothing else is mixed into it.
 
 - **The cost of a coarse node is the limit, and on Cave's terrain it is far too high.** A level 1 node of Cave's hills with its caves takes the generator about **375 ms** when the bounds cannot decide its cells (60 ms with a lattice of
   2 x 2 x 2 points in a cell instead of 4 x 4 x 4, which changes what 38e measured); flat ground takes 1 to 2 ms. At the default settings a view out to 700 voxels is about 6,900 cubes, so a Cave view would never finish,
-  and the server pays the same for every edit (it starts each override from the generator's node). So `Cave::coarse_detail()` is still none and Cave does not register the plugin. What has to be found before it is turned on: a sampler that
+  and the server pays the same for every edit (it starts each override from the generator's node). So `Cave::coarse_detail()` is still none and Cave does not register the plugin (the level of space is the exception, 2026-10-28: `Cave::level_detail` draws it in nodes out past the universe, because the generator of the great rivers makes a node in under 2 ms; no overworld). What has to be found before it is turned on: a sampler that
   asks the field about a cell once (or a column once) rather than 64 times, bounds that decide more, a cache of the generator's nodes on the server, and skipping cubes that need no picture (see below). This is the first job of 38l.
 - **What was fast and was not:** the nodes of flat ground were 26,630 of 27,805 *uniform*, and each cost 1.6 ms in the generator and 1.5 ms in the mesher: a node of one cell was built and meshed cell by cell. Both have a
   shortcut now (`terrain`: ground that the bounds say has ground all round it and over it is one stone cell; `voxel_meshing`: a node of one cube has the faces of its sides only), each checked against the slow way (on three kinds of field, and by property)

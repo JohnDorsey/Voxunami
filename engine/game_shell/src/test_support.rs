@@ -188,3 +188,60 @@ impl GameDefinition for ExampleSpaceGame {
         vec![(id("example:space"), [0.0; 3])]
     }
 }
+
+/// A game that says how far its terrain is drawn, and nothing about levels: so every level is drawn so (`GameDefinition::level_detail`).
+#[derive(Debug)]
+pub struct ExampleDetailGame;
+
+impl GameDefinition for ExampleDetailGame {
+    type Content = ExampleContent;
+
+    fn id() -> NamespacedId {
+        id("example:detail_game")
+    }
+
+    fn title() -> &'static str {
+        ExampleGame::title()
+    }
+
+    fn command() -> &'static str {
+        ExampleGame::command()
+    }
+
+    fn summary() -> &'static str {
+        ExampleGame::summary()
+    }
+
+    fn controls() -> &'static str {
+        ExampleGame::controls()
+    }
+
+    fn default_seed() -> u64 {
+        ExampleGame::default_seed()
+    }
+
+    fn default_camera() -> CameraStart {
+        ExampleGame::default_camera()
+    }
+
+    fn reach() -> f32 {
+        ExampleGame::reach()
+    }
+
+    fn new_content() -> ExampleContent {
+        ExampleGame::new_content()
+    }
+
+    fn plugins(content: &ExampleContent) -> Vec<Box<dyn ServerPlugin>> {
+        ExampleGame::plugins(content)
+    }
+
+    fn coarse_detail() -> Option<crate::definition::CoarseDetail> {
+        Some(crate::definition::CoarseDetail {
+            maximum_distance: 700.0,
+            unlit: 0,
+            cell_pixels: 3.0,
+            bytes_per_second: 0,
+        })
+    }
+}

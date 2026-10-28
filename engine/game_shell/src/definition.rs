@@ -189,6 +189,13 @@ pub trait GameDefinition: Sized + 'static {
         None
     }
 
+    /// How far the terrain of the level with this identifier is drawn, if beyond the bricks round the camera it is: what a window follows as the player goes from level to
+    /// level (`Session::enable_level_detail`). The default is [`GameDefinition::coarse_detail`] for every level, so a game that says only that is drawn as it was.
+    fn level_detail(level: &NamespacedId) -> Option<CoarseDetail> {
+        let _ = level;
+        Self::coarse_detail()
+    }
+
     /// How far the terrain of a planet (a ship with terrain) is drawn, if beyond the bricks round the camera it is. The default is not at all. (The server corrects the
     /// nodes of a level where it was edited and the nodes of a planet it does not, so `bytes_per_second` means nothing here.)
     fn grid_detail() -> Option<CoarseDetail> {

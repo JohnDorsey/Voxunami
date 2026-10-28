@@ -110,7 +110,10 @@ fn finish(relative: vec3<f32>, face: u32, material: u32, light: u32) -> VertexOu
     var out: VertexOutput;
     out.position = frame.view_projection * vec4<f32>(relative, 1.0);
     out.color = base * shade;
-    out.distance = length(relative);
+    // The distance, which for what is 10^20 voxels away or more is a square that does not fit an `f32` (and `length` may overflow, as the standard allows): the vector is
+    // scaled by its largest part first.
+    let largest = max(abs(relative.x), max(abs(relative.y), abs(relative.z)));
+    out.distance = select(0.0, largest * length(relative / largest), largest > 0.0);
     return out;
 }
 

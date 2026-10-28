@@ -33,6 +33,7 @@ entities.workspace = true
 world_view.workspace = true
 
 [dev-dependencies]
+region_octree.workspace = true
 serde_json.workspace = true
 proptest.workspace = true
 wgpu = "30.0.1"

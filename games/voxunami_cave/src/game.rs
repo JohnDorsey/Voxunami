@@ -121,10 +121,21 @@ impl GameDefinition for Cave {
     }
 
     /// A planet is drawn out to ten thousand kilometres, from which the one of the first level is a few pixels across, with the light that the bricks of its generator
-    /// have (none: the nodes are as bright as the bricks beside them). The terrain of a level is not drawn beyond its bricks yet.
+    /// have (none: the nodes are as bright as the bricks beside them). The terrain of a level is drawn beyond its bricks only in the level of space (`level_detail`).
     fn grid_detail() -> Option<CoarseDetail> {
         Some(CoarseDetail {
             maximum_distance: 1.0e7,
+            unlit: 0,
+            cell_pixels: 3.0,
+            bytes_per_second: 0,
+        })
+    }
+
+    /// The level of space is drawn in coarse nodes out past the size of the universe (93 billion light years is 8.8 x 10^26 metres across), so that the great rivers are seen
+    /// from anywhere; the overworld is not drawn beyond its bricks. The light of terrain that nobody has lit is none: the nodes are as dark as the bricks beside them.
+    fn level_detail(level: &NamespacedId) -> Option<CoarseDetail> {
+        (*level == mini_cosmos_id()).then_some(CoarseDetail {
+            maximum_distance: 2.0e27,
             unlit: 0,
             cell_pixels: 3.0,
             bytes_per_second: 0,

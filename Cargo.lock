@@ -3388,6 +3388,7 @@ dependencies = [
  "png",
  "proptest",
  "protocol",
+ "region_octree",
  "renderer",
  "replay",
  "serde_json",

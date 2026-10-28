@@ -70,9 +70,7 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
         &mut step_server,
     )
     .map_err(|error| error.to_string())?;
-    if let Some(detail) = G::coarse_detail() {
-        session.enable_coarse_detail(detail);
-    }
+    session.enable_level_detail();
     if let Some(detail) = G::grid_detail() {
         session.enable_grid_detail(detail);
     }
@@ -138,9 +136,7 @@ pub fn replay<G: GameDefinition>(options: &ReplayOptions) -> Result<(), String> 
         || {},
     )
     .map_err(|error| error.to_string())?;
-    if let Some(detail) = G::coarse_detail() {
-        session.enable_coarse_detail(detail);
-    }
+    session.enable_level_detail();
     if let Some(detail) = G::grid_detail() {
         session.enable_grid_detail(detail);
     }
