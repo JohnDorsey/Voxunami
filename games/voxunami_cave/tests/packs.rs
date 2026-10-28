@@ -103,9 +103,9 @@ fn a_server_with_a_pack_has_its_blocks_after_the_games_own_and_its_patches_appli
         6,
         "the games blocks keep their numbers"
     );
-    // In the order of the file names: glow_stone before marble.
-    assert_eq!(raw_in(&content, "my_pack:glow_stone"), 8);
-    assert_eq!(raw_in(&content, "my_pack:marble"), 9);
+    // In the order of the file names: glow_stone before marble, after the games own blocks (the base blocks, and then the dev docking port).
+    assert_eq!(raw_in(&content, "my_pack:glow_stone"), 9);
+    assert_eq!(raw_in(&content, "my_pack:marble"), 10);
     let table = content.block_table();
     let emission = table.handle(&EMISSION).unwrap();
     assert_eq!(
@@ -114,11 +114,11 @@ fn a_server_with_a_pack_has_its_blocks_after_the_games_own_and_its_patches_appli
         "patched"
     );
     assert_eq!(
-        table.get_of(emission, 8, 0),
+        table.get_of(emission, 9, 0),
         10,
         "a block of the pack that glows"
     );
-    assert_eq!(table.get_of(emission, 9, 0), 0);
+    assert_eq!(table.get_of(emission, 10, 0), 0);
 }
 
 #[test]

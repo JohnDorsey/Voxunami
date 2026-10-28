@@ -333,8 +333,12 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// description, whose sections are the new versions) and six `player_presence:placed` messages (a game message, whose payload holds a brick: one byte longer for each coordinate,
 /// `6, 0, 0` before and `1, 6, 0, 0` after) differ. The bytes 7,190,182 to 7,203,981, 13,799 more, are the same values written longer. The saved world is different (the same sections, at
 /// the new versions). Windows and Linux agree.
+/// The great rivers (2026-10-27): a block (`base_blocks:great_river_water`), a generator (`base_blocks:great_rivers_v1`) and a command (`/river`). The stream grows by 152 bytes, 7,203,981 to
+/// 7,204,133, and the saved world's hash changes with its tables of blocks and generators. Measured by control runs, not assumed: with the block and the generator left out of the plugin and the
+/// command in, the stream is 7,203,997 (16 bytes: the command in the reply to `/nonsense`) and the saved world is the old one to the hash; with the generator alone it is 28 bytes more (the
+/// identifier, 27 characters and a length), with the block alone 108 more; 16 + 28 + 108 = 152. The session runs in the overworld alone, so nothing of the river is in it.
 const PINNED: (u64, usize, u64) = (
-    11_928_037_873_098_961_244,
-    7_203_981,
-    16_296_814_061_143_019_322,
+    9_294_768_049_016_043_855,
+    7_204_133,
+    16_456_388_781_098_525_124,
 );

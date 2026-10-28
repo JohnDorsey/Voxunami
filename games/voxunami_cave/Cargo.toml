@@ -15,6 +15,7 @@ game_shell.workspace = true
 grid_bodies.workspace = true
 grid_lifecycle.workspace = true
 lattice.workspace = true
+libm = "0.2"
 physics.workspace = true
 plugin_host.workspace = true
 player_presence.workspace = true
@@ -32,7 +33,6 @@ entities.workspace = true
 world_view.workspace = true
 
 [dev-dependencies]
-libm = "0.2"
 serde_json.workspace = true
 proptest.workspace = true
 wgpu = "30.0.1"

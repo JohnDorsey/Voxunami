@@ -25,6 +25,7 @@ pub mod movement;
 pub mod multiscale_light;
 pub mod placement;
 pub mod plugins;
+pub mod rivers;
 pub mod scaled_light;
 pub mod ships;
 

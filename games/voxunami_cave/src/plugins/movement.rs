@@ -1,8 +1,9 @@
-//! The players' bodies: spawning, walking and flying, `/fly` and `/tp`.
+//! The players' bodies: spawning, walking and flying, `/fly`, `/tp` and `/river`.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use base_blocks::great_rivers_generator_identifier;
 use game_shell::GameContent;
 use namespaced_id::NamespacedId;
 use player_presence::{PlayerPose, Presence, SharedPresence, lock};
@@ -11,12 +12,14 @@ use plugin_host::{
 };
 use protocol::ClientId;
 use server::ServerWorld;
+use terrain::GreatRivers;
 use voxel_grid::ChannelIndex;
 use voxel_space::{Displacement, GridId, LevelIndex, Orientation, VoxelCoordinate, WorldPosition};
 
 use crate::content::CaveContent;
 use crate::messages::{MoveRequest, Spawn};
 use crate::movement::{Movement, Placement};
+use crate::rivers;
 
 /// Moves the players' bodies, on the server: a client says which keys are held and which way it
 /// faces, never where it is. The terrain bodies stand on is made again where blocks change.
@@ -73,6 +76,127 @@ fn voxels(position: WorldPosition) -> [f64; 3] {
     ]
 }
 
+/// Puts the player's eyes at `position` in `level` (moved out of the terrain if that is inside it), in the level and not aboard whatever ship they were on, and tells
+/// them and everyone where they are. Returns where their eyes are now, or `None` if they have not joined.
+fn put_player_at(
+    movement: &mut Movement,
+    presence: &mut Presence,
+    world: &mut ServerWorld,
+    level: LevelIndex,
+    client: ClientId,
+    position: WorldPosition,
+) -> Option<WorldPosition> {
+    let now = movement.teleport(world, level, client, position)?;
+    // The record of the player is where they are for everyone, and the body is made to agree with it each tick: so the record goes
+    // there now, in the level and not aboard whatever ship they were on, looking the way they were.
+    if let Some((_, saved, _)) = presence.local_pose_of(world.data(), client) {
+        let pose = PlayerPose {
+            position: now,
+            ..saved
+        };
+        let _ = presence.set_pose_in(
+            world,
+            client,
+            GridId::root(level),
+            pose,
+            pose.view_orientation(Orientation::IDENTITY),
+        );
+    }
+    // Their client watches around its camera, which may be far from here: it is told where they are.
+    presence.tell_placed(world, client);
+    Some(now)
+}
+
+/// `/river [narrowest|widest|N]`: puts the player in view of a knot of the great river of the level they are in (the places where its radius was set: `narrowest` and
+/// `widest` are two of them), with the knot straight ahead of where they look. Returns what to tell them.
+fn visit_the_great_river(
+    movement: &mut Movement,
+    presence: &mut Presence,
+    world: &mut ServerWorld,
+    level: LevelIndex,
+    client: ClientId,
+    arguments: &Arguments<'_>,
+) -> String {
+    let has_rivers = world.data().level(level).is_some_and(|data| {
+        data.preferred_default_generator() == &great_rivers_generator_identifier()
+    });
+    if !has_rivers {
+        return "there is no great river in this level (it is in voxunami_cave:mini_cosmos, of a world made after they were added)"
+            .to_owned();
+    }
+    let rivers = GreatRivers::new(world.data().world_seed);
+    let knots: Vec<_> = rivers.knots().copied().collect();
+    let describe = |index: usize| {
+        format!(
+            "knot {index}, {} across",
+            rivers::length_in_words(knots[index].radius() * 2.0)
+        )
+    };
+    let index_of = |wanted: &terrain::RiverKnot| {
+        knots
+            .iter()
+            .position(|knot| knot == wanted)
+            .expect("a knot of the river")
+    };
+    let (narrowest, widest) = (
+        index_of(&rivers.narrowest_knot()),
+        index_of(&rivers.widest_knot()),
+    );
+    if !arguments.present(0) {
+        return format!(
+            "the great river has {} knots, where its radius is set; it is narrowest at {} (/river narrowest) and widest at {} (/river widest); /river N goes to knot N, from 0 to {}",
+            knots.len(),
+            describe(narrowest),
+            describe(widest),
+            knots.len() - 1
+        );
+    }
+    let which = arguments.word(0);
+    let index = match which {
+        "narrowest" => narrowest,
+        "widest" => widest,
+        number => match number.parse::<usize>() {
+            Ok(index) if index < knots.len() => index,
+            _ => {
+                return format!(
+                    "usage: /river [narrowest|widest|N], with N from 0 to {}",
+                    knots.len() - 1
+                );
+            }
+        },
+    };
+    let knot = knots[index];
+    // The way they look: the angles their program last sent.
+    let forward = movement
+        .request_of(client)
+        .map_or([0.0, 0.0, -1.0], |request| {
+            rivers::forward(request.input.yaw, request.pitch)
+        });
+    let eyes = rivers::eyes_in_view_of(&rivers, &knot, forward);
+    let Ok(voxel) = VoxelCoordinate::try_new(eyes[0], eyes[1], eyes[2]) else {
+        return "that is outside the world".to_owned();
+    };
+    let (brick, local) = voxel.split();
+    let position = WorldPosition::new(
+        brick,
+        [
+            f32::from(local.x()) + 0.5,
+            f32::from(local.y()) + 0.5,
+            f32::from(local.z()) + 0.5,
+        ],
+    );
+    if put_player_at(movement, presence, world, level, client, position).is_none() {
+        return "you have not joined yet".to_owned();
+    }
+    let away = [0, 1, 2].map(|axis| (eyes[axis] - knot.position[axis]) as f64);
+    let distance = (away[0] * away[0] + away[1] * away[1] + away[2] * away[2]).sqrt();
+    format!(
+        "you are {} from {}",
+        rivers::length_in_words(distance),
+        describe(index)
+    )
+}
+
 /// `/tp X Y Z`: puts the player's eyes at a position, in voxels. Returns what to tell them: where they are, which
 /// is not the place asked for if that is inside the terrain (they are moved out of it, the shortest way).
 fn teleport(
@@ -100,26 +224,9 @@ fn teleport(
             f32::from(local.z()) + fraction(z),
         ],
     );
-    let Some(now) = movement.teleport(world, level, client, position) else {
+    let Some(now) = put_player_at(movement, presence, world, level, client, position) else {
         return "you have not joined yet".to_owned();
     };
-    // The record of the player is where they are for everyone, and the body is made to agree with it each tick: so the record goes
-    // there now, in the level and not aboard whatever ship they were on, looking the way they were.
-    if let Some((_, saved, _)) = presence.local_pose_of(world.data(), client) {
-        let pose = PlayerPose {
-            position: now,
-            ..saved
-        };
-        let _ = presence.set_pose_in(
-            world,
-            client,
-            GridId::root(level),
-            pose,
-            pose.view_orientation(Orientation::IDENTITY),
-        );
-    }
-    // Their client watches around its camera, which may be far from here: it is told where they are.
-    presence.tell_placed(world, client);
     let [now_x, now_y, now_z] = voxels(now);
     // (The position is made of an `f32` offset in a brick, so a place that was not moved is the one asked for,
     // to within what an `f32` holds.)
@@ -232,6 +339,28 @@ impl Plugin for MovementPlugin {
                 let mut presence = lock(&players);
                 let level = presence.level_of(context.world().data(), client);
                 let reply = teleport(
+                    &mut locked(&bodies),
+                    &mut presence,
+                    context.world(),
+                    level,
+                    client,
+                    arguments,
+                );
+                context.reply(client, &reply);
+            },
+        );
+
+        let (bodies, players) = (Arc::clone(&movement), Arc::clone(&self.players));
+        registrar.command(
+            CommandSpec::new(
+                "river",
+                "puts you in view of the great river: /river narrowest, /river widest or /river N",
+            )
+            .argument(Argument::word("where").optional()),
+            move |context, client, arguments| {
+                let mut presence = lock(&players);
+                let level = presence.level_of(context.world().data(), client);
+                let reply = visit_the_great_river(
                     &mut locked(&bodies),
                     &mut presence,
                     context.world(),

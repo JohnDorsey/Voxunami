@@ -2,7 +2,7 @@
 
 mod common;
 
-use base_blocks::{empty_generator_identifier, rolling_hills_generator_identifier};
+use base_blocks::{great_rivers_generator_identifier, rolling_hills_generator_identifier};
 use std::sync::{Arc, Mutex};
 
 use common::{
@@ -45,7 +45,7 @@ fn a_new_world_is_space_first_and_the_overworld_second_with_a_planet_in_space() 
         [
             (
                 mini_cosmos_id().to_string(),
-                empty_generator_identifier().to_string()
+                great_rivers_generator_identifier().to_string()
             ),
             (
                 overworld_id().to_string(),

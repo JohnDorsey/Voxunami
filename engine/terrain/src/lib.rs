@@ -20,6 +20,7 @@ mod coarse;
 mod density;
 mod empty;
 mod generator;
+mod great_river;
 mod interval;
 mod noise;
 mod planet;
@@ -32,6 +33,9 @@ pub use empty::{EmptyTerrain, empty};
 pub use generator::{
     FamilyError, FieldTerrainGenerator, GeneratorFamily, RollingHillsSettings, SolidBall,
     TerrainGenerator, TerrainMaterials, rolling_hills,
+};
+pub use great_river::{
+    GreatRivers, GreatRiversGenerator, RiverField, RiverKnot, RiverPath, great_rivers,
 };
 pub use interval::Interval;
 pub use noise::{Dimensionality, FractalNoise, Octave, lattice_hash, lattice_value, mix};

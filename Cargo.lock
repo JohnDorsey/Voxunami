@@ -3104,6 +3104,7 @@ version = "0.0.0"
 dependencies = [
  "coarse_cells",
  "content_registry",
+ "libm",
  "namespaced_id",
  "proptest",
  "region_octree",

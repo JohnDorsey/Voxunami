@@ -14,6 +14,7 @@ region_octree.workspace = true
 voxel_grid.workspace = true
 voxel_space.workspace = true
 thiserror.workspace = true
+libm = "0.2"
 
 [dev-dependencies]
 proptest.workspace = true

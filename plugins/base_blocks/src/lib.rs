@@ -19,7 +19,7 @@ use content_registry::{Registry, RuntimeId};
 use namespaced_id::NamespacedId;
 use terrain::{
     GeneratorFamily, PlanetFamily, PlanetSettings, RollingHillsSettings, TerrainGenerator,
-    TerrainMaterials, empty, planet, rolling_hills,
+    TerrainMaterials, empty, great_rivers, planet, rolling_hills,
 };
 use voxel_grid::{ChannelDefinition, ChannelIndex};
 use voxel_space::FaceDirection;
@@ -123,6 +123,9 @@ pub fn property_schema() -> PropertySchema {
     schema
 }
 
+/// The colour of the water of the great rivers.
+pub const GREAT_RIVER_WATER_COLOR: [f32; 3] = [0.08, 0.28, 0.85];
+
 /// The colour of the ends of a log, as sRGB bytes.
 pub const LOG_END_COLOR: [u8; 3] = [191, 148, 92];
 
@@ -185,6 +188,12 @@ pub fn empty_generator_identifier() -> NamespacedId {
     identifier("base_blocks:empty_v1")
 }
 
+/// The terrain generator version of the great rivers (`terrain::great_rivers`, `docs/great-rivers-spec.md`): tubes of great river water across the universe, from a
+/// billion light years wide to eighty metres, and air everywhere else. It is the terrain of the level of space of a new world.
+pub fn great_rivers_generator_identifier() -> NamespacedId {
+    identifier("base_blocks:great_rivers_v1")
+}
+
 /// What each state of a solid block of this plugin looks like, by name; the position is the state.
 pub const SHAPE_NAMES: [&str; 7] = [
     "whole",
@@ -231,6 +240,8 @@ pub struct BaseBlockIds {
     /// Flames: a low, lit, non-solid-looking block that spreads to what burns and goes out. Its state
     /// is its age, which any number can be (see [`FIRE_LIFETIME`]).
     pub fire: u32,
+    /// The water of the great rivers: a block that never flows, which bodies move through (`terrain::great_rivers`).
+    pub great_river_water: u32,
 }
 
 impl BaseBlockIds {
@@ -306,6 +317,16 @@ impl BaseBlockIds {
         generators
             .register(empty_generator_identifier(), nothing)
             .expect("the identifier is new");
+        // (After the empty terrain, for the same reason.)
+        let rivers: Arc<dyn TerrainGenerator> = Arc::new(great_rivers(
+            seed,
+            block_channel,
+            self.air,
+            self.great_river_water,
+        ));
+        generators
+            .register(great_rivers_generator_identifier(), rivers)
+            .expect("the identifier is new");
         generators
     }
 }
@@ -370,6 +391,11 @@ impl BaseBlocks {
                 .with_emission(FIRE_EMISSION)
                 .with_state_colors(fire_colors()),
         );
+        // Water that does not flow: a whole cube that bodies pass through, the blue of the river it is the water of.
+        let great_river_water = register(
+            "great_river_water",
+            BlockDefinition::cube(GREAT_RIVER_WATER_COLOR).with_passable(true),
+        );
         Self {
             blocks,
             ids: BaseBlockIds {
@@ -380,6 +406,7 @@ impl BaseBlocks {
                 lamp,
                 wood,
                 fire,
+                great_river_water,
             },
         }
     }
@@ -431,11 +458,12 @@ mod tests {
                 blocks.grass,
                 blocks.lamp,
                 blocks.wood,
-                blocks.fire
+                blocks.fire,
+                blocks.great_river_water
             ),
-            (0, 1, 2, 3, 4, 5, 6)
+            (0, 1, 2, 3, 4, 5, 6, 7)
         );
-        let names: Vec<String> = (0..7)
+        let names: Vec<String> = (0..8)
             .map(|raw| blocks.blocks.identifier_of_raw(raw).unwrap().to_string())
             .collect();
         assert_eq!(
@@ -447,7 +475,8 @@ mod tests {
                 "base_blocks:grass",
                 "base_blocks:lamp",
                 "base_blocks:wood",
-                "base_blocks:fire"
+                "base_blocks:fire",
+                "base_blocks:great_river_water"
             ]
         );
         assert_eq!(blocks.light_channel().default_value, 0);
@@ -524,43 +553,43 @@ mod tests {
         let mut blocks = BaseBlocks::new();
         let table = blocks.block_table();
         // The blocks, then the colours a fire is drawn in as it ages, then the colour of the ends of a log.
-        assert_eq!(table.palette().len(), 7 + FIRE_LIFETIME as usize + 1);
+        assert_eq!(table.palette().len(), 8 + FIRE_LIFETIME as usize + 1);
         assert_eq!(table.color(3), [0.30, 0.62, 0.20]);
         // Only the lamp and the fire give off light, only grass and wood burn, and bodies pass through flames and
-        // nothing else of the blocks.
+        // river water and nothing else of the blocks.
         let emission = table.handle(&EMISSION).unwrap();
         let flammability = table.handle(&FLAMMABILITY).unwrap();
         let passable = table.handle(&PASSABLE).unwrap();
         assert_eq!(
-            (0..7)
+            (0..8)
                 .map(|block| table.get_of(emission, block, 0))
                 .collect::<Vec<_>>(),
-            [0, 0, 0, 0, LAMP_EMISSION, 0, FIRE_EMISSION]
+            [0, 0, 0, 0, LAMP_EMISSION, 0, FIRE_EMISSION, 0]
         );
         assert_eq!(
-            (0..7)
+            (0..8)
                 .map(|block| table.get_of(flammability, block, 0))
                 .collect::<Vec<_>>(),
-            [0, 0, 0, GRASS_FLAMMABILITY, 0, WOOD_FLAMMABILITY, 0],
-            "grass and wood burn, and fire does not burn"
+            [0, 0, 0, GRASS_FLAMMABILITY, 0, WOOD_FLAMMABILITY, 0, 0],
+            "grass and wood burn, and fire and water do not burn"
         );
         // The lamp is a whole opaque block.
         assert!(table.is_opaque_cube(table.model_of(4, 0, 0)));
         assert_eq!(
-            (0..7)
+            (0..8)
                 .map(|block| table.get_of(passable, block, 0))
                 .collect::<Vec<_>>(),
-            [false, false, false, false, false, false, true]
+            [false, false, false, false, false, false, true, true]
         );
         assert!(!table.is_solid(table.model_of(0, 0, 0)));
         assert!(table.is_see_through(table.model_of(0, 0, 0)));
         let missing = blocks
             .blocks
             .register_missing(identifier("elsewhere:marble"));
-        assert_eq!(missing.raw(), 7);
+        assert_eq!(missing.raw(), 8);
         let table = blocks.block_table();
-        assert_eq!(table.palette()[7], MISSING_BLOCK_COLOR);
-        assert!(table.is_opaque_cube(table.model_of(7, 0, 0)));
+        assert_eq!(table.palette()[8], MISSING_BLOCK_COLOR);
+        assert!(table.is_opaque_cube(table.model_of(8, 0, 0)));
     }
 
     #[test]
@@ -620,11 +649,12 @@ mod tests {
             rolling_hills_generator_identifier(),
             small_planet_generator_identifier(),
             empty_generator_identifier(),
+            great_rivers_generator_identifier(),
         ]
         .iter()
         .map(|identifier| generators.runtime_id(identifier).unwrap().raw())
         .collect();
-        assert_eq!(numbers, [0, 1, 2]);
+        assert_eq!(numbers, [0, 1, 2, 3]);
         let id = generators
             .runtime_id(&empty_generator_identifier())
             .unwrap();

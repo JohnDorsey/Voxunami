@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use base_blocks::{
     BaseBlockIds, BaseBlocks, block_channel_identifier, block_registry_kind,
-    empty_generator_identifier, light_channel_identifier, orientation_channel_identifier,
+    great_rivers_generator_identifier, light_channel_identifier, orientation_channel_identifier,
     rolling_hills_generator_identifier, state_channel_identifier,
 };
 use block_models::BlockDefinition;
@@ -251,13 +251,13 @@ impl GameContent for CaveContent {
         self.package.body_names()
     }
 
-    /// A new world with this seed: a level of space first, with the planet in it, and the overworld (rolling hills everywhere) second. Nothing is edited. A world
+    /// A new world with this seed: a level of space first, with the planet in it and the great rivers across it, and the overworld (rolling hills everywhere) second. Nothing is edited. A world
     /// that was saved before there was a planet is loaded as it was: with the overworld as its only level.
     fn new_world(&self, seed: u64) -> WorldData {
         let mut world = self.package.new_world_of(
             seed,
             &[
-                (mini_cosmos_id(), empty_generator_identifier()),
+                (mini_cosmos_id(), great_rivers_generator_identifier()),
                 (overworld_id(), rolling_hills_generator_identifier()),
             ],
         );
