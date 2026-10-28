@@ -18,6 +18,15 @@ Status: built (30a to 30f); the owner took all six defaults of section 6. What c
   card). This was the cause of the flaky `an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw`. Pictures that are compared to the
   pixel are now taken once two frames in a row agree.
 
+## Text that is wider than the screen wraps (2026-10-28; the owner asked: "make the text for command tips and coordinates wrap")
+
+- **Where:** in `ui::layout`, since only it knows the screen. Before a panel is measured, the labels of every *column* (a panel's children, and the panels inside it, each with 10 units less width) are broken by `ui::wrap_text` into lines that fit the width the screen leaves (the screen less the margin and the panel's padding and border: at 1280 x 720, scale 2, that is 76 letters). The labels of a *row* are left as they are (nothing says how a row shares its width).
+- **How:** at the last space that fits; a word that is alone longer than a line is cut into pieces; a space where a line is broken is not drawn, nor are the spaces at the end of a line that is followed by another or at the start of one that goes on; spaces inside a line are kept (so a command being typed looks as typed). A `ui::NO_BREAK_SPACE` (U+00A0) is a space a line is not broken at, and is drawn as a plain one: the coordinates use it between the axis and its number, so a line breaks between coordinates and never inside one.
+- **Cut to the height:** a column of nothing but text (the window's own status, command line and reply) that is still taller than the screen has its last lines taken off, and dots put at the end of the last left. A panel with buttons, bars or swatches is never cut (a button that was cut could not be answered), and a description's size is bounded by its limits already.
+- **The limit on a line of the window's own text** (`MAXIMUM_LINE_CHARACTERS`, 2,000) replaces the 80 letters those lines were cut to (which cut off the list that `/tp` answers); the text of a *description* (a server's form or question) is still at most `MAXIMUM_TEXT_CHARACTERS` (80) a label.
+- **Coordinates on the screen are hexadecimal** (`x 0x1f y 0x6e z -0x5`, from binary; a negative one is its size with a minus sign, as before).
+- **Checked:** `wrap_text` (8 tests, two of them properties over any text and width: no line too long, no letter lost or moved, a word that fits is never cut); the layout (6 tests: a long label is lines that each fit, at two scales; a short one is where it was; a row is not wrapped; a nested panel has less; a no-break space keeps coordinates together; a very long text is cut with dots and fits; buttons and titles keep their places); the shell (a long reply and 120-bit coordinates at 1280 x 720 are all on the screen and lose nothing; coordinates a hundred and twenty bits wide are whole). Not looked at in a window.
+
 ## 1. What is wrong today
 
 The renderer cannot draw text. Everything a player reads goes in the **window title**: the HUD lines of the client plugins, the

@@ -235,6 +235,8 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   - *A place in another level takes the player there* (`/level go`'s move, so the client is told), and a player who is moved out of the ground is told so.
   - The golden session moved by one byte (the list of commands), worked out before it was run.
 
+- **Text wraps, and coordinates are hexadecimal (owner's request 2026-10-28; `ui-spec.md`).** Text wider than the screen is broken into lines in `ui::layout` (the only place that knows the width): at spaces, a word longer than a line cut, a no-break space to keep a letter with its number; the window's own lines may be 2,000 letters (a server's descriptions are still 80 a label); a column of nothing but text that is taller than the screen is cut with dots, and nothing with a button is ever cut. The coordinates of the status line are `x 0x1f y 0x6e z -0x5`, from binary. *Mine, the owner's to overrule:* lowercase digits; the status line stays a line of text that wraps (a panel of its own for coordinates was not asked for).
+
 ## Decided (the plugin host; built in Phase 23)
 - **Coarse levels to the root (owner's wish 2026-10-27, "the generator's coarse levels above detail 40"; built 2026-10-27).** `MAXIMUM_DETAIL_LEVEL` and `LevelOfDetail::MAXIMUM_LEVEL` are 116, the octree's `ROOT_LEVEL` (a cell of 2^116 voxels, and a node of the whole
   world; a compile-time assertion keeps the three the same number). What was decided and found, tests first:

@@ -794,3 +794,178 @@ fn where_buttons_overlap_the_one_drawn_last_is_the_one_hit() {
         "only in the second"
     );
 }
+
+// ---- text that is wider than the screen wraps ----
+
+/// The text drawn, in order: where it starts, and what it says.
+fn texts(laid: &ui::Layout) -> Vec<(i32, i32, String)> {
+    laid.draws
+        .iter()
+        .filter_map(|draw| match draw {
+            Draw::Text { x, y, text, .. } => Some((*x, *y, text.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+const A_LONG_SENTENCE: &str = "the quick brown fox jumps over the lazy dog and then it keeps on going for a long long time without stopping";
+
+#[test]
+fn a_label_wider_than_the_screen_is_wrapped_into_lines_that_fit_one_under_the_other() {
+    // 400 pixels at scale 1: 8 of margin and 5 of padding and border either side leave 374 units, which is 46 letters.
+    let interface = ui(Anchor::TopLeft, false, vec![label(A_LONG_SENTENCE)]);
+    let drawn = texts(&layout(&[interface], (400, 720), 1, None));
+    assert!(drawn.len() >= 3, "{drawn:?}");
+    for (x, _, line) in &drawn {
+        assert!(line.chars().count() <= 46, "{line:?}");
+        assert!(
+            x + line.chars().count() as i32 * 8 <= 400 - 8 - 5,
+            "{line:?} at {x} runs off the screen"
+        );
+    }
+    // Each line is a letter-height and a gap under the one before, and together they say the sentence.
+    for pair in drawn.windows(2) {
+        assert_eq!(pair[1].1 - pair[0].1, 8 + 4);
+        assert_eq!(pair[1].0, pair[0].0);
+    }
+    let said: Vec<&str> = drawn.iter().map(|(_, _, line)| line.as_str()).collect();
+    assert_eq!(said.join(" "), A_LONG_SENTENCE);
+}
+
+#[test]
+fn a_larger_scale_fits_fewer_letters_in_a_line() {
+    let interface = ui(Anchor::TopLeft, false, vec![label(A_LONG_SENTENCE)]);
+    let at_scale = |scale| {
+        texts(&layout(
+            std::slice::from_ref(&interface),
+            (400, 720),
+            scale,
+            None,
+        ))
+    };
+    let (one, two) = (at_scale(1), at_scale(2));
+    let widest = |drawn: &[(i32, i32, String)]| {
+        drawn
+            .iter()
+            .map(|(_, _, line)| line.chars().count())
+            .max()
+            .unwrap()
+    };
+    // At scale 2 the content is 400 / 2 - 16 - 10 = 174 units: 21 letters.
+    assert!(widest(&two) <= 21, "{two:?}");
+    assert!(widest(&one) > widest(&two));
+    assert!(two.len() > one.len());
+    for (x, _, line) in &two {
+        assert!(
+            x + line.chars().count() as i32 * 16 <= 400 - 16 - 10,
+            "{line:?}"
+        );
+    }
+}
+
+#[test]
+fn a_label_that_fits_is_one_line_and_is_drawn_where_it_always_was() {
+    let interface = ui(Anchor::TopLeft, false, vec![label("hello"), label("world")]);
+    let drawn = texts(&layout(&[interface], (400, 720), 1, None));
+    assert_eq!(
+        drawn,
+        [
+            (8 + 5, 8 + 5, "hello".to_owned()),
+            (8 + 5, 8 + 5 + 8 + 4, "world".to_owned())
+        ]
+    );
+}
+
+#[test]
+fn a_label_in_a_row_is_not_wrapped_and_a_panel_in_a_column_wraps_to_what_is_left_of_the_screen() {
+    let row = Ui {
+        modal: false,
+        anchor: Anchor::TopLeft,
+        root: Panel {
+            title: None,
+            color: Color([20, 20, 40]),
+            direction: Direction::Row,
+            children: vec![label(A_LONG_SENTENCE)],
+        },
+    };
+    let drawn = texts(&layout(&[row], (400, 720), 1, None));
+    assert_eq!(drawn.len(), 1, "a row keeps its text on a line");
+    // A panel inside a panel has 10 units less on each level: 364 units, 45 letters.
+    let inner = Node::Panel(panel(vec![label(A_LONG_SENTENCE)]));
+    let nested = ui(Anchor::TopLeft, false, vec![inner]);
+    let drawn = texts(&layout(&[nested], (400, 720), 1, None));
+    assert!(drawn.len() >= 3);
+    assert!(
+        drawn.iter().all(|(_, _, line)| line.chars().count() <= 45),
+        "{drawn:?}"
+    );
+}
+
+#[test]
+fn words_kept_together_by_a_no_break_space_are_wrapped_together_and_drawn_with_a_space() {
+    let pair = |axis: &str, value: &str| format!("{axis}{}{value}", ui::NO_BREAK_SPACE);
+    let text = [
+        pair("x", "0x1234567890abcdef"),
+        pair("y", "0x1234567890abcdef"),
+        pair("z", "0x1234567890abcdef"),
+    ]
+    .join(" ");
+    let interface = ui(Anchor::TopLeft, false, vec![label(&text)]);
+    // 400 pixels is 46 letters: two pairs (20 + 1 + 20) fit, the third goes under.
+    let drawn = texts(&layout(&[interface], (400, 720), 1, None));
+    let said: Vec<&str> = drawn.iter().map(|(_, _, line)| line.as_str()).collect();
+    assert_eq!(
+        said,
+        [
+            "x 0x1234567890abcdef y 0x1234567890abcdef",
+            "z 0x1234567890abcdef"
+        ]
+    );
+}
+
+#[test]
+fn a_text_taller_than_the_screen_is_cut_with_dots_and_the_panel_fits() {
+    let endless = "word ".repeat(2000);
+    let interface = ui(Anchor::TopLeft, false, vec![label(&endless)]);
+    let laid = layout(&[interface], (400, 360), 1, None);
+    let drawn = texts(&laid);
+    let last = drawn.last().unwrap();
+    assert!(last.2.ends_with("..."), "{last:?}");
+    assert!(last.2.chars().count() <= 46);
+    // The bottom of the last line is on the screen.
+    assert!(last.1 + 8 <= 360, "{last:?}");
+    for pair in drawn.windows(2) {
+        assert_eq!(pair[1].1 - pair[0].1, 12);
+    }
+}
+
+#[test]
+fn buttons_and_titles_keep_their_places_when_a_label_wraps() {
+    let interface = Ui {
+        modal: true,
+        anchor: Anchor::Center,
+        root: Panel {
+            title: Some("Question".to_owned()),
+            color: Color([20, 20, 40]),
+            direction: Direction::Column,
+            children: vec![
+                label(A_LONG_SENTENCE),
+                button(3, "1) yes"),
+                button(4, "2) no"),
+            ],
+        },
+    };
+    let laid = layout(&[interface], (400, 720), 1, None);
+    let ids: Vec<u32> = laid.buttons.iter().map(|button| button.id).collect();
+    assert_eq!(ids, [3, 4]);
+    // The buttons are under every line of the label.
+    let last_line = texts(&laid)
+        .into_iter()
+        .filter(|(_, _, line)| {
+            !line.starts_with("1)") && !line.starts_with("2)") && line != "Question"
+        })
+        .map(|(_, y, _)| y)
+        .max()
+        .unwrap();
+    assert!(laid.buttons.iter().all(|button| button.area.y > last_line));
+}

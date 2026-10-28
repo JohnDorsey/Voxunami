@@ -58,11 +58,20 @@ pub struct Screen {
     pub sources: Vec<Source>,
 }
 
+/// The most letters a line of the window's own text (its status, the command typed, the reply to the last one) may have. The layout breaks it into lines that fit the screen
+/// (`ui::layout`), so this is only a limit on what a server's very long reply can make the client draw.
+const MAXIMUM_LINE_CHARACTERS: usize = 2000;
+
 fn shortened(text: &str) -> String {
-    if text.chars().count() <= MAXIMUM_TEXT_CHARACTERS {
+    cut_to(text, MAXIMUM_TEXT_CHARACTERS)
+}
+
+/// `text`, or its first letters and dots if it has more than `limit`.
+fn cut_to(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
         return text.to_owned();
     }
-    let kept: String = text.chars().take(MAXIMUM_TEXT_CHARACTERS - 3).collect();
+    let kept: String = text.chars().take(limit - 3).collect();
     format!("{kept}...")
 }
 
@@ -77,7 +86,7 @@ fn lines(anchor: Anchor, color: Color, text_color: Color, lines: &[String]) -> U
             children: lines
                 .iter()
                 .map(|line| Node::Label {
-                    text: shortened(line),
+                    text: cut_to(line, MAXIMUM_LINE_CHARACTERS),
                     color: text_color,
                 })
                 .collect(),
@@ -380,22 +389,90 @@ mod tests {
     }
 
     #[test]
-    fn text_longer_than_an_interface_allows_is_cut_with_dots_so_that_what_is_built_is_always_allowed()
+    fn text_longer_than_an_interface_allows_is_cut_with_dots_so_that_what_a_server_describes_is_always_allowed()
      {
+        // A question (a server's words) is cut at what a description may hold, and passes the check.
         let long = "x".repeat(300);
-        let screen = build_without_overlays(
-            &[question(1, &long, &[&long])],
-            &[],
-            &text(&[&long], Some(&long), Some(&long)),
-        );
+        let screen =
+            build_without_overlays(&[question(1, &long, &[&long])], &[], &ScreenText::default());
         for ui in &screen.uis {
             assert_eq!(ui.check(), Ok(()));
         }
-        let Node::Label { text, .. } = &screen.uis[0].root.children[0] else {
-            panic!("a status line");
-        };
-        assert_eq!(text.chars().count(), MAXIMUM_TEXT_CHARACTERS);
-        assert!(text.ends_with("..."));
+        // The window's own lines are wrapped to the screen by the layout and cut only at a very much longer length.
+        let screen = build_without_overlays(&[], &[], &text(&[&long], Some(&long), Some(&long)));
+        for ui in &screen.uis {
+            let Node::Label { text, .. } = &ui.root.children[0] else {
+                panic!("a line of text");
+            };
+            assert_eq!(text, &long, "300 letters are shown whole");
+        }
+        let endless = "y".repeat(5000);
+        let screen = build_without_overlays(&[], &[], &text(&[&endless], Some(&endless), None));
+        for ui in &screen.uis {
+            let Node::Label { text, .. } = &ui.root.children[0] else {
+                panic!("a line of text");
+            };
+            assert_eq!(text.chars().count(), 2000);
+            assert!(text.ends_with("..."));
+        }
+    }
+
+    /// The text drawn, with where each line starts.
+    fn drawn_text(laid: &ui::Layout) -> Vec<(i32, i32, String)> {
+        laid.draws
+            .iter()
+            .filter_map(|draw| match draw {
+                ui::Draw::Text { x, y, text, .. } => Some((*x, *y, text.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_long_reply_and_long_coordinates_are_wrapped_to_the_screen_and_lose_nothing() {
+        let places = "places: voxunami_cave:planet, moons:moon, base_blocks:great_river_narrowest, base_blocks:great_river_widest. /tp PLACE goes to the ground of a body nearest to you, or in view of a landmark; /tp PLACE LATITUDE LONGITUDE and /tp PLACE X Y Z (in the body's own axes) say where on a body; /tp X Y Z goes to coordinates of the level you are in";
+        let coordinates = ["x", "y", "z"]
+            .map(|axis| {
+                format!(
+                    "{axis}{}0x1fffffffffffffffffffffffffffff",
+                    ui::NO_BREAK_SPACE
+                )
+            })
+            .join(" ");
+        let status = format!("players 1 | {coordinates}");
+        let screen = build_without_overlays(&[], &[], &text(&[&status], None, Some(places)));
+        // A window 1280 wide and 720 high draws at scale 2: 614 units of text, 76 letters.
+        let (width, height, scale) = (1280, 720, 2);
+        let laid = layout(&screen.uis, (width, height), scale, None);
+        let drawn = drawn_text(&laid);
+        for (x, y, line) in &drawn {
+            assert!(line.chars().count() <= 76, "{line:?}");
+            assert!(
+                x + line.chars().count() as i32 * 8 * scale <= width,
+                "{line:?} runs off the right"
+            );
+            assert!(
+                *y >= 0 && y + 8 * scale <= height,
+                "{line:?} runs off the top or bottom"
+            );
+        }
+        let said: Vec<&str> = drawn.iter().map(|(_, _, line)| line.as_str()).collect();
+        // Everything that was said is there, in order, once.
+        let all = said.join(" ");
+        assert!(all.contains("players 1 |"), "{all}");
+        assert!(all.contains(places), "{all}");
+        // The coordinates are on lines whole: a letter is never the last thing on a line.
+        let status_lines: Vec<&&str> = said
+            .iter()
+            .filter(|line| !places.contains(**line))
+            .collect();
+        assert!(status_lines.len() >= 2, "{status_lines:?}");
+        for line in &status_lines {
+            assert!(
+                !line.ends_with(" x") && !line.ends_with(" y") && !line.ends_with(" z"),
+                "{line:?}"
+            );
+        }
     }
 
     #[test]

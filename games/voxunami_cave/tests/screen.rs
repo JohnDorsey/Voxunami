@@ -433,7 +433,7 @@ fn a_screen_with_everything_on_it_is_drawn_where_the_layout_says_and_can_be_look
         tick(&mut rig, &mut player, 3);
         let text = ScreenText {
             status: vec![
-                "players 1 | 0b10000, 0b1101110, 0b10000".to_owned(),
+                "players 1 | x 0x10 y 0x6e z 0x10".to_owned(),
                 "placing stone (whole)".to_owned(),
             ],
             typing: Some("> /gamemode survival_".to_owned()),

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 715ca525ea7625b524411abb08cbda6cf641c67a3bf9dfb0880ac1c2361c4a92 # shrinks to interface = Ui { modal: false, anchor: TopLeft, root: Panel { title: None, color: Color([0, 0, 0]), direction: Column, children: [Label { text: "", color: Color([0, 0, 0]) }, Space(49), Space(53), Space(51), Panel(Panel { title: None, color: Color([20, 20, 40]), direction: Column, children: [Button { id: 4, text: "" }, Label { text: "", color: Color([0, 0, 0]) }] })] } }, scale = 3

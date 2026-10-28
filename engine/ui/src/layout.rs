@@ -4,6 +4,7 @@
 //! scale, a whole number, when they are placed.
 
 use crate::model::{Anchor, Color, Direction, Node, Panel, Ui};
+use crate::wrap::wrap_text;
 
 /// How wide and tall a letter is, in units.
 pub const GLYPH: i32 = 8;
@@ -323,6 +324,68 @@ impl Painter<'_> {
     }
 }
 
+/// The panel with the text of its labels broken into lines that fit `units` of width (the width its content may have), and the panels in it too, to what is left of that.
+/// The labels of a row are left as they are: nothing says how a row is to share its width.
+fn wrapped(panel: &Panel, units: i32) -> Panel {
+    if panel.direction == Direction::Row {
+        return panel.clone();
+    }
+    let columns = letters_in(units);
+    let mut children = Vec::with_capacity(panel.children.len());
+    for child in &panel.children {
+        match child {
+            Node::Label { text, color } => {
+                children.extend(
+                    wrap_text(text, columns)
+                        .into_iter()
+                        .map(|line| Node::Label {
+                            text: line,
+                            color: *color,
+                        }),
+                );
+            }
+            Node::Panel(inner) => {
+                children.push(Node::Panel(wrapped(inner, units - 2 * (PADDING + BORDER))));
+            }
+            other => children.push(other.clone()),
+        }
+    }
+    Panel {
+        title: panel.title.clone(),
+        color: panel.color,
+        direction: panel.direction,
+        children,
+    }
+}
+
+/// How many letters a width of units holds, at least one.
+fn letters_in(units: i32) -> usize {
+    (units / GLYPH).max(1) as usize
+}
+
+/// Takes the last lines off a column of text that is taller than `units` until it fits, and says so with dots at the end of the last line left: a text that is longer
+/// than the screen is tall (a very long reply) is cut and not drawn off it.
+fn cut_to_height(panel: &mut Panel, units: i32, columns: usize) {
+    // Only a panel of nothing but text (what the window says, and a reply): a button, a bar or a swatch that was cut off could not be answered or shown, and the work of
+    // a description that is not that is bounded by its limits.
+    let only_text = panel
+        .children
+        .iter()
+        .all(|child| matches!(child, Node::Label { .. }));
+    if panel.direction != Direction::Column || !only_text {
+        return;
+    }
+    let mut cut = false;
+    while measure_panel(panel).height > units && panel.children.len() > 1 {
+        panel.children.pop();
+        cut = true;
+    }
+    if cut && let Some(Node::Label { text, .. }) = panel.children.last_mut() {
+        let kept: String = text.chars().take(columns.saturating_sub(3)).collect();
+        *text = format!("{}...", kept.trim_end());
+    }
+}
+
 /// Lays out these interfaces, in order (later ones over earlier), on a screen of `screen` pixels at `scale` (a whole
 /// number from 1), with the keyboard focus on the button `focus`. Panels at one anchor stack away from the edge.
 pub fn layout(uis: &[Ui], screen: (i32, i32), scale: i32, focus: Option<u32>) -> Layout {
@@ -331,7 +394,15 @@ pub fn layout(uis: &[Ui], screen: (i32, i32), scale: i32, focus: Option<u32>) ->
     // How far each anchor's stack has grown, in pixels, away from the edge (or down from the middle).
     let mut stacked = [0i32; 9];
     for (index, ui) in uis.iter().enumerate() {
-        let size = measure_panel(&ui.root);
+        // Text wider than the screen is broken into lines, and text taller than it is cut.
+        let content = screen.0 / scale - 2 * MARGIN - 2 * (PADDING + BORDER);
+        let mut root = wrapped(&ui.root, content);
+        cut_to_height(
+            &mut root,
+            screen.1 / scale - 2 * MARGIN,
+            letters_in(content),
+        );
+        let size = measure_panel(&root);
         let (width, height) = (size.width * scale, size.height * scale);
         let slot = Anchor::ALL
             .iter()
@@ -367,7 +438,7 @@ pub fn layout(uis: &[Ui], screen: (i32, i32), scale: i32, focus: Option<u32>) ->
             focus,
             ui: index,
         };
-        painter.panel(x, y, &ui.root);
+        painter.panel(x, y, &root);
     }
     result
 }

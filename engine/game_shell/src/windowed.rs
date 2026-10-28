@@ -28,7 +28,7 @@ use crate::options::{PlayOptions, ReplayOptions, ViewOptions};
 use crate::screen::{Screen, ScreenKey, ScreenText, Source};
 use crate::session::{Mode, Session};
 use crate::view::{
-    apply_updates, atmosphere, binary_voxel_coordinates, camera_at, configure_renderer,
+    apply_updates, atmosphere, camera_at, configure_renderer, hexadecimal_voxel_coordinates,
     show_entity_boxes, show_other_players, show_screen,
 };
 
@@ -319,7 +319,7 @@ impl<G: GameDefinition> Viewer<G> {
                 status.push(format!(
                     "players {} | {}",
                     self.session.players().len().max(1),
-                    binary_voxel_coordinates(self.session.camera.position)
+                    hexadecimal_voxel_coordinates(self.session.camera.position)
                 ));
                 status.extend(self.session.hud_lines());
             }

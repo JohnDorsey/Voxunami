@@ -111,9 +111,10 @@ pub fn show_entity_boxes<C: Connection, G: GameDefinition>(
     renderer.set_entity_boxes(&session.entity_boxes());
 }
 
-/// The voxel a position is in, as its three coordinates in binary: `x 0b1011 y 0b110 z -0b101`. A
-/// negative coordinate is its size in binary with a minus sign (not in two's complement).
-pub fn binary_voxel_coordinates(position: WorldPosition) -> String {
+/// The voxel a position is in, as its three coordinates in hexadecimal: `x 0x1f y 0x6e z -0x5`. A negative coordinate is its size in hexadecimal with a minus sign (not in
+/// two's complement). The letter and its number are joined by a no-break space ([`ui::NO_BREAK_SPACE`]), so that where the screen wraps the line it breaks between the
+/// coordinates and not inside one.
+pub fn hexadecimal_voxel_coordinates(position: WorldPosition) -> String {
     let brick = position.brick();
     let offset = position.offset();
     let coordinates = [
@@ -121,16 +122,16 @@ pub fn binary_voxel_coordinates(position: WorldPosition) -> String {
         brick.y() * 32 + offset[1].floor() as i128,
         brick.z() * 32 + offset[2].floor() as i128,
     ];
-    let binary = |value: i128| {
+    let hexadecimal = |value: i128| {
         let sign = if value < 0 { "-" } else { "" };
-        format!("{sign}0b{:b}", value.unsigned_abs())
+        format!("{sign}0x{:x}", value.unsigned_abs())
     };
-    format!(
-        "x {} y {} z {}",
-        binary(coordinates[0]),
-        binary(coordinates[1]),
-        binary(coordinates[2])
-    )
+    ["x", "y", "z"]
+        .into_iter()
+        .zip(coordinates)
+        .map(|(axis, value)| format!("{axis}{}{}", ui::NO_BREAK_SPACE, hexadecimal(value)))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// A camera at a position given in voxels, with angles in degrees.
@@ -165,18 +166,42 @@ mod tests {
     }
 
     #[test]
-    fn coordinates_are_the_voxel_the_position_is_in_in_binary() {
-        let binary =
-            |position: [f64; 3]| binary_voxel_coordinates(camera_at(position, 0.0, 0.0).position);
-        assert_eq!(binary([0.0, 0.0, 0.0]), "x 0b0 y 0b0 z 0b0");
-        assert_eq!(binary([11.9, 6.0, 5.5]), "x 0b1011 y 0b110 z 0b101");
-        // Across bricks: 32 + 5 = 100101, 110 = 0b1101110.
-        assert_eq!(
-            binary([37.2, 110.0, 64.0]),
-            "x 0b100101 y 0b1101110 z 0b1000000"
-        );
+    fn coordinates_are_the_voxel_the_position_is_in_in_hexadecimal() {
+        // (Shown with plain spaces: the one between a letter and its number does not let a line break there.)
+        let hexadecimal = |position: [f64; 3]| {
+            hexadecimal_voxel_coordinates(camera_at(position, 0.0, 0.0).position)
+                .replace(ui::NO_BREAK_SPACE, " ")
+        };
+        assert_eq!(hexadecimal([0.0, 0.0, 0.0]), "x 0x0 y 0x0 z 0x0");
+        assert_eq!(hexadecimal([11.9, 6.0, 5.5]), "x 0xb y 0x6 z 0x5");
+        // Across bricks: 32 + 5 = 0x25, 110 = 0x6e, 64 = 0x40.
+        assert_eq!(hexadecimal([37.2, 110.0, 64.0]), "x 0x25 y 0x6e z 0x40");
         // The voxel is the one below, so -0.5 is voxel -1 and -1.0 is too.
-        assert_eq!(binary([-0.5, -1.0, -32.0]), "x -0b1 y -0b1 z -0b100000");
-        assert_eq!(binary([-1.5, -2.0, -33.0]), "x -0b10 y -0b10 z -0b100001");
+        assert_eq!(hexadecimal([-0.5, -1.0, -32.0]), "x -0x1 y -0x1 z -0x20");
+        assert_eq!(hexadecimal([-1.5, -2.0, -33.0]), "x -0x2 y -0x2 z -0x21");
+    }
+
+    #[test]
+    fn coordinates_a_hundred_and_twenty_bits_wide_are_whole_and_break_only_between_coordinates() {
+        // 2^120 - 1, the edge of the world, and its negative: thirty digits each.
+        let edge: i128 = (1i128 << 120) - 1;
+        let brick = BrickCoordinate::new(edge.div_euclid(32), -edge.div_euclid(32), 0);
+        let position = WorldPosition::new(brick, [31.0, 0.0, 0.0]);
+        let shown = hexadecimal_voxel_coordinates(position);
+        let plain = shown.replace(ui::NO_BREAK_SPACE, " ");
+        assert_eq!(plain, format!("x 0x{:x} y -0x{:x} z 0x0", edge, edge - 31));
+        // Wrapped to a line of 40 letters it breaks at the spaces between coordinates: every line starts with a letter and its number, and none ends with a letter.
+        let lines = ui::wrap_text(&shown, 40);
+        assert!(lines.len() >= 2, "{lines:?}");
+        for line in &lines {
+            assert!(
+                line.starts_with("x 0x") || line.starts_with("y -0x") || line.starts_with("z 0x"),
+                "{line:?}"
+            );
+            assert!(
+                !line.ends_with(" x") && !line.ends_with(" y") && !line.ends_with(" z"),
+                "{line:?}"
+            );
+        }
     }
 }

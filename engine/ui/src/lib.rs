@@ -7,6 +7,7 @@ mod codec;
 mod layout;
 mod model;
 mod paint;
+mod wrap;
 
 pub use layout::{
     BACKDROP_COLOR, BAR_BACKGROUND, BORDER_COLOR, BUTTON_COLOR, ButtonArea, Draw,
@@ -17,3 +18,4 @@ pub use model::{
     MAXIMUM_TEXT_CHARACTERS, Node, Panel, Ui, UiError, next_button,
 };
 pub use paint::{Painted, paint};
+pub use wrap::{NO_BREAK_SPACE, wrap_text};
