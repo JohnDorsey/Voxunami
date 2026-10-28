@@ -22,7 +22,7 @@ The owner's direction (2026-10-27): shadows from shaders in place of the floodin
 
 ## 3. Cave's sun
 
-A day of twenty minutes of the world's clock (1,200 s: 50 s an hour), beginning at 07:00, in the level of space and in the overworld (no other level has a sun). Noon is at the direction (0, 0.94, 0.342) turned about (0, -0.342, 0.94): the sun is never straight overhead at the pole where players start (70 degrees at noon), rises towards +x and sets towards -x, and is 12 hours above the horizon and 12 below there. `light` 255, `sky_light` 110, sky `[0.55, 0.72, 0.92]` (the blue it always had) to 30 km over a planet. **All of these numbers are mine; the owner overrules** (a longer day, a different start, a dimmer sky).
+A day of twenty minutes of the world's clock (1,200 s: 50 s an hour), beginning at 06:30 (it began at 07:00 until the owner asked for a lower sun at the start, 2026-10-28: the sun is 7 degrees up at the pole then, and shadows are long and easy to see; a world already made keeps its clock, so its hour moves back by half an hour; `--time` and `.time` pin any hour), in the level of space and in the overworld (no other level has a sun). Noon is at the direction (0, 0.94, 0.342) turned about (0, -0.342, 0.94): the sun is never straight overhead at the pole where players start (70 degrees at noon), rises towards +x and sets towards -x, and is 12 hours above the horizon and 12 below there. `light` 255, `sky_light` 110, sky `[0.55, 0.72, 0.92]` (the blue it always had) to 30 km over a planet. **All of these numbers are mine; the owner overrules** (a longer day, a different start, a dimmer sky).
 
 ## 4. For the player
 

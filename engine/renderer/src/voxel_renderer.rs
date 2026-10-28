@@ -2293,10 +2293,6 @@ mod tests {
                 crate::shadow::DEPTH_BIAS_TEXELS
             ),
             format!(
-                "const SLOPE_BIAS_LIMIT: f32 = {:?};",
-                crate::shadow::SLOPE_BIAS_LIMIT
-            ),
-            format!(
                 "const FACING_FULL_FROM: f32 = {:?};",
                 crate::shadow::FACING_FULL_FROM
             ),

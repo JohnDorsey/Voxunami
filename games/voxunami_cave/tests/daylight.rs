@@ -52,7 +52,10 @@ fn the_levels_of_cave_have_a_sun_and_no_other_level_does() {
     assert_eq!(space.day_seconds, 1_200);
     assert!((6.0..9.0).contains(&space.start_hour));
     let up = |hours: f64| space.direction_at(hours)[1];
-    assert!(up(space.start_hour) > 0.1, "the world begins by day");
+    assert!(
+        (0.08..0.2).contains(&up(space.start_hour)),
+        "the world begins by day with a low sun (seven degrees up is 0.12)"
+    );
     assert!(up(12.0) > 0.9, "the noon sun is high");
     assert!(up(0.0) < -0.9, "and the midnight sun is under the planet");
     // Noon is when the sun is highest.
@@ -76,7 +79,8 @@ fn a_new_world_begins_on_a_morning_on_the_ground_of_the_planet_with_the_planet_i
     assert_eq!(sun.hours_at(0, 20), sun.start_hour);
     // The morning, as a player who joins at the start of a world has it.
     let start = sun.start_hour;
-    player.client_command(&format!(".time {start}"));
+    let minutes = (start * 60.0).round() as u32;
+    player.client_command(&format!(".time {:02}:{:02}", minutes / 60, minutes % 60));
     let view = player.sun_view().unwrap();
     assert_eq!(view.hours, start);
     assert_eq!(view.daylight, 1.0, "the player stands in the morning sun");

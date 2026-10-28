@@ -2802,6 +2802,55 @@ fn a_block_and_a_roof_shade_the_floor_where_the_sun_puts_the_shadow_from_a_brick
     }
 }
 
+#[test]
+fn under_a_low_sun_the_shadow_of_a_block_begins_at_its_foot_and_not_a_few_texels_from_it_at_every_scale()
+ {
+    // The sun is 15 degrees up, over the +x side, so the block's shadow lies along the floor to -x from the block's far face, at x = 14, for 15 cells. The camera looks
+    // straight down through a narrow field of view at the floor behind that face, so that a pixel is a twentieth of a cell. A shadow map keeps what is a texel from where
+    // it is looked up, and a place that was eased toward the sun by the texels of a slanting floor (up to five of them) was lit for a third of a cell beside the wall that
+    // shaded it. The floor is shadowed from a fifth of a cell on. (Not at level 20: there the camera, 20 cells up, is 21 million voxels from the floor, in the last of the
+    // cascades, whose texels are an eighth of a cell: a shadow is blurred over that, whatever the bias. The test of the scales has that level.)
+    let sun = [0.966, 0.259, 0.0];
+    for context in contexts() {
+        let name = adapter_name(&context);
+        for level in [0u8, 4, 9, 15] {
+            let mut renderer = new_renderer(&context);
+            upload_shadow_scene(&mut renderer, ShadowScene::Block, level);
+            let cells = [13i128, 21, 16];
+            let mut camera = camera_in_cells(level, cells, 0.0, -Camera::MAXIMUM_PITCH);
+            camera.vertical_field_of_view = 0.17;
+            let mut probes = Vec::new();
+            for z in [15.0, 16.0, 17.0] {
+                for x in [13.8, 13.7, 13.4, 13.0] {
+                    probes.push(([x, 1.0, z], true));
+                }
+            }
+            let (failures, seen) = shadow_failures(
+                &mut renderer,
+                level,
+                sun,
+                &camera,
+                cells.map(|cell| cell as f64),
+                &probes,
+            );
+            assert_eq!(
+                seen,
+                probes.len(),
+                "{name} level {level}: a probe is out of the picture"
+            );
+            assert!(
+                failures.is_empty(),
+                "{name} level {level}:
+{}",
+                failures.join(
+                    "
+"
+                )
+            );
+        }
+    }
+}
+
 /// The floor of a brick: every voxel at height 0.
 fn floor_voxels() -> Vec<([u8; 3], u32, u32)> {
     let mut blocks = Vec::new();

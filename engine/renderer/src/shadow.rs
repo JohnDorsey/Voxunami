@@ -51,11 +51,18 @@ pub const SUN_DRIFT: f32 = 0.005;
 /// Where, as a fraction of its reach, a cascade begins to give way to the next: the lookups of the two are mixed over the rest, so that the line between them does not show.
 pub const BLEND_FROM: f32 = 0.85;
 
-/// How much, in texels, the place's depth is eased toward the sun, and how much more for every unit of the tangent of the angle between the normal and the sun (a surface
-/// seen at a slant changes depth across a texel by the texel's width times the tangent), up to [`SLOPE_BIAS_LIMIT`] of them. (A place is not moved along its normal as well:
-/// it was, and the tests did not need it, since only a face turned from the sun by its own body is ever near what the map holds of it, and the slope covers that.)
+/// How much, in texels, the place's depth is eased toward the sun when it is looked up: the room for what the arithmetic of a depth gets wrong. (A place is not moved along
+/// its normal as well: it was, and the tests did not need it.)
 pub const DEPTH_BIAS_TEXELS: f32 = 1.0;
-pub const SLOPE_BIAS_LIMIT: f32 = 4.0;
+
+/// How much, for every unit of the steepness of a face's depth across a texel (a face nearly edge on to the light changes its depth by a great deal between the centres
+/// of two texels, and a place looks up four of them), what the map keeps of the face is eased away from the sun. It is the face's own steepness, drawn into the map by
+/// the pipeline's slope-scaled depth bias, and not that of the place that looks it up: a floor nothing stands on has the underside of its own thickness in the map, as
+/// steep as it, and needs the bias; the wall of a block has a steepness of its own, small under a low sun, and the floor behind it is in its shadow from its foot. (A
+/// bias by the steepness of the place that looked it up, up to five texels under a low sun, left the floor lit for as many beside the wall that shaded it.) The depth
+/// slope of the hardware is that of the steeper of the two directions of the texels, and the neighbours looked up may be a diagonal away, which a margin covers: the
+/// tests fail at half a unit and pass from one, and this is a unit and a half.
+pub const CASTER_SLOPE_BIAS: f32 = 1.5;
 
 /// The cosine of the angle between a face and the sun below which the face is, for the sky's light, turned away from the sun and in the shade: it fades in from 0 (edge on)
 /// to this, so that a wall does not change from one to the other in a moment as the sun crosses its plane.
@@ -300,13 +307,11 @@ impl Cascade {
         )
     }
 
-    /// Where a place looks up its shadow, for a face whose normal makes an angle with the sun whose cosine is `cosine` (above 0): the texture coordinates in the map and the
-    /// depth to compare with what the map holds. The shader's `shadow_in_cascade` does the same.
-    pub fn lookup(&self, basis: &LightBasis, position: Vec3, cosine: f32) -> (Vec2, f32) {
+    /// Where a place looks up its shadow: the texture coordinates in the map and the depth to compare with what the map holds. The shader's `shadow_in_cascade` does the
+    /// same.
+    pub fn lookup(&self, basis: &LightBasis, position: Vec3) -> (Vec2, f32) {
         let clip = self.matrix(basis) * position.extend(1.0);
-        let sine = (1.0 - cosine * cosine).max(0.0).sqrt();
-        let slope = (sine / cosine.max(0.1)).min(SLOPE_BIAS_LIMIT);
-        let reference = clip.z + (DEPTH_BIAS_TEXELS + slope) * self.texel / self.range;
+        let reference = clip.z + DEPTH_BIAS_TEXELS * self.texel / self.range;
         (Vec2::new(clip.x * 0.5 + 0.5, 0.5 - clip.y * 0.5), reference)
     }
 }
@@ -769,37 +774,20 @@ mod tests {
     }
 
     #[test]
-    fn a_place_is_looked_up_where_it_is_and_eased_toward_the_sun_more_the_slantier_the_face() {
+    fn a_place_is_looked_up_where_it_is_and_eased_toward_the_sun_by_a_texel() {
         let basis = LightBasis::new(Vec3::Y);
         let mut cascade = Cascade::new(32.0, [0.0, 0.0]);
         cascade.fit(1000.0);
         let place = Vec3::new(3.0, 4.0, 5.0);
-        // A face looking at the sun squarely: where it is, eased by the one texel of bias.
-        let (squarely_uv, squarely_reference) = cascade.lookup(&basis, place, 1.0);
+        let (uv, reference) = cascade.lookup(&basis, place);
         let plain = cascade.matrix(&basis) * place.extend(1.0);
         let expected_depth = plain.z + DEPTH_BIAS_TEXELS * cascade.texel / cascade.range;
         assert!(
-            (squarely_reference - expected_depth).abs() < 1e-7,
-            "{squarely_reference} {expected_depth}"
+            (reference - expected_depth).abs() < 1e-7,
+            "{reference} {expected_depth}"
         );
-        assert!((squarely_uv.x - (plain.x * 0.5 + 0.5)).abs() < 1e-6);
-        assert!((squarely_uv.y - (0.5 - plain.y * 0.5)).abs() < 1e-6);
-        // Slanted by 45 degrees: one more texel of bias (the tangent is 1). Edge on: capped.
-        let cosine = std::f32::consts::FRAC_1_SQRT_2;
-        let (_, slanted_reference) = cascade.lookup(&basis, place, cosine);
-        let bias = slanted_reference - plain.z;
-        assert!(
-            (bias - 2.0 * cascade.texel / cascade.range).abs() < 1e-6,
-            "{bias}"
-        );
-        let (_, grazing_reference) = cascade.lookup(&basis, place, 0.0);
-        let grazing_bias = grazing_reference - plain.z;
-        assert!(
-            (grazing_bias - (DEPTH_BIAS_TEXELS + SLOPE_BIAS_LIMIT) * cascade.texel / cascade.range)
-                .abs()
-                < 1e-6,
-            "{grazing_bias}"
-        );
+        assert!((uv.x - (plain.x * 0.5 + 0.5)).abs() < 1e-6);
+        assert!((uv.y - (0.5 - plain.y * 0.5)).abs() < 1e-6);
     }
 
     #[test]
@@ -850,7 +838,6 @@ mod tests {
     #[test]
     fn the_biases_are_in_texels_so_a_shadow_looks_the_same_at_every_scale() {
         let basis = LightBasis::new(Vec3::new(0.0, 0.9, 0.4));
-        let cosine = basis.toward_sun.dot(Vec3::Y);
         let mut reference: Option<(f32, f32)> = None;
         // A place 8 texels from the middle of the map, 5 texels up: at every scale it is the same place in the map, to the bit of an f32.
         for scale in [1.0f32, 16.0, 4096.0, 1.0e6, 1.0e9] {
@@ -858,7 +845,7 @@ mod tests {
             cascade.fit(cascade.half_width * 40.0);
             let place =
                 basis.right * (8.0 * cascade.texel) + basis.toward_sun * (5.0 * cascade.texel);
-            let (uv, depth) = cascade.lookup(&basis, place, cosine);
+            let (uv, depth) = cascade.lookup(&basis, place);
             let relative_depth = (depth - (cascade.matrix(&basis) * Vec3::ZERO.extend(1.0)).z)
                 * cascade.range
                 / cascade.texel;

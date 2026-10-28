@@ -102,7 +102,6 @@ const TURNED_NO_MORE_FROM: f32 = 0.03;
 // How the shadow of the terrain is looked up. The same numbers as `shadow.rs`.
 const BLEND_FROM: f32 = 0.85;
 const DEPTH_BIAS_TEXELS: f32 = 1.0;
-const SLOPE_BIAS_LIMIT: f32 = 4.0;
 const FACING_FULL_FROM: f32 = 0.15;
 
 struct Sunlight {
@@ -284,21 +283,18 @@ fn shadow_vertex_detailed(@builtin(vertex_index) vertex_index: u32, instance: De
 
 // The share of the sun that the terrain lets through to a place, in one cascade of the map: 1 if nothing is nearer the sun than the place in its texel, 0 if something is
 // (between them for a texel that is part one, part the other). The same arithmetic as `Cascade::lookup` in `shadow.rs`.
-fn shadow_in_cascade(index: u32, position: vec3<f32>, cosine: f32) -> f32 {
+fn shadow_in_cascade(index: u32, position: vec3<f32>) -> f32 {
     let cascade = frame.cascades[index];
     let texel = cascade.limits.y;
     let clip = cascade.matrix * vec4<f32>(position, 1.0);
-    let sine = sqrt(max(1.0 - cosine * cosine, 0.0));
-    let slope = min(sine / max(cosine, 0.1), SLOPE_BIAS_LIMIT);
-    let reference = clip.z + (DEPTH_BIAS_TEXELS + slope) * texel / cascade.limits.z;
+    let reference = clip.z + DEPTH_BIAS_TEXELS * texel / cascade.limits.z;
     let coordinates = vec2<f32>(clip.x * 0.5 + 0.5, 0.5 - clip.y * 0.5);
     return textureSampleCompareLevel(shadow_maps, shadow_sampler, coordinates, index, reference);
 }
 
-// The share of the sun the terrain lets through to a place `distance` from the camera, for a face that makes an angle with the sun of the given cosine
-// (above 0). The finest cascade that holds the place is looked in, mixed with the next over the last of its reach (and a place beyond the last cascade is not in shadow). The
+// The share of the sun the terrain lets through to a place `distance` from the camera. The finest cascade that holds the place is looked in, mixed with the next over the last of its reach (and a place beyond the last cascade is not in shadow). The
 // same as `cascade_for` in `shadow.rs`.
-fn terrain_light(position: vec3<f32>, cosine: f32, distance: f32) -> f32 {
+fn terrain_light(position: vec3<f32>, distance: f32) -> f32 {
     let count = u32(frame.shadow.x);
     var chosen = count;
     var blend = 0.0;
@@ -314,11 +310,11 @@ fn terrain_light(position: vec3<f32>, cosine: f32, distance: f32) -> f32 {
     if (chosen == count) {
         return 1.0;
     }
-    var light = shadow_in_cascade(chosen, position, cosine);
+    var light = shadow_in_cascade(chosen, position);
     if (blend > 0.0) {
         var next = 1.0;
         if (chosen + 1u < count && frame.cascades[chosen + 1u].limits.x > 0.0) {
-            next = shadow_in_cascade(chosen + 1u, position, cosine);
+            next = shadow_in_cascade(chosen + 1u, position);
         }
         light = mix(light, next, blend);
     }
@@ -346,7 +342,7 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 // (The distance of this pixel, not the one the vertices interpolate: that is wrong across the big quads of coarse nodes, where it chooses a cascade too coarse.)
                 let largest = max(abs(in.relative.x), max(abs(in.relative.y), abs(in.relative.z)));
                 let distance = largest * length(in.relative / max(largest, 1.0e-30));
-                terrain = terrain_light(in.relative, cosine, distance);
+                terrain = terrain_light(in.relative, distance);
             }
             sun_visible = sun_visible * terrain;
             sky_visible = sky_visible * mix(frame.shadow.y, 1.0, terrain * smoothstep(0.0, FACING_FULL_FROM, cosine));

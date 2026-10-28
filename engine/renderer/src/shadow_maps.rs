@@ -135,7 +135,14 @@ impl ShadowPipelines {
                     // Depth grows toward the sun, and the map keeps the greatest.
                     depth_compare: Some(wgpu::CompareFunction::Greater),
                     stencil: wgpu::StencilState::default(),
-                    bias: wgpu::DepthBiasState::default(),
+                    // What a face keeps in the map is eased away from the sun by how steeply its depth changes across a texel (a face nearly edge-on to the light
+                    // changes it a lot, and a neighbouring texel's depth is then far from the one a place looks up), so a place on a face the sun reaches is never in
+                    // the shadow of the one under it, and one beside a wall is in the wall's shadow from the wall's foot.
+                    bias: wgpu::DepthBiasState {
+                        constant: 0,
+                        slope_scale: -crate::shadow::CASTER_SLOPE_BIAS,
+                        clamp: 0.0,
+                    },
                 }),
                 multisample: wgpu::MultisampleState::default(),
                 multiview_mask: None,

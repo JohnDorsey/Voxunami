@@ -142,15 +142,15 @@ impl GameDefinition for Cave {
         })
     }
 
-    /// A day of twenty minutes of the world's clock that begins at seven in the morning, in the level of space and in the overworld. The sun is in the plane of a path that
-    /// goes a little to one side of the top of the planet at noon (so that it is never straight overhead at the place players start), and it is hidden by the planet in space
-    /// and by the flat ground of the overworld. The sky is the blue the game always had, to a height of 30 kilometres over a planet (a fifth of its radius, and a clear
+    /// A day of twenty minutes of the world's clock that begins at half past six in the morning, in the level of space and in the overworld: the sun is seven degrees
+    /// above the horizon where players start, so that the shadows are long and easy to see. The sun is in the plane of a path that goes a little to one side of the top of the
+    /// planet at noon (so that it is never straight overhead at the place players start), and it is hidden by the planet in space and by the flat ground of the overworld. The sky is the blue the game always had, to a height of 30 kilometres over a planet (a fifth of its radius, and a clear
     /// sky to 15), black above.
     fn sun(level: &NamespacedId) -> Option<Sun> {
         let in_space = *level == mini_cosmos_id();
         (in_space || *level == overworld_id()).then_some(Sun {
             day_seconds: 1_200,
-            start_hour: 7.0,
+            start_hour: 6.5,
             noon: [0.0, 0.94, 0.342],
             axis: [0.0, -0.342, 0.94],
             light: 255,
