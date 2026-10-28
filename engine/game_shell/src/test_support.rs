@@ -202,6 +202,7 @@ impl ExampleSunGame {
             axis: [0.0, 0.0, 1.0],
             light: 255,
             sky_light: 100,
+            sky_light_in_shadow: 64,
             flat_ground: true,
             sky: crate::sun::Sky {
                 color: [0.4, 0.6, 0.9],

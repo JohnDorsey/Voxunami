@@ -12,7 +12,7 @@ requirement 7 of "Requirements pulled forward". What I say about today's code wa
   (Phases 19 to 22) against the rule that the engine never knows a plugin.
 - **The client side is the game's, not the plugins'.** `GameDefinition` carries `ClientState`, `handle_game_message(state, kind, bytes)`,
   `view_channels(content, state)`, `primary_action`, `secondary_action`, `key_pressed` and `status_text`. A plugin (or later a mod) cannot add a key,
-  a mouse action, a HUD line or a client message handler; and `.`-commands are two hard-coded ones in `client_commands.rs` (`.ambient`, `.help`; `.time` and `.keys` and `.choose` came later, 2026-10-28 for `.time`: it pins the sun for this player, `sun-spec.md`).
+  a mouse action, a HUD line or a client message handler; and `.`-commands are two hard-coded ones in `client_commands.rs` (`.ambient`, `.help`; `.time`, `.shadows` and `.keys` and `.choose` came later, 2026-10-28 for `.time`: it pins the sun for this player, `sun-spec.md`).
   Tests read the state directly (`player.state.progress` about 15 times in 2048, `.standings` 8 in Eels, `.light_scheme` once in Cave).
 - The window has no text drawing (the renderer has none), so the HUD is the window title: `status_text` is appended to it.
 

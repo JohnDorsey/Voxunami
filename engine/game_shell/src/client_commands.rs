@@ -18,6 +18,8 @@ pub struct ClientSettings {
     pub pinned_time: Option<u16>,
     /// The time of day by the world's clock in the level the player is in, in minutes from midnight, if the game has a sun there. The session keeps it, for `.time` to say.
     pub time_of_day: Option<u16>,
+    /// Whether the terrain casts shadows in the pictures (`.shadows`). On by default; it costs a second drawing of what is near the sun's way, so a slow GPU may want it off.
+    pub shadows: bool,
 }
 
 impl ClientSettings {
@@ -28,6 +30,7 @@ impl ClientSettings {
             default_ambient_light: ambient_light,
             pinned_time: None,
             time_of_day: None,
+            shadows: true,
         }
     }
 }
@@ -153,6 +156,31 @@ pub(crate) fn register(registrar: &mut ClientRegistrar<'_>) {
                     )
                 }
                 None => "usage: .time [HOURS[:MINUTES]|noon|midnight|auto]".to_owned(),
+            }
+        },
+    );
+    registrar.command(
+        CommandSpec::new(
+            "shadows",
+            "turns the shadows of the terrain on or off for you (they are on): they cost a second drawing of what is near the sun's way, and a slow GPU may do better without; .shadows alone says which",
+        )
+        .with_prefix('.')
+        .argument(Argument::word("on|off").optional()),
+        |context, arguments| {
+            let settings = context.settings_mut();
+            if !arguments.present(0) {
+                return format!("shadows are {}", if settings.shadows { "on" } else { "off" });
+            }
+            match arguments.word(0) {
+                "on" => {
+                    settings.shadows = true;
+                    "shadows are now on".to_owned()
+                }
+                "off" => {
+                    settings.shadows = false;
+                    "shadows are now off".to_owned()
+                }
+                _ => "usage: .shadows [on|off]".to_owned(),
             }
         },
     );
@@ -296,6 +324,31 @@ mod tests {
     }
 
     #[test]
+    fn shadows_are_on_to_begin_with_and_can_be_turned_off_and_on_and_nothing_else() {
+        let mut settings = ClientSettings::new(0);
+        assert!(settings.shadows);
+        assert_eq!(run(".shadows", &mut settings), "shadows are on");
+        assert_eq!(run(".shadows off", &mut settings), "shadows are now off");
+        assert!(!settings.shadows);
+        assert_eq!(run(".shadows", &mut settings), "shadows are off");
+        assert_eq!(run(".shadows on", &mut settings), "shadows are now on");
+        assert!(settings.shadows);
+        // What is neither changes nothing.
+        for bad in [".shadows maybe", ".shadows 1", ".shadows ON"] {
+            settings.shadows = false;
+            assert_eq!(run(bad, &mut settings), "usage: .shadows [on|off]", "{bad}");
+            assert!(!settings.shadows, "{bad}");
+        }
+        // (More than one word is the usage the shell itself gives.)
+        settings.shadows = false;
+        assert_eq!(
+            run(".shadows off on", &mut settings),
+            "usage: .shadows [ON|OFF]"
+        );
+        assert!(!settings.shadows);
+    }
+
+    #[test]
     fn ambient_shows_sets_and_resets_how_bright_unlit_faces_are() {
         let mut settings = ClientSettings::new(0);
         assert_eq!(
@@ -367,18 +420,18 @@ mod tests {
         assert!(run(".help", &mut settings).starts_with("client commands: .ambient"));
         assert_eq!(
             run(".dance", &mut settings),
-            "unknown client command .dance; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .time [TIME]"
+            "unknown client command .dance; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .shadows [ON|OFF], .time [TIME]"
         );
         assert_eq!(
             run(".", &mut settings),
-            "client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .time [TIME]"
+            "client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .shadows [ON|OFF], .time [TIME]"
         );
         assert!(
             run(".help ambient", &mut settings).starts_with(".ambient [LEVEL]: sets how bright")
         );
         assert_eq!(
             run(".help nothing", &mut settings),
-            "there is no client command .nothing; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .time [TIME]"
+            "there is no client command .nothing; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .shadows [ON|OFF], .time [TIME]"
         );
         // Spaces round the words do not matter.
         assert_eq!(

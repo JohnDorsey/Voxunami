@@ -173,6 +173,13 @@ fn the_atmosphere_of_a_picture_is_the_suns_and_the_sides_are_shaded_from_one_pla
         Some(renderer::Atmosphere::default().sun_direction)
     );
     assert_ne!(lit.side_direction, Some(lit.sun_direction));
+    // The terrain casts shadows, with the share of the sky's light the game says reaches a place in one; the player can turn them off, and on.
+    assert!(lit.shadows);
+    assert_eq!(lit.sky_light_in_shadow, 64);
+    player.client_command(".shadows off");
+    assert!(!crate::view::lit_atmosphere(&player).0.shadows);
+    player.client_command(".shadows on");
+    assert!(crate::view::lit_atmosphere(&player).0.shadows);
     // The fog is the shell's, as it was: its range, and the ambient light the player set.
     player.client_command(".ambient 33");
     let (lit, _) = crate::view::lit_atmosphere(&player);
@@ -210,6 +217,8 @@ fn a_game_with_no_sun_in_the_level_is_lit_as_it_was() {
         (lit.sun_light, lit.sky_light, lit.side_direction),
         (0, 0, None)
     );
+    // (A world with no sun has no shadows, whatever the player's setting.)
+    assert!(!lit.shadows);
 }
 
 #[test]

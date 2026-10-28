@@ -29,6 +29,7 @@ Usage: voxunami {command} [options]
   --yaw DEGREES --pitch DEGREES   start orientation (default {yaw}, {pitch})
   --time TIME                     pin the sun at a time of day for you (noon, midnight, 18:30);
                                   by default it follows the world's clock
+  --shadows on|off                shadows of the terrain (default on); .shadows changes it while playing
   --screenshot FILE.png           render one image without a window and exit
   --benchmark                     time frames without a window and exit
   --no-vsync                      do not wait for the display refresh
@@ -92,6 +93,7 @@ Usage: voxunami replay FILE [options]
   --screenshot FILE.png           render the view at --tick (default: the end) and exit
   --tick NUMBER                   the tick to render with --screenshot
   --time TIME                     pin the sun at a time of day (noon, midnight, 18:30), not the recorded clock
+  --shadows on|off                shadows of the terrain (default on)
   --no-vsync                      do not wait for the display refresh
   --exit-after SECONDS            close the window after this long
   --help                          show this text
@@ -112,6 +114,8 @@ pub struct ViewOptions {
     pub screenshot: Option<PathBuf>,
     /// The time of day to pin the sun at, in minutes from midnight (`--time`), instead of following the world's clock.
     pub time: Option<u16>,
+    /// Whether the terrain casts shadows (`--shadows`); on by default.
+    pub shadows: bool,
 }
 
 impl Default for ViewOptions {
@@ -125,6 +129,7 @@ impl Default for ViewOptions {
             exit_after_seconds: None,
             screenshot: None,
             time: None,
+            shadows: true,
         }
     }
 }
@@ -237,6 +242,13 @@ fn parse_view_flag(
                     format!("--time: {text:?} should be noon, midnight, or a time like 7 or 18:30")
                 })?,
             );
+        }
+        "--shadows" => {
+            view.shadows = match value(flag)?.as_str() {
+                "on" => true,
+                "off" => false,
+                other => return Err(format!("--shadows: {other:?} should be on or off")),
+            };
         }
         _ => return Ok(false),
     }
@@ -473,7 +485,7 @@ mod tests {
         let parsed = play(
             "--adapter integrated --view-radius 8 --seed 7 --size 640x360 --camera 1.5,2,-3 \
              --yaw 90 --pitch -45 --screenshot out.png --benchmark --no-vsync --exit-after 2.5 \
-             --world w.voxunami --record r.voxreplay --host 4000 --autosave 30 \n             --identity me.key --packs my_packs --time 18:30",
+             --world w.voxunami --record r.voxreplay --host 4000 --autosave 30 \n             --identity me.key --packs my_packs --time 18:30 --shadows off",
         );
         assert_eq!(
             parsed,
@@ -487,6 +499,7 @@ mod tests {
                     exit_after_seconds: Some(2.5),
                     screenshot: Some(PathBuf::from("out.png")),
                     time: Some(18 * 60 + 30),
+                    shadows: false,
                 },
                 seed: 7,
                 world_file: Some(PathBuf::from("w.voxunami")),
@@ -502,6 +515,29 @@ mod tests {
                 benchmark: true,
             }
         );
+    }
+
+    #[test]
+    fn shadows_are_on_unless_the_player_says_off_and_nothing_else_is_a_state() {
+        assert!(play("").view.shadows);
+        assert!(play("--shadows on").view.shadows);
+        assert!(!play("--shadows off").view.shadows);
+        for bad in ["maybe", "1", "ON", ""] {
+            let error =
+                parse_play::<ExampleGame>(arguments(&format!("--shadows {bad}"))).unwrap_err();
+            assert!(error.contains("--shadows"), "{bad:?}: {error}");
+        }
+        assert!(
+            parse_play::<ExampleGame>(arguments("--shadows"))
+                .unwrap_err()
+                .contains("--shadows")
+        );
+        // A recording can be watched without them too.
+        let Parsed::Run(options) = parse_replay(arguments("r.voxreplay --shadows off")).unwrap()
+        else {
+            panic!("a replay");
+        };
+        assert!(!options.view.shadows);
     }
 
     #[test]

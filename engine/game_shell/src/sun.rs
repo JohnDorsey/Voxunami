@@ -38,6 +38,9 @@ pub struct Sun {
     pub light: u8,
     /// How bright, 0 to 255, the sky lights the faces the sun reaches (`renderer::Atmosphere::sky_light`), in the air.
     pub sky_light: u8,
+    /// How much, 0 to 255, of the sky's light reaches a place the sun does not (`renderer::Atmosphere::sky_light_in_shadow`): one in the shadow of a hill, or a face turned
+    /// from the sun. The sky is scattered light, so a shadow is not black; 255 is no shadow of the sky at all.
+    pub sky_light_in_shadow: u8,
     /// Whether the level's ground is flat and level, with `y` up, so that the sun is hidden whenever it is below the horizon (the sun cannot light a place from under the
     /// ground). A level with planets in it is not flat: the planets hide the sun.
     pub flat_ground: bool,
@@ -99,6 +102,8 @@ pub struct SunView {
     pub sun_light: u8,
     /// `renderer::Atmosphere::sky_light`, less in thin air.
     pub sky_light: u8,
+    /// `renderer::Atmosphere::sky_light_in_shadow`.
+    pub sky_light_in_shadow: u8,
     /// The colour of the sky and the fog, as sRGB.
     pub sky_color: [f32; 3],
     /// How much of the sun reaches the camera: 0 to 1.
@@ -148,6 +153,7 @@ pub fn sun_view(
         direction,
         sun_light: sun.light,
         sky_light: (f32::from(sun.sky_light) * air).round() as u8,
+        sky_light_in_shadow: sun.sky_light_in_shadow,
         sky_color: sun.sky.color.map(|part| part * daylight * air),
         daylight,
         occluders,
@@ -179,6 +185,7 @@ mod tests {
             axis: [0.0, 0.0, 2.0],
             light: 255,
             sky_light: 100,
+            sky_light_in_shadow: 64,
             flat_ground: false,
             sky: Sky {
                 color: [0.4, 0.6, 0.9],

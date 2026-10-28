@@ -89,6 +89,7 @@ pub fn play<G: GameDefinition>(options: PlayOptions) -> Result<(), String> {
     .map_err(|error| error.to_string())?;
     session.enable_level_detail();
     session.pin_time(view.time);
+    session.set_shadows(view.shadows);
     if let Some(detail) = G::grid_detail() {
         session.enable_grid_detail(detail);
     }
@@ -127,6 +128,7 @@ pub fn replay<G: GameDefinition>(options: ReplayOptions) -> Result<(), String> {
     .map_err(|error| error.to_string())?;
     session.enable_level_detail();
     session.pin_time(view.time);
+    session.set_shadows(view.shadows);
     if let Some(detail) = G::grid_detail() {
         session.enable_grid_detail(detail);
     }

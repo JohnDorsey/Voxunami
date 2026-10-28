@@ -59,6 +59,9 @@ pub fn lit_atmosphere<C: Connection, G: GameDefinition>(
     lit.side_direction = Some(Atmosphere::default().sun_direction);
     lit.sun_light = sun.sun_light;
     lit.sky_light = sun.sky_light;
+    // (The sun is what the shadows are of: a world with none has no shadows to ask for.)
+    lit.shadows = session.settings().shadows;
+    lit.sky_light_in_shadow = sun.sky_light_in_shadow;
     (lit, sun.occluders)
 }
 

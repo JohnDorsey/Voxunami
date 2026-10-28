@@ -2519,3 +2519,919 @@ fn a_sun_with_no_light_leaves_every_picture_as_it_was_whatever_is_in_its_way() {
         assert!(render(&mut renderer, &camera) == before, "{name}");
     }
 }
+
+// --- shadows ---
+//
+// A node of detail level `n` is the cells of a brick, each `2^n` voxels wide, so one scene is a picture at every scale if the camera, the near plane and the fog are scaled with it:
+// a block four cells high is a block of four voxels, of 4,096, or of four million, and the shadows are the same picture. The scenes are built from cells for that reason.
+//
+// A shadow is told from light by the brightness of the pixel a place on the floor lands on with the shadows on, over the same pixel with them off: the sun's light on a
+// floor that looks at it from 53 degrees up is `0.876` of full and the sky's `0.38` of that, and in the shadow the sky's light is the share `sky_light_in_shadow` of what it
+// was, `0.095`: a shadow is `0.109` of the light and a place the sun reaches is `1.0`.
+
+const SHADOWED_ATMOSPHERE_FILL: u8 = 64;
+
+/// What the cell at `(x, y, z)` of the scenes of the shadow tests is made of.
+#[derive(Clone, Copy)]
+enum ShadowScene {
+    /// The floor of the node (one cell thick) and a block of four cells on it in the middle.
+    Block,
+    /// The floor and a roof of one cell, eight cells up, over the first ten cells along x.
+    Roof,
+}
+
+impl ShadowScene {
+    fn cell(self, x: usize, y: usize, z: usize) -> Option<u32> {
+        if y == 0 {
+            return Some(2);
+        }
+        match self {
+            ShadowScene::Block => {
+                ((14..18).contains(&x) && (1..5).contains(&y) && (14..18).contains(&z))
+                    .then_some(RED)
+            }
+            ShadowScene::Roof => (x < 10 && y == 7).then_some(RED),
+        }
+    }
+}
+
+/// The mesh of a coarse node of these cells, each lit by `light` of its own.
+fn coarse_mesh_lit(
+    solid: impl Fn(usize, usize, usize) -> Option<u32>,
+    light: u8,
+) -> voxel_meshing::PackedBrickMesh {
+    use coarse_cells::{CoarseCell, CoarseNode};
+    let mut cells = Vec::with_capacity(32 * 32 * 32);
+    for z in 0..32 {
+        for y in 0..32 {
+            for x in 0..32 {
+                cells.push(match solid(x, y, z) {
+                    Some(block) => CoarseCell {
+                        block,
+                        fill: 255,
+                        light,
+                        exposure: 0,
+                    },
+                    None => CoarseCell::empty(0, light),
+                });
+            }
+        }
+    }
+    voxel_meshing::mesh_coarse_node(&CoarseNode::from_cells(cells), &[None; 6]).pack()
+}
+
+/// Puts a scene at a detail level: the bricks of voxels for level 0, a node whose cells are `2^level` voxels for any other.
+fn upload_shadow_scene(renderer: &mut VoxelRenderer, scene: ShadowScene, level: u8) {
+    if level == 0 {
+        let mut blocks = Vec::new();
+        for z in 0..32usize {
+            for y in 0..32usize {
+                for x in 0..32usize {
+                    if let Some(block) = scene.cell(x, y, z) {
+                        blocks.push(([x as u8, y as u8, z as u8], block, 0));
+                    }
+                }
+            }
+        }
+        place_blocks(renderer, ORIGIN_BRICK, &blocks, Some(0));
+    } else {
+        renderer.upload_coarse_node(
+            cube_of_bricks([0, 0, 0], level),
+            &coarse_mesh_lit(|x, y, z| scene.cell(x, y, z), 0),
+        );
+    }
+}
+
+/// 2^level, as an `f64`.
+fn scale_of(level: u8) -> f64 {
+    (1u128 << level) as f64
+}
+
+/// The atmosphere of the shadow tests for a scene of this level: the sun in this direction at full light, the sky's light, fog beyond the scene, shadows on or off.
+fn shadow_atmosphere(level: u8, sun: [f32; 3], shadows: bool) -> Atmosphere {
+    let scale = scale_of(level) as f32;
+    Atmosphere {
+        sky_color: SKY,
+        fog_start: 100.0 * scale,
+        fog_end: 200.0 * scale,
+        sun_direction: sun,
+        sun_light: 255,
+        sky_light: 110,
+        shadows,
+        sky_light_in_shadow: SHADOWED_ATMOSPHERE_FILL,
+        ..Atmosphere::default()
+    }
+}
+
+/// A camera at a place given in cells of a node of this level (whole numbers), looking this way, with the near plane scaled to the level too.
+fn camera_in_cells(level: u8, cells: [i128; 3], yaw: f32, pitch: f32) -> Camera {
+    let mut camera = camera_in_voxels(cells.map(|cell| cell << level));
+    camera.yaw = yaw;
+    camera.pitch = pitch;
+    camera.near_plane = 0.1 * scale_of(level) as f32;
+    camera
+}
+
+/// The pixel that a place lands on, given relative to the camera in voxels, if it is in the picture.
+fn pixel_of(camera: &Camera, relative: [f64; 3]) -> Option<(u32, u32)> {
+    let clip = camera.view_projection(1.0)
+        * glam::Vec4::new(
+            relative[0] as f32,
+            relative[1] as f32,
+            relative[2] as f32,
+            1.0,
+        );
+    if clip.w <= 0.0 {
+        return None;
+    }
+    let (x, y) = (clip.x / clip.w, clip.y / clip.w);
+    if x.abs() >= 1.0 || y.abs() >= 1.0 {
+        return None;
+    }
+    Some((
+        ((x * 0.5 + 0.5) * SIZE as f32) as u32,
+        ((0.5 - y * 0.5) * SIZE as f32) as u32,
+    ))
+}
+
+/// A place the pictures of the shadow tests are asked about: in cells of the scene, and whether it is in the shadow.
+type Probe = ([f64; 3], bool);
+
+/// What is wrong with the shadows in the picture from `camera`, which is at `camera_cells`: for each probe, the brightness of its pixel with the shadows on over that with
+/// them off must be 1 for a place the sun reaches and about `0.109` for one in a shadow. Returns what is wrong, empty if all is well; and how many probes were in the picture.
+fn shadow_failures(
+    renderer: &mut VoxelRenderer,
+    level: u8,
+    sun: [f32; 3],
+    camera: &Camera,
+    camera_cells: [f64; 3],
+    probes: &[Probe],
+) -> (Vec<String>, usize) {
+    renderer.set_atmosphere(shadow_atmosphere(level, sun, false));
+    let off = render(renderer, camera);
+    renderer.set_atmosphere(shadow_atmosphere(level, sun, true));
+    let on = render(renderer, camera);
+    let mut failures = Vec::new();
+    let mut seen = 0;
+    for &(cells, shadowed) in probes {
+        let relative =
+            std::array::from_fn(|axis| (cells[axis] - camera_cells[axis]) * scale_of(level));
+        let Some((x, y)) = pixel_of(camera, relative) else {
+            continue;
+        };
+        seen += 1;
+        let (with, without) = (
+            linear_brightness(pixel(&on, x, y)),
+            linear_brightness(pixel(&off, x, y)),
+        );
+        let ratio = with / without;
+        let right = if shadowed {
+            (0.07..0.15).contains(&ratio)
+        } else {
+            (0.97..1.03).contains(&ratio)
+        };
+        if !right {
+            failures.push(format!(
+                "{cells:?} at pixel ({x}, {y}) is {} but is {ratio:.3} of the light",
+                if shadowed { "in a shadow" } else { "lit" }
+            ));
+        }
+    }
+    (failures, seen)
+}
+
+/// The sun of the scenes: 53 degrees up, over the +x side, so a block's shadow falls to -x.
+const SUN_OVER_THE_EAST: [f32; 3] = [0.6, 0.8, 0.0];
+
+fn probe_set(shadowed: &[[f64; 3]], lit: &[[f64; 3]]) -> Vec<Probe> {
+    shadowed
+        .iter()
+        .map(|&cells| (cells, true))
+        .chain(lit.iter().map(|&cells| (cells, false)))
+        .collect()
+}
+
+/// Both scenes, with a camera that sees the shadows of each and the places probed: for the block, from above; for the roof, from the side, so as to see under it.
+fn shadow_scene_setup(scene: ShadowScene, level: u8) -> (Camera, [i128; 3], Vec<Probe>) {
+    match scene {
+        ShadowScene::Block => {
+            let cells = [16, 21, 16];
+            let camera = camera_in_cells(level, cells, 0.0, -Camera::MAXIMUM_PITCH);
+            // The shadow of the block lies from x = 11 to 14, along the block's width (z from 14 to 18); the camera is over the middle of the block, so the block hides
+            // nothing of the floor that is probed.
+            let shadowed = [
+                [11.8, 1.0, 15.0],
+                [12.5, 1.0, 16.0],
+                [13.2, 1.0, 17.0],
+                [12.5, 1.0, 15.0],
+            ];
+            let lit = [
+                [3.0, 1.0, 5.0],
+                [6.0, 1.0, 16.0],
+                [9.0, 1.0, 27.0],
+                [22.0, 1.0, 16.0],
+                [26.0, 1.0, 5.0],
+                [12.5, 1.0, 6.0],
+                [12.5, 1.0, 26.0],
+                [16.0, 5.0, 16.0],
+                [15.0, 5.0, 17.0],
+            ];
+            (camera, cells, probe_set(&shadowed, &lit))
+        }
+        ShadowScene::Roof => {
+            let cells = [24, 5, 16];
+            let camera = camera_in_cells(level, cells, std::f32::consts::FRAC_PI_2, -0.25);
+            // The roof is over x from 0 to 10 at the height of 7 to 8; the sun comes in from the east at 53 degrees, so the floor is dark from the west edge to x = 5.5 and light
+            // from there, though still under the roof.
+            let shadowed = [
+                [1.5, 1.0, 12.0],
+                [2.5, 1.0, 16.0],
+                [3.5, 1.0, 20.0],
+                [4.5, 1.0, 16.0],
+            ];
+            let lit = [
+                [6.7, 1.0, 12.0],
+                [7.5, 1.0, 16.0],
+                [9.0, 1.0, 20.0],
+                [12.0, 1.0, 16.0],
+                [16.0, 1.0, 12.0],
+                [14.0, 1.0, 20.0],
+            ];
+            (camera, cells, probe_set(&shadowed, &lit))
+        }
+    }
+}
+
+#[test]
+fn a_block_and_a_roof_shade_the_floor_where_the_sun_puts_the_shadow_from_a_brick_to_a_mountain_range()
+ {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        for scene in [ShadowScene::Block, ShadowScene::Roof] {
+            // 0 is bricks of voxels; 1 and 4 are nodes of cells of 2 and 16 voxels; 9 is cells of 512, a node as wide as a town; 15, cells of 32,768 voxels, mountains
+            // 500,000 voxels high among them; 20, cells of a million: a node 33 million voxels across, in which the block is four million voxels high.
+            for level in [0u8, 1, 4, 9, 15, 20] {
+                let mut renderer = new_renderer(&context);
+                upload_shadow_scene(&mut renderer, scene, level);
+                let (camera, cells, probes) = shadow_scene_setup(scene, level);
+                let (failures, seen) = shadow_failures(
+                    &mut renderer,
+                    level,
+                    SUN_OVER_THE_EAST,
+                    &camera,
+                    cells.map(|cell| cell as f64),
+                    &probes,
+                );
+                assert_eq!(
+                    seen,
+                    probes.len(),
+                    "{name} level {level}: a probe is out of the picture"
+                );
+                assert!(
+                    failures.is_empty(),
+                    "{name} {} level {level}:\n{}",
+                    if matches!(scene, ShadowScene::Block) {
+                        "block"
+                    } else {
+                        "roof"
+                    },
+                    failures.join("\n")
+                );
+            }
+        }
+    }
+}
+
+/// The floor of a brick: every voxel at height 0.
+fn floor_voxels() -> Vec<([u8; 3], u32, u32)> {
+    let mut blocks = Vec::new();
+    for z in 0..32u8 {
+        for x in 0..32u8 {
+            blocks.push(([x, 0, z], 2, 0));
+        }
+    }
+    blocks
+}
+
+#[test]
+fn a_mountain_half_a_million_voxels_high_shades_a_floor_of_voxels_in_front_of_it_to_within_a_voxel_of_where_its_ridge_puts_the_shadow()
+ {
+    // The floor is bricks of voxels, three by three, about the origin. The mountain is a node of cells of 32,768 voxels: its west face is at x = 524,288, it is 524,288 high
+    // (16 cells) and 1,048,576 wide along z. The sun is along the line from the floor to the ridge of the mountain at x = 16: a floor point of x over 17 is in the shadow of the
+    // mountain (a ray from it up the sun reaches the west face below the ridge), and one under 17 sees the sun over the ridge.
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        let blocks = floor_voxels();
+        for bz in -1..=1 {
+            for bx in -1..=1 {
+                place_blocks(
+                    &mut renderer,
+                    BrickCoordinate::new(bx, 0, bz),
+                    &blocks,
+                    Some(0),
+                );
+            }
+        }
+        renderer.upload_coarse_node(
+            cube_of_bricks([0, 0, 0], 15),
+            &coarse_mesh_lit(|x, y, _| (x >= 16 && y < 16).then_some(RED), 0),
+        );
+        let sun = [524_272.0f32, 524_288.0, 0.0];
+        let cells = [17i128, 30, 24];
+        let camera = camera_in_voxels(cells);
+        let mut camera = camera;
+        camera.pitch = -Camera::MAXIMUM_PITCH;
+        let mut probes = Vec::new();
+        for z in [10.0, 24.0, 40.0] {
+            for x in [-2.0, 2.0, 8.0, 13.0] {
+                probes.push(([x, 1.0, z], false));
+            }
+            for x in [21.0, 26.0, 32.0, 36.0] {
+                probes.push(([x, 1.0, z], true));
+            }
+        }
+        // (Probes are in voxels here: the scale is 1.)
+        let (failures, seen) = shadow_failures(
+            &mut renderer,
+            0,
+            sun,
+            &camera,
+            cells.map(|cell| cell as f64),
+            &probes,
+        );
+        assert_eq!(seen, probes.len(), "{name}: a probe is out of the picture");
+        assert!(failures.is_empty(), "{name}:\n{}", failures.join("\n"));
+    }
+}
+
+#[test]
+fn a_floor_nothing_stands_on_is_as_bright_with_the_shadows_on_at_every_distance_and_every_sun_up_to_a_grazing_one()
+ {
+    // A floor seen along its length, from 5 voxels to the fog at 600: five cascades and the seams between them, three suns. Nothing is in the way of the light, so no pixel
+    // may be darker than it is with the shadows off: that is no acne, and no line where one cascade gives way to the next.
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        let blocks = floor_voxels();
+        for bz in -16..=0 {
+            for bx in -3..=3 {
+                place_blocks(
+                    &mut renderer,
+                    BrickCoordinate::new(bx, 0, bz),
+                    &blocks,
+                    Some(0),
+                );
+            }
+        }
+        let mut camera = camera_at(ORIGIN_BRICK, [16.0, 4.0, 30.0]);
+        camera.pitch = -0.15;
+        for (label, sun) in [
+            ("high", [0.1f32, 1.0, 0.2]),
+            ("45 degrees", [1.0, 1.0, 0.0]),
+            ("low", [0.3, 0.17, 0.9]),
+        ] {
+            let atmosphere = |shadows| Atmosphere {
+                fog_start: 400.0,
+                fog_end: 600.0,
+                ..shadow_atmosphere(0, sun, shadows)
+            };
+            renderer.set_atmosphere(atmosphere(false));
+            let off = render(&mut renderer, &camera);
+            renderer.set_atmosphere(atmosphere(true));
+            let on = render(&mut renderer, &camera);
+            let mut floor = 0;
+            let mut darker = Vec::new();
+            for y in 0..SIZE {
+                for x in 0..SIZE {
+                    let (with, without) = (pixel(&on, x, y), pixel(&off, x, y));
+                    if is_sky(without) {
+                        continue;
+                    }
+                    floor += 1;
+                    if without[..3]
+                        .iter()
+                        .zip(&with[..3])
+                        .any(|(without, with)| without.abs_diff(*with) > 2)
+                    {
+                        darker.push((x, y, without, with));
+                    }
+                }
+            }
+            assert!(floor > 1500, "{name} {label}: only {floor} pixels of floor");
+            assert!(
+                darker.is_empty(),
+                "{name} {label}: {} of {floor} pixels differ, the first {:?}",
+                darker.len(),
+                &darker[..darker.len().min(4)]
+            );
+        }
+    }
+}
+
+#[test]
+fn beyond_the_reach_of_the_cascades_the_picture_is_the_one_without_shadows_and_nothing_is_not_a_number()
+ {
+    // The cascades reach 67 million voxels at most; a scene of nodes of cells of 2^24 voxels or more, seen from within it, is further off than that.
+    for context in contexts() {
+        let name = adapter_name(&context);
+        for level in [24u8, 40, 60, 90] {
+            let mut renderer = new_renderer(&context);
+            upload_shadow_scene(&mut renderer, ShadowScene::Block, level);
+            let (camera, cells, _) = shadow_scene_setup(ShadowScene::Block, level);
+            let _ = cells;
+            renderer.set_atmosphere(shadow_atmosphere(level, SUN_OVER_THE_EAST, false));
+            let off = render(&mut renderer, &camera);
+            renderer.set_atmosphere(shadow_atmosphere(level, SUN_OVER_THE_EAST, true));
+            let on = render(&mut renderer, &camera);
+            assert!(
+                pixels_where(&off, |pixel| !is_sky(pixel)) > 1500,
+                "{name} level {level}: the scene is not in the picture"
+            );
+            assert!(on == off, "{name} level {level}: the pictures differ");
+        }
+    }
+}
+
+#[test]
+fn shadows_on_in_a_world_with_no_sun_are_no_change_and_cost_nothing() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        upload_shadow_scene(&mut renderer, ShadowScene::Block, 0);
+        let (camera, _, _) = shadow_scene_setup(ShadowScene::Block, 0);
+        let plain = Atmosphere {
+            sun_light: 0,
+            sky_light: 0,
+            ..shadow_atmosphere(0, SUN_OVER_THE_EAST, false)
+        };
+        renderer.set_atmosphere(plain);
+        let before = render(&mut renderer, &camera);
+        renderer.set_atmosphere(Atmosphere {
+            shadows: true,
+            ..plain
+        });
+        let (after, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+        assert!(after == before, "{name}");
+        assert_eq!(
+            (
+                statistics.shadow_cascades_drawn,
+                statistics.shadow_casters_drawn
+            ),
+            (0, 0),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn the_maps_are_drawn_only_while_the_sun_can_light_something_and_only_for_the_cascades_with_something_to_light()
+ {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        upload_shadow_scene(&mut renderer, ShadowScene::Block, 0);
+        let (camera, _, _) = shadow_scene_setup(ShadowScene::Block, 0);
+        // Shadows off: no maps.
+        renderer.set_atmosphere(shadow_atmosphere(0, SUN_OVER_THE_EAST, false));
+        let (_, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+        assert_eq!(statistics.shadow_cascades_drawn, 0, "{name}");
+        // On: the scene is 20 to 40 voxels away, in the first cascade (it reaches 27.8 voxels) and the second (mixed in from 23.6, and reaching 55.6), and the block is drawn
+        // into them.
+        renderer.set_atmosphere(shadow_atmosphere(0, SUN_OVER_THE_EAST, true));
+        let (day, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+        assert!(
+            (1..=2).contains(&statistics.shadow_cascades_drawn),
+            "{name}: {}",
+            statistics.shadow_cascades_drawn
+        );
+        assert!(statistics.shadow_casters_drawn >= 1, "{name}");
+        // The ground of a flat level hides a sun below the horizon from everything: nothing is drawn.
+        renderer.set_sun_occluders(&[SunOccluder::FlatGround]);
+        renderer.set_atmosphere(shadow_atmosphere(0, [0.6, -0.8, 0.0], true));
+        let (_, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+        assert_eq!(
+            (
+                statistics.shadow_cascades_drawn,
+                statistics.shadow_casters_drawn
+            ),
+            (0, 0),
+            "{name}: night over flat ground"
+        );
+        // And above the horizon they are lit again by the maps drawn before, which were kept: nothing is drawn, and the picture is the one of the day before.
+        renderer.set_atmosphere(shadow_atmosphere(0, SUN_OVER_THE_EAST, true));
+        let (again, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+        assert_eq!(
+            statistics.shadow_cascades_drawn, 0,
+            "{name}: the maps are kept"
+        );
+        assert!(again == day, "{name}: kept maps, the same shadows");
+    }
+}
+
+#[test]
+fn a_map_is_kept_while_nothing_changes_and_the_camera_stays_near_its_middle_and_the_shadow_is_where_the_sun_puts_it_for_the_camera_in_its_new_place()
+ {
+    // The camera is over the block, outside the sphere that holds the node (which is how far a node can be from the camera and still be counted as near it): the nearest the
+    // scene is is six cells, and the cascades that serve it are those at least that wide.
+    for context in contexts() {
+        let name = adapter_name(&context);
+        for level in [0u8, 6, 15] {
+            let mut renderer = new_renderer(&context);
+            upload_shadow_scene(&mut renderer, ShadowScene::Block, level);
+            let cells = [16i128, 50, 16];
+            let camera = camera_in_cells(level, cells, 0.0, -Camera::MAXIMUM_PITCH);
+            let probes = probe_set(
+                &[[12.5, 1.0, 15.0], [12.5, 1.0, 16.0], [12.5, 1.0, 17.0]],
+                &[
+                    [3.0, 1.0, 5.0],
+                    [6.0, 1.0, 16.0],
+                    [26.0, 1.0, 5.0],
+                    [22.0, 1.0, 16.0],
+                    [16.0, 5.0, 16.0],
+                ],
+            );
+            renderer.set_atmosphere(shadow_atmosphere(level, SUN_OVER_THE_EAST, true));
+            let (_, first) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+            assert!(first.shadow_cascades_drawn >= 1, "{name} level {level}");
+            // The camera moves by a fifth of a cell along x, y, z and all of them (far less than the slack of the cascades that serve the scene, which are eight cells wide or
+            // more): nothing is drawn again, and the shadow is where the sun puts it for the camera in its new place.
+            let a_fifth = (scale_of(level) * 0.2) as f32;
+            let cell_cells = cells.map(|cell| cell as f64);
+            for movement in [
+                [a_fifth, 0.0, 0.0],
+                [0.0, a_fifth, 0.0],
+                [0.0, 0.0, -a_fifth],
+                [a_fifth, -a_fifth, a_fifth],
+            ] {
+                let mut moved = camera;
+                moved.position = moved.position.translated(movement);
+                let (_, kept) = renderer.render_to_rgba(&moved, SIZE, SIZE);
+                assert_eq!(
+                    kept.shadow_cascades_drawn, 0,
+                    "{name} level {level} {movement:?}: a map was drawn again"
+                );
+                let moved_cells = std::array::from_fn(|axis| {
+                    cell_cells[axis] + f64::from(movement[axis]) / scale_of(level)
+                });
+                let (failures, seen) = shadow_failures(
+                    &mut renderer,
+                    level,
+                    SUN_OVER_THE_EAST,
+                    &moved,
+                    moved_cells,
+                    &probes,
+                );
+                assert_eq!(seen, probes.len(), "{name} level {level} {movement:?}");
+                assert!(
+                    failures.is_empty(),
+                    "{name} level {level} {movement:?}:\n{}",
+                    failures.join("\n")
+                );
+            }
+            // Twenty cells along x is more than the slack of the narrowest cascade that serves the scene: that one is drawn again.
+            let mut far = camera;
+            far.position = far
+                .position
+                .translated([(scale_of(level) * 20.0) as f32, 0.0, 0.0]);
+            let (_, redrawn) = renderer.render_to_rgba(&far, SIZE, SIZE);
+            assert!(
+                redrawn.shadow_cascades_drawn >= 1,
+                "{name} level {level}: the maps were not drawn again for a camera 20 cells away"
+            );
+        }
+    }
+}
+
+/// How much of the light a place on the floor of a shadow scene gets in a picture with the shadows on, over what it gets with them off, in the picture `on` and the picture
+/// `off` taken from `camera`, which is at `camera_cells`; None if the place is not in the picture.
+fn light_at(
+    on: &[u8],
+    off: &[u8],
+    level: u8,
+    camera: &Camera,
+    camera_cells: [f64; 3],
+    cells: [f64; 3],
+) -> Option<f64> {
+    let relative = std::array::from_fn(|axis| (cells[axis] - camera_cells[axis]) * scale_of(level));
+    let (x, y) = pixel_of(camera, relative)?;
+    Some(linear_brightness(pixel(on, x, y)) / linear_brightness(pixel(off, x, y)))
+}
+
+/// The pictures of a renderer with the shadows on and off, from `camera`, and the statistics of the one with them on. (Leaves them on.)
+fn on_and_off(
+    renderer: &mut VoxelRenderer,
+    level: u8,
+    sun: [f32; 3],
+    camera: &Camera,
+) -> (Vec<u8>, Vec<u8>, RenderStatistics) {
+    renderer.set_atmosphere(shadow_atmosphere(level, sun, true));
+    let (on, statistics) = renderer.render_to_rgba(camera, SIZE, SIZE);
+    renderer.set_atmosphere(shadow_atmosphere(level, sun, false));
+    let off = render(renderer, camera);
+    renderer.set_atmosphere(shadow_atmosphere(level, sun, true));
+    (on, off, statistics)
+}
+
+#[test]
+fn a_block_that_is_placed_or_taken_away_changes_the_shadow_in_the_next_picture_of_the_fine_cascades()
+ {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        let (camera, cells, _) = shadow_scene_setup(ShadowScene::Block, 0);
+        let cells = cells.map(|cell| cell as f64);
+        let in_the_shadow = [12.5, 1.0, 16.0];
+        // The floor alone: the place the block will shade is lit.
+        place_blocks(&mut renderer, ORIGIN_BRICK, &floor_voxels(), Some(0));
+        let (on, off, first) = on_and_off(&mut renderer, 0, SUN_OVER_THE_EAST, &camera);
+        assert!(first.shadow_cascades_drawn >= 1, "{name}");
+        let light = light_at(&on, &off, 0, &camera, cells, in_the_shadow).unwrap();
+        assert!((0.97..1.03).contains(&light), "{name}: {light}");
+        // The block is placed: the next picture has its shadow (the maps that serve this scene are of the finest, and are drawn again as soon as the terrain changes).
+        upload_shadow_scene(&mut renderer, ShadowScene::Block, 0);
+        let (on, off, placed) = on_and_off(&mut renderer, 0, SUN_OVER_THE_EAST, &camera);
+        assert!(
+            placed.shadow_cascades_drawn >= 1,
+            "{name}: the maps were not drawn again"
+        );
+        let light = light_at(&on, &off, 0, &camera, cells, in_the_shadow).unwrap();
+        assert!((0.07..0.15).contains(&light), "{name}: placed: {light}");
+        // And nothing changed in the picture after: the maps are kept.
+        let (_, _, kept) = on_and_off(&mut renderer, 0, SUN_OVER_THE_EAST, &camera);
+        assert_eq!(kept.shadow_cascades_drawn, 0, "{name}");
+        // The block is taken away again: the shadow goes.
+        place_blocks(&mut renderer, ORIGIN_BRICK, &floor_voxels(), Some(0));
+        let (on, off, taken) = on_and_off(&mut renderer, 0, SUN_OVER_THE_EAST, &camera);
+        assert!(taken.shadow_cascades_drawn >= 1, "{name}");
+        let light = light_at(&on, &off, 0, &camera, cells, in_the_shadow).unwrap();
+        assert!((0.97..1.03).contains(&light), "{name}: taken away: {light}");
+    }
+}
+
+#[test]
+fn a_sun_that_moves_a_little_keeps_the_maps_a_little_more_draws_them_again_and_one_that_jumps_puts_the_shadow_where_the_new_sun_does()
+ {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        upload_shadow_scene(&mut renderer, ShadowScene::Block, 0);
+        let (camera, cells, _) = shadow_scene_setup(ShadowScene::Block, 0);
+        let cells = cells.map(|cell| cell as f64);
+        let turned = |angle: f32| {
+            // The sun turned about the z axis from over the east by `angle` radians: toward the vertical.
+            let (sine, cosine) = (libm::sinf(angle), libm::cosf(angle));
+            let (x, y) = (SUN_OVER_THE_EAST[0], SUN_OVER_THE_EAST[1]);
+            [x * cosine - y * sine, x * sine + y * cosine, 0.0]
+        };
+        let (_, _, first) = on_and_off(&mut renderer, 0, SUN_OVER_THE_EAST, &camera);
+        assert!(first.shadow_cascades_drawn >= 1, "{name}");
+        // Two thousandths of a radian: kept. (The sine of the angle the maps allow is 0.005.)
+        let (_, _, a_little) = on_and_off(&mut renderer, 0, turned(0.002), &camera);
+        assert_eq!(a_little.shadow_cascades_drawn, 0, "{name}: 0.002 rad");
+        // Seven thousandths from where the maps were drawn: drawn again.
+        let (_, _, more) = on_and_off(&mut renderer, 0, turned(0.007), &camera);
+        assert!(more.shadow_cascades_drawn >= 1, "{name}: 0.007 rad");
+        let (_, _, kept) = on_and_off(&mut renderer, 0, turned(0.0072), &camera);
+        assert_eq!(kept.shadow_cascades_drawn, 0, "{name}: 0.0072 rad");
+        // A sun that has jumped (a quarter of a radian: a player's `.time`): drawn again at once, and the shadow of the block, four cells high, lies where the new sun puts
+        // it: the block's top edge has a shadow at 14 - 4 * x / y, and the sun is now (0.8, 0.6): at 8.67, the shadow from there to 14.
+        let sun = [0.8, 0.6, 0.0];
+        let (on, off, jumped) = on_and_off(&mut renderer, 0, sun, &camera);
+        assert!(jumped.shadow_cascades_drawn >= 1, "{name}: the jump");
+        for (x, shadowed) in [
+            (10.0, true),
+            (11.5, true),
+            (13.0, true),
+            (6.5, false),
+            (7.5, false),
+            (22.0, false),
+        ] {
+            let light = light_at(&on, &off, 0, &camera, cells, [x, 1.0, 16.0]).unwrap();
+            let right = if shadowed {
+                (0.07..0.15).contains(&light)
+            } else {
+                (0.97..1.03).contains(&light)
+            };
+            assert!(right, "{name}: x = {x}: {light}");
+        }
+    }
+}
+
+#[test]
+fn a_player_standing_on_the_floor_shades_it_and_moving_changes_the_shadow_in_the_next_picture() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        place_blocks(&mut renderer, ORIGIN_BRICK, &floor_voxels(), Some(0));
+        let (camera, cells, _) = shadow_scene_setup(ShadowScene::Block, 0);
+        let cells = cells.map(|cell| cell as f64);
+        let (on, off, first) = on_and_off(&mut renderer, 0, SUN_OVER_THE_EAST, &camera);
+        assert!(first.shadow_cascades_drawn >= 1, "{name}");
+        // The floor is lit at x = 20 and x = 12.
+        for x in [12.0, 20.0] {
+            let light = light_at(&on, &off, 0, &camera, cells, [x, 1.0, 16.0]).unwrap();
+            assert!((0.97..1.03).contains(&light), "{name}: x = {x}: {light}");
+        }
+        // A player whose eyes are 1.5 voxels over the floor at x = 22: the figure is two voxels high, so the sun at 53 degrees puts its shadow at about 20.5.
+        let at = |x: f32| Avatar {
+            position: WorldPosition::new(ORIGIN_BRICK, [x, 2.5, 16.5]),
+            color: 3,
+        };
+        renderer.set_avatars(&[at(22.0)]);
+        let (on, off, with_the_player) = on_and_off(&mut renderer, 0, SUN_OVER_THE_EAST, &camera);
+        assert!(
+            with_the_player.shadow_cascades_drawn >= 1,
+            "{name}: the player is a caster of the fine maps"
+        );
+        assert!(
+            with_the_player.shadow_casters_drawn > first.shadow_casters_drawn,
+            "{name}"
+        );
+        let in_the_players_shadow =
+            light_at(&on, &off, 0, &camera, cells, [20.8, 1.0, 16.5]).unwrap();
+        assert!(
+            in_the_players_shadow < 0.5,
+            "{name}: {in_the_players_shadow}"
+        );
+        let beside_it = light_at(&on, &off, 0, &camera, cells, [20.8, 1.0, 20.0]).unwrap();
+        assert!((0.97..1.03).contains(&beside_it), "{name}: {beside_it}");
+        // The player walks: the shadow follows in the next picture.
+        renderer.set_avatars(&[at(18.0)]);
+        let (on, off, walked) = on_and_off(&mut renderer, 0, SUN_OVER_THE_EAST, &camera);
+        assert!(
+            walked.shadow_cascades_drawn >= 1,
+            "{name}: the maps were not drawn again"
+        );
+        let old_place = light_at(&on, &off, 0, &camera, cells, [20.8, 1.0, 16.5]).unwrap();
+        assert!(
+            (0.97..1.03).contains(&old_place),
+            "{name}: the shadow stayed: {old_place}"
+        );
+        let new_place = light_at(&on, &off, 0, &camera, cells, [16.8, 1.0, 16.5]).unwrap();
+        assert!(new_place < 0.5, "{name}: {new_place}");
+        // Taken away: no more shadow.
+        renderer.set_avatars(&[]);
+        let (on, off, gone) = on_and_off(&mut renderer, 0, SUN_OVER_THE_EAST, &camera);
+        assert!(gone.shadow_cascades_drawn >= 1, "{name}");
+        let light = light_at(&on, &off, 0, &camera, cells, [16.8, 1.0, 16.5]).unwrap();
+        assert!((0.97..1.03).contains(&light), "{name}: {light}");
+    }
+}
+
+/// A place given in voxels, as a brick and an offset in it.
+fn place_in_voxels(voxels: [f64; 3]) -> WorldPosition {
+    let brick = voxels.map(|part| (part / 32.0).floor());
+    WorldPosition::new(
+        BrickCoordinate::new(brick[0] as i128, brick[1] as i128, brick[2] as i128),
+        std::array::from_fn(|axis| (voxels[axis] - brick[axis] * 32.0) as f32),
+    )
+}
+
+/// A green cube at (16, 16, 16) with no light of its own, seen from the side it can be seen from with its -x face in the middle of the picture, and the brightness of that
+/// pixel with the shadows on over what it is with them off, for this atmosphere (which has the sun's light and the sky's).
+fn side_face_light(
+    context: &GraphicsContext,
+    sun: [f32; 3],
+    sun_light: u8,
+    sky_light: u8,
+    ball: Option<SunOccluder>,
+) -> f64 {
+    let mut renderer = new_renderer(context);
+    place_blocks(
+        &mut renderer,
+        ORIGIN_BRICK,
+        &[([16, 16, 16], 2, 0)],
+        Some(0),
+    );
+    if let Some(ball) = ball {
+        renderer.set_sun_occluders(&[ball]);
+    }
+    let mut camera = camera_at(ORIGIN_BRICK, [10.0, 16.5, 16.5]);
+    camera.yaw = -std::f32::consts::FRAC_PI_2;
+    let atmosphere = |shadows| Atmosphere {
+        sun_light,
+        sky_light,
+        ..shadow_atmosphere(0, sun, shadows)
+    };
+    renderer.set_atmosphere(atmosphere(false));
+    let off = render(&mut renderer, &camera);
+    renderer.set_atmosphere(atmosphere(true));
+    let on = render(&mut renderer, &camera);
+    let at = |image: &[u8]| linear_brightness(pixel(image, SIZE / 2, SIZE / 2));
+    assert!(at(&off) > 0.0, "the face is black with the shadows off");
+    at(&on) / at(&off)
+}
+
+#[test]
+fn faces_turned_from_the_sun_have_the_shadowed_share_of_the_sky_and_gain_all_of_it_as_they_turn_to_it()
+ {
+    // The sky alone (the sun has no light), so the share is the whole of the change: a face looking along -x, and the sun at an angle from it whose cosine is `cosine`.
+    let share = |cosine: f32| [-cosine, (1.0 - cosine * cosine).sqrt(), 0.0];
+    let fill = f64::from(SHADOWED_ATMOSPHERE_FILL) / 255.0;
+    for context in contexts() {
+        let name = adapter_name(&context);
+        // Looking straight away from the sun, and edge on: the shadowed share (the face is in the shade of its own body).
+        for cosine in [-0.8f32, -0.1, 0.0] {
+            let light = side_face_light(&context, share(cosine), 0, 255, None);
+            assert!(
+                (light - fill).abs() < 0.02,
+                "{name}: cosine {cosine}: {light} against {fill}"
+            );
+        }
+        // Half way to facing it (0.075 of the 0.15 it takes): half way between.
+        let half = side_face_light(&context, share(0.075), 0, 255, None);
+        let expected = fill + (1.0 - fill) * 0.5;
+        assert!(
+            (half - expected).abs() < 0.03,
+            "{name}: {half} against {expected}"
+        );
+        // From 0.15 on: all of the sky, as with no shadows.
+        for cosine in [0.15f32, 0.5, 1.0] {
+            let light = side_face_light(&context, share(cosine), 0, 255, None);
+            assert!(
+                (light - 1.0).abs() < 0.02,
+                "{name}: cosine {cosine}: {light}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_face_of_a_planets_ground_that_looks_away_from_the_sun_but_is_lit_by_the_turn_is_not_shaded_by_its_own_body()
+ {
+    // The cube's -x face is a face of the ground of a planet whose way out there is (-0.5, 0, 0.866) (a ball of radius 1,000 under the face, a cube-sphere's patch that is not
+    // level): the sun is nearly along +z, a little toward +x (0.3), so the face looks away from it by its own normal (the cosine is -0.29), and by the turned one (which points
+    // half way to the way out, up and to -x) it is lit by 0.23. The shadow map holds the back of the cube, which is this face, at the depth of the face: only a place moved
+    // off the face and eased toward the sun is lit by it. With the shadows on the face is as bright as with them off.
+    let face = [16.0, 16.5, 16.5];
+    let way_out = [-0.5, 0.0, 0.866_025_403_784_438_6];
+    let radius = 1000.0;
+    let centre: [f64; 3] = std::array::from_fn(|axis| face[axis] - radius * way_out[axis]);
+    let ball = SunOccluder::Ball {
+        centre: place_in_voxels(centre),
+        radius: radius as f32,
+    };
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let light = side_face_light(&context, [0.3, 0.0, 1.0], 255, 0, Some(ball));
+        // (Not exactly all of it: a face this slanted to the light (73 degrees) has a few texels of the filter deeper than the bias, a few in a hundred of the light. A face
+        // in its own shadow has none.)
+        assert!(
+            (0.9..1.03).contains(&light),
+            "{name}: the face of the ground is {light} of what it is with no shadows"
+        );
+    }
+}
+
+#[test]
+fn the_shadow_of_the_last_cascade_fades_out_over_the_last_of_its_reach_as_the_rule_says() {
+    // With no fog there are eleven cascades, and the last reaches 58.7 million voxels. A scene of cells of 2^21 voxels (two million) seen from 26 cells above its floor has a
+    // place in a shadow 55 million voxels away: in the part of the last cascade's reach where it gives way to no shadow at all (from 85% of the reach). The share of the shadow
+    // left is the rule's (`cascade_for`), and the light is the sun's and the sky's by it, as the shader combines them.
+    let level = 21;
+    let reach = renderer::reach_of(67_108_864.0);
+    let (probe, camera_cells) = ([12.5, 1.0, 16.0], [16.0, 27.0, 16.0]);
+    let squares: f64 = (0..3)
+        .map(|axis| {
+            let delta = (probe[axis] - camera_cells[axis]) * scale_of(level);
+            delta * delta
+        })
+        .sum();
+    let distance = squares.sqrt() as f32;
+    let (index, blend) = renderer::cascade_for(&[reach], distance);
+    assert_eq!(index, 0);
+    assert!((0.2..0.8).contains(&blend), "{distance}: {blend}");
+    // The light of a floor that faces the sun at 53 degrees, by how much of the sun reaches it: the sun's (0.8 of a full 1), the sky's (110 of 255, and of that the shadowed
+    // share of 64 of 255 when it is not reached), shaded by the side (0.4 + 0.6 * 0.8) and combined like a screen blend.
+    let light = |reached: f64| {
+        let sky = 110.0 / 255.0 * (64.0 / 255.0 + (1.0 - 64.0 / 255.0) * reached);
+        let shaded = (0.4 + 0.6 * 0.8) * sky;
+        let sun = 0.8 * reached;
+        shaded + sun * (1.0 - shaded)
+    };
+    let expected = light(f64::from(blend)) / light(1.0);
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        upload_shadow_scene(&mut renderer, ShadowScene::Block, level);
+        let camera = camera_in_cells(level, [16, 27, 16], 0.0, -Camera::MAXIMUM_PITCH);
+        let atmosphere = |shadows| Atmosphere {
+            fog_start: 1.0e15,
+            fog_end: 2.0e15,
+            ..shadow_atmosphere(level, SUN_OVER_THE_EAST, shadows)
+        };
+        renderer.set_atmosphere(atmosphere(false));
+        let off = render(&mut renderer, &camera);
+        renderer.set_atmosphere(atmosphere(true));
+        let on = render(&mut renderer, &camera);
+        let seen = light_at(&on, &off, level, &camera, camera_cells, probe)
+            .expect("the place is in the picture");
+        assert!(
+            (seen - expected).abs() < 0.03,
+            "{name}: the light there is {seen} of full, the rule says {expected} (a share of {blend} of the sun)"
+        );
+        // And it is not the shadow whole (0.11) nor none of it (1.0): the test is of the fade.
+        assert!(seen > 0.2 && seen < 0.9, "{name}: {seen}");
+    }
+}

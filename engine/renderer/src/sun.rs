@@ -59,7 +59,7 @@ fn smoothstep(edge_start: f32, edge_end: f32, value: f32) -> f32 {
 
 /// The vector's length, worked out from the vector scaled by its largest part, because the square of a part of 10^20 or more does not fit an `f32`. Returns the length and
 /// the unit vector; a zero vector has length 0 and no direction (zero).
-fn length_and_direction(vector: Vec3) -> (f32, Vec3) {
+pub(crate) fn length_and_direction(vector: Vec3) -> (f32, Vec3) {
     let largest = vector.abs().max_element();
     if largest == 0.0 {
         return (0.0, Vec3::ZERO);

@@ -155,6 +155,8 @@ impl GameDefinition for Cave {
             axis: [0.0, -0.342, 0.94],
             light: 255,
             sky_light: 110,
+            // A place the sun does not reach has about a quarter of the sky's light: shade is dim, not black.
+            sky_light_in_shadow: 70,
             flat_ground: !in_space,
             sky: Sky {
                 color: [0.55, 0.72, 0.92],

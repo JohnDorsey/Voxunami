@@ -8,6 +8,14 @@
 //
 // Both carry the block (an index into the palette) and a brightness from 0 to 255.
 
+// One cascade of the shadow map: a picture of the terrain from the sun, of a square across the light round the camera.
+struct Cascade {
+    // From a place relative to the camera to the map: x and y across it (-1 to 1), z the depth (0 to 1, the sun's side deeper).
+    matrix: mat4x4<f32>,
+    // x: how far from the camera a place may be to be looked up in this cascade, y: the width of a texel in voxels, z: the distance in voxels from depth 0 to depth 1.
+    limits: vec4<f32>,
+}
+
 struct Frame {
     view_projection: mat4x4<f32>,
     fog_color: vec4<f32>,
@@ -23,6 +31,10 @@ struct Frame {
     sun_light: vec4<f32>,
     // The balls (planets, moons) that can hide the sun: the middle relative to the camera, in voxels (xyz), and the radius (w).
     sun_balls: array<vec4<f32>, 8>,
+    // x: how many cascades of shadow map there are (0: the terrain casts no shadows), y: the share of the sky's light that reaches a place the terrain puts in shadow (0 to 1).
+    shadow: vec4<f32>,
+    // The cascades of the shadow map, finest first.
+    cascades: array<Cascade, 11>,
     // Linear RGB of each avatar colour.
     avatars: array<vec4<f32>, 16>,
 }
@@ -42,6 +54,9 @@ struct Placement {
 @group(0) @binding(0) var<uniform> frame: Frame;
 // Linear RGB per game material value; values beyond the palette draw magenta.
 @group(0) @binding(1) var<storage, read> palette: array<vec4<f32>>;
+// The cascades of the shadow map, a layer each, and the sampler that compares a depth with what a layer holds.
+@group(0) @binding(2) var shadow_maps: texture_depth_2d_array;
+@group(0) @binding(3) var shadow_sampler: sampler_comparison;
 @group(1) @binding(0) var<uniform> placement: Placement;
 
 struct Instance {
@@ -83,6 +98,12 @@ const MOST_OF_A_BALL: f32 = 0.999999;
 // `sun.rs`).
 const TURNED_UP_TO: f32 = 0.01;
 const TURNED_NO_MORE_FROM: f32 = 0.03;
+
+// How the shadow of the terrain is looked up. The same numbers as `shadow.rs`.
+const BLEND_FROM: f32 = 0.85;
+const DEPTH_BIAS_TEXELS: f32 = 1.0;
+const SLOPE_BIAS_LIMIT: f32 = 4.0;
+const FACING_FULL_FROM: f32 = 0.15;
 
 struct Sunlight {
     // How much of the sun reaches a place: 1 for all of it, 0 for none.
@@ -204,8 +225,13 @@ fn finish(relative: vec3<f32>, face: u32, material: u32, light: u32) -> VertexOu
     return out;
 }
 
-@vertex
-fn vertex_main(@builtin(vertex_index) vertex_index: u32, instance: Instance) -> VertexOutput {
+struct Corner {
+    // Where the corner is relative to the camera, in voxels.
+    relative: vec3<f32>,
+    face: u32,
+}
+
+fn whole_corner(vertex_index: u32, instance: Instance) -> Corner {
     let origin = vec3<f32>(
         f32(instance.geometry & 31u),
         f32((instance.geometry >> 5u) & 31u),
@@ -217,11 +243,10 @@ fn vertex_main(@builtin(vertex_index) vertex_index: u32, instance: Instance) -> 
     // The voxel owns its face; a positive face is on the voxel's far side.
     let plane = origin + axis_unit(face / 2u) * select(0.0, 1.0, (face & 1u) == 1u);
     let local = corner_position(vertex_index, face, plane, width, height);
-    return finish(placement.rotation * (local * placement.offset.w) + placement.offset.xyz, face, instance.material & 0xFFFFFFu, instance.material >> 24u);
+    return Corner(placement.rotation * (local * placement.offset.w) + placement.offset.xyz, face);
 }
 
-@vertex
-fn vertex_detailed(@builtin(vertex_index) vertex_index: u32, instance: DetailedInstance) -> VertexOutput {
+fn detailed_corner(vertex_index: u32, instance: DetailedInstance) -> Corner {
     let origin = vec3<f32>(
         f32(instance.first & 0xFFFFu),
         f32(instance.first >> 16u),
@@ -231,7 +256,73 @@ fn vertex_detailed(@builtin(vertex_index) vertex_index: u32, instance: DetailedI
     let height = f32(instance.third & 0xFFFFu) / 8.0;
     let face = (instance.third >> 16u) & 7u;
     let local = corner_position(vertex_index, face, origin, width, height);
-    return finish(placement.rotation * (local * placement.offset.w) + placement.offset.xyz, face, instance.material & 0xFFFFFFu, instance.third >> 24u);
+    return Corner(placement.rotation * (local * placement.offset.w) + placement.offset.xyz, face);
+}
+
+@vertex
+fn vertex_main(@builtin(vertex_index) vertex_index: u32, instance: Instance) -> VertexOutput {
+    let corner = whole_corner(vertex_index, instance);
+    return finish(corner.relative, corner.face, instance.material & 0xFFFFFFu, instance.material >> 24u);
+}
+
+@vertex
+fn vertex_detailed(@builtin(vertex_index) vertex_index: u32, instance: DetailedInstance) -> VertexOutput {
+    let corner = detailed_corner(vertex_index, instance);
+    return finish(corner.relative, corner.face, instance.material & 0xFFFFFFu, instance.third >> 24u);
+}
+
+// The same quads for the shadow map: where they are in the cascade (the frame's matrix is the cascade's) and nothing else.
+@vertex
+fn shadow_vertex_main(@builtin(vertex_index) vertex_index: u32, instance: Instance) -> @builtin(position) vec4<f32> {
+    return frame.view_projection * vec4<f32>(whole_corner(vertex_index, instance).relative, 1.0);
+}
+
+@vertex
+fn shadow_vertex_detailed(@builtin(vertex_index) vertex_index: u32, instance: DetailedInstance) -> @builtin(position) vec4<f32> {
+    return frame.view_projection * vec4<f32>(detailed_corner(vertex_index, instance).relative, 1.0);
+}
+
+// The share of the sun that the terrain lets through to a place, in one cascade of the map: 1 if nothing is nearer the sun than the place in its texel, 0 if something is
+// (between them for a texel that is part one, part the other). The same arithmetic as `Cascade::lookup` in `shadow.rs`.
+fn shadow_in_cascade(index: u32, position: vec3<f32>, cosine: f32) -> f32 {
+    let cascade = frame.cascades[index];
+    let texel = cascade.limits.y;
+    let clip = cascade.matrix * vec4<f32>(position, 1.0);
+    let sine = sqrt(max(1.0 - cosine * cosine, 0.0));
+    let slope = min(sine / max(cosine, 0.1), SLOPE_BIAS_LIMIT);
+    let reference = clip.z + (DEPTH_BIAS_TEXELS + slope) * texel / cascade.limits.z;
+    let coordinates = vec2<f32>(clip.x * 0.5 + 0.5, 0.5 - clip.y * 0.5);
+    return textureSampleCompareLevel(shadow_maps, shadow_sampler, coordinates, index, reference);
+}
+
+// The share of the sun the terrain lets through to a place `distance` from the camera, for a face that makes an angle with the sun of the given cosine
+// (above 0). The finest cascade that holds the place is looked in, mixed with the next over the last of its reach (and a place beyond the last cascade is not in shadow). The
+// same as `cascade_for` in `shadow.rs`.
+fn terrain_light(position: vec3<f32>, cosine: f32, distance: f32) -> f32 {
+    let count = u32(frame.shadow.x);
+    var chosen = count;
+    var blend = 0.0;
+    for (var index = 0u; index < count; index = index + 1u) {
+        // (A cascade that is not used has a reach of 0.)
+        let reach = frame.cascades[index].limits.x;
+        if (distance < reach) {
+            chosen = index;
+            blend = smoothstep(BLEND_FROM * reach, reach, distance);
+            break;
+        }
+    }
+    if (chosen == count) {
+        return 1.0;
+    }
+    var light = shadow_in_cascade(chosen, position, cosine);
+    if (blend > 0.0) {
+        var next = 1.0;
+        if (chosen + 1u < count && frame.cascades[chosen + 1u].limits.x > 0.0) {
+            next = shadow_in_cascade(chosen + 1u, position, cosine);
+        }
+        light = mix(light, next, blend);
+    }
+    return light;
 }
 
 @fragment
@@ -244,9 +335,25 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // The sky lights every face the sun can reach, as much as its side allows, like another lamp; the sun lights the faces that look at it, by the cosine of the
         // angle; and the sun's light and what there was combine like a screen blend too.
         let light = sunlight(in.relative, in.normal);
-        let sky = frame.sun_light.y * light.visible;
+        var sun_visible = light.visible;
+        var sky_visible = light.visible;
+        if (frame.shadow.x > 0.5) {
+            // The terrain's shadow: on the sun's light as it is; on the sky's light only in part (a place in a shadow has the sky's light still, and the more the less of the sky
+            // is hidden, which this does not know), and a face turned from the sun is in the shade of its own body, which fades in as the sun crosses its plane.
+            let cosine = dot(light.normal, frame.sun_direction.xyz);
+            var terrain = 0.0;
+            if (cosine > 0.0) {
+                // (The distance of this pixel, not the one the vertices interpolate: that is wrong across the big quads of coarse nodes, where it chooses a cascade too coarse.)
+                let largest = max(abs(in.relative.x), max(abs(in.relative.y), abs(in.relative.z)));
+                let distance = largest * length(in.relative / max(largest, 1.0e-30));
+                terrain = terrain_light(in.relative, cosine, distance);
+            }
+            sun_visible = sun_visible * terrain;
+            sky_visible = sky_visible * mix(frame.shadow.y, 1.0, terrain * smoothstep(0.0, FACING_FULL_FROM, cosine));
+        }
+        let sky = frame.sun_light.y * sky_visible;
         shaded = side * (lamp + sky * (1.0 - lamp));
-        sun = frame.sun_light.x * max(dot(light.normal, frame.sun_direction.xyz), 0.0) * light.visible;
+        sun = frame.sun_light.x * max(dot(light.normal, frame.sun_direction.xyz), 0.0) * sun_visible;
     }
     let color = in.albedo * (shaded + sun * (1.0 - shaded));
     let fog = smoothstep(frame.fog_range.x, frame.fog_range.y, in.distance);

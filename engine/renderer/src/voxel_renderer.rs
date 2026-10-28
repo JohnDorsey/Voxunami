@@ -18,12 +18,32 @@ use crate::camera::{Camera, Frustum};
 use crate::crosshair::Crosshair;
 use crate::graphics_context::GraphicsContext;
 use crate::overlay::{Overlay, OverlayRect};
-use crate::sun::{MAXIMUM_SUN_BALLS, SunOccluder, balls_and_ground};
+use crate::shadow::{Cascade, LightBasis, MAXIMUM_CASCADES, SUN_DRIFT, half_widths};
+use crate::shadow_maps::{ShadowPipelines, ShadowTarget, comparison_sampler, shadow_frame_layout};
+use crate::sun::{
+    MAXIMUM_SUN_BALLS, SUN_DISC_SOFTNESS, SunOccluder, TWILIGHT_SOFTNESS, balls_and_ground,
+    length_and_direction,
+};
 
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Radius of a sphere around a brick: half the diagonal of a 32-voxel cube.
 const BRICK_BOUNDING_RADIUS: f32 = 27.72;
 const BRICK_CENTER_OFFSET: f32 = 16.0;
+/// How many quads of shadow maps may be drawn again in a frame to keep them up to date (a map that is wrong is always drawn again, and one map is always allowed): a cascade
+/// keeps its map while the camera stays near the middle of it, and drawing the terrain of a whole picture is most of what shadows cost.
+const REFRESH_BUDGET_QUADS: usize = 1_500_000;
+/// What the calls that draw one thing into a shadow map cost, in quads (see [`REFRESH_BUDGET_QUADS`]).
+const SHADOW_CALL_COST_QUADS: usize = 300;
+/// Things that move (other players, boxes, ships) are drawn into the maps whose texels are this wide, in voxels, or less: a figure of two voxels is no shadow in a cascade of
+/// texels of several, and a map that held it would have to be drawn again whenever it moved.
+const DYNAMIC_CASTER_TEXEL_LIMIT: f32 = 1.0;
+
+/// How many frames a map of terrain that has changed (a brick came or went, or was edited) is kept before it is drawn again: none for the fine cascades, so that a block that
+/// is placed has its shadow at once, and more for each coarser, which have more terrain to draw and shadows that a texel's change of would not be seen in.
+fn terrain_refresh_age(index: usize) -> u64 {
+    1 << index.saturating_sub(2)
+}
+
 /// A placement is the position of the brick's corner relative to the camera (a `vec4`) and the three columns of the turn of the grid it
 /// is in (a `mat3x3`, each column padded to a `vec4`).
 const PLACEMENT_SIZE: u64 = 64;
@@ -205,6 +225,14 @@ pub struct Atmosphere {
     /// How bright, from 0 to 255, the sky makes every face the sun can reach, from whichever side (a face on the side away from the sun is shaded as ever). The sky is
     /// the sun's light scattered, so it goes where the sun does: a place the sun does not reach has none. 0 is none.
     pub sky_light: u8,
+    /// Whether the terrain and everything drawn casts shadows (see [`crate::shadow`]): the sun lights only what it reaches, and the sky's light is cut to
+    /// [`Atmosphere::sky_light_in_shadow`] where it does not. The renderer draws the shadow maps for it (they cost a second drawing of what is near the sun's way,
+    /// finest for what is near the camera), and only while there is a sun or a sky light to shade. `false`, the default, is no shadows, and pictures as they were.
+    pub shadows: bool,
+    /// The share, from 0 to 255, of the sky's light that reaches a place the sun does not (one in the shadow of the terrain, or a face turned from the sun), while
+    /// [`Atmosphere::shadows`] are on: the sky is scattered light, so a shadow is not black, but it is not told how much of the sky is hidden, which only a cave knows. 255, the
+    /// default, is no darkening at all.
+    pub sky_light_in_shadow: u8,
 }
 
 impl Default for Atmosphere {
@@ -218,6 +246,8 @@ impl Default for Atmosphere {
             ambient_light: 0,
             sun_light: 0,
             sky_light: 0,
+            shadows: false,
+            sky_light_in_shadow: 255,
         }
     }
 }
@@ -236,6 +266,10 @@ pub struct RenderStatistics {
     pub detailed_quads_drawn: usize,
     pub avatars_drawn: usize,
     pub entity_boxes_drawn: usize,
+    /// How many cascades of the shadow map were drawn again this frame (0 while there are no shadows, or no sun to cast them, and while the maps are kept), and how many things
+    /// were drawn into them in all.
+    pub shadow_cascades_drawn: usize,
+    pub shadow_casters_drawn: usize,
 }
 
 #[repr(C)]
@@ -250,22 +284,82 @@ struct FrameUniform {
     sun_light: [f32; 4],
     /// The balls that can hide the sun: the middle relative to the camera and the radius.
     sun_balls: [[f32; 4]; MAXIMUM_SUN_BALLS],
+    /// x: how many cascades there are (0: no shadows), y: the share of the sky's light that reaches a place in a shadow.
+    shadow: [f32; 4],
+    cascades: [CascadeUniform; MAXIMUM_CASCADES],
     /// Linear RGB of each avatar colour.
     avatars: [[f32; 4]; AVATAR_COLOR_COUNT],
 }
 
-/// The meshes of a brick on the GPU: whole-voxel quads, and detailed ones if it has any.
+/// A cascade of the shadow map as the shader has it: the matrix from a place relative to the camera to the map, how far from the camera the cascade is looked in,
+/// the width of a texel in voxels and the depth range in voxels.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct CascadeUniform {
+    matrix: [[f32; 4]; 4],
+    limits: [f32; 4],
+}
+
+/// The meshes of a brick on the GPU: whole-voxel quads, and detailed ones if it has any. The quads are in the order of the faces they are on (a shadow map is drawn from
+/// the faces that look away from the sun, which are a few of the six).
 struct GpuBrick {
     quads: Option<wgpu::Buffer>,
     quad_count: u32,
+    /// Where the quads of each face begin: those of face `f` are `quad_faces[f]..quad_faces[f + 1]`.
+    quad_faces: [u32; 7],
     detailed: Option<wgpu::Buffer>,
     detailed_count: u32,
+    detailed_faces: [u32; 7],
 }
 
 impl GpuBrick {
     fn quad_total(&self) -> usize {
         (self.quad_count + self.detailed_count) as usize
     }
+
+    /// The ranges of whole quads, and of detailed ones, on the faces that look away from the sun when the brick is turned by `rotation` (the sun's direction is a unit
+    /// vector, in the world): what a shadow map is drawn from. Neighbouring faces' ranges are joined.
+    fn back_faces(
+        faces: &[u32; 7],
+        rotation: &[[f32; 3]; 3],
+        toward_sun: Vec3,
+    ) -> Vec<std::ops::Range<u32>> {
+        let mut ranges: Vec<std::ops::Range<u32>> = Vec::new();
+        for face in 0..6 {
+            let (axis, sign) = (face / 2, if face % 2 == 1 { 1.0 } else { -1.0 });
+            let normal = Vec3::new(rotation[0][axis], rotation[1][axis], rotation[2][axis]) * sign;
+            let range = faces[face]..faces[face + 1];
+            if normal.dot(toward_sun) >= 0.0 || range.is_empty() {
+                continue;
+            }
+            match ranges.last_mut() {
+                Some(last) if last.end == range.start => last.end = range.end,
+                _ => ranges.push(range),
+            }
+        }
+        ranges
+    }
+
+    /// How many quads a shadow map from this sun draws of the brick placed with this turn.
+    fn shadow_quads(&self, rotation: &[[f32; 3]; 3], toward_sun: Vec3) -> usize {
+        [&self.quad_faces, &self.detailed_faces]
+            .into_iter()
+            .flat_map(|faces| Self::back_faces(faces, rotation, toward_sun))
+            .map(|range| range.len())
+            .sum()
+    }
+}
+
+/// Where the things on each face begin, for things in the order of their faces (0 to 5): the number of things before the first of each face, and the total after the last.
+fn face_starts(faces: impl Iterator<Item = u32>) -> [u32; 7] {
+    let mut starts = [0u32; 7];
+    for face in faces {
+        starts[face as usize + 1] += 1;
+    }
+    for face in 0..6 {
+        starts[face + 1] += starts[face];
+    }
+    starts
 }
 
 /// Where one brick, avatar or box is drawn: the position of its corner relative to the camera, and the turn of what it is part of.
@@ -313,6 +407,146 @@ struct ShipFrame {
     origin: [f64; 3],
 }
 
+/// What a placement draws: a brick or node the renderer holds, an avatar's mesh, or a box's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MeshKey {
+    Held(BrickKey),
+    Avatar(usize),
+    Box((u32, [u8; 3])),
+}
+
+/// One thing that may be drawn this frame: what it is, where it is placed, and the sphere that holds it (relative to the camera), for deciding whether the camera sees it and
+/// whether a shadow map wants it.
+struct Drawable {
+    mesh: MeshKey,
+    placement: Placement,
+    middle: Vec3,
+    radius: f32,
+    /// Whether it moves (a ship, an avatar, a box) and not the terrain: the maps that keep their picture for a while hold only the terrain.
+    dynamic: bool,
+}
+
+/// Every thing that may be drawn this frame: the bricks and nodes first (`pieces` of them), then the avatars (up to `avatars_end`), then the boxes.
+struct Gathered {
+    drawables: Vec<Drawable>,
+    pieces: usize,
+    avatars_end: usize,
+}
+
+/// How a kept map stands: what has become of the camera, the sun and the world since it was drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Standing {
+    /// Whether the map still holds everything within its reach of the camera.
+    holds: bool,
+    /// The sine of the angle the sun has turned since (infinite if it has turned over).
+    turned: f32,
+    /// Whether the terrain has changed since, and (for a cascade fine enough to hold them) the things that move.
+    terrain_changed: bool,
+    things_changed: bool,
+    /// How many frames ago it was drawn.
+    waited: u64,
+}
+
+impl Standing {
+    /// Whether the map is wrong, not just out of date: it does not hold what it must, or the sun has turned too far (ten times what is allowed to be a little).
+    fn is_wrong(&self) -> bool {
+        !self.holds || self.turned > 10.0 * SUN_DRIFT
+    }
+}
+
+/// Whether the map of cascade `index`, which something in the picture is looked up in, is to be drawn again, given how the map that is kept stands (if there is one), how many
+/// quads of maps have been drawn again in this frame already, and (asked for only when it matters) how many quads it takes to draw this one: always if there is none or it
+/// is wrong; if it is only out of date, when it has waited its time (see [`terrain_refresh_age`]), for as many frames as it has times the budget in quads to draw, and there is
+/// room in the frame (the first map drawn again in a frame is always allowed).
+fn draw_again(
+    standing: Option<Standing>,
+    index: usize,
+    spent: usize,
+    cost: impl FnOnce() -> usize,
+) -> bool {
+    let Some(standing) = standing else {
+        return true;
+    };
+    if standing.is_wrong() {
+        return true;
+    }
+    let changed = standing.terrain_changed || standing.things_changed;
+    if !changed && standing.turned <= SUN_DRIFT {
+        return false;
+    }
+    let wait = if changed {
+        terrain_refresh_age(index)
+    } else {
+        1
+    };
+    if standing.waited < wait {
+        return false;
+    }
+    let cost = cost();
+    let affordable = spent == 0 || spent + cost <= REFRESH_BUDGET_QUADS;
+    affordable && standing.waited >= cost.div_ceil(REFRESH_BUDGET_QUADS) as u64
+}
+
+/// A cascade's map as it was drawn last, kept while it still serves.
+struct CascadeCache {
+    cascade: Cascade,
+    basis: LightBasis,
+    /// Where the camera was.
+    camera: WorldPosition,
+    /// What the renderer held then: the terrain, and the things that move.
+    terrain_version: u64,
+    dynamic_version: u64,
+    /// The frame it was drawn in.
+    frame: u64,
+}
+
+/// A cascade of the shadow map for this frame, and what is drawn into it.
+struct PlannedCascade {
+    /// The cascade as its map was drawn (this frame, or before), and the sun's frame it was drawn in.
+    cascade: Cascade,
+    basis: LightBasis,
+    /// The camera's place relative to where it was when the map was drawn (nothing if it is drawn this frame).
+    moved: Vec3,
+    /// Whether the pictures look places up in it this frame: there is a map to look in that is right for the camera.
+    used: bool,
+    /// Whether its map is drawn this frame; if not, what it holds is kept.
+    drawn: bool,
+    /// The things drawn into it, by index in the frame's drawables (none if it is not drawn).
+    casters: Vec<usize>,
+}
+
+/// The shadow maps of this frame.
+struct ShadowPlan {
+    cascades: Vec<PlannedCascade>,
+}
+
+/// The places in the placements buffer of the things drawn this frame: each thing drawn has one, however many passes it is drawn in.
+struct Slots {
+    slot_of: Vec<Option<u32>>,
+    placements: Vec<Placement>,
+}
+
+impl Slots {
+    fn new(count: usize) -> Self {
+        Self {
+            slot_of: vec![None; count],
+            placements: Vec::new(),
+        }
+    }
+
+    /// The slot of a drawable, given one if it has none.
+    fn slot(&mut self, drawables: &[Drawable], index: usize) -> u32 {
+        *self.slot_of[index].get_or_insert_with(|| {
+            self.placements.push(drawables[index].placement);
+            self.placements.len() as u32 - 1
+        })
+    }
+
+    fn get(&self, index: usize) -> u32 {
+        self.slot_of[index].expect("a drawable that is drawn has a slot")
+    }
+}
+
 struct PlacementBuffer {
     buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -335,10 +569,17 @@ pub struct VoxelRenderer {
     pipeline: wgpu::RenderPipeline,
     detailed_pipeline: wgpu::RenderPipeline,
     frame_layout: wgpu::BindGroupLayout,
+    /// The frame's uniform for the picture, and after it one copy for each cascade of the shadow map, each at a multiple of `frame_stride`.
     frame_buffer: wgpu::Buffer,
+    frame_stride: u64,
     /// Linear RGB of every game material, which the shader reads by material value.
     palette_buffer: wgpu::Buffer,
     frame_bind_group: wgpu::BindGroup,
+    /// The shadow maps: drawn into when there are shadows, looked up in by the pictures.
+    shadow_target: ShadowTarget,
+    shadow_sampler: wgpu::Sampler,
+    shadow_pipelines: ShadowPipelines,
+    shadow_frame_group: wgpu::BindGroup,
     placement_layout: wgpu::BindGroupLayout,
     placements: PlacementBuffer,
     placement_stride: u64,
@@ -356,6 +597,13 @@ pub struct VoxelRenderer {
     box_meshes: HashMap<(u32, [u8; 3]), GpuBrick>,
     atmosphere: Atmosphere,
     sun_occluders: Vec<SunOccluder>,
+    /// How many times the terrain held changed (a brick or node came, went or was replaced), and the things that move (ships, avatars, boxes): what a kept map is held
+    /// against, to know that it is out of date.
+    terrain_version: u64,
+    dynamic_version: u64,
+    /// How many pictures have been drawn with shadows, and the maps as they were last drawn, one for each cascade.
+    shadow_frame: u64,
+    shadow_cache: Vec<Option<CascadeCache>>,
     depth: Option<SizedTarget>,
     offscreen: Option<SizedTarget>,
     crosshair: Crosshair,
@@ -419,6 +667,22 @@ impl VoxelRenderer {
                         has_dynamic_offset: false,
                         min_binding_size: NonZeroU64::new(16),
                     },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                     count: None,
                 },
             ],
@@ -504,21 +768,45 @@ impl VoxelRenderer {
             },
         );
 
+        let alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment);
+        let frame_stride = (size_of::<FrameUniform>() as u64).next_multiple_of(alignment);
         let frame_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame uniform"),
-            size: size_of::<FrameUniform>() as u64,
+            size: frame_stride * (1 + MAXIMUM_CASCADES as u64),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let palette_buffer = Self::palette_buffer(&device, &[]);
-        let frame_bind_group =
-            Self::frame_bind_group(&device, &frame_layout, &frame_buffer, &palette_buffer);
+        let shadow_target = ShadowTarget::new(&device, false);
+        let shadow_sampler = comparison_sampler(&device);
+        let frame_bind_group = Self::frame_bind_group(
+            &device,
+            &frame_layout,
+            &frame_buffer,
+            &palette_buffer,
+            &shadow_target,
+            &shadow_sampler,
+        );
+        let shadow_frame_layout = shadow_frame_layout(&device, size_of::<FrameUniform>() as u64);
+        let shadow_frame_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("shadow frame bind group"),
+            layout: &shadow_frame_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &frame_buffer,
+                    offset: 0,
+                    size: NonZeroU64::new(size_of::<FrameUniform>() as u64),
+                }),
+            }],
+        });
 
-        let alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment);
         let placement_stride = PLACEMENT_SIZE.next_multiple_of(alignment);
         let placements =
             Self::create_placement_buffer(&device, &placement_layout, placement_stride, 64);
 
+        let shadow_pipelines =
+            ShadowPipelines::new(&device, &shader, &shadow_frame_layout, &placement_layout);
         let crosshair = Crosshair::new(&device, color_format);
         let device_for_overlay = device.clone();
         let mut renderer = Self {
@@ -529,8 +817,13 @@ impl VoxelRenderer {
             detailed_pipeline,
             frame_layout,
             frame_buffer,
+            frame_stride,
             palette_buffer,
             frame_bind_group,
+            shadow_target,
+            shadow_sampler,
+            shadow_pipelines,
+            shadow_frame_group,
             placement_layout,
             placements,
             placement_stride,
@@ -545,6 +838,10 @@ impl VoxelRenderer {
             box_meshes: HashMap::new(),
             atmosphere: Atmosphere::default(),
             sun_occluders: Vec::new(),
+            terrain_version: 0,
+            dynamic_version: 0,
+            shadow_frame: 0,
+            shadow_cache: (0..MAXIMUM_CASCADES).map(|_| None).collect(),
             depth: None,
             offscreen: None,
             crosshair,
@@ -573,6 +870,8 @@ impl VoxelRenderer {
         layout: &wgpu::BindGroupLayout,
         frame_buffer: &wgpu::Buffer,
         palette_buffer: &wgpu::Buffer,
+        shadow_target: &ShadowTarget,
+        shadow_sampler: &wgpu::Sampler,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("frame bind group"),
@@ -580,11 +879,23 @@ impl VoxelRenderer {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: frame_buffer.as_entire_binding(),
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: frame_buffer,
+                        offset: 0,
+                        size: NonZeroU64::new(size_of::<FrameUniform>() as u64),
+                    }),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: palette_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&shadow_target.array_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(shadow_sampler),
                 },
             ],
         })
@@ -601,20 +912,30 @@ impl VoxelRenderer {
                     })
             })
         };
+        // In the order of their faces (the face is in bits 25 to 27 of the geometry of a quad, and in bits 16 to 18 of the third word of a detailed one), the order within a
+        // face kept.
+        let quad_face = |quad: &PackedQuad| (quad.geometry >> 25) & 7;
+        let detailed_face = |quad: &PackedDetailedQuad| (quad.words[2] >> 16) & 7;
+        let mut quads = mesh.quads.clone();
+        quads.sort_by_key(quad_face);
+        let mut detailed = mesh.detailed.clone();
+        detailed.sort_by_key(detailed_face);
         GpuBrick {
+            quad_faces: face_starts(quads.iter().map(quad_face)),
             quads: buffer(
                 "quads",
-                mesh.quads
+                quads
                     .iter()
                     .flat_map(|quad| [quad.geometry, quad.material])
                     .collect(),
             ),
-            quad_count: mesh.quads.len() as u32,
+            quad_count: quads.len() as u32,
+            detailed_faces: face_starts(detailed.iter().map(detailed_face)),
             detailed: buffer(
                 "detailed quads",
-                mesh.detailed.iter().flat_map(|quad| quad.words).collect(),
+                detailed.iter().flat_map(|quad| quad.words).collect(),
             ),
-            detailed_count: mesh.detailed.len() as u32,
+            detailed_count: detailed.len() as u32,
         }
     }
 
@@ -673,17 +994,26 @@ impl VoxelRenderer {
             "at most {MAXIMUM_GAME_MATERIALS} materials can be drawn"
         );
         self.palette_buffer = Self::palette_buffer(&self.device, colors);
+        self.remake_frame_bind_group();
+    }
+
+    fn remake_frame_bind_group(&mut self) {
         self.frame_bind_group = Self::frame_bind_group(
             &self.device,
             &self.frame_layout,
             &self.frame_buffer,
             &self.palette_buffer,
+            &self.shadow_target,
+            &self.shadow_sampler,
         );
     }
 
     /// Sets which avatars are drawn from now on, replacing the previous ones.
     pub fn set_avatars(&mut self, avatars: &[Avatar]) {
-        self.avatars = avatars.to_vec();
+        if self.avatars != avatars {
+            self.dynamic_version += 1;
+            self.avatars = avatars.to_vec();
+        }
     }
 
     /// Sets which boxes are drawn from now on, replacing the previous ones.
@@ -695,7 +1025,10 @@ impl VoxelRenderer {
                 self.box_meshes.insert((material, size), mesh);
             }
         }
-        self.entity_boxes = boxes.to_vec();
+        if self.entity_boxes != boxes {
+            self.dynamic_version += 1;
+            self.entity_boxes = boxes.to_vec();
+        }
     }
 
     pub fn set_atmosphere(&mut self, atmosphere: Atmosphere) {
@@ -711,6 +1044,7 @@ impl VoxelRenderer {
 
     /// Replaces the mesh of one brick. An empty mesh removes the brick.
     pub fn upload_brick(&mut self, coordinate: BrickCoordinate, mesh: &PackedBrickMesh) {
+        self.terrain_version += 1;
         if mesh.is_empty() {
             self.bricks.remove(&coordinate);
             return;
@@ -720,6 +1054,7 @@ impl VoxelRenderer {
     }
 
     pub fn remove_brick(&mut self, coordinate: BrickCoordinate) {
+        self.terrain_version += 1;
         self.bricks.remove(&coordinate);
     }
 
@@ -750,6 +1085,7 @@ impl VoxelRenderer {
         coordinate: BrickCoordinate,
         mesh: &PackedBrickMesh,
     ) {
+        self.dynamic_version += 1;
         if mesh.is_empty() {
             self.ship_bricks.remove(&(grid, coordinate));
             return;
@@ -759,6 +1095,7 @@ impl VoxelRenderer {
     }
 
     pub fn remove_grid_brick(&mut self, grid: GridId, coordinate: BrickCoordinate) {
+        self.dynamic_version += 1;
         self.ship_bricks.remove(&(grid, coordinate));
     }
 
@@ -769,6 +1106,7 @@ impl VoxelRenderer {
     /// nodes (`coarse_cells::select_nodes`) removes what a node replaces.
     pub fn upload_coarse_node(&mut self, cube: BrickCube, mesh: &PackedBrickMesh) {
         assert!(cube.level() > 0, "a cube of level 0 is a brick");
+        self.terrain_version += 1;
         if mesh.is_empty() {
             self.coarse_nodes.remove(&cube);
             return;
@@ -778,6 +1116,7 @@ impl VoxelRenderer {
     }
 
     pub fn remove_coarse_node(&mut self, cube: BrickCube) {
+        self.terrain_version += 1;
         self.coarse_nodes.remove(&cube);
     }
 
@@ -797,6 +1136,7 @@ impl VoxelRenderer {
         mesh: &PackedBrickMesh,
     ) {
         assert!(cube.level() > 0, "a cube of level 0 is a brick");
+        self.dynamic_version += 1;
         if mesh.is_empty() {
             self.ship_coarse_nodes.remove(&(grid, cube));
             return;
@@ -806,6 +1146,7 @@ impl VoxelRenderer {
     }
 
     pub fn remove_grid_coarse_node(&mut self, grid: GridId, cube: BrickCube) {
+        self.dynamic_version += 1;
         self.ship_coarse_nodes.remove(&(grid, cube));
     }
 
@@ -816,11 +1157,14 @@ impl VoxelRenderer {
 
     /// Says where a ship is and how it is turned: its bricks are drawn there from the next picture on.
     pub fn set_grid_pose(&mut self, grid: GridId, pose: GridPose) {
-        self.ship_poses.insert(grid, pose);
+        if self.ship_poses.insert(grid, pose) != Some(pose) {
+            self.dynamic_version += 1;
+        }
     }
 
     /// Forgets a ship, its pose and all its bricks.
     pub fn remove_grid(&mut self, grid: GridId) {
+        self.dynamic_version += 1;
         self.ship_poses.remove(&grid);
         self.ship_bricks.retain(|(held, _), _| *held != grid);
         self.ship_coarse_nodes.retain(|(held, _), _| *held != grid);
@@ -840,37 +1184,32 @@ impl VoxelRenderer {
         }
     }
 
-    /// Draws every visible brick into `color_view`, which must be `size` pixels in the renderer's
-    /// colour format.
-    pub fn render(
-        &mut self,
-        color_view: &wgpu::TextureView,
-        size: (u32, u32),
-        camera: &Camera,
-    ) -> RenderStatistics {
-        self.ensure_depth_target(size);
-        let aspect_ratio = size.0 as f32 / size.1 as f32;
-        let view_projection = camera.view_projection(aspect_ratio);
-        let frustum = Frustum::from_view_projection(view_projection);
+    fn mesh(&self, key: MeshKey) -> &GpuBrick {
+        match key {
+            MeshKey::Held(held) => self.brick_of(held),
+            MeshKey::Avatar(color) => &self.avatar_meshes[color],
+            MeshKey::Box(key) => &self.box_meshes[&key],
+        }
+    }
 
-        // Camera-relative placement, computed exactly from integers, then culled and sorted
-        // front to back so nearer bricks hide farther ones early.
-        let mut visible: Vec<(f32, BrickKey, Placement)> = Vec::new();
+    /// Every thing that may be drawn this frame, placed relative to the camera: the placement of a brick is computed exactly from integers, then it is only a matter of which
+    /// of them the camera sees and which a shadow map wants.
+    fn gather(&self, camera: &Camera) -> Gathered {
+        let mut drawables: Vec<Drawable> = Vec::new();
         for &coordinate in self.bricks.keys() {
             let corner = WorldPosition::new(coordinate, [0.0; 3]).relative_to(camera.position);
             let corner = Vec3::from_array(corner);
-            let center = corner + Vec3::splat(BRICK_CENTER_OFFSET);
-            if frustum.intersects_sphere(center, BRICK_BOUNDING_RADIUS) {
-                visible.push((
-                    center.length_squared(),
-                    BrickKey::Terrain(coordinate),
-                    Placement {
-                        offset: corner,
-                        scale: 1.0,
-                        rotation: NO_TURN,
-                    },
-                ));
-            }
+            drawables.push(Drawable {
+                mesh: MeshKey::Held(BrickKey::Terrain(coordinate)),
+                placement: Placement {
+                    offset: corner,
+                    scale: 1.0,
+                    rotation: NO_TURN,
+                },
+                middle: corner + Vec3::splat(BRICK_CENTER_OFFSET),
+                radius: BRICK_BOUNDING_RADIUS,
+                dynamic: false,
+            });
         }
         // Coarse nodes of the terrain: a node of detail level `n` is `2^n` bricks along an edge, drawn from its mesh in cells of `2^n` voxels.
         for &cube in self.coarse_nodes.keys() {
@@ -878,18 +1217,18 @@ impl VoxelRenderer {
             let corner = Vec3::from_array(
                 WorldPosition::new(cube.origin(), [0.0; 3]).relative_to(camera.position),
             );
-            let (center, radius) = node_sphere(corner, scale);
-            if frustum.intersects_sphere(center, radius) {
-                visible.push((
-                    center.length_squared(),
-                    BrickKey::CoarseTerrain(cube),
-                    Placement {
-                        offset: corner,
-                        scale,
-                        rotation: NO_TURN,
-                    },
-                ));
-            }
+            let (middle, radius) = node_sphere(corner, scale);
+            drawables.push(Drawable {
+                mesh: MeshKey::Held(BrickKey::CoarseTerrain(cube)),
+                placement: Placement {
+                    offset: corner,
+                    scale,
+                    rotation: NO_TURN,
+                },
+                middle,
+                radius,
+                dynamic: false,
+            });
         }
         // A ship's brick is placed by turning its place in the ship and adding the ship's place, in `f64` so that a brick far along a
         // big ship is as exact as one near its origin.
@@ -923,19 +1262,17 @@ impl VoxelRenderer {
                 coordinate.y() as f64 * 32.0,
                 coordinate.z() as f64 * 32.0,
             ];
-            let corner = place(local);
-            let center = place(local.map(|component| component + f64::from(BRICK_CENTER_OFFSET)));
-            if frustum.intersects_sphere(center, BRICK_BOUNDING_RADIUS) {
-                visible.push((
-                    center.length_squared(),
-                    BrickKey::Ship(grid, coordinate),
-                    Placement {
-                        offset: corner,
-                        scale: 1.0,
-                        rotation: frame.rotation.map(|row| row.map(|entry| entry as f32)),
-                    },
-                ));
-            }
+            drawables.push(Drawable {
+                mesh: MeshKey::Held(BrickKey::Ship(grid, coordinate)),
+                placement: Placement {
+                    offset: place(local),
+                    scale: 1.0,
+                    rotation: frame.rotation.map(|row| row.map(|entry| entry as f32)),
+                },
+                middle: place(local.map(|component| component + f64::from(BRICK_CENTER_OFFSET))),
+                radius: BRICK_BOUNDING_RADIUS,
+                dynamic: true,
+            });
         }
         for &(grid, cube) in self.ship_coarse_nodes.keys() {
             let Some(frame) = frames.get(&grid) else {
@@ -956,99 +1293,312 @@ impl VoxelRenderer {
                 origin.y() as f64 * 32.0,
                 origin.z() as f64 * 32.0,
             ];
-            let corner = place(local);
             let half = f64::from(BRICK_CENTER_OFFSET) * f64::from(scale);
-            let center = place(local.map(|component| component + half));
-            if frustum.intersects_sphere(center, BRICK_BOUNDING_RADIUS * scale) {
-                visible.push((
-                    center.length_squared(),
-                    BrickKey::CoarseShip(grid, cube),
-                    Placement {
-                        offset: corner,
-                        scale,
-                        rotation: frame.rotation.map(|row| row.map(|entry| entry as f32)),
-                    },
-                ));
-            }
+            drawables.push(Drawable {
+                mesh: MeshKey::Held(BrickKey::CoarseShip(grid, cube)),
+                placement: Placement {
+                    offset: place(local),
+                    scale,
+                    rotation: frame.rotation.map(|row| row.map(|entry| entry as f32)),
+                },
+                middle: place(local.map(|component| component + half)),
+                radius: BRICK_BOUNDING_RADIUS * scale,
+                dynamic: true,
+            });
         }
-        visible.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let pieces = drawables.len();
         // Avatars are placed like bricks: by where their model's corner is relative to the camera.
         let eye = Vec3::splat(f32::from(AVATAR_EYE_VOXEL) + 0.5);
-        let visible_avatars: Vec<(usize, Placement)> = self
-            .avatars
+        for avatar in &self.avatars {
+            let relative = Vec3::from_array(avatar.position.relative_to(camera.position));
+            drawables.push(Drawable {
+                mesh: MeshKey::Avatar(avatar.color as usize % AVATAR_COLOR_COUNT),
+                placement: Placement {
+                    offset: relative - eye,
+                    scale: 1.0,
+                    rotation: NO_TURN,
+                },
+                middle: relative,
+                radius: AVATAR_BOUNDING_RADIUS,
+                dynamic: true,
+            });
+        }
+        let avatars_end = drawables.len();
+        for entity_box in &self.entity_boxes {
+            let relative = Vec3::from_array(entity_box.position.relative_to(camera.position));
+            drawables.push(Drawable {
+                mesh: MeshKey::Box(entity_box.key()),
+                placement: Placement {
+                    offset: relative - eye,
+                    scale: 1.0,
+                    rotation: NO_TURN,
+                },
+                middle: relative,
+                radius: ENTITY_BOX_BOUNDING_RADIUS,
+                dynamic: true,
+            });
+        }
+        Gathered {
+            drawables,
+            pieces,
+            avatars_end,
+        }
+    }
+
+    /// The things a cascade's map is drawn from, and how high the highest of them reaches: those the cascade wants (see [`Cascade::wants_caster`]), without the things that move
+    /// if the cascade is one that keeps its map for a while.
+    fn shadow_casters(
+        drawables: &[Drawable],
+        cascade: &Cascade,
+        basis: &LightBasis,
+    ) -> (Vec<usize>, f32) {
+        let with_things_that_move = cascade.texel <= DYNAMIC_CASTER_TEXEL_LIMIT;
+        let mut casters = Vec::new();
+        let mut highest = f32::NEG_INFINITY;
+        for (index, drawable) in drawables.iter().enumerate() {
+            if (with_things_that_move || !drawable.dynamic)
+                && cascade.wants_caster(basis, drawable.middle, drawable.radius)
+            {
+                casters.push(index);
+                highest = highest.max(Cascade::top_of(basis, drawable.middle, drawable.radius));
+            }
+        }
+        (casters, highest)
+    }
+
+    /// What drawing these casters into a shadow map for this sun takes, as a number of quads: the quads of the faces drawn, and for each caster something for the calls it
+    /// takes to draw them (a brick is a few calls and a few hundred quads, and the calls cost about as much as the quads).
+    fn shadow_cost(&self, drawables: &[Drawable], casters: &[usize], basis: &LightBasis) -> usize {
+        casters
             .iter()
-            .filter_map(|avatar| {
-                let relative = Vec3::from_array(avatar.position.relative_to(camera.position));
-                frustum
-                    .intersects_sphere(relative, AVATAR_BOUNDING_RADIUS)
-                    .then_some((
-                        avatar.color as usize % AVATAR_COLOR_COUNT,
-                        Placement {
-                            offset: relative - eye,
-                            scale: 1.0,
-                            rotation: NO_TURN,
-                        },
-                    ))
+            .map(|&index| {
+                SHADOW_CALL_COST_QUADS
+                    + self
+                        .mesh(drawables[index].mesh)
+                        .shadow_quads(&drawables[index].placement.rotation, basis.toward_sun)
             })
+            .sum()
+    }
+
+    /// The shadow maps for this frame, if there are to be any: for each cascade, whether its map is drawn again or kept, and what is drawn into it. `seen` are the drawables the
+    /// camera sees. None while shadows are off, while there is no sun or sky to shade, while the ground of a flat level hides the sun from everything, and while nothing is seen.
+    ///
+    /// A map is drawn again when it is wrong: there is none, or the camera has moved too far from where it was (see [`Cascade::holds_after_moving`]) or the sun has turned too
+    /// far ([`SUN_DRIFT`] times ten). A map that is a little out of date (the sun a little turned, the terrain or the things that move changed) is drawn again when it has waited
+    /// long enough and there is room in the frame for it, finest first: the map of terrain that changed waits longer the coarser the cascade ([`terrain_refresh_age`]) and every
+    /// map waits for as many frames as it has times the budget in quads to draw.
+    fn plan_shadows(
+        &mut self,
+        camera: &Camera,
+        drawables: &[Drawable],
+        seen: &[usize],
+    ) -> Option<ShadowPlan> {
+        let atmosphere = &self.atmosphere;
+        if !atmosphere.shadows
+            || (atmosphere.sun_light == 0 && atmosphere.sky_light == 0)
+            || seen.is_empty()
+        {
+            return None;
+        }
+        let sun = Vec3::from_array(atmosphere.sun_direction).normalize_or(Vec3::Y);
+        let (_, flat_ground) = balls_and_ground(&self.sun_occluders, camera.position);
+        if flat_ground && sun.y <= -(SUN_DISC_SOFTNESS + TWILIGHT_SOFTNESS) {
+            return None;
+        }
+        let widths = half_widths(atmosphere.fog_end);
+        self.shadow_frame += 1;
+        let frame = self.shadow_frame;
+        let basis = LightBasis::new(sun);
+        let camera_across_the_light = basis.coordinates_of(camera.position);
+        // How near the camera and how far from it the things it sees are: a cascade is used only if something seen is looked up in it.
+        let mut nearest = f32::INFINITY;
+        let mut farthest = 0.0f32;
+        for &index in seen {
+            let (distance, _) = length_and_direction(drawables[index].middle);
+            nearest = nearest.min((distance - drawables[index].radius).max(0.0));
+            farthest = farthest.max(distance + drawables[index].radius);
+        }
+        let mut previous_reach = 0.0;
+        let mut spent = 0usize;
+        let mut cascades = Vec::new();
+        for (index, &half_width) in widths.iter().enumerate() {
+            let mut cascade = Cascade::new(half_width, camera_across_the_light);
+            let serves = cascade.serves(previous_reach, nearest, farthest);
+            previous_reach = cascade.reach;
+            let kept = self.shadow_cache[index]
+                .as_ref()
+                .filter(|kept| kept.cascade.half_width == half_width);
+            // How the map that is kept stands: where the camera is from where it was, how far the sun has turned, what has changed.
+            let moved = kept.map_or(Vec3::ZERO, |kept| {
+                Vec3::from_array(camera.position.relative_to(kept.camera))
+            });
+            let standing = kept.map(|kept| Standing {
+                holds: kept.cascade.holds_after_moving(&kept.basis, moved),
+                turned: if kept.basis.toward_sun.dot(sun) > 0.0 {
+                    kept.basis.toward_sun.cross(sun).length()
+                } else {
+                    f32::INFINITY
+                },
+                terrain_changed: kept.terrain_version != self.terrain_version,
+                things_changed: cascade.texel <= DYNAMIC_CASTER_TEXEL_LIMIT
+                    && kept.dynamic_version != self.dynamic_version,
+                waited: frame - kept.frame,
+            });
+            let wrong = standing.is_none_or(|standing| standing.is_wrong());
+            let mut found = None;
+            let redraw = serves
+                && draw_again(standing, index, spent, || {
+                    let (casters, highest) = Self::shadow_casters(drawables, &cascade, &basis);
+                    let cost = self.shadow_cost(drawables, &casters, &basis);
+                    found = Some((casters, highest));
+                    cost
+                });
+            let (casters, highest) = match found {
+                Some(found) => found,
+                None if redraw => Self::shadow_casters(drawables, &cascade, &basis),
+                None => (Vec::new(), f32::NEG_INFINITY),
+            };
+            if redraw {
+                cascade.fit(highest);
+                spent += self.shadow_cost(drawables, &casters, &basis);
+                self.shadow_cache[index] = Some(CascadeCache {
+                    cascade,
+                    basis,
+                    camera: camera.position,
+                    terrain_version: self.terrain_version,
+                    dynamic_version: self.dynamic_version,
+                    frame,
+                });
+                cascades.push(PlannedCascade {
+                    cascade,
+                    basis,
+                    moved: Vec3::ZERO,
+                    used: true,
+                    drawn: true,
+                    casters,
+                });
+            } else if let (false, Some(kept)) = (wrong, kept) {
+                cascades.push(PlannedCascade {
+                    cascade: kept.cascade,
+                    basis: kept.basis,
+                    moved,
+                    used: true,
+                    drawn: false,
+                    casters,
+                });
+            } else {
+                // Nothing in the picture is looked up in it, and what it held is wrong for where the camera is: not used.
+                cascades.push(PlannedCascade {
+                    cascade,
+                    basis,
+                    moved: Vec3::ZERO,
+                    used: false,
+                    drawn: false,
+                    casters,
+                });
+            }
+        }
+        Some(ShadowPlan { cascades })
+    }
+
+    /// Draws every visible brick into `color_view`, which must be `size` pixels in the renderer's
+    /// colour format.
+    pub fn render(
+        &mut self,
+        color_view: &wgpu::TextureView,
+        size: (u32, u32),
+        camera: &Camera,
+    ) -> RenderStatistics {
+        self.ensure_depth_target(size);
+        let aspect_ratio = size.0 as f32 / size.1 as f32;
+        let view_projection = camera.view_projection(aspect_ratio);
+        let frustum = Frustum::from_view_projection(view_projection);
+
+        let Gathered {
+            drawables,
+            pieces,
+            avatars_end,
+        } = self.gather(camera);
+        let sees = |index: usize| {
+            frustum.intersects_sphere(drawables[index].middle, drawables[index].radius)
+        };
+        // What the camera sees, nearer bricks first so that they hide farther ones early.
+        let mut seen_pieces: Vec<(f32, usize)> = (0..pieces)
+            .filter(|&index| sees(index))
+            .map(|index| (drawables[index].middle.length_squared(), index))
             .collect();
-        let visible_boxes: Vec<((u32, [u8; 3]), Placement)> = self
-            .entity_boxes
+        seen_pieces.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let visible: Vec<usize> = seen_pieces.into_iter().map(|(_, index)| index).collect();
+        let visible_avatars: Vec<usize> = (pieces..avatars_end).filter(|&i| sees(i)).collect();
+        let visible_boxes: Vec<usize> = (avatars_end..drawables.len())
+            .filter(|&i| sees(i))
+            .collect();
+        let held = |index: usize| match drawables[index].mesh {
+            MeshKey::Held(key) => key,
+            _ => unreachable!("only the first drawables are bricks and nodes"),
+        };
+
+        let seen: Vec<usize> = visible
             .iter()
-            .filter_map(|entity_box| {
-                let relative = Vec3::from_array(entity_box.position.relative_to(camera.position));
-                frustum
-                    .intersects_sphere(relative, ENTITY_BOX_BOUNDING_RADIUS)
-                    .then_some((
-                        entity_box.key(),
-                        Placement {
-                            offset: relative - eye,
-                            scale: 1.0,
-                            rotation: NO_TURN,
-                        },
-                    ))
-            })
+            .chain(&visible_avatars)
+            .chain(&visible_boxes)
+            .copied()
             .collect();
-        let statistics = RenderStatistics {
+        let shadows = self.plan_shadows(camera, &drawables, &seen);
+        if shadows.is_some() && !self.shadow_target.full_size {
+            self.shadow_target = ShadowTarget::new(&self.device, true);
+            self.remake_frame_bind_group();
+        }
+
+        // Each thing drawn has a place in the buffer of placements: the pictures' first (bricks, then avatars, then boxes), then what only the shadow maps draw.
+        let mut slots = Slots::new(drawables.len());
+        for &index in seen.iter() {
+            slots.slot(&drawables, index);
+        }
+        if let Some(plan) = &shadows {
+            for planned in plan.cascades.iter().filter(|planned| planned.drawn) {
+                for &index in &planned.casters {
+                    slots.slot(&drawables, index);
+                }
+            }
+        }
+
+        let mut statistics = RenderStatistics {
             avatars_drawn: visible_avatars.len(),
             entity_boxes_drawn: visible_boxes.len(),
             bricks_drawn: visible.len(),
             coarse_nodes_drawn: visible
                 .iter()
-                .filter(|(_, key, _)| {
-                    matches!(key, BrickKey::CoarseTerrain(_) | BrickKey::CoarseShip(..))
+                .filter(|&&index| {
+                    matches!(
+                        held(index),
+                        BrickKey::CoarseTerrain(_) | BrickKey::CoarseShip(..)
+                    )
                 })
                 .count(),
-            bricks_culled: self.bricks.len()
-                + self.coarse_nodes.len()
-                + self
-                    .ship_bricks
-                    .keys()
-                    .filter(|(grid, _)| self.ship_poses.contains_key(grid))
-                    .count()
-                + self
-                    .ship_coarse_nodes
-                    .keys()
-                    .filter(|(grid, _)| self.ship_poses.contains_key(grid))
-                    .count()
-                - visible.len(),
+            bricks_culled: pieces - visible.len(),
             quads_drawn: visible
                 .iter()
-                .map(|(_, key, _)| self.brick_of(*key).quad_total())
+                .map(|&index| self.mesh(drawables[index].mesh).quad_total())
                 .sum(),
             detailed_quads_drawn: visible
                 .iter()
-                .map(|(_, key, _)| self.brick_of(*key).detailed_count as usize)
+                .map(|&index| self.mesh(drawables[index].mesh).detailed_count as usize)
                 .sum(),
+            ..RenderStatistics::default()
         };
+        if let Some(plan) = &shadows {
+            statistics.shadow_cascades_drawn =
+                plan.cascades.iter().filter(|planned| planned.drawn).count();
+            statistics.shadow_casters_drawn = plan
+                .cascades
+                .iter()
+                .map(|planned| planned.casters.len())
+                .sum();
+        }
 
-        let placements: Vec<Placement> = visible
-            .iter()
-            .map(|(_, _, placement)| *placement)
-            .chain(visible_avatars.iter().map(|(_, placement)| *placement))
-            .chain(visible_boxes.iter().map(|(_, placement)| *placement))
-            .collect();
-        self.write_placements(&placements);
-        self.write_frame_uniform(view_projection, camera.position);
+        self.write_placements(&slots.placements);
+        self.write_frame_uniform(view_projection, camera.position, shadows.as_ref());
         self.crosshair.set_screen_size(&self.queue, size);
         self.overlay.set_screen_size(&self.queue, size);
 
@@ -1058,11 +1608,75 @@ impl VoxelRenderer {
             .expect("depth target was just created")
             .view;
         let [red, green, blue] = srgb_to_linear_color(self.atmosphere.sky_color);
+        let placement_offset =
+            |index: usize| (u64::from(slots.get(index)) * self.placement_stride) as u32;
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("voxel frame"),
             });
+        // The shadow maps first: the sun's view of what is near the camera, a map for each cascade that something is looked up in.
+        if let Some(plan) = &shadows {
+            for (layer, planned) in plan.cascades.iter().enumerate() {
+                if !planned.drawn {
+                    continue;
+                }
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("shadow pass"),
+                    color_attachments: &[],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.shadow_target.layer_views[layer],
+                        depth_ops: Some(wgpu::Operations {
+                            // (Depth grows toward the sun: 0 is as far from it as the map goes, where nothing is.)
+                            load: wgpu::LoadOp::Clear(0.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                let frame_offset = ((layer as u64 + 1) * self.frame_stride) as u32;
+                pass.set_bind_group(0, &self.shadow_frame_group, &[frame_offset]);
+                // (Only the faces that look away from the sun: the others are not kept, and are not worth the vertices.)
+                let toward_sun = planned.basis.toward_sun;
+                pass.set_pipeline(&self.shadow_pipelines.quads);
+                for &index in &planned.casters {
+                    let mesh = self.mesh(drawables[index].mesh);
+                    let Some(quads) = &mesh.quads else {
+                        continue;
+                    };
+                    let rotation = &drawables[index].placement.rotation;
+                    let ranges = GpuBrick::back_faces(&mesh.quad_faces, rotation, toward_sun);
+                    if ranges.is_empty() {
+                        continue;
+                    }
+                    pass.set_bind_group(1, &self.placements.bind_group, &[placement_offset(index)]);
+                    pass.set_vertex_buffer(0, quads.slice(..));
+                    for range in ranges {
+                        pass.draw(0..6, range);
+                    }
+                }
+                pass.set_pipeline(&self.shadow_pipelines.detailed);
+                for &index in &planned.casters {
+                    let mesh = self.mesh(drawables[index].mesh);
+                    let Some(detailed) = &mesh.detailed else {
+                        continue;
+                    };
+                    let rotation = &drawables[index].placement.rotation;
+                    let ranges = GpuBrick::back_faces(&mesh.detailed_faces, rotation, toward_sun);
+                    if ranges.is_empty() {
+                        continue;
+                    }
+                    pass.set_bind_group(1, &self.placements.bind_group, &[placement_offset(index)]);
+                    pass.set_vertex_buffer(0, detailed.slice(..));
+                    for range in ranges {
+                        pass.draw(0..6, range);
+                    }
+                }
+            }
+        }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("voxel pass"),
@@ -1095,75 +1709,54 @@ impl VoxelRenderer {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
-            for (index, (_, key, _)) in visible.iter().enumerate() {
-                let brick = self.brick_of(*key);
+            for &index in &visible {
+                let brick = self.mesh(drawables[index].mesh);
                 let Some(quads) = &brick.quads else {
                     continue;
                 };
-                pass.set_bind_group(
-                    1,
-                    &self.placements.bind_group,
-                    &[(index as u64 * self.placement_stride) as u32],
-                );
+                pass.set_bind_group(1, &self.placements.bind_group, &[placement_offset(index)]);
                 pass.set_vertex_buffer(0, quads.slice(..));
                 pass.draw(0..6, 0..brick.quad_count);
             }
             // The bricks that have blocks that do not fill their cells, with the other pipeline.
             pass.set_pipeline(&self.detailed_pipeline);
-            for (index, (_, key, _)) in visible.iter().enumerate() {
-                let brick = self.brick_of(*key);
+            for &index in &visible {
+                let brick = self.mesh(drawables[index].mesh);
                 let Some(detailed) = &brick.detailed else {
                     continue;
                 };
-                pass.set_bind_group(
-                    1,
-                    &self.placements.bind_group,
-                    &[(index as u64 * self.placement_stride) as u32],
-                );
+                pass.set_bind_group(1, &self.placements.bind_group, &[placement_offset(index)]);
                 pass.set_vertex_buffer(0, detailed.slice(..));
                 pass.draw(0..6, 0..brick.detailed_count);
             }
             pass.set_pipeline(&self.pipeline);
-            for (index, (color, _)) in visible_avatars.iter().enumerate() {
-                let mesh = &self.avatar_meshes[*color];
+            for &index in &visible_avatars {
+                let mesh = self.mesh(drawables[index].mesh);
                 let Some(quads) = &mesh.quads else {
                     continue;
                 };
-                pass.set_bind_group(
-                    1,
-                    &self.placements.bind_group,
-                    &[((visible.len() + index) as u64 * self.placement_stride) as u32],
-                );
+                pass.set_bind_group(1, &self.placements.bind_group, &[placement_offset(index)]);
                 pass.set_vertex_buffer(0, quads.slice(..));
                 pass.draw(0..6, 0..mesh.quad_count);
             }
             // Boxes: the faces that fill a cell, then the ones that do not (a box is all of the second kind unless
             // it is a whole voxel).
-            let first_box = visible.len() + visible_avatars.len();
-            for (index, (key, _)) in visible_boxes.iter().enumerate() {
-                let mesh = &self.box_meshes[key];
+            for &index in &visible_boxes {
+                let mesh = self.mesh(drawables[index].mesh);
                 let Some(quads) = &mesh.quads else {
                     continue;
                 };
-                pass.set_bind_group(
-                    1,
-                    &self.placements.bind_group,
-                    &[((first_box + index) as u64 * self.placement_stride) as u32],
-                );
+                pass.set_bind_group(1, &self.placements.bind_group, &[placement_offset(index)]);
                 pass.set_vertex_buffer(0, quads.slice(..));
                 pass.draw(0..6, 0..mesh.quad_count);
             }
             pass.set_pipeline(&self.detailed_pipeline);
-            for (index, (key, _)) in visible_boxes.iter().enumerate() {
-                let mesh = &self.box_meshes[key];
+            for &index in &visible_boxes {
+                let mesh = self.mesh(drawables[index].mesh);
                 let Some(detailed) = &mesh.detailed else {
                     continue;
                 };
-                pass.set_bind_group(
-                    1,
-                    &self.placements.bind_group,
-                    &[((first_box + index) as u64 * self.placement_stride) as u32],
-                );
+                pass.set_bind_group(1, &self.placements.bind_group, &[placement_offset(index)]);
                 pass.set_vertex_buffer(0, detailed.slice(..));
                 pass.draw(0..6, 0..mesh.detailed_count);
             }
@@ -1376,7 +1969,12 @@ impl VoxelRenderer {
         }
     }
 
-    fn write_frame_uniform(&self, view_projection: glam::Mat4, camera: WorldPosition) {
+    fn write_frame_uniform(
+        &self,
+        view_projection: glam::Mat4,
+        camera: WorldPosition,
+        shadows: Option<&ShadowPlan>,
+    ) {
         let [fog_red, fog_green, fog_blue] = srgb_to_linear_color(self.atmosphere.sky_color);
         let sun = Vec3::from_array(self.atmosphere.sun_direction).normalize_or(Vec3::Y);
         let side = self
@@ -1406,6 +2004,29 @@ impl VoxelRenderer {
                 balls.len() as f32,
             ],
             sun_balls,
+            shadow: [
+                shadows.map_or(0.0, |plan| plan.cascades.len() as f32),
+                f32::from(self.atmosphere.sky_light_in_shadow) / 255.0,
+                0.0,
+                0.0,
+            ],
+            cascades: std::array::from_fn(|index| {
+                shadows
+                    .and_then(|plan| plan.cascades.get(index))
+                    .filter(|planned| planned.used)
+                    .map_or_else(Zeroable::zeroed, |planned| CascadeUniform {
+                        matrix: planned
+                            .cascade
+                            .matrix_after_moving(&planned.basis, planned.moved)
+                            .to_cols_array_2d(),
+                        limits: [
+                            planned.cascade.reach,
+                            planned.cascade.texel,
+                            planned.cascade.range,
+                            0.0,
+                        ],
+                    })
+            }),
             avatars: AVATAR_COLORS.map(|color| {
                 let [red, green, blue] = srgb_to_linear_color(color);
                 [red, green, blue, 1.0]
@@ -1413,6 +2034,23 @@ impl VoxelRenderer {
         };
         self.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
+        // The copies the shadow passes use: the same, with the cascade's matrix where the camera's is.
+        if let Some(plan) = shadows {
+            for (index, planned) in plan.cascades.iter().enumerate() {
+                if !planned.drawn {
+                    continue;
+                }
+                let copy = FrameUniform {
+                    view_projection: planned.cascade.matrix(&planned.basis).to_cols_array_2d(),
+                    ..uniform
+                };
+                self.queue.write_buffer(
+                    &self.frame_buffer,
+                    (index as u64 + 1) * self.frame_stride,
+                    bytemuck::bytes_of(&copy),
+                );
+            }
+        }
     }
 }
 
@@ -1443,6 +2081,176 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn the_starts_of_the_faces_count_what_comes_before_each_and_the_total_after_the_last() {
+        assert_eq!(face_starts([].into_iter()), [0; 7]);
+        assert_eq!(
+            face_starts([0, 0, 2, 5, 5, 5].into_iter()),
+            [0, 2, 2, 3, 3, 3, 6]
+        );
+        assert_eq!(face_starts([1].into_iter()), [0, 0, 1, 1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn only_the_faces_that_look_away_from_the_sun_are_drawn_into_a_shadow_map_and_a_turn_turns_them()
+     {
+        // Faces in the order -x, +x, -y, +y, -z, +z, with 1, 2, 3, 4, 5 and 6 quads on them.
+        let starts = [0, 1, 3, 6, 10, 15, 21];
+        let drawn =
+            |rotation: &[[f32; 3]; 3], sun: Vec3| GpuBrick::back_faces(&starts, rotation, sun);
+        // A sun straight up: the faces that look down are the backs, and the sides are edge on and not drawn.
+        assert_eq!(drawn(&NO_TURN, Vec3::Y), vec![3..6]);
+        // A sun over +x and +y (and +z a little): the backs are -x, -y and -z.
+        assert_eq!(
+            drawn(&NO_TURN, Vec3::new(0.6, 0.8, 0.1)),
+            vec![0..1, 3..6, 10..15]
+        );
+        // A sun over -x and +y: the backs are +x and -y, which are neighbours and make one range.
+        assert_eq!(drawn(&NO_TURN, Vec3::new(-0.6, 0.8, 0.0)), vec![1..6]);
+        // A brick turned half way round the y axis: its +x face looks to -x and its +z face to -z, so for the first sun the backs are the brick's +x, -y and +z.
+        let half_turn = [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]];
+        assert_eq!(
+            drawn(&half_turn, Vec3::new(0.6, 0.8, 0.1)),
+            vec![1..6, 15..21]
+        );
+        // No quads on a face: no range.
+        assert_eq!(
+            GpuBrick::back_faces(&[0, 0, 0, 0, 5, 5, 5], &NO_TURN, Vec3::Y),
+            vec![]
+        );
+    }
+
+    fn standing() -> Standing {
+        Standing {
+            holds: true,
+            turned: 0.0,
+            terrain_changed: false,
+            things_changed: false,
+            waited: 100,
+        }
+    }
+
+    fn cost_of(quads: usize) -> impl FnOnce() -> usize {
+        move || quads
+    }
+
+    #[test]
+    fn a_map_that_is_wrong_or_missing_is_drawn_again_whatever_it_costs_and_one_that_is_right_is_not()
+     {
+        let nothing = || panic!("the cost is not asked for when it does not matter");
+        assert!(draw_again(None, 6, 9_000_000, nothing));
+        for wrong in [
+            Standing {
+                holds: false,
+                ..standing()
+            },
+            Standing {
+                turned: 10.0 * SUN_DRIFT * 1.01,
+                ..standing()
+            },
+            Standing {
+                turned: f32::INFINITY,
+                ..standing()
+            },
+        ] {
+            assert!(wrong.is_wrong());
+            assert!(draw_again(Some(wrong), 6, 9_000_000, nothing), "{wrong:?}");
+            assert!(draw_again(
+                Some(Standing { waited: 0, ..wrong }),
+                6,
+                9_000_000,
+                nothing
+            ));
+        }
+        assert!(!standing().is_wrong());
+        assert!(!draw_again(Some(standing()), 0, 0, nothing));
+        // A sun that has turned a little, but not enough to matter, is no reason.
+        assert!(!draw_again(
+            Some(Standing {
+                turned: SUN_DRIFT,
+                ..standing()
+            }),
+            0,
+            0,
+            nothing
+        ));
+    }
+
+    #[test]
+    fn a_map_that_is_out_of_date_waits_for_its_time_and_for_room_and_the_first_in_a_frame_is_let_in()
+     {
+        let turned = Standing {
+            turned: SUN_DRIFT * 1.5,
+            ..standing()
+        };
+        // A sun that has turned: after a frame, if it is cheap.
+        assert!(!draw_again(
+            Some(Standing {
+                waited: 0,
+                ..turned
+            }),
+            0,
+            0,
+            cost_of(1)
+        ));
+        assert!(draw_again(
+            Some(Standing {
+                waited: 1,
+                ..turned
+            }),
+            0,
+            0,
+            cost_of(1)
+        ));
+        // The cost is a number of budgets, and so of frames to wait: 4 million is three of 1.5 million.
+        let costly = |waited| Standing { waited, ..turned };
+        assert!(!draw_again(Some(costly(2)), 0, 0, cost_of(4_000_000)));
+        assert!(draw_again(Some(costly(3)), 0, 0, cost_of(4_000_000)));
+        // The first map of a frame is let in over the budget; one after it is not, unless it fits.
+        assert!(draw_again(Some(costly(9)), 0, 0, cost_of(7_000_000)));
+        assert!(!draw_again(Some(costly(9)), 0, 1, cost_of(7_000_000)));
+        assert!(draw_again(Some(costly(9)), 0, 1_000_000, cost_of(400_000)));
+        assert!(!draw_again(Some(costly(9)), 0, 1_000_000, cost_of(600_000)));
+        // Terrain that has changed waits for its cascade's time: none for the finest three, then 2, 4, 8 frames.
+        let changed = |waited| Standing {
+            terrain_changed: true,
+            waited,
+            ..standing()
+        };
+        for (index, wait) in [(0, 1), (1, 1), (2, 1), (3, 2), (4, 4), (5, 8), (9, 128)] {
+            assert!(
+                !draw_again(Some(changed(wait - 1)), index, 0, cost_of(1)),
+                "{index}"
+            );
+            assert!(
+                draw_again(Some(changed(wait)), index, 0, cost_of(1)),
+                "{index}"
+            );
+        }
+        // Things that move are a reason in the same way, and so is each of the reasons alone.
+        let things = Standing {
+            things_changed: true,
+            waited: 1,
+            ..standing()
+        };
+        assert!(draw_again(Some(things), 0, 0, cost_of(1)));
+        assert!(!draw_again(
+            Some(Standing {
+                waited: 0,
+                ..things
+            }),
+            0,
+            0,
+            cost_of(1)
+        ));
+    }
+
+    #[test]
+    fn the_wait_of_terrain_that_changed_doubles_for_each_cascade_after_the_third() {
+        let waits: Vec<u64> = (0..MAXIMUM_CASCADES).map(terrain_refresh_age).collect();
+        assert_eq!(waits, [1, 1, 1, 2, 4, 8, 16, 32, 64, 128, 256]);
+    }
 
     #[test]
     fn the_palette_the_shader_reads_is_linear_and_never_empty() {
@@ -1479,6 +2287,20 @@ mod tests {
                 crate::sun::TURNED_NO_MORE_FROM
             ),
             format!("sun_balls: array<vec4<f32>, {MAXIMUM_SUN_BALLS}>,"),
+            format!("const BLEND_FROM: f32 = {:?};", crate::shadow::BLEND_FROM),
+            format!(
+                "const DEPTH_BIAS_TEXELS: f32 = {:?};",
+                crate::shadow::DEPTH_BIAS_TEXELS
+            ),
+            format!(
+                "const SLOPE_BIAS_LIMIT: f32 = {:?};",
+                crate::shadow::SLOPE_BIAS_LIMIT
+            ),
+            format!(
+                "const FACING_FULL_FROM: f32 = {:?};",
+                crate::shadow::FACING_FULL_FROM
+            ),
+            format!("cascades: array<Cascade, {MAXIMUM_CASCADES}>,"),
         ] {
             assert!(shader.contains(&declaration), "{declaration}");
         }

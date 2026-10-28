@@ -357,6 +357,11 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         self.settings.pinned_time = minutes;
     }
 
+    /// Turns the shadows of the terrain on or off for this player (what `.shadows` does).
+    pub fn set_shadows(&mut self, on: bool) {
+        self.settings.shadows = on;
+    }
+
     /// Whether the terrain of the level being watched is drawn beyond its bricks, in coarse nodes.
     pub fn draws_coarse_terrain(&self) -> bool {
         matches!(self.terrain, TerrainView::Coarse(_))

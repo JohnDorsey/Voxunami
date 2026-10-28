@@ -1,4 +1,4 @@
-# The sun (Phase 41a)
+# The sun (Phase 41a; its shadows are in `shadow-spec.md`, 41b)
 
 Status: built 2026-10-28, the owner's "Lighting please" after the great rivers. What I ran or looked at is marked **[run]**; what I believe from reading the code **[belief]**.
 
@@ -41,7 +41,7 @@ Headless pictures (`cave --screenshot`, release): the ground at 07:00, 17:30, 18
 
 ## 7. Limits, known and not hidden
 
-- **No shadows.** A hill does not shade what is behind it; a cave under a sunlit hill has its sun-facing walls lit by the sun through the rock. That is the next phase (cascaded shadow maps for what is near), and the reason the owner wanted shader shadows. Until then the planet's own terminator is the only shadow, and the sun-facing walls of caves are bright by day.
+- **Shadows are the next phase, built the same day** (`shadow-spec.md`): a hill shades what is behind it and a cave under a sunlit hill is in its shade. This phase had none: the planet's own terminator was the only shadow.
 - **Nights are black**, like the caves: no moon, no stars, no night light. `.ambient` is how a player sees at night. A small night light (moon) is a number away if the owner wants it.
 - **The terminator is that of the core**, a ball 280 voxels smaller than the planet (about 4 degrees of arc, in the twilight's width), and the hills' own horizon is not in it.
 - **A sunset is not red**: the light is white and the sky only dims.
