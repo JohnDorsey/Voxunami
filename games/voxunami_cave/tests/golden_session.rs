@@ -337,8 +337,11 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// 7,204,133, and the saved world's hash changes with its tables of blocks and generators. Measured by control runs, not assumed: with the block and the generator left out of the plugin and the
 /// command in, the stream is 7,203,997 (16 bytes: the command in the reply to `/nonsense`) and the saved world is the old one to the hash; with the generator alone it is 28 bytes more (the
 /// identifier, 27 characters and a length), with the block alone 108 more; 16 + 28 + 108 = 152. The session runs in the overworld alone, so nothing of the river is in it.
+/// Places (2026-10-27): `/tp` goes to places, and `/river` is gone (it was the first of them). Only the list of the commands in the reply to `/nonsense` is in the stream: `/river [WHERE], `
+/// is 16 bytes fewer and `/tp [WHERE] [NUMBERS...]` for `/tp X Y Z` 15 more, so 7,204,133 to 7,204,132 (worked out before it was run, and the run gave it). The `/tp` the script does
+/// are of the old form and answer as they did. The saved world is the same.
 const PINNED: (u64, usize, u64) = (
-    9_294_768_049_016_043_855,
-    7_204_133,
+    4_796_938_907_263_250_842,
+    7_204_132,
     16_456_388_781_098_525_124,
 );

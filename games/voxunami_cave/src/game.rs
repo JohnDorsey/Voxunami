@@ -146,7 +146,7 @@ impl GameDefinition for Cave {
     fn controls() -> &'static str {
         "Left click breaks the block you look at; right click places the selected block;\n1 to 6 select stone, dirt, grass, lamp, wood, fire (which burns grass and wood); R cycles whole block, slabs and stairs.
 W A S D walk, Space jumps, Ctrl runs; F flies or walks (then Space and Shift go up and down).
-Commands: /level shows which level you are in, /level list lists them, /level go NAME moves you; /fly toggles flying; /tp X Y Z teleports; /river narrowest or /river widest takes you to the great river; /light classic or /light multiscale chooses the light.
+Commands: /level shows which level you are in, /level list lists them, /level go NAME moves you; /fly toggles flying; /tp lists the places, /tp PLACE goes to one (a planet, or the great river), /tp X Y Z teleports; /light classic or /light multiscale chooses the light.
 Window commands (start with a period): .ambient 0-255 sets how bright a face is that no light reaches (0, the default, is black; 20 to 40 is dim like a cave), .help lists them."
     }
 

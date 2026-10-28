@@ -1,4 +1,4 @@
-//! Where a player goes to see the great rivers (`/river`, `docs/great-rivers-spec.md`).
+//! Where a player goes to see the great rivers: the eyes in view of a knot, for `/tp base_blocks:great_river_narrowest` and `..._widest` (`places.rs`, `docs/great-rivers-spec.md`).
 
 use terrain::{DensityField, GreatRivers, RiverKnot};
 use voxel_space::{LevelOfDetail, VoxelCoordinate};

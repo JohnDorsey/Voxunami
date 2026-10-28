@@ -35,10 +35,11 @@ fn tp_moves_the_player_and_explains_what_it_cannot_do() {
         reply_to(&mut rig, &mut player, "/tp 20.5 120 -3.25"),
         ["teleported to 20.5 120 -3.25"]
     );
-    for wrong_count in ["/tp", "/tp 1", "/tp 1 2", "/tp 1 2 3 4"] {
+    // (With no words it lists the places: `places.rs`.)
+    for wrong_count in ["/tp 1", "/tp 1 2", "/tp 1 2 3 4"] {
         assert_eq!(
             reply_to(&mut rig, &mut player, wrong_count),
-            ["usage: /tp X Y Z"],
+            ["usage: /tp, /tp X Y Z, /tp PLACE [LATITUDE LONGITUDE | X Y Z]"],
             "{wrong_count}"
         );
     }

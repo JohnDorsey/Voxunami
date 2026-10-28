@@ -650,7 +650,7 @@ fn commands_the_game_does_not_know_are_answered() {
     assert_eq!(
         player.take_command_replies(),
         [
-            "unknown command; try /fly, /gamemode [MODE...], /help [COMMAND], /level [SUBCOMMAND...], /light [SUBCOMMAND...], /river [WHERE], /ship ACTION [DETAILS...], /tp X Y Z",
+            "unknown command; try /fly, /gamemode [MODE...], /help [COMMAND], /level [SUBCOMMAND...], /light [SUBCOMMAND...], /ship ACTION [DETAILS...], /tp [WHERE] [NUMBERS...]",
             "you are in voxunami_cave:overworld"
         ]
     );
@@ -1401,7 +1401,7 @@ fn flying_hovers_and_the_commands_for_it_and_for_teleporting_answer() {
         [
             "you are flying",
             "teleported to 100.5 200 -50.25",
-            "usage: /tp X Y Z",
+            "usage: /tp, /tp X Y Z, /tp PLACE [LATITUDE LONGITUDE | X Y Z]",
             "usage: /tp X Y Z; X must be a number",
             "that is outside the world",
             "you are walking",

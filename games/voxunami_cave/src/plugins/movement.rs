@@ -1,9 +1,8 @@
-//! The players' bodies: spawning, walking and flying, `/fly`, `/tp` and `/river`.
+//! The players' bodies: spawning, walking and flying, `/fly` and `/tp` (to coordinates, and to the places of `places.rs`).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use base_blocks::great_rivers_generator_identifier;
 use game_shell::GameContent;
 use namespaced_id::NamespacedId;
 use player_presence::{PlayerPose, Presence, SharedPresence, lock};
@@ -19,6 +18,7 @@ use voxel_space::{Displacement, GridId, LevelIndex, Orientation, VoxelCoordinate
 use crate::content::CaveContent;
 use crate::messages::{MoveRequest, Spawn};
 use crate::movement::{Movement, Placement};
+use crate::places::{self, BodyArrival, PlaceKind};
 use crate::rivers;
 
 /// Moves the players' bodies, on the server: a client says which keys are held and which way it
@@ -107,126 +107,86 @@ fn put_player_at(
     Some(now)
 }
 
-/// `/river [narrowest|widest|N]`: puts the player in view of a knot of the great river of the level they are in (the places where its radius was set: `narrowest` and
-/// `widest` are two of them), with the knot straight ahead of where they look. Returns what to tell them.
-fn visit_the_great_river(
-    movement: &mut Movement,
-    presence: &mut Presence,
-    world: &mut ServerWorld,
-    level: LevelIndex,
-    client: ClientId,
-    arguments: &Arguments<'_>,
-) -> String {
-    let has_rivers = world.data().level(level).is_some_and(|data| {
-        data.preferred_default_generator() == &great_rivers_generator_identifier()
-    });
-    if !has_rivers {
-        return "there is no great river in this level (it is in voxunami_cave:mini_cosmos, of a world made after they were added)"
-            .to_owned();
-    }
-    let rivers = GreatRivers::new(world.data().world_seed);
-    let knots: Vec<_> = rivers.knots().copied().collect();
-    let describe = |index: usize| {
-        format!(
-            "knot {index}, {} across",
-            rivers::length_in_words(knots[index].radius() * 2.0)
-        )
-    };
-    let index_of = |wanted: &terrain::RiverKnot| {
-        knots
-            .iter()
-            .position(|knot| knot == wanted)
-            .expect("a knot of the river")
-    };
-    let (narrowest, widest) = (
-        index_of(&rivers.narrowest_knot()),
-        index_of(&rivers.widest_knot()),
-    );
-    if !arguments.present(0) {
-        return format!(
-            "the great river has {} knots, where its radius is set; it is narrowest at {} (/river narrowest) and widest at {} (/river widest); /river N goes to knot N, from 0 to {}",
-            knots.len(),
-            describe(narrowest),
-            describe(widest),
-            knots.len() - 1
-        );
-    }
-    let which = arguments.word(0);
-    let index = match which {
-        "narrowest" => narrowest,
-        "widest" => widest,
-        number => match number.parse::<usize>() {
-            Ok(index) if index < knots.len() => index,
-            _ => {
-                return format!(
-                    "usage: /river [narrowest|widest|N], with N from 0 to {}",
-                    knots.len() - 1
-                );
-            }
-        },
-    };
-    let knot = knots[index];
-    // The way they look: the angles their program last sent.
-    let forward = movement
-        .request_of(client)
-        .map_or([0.0, 0.0, -1.0], |request| {
-            rivers::forward(request.input.yaw, request.pitch)
-        });
-    let eyes = rivers::eyes_in_view_of(&rivers, &knot, forward);
-    let Ok(voxel) = VoxelCoordinate::try_new(eyes[0], eyes[1], eyes[2]) else {
-        return "that is outside the world".to_owned();
-    };
-    let (brick, local) = voxel.split();
-    let position = WorldPosition::new(
-        brick,
-        [
-            f32::from(local.x()) + 0.5,
-            f32::from(local.y()) + 0.5,
-            f32::from(local.z()) + 0.5,
-        ],
-    );
-    if put_player_at(movement, presence, world, level, client, position).is_none() {
-        return "you have not joined yet".to_owned();
-    }
-    let away = [0, 1, 2].map(|axis| (eyes[axis] - knot.position[axis]) as f64);
-    let distance = (away[0] * away[0] + away[1] * away[1] + away[2] * away[2]).sqrt();
+/// What `/tp` is told when it is not understood.
+const TP_USAGE: &str = "usage: /tp, /tp X Y Z, /tp PLACE [LATITUDE LONGITUDE | X Y Z]";
+
+/// What `/tp` with no words answers: the places of the world, and the ways to say where.
+fn list_places(world: &ServerWorld) -> String {
+    let names: Vec<String> = places::places(world.data())
+        .iter()
+        .map(|place| place.name.to_string())
+        .collect();
     format!(
-        "you are {} from {}",
-        rivers::length_in_words(distance),
-        describe(index)
+        "places: {}. /tp PLACE goes to the ground of a body nearest to you, or in view of a landmark; /tp PLACE LATITUDE LONGITUDE and /tp PLACE X Y Z (in the body's own axes) say where on a body; /tp X Y Z goes to coordinates of the level you are in",
+        if names.is_empty() {
+            "none".to_owned()
+        } else {
+            names.join(", ")
+        }
     )
 }
 
-/// `/tp X Y Z`: puts the player's eyes at a position, in voxels. Returns what to tell them: where they are, which
-/// is not the place asked for if that is inside the terrain (they are moved out of it, the shortest way).
-fn teleport(
+fn finite_number(text: &str) -> Option<f64> {
+    text.parse::<f64>().ok().filter(|number| number.is_finite())
+}
+
+/// `/tp`: with no words, lists the places; with a place (its name has a colon), goes to it, and with numbers after it says where on it; with three numbers, goes to
+/// those coordinates of the level the player is in. Returns what to tell them.
+fn tp(
     movement: &mut Movement,
     presence: &mut Presence,
     world: &mut ServerWorld,
-    level: LevelIndex,
     client: ClientId,
     arguments: &Arguments<'_>,
+    ground: (ChannelIndex, u32),
 ) -> String {
-    let [x, y, z] = [0, 1, 2].map(|position| arguments.number(position));
+    let mut words: Vec<&str> = Vec::new();
+    if arguments.present(0) {
+        words.push(arguments.word(0));
+        words.extend_from_slice(arguments.rest(1));
+    }
+    let Some((&first, rest)) = words.split_first() else {
+        return list_places(world);
+    };
+    if first.contains(':') {
+        go_to_a_place(movement, presence, world, client, first, rest, ground)
+    } else {
+        go_to_coordinates(movement, presence, world, client, &words)
+    }
+}
+
+/// `/tp X Y Z`: puts the player's eyes at a position, in voxels, in the level they are in. Returns what to tell them: where they are, which is not the place asked for if
+/// that is inside the terrain (they are moved out of it, the shortest way).
+fn go_to_coordinates(
+    movement: &mut Movement,
+    presence: &mut Presence,
+    world: &mut ServerWorld,
+    client: ClientId,
+    words: &[&str],
+) -> String {
+    if words.len() != 3 {
+        return TP_USAGE.to_owned();
+    }
+    let mut coordinates = [(0, 0.0); 3];
+    for (index, (axis, word)) in ["X", "Y", "Z"].into_iter().zip(words).enumerate() {
+        match places::parse_coordinate(word) {
+            Some(parsed) => coordinates[index] = parsed,
+            None => return format!("usage: /tp X Y Z; {axis} must be a number"),
+        }
+    }
     // The position must be somewhere in the world.
-    let Ok(voxel) =
-        VoxelCoordinate::try_new(x.floor() as i128, y.floor() as i128, z.floor() as i128)
-    else {
+    let Some(position) = places::position_of(coordinates) else {
         return "that is outside the world".to_owned();
     };
-    let (brick, local) = voxel.split();
-    let fraction = |value: f64| (value - value.floor()) as f32;
-    let position = WorldPosition::new(
-        brick,
-        [
-            f32::from(local.x()) + fraction(x),
-            f32::from(local.y()) + fraction(y),
-            f32::from(local.z()) + fraction(z),
-        ],
-    );
+    let level = presence.level_of(world.data(), client);
     let Some(now) = put_player_at(movement, presence, world, level, client, position) else {
         return "you have not joined yet".to_owned();
     };
+    let [x, y, z] = [0, 1, 2].map(|axis| {
+        words[axis]
+            .parse::<f64>()
+            .expect("a coordinate that was read is a number")
+    });
     let [now_x, now_y, now_z] = voxels(now);
     // (The position is made of an `f32` offset in a brick, so a place that was not moved is the one asked for,
     // to within what an `f32` holds.)
@@ -240,6 +200,148 @@ fn teleport(
     } else {
         format!("teleported to {x} {y} {z}")
     }
+}
+
+/// `/tp PLACE [LATITUDE LONGITUDE | X Y Z]`: see [`places`]. A place in another level takes the player there.
+fn go_to_a_place(
+    movement: &mut Movement,
+    presence: &mut Presence,
+    world: &mut ServerWorld,
+    client: ClientId,
+    name: &str,
+    rest: &[&str],
+    (block_channel, air): (ChannelIndex, u32),
+) -> String {
+    let unknown = || format!("there is no place {name}; /tp alone lists the places");
+    let Some(place) = name
+        .parse::<NamespacedId>()
+        .ok()
+        .and_then(|name| places::find(world.data(), &name))
+    else {
+        return unknown();
+    };
+    let here = presence.level_of(world.data(), client);
+    // Where the player is, if it means something to the place: in its level.
+    let player = if place.level == here {
+        presence
+            .pose_of(world.data(), client)
+            .map(|pose| pose.position)
+    } else {
+        None
+    };
+    // Where they are to be put, and what to tell them of it.
+    let (eyes, told): (WorldPosition, String) = match &place.kind {
+        PlaceKind::Body(grid) => {
+            let arrival = match *rest {
+                [] => BodyArrival::Nearest,
+                [latitude, longitude] => {
+                    let Some(latitude) = finite_number(latitude) else {
+                        return "LATITUDE must be a number".to_owned();
+                    };
+                    let Some(longitude) = finite_number(longitude) else {
+                        return "LONGITUDE must be a number".to_owned();
+                    };
+                    if !(-90.0..=90.0).contains(&latitude) {
+                        return "a latitude is from -90 to 90".to_owned();
+                    }
+                    BodyArrival::Direction {
+                        latitude,
+                        longitude,
+                    }
+                }
+                [x, y, z] => {
+                    let mut coordinates = [(0, 0.0); 3];
+                    for (index, (axis, word)) in
+                        ["X", "Y", "Z"].into_iter().zip([x, y, z]).enumerate()
+                    {
+                        match places::parse_coordinate(word) {
+                            Some(parsed) => coordinates[index] = parsed,
+                            None => return format!("{axis} must be a number"),
+                        }
+                    }
+                    BodyArrival::Point(coordinates)
+                }
+                _ => return TP_USAGE.to_owned(),
+            };
+            let landed =
+                match places::land_on_body(world, *grid, arrival, player, block_channel, air) {
+                    Ok(landed) => landed,
+                    Err(why) => return why,
+                };
+            // (To a tenth of a degree, and no minus zero for a latitude that is a hair under the equator.)
+            let tenth = |degrees: f64| (degrees * 10.0).round() / 10.0 + 0.0;
+            let told = match landed.direction {
+                Some((latitude, longitude)) => format!(
+                    "you are on {} at latitude {:.1}, longitude {:.1}",
+                    place.name,
+                    tenth(latitude),
+                    tenth(longitude)
+                ),
+                None => format!(
+                    "you are at {} {} {} of {}",
+                    rest[0], rest[1], rest[2], place.name
+                ),
+            };
+            (landed.position, told)
+        }
+        PlaceKind::RiverKnot { index, knot } => {
+            if !rest.is_empty() {
+                return format!("{} has no coordinates; /tp it alone", place.name);
+            }
+            let rivers = GreatRivers::new(world.data().world_seed);
+            // The way they look: the angles their program last sent.
+            let forward = movement
+                .request_of(client)
+                .map_or([0.0, 0.0, -1.0], |request| {
+                    rivers::forward(request.input.yaw, request.pitch)
+                });
+            let eyes = rivers::eyes_in_view_of(&rivers, knot, forward);
+            let Ok(voxel) = VoxelCoordinate::try_new(eyes[0], eyes[1], eyes[2]) else {
+                return "that is outside the world".to_owned();
+            };
+            let away = [0, 1, 2].map(|axis| (eyes[axis] - knot.position[axis]) as f64);
+            let distance = (away[0] * away[0] + away[1] * away[1] + away[2] * away[2]).sqrt();
+            let (brick, local) = voxel.split();
+            let position = WorldPosition::new(
+                brick,
+                [
+                    f32::from(local.x()) + 0.5,
+                    f32::from(local.y()) + 0.5,
+                    f32::from(local.z()) + 0.5,
+                ],
+            );
+            (
+                position,
+                format!(
+                    "you are {} from {} (knot {index}, {} across)",
+                    rivers::length_in_words(distance),
+                    place.name,
+                    rivers::length_in_words(knot.radius() * 2.0)
+                ),
+            )
+        }
+    };
+    // A place in another level takes the player there first.
+    let mut note = String::new();
+    if place.level != here {
+        presence.move_to_level(client, place.level, world);
+        if let Some(level) = world.data().level_id(place.level) {
+            note = format!(" (in {level})");
+        }
+    }
+    let Some(now) = put_player_at(movement, presence, world, place.level, client, eyes) else {
+        return "you have not joined yet".to_owned();
+    };
+    // A place that was in the terrain is not where they are: they are moved out of it, which is said (it is a fault of the arrival if it is a body's ground).
+    let [now_x, now_y, now_z] = voxels(now);
+    let [x, y, z] = voxels(eyes);
+    if [now_x - x, now_y - y, now_z - z]
+        .iter()
+        .any(|difference| difference.abs() > 0.05)
+    {
+        note.push_str(" (moved out of the terrain)");
+    }
+    format!("{told}{note}")
 }
 
 impl Plugin for MovementPlugin {
@@ -330,43 +432,23 @@ impl Plugin for MovementPlugin {
             },
         );
         let (bodies, players) = (Arc::clone(&movement), Arc::clone(&self.players));
-        registrar.command(
-            CommandSpec::new("tp", "puts your eyes at a position, in voxels")
-                .argument(Argument::number("x"))
-                .argument(Argument::number("y"))
-                .argument(Argument::number("z")),
-            move |context, client, arguments| {
-                let mut presence = lock(&players);
-                let level = presence.level_of(context.world().data(), client);
-                let reply = teleport(
-                    &mut locked(&bodies),
-                    &mut presence,
-                    context.world(),
-                    level,
-                    client,
-                    arguments,
-                );
-                context.reply(client, &reply);
-            },
-        );
-
-        let (bodies, players) = (Arc::clone(&movement), Arc::clone(&self.players));
+        let ground = (self.block_channel, self.air);
         registrar.command(
             CommandSpec::new(
-                "river",
-                "puts you in view of the great river: /river narrowest, /river widest or /river N",
+                "tp",
+                "goes to a place or to coordinates; /tp alone lists the places",
             )
-            .argument(Argument::word("where").optional()),
+            .argument(Argument::word("where").optional())
+            .argument(Argument::rest("numbers").optional()),
             move |context, client, arguments| {
                 let mut presence = lock(&players);
-                let level = presence.level_of(context.world().data(), client);
-                let reply = visit_the_great_river(
+                let reply = tp(
                     &mut locked(&bodies),
                     &mut presence,
                     context.world(),
-                    level,
                     client,
                     arguments,
+                    ground,
                 );
                 context.reply(client, &reply);
             },

@@ -1,4 +1,5 @@
-//! `/river` (the great rivers, `docs/great-rivers-spec.md`): a player is put in view of a knot of the river, with the knot ahead of where they look, and told how far.
+//! The landmarks of the great rivers as places (`docs/great-rivers-spec.md`, `docs/places-spec.md`): `/tp base_blocks:great_river_narrowest` and `..._widest` put a player in view of that knot of the
+//! river, with the knot ahead of where they look, and tell them how far.
 
 mod common;
 
@@ -57,30 +58,20 @@ fn eyes_of_the_player(scene: &Scene) -> [i128; 3] {
 }
 
 #[test]
-fn river_with_no_words_says_where_the_knots_are() {
-    let (mut scene, mut player) = scene_with_a_player();
-    let reply = say(&mut scene, &mut player, "/river");
-    let rivers = GreatRivers::new(SEED);
-    let knots = rivers.knots().count();
-    assert!(
-        reply.contains(&format!("the great river has {knots} knots")),
-        "{reply}"
-    );
-    assert!(reply.contains("80 m across (/river narrowest)"), "{reply}");
-    assert!(
-        reply.contains("1.000e9 light years across (/river widest)"),
-        "{reply}"
-    );
-}
-
-#[test]
 fn the_player_is_put_the_viewing_distance_from_the_narrowest_knot_outside_the_water() {
     let (mut scene, mut player) = scene_with_a_player();
-    let reply = say(&mut scene, &mut player, "/river narrowest");
+    let reply = say(
+        &mut scene,
+        &mut player,
+        "/tp base_blocks:great_river_narrowest",
+    );
     let rivers = GreatRivers::new(SEED);
     let knot: RiverKnot = rivers.narrowest_knot();
-    assert!(reply.starts_with("you are 320 m from knot "), "{reply}");
-    assert!(reply.ends_with(", 80 m across"), "{reply}");
+    assert!(
+        reply.starts_with("you are 320 m from base_blocks:great_river_narrowest (knot "),
+        "{reply}"
+    );
+    assert!(reply.ends_with(", 80 m across)"), "{reply}");
     let eyes = eyes_of_the_player(&scene);
     let distance = distance_between(eyes, knot.position);
     assert!(
@@ -100,7 +91,11 @@ fn the_knot_is_straight_ahead_of_the_way_the_player_looks() {
     let knot = rivers.narrowest_knot();
     // (If the place back along the view were in the river the player would be put at right angles to it instead, which is tested in `rivers`.)
     let (mut scene, mut player) = scene_with_a_player();
-    say(&mut scene, &mut player, "/river narrowest");
+    say(
+        &mut scene,
+        &mut player,
+        "/tp base_blocks:great_river_narrowest",
+    );
     let eyes = eyes_of_the_player(&scene);
     let back = forward(0.0, 0.0).map(|component| -component);
     let wanted =
@@ -129,7 +124,11 @@ fn the_server_puts_the_player_back_along_the_way_they_look_whichever_way_that_is
             .rig
             .join_walking(Cave::default_camera().position, degrees, 0.0);
         scene.rig.settle(&mut [&mut player]);
-        say(&mut scene, &mut player, "/river narrowest");
+        say(
+            &mut scene,
+            &mut player,
+            "/tp base_blocks:great_river_narrowest",
+        );
         let eyes = eyes_of_the_player(&scene);
         let back = forward(yaw, 0.0).map(|component| -component);
         let wanted = [0, 1, 2]
@@ -153,11 +152,16 @@ fn the_server_puts_the_player_back_along_the_way_they_look_whichever_way_that_is
 #[test]
 fn the_player_is_put_three_radii_and_two_hundred_metres_from_the_widest_knot() {
     let (mut scene, mut player) = scene_with_a_player();
-    let reply = say(&mut scene, &mut player, "/river widest");
+    let reply = say(
+        &mut scene,
+        &mut player,
+        "/tp base_blocks:great_river_widest",
+    );
     let rivers = GreatRivers::new(SEED);
     let knot = rivers.widest_knot();
     assert!(
-        reply.contains("light years from knot") && reply.ends_with("1.000e9 light years across"),
+        reply.contains("light years from base_blocks:great_river_widest (knot")
+            && reply.ends_with(", 1.000e9 light years across)"),
         "{reply}"
     );
     let eyes = eyes_of_the_player(&scene);
@@ -171,45 +175,14 @@ fn the_player_is_put_three_radii_and_two_hundred_metres_from_the_widest_knot() {
 }
 
 #[test]
-fn a_knot_by_its_number_and_the_words_for_a_wrong_one() {
-    let (mut scene, mut player) = scene_with_a_player();
-    let rivers = GreatRivers::new(SEED);
-    let knots = rivers.knots().count();
-    let reply = say(&mut scene, &mut player, "/river 3");
-    assert!(reply.contains("from knot 3, "), "{reply}");
-    let wanted = format!(
-        "usage: /river [narrowest|widest|N], with N from 0 to {}",
-        knots - 1
-    );
-    for wrong in [
-        format!("/river {knots}"),
-        "/river banana".to_owned(),
-        "/river -1".to_owned(),
-    ] {
-        assert_eq!(say(&mut scene, &mut player, &wrong), wanted, "{wrong}");
-    }
-}
-
-#[test]
-fn there_is_no_river_in_the_overworld() {
-    let (mut scene, mut player) = scene_with_a_player();
-    let reply = say(&mut scene, &mut player, "/level go overworld");
-    assert!(
-        reply.contains("you are now in voxunami_cave:overworld"),
-        "{reply}"
-    );
-    let reply = say(&mut scene, &mut player, "/river narrowest");
-    assert!(
-        reply.starts_with("there is no great river in this level"),
-        "{reply}"
-    );
-}
-
-#[test]
 fn the_player_can_go_from_the_river_to_the_overworld_and_back_to_the_planet() {
     // The river is a place in the level like any other: leaving the level and coming back puts the player at the pole of the planet again.
     let (mut scene, mut player) = scene_with_a_player();
-    say(&mut scene, &mut player, "/river narrowest");
+    say(
+        &mut scene,
+        &mut player,
+        "/tp base_blocks:great_river_narrowest",
+    );
     say(&mut scene, &mut player, "/level go overworld");
     let reply = say(&mut scene, &mut player, "/level go mini_cosmos");
     assert!(
@@ -221,5 +194,46 @@ fn the_player_can_go_from_the_river_to_the_overworld_and_back_to_the_planet() {
         player_pose(&scene, 1).grid,
         common::ship_id(0),
         "aboard the planet"
+    );
+}
+
+#[test]
+fn from_the_overworld_the_player_is_taken_to_the_river_in_the_level_of_space() {
+    let (mut scene, mut player) = scene_with_a_player();
+    let reply = say(&mut scene, &mut player, "/level go overworld");
+    assert!(
+        reply.contains("you are now in voxunami_cave:overworld"),
+        "{reply}"
+    );
+    let reply = say(
+        &mut scene,
+        &mut player,
+        "/tp base_blocks:great_river_narrowest",
+    );
+    assert!(
+        reply.starts_with("you are 320 m from base_blocks:great_river_narrowest"),
+        "{reply}"
+    );
+    assert!(reply.contains("voxunami_cave:mini_cosmos"), "{reply}");
+    assert_eq!(player.level(), LevelIndex::MAIN, "the client is told");
+    let rivers = GreatRivers::new(SEED);
+    let eyes = eyes_of_the_player(&scene);
+    assert!((distance_between(eyes, rivers.narrowest_knot().position) - 320.0).abs() < 2.0);
+}
+
+#[test]
+fn a_world_without_the_rivers_has_no_landmark_of_them() {
+    // The overworld alone has no great river: its landmarks are no places.
+    let mut rig = common::Rig::new();
+    let mut player = rig.join([16.5, 110.0, 16.5], 0.0, 0.0);
+    rig.settle(&mut [&mut player]);
+    player.take_command_replies();
+    player.send_command("/tp base_blocks:great_river_widest");
+    rig.step();
+    rig.step();
+    rig.settle(&mut [&mut player]);
+    assert_eq!(
+        player.take_command_replies(),
+        ["there is no place base_blocks:great_river_widest; /tp alone lists the places"]
     );
 }
