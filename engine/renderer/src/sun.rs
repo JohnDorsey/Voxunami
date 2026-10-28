@@ -173,6 +173,27 @@ pub fn balls_and_ground(occluders: &[SunOccluder], camera: WorldPosition) -> (Ve
     (balls, flat)
 }
 
+/// Which way is up at the camera (a unit vector, relative to the world's axes): the way out of the ball whose surface is nearest to it (in that ball's radii, as for the
+/// turn of a face above), or +y if the level's ground is flat, or if the camera is in the very middle of a ball. `None` where there is neither ground nor ball: in empty space.
+/// What is above a place is looked for along it (`crate::shadow`, the sky maps); this is the direction of the camera's own place, which is the one for the places near it.
+pub fn zenith(balls: &[SunBall], flat_ground: bool) -> Option<Vec3> {
+    if flat_ground {
+        return Some(Vec3::Y);
+    }
+    let mut nearest: Option<(f32, Vec3)> = None;
+    for ball in balls.iter().take(MAXIMUM_SUN_BALLS) {
+        let (distance, direction) = length_and_direction(ball.centre);
+        if distance == 0.0 {
+            return Some(Vec3::Y);
+        }
+        let over = (distance - ball.radius) / ball.radius;
+        if nearest.is_none_or(|(least, _)| over < least) {
+            nearest = Some((over, -direction));
+        }
+    }
+    nearest.map(|(_, up)| up)
+}
+
 /// How much of the sun reaches the camera, by the rule the pictures use.
 pub fn daylight_at(camera: WorldPosition, sun: Vec3, occluders: &[SunOccluder]) -> f32 {
     let (balls, flat_ground) = balls_and_ground(occluders, camera);
@@ -471,5 +492,39 @@ mod tests {
             &[planet],
         );
         assert_eq!((noon, night), (1.0, 0.0));
+    }
+
+    #[test]
+    fn the_zenith_is_up_on_flat_ground_the_way_out_of_the_nearest_ball_and_nothing_in_empty_space()
+    {
+        assert_eq!(zenith(&[], true), Some(Vec3::Y));
+        assert_eq!(zenith(&[], false), None);
+        // A planet below the camera: the way out is up. One to the +x side, whose middle is below too: the way out is the other way, -x and up.
+        let below = zenith(&[ball([0.0, -1000.0, 0.0], 1000.0)], false).unwrap();
+        assert!((below - Vec3::Y).length() < 1e-6, "{below}");
+        let beside = zenith(&[ball([300.0, -400.0, 0.0], 500.0)], false).unwrap();
+        assert!(
+            (beside - Vec3::new(-0.6, 0.8, 0.0)).length() < 1e-6,
+            "{beside}"
+        );
+        // Of two, the one whose surface is nearer (in its own radii) is the ground: a moon close by, not a planet that is bigger and further.
+        let planet = ball([0.0, -9000.0, 0.0], 8000.0);
+        let moon = ball([0.0, 0.0, 120.0], 110.0);
+        let nearer = zenith(&[planet, moon], false).unwrap();
+        assert!(
+            (nearer - Vec3::new(0.0, 0.0, -1.0)).length() < 1e-6,
+            "{nearer}"
+        );
+        // A camera in the middle of a ball has no way out of it, and is given up; a ground that is flat says up whatever balls there are.
+        assert_eq!(zenith(&[ball([0.0; 3], 10.0)], false), Some(Vec3::Y));
+        assert_eq!(zenith(&[moon], true), Some(Vec3::Y));
+    }
+
+    #[test]
+    fn the_zenith_is_a_unit_vector_even_for_a_planet_a_billion_billion_voxels_away() {
+        for distance in [1.0f32, 1.0e6, 1.0e20, 1.0e30] {
+            let up = zenith(&[ball([0.0, -distance, 0.0], distance * 0.5)], false).unwrap();
+            assert!((up - Vec3::Y).length() < 1e-6, "{distance}: {up}");
+        }
     }
 }

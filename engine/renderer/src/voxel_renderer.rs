@@ -18,11 +18,14 @@ use crate::camera::{Camera, Frustum};
 use crate::crosshair::Crosshair;
 use crate::graphics_context::GraphicsContext;
 use crate::overlay::{Overlay, OverlayRect};
-use crate::shadow::{Cascade, LightBasis, MAXIMUM_CASCADES, SUN_DRIFT, half_widths};
+use crate::shadow::{
+    Cascade, LightBasis, MAP_LAYERS, MAXIMUM_CASCADES, SKY_CASCADES, SUN_DRIFT, half_widths,
+    sky_half_widths,
+};
 use crate::shadow_maps::{ShadowPipelines, ShadowTarget, comparison_sampler, shadow_frame_layout};
 use crate::sun::{
     MAXIMUM_SUN_BALLS, SUN_DISC_SOFTNESS, SunOccluder, TWILIGHT_SOFTNESS, balls_and_ground,
-    length_and_direction,
+    length_and_direction, zenith,
 };
 
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -233,6 +236,13 @@ pub struct Atmosphere {
     /// [`Atmosphere::shadows`] are on: the sky is scattered light, so a shadow is not black, but it is not told how much of the sky is hidden, which only a cave knows. 255, the
     /// default, is no darkening at all.
     pub sky_light_in_shadow: u8,
+    /// The share, from 0 to 255, of the sky's light that reaches a place with the terrain over it (a roof, a hill over a cave, an overhang), while [`Atmosphere::shadows`] are on
+    /// and there is a ground or a planet to say which way is up (see [`VoxelRenderer::set_sun_occluders`]): the sky is over a place as far as the terrain seen from straight
+    /// above is not, over the columns round the place (13 of them, out to 8 voxels; a place on a wall is the one in front of it, 9 voxels out), and only near the camera (the
+    /// four maps reach 11, 39, 94 and 205 voxels); farther the sky is taken to be open. The renderer draws a second set of maps for it, of the terrain from above, which are
+    /// kept while the camera stays near the middle of each and the terrain does not change, whatever the sun does. 255, the default, is no cover counted at all, and
+    /// pictures as they were; 0 is a cave that is black by day.
+    pub sky_light_under_cover: u8,
 }
 
 impl Default for Atmosphere {
@@ -248,6 +258,7 @@ impl Default for Atmosphere {
             sky_light: 0,
             shadows: false,
             sky_light_in_shadow: 255,
+            sky_light_under_cover: 255,
         }
     }
 }
@@ -270,6 +281,8 @@ pub struct RenderStatistics {
     /// were drawn into them in all.
     pub shadow_cascades_drawn: usize,
     pub shadow_casters_drawn: usize,
+    /// How many cascades of the sky's maps (the terrain seen from straight above, for [`Atmosphere::sky_light_under_cover`]) were drawn again this frame.
+    pub sky_cascades_drawn: usize,
 }
 
 #[repr(C)]
@@ -284,15 +297,18 @@ struct FrameUniform {
     sun_light: [f32; 4],
     /// The balls that can hide the sun: the middle relative to the camera and the radius.
     sun_balls: [[f32; 4]; MAXIMUM_SUN_BALLS],
-    /// x: how many cascades there are (0: no shadows), y: the share of the sky's light that reaches a place in a shadow.
+    /// x: how many cascades there are (0: no shadows), y: the share of the sky's light that reaches a place in a shadow, z: the share that reaches a place with the terrain over
+    /// it, w: how many cascades of the sky there are (0: the cover is not counted).
     shadow: [f32; 4],
     cascades: [CascadeUniform; MAXIMUM_CASCADES],
+    /// The cascades of the sky: maps of the terrain seen from straight above.
+    sky_cascades: [CascadeUniform; SKY_CASCADES],
     /// Linear RGB of each avatar colour.
     avatars: [[f32; 4]; AVATAR_COLOR_COUNT],
 }
 
 /// A cascade of the shadow map as the shader has it: the matrix from a place relative to the camera to the map, how far from the camera the cascade is looked in,
-/// the width of a texel in voxels and the depth range in voxels.
+/// the width of a texel in voxels, the depth range in voxels and half the width of the map in voxels.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct CascadeUniform {
@@ -317,19 +333,39 @@ impl GpuBrick {
         (self.quad_count + self.detailed_count) as usize
     }
 
-    /// The ranges of whole quads, and of detailed ones, on the faces that look away from the sun when the brick is turned by `rotation` (the sun's direction is a unit
-    /// vector, in the world): what a shadow map is drawn from. Neighbouring faces' ranges are joined.
+    /// The ranges of quads on the faces that look away from the sun when the brick is turned by `rotation` (the sun's direction is a unit vector, in the world): what a
+    /// shadow map is drawn from. Neighbouring faces' ranges are joined.
     fn back_faces(
         faces: &[u32; 7],
         rotation: &[[f32; 3]; 3],
         toward_sun: Vec3,
+    ) -> Vec<std::ops::Range<u32>> {
+        Self::faces_where(faces, rotation, toward_sun, |facing| facing < 0.0)
+    }
+
+    /// The ranges of quads on the faces that look toward `toward_light` (a unit vector, in the world, up for the sky's maps): the highest thing over a column is one of them, and
+    /// it is what a sky map is drawn from.
+    fn front_faces(
+        faces: &[u32; 7],
+        rotation: &[[f32; 3]; 3],
+        toward_light: Vec3,
+    ) -> Vec<std::ops::Range<u32>> {
+        Self::faces_where(faces, rotation, toward_light, |facing| facing > 0.0)
+    }
+
+    /// The ranges of quads on the faces whose normal, turned by `rotation`, has a cosine with `direction` that `wanted` says yes to. Neighbouring faces' ranges are joined.
+    fn faces_where(
+        faces: &[u32; 7],
+        rotation: &[[f32; 3]; 3],
+        direction: Vec3,
+        wanted: impl Fn(f32) -> bool,
     ) -> Vec<std::ops::Range<u32>> {
         let mut ranges: Vec<std::ops::Range<u32>> = Vec::new();
         for face in 0..6 {
             let (axis, sign) = (face / 2, if face % 2 == 1 { 1.0 } else { -1.0 });
             let normal = Vec3::new(rotation[0][axis], rotation[1][axis], rotation[2][axis]) * sign;
             let range = faces[face]..faces[face + 1];
-            if normal.dot(toward_sun) >= 0.0 || range.is_empty() {
+            if !wanted(normal.dot(direction)) || range.is_empty() {
                 continue;
             }
             match ranges.last_mut() {
@@ -340,11 +376,24 @@ impl GpuBrick {
         ranges
     }
 
-    /// How many quads a shadow map from this sun draws of the brick placed with this turn.
-    fn shadow_quads(&self, rotation: &[[f32; 3]; 3], toward_sun: Vec3) -> usize {
+    /// The ranges of quads a map of this kind is drawn from, for the light in this direction.
+    fn map_faces(
+        kind: MapKind,
+        faces: &[u32; 7],
+        rotation: &[[f32; 3]; 3],
+        toward_light: Vec3,
+    ) -> Vec<std::ops::Range<u32>> {
+        match kind {
+            MapKind::Sun => Self::back_faces(faces, rotation, toward_light),
+            MapKind::Sky => Self::front_faces(faces, rotation, toward_light),
+        }
+    }
+
+    /// How many quads a map of this kind from this light draws of the brick placed with this turn.
+    fn map_quads(&self, kind: MapKind, rotation: &[[f32; 3]; 3], toward_light: Vec3) -> usize {
         [&self.quad_faces, &self.detailed_faces]
             .into_iter()
-            .flat_map(|faces| Self::back_faces(faces, rotation, toward_sun))
+            .flat_map(|faces| Self::map_faces(kind, faces, rotation, toward_light))
             .map(|range| range.len())
             .sum()
     }
@@ -413,6 +462,37 @@ enum MeshKey {
     Held(BrickKey),
     Avatar(usize),
     Box((u32, [u8; 3])),
+}
+
+/// What a map is a picture of: everything that casts a shadow seen from the sun (it keeps what is nearest the sun, the backs of things), or the terrain seen from straight above
+/// (it keeps what is highest over each column, the faces that look up).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MapKind {
+    Sun,
+    Sky,
+}
+
+impl MapKind {
+    /// The layer of the maps' texture, and the place in the cache of kept maps, of the first cascade of this kind.
+    fn first_layer(self) -> usize {
+        match self {
+            MapKind::Sun => 0,
+            MapKind::Sky => MAXIMUM_CASCADES,
+        }
+    }
+
+    /// The cascade of this kind of this half width, for a camera at this place across the light.
+    fn cascade(self, half_width: f32, camera_across_the_light: [f64; 2]) -> Cascade {
+        match self {
+            MapKind::Sun => Cascade::new(half_width, camera_across_the_light),
+            MapKind::Sky => Cascade::new_for_sky(half_width, camera_across_the_light),
+        }
+    }
+
+    /// Whether the map of this cascade holds the things that move (the sky's never do: they cast shadows, they are not a roof).
+    fn holds_things_that_move(self, cascade: &Cascade) -> bool {
+        self == MapKind::Sun && cascade.texel <= DYNAMIC_CASTER_TEXEL_LIMIT
+    }
 }
 
 /// One thing that may be drawn this frame: what it is, where it is placed, and the sphere that holds it (relative to the camera), for deciding whether the camera sees it and
@@ -515,9 +595,19 @@ struct PlannedCascade {
     casters: Vec<usize>,
 }
 
-/// The shadow maps of this frame.
+/// The shadow maps of this frame: the sun's, and the sky's if the sky's cover is counted.
 struct ShadowPlan {
     cascades: Vec<PlannedCascade>,
+    sky: Vec<PlannedCascade>,
+}
+
+/// What a frame's maps are planned against: the camera and the things drawn, how near and how far from the camera the things seen are, and the number of this frame.
+struct SeenFromTheCamera<'a> {
+    camera: &'a Camera,
+    drawables: &'a [Drawable],
+    nearest: f32,
+    farthest: f32,
+    frame: u64,
 }
 
 /// The places in the placements buffer of the things drawn this frame: each thing drawn has one, however many passes it is drawn in.
@@ -569,7 +659,7 @@ pub struct VoxelRenderer {
     pipeline: wgpu::RenderPipeline,
     detailed_pipeline: wgpu::RenderPipeline,
     frame_layout: wgpu::BindGroupLayout,
-    /// The frame's uniform for the picture, and after it one copy for each cascade of the shadow map, each at a multiple of `frame_stride`.
+    /// The frame's uniform for the picture, and after it one copy for each cascade of the maps (the sun's, then the sky's), each at a multiple of `frame_stride`.
     frame_buffer: wgpu::Buffer,
     frame_stride: u64,
     /// Linear RGB of every game material, which the shader reads by material value.
@@ -579,6 +669,7 @@ pub struct VoxelRenderer {
     shadow_target: ShadowTarget,
     shadow_sampler: wgpu::Sampler,
     shadow_pipelines: ShadowPipelines,
+    sky_pipelines: ShadowPipelines,
     shadow_frame_group: wgpu::BindGroup,
     placement_layout: wgpu::BindGroupLayout,
     placements: PlacementBuffer,
@@ -601,7 +692,7 @@ pub struct VoxelRenderer {
     /// against, to know that it is out of date.
     terrain_version: u64,
     dynamic_version: u64,
-    /// How many pictures have been drawn with shadows, and the maps as they were last drawn, one for each cascade.
+    /// How many pictures have been drawn with shadows, and the maps as they were last drawn, one for each cascade (the sun's, then the sky's).
     shadow_frame: u64,
     shadow_cache: Vec<Option<CascadeCache>>,
     depth: Option<SizedTarget>,
@@ -772,7 +863,7 @@ impl VoxelRenderer {
         let frame_stride = (size_of::<FrameUniform>() as u64).next_multiple_of(alignment);
         let frame_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame uniform"),
-            size: frame_stride * (1 + MAXIMUM_CASCADES as u64),
+            size: frame_stride * (1 + MAP_LAYERS as u64),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -805,8 +896,20 @@ impl VoxelRenderer {
         let placements =
             Self::create_placement_buffer(&device, &placement_layout, placement_stride, 64);
 
-        let shadow_pipelines =
-            ShadowPipelines::new(&device, &shader, &shadow_frame_layout, &placement_layout);
+        let shadow_pipelines = ShadowPipelines::new(
+            &device,
+            &shader,
+            &shadow_frame_layout,
+            &placement_layout,
+            wgpu::Face::Front,
+        );
+        let sky_pipelines = ShadowPipelines::new(
+            &device,
+            &shader,
+            &shadow_frame_layout,
+            &placement_layout,
+            wgpu::Face::Back,
+        );
         let crosshair = Crosshair::new(&device, color_format);
         let device_for_overlay = device.clone();
         let mut renderer = Self {
@@ -823,6 +926,7 @@ impl VoxelRenderer {
             shadow_target,
             shadow_sampler,
             shadow_pipelines,
+            sky_pipelines,
             shadow_frame_group,
             placement_layout,
             placements,
@@ -841,7 +945,7 @@ impl VoxelRenderer {
             terrain_version: 0,
             dynamic_version: 0,
             shadow_frame: 0,
-            shadow_cache: (0..MAXIMUM_CASCADES).map(|_| None).collect(),
+            shadow_cache: (0..MAP_LAYERS).map(|_| None).collect(),
             depth: None,
             offscreen: None,
             crosshair,
@@ -1349,10 +1453,11 @@ impl VoxelRenderer {
     /// if the cascade is one that keeps its map for a while.
     fn shadow_casters(
         drawables: &[Drawable],
+        kind: MapKind,
         cascade: &Cascade,
         basis: &LightBasis,
     ) -> (Vec<usize>, f32) {
-        let with_things_that_move = cascade.texel <= DYNAMIC_CASTER_TEXEL_LIMIT;
+        let with_things_that_move = kind.holds_things_that_move(cascade);
         let mut casters = Vec::new();
         let mut highest = f32::NEG_INFINITY;
         for (index, drawable) in drawables.iter().enumerate() {
@@ -1366,27 +1471,32 @@ impl VoxelRenderer {
         (casters, highest)
     }
 
-    /// What drawing these casters into a shadow map for this sun takes, as a number of quads: the quads of the faces drawn, and for each caster something for the calls it
-    /// takes to draw them (a brick is a few calls and a few hundred quads, and the calls cost about as much as the quads).
-    fn shadow_cost(&self, drawables: &[Drawable], casters: &[usize], basis: &LightBasis) -> usize {
+    /// What drawing these casters into a map of this kind from this light takes, as a number of quads: the quads of the faces drawn, and for each caster something for the calls
+    /// it takes to draw them (a brick is a few calls and a few hundred quads, and the calls cost about as much as the quads).
+    fn shadow_cost(
+        &self,
+        drawables: &[Drawable],
+        kind: MapKind,
+        casters: &[usize],
+        basis: &LightBasis,
+    ) -> usize {
         casters
             .iter()
             .map(|&index| {
                 SHADOW_CALL_COST_QUADS
-                    + self
-                        .mesh(drawables[index].mesh)
-                        .shadow_quads(&drawables[index].placement.rotation, basis.toward_sun)
+                    + self.mesh(drawables[index].mesh).map_quads(
+                        kind,
+                        &drawables[index].placement.rotation,
+                        basis.toward_sun,
+                    )
             })
             .sum()
     }
 
     /// The shadow maps for this frame, if there are to be any: for each cascade, whether its map is drawn again or kept, and what is drawn into it. `seen` are the drawables the
     /// camera sees. None while shadows are off, while there is no sun or sky to shade, while the ground of a flat level hides the sun from everything, and while nothing is seen.
-    ///
-    /// A map is drawn again when it is wrong: there is none, or the camera has moved too far from where it was (see [`Cascade::holds_after_moving`]) or the sun has turned too
-    /// far ([`SUN_DRIFT`] times ten). A map that is a little out of date (the sun a little turned, the terrain or the things that move changed) is drawn again when it has waited
-    /// long enough and there is room in the frame for it, finest first: the map of terrain that changed waits longer the coarser the cascade ([`terrain_refresh_age`]) and every
-    /// map waits for as many frames as it has times the budget in quads to draw.
+    /// The sky's maps (the terrain from straight above, for [`Atmosphere::sky_light_under_cover`]) are planned the same way, if the cover is counted and there is a ground or a
+    /// planet to say which way is up.
     fn plan_shadows(
         &mut self,
         camera: &Camera,
@@ -1401,15 +1511,13 @@ impl VoxelRenderer {
             return None;
         }
         let sun = Vec3::from_array(atmosphere.sun_direction).normalize_or(Vec3::Y);
-        let (_, flat_ground) = balls_and_ground(&self.sun_occluders, camera.position);
+        let widths = half_widths(atmosphere.fog_end);
+        let cover_counted = atmosphere.sky_light > 0 && atmosphere.sky_light_under_cover < 255;
+        let (balls, flat_ground) = balls_and_ground(&self.sun_occluders, camera.position);
         if flat_ground && sun.y <= -(SUN_DISC_SOFTNESS + TWILIGHT_SOFTNESS) {
             return None;
         }
-        let widths = half_widths(atmosphere.fog_end);
         self.shadow_frame += 1;
-        let frame = self.shadow_frame;
-        let basis = LightBasis::new(sun);
-        let camera_across_the_light = basis.coordinates_of(camera.position);
         // How near the camera and how far from it the things it sees are: a cascade is used only if something seen is looked up in it.
         let mut nearest = f32::INFINITY;
         let mut farthest = 0.0f32;
@@ -1418,52 +1526,104 @@ impl VoxelRenderer {
             nearest = nearest.min((distance - drawables[index].radius).max(0.0));
             farthest = farthest.max(distance + drawables[index].radius);
         }
-        let mut previous_reach = 0.0;
+        let view = SeenFromTheCamera {
+            camera,
+            drawables,
+            nearest,
+            farthest,
+            frame: self.shadow_frame,
+        };
         let mut spent = 0usize;
+        let cascades = self.plan_maps(
+            MapKind::Sun,
+            &view,
+            &LightBasis::new(sun),
+            &widths,
+            &mut spent,
+        );
+        let sky = match zenith(&balls, flat_ground) {
+            Some(up) if cover_counted => self.plan_maps(
+                MapKind::Sky,
+                &view,
+                &LightBasis::new(up),
+                &sky_half_widths(),
+                &mut spent,
+            ),
+            _ => Vec::new(),
+        };
+        Some(ShadowPlan { cascades, sky })
+    }
+
+    /// The cascades of one kind of map, of these half widths, for the light in this frame (`basis`; toward the sun, or up): for each, whether its map is drawn again or kept, and
+    /// what is drawn into it. `spent` is how many quads of maps have been drawn again in this frame already.
+    ///
+    /// A map is drawn again when it is wrong: there is none, or the camera has moved too far from where it was (see [`Cascade::holds_after_moving`]) or the light has turned too
+    /// far ([`SUN_DRIFT`] times ten; for the sky it is the camera going round a planet). A map that is a little out of date (the light a little turned, the terrain or the things
+    /// that move changed) is drawn again when it has waited long enough and there is room in the frame for it, finest first: the map of terrain that changed waits longer the
+    /// coarser the cascade ([`terrain_refresh_age`]) and every map waits for as many frames as it has times the budget in quads to draw.
+    fn plan_maps(
+        &mut self,
+        kind: MapKind,
+        view: &SeenFromTheCamera,
+        basis: &LightBasis,
+        widths: &[f32],
+        spent: &mut usize,
+    ) -> Vec<PlannedCascade> {
+        let SeenFromTheCamera {
+            camera,
+            drawables,
+            nearest,
+            farthest,
+            frame,
+        } = *view;
+        let light = basis.toward_sun;
+        let camera_across_the_light = basis.coordinates_of(camera.position);
+        let mut previous_reach = 0.0;
         let mut cascades = Vec::new();
         for (index, &half_width) in widths.iter().enumerate() {
-            let mut cascade = Cascade::new(half_width, camera_across_the_light);
+            let slot = kind.first_layer() + index;
+            let mut cascade = kind.cascade(half_width, camera_across_the_light);
             let serves = cascade.serves(previous_reach, nearest, farthest);
             previous_reach = cascade.reach;
-            let kept = self.shadow_cache[index]
+            let kept = self.shadow_cache[slot]
                 .as_ref()
                 .filter(|kept| kept.cascade.half_width == half_width);
-            // How the map that is kept stands: where the camera is from where it was, how far the sun has turned, what has changed.
+            // How the map that is kept stands: where the camera is from where it was, how far the light has turned, what has changed.
             let moved = kept.map_or(Vec3::ZERO, |kept| {
                 Vec3::from_array(camera.position.relative_to(kept.camera))
             });
             let standing = kept.map(|kept| Standing {
                 holds: kept.cascade.holds_after_moving(&kept.basis, moved),
-                turned: if kept.basis.toward_sun.dot(sun) > 0.0 {
-                    kept.basis.toward_sun.cross(sun).length()
+                turned: if kept.basis.toward_sun.dot(light) > 0.0 {
+                    kept.basis.toward_sun.cross(light).length()
                 } else {
                     f32::INFINITY
                 },
                 terrain_changed: kept.terrain_version != self.terrain_version,
-                things_changed: cascade.texel <= DYNAMIC_CASTER_TEXEL_LIMIT
+                things_changed: kind.holds_things_that_move(&cascade)
                     && kept.dynamic_version != self.dynamic_version,
                 waited: frame - kept.frame,
             });
             let wrong = standing.is_none_or(|standing| standing.is_wrong());
             let mut found = None;
             let redraw = serves
-                && draw_again(standing, index, spent, || {
-                    let (casters, highest) = Self::shadow_casters(drawables, &cascade, &basis);
-                    let cost = self.shadow_cost(drawables, &casters, &basis);
+                && draw_again(standing, index, *spent, || {
+                    let (casters, highest) = Self::shadow_casters(drawables, kind, &cascade, basis);
+                    let cost = self.shadow_cost(drawables, kind, &casters, basis);
                     found = Some((casters, highest));
                     cost
                 });
             let (casters, highest) = match found {
                 Some(found) => found,
-                None if redraw => Self::shadow_casters(drawables, &cascade, &basis),
+                None if redraw => Self::shadow_casters(drawables, kind, &cascade, basis),
                 None => (Vec::new(), f32::NEG_INFINITY),
             };
             if redraw {
                 cascade.fit(highest);
-                spent += self.shadow_cost(drawables, &casters, &basis);
-                self.shadow_cache[index] = Some(CascadeCache {
+                *spent += self.shadow_cost(drawables, kind, &casters, basis);
+                self.shadow_cache[slot] = Some(CascadeCache {
                     cascade,
-                    basis,
+                    basis: *basis,
                     camera: camera.position,
                     terrain_version: self.terrain_version,
                     dynamic_version: self.dynamic_version,
@@ -1471,7 +1631,7 @@ impl VoxelRenderer {
                 });
                 cascades.push(PlannedCascade {
                     cascade,
-                    basis,
+                    basis: *basis,
                     moved: Vec3::ZERO,
                     used: true,
                     drawn: true,
@@ -1490,7 +1650,7 @@ impl VoxelRenderer {
                 // Nothing in the picture is looked up in it, and what it held is wrong for where the camera is: not used.
                 cascades.push(PlannedCascade {
                     cascade,
-                    basis,
+                    basis: *basis,
                     moved: Vec3::ZERO,
                     used: false,
                     drawn: false,
@@ -1498,7 +1658,7 @@ impl VoxelRenderer {
                 });
             }
         }
-        Some(ShadowPlan { cascades })
+        cascades
     }
 
     /// Draws every visible brick into `color_view`, which must be `size` pixels in the renderer's
@@ -1556,7 +1716,12 @@ impl VoxelRenderer {
             slots.slot(&drawables, index);
         }
         if let Some(plan) = &shadows {
-            for planned in plan.cascades.iter().filter(|planned| planned.drawn) {
+            for planned in plan
+                .cascades
+                .iter()
+                .chain(&plan.sky)
+                .filter(|planned| planned.drawn)
+            {
                 for &index in &planned.casters {
                     slots.slot(&drawables, index);
                 }
@@ -1595,6 +1760,7 @@ impl VoxelRenderer {
                 .iter()
                 .map(|planned| planned.casters.len())
                 .sum();
+            statistics.sky_cascades_drawn = plan.sky.iter().filter(|planned| planned.drawn).count();
         }
 
         self.write_placements(&slots.placements);
@@ -1615,19 +1781,30 @@ impl VoxelRenderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("voxel frame"),
             });
-        // The shadow maps first: the sun's view of what is near the camera, a map for each cascade that something is looked up in.
+        // The shadow maps first: the sun's view of what is near the camera, a map for each cascade that something is looked up in; and the terrain seen from straight above.
         if let Some(plan) = &shadows {
-            for (layer, planned) in plan.cascades.iter().enumerate() {
+            let sun_maps = plan
+                .cascades
+                .iter()
+                .enumerate()
+                .map(|(index, planned)| (MapKind::Sun, index, planned));
+            let sky_maps = plan
+                .sky
+                .iter()
+                .enumerate()
+                .map(|(index, planned)| (MapKind::Sky, index, planned));
+            for (kind, index, planned) in sun_maps.chain(sky_maps) {
                 if !planned.drawn {
                     continue;
                 }
+                let layer = kind.first_layer() + index;
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("shadow pass"),
                     color_attachments: &[],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                         view: &self.shadow_target.layer_views[layer],
                         depth_ops: Some(wgpu::Operations {
-                            // (Depth grows toward the sun: 0 is as far from it as the map goes, where nothing is.)
+                            // (Depth grows toward the light: 0 is as far from it as the map goes, where nothing is.)
                             load: wgpu::LoadOp::Clear(0.0),
                             store: wgpu::StoreOp::Store,
                         }),
@@ -1639,37 +1816,51 @@ impl VoxelRenderer {
                 });
                 let frame_offset = ((layer as u64 + 1) * self.frame_stride) as u32;
                 pass.set_bind_group(0, &self.shadow_frame_group, &[frame_offset]);
-                // (Only the faces that look away from the sun: the others are not kept, and are not worth the vertices.)
-                let toward_sun = planned.basis.toward_sun;
-                pass.set_pipeline(&self.shadow_pipelines.quads);
-                for &index in &planned.casters {
-                    let mesh = self.mesh(drawables[index].mesh);
+                // (Only the faces the map keeps, the backs of things for the sun and the fronts for the sky: the others are not kept, and are not worth the vertices.)
+                let toward_light = planned.basis.toward_sun;
+                let pipelines = match kind {
+                    MapKind::Sun => &self.shadow_pipelines,
+                    MapKind::Sky => &self.sky_pipelines,
+                };
+                pass.set_pipeline(&pipelines.quads);
+                for &caster in &planned.casters {
+                    let mesh = self.mesh(drawables[caster].mesh);
                     let Some(quads) = &mesh.quads else {
                         continue;
                     };
-                    let rotation = &drawables[index].placement.rotation;
-                    let ranges = GpuBrick::back_faces(&mesh.quad_faces, rotation, toward_sun);
+                    let rotation = &drawables[caster].placement.rotation;
+                    let ranges =
+                        GpuBrick::map_faces(kind, &mesh.quad_faces, rotation, toward_light);
                     if ranges.is_empty() {
                         continue;
                     }
-                    pass.set_bind_group(1, &self.placements.bind_group, &[placement_offset(index)]);
+                    pass.set_bind_group(
+                        1,
+                        &self.placements.bind_group,
+                        &[placement_offset(caster)],
+                    );
                     pass.set_vertex_buffer(0, quads.slice(..));
                     for range in ranges {
                         pass.draw(0..6, range);
                     }
                 }
-                pass.set_pipeline(&self.shadow_pipelines.detailed);
-                for &index in &planned.casters {
-                    let mesh = self.mesh(drawables[index].mesh);
+                pass.set_pipeline(&pipelines.detailed);
+                for &caster in &planned.casters {
+                    let mesh = self.mesh(drawables[caster].mesh);
                     let Some(detailed) = &mesh.detailed else {
                         continue;
                     };
-                    let rotation = &drawables[index].placement.rotation;
-                    let ranges = GpuBrick::back_faces(&mesh.detailed_faces, rotation, toward_sun);
+                    let rotation = &drawables[caster].placement.rotation;
+                    let ranges =
+                        GpuBrick::map_faces(kind, &mesh.detailed_faces, rotation, toward_light);
                     if ranges.is_empty() {
                         continue;
                     }
-                    pass.set_bind_group(1, &self.placements.bind_group, &[placement_offset(index)]);
+                    pass.set_bind_group(
+                        1,
+                        &self.placements.bind_group,
+                        &[placement_offset(caster)],
+                    );
                     pass.set_vertex_buffer(0, detailed.slice(..));
                     for range in ranges {
                         pass.draw(0..6, range);
@@ -1986,6 +2177,18 @@ impl VoxelRenderer {
         for (slot, ball) in sun_balls.iter_mut().zip(&balls) {
             *slot = [ball.centre.x, ball.centre.y, ball.centre.z, ball.radius];
         }
+        let cascade_uniform = |planned: &PlannedCascade| CascadeUniform {
+            matrix: planned
+                .cascade
+                .matrix_after_moving(&planned.basis, planned.moved)
+                .to_cols_array_2d(),
+            limits: [
+                planned.cascade.reach,
+                planned.cascade.texel,
+                planned.cascade.range,
+                planned.cascade.half_width,
+            ],
+        };
         let uniform = FrameUniform {
             view_projection: view_projection.to_cols_array_2d(),
             fog_color: [fog_red, fog_green, fog_blue, 1.0],
@@ -2007,25 +2210,20 @@ impl VoxelRenderer {
             shadow: [
                 shadows.map_or(0.0, |plan| plan.cascades.len() as f32),
                 f32::from(self.atmosphere.sky_light_in_shadow) / 255.0,
-                0.0,
-                0.0,
+                f32::from(self.atmosphere.sky_light_under_cover) / 255.0,
+                shadows.map_or(0.0, |plan| plan.sky.len() as f32),
             ],
             cascades: std::array::from_fn(|index| {
                 shadows
                     .and_then(|plan| plan.cascades.get(index))
                     .filter(|planned| planned.used)
-                    .map_or_else(Zeroable::zeroed, |planned| CascadeUniform {
-                        matrix: planned
-                            .cascade
-                            .matrix_after_moving(&planned.basis, planned.moved)
-                            .to_cols_array_2d(),
-                        limits: [
-                            planned.cascade.reach,
-                            planned.cascade.texel,
-                            planned.cascade.range,
-                            0.0,
-                        ],
-                    })
+                    .map_or_else(Zeroable::zeroed, cascade_uniform)
+            }),
+            sky_cascades: std::array::from_fn(|index| {
+                shadows
+                    .and_then(|plan| plan.sky.get(index))
+                    .filter(|planned| planned.used)
+                    .map_or_else(Zeroable::zeroed, cascade_uniform)
             }),
             avatars: AVATAR_COLORS.map(|color| {
                 let [red, green, blue] = srgb_to_linear_color(color);
@@ -2036,7 +2234,17 @@ impl VoxelRenderer {
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
         // The copies the shadow passes use: the same, with the cascade's matrix where the camera's is.
         if let Some(plan) = shadows {
-            for (index, planned) in plan.cascades.iter().enumerate() {
+            let sun_maps = plan
+                .cascades
+                .iter()
+                .enumerate()
+                .map(|(index, planned)| (MapKind::Sun.first_layer() + index, planned));
+            let sky_maps = plan
+                .sky
+                .iter()
+                .enumerate()
+                .map(|(index, planned)| (MapKind::Sky.first_layer() + index, planned));
+            for (layer, planned) in sun_maps.chain(sky_maps) {
                 if !planned.drawn {
                     continue;
                 }
@@ -2046,7 +2254,7 @@ impl VoxelRenderer {
                 };
                 self.queue.write_buffer(
                     &self.frame_buffer,
-                    (index as u64 + 1) * self.frame_stride,
+                    (layer as u64 + 1) * self.frame_stride,
                     bytemuck::bytes_of(&copy),
                 );
             }
@@ -2119,6 +2327,43 @@ mod tests {
             GpuBrick::back_faces(&[0, 0, 0, 0, 5, 5, 5], &NO_TURN, Vec3::Y),
             vec![]
         );
+    }
+
+    #[test]
+    fn only_the_faces_that_look_toward_the_sky_are_drawn_into_a_sky_map_and_a_turn_turns_them() {
+        // The same faces as above. A sky map keeps the highest thing over each column: the faces that look up, and not the ones that look down or sideways.
+        let starts = [0, 1, 3, 6, 10, 15, 21];
+        let drawn =
+            |rotation: &[[f32; 3]; 3], up: Vec3| GpuBrick::front_faces(&starts, rotation, up);
+        assert_eq!(drawn(&NO_TURN, Vec3::Y), vec![6..10]);
+        // Up tilted over +x and +z: the fronts are +x, +y and +z.
+        assert_eq!(
+            drawn(&NO_TURN, Vec3::new(0.6, 0.8, 0.1)),
+            vec![1..3, 6..10, 15..21]
+        );
+        // A brick turned half way round the y axis: the fronts are its -x (which looks to +x), +y and -z (which looks to +z), and the last two are neighbours.
+        let half_turn = [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]];
+        assert_eq!(
+            drawn(&half_turn, Vec3::new(0.6, 0.8, 0.1)),
+            vec![0..1, 6..15]
+        );
+        // Five quads, all on the +y face: a front of the sky looking up, and not of one looking down; no quads on the faces that do look at it: no range.
+        let on_top = [0, 0, 0, 0, 5, 5, 5];
+        assert_eq!(
+            GpuBrick::front_faces(&on_top, &NO_TURN, Vec3::Y),
+            vec![0..5]
+        );
+        assert_eq!(GpuBrick::front_faces(&on_top, &NO_TURN, -Vec3::Y), vec![]);
+        assert_eq!(GpuBrick::front_faces(&on_top, &NO_TURN, Vec3::X), vec![]);
+        // Every face that has quads and is not edge on is a front or a back: a sun map and a sky map from the same direction draw the faces that are left of each other.
+        let toward = Vec3::new(0.6, 0.8, 0.1);
+        let (fronts, backs) = (
+            GpuBrick::front_faces(&starts, &NO_TURN, toward),
+            GpuBrick::back_faces(&starts, &NO_TURN, toward),
+        );
+        let quads =
+            |ranges: &[std::ops::Range<u32>]| ranges.iter().map(|range| range.len()).sum::<usize>();
+        assert_eq!(quads(&fronts) + quads(&backs), 21);
     }
 
     fn standing() -> Standing {
@@ -2297,6 +2542,19 @@ mod tests {
                 crate::shadow::FACING_FULL_FROM
             ),
             format!("cascades: array<Cascade, {MAXIMUM_CASCADES}>,"),
+            format!("sky_cascades: array<Cascade, {SKY_CASCADES}>,"),
+            format!("const SKY_FIRST_LAYER: u32 = {MAXIMUM_CASCADES}u;"),
+            format!(
+                "const SKY_WALL_PUSH: f32 = {:?};",
+                crate::shadow::SKY_WALL_PUSH
+            ),
+            format!(
+                "const SKY_TAPS = array<vec2<f32>, {}>({});",
+                crate::shadow::SKY_TAPS.len(),
+                crate::shadow::SKY_TAPS
+                    .map(|[x, y]| format!("vec2<f32>({x:?}, {y:?})"))
+                    .join(", ")
+            ),
         ] {
             assert!(shader.contains(&declaration), "{declaration}");
         }

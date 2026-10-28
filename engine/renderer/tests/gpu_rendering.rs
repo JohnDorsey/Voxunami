@@ -3484,3 +3484,643 @@ fn the_shadow_of_the_last_cascade_fades_out_over_the_last_of_its_reach_as_the_ru
         assert!(seen > 0.2 && seen < 0.9, "{name}: {seen}");
     }
 }
+
+// The sky's cover. A place under a roof, or in a cave under a hill, gets none of the sky's light when `sky_light_under_cover` is 0; the sky maps (the terrain seen from
+// straight above, round the camera) tell the shader what is over a place. The sun is not the sky: the sun's light is the sun maps' business, and a floor the sun reaches under a
+// roof's edge has it still.
+
+/// The atmosphere of the sky tests for a scene of this level: the sky's light only (and the sun's if `sun_light` is not 0), shadows on, the sky not darkened by the sun's shadows,
+/// and `cover` of the sky's light reaching a place with a roof over it.
+fn covered_atmosphere(level: u8, sun: [f32; 3], sun_light: u8, cover: u8) -> Atmosphere {
+    let scale = scale_of(level) as f32;
+    Atmosphere {
+        sky_color: SKY,
+        fog_start: 100.0 * scale,
+        fog_end: 200.0 * scale,
+        sun_direction: sun,
+        sun_light,
+        sky_light: 110,
+        shadows: true,
+        sky_light_in_shadow: 255,
+        sky_light_under_cover: cover,
+        ..Atmosphere::default()
+    }
+}
+
+/// The pictures from `camera` with the cover of the sky counted (the first) and not (the second, where the sky's light is all there is), and what was drawn for them: the
+/// sun's cascades of both pictures (the second is drawn first) and the sky's, which only the first has.
+fn cover_pair(
+    renderer: &mut VoxelRenderer,
+    level: u8,
+    sun: [f32; 3],
+    sun_light: u8,
+    camera: &Camera,
+) -> (Vec<u8>, Vec<u8>, RenderStatistics) {
+    renderer.set_atmosphere(covered_atmosphere(level, sun, sun_light, 255));
+    let (uncovered, before) = renderer.render_to_rgba(camera, SIZE, SIZE);
+    renderer.set_atmosphere(covered_atmosphere(level, sun, sun_light, 0));
+    let (covered, mut statistics) = renderer.render_to_rgba(camera, SIZE, SIZE);
+    statistics.shadow_cascades_drawn += before.shadow_cascades_drawn;
+    statistics.shadow_casters_drawn += before.shadow_casters_drawn;
+    (covered, uncovered, statistics)
+}
+
+/// The hall of the sky tests, in bricks of voxels: a floor (its top at y = 1) over three bricks by three, and, over the bricks given, a roof of one voxel (y = 8 to 9) over
+/// everything west of x = 20. The mouth of the hall is at x = 20, opening to the east, and it is open to the sky anywhere else.
+fn place_hall(renderer: &mut VoxelRenderer, roof_bricks: std::ops::RangeInclusive<i128>) {
+    for bz in -1..=1 {
+        for bx in -1..=1 {
+            let mut blocks = floor_voxels();
+            if roof_bricks.contains(&bx) {
+                for z in 0..32u8 {
+                    for x in 0..32u8 {
+                        if bx * 32 + i128::from(x) < 20 {
+                            blocks.push(([x, 8, z], RED, 0));
+                        }
+                    }
+                }
+            }
+            place_blocks(renderer, BrickCoordinate::new(bx, 0, bz), &blocks, Some(0));
+        }
+    }
+}
+
+/// The hall renderer on a flat ground (the sky maps look up from it), with the whole roof.
+fn hall_renderer(context: &GraphicsContext) -> VoxelRenderer {
+    let mut renderer = new_renderer(context);
+    renderer.set_sun_occluders(&[SunOccluder::FlatGround]);
+    place_hall(&mut renderer, -1..=0);
+    renderer
+}
+
+/// Where the eyes of the hall are, in voxels: outside its mouth, 25 voxels east of the roof's edge, one a little over the floor (it sees the underside of the roof) and one
+/// high enough to see the floor of the hall under the edge of the roof (the line of sight to the floor at x = 0 passes the edge at a height of 6, under the roof).
+const LOW_EYE: [f64; 3] = [45.0, 5.0, 16.0];
+const HIGH_EYE: [f64; 3] = [45.0, 12.0, 16.0];
+
+/// A camera at `eye` (voxels) looking at `target` through a narrow view (a hundredth of a radian a pixel or so), so that a pixel at the middle of the picture is a fraction of a
+/// voxel of what is looked at, and the place probed is that pixel and not one of the several voxels that a pixel is on a floor seen at a slant.
+fn camera_aimed_at(eye: [f64; 3], target: [f64; 3]) -> Camera {
+    let forward = Vec3::new(
+        (target[0] - eye[0]) as f32,
+        (target[1] - eye[1]) as f32,
+        (target[2] - eye[2]) as f32,
+    )
+    .normalize();
+    let mut camera = Camera::new(place_in_voxels(eye));
+    camera.yaw = libm::atan2f(-forward.x, -forward.z);
+    camera.pitch = libm::asinf(forward.y);
+    camera.vertical_field_of_view = 0.17;
+    camera
+}
+
+/// How much of the light a place has with the cover of the sky counted over what it has without, seen from `eye`: the pictures are taken aimed at the place, which is checked to be
+/// at the middle of them.
+fn cover_ratio(
+    renderer: &mut VoxelRenderer,
+    sun: [f32; 3],
+    sun_light: u8,
+    eye: [f64; 3],
+    place: [f64; 3],
+) -> f64 {
+    let camera = camera_aimed_at(eye, place);
+    let (covered, uncovered, _) = cover_pair(renderer, 0, sun, sun_light, &camera);
+    let relative = std::array::from_fn(|axis| place[axis] - eye[axis]);
+    let (x, y) = pixel_of(&camera, relative).expect("the place is in the picture");
+    assert!(
+        x.abs_diff(SIZE / 2) <= 1 && y.abs_diff(SIZE / 2) <= 1,
+        "{place:?} is at pixel ({x}, {y}), not the middle"
+    );
+    light_at(&covered, &uncovered, 0, &camera, eye, place).expect("it is in the picture")
+}
+
+#[test]
+fn under_a_roof_the_sky_gives_no_light_and_in_the_open_all_of_it_and_at_the_mouth_something_between()
+ {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = hall_renderer(&context);
+        let (_, _, statistics) = cover_pair(
+            &mut renderer,
+            0,
+            [0.0, 1.0, 0.0],
+            0,
+            &camera_aimed_at(HIGH_EYE, [10.0, 1.0, 16.0]),
+        );
+        assert!(statistics.sky_cascades_drawn >= 1, "{name}: no sky map");
+        let mut ratio = |eye, place| cover_ratio(&mut renderer, [0.0, 1.0, 0.0], 0, eye, place);
+        // Deep under the roof (every tap of the sky, out to 8 voxels, is under it; with the sky straight up the farthest tap is 8 voxels along x): none of the sky's light. The
+        // floor and the roof's own underside.
+        for x in [0.0, 4.0, 8.0, 11.0] {
+            let floor = ratio(HIGH_EYE, [x, 1.0, 16.0]);
+            assert!(
+                floor < 0.02,
+                "{name}: the floor at x = {x} has {floor} of the sky"
+            );
+        }
+        for x in [2.0, 6.0, 9.0] {
+            let roof = ratio(LOW_EYE, [x, 8.0, 16.0]);
+            assert!(
+                roof < 0.02,
+                "{name}: the roof's underside at x = {x} has {roof}"
+            );
+        }
+        // The open, eight voxels from the mouth and more: all of it.
+        for x in [29.0, 31.0, 33.0] {
+            let floor = ratio(HIGH_EYE, [x, 1.0, 16.0]);
+            assert!(
+                (0.98..1.02).contains(&floor),
+                "{name}: the floor at x = {x} has {floor}"
+            );
+        }
+        // Between, a gradient of the size of the rings of taps: never darker the nearer the open.
+        let mut last = 0.0;
+        for step in 0..=16 {
+            let x = 12.0 + step as f64;
+            let share = ratio(HIGH_EYE, [x, 1.0, 16.0]);
+            assert!(
+                share >= last - 0.02,
+                "{name}: x = {x}: {share} after {last}"
+            );
+            last = share;
+        }
+        // The outer ring (8 voxels) still finds the roof from a floor 5 and 7 voxels outside the mouth, and not from nine: not all of the sky, and not none.
+        for x in [25.0, 27.0] {
+            let share = ratio(HIGH_EYE, [x, 1.0, 16.0]);
+            assert!(
+                (0.8..0.97).contains(&share),
+                "{name}: the floor at x = {x} has {share} of the sky"
+            );
+        }
+        let at_the_mouth = ratio(HIGH_EYE, [20.0, 1.0, 16.0]);
+        assert!(
+            (0.25..0.75).contains(&at_the_mouth),
+            "{name}: at the mouth: {at_the_mouth}"
+        );
+    }
+}
+
+#[test]
+fn the_top_of_the_roof_seen_from_above_has_all_of_the_sky() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = hall_renderer(&context);
+        // (A face is its own height in the map, and the place is eased toward the sky by a texel: it is never covered by itself.)
+        for place in [[4.0, 9.0, 16.0], [10.0, 9.0, 12.0], [16.0, 9.0, 20.0]] {
+            let eye = [place[0] + 3.0, 24.0, place[2]];
+            let ratio = cover_ratio(&mut renderer, [0.0, 1.0, 0.0], 0, eye, place);
+            assert!(
+                (0.98..1.02).contains(&ratio),
+                "{name}: the top of the roof at {place:?} has {ratio}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_sun_and_the_sky_are_told_apart_a_floor_the_sun_reaches_under_the_edge_of_a_roof_keeps_the_sun_and_loses_the_sky()
+ {
+    // The sun is 53 degrees up, over the east: the roof (eight voxels up) shades the floor to x = 14.75, and the floor from there to the mouth is lit by the sun and roofed from
+    // the sky. The sun's light on such a floor is 0.8 of full and the sky's 0.4 of that, and the two together 0.876 (see above): without the sky, 0.8, which is 0.913 of it.
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = hall_renderer(&context);
+        let mut ratio = |place| cover_ratio(&mut renderer, SUN_OVER_THE_EAST, 255, HIGH_EYE, place);
+        // In the roof's shadow and under it: no light at all.
+        let dark = ratio([8.0, 1.0, 16.0]);
+        assert!(dark < 0.02, "{name}: {dark}");
+        // In the sun and under the roof, a little from the mouth (a few of the thirteen taps are in the open, and all of the sky together is a tenth of the light there: the
+        // ratio is 0.913 with none of them in the open, and 1 with all).
+        for x in [15.5, 16.5, 17.5, 18.5] {
+            let lit = ratio([x, 1.0, 16.0]);
+            assert!(
+                (0.90..0.97).contains(&lit),
+                "{name}: in the sun, under the roof, at x = {x}: {lit}"
+            );
+        }
+        // Out in the open: as it was.
+        let open = ratio([31.0, 1.0, 16.0]);
+        assert!((0.98..1.02).contains(&open), "{name}: {open}");
+    }
+}
+
+#[test]
+fn on_the_ground_of_a_planet_the_sky_is_over_the_camera_as_it_is_on_flat_ground() {
+    // A ball a million voxels in radius, whose surface is at y = 0 under the hall: the way out of it at the camera is up, give or take twenty millionths.
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        renderer.set_sun_occluders(&[SunOccluder::Ball {
+            centre: place_in_voxels([16.0, -1.0e6, 16.0]),
+            radius: 1.0e6,
+        }]);
+        place_hall(&mut renderer, -1..=0);
+        let (_, _, statistics) = cover_pair(
+            &mut renderer,
+            0,
+            [0.0, 1.0, 0.0],
+            0,
+            &camera_aimed_at(HIGH_EYE, [10.0, 1.0, 16.0]),
+        );
+        assert!(statistics.sky_cascades_drawn >= 1, "{name}: no sky map");
+        let under = cover_ratio(
+            &mut renderer,
+            [0.0, 1.0, 0.0],
+            0,
+            HIGH_EYE,
+            [6.0, 1.0, 16.0],
+        );
+        assert!(under < 0.02, "{name}: under the roof: {under}");
+        let open = cover_ratio(
+            &mut renderer,
+            [0.0, 1.0, 0.0],
+            0,
+            HIGH_EYE,
+            [31.0, 1.0, 16.0],
+        );
+        assert!((0.98..1.02).contains(&open), "{name}: in the open: {open}");
+    }
+}
+
+#[test]
+fn a_world_with_no_cover_counted_or_no_ground_to_say_which_way_is_up_has_no_sky_maps_and_its_pictures_are_as_they_were()
+ {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        // The default is no cover counted at all: the sky's light reaches everywhere, and no map is drawn for it.
+        assert_eq!(Atmosphere::default().sky_light_under_cover, 255);
+        let camera = camera_aimed_at(HIGH_EYE, [10.0, 1.0, 16.0]);
+        let mut renderer = hall_renderer(&context);
+        renderer.set_atmosphere(covered_atmosphere(0, [0.0, 1.0, 0.0], 0, 255));
+        let (_, uncounted) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+        assert_eq!(uncounted.sky_cascades_drawn, 0, "{name}");
+        // Cover counted, but nothing to say which way is up (no ground and no planet): no maps, and the picture is the same.
+        let mut renderer = new_renderer(&context);
+        place_hall(&mut renderer, -1..=0);
+        renderer.set_atmosphere(covered_atmosphere(0, [0.0, 1.0, 0.0], 0, 255));
+        let (without, _) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+        renderer.set_atmosphere(covered_atmosphere(0, [0.0, 1.0, 0.0], 0, 0));
+        let (with, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+        assert_eq!(statistics.sky_cascades_drawn, 0, "{name}: no up, no map");
+        assert!(with == without, "{name}: no up, no change");
+        // No sky's light at all (nothing for the cover to take): no maps either.
+        let mut renderer = hall_renderer(&context);
+        renderer.set_atmosphere(Atmosphere {
+            sky_light: 0,
+            ..covered_atmosphere(0, [0.0, 1.0, 0.0], 255, 0)
+        });
+        let (_, dark) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+        assert_eq!(dark.sky_cascades_drawn, 0, "{name}: no sky, no cover");
+        // The shadows off: no maps either, however much cover is asked for.
+        let mut renderer = hall_renderer(&context);
+        renderer.set_atmosphere(Atmosphere {
+            shadows: false,
+            ..covered_atmosphere(0, [0.0, 1.0, 0.0], 0, 0)
+        });
+        let (_, off) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+        assert_eq!(
+            (off.sky_cascades_drawn, off.shadow_cascades_drawn),
+            (0, 0),
+            "{name}: shadows off"
+        );
+    }
+}
+
+#[test]
+fn the_sky_maps_are_kept_while_the_sun_moves_and_drawn_again_when_the_camera_leaves_or_the_terrain_changes()
+ {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = hall_renderer(&context);
+        let camera = camera_aimed_at(HIGH_EYE, [10.0, 1.0, 16.0]);
+        let sun = [0.0, 1.0, 0.0];
+        let (_, _, first) = cover_pair(&mut renderer, 0, sun, 0, &camera);
+        assert!(
+            (1..=4).contains(&first.sky_cascades_drawn),
+            "{name}: {}",
+            first.sky_cascades_drawn
+        );
+        // The same again: kept, and the sun's too.
+        let (_, _, kept) = cover_pair(&mut renderer, 0, sun, 0, &camera);
+        assert_eq!(
+            (kept.sky_cascades_drawn, kept.shadow_cascades_drawn),
+            (0, 0),
+            "{name}"
+        );
+        // The sun moves by a twentieth of a radian: the sun's maps are drawn again for it and the sky's are not, for the sky does not depend on the sun.
+        let (_, _, sun_moved) = cover_pair(&mut renderer, 0, [0.05, 1.0, 0.0], 0, &camera);
+        assert!(
+            sun_moved.shadow_cascades_drawn >= 1,
+            "{name}: the sun's maps"
+        );
+        assert_eq!(sun_moved.sky_cascades_drawn, 0, "{name}: the sky's maps");
+        // A player walks in: the sun's fine maps hold the figure and are drawn again for it, and the sky's do not (a figure is no roof, and the sky's maps are of the terrain).
+        let figure = Avatar {
+            position: WorldPosition::new(BrickCoordinate::new(1, 0, 0), [8.0, 2.5, 16.5]),
+            color: 3,
+        };
+        renderer.set_avatars(&[figure]);
+        let (_, _, walked_in) = cover_pair(&mut renderer, 0, [0.05, 1.0, 0.0], 0, &camera);
+        assert!(
+            walked_in.shadow_cascades_drawn >= 1,
+            "{name}: the sun's maps hold the figure"
+        );
+        assert_eq!(walked_in.sky_cascades_drawn, 0, "{name}: the sky's maps");
+        renderer.set_avatars(&[]);
+        // The camera moves a voxel: kept. Twenty-four voxels: the finer maps are drawn again.
+        let mut near = camera;
+        near.position = near.position.translated([-1.0, 0.0, 0.0]);
+        let (_, _, a_voxel) = cover_pair(&mut renderer, 0, [0.05, 1.0, 0.0], 0, &near);
+        assert_eq!(a_voxel.sky_cascades_drawn, 0, "{name}: a voxel");
+        let mut far = camera;
+        far.position = far.position.translated([-24.0, 0.0, 0.0]);
+        let (_, _, a_walk) = cover_pair(&mut renderer, 0, [0.05, 1.0, 0.0], 0, &far);
+        assert!(a_walk.sky_cascades_drawn >= 1, "{name}: a walk");
+        // The terrain changes (the roof over the middle brick is taken away): the next picture has the open sky over the floor there, and the maps were drawn again.
+        let roofed = cover_ratio(&mut renderer, sun, 0, HIGH_EYE, [4.0, 1.0, 16.0]);
+        assert!(roofed < 0.02, "{name}: before: {roofed}");
+        place_blocks(&mut renderer, ORIGIN_BRICK, &floor_voxels(), Some(0));
+        let aimed = camera_aimed_at(HIGH_EYE, [10.0, 1.0, 16.0]);
+        let (_, _, changed) = cover_pair(&mut renderer, 0, sun, 0, &aimed);
+        assert!(changed.sky_cascades_drawn >= 1, "{name}: not drawn again");
+        // (Nothing is over the floor at x = 10 now, nor within 7 voxels of it.)
+        let opened = cover_ratio(&mut renderer, sun, 0, HIGH_EYE, [10.0, 1.0, 16.0]);
+        assert!((0.98..1.02).contains(&opened), "{name}: after: {opened}");
+        // And put back: dark again.
+        place_hall(&mut renderer, -1..=0);
+        let dark = cover_ratio(&mut renderer, sun, 0, HIGH_EYE, [10.0, 1.0, 16.0]);
+        assert!(dark < 0.02, "{name}: put back: {dark}");
+    }
+}
+
+#[test]
+fn a_hall_of_coarse_cells_is_dark_under_its_roof_in_the_sky_maps_too_and_a_hall_beyond_their_reach_is_as_if_there_were_none()
+ {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        // Cells of four voxels, a node: the roof is 28 voxels up and the camera 60 to 100 voxels from what is probed (inside the reach of the third sky map).
+        let level = 2;
+        let mut renderer = new_renderer(&context);
+        renderer.set_sun_occluders(&[SunOccluder::FlatGround]);
+        upload_shadow_scene(&mut renderer, ShadowScene::Roof, level);
+        let (camera, cells, _) = shadow_scene_setup(ShadowScene::Roof, level);
+        let cells = cells.map(|cell| cell as f64);
+        let (covered, uncovered, statistics) =
+            cover_pair(&mut renderer, level, [0.0, 1.0, 0.0], 0, &camera);
+        assert!(statistics.sky_cascades_drawn >= 1, "{name}: no sky map");
+        // (Not nearer the west edge of the node than two cells: beyond it there is nothing, and the sky over nothing is open.)
+        for x in [3.0, 4.0, 5.0, 6.0] {
+            let place = [x, 1.0, 16.0];
+            let ratio = light_at(&covered, &uncovered, level, &camera, cells, place)
+                .unwrap_or_else(|| panic!("{name}: {place:?} is not in the picture"));
+            assert!(ratio < 0.05, "{name}: under the roof at x = {x}: {ratio}");
+        }
+        for (x, z) in [(14.0, 12.0), (16.0, 20.0), (18.0, 16.0)] {
+            let place = [x, 1.0, z];
+            let ratio = light_at(&covered, &uncovered, level, &camera, cells, place)
+                .unwrap_or_else(|| panic!("{name}: {place:?} is not in the picture"));
+            assert!(
+                (0.97..1.03).contains(&ratio),
+                "{name}: in the open at x = {x}: {ratio}"
+            );
+        }
+        // Far beyond the sky maps (cells of 512 voxels and of a million: the places are thousands of voxels and millions away): the sky is taken to be open, so the picture is
+        // exactly the one with no cover. (Maps are drawn all the same: the camera is in the sphere that holds the node, which makes every cascade look as if it serves.)
+        for level in [9u8, 20] {
+            let mut renderer = new_renderer(&context);
+            renderer.set_sun_occluders(&[SunOccluder::FlatGround]);
+            upload_shadow_scene(&mut renderer, ShadowScene::Roof, level);
+            let (camera, _, _) = shadow_scene_setup(ShadowScene::Roof, level);
+            let (covered, uncovered, _) =
+                cover_pair(&mut renderer, level, [0.0, 1.0, 0.0], 0, &camera);
+            assert!(
+                covered == uncovered,
+                "{name} level {level}: the picture changed"
+            );
+        }
+    }
+}
+
+/// A hill with a tunnel through it, in bricks of voxels: a floor of two voxels (green), and west of x = 24 a hill of red 20 voxels high (its east face is a wall at x = 24)
+/// with a tunnel in it along x, from z = 12 to 20 and 2 to 8 high, open at its east end.
+fn place_hill_with_a_tunnel(renderer: &mut VoxelRenderer) {
+    for bz in -1..=1i128 {
+        for bx in -1..=1i128 {
+            let mut blocks = Vec::new();
+            for z in 0..32u8 {
+                for x in 0..32u8 {
+                    let (wx, wz) = (bx * 32 + i128::from(x), bz * 32 + i128::from(z));
+                    for y in 0..24u8 {
+                        let hill = wx < 24 && y < 20;
+                        let floor = y < 2;
+                        let tunnel = wx < 24 && (12..20).contains(&wz) && (2..8).contains(&y);
+                        if (floor || hill) && !tunnel {
+                            blocks.push(([x, y, z], if floor { 2 } else { RED }, 0));
+                        }
+                    }
+                }
+            }
+            place_blocks(renderer, BrickCoordinate::new(bx, 0, bz), &blocks, Some(0));
+        }
+    }
+}
+
+#[test]
+fn the_sky_over_a_wall_is_the_sky_in_front_of_it_and_not_the_hill_behind_it_and_in_a_tunnel_there_is_none()
+ {
+    // The wall of a hill in the open (its east face at x = 24, a place at z = 6, outside the tunnel) has all of the sky, though half of the columns round it are the hill's;
+    // the walls, the floor and the roof of the tunnel, deep in it, have none; and at the tunnel's mouth, in between.
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        renderer.set_sun_occluders(&[SunOccluder::FlatGround]);
+        place_hill_with_a_tunnel(&mut renderer);
+        let mut ratio = |eye, place| cover_ratio(&mut renderer, [0.0, 1.0, 0.0], 0, eye, place);
+        for place in [[24.0, 12.0, 6.0], [24.0, 14.0, 26.0], [24.0, 6.0, 10.0]] {
+            let eye = [place[0] + 14.0, place[1], place[2]];
+            let wall = ratio(eye, place);
+            assert!(
+                (0.97..1.03).contains(&wall),
+                "{name}: the wall of the hill at {place:?} has {wall} of the sky"
+            );
+        }
+        // The top of the hill and the floor in the open, as ever.
+        for (eye, place) in [
+            ([14.0, 30.0, 6.0], [10.0, 20.0, 6.0]),
+            ([40.0, 12.0, 16.0], [34.0, 2.0, 16.0]),
+        ] {
+            let flat = ratio(eye, place);
+            assert!(
+                (0.97..1.03).contains(&flat),
+                "{name}: {place:?} has {flat} of the sky"
+            );
+        }
+        // Deep in the tunnel (every column round the place is the hill's or the tunnel's roof): the south wall (z = 12, looking to +z), the north wall (z = 20, looking to -z), the
+        // floor (y = 2) and the roof (y = 8).
+        let inside = [
+            ([26.0, 5.0, 16.0], [8.0, 5.0, 12.0]),
+            ([26.0, 5.0, 16.0], [8.0, 5.0, 20.0]),
+            ([34.0, 4.0, 16.0], [8.0, 2.0, 16.0]),
+            ([34.0, 3.0, 16.0], [8.0, 8.0, 16.0]),
+        ];
+        for (eye, place) in inside {
+            let dark = ratio(eye, place);
+            assert!(dark < 0.03, "{name}: {place:?} in the tunnel has {dark}");
+        }
+    }
+}
+
+#[test]
+fn the_share_of_the_skys_light_that_reaches_under_cover_is_the_one_the_atmosphere_says() {
+    // The sky alone lights the floor, so the light of a place is the sky's share of it, and nothing else: a floor deep under the roof has the share the atmosphere says.
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = hall_renderer(&context);
+        let place = [4.0, 1.0, 16.0];
+        let camera = camera_aimed_at(HIGH_EYE, place);
+        renderer.set_atmosphere(covered_atmosphere(0, [0.0, 1.0, 0.0], 0, 255));
+        let uncovered = render(&mut renderer, &camera);
+        for cover in [0u8, 64, 128, 200, 255] {
+            renderer.set_atmosphere(covered_atmosphere(0, [0.0, 1.0, 0.0], 0, cover));
+            let covered = render(&mut renderer, &camera);
+            let ratio = light_at(&covered, &uncovered, 0, &camera, HIGH_EYE, place).unwrap();
+            let expected = f64::from(cover) / 255.0;
+            assert!(
+                (ratio - expected).abs() < 0.02,
+                "{name}: with {cover} of 255 reaching under cover the floor has {ratio}, not {expected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_floor_with_nothing_over_it_is_as_bright_with_the_cover_counted_at_every_distance_to_the_end_of_the_sky_maps_and_beyond()
+ {
+    // (The sky alone: a sun that lights a floor so brightly fills the screen blend and hides what the sky does, which was found when a mutant of the last sky map's blend survived.)
+    // A floor seen along its length, from 5 voxels to the fog at 600: the four sky maps (they reach 11, 39, 94 and 205 voxels) and the seams between them, and what is beyond.
+    // Nothing is over any of it, so no pixel may be darker than it is with the cover not counted: that is no acne in any of the four, and no line where one gives way to the
+    // next.
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        renderer.set_sun_occluders(&[SunOccluder::FlatGround]);
+        let blocks = floor_voxels();
+        for bz in -16..=0 {
+            for bx in -3..=3 {
+                place_blocks(
+                    &mut renderer,
+                    BrickCoordinate::new(bx, 0, bz),
+                    &blocks,
+                    Some(0),
+                );
+            }
+        }
+        let mut camera = camera_at(ORIGIN_BRICK, [16.0, 4.0, 30.0]);
+        camera.pitch = -0.15;
+        for (label, sun) in [("high", [0.1f32, 1.0, 0.2]), ("low", [0.3, 0.17, 0.9])] {
+            let atmosphere = |cover| Atmosphere {
+                fog_start: 400.0,
+                fog_end: 600.0,
+                ..covered_atmosphere(0, sun, 0, cover)
+            };
+            renderer.set_atmosphere(atmosphere(255));
+            let off = render(&mut renderer, &camera);
+            renderer.set_atmosphere(atmosphere(0));
+            let (on, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
+            // (The maps are kept from the first sun to the second: the sky does not depend on the sun.)
+            assert_eq!(
+                statistics.sky_cascades_drawn >= 1,
+                label == "high",
+                "{name} {label}: {}",
+                statistics.sky_cascades_drawn
+            );
+            let mut floor = 0;
+            let mut darker = Vec::new();
+            for y in 0..SIZE {
+                for x in 0..SIZE {
+                    let (with, without) = (pixel(&on, x, y), pixel(&off, x, y));
+                    if is_sky(without) {
+                        continue;
+                    }
+                    floor += 1;
+                    if without[..3]
+                        .iter()
+                        .zip(&with[..3])
+                        .any(|(without, with)| without.abs_diff(*with) > 2)
+                    {
+                        darker.push((x, y, without, with));
+                    }
+                }
+            }
+            assert!(floor > 1500, "{name} {label}: only {floor} pixels of floor");
+            assert!(
+                darker.is_empty(),
+                "{name} {label}: {} of {floor} pixels differ, the first {:?}",
+                darker.len(),
+                &darker[..darker.len().min(4)]
+            );
+        }
+        // The band where the last sky map (205 voxels) gives way to the open sky, from 174 on, is less than a row of pixels of such a picture: a narrow view aimed into
+        // it, and at the other distances, finds nothing darker either.
+        let eye = [16.0, 4.0, 30.0];
+        for distance in [20.0, 60.0, 100.0, 160.0, 180.0, 190.0, 200.0, 230.0] {
+            let place = [16.0, 1.0, 30.0 - distance];
+            let aimed = camera_aimed_at(eye, place);
+            let atmosphere = |cover| Atmosphere {
+                fog_start: 400.0,
+                fog_end: 600.0,
+                ..covered_atmosphere(0, [0.1, 1.0, 0.2], 0, cover)
+            };
+            renderer.set_atmosphere(atmosphere(255));
+            let off = render(&mut renderer, &aimed);
+            renderer.set_atmosphere(atmosphere(0));
+            let on = render(&mut renderer, &aimed);
+            let ratio = light_at(&on, &off, 0, &aimed, eye, place).unwrap();
+            assert!(
+                (0.98..1.02).contains(&ratio),
+                "{name}: the floor {distance} voxels off has {ratio} of its light"
+            );
+        }
+    }
+}
+
+#[test]
+fn on_a_planet_seen_from_the_side_the_sky_is_over_the_camera_along_the_way_out_of_the_planet() {
+    // The hill of the tunnel scene, its east face at x = 24 and 20 voxels high; the floor east of it at x = 30. Straight up, the hill is not over the floor there (all but a
+    // tap or two are in the open: 0.92). On a planet whose middle is 600,000 voxels east and 800,000 down from the camera the way out is 37 degrees from straight up, to the
+    // west, over the hill: a ray from the floor at x = 30 along it goes into the hill (at x = 24 it is 4.5 up, and the hill is 20 high), and the floor has most of the sky
+    // hidden.
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let share_at_30 = |ball_centre: [f64; 3]| {
+            let mut renderer = new_renderer(&context);
+            renderer.set_sun_occluders(&[SunOccluder::Ball {
+                centre: place_in_voxels(ball_centre),
+                radius: 999_999.0,
+            }]);
+            place_hill_with_a_tunnel(&mut renderer);
+            cover_ratio(
+                &mut renderer,
+                [0.0, 1.0, 0.0],
+                0,
+                HIGH_EYE,
+                [30.0, 2.0, 16.0],
+            )
+        };
+        let below = share_at_30([HIGH_EYE[0], HIGH_EYE[1] - 1.0e6, HIGH_EYE[2]]);
+        assert!(
+            below > 0.85,
+            "{name}: with the way out straight up the floor has {below}"
+        );
+        let beside = share_at_30([
+            HIGH_EYE[0] + 600_000.0,
+            HIGH_EYE[1] - 800_000.0,
+            HIGH_EYE[2],
+        ]);
+        // (Not none: the rings of taps are across the way out, and a few of them look past the hill. 5 of 13 at the time of writing.)
+        assert!(
+            beside < 0.5 && below - beside > 0.4,
+            "{name}: with the way out over the hill the floor has {beside}, against {below}"
+        );
+    }
+}

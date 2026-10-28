@@ -76,6 +76,47 @@ pub const HIGHEST_CASTER: f32 = (1u64 << 40) as f32;
 /// mountain range has no use for a tree, nor for the bricks of the ground round the camera (a brick is a sphere of 28 voxels).
 pub const SMALLEST_CASTER_TEXELS: f32 = 2.0;
 
+/// How many sky cascades there are: maps of the terrain seen from straight above, round the camera, that tell a place how much of the sky is over it. They are the finest few
+/// of the cascades of the sun, because what covers a place from the sky (a roof, a hill over a cave, an overhang) is a thing of the size of a cave and not of a mountain; beyond
+/// the last the sky is taken to be open.
+pub const SKY_CASCADES: usize = 4;
+
+/// How many layers the maps' texture has: the sun's cascades, then the sky's.
+pub const MAP_LAYERS: usize = MAXIMUM_CASCADES + SKY_CASCADES;
+
+/// The distances, in voxels, from a place of the taps of the sky: the place itself, six round it at the inner radius, and six more at the outer, turned a twelfth of a turn
+/// from the first. Each says whether the terrain over the column that far across the map from the place is higher than the place, so that the share of them that do not is how
+/// open the sky is over it: the mouth of a cave is a gradient of the size of the rings, not a line.
+pub const SKY_INNER_TAP_RADIUS: f32 = 3.0;
+pub const SKY_TAP_RADIUS: f32 = 8.0;
+pub const SKY_TAPS: [[f32; 2]; 13] = [
+    [0.0, 0.0],
+    [3.0, 0.0],
+    [1.5, 2.598_076_3],
+    [-1.5, 2.598_076_3],
+    [-3.0, 0.0],
+    [-1.5, -2.598_076_3],
+    [1.5, -2.598_076_3],
+    [6.928_203, 4.0],
+    [0.0, 8.0],
+    [-6.928_203, 4.0],
+    [-6.928_203, -4.0],
+    [0.0, -8.0],
+    [6.928_203, -4.0],
+];
+
+/// How far, in voxels, a place on a face that looks sideways is moved out along it before the sky over it is looked up: the sky over a wall is the sky over the air in front of
+/// it, and not half of it the hill the wall is the side of. A face that looks up or down is not moved (a floor is under what is over the air above it, and a ceiling under it).
+/// A voxel farther than the farthest tap ([`SKY_TAP_RADIUS`]), so that none of the taps is behind the wall, nor on its plane where the filter would take some of the hill (at
+/// 4 voxels a wall in the open had 0.84 of the sky, and at 8, 0.96).
+pub const SKY_WALL_PUSH: f32 = SKY_TAP_RADIUS + 1.0;
+
+/// The place the sky over a face is looked up at: `position` moved [`SKY_WALL_PUSH`] along the part of `normal` that is across `up`. The shader's `open_in_sky_cascade` does
+/// the same.
+pub fn sky_place(position: Vec3, normal: Vec3, up: Vec3) -> Vec3 {
+    position + (normal - up * normal.dot(up)) * SKY_WALL_PUSH
+}
+
 fn smoothstep(edge_start: f32, edge_end: f32, value: f32) -> f32 {
     let fraction = ((value - edge_start) / (edge_end - edge_start)).clamp(0.0, 1.0);
     fraction * fraction * (3.0 - 2.0 * fraction)
@@ -132,6 +173,11 @@ pub fn texel_of(half_width: f32) -> f32 {
 /// texels kept at the edge.
 pub fn reach_of(half_width: f32) -> f32 {
     half_width * (1.0 - SLACK) - EDGE_TEXELS * texel_of(half_width)
+}
+
+/// The half widths of the sky cascades: the first few of the sun's, doubling from [`FIRST_HALF_WIDTH`].
+pub fn sky_half_widths() -> [f32; SKY_CASCADES] {
+    std::array::from_fn(|index| FIRST_HALF_WIDTH * (1u32 << index) as f32)
 }
 
 /// The half width at which the cascades stop doubling and begin to grow fourfold, and the one at which they begin to grow eightfold. Up to the first a texel is about a voxel or
@@ -220,6 +266,14 @@ impl Cascade {
             back,
             range: -2.0 * back,
         }
+    }
+
+    /// The sky cascade of this half width (see [`SKY_CASCADES`]): the same map, but a place is looked up only so far in that the farthest tap of the sky ([`SKY_TAP_RADIUS`])
+    /// round it, after a wall's place has been moved out ([`SKY_WALL_PUSH`]), is still inside: its reach is less by both.
+    pub fn new_for_sky(half_width: f32, camera: [f64; 2]) -> Self {
+        let mut cascade = Self::new(half_width, camera);
+        cascade.reach -= SKY_TAP_RADIUS + SKY_WALL_PUSH;
+        cascade
     }
 
     /// Whether something whose bounding sphere has this middle (relative to the camera) and radius can put a place the cascade is for in shadow, so that it is drawn into the
@@ -313,6 +367,17 @@ impl Cascade {
         let clip = self.matrix(basis) * position.extend(1.0);
         let reference = clip.z + DEPTH_BIAS_TEXELS * self.texel / self.range;
         (Vec2::new(clip.x * 0.5 + 0.5, 0.5 - clip.y * 0.5), reference)
+    }
+
+    /// Where a place looks up one tap of the sky: the same depth as [`Cascade::lookup`], and the column `tap` voxels across the light from it (along `right` and `up`).
+    /// The shader's `sky_openness` does the same.
+    pub fn lookup_tap(&self, basis: &LightBasis, position: Vec3, tap: [f32; 2]) -> (Vec2, f32) {
+        let (coordinates, reference) = self.lookup(basis, position);
+        let step = 0.5 / self.half_width;
+        (
+            coordinates + Vec2::new(tap[0] * step, -tap[1] * step),
+            reference,
+        )
     }
 }
 
@@ -858,6 +923,151 @@ mod tests {
                         "{scale}: {relative_depth} against {expected}"
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn the_sky_cascades_are_the_finest_few_doubling_and_keep_the_taps_inside_the_map() {
+        let widths = sky_half_widths();
+        assert_eq!(widths, [32.0, 64.0, 128.0, 256.0]);
+        let mut previous_reach = 0.0;
+        for half_width in widths {
+            let cascade = Cascade::new_for_sky(half_width, [0.0, 0.0]);
+            // A place at the cascade's reach, the camera as far from the middle as the slack lets it be, a wall's place moved out and the farthest tap from that, with the texels
+            // kept at the edge: all of it is inside the map.
+            let farthest = cascade.reach
+                + SKY_WALL_PUSH
+                + SKY_TAP_RADIUS
+                + half_width * SLACK
+                + EDGE_TEXELS * cascade.texel;
+            assert!(
+                farthest <= half_width * 1.0000001,
+                "{half_width}: {farthest}"
+            );
+            assert!(cascade.reach > previous_reach, "{half_width}");
+            assert!(cascade.reach < Cascade::new(half_width, [0.0, 0.0]).reach);
+            previous_reach = cascade.reach;
+        }
+    }
+
+    #[test]
+    fn the_sky_taps_are_one_at_the_place_and_two_rings_round_it_that_balance_and_stay_in_their_radius()
+     {
+        assert_eq!(SKY_TAPS.len(), 13);
+        assert_eq!(SKY_TAPS[0], [0.0, 0.0]);
+        let mut sum = [0.0f32; 2];
+        let mut farthest = 0.0f32;
+        for tap in SKY_TAPS {
+            sum[0] += tap[0];
+            sum[1] += tap[1];
+            farthest = farthest.max(libm::hypotf(tap[0], tap[1]));
+        }
+        assert!(sum[0].abs() < 1e-5 && sum[1].abs() < 1e-5, "{sum:?}");
+        assert!((farthest - SKY_TAP_RADIUS).abs() < 1e-4, "{farthest}");
+        // Six on the inner ring and six on the outer, each evenly spaced, the rings turned a twelfth of a turn from each other so that no tap is behind another.
+        let radius = |tap: [f32; 2]| libm::hypotf(tap[0], tap[1]);
+        for tap in &SKY_TAPS[1..7] {
+            assert!(
+                (radius(*tap) - SKY_INNER_TAP_RADIUS).abs() < 1e-4,
+                "{tap:?}"
+            );
+        }
+        for tap in &SKY_TAPS[7..] {
+            assert!((radius(*tap) - SKY_TAP_RADIUS).abs() < 1e-4, "{tap:?}");
+        }
+        for ring in [&SKY_TAPS[1..7], &SKY_TAPS[7..]] {
+            for index in 0..6 {
+                let (a, b) = (ring[index], ring[(index + 1) % 6]);
+                let cosine = (a[0] * b[0] + a[1] * b[1]) / (radius(a) * radius(b));
+                assert!((cosine - 0.5).abs() < 1e-4, "{a:?} {b:?}");
+            }
+        }
+        let angle = |tap: [f32; 2]| libm::atan2f(tap[1], tap[0]);
+        let turned = (angle(SKY_TAPS[7]) - angle(SKY_TAPS[1])).abs();
+        assert!(
+            (turned - std::f32::consts::FRAC_PI_6).abs() < 1e-4,
+            "{turned}"
+        );
+    }
+
+    #[test]
+    fn the_depth_row_of_the_matrix_is_the_way_to_the_light_over_the_range_which_is_how_the_shader_finds_the_way_up()
+     {
+        // `open_in_sky_cascade` takes the way up from the third row of the matrix (its x, y and z in the first three columns), and the way to the light is that over the range.
+        for light in sun_directions() {
+            if light.length() < 1.0e-3 {
+                continue;
+            }
+            let basis = LightBasis::new(light);
+            let mut cascade = Cascade::new_for_sky(64.0, [3.0, 4.0]);
+            cascade.fit(500.0);
+            let matrix = cascade.matrix(&basis);
+            let row = Vec3::new(matrix.col(0).z, matrix.col(1).z, matrix.col(2).z);
+            assert!(
+                (row.normalize() - basis.toward_sun).length() < 1e-5,
+                "{light}: {row}"
+            );
+            assert!(
+                (row.length() - 1.0 / cascade.range).abs() < 1e-6,
+                "{light}: {}",
+                row.length()
+            );
+        }
+    }
+
+    #[test]
+    fn a_place_on_a_wall_is_moved_out_along_the_wall_and_a_floor_or_a_ceiling_is_not_moved() {
+        let up = Vec3::new(0.0, 1.0, 0.0);
+        let place = Vec3::new(5.0, 6.0, 7.0);
+        // A floor and a ceiling: not moved (a floor is under what is over it, and a ceiling is under it).
+        assert_eq!(sky_place(place, up, up), place);
+        assert_eq!(sky_place(place, -up, up), place);
+        // A wall: moved by the push along its normal.
+        assert_eq!(
+            sky_place(place, Vec3::X, up),
+            place + Vec3::X * SKY_WALL_PUSH
+        );
+        assert_eq!(
+            sky_place(place, -Vec3::Z, up),
+            place - Vec3::Z * SKY_WALL_PUSH
+        );
+        // A face slanted 45 degrees up from a wall: moved by the part of its normal across the way up, which is 0.707 of the push, and not up.
+        let slanted = Vec3::new(1.0, 1.0, 0.0).normalize();
+        let moved = sky_place(place, slanted, up) - place;
+        assert!(
+            (moved - Vec3::X * (SKY_WALL_PUSH * std::f32::consts::FRAC_1_SQRT_2)).length() < 1e-5,
+            "{moved}"
+        );
+        // The way up is any direction: a wall is across it.
+        let tilted_up = Vec3::new(1.0, 1.0, 0.0).normalize();
+        let wall = Vec3::new(1.0, -1.0, 0.0).normalize();
+        assert!(
+            (sky_place(place, wall, tilted_up) - (place + wall * SKY_WALL_PUSH)).length() < 1e-5
+        );
+        assert!((sky_place(place, tilted_up, tilted_up) - place).length() < 1e-5);
+    }
+
+    #[test]
+    fn a_tap_looks_up_the_place_that_far_across_the_map_at_the_same_depth() {
+        // The offsets are in voxels across the light: looking up place + offset gives the same texture coordinates and depth as the tap at that offset of the place.
+        let basis = LightBasis::new(Vec3::new(0.2, 0.9, -0.3));
+        for half_width in sky_half_widths() {
+            let mut cascade = Cascade::new_for_sky(half_width, [1.7, -0.4]);
+            cascade.fit(half_width * 3.0);
+            let place = Vec3::new(2.5, -3.0, 6.0);
+            for tap in SKY_TAPS {
+                let (uv, depth) = cascade.lookup_tap(&basis, place, tap);
+                let moved = place + basis.right * tap[0] + basis.up * tap[1];
+                let (expected_uv, expected_depth) = cascade.lookup(&basis, moved);
+                assert!(
+                    (uv - expected_uv).abs().max_element() < 1e-5,
+                    "{half_width} {tap:?}: {uv} {expected_uv}"
+                );
+                assert!(
+                    (depth - expected_depth).abs() < 1e-6,
+                    "{half_width} {tap:?}"
+                );
             }
         }
     }

@@ -41,6 +41,9 @@ pub struct Sun {
     /// How much, 0 to 255, of the sky's light reaches a place the sun does not (`renderer::Atmosphere::sky_light_in_shadow`): one in the shadow of a hill, or a face turned
     /// from the sun. The sky is scattered light, so a shadow is not black; 255 is no shadow of the sky at all.
     pub sky_light_in_shadow: u8,
+    /// How much, 0 to 255, of the sky's light reaches a place with the terrain over it (`renderer::Atmosphere::sky_light_under_cover`): a cave under a hill, a place under a roof
+    /// or an overhang. 0 is a cave that is black by day; 255 counts no cover of the sky at all.
+    pub sky_light_under_cover: u8,
     /// Whether the level's ground is flat and level, with `y` up, so that the sun is hidden whenever it is below the horizon (the sun cannot light a place from under the
     /// ground). A level with planets in it is not flat: the planets hide the sun.
     pub flat_ground: bool,
@@ -104,6 +107,8 @@ pub struct SunView {
     pub sky_light: u8,
     /// `renderer::Atmosphere::sky_light_in_shadow`.
     pub sky_light_in_shadow: u8,
+    /// `renderer::Atmosphere::sky_light_under_cover`.
+    pub sky_light_under_cover: u8,
     /// The colour of the sky and the fog, as sRGB.
     pub sky_color: [f32; 3],
     /// How much of the sun reaches the camera: 0 to 1.
@@ -154,6 +159,7 @@ pub fn sun_view(
         sun_light: sun.light,
         sky_light: (f32::from(sun.sky_light) * air).round() as u8,
         sky_light_in_shadow: sun.sky_light_in_shadow,
+        sky_light_under_cover: sun.sky_light_under_cover,
         sky_color: sun.sky.color.map(|part| part * daylight * air),
         daylight,
         occluders,
@@ -186,6 +192,7 @@ mod tests {
             light: 255,
             sky_light: 100,
             sky_light_in_shadow: 64,
+            sky_light_under_cover: 32,
             flat_ground: false,
             sky: Sky {
                 color: [0.4, 0.6, 0.9],
@@ -289,6 +296,21 @@ mod tests {
             ..sun()
         };
         let _ = sun.direction_at(12.0);
+    }
+
+    #[test]
+    fn the_view_of_the_sun_carries_the_shares_of_the_skys_light_the_game_says_through_to_the_picture()
+     {
+        let sun = Sun {
+            sky_light_in_shadow: 90,
+            sky_light_under_cover: 17,
+            ..sun()
+        };
+        let view = sun_view(&sun, 12.0, position_of_voxels([0.0, 10.0, 0.0]), Vec::new());
+        assert_eq!(
+            (view.sky_light_in_shadow, view.sky_light_under_cover),
+            (90, 17)
+        );
     }
 
     fn at_height(height: i128) -> WorldPosition {

@@ -62,6 +62,7 @@ pub fn lit_atmosphere<C: Connection, G: GameDefinition>(
     // (The sun is what the shadows are of: a world with none has no shadows to ask for.)
     lit.shadows = session.settings().shadows;
     lit.sky_light_in_shadow = sun.sky_light_in_shadow;
+    lit.sky_light_under_cover = sun.sky_light_under_cover;
     (lit, sun.occluders)
 }
 

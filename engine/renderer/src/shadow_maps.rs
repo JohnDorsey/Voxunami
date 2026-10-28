@@ -7,7 +7,7 @@ use std::num::NonZeroU64;
 
 use voxel_meshing::{PackedDetailedQuad, PackedQuad};
 
-use crate::shadow::{CASCADE_RESOLUTION, MAXIMUM_CASCADES};
+use crate::shadow::{CASCADE_RESOLUTION, MAP_LAYERS};
 use crate::voxel_renderer::DEPTH_FORMAT;
 
 /// The texture the cascades are drawn into, a layer for each, and a view of each layer to draw into and one of all of them to look up in.
@@ -27,7 +27,7 @@ impl ShadowTarget {
             size: wgpu::Extent3d {
                 width: size,
                 height: size,
-                depth_or_array_layers: MAXIMUM_CASCADES as u32,
+                depth_or_array_layers: MAP_LAYERS as u32,
             },
             mip_level_count: 1,
             sample_count: 1,
@@ -41,7 +41,7 @@ impl ShadowTarget {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
         });
-        let layer_views = (0..MAXIMUM_CASCADES as u32)
+        let layer_views = (0..MAP_LAYERS as u32)
             .map(|layer| {
                 texture.create_view(&wgpu::TextureViewDescriptor {
                     label: Some("shadow map"),
@@ -93,7 +93,8 @@ pub(crate) fn shadow_frame_layout(device: &wgpu::Device, frame_size: u64) -> wgp
     })
 }
 
-/// The pipelines that draw casters into a map: one for whole-voxel quads and one for detailed ones.
+/// The pipelines that draw casters into a map: one for whole-voxel quads and one for detailed ones. The sun's maps keep the backs of things and the sky's keep the fronts;
+/// `culled` is the side that is not drawn.
 pub(crate) struct ShadowPipelines {
     pub(crate) quads: wgpu::RenderPipeline,
     pub(crate) detailed: wgpu::RenderPipeline,
@@ -105,6 +106,7 @@ impl ShadowPipelines {
         shader: &wgpu::ShaderModule,
         frame_layout: &wgpu::BindGroupLayout,
         placement_layout: &wgpu::BindGroupLayout,
+        culled: wgpu::Face,
     ) -> Self {
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("shadow pipeline layout"),
@@ -125,8 +127,8 @@ impl ShadowPipelines {
                 primitive: wgpu::PrimitiveState {
                     topology: wgpu::PrimitiveTopology::TriangleList,
                     front_face: wgpu::FrontFace::Ccw,
-                    // Seen from the sun the faces that look at it are the front ones; the map keeps the backs (see the module `shadow`).
-                    cull_mode: Some(wgpu::Face::Front),
+                    // Seen from the sun the faces that look at it are the front ones; the sun's maps keep the backs (see the module `shadow`) and the sky's the fronts.
+                    cull_mode: Some(culled),
                     ..Default::default()
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {

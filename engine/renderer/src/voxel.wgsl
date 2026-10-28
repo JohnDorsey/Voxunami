@@ -12,7 +12,8 @@
 struct Cascade {
     // From a place relative to the camera to the map: x and y across it (-1 to 1), z the depth (0 to 1, the sun's side deeper).
     matrix: mat4x4<f32>,
-    // x: how far from the camera a place may be to be looked up in this cascade, y: the width of a texel in voxels, z: the distance in voxels from depth 0 to depth 1.
+    // x: how far from the camera a place may be to be looked up in this cascade, y: the width of a texel in voxels, z: the distance in voxels from depth 0 to depth 1, w: half the
+    // width of the map in voxels.
     limits: vec4<f32>,
 }
 
@@ -31,10 +32,13 @@ struct Frame {
     sun_light: vec4<f32>,
     // The balls (planets, moons) that can hide the sun: the middle relative to the camera, in voxels (xyz), and the radius (w).
     sun_balls: array<vec4<f32>, 8>,
-    // x: how many cascades of shadow map there are (0: the terrain casts no shadows), y: the share of the sky's light that reaches a place the terrain puts in shadow (0 to 1).
+    // x: how many cascades of shadow map there are (0: the terrain casts no shadows), y: the share of the sky's light that reaches a place the terrain puts in shadow (0 to 1),
+    // z: the share of it that reaches a place with the terrain over it, w: how many cascades of the sky there are (0: what is over a place is not counted).
     shadow: vec4<f32>,
     // The cascades of the shadow map, finest first.
     cascades: array<Cascade, 11>,
+    // The cascades of the sky: the terrain seen from straight above, finest first, in the layers of the same texture that follow the sun's.
+    sky_cascades: array<Cascade, 4>,
     // Linear RGB of each avatar colour.
     avatars: array<vec4<f32>, 16>,
 }
@@ -103,6 +107,13 @@ const TURNED_NO_MORE_FROM: f32 = 0.03;
 const BLEND_FROM: f32 = 0.85;
 const DEPTH_BIAS_TEXELS: f32 = 1.0;
 const FACING_FULL_FROM: f32 = 0.15;
+
+// How the terrain over a place is looked up: the layer of the texture where the sky's cascades begin, and where, in voxels across the map, the columns are that are looked at
+// for a place (the same as `SKY_TAPS` in `shadow.rs`).
+const SKY_FIRST_LAYER: u32 = 11u;
+// How far a place on a face that looks sideways is moved out along it before the sky over it is looked up (the same as `SKY_WALL_PUSH` in `shadow.rs`).
+const SKY_WALL_PUSH: f32 = 9.0;
+const SKY_TAPS = array<vec2<f32>, 13>(vec2<f32>(0.0, 0.0), vec2<f32>(3.0, 0.0), vec2<f32>(1.5, 2.5980763), vec2<f32>(-1.5, 2.5980763), vec2<f32>(-3.0, 0.0), vec2<f32>(-1.5, -2.5980763), vec2<f32>(1.5, -2.5980763), vec2<f32>(6.928203, 4.0), vec2<f32>(0.0, 8.0), vec2<f32>(-6.928203, 4.0), vec2<f32>(-6.928203, -4.0), vec2<f32>(0.0, -8.0), vec2<f32>(6.928203, -4.0));
 
 struct Sunlight {
     // How much of the sun reaches a place: 1 for all of it, 0 for none.
@@ -321,6 +332,63 @@ fn terrain_light(position: vec3<f32>, distance: f32) -> f32 {
     return light;
 }
 
+// The share of the columns round a place, in one cascade of the sky, that the terrain is not over: 1 if nothing in any of the thirteen is higher than the place, 0 if something
+// is in all of them. The place is first moved out along its face if that looks sideways (the sky over a wall is the sky in front of it). The same arithmetic as `sky_place` and
+// `Cascade::lookup_tap` in `shadow.rs`.
+fn open_in_sky_cascade(index: u32, position: vec3<f32>, normal: vec3<f32>) -> f32 {
+    let cascade = frame.sky_cascades[index];
+    let texel = cascade.limits.y;
+    // The way up is the depth axis of the map: the third row of its matrix, which is that axis over the depth range.
+    let up = normalize(vec3<f32>(cascade.matrix[0][2], cascade.matrix[1][2], cascade.matrix[2][2]));
+    let place = position + (normal - up * dot(normal, up)) * SKY_WALL_PUSH;
+    let clip = cascade.matrix * vec4<f32>(place, 1.0);
+    let reference = clip.z + DEPTH_BIAS_TEXELS * texel / cascade.limits.z;
+    let centre = vec2<f32>(clip.x * 0.5 + 0.5, 0.5 - clip.y * 0.5);
+    let step = 0.5 / cascade.limits.w;
+    var taps = SKY_TAPS;
+    var open = 0.0;
+    for (var tap = 0u; tap < 13u; tap = tap + 1u) {
+        let offset = taps[tap];
+        open = open + textureSampleCompareLevel(
+            shadow_maps,
+            shadow_sampler,
+            centre + vec2<f32>(offset.x, -offset.y) * step,
+            SKY_FIRST_LAYER + index,
+            reference,
+        );
+    }
+    return open / 13.0;
+}
+
+// How open the sky is over a place `distance` from the camera: the finest cascade of the sky that holds the place, mixed with the next over the last of its reach, and a place
+// beyond the last has an open sky.
+fn sky_openness(position: vec3<f32>, normal: vec3<f32>, distance: f32) -> f32 {
+    let count = u32(frame.shadow.w);
+    var chosen = count;
+    var blend = 0.0;
+    for (var index = 0u; index < count; index = index + 1u) {
+        // (A cascade that is not used has a reach of 0.)
+        let reach = frame.sky_cascades[index].limits.x;
+        if (distance < reach) {
+            chosen = index;
+            blend = smoothstep(BLEND_FROM * reach, reach, distance);
+            break;
+        }
+    }
+    if (chosen == count) {
+        return 1.0;
+    }
+    var open = open_in_sky_cascade(chosen, position, normal);
+    if (blend > 0.0) {
+        var next = 1.0;
+        if (chosen + 1u < count && frame.sky_cascades[chosen + 1u].limits.x > 0.0) {
+            next = open_in_sky_cascade(chosen + 1u, position, normal);
+        }
+        open = mix(open, next, blend);
+    }
+    return open;
+}
+
 @fragment
 fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let lamp = in.lamp_and_side.x;
@@ -337,15 +405,19 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
             // The terrain's shadow: on the sun's light as it is; on the sky's light only in part (a place in a shadow has the sky's light still, and the more the less of the sky
             // is hidden, which this does not know), and a face turned from the sun is in the shade of its own body, which fades in as the sun crosses its plane.
             let cosine = dot(light.normal, frame.sun_direction.xyz);
+            // (The distance of this pixel, not the one the vertices interpolate: that is wrong across the big quads of coarse nodes, where it chooses a cascade too coarse.)
+            let largest = max(abs(in.relative.x), max(abs(in.relative.y), abs(in.relative.z)));
+            let distance = largest * length(in.relative / max(largest, 1.0e-30));
             var terrain = 0.0;
             if (cosine > 0.0) {
-                // (The distance of this pixel, not the one the vertices interpolate: that is wrong across the big quads of coarse nodes, where it chooses a cascade too coarse.)
-                let largest = max(abs(in.relative.x), max(abs(in.relative.y), abs(in.relative.z)));
-                let distance = largest * length(in.relative / max(largest, 1.0e-30));
                 terrain = terrain_light(in.relative, distance);
             }
             sun_visible = sun_visible * terrain;
             sky_visible = sky_visible * mix(frame.shadow.y, 1.0, terrain * smoothstep(0.0, FACING_FULL_FROM, cosine));
+            if (frame.shadow.w > 0.5) {
+                // The terrain over the place hides the sky from it, whatever the sun does: a cave under a hill is dark by day.
+                sky_visible = sky_visible * mix(frame.shadow.z, 1.0, sky_openness(in.relative, in.normal, distance));
+            }
         }
         let sky = frame.sun_light.y * sky_visible;
         shaded = side * (lamp + sky * (1.0 - lamp));

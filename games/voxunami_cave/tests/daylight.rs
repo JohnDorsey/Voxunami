@@ -86,6 +86,10 @@ fn a_new_world_begins_on_a_morning_on_the_ground_of_the_planet_with_the_planet_i
     assert_eq!(view.daylight, 1.0, "the player stands in the morning sun");
     assert_eq!(view.sun_light, 255);
     assert!(view.sky_light > 50, "{}", view.sky_light);
+    assert_eq!(
+        view.sky_light_under_cover, 0,
+        "a place with a hill over it has none of the sky"
+    );
     assert!(view.sky_color[2] > 0.8, "a blue sky: {:?}", view.sky_color);
     // The planet is the one ball in the sun's way: its solid core, about the middle of the world, a little smaller than the planet.
     let [SunOccluder::Ball { centre, radius }] = view.occluders[..] else {

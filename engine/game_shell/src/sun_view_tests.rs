@@ -176,6 +176,8 @@ fn the_atmosphere_of_a_picture_is_the_suns_and_the_sides_are_shaded_from_one_pla
     // The terrain casts shadows, with the share of the sky's light the game says reaches a place in one; the player can turn them off, and on.
     assert!(lit.shadows);
     assert_eq!(lit.sky_light_in_shadow, 64);
+    // And the share that reaches a place with the terrain over it.
+    assert_eq!(lit.sky_light_under_cover, 32);
     player.client_command(".shadows off");
     assert!(!crate::view::lit_atmosphere(&player).0.shadows);
     player.client_command(".shadows on");
