@@ -94,6 +94,8 @@ pub struct ClientWorld {
     /// Edit digests can only be checked when the server and this program number content alike.
     verifies_edit_digests: bool,
     tick: Tick,
+    /// The time of the world at `tick`.
+    world_clock: u64,
     watched: Option<(LevelIndex, BrickBox)>,
     entities: ClientEntities,
     grids: ClientGrids,
@@ -127,6 +129,7 @@ impl ClientWorld {
                 translator,
                 verifies_edit_digests,
                 tick: welcome.tick,
+                world_clock: welcome.world_clock,
                 watched: None,
                 entities: ClientEntities::default(),
                 grids: ClientGrids::default(),
@@ -148,6 +151,12 @@ impl ClientWorld {
     /// The last tick this view is complete for.
     pub fn tick(&self) -> Tick {
         self.tick
+    }
+
+    /// The time of the world at [`ClientWorld::tick`]: whole ticks (a twentieth of a second each, at the rate the server says) since the world was made. It is the
+    /// server's clock, which is saved with the world, and not the count of ticks since this program connected.
+    pub fn world_clock(&self) -> u64 {
+        self.world_clock
     }
 
     /// The entities the server has told this client of.
@@ -272,6 +281,7 @@ impl ClientWorld {
                     });
                 }
                 self.tick = tick;
+                self.world_clock = self.world_clock.saturating_add(1);
                 Ok(None)
             }
             ServerMessage::GameMessage { kind, payload } => {

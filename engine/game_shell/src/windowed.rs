@@ -28,7 +28,7 @@ use crate::options::{PlayOptions, ReplayOptions, ViewOptions};
 use crate::screen::{Screen, ScreenKey, ScreenText, Source};
 use crate::session::{Mode, Session};
 use crate::view::{
-    apply_updates, atmosphere, camera_at, configure_renderer, hexadecimal_voxel_coordinates,
+    apply_updates, camera_at, configure_renderer, hexadecimal_voxel_coordinates, light_the_scene,
     show_entity_boxes, show_other_players, show_screen,
 };
 
@@ -88,6 +88,7 @@ pub fn play<G: GameDefinition>(options: PlayOptions) -> Result<(), String> {
     )
     .map_err(|error| error.to_string())?;
     session.enable_level_detail();
+    session.pin_time(view.time);
     if let Some(detail) = G::grid_detail() {
         session.enable_grid_detail(detail);
     }
@@ -125,6 +126,7 @@ pub fn replay<G: GameDefinition>(options: ReplayOptions) -> Result<(), String> {
     )
     .map_err(|error| error.to_string())?;
     session.enable_level_detail();
+    session.pin_time(view.time);
     if let Some(detail) = G::grid_detail() {
         session.enable_grid_detail(detail);
     }
@@ -198,8 +200,6 @@ struct Viewer<G: GameDefinition> {
     last_title_update: Instant,
     frames_total: u64,
     last_statistics: RenderStatistics,
-    /// The radius, in bricks, that the fog was last set for: it changes when the player goes to a level that is drawn farther (or less far).
-    fog_radius_bricks: i128,
     exit_after: Option<Duration>,
     ticks_played: u64,
     recording_ended: bool,
@@ -287,7 +287,6 @@ impl<G: GameDefinition> Viewer<G> {
             last_title_update: now,
             frames_total: 0,
             last_statistics: RenderStatistics::default(),
-            fog_radius_bricks: 0,
             exit_after: view.exit_after_seconds.map(Duration::from_secs_f32),
             ticks_played: 0,
             recording_ended: false,
@@ -299,10 +298,6 @@ impl<G: GameDefinition> Viewer<G> {
     fn run_command(&mut self, text: &str, now: Instant) {
         if is_client_command(text) {
             let reply = self.session.client_command(text);
-            self.renderer.set_atmosphere(atmosphere(
-                self.session.fog_radius_bricks(),
-                self.session.settings().ambient_light,
-            ));
             println!("{reply}");
             self.reply = Some((reply, now));
         } else {
@@ -520,15 +515,9 @@ impl<G: GameDefinition> Viewer<G> {
         }
         let updates = self.session.update_view();
         apply_updates(&mut self.renderer, updates);
-        // The terrain of the level the player is in may be drawn farther than the last one (the level of space is drawn out past the universe): so is the fog.
-        let fog_radius_bricks = self.session.fog_radius_bricks();
-        if fog_radius_bricks != self.fog_radius_bricks {
-            self.fog_radius_bricks = fog_radius_bricks;
-            self.renderer.set_atmosphere(atmosphere(
-                fog_radius_bricks,
-                self.session.settings().ambient_light,
-            ));
-        }
+        // The light of the picture: the terrain of the level the player is in may be drawn farther than the last one (the level of space is drawn out past the universe), so
+        // the fog moves; the sun moves with the clock of the world, and the sky is a colour for where the camera is.
+        light_the_scene(&mut self.renderer, &self.session);
         show_other_players(&mut self.renderer, &self.session);
         show_entity_boxes(&mut self.renderer, &self.session);
 

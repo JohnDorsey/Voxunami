@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use game_shell::client_plugin::ClientPlugin;
-use game_shell::{CameraStart, CoarseDetail, GameDefinition, KeyCode, PlayerPose};
+use game_shell::{CameraStart, CoarseDetail, GameDefinition, KeyCode, PlayerPose, Sky, Sun};
 use namespaced_id::NamespacedId;
 use physics::MoveInput;
 use plugin_host::Plugin;
@@ -15,7 +15,7 @@ use crate::client::{
     ClientBlockEditing, ClientItems, ClientLight, ClientMovement, place_block_request,
     set_block_request,
 };
-use crate::content::{CaveContent, game_id, mini_cosmos_id};
+use crate::content::{CaveContent, game_id, mini_cosmos_id, overworld_id};
 use crate::logic::REACH;
 use crate::messages::{MoveRequest, SetBlock, Spawn};
 use crate::multiscale_light::LightScheme;
@@ -139,6 +139,27 @@ impl GameDefinition for Cave {
             unlit: 0,
             cell_pixels: 3.0,
             bytes_per_second: 0,
+        })
+    }
+
+    /// A day of twenty minutes of the world's clock that begins at seven in the morning, in the level of space and in the overworld. The sun is in the plane of a path that
+    /// goes a little to one side of the top of the planet at noon (so that it is never straight overhead at the place players start), and it is hidden by the planet in space
+    /// and by the flat ground of the overworld. The sky is the blue the game always had, to a height of 30 kilometres over a planet (a fifth of its radius, and a clear
+    /// sky to 15), black above.
+    fn sun(level: &NamespacedId) -> Option<Sun> {
+        let in_space = *level == mini_cosmos_id();
+        (in_space || *level == overworld_id()).then_some(Sun {
+            day_seconds: 1_200,
+            start_hour: 7.0,
+            noon: [0.0, 0.94, 0.342],
+            axis: [0.0, -0.342, 0.94],
+            light: 255,
+            sky_light: 110,
+            flat_ground: !in_space,
+            sky: Sky {
+                color: [0.55, 0.72, 0.92],
+                thickness: 30_000.0,
+            },
         })
     }
 

@@ -35,6 +35,7 @@ fn welcome(game: &Game, tick: u64) -> ServerMessage {
         client: ClientId::new(7),
         ticks_per_second: 20,
         tick: Tick::new(tick),
+        world_clock: 1_000 + tick,
         world_description: game
             .new_world()
             .describe(&game.registries())
@@ -120,6 +121,26 @@ fn assignment_everywhere(generator: u32) -> GeneratorAssignment {
         cube: BrickCube::new(BrickCoordinate::new(0, 0, 0), 3).unwrap(),
         generator: Some(generator),
     }
+}
+
+#[test]
+fn the_client_knows_the_clock_of_the_world_from_the_welcome_and_counts_it_a_tick_at_a_time() {
+    let mut rig = Rig::new();
+    // (The welcome of the rig is at tick 4, when the world's clock was 1,004.)
+    assert_eq!(rig.client.world().world_clock(), 1_004);
+    assert_eq!(rig.client.world().tick(), Tick::new(4));
+    rig.tick(5);
+    rig.client.poll_tick().unwrap().unwrap();
+    assert_eq!(rig.client.world().world_clock(), 1_005);
+    for number in 6..=9 {
+        rig.tick(number);
+        rig.client.poll_tick().unwrap().unwrap();
+    }
+    assert_eq!(rig.client.world().world_clock(), 1_009);
+    // A tick out of order is refused and does not move the clock.
+    rig.tick(12);
+    assert!(rig.client.poll_tick().is_err());
+    assert_eq!(rig.client.world().world_clock(), 1_009);
 }
 
 #[test]
@@ -751,6 +772,7 @@ impl Rig {
                     client: ClientId::new(7),
                     ticks_per_second: 20,
                     tick: Tick::new(4),
+                    world_clock: 1_004,
                     world_description: world.describe(&server_game.registries()).unwrap(),
                     package: Vec::new(),
                 })

@@ -16,6 +16,13 @@ struct Frame {
     fog_range: vec4<f32>,
     // Unit vector pointing towards the sun.
     sun_direction: vec4<f32>,
+    // Unit vector the sides of faces are shaded by: the sun's, unless the atmosphere says otherwise.
+    side_direction: vec4<f32>,
+    // x: how bright the sun lights a face that looks straight at it (0 to 1), y: how bright the sky lights every face the sun can reach (0 to 1), z: 1 if the level's
+    // ground is flat (the sun is hidden whenever it is below the horizon, y being up), w: how many of the balls below are used.
+    sun_light: vec4<f32>,
+    // The balls (planets, moons) that can hide the sun: the middle relative to the camera, in voxels (xyz), and the radius (w).
+    sun_balls: array<vec4<f32>, 8>,
     // Linear RGB of each avatar colour.
     avatars: array<vec4<f32>, 16>,
 }
@@ -55,8 +62,84 @@ struct DetailedInstance {
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) @interpolate(flat) color: vec3<f32>,
+    // The colour of the block.
+    @location(0) @interpolate(flat) albedo: vec3<f32>,
     @location(1) distance: f32,
+    // The face's normal, turned to the world's.
+    @location(2) @interpolate(flat) normal: vec3<f32>,
+    // Where the point is relative to the camera, in voxels.
+    @location(3) relative: vec3<f32>,
+    // x: the light of the lamps and the ambient light (0 to 1), y: how bright the side of the face makes it (0.4 to 1).
+    @location(4) @interpolate(flat) lamp_and_side: vec2<f32>,
+}
+
+// How wide, in radians, the soft edge of a shadow is: the sun's disc, and the twilight of the air for a place at the ground of a ball. The same numbers as `sun.rs`.
+const SUN_DISC_SOFTNESS: f32 = 0.005;
+const TWILIGHT_SOFTNESS: f32 = 0.1;
+// The most `asin` is asked about: its answer at exactly 1 is not a number on some GPUs (the integrated AMD one, in DX12). A place on or in the ball is as near the surface as this.
+const MOST_OF_A_BALL: f32 = 0.999999;
+
+// How far over the surface of a ball, in its radii, a face is still turned all the way to the way out of the ball, and how far it is no longer turned (see `Sunlight` in
+// `sun.rs`).
+const TURNED_UP_TO: f32 = 0.01;
+const TURNED_NO_MORE_FROM: f32 = 0.03;
+
+struct Sunlight {
+    // How much of the sun reaches a place: 1 for all of it, 0 for none.
+    visible: f32,
+    // The normal the cosine of the light is taken of.
+    normal: vec3<f32>,
+}
+
+// What the sun does at a place (relative to the camera) for a face that looks along `normal`. The same arithmetic as `sunlight` in `sun.rs`.
+fn sunlight(position: vec3<f32>, normal: vec3<f32>) -> Sunlight {
+    let sun = frame.sun_direction.xyz;
+    var visible = 1.0;
+    var nearest_over = 1.0e30;
+    var way_out = vec3<f32>(0.0);
+    if (frame.sun_light.z > 0.5) {
+        let softness = SUN_DISC_SOFTNESS + TWILIGHT_SOFTNESS;
+        visible = smoothstep(-softness, softness, sun.y);
+    }
+    let count = u32(frame.sun_light.w);
+    for (var index = 0u; index < count; index = index + 1u) {
+        let ball = frame.sun_balls[index];
+        let to_ball = ball.xyz - position;
+        // The length from the vector scaled by its largest part: the square of a part of 10^20 or more does not fit an `f32`.
+        let largest = max(abs(to_ball.x), max(abs(to_ball.y), abs(to_ball.z)));
+        if (largest == 0.0) {
+            return Sunlight(0.0, normal);
+        }
+        let scaled = to_ball / largest;
+        let scaled_length = length(scaled);
+        let true_distance = largest * scaled_length;
+        let over = (true_distance - ball.w) / ball.w;
+        if (over < nearest_over) {
+            nearest_over = over;
+            way_out = -(scaled / scaled_length);
+        }
+        // A place inside the ball is taken to be on its surface, in its direction: a face of a far node of a planet may be a little below the ground, inside the core, and
+        // it is lit by the terminator of the planet like the ground over it.
+        let ball_distance = max(true_distance, ball.w);
+        let share = ball.w / ball_distance;
+        let reach = asin(min(share, MOST_OF_A_BALL));
+        let separation = acos(clamp(dot(scaled / scaled_length, sun), -1.0, 1.0));
+        let share_squared = share * share;
+        let softness = SUN_DISC_SOFTNESS + TWILIGHT_SOFTNESS * share_squared * share_squared * share_squared * share_squared;
+        // A ball that takes up less of the sky than the soft edge is wide hides only part of the sun's disc, by the share of the area.
+        let coverage = min(reach / softness, 1.0);
+        visible = visible * (1.0 - coverage * coverage * (1.0 - smoothstep(reach - softness, reach + softness, separation)));
+    }
+    var lit_normal = normal;
+    if (nearest_over < 1.0e29) {
+        let turn = 1.0 - smoothstep(TURNED_UP_TO, TURNED_NO_MORE_FROM, nearest_over);
+        let turned = normal + way_out * turn;
+        let turned_length = length(turned);
+        if (turned_length > 1.0e-3) {
+            lit_normal = turned / turned_length;
+        }
+    }
+    return Sunlight(visible, lit_normal);
 }
 
 fn axis_unit(axis: u32) -> vec3<f32> {
@@ -96,9 +179,10 @@ fn finish(relative: vec3<f32>, face: u32, material: u32, light: u32) -> VertexOu
     // The face's normal in the grid's own axes, turned to the world's, where the sun is.
     let normal = placement.rotation * (axis_unit(face / 2u) * select(-1.0, 1.0, (face & 1u) == 1u));
     // The light of the face and the ambient light combine like a screen blend: each is the share of
-    // full brightness, and what is missing from both is what is missing from the result.
+    // full brightness, and what is missing from both is what is missing from the result. (The sun's light and
+    // the sky's are added to it for each pixel, in `fragment_main`.)
     let lit = 1.0 - (1.0 - frame.fog_range.z) * (1.0 - f32(light) / 255.0);
-    let shade = (0.4 + 0.6 * max(dot(normal, frame.sun_direction.xyz), 0.0)) * lit;
+    let side = 0.4 + 0.6 * max(dot(normal, frame.side_direction.xyz), 0.0);
 
     var base = vec3<f32>(1.0, 0.0, 1.0);
     if (material >= AVATAR_BASE) {
@@ -109,7 +193,10 @@ fn finish(relative: vec3<f32>, face: u32, material: u32, light: u32) -> VertexOu
 
     var out: VertexOutput;
     out.position = frame.view_projection * vec4<f32>(relative, 1.0);
-    out.color = base * shade;
+    out.albedo = base;
+    out.normal = normal;
+    out.relative = relative;
+    out.lamp_and_side = vec2<f32>(lit, side);
     // The distance, which for what is 10^20 voxels away or more is a square that does not fit an `f32` (and `length` may overflow, as the standard allows): the vector is
     // scaled by its largest part first.
     let largest = max(abs(relative.x), max(abs(relative.y), abs(relative.z)));
@@ -149,6 +236,19 @@ fn vertex_detailed(@builtin(vertex_index) vertex_index: u32, instance: DetailedI
 
 @fragment
 fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let lamp = in.lamp_and_side.x;
+    let side = in.lamp_and_side.y;
+    var shaded = side * lamp;
+    var sun = 0.0;
+    if (frame.sun_light.x > 0.0 || frame.sun_light.y > 0.0) {
+        // The sky lights every face the sun can reach, as much as its side allows, like another lamp; the sun lights the faces that look at it, by the cosine of the
+        // angle; and the sun's light and what there was combine like a screen blend too.
+        let light = sunlight(in.relative, in.normal);
+        let sky = frame.sun_light.y * light.visible;
+        shaded = side * (lamp + sky * (1.0 - lamp));
+        sun = frame.sun_light.x * max(dot(light.normal, frame.sun_direction.xyz), 0.0) * light.visible;
+    }
+    let color = in.albedo * (shaded + sun * (1.0 - shaded));
     let fog = smoothstep(frame.fog_range.x, frame.fog_range.y, in.distance);
-    return vec4<f32>(mix(in.color, frame.fog_color.rgb, fog), 1.0);
+    return vec4<f32>(mix(color, frame.fog_color.rgb, fog), 1.0);
 }

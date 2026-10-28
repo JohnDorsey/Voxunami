@@ -15,8 +15,8 @@ use crate::options::{PlayOptions, ReplayOptions};
 use crate::screen::ScreenText;
 use crate::session::{Mode, Session};
 use crate::view::{
-    apply_updates, camera_at, configure_renderer, show_entity_boxes, show_other_players,
-    show_screen,
+    apply_updates, camera_at, configure_renderer, light_the_scene, show_entity_boxes,
+    show_other_players, show_screen,
 };
 use world_storage::{DirectoryShipFiles, MemoryShipFiles, ShipFiles};
 
@@ -71,6 +71,7 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
     )
     .map_err(|error| error.to_string())?;
     session.enable_level_detail();
+    session.pin_time(view.time);
     if let Some(detail) = G::grid_detail() {
         session.enable_grid_detail(detail);
     }
@@ -137,6 +138,7 @@ pub fn replay<G: GameDefinition>(options: &ReplayOptions) -> Result<(), String> 
     )
     .map_err(|error| error.to_string())?;
     session.enable_level_detail();
+    session.pin_time(view.time);
     if let Some(detail) = G::grid_detail() {
         session.enable_grid_detail(detail);
     }
@@ -187,6 +189,7 @@ fn render_outputs<C: Connection, G: GameDefinition>(
     view: &crate::options::ViewOptions,
     benchmark: bool,
 ) -> Result<(), String> {
+    light_the_scene(renderer, session);
     show_other_players(renderer, session);
     show_entity_boxes(renderer, session);
     // What the server has put on the screen (forms, a question) is in a picture of the session; the window's own status and

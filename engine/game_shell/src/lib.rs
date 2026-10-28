@@ -27,6 +27,9 @@ mod player_identity;
 pub mod screen;
 pub mod serve;
 pub mod session;
+pub mod sun;
+#[cfg(test)]
+mod sun_view_tests;
 #[cfg(test)]
 mod test_support;
 pub mod view;
@@ -38,6 +41,7 @@ pub use identity::Identity;
 pub use package::{ContentPackage, FamilyFactory, GeneratorFactory, PackageSpec, no_families};
 pub use package_data::{PackageData, PackageError, check_materials};
 pub use player_presence::{PlayerPose, Presence};
+pub use sun::{Sky, Sun, SunView};
 pub use winit::keyboard::KeyCode;
 
 pub use packs::{content_with_packs, run_check_packs, run_pack_schemas};

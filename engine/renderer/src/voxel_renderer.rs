@@ -18,6 +18,7 @@ use crate::camera::{Camera, Frustum};
 use crate::crosshair::Crosshair;
 use crate::graphics_context::GraphicsContext;
 use crate::overlay::{Overlay, OverlayRect};
+use crate::sun::{MAXIMUM_SUN_BALLS, SunOccluder, balls_and_ground};
 
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Radius of a sphere around a brick: half the diagonal of a 32-voxel cube.
@@ -187,12 +188,23 @@ pub struct Atmosphere {
     pub fog_end: f32,
     /// Direction towards the sun (need not be normalized).
     pub sun_direction: [f32; 3],
+    /// The direction the sides of faces are shaded by, if it is not the sun's: a face is a little brighter the more it looks along it, whatever lights it (the lamps and
+    /// the ambient light; the sun lights by its own direction). `None`, the default, is the sun's direction. A world whose sun moves sets it, so that a lamp lights a
+    /// wall as it did at every time of the day.
+    pub side_direction: Option<[f32; 3]>,
     /// How bright, from 0 to 255, a face is that no light reaches. A face's brightness is its light
     /// and this one combined like screen blending in an image editor (each as a fraction of full
     /// brightness, one minus the product of what is missing from each), so light adds to the
     /// ambient and never goes beyond full. 0, the default, is no ambient light: brightness is the
     /// face's light alone.
     pub ambient_light: u8,
+    /// How bright, from 0 to 255, the sun makes a face that looks straight at it and that nothing is in the way of (see [`VoxelRenderer::set_sun_occluders`]): by the
+    /// cosine of the angle between the face and `sun_direction`. It adds to the face's light and the ambient light like another screen blend. 0, the default, is a world
+    /// with no sun: its pictures are as they were.
+    pub sun_light: u8,
+    /// How bright, from 0 to 255, the sky makes every face the sun can reach, from whichever side (a face on the side away from the sun is shaded as ever). The sky is
+    /// the sun's light scattered, so it goes where the sun does: a place the sun does not reach has none. 0 is none.
+    pub sky_light: u8,
 }
 
 impl Default for Atmosphere {
@@ -202,7 +214,10 @@ impl Default for Atmosphere {
             fog_start: 400.0,
             fog_end: 900.0,
             sun_direction: [0.4, 0.8, 0.3],
+            side_direction: None,
             ambient_light: 0,
+            sun_light: 0,
+            sky_light: 0,
         }
     }
 }
@@ -230,6 +245,11 @@ struct FrameUniform {
     fog_color: [f32; 4],
     fog_range: [f32; 4],
     sun_direction: [f32; 4],
+    side_direction: [f32; 4],
+    /// x: the sun's light, y: the sky's (0 to 1), z: 1 if the level's ground is flat, w: how many balls follow.
+    sun_light: [f32; 4],
+    /// The balls that can hide the sun: the middle relative to the camera and the radius.
+    sun_balls: [[f32; 4]; MAXIMUM_SUN_BALLS],
     /// Linear RGB of each avatar colour.
     avatars: [[f32; 4]; AVATAR_COLOR_COUNT],
 }
@@ -335,6 +355,7 @@ pub struct VoxelRenderer {
     /// The meshes of the boxes there have been, by material and size, made when first asked for.
     box_meshes: HashMap<(u32, [u8; 3]), GpuBrick>,
     atmosphere: Atmosphere,
+    sun_occluders: Vec<SunOccluder>,
     depth: Option<SizedTarget>,
     offscreen: Option<SizedTarget>,
     crosshair: Crosshair,
@@ -523,6 +544,7 @@ impl VoxelRenderer {
             entity_boxes: Vec::new(),
             box_meshes: HashMap::new(),
             atmosphere: Atmosphere::default(),
+            sun_occluders: Vec::new(),
             depth: None,
             offscreen: None,
             crosshair,
@@ -678,6 +700,13 @@ impl VoxelRenderer {
 
     pub fn set_atmosphere(&mut self, atmosphere: Atmosphere) {
         self.atmosphere = atmosphere;
+    }
+
+    /// Sets what can stand between a place and the sun, replacing what was set: balls (the planets and moons, as the balls inside them that are ground all through) and
+    /// the ground of a level that is flat. The sun lights a place by [`Atmosphere::sun_light`] and [`Atmosphere::sky_light`] in the share that gets past them
+    /// ([`crate::sun_visibility`] is the rule, with a soft edge); with none set the sun reaches everywhere. Only the nearest [`MAXIMUM_SUN_BALLS`] balls are used.
+    pub fn set_sun_occluders(&mut self, occluders: &[SunOccluder]) {
+        self.sun_occluders = occluders.to_vec();
     }
 
     /// Replaces the mesh of one brick. An empty mesh removes the brick.
@@ -1019,7 +1048,7 @@ impl VoxelRenderer {
             .chain(visible_boxes.iter().map(|(_, placement)| *placement))
             .collect();
         self.write_placements(&placements);
-        self.write_frame_uniform(view_projection);
+        self.write_frame_uniform(view_projection, camera.position);
         self.crosshair.set_screen_size(&self.queue, size);
         self.overlay.set_screen_size(&self.queue, size);
 
@@ -1347,9 +1376,18 @@ impl VoxelRenderer {
         }
     }
 
-    fn write_frame_uniform(&self, view_projection: glam::Mat4) {
+    fn write_frame_uniform(&self, view_projection: glam::Mat4, camera: WorldPosition) {
         let [fog_red, fog_green, fog_blue] = srgb_to_linear_color(self.atmosphere.sky_color);
         let sun = Vec3::from_array(self.atmosphere.sun_direction).normalize_or(Vec3::Y);
+        let side = self
+            .atmosphere
+            .side_direction
+            .map_or(sun, |side| Vec3::from_array(side).normalize_or(Vec3::Y));
+        let (balls, flat_ground) = balls_and_ground(&self.sun_occluders, camera);
+        let mut sun_balls = [[0.0; 4]; MAXIMUM_SUN_BALLS];
+        for (slot, ball) in sun_balls.iter_mut().zip(&balls) {
+            *slot = [ball.centre.x, ball.centre.y, ball.centre.z, ball.radius];
+        }
         let uniform = FrameUniform {
             view_projection: view_projection.to_cols_array_2d(),
             fog_color: [fog_red, fog_green, fog_blue, 1.0],
@@ -1360,6 +1398,14 @@ impl VoxelRenderer {
                 0.0,
             ],
             sun_direction: [sun.x, sun.y, sun.z, 0.0],
+            side_direction: [side.x, side.y, side.z, 0.0],
+            sun_light: [
+                f32::from(self.atmosphere.sun_light) / 255.0,
+                f32::from(self.atmosphere.sky_light) / 255.0,
+                if flat_ground { 1.0 } else { 0.0 },
+                balls.len() as f32,
+            ],
+            sun_balls,
             avatars: AVATAR_COLORS.map(|color| {
                 let [red, green, blue] = srgb_to_linear_color(color);
                 [red, green, blue, 1.0]
@@ -1409,6 +1455,33 @@ mod tests {
         // Half in sRGB is about a fifth in linear light.
         assert!((middle[0] - 0.2140).abs() < 0.001, "{middle:?}");
         assert_eq!(middle[0], middle[2]);
+    }
+
+    #[test]
+    fn the_shader_and_the_rule_agree_on_how_soft_a_shadow_is_and_how_many_balls_there_are() {
+        let shader = include_str!("voxel.wgsl");
+        for declaration in [
+            format!(
+                "const SUN_DISC_SOFTNESS: f32 = {:?};",
+                crate::sun::SUN_DISC_SOFTNESS
+            ),
+            format!(
+                "const TWILIGHT_SOFTNESS: f32 = {:?};",
+                crate::sun::TWILIGHT_SOFTNESS
+            ),
+            format!(
+                "const MOST_OF_A_BALL: f32 = {:?};",
+                crate::sun::MOST_OF_A_BALL
+            ),
+            format!("const TURNED_UP_TO: f32 = {:?};", crate::sun::TURNED_UP_TO),
+            format!(
+                "const TURNED_NO_MORE_FROM: f32 = {:?};",
+                crate::sun::TURNED_NO_MORE_FROM
+            ),
+            format!("sun_balls: array<vec4<f32>, {MAXIMUM_SUN_BALLS}>,"),
+        ] {
+            assert!(shader.contains(&declaration), "{declaration}");
+        }
     }
 
     #[test]

@@ -297,7 +297,7 @@ fn the_standard_session_makes_the_same_recording_on_every_platform() {
     );
 }
 
-const PINNED_RECORDING_LENGTH: usize = 84_915;
+const PINNED_RECORDING_LENGTH: usize = 84_923;
 // Phase 27c: the checksum changed once, for the protocol version in the welcome (3, was 2); the length did not, and
 // setting the version back to 2 gave the old checksum.
 // Phase 27e: both changed: the challenge is in the stream, the welcome says version 4, and joins take longer, so the game's own
@@ -309,7 +309,8 @@ const PINNED_RECORDING_LENGTH: usize = 84_915;
 // told of in this recording), and the code of the commit before with only the version raised to 8 gives the new checksum.
 // Coordinates of 128 bits (2026-10-27; protocol 9): the checksum and the length (84,807 to 84,915, 108 more) moved because a coordinate is a length byte and its bytes. Not compared frame by frame
 // with the code before (as the comment above says of this recording); the three golden sessions of the games were, and show the values the same and only the bytes longer.
-const PINNED_RECORDING_CHECKSUM: u32 = 905_310_838;
+// The world's clock in the welcome (2026-10-28; protocol 10): 8 bytes more (84,915 to 84,923: a `u64`, predicted) and the version, so the checksum moved.
+const PINNED_RECORDING_CHECKSUM: u32 = 3_004_670_074;
 
 #[test]
 fn identical_sessions_make_byte_identical_recordings() {

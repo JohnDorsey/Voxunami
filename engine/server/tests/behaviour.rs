@@ -242,6 +242,11 @@ fn a_joining_client_is_challenged_then_welcomed_with_a_description_it_can_load()
         Tick::new(1),
         "the last tick completed before joining"
     );
+    // (The world's clock goes on a tick at the start of each, from 0, so it was 1 when tick 1 was completed.)
+    assert_eq!(
+        welcome.world_clock, 1,
+        "the clock of the world at that tick"
+    );
     assert_eq!(
         harness.server.player_key(ClientId::new(1)),
         Some(Identity::from_secret([1; 32]).player_key())
@@ -261,6 +266,28 @@ fn a_joining_client_is_challenged_then_welcomed_with_a_description_it_can_load()
             LogicEvent::Tick(Tick::new(2))
         ]
     );
+}
+
+#[test]
+fn a_world_that_has_run_before_welcomes_with_its_own_clock_not_the_count_of_ticks_of_this_run() {
+    let game = Game::new(&ALL_PLUGINS);
+    let mut world = game.new_world();
+    // A world saved at tick 5,000 of its time and started again: this run's ticks start from 1, the world's clock from 5,001.
+    world.set_clock(5_000);
+    let mut harness = Harness::new(&game, world, ServerConfig::new(game_id()));
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    let messages = client.received();
+    let Some(ServerMessage::Welcome(welcome)) = messages.first() else {
+        panic!("expected a welcome first, got {messages:?}");
+    };
+    assert_eq!(welcome.tick, Tick::new(1));
+    assert_eq!(welcome.world_clock, 5_001);
+    // And the clock minus the tick is what a client adds to a tick to know the time of the world: it is the same at every later tick.
+    harness.server.step();
+    harness.server.step();
+    assert_eq!(harness.server.world().clock(), 5_004);
+    assert_eq!(harness.server.tick(), Tick::new(4));
 }
 
 #[test]

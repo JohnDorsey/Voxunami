@@ -10,6 +10,7 @@ description = "Draws meshed voxel bricks with wgpu: camera-relative, instanced q
 block_models.workspace = true
 bytemuck = { version = "1.25.2", features = ["derive"] }
 glam = "0.34.1"
+libm = "0.2"
 pollster = "1.0.1"
 region_octree.workspace = true
 thiserror.workspace = true

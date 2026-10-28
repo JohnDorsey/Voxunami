@@ -2644,6 +2644,7 @@ dependencies = [
  "bytemuck",
  "coarse_cells",
  "glam 0.34.1",
+ "libm",
  "png",
  "pollster",
  "region_octree",

@@ -16,7 +16,7 @@ use player_presence::{
 };
 use plugin_host::{FormId, Prompt, PromptClosed, UiAction, UiClose, UiResponse, UiShow};
 use protocol::{ClientId, Message};
-use renderer::Camera;
+use renderer::{Camera, SunOccluder};
 use transport::Connection;
 use voxel_grid::Grid;
 use voxel_space::{
@@ -36,6 +36,7 @@ use crate::client_plugin::{
 use crate::definition::{CoarseDetail, GameContent, GameDefinition};
 use crate::host::{COARSE_WATCH_MARGIN_BRICKS, WATCH_MARGIN_BRICKS};
 use crate::package_data::{PackageData, PackageError, check_materials};
+use crate::sun::{SunView, position_of_voxels, sun_view};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -349,6 +350,11 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     /// for another, changing over when the player goes from one to the other. Done before anything is drawn.
     pub fn enable_level_detail(&mut self) {
         self.follows_level_detail = true;
+    }
+
+    /// Pins the sun at a time of day, in minutes from midnight, for this player (what `.time` does), or lets the world's clock move it again.
+    pub fn pin_time(&mut self, minutes: Option<u16>) {
+        self.settings.pinned_time = minutes;
     }
 
     /// Whether the terrain of the level being watched is drawn beyond its bricks, in coarse nodes.
@@ -1014,6 +1020,58 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         &self.settings
     }
 
+    /// The sun of the level the player is in and the time of day by the world's clock, if the game has a sun there.
+    fn sun_by_the_clock(&self) -> Option<(crate::sun::Sun, f64)> {
+        let world = self.client.world();
+        let sun = G::sun(world.world().level_id(self.level())?)?;
+        let hours = sun.hours_at(world.world_clock(), world.server_info().ticks_per_second);
+        Some((sun, hours))
+    }
+
+    /// The balls the sun is hidden by, in the level the player is in: the solid core of each planet the client knows of (a ship with terrain whose generator has one),
+    /// where the planet is now.
+    fn planet_cores(&self) -> Vec<SunOccluder> {
+        let level = self.level();
+        let world = self.client.world();
+        world
+            .grids()
+            .iter()
+            .filter(|(_, grid)| grid.level == level)
+            .filter_map(|(_, grid)| {
+                let terrain = grid.terrain?;
+                let generator = world
+                    .world()
+                    .main()
+                    .terrain
+                    .generators()
+                    .entry(terrain.generator)
+                    .and_then(|entry| entry.content().cloned())?;
+                let core = generator.solid_core()?;
+                let centre = grid.pose.local_to_world(position_of_voxels(core.centre))?;
+                Some(SunOccluder::Ball {
+                    centre,
+                    radius: core.radius as f32,
+                })
+            })
+            .collect()
+    }
+
+    /// What the sun does to the next picture, if the game has a sun in this level: its direction by the world's clock (or the time the player pinned with `.time`), the
+    /// colour of the sky for where the camera is, and what is in the sun's way.
+    pub fn sun_view(&self) -> Option<SunView> {
+        let (sun, by_the_clock) = self.sun_by_the_clock()?;
+        let hours = self
+            .settings
+            .pinned_time
+            .map_or(by_the_clock, |minutes| f64::from(minutes) / 60.0);
+        Some(sun_view(
+            &sun,
+            hours,
+            self.camera.position,
+            self.planet_cores(),
+        ))
+    }
+
     /// How many payloads of messages the client plugins handle did not decode, and were ignored.
     pub fn malformed_messages(&self) -> u64 {
         self.client_host.malformed_messages()
@@ -1029,6 +1087,9 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         let target_content = target.and_then(|hit| self.target_content_of(&hit));
         let tick = self.client.world().tick();
         let own_client = self.client.world().server_info().client;
+        self.settings.time_of_day = self
+            .sun_by_the_clock()
+            .map(|(_, hours)| (hours * 60.0) as u16 % (24 * 60));
         let mut context = ClientContext::new(SessionView {
             camera: &self.camera,
             block_table: &self.block_table,

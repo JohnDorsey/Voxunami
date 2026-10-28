@@ -224,6 +224,7 @@ fn a_recording_names_its_game_in_the_welcome_it_starts_with() {
         client: ClientId::new(1),
         ticks_per_second: 20,
         tick: Tick::ZERO,
+        world_clock: 0,
         world_description: vec![1, 2, 3],
         package: vec![4, 5],
     });

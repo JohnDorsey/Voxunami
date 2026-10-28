@@ -11,7 +11,7 @@ use block_models::{BlockDefinition, BlockTable, Shape, ShapeBox};
 use glam::Vec3;
 use renderer::{
     Atmosphere, Avatar, Camera, EntityBox, GraphicsContext, OverlayRect, RenderStatistics,
-    VoxelRenderer,
+    SunOccluder, VoxelRenderer,
 };
 use voxel_grid::ChannelStorage;
 use voxel_meshing::{BrickChannels, BrickNeighbourhood, FULL_LIGHT, mesh_brick};
@@ -2083,5 +2083,439 @@ fn a_brick_far_along_a_tumbled_ship_is_drawn_where_the_turn_of_its_place_puts_it
             .count();
         assert!(drawn > 100, "{name}: the scene is empty ({drawn} pixels)");
         assert!(from_the_ship == from_the_terrain, "{name}");
+    }
+}
+
+// ---- The sun ----
+//
+// One green cube with no light of its own (`Some(0)`) and no ambient light, seen from the front: its face looks along +z, so a sun along +z is straight onto it. The sun's
+// share of the colour is its light, times the cosine of the angle to the face, times how much of it gets past what is in the way; the sky's share is the sky light times the
+// same share of the sun that reaches the place; the two add like light (a screen blend).
+
+/// The atmosphere of the sun tests: no ambient light, a sun in this direction of this strength, and the sky's light of this strength.
+fn sunny(sun_direction: [f32; 3], sun_light: u8, sky_light: u8) -> Atmosphere {
+    Atmosphere {
+        sky_color: SKY,
+        fog_start: 1000.0,
+        fog_end: 2000.0,
+        sun_direction,
+        sun_light,
+        sky_light,
+        ..Atmosphere::default()
+    }
+}
+
+/// The brightness of the pixel at the middle of the green cube of the sun tests, seen from the front, with `light` of its own (None is the full light of a game with none).
+fn lit_face(renderer: &mut VoxelRenderer, light: Option<u32>) -> f64 {
+    place_blocks(renderer, ORIGIN_BRICK, &[([16, 16, 16], 2, 0)], light);
+    let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+    linear_brightness(pixel(&render(renderer, &camera), SIZE / 2, SIZE / 2))
+}
+
+/// The brightness of a face that is fully lit and faces the sun squarely: the reference the other pictures are shares of.
+fn fully_lit_face(context: &GraphicsContext) -> f64 {
+    let mut renderer = new_renderer(context);
+    renderer.set_atmosphere(sunny([0.0, 0.0, 1.0], 0, 0));
+    lit_face(&mut renderer, None)
+}
+
+#[test]
+fn a_sun_lights_a_face_by_the_cosine_of_its_angle_to_the_face() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let full = fully_lit_face(&context);
+        let mut renderer = new_renderer(&context);
+        let mut seen = |sun: [f32; 3], sun_light: u8| {
+            renderer.set_atmosphere(sunny(sun, sun_light, 0));
+            lit_face(&mut renderer, Some(0)) / full
+        };
+        // Squarely: all of it. A face squarely to a sun of no light is black (the ambient light and its own light are none).
+        let squarely = seen([0.0, 0.0, 1.0], 255);
+        assert!((0.99..1.01).contains(&squarely), "{name}: {squarely}");
+        assert_eq!(seen([0.0, 0.0, 1.0], 0), 0.0, "{name}: a sun with no light");
+        // Sixty degrees from the face: half. (The direction need not be a unit vector.)
+        let sloped = seen([0.0, 3.0f32.sqrt() * 2.0, 2.0], 255);
+        assert!((0.49..0.51).contains(&sloped), "{name}: {sloped}");
+        // Half the light: half the brightness.
+        let dim = seen([0.0, 0.0, 1.0], 128);
+        assert!((0.49..0.51).contains(&dim), "{name}: {dim}");
+        // Edge on, and from behind: the sun does not light a face it is behind.
+        assert_eq!(seen([1.0, 0.0, 0.0], 255), 0.0, "{name}: edge on");
+        assert_eq!(seen([0.0, 0.0, -1.0], 255), 0.0, "{name}: from behind");
+    }
+}
+
+#[test]
+fn the_sky_lights_a_face_the_sun_does_not_reach_a_little_less_than_one_it_does() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let full = fully_lit_face(&context);
+        let mut renderer = new_renderer(&context);
+        let mut seen = |sun: [f32; 3], sun_light: u8, sky_light: u8| {
+            renderer.set_atmosphere(sunny(sun, sun_light, sky_light));
+            lit_face(&mut renderer, Some(0)) / full
+        };
+        // The sun is behind the face: only the sky lights it, and as every face is shaded by the sun's side (0.4 away from it), by 0.4 of the sky's light.
+        let in_shade = seen([0.0, 0.0, -1.0], 255, 255);
+        assert!((0.39..0.41).contains(&in_shade), "{name}: {in_shade}");
+        let dim_sky = seen([0.0, 0.0, -1.0], 255, 128);
+        assert!((0.19..0.21).contains(&dim_sky), "{name}: {dim_sky}");
+        // The sun and the sky together are a screen blend: the face the sun lights half (sixty degrees) and the sky lights by (0.4 + 0.6 * 0.5 =) 0.7 of 0.5 is
+        // 0.35, and 0.35 and 0.5 make 0.35 + 0.5 * (1 - 0.35) = 0.675 of full.
+        let both = seen([0.0, 3.0f32.sqrt() * 2.0, 2.0], 255, 128);
+        assert!((0.66..0.69).contains(&both), "{name}: {both}");
+        // The sky alone, with a sun of no light: the sky still lights, and a face the sun faces is the sky's full light.
+        let only_sky = seen([0.0, 0.0, 1.0], 0, 255);
+        assert!((0.99..1.01).contains(&only_sky), "{name}: {only_sky}");
+    }
+}
+
+/// The ball of a planet whose surface is the face of the cube of the sun tests (its middle is at (16.5, 16.5, 17)): `radius` down along the face's normal, a thousandth of a
+/// voxel more, so that the face is not inside it.
+fn planet_under_the_face(radius: f32) -> SunOccluder {
+    planet_with_the_face_this_deep(radius, f64::from(radius) + 0.001)
+}
+
+/// The ball of this radius whose middle is `depth` below the face along its normal: the face is inside the ball if the depth is less than the radius.
+fn planet_with_the_face_this_deep(radius: f32, depth: f64) -> SunOccluder {
+    let z = 17.0 - depth;
+    let brick = (z / 32.0).floor();
+    SunOccluder::Ball {
+        centre: WorldPosition::new(
+            BrickCoordinate::new(0, 0, brick as i128),
+            [16.5, 16.5, (z - brick * 32.0) as f32],
+        ),
+        radius,
+    }
+}
+
+#[test]
+fn a_ball_in_the_way_puts_a_face_in_the_shadow_and_one_beside_it_does_not() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let full = fully_lit_face(&context);
+        let mut renderer = new_renderer(&context);
+        renderer.set_atmosphere(sunny([0.0, 0.0, 1.0], 255, 0));
+        let open = lit_face(&mut renderer, Some(0)) / full;
+        assert!((0.99..1.01).contains(&open), "{name}: {open}");
+        // A ball between the face and the sun, 100 voxels out: the face is in its shadow.
+        let in_the_way = SunOccluder::Ball {
+            centre: WorldPosition::new(BrickCoordinate::new(0, 0, 3), [16.5, 16.5, 21.0]),
+            radius: 30.0,
+        };
+        renderer.set_sun_occluders(&[in_the_way]);
+        assert_eq!(
+            lit_face(&mut renderer, Some(0)),
+            0.0,
+            "{name}: in the shadow"
+        );
+        // The same ball 200 voxels to the side is a long way from the sun's line: the face is in full sun.
+        let beside = SunOccluder::Ball {
+            centre: WorldPosition::new(BrickCoordinate::new(7, 0, 3), [16.5, 16.5, 21.0]),
+            radius: 30.0,
+        };
+        renderer.set_sun_occluders(&[beside]);
+        let at_the_side = lit_face(&mut renderer, Some(0)) / full;
+        assert!((0.99..1.01).contains(&at_the_side), "{name}: {at_the_side}");
+        // And none again.
+        renderer.set_sun_occluders(&[]);
+        let none = lit_face(&mut renderer, Some(0)) / full;
+        assert!((0.99..1.01).contains(&none), "{name}: {none}");
+    }
+}
+
+#[test]
+fn the_shader_and_the_reference_agree_on_the_sunset_of_a_planet() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let full = fully_lit_face(&context);
+        let mut renderer = new_renderer(&context);
+        let planet = planet_under_the_face(1000.0);
+        renderer.set_sun_occluders(&[planet]);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+        let middle = Vec3::from_array(
+            WorldPosition::new(ORIGIN_BRICK, [16.5, 16.5, 17.0]).relative_to(camera.position),
+        );
+        let (balls, ground) = renderer::balls_and_ground(&[planet], camera.position);
+        // The sun from well up in the sky of the face to well below its horizon (the face looks along +z, which is up for the planet): the shader's share of the sun that
+        // reaches the face's middle, and the rule's with the cosine of the angle to the face.
+        let mut seen_something_in_between = false;
+        for step in 0..=24 {
+            let height = 0.3 - step as f32 * 0.025;
+            let sun = Vec3::new(libm::cosf(height), 0.0, libm::sinf(height));
+            renderer.set_atmosphere(sunny(sun.to_array(), 255, 0));
+            let seen = lit_face(&mut renderer, Some(0)) / full;
+            let share = renderer::sun_visibility(middle, sun, &balls, ground);
+            let expected = f64::from(share * sun.z.max(0.0));
+            assert!(
+                (seen - expected).abs() < 0.03,
+                "{name}: the sun at {height} radians: the shader says {seen}, the rule {expected}"
+            );
+            seen_something_in_between |= seen > 0.02 && seen < 0.2;
+        }
+        assert!(
+            seen_something_in_between,
+            "{name}: the steps cross the twilight"
+        );
+    }
+}
+
+#[test]
+fn a_face_at_the_ground_of_a_planet_is_lit_by_a_normal_turned_to_the_way_out_and_one_high_over_it_is_not()
+ {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let full = fully_lit_face(&context);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+        let middle = Vec3::from_array(
+            WorldPosition::new(ORIGIN_BRICK, [16.5, 16.5, 17.0]).relative_to(camera.position),
+        );
+        // The face looks along +z. A planet with its way out along +x from the face (the face is on its flank) turns the normal to 45 degrees; a planet whose way out is
+        // along +z (the face is squarely on top of it) does not. A sun along +x lights the first by the cosine of 45 degrees and the second not at all. (The face is 5
+        // voxels over the ground of both: right at the ground the light changes with the square root of the height, and a pixel is not at the middle of the face.)
+        let flank = {
+            // The middle of the ball is 1,005 voxels from the face along -x.
+            let x: f64 = 16.5 - 1005.0;
+            let brick = (x / 32.0).floor();
+            SunOccluder::Ball {
+                centre: WorldPosition::new(
+                    BrickCoordinate::new(brick as i128, 0, 0),
+                    [(x - brick * 32.0) as f32, 16.5, 17.0],
+                ),
+                radius: 1000.0,
+            }
+        };
+        let on_top = planet_with_the_face_this_deep(1000.0, 1005.0);
+        let high_over = {
+            // 100,000 voxels from the same ball's surface: not turned.
+            let x: f64 = 16.5 - 101_000.0;
+            let brick = (x / 32.0).floor();
+            SunOccluder::Ball {
+                centre: WorldPosition::new(
+                    BrickCoordinate::new(brick as i128, 0, 0),
+                    [(x - brick * 32.0) as f32, 16.5, 17.0],
+                ),
+                radius: 1000.0,
+            }
+        };
+        for (what, planet) in [
+            ("on the flank", flank),
+            ("on top", on_top),
+            ("high over", high_over),
+        ] {
+            let mut renderer = new_renderer(&context);
+            renderer.set_sun_occluders(&[planet]);
+            let (balls, ground) = renderer::balls_and_ground(&[planet], camera.position);
+            for sun in [Vec3::X, Vec3::new(1.0, 0.0, 1.0).normalize(), Vec3::Z] {
+                renderer.set_atmosphere(sunny(sun.to_array(), 255, 0));
+                let seen = lit_face(&mut renderer, Some(0)) / full;
+                let light = renderer::sunlight(middle, Vec3::Z, sun, &balls, ground);
+                let expected = f64::from(light.visible * light.normal.dot(sun).max(0.0));
+                assert!(
+                    (seen - expected).abs() < 0.03,
+                    "{name}: {what}, the sun along {sun}: the shader says {seen}, the rule {expected}"
+                );
+            }
+        }
+        // And the cases differ as they should: the flank is lit by the sun along +x (a face looking along +z, turned half way to +x) and the face on top is not (its normal
+        // is not turned and is at right angles to the sun).
+        let seen_with = |planet: SunOccluder| {
+            let mut renderer = new_renderer(&context);
+            renderer.set_sun_occluders(&[planet]);
+            renderer.set_atmosphere(sunny([1.0, 0.0, 0.0], 255, 0));
+            lit_face(&mut renderer, Some(0)) / full
+        };
+        assert!(seen_with(flank) > 0.5, "{name}: {}", seen_with(flank));
+        assert_eq!(seen_with(on_top), 0.0, "{name}");
+        assert_eq!(
+            seen_with(high_over),
+            0.0,
+            "{name}: a face high over a planet is not turned"
+        );
+    }
+}
+
+/// The sky's light and the twilight, high enough over the ground of a planet that the twilight is narrower than at it: the face is 200 voxels over a ball of 1,000, with the sun
+/// below its horizon (so only the sky lights it, and by the 0.4 of a face the sun's side does not reach).
+#[test]
+fn the_sky_goes_with_the_sun_past_a_planet_and_the_twilight_is_narrower_the_higher_the_place() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let full = fully_lit_face(&context);
+        let mut renderer = new_renderer(&context);
+        let planet = planet_with_the_face_this_deep(1000.0, 1200.0);
+        renderer.set_sun_occluders(&[planet]);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+        let middle = Vec3::from_array(
+            WorldPosition::new(ORIGIN_BRICK, [16.5, 16.5, 17.0]).relative_to(camera.position),
+        );
+        let (balls, ground) = renderer::balls_and_ground(&[planet], camera.position);
+        let mut partly = 0;
+        for step in 0..=30 {
+            let height = -0.45 - step as f32 * 0.01;
+            let sun = Vec3::new(libm::cosf(height), 0.0, libm::sinf(height));
+            renderer.set_atmosphere(sunny(sun.to_array(), 0, 255));
+            let seen = lit_face(&mut renderer, Some(0)) / full;
+            let visible = renderer::sun_visibility(middle, sun, &balls, ground);
+            let expected = f64::from(0.4 * visible);
+            assert!(
+                (seen - expected).abs() < 0.02,
+                "{name}: the sun at {height} radians: the shader says {seen}, the rule {expected}"
+            );
+            partly += usize::from(seen > 0.02 && seen < 0.38);
+        }
+        assert!(partly >= 3, "{name}: the sky fades over {partly} steps");
+        // With nothing in the way the sky lights the face at the same sun.
+        renderer.set_sun_occluders(&[]);
+        let open = lit_face(&mut renderer, Some(0)) / full;
+        assert!((0.39..0.41).contains(&open), "{name}: {open}");
+    }
+}
+
+#[test]
+fn a_face_inside_a_ball_is_lit_as_the_terminator_of_the_ball_says_in_its_direction() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let full = fully_lit_face(&context);
+        let mut renderer = new_renderer(&context);
+        // The face is 300 voxels inside a ball of 1,000: a face of a far node of a planet is under the ground, inside the core, like this.
+        let planet = planet_with_the_face_this_deep(1000.0, 700.0);
+        renderer.set_sun_occluders(&[planet]);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+        let middle = Vec3::from_array(
+            WorldPosition::new(ORIGIN_BRICK, [16.5, 16.5, 17.0]).relative_to(camera.position),
+        );
+        let (balls, ground) = renderer::balls_and_ground(&[planet], camera.position);
+        let mut lit = 0;
+        let mut dark = 0;
+        for step in 0..=24 {
+            let height = 0.3 - step as f32 * 0.025;
+            let sun = Vec3::new(libm::cosf(height), 0.0, libm::sinf(height));
+            renderer.set_atmosphere(sunny(sun.to_array(), 255, 0));
+            let seen = lit_face(&mut renderer, Some(0)) / full;
+            let share = renderer::sun_visibility(middle, sun, &balls, ground);
+            let expected = f64::from(share * sun.z.max(0.0));
+            assert!(
+                (seen - expected).abs() < 0.03,
+                "{name}: the sun at {height} radians: the shader says {seen}, the rule {expected}"
+            );
+            lit += usize::from(seen > 0.2);
+            dark += usize::from(seen == 0.0);
+        }
+        // (Above the horizon of the face the planet's day is on, and well below it the night: not all black as a place inside a ball once was.)
+        assert!(lit >= 3 && dark >= 5, "{name}: {lit} lit, {dark} dark");
+    }
+}
+
+#[test]
+fn flat_ground_hides_a_sun_below_the_horizon_and_a_sun_above_it_is_whole() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let full = fully_lit_face(&context);
+        let mut renderer = new_renderer(&context);
+        renderer.set_sun_occluders(&[SunOccluder::FlatGround]);
+        // A face that looks along +z, with the level's up along +y: the sun 30 degrees above the horizon in front of it is whole (cosine 0.866 to the face), and 30 degrees
+        // below the horizon, still in front of the face, it is hidden by the ground.
+        let (sine, cosine) = (0.5f32, 3.0f32.sqrt() / 2.0);
+        renderer.set_atmosphere(sunny([0.0, sine, cosine], 255, 0));
+        let above = lit_face(&mut renderer, Some(0)) / full;
+        assert!((0.85..0.88).contains(&above), "{name}: {above}");
+        renderer.set_atmosphere(sunny([0.0, -sine, cosine], 255, 0));
+        assert_eq!(
+            lit_face(&mut renderer, Some(0)),
+            0.0,
+            "{name}: below the horizon"
+        );
+        // Without the ground the same sun lights the face.
+        renderer.set_sun_occluders(&[]);
+        let without = lit_face(&mut renderer, Some(0)) / full;
+        assert!((0.85..0.88).contains(&without), "{name}: {without}");
+    }
+}
+
+#[test]
+fn a_ball_a_billion_light_years_away_is_no_shadow_and_no_number_that_is_not_one() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let full = fully_lit_face(&context);
+        let mut renderer = new_renderer(&context);
+        renderer.set_atmosphere(sunny([0.0, 0.0, 1.0], 255, 0));
+        // 10^35 voxels out: off the sun's line, and on it (a speck there: its disc is 10^-29 of a radian across).
+        let far = |brick: [i128; 3]| SunOccluder::Ball {
+            centre: WorldPosition::new(
+                BrickCoordinate::new(brick[0], brick[1], brick[2]),
+                [0.0; 3],
+            ),
+            radius: 1.0e6,
+        };
+        let a_lot: i128 = 3_000_000_000_000_000_000_000_000_000_000_000;
+        renderer.set_sun_occluders(&[far([a_lot, 0, 0])]);
+        let sideways = lit_face(&mut renderer, Some(0)) / full;
+        assert!((0.99..1.01).contains(&sideways), "{name}: {sideways}");
+        renderer.set_sun_occluders(&[far([0, 0, a_lot])]);
+        let in_line = lit_face(&mut renderer, Some(0)) / full;
+        assert!(
+            (0.99..1.01).contains(&in_line),
+            "{name}: a speck: {in_line}"
+        );
+    }
+}
+
+#[test]
+fn the_sides_of_faces_are_shaded_by_the_side_direction_when_there_is_one_and_the_sun_otherwise() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+        let seen = |atmosphere: Atmosphere| {
+            let mut renderer = new_renderer(&context);
+            renderer.set_atmosphere(atmosphere);
+            place_blocks(
+                &mut renderer,
+                ORIGIN_BRICK,
+                &[([16, 16, 16], 2, 0)],
+                Some(255),
+            );
+            render(&mut renderer, &camera)
+        };
+        let toward = [0.3, 0.2, 1.0];
+        let away = [0.3, 0.2, -1.0];
+        let by_the_sun = |direction| Atmosphere {
+            sun_direction: direction,
+            ..Atmosphere::default()
+        };
+        // With no side direction the sun's direction shades the sides of faces: a face is brighter toward the sun than away from it.
+        assert!(seen(by_the_sun(toward)) != seen(by_the_sun(away)), "{name}");
+        // With one, the sun can be anywhere and the sides are shaded as the side direction says: the same pictures as if it were the sun.
+        let with_side = |sun, side| Atmosphere {
+            sun_direction: sun,
+            side_direction: Some(side),
+            ..Atmosphere::default()
+        };
+        assert!(
+            seen(with_side(away, toward)) == seen(by_the_sun(toward)),
+            "{name}"
+        );
+        assert!(
+            seen(with_side(toward, away)) == seen(by_the_sun(away)),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_sun_with_no_light_leaves_every_picture_as_it_was_whatever_is_in_its_way() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
+        place_blocks(
+            &mut renderer,
+            ORIGIN_BRICK,
+            &[([16, 16, 16], 2, 0)],
+            Some(100),
+        );
+        let before = render(&mut renderer, &camera);
+        renderer.set_sun_occluders(&[planet_under_the_face(1000.0), SunOccluder::FlatGround]);
+        assert!(render(&mut renderer, &camera) == before, "{name}");
     }
 }

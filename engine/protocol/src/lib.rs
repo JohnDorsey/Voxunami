@@ -52,8 +52,8 @@ pub use types::{ClientId, EntityId, PlayerKey, Tick};
 
 /// Bumped whenever a message changes. A recording stores the version it was made with, and a program
 /// plays only recordings of its own version (nothing is kept to read older ones before a first release).
-/// (9: a brick coordinate is three wide integers, up to 128 bits each; 8, Phase 39c: a ship may have terrain, which `GridsSpawned` says; 7: a pose has four `f64`.)
-pub const PROTOCOL_VERSION: u32 = 9;
+/// (10: the welcome has the clock of the world; 9: a brick coordinate is three wide integers, up to 128 bits each; 8, Phase 39c: a ship may have terrain, which `GridsSpawned` says; 7: a pose has four `f64`.)
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// The most bytes of text a command may have; a longer one is a protocol violation.
 pub const MAXIMUM_COMMAND_LENGTH: usize = 1024;

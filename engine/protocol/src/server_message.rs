@@ -44,6 +44,9 @@ pub struct Welcome {
     pub ticks_per_second: u32,
     /// The last tick the server completed before this client joined.
     pub tick: Tick,
+    /// The time of the world at that tick: whole ticks since the world was made, which unlike the tick is saved with the world and goes on across a restart. The client
+    /// adds one for each tick it is told of, and has what everything that depends on the time of the world (the sun, a planet on its rail) is a function of.
+    pub world_clock: u64,
     /// A world file holding the world's shape without its contents (`WorldData::describe`): seed,
     /// registry tables, channels, and each level's name and generator setup. Loading it is how a
     /// client learns the numbering every brick and edit below uses, and which level each level
@@ -197,6 +200,7 @@ impl ServerMessage {
                 writer.write_u32(welcome.client.get());
                 writer.write_u32(welcome.ticks_per_second);
                 writer.write_u64(welcome.tick.get());
+                writer.write_u64(welcome.world_clock);
                 writer.write_bytes(&welcome.world_description);
                 writer.write_bytes(&welcome.package);
             }
@@ -342,6 +346,7 @@ impl ServerMessage {
                 client: ClientId::new(reader.read_u32()?),
                 ticks_per_second: reader.read_u32()?,
                 tick: Tick::new(reader.read_u64()?),
+                world_clock: reader.read_u64()?,
                 world_description: reader.read_bytes()?.to_vec(),
                 package: reader.read_bytes()?.to_vec(),
             }),
@@ -607,6 +612,7 @@ mod tests {
                 client: ClientId::new(3),
                 ticks_per_second: 20,
                 tick: Tick::new(12_345),
+                world_clock: 9_876_543_210,
                 world_description: vec![5; 40],
                 package: vec![6; 25],
             }),
@@ -764,6 +770,34 @@ mod tests {
                 "{message:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_clock_of_the_world_is_in_the_welcome_after_the_tick_and_before_the_description() {
+        let welcome = ServerMessage::Welcome(Welcome {
+            protocol_version: 0x0A0B_0C0D,
+            game: id("a:b"),
+            client: ClientId::new(1),
+            ticks_per_second: 20,
+            tick: Tick::new(0x0102),
+            world_clock: 0x1112_1314_1516_1718,
+            world_description: vec![0xDE],
+            package: vec![0xAD],
+        });
+        assert_eq!(
+            welcome.encode(),
+            [
+                1, // the kind
+                0x0D, 0x0C, 0x0B, 0x0A, // the version
+                3, b'a', b':', b'b', // the game
+                1, 0, 0, 0, // the client
+                20, 0, 0, 0, // ticks per second
+                2, 1, 0, 0, 0, 0, 0, 0, // the tick
+                0x18, 0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11, // the clock
+                1, 0xDE, // the description
+                1, 0xAD, // the package
+            ]
+        );
     }
 
     #[test]

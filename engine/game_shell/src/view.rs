@@ -31,6 +31,37 @@ pub fn atmosphere(view_radius_bricks: i128, ambient_light: u8) -> Atmosphere {
     }
 }
 
+/// Lights the next pictures: the sky and fog, the ambient light the player has set, and, if the game has a sun in the level the player is in, the sun, the sky's light and
+/// what is in the sun's way. Done in every frame: the sun moves with the world's clock and the colour of the sky with the camera.
+pub fn light_the_scene<C: Connection, G: GameDefinition>(
+    renderer: &mut VoxelRenderer,
+    session: &Session<C, G>,
+) {
+    let (lit, occluders) = lit_atmosphere(session);
+    renderer.set_sun_occluders(&occluders);
+    renderer.set_atmosphere(lit);
+}
+
+/// What [`light_the_scene`] gives the renderer: the atmosphere, and what can be in the sun's way.
+pub fn lit_atmosphere<C: Connection, G: GameDefinition>(
+    session: &Session<C, G>,
+) -> (Atmosphere, Vec<renderer::SunOccluder>) {
+    let mut lit = atmosphere(
+        session.fog_radius_bricks(),
+        session.settings().ambient_light,
+    );
+    let Some(sun) = session.sun_view() else {
+        return (lit, Vec::new());
+    };
+    lit.sky_color = sun.sky_color;
+    lit.sun_direction = sun.direction;
+    // (The lamps light a wall as they did at every time of the day: the sides of faces are shaded from one place.)
+    lit.side_direction = Some(Atmosphere::default().sun_direction);
+    lit.sun_light = sun.sun_light;
+    lit.sky_light = sun.sky_light;
+    (lit, sun.occluders)
+}
+
 /// Puts the screen over the next pictures: lays it out for a picture of `size` pixels (at the whole-number scale that suits its
 /// height), paints it as rectangles and gives them to the renderer. `focus` is the button that has the keyboard focus. Returns the
 /// layout, for finding what a click at a pixel is on.

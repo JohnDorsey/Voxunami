@@ -27,6 +27,8 @@ Usage: voxunami {command} [options]
   --size WIDTHxHEIGHT             window or image size (default 1280x720)
   --camera X,Y,Z                  start position in voxels (default {x},{y},{z})
   --yaw DEGREES --pitch DEGREES   start orientation (default {yaw}, {pitch})
+  --time TIME                     pin the sun at a time of day for you (noon, midnight, 18:30);
+                                  by default it follows the world's clock
   --screenshot FILE.png           render one image without a window and exit
   --benchmark                     time frames without a window and exit
   --no-vsync                      do not wait for the display refresh
@@ -89,6 +91,7 @@ Usage: voxunami replay FILE [options]
   --size WIDTHxHEIGHT             window or image size (default 1280x720)
   --screenshot FILE.png           render the view at --tick (default: the end) and exit
   --tick NUMBER                   the tick to render with --screenshot
+  --time TIME                     pin the sun at a time of day (noon, midnight, 18:30), not the recorded clock
   --no-vsync                      do not wait for the display refresh
   --exit-after SECONDS            close the window after this long
   --help                          show this text
@@ -107,6 +110,8 @@ pub struct ViewOptions {
     pub vsync: bool,
     pub exit_after_seconds: Option<f32>,
     pub screenshot: Option<PathBuf>,
+    /// The time of day to pin the sun at, in minutes from midnight (`--time`), instead of following the world's clock.
+    pub time: Option<u16>,
 }
 
 impl Default for ViewOptions {
@@ -119,6 +124,7 @@ impl Default for ViewOptions {
             vsync: true,
             exit_after_seconds: None,
             screenshot: None,
+            time: None,
         }
     }
 }
@@ -224,6 +230,14 @@ fn parse_view_flag(
         "--screenshot" => view.screenshot = Some(PathBuf::from(value(flag)?)),
         "--no-vsync" => view.vsync = false,
         "--exit-after" => view.exit_after_seconds = Some(parse_number(flag, &value(flag)?)?),
+        "--time" => {
+            let text = value(flag)?;
+            view.time = Some(
+                crate::client_commands::minutes_of_day(&text).ok_or_else(|| {
+                    format!("--time: {text:?} should be noon, midnight, or a time like 7 or 18:30")
+                })?,
+            );
+        }
         _ => return Ok(false),
     }
     Ok(true)
@@ -459,7 +473,7 @@ mod tests {
         let parsed = play(
             "--adapter integrated --view-radius 8 --seed 7 --size 640x360 --camera 1.5,2,-3 \
              --yaw 90 --pitch -45 --screenshot out.png --benchmark --no-vsync --exit-after 2.5 \
-             --world w.voxunami --record r.voxreplay --host 4000 --autosave 30 \n             --identity me.key --packs my_packs",
+             --world w.voxunami --record r.voxreplay --host 4000 --autosave 30 \n             --identity me.key --packs my_packs --time 18:30",
         );
         assert_eq!(
             parsed,
@@ -472,6 +486,7 @@ mod tests {
                     vsync: false,
                     exit_after_seconds: Some(2.5),
                     screenshot: Some(PathBuf::from("out.png")),
+                    time: Some(18 * 60 + 30),
                 },
                 seed: 7,
                 world_file: Some(PathBuf::from("w.voxunami")),
@@ -487,6 +502,31 @@ mod tests {
                 benchmark: true,
             }
         );
+    }
+
+    #[test]
+    fn the_time_of_day_is_noon_midnight_hours_or_hours_and_minutes_and_nothing_else() {
+        assert_eq!(play("").view.time, None);
+        assert_eq!(play("--time noon").view.time, Some(12 * 60));
+        assert_eq!(play("--time midnight").view.time, Some(0));
+        assert_eq!(play("--time 7").view.time, Some(7 * 60));
+        assert_eq!(play("--time 07:05").view.time, Some(7 * 60 + 5));
+        assert_eq!(play("--time 23:59").view.time, Some(23 * 60 + 59));
+        for bad in ["24", "12:60", "lots", "-1", "12:", "auto"] {
+            let error = parse_play::<ExampleGame>(arguments(&format!("--time {bad}"))).unwrap_err();
+            assert!(error.contains("--time"), "{bad}: {error}");
+        }
+        assert!(
+            parse_play::<ExampleGame>(arguments("--time"))
+                .unwrap_err()
+                .contains("needs a value")
+        );
+        // A recording can be watched at a time of day too.
+        let Parsed::Run(options) = parse_replay(arguments("r.voxreplay --time 18:00")).unwrap()
+        else {
+            panic!("expected options")
+        };
+        assert_eq!(options.view.time, Some(18 * 60));
     }
 
     #[test]

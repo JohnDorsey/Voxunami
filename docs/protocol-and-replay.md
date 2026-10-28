@@ -1,4 +1,4 @@
-# The message stream and replays (protocol version 8)
+# The message stream and replays (protocol version 10)
 
 Implemented by `engine/protocol` (messages), `engine/transport` (carrying frames), `engine/server`, `engine/client`
 and `engine/replay`; scenarios that run them together are in `engine/end_to_end_tests`.
@@ -48,7 +48,7 @@ since a recording is just the frames a client received.
    key is one player and one connection at a time; there are no accounts (`entities-spec.md` section 2.7). Joining takes two
    server ticks: the challenge is sent in the tick after the hello and the welcome in the tick after the proof.
 3. The server answers `Welcome`: protocol version, game id, the id it gave the client, ticks per second, the last tick
-   completed before the client joined, the *package* (how blocks look, which channels the view reads) and a *world description*: a world file (`WorldData::describe`) with seed,
+   completed before the client joined, the world's clock at that tick (protocol 10: the time of the world, which is saved with it and which the client counts a tick at a time, is what the sun is a function of), the *package* (how blocks look, which channels the view reads) and a *world description*: a world file (`WorldData::describe`) with seed,
    registry tables, channel layout and, for each level, its name and generator setup, but no assignments, bricks or
    plugin sections. Levels are numbered by their order in it. The client loads
    it like a save (placeholders for content it lacks) and keeps the translator for everything that follows.
@@ -80,7 +80,7 @@ Server to client:
 
 | Kind | Message | Body |
 |---|---|---|
-| 1 | `Welcome` | protocol version (`u32`), game (identifier), client id (`u32`), ticks per second (`u32`), tick (`u64`), world description (bytes), package (bytes) |
+| 1 | `Welcome` | protocol version (`u32`), game (identifier), client id (`u32`), ticks per second (`u32`), tick (`u64`), world clock (`u64`), world description (bytes), package (bytes) |
 | 2 | `InterestChanged` | level (varint), box, then count and per assignment: cube origin x, y, z (zigzag), cube size level (`u8`), generator file id plus one (varint, 0 = none) |
 | 3 | `BrickContents` | grid (varint: a level's number for its terrain, from 2^32 up for a ship), brick x, y, z (zigzag), the brick in its stored form (bytes; see the world file format) |
 | 4 | `VoxelEdits` | grid (varint), brick x, y, z, digest of the result (`u64`), count and per change: voxel index, channel number, value (varints) |

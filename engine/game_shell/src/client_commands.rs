@@ -14,6 +14,10 @@ pub struct ClientSettings {
     pub ambient_light: u8,
     /// What it is when the game starts, and what `.ambient default` returns to.
     pub default_ambient_light: u8,
+    /// The time of day the player has pinned the sun to, in minutes from midnight (`.time`), instead of the world's clock.
+    pub pinned_time: Option<u16>,
+    /// The time of day by the world's clock in the level the player is in, in minutes from midnight, if the game has a sun there. The session keeps it, for `.time` to say.
+    pub time_of_day: Option<u16>,
 }
 
 impl ClientSettings {
@@ -22,6 +26,8 @@ impl ClientSettings {
         Self {
             ambient_light,
             default_ambient_light: ambient_light,
+            pinned_time: None,
+            time_of_day: None,
         }
     }
 }
@@ -34,6 +40,30 @@ pub fn is_client_command(line: &str) -> bool {
 use plugin_host::{Argument, CommandSpec};
 
 use crate::client_plugin::ClientRegistrar;
+
+/// A time of day in minutes from midnight as `07:05`.
+fn clock_text(minutes: u16) -> String {
+    format!("{:02}:{:02}", minutes / 60, minutes % 60)
+}
+
+/// The minutes from midnight of what a player typed: `noon`, `midnight`, hours (`7`) or hours and minutes (`7:05`), from 0:00 to 23:59.
+pub(crate) fn minutes_of_day(text: &str) -> Option<u16> {
+    match text {
+        "noon" => return Some(12 * 60),
+        "midnight" => return Some(0),
+        _ => {}
+    }
+    let digits = |part: &str| {
+        (!part.is_empty() && part.len() <= 2 && part.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| part.parse::<u16>().ok())
+            .flatten()
+    };
+    let (hours, minutes) = match text.split_once(':') {
+        Some((hours, minutes)) => (digits(hours)?, digits(minutes)?),
+        None => (digits(text)?, 0),
+    };
+    (hours < 24 && minutes < 60).then_some(hours * 60 + minutes)
+}
 
 /// The shell's own client commands.
 pub(crate) fn register(registrar: &mut ClientRegistrar<'_>) {
@@ -79,6 +109,50 @@ pub(crate) fn register(registrar: &mut ClientRegistrar<'_>) {
                     }
                     Err(_) => "usage: .ambient [0-255|default]".to_owned(),
                 },
+            }
+        },
+    );
+    registrar.command(
+        CommandSpec::new(
+            "time",
+            "shows the time of day of the sun, which is the world's clock; .time 15:30 (or noon, or midnight) pins the sun at that time for you, and .time auto lets the clock move it again",
+        )
+        .with_prefix('.')
+        .argument(Argument::word("time").optional()),
+        |context, arguments| {
+            let settings = context.settings_mut();
+            if !arguments.present(0) {
+                return match (settings.pinned_time, settings.time_of_day) {
+                    (_, None) => "there is no sun in this level".to_owned(),
+                    (None, Some(now)) => {
+                        format!("it is {} by the world's clock", clock_text(now))
+                    }
+                    (Some(pinned), Some(now)) => format!(
+                        "the sun is pinned at {} (by the world's clock it is {})",
+                        clock_text(pinned),
+                        clock_text(now)
+                    ),
+                };
+            }
+            if arguments.word(0) == "auto" {
+                settings.pinned_time = None;
+                return match settings.time_of_day {
+                    Some(now) => format!(
+                        "the sun follows the clock of the world again; it is {}",
+                        clock_text(now)
+                    ),
+                    None => "the sun follows the clock of the world again".to_owned(),
+                };
+            }
+            match minutes_of_day(arguments.word(0)) {
+                Some(minutes) => {
+                    settings.pinned_time = Some(minutes);
+                    format!(
+                        "the sun stays at {}; .time auto goes back to the clock of the world",
+                        clock_text(minutes)
+                    )
+                }
+                None => "usage: .time [HOURS[:MINUTES]|noon|midnight|auto]".to_owned(),
             }
         },
     );
@@ -293,18 +367,18 @@ mod tests {
         assert!(run(".help", &mut settings).starts_with("client commands: .ambient"));
         assert_eq!(
             run(".dance", &mut settings),
-            "unknown client command .dance; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys"
+            "unknown client command .dance; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .time [TIME]"
         );
         assert_eq!(
             run(".", &mut settings),
-            "client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys"
+            "client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .time [TIME]"
         );
         assert!(
             run(".help ambient", &mut settings).starts_with(".ambient [LEVEL]: sets how bright")
         );
         assert_eq!(
             run(".help nothing", &mut settings),
-            "there is no client command .nothing; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys"
+            "there is no client command .nothing; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .time [TIME]"
         );
         // Spaces round the words do not matter.
         assert_eq!(

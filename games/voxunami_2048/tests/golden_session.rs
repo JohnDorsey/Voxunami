@@ -287,4 +287,6 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// Measured as the stage before did: the stream of the script recorded with the code of the commit before and with this, and the frames decoded and compared one by one: 303 frames in both, 302
 /// the same value for value, the welcome different (it says version 9, and carries the world description, whose sections are the new versions); and the bytes 58,943 to 59,080, 137
 /// more, for the same values written longer. The saved world is different (the same sections, written at the new versions).
-const PINNED: (u64, usize, u64) = (2_045_406_350_182_023_027, 59_080, 170_123_486_067_092_622);
+/// The world's clock in the welcome (2026-10-28; protocol 10): the welcome carries a `u64` more, the time of the world at its tick, and says version 10. Predicted before the run and then seen
+/// in all four pinned streams: 8 bytes more (59,080 to 59,088) and the saved world the same to the hash (nothing is saved that was not). The stream hash moved for those 8 bytes and the version.
+const PINNED: (u64, usize, u64) = (2_608_887_802_805_617_703, 59_088, 170_123_486_067_092_622);

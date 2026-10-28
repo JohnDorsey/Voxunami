@@ -412,6 +412,23 @@ pub fn tick_and_follow(scene: &mut Scene, player: &mut Player, count: usize) {
     }
 }
 
+/// The updates for the renderer that the player's view makes in the ticks that follow, until it is quiet.
+pub fn view_after(scene: &mut Scene, player: &mut Player) -> Vec<world_view::MeshUpdate> {
+    let mut updates = Vec::new();
+    for _ in 0..6 {
+        updates.extend(player.update_view());
+        let server = &mut scene.rig.server;
+        updates.extend(
+            player
+                .settle(|| {
+                    server.step();
+                })
+                .unwrap(),
+        );
+    }
+    updates
+}
+
 /// Runs `count` ticks, in each of which `act` is run in the server with the number of the tick (from 0).
 pub fn each_tick(
     scene: &mut Scene,

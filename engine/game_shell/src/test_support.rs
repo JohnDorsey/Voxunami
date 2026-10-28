@@ -189,6 +189,77 @@ impl GameDefinition for ExampleSpaceGame {
     }
 }
 
+/// A game with a sun: a day of 1,200 seconds that begins at 6 in the morning, over flat ground (every level of it).
+#[derive(Debug)]
+pub struct ExampleSunGame;
+
+impl ExampleSunGame {
+    pub fn the_sun() -> crate::sun::Sun {
+        crate::sun::Sun {
+            day_seconds: 1_200,
+            start_hour: 6.0,
+            noon: [0.0, 1.0, 0.0],
+            axis: [0.0, 0.0, 1.0],
+            light: 255,
+            sky_light: 100,
+            flat_ground: true,
+            sky: crate::sun::Sky {
+                color: [0.4, 0.6, 0.9],
+                thickness: 30_000.0,
+            },
+        }
+    }
+}
+
+impl GameDefinition for ExampleSunGame {
+    type Content = ExampleContent;
+
+    fn id() -> NamespacedId {
+        id("example:sun_game")
+    }
+
+    fn title() -> &'static str {
+        ExampleGame::title()
+    }
+
+    fn command() -> &'static str {
+        ExampleGame::command()
+    }
+
+    fn summary() -> &'static str {
+        ExampleGame::summary()
+    }
+
+    fn controls() -> &'static str {
+        ExampleGame::controls()
+    }
+
+    fn default_seed() -> u64 {
+        ExampleGame::default_seed()
+    }
+
+    fn default_camera() -> CameraStart {
+        ExampleGame::default_camera()
+    }
+
+    fn reach() -> f32 {
+        ExampleGame::reach()
+    }
+
+    fn new_content() -> ExampleContent {
+        ExampleGame::new_content()
+    }
+
+    fn plugins(content: &ExampleContent) -> Vec<Box<dyn ServerPlugin>> {
+        ExampleGame::plugins(content)
+    }
+
+    fn sun(level: &NamespacedId) -> Option<crate::sun::Sun> {
+        // (No sun in the level called "example:dark".)
+        (level.as_str() != "example:dark").then(Self::the_sun)
+    }
+}
+
 /// A game that says how far its terrain is drawn, and nothing about levels: so every level is drawn so (`GameDefinition::level_detail`).
 #[derive(Debug)]
 pub struct ExampleDetailGame;

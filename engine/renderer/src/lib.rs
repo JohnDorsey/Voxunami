@@ -13,6 +13,7 @@ mod camera;
 mod crosshair;
 mod graphics_context;
 mod overlay;
+mod sun;
 mod voxel_renderer;
 
 pub use camera::{Camera, Frustum};
@@ -20,6 +21,11 @@ pub use graphics_context::{
     AdapterPreference, GraphicsContext, GraphicsError, describe, new_instance,
 };
 pub use overlay::OverlayRect;
+pub use sun::{
+    MAXIMUM_SUN_BALLS, MOST_OF_A_BALL, SUN_DISC_SOFTNESS, SunBall, SunOccluder, Sunlight,
+    TURNED_NO_MORE_FROM, TURNED_UP_TO, TWILIGHT_SOFTNESS, balls_and_ground, daylight_at,
+    sun_visibility, sunlight,
+};
 pub use voxel_renderer::{
     AVATAR_COLOR_COUNT, Atmosphere, Avatar, EntityBox, MAXIMUM_GAME_MATERIALS, RenderStatistics,
     VoxelRenderer,

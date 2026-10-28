@@ -200,8 +200,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// the bytes of its zigzag value. Measured as the 2048 script was: the stream recorded with the code of the commit before and with this, and every message decoded and compared: 1,274 in both,
 /// 1,273 the same value for value, the welcome different (version 9, and the world description, whose sections are the new versions). The bytes 80,780 to 82,541, 1,761 more, are the same
 /// values written longer. The saved world is different (the same sections, at the new versions).
+/// The world's clock in the welcome (2026-10-28; protocol 10): the welcome carries a `u64` more, the time of the world at its tick, and says version 10. Predicted before the run and then seen
+/// in all four pinned streams: 8 bytes more (82,541 to 82,549) and the saved world the same to the hash (nothing is saved that was not). The stream hash moved for those 8 bytes and the version.
 const PINNED: (u64, usize, u64) = (
-    16_792_241_247_703_677_436,
-    82_541,
+    9_878_055_937_370_023_847,
+    82_549,
     12_252_857_276_061_378_912,
 );

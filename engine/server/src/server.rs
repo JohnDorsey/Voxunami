@@ -472,6 +472,8 @@ impl Server {
             client: id,
             ticks_per_second: self.config.ticks_per_second,
             tick: Tick::new(self.world.tick().get() - 1),
+            // (The clock went on at the start of this tick, which has not completed: it was one less at the last that did.)
+            world_clock: self.world.world_tick().saturating_sub(1),
             world_description: self.world_description.clone(),
             package: self.config.package.clone(),
         });

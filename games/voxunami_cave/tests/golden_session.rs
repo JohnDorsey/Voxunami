@@ -340,8 +340,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// Places (2026-10-27): `/tp` goes to places, and `/river` is gone (it was the first of them). Only the list of the commands in the reply to `/nonsense` is in the stream: `/river [WHERE], `
 /// is 16 bytes fewer and `/tp [WHERE] [NUMBERS...]` for `/tp X Y Z` 15 more, so 7,204,133 to 7,204,132 (worked out before it was run, and the run gave it). The `/tp` the script does
 /// are of the old form and answer as they did. The saved world is the same.
+/// The world's clock in the welcome (2026-10-28; protocol 10): the welcome carries a `u64` more, the time of the world at its tick, and says version 10. Predicted before the run and then seen
+/// in all four pinned streams: 8 bytes more (7,204,132 to 7,204,140) and the saved world the same to the hash (nothing is saved that was not). The stream hash moved for those 8 bytes and the version.
 const PINNED: (u64, usize, u64) = (
-    4_796_938_907_263_250_842,
-    7_204_132,
+    3_514_329_510_159_853_972,
+    7_204_140,
     16_456_388_781_098_525_124,
 );

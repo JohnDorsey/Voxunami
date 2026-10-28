@@ -158,6 +158,7 @@ mod tests {
             client: ClientId::new(1),
             ticks_per_second: 20,
             tick: Tick::ZERO,
+            world_clock: 0,
             world_description: Vec::new(),
             package: Vec::new(),
         });

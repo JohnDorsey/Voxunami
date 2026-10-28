@@ -4,29 +4,12 @@
 
 mod common;
 
-use common::{Player, Scene, say, tick_and_follow};
+use common::{Player, Scene, say, tick_and_follow, view_after};
 use game_shell::GameDefinition;
 use game_shell::view::{apply_updates, atmosphere, configure_renderer};
 use renderer::{GraphicsContext, VoxelRenderer};
 use voxunami_cave::Cave;
 use world_view::MeshUpdate;
-
-/// The updates for the renderer that the view makes in the ticks that follow, until it is quiet.
-fn view_after(scene: &mut Scene, player: &mut Player) -> Vec<MeshUpdate> {
-    let mut updates = Vec::new();
-    for _ in 0..6 {
-        updates.extend(player.update_view());
-        let server = &mut scene.rig.server;
-        updates.extend(
-            player
-                .settle(|| {
-                    server.step();
-                })
-                .unwrap(),
-        );
-    }
-    updates
-}
 
 /// The coarse nodes the renderer holds, as the updates say (an empty mesh takes a node down, as a removal does).
 #[derive(Default)]

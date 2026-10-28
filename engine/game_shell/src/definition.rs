@@ -196,6 +196,13 @@ pub trait GameDefinition: Sized + 'static {
         Self::coarse_detail()
     }
 
+    /// The sun of the level with this identifier, if it has one: where it is by the world's clock, how much it lights, and the colour of the sky (see
+    /// [`crate::sun::Sun`]). The default is no sun: the pictures are as the game's light makes them and the sky is the renderer's.
+    fn sun(level: &NamespacedId) -> Option<crate::sun::Sun> {
+        let _ = level;
+        None
+    }
+
     /// How far the terrain of a planet (a ship with terrain) is drawn, if beyond the bricks round the camera it is. The default is not at all. (The server corrects the
     /// nodes of a level where it was edited and the nodes of a planet it does not, so `bytes_per_second` means nothing here.)
     fn grid_detail() -> Option<CoarseDetail> {
