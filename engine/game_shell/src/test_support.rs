@@ -204,6 +204,7 @@ impl ExampleSunGame {
             sky_light: 100,
             sky_light_in_shadow: 64,
             sky_light_under_cover: 32,
+            night_light: 12,
             flat_ground: true,
             sky: crate::sun::Sky {
                 color: [0.4, 0.6, 0.9],

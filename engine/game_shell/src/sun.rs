@@ -9,7 +9,7 @@
 //! the game gives it, darker the less daylight there is at the camera and as it goes up out of the air of a planet (a sky that goes black in space).
 
 use libm::{cos, sin};
-use renderer::{SunOccluder, balls_and_ground, daylight_at};
+use renderer::{Heavens, SunOccluder, balls_and_ground, daylight_at, zenith};
 use voxel_space::{BrickCoordinate, WorldPosition};
 
 /// The sky of a level with a sun.
@@ -44,6 +44,9 @@ pub struct Sun {
     /// How much, 0 to 255, of the sky's light reaches a place with the terrain over it (`renderer::Atmosphere::sky_light_under_cover`): a cave under a hill, a place under a roof
     /// or an overhang. 0 is a cave that is black by day; 255 counts no cover of the sky at all.
     pub sky_light_under_cover: u8,
+    /// How bright, 0 to 255, the stars and the night sky light a place the sun does not reach where the sky is open over it (`renderer::Atmosphere::night_light`), in the air.
+    /// 0 is a black night.
+    pub night_light: u8,
     /// Whether the level's ground is flat and level, with `y` up, so that the sun is hidden whenever it is below the horizon (the sun cannot light a place from under the
     /// ground). A level with planets in it is not flat: the planets hide the sun.
     pub flat_ground: bool,
@@ -83,14 +86,26 @@ impl Sun {
     /// The unit vector towards the sun at this time of day: the direction of noon turned about the axis a twenty-fourth of a turn for each hour from noon. Worked out with
     /// `libm`, so the same on every machine.
     pub fn direction_at(&self, hours: f64) -> [f32; 3] {
-        let (noon, axis) = (unit(self.noon), unit(self.axis));
+        self.turned(unit(self.noon), hours).map(|part| part as f32)
+    }
+
+    /// A vector turned about the axis by the angle the sky has turned since noon at this time of day (Rodrigues' rotation, with `libm`).
+    fn turned(&self, vector: [f64; 3], hours: f64) -> [f64; 3] {
+        let axis = unit(self.axis);
         let angle = (hours - 12.0) / 24.0 * std::f64::consts::TAU;
         let (sine, cosine) = (sin(angle), cos(angle));
-        let sideways = cross(axis, noon);
-        let along = dot(axis, noon) * (1.0 - cosine);
+        let sideways = cross(axis, vector);
+        let along = dot(axis, vector) * (1.0 - cosine);
         std::array::from_fn(|part| {
-            (noon[part] * cosine + sideways[part] * sine + axis[part] * along) as f32
+            vector[part] * cosine + sideways[part] * sine + axis[part] * along
         })
+    }
+
+    /// The frame of the field of stars at this time of day: the rows are the axes of the field as directions in the world (`renderer::Heavens::star_frame`), which is the sky's
+    /// turn since noon undone, so that the sun is at the same place in the field all day (the direction of noon) and the stars go round it as the sun goes round the world.
+    pub fn star_frame_at(&self, hours: f64) -> [[f32; 3]; 3] {
+        let axes = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        axes.map(|axis| self.turned(axis, hours).map(|part| part as f32))
     }
 }
 
@@ -109,6 +124,10 @@ pub struct SunView {
     pub sky_light_in_shadow: u8,
     /// `renderer::Atmosphere::sky_light_under_cover`.
     pub sky_light_under_cover: u8,
+    /// `renderer::Atmosphere::night_light`, less in thin air.
+    pub night_light: u8,
+    /// What is in the sky: the stars, as bright as the dark of the sky lets them be, turning with the day, and the sun as a disc and a glow (`renderer::Heavens`).
+    pub heavens: Heavens,
     /// The colour of the sky and the fog, as sRGB.
     pub sky_color: [f32; 3],
     /// How much of the sun reaches the camera: 0 to 1.
@@ -139,6 +158,56 @@ fn air_at(camera: WorldPosition, occluders: &[SunOccluder], thickness: f32) -> f
     1.0 - smoothstep(thickness * 0.5, thickness, nearest as f32)
 }
 
+/// How much of a sunset the sky is having, 0 to 1, when the sun is `elevation` radians over the horizon (negative under it): none by the time the sun is 0.17 radians (10
+/// degrees) up, all of it as it touches the horizon, and gone again as it sinks (the daylight is gone by 0.105 under it).
+pub fn sunset_amount(elevation: f32) -> f32 {
+    smoothstep(SUNSET_FROM, 0.0, elevation) * smoothstep(-SUNSET_UNTIL, 0.0, elevation)
+}
+
+/// How high the sun is where a sunset begins, in radians, and how far under the horizon it ends.
+const SUNSET_FROM: f32 = 0.17;
+const SUNSET_UNTIL: f32 = 0.1;
+
+/// How far a sunset takes the colour of the sky to the colour below, as a share, at the most; and that colour, as a share of the brightest part of the sky's own (a sunset is as
+/// bright as the sky is, and orange whatever colour the sky is by day).
+const SUNSET_SKY_SHARE: f32 = 0.8;
+const SUNSET_SKY_TINT: [f32; 3] = [1.0, 0.5, 0.28];
+
+/// The colour of the sun's disc as linear light, at noon and in a sunset.
+const SUN_COLOR_AT_NOON: [f32; 3] = [1.0, 0.97, 0.88];
+const SUN_COLOR_AT_SUNSET: [f32; 3] = [1.0, 0.45, 0.15];
+
+/// How bright the sky is, as a share of its full daylight colour, above which the stars have gone from it and below which they are all there: they come out as it darkens.
+const STARS_ALL_BELOW: f32 = 0.03;
+const STARS_NONE_ABOVE: f32 = 0.4;
+
+/// How far under the horizon of the ground, in radians, the horizon of the nearest ball is, from where the camera is: the angle whose cosine is the ball's radius over the distance
+/// of the camera from its middle. 0 for a camera at the ball's surface, and no ball is 0.
+fn horizon_dip(balls: &[renderer::SunBall]) -> f32 {
+    let mut nearest: Option<(f64, f64)> = None;
+    for ball in balls {
+        let centre = ball.centre.to_array().map(f64::from);
+        let distance = dot(centre, centre).sqrt();
+        let radius = f64::from(ball.radius);
+        let over = (distance - radius) / radius;
+        if nearest.is_none_or(|(least, _)| over < least) {
+            nearest = Some((
+                over,
+                if distance > 0.0 {
+                    (radius / distance).min(1.0)
+                } else {
+                    1.0
+                },
+            ));
+        }
+    }
+    nearest.map_or(0.0, |(_, share)| libm::acos(share) as f32)
+}
+
+fn mix(first: [f32; 3], second: [f32; 3], share: f32) -> [f32; 3] {
+    std::array::from_fn(|part| first[part] + (second[part] - first[part]) * share)
+}
+
 /// The sun for a picture taken from `camera` at this time of day, with these planets (the balls that are ground all through in them) in its way.
 pub fn sun_view(
     sun: &Sun,
@@ -153,6 +222,30 @@ pub fn sun_view(
     }
     let daylight = daylight_at(camera, glam::Vec3::from_array(direction), &occluders);
     let air = air_at(camera, &occluders, sun.sky.thickness);
+    // How high the sun is over the horizon of the place the camera is in (a camera in empty space has no horizon, and no sunset). The horizon is the one the daylight has: for a
+    // planet it is that of the solid core, which is under the ground's own by a few degrees (the terminator is that of the core, `sun-spec.md`), so a sunset is of the sun's
+    // light going and not of the sun's disc touching the ground.
+    let (balls, flat_ground) = balls_and_ground(&occluders, camera);
+    let sunset = zenith(&balls, flat_ground).map_or(0.0, |up| {
+        let height = glam::Vec3::from_array(direction).dot(up).clamp(-1.0, 1.0);
+        let dip = if flat_ground {
+            0.0
+        } else {
+            horizon_dip(&balls)
+        };
+        // (The air is what a sunset is of: none in thin air.)
+        sunset_amount(libm::asinf(height) + dip) * air
+    });
+    let brightest = sun.sky.color.iter().copied().fold(0.0, f32::max);
+    let sky_color = mix(
+        sun.sky.color,
+        SUNSET_SKY_TINT.map(|part| part * brightest),
+        SUNSET_SKY_SHARE * sunset,
+    )
+    .map(|part| part * daylight * air);
+    // The stars come out as the sky darkens, and in space (where it is black) they are all there. The sun is a star among them, in the same place all day in the field.
+    let sky_brightness = daylight * air;
+    let star_light = 1.0 - smoothstep(STARS_ALL_BELOW, STARS_NONE_ABOVE, sky_brightness);
     SunView {
         hours,
         direction,
@@ -160,7 +253,15 @@ pub fn sun_view(
         sky_light: (f32::from(sun.sky_light) * air).round() as u8,
         sky_light_in_shadow: sun.sky_light_in_shadow,
         sky_light_under_cover: sun.sky_light_under_cover,
-        sky_color: sun.sky.color.map(|part| part * daylight * air),
+        night_light: (f32::from(sun.night_light) * air).round() as u8,
+        heavens: Heavens {
+            star_light,
+            star_frame: sun.star_frame_at(hours),
+            sun_color: mix(SUN_COLOR_AT_NOON, SUN_COLOR_AT_SUNSET, sunset)
+                .map(|part| part * daylight),
+            sun_glow: sky_brightness,
+        },
+        sky_color,
         daylight,
         occluders,
     }
@@ -193,6 +294,7 @@ mod tests {
             sky_light: 100,
             sky_light_in_shadow: 64,
             sky_light_under_cover: 32,
+            night_light: 40,
             flat_ground: false,
             sky: Sky {
                 color: [0.4, 0.6, 0.9],
@@ -427,5 +529,241 @@ mod tests {
         let position = position_of_voxels([33.5, -0.25, 64.0]);
         assert_eq!(position.brick(), BrickCoordinate::new(1, -1, 2));
         assert_eq!(position.offset(), [1.5, 31.75, 0.0]);
+    }
+
+    fn flat_sun() -> Sun {
+        Sun {
+            flat_ground: true,
+            ..sun()
+        }
+    }
+
+    #[test]
+    fn the_frame_of_the_stars_undoes_the_turn_of_the_sky_so_the_sun_is_at_noon_in_it_all_day() {
+        let sun = Sun {
+            noon: [0.0, 0.94, 0.342],
+            axis: [0.0, -0.342, 0.94],
+            ..sun()
+        };
+        let noon = unit(sun.noon);
+        let in_the_field = |frame: [[f32; 3]; 3], direction: [f32; 3]| {
+            frame.map(|row| row.iter().zip(direction).map(|(a, b)| a * b).sum::<f32>())
+        };
+        // At noon the field is the world.
+        assert_eq!(
+            sun.star_frame_at(12.0),
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        );
+        for step in 0..48 {
+            let hours = f64::from(step) * 0.5;
+            let frame = sun.star_frame_at(hours);
+            // The sun is where it is at noon, in the field, at every hour.
+            let sun_in_the_field = in_the_field(frame, sun.direction_at(hours));
+            for part in 0..3 {
+                assert!(
+                    (f64::from(sun_in_the_field[part]) - noon[part]).abs() < 1e-5,
+                    "{hours}: {sun_in_the_field:?}"
+                );
+            }
+            // The frame is a turn: its rows are unit, across each other, and right-handed.
+            for first in 0..3 {
+                for second in 0..3 {
+                    let product: f32 = (0..3)
+                        .map(|part| frame[first][part] * frame[second][part])
+                        .sum();
+                    let expected = if first == second { 1.0 } else { 0.0 };
+                    assert!((product - expected).abs() < 1e-5, "{hours}: {frame:?}");
+                }
+            }
+            let handed = cross(frame[0].map(f64::from), frame[1].map(f64::from));
+            for part in 0..3 {
+                assert!(
+                    (handed[part] - f64::from(frame[2][part])).abs() < 1e-5,
+                    "{hours}"
+                );
+            }
+        }
+        // And it goes round once in a day: the frame at hour 36 is that of hour 12.
+        let (same, day_later) = (sun.star_frame_at(12.0), sun.star_frame_at(36.0));
+        for row in 0..3 {
+            for part in 0..3 {
+                assert!((same[row][part] - day_later[row][part]).abs() < 1e-5);
+            }
+        }
+    }
+
+    #[test]
+    fn a_sunset_is_all_there_at_the_horizon_and_gone_by_ten_degrees_up_and_a_little_under_it() {
+        assert_eq!(sunset_amount(0.0), 1.0);
+        assert_eq!(sunset_amount(0.17), 0.0);
+        assert_eq!(sunset_amount(1.5), 0.0);
+        assert_eq!(sunset_amount(-0.1), 0.0);
+        assert_eq!(sunset_amount(-1.0), 0.0);
+        let mut last = 1.0;
+        for step in 0..=17 {
+            let amount = sunset_amount(step as f32 * 0.01);
+            assert!(amount <= last + 1e-6, "{step}");
+            last = amount;
+        }
+        let mut last = 0.0;
+        for step in 0..=10 {
+            let amount = sunset_amount(-0.1 + step as f32 * 0.01);
+            assert!(amount >= last - 1e-6, "{step}");
+            last = amount;
+        }
+    }
+
+    #[test]
+    fn at_a_sunset_the_sky_and_the_disc_are_warm_and_at_noon_they_are_not() {
+        let sun = flat_sun();
+        let noon = sun_view(&sun, 12.0, at_height(10), Vec::new());
+        assert_eq!(noon.sky_color, [0.4, 0.6, 0.9]);
+        assert_eq!(noon.heavens.sun_color, [1.0, 0.97, 0.88]);
+        // Just before the sun sets: 17.9 hours is 5.9 hours past noon, 88 degrees round; the sun is 2 degrees over the horizon.
+        let dusk = sun_view(&sun, 17.9, at_height(10), Vec::new());
+        let [red, green, blue] = dusk.sky_color;
+        assert!(
+            red > green * 1.5 && red > blue * 1.7,
+            "a red sky at sunset: {:?}",
+            dusk.sky_color
+        );
+        let [red, green, blue] = dusk.heavens.sun_color;
+        assert!(
+            red > green * 1.5 && green > blue * 1.5,
+            "an orange disc at sunset: {:?}",
+            dusk.heavens.sun_color
+        );
+        // The sun is not in the sky once it is down.
+        let night = sun_view(&sun, 0.0, at_height(10), Vec::new());
+        assert_eq!(night.heavens.sun_color, [0.0; 3]);
+        assert_eq!(night.heavens.sun_glow, 0.0);
+    }
+
+    #[test]
+    fn the_stars_come_out_as_the_sky_darkens_and_are_all_there_in_space_even_by_day() {
+        let sun = flat_sun();
+        let stars = |hours: f64, height: i128| {
+            sun_view(&sun, hours, at_height(height), Vec::new())
+                .heavens
+                .star_light
+        };
+        assert_eq!(stars(12.0, 10), 0.0, "no stars at noon");
+        assert_eq!(stars(0.0, 10), 1.0, "all of them at midnight");
+        let mut last = 0.0;
+        let mut between = 0;
+        for step in 0..=60 {
+            let amount = stars(17.0 + f64::from(step) * 0.05, 10);
+            assert!(amount >= last - 1e-6, "{step}: {amount} after {last}");
+            between += usize::from(amount > 0.0 && amount < 1.0);
+            last = amount;
+        }
+        assert_eq!(last, 1.0);
+        assert!(
+            between >= 3,
+            "they come out over some time: {between} steps"
+        );
+        // Up out of the air of a planet: the sky is black at noon, and the stars are out (with the sun a disc in them, and no glow round it where there is no air).
+        let planet = planet_below(100_000, 99_900.0);
+        let view = self::sun_view(&self::sun(), 12.0, at_height(100_000), vec![planet]);
+        assert_eq!(view.sky_color, [0.0; 3]);
+        assert_eq!(view.heavens.star_light, 1.0);
+        assert_eq!(view.heavens.sun_glow, 0.0);
+        assert!(
+            view.heavens.sun_color.iter().all(|part| *part > 0.8),
+            "{:?}",
+            view.heavens.sun_color
+        );
+    }
+
+    #[test]
+    fn the_night_light_is_the_games_in_the_air_and_none_in_space() {
+        let planet = planet_below(100_000, 99_900.0);
+        let at = |height: i128| sun_view(&sun(), 0.0, at_height(height), vec![planet]).night_light;
+        assert_eq!(at(100), 40);
+        assert_eq!(at(40_000), 0);
+        let middle = at(22_000);
+        assert!(0 < middle && middle < 40, "{middle}");
+        // The same game with no night light has none at all.
+        let none = Sun {
+            night_light: 0,
+            ..sun()
+        };
+        assert_eq!(
+            sun_view(&none, 0.0, at_height(100), vec![planet]).night_light,
+            0
+        );
+    }
+
+    #[test]
+    fn a_camera_with_no_planet_and_no_flat_ground_has_no_up_and_so_no_sunset() {
+        // The sun is on the horizon of nothing: no sunset is asked of a horizon that is not there.
+        let view = sun_view(&sun(), 12.0, at_height(10), Vec::new());
+        assert_eq!(view.sky_color, [0.4, 0.6, 0.9]);
+        let low = Sun {
+            noon: [1.0, 0.0, 0.0],
+            axis: [0.0, 0.0, 1.0],
+            ..sun()
+        };
+        let view = sun_view(&low, 12.0, at_height(10), Vec::new());
+        assert_eq!(view.sky_color, [0.4, 0.6, 0.9], "no up, no sunset");
+        // With flat ground the same sun is on the horizon, and the sky is warm.
+        let flat = Sun {
+            flat_ground: true,
+            ..low
+        };
+        let view = sun_view(&flat, 12.0, at_height(10), Vec::new());
+        assert!(
+            view.sky_color[0] > view.sky_color[2],
+            "{:?}",
+            view.sky_color
+        );
+    }
+
+    #[test]
+    fn on_a_planet_the_sunset_is_when_the_light_goes_which_is_at_the_horizon_of_the_core_and_under_the_ground_s()
+     {
+        // The ground is 100 voxels over a core of 99,900: the core's horizon is 0.045 radians (2.6 degrees) under the ground's. At 18.11 hours the sun is 0.07 radians under
+        // the ground's horizon: on flat ground the sunset is nearly over, and on the planet the light is going, which is the sunset.
+        let flat = sun_view(&flat_sun(), 18.11, at_height(10), Vec::new());
+        let round = sun_view(
+            &sun(),
+            18.11,
+            at_height(10),
+            vec![planet_below(100_000, 99_900.0)],
+        );
+        let warmth = |view: &SunView| view.sky_color[0] / view.sky_color[2];
+        assert!(
+            warmth(&round) > warmth(&flat) * 1.25,
+            "{:?} on a planet, {:?} on the flat",
+            round.sky_color,
+            flat.sky_color
+        );
+        // And a camera far over the planet sees no sunset at all (no air).
+        let high = sun_view(
+            &sun(),
+            18.11,
+            at_height(60_000),
+            vec![planet_below(160_000, 99_900.0)],
+        );
+        assert_eq!(high.sky_color, [0.0; 3]);
+    }
+
+    #[test]
+    fn a_sunset_is_of_the_air_so_in_thin_air_the_sun_is_white_to_the_last() {
+        // A camera 60,000 voxels over a planet's ground (160,000 from the middle of a core of 99,900) is out of its air. At 21.42 hours the sun is at the limb of the planet from there, which is the horizon that counts, so a
+        // sunset would be all there (and the disc orange) if the air did not matter; it is the white of noon, as dim as the daylight there is.
+        let planet = planet_below(100_000, 99_900.0);
+        let view = sun_view(&sun(), 21.42, at_height(60_000), vec![planet]);
+        assert!(
+            view.daylight > 0.1,
+            "the sun is at the planet's limb: {}",
+            view.daylight
+        );
+        let [red, green, blue] = view.heavens.sun_color;
+        assert!(
+            (blue / red - 0.88).abs() < 0.01 && (green / red - 0.97).abs() < 0.01,
+            "white, not orange: {:?}",
+            view.heavens.sun_color
+        );
     }
 }

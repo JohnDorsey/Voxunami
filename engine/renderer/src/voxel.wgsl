@@ -39,6 +39,14 @@ struct Frame {
     cascades: array<Cascade, 11>,
     // The cascades of the sky: the terrain seen from straight above, finest first, in the layers of the same texture that follow the sun's.
     sky_cascades: array<Cascade, 4>,
+    // From a point of the near plane in clip space to the direction it looks along, relative to the camera: the sky is drawn from it.
+    sky_rays: mat4x4<f32>,
+    // The rows of the frame of the field of stars: a direction of the world, in the field.
+    star_frame: array<vec4<f32>, 3>,
+    // The sun's disc: its linear colour (xyz; black is none) and its angular radius in radians (w).
+    sun_disc: vec4<f32>,
+    // x: how brightly the stars shine (0 to 1), y: how bright the glow round the sun is (0 to 1), z: how many radians a pixel is across, w: the night light (0 to 1).
+    heavens: vec4<f32>,
     // Linear RGB of each avatar colour.
     avatars: array<vec4<f32>, 16>,
 }
@@ -395,35 +403,139 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let side = in.lamp_and_side.y;
     var shaded = side * lamp;
     var sun = 0.0;
-    if (frame.sun_light.x > 0.0 || frame.sun_light.y > 0.0) {
+    if (frame.sun_light.x > 0.0 || frame.sun_light.y > 0.0 || frame.heavens.w > 0.0) {
         // The sky lights every face the sun can reach, as much as its side allows, like another lamp; the sun lights the faces that look at it, by the cosine of the
         // angle; and the sun's light and what there was combine like a screen blend too.
         let light = sunlight(in.relative, in.normal);
         var sun_visible = light.visible;
         var sky_visible = light.visible;
+        // The share of the sky's light that reaches the place past what is over it (all of it where that is not counted).
+        var uncovered = 1.0;
+        // (The distance of this pixel, not the one the vertices interpolate: that is wrong across the big quads of coarse nodes, where it chooses a cascade too coarse.)
+        let largest = max(abs(in.relative.x), max(abs(in.relative.y), abs(in.relative.z)));
+        let distance = largest * length(in.relative / max(largest, 1.0e-30));
         if (frame.shadow.x > 0.5) {
             // The terrain's shadow: on the sun's light as it is; on the sky's light only in part (a place in a shadow has the sky's light still, and the more the less of the sky
             // is hidden, which this does not know), and a face turned from the sun is in the shade of its own body, which fades in as the sun crosses its plane.
             let cosine = dot(light.normal, frame.sun_direction.xyz);
-            // (The distance of this pixel, not the one the vertices interpolate: that is wrong across the big quads of coarse nodes, where it chooses a cascade too coarse.)
-            let largest = max(abs(in.relative.x), max(abs(in.relative.y), abs(in.relative.z)));
-            let distance = largest * length(in.relative / max(largest, 1.0e-30));
             var terrain = 0.0;
             if (cosine > 0.0) {
                 terrain = terrain_light(in.relative, distance);
             }
             sun_visible = sun_visible * terrain;
             sky_visible = sky_visible * mix(frame.shadow.y, 1.0, terrain * smoothstep(0.0, FACING_FULL_FROM, cosine));
-            if (frame.shadow.w > 0.5) {
-                // The terrain over the place hides the sky from it, whatever the sun does: a cave under a hill is dark by day.
-                sky_visible = sky_visible * mix(frame.shadow.z, 1.0, sky_openness(in.relative, in.normal, distance));
-            }
         }
-        let sky = frame.sun_light.y * sky_visible;
+        if (frame.shadow.w > 0.5) {
+            // The terrain over the place hides the sky from it, whatever the sun does: a cave under a hill is dark by day (and at night, when the sun's shadows are not drawn).
+            uncovered = mix(frame.shadow.z, 1.0, sky_openness(in.relative, in.normal, distance));
+            sky_visible = sky_visible * uncovered;
+        }
+        // At night the light of the stars lights what the sun does not reach, where the sky is open, as the sky's light does by day.
+        let sky = frame.sun_light.y * sky_visible + frame.heavens.w * (1.0 - light.visible) * uncovered;
         shaded = side * (lamp + sky * (1.0 - lamp));
         sun = frame.sun_light.x * max(dot(light.normal, frame.sun_direction.xyz), 0.0) * sun_visible;
     }
     let color = in.albedo * (shaded + sun * (1.0 - shaded));
     let fog = smoothstep(frame.fog_range.x, frame.fog_range.y, in.distance);
     return vec4<f32>(mix(color, frame.fog_color.rgb, fog), 1.0);
+}
+
+// The sky: one triangle that covers the picture, drawn before the terrain, from the direction each pixel looks in.
+struct SkyVertex {
+    @builtin(position) position: vec4<f32>,
+    // Where the pixel is on the picture, -1 to 1.
+    @location(0) clip: vec2<f32>,
+}
+
+@vertex
+fn sky_vertex(@builtin(vertex_index) vertex_index: u32) -> SkyVertex {
+    let corner = vec2<f32>(f32(vertex_index == 1u) * 4.0 - 1.0, f32(vertex_index == 2u) * 4.0 - 1.0);
+    return SkyVertex(vec4<f32>(corner, 0.0, 1.0), corner);
+}
+
+// A hash of 32 bits (`lowbias32`), the same as `star_hash` in `sky.rs`.
+fn star_hash(input: u32) -> u32 {
+    var value = input;
+    value = value ^ (value >> 16u);
+    value = value * 0x7feb352du;
+    value = value ^ (value >> 15u);
+    value = value * 0x846ca68bu;
+    return value ^ (value >> 16u);
+}
+
+// The cells of the field of stars along an edge of a face of the cube it is laid on, and how wide a cell is in the cube's own units (-1 to 1 across a face: a quarter turn).
+const STAR_CELLS_ACROSS: f32 = 128.0;
+const STAR_CHANCE: u32 = 14u;
+const STAR_CELL_ANGLE: f32 = 0.012271847;
+const QUARTER: f32 = 0.7853982;
+
+// The light of the stars in a direction of the field (a unit vector), for pixels `pixel_angle` radians across: the cell it is in has a star or not, and the dot is drawn round
+// where the star is in the cell. The same rule as `star_cell_of` and `star_in_cell` in `sky.rs`.
+fn star_colour(direction: vec3<f32>, pixel_angle: f32) -> vec3<f32> {
+    let magnitude = abs(direction);
+    var axis = 2u;
+    if (magnitude.x >= magnitude.y && magnitude.x >= magnitude.z) {
+        axis = 0u;
+    } else if (magnitude.y >= magnitude.z) {
+        axis = 1u;
+    }
+    // The two axes the cells are laid along are the ones after the face's, round; the face's own is the larger of the three parts.
+    var major = magnitude.z;
+    var first = direction.x;
+    var second = direction.y;
+    var positive = direction.z > 0.0;
+    if (axis == 0u) {
+        major = magnitude.x;
+        first = direction.y;
+        second = direction.z;
+        positive = direction.x > 0.0;
+    } else if (axis == 1u) {
+        major = magnitude.y;
+        first = direction.z;
+        second = direction.x;
+        positive = direction.y > 0.0;
+    }
+    let face = 2u * axis + select(0u, 1u, positive);
+    // The warp that makes the cells equal in angle.
+    let places = clamp(vec2<f32>(atan(first / major), atan(second / major)) / QUARTER * 0.5 + 0.5, vec2<f32>(0.0), vec2<f32>(0.999999)) * STAR_CELLS_ACROSS;
+    let cell = vec2<u32>(places);
+    let within = places - vec2<f32>(cell);
+    let seed = star_hash(star_hash(cell.x + u32(STAR_CELLS_ACROSS) * cell.y) ^ (face * 0x9e3779b9u));
+    if ((seed & 0xFFu) >= STAR_CHANCE) {
+        return vec3<f32>(0.0);
+    }
+    let other = star_hash(seed);
+    let byte_of = vec4<f32>(f32((seed >> 8u) & 0xFFu), f32((seed >> 16u) & 0xFFu), f32((seed >> 24u) & 0xFFu), f32(other & 0xFFu)) / 255.0;
+    let brightness = 0.2 + 0.8 * byte_of.x * byte_of.x * byte_of.x;
+    let centre = vec2<f32>(0.2 + 0.6 * byte_of.y, 0.2 + 0.6 * byte_of.z);
+    let tint = byte_of.w;
+    let colour = vec3<f32>(0.7 + 0.3 * tint, 0.8 + 0.05 * tint, 1.0 - 0.35 * tint);
+    // The dot: a pixel or so across, a little more for the bright ones, soft at the edge. (A pixel in cells.)
+    let pixel_in_cells = pixel_angle / STAR_CELL_ANGLE;
+    let radius = pixel_in_cells * (0.7 + 0.9 * brightness);
+    let nearness = 1.0 - smoothstep(0.0, radius, distance(within, centre));
+    return colour * brightness * nearness * nearness;
+}
+
+@fragment
+fn sky_fragment(in: SkyVertex) -> @location(0) vec4<f32> {
+    let near = frame.sky_rays * vec4<f32>(in.clip, 1.0, 1.0);
+    let ray = normalize(near.xyz / near.w);
+    var colour = frame.fog_color.rgb;
+    let pixel_angle = frame.heavens.z;
+    let sun = frame.sun_direction.xyz;
+    // The angle to the sun: from the cross product, which is exact for small angles where an arccosine is not.
+    let angle = atan2(length(cross(ray, sun)), dot(ray, sun));
+    let glow = frame.sun_disc.rgb * frame.heavens.y * 0.5 / (1.0 + (angle / 0.15) * (angle / 0.15));
+    colour = colour + glow;
+    if (frame.heavens.x > 0.0) {
+        let field = vec3<f32>(dot(frame.star_frame[0].xyz, ray), dot(frame.star_frame[1].xyz, ray), dot(frame.star_frame[2].xyz, ray));
+        colour = colour + star_colour(field, pixel_angle) * frame.heavens.x;
+    }
+    let radius = frame.sun_disc.w;
+    // (A sun of no colour is no sun: the disc is not drawn black.)
+    let has_sun = step(0.0, max(frame.sun_disc.r, max(frame.sun_disc.g, frame.sun_disc.b)) - 1.0e-6);
+    let disc = has_sun * (1.0 - smoothstep(radius - pixel_angle, radius + pixel_angle, angle));
+    colour = mix(colour, frame.sun_disc.rgb, disc);
+    return vec4<f32>(colour, 1.0);
 }

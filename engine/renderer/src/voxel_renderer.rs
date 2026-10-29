@@ -23,6 +23,7 @@ use crate::shadow::{
     sky_half_widths,
 };
 use crate::shadow_maps::{ShadowPipelines, ShadowTarget, comparison_sampler, shadow_frame_layout};
+use crate::sky::{Heavens, SUN_DISC_RADIUS};
 use crate::sun::{
     MAXIMUM_SUN_BALLS, SUN_DISC_SOFTNESS, SunOccluder, TWILIGHT_SOFTNESS, balls_and_ground,
     length_and_direction, zenith,
@@ -243,6 +244,14 @@ pub struct Atmosphere {
     /// kept while the camera stays near the middle of each and the terrain does not change, whatever the sun does. 255, the default, is no cover counted at all, and
     /// pictures as they were; 0 is a cave that is black by day.
     pub sky_light_under_cover: u8,
+    /// How bright, from 0 to 255, the light of the stars and the night sky makes every face the sun does not reach, where the sky is open over it (a face under a roof, with the
+    /// cover of the sky counted by [`Atmosphere::sky_light_under_cover`] and the shadows on, gets the share of it that one says: a cave is as dark at night as by day). It is
+    /// the sky's light at night: it goes as the sun's goes (none by day, all of it once the sun is hidden from the place), and it lights faces the way the sky does. 0, the default,
+    /// is a black night.
+    pub night_light: u8,
+    /// What is in the sky besides its colour: the stars, and the sun as a disc with a glow (see [`Heavens`]). Drawn before the terrain, so the terrain hides it. The default is an
+    /// empty sky, and then nothing is drawn for it and pictures are as they were.
+    pub heavens: Heavens,
 }
 
 impl Default for Atmosphere {
@@ -259,6 +268,8 @@ impl Default for Atmosphere {
             shadows: false,
             sky_light_in_shadow: 255,
             sky_light_under_cover: 255,
+            night_light: 0,
+            heavens: Heavens::default(),
         }
     }
 }
@@ -303,6 +314,14 @@ struct FrameUniform {
     cascades: [CascadeUniform; MAXIMUM_CASCADES],
     /// The cascades of the sky: maps of the terrain seen from straight above.
     sky_cascades: [CascadeUniform; SKY_CASCADES],
+    /// From a point on the near plane in clip space to the direction it looks along, relative to the camera (the inverse of `view_projection`): the sky is drawn from it.
+    sky_rays: [[f32; 4]; 4],
+    /// The rows of the frame of the field of stars (a direction of the world, in the field).
+    star_frame: [[f32; 4]; 3],
+    /// The sun's disc: the linear colour (xyz) and the angular radius in radians (w).
+    sun_disc: [f32; 4],
+    /// x: how brightly the stars shine, y: how bright the glow round the sun is, z: how many radians a pixel is across, w: the night light (0 to 1).
+    heavens: [f32; 4],
     /// Linear RGB of each avatar colour.
     avatars: [[f32; 4]; AVATAR_COLOR_COUNT],
 }
@@ -658,6 +677,8 @@ pub struct VoxelRenderer {
     color_format: wgpu::TextureFormat,
     pipeline: wgpu::RenderPipeline,
     detailed_pipeline: wgpu::RenderPipeline,
+    /// Draws the sky (the stars and the sun) over the whole picture, before the terrain.
+    sky_pipeline: wgpu::RenderPipeline,
     frame_layout: wgpu::BindGroupLayout,
     /// The frame's uniform for the picture, and after it one copy for each cascade of the maps (the sun's, then the sky's), each at a multiple of `frame_stride`.
     frame_buffer: wgpu::Buffer,
@@ -859,6 +880,45 @@ impl VoxelRenderer {
             },
         );
 
+        let sky_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("sky pipeline layout"),
+            bind_group_layouts: &[Some(&frame_layout)],
+            immediate_size: 0,
+        });
+        let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("sky pipeline"),
+            layout: Some(&sky_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("sky_vertex"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("sky_fragment"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            // (Drawn after the terrain, where the depth is still the clear value: depth is reversed and the sky is at the far plane, 0, so the sky is at depth 0 and the terrain
+            // hides it everywhere it is. It writes no depth.)
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Equal),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment);
         let frame_stride = (size_of::<FrameUniform>() as u64).next_multiple_of(alignment);
         let frame_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -918,6 +978,7 @@ impl VoxelRenderer {
             color_format,
             pipeline,
             detailed_pipeline,
+            sky_pipeline,
             frame_layout,
             frame_buffer,
             frame_stride,
@@ -1504,17 +1565,20 @@ impl VoxelRenderer {
         seen: &[usize],
     ) -> Option<ShadowPlan> {
         let atmosphere = &self.atmosphere;
-        if !atmosphere.shadows
-            || (atmosphere.sun_light == 0 && atmosphere.sky_light == 0)
-            || seen.is_empty()
-        {
+        // (The night light is the sky's light too, and where the cover of the sky is counted it is counted for that.)
+        let lights =
+            atmosphere.sun_light != 0 || atmosphere.sky_light != 0 || atmosphere.night_light != 0;
+        if !atmosphere.shadows || !lights || seen.is_empty() {
             return None;
         }
         let sun = Vec3::from_array(atmosphere.sun_direction).normalize_or(Vec3::Y);
         let widths = half_widths(atmosphere.fog_end);
-        let cover_counted = atmosphere.sky_light > 0 && atmosphere.sky_light_under_cover < 255;
+        let cover_counted = (atmosphere.sky_light > 0 || atmosphere.night_light > 0)
+            && atmosphere.sky_light_under_cover < 255;
         let (balls, flat_ground) = balls_and_ground(&self.sun_occluders, camera.position);
-        if flat_ground && sun.y <= -(SUN_DISC_SOFTNESS + TWILIGHT_SOFTNESS) {
+        // A sun below the horizon of a flat ground casts nothing: only the night's sky has anything to be covered from.
+        let sun_hidden = flat_ground && sun.y <= -(SUN_DISC_SOFTNESS + TWILIGHT_SOFTNESS);
+        if sun_hidden && !(cover_counted && atmosphere.night_light > 0) {
             return None;
         }
         self.shadow_frame += 1;
@@ -1534,13 +1598,17 @@ impl VoxelRenderer {
             frame: self.shadow_frame,
         };
         let mut spent = 0usize;
-        let cascades = self.plan_maps(
-            MapKind::Sun,
-            &view,
-            &LightBasis::new(sun),
-            &widths,
-            &mut spent,
-        );
+        let cascades = if sun_hidden {
+            Vec::new()
+        } else {
+            self.plan_maps(
+                MapKind::Sun,
+                &view,
+                &LightBasis::new(sun),
+                &widths,
+                &mut spent,
+            )
+        };
         let sky = match zenith(&balls, flat_ground) {
             Some(up) if cover_counted => self.plan_maps(
                 MapKind::Sky,
@@ -1764,7 +1832,12 @@ impl VoxelRenderer {
         }
 
         self.write_placements(&slots.placements);
-        self.write_frame_uniform(view_projection, camera.position, shadows.as_ref());
+        self.write_frame_uniform(
+            view_projection,
+            camera.vertical_field_of_view / size.1 as f32,
+            camera.position,
+            shadows.as_ref(),
+        );
         self.crosshair.set_screen_size(&self.queue, size);
         self.overlay.set_screen_size(&self.queue, size);
 
@@ -1898,8 +1971,8 @@ impl VoxelRenderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
+            pass.set_pipeline(&self.pipeline);
             for &index in &visible {
                 let brick = self.mesh(drawables[index].mesh);
                 let Some(quads) = &brick.quads else {
@@ -1950,6 +2023,12 @@ impl VoxelRenderer {
                 pass.set_bind_group(1, &self.placements.bind_group, &[placement_offset(index)]);
                 pass.set_vertex_buffer(0, detailed.slice(..));
                 pass.draw(0..6, 0..mesh.detailed_count);
+            }
+            // The sky last, over the pixels nothing was drawn at (the depth is still the clear value, 0): what is drawn is a few of the pixels, where drawing it first was all of them.
+            if !self.atmosphere.heavens.is_empty() {
+                pass.set_bind_group(0, &self.frame_bind_group, &[]);
+                pass.set_pipeline(&self.sky_pipeline);
+                pass.draw(0..3, 0..1);
             }
             if self.crosshair_enabled {
                 self.crosshair.draw(&mut pass);
@@ -2163,6 +2242,7 @@ impl VoxelRenderer {
     fn write_frame_uniform(
         &self,
         view_projection: glam::Mat4,
+        pixel_angle: f32,
         camera: WorldPosition,
         shadows: Option<&ShadowPlan>,
     ) {
@@ -2225,6 +2305,22 @@ impl VoxelRenderer {
                     .filter(|planned| planned.used)
                     .map_or_else(Zeroable::zeroed, cascade_uniform)
             }),
+            sky_rays: view_projection.inverse().to_cols_array_2d(),
+            star_frame: self
+                .atmosphere
+                .heavens
+                .star_frame
+                .map(|[x, y, z]| [x, y, z, 0.0]),
+            sun_disc: {
+                let [red, green, blue] = self.atmosphere.heavens.sun_color;
+                [red, green, blue, SUN_DISC_RADIUS]
+            },
+            heavens: [
+                self.atmosphere.heavens.star_light,
+                self.atmosphere.heavens.sun_glow,
+                pixel_angle,
+                f32::from(self.atmosphere.night_light) / 255.0,
+            ],
             avatars: AVATAR_COLORS.map(|color| {
                 let [red, green, blue] = srgb_to_linear_color(color);
                 [red, green, blue, 1.0]
@@ -2540,6 +2636,15 @@ mod tests {
             format!(
                 "const FACING_FULL_FROM: f32 = {:?};",
                 crate::shadow::FACING_FULL_FROM
+            ),
+            format!(
+                "const STAR_CELLS_ACROSS: f32 = {:?};",
+                crate::sky::STAR_CELLS_ACROSS as f32
+            ),
+            format!("const STAR_CHANCE: u32 = {}u;", crate::sky::STAR_CHANCE),
+            format!(
+                "const STAR_CELL_ANGLE: f32 = {:.9};",
+                crate::sky::STAR_CELL_ANGLE
             ),
             format!("cascades: array<Cascade, {MAXIMUM_CASCADES}>,"),
             format!("sky_cascades: array<Cascade, {SKY_CASCADES}>,"),

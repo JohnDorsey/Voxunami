@@ -15,6 +15,7 @@ mod graphics_context;
 mod overlay;
 mod shadow;
 mod shadow_maps;
+mod sky;
 mod sun;
 mod voxel_renderer;
 
@@ -28,6 +29,10 @@ pub use shadow::{
     FIRST_HALF_WIDTH, HIGHEST_CASTER, LightBasis, MAP_LAYERS, MAXIMUM_CASCADES, SKY_CASCADES,
     SKY_INNER_TAP_RADIUS, SKY_TAP_RADIUS, SKY_TAPS, SKY_WALL_PUSH, SMALLEST_CASTER_TEXELS,
     cascade_for, facing, half_widths, reach_of, sky_half_widths, sky_place, texel_of,
+};
+pub use sky::{
+    Heavens, STAR_CELL_ANGLE, STAR_CELLS_ACROSS, STAR_CHANCE, SUN_DISC_RADIUS, Star, StarCell,
+    star_cell_of, star_hash, star_in_cell,
 };
 pub use sun::{
     MAXIMUM_SUN_BALLS, MOST_OF_A_BALL, SUN_DISC_SOFTNESS, SunBall, SunOccluder, Sunlight,

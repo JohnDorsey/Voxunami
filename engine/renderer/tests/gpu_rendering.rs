@@ -4124,3 +4124,612 @@ fn on_a_planet_seen_from_the_side_the_sky_is_over_the_camera_along_the_way_out_o
         );
     }
 }
+
+/// The eye of the sky tests, in voxels: in the brick at the origin, 8 voxels in front of the wall of the test that puts terrain in the way.
+const SKY_EYE: [f64; 3] = [16.0, 16.0, 40.0];
+
+/// A black sky with these heavens: nothing but the sky is drawn (there is no terrain, unless a test puts some there).
+fn heavens_atmosphere(heavens: renderer::Heavens) -> Atmosphere {
+    Atmosphere {
+        sky_color: [0.0; 3],
+        heavens,
+        ..Atmosphere::default()
+    }
+}
+
+/// The picture from the eye looking along `direction` through a narrow view (`camera_aimed_at`'s: 0.17 radians across), so that the middle of the picture is the direction.
+fn sky_picture(renderer: &mut VoxelRenderer, direction: Vec3) -> (Vec<u8>, Camera) {
+    let target = std::array::from_fn(|axis| SKY_EYE[axis] + f64::from(direction[axis]) * 100.0);
+    let camera = camera_aimed_at(SKY_EYE, target);
+    (render(renderer, &camera), camera)
+}
+
+/// The picture of a star, with the camera turned a half pixel one way or the other so that the star is on the middle of a pixel and not at the corner of four (where a dot of
+/// a pixel and a half across is a third as bright): the one of the four turns that has it brightest.
+fn star_picture(renderer: &mut VoxelRenderer, direction: Vec3) -> Vec<u8> {
+    let target = std::array::from_fn(|axis| SKY_EYE[axis] + f64::from(direction[axis]) * 100.0);
+    let aimed = camera_aimed_at(SKY_EYE, target);
+    let half_pixel = aimed.vertical_field_of_view / SIZE as f32 / 2.0;
+    let mut best: Option<(f64, Vec<u8>)> = None;
+    for (yaw, pitch) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+        let mut camera = aimed;
+        camera.yaw += yaw * half_pixel;
+        camera.pitch += pitch * half_pixel;
+        let picture = render(renderer, &camera);
+        let light = most_light_near_the_middle(&picture);
+        if best.as_ref().is_none_or(|(most, _)| light > *most) {
+            best = Some((light, picture));
+        }
+    }
+    best.expect("four pictures").1
+}
+
+/// The pixels within a few of the middle of the picture.
+fn near_the_middle(image: &[u8]) -> impl Iterator<Item = [u8; 4]> + '_ {
+    (SIZE / 2 - 3..SIZE / 2 + 3)
+        .flat_map(|y| (SIZE / 2 - 3..SIZE / 2 + 3).map(move |x| (x, y)))
+        .map(|(x, y)| pixel(image, x, y))
+}
+
+/// The most light of a pixel near the middle of the picture.
+fn most_light_near_the_middle(image: &[u8]) -> f64 {
+    near_the_middle(image)
+        .map(linear_brightness)
+        .fold(0.0, f64::max)
+}
+
+/// A direction that is `angle` radians from `direction`, turned about a direction across it.
+fn turned_from(direction: Vec3, angle: f32) -> Vec3 {
+    let across = direction.cross(Vec3::Y).normalize_or(Vec3::X);
+    (direction * libm::cosf(angle) + across * libm::sinf(angle)).normalize()
+}
+
+/// A star that is bright and has no other star of a third of its brightness or more within a tenth of a radian, so that a narrow picture of it has it alone.
+fn a_bright_star_alone() -> renderer::Star {
+    let stars: Vec<renderer::Star> = (0..6)
+        .flat_map(|face| {
+            (0..renderer::STAR_CELLS_ACROSS).flat_map(move |up| {
+                (0..renderer::STAR_CELLS_ACROSS).filter_map(move |across| {
+                    renderer::star_in_cell(renderer::StarCell { face, across, up })
+                })
+            })
+        })
+        .collect();
+    *stars
+        .iter()
+        .find(|star| {
+            star.brightness > 0.95
+                && stars.iter().all(|other| {
+                    other.direction == star.direction
+                        || other.brightness < star.brightness * 0.3
+                        || other.direction.dot(star.direction) < libm::cosf(0.1)
+                })
+        })
+        .expect("a bright star with nothing bright near it")
+}
+
+#[test]
+fn a_star_is_drawn_where_the_field_has_it_and_the_sky_is_black_round_it_and_with_no_star_light_there_is_none()
+ {
+    let star = a_bright_star_alone();
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        let bright = renderer::Heavens {
+            star_light: 1.0,
+            ..renderer::Heavens::default()
+        };
+        renderer.set_atmosphere(heavens_atmosphere(bright));
+        let picture = star_picture(&mut renderer, star.direction);
+        let at_the_star = most_light_near_the_middle(&picture);
+        assert!(
+            at_the_star > 0.5,
+            "{name}: the star is {at_the_star} of light at the middle"
+        );
+        // Everything else in the picture is a faint star or black: nothing half as bright as the star is anywhere but at it.
+        for y in 0..SIZE {
+            for x in 0..SIZE {
+                if x.abs_diff(SIZE / 2) > 4 || y.abs_diff(SIZE / 2) > 4 {
+                    assert!(
+                        linear_brightness(pixel(&picture, x, y)) * 2.0 < at_the_star,
+                        "{name}: ({x}, {y}) is {:?}",
+                        pixel(&picture, x, y)
+                    );
+                }
+            }
+        }
+        // A star at half the light is half as bright, in light and not in bytes.
+        renderer.set_atmosphere(heavens_atmosphere(renderer::Heavens {
+            star_light: 0.5,
+            ..bright
+        }));
+        let dim = star_picture(&mut renderer, star.direction);
+        let ratio = most_light_near_the_middle(&dim) / at_the_star;
+        assert!(
+            (0.4..0.6).contains(&ratio),
+            "{name}: half the light is {ratio}"
+        );
+        // No star light, no star: a black sky.
+        renderer.set_atmosphere(heavens_atmosphere(renderer::Heavens::default()));
+        let (empty, _) = sky_picture(&mut renderer, star.direction);
+        assert!(
+            empty.chunks(4).all(|texel| texel[..3] == [0, 0, 0]),
+            "{name}: a sky with no star light is not black"
+        );
+    }
+}
+
+#[test]
+fn the_stars_turn_with_the_frame_and_the_star_is_where_the_frame_puts_it() {
+    // The field turned a quarter about the y axis: the world's direction `d` is `R d` in the field (the rows of `frame` are the axes), so a star at `s` in the field is at
+    // `R^-1 s = R^T s` in the world.
+    let star = a_bright_star_alone();
+    let frame = [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]];
+    let s = star.direction;
+    let in_the_world = Vec3::new(
+        frame[0][0] * s.x + frame[1][0] * s.y + frame[2][0] * s.z,
+        frame[0][1] * s.x + frame[1][1] * s.y + frame[2][1] * s.z,
+        frame[0][2] * s.x + frame[1][2] * s.y + frame[2][2] * s.z,
+    );
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        renderer.set_atmosphere(heavens_atmosphere(renderer::Heavens {
+            star_light: 1.0,
+            star_frame: frame,
+            ..renderer::Heavens::default()
+        }));
+        let at_the_star = most_light_near_the_middle(&star_picture(&mut renderer, in_the_world));
+        assert!(at_the_star > 0.5, "{name}: no star where the frame puts it");
+        let elsewhere = most_light_near_the_middle(&star_picture(&mut renderer, star.direction));
+        assert!(
+            elsewhere * 2.0 < at_the_star,
+            "{name}: the star is where the field has it and not where the frame turned it ({elsewhere})"
+        );
+    }
+}
+
+#[test]
+fn the_sun_is_a_disc_of_its_radius_in_its_direction_and_black_sky_round_it_with_no_glow() {
+    let sun = Vec3::new(0.3, 0.5, -0.8).normalize();
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        renderer.set_atmosphere(Atmosphere {
+            sun_direction: sun.to_array(),
+            ..heavens_atmosphere(renderer::Heavens {
+                sun_color: [1.0, 1.0, 1.0],
+                ..renderer::Heavens::default()
+            })
+        });
+        let (picture, camera) = sky_picture(&mut renderer, sun);
+        let pixels_across = f64::from(SIZE) / f64::from(camera.vertical_field_of_view);
+        assert!(
+            pixel(&picture, SIZE / 2, SIZE / 2)[..3]
+                .iter()
+                .all(|&byte| byte > 245),
+            "{name}: the middle is {:?}",
+            pixel(&picture, SIZE / 2, SIZE / 2)
+        );
+        // Its area is that of a disc of the radius.
+        let radius_in_pixels = f64::from(renderer::SUN_DISC_RADIUS) * pixels_across;
+        let bright = pixels_where(&picture, |texel| brightness(texel) > 600);
+        let expected = std::f64::consts::PI * radius_in_pixels * radius_in_pixels;
+        assert!(
+            (bright as f64 / expected - 1.0).abs() < 0.2,
+            "{name}: {bright} pixels of the disc, {expected} expected for a radius of {radius_in_pixels} pixels"
+        );
+        // Black sky beyond: with no glow, nothing is lit outside the disc.
+        let (beside, _) = sky_picture(&mut renderer, turned_from(sun, 0.2));
+        assert!(
+            beside.chunks(4).all(|texel| texel[..3] == [0, 0, 0]),
+            "{name}: the sky 0.2 radians from the sun is not black"
+        );
+        // The sun goes where its direction does.
+        let (elsewhere, _) = sky_picture(&mut renderer, -sun);
+        assert!(
+            elsewhere.chunks(4).all(|texel| texel[..3] == [0, 0, 0]),
+            "{name}: a sun on the other side of the sky"
+        );
+    }
+}
+
+#[test]
+fn the_glow_round_the_sun_fades_with_the_angle_from_it_and_goes_with_the_glow_setting() {
+    let sun = Vec3::new(-0.2, 0.7, -0.6).normalize();
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        let mut glow_at = |glow: f32, angle: f32| {
+            renderer.set_atmosphere(Atmosphere {
+                sun_direction: sun.to_array(),
+                ..heavens_atmosphere(renderer::Heavens {
+                    sun_color: [1.0, 0.8, 0.5],
+                    sun_glow: glow,
+                    ..renderer::Heavens::default()
+                })
+            });
+            let (picture, _) = sky_picture(&mut renderer, turned_from(sun, angle));
+            linear_brightness(pixel(&picture, SIZE / 2, SIZE / 2))
+        };
+        let near = glow_at(1.0, 0.04);
+        let middle = glow_at(1.0, 0.1);
+        let far = glow_at(1.0, 0.3);
+        assert!(
+            near > middle && middle > far && far > 0.0,
+            "{name}: the glow at 0.04, 0.1 and 0.3 radians is {near}, {middle}, {far}"
+        );
+        assert_eq!(glow_at(0.0, 0.04), 0.0, "{name}: no glow is none");
+        let half = glow_at(0.5, 0.1);
+        assert!(
+            (half / middle - 0.5).abs() < 0.05,
+            "{name}: half the glow is {} of it",
+            half / middle
+        );
+    }
+}
+
+#[test]
+fn terrain_in_front_of_a_star_or_the_sun_hides_it_and_the_terrain_is_as_it_was() {
+    let sun = Vec3::new(0.0, 0.0, -1.0);
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        let heavens = renderer::Heavens {
+            star_light: 1.0,
+            sun_color: [1.0, 1.0, 1.0],
+            sun_glow: 1.0,
+            ..renderer::Heavens::default()
+        };
+        let atmosphere = Atmosphere {
+            sun_direction: sun.to_array(),
+            ..heavens_atmosphere(heavens)
+        };
+        // A wall of red voxels at z = 30, across the whole view from the eye at z = 40.
+        let wall: Vec<([u8; 3], u32)> = (0..32u8)
+            .flat_map(|x| (0..32u8).map(move |y| ([x, y, 30], RED)))
+            .collect();
+        place_voxels(&mut renderer, ORIGIN_BRICK, &wall);
+        renderer.set_atmosphere(Atmosphere {
+            heavens: renderer::Heavens::default(),
+            ..atmosphere
+        });
+        let (without, _) = sky_picture(&mut renderer, sun);
+        renderer.set_atmosphere(atmosphere);
+        let (with, _) = sky_picture(&mut renderer, sun);
+        assert_eq!(
+            with, without,
+            "{name}: a wall in front hides all of the sky, and the heavens leave it as it was"
+        );
+        assert!(
+            pixels_where(&with, is_red) > 4_000,
+            "{name}: the wall is not all the picture"
+        );
+    }
+}
+
+#[test]
+fn stars_are_over_the_colour_of_the_sky_and_not_instead_of_it() {
+    let star = a_bright_star_alone();
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        let (plain, _) = sky_picture(&mut renderer, star.direction);
+        assert!(
+            plain
+                .chunks(4)
+                .all(|texel| is_sky([texel[0], texel[1], texel[2], texel[3]])),
+            "{name}: the sky is not its colour"
+        );
+        renderer.set_atmosphere(Atmosphere {
+            sky_color: SKY,
+            heavens: renderer::Heavens {
+                star_light: 1.0,
+                ..renderer::Heavens::default()
+            },
+            ..Atmosphere::default()
+        });
+        let starry = star_picture(&mut renderer, star.direction);
+        // (The colour of the sky is behind every star: no pixel is darker than it.)
+        assert!(
+            starry.chunks(4).all(|texel| (0..3)
+                .all(|channel| texel[channel].saturating_add(2) >= SKY_BYTES[channel])),
+            "{name}: a star is darker than the sky"
+        );
+        let sky_brightness = brightness([SKY_BYTES[0], SKY_BYTES[1], SKY_BYTES[2], 255]);
+        let brightest = near_the_middle(&starry).map(brightness).max().unwrap();
+        assert!(
+            brightest > sky_brightness + 100,
+            "{name}: the star is lost in the sky ({brightest})"
+        );
+    }
+}
+
+#[test]
+fn the_wide_sky_has_a_great_many_stars_each_at_least_a_pixel() {
+    // The usual field of view: a pixel is 0.019 radians here, more than a cell. A star is a dot of a pixel or two, not lost.
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        renderer.set_atmosphere(heavens_atmosphere(renderer::Heavens {
+            star_light: 1.0,
+            ..renderer::Heavens::default()
+        }));
+        let camera = camera_at(ORIGIN_BRICK, [16.0, 16.0, 16.0]);
+        let picture = render(&mut renderer, &camera);
+        let lit = pixels_where(&picture, |texel| brightness(texel) > 12);
+        assert!(
+            (200..2_000).contains(&lit),
+            "{name}: {lit} of 4096 pixels have a star"
+        );
+        let bright = pixels_where(&picture, |texel| brightness(texel) > 300);
+        assert!(bright >= 5, "{name}: only {bright} bright pixels");
+    }
+}
+
+/// An atmosphere of a flat ground with the shadows on, the sun's light at full, this much cover of the sky counted and this night light.
+fn night_atmosphere(sun: [f32; 3], night_light: u8, cover: u8) -> Atmosphere {
+    Atmosphere {
+        night_light,
+        ..covered_atmosphere(0, sun, 255, cover)
+    }
+}
+
+/// How much light the floor of the hall sends at `place`, seen from `eye` with this atmosphere.
+fn hall_floor_light(
+    renderer: &mut VoxelRenderer,
+    atmosphere: Atmosphere,
+    eye: [f64; 3],
+    place: [f64; 3],
+) -> f64 {
+    renderer.set_atmosphere(atmosphere);
+    let picture = render(renderer, &camera_aimed_at(eye, place));
+    linear_brightness(pixel(&picture, SIZE / 2, SIZE / 2))
+}
+
+#[test]
+fn the_night_light_lights_the_open_floor_by_the_share_it_says_and_a_floor_under_cover_is_dark_still()
+ {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = hall_renderer(&context);
+        let night = [0.0, -1.0, 0.0];
+        let open = [35.0, 1.0, 16.0];
+        let light = |renderer: &mut VoxelRenderer, share, cover, place| {
+            hall_floor_light(
+                renderer,
+                night_atmosphere(night, share, cover),
+                HIGH_EYE,
+                place,
+            )
+        };
+        // No night light, no light at night anywhere.
+        let dark = light(&mut renderer, 0, 255, open);
+        assert!(dark < 1e-4, "{name}: a night with no light has {dark}");
+        let full = light(&mut renderer, 255, 0, open);
+        assert!(
+            full > 0.1,
+            "{name}: the open floor with the full night light has {full}"
+        );
+        for share in [64u8, 128, 200] {
+            let lit = light(&mut renderer, share, 0, open);
+            let expected = f64::from(share) / 255.0;
+            assert!(
+                (lit / full - expected).abs() < 0.03,
+                "{name}: with {share} the open floor has {} of the full night light, not {expected}",
+                lit / full
+            );
+        }
+        // Deep under the roof, with the cover counted: the dark of a cave at night.
+        let under = [4.0, 1.0, 16.0];
+        let covered = light(&mut renderer, 255, 0, under);
+        assert!(
+            covered < full * 0.02,
+            "{name}: under the roof there is {covered} against {full}"
+        );
+        // With the cover not counted the roof does not matter.
+        let uncounted = light(&mut renderer, 255, 255, under);
+        assert!(
+            uncounted > full * 0.9,
+            "{name}: uncounted cover {uncounted} against {full}"
+        );
+    }
+}
+
+#[test]
+fn the_night_light_is_for_the_dark_and_adds_nothing_by_day_and_is_as_much_light_as_the_skys_by_the_same_number()
+ {
+    // (The sun's own light is left out: a floor the sun lights at full is as bright whatever else lights it, since the lights are a screen blend.) With the sky's light alone by day,
+    // the night light changes nothing; and the night light alone at night is the sky's light of the same number by day, as the sky is the sun's light scattered and this is the
+    // stars' (the sides are shaded from one direction in both).
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = hall_renderer(&context);
+        let open = [35.0, 1.0, 16.0];
+        let plain = |sun: [f32; 3], sky_light, night_light| Atmosphere {
+            sun_light: 0,
+            sky_light,
+            night_light,
+            side_direction: Some([0.0, 1.0, 0.0]),
+            ..night_atmosphere(sun, 0, 255)
+        };
+        let by_day = [0.0, 1.0, 0.0];
+        let at_night = [0.0, -1.0, 0.0];
+        for share in [64u8, 128, 200] {
+            let sky_only = hall_floor_light(&mut renderer, plain(by_day, share, 0), HIGH_EYE, open);
+            let both = hall_floor_light(&mut renderer, plain(by_day, share, 255), HIGH_EYE, open);
+            assert!(
+                (both - sky_only).abs() < sky_only * 0.01 + 1e-5,
+                "{name}: by day the night light changes {sky_only} to {both} with the sky's light at {share}"
+            );
+            let night = hall_floor_light(&mut renderer, plain(at_night, 0, share), HIGH_EYE, open);
+            assert!(
+                (night / sky_only - 1.0).abs() < 0.02,
+                "{name}: a night light of {share} is {night}, and a sky light of {share} by day {sky_only}"
+            );
+        }
+    }
+}
+
+#[test]
+fn at_night_with_a_night_light_the_sky_maps_are_drawn_and_the_sun_s_are_not() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = hall_renderer(&context);
+        renderer.set_atmosphere(night_atmosphere([0.0, -1.0, 0.0], 255, 0));
+        let (_, statistics) =
+            renderer.render_to_rgba(&camera_aimed_at(HIGH_EYE, [4.0, 1.0, 16.0]), SIZE, SIZE);
+        assert_eq!(
+            statistics.shadow_cascades_drawn, 0,
+            "{name}: a sun below the horizon casts nothing to draw"
+        );
+        assert!(
+            statistics.sky_cascades_drawn >= 1,
+            "{name}: the night has a cover to draw"
+        );
+        // And with no night light a night draws nothing at all.
+        renderer.set_atmosphere(night_atmosphere([0.0, -1.0, 0.0], 0, 0));
+        let (_, statistics) =
+            renderer.render_to_rgba(&camera_aimed_at(HIGH_EYE, [4.0, 1.0, 16.0]), SIZE, SIZE);
+        assert_eq!(
+            (
+                statistics.shadow_cascades_drawn,
+                statistics.sky_cascades_drawn
+            ),
+            (0, 0),
+            "{name}: a night with no light has nothing to draw maps for"
+        );
+    }
+}
+
+/// The light of a star at the middle of the picture when the camera is turned on it, from the stars the field has: the faint one and the bright one.
+fn a_faint_star_alone() -> renderer::Star {
+    let stars: Vec<renderer::Star> = (0..6)
+        .flat_map(|face| {
+            (0..renderer::STAR_CELLS_ACROSS).flat_map(move |up| {
+                (0..renderer::STAR_CELLS_ACROSS).filter_map(move |across| {
+                    renderer::star_in_cell(renderer::StarCell { face, across, up })
+                })
+            })
+        })
+        .collect();
+    *stars
+        .iter()
+        .find(|star| {
+            star.brightness < 0.22
+                && stars.iter().all(|other| {
+                    other.direction == star.direction
+                        || other.direction.dot(star.direction) < libm::cosf(0.03)
+                })
+        })
+        .expect("a faint star with no other near it")
+}
+
+#[test]
+fn a_faint_star_is_as_much_fainter_than_a_bright_one_as_the_field_says() {
+    let bright = a_bright_star_alone();
+    let faint = a_faint_star_alone();
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        renderer.set_atmosphere(heavens_atmosphere(renderer::Heavens {
+            star_light: 1.0,
+            ..renderer::Heavens::default()
+        }));
+        let light_of = |renderer: &mut VoxelRenderer, star: &renderer::Star| {
+            most_light_near_the_middle(&star_picture(renderer, star.direction))
+                / f64::from(star.color.iter().sum::<f32>())
+        };
+        let ratio = light_of(&mut renderer, &faint) / light_of(&mut renderer, &bright);
+        let expected = f64::from(faint.brightness / bright.brightness);
+        // (The dot's peak is the star's brightness times the square of how near the pixel's middle is, which the half-pixel turns make nearly 1.)
+        assert!(
+            (ratio / expected - 1.0).abs() < 0.3,
+            "{name}: the faint star is {ratio} of the bright one, and the field says {expected}"
+        );
+    }
+}
+
+#[test]
+fn a_sun_of_no_colour_is_no_sun_and_leaves_the_sky_at_its_direction_as_it_is() {
+    // (A disc of no colour must not be drawn black: a sky with stars and no sun, the usual one of a game with no sun in a level, is the sky's colour at the sun's direction.)
+    let sun = Vec3::new(0.3, 0.5, -0.8).normalize();
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        renderer.set_atmosphere(Atmosphere {
+            sky_color: SKY,
+            sun_direction: sun.to_array(),
+            heavens: renderer::Heavens {
+                star_light: 1.0,
+                sun_glow: 1.0,
+                ..renderer::Heavens::default()
+            },
+            ..Atmosphere::default()
+        });
+        let (picture, _) = sky_picture(&mut renderer, sun);
+        assert!(
+            near_the_middle(&picture).all(|texel| brightness(texel)
+                >= brightness([SKY_BYTES[0], SKY_BYTES[1], SKY_BYTES[2], 255]) - 6),
+            "{name}: the sky at the sun's direction is {:?}, not the sky's colour",
+            pixel(&picture, SIZE / 2, SIZE / 2)
+        );
+    }
+}
+
+#[test]
+fn the_glow_is_the_sun_s_colour_by_its_falloff_at_a_given_angle() {
+    // 0.5 over one plus the square of the angle over 0.15: at 0.1 radians, 0.346 of the colour, which this holds to a tenth (it is a look and not a law, and the number is here so
+    // that a change of it is a decision).
+    let sun = Vec3::new(-0.2, 0.7, -0.6).normalize();
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        renderer.set_atmosphere(Atmosphere {
+            sun_direction: sun.to_array(),
+            ..heavens_atmosphere(renderer::Heavens {
+                sun_color: [0.8, 0.6, 0.4],
+                sun_glow: 1.0,
+                ..renderer::Heavens::default()
+            })
+        });
+        let (picture, _) = sky_picture(&mut renderer, turned_from(sun, 0.1));
+        let expected = (0.8 + 0.6 + 0.4) * 0.5 / (1.0 + (0.1f64 / 0.15) * (0.1 / 0.15));
+        let found = linear_brightness(pixel(&picture, SIZE / 2, SIZE / 2));
+        assert!(
+            (found / expected - 1.0).abs() < 0.1,
+            "{name}: the glow at 0.1 radians is {found}, not {expected}"
+        );
+    }
+}
+
+#[test]
+fn the_night_light_needs_neither_the_suns_light_nor_the_skys_to_light_a_face_and_is_covered_all_the_same()
+ {
+    // A level that has only a night light (no sun's light and no sky's): the open floor is lit by it, and the floor under a roof is not, with the cover counted.
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = hall_renderer(&context);
+        let only_night = |share, cover| Atmosphere {
+            sun_light: 0,
+            sky_light: 0,
+            ..night_atmosphere([0.0, -1.0, 0.0], share, cover)
+        };
+        let open = [35.0, 1.0, 16.0];
+        let under = [4.0, 1.0, 16.0];
+        let none = hall_floor_light(&mut renderer, only_night(0, 0), HIGH_EYE, open);
+        let lit = hall_floor_light(&mut renderer, only_night(255, 0), HIGH_EYE, open);
+        let dark = hall_floor_light(&mut renderer, only_night(255, 0), HIGH_EYE, under);
+        let uncounted = hall_floor_light(&mut renderer, only_night(255, 255), HIGH_EYE, under);
+        assert!(none < 1e-4, "{name}: no night light is {none}");
+        assert!(lit > 0.1, "{name}: the open floor is {lit}");
+        assert!(
+            dark < lit * 0.02,
+            "{name}: under the roof {dark} against {lit}"
+        );
+        assert!(
+            uncounted > lit * 0.9,
+            "{name}: uncounted {uncounted} against {lit}"
+        );
+    }
+}

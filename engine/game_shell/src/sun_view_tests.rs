@@ -178,6 +178,11 @@ fn the_atmosphere_of_a_picture_is_the_suns_and_the_sides_are_shaded_from_one_pla
     assert_eq!(lit.sky_light_in_shadow, 64);
     // And the share that reaches a place with the terrain over it.
     assert_eq!(lit.sky_light_under_cover, 32);
+    // The night light and the heavens (the stars, and the sun in the sky) are the sun's view of them.
+    let view = player.sun_view().expect("a sun");
+    assert_eq!(lit.night_light, view.night_light);
+    assert_eq!(lit.heavens, view.heavens);
+    assert!(lit.night_light > 0 && !lit.heavens.is_empty());
     player.client_command(".shadows off");
     assert!(!crate::view::lit_atmosphere(&player).0.shadows);
     player.client_command(".shadows on");

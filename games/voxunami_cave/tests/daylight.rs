@@ -90,7 +90,12 @@ fn a_new_world_begins_on_a_morning_on_the_ground_of_the_planet_with_the_planet_i
         view.sky_light_under_cover, 0,
         "a place with a hill over it has none of the sky"
     );
-    assert!(view.sky_color[2] > 0.8, "a blue sky: {:?}", view.sky_color);
+    // (A sun 7 degrees up is a morning: the sky is blue still, with a little of the warmth of a sunrise in it.)
+    assert!(
+        view.sky_color[2] > view.sky_color[0] && view.sky_color[2] > 0.5,
+        "a blue sky: {:?}",
+        view.sky_color
+    );
     // The planet is the one ball in the sun's way: its solid core, about the middle of the world, a little smaller than the planet.
     let [SunOccluder::Ball { centre, radius }] = view.occluders[..] else {
         panic!(
@@ -121,9 +126,17 @@ fn at_midnight_the_planet_hides_the_sun_and_the_sky_is_black_and_at_noon_it_is_b
     assert_eq!(night.hours, 0.0);
     assert_eq!(night.daylight, 0.0);
     assert_eq!(night.sky_color, [0.0; 3]);
+    // The stars are out and the sun is not in the sky, and the night has its light (dim, and for the faces the sky is open over).
+    assert_eq!(night.heavens.star_light, 1.0);
+    assert_eq!(night.heavens.sun_color, [0.0; 3]);
+    assert_eq!(night.night_light, 40);
     assert!(player.client_command(".time noon").contains("12:00"));
     let noon = player.sun_view().unwrap();
     assert_eq!(noon.daylight, 1.0);
+    // By day the stars are out of the sky, and the sun is a disc in it with the air's glow round it.
+    assert_eq!(noon.heavens.star_light, 0.0);
+    assert!(noon.heavens.sun_color.iter().all(|part| *part > 0.8));
+    assert_eq!(noon.heavens.sun_glow, 1.0);
     assert!(
         noon.sky_color[2] > 0.85 && noon.sky_color[0] > 0.5,
         "{:?}",
@@ -291,9 +304,16 @@ fn the_ground_and_the_sky_of_the_planet_go_from_day_to_night_as_the_world_clock_
             noon_sky[2] > 200 && noon_sky[2] > noon_sky[0],
             "{name}: the sky at noon is {noon_sky:?}"
         );
-        // Night: black ground and a black sky: nothing lights anything.
-        assert_eq!(*night_ground, [0, 0, 0], "{name}: the ground at midnight");
+        // Night: the sky is black (a star may be in it, but not at this pixel) and the ground has only the light of the night: dim, and green still.
         assert_eq!(*night_sky, [0, 0, 0], "{name}: the sky at midnight");
+        let night_light = linear_brightness(*night_ground);
+        assert!(
+            night_light > 0.0
+                && night_light < linear_brightness(*noon_ground) * 0.25
+                && night_ground[1] > night_ground[0]
+                && night_ground[1] > night_ground[2],
+            "{name}: the ground at midnight is {night_ground:?}, and at noon {noon_ground:?}"
+        );
         // At half past six in the evening (the sun is below the horizon but the sky is not dark) the ground is lit by the sky alone, so darker than at noon and not black,
         // and the sky is darker too.
         let (day, dusk) = (

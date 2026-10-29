@@ -159,6 +159,8 @@ impl GameDefinition for Cave {
             sky_light_in_shadow: 70,
             // A place with a hill or a roof over it has none of the sky's light: a cave is dark by day.
             sky_light_under_cover: 0,
+            // Starlight: a night is dim where the sky is open, and still black in a cave.
+            night_light: 40,
             flat_ground: !in_space,
             sky: Sky {
                 color: [0.55, 0.72, 0.92],

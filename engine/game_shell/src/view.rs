@@ -63,6 +63,8 @@ pub fn lit_atmosphere<C: Connection, G: GameDefinition>(
     lit.shadows = session.settings().shadows;
     lit.sky_light_in_shadow = sun.sky_light_in_shadow;
     lit.sky_light_under_cover = sun.sky_light_under_cover;
+    lit.night_light = sun.night_light;
+    lit.heavens = sun.heavens;
     (lit, sun.occluders)
 }
 
