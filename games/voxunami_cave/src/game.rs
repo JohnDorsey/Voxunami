@@ -178,7 +178,7 @@ impl GameDefinition for Cave {
     }
 
     fn summary() -> &'static str {
-        "fly through caverns and break and place blocks."
+        "walk or fly over planets, and break and place blocks."
     }
 
     fn controls() -> &'static str {

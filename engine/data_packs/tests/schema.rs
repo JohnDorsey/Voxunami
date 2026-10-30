@@ -208,7 +208,32 @@ fn corpus() -> Vec<Case> {
             "needs that are not a list",
             r#"{ "id": "p", "depends_on": "a" }"#,
         ),
-        bad(Manifest, "an unknown key", r#"{ "id": "p", "version": 1 }"#),
+        ok(
+            Manifest,
+            "the format and the version",
+            r#"{ "id": "p", "format": 1, "version": "0.3.1" }"#,
+        ),
+        bad(
+            Manifest,
+            "a format that does not exist",
+            r#"{ "id": "p", "format": 2 }"#,
+        ),
+        bad(
+            Manifest,
+            "a format as text",
+            r#"{ "id": "p", "format": "1" }"#,
+        ),
+        bad(
+            Manifest,
+            "a version as a number",
+            r#"{ "id": "p", "version": 1 }"#,
+        ),
+        bad(
+            Manifest,
+            "an empty version",
+            r#"{ "id": "p", "version": "" }"#,
+        ),
+        bad(Manifest, "an unknown key", r#"{ "id": "p", "colour": 1 }"#),
         bad(Manifest, "a number for a name", r#"{ "id": 5 }"#),
         beyond(
             Manifest,

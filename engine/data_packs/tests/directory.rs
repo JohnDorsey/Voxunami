@@ -68,6 +68,35 @@ fn packs_are_read_from_their_folders_sorted_by_name() {
 }
 
 #[test]
+fn a_folder_in_a_pack_that_nothing_reads_is_an_error_not_a_silence() {
+    let scratch = Scratch::new("unread");
+    scratch.write("mine/pack.json", "{\"id\":\"mine\"}");
+    scratch.write("mine/blocks/a.json", "A");
+    scratch.write("mine/recipes/plank.json", "R");
+    scratch.write("mine/sounds/hit.ogg", "S");
+    scratch.write("mine/.git/config", "left alone");
+    scratch.write("mine/README.md", "a file beside pack.json is allowed");
+    let errors = read_directory(scratch.path()).unwrap_err();
+    assert_eq!(
+        errors.to_string(),
+        "mine/recipes: nothing reads this folder; a pack's folders are \"blocks\", \"patches\" and \"bodies\"\n\
+         mine/sounds: nothing reads this folder; a pack's folders are \"blocks\", \"patches\" and \"bodies\""
+    );
+}
+
+#[test]
+fn a_misspelt_folder_gets_a_suggestion() {
+    let scratch = Scratch::new("misspelt");
+    scratch.write("mine/pack.json", "{\"id\":\"mine\"}");
+    scratch.write("mine/block/a.json", "A");
+    let errors = read_directory(scratch.path()).unwrap_err();
+    assert_eq!(
+        errors.to_string(),
+        "mine/block: nothing reads this folder (did you mean \"blocks\"?); a pack's folders are \"blocks\", \"patches\" and \"bodies\""
+    );
+}
+
+#[test]
 fn a_folder_without_a_manifest_and_a_missing_root_are_errors_that_say_where() {
     let scratch = Scratch::new("missing");
     scratch.write("stray/blocks/a.json", "A");

@@ -309,16 +309,15 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   which changed the pinned Cave session (the walker no longer stands still for a hundred steps); (e) `/tp` far from the start does not tell the client where it
   is (returning players now are told); (f) nothing is hurt by being pushed or pressed: a ship that falls on a player lifts them onto itself.
 - Plugin architecture (2026-10-17; `docs/plugin-architecture-review.md` has the options and sources; each item is now in the
-  Build plan, and what stays open is the detail): (a) *Entities and items* (Phase 27): only players exist, and the protocol, the
-  replay stream and the save format have no entity messages; the design says creatures are finite grids, which is not built. What
-  an entity replicates, how an inventory is shaped, and what the first mob is are open. (b) *Patches* (Phase 29): the operations
+  Build plan, and what stays open is the detail): (a) *Entities and items* (Phase 27; built since, 27a to 27i, so entities, inventories and their messages exist): when this was
+  written only players existed. The design says creatures are finite grids, which is not built, and what the first mob is stays open. (b) *Patches* (Phase 29): the operations
   and failure rules are written above; the policy for a patch to a property whose plugin is missing (ignore with a warning, or
   refuse) is open. (c) *Materials* (Phase 31): built in Phase 31: the renderer draws up to 1,048,576 game materials (it was 240: a 256-entry palette less 16 for
   avatars); the packed quad has 24 bits for the material and saves hold block ids, so widening it was a renderer-only change; whether
   the first release has textures is open, and a texture path (an array indexed by material and face, UVs from position) is a larger
   decision than the palette. (d) *Scaled light in the engine*: closed in Phase 26 (the `BrickLight` hook; Cave's concepts live in Cave). (e) *Client interface*
-  (Phases 26 and 30): plugins now register a HUD line, key and mouse actions and `.`-commands (Phase 26); the HUD is still the window
-  title and there is no UI toolkit (Phase 30). Rebinding actions with client commands is a later phase (the owner's decision: any
+  (Phases 26 and 30): plugins now register a HUD line, key and mouse actions and `.`-commands (Phase 26); the HUD was the window
+  title then, and since Phase 30 the server describes a UI that the client draws on the screen. Rebinding actions with client commands is a later phase (the owner's decision: any
   number of actions may share a key or button; they are keyed by action identifier so that rebinding can name them).
 - **Explained and fixed (2026-10-19):** `a_walker_standing_in_flames_falls_when_the_fire_burns_the_ground_away` failed about 1 full Linux run in 4 and
   2 of 30 runs of Cave's play tests. The failure printed that the walker had dropped 0.0533 voxel (one tick of free fall) in the two ticks after
@@ -366,8 +365,8 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
 - Light (Phase 12): cost is one lamp's 64 ticks of spreading averaged 15 ms a tick in a release build (with two clients
   watching; measured once, not repeated), and a tick is 50 ms, so a few lamps placed at once would overrun it. The budget
   of 20 000 voxels a tick (Phase 14) is a guess, not tuned, and its streaming cost to clients is not measured. The sky light
-  with its six directions, how block and sky light combine, and a daylight cycle (replacing the placeholder ambient light)
-  are not built either, and the glow of a lamp could not be judged by eye here.
+  with its six directions and how block and sky light combine are not built (a daylight cycle was built on 2026-10-28, `sun-spec.md`),
+  and the glow of a lamp could not be judged by eye here.
 - Keyboard controls in a window (reported by the owner, 2026-10-16): in both games the keys type into the title bar instead
   of moving the player. Not reproduced: with real key events sent to the real window (Windows 10, RTX 3090, built from
   this code), pressing W and A left the title as it was, and holding W for two seconds changed the picture (the camera

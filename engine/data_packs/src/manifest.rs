@@ -16,7 +16,13 @@ pub struct PackManifest {
     pub id: String,
     /// Packs (or plugins) that load before this one, by their ids.
     pub depends_on: Vec<String>,
+    /// The author's own version of the pack, as they write it; the engine does not read it as a number.
+    pub version: Option<String>,
 }
+
+/// The only pack format there is. A pack may say `"format": 1` so that a later engine, which reads other formats,
+/// can tell this pack was written for the first.
+const PACK_FORMAT: i64 = 1;
 
 /// Whether `text` can be a pack's id: it is the namespace of an identifier.
 pub(crate) fn check_pack_id(walk: &mut Walk, text: &str, path: &Path) -> bool {
@@ -44,7 +50,25 @@ pub fn read_manifest(file: &str, text: &str) -> Result<PackManifest, PackErrors>
 }
 
 fn read(walk: &mut Walk, value: &Value, path: &Path) -> Option<PackManifest> {
-    let object = walk.object(value, path, &["id", "depends_on"])?;
+    let object = walk.object(value, path, &["id", "depends_on", "format", "version"])?;
+    let format_ok = object.get("format").is_none_or(|format| {
+        walk.integer(format, &path.key("format"), PACK_FORMAT, PACK_FORMAT)
+            .is_some()
+    });
+    let version_path = path.key("version");
+    let version = match object.get("version") {
+        None => Some(None),
+        Some(version) => walk.string(version, &version_path).and_then(|text| {
+            if text.is_empty() {
+                walk.fail(
+                    &version_path,
+                    "the version is empty; leave it out or say something",
+                );
+                return None;
+            }
+            Some(Some(text.to_owned()))
+        }),
+    };
     let id_path = path.key("id");
     let id = walk
         .require(object, "id", path)
@@ -78,8 +102,10 @@ fn read(walk: &mut Walk, value: &Value, path: &Path) -> Option<PackManifest> {
             good.then_some(names)
         }),
     };
+    format_ok.then_some(())?;
     Some(PackManifest {
         id: id?,
         depends_on: depends_on?,
+        version: version?,
     })
 }

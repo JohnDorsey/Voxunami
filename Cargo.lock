@@ -1454,6 +1454,7 @@ dependencies = [
  "namespaced_id",
  "protocol",
  "replay",
+ "serde_json",
  "voxunami_2048",
  "voxunami_cave",
  "voxunami_eels",

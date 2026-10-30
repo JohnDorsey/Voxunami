@@ -5,6 +5,7 @@ use std::path::Path;
 
 use crate::error::{PackError, PackErrors};
 use crate::load::{RawFile, RawPack};
+use crate::walk::nearest;
 
 fn problem(file: String, message: impl Into<String>) -> PackError {
     PackError {
@@ -88,6 +89,35 @@ fn files_in(
         .collect()
 }
 
+/// The folders of a pack that are read. Anything else is an error: a pack with a `recipes` folder that nothing reads
+/// would be reported as fine and then do nothing, which is the worst thing a checker can say.
+const READ_FOLDERS: [&str; 3] = ["blocks", "patches", "bodies"];
+
+fn check_for_unread_folders(pack: &Path, folder_name: &str, errors: &mut Vec<PackError>) {
+    let label = folder_name.to_owned();
+    let names = match names_in(pack, &label, true) {
+        Ok(names) => names,
+        Err(error) => {
+            errors.push(error);
+            return;
+        }
+    };
+    for name in names {
+        if READ_FOLDERS.contains(&name.as_str()) {
+            continue;
+        }
+        let hint = nearest(&name, &READ_FOLDERS)
+            .map(|near| format!(" (did you mean \"{near}\"?)"))
+            .unwrap_or_default();
+        errors.push(problem(
+            format!("{folder_name}/{name}"),
+            format!(
+                "nothing reads this folder{hint}; a pack's folders are \"blocks\", \"patches\" and \"bodies\""
+            ),
+        ));
+    }
+}
+
 /// Reads every pack in the folders of `root`. A folder without a `pack.json` is an error (it is probably not meant to
 /// be there, and quietly skipping it would hide a misplaced pack). A `root` that does not exist is an error.
 pub fn read_directory(root: &Path) -> Result<Vec<RawPack>, PackErrors> {
@@ -113,6 +143,7 @@ pub fn read_directory(root: &Path) -> Result<Vec<RawPack>, PackErrors> {
                 continue;
             }
         };
+        check_for_unread_folders(&pack, &folder, &mut errors);
         let blocks = files_in(&pack, &folder, "blocks", &mut errors);
         let patches = files_in(&pack, &folder, "patches", &mut errors);
         let bodies = files_in(&pack, &folder, "bodies", &mut errors);

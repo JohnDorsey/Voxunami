@@ -319,3 +319,74 @@ impl GameDefinition for ExampleDetailGame {
         })
     }
 }
+
+/// A game whose server fails on its third tick, for the tests of what the shell does when a server dies.
+#[derive(Debug)]
+pub struct ExamplePanickingGame;
+
+/// What the failing server says as it dies.
+pub const PANIC_MESSAGE: &str = "example: the third tick is too much";
+
+#[derive(Debug)]
+struct PanicOnThirdTick;
+
+impl ServerPlugin for PanicOnThirdTick {
+    fn id(&self) -> NamespacedId {
+        id("example:panics")
+    }
+
+    fn register(&self, registrar: &mut plugin_host::Registrar<'_>) {
+        let mut ticks = 0;
+        registrar.system(
+            plugin_host::SystemSpec::new("example:panic_on_third_tick", plugin_host::Phase::Rules),
+            move |_| {
+                ticks += 1;
+                assert!(ticks < 3, "{PANIC_MESSAGE}");
+            },
+        );
+    }
+}
+
+impl GameDefinition for ExamplePanickingGame {
+    type Content = ExampleContent;
+
+    fn id() -> NamespacedId {
+        id("example:panicking_game")
+    }
+
+    fn title() -> &'static str {
+        ExampleGame::title()
+    }
+
+    fn command() -> &'static str {
+        ExampleGame::command()
+    }
+
+    fn summary() -> &'static str {
+        ExampleGame::summary()
+    }
+
+    fn controls() -> &'static str {
+        ExampleGame::controls()
+    }
+
+    fn default_seed() -> u64 {
+        ExampleGame::default_seed()
+    }
+
+    fn default_camera() -> CameraStart {
+        ExampleGame::default_camera()
+    }
+
+    fn reach() -> f32 {
+        ExampleGame::reach()
+    }
+
+    fn new_content() -> ExampleContent {
+        ExampleGame::new_content()
+    }
+
+    fn plugins(_content: &ExampleContent) -> Vec<Box<dyn ServerPlugin>> {
+        vec![Box::new(PanicOnThirdTick)]
+    }
+}

@@ -17,7 +17,9 @@ packs/                      the folder you give the server: --packs packs
 ```
 
 Names are lowercase letters, digits and `_`, starting with a letter, at most 64 characters. A file's name without `.json` is
-the block's, patch's or body's name. Names that start with `.` and files that are not `.json` are left alone.
+the block's, patch's or body's name. Names that start with `.` and files that are not `.json` are left alone. A folder
+inside a pack that is not `blocks`, `patches` or `bodies` is an error (`check-pack` names it and suggests the nearest), so a
+folder that nothing reads is never reported as fine.
 
 ## `pack.json`
 
@@ -25,7 +27,9 @@ the block's, patch's or body's name. Names that start with `.` and files that ar
 { "id": "my_pack", "depends_on": ["base_blocks", "other_pack"] }
 ```
 
-`id` must be the folder's name (and not `engine`). `depends_on` lists what must load before this pack: other packs, or the
+`id` must be the folder's name (and not `engine`). Two optional keys: `"format": 1` says which pack format the file is written
+for (1 is the only one so far; a later engine that reads others can tell), and `"version": "0.3.1"` is your own version of the pack, as text.
+`depends_on` lists what must load before this pack: other packs, or the
 name of a plugin the game has blocks from (`base_blocks`). A pack may change only blocks of its own and of the names it
 depends on (and what those depend on). Packs load in dependency order, ties by id, and the files of a pack in order of their
 names, so the result never depends on how the folder happens to be listed.
@@ -66,7 +70,7 @@ Only `color` is needed. A block is one whole cube unless `states` says more.
     { "op": "test",   "property": "base_blocks:emission", "value": 64 },
     { "op": "set",    "property": "base_blocks:emission", "value": 90 },
     { "op": "set",    "property": "base_blocks:passable", "state": 0, "value": false },
-    { "op": "remove", "property": "base_blocks:flammability" },
+    { "op": "set",    "property": "base_blocks:flammability", "value": 40 },
     { "op": "set",    "path": "color", "value": [1.0, 0.8, 0.5] },
     { "op": "set",    "path": "see_through", "value": false },
     { "op": "set",    "path": "state_colors", "value": [[0,0,0], [1,1,1]] },
@@ -81,7 +85,7 @@ Only `color` is needed. A block is one whole cube unless `states` says more.
 - **`set`** changes a property (in every state, or in one with `"state": N`; setting for every state leaves a state's own
   value alone) or one of the fields `color`, `see_through`, `state_colors`.
 - **`remove`** takes a property back to the game's default (for every state, or one state), or removes the state colours. It is an
-  error to remove what is not set. `color` and `see_through` cannot be removed (set them).
+  error to remove what is not set (a lamp has no flammability, so removing it fails; the example removes `state_colors` after setting them). `color` and `see_through` cannot be removed (set them).
 - **`add`** appends a state with this shape. Later operations in the same patch may use it.
 - A patch is applied as a whole or not at all: if one operation fails, none of it happened.
 - Two packs that both set a tag (a true/false property) to true agree; a pack that wants it off sets it false or removes it.

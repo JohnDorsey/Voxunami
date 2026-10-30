@@ -7,3 +7,6 @@
 /videos
 
 .claude/settings.local.json
+
+# Worlds made by hand while testing
+/testworld*

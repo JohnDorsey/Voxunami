@@ -254,7 +254,7 @@ fn a_hosted_game_has_the_local_player_and_network_players_in_one_world() {
     });
     drop(local);
     drop(remote);
-    let (world, _) = host.stop();
+    let (world, _) = host.stop().unwrap();
     assert_eq!(world.main().overrides.brick_count(), 1);
 }
 
@@ -439,7 +439,7 @@ fn a_player_over_the_network_goes_to_another_level_with_a_command_and_changes_on
         remote.mesher().is_opaque_at(hit.voxel) == Some(false)
     });
     drop(remote);
-    let (world, _) = host.stop();
+    let (world, _) = host.stop().unwrap();
     assert_eq!(world.main().overrides.brick_count(), 0);
     assert_eq!(world.level(cellar).unwrap().overrides.brick_count(), 1);
 }

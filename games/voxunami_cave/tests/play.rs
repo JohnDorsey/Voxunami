@@ -505,7 +505,7 @@ fn the_integrated_server_ticks_by_itself_and_hands_back_the_world() {
     }
     player.say_goodbye();
     drop(player);
-    let (world, _content) = host.stop();
+    let (world, _content) = host.stop().unwrap();
     assert_eq!(world.world_seed, SEED);
 }
 

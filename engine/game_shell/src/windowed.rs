@@ -96,7 +96,12 @@ pub fn play<G: GameDefinition>(options: PlayOptions) -> Result<(), String> {
 
     let (_session, failure) = run_window::<G>(session, &view)?;
     if let Some(host) = host {
-        let (mut world, content) = host.stop();
+        let (mut world, content) = host.stop().map_err(|crash| match &options.world_file {
+            Some(_) => {
+                format!("{crash}; the world file was not written, so the last save is the world")
+            }
+            None => format!("{crash}; there was no world file, so the world is lost"),
+        })?;
         if let Some(path) = &options.world_file {
             save_world(&content, &mut world, path)?;
             println!("saved the world to {}", path.display());

@@ -124,6 +124,15 @@ fn manifest() -> Value {
                 "uniqueItems": true,
                 "items": { "type": "string", "pattern": part_pattern(), "not": { "const": "engine" } },
                 "description": "packs, or plugins that have blocks, that load before this one"
+            },
+            "format": {
+                "const": 1,
+                "description": "the pack format this pack is written for; 1 is the only one so far"
+            },
+            "version": {
+                "type": "string",
+                "minLength": 1,
+                "description": "the author's own version of the pack, as they write it"
             }
         }
     })

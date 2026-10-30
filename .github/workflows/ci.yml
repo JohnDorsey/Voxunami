@@ -1,0 +1,31 @@
+# The gate every change passes, on the two systems the simulation must agree on: the same checks as CLAUDE.md lists.
+# The runners have no graphics adapter, so the tests that draw print a notice and pass here; they are run for real,
+# with VOX_REQUIRE_GPU=1, on the owner's machines before a phase is committed.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: ${{ matrix.system }}
+    runs-on: ${{ matrix.system }}
+    strategy:
+      fail-fast: false
+      matrix:
+        system: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain (the version rust-toolchain.toml names)
+        run: rustup show
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace

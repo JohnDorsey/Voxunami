@@ -468,6 +468,8 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - **What a player can place is a property of the block** (`voxunami_cave:placeable`), set by Cave on its six blocks and by a pack on its own. Cave's items,
   its drops and its number keys come from it; the client reads the list from the server's package, so a client with no pack has the same keys.
 - **A client refuses a package it cannot draw** (more colours than the renderer has) with an error instead of a panic, and the same check runs when packs load.
+- Mine, M0 housekeeping (2026-10-30; `architecture-review.md`): **a folder in a pack that nothing reads is an error** (`recipes/` was reported as fine and did nothing; `check-pack` now names the folder and suggests the nearest of `blocks`, `patches`, `bodies`), and **`pack.json` accepts `"format": 1` and a free-text `"version"`**, so a later engine that reads another format can tell which one a pack was written for. The examples in `pack-format.md` are checked by a launcher test, so the guide cannot drift from the loader.
+- Mine, M0 (2026-10-30): **a server that panics is noticed and nothing is saved from it.** A panic leaves a tick half done, and a file written from half a tick (the ships' files are shared with the last good save) could replace a good world with a bad one, so the world on disk stays the last autosave. `ServerThread::stop` returns the failure instead of panicking its owner, `has_failed` lets `serve` end by itself, and both say which save is the world. Open: a game played with no `--autosave` saves only on exit, so a failure there loses the session.
 
 ## Decided (the content package at the handshake; built in Phase 28)
 

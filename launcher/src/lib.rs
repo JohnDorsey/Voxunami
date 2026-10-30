@@ -346,6 +346,53 @@ mod tests {
         );
     }
 
+    /// The first JSON code block after the line that starts with `heading`.
+    fn json_block_after(document: &str, heading: &str) -> String {
+        let after = document
+            .split_once(&format!("\n{heading}"))
+            .unwrap_or_else(|| panic!("pack-format.md has no heading {heading:?}"))
+            .1;
+        let block = after
+            .split_once("```json\n")
+            .unwrap_or_else(|| panic!("no JSON block after {heading:?}"))
+            .1;
+        block.split_once("```").expect("a block ends").0.to_owned()
+    }
+
+    /// A guide that a modder follows must be right: every example it gives in full is written into a pack and
+    /// checked the way a server loads it, so the guide cannot drift from the loader.
+    #[test]
+    fn the_examples_in_the_pack_format_guide_pass_check_pack() {
+        let guide = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../docs/pack-format.md"
+        ))
+        .expect("the guide is in docs/");
+        let packs = Scratch::new("guide_examples");
+        // The guide's `pack.json` depends on `other_pack`, which must exist for the example to load.
+        packs.write("other_pack/pack.json", r#"{ "id": "other_pack" }"#);
+        packs.write(
+            "my_pack/pack.json",
+            &json_block_after(&guide, "## `pack.json`"),
+        );
+        packs.write(
+            "my_pack/blocks/marble.json",
+            &json_block_after(&guide, "## A block"),
+        );
+        packs.write(
+            "my_pack/patches/dim_lamps.json",
+            &json_block_after(&guide, "## A patch"),
+        );
+        packs.write(
+            "my_pack/bodies/moon.json",
+            &json_block_after(&guide, "## A body"),
+        );
+        assert_eq!(
+            run(vec!["check-pack".into(), "cave".into(), packs.argument()]),
+            Ok(())
+        );
+    }
+
     #[test]
     fn pack_schema_writes_three_schemas_that_name_the_games_properties() {
         let scratch = Scratch::new("schemas");

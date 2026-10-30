@@ -2,6 +2,7 @@
 //! network for a hosted game, or on its own as a dedicated server.
 
 use std::fmt;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -221,11 +222,38 @@ impl fmt::Debug for HostSettings {
     }
 }
 
+/// Why a server stopped when nobody asked it to: something in it panicked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServerFailure {
+    reason: String,
+}
+
+impl fmt::Display for ServerFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "the server failed: {}", self.reason)
+    }
+}
+
+impl std::error::Error for ServerFailure {}
+
+/// The words of a panic, if it had any.
+fn panic_reason(panic: &(dyn std::any::Any + Send)) -> String {
+    if let Some(text) = panic.downcast_ref::<&str>() {
+        (*text).to_owned()
+    } else if let Some(text) = panic.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "a panic with no message".to_owned()
+    }
+}
+
+type ServerOutcome<G> = Result<(WorldData, <G as GameDefinition>::Content), ServerFailure>;
+
 /// A server ticking on its own thread at the game's tick rate. It owns the game's content while it
 /// runs and hands it back, with the world, when it stops.
 pub struct ServerThread<G: GameDefinition> {
     stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<(WorldData, G::Content)>>,
+    thread: Option<JoinHandle<ServerOutcome<G>>>,
     connector: LoopbackConnector,
 }
 
@@ -271,45 +299,56 @@ impl<G: GameDefinition> ServerThread<G> {
         let (autosave, announce) = (settings.autosave, settings.announce_players);
         let world_file = settings.world_file.clone();
         let thread = std::thread::spawn(move || {
-            // The clock only paces the loop; the server itself never reads it.
-            let tick_length = Duration::from_secs_f64(1.0 / f64::from(G::ticks_per_second()));
-            let mut next_tick = Instant::now();
-            let mut last_save = Instant::now();
-            while !stopped.load(Ordering::Relaxed) {
-                let report = server.step();
-                if announce {
-                    for client in &report.joined {
-                        println!("{client} joined");
-                    }
-                    for (client, reason) in &report.left {
-                        println!("{client} left ({reason:?})");
-                    }
-                }
-                if let (Some(autosave), Some(path)) = (&autosave, &world_file)
-                    && last_save.elapsed() >= autosave.interval
-                {
-                    last_save = Instant::now();
-                    match server.save(&content.registries()) {
-                        // (The files of the ships, then the world file: before the next tick, so that what is written is what was saved.)
-                        Ok(save) => {
-                            if let Err(error) = save.write_with(server.ship_files_mut(), |bytes| {
-                                write_atomically(path, bytes)
-                            }) {
-                                eprintln!("autosave to {} failed: {error}", path.display());
-                            }
+            // A panic in a tick leaves the server half-way through it, so nothing is saved from it: the last save is
+            // good, and a file written from half a tick, with the ships' files shared with it, might not be.
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
+                // The clock only paces the loop; the server itself never reads it.
+                let tick_length = Duration::from_secs_f64(1.0 / f64::from(G::ticks_per_second()));
+                let mut next_tick = Instant::now();
+                let mut last_save = Instant::now();
+                while !stopped.load(Ordering::Relaxed) {
+                    let report = server.step();
+                    if announce {
+                        for client in &report.joined {
+                            println!("{client} joined");
                         }
-                        Err(error) => eprintln!("autosave failed: {error}"),
+                        for (client, reason) in &report.left {
+                            println!("{client} left ({reason:?})");
+                        }
+                    }
+                    if let (Some(autosave), Some(path)) = (&autosave, &world_file)
+                        && last_save.elapsed() >= autosave.interval
+                    {
+                        last_save = Instant::now();
+                        match server.save(&content.registries()) {
+                            // (The files of the ships, then the world file: before the next tick, so that what is written is what was saved.)
+                            Ok(save) => {
+                                if let Err(error) = save
+                                    .write_with(server.ship_files_mut(), |bytes| {
+                                        write_atomically(path, bytes)
+                                    })
+                                {
+                                    eprintln!("autosave to {} failed: {error}", path.display());
+                                }
+                            }
+                            Err(error) => eprintln!("autosave failed: {error}"),
+                        }
+                    }
+                    next_tick += tick_length;
+                    let now = Instant::now();
+                    if next_tick > now {
+                        std::thread::sleep(next_tick - now);
+                    } else if now - next_tick > Duration::from_secs(1) {
+                        next_tick = now; // far behind: skip ahead rather than race to catch up
                     }
                 }
-                next_tick += tick_length;
-                let now = Instant::now();
-                if next_tick > now {
-                    std::thread::sleep(next_tick - now);
-                } else if now - next_tick > Duration::from_secs(1) {
-                    next_tick = now; // far behind: skip ahead rather than race to catch up
-                }
+            }));
+            match outcome {
+                Ok(()) => Ok((server.into_world(), content)),
+                Err(panic) => Err(ServerFailure {
+                    reason: panic_reason(panic.as_ref()),
+                }),
             }
-            (server.into_world(), content)
         });
         Ok(Self {
             stop,
@@ -323,14 +362,25 @@ impl<G: GameDefinition> ServerThread<G> {
         self.connector.connect()
     }
 
-    /// Stops ticking and returns the world, to be saved, and the content.
-    pub fn stop(mut self) -> (WorldData, G::Content) {
+    /// Whether the server has ended without being asked to: it only ends by failing. A program that runs
+    /// beside the server asks this so that it does not wait on a server that is gone.
+    pub fn has_failed(&self) -> bool {
+        !self.stop.load(Ordering::Relaxed)
+            && self.thread.as_ref().is_some_and(JoinHandle::is_finished)
+    }
+
+    /// Stops ticking and returns the world, to be saved, and the content; or why the server failed, in which
+    /// case there is no world to save (what it held was half a tick), and the last save is the world.
+    pub fn stop(mut self) -> Result<(WorldData, G::Content), ServerFailure> {
         self.stop.store(true, Ordering::Relaxed);
-        self.thread
-            .take()
-            .expect("the thread runs until stopped")
-            .join()
-            .expect("the server thread does not panic")
+        let thread = self.thread.take().expect("the thread runs until stopped");
+        match thread.join() {
+            Ok(outcome) => outcome,
+            // The loop catches panics, so this is one outside it (while the server was being handed back).
+            Err(panic) => Err(ServerFailure {
+                reason: panic_reason(panic.as_ref()),
+            }),
+        }
     }
 }
 
@@ -346,7 +396,7 @@ impl<G: GameDefinition> Drop for ServerThread<G> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{ExampleGame, ExampleSpaceGame};
+    use crate::test_support::{ExampleGame, ExamplePanickingGame, ExampleSpaceGame, PANIC_MESSAGE};
 
     #[test]
     fn the_server_is_configured_with_the_gravity_of_the_game() {
@@ -361,5 +411,45 @@ mod tests {
             space.level_gravity,
             vec![("example:space".parse().unwrap(), [0.0; 3])]
         );
+    }
+
+    /// Waits for `condition`, for at most ten seconds.
+    fn wait_for(condition: impl Fn() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if condition() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        condition()
+    }
+
+    #[test]
+    fn a_server_that_fails_is_noticed_and_says_why_instead_of_panicking_its_owner() {
+        let content = ExamplePanickingGame::new_content();
+        let world = content.new_world(1);
+        let host =
+            ServerThread::<ExamplePanickingGame>::start(content, world, HostSettings::local(2))
+                .unwrap();
+        assert!(
+            wait_for(|| host.has_failed()),
+            "the server's third tick fails, and the thread that runs it ends"
+        );
+        let crash = host
+            .stop()
+            .expect_err("a server that failed has no world to give back");
+        assert!(crash.to_string().contains(PANIC_MESSAGE), "{crash}");
+    }
+
+    #[test]
+    fn a_server_that_runs_is_not_failed_and_gives_its_world_back_when_stopped() {
+        let content = ExampleGame::new_content();
+        let world = content.new_world(1);
+        let host =
+            ServerThread::<ExampleGame>::start(content, world, HostSettings::local(2)).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!host.has_failed());
+        assert!(host.stop().is_ok());
     }
 }

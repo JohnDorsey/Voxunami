@@ -65,6 +65,39 @@ fn a_manifest_names_the_pack_and_what_it_needs() {
     assert_eq!(manifest.depends_on, ["base_blocks", "other_pack"]);
     let lone = read_manifest("p/pack.json", r#"{ "id": "lone" }"#).unwrap();
     assert!(lone.depends_on.is_empty());
+    assert_eq!(lone.version, None);
+}
+
+#[test]
+fn a_manifest_may_say_which_format_it_is_written_in_and_which_version_of_the_pack_it_is() {
+    let manifest = read_manifest(
+        "my_pack/pack.json",
+        r#"{ "id": "my_pack", "format": 1, "version": "0.3.1" }"#,
+    )
+    .unwrap();
+    assert_eq!(manifest.version.as_deref(), Some("0.3.1"));
+
+    let file = "my_pack/pack.json";
+    assert_eq!(
+        manifest_errors(r#"{ "id": "my_pack", "format": 2 }"#),
+        [format!("{file}: /format: 2 is outside 1 to 1")]
+    );
+    assert_eq!(
+        manifest_errors(r#"{ "id": "my_pack", "format": "1" }"#),
+        [format!(
+            "{file}: /format: expected a whole number, found text"
+        )]
+    );
+    assert_eq!(
+        manifest_errors(r#"{ "id": "my_pack", "version": 3 }"#),
+        [format!("{file}: /version: expected text, found a number")]
+    );
+    assert_eq!(
+        manifest_errors(r#"{ "id": "my_pack", "version": "" }"#),
+        [format!(
+            "{file}: /version: the version is empty; leave it out or say something"
+        )]
+    );
 }
 
 fn manifest_errors(text: &str) -> Vec<String> {
@@ -109,7 +142,7 @@ fn a_manifest_that_is_wrong_says_what_and_where() {
         manifest_errors(r#"{ "idd": "my_pack" }"#),
         [
             format!(
-                "{file}: /idd: unknown key \"idd\" (did you mean \"id\"?); the keys here are \"id\", \"depends_on\""
+                "{file}: /idd: unknown key \"idd\" (did you mean \"id\"?); the keys here are \"id\", \"depends_on\", \"format\", \"version\""
             ),
             format!("{file}: missing \"id\""),
         ]
