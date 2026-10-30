@@ -51,8 +51,3 @@ Three layers, and a crate may use only its own layer and those below it (a test 
 `engine/*` (the voxel engine, with no idea what any game is), `plugins/*` (content, such as the first blocks), and `games/*`
 (Cave, plus two small ones that keep the engine honest: 2048 and Eels). `docs/design-decisions.md` says why it is built this way.
 
-## Status
-
-One person and an AI pair-programmer (Claude) build this, in the open, in short bursts. There is no licence yet, so for now it is
-here to read, not to reuse. If you want to see whether a blocky spaceflight game with proper planets turns out well, star it
-and look again in a few months.
