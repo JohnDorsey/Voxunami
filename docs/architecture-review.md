@@ -4,6 +4,7 @@ Written 2026-10-29 by the assistant, at the owner's request: step back from grap
 are well designed, whether they will be easy to mod and to maintain, whether complexity is boxed in the right places, how the
 project compares with the most moddable games (Hytale first), what to change about how we work, and what we may be too close to
 see. This document is a proposal. Nothing in it is decided until the owner says so (status key as in `design-decisions.md`).
+**Appendix D (2026-10-31) says what has been done since, and keeps the answers to the owner's follow-up questions.**
 
 ## 0. How to read this
 
@@ -895,3 +896,53 @@ can be rerun; the ones that matter are described here.
   competing product (Hytale's Shared Source).
 - *Stability.* Pack formats and the wire protocol are versioned and migrate; the host API a WASM module sees is versioned; the Rust
   plugin API is internal and may change.
+
+## Appendix D. After the review (2026-10-30 and 31): what was done, and the owner's questions
+
+Added 2026-10-31. Sections 1 to 11 and appendices A to C are as written on 2026-10-29; this appendix says what has happened since and keeps the answers to the owner's follow-up questions, which were given in conversation and would otherwise be lost. **Nothing in the proposals is decided because it is here**; what is decided is in `design-decisions.md` and `decisions/`.
+
+### D.1 What was done
+
+| Item | Status | Where |
+|---|---|---|
+| M0: CI on two systems | Done. Green on Ubuntu and Windows apart from two failures of the Ubuntu job on 2026-10-30 (cause not seen: logs need a login; I believe the timing test fixed below). Windows tests take about 33 minutes, Ubuntu 11 | `.github/workflows/ci.yml` |
+| M0: README | Done, one page | `README.md` |
+| M0: ARCHITECTURE and STATE | **Not written**, on purpose: the owner said detail goes stale. `docs/README.md` is the map | |
+| M0: stale statements, the pack example, `check-pack`, `pack.json` format and version | Done; the guide's examples are now checked by a test | `launcher/tests/` |
+| M0: the server thread watched, nothing saved from half a tick | Done (not "save on a panic": a file written from half a tick could replace a good world) | `engine/game_shell/src/host.rs` |
+| M0: a test of the layers; the float functions in `clippy.toml`; `testworld*` ignored; Sculpt marked an idea; `server_world` tests moved | Done | |
+| M0: the wall-clock rule reworded, with a test for `Instant` in simulation crates | **Not done**: it needs the owner's yes to the wording (Appendix C) | |
+| F5: Cave owns Cave's ground | Done: `games/voxunami_cave/src/generators`, `SurfaceLayers`, ids `voxunami_cave:*_v1`; `base_blocks` is blocks only | `decisions/world-and-sky.md` |
+| F8: `LIGHT_YEAR` kept in two places | Moot: it is Cave's alone since F5 | |
+| F8: `FULL_LIGHT` in two crates | One definition now (`voxel_meshing` re-exports `coarse_cells`') | |
+| F8: a client plugin's id written beside its server plugin's | A check in each game: `game_shell::unpaired_client_plugins` | |
+| F8: the terrain look-ahead numbers of `physics` and `grid_bodies` | Left: the same numbers in two places, but they belong with the held-back ship work (`ship-terrain-cost.md`) | |
+| F8: `end_to_end_tests` against the rule about test-only crates | Open: the rule's wording is the owner's to change | |
+| F9: the record as a map | Docs in folders by kind, a map, a test of every reference; `design-decisions.md` split by area; the stories in `history/decision-diary.md` | `docs/README.md` |
+| M1 step 1: is an orbit stable? | Done: it is not, a little (the pull is held for every solver step of a tick); the cost found on the way was first blamed on the solver steps, which was **wrong**: profiled, it is the terrain colliders asked for round a fast ship | `tests/orbit.rs`, `ship-terrain-cost.md` |
+
+Also hardened: tests that waited a fixed time for a worker thread now wait for the condition with a deadline (`tick_until`), the unused dependencies of nine crates were removed, and the documentation's broken links were fixed and `cargo doc` with warnings denied is part of CI.
+
+### D.2 How far a feature reaches (the owner's question on 2.4)
+
+By commit (changed lines): *the sun as a light of the clock* 41 files and 12 crates (1,293 lines of code, 1,233 of tests): the renderer and the shell's sun, the protocol (one field), the client and server (a few lines), Cave, and **five pinned-session files in all three games**.
+*Docking* 41 files, 12 crates (2,826 code, 1,051 tests): `grid_bodies/docking.rs`, three block properties in `block_models`, `physics`, the mesher, `server/merge.rs`, Cave's ship plugin; **the golden sessions of 2048 and Eels** were re-pinned because the
+welcome grew by the three declared properties. *Planets from data* 39 files, 8 crates (1,618 code, 1,295 tests): `data_packs/body.rs` and its schema, the shell's `package.rs`, the planet reader, Cave's data file, 14 lines each in 2048 and Eels. *`/tp`* 16 files in one crate.
+*128-bit coordinates* 157 files, 26 crates, mostly one-line type changes. A feature that adds a message, a rule and a drawing touches 5 to 8 crates; that is normal for a layered client and server (belief: I have no benchmark). What I would lower: the golden pins (three files for a feature
+of one game), additions to `GameDefinition`, and four to seven documents per feature.
+
+### D.3 The thin client, and why mod code should not run on it (F2, A2)
+
+A thin client means a friend joins with nothing installed; there is one authority, so no desync and replay works; mod code from a stranger's server does not run on the player's computer (a sandbox helps, but one escape reaches every player; the 2023 malware in Minecraft mods
+is the example I know, from memory); and no version skew. **A tension the review did not resolve:** the client regenerates terrain nobody has edited, so a mod that adds a terrain *generator* needs code on the client. Ways out: generators as data only (a closed set of families with
+parameters, as `planet_v1` is now); the server streams the terrain of a modded generator; or a pure, sandboxed WASM generator on both ends (deterministic, no I/O). I would choose the first now and keep the third open. **Client mods the server does not know about** (accessibility)
+fit if the line is drawn by what a mod can affect: *presentation only* (reads the stream, changes what this player sees and hears; replay-safe; needs the server never to send hidden information) is allowed; anything that changes the simulation or what others see is not. Most accessibility
+is better built in (text size, palettes, subtitles for sound events, remapping, reduced motion; the server-described UI is a tree a screen reader can walk). Resource packs (client data) are safe from day one; client code mods come after server mods, in the same sandbox with a narrow API; input
+injection must be limited to the actions a human has, at a human's rate, with the server rate-limiting regardless.
+
+### D.4 Are all plugins "mods of the engine"?
+
+No, and the layer does not say so. "Plugin" means three things today: engine crates that implement `Plugin` (`grid_bodies`, `grid_lifecycle`, `player_presence`, which only Cave uses), Cave's own six plugins in `games/voxunami_cave/src/plugins`, and the `plugins/` layer, which holds one crate
+(`base_blocks`, no `Plugin` in it, one consumer). My recommendation: stop treating "plugin" as a layer and ask three questions of a piece of code: does the engine know it (only engine crates), is it a game (`voxunami_cave` is a module in its own namespace, its vocabulary is the API Cave mods build on),
+is it a mod (third-party, declares what it depends on; one that depends on `voxunami_cave` is a Cave mod). This is how Hytale's mods work: they target the game's API, not the engine's. Keep `plugins/*` for content two games share, promoted on the second user. The owner decided (2026-10-31)
+to keep `physics`, `grid_bodies`, `grid_lifecycle` and `lattice` in the engine for now.
