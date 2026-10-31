@@ -1197,17 +1197,15 @@ impl Bodies {
             if let Some(bricks) = bricks_near(body, needed_margin) {
                 needed.extend(bricks.bricks());
             }
-            let mut ring = 0;
+            let mut rings = Vec::new();
             let mut margin = needed_margin;
             while margin < lookahead {
                 margin = (margin + TERRAIN_RING_VOXELS).min(lookahead);
-                ring += 1;
-                if let Some(bricks) = bricks_near(body, margin) {
-                    for brick in bricks.bricks() {
-                        let nearest = wanted.entry(brick).or_insert(ring);
-                        *nearest = (*nearest).min(ring);
-                    }
-                }
+                rings.extend(bricks_near(body, margin));
+            }
+            for (brick, ring) in wanted_rings(&rings) {
+                let nearest = wanted.entry(brick).or_insert(ring);
+                *nearest = (*nearest).min(ring);
             }
             if let Some(bricks) = bricks_near(body, lookahead + TERRAIN_KEEP_EXTRA_VOXELS) {
                 kept.extend(bricks.bricks());
@@ -1886,9 +1884,53 @@ fn has_blocks(ship: &MovingGrid, block_channel: ChannelIndex, air: u32) -> bool 
         })
 }
 
+/// For each brick of the outermost of `boxes`, the number of the first box that holds it, counting from 1. The boxes are the bricks a ship's bounds come within a margin of,
+/// for margins that grow, so each holds the one before it, and a brick is held by a box when each of its three coordinates is: its ring is the greatest of the rings
+/// of its coordinates. That makes the work the number of bricks of the outermost box (a cube round a fast ship that is a few thousand) and not that number for every box.
+fn wanted_rings(boxes: &[voxel_space::BrickBox]) -> BTreeMap<BrickCoordinate, usize> {
+    let Some(outer) = boxes.last() else {
+        return BTreeMap::new();
+    };
+    let (low, high) = (outer.min(), outer.max());
+    let (low, high) = ([low.x(), low.y(), low.z()], [high.x(), high.y(), high.z()]);
+    let corners = |bricks: &voxel_space::BrickBox| {
+        let (min, max) = (bricks.min(), bricks.max());
+        ([min.x(), min.y(), min.z()], [max.x(), max.y(), max.z()])
+    };
+    // For each axis, the ring of each coordinate along it, counted from the low edge of the outermost box.
+    let along: [Vec<usize>; 3] = std::array::from_fn(|axis| {
+        (low[axis]..=high[axis])
+            .map(|coordinate| {
+                boxes
+                    .iter()
+                    .position(|bricks| {
+                        let (min, max) = corners(bricks);
+                        min[axis] <= coordinate && coordinate <= max[axis]
+                    })
+                    .map_or(boxes.len(), |first| first + 1)
+            })
+            .collect()
+    });
+    let mut rings = BTreeMap::new();
+    for brick in outer.bricks() {
+        let ring = (0..3)
+            .map(|axis| along[axis][(brick_component(brick, axis) - low[axis]) as usize])
+            .max()
+            .expect("three axes");
+        rings.insert(brick, ring);
+    }
+    rings
+}
+
+fn brick_component(brick: BrickCoordinate, axis: usize) -> i128 {
+    [brick.x(), brick.y(), brick.z()][axis]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+    use voxel_space::BrickBox;
 
     #[test]
     fn two_bricks_are_farther_apart_than_a_radius_when_any_axis_is_past_it() {
@@ -2150,5 +2192,74 @@ mod tests {
         );
         assert!(planet_state(Some(frame), false, last, [0.0; 3], [0.0; 3], 0.05).is_none());
         assert!(planet_state(None, false, last, [0.0; 3], [0.0; 3], 0.05).is_some());
+    }
+
+    /// The rings as the first version of `bricks_to_change` made them, which went over every brick of every box: the meaning `wanted_rings` must keep.
+    fn rings_by_going_over_every_box(boxes: &[BrickBox]) -> BTreeMap<BrickCoordinate, usize> {
+        let mut wanted: BTreeMap<BrickCoordinate, usize> = BTreeMap::new();
+        for (index, bricks) in boxes.iter().enumerate() {
+            let ring = index + 1;
+            for brick in bricks.bricks() {
+                let nearest = wanted.entry(brick).or_insert(ring);
+                *nearest = (*nearest).min(ring);
+            }
+        }
+        wanted
+    }
+
+    /// Boxes that each hold the one before, as margins that grow make them: a first box anywhere, and each of its six faces moved out by 0 to 3 bricks a ring.
+    fn nested_boxes() -> impl Strategy<Value = Vec<BrickBox>> {
+        let base = (
+            -5i128..5,
+            -5i128..5,
+            -5i128..5,
+            0i128..4,
+            0i128..4,
+            0i128..4,
+        );
+        let growth = proptest::collection::vec(proptest::array::uniform6(0i128..4), 0..9);
+        (base, growth).prop_map(|((x, y, z, width, height, depth), growth)| {
+            let mut low = [x, y, z];
+            let mut high = [x + width, y + height, z + depth];
+            let mut boxes = Vec::new();
+            for step in growth {
+                for axis in 0..3 {
+                    low[axis] -= step[axis];
+                    high[axis] += step[axis + 3];
+                }
+                boxes.push(
+                    BrickBox::new(
+                        BrickCoordinate::new(low[0], low[1], low[2]),
+                        BrickCoordinate::new(high[0], high[1], high[2]),
+                    )
+                    .expect("a box that only grows is a box"),
+                );
+            }
+            boxes
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn a_brick_is_in_the_first_ring_whose_box_holds_it(boxes in nested_boxes()) {
+            prop_assert_eq!(wanted_rings(&boxes), rings_by_going_over_every_box(&boxes));
+        }
+    }
+
+    #[test]
+    fn rings_are_numbered_from_one_and_a_brick_is_in_the_nearest_ring_that_has_it() {
+        let at = |x, y, z| BrickCoordinate::new(x, y, z);
+        let boxes = [
+            BrickBox::new(at(0, 0, 0), at(0, 0, 0)).unwrap(),
+            BrickBox::new(at(-1, -1, -1), at(1, 1, 1)).unwrap(),
+            BrickBox::new(at(-2, -1, -1), at(3, 1, 1)).unwrap(),
+        ];
+        let rings = wanted_rings(&boxes);
+        assert_eq!(rings[&at(0, 0, 0)], 1);
+        assert_eq!(rings[&at(1, 1, 1)], 2);
+        assert_eq!(rings[&at(-2, 0, 0)], 3);
+        assert_eq!(rings[&at(3, 1, 1)], 3);
+        assert_eq!(rings.len(), 6 * 3 * 3);
+        assert!(wanted_rings(&[]).is_empty());
     }
 }
