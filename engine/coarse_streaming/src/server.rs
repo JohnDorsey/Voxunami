@@ -1,4 +1,4 @@
-//! The server half of coarse levels of detail (`docs/lod-spec.md`, 3.4 and 3.5): the coarse nodes that differ from what a client derives, kept up as the world
+//! The server half of coarse levels of detail (`docs/specs/lod-spec.md`, 3.4 and 3.5): the coarse nodes that differ from what a client derives, kept up as the world
 //! is edited, and sent to the clients that need them, coarsest first and no faster than they ask.
 //!
 //! A client works out the coarse cells of unedited terrain for itself from the terrain generators it was told of. Where bricks have been edited those cells are

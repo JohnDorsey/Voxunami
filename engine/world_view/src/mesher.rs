@@ -410,7 +410,7 @@ impl WorldMesher {
     }
 
     /// Makes the mesher keep the pictures it makes instead of reporting them, for a view that swaps bricks and coarse nodes for each other
-    /// (`docs/lod-spec.md`, 3.6) and so decides when a picture goes up: [`WorldMesher::is_ready`] says that one is waiting, [`WorldMesher::show`] hands it out
+    /// (`docs/specs/lod-spec.md`, 3.6) and so decides when a picture goes up: [`WorldMesher::is_ready`] says that one is waiting, [`WorldMesher::show`] hands it out
     /// and [`WorldMesher::hide`] takes it down. The bricks it makes pictures of are the ones the view radius (as a [`FineRegion`]) says are drawn as bricks:
     /// those in a cube of two bricks that touches the ball. A brick that is shown and changes is reported again as it is made, since it is on the screen
     /// already. Bricks that go out of range are not hidden, that is for the caller to do.

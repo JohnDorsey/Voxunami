@@ -123,4 +123,4 @@ union: two packs that both set a tag to true agree, and `remove` is how one take
 - **29c** The schema generator, `check-pack` and `pack-schema`, and the differential test.
 - **29d** Wiring: `GameContent::apply_packs`, `--packs`, an end-to-end test (a pack adds a block; a client with no pack sees and draws it;
   a recording of the session replays it; a world saved with the pack's block loads without the pack and keeps it), and `placeable` (question 5).
-- **29e** Documentation for mod authors (`docs/pack-format.md`), `design-decisions.md`, `plan.md`, build log; gates on both systems.
+- **29e** Documentation for mod authors (`docs/reference/pack-format.md`), `design-decisions.md`, `plan.md`, build log; gates on both systems.

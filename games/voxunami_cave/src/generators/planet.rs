@@ -1,4 +1,4 @@
-//! A planet: ground that is a ball, whose outside is shaped by 2D heightmaps bent round it (`docs/planet-spec.md`, section 3).
+//! A planet: ground that is a ball, whose outside is shaped by 2D heightmaps bent round it (`docs/specs/planet-spec.md`, section 3).
 //!
 //! **The shape.** A voxel is ground when `radius + height(direction) - distance > 0`, where `distance` is how far the middle of the voxel is from the planet's
 //! centre (the corner where the eight voxels at the origin meet) and `height` depends only on the direction. The value is about how many voxels below the

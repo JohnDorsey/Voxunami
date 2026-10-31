@@ -1,5 +1,5 @@
 //! A body file: one body of a pack, named by the file. A body is a thing in a level of the world with ground of its own that a family of terrain generators
-//! makes: a planet. (`docs/rails-and-recipes-spec.md`, section 3.3.)
+//! makes: a planet. (`docs/specs/rails-and-recipes-spec.md`, section 3.3.)
 
 use std::sync::Arc;
 
@@ -65,7 +65,7 @@ pub struct OrbitData {
     pub phase_degrees: f64,
 }
 
-/// How a body moves (`docs/rails-and-recipes-spec.md`, section 3.4).
+/// How a body moves (`docs/specs/rails-and-recipes-spec.md`, section 3.4).
 #[derive(Clone, Debug, PartialEq)]
 pub struct BodyRail {
     pub spin: Option<SpinData>,

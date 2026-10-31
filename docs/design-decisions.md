@@ -127,7 +127,7 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   example above is read as the exposed stone face lighting the transparent block in front of it; working out the exact
   source value for that block is part of building the lighting system.
 - Light that reaches 255 blocks crosses many bricks, so updates need the phased-tick rule's brick-boundary handling.
-- How light reaches the renderer (decided by the spike in `docs/light-spike.md`, built in Phase 7): each quad carries its
+- How light reaches the renderer (decided by the spike in `docs/history/light-spike.md`, built in Phase 7): each quad carries its
   light in 8 bits of its material word, the mesher uses the light of the voxel in front of a face as part of the merge
   key, and the quad stays 8 bytes. Measured on rolling hills with made-up lamp light: meshing time +2 to +8 percent, quad
   count +25 percent for Minecraft-style 16 levels around very dense lamps, +62 percent for 256 smooth levels, none for
@@ -525,7 +525,7 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - Physics (confirmed by the owner): Rapier (rapier3d 0.36.1) behind a Voxunami adapter crate, with
   `enhanced-determinism`, single-threaded stepping on the server, a local floating-origin frame, large merged voxel
   colliders for terrain, and gravity, buoyancy and drag applied as per-body forces. Evidence and caveats are in
-  `docs/physics-spike.md`. Built so far for players only (Phases 15 and 16, below); rigid structures, buoyancy and
+  `docs/history/physics-spike.md`. Built so far for players only (Phases 15 and 16, below); rigid structures, buoyancy and
   joints are not.
 - Players' bodies (decided with the physics, Phases 15 and 16): the server moves them. A client says which keys are
   held and which way it faces; it never says where it is, and a game that moves players ignores pose messages. This is what
@@ -581,7 +581,7 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   version, in whole aligned cubes of a per-game size (larger cubes mean fewer boundary nodes). Released versions are
   frozen; a missing generator plugin loses only unmodified terrain.
 - Entity gravity direction is server-authoritative replicated state, computed from coarse LOD mass, smoothed per entity.
-- Network stream (`docs/protocol-and-replay.md`): clients tell the server a box of bricks to watch; the server sends
+- Network stream (`docs/reference/protocol-and-replay.md`): clients tell the server a box of bricks to watch; the server sends
   which generator made each part and every *edited* brick in it, then each tick the changes inside it. Terrain nobody
   has edited is never sent. A brick's first edit is sent as the whole brick, later edits as change lists with a digest of
   the result. Game and plugin messages ride in a generic message that names its owner by identifier.

@@ -1,4 +1,4 @@
-//! Which nodes of a grid are drawn for a viewer (`docs/lod-spec.md`, 3.3): one rule for terrain and for every ship, in the grid's own axes.
+//! Which nodes of a grid are drawn for a viewer (`docs/specs/lod-spec.md`, 3.3): one rule for terrain and for every ship, in the grid's own axes.
 //!
 //! A cube of bricks (a node: `BrickCube`, whose `level` is the detail level of its cells) is **fine enough** when its cells are small against its distance
 //! from the viewer: a cell is `2^level` voxels across, and it is fine enough when that is at most `cell_pixels` times the size of a pixel at that

@@ -1,4 +1,4 @@
-//! `/tp` to a place (`docs/places-spec.md`): a body by its name, on the ground nearest the player or at a latitude and longitude or at coordinates of its own; the
+//! `/tp` to a place (`docs/specs/places-spec.md`): a body by its name, on the ground nearest the player or at a latitude and longitude or at coordinates of its own; the
 //! great rivers' landmarks; and from a level to another. The old `/tp X Y Z` is in `commands.rs`.
 
 mod common;

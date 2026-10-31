@@ -22,7 +22,7 @@ of it as far as it goes.
    nodes above it is not obviously better than rasterising them), a cubemap of the far field (it saves the far draw, 0.5 to 7 ms, at the price of re-baking every few tens of metres and a depth to composite with; worth it
    only at planet distances), and column meshes read by the vertex shader from a height buffer (a quarter of the memory; a different renderer).
 
-Reproduce: `cd docs/spikes/lod && cargo run --release -- help` (a standalone project, like the other spikes; it uses the real terrain, selection, mesher and renderer). Measured on the owner's machine (Ryzen 5 7600X, RTX 3090,
+Reproduce: `cd docs/history/spikes/lod && cargo run --release -- help` (a standalone project, like the other spikes; it uses the real terrain, selection, mesher and renderer). Measured on the owner's machine (Ryzen 5 7600X, RTX 3090,
 AMD Radeon integrated graphics, Windows 10), release build, the rolling hills of seed 2024 (hills 40 high, the largest 128 voxels across, six octaves). Counts repeat; times are of one run.
 
 ## 1. Pruning, and the size of the problem (`pruning`, `detail`)

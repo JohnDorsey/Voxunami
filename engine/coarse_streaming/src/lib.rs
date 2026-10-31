@@ -1,4 +1,4 @@
-//! Coarse levels of detail in the stream (`docs/lod-spec.md`, 3.5 and 38i): the messages and, in the modules that follow, the server and client sides.
+//! Coarse levels of detail in the stream (`docs/specs/lod-spec.md`, 3.5 and 38i): the messages and, in the modules that follow, the server and client sides.
 
 mod messages;
 mod server;

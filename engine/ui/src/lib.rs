@@ -1,7 +1,7 @@
 //! A small user interface that a server can describe and a client can draw: a tree of panels, labels, buttons, bars and
 //! swatches (see [`Ui`]), the limits that keep a hostile description cheap, its byte form for the messages that carry it, and
 //! a layout that turns it into rectangles and text at whole pixels. Nothing here draws or knows of a window.
-//! See `docs/ui-spec.md`.
+//! See `docs/specs/ui-spec.md`.
 
 mod codec;
 mod layout;

@@ -10,7 +10,7 @@ standing in for the server, so the unchanged client code rebuilds the views tick
 
 All integers are little-endian unless stated; "varint" is unsigned LEB128, "zigzag" a signed varint, "bytes" a varint
 length then that many bytes, a "string" is bytes of UTF-8, an "identifier" is a string holding `namespace:name`
-(see `docs/world-file-format.md` for the same primitives).
+(see `docs/reference/world-file-format.md` for the same primitives).
 
 ## Frames and connections
 

@@ -2,7 +2,7 @@
 //!
 //! Nothing else in the engine imports Rapier: this crate hides it behind types of the engine's own
 //! ([`WorldPosition`](voxel_space::WorldPosition), [`MoveInput`]). It follows the architecture of
-//! `docs/physics-spike.md`:
+//! `docs/history/physics-spike.md`:
 //!
 //! - Rapier works in `f32`, so each body lives in a *local frame* (a brick of the world as origin)
 //!   near it, which is rebuilt when the body has gone some way from its origin;

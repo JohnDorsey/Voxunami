@@ -23,7 +23,7 @@ see the whole of it from orbit, and (this part is the plan, not yet the game) bu
   Everything a client sees comes from the server's message stream, so any session can be recorded and watched again.
 - **The same world on Windows and Linux**, bit for bit: the simulation avoids anything the two systems do differently.
 - **Packs of JSON add blocks and planets** with no code, checked with good error messages before a server loads them
-  (`docs/pack-format.md`).
+  (`docs/reference/pack-format.md`).
 
 ## What is not
 

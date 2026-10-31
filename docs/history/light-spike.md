@@ -11,7 +11,7 @@ that big quads are cut where light changes, which the table below measures. Conf
 meshing time figures are right for this terrain and these made-up fields; moderate on how they carry over to real lamp
 and cave lighting, which does not exist yet.
 
-Reproduce: `cd docs/spikes/light && cargo run --release`. The project is standalone and not part of the cargo workspace;
+Reproduce: `cd docs/history/spikes/light && cargo run --release`. The project is standalone and not part of the cargo workspace;
 it uses the real mesher (`voxel_meshing::mesh_brick`) and the real `base_blocks` terrain. Measured on the owner's
 Windows 10 machine, one thread, release build, best of 5 runs of meshing the whole patch; the numbers that are not times
 are exact and repeat.

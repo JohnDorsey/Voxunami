@@ -1,4 +1,4 @@
-//! Bricks and coarse nodes drawn together (`docs/lod-spec.md`, 3.3 and 3.6): what a viewer sees of the terrain of a level, near as bricks and far as nodes.
+//! Bricks and coarse nodes drawn together (`docs/specs/lod-spec.md`, 3.3 and 3.6): what a viewer sees of the terrain of a level, near as bricks and far as nodes.
 //!
 //! [`LodView`] decides, from where the viewer is, which cubes are to be drawn ([`coarse_cells::select_around_brick`]: bricks inside the viewer's
 //! [`coarse_cells::FineRegion`], nodes of growing size outside), has them made (the bricks by the [`WorldMesher`], held back; the nodes on threads of its own,

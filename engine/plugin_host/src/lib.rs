@@ -8,7 +8,7 @@
 //!
 //! Order is part of the replay contract: within a phase, systems run in one sequential order given by
 //! the `after` and `before` they declare and, for ties, by plugin identifier then their own; never by
-//! hash order, thread timing or the order the plugins were listed. See `docs/plugin-api-spec.md`.
+//! hash order, thread timing or the order the plugins were listed. See `docs/specs/plugin-api-spec.md`.
 
 mod command;
 mod context;

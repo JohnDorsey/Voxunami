@@ -10,7 +10,7 @@ things it lacks (buoyancy, per-brick material densities, splitting) are small, w
 Confidence: high that it is fit for purpose for structures; moderate on how it scales to thousands of players, which
 this spike did not test.
 
-Reproduce: `cd docs/spikes/physics && cargo run --release -- all` (or one of `determinism scale origin perf seams
+Reproduce: `cd docs/history/spikes/physics && cargo run --release -- all` (or one of `determinism scale origin perf seams
 collisions joints buoyancy misc`). The project is standalone and not part of the cargo workspace. Everything below was
 measured on a Ryzen 7600X, single thread, release build, 60 Hz steps, unless stated. "Verified" means a test printed it.
 

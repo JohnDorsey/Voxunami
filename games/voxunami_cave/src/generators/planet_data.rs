@@ -1,4 +1,4 @@
-//! How the parameters of the planet family are written in a body file (`docs/rails-and-recipes-spec.md`, section 3.3), and the schema an editor checks them with.
+//! How the parameters of the planet family are written in a body file (`docs/specs/rails-and-recipes-spec.md`, section 3.3), and the schema an editor checks them with.
 
 use std::sync::Arc;
 

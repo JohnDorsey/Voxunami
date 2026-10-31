@@ -1,4 +1,4 @@
-//! How far the coarse cells a generator gives are from the coarse cells of the bricks it generates (`docs/lod-spec.md`, 38e).
+//! How far the coarse cells a generator gives are from the coarse cells of the bricks it generates (`docs/specs/lod-spec.md`, 38e).
 //!
 //! The generator's cells (`TerrainGenerator::coarse_node`) are worked out from the density field without generating the voxels. The exact ones are made the
 //! other way: generate every brick of the cube and the bricks around it, make the node of each (`voxel_meshing::coarse_node_of_brick`), and make the nodes up

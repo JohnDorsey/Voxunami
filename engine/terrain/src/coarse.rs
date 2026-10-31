@@ -1,4 +1,4 @@
-//! The coarse cells of terrain: what a density field looks like from far away (`docs/lod-spec.md`, 38e).
+//! The coarse cells of terrain: what a density field looks like from far away (`docs/specs/lod-spec.md`, 38e).
 //!
 //! A node of detail level `n` is 32 x 32 x 32 cells of `2^n` voxels each. The field is asked about each cell at footprint `n` (so the features finer than a
 //! cell are not in it, as for all coarse sampling): whether the cell is all air or all ground from the bounds over it, and for a cell that is neither

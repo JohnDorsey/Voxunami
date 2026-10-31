@@ -1,4 +1,4 @@
-//! The landmarks of the great rivers as places (`docs/great-rivers-spec.md`, `docs/places-spec.md`): `/tp base_blocks:great_river_narrowest` and `..._widest` put a player in view of that knot of the
+//! The landmarks of the great rivers as places (`docs/specs/great-rivers-spec.md`, `docs/specs/places-spec.md`): `/tp base_blocks:great_river_narrowest` and `..._widest` put a player in view of that knot of the
 //! river, with the knot ahead of where they look, and tell them how far.
 
 mod common;

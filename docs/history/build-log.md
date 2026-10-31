@@ -1,6 +1,6 @@
 # Build log
 
-What each phase built, and what was measured. History: read the phase you need (`grep -n "^Phase" docs/build-log.md` lists them).
+What each phase built, and what was measured. History: read the phase you need (`grep -n "^Phase" docs/history/build-log.md` lists them).
 The decisions that came out of them are in `design-decisions.md`; the plan is in `plan.md`.
 
 ## Built
@@ -45,7 +45,7 @@ Phase 1d (saving):
 - `content_registry`: `IdentifierRegistry`, a type-erased view for translating ids.
 - `terrain`: `WorldTerrain` exposes its configuration and can restore saved assignments.
 - `world_storage`: the section container, the engine sections, `WorldData` (terrain recipe + edited bricks + plugin
-  sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/world-file-format.md`.
+  sections), `ParsedWorld` / `LoadContext` / `LoadReport`. The format is specified in `docs/reference/world-file-format.md`.
 
 Phase 23e (closing Phase 23; owner's request, 2026-10-18):
 - `GameDefinition::new_logic` is replaced by `GameDefinition::plugins(content)`; the shell builds the `PluginHost`
@@ -162,7 +162,7 @@ Phase 22 (cells of any width; owner's request, 2026-10-17; still a spike):
   preset 8-level scheme (103), which also had cells of 16 and 32; why was not investigated. The 4-level scheme with seven scales is cheapest
   per tick (3 levels is only 3 cells of reach, 156 cells in all) but its switching tick is the slowest (60 ms: it reads whole cells
   of 23, 12 167 voxels each, once). Cost follows the finest scale and the number of levels, as in Phase 21, not how many scales there are.
-- Pictures (`docs/multiscale-modes/montage_custom.png`: classic, then the four; same view and no ambient light or fog as Phase 21).
+- Pictures (`docs/history/multiscale-modes/montage_custom.png`: classic, then the four; same view and no ambient light or fog as Phase 21).
   Mean ground brightness measured from the pictures the same way as before (classic 26.5, which matches the 27 of Phase 21):
   8 levels with 1, 3, 7, 17: 61.5; with 1, 5, 17: 56.2; with 2, 5, 11, 17: 70.3; 4 levels with seven scales: 42.3. Cells of 17 show as flat dark
   squares far from the lamp, on a grid of 17 from the origin (it does not line up with the lamp or the platform, which is the point of
@@ -217,7 +217,7 @@ Phase 21 (multiscale light schemes and weights; owner's request, 2026-10-17; sti
   fills and empties slowest in ticks (a sphere of 31 cells at the finest scale),; 16 is about classic's cost; 8 and 4 are cheaper than classic in ticks, with a switching tick that is
   slow because cells of 16 and 32 are costly to look into the first time (the 4-level switch reads whole cells of 32). The mean cost
   of fill is dominated by the finest scale in every scheme, so the number of levels, not the number of scales, drives the cost.
-- Pictures (`docs/multiscale-modes/montage.png`: classic, then 32, 16, 8, 4 levels; from straight above, no ambient light, no fog; the lamp is
+- Pictures (`docs/history/multiscale-modes/montage.png`: classic, then 32, 16, 8, 4 levels; from straight above, no ambient light, no fog; the lamp is
   the pale square, flat ground on the left): the schemes agree on the far shape of the glow; the fewer the levels the bigger and plainer
   the steps, and in 8 and 4 the cells of 16 and 32 show as flat squares; the 4-level scheme shows a dark band at the back of the hills (cells
   that are mostly hill are not connected to the lamp's air by a face that touches). Classic is much dimmer at the same distance
@@ -602,7 +602,7 @@ Phase 1f (first game):
 - `tools/terrain_viewer` is gone: the game does everything it did (`--screenshot`, `--benchmark`, `--adapter`), through
   the same client path a networked player uses.
 
-Phase 1e (the stream; protocol version 1, documented in `docs/protocol-and-replay.md`):
+Phase 1e (the stream; protocol version 1, documented in `docs/reference/protocol-and-replay.md`):
 - `binary_codec` (the byte primitives, moved out of `world_storage`), `voxel_space::BrickBox` (inclusive box of bricks,
   with `without` for the newly watched part), `region_octree::BrickCube::covering`, `voxel_grid::Grid::content_digest`.
 - `world_storage`: `WorldData::describe` (the world's shape as a small world file), `SourceTranslator` (translates a
@@ -1618,7 +1618,7 @@ Phase 27g (items, inventories, drops, game modes, boxes):
 - Server: the player entity has a nine slot `Inventory` (replicated); Cave declares an item for each of its six placeable blocks, the kind
   `voxunami_cave:dropped_item`, `/gamemode [creative|survival]` (saved per world, not saved while creative), and an items plugin: in survival a broken
   block leaves its item, items fall a voxel every fourth tick and join and are picked up within 3 voxels, placing needs the item and uses it
-  up. Block editing now announces `BlockBroken` and `BlockPlaced`. `docs/entities-spec.md` 2.6b has the decisions.
+  up. Block editing now announces `BlockBroken` and `BlockPlaced`. `docs/specs/entities-spec.md` 2.6b has the decisions.
 - Client: `ClientContext::entities()`; the verb `entity_appearance`; `EntityBox` in the renderer (22 renderer GPU tests pass on both adapters, 2 new);
   Cave's client shows the survival count on the screen and draws items as boxes.
 - Tests: 12 item tests through a server and a session (creative changes nothing, drops, falling and joining independent of the tick phase,
@@ -1698,7 +1698,7 @@ loop and bounds overhead, so bulk decode will be faster):
   Uniform bricks cost almost nothing; a 3-value surface brick channel is 8 KB; a dense channel is 4 bytes per voxel.
 - Cloning a 2048-brick grid takes 14.5 us; the first write to a snapshotted surface brick takes 2.3 us.
 
-Light in the quad (Windows 10 machine, release, one thread; `docs/light-spike.md`): meshing a 416 x 416 x 256 voxel patch
+Light in the quad (Windows 10 machine, release, one thread; `docs/history/light-spike.md`): meshing a 416 x 416 x 256 voxel patch
 of rolling hills with a light channel takes 2 to 8 percent longer than without one; quads grow 0 to 25 percent for
 Minecraft-style light and 62 percent for 256 smooth levels around very dense lamps.
 

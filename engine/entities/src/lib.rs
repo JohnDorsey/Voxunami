@@ -11,7 +11,7 @@
 //!
 //! Everything here is deterministic: iteration is by identifier, nothing reads a clock, and a pose is
 //! compared by bits. Replication to clients and saving are built on top of this crate (see
-//! `docs/entities-spec.md`).
+//! `docs/specs/entities-spec.md`).
 
 mod catalog;
 mod component;

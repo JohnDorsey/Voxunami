@@ -335,7 +335,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         self.terrain.mesher()
     }
 
-    /// Makes the session draw terrain beyond the bricks round the camera, as coarse nodes (`docs/lod-spec.md`), and ask the server for the ones it must
+    /// Makes the session draw terrain beyond the bricks round the camera, as coarse nodes (`docs/specs/lod-spec.md`), and ask the server for the ones it must
     /// correct. Done before anything is drawn, or what has been is made again.
     pub fn enable_coarse_detail(&mut self, detail: CoarseDetail) {
         if matches!(self.terrain, TerrainView::Coarse(_)) {
@@ -420,7 +420,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         taken_down
     }
 
-    /// Makes the session draw the terrain of a planet beyond the bricks round the camera, as the nodes of the planet's generator (`docs/planet-spec.md`, 39e). Done
+    /// Makes the session draw the terrain of a planet beyond the bricks round the camera, as the nodes of the planet's generator (`docs/specs/planet-spec.md`, 39e). Done
     /// before anything is drawn, or the planets that are already are made again.
     pub fn enable_grid_detail(&mut self, detail: CoarseDetail) {
         self.grid_detail = Some(detail);

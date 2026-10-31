@@ -13,7 +13,7 @@
 //! ship's own coordinates, where the ship's blocks are its terrain and the ship is still, so the ship carries it exactly; gravity is
 //! the world's field turned into those coordinates (so on a ship that is on its side or upside down the body stands on what is the floor
 //! now); and a body that has nothing of the ship under it, or is far from it, is put back in the level with the speed the ship gave it.
-//! See [`crate::aboard`] for the two questions, and `docs/moving-grids-spec.md`, 2.6.
+//! See [`crate::aboard`] for the two questions, and `docs/specs/moving-grids-spec.md`, 2.6.
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -1,4 +1,4 @@
-//! The coarse cells of a brick: what each of its voxels is drawn as from far away (`docs/lod-spec.md`, 38d).
+//! The coarse cells of a brick: what each of its voxels is drawn as from far away (`docs/specs/lod-spec.md`, 38d).
 //!
 //! This is the other half of meshing: the mesher decides which faces of a brick are drawn, and here the same decision says how much surface each voxel
 //! shows to the air, which is what a coarse cell chooses its block by (`coarse_cells::combine`).
@@ -167,7 +167,7 @@ fn uniform_node(
     })
 }
 
-/// The mesh of a coarse node (`docs/lod-spec.md`, 38g): a cube for each cell that is filled by at least [`DRAWN_FILL`] (half), in the units of the cells
+/// The mesh of a coarse node (`docs/specs/lod-spec.md`, 38g): a cube for each cell that is filled by at least [`DRAWN_FILL`] (half), in the units of the cells
 /// (one unit is a cell, `2^level` voxels; the renderer scales it), with a face wherever the cell next to it is not a cube. Cubes of the same block and light
 /// along a face are merged into one rectangle, as for a brick.
 ///

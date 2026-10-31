@@ -1,4 +1,4 @@
-//! The great rivers: tubes of water that span the universe (`docs/great-rivers-spec.md`).
+//! The great rivers: tubes of water that span the universe (`docs/specs/great-rivers-spec.md`).
 //!
 //! A river is a **path** of knots with whole-voxel positions, joined by straight **courses** (a small whole-number direction and a number of steps along it, so
 //! that a knot is exact at any distance), and a **radius** at each knot that goes from knot to knot as a power of two: the log of the radius changes in a

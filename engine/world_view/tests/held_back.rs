@@ -1,4 +1,4 @@
-//! The mesher that holds its pictures back until it is asked to show them (`docs/lod-spec.md`, 3.6): the bricks a coordinator swaps with coarse nodes.
+//! The mesher that holds its pictures back until it is asked to show them (`docs/specs/lod-spec.md`, 3.6): the bricks a coordinator swaps with coarse nodes.
 
 use coarse_cells::FineRegion;
 use voxel_space::BrickCoordinate;

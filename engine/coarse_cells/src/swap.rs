@@ -1,4 +1,4 @@
-//! Changing what is drawn without a gap or an overlap (`docs/lod-spec.md`, 3.6: a node replaced by its children, or the reverse, swaps in one frame).
+//! Changing what is drawn without a gap or an overlap (`docs/specs/lod-spec.md`, 3.6: a node replaced by its children, or the reverse, swaps in one frame).
 //!
 //! What is drawn at any moment is a set of cubes that do not overlap: bricks (detail level 0) and nodes. What should be drawn, [`select_nodes`](crate::select_nodes)
 //! says, is another such set, and the two differ as the viewer moves. A cube that is to go is replaced by the cubes that are to come in its place, and the

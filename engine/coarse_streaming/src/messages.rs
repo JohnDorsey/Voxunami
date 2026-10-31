@@ -1,4 +1,4 @@
-//! The two messages of coarse levels of detail (`docs/lod-spec.md`, 3.5), carried as game messages: the client says how it wants far things drawn, and the
+//! The two messages of coarse levels of detail (`docs/specs/lod-spec.md`, 3.5), carried as game messages: the client says how it wants far things drawn, and the
 //! server sends the coarse nodes that differ from what the client works out for itself.
 //!
 //! Everything is keyed by the **grid** (`GridId`), never by "the terrain of the level": a ship's nodes are sent the same way, and a ship that has terrain

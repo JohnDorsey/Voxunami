@@ -1,6 +1,6 @@
 //! `/ship`: a player makes a ship of what they built, and pushes it, holds it still, and pilots it. (Ships are made by the engine from
 //! voxels of the terrain; which voxels, and what a pilot's keys do, are Cave's. Until there is a command chair these commands are how a
-//! ship comes to be and to fly. See `docs/moving-grids-spec.md`, 2.7.)
+//! ship comes to be and to fly. See `docs/specs/moving-grids-spec.md`, 2.7.)
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};

@@ -1,4 +1,4 @@
-//! The bricks a client draws as bricks (`docs/lod-spec.md`, 3.3 and 3.5): a ball of bricks round the brick the viewer is in. Everything outside it is drawn as
+//! The bricks a client draws as bricks (`docs/specs/lod-spec.md`, 3.3 and 3.5): a ball of bricks round the brick the viewer is in. Everything outside it is drawn as
 //! coarse nodes, everything inside as bricks, and the two must meet without a gap or an overlap, on the client that draws them and on the server that sends
 //! the nodes, which is why the rule for them is here and only here.
 //!

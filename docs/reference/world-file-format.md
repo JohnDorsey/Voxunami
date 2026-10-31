@@ -61,7 +61,7 @@ one completely, and is only stored if it differs from what the generator makes (
 
 `WorldData::describe` writes the same container with only `engine:header`, `engine:registries`, `engine:channels` and
 `engine:levels` (each level with no assignment leaves and no bricks): the world's shape without its contents. A server sends it to a joining
-client (`docs/protocol-and-replay.md`), which loads it exactly like a save, and keeps the `SourceTranslator` that loading
+client (`docs/reference/protocol-and-replay.md`), which loads it exactly like a save, and keeps the `SourceTranslator` that loading
 builds to translate the bricks, values and generator ids the server sends afterwards.
 
 ## What happens when something is missing

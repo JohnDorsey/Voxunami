@@ -1,4 +1,4 @@
-//! Rails: how a body moves, as a function of the time of the world and nothing else (`docs/rails-and-recipes-spec.md`, section 3.4).
+//! Rails: how a body moves, as a function of the time of the world and nothing else (`docs/specs/rails-and-recipes-spec.md`, section 3.4).
 //!
 //! A planet on rails is not integrated: its place and its turn at a time are worked out from the time alone, so they are the same bits on every machine, there is
 //! nothing to drift, and a world that is saved and loaded has its planets where the clock says without having saved them. A spin is worked out with `libm` in

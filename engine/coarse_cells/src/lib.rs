@@ -1,4 +1,4 @@
-//! Coarse cells: what far away voxels are drawn as (`docs/lod-spec.md`).
+//! Coarse cells: what far away voxels are drawn as (`docs/specs/lod-spec.md`).
 //!
 //! A [`CoarseCell`] stands for a cube of `2^n` voxels along each edge (detail level `n`, [`voxel_space::LevelOfDetail`]): its dominant block, how much of it
 //! is filled, how bright it is, and how much of its surface touches air. Eight cells make the cell one level up ([`combine`]); a [`CoarseNode`] is 32 x 32

@@ -1,4 +1,4 @@
-//! Where the world has been edited, as far as drawing it goes (`docs/lod-spec.md`, 9b): a cube that holds an edit is never left out as empty or buried, and nor is a
+//! Where the world has been edited, as far as drawing it goes (`docs/specs/lod-spec.md`, 9b): a cube that holds an edit is never left out as empty or buried, and nor is a
 //! cube beside one, since its walls face the edit. The server follows the cubes that hold an override to find the leaves it has something to send for.
 //!
 //! A cube that holds an edit has an override (the server keeps one for every cube from detail level 1 to 12 that holds an edited brick, and sends it to

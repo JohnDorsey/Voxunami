@@ -1,4 +1,4 @@
-//! The places a player can go to with `/tp` (`docs/places-spec.md`): a body (a planet, a moon, a star: any ship with terrain) by the name of its generator, and the
+//! The places a player can go to with `/tp` (`docs/specs/places-spec.md`): a body (a planet, a moon, a star: any ship with terrain) by the name of its generator, and the
 //! landmarks of the great rivers. A body is reached on the ground nearest to the player, at a latitude and longitude, or at coordinates of its own.
 
 use crate::generators::great_rivers_generator_identifier;

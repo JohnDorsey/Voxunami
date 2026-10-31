@@ -71,7 +71,7 @@ Phase 1 is the walking skeleton. Each step ends with passing tests, clippy, rust
 - 19 Multiscale light spike in Cave: four scales of 16-level flood fill (cells of 1, 2, 4, 8), switched with `/light`. **Done (a spike).**
 - 1f Launcher and first game crate: `world_view`, the `base_blocks` plugin, Voxunami Cave, the launcher; the old viewer
   retired. **Done.**
-The physics spike is done (`docs/physics-spike.md`); the adapter for rigid structures belongs with the structures work.
+The physics spike is done (`docs/history/physics-spike.md`); the adapter for rigid structures belongs with the structures work.
 
 ## Proposed
 - Order of features, to let real uses shape the engine and the plugin API before either is frozen (proposed 2026-10-16;
@@ -113,7 +113,7 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   no players and no saved worlds to protect, especially the parts modders touch). They come from comparing this design with
   Hytale, Minecraft (Java and Bedrock), Factorio, Luanti, Vintage Story, RimWorld, Starbound and Veloren. The eight weaknesses
   they answer, the options weighed for each, what they leave open, and the sources are in
-  `docs/plugin-architecture-review.md`. Five changes, in the order they depend on each other, each small in API terms:
+  `docs/history/plugin-architecture-review.md`. Five changes, in the order they depend on each other, each small in API terms:
   1. **A registrar and a few events (Phase 23).** A plugin is one function handed a `Registrar` (on the server and on every
      client) and registers what it adds: blocks, channels, property keys, commands, message kinds, tick systems, event handlers,
      save sections, and client hooks (a HUD line, key actions, client commands). That list is the API's size budget: an eighth
@@ -308,7 +308,7 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   along a wall (seen once in the pinned Cave session against terrain, and found with turned ship walls): made again for walls of terrain too in 32h,
   which changed the pinned Cave session (the walker no longer stands still for a hundred steps); (e) `/tp` far from the start does not tell the client where it
   is (returning players now are told); (f) nothing is hurt by being pushed or pressed: a ship that falls on a player lifts them onto itself.
-- Plugin architecture (2026-10-17; `docs/plugin-architecture-review.md` has the options and sources; each item is now in the
+- Plugin architecture (2026-10-17; `docs/history/plugin-architecture-review.md` has the options and sources; each item is now in the
   Build plan, and what stays open is the detail): (a) *Entities and items* (Phase 27; built since, 27a to 27i, so entities, inventories and their messages exist): when this was
   written only players existed. The design says creatures are finite grids, which is not built, and what the first mob is stays open. (b) *Patches* (Phase 29): the operations
   and failure rules are written above; the policy for a patch to a property whose plugin is missing (ignore with a warning, or
@@ -393,7 +393,7 @@ The physics spike is done (`docs/physics-spike.md`); the adapter for rigid struc
   Other players are drawn as a plain pillar that does not face where they look, and there is no inventory.
 - Network scale: a spatial index over watched regions (an edit currently scans all clients); passwords or at least a
   shared secret, and encryption, before play over the internet; resending single bricks to repair a client that fell out of sync; replay keyframes for seeking; interest with a
-  level of detail. See "Known limits" in `docs/protocol-and-replay.md`.
+  level of detail. See "Known limits" in `docs/reference/protocol-and-replay.md`.
 - The server's cache of generated bricks is 128 bricks, chosen without measuring; it matters when logic reads many
   different bricks every tick (large moving structures, simulation across a wide area).
 - Which replicated entity state (players, structures) is common to all games; it travels as game messages until a second

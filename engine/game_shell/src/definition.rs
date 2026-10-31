@@ -86,7 +86,7 @@ pub struct CameraStart {
     pub pitch_degrees: f32,
 }
 
-/// How a game draws terrain that is far away: as coarse nodes (`docs/lod-spec.md`), which the client makes from the terrain generators and the server corrects where
+/// How a game draws terrain that is far away: as coarse nodes (`docs/specs/lod-spec.md`), which the client makes from the terrain generators and the server corrects where
 /// the world has been edited. A game that does not say draws bricks around the camera and nothing beyond.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CoarseDetail {

@@ -365,7 +365,7 @@ mod tests {
     fn the_examples_in_the_pack_format_guide_pass_check_pack() {
         let guide = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../docs/pack-format.md"
+            "/../docs/reference/pack-format.md"
         ))
         .expect("the guide is in docs/");
         let packs = Scratch::new("guide_examples");

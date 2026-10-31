@@ -1,5 +1,5 @@
 # Throwaway physics experiments (see ../../physics-spike.md). A standalone project, not part of the
-# workspace: `cd docs/spikes/physics && cargo run --release -- all`.
+# workspace: `cd docs/history/spikes/physics && cargo run --release -- all`.
 [package]
 name = "physics_spike"
 version = "0.0.0"

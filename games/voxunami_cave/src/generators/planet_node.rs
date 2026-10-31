@@ -1,4 +1,4 @@
-//! The coarse nodes of a planet (`docs/planet-spec.md`, section 3): what its ground looks like from far away, made from columns.
+//! The coarse nodes of a planet (`docs/specs/planet-spec.md`, section 3): what its ground looks like from far away, made from columns.
 //!
 //! A node of detail level `n` is 32 x 32 x 32 cells of `2^n` voxels. Asking the ground about the 4 x 4 x 4 points of every cell of a surface node (as
 //! `coarse.rs` does for flat terrain) costs far too much for a planet, whose ground takes many noise octaves to say anything. Instead each of the 32 x 32

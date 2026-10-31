@@ -56,7 +56,7 @@ document becomes history: a later session should not load it whole.
    prove I did what I meant, not that it is good; and the record has grown into a place to put things down, not a map.
 7. **What I would change** (sections 9 to 11): direct by player outcome, one milestone at a time, with a stop list; sort decisions
    into one-way doors (you decide, on a one-page memo) and two-way doors (I decide and log); scale rigour to the kind of change; you
-   play for twenty minutes a week; a README, a one-page architecture and a `STATE.md`; continuous integration on both systems; and
+   play for twenty minutes a week; a README, a one-page architecture and a state document; continuous integration on both systems; and
    three words (*pack*, *module*, *game*) used the same way everywhere.
 
 ## 2. What I measured
@@ -707,7 +707,7 @@ I would rather say these plainly once than have you find them later.
    does well. Hexadecimal is your choice and a fine one for us, and a barrier for a newcomer; a development mode and a friendly
    default would serve both.
 8. **Bus factor.** The builder is a model and the reader is one person. If either is unavailable for a month the other cannot carry
-   on alone. The cure is cheap: a one-page architecture and a `STATE.md`, so that a new model or a new person starts in an hour.
+   on alone. The cure is cheap: a one-page architecture and a state document, so that a new model or a new person starts in an hour.
 9. **Which game is the product.** Cave is the space game; 2048 and Eels are finished toys (6.6 percent of the lines, unchanged in
    design since 10-17); Sculpt is an idea. Saying which is the product frees the others to be fixtures.
 
@@ -767,7 +767,7 @@ Mutation experiments, extra adapters and golden pins belong in tier 1. The sky w
 
 - Every proposal states the outcome, the cost, what it blocks, and what would make us remove it.
 - I flag one-way doors, stop, and wait.
-- I keep a one-page `docs/STATE.md` (where we are, what is next, what waits on you) and rewrite it at the end of each phase, so a
+- I keep a one-page state document (not written: the map in `docs/README.md` is the nearest thing) (where we are, what is next, what waits on you) and rewrite it at the end of each phase, so a
   new session starts in minutes.
 - I scale rigour by tier and say which tier I am in.
 - I tell you once, briefly, when I think a request is a detour, then do what you decide.
@@ -881,7 +881,7 @@ can be rerun; the ones that matter are described here.
 
 ## Appendix C. Wording I would propose for `CLAUDE.md` (not applied; it is your file)
 
-- *Direction.* Each phase begins with a one-sentence outcome a player or modder could see, and ends by rewriting `docs/STATE.md`.
+- *Direction.* Each phase begins with a one-sentence outcome a player or modder could see, and ends by rewriting the state document.
 - *Decisions.* One-way doors (formats, wire, coordinates, the mod surface, assets, licence, the flagship game) need a one-page memo
   and the owner's yes before they are built; two-way doors are decided and logged in a line.
 - *Rigour.* Tier 1 (whatever a world or a mod depends on) gets tests first, property tests, mutation experiments and both systems;

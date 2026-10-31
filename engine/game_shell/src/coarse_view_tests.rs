@@ -1,4 +1,4 @@
-//! Terrain far away, drawn as coarse nodes (`docs/lod-spec.md`): an edit made by the server shows in the coarse view of a player who is far from it, a player
+//! Terrain far away, drawn as coarse nodes (`docs/specs/lod-spec.md`): an edit made by the server shows in the coarse view of a player who is far from it, a player
 //! who arrives later sees the same, and a recording shows what the live player saw. The terrain is the flat ground of the example game.
 
 use std::collections::HashMap;
