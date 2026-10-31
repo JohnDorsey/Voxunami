@@ -20,7 +20,6 @@ world_storage.workspace = true
 
 [dev-dependencies]
 block_models.workspace = true
-entities.workspace = true
 identity.workspace = true
 transport.workspace = true
 world_storage = { workspace = true, features = ["test-support"] }

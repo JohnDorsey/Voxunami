@@ -13,8 +13,5 @@ transport.workspace = true
 thiserror.workspace = true
 crc32fast = "1"
 
-[dev-dependencies]
-proptest.workspace = true
-
 [lints]
 workspace = true

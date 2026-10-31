@@ -12,8 +12,5 @@ namespaced_id.workspace = true
 protocol.workspace = true
 rand_core = { version = "0.6", features = ["getrandom"] }
 
-[dev-dependencies]
-proptest.workspace = true
-
 [lints]
 workspace = true

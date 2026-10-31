@@ -148,7 +148,6 @@ dependencies = [
  "block_models",
  "content_registry",
  "namespaced_id",
- "region_octree",
  "voxel_grid",
  "voxel_space",
 ]
@@ -647,7 +646,6 @@ dependencies = [
  "namespaced_id",
  "proptest",
  "serde_json",
- "thiserror 2.0.21",
  "voxel_space",
 ]
 
@@ -969,7 +967,6 @@ dependencies = [
  "binary_codec",
  "block_models",
  "client",
- "coarse_cells",
  "coarse_streaming",
  "content_registry",
  "ctrlc",
@@ -1174,7 +1171,6 @@ name = "grid_lifecycle"
 version = "0.0.0"
 dependencies = [
  "block_models",
- "entities",
  "grid_bodies",
  "identity",
  "namespaced_id",
@@ -1260,7 +1256,6 @@ version = "0.0.0"
 dependencies = [
  "ed25519-dalek",
  "namespaced_id",
- "proptest",
  "protocol",
  "rand_core 0.6.4",
 ]
@@ -2659,7 +2654,6 @@ version = "0.0.0"
 dependencies = [
  "binary_codec",
  "crc32fast",
- "proptest",
  "protocol",
  "thiserror 2.0.21",
  "transport",
@@ -2849,7 +2843,6 @@ dependencies = [
  "identity",
  "libm",
  "namespaced_id",
- "proptest",
  "protocol",
  "region_octree",
  "server",
@@ -3103,7 +3096,6 @@ version = "0.0.0"
 dependencies = [
  "coarse_cells",
  "content_registry",
- "libm",
  "namespaced_id",
  "proptest",
  "region_octree",
@@ -3426,7 +3418,6 @@ dependencies = [
  "transport",
  "voxel_grid",
  "voxel_space",
- "wgpu",
  "world_storage",
  "world_view",
 ]

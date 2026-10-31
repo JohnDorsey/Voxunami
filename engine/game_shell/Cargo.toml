@@ -10,7 +10,6 @@ description = "Everything a Voxunami game shares: window, camera, singleplayer s
 binary_codec.workspace = true
 block_models.workspace = true
 client.workspace = true
-coarse_cells.workspace = true
 coarse_streaming.workspace = true
 content_registry.workspace = true
 data_packs.workspace = true
