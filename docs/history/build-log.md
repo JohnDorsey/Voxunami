@@ -1739,3 +1739,19 @@ fluids) will be several times slower, and the minimum-spec CPU slower still.
 Implication: 300 M voxels updated at 20 Hz needs 6 G updates/s for one trivial kernel, so most voxels must sleep.
 Implication: a continuous-valued channel stored densely costs 4 bytes per voxel (1.2 GB per 300 M voxels), so
 continuous channels need quantization or sparse activity.
+
+M1 step 1 (2026-10-30; `architecture-review.md` 7.1): is an orbit stable? `games/voxunami_cave/tests/orbit.rs`.
+- A free cube of stone (3 voxels), put 2 km over the top of Cave's planet (65,710 voxels from its middle) at the speed of a circle (785.9 metres a second, from `G M` and the softening the world has), goes round
+  in 10,506 ticks. **It gains energy and angular momentum at every tick**: after a tenth of a lap (1,050 ticks) the energy is up 0.353 thousandths of its size and the angular momentum 0.176 thousandths
+  (a pull toward a point cannot change it), the radius by 1.8 metres; after a whole lap the radius is 256 metres more (0.39 percent) and the energy 3.9 thousandths. Linear growth would carry it off
+  the planet's pull (energy 0) after some 250 laps (about 36 hours of play); a coasting ship is not likely to be there, so for a first flight the error is small, and it is wrong for the review's criterion of a hundred laps
+  (energy +39 percent) and for anything on rails or in a time warp.
+- Cause (by reading `physics::BodyWorld::step` and by a fit, not by a change of the code): the pull is a force put on the body before the tick and Rapier keeps it for every solver step; a ship at this speed is cut into
+  24 steps (`MOST_STEPS`), so it moves 39 metres under a pull of the place it began in. A model of exactly that (`x' = x + v dt + a dt^2/2`, `v' = v + a dt`) gives AM -1.88e-4, energy +3.76e-4, radius +1.59 m
+  against the seen -1.76e-4, +3.53e-4, +1.78 m; a textbook explicit step gives twice the first two; a symplectic step or velocity Verlet gives nothing. Either work out the pull at every solver step or
+  kick the velocity at the middle of the tick; neither is done.
+- **Cost, found on the way:** a free ship at that speed costs 10.7 to 10.9 milliseconds a tick (a cube; 21 percent of a tick) against 0.03 for one at rest and 0.05 for the world without a ship, because
+  it is cut into 24 solver steps: 6 ms at 1,000 metres a second, 11 ms at 786 (the step count is `ceil(speed x tick / 0.8)` and the 24 steps are the most). A ship far from everything costs as much.
+  Two ships would cost two. The same cost is paid by a ship that only coasts.
+- Tests: two that pass (it goes round near its circle, 36 degrees in a tenth of a lap; what is wrong today, with bounds around what was measured) and one criterion (`#[ignore]`: energy and angular momentum
+  change by less than 1e-5 in a tenth of a lap) that fails by a factor of about 35 at the tenth. The three run on one measurement of 1,050 ticks (11 seconds). A hundred laps would take three hours.
