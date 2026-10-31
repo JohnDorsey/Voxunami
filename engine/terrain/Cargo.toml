@@ -6,6 +6,10 @@ rust-version.workspace = true
 publish.workspace = true
 description = "Deterministic procedural terrain: density fields with conservative bounds, brick generation, and per-region generator versions."
 
+[features]
+# A hills fixture and the test helpers of the coarse-cell code, for tests of what the engine does with a density field.
+test-support = []
+
 [dependencies]
 coarse_cells.workspace = true
 content_registry.workspace = true

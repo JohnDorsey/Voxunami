@@ -6,7 +6,8 @@ use std::sync::Arc;
 use block_models::BlockTable;
 use coarse_cells::DetailSettings;
 use region_octree::BrickCube;
-use terrain::{PlanetSettings, TerrainGenerator, TerrainMaterials, planet};
+use terrain::test_support::ball;
+use terrain::{SurfaceLayers, TerrainGenerator};
 use voxel_grid::{Brick, Grid, GridLayout};
 use voxel_meshing::PackedBrickMesh;
 use voxel_space::{BrickBox, BrickCoordinate, GridId, VoxelCoordinate, WorldPosition};
@@ -423,27 +424,15 @@ impl CoarseTerrainSource for WithoutCore<'_> {
     }
 }
 
-/// A round planet, 600 voxels in radius with hills a few voxels tall, made of the scene's blocks.
+/// A round planet, 600 voxels in radius, made of the scene's blocks.
 fn round_planet(scene: &Scene) -> Arc<dyn TerrainGenerator> {
-    let materials = TerrainMaterials {
+    let materials = SurfaceLayers {
         air: scene.air,
-        stone: scene.game.raw_block("base_blocks:stone"),
-        dirt: scene.game.raw_block("base_blocks:dirt"),
-        grass: scene.game.raw_block("base_blocks:grass"),
+        deep: scene.game.raw_block("base_blocks:stone"),
+        subsurface: scene.game.raw_block("base_blocks:dirt"),
+        surface: scene.game.raw_block("base_blocks:grass"),
     };
-    Arc::new(planet(
-        PlanetSettings {
-            seed: 3,
-            radius: 600.0,
-            hill_height: 8.0,
-            largest_hill_wavelength_log2: 6,
-            hill_octave_count: 3,
-            cave_wavelength_log2: 5,
-            cave_half_thickness: 0.0,
-        },
-        scene.material,
-        materials,
-    ))
+    Arc::new(ball(600.0, scene.material, materials))
 }
 
 /// How far the nearest point of a node is from a place, in voxels.

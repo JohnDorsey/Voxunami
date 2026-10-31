@@ -8,8 +8,7 @@ use voxel_space::{
     BRICK_EDGE_LENGTH, BRICK_VOXEL_COUNT, BrickCoordinate, LevelOfDetail, LocalVoxelIndex, VoxelBox,
 };
 
-use crate::density::{DensityField, Heightfield, Minimum, ShellCaves};
-use crate::noise::{Dimensionality, FractalNoise};
+use crate::density::DensityField;
 
 /// A ball, in the coordinates of a terrain generator, that is ground all through (caves apart): nothing can be seen through it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -76,34 +75,36 @@ pub trait GeneratorFamily: Debug + Send + Sync {
     fn build(&self, parameters: &[u8]) -> Result<Arc<dyn TerrainGenerator>, FamilyError>;
 }
 
-/// The material values a terrain generator writes into the material channel.
+/// The material values a terrain generator writes into the material channel, by where in the ground they go: the top voxel of the ground under open air
+/// (`surface`), the ones just below it (`subsurface`), and everything deeper (`deep`). The engine does not know what the game makes of them (Cave's are
+/// grass, dirt and stone).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TerrainMaterials {
+pub struct SurfaceLayers {
     pub air: u32,
-    pub stone: u32,
-    pub dirt: u32,
-    pub grass: u32,
+    pub surface: u32,
+    pub subsurface: u32,
+    pub deep: u32,
 }
 
-/// Voxels of dirt-or-grass above the stone: grass on top, then dirt, then stone from this depth.
-pub(crate) const SURFACE_LAYER_DEPTH: usize = 4;
+/// How many voxels of ground from the top count as the surface layers: the surface voxel, then subsurface voxels, and `deep` from this depth.
+pub const SURFACE_LAYER_DEPTH: usize = 4;
 
-/// Turns a [`DensityField`] into bricks: solid voxels become grass under open air, dirt within
-/// three voxels of the surface above them, and stone deeper down.
+/// Turns a [`DensityField`] into bricks: solid voxels become the surface layer under open air, the subsurface layer within
+/// three voxels of the surface above them, and the deep layer deeper down.
 ///
 /// Surface layering looks along +y, so this generator assumes y is "up" in its own world.
 #[derive(Clone, Debug)]
 pub struct FieldTerrainGenerator {
     field: Arc<dyn DensityField>,
     material_channel: ChannelIndex,
-    materials: TerrainMaterials,
+    materials: SurfaceLayers,
 }
 
 impl FieldTerrainGenerator {
     pub fn new(
         field: Arc<dyn DensityField>,
         material_channel: ChannelIndex,
-        materials: TerrainMaterials,
+        materials: SurfaceLayers,
     ) -> Self {
         Self {
             field,
@@ -130,7 +131,7 @@ impl TerrainGenerator for FieldTerrainGenerator {
         if self.field.bounds(&with_surface_layer, detail).lower() > 0.0 {
             brick
                 .channel_mut(self.material_channel)
-                .fill(self.materials.stone);
+                .fill(self.materials.deep);
             return brick;
         }
 
@@ -155,9 +156,9 @@ impl TerrainGenerator for FieldTerrainGenerator {
                         .count();
                     let local = LocalVoxelIndex::new(x as u8, y as u8, z as u8);
                     materials[local.index()] = match solid_voxels_above {
-                        0 => self.materials.grass,
-                        depth if depth < SURFACE_LAYER_DEPTH => self.materials.dirt,
-                        _ => self.materials.stone,
+                        0 => self.materials.surface,
+                        depth if depth < SURFACE_LAYER_DEPTH => self.materials.subsurface,
+                        _ => self.materials.deep,
                     };
                 }
             }
@@ -175,79 +176,6 @@ impl TerrainGenerator for FieldTerrainGenerator {
     }
 }
 
-/// Parameters of the rolling-hills terrain. All lengths are in voxels.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RollingHillsSettings {
-    pub seed: u64,
-    /// Surface height where the hills contribute nothing.
-    pub surface_height: f64,
-    /// Height contributed by the largest hills (the sum over all octaves can reach about twice this).
-    pub hill_height: f64,
-    pub largest_hill_wavelength_log2: u8,
-    pub hill_octave_count: u8,
-    pub cave_wavelength_log2: u8,
-    /// Half the thickness of cave sheets, in noise units (the noise ranges over `[-1, 1]`).
-    pub cave_half_thickness: f64,
-}
-
-impl RollingHillsSettings {
-    /// Sensible terrain for 1 metre voxels: hills a few hundred metres wide and tens of metres
-    /// tall over a surface near height 64.
-    pub fn for_one_metre_voxels(seed: u64) -> Self {
-        Self {
-            seed,
-            surface_height: 64.0,
-            hill_height: 40.0,
-            largest_hill_wavelength_log2: 7,
-            hill_octave_count: 6,
-            cave_wavelength_log2: 5,
-            cave_half_thickness: 0.08,
-        }
-    }
-}
-
-/// Hills over a flat base, riddled with thin sheet-like caves.
-///
-/// The output for given settings is part of a world's file format and must never change; see
-/// [`TerrainGenerator`]. Register a changed design under a new version name instead.
-pub fn rolling_hills(
-    settings: RollingHillsSettings,
-    material_channel: ChannelIndex,
-    materials: TerrainMaterials,
-) -> FieldTerrainGenerator {
-    let ground = Heightfield::new(
-        settings.surface_height,
-        FractalNoise::standard(
-            settings.seed,
-            Dimensionality::Planar,
-            settings.largest_hill_wavelength_log2,
-            settings.hill_octave_count,
-            settings.hill_height,
-            0.5,
-        ),
-    );
-    let caves = ShellCaves::new(
-        FractalNoise::standard(
-            settings.seed ^ 0xCA7E_5CA7_E5CA_7E5C,
-            Dimensionality::Volumetric,
-            settings.cave_wavelength_log2,
-            2,
-            1.0,
-            0.5,
-        ),
-        settings.cave_half_thickness,
-        16.0,
-    );
-    FieldTerrainGenerator::new(
-        Arc::new(Minimum {
-            first: ground,
-            second: caves,
-        }),
-        material_channel,
-        materials,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -257,13 +185,16 @@ mod tests {
     use voxel_space::{VoxelCoordinate, test_support::local_voxel_index};
 
     use super::*;
+    use crate::density::Heightfield;
     use crate::interval::Interval;
+    use crate::noise::FractalNoise;
+    use crate::test_support::{RollingHillsSettings, hills_field, rolling_hills};
 
-    const MATERIALS: TerrainMaterials = TerrainMaterials {
+    const MATERIALS: SurfaceLayers = SurfaceLayers {
         air: 0,
-        stone: 1,
-        dirt: 2,
-        grass: 3,
+        deep: 1,
+        subsurface: 2,
+        surface: 3,
     };
 
     fn flat_ground_generator(height: f64, fixture: &StandardTestLayout) -> FieldTerrainGenerator {
@@ -285,18 +216,18 @@ mod tests {
         let brick = generator.generate_brick(&fixture.layout, BrickCoordinate::new(0, 0, 0));
 
         // Solid voxels are those with y < 20.
-        assert_eq!(material_at(&brick, &fixture, 5, 19, 5), MATERIALS.grass);
+        assert_eq!(material_at(&brick, &fixture, 5, 19, 5), MATERIALS.surface);
         for y in [18, 17, 16] {
             assert_eq!(
                 material_at(&brick, &fixture, 5, y, 5),
-                MATERIALS.dirt,
+                MATERIALS.subsurface,
                 "y = {y}"
             );
         }
         for y in [15, 8, 0] {
             assert_eq!(
                 material_at(&brick, &fixture, 5, y, 5),
-                MATERIALS.stone,
+                MATERIALS.deep,
                 "y = {y}"
             );
         }
@@ -317,13 +248,19 @@ mod tests {
         let lower = generator.generate_brick(&fixture.layout, BrickCoordinate::new(0, 0, 0));
         let upper = generator.generate_brick(&fixture.layout, BrickCoordinate::new(0, 1, 0));
 
-        assert_eq!(material_at(&upper, &fixture, 0, 1, 0), MATERIALS.grass); // y = 33
-        assert_eq!(material_at(&upper, &fixture, 0, 0, 0), MATERIALS.dirt); // y = 32
+        assert_eq!(material_at(&upper, &fixture, 0, 1, 0), MATERIALS.surface); // y = 33
+        assert_eq!(material_at(&upper, &fixture, 0, 0, 0), MATERIALS.subsurface); // y = 32
         // Solid voxels are y <= 33, so y = 30 has three solid voxels above it (31..=33) and
         // y = 29 has four (30..=33).
-        assert_eq!(material_at(&lower, &fixture, 0, 31, 0), MATERIALS.dirt);
-        assert_eq!(material_at(&lower, &fixture, 0, 30, 0), MATERIALS.dirt);
-        assert_eq!(material_at(&lower, &fixture, 0, 29, 0), MATERIALS.stone);
+        assert_eq!(
+            material_at(&lower, &fixture, 0, 31, 0),
+            MATERIALS.subsurface
+        );
+        assert_eq!(
+            material_at(&lower, &fixture, 0, 30, 0),
+            MATERIALS.subsurface
+        );
+        assert_eq!(material_at(&lower, &fixture, 0, 29, 0), MATERIALS.deep);
     }
 
     #[derive(Debug)]
@@ -362,7 +299,7 @@ mod tests {
         );
         assert_eq!(
             deep.channel(fixture.material).uniform_value(),
-            Some(MATERIALS.stone)
+            Some(MATERIALS.deep)
         );
         // The surface brick must sample: one column of 36 voxels per (x, z).
         generator.generate_brick(&fixture.layout, BrickCoordinate::new(0, 0, 0));
@@ -376,7 +313,10 @@ mod tests {
         let generator = flat_ground_generator(35.0, &fixture);
         let brick = generator.generate_brick(&fixture.layout, BrickCoordinate::new(0, 0, 0));
         assert_eq!(brick.channel(fixture.material).uniform_value(), None);
-        assert_eq!(material_at(&brick, &fixture, 0, 31, 0), MATERIALS.dirt); // 3 solids above: 32..=34
+        assert_eq!(
+            material_at(&brick, &fixture, 0, 31, 0),
+            MATERIALS.subsurface
+        ); // 3 solids above: 32..=34
     }
 
     #[test]
@@ -394,7 +334,7 @@ mod tests {
     fn reference_material(
         field: &dyn DensityField,
         position: VoxelCoordinate,
-        materials: TerrainMaterials,
+        materials: SurfaceLayers,
     ) -> u32 {
         let solid_at = |height_above: i128| {
             position
@@ -409,9 +349,9 @@ mod tests {
             solid_above += 1;
         }
         match solid_above {
-            0 => materials.grass,
-            1..=3 => materials.dirt,
-            _ => materials.stone,
+            0 => materials.surface,
+            1..=3 => materials.subsurface,
+            _ => materials.deep,
         }
     }
 
@@ -430,15 +370,16 @@ mod tests {
             probes in proptest::collection::vec(local_voxel_index(), 200),
         ) {
             let fixture = StandardTestLayout::default();
-            let generator = rolling_hills(
-                RollingHillsSettings::for_one_metre_voxels(seed),
+            let field = hills_field(RollingHillsSettings::for_one_metre_voxels(seed));
+            let generator = FieldTerrainGenerator::new(
+                Arc::clone(&field),
                 fixture.material,
                 MATERIALS,
             );
             let brick = generator.generate_brick(&fixture.layout, coordinate);
             for local in probes {
                 let expected = reference_material(
-                    generator.field.as_ref(),
+                    field.as_ref(),
                     coordinate.voxel_at(local),
                     MATERIALS,
                 );
@@ -446,72 +387,6 @@ mod tests {
             }
         }
     }
-
-    /// Output of the default rolling hills for a fixed seed. These values are the file format:
-    /// if one changes, existing worlds change under their players. They were produced by this
-    /// code, so they pin behaviour; they are not an independent check of it. The bricks are
-    /// chosen to contain real surface or caves, including negative and enormous coordinates.
-    #[test]
-    fn rolling_hills_output_is_pinned() {
-        let fixture = StandardTestLayout::default();
-        let generator = rolling_hills(
-            RollingHillsSettings::for_one_metre_voxels(2024),
-            fixture.material,
-            MATERIALS,
-        );
-        let pinned_bricks = [
-            (
-                BrickCoordinate::new(0, 0, 0),
-                PINNED_ROLLING_HILLS_DIGESTS[0],
-            ),
-            (
-                BrickCoordinate::new(0, 3, 0),
-                PINNED_ROLLING_HILLS_DIGESTS[1],
-            ),
-            (
-                BrickCoordinate::new(-1, 3, -1),
-                PINNED_ROLLING_HILLS_DIGESTS[2],
-            ),
-            (
-                BrickCoordinate::new(7, 1, -12),
-                PINNED_ROLLING_HILLS_DIGESTS[3],
-            ),
-            (
-                BrickCoordinate::new(1_000_000_000, 1, 5),
-                PINNED_ROLLING_HILLS_DIGESTS[4],
-            ),
-            (
-                BrickCoordinate::new(-33, 2, 21),
-                PINNED_ROLLING_HILLS_DIGESTS[5],
-            ),
-            (
-                BrickCoordinate::new(123_456_789_012, 2, -987_654_321),
-                PINNED_ROLLING_HILLS_DIGESTS[6],
-            ),
-        ];
-        let mut observed = Vec::new();
-        for (coordinate, _) in pinned_bricks {
-            let brick = generator.generate_brick(&fixture.layout, coordinate);
-            assert_eq!(
-                brick.channel(fixture.material).uniform_value(),
-                None,
-                "{coordinate} should contain terrain detail"
-            );
-            observed.push(brick.content_digest());
-        }
-        let expected: Vec<u64> = pinned_bricks.iter().map(|&(_, digest)| digest).collect();
-        assert_eq!(observed, expected);
-    }
-
-    const PINNED_ROLLING_HILLS_DIGESTS: [u64; 7] = [
-        10_435_167_514_397_377_490,
-        15_902_999_568_092_474_262,
-        9_435_966_543_601_840_145,
-        10_910_340_570_707_222_884,
-        18_170_788_201_477_264_472,
-        17_677_368_896_373_949_775,
-        13_609_564_394_996_896_000,
-    ];
 
     #[test]
     fn generation_is_independent_of_thread_and_repetition() {

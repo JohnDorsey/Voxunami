@@ -413,11 +413,10 @@ fn a_world_saved_before_the_scales_existed_loads_and_its_lamps_light_up_in_multi
         ])
         .unwrap(),
     );
-    let generators = content
-        .blocks
-        .terrain_generators(5, content.block_channel());
+    let generators =
+        voxunami_cave::generators::terrain_generators(&content.blocks, 5, content.block_channel());
     let default = generators
-        .runtime_id(&base_blocks::rolling_hills_generator_identifier())
+        .runtime_id(&voxunami_cave::generators::rolling_hills_generator_identifier())
         .unwrap();
     let mut old_world = world_storage::WorldData::new(
         5,

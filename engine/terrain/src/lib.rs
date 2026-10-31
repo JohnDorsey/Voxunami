@@ -20,25 +20,23 @@ mod coarse;
 mod density;
 mod empty;
 mod generator;
-mod great_river;
 mod interval;
 mod noise;
-mod planet;
-mod planet_family;
-mod planet_node;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 mod world_terrain;
 
+pub use coarse::{coarse_node_from_fills, coarse_node_of_field, cube_may_show};
+#[cfg(any(test, feature = "test-support"))]
+pub use coarse::{coarse_node_of_field_cell_by_cell, fills_of_field_cell_by_cell, node_digest};
 pub use density::{DensityField, Heightfield, Minimum, ShellCaves};
 pub use empty::{EmptyTerrain, empty};
 pub use generator::{
-    FamilyError, FieldTerrainGenerator, GeneratorFamily, RollingHillsSettings, SolidBall,
-    TerrainGenerator, TerrainMaterials, rolling_hills,
-};
-pub use great_river::{
-    GreatRivers, GreatRiversGenerator, RiverField, RiverKnot, RiverPath, great_rivers,
+    FamilyError, FieldTerrainGenerator, GeneratorFamily, SURFACE_LAYER_DEPTH, SolidBall,
+    SurfaceLayers, TerrainGenerator,
 };
 pub use interval::Interval;
-pub use noise::{Dimensionality, FractalNoise, Octave, lattice_hash, lattice_value, mix};
-pub use planet::{PlanetGenerator, PlanetGround, PlanetSettings, planet};
-pub use planet_family::PlanetFamily;
+pub use noise::{
+    Dimensionality, FractalNoise, MAXIMUM_WAVELENGTH_LOG2, Octave, lattice_hash, lattice_value, mix,
+};
 pub use world_terrain::{GenerationOutcome, GeneratorId, WorldTerrain, WorldTerrainError};

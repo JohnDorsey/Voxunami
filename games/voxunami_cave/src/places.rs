@@ -1,10 +1,10 @@
 //! The places a player can go to with `/tp` (`docs/places-spec.md`): a body (a planet, a moon, a star: any ship with terrain) by the name of its generator, and the
 //! landmarks of the great rivers. A body is reached on the ground nearest to the player, at a latitude and longitude, or at coordinates of its own.
 
-use base_blocks::great_rivers_generator_identifier;
+use crate::generators::great_rivers_generator_identifier;
+use crate::generators::{GreatRivers, RiverKnot};
 use namespaced_id::NamespacedId;
 use server::ServerWorld;
-use terrain::{GreatRivers, RiverKnot};
 use voxel_space::{BrickBox, GridId, LevelIndex, VoxelCoordinate, WorldPosition};
 use world_storage::WorldData;
 

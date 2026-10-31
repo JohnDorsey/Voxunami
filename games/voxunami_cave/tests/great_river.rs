@@ -5,9 +5,10 @@ mod common;
 
 use common::{SEED, Scene, player_pose, say};
 use game_shell::GameDefinition;
-use terrain::{DensityField, GreatRivers, RiverKnot};
+use terrain::DensityField;
 use voxel_space::{GridId, LevelIndex, LevelOfDetail, VoxelCoordinate, WorldPosition};
 use voxunami_cave::Cave;
+use voxunami_cave::generators::{GreatRivers, RiverKnot};
 use voxunami_cave::rivers::{forward, viewing_distance};
 
 /// Where the eyes are, as whole voxels (exact, which `in_voxels` is not at this distance from the origin).

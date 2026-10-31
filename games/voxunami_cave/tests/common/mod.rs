@@ -785,11 +785,13 @@ pub fn top_of_the_column(x: i128, z: i128) -> i128 {
     let content = CaveContent::new();
     let world = content.new_overworld_world(SEED);
     let layout = Arc::clone(world.main().overrides.layout());
-    let generator = content
-        .blocks
-        .terrain_generators(SEED, content.block_channel());
+    let generator = voxunami_cave::generators::terrain_generators(
+        &content.blocks,
+        SEED,
+        content.block_channel(),
+    );
     let id = generator
-        .runtime_id(&base_blocks::small_planet_generator_identifier())
+        .runtime_id(&voxunami_cave::generators::small_planet_generator_identifier())
         .unwrap();
     let generator = generator.entry(id).unwrap().content().unwrap();
     for brick_y in (1900..2010).rev() {

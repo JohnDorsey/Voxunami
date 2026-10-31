@@ -342,8 +342,11 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// are of the old form and answer as they did. The saved world is the same.
 /// The world's clock in the welcome (2026-10-28; protocol 10): the welcome carries a `u64` more, the time of the world at its tick, and says version 10. Predicted before the run and then seen
 /// in all four pinned streams: 8 bytes more (7,204,132 to 7,204,140) and the saved world the same to the hash (nothing is saved that was not). The stream hash moved for those 8 bytes and the version.
+/// Cave's generators are Cave's (2026-10-30; the F5 move out of `terrain` and `base_blocks`): their identifiers are `voxunami_cave:...` where they were `base_blocks:...`, and that is all that
+/// changed. Checked, not assumed: with the five identifiers (four generators and the planet family) written back as they were, this session gave the old values below to the digit; with the new ones it is
+/// 10 bytes longer (the welcome and the saved world name them) and the hashes differ because the bytes do.
 const PINNED: (u64, usize, u64) = (
-    3_514_329_510_159_853_972,
-    7_204_140,
-    16_456_388_781_098_525_124,
+    17_151_338_716_148_404_135,
+    7_204_150,
+    7_542_728_601_885_368_666,
 );

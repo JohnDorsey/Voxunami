@@ -4,15 +4,16 @@
 
 mod common;
 
-use base_blocks::planet_family_identifier;
 use common::{SEED, Scene, player_pose, ship_id, tick_and_follow};
 use game_shell::GameContent;
-use terrain::{PlanetSettings, TerrainGenerator};
+use terrain::TerrainGenerator;
 use voxel_space::{
     BrickBox, BrickCoordinate, GridId, GridPose, LevelIndex, Orientation, WorldPosition,
 };
 use voxunami_cave::aboard::in_voxels;
 use voxunami_cave::content::CaveContent;
+use voxunami_cave::generators::PlanetSettings;
+use voxunami_cave::generators::planet_family_identifier;
 use world_storage::{GeneratorRecipe, GridTerrain, MovingGrid, PilotLogout, WorldData};
 
 /// The moon: a ball of 300 voxels with low hills, a seed of its own.
@@ -142,10 +143,10 @@ fn a_planet_made_from_a_recipe_is_a_ship_whose_generator_the_world_names_and_kee
         .unwrap()
         .generate_brick(&layout, BrickCoordinate::new(0, 9, 0));
     let blocks = &scene.rig.content.blocks;
-    let direct = terrain::planet(
+    let direct = voxunami_cave::generators::planet(
         moon_settings(),
         scene.rig.content.block_channel(),
-        blocks.terrain_materials(),
+        voxunami_cave::generators::surface_layers(blocks),
     )
     .generate_brick(&layout, BrickCoordinate::new(0, 9, 0));
     assert_eq!(made, direct);

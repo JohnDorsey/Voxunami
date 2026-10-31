@@ -63,7 +63,7 @@ fn make_a_planet_that_reaches(scene: &mut Scene, pose: GridPose, reach: u32) {
             .main()
             .terrain
             .generators()
-            .runtime_id(&base_blocks::small_planet_generator_identifier())
+            .runtime_id(&voxunami_cave::generators::small_planet_generator_identifier())
             .expect("the world has the planet's generator");
         let grid = world.create_grid(LevelIndex::MAIN, pose).unwrap();
         assert_eq!(grid, planet());
@@ -892,7 +892,7 @@ fn a_ship_rests_on_a_second_planet_two_hundred_kilometres_from_the_first_and_bot
             .main()
             .terrain
             .generators()
-            .runtime_id(&base_blocks::small_planet_generator_identifier())
+            .runtime_id(&voxunami_cave::generators::small_planet_generator_identifier())
             .unwrap();
         let grid = world
             .create_grid(

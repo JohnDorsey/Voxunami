@@ -2,8 +2,10 @@
 
 mod common;
 
-use base_blocks::{great_rivers_generator_identifier, rolling_hills_generator_identifier};
 use std::sync::{Arc, Mutex};
+use voxunami_cave::generators::{
+    great_rivers_generator_identifier, rolling_hills_generator_identifier,
+};
 
 use common::{
     PlayerExt, SEED, Scene, make_ship, player_pose, pose_at, say, ship_id, tick_and_follow,
@@ -11,7 +13,6 @@ use common::{
 };
 use game_shell::{GameContent, GameDefinition};
 use server::GridView;
-use terrain::PlanetSettings;
 use voxel_space::{
     BrickCoordinate, GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate, WorldPosition,
 };
@@ -19,6 +20,7 @@ use voxunami_cave::Cave;
 use voxunami_cave::aboard::in_voxels;
 use voxunami_cave::content::{CaveContent, mini_cosmos_id, overworld_id};
 use voxunami_cave::game::{break_block, place_block};
+use voxunami_cave::generators::PlanetSettings;
 use voxunami_cave::landing::{on_a_planet, spawn_in};
 use voxunami_cave::plugins::world_spawn;
 use world_storage::ShipFiles;
@@ -712,17 +714,18 @@ fn an_item_on_the_side_of_the_planet_falls_toward_its_centre_and_one_under_it_do
 #[test]
 fn the_bricks_where_players_arrive_on_a_planet_are_made_before_anyone_arrives() {
     let mut scene = Scene::in_a_new_world();
-    // (The worker is a thread: the ticks are given the time of a server's.)
-    for _ in 0..40 {
+    // The 5 x 5 x 5 bricks round the pole, those of them that are in the planet's extent (all are). The worker is a thread, so the ticks are given the
+    // time of a server's, and the test waits for the bricks, not for a fixed time (a busy machine takes longer; it failed once at 88 under the load of
+    // another test run). It gives up after twenty seconds.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut prefetched = 0;
+    while prefetched < 100 && std::time::Instant::now() < deadline {
         scene.ticks(1);
         std::thread::sleep(std::time::Duration::from_millis(50));
+        let found = Arc::new(Mutex::new(0));
+        let slot = Arc::clone(&found);
+        scene.run(move |world| *slot.lock().unwrap() = world.bricks_prefetched());
+        prefetched = *found.lock().unwrap();
     }
-    let found = Arc::new(Mutex::new((0, 0)));
-    let slot = Arc::clone(&found);
-    scene.run(move |world| {
-        *slot.lock().unwrap() = (world.bricks_prefetched(), world.bricks_generated())
-    });
-    let (prefetched, _) = *found.lock().unwrap();
-    // The 5 x 5 x 5 bricks round the pole, those of them that are in the planet's extent (all are).
     assert!(prefetched >= 100, "{prefetched} made ahead");
 }

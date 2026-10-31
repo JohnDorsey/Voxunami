@@ -23,10 +23,10 @@ use voxel_space::{
     VoxelBox, VoxelCoordinate,
 };
 
-use crate::density::{DensityField, ShellCaves};
-use crate::generator::{SURFACE_LAYER_DEPTH, SolidBall, TerrainGenerator, TerrainMaterials};
-use crate::interval::Interval;
-use crate::noise::{Dimensionality, FractalNoise, mix};
+use terrain::Interval;
+use terrain::{DensityField, ShellCaves};
+use terrain::{Dimensionality, FractalNoise, mix};
+use terrain::{SURFACE_LAYER_DEPTH, SolidBall, SurfaceLayers, TerrainGenerator};
 
 /// How far below the greatest a face's share of the direction can be and still count, as a share of the distance from the centre: the width of the seam.
 const BLEND_BAND: f64 = 0.15;
@@ -388,14 +388,14 @@ pub struct PlanetGenerator {
     ground: Arc<PlanetGround>,
     caves: ShellCaves,
     material_channel: ChannelIndex,
-    materials: TerrainMaterials,
+    materials: SurfaceLayers,
 }
 
 /// The planet of `settings`: its generator.
 pub fn planet(
     settings: PlanetSettings,
     material_channel: ChannelIndex,
-    materials: TerrainMaterials,
+    materials: SurfaceLayers,
 ) -> PlanetGenerator {
     let caves = ShellCaves::new(
         FractalNoise::standard(
@@ -425,11 +425,11 @@ impl PlanetGenerator {
     /// The material of a voxel that is `depth` voxels under the surface (the value of the ground), when it is ground.
     fn layer(&self, depth: f64) -> u32 {
         if depth <= 1.0 {
-            self.materials.grass
+            self.materials.surface
         } else if depth <= SURFACE_LAYER_DEPTH as f64 {
-            self.materials.dirt
+            self.materials.subsurface
         } else {
-            self.materials.stone
+            self.materials.deep
         }
     }
 }
@@ -451,7 +451,7 @@ impl TerrainGenerator for PlanetGenerator {
         let caves = self.caves.bounds(&region, detail);
         let below_the_layers = ground.lower() > SURFACE_LAYER_DEPTH as f64;
         if below_the_layers && caves.lower() > 0.0 {
-            uniform(&mut brick, self.materials.stone);
+            uniform(&mut brick, self.materials.deep);
             return brick;
         }
         let may_have_caves = caves.lower() <= 0.0;
@@ -470,7 +470,7 @@ impl TerrainGenerator for PlanetGenerator {
                     }
                     let local = LocalVoxelIndex::new(x as u8, y as u8, z as u8);
                     if below_the_layers {
-                        materials[local.index()] = self.materials.stone;
+                        materials[local.index()] = self.materials.deep;
                         continue;
                     }
                     let depth = self.ground.sample(position, detail);
@@ -485,11 +485,16 @@ impl TerrainGenerator for PlanetGenerator {
     }
 
     fn coarse_node(&self, cube: BrickCube, unlit: u8) -> Option<CoarseNode> {
-        crate::planet_node::coarse_node_of_planet(&self.ground, self.materials, cube, unlit)
+        crate::generators::planet_node::coarse_node_of_planet(
+            &self.ground,
+            self.materials,
+            cube,
+            unlit,
+        )
     }
 
     fn may_show(&self, cube: BrickCube) -> bool {
-        crate::coarse::cube_may_show(&*self.ground, cube)
+        terrain::cube_may_show(&*self.ground, cube)
     }
 
     fn solid_core(&self) -> Option<SolidBall> {
@@ -506,11 +511,11 @@ impl TerrainGenerator for PlanetGenerator {
 pub(crate) mod test_fixtures {
     use super::*;
 
-    pub(crate) const MATERIALS: TerrainMaterials = TerrainMaterials {
+    pub(crate) const MATERIALS: SurfaceLayers = SurfaceLayers {
         air: 0,
-        stone: 1,
-        dirt: 2,
-        grass: 3,
+        deep: 1,
+        subsurface: 2,
+        surface: 3,
     };
 
     /// A small planet, so that tests reach every seam and corner with few samples: a radius of 500 voxels, hills 20 voxels tall over 64 voxels at the most.
@@ -1096,11 +1101,11 @@ mod tests {
         if depth <= 0.0 || generator.caves.sample(position, FULL) <= 0.0 {
             MATERIALS.air
         } else if depth <= 1.0 {
-            MATERIALS.grass
+            MATERIALS.surface
         } else if depth <= 4.0 {
-            MATERIALS.dirt
+            MATERIALS.subsurface
         } else {
-            MATERIALS.stone
+            MATERIALS.deep
         }
     }
 
@@ -1186,13 +1191,13 @@ mod tests {
         };
         let expected = [
             (300, MATERIALS.air),
-            (299, MATERIALS.grass),
-            (298, MATERIALS.dirt),
-            (297, MATERIALS.dirt),
-            (296, MATERIALS.dirt),
-            (295, MATERIALS.stone),
-            (200, MATERIALS.stone),
-            (0, MATERIALS.stone),
+            (299, MATERIALS.surface),
+            (298, MATERIALS.subsurface),
+            (297, MATERIALS.subsurface),
+            (296, MATERIALS.subsurface),
+            (295, MATERIALS.deep),
+            (200, MATERIALS.deep),
+            (0, MATERIALS.deep),
         ];
         for (depth_from_zero, material) in expected {
             // +y, and the other five ways, which are the same by the symmetry of the ball (a negative coordinate n is the mirror of -n - 1).
@@ -1232,13 +1237,10 @@ mod tests {
             uniform(BrickCoordinate::new(-30, -30, 30)),
             Some(MATERIALS.air)
         );
-        assert_eq!(
-            uniform(BrickCoordinate::new(0, 0, 0)),
-            Some(MATERIALS.stone)
-        );
+        assert_eq!(uniform(BrickCoordinate::new(0, 0, 0)), Some(MATERIALS.deep));
         assert_eq!(
             uniform(BrickCoordinate::new(-3, 2, 4)),
-            Some(MATERIALS.stone)
+            Some(MATERIALS.deep)
         );
         assert_eq!(
             uniform(BrickCoordinate::new(0, 9, 0)),

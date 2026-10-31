@@ -3,7 +3,7 @@
 //! A node of detail level `n` is 32 x 32 x 32 cells of `2^n` voxels each. The field is asked about each cell at footprint `n` (so the features finer than a
 //! cell are not in it, as for all coarse sampling): whether the cell is all air or all ground from the bounds over it, and for a cell that is neither
 //! how full it is from the field at the middle of its column. The block of a cell and the surface it shows are worked out from the fill of the cells
-//! around it, with the layering of [`crate::FieldTerrainGenerator`] (grass under open air, then dirt, then stone) at the resolution of a cell.
+//! around it, with the layering of [`crate::FieldTerrainGenerator`] (the surface layer under open air, then the subsurface, then the deep) at the resolution of a cell.
 //!
 //! **This is an approximation.** The cell is not the summary of the fine voxels under it, which would take generating all of them; how far it is from
 //! that is measured in `world_view/tests/coarse_agreement.rs`.
@@ -16,14 +16,14 @@ use region_octree::BrickCube;
 use voxel_space::{BRICK_EDGE_LENGTH, LevelOfDetail, VoxelBox, VoxelCoordinate};
 
 use crate::density::DensityField;
-use crate::generator::{SURFACE_LAYER_DEPTH, TerrainMaterials};
+use crate::generator::{SURFACE_LAYER_DEPTH, SurfaceLayers};
 
 /// Points along an edge of a cell that the field is asked at when the bounds cannot say whether the cell is air or ground.
 const SAMPLES_PER_EDGE: i128 = 4;
 
 /// Whether a cube of bricks of a field could show anything (see `TerrainGenerator::may_show`): not if the field is air through the cube at its level of detail and
 /// at every finer one, nor if it is ground through the cube and the cube's neighbours, which are as many cubes all round it.
-pub(crate) fn cube_may_show(field: &dyn DensityField, cube: BrickCube) -> bool {
+pub fn cube_may_show(field: &dyn DensityField, cube: BrickCube) -> bool {
     let Some(detail) = LevelOfDetail::new(cube.level()) else {
         return true;
     };
@@ -49,9 +49,9 @@ pub(crate) fn cube_may_show(field: &dyn DensityField, cube: BrickCube) -> bool {
 }
 
 /// The coarse node of a cube of bricks of a field, or `None` for detail level 0 (a node of level 0 is a brick, and a brick is generated).
-pub(crate) fn coarse_node_of_field(
+pub fn coarse_node_of_field(
     field: &dyn DensityField,
-    materials: TerrainMaterials,
+    materials: SurfaceLayers,
     cube: BrickCube,
     unlit: u8,
 ) -> Option<CoarseNode> {
@@ -60,7 +60,7 @@ pub(crate) fn coarse_node_of_field(
     // world that is under the other half.
     if sampler.is_sealed_ground() {
         return Some(CoarseNode::uniform(CoarseCell {
-            block: materials.stone,
+            block: materials.deep,
             fill: 255,
             light: unlit,
             exposure: 0,
@@ -70,10 +70,10 @@ pub(crate) fn coarse_node_of_field(
 }
 
 /// The same as [`coarse_node_of_field`], asking about every cell (what it was before the shortcut for sealed ground; the tests check them against each other).
-#[cfg(test)]
-pub(crate) fn coarse_node_of_field_cell_by_cell(
+#[cfg(any(test, feature = "test-support"))]
+pub fn coarse_node_of_field_cell_by_cell(
     field: &dyn DensityField,
-    materials: TerrainMaterials,
+    materials: SurfaceLayers,
     cube: BrickCube,
     unlit: u8,
 ) -> Option<CoarseNode> {
@@ -83,11 +83,8 @@ pub(crate) fn coarse_node_of_field_cell_by_cell(
 
 /// The fill of every cell of the node of `cube`, found by asking the field about each cell (what coarse nodes are made from; for tests that compare another
 /// way of finding the fills with it).
-#[cfg(test)]
-pub(crate) fn fills_of_field_cell_by_cell(
-    field: &dyn DensityField,
-    cube: BrickCube,
-) -> Option<Vec<u8>> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn fills_of_field_cell_by_cell(field: &dyn DensityField, cube: BrickCube) -> Option<Vec<u8>> {
     let sampler = sampler_of(field, cube)?;
     let mut fills = vec![0u8; CELLS_PER_NODE];
     sampler.fill_block([0, 0, 0], NODE_EDGE as i128, &mut fills);
@@ -108,11 +105,7 @@ fn sampler_of(field: &dyn DensityField, cube: BrickCube) -> Option<Sampler<'_>> 
     })
 }
 
-fn coarse_node_by_cells(
-    sampler: &Sampler<'_>,
-    materials: TerrainMaterials,
-    unlit: u8,
-) -> CoarseNode {
+fn coarse_node_by_cells(sampler: &Sampler<'_>, materials: SurfaceLayers, unlit: u8) -> CoarseNode {
     let air = materials.air;
 
     // The fill of every cell of the node, found a block at a time where the bounds say the whole block is air or ground.
@@ -132,14 +125,14 @@ fn coarse_node_by_cells(
 }
 
 /// The cells of a node from how full each of its cells is (`fills`, x fastest, 0 to 255) and how full the cells beside it are (`fill_outside`, by their
-/// numbers counted from the node's), for cells `edge` voxels across: the block of a cell (grass with open air over it, dirt with less than the depth of the
-/// surface layer of ground over it, stone otherwise) and the surface it shows. `up` is the step to the cell over a cell: the layers look along it, outward.
-pub(crate) fn coarse_node_from_fills(
+/// numbers counted from the node's), for cells `edge` voxels across: the block of a cell (the surface layer with open air over it, the subsurface with less than the depth of the
+/// surface layers of ground over it, the deep layer otherwise) and the surface it shows. `up` is the step to the cell over a cell: the layers look along it, outward.
+pub fn coarse_node_from_fills(
     fills: &[u8],
     fill_outside: &dyn Fn([i128; 3]) -> u8,
     up: [i128; 3],
     edge: i128,
-    materials: TerrainMaterials,
+    materials: SurfaceLayers,
     unlit: u8,
 ) -> CoarseNode {
     let air = materials.air;
@@ -184,8 +177,8 @@ pub(crate) fn coarse_node_from_fills(
                     let inside = if mixed { 1 } else { 0 };
                     open_sides.max(inside) * CoarseCell::EXPOSURE_ONE
                 };
-                // The layers: grass if there is open air over the cell, dirt if the ground over it is less than the depth of the surface layer,
-                // else stone. (The ground over it is counted in voxels, from the fill of the cells above.)
+                // The layers: the surface layer if there is open air over the cell, the subsurface if the ground over it is less than the depth of the surface layer,
+                // else the deep layer. (The ground over it is counted in voxels, from the fill of the cells above.)
                 // (A cell is up to 2^116 voxels across, so this is counted in 128 bits.)
                 let mut covered = 0u128;
                 let over_the_cell = [x + up[0], y + up[1], z + up[2]];
@@ -198,13 +191,13 @@ pub(crate) fn coarse_node_from_fills(
                     covered += edge as u128 * u128::from(over);
                     above = [above[0] + up[0], above[1] + up[1], above[2] + up[2]];
                 }
-                // A cell with air in it that has air over it, or a cell the ground goes through, is the top of the ground: grass.
+                // A cell with air in it that has air over it, or a cell the ground goes through, is the top of the ground: the surface layer.
                 let block = if covered == 0 || (mixed && fill_at(over_the_cell) < 254) {
-                    materials.grass
+                    materials.surface
                 } else if covered < SURFACE_LAYER_DEPTH as u128 * 255 {
-                    materials.dirt
+                    materials.subsurface
                 } else {
-                    materials.stone
+                    materials.deep
                 };
                 cells.push(CoarseCell {
                     block,
@@ -246,7 +239,7 @@ impl Sampler<'_> {
     }
 
     /// Whether the bounds say that all of the node, the cells round it, and the cells over it that the layers of the surface look at, are ground: then every
-    /// cell of the node is stone, whole and with no surface.
+    /// cell of the node is the deep layer, whole and with no surface.
     fn is_sealed_ground(&self) -> bool {
         // The layers look up until the ground over a cell is as deep as the surface layer.
         let above = (SURFACE_LAYER_DEPTH as i128 + self.edge - 1) / self.edge;
@@ -363,8 +356,8 @@ impl Sampler<'_> {
 }
 
 /// A digest of the cells of a node (FNV-1a over each cell's block, fill, light and exposure, in order), for tests that pin the nodes of a generator.
-#[cfg(test)]
-pub(crate) fn node_digest(node: &CoarseNode) -> u64 {
+#[cfg(any(test, feature = "test-support"))]
+pub fn node_digest(node: &CoarseNode) -> u64 {
     let mut state: u64 = 0xcbf2_9ce4_8422_2325;
     for cell in node.cells() {
         for value in [
@@ -395,12 +388,12 @@ mod tests {
     const GRASS: u32 = 3;
     const UNLIT: u8 = 9;
 
-    fn materials() -> TerrainMaterials {
-        TerrainMaterials {
+    fn materials() -> SurfaceLayers {
+        SurfaceLayers {
             air: AIR,
-            stone: STONE,
-            dirt: DIRT,
-            grass: GRASS,
+            deep: STONE,
+            subsurface: DIRT,
+            surface: GRASS,
         }
     }
 
@@ -882,7 +875,8 @@ mod tests {
 
     #[test]
     fn what_a_cube_that_may_show_nothing_holds_is_air_or_stone_all_through_at_every_level() {
-        use crate::generator::{RollingHillsSettings, TerrainGenerator, rolling_hills};
+        use crate::generator::TerrainGenerator;
+        use crate::test_support::{RollingHillsSettings, rolling_hills};
         use voxel_grid::test_support::StandardTestLayout;
         let fixture = StandardTestLayout::default();
         let mut pruned = 0;
@@ -1153,8 +1147,8 @@ mod tests {
         // Like the bricks of a generator, its coarse nodes are not to change once there is a recording of them (a replay must draw the same
         // picture). These two are the fingerprint: if this fails, add a new generator version instead of changing the output. Windows and Linux agree.
         let fixture = voxel_grid::test_support::StandardTestLayout::default();
-        let generator = crate::generator::rolling_hills(
-            crate::generator::RollingHillsSettings::for_one_metre_voxels(2024),
+        let generator = crate::test_support::rolling_hills(
+            crate::test_support::RollingHillsSettings::for_one_metre_voxels(2024),
             fixture.material,
             materials(),
         );

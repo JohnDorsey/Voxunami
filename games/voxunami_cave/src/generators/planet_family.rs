@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use voxel_grid::ChannelIndex;
 
-use crate::generator::{FamilyError, GeneratorFamily, TerrainGenerator, TerrainMaterials};
-use crate::noise::MAXIMUM_WAVELENGTH_LOG2;
-use crate::planet::{PlanetSettings, planet};
+use crate::generators::planet::{PlanetSettings, planet};
+use terrain::MAXIMUM_WAVELENGTH_LOG2;
+use terrain::{FamilyError, GeneratorFamily, SurfaceLayers, TerrainGenerator};
 
 /// The length of the bytes of the settings of a planet: the seed (8), the radius (8), the height of the hills (8), three single bytes, the half thickness of the caves (8).
 const SETTINGS_LENGTH: usize = 35;
@@ -113,11 +113,11 @@ impl PlanetSettings {
 #[derive(Clone, Debug)]
 pub struct PlanetFamily {
     material_channel: ChannelIndex,
-    materials: TerrainMaterials,
+    materials: SurfaceLayers,
 }
 
 impl PlanetFamily {
-    pub fn new(material_channel: ChannelIndex, materials: TerrainMaterials) -> Self {
+    pub fn new(material_channel: ChannelIndex, materials: SurfaceLayers) -> Self {
         Self {
             material_channel,
             materials,
@@ -142,8 +142,8 @@ mod tests {
     use voxel_space::BrickCoordinate;
 
     use super::*;
-    use crate::planet::test_fixtures::{MATERIALS, small_planet};
-    use crate::planet::{PlanetSettings, planet};
+    use crate::generators::planet::test_fixtures::{MATERIALS, small_planet};
+    use crate::generators::planet::{PlanetSettings, planet};
 
     fn family(fixture: &StandardTestLayout) -> PlanetFamily {
         PlanetFamily::new(fixture.material, MATERIALS)

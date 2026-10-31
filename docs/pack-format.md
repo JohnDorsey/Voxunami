@@ -104,7 +104,7 @@ in this same format (`games/voxunami_cave/data/bodies/planet.json`).
   "level": "voxunami_cave:mini_cosmos",
   "position": [400000, 0, 0],
   "terrain": {
-    "family": "base_blocks:planet_v1",
+    "family": "voxunami_cave:planet_v1",
     "parameters": { "seed": 99, "radius": 10000, "hill_height": 20, "largest_hill_wavelength_log2": 7,
                     "hill_octave_count": 4, "cave_wavelength_log2": 5, "cave_half_thickness": 0.05 }
   },
@@ -115,7 +115,7 @@ in this same format (`games/voxunami_cave/data/bodies/planet.json`).
 
 - **`level`**: the level it is in. Cave has `voxunami_cave:mini_cosmos` (space, where its planet is) and `voxunami_cave:overworld`.
 - **`position`**: where its centre is in the level, in voxels (x, y, z). The origin if left out.
-- **`terrain.family`**: the family of generators that makes its ground. Cave has one, `base_blocks:planet_v1`: a ball whose surface is hills (noise bent
+- **`terrain.family`**: the family of generators that makes its ground. Cave has one, `voxunami_cave:planet_v1`: a ball whose surface is hills (noise bent
   round it) with sheet caves under it. `pack-schema` lists the families a game has.
 - **`terrain.parameters`**: what the family takes. For planets: `seed` (a whole number, or `"world"` for the seed of the world it is made in, which makes
   the planet the world's own) and `radius` (voxels, from the centre to the surface where the hills add nothing) are required; `hill_height` (voxels, the height

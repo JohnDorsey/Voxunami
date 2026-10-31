@@ -914,7 +914,7 @@ fn a_planet_under_the_patch(scene: &mut Scene) -> f64 {
             .main()
             .terrain
             .generators()
-            .runtime_id(&base_blocks::small_planet_generator_identifier())
+            .runtime_id(&voxunami_cave::generators::small_planet_generator_identifier())
             .expect("the world has the planet's generator");
         let planet = world
             .create_grid(

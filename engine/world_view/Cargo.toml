@@ -17,6 +17,7 @@ voxel_space.workspace = true
 world_storage.workspace = true
 
 [dev-dependencies]
+terrain = { workspace = true, features = ["test-support"] }
 content_registry.workspace = true
 proptest.workspace = true
 voxel_grid = { workspace = true, features = ["test-support"] }

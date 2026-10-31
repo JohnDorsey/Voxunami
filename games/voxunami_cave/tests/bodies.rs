@@ -3,15 +3,15 @@
 
 mod common;
 
-use base_blocks::{planet_family_identifier, small_planet_generator_identifier};
 use common::{SEED, Scene, player_pose, ship_id, tick_and_follow};
 use game_shell::{GameContent, GameDefinition, RawFile, RawPack};
 use namespaced_id::NamespacedId;
-use terrain::PlanetSettings;
 use voxel_space::{BrickBox, BrickCoordinate, GridPose, LevelIndex};
 use voxunami_cave::aboard::in_voxels;
 use voxunami_cave::content::CaveContent;
 use voxunami_cave::game::Cave;
+use voxunami_cave::generators::PlanetSettings;
+use voxunami_cave::generators::{planet_family_identifier, small_planet_generator_identifier};
 use world_storage::GeneratorRecipe;
 
 fn id(text: &str) -> NamespacedId {
@@ -115,7 +115,7 @@ fn moons() -> Vec<RawPack> {
                 "level": "voxunami_cave:mini_cosmos",
                 "position": [400000, 0, 0],
                 "terrain": {
-                    "family": "base_blocks:planet_v1",
+                    "family": "voxunami_cave:planet_v1",
                     "parameters": { "seed": 99, "radius": 10000, "hill_height": 20,
                         "largest_hill_wavelength_log2": 7, "hill_octave_count": 4,
                         "cave_wavelength_log2": 5, "cave_half_thickness": 0.05 }
@@ -203,7 +203,7 @@ fn wanderers() -> Vec<RawPack> {
             r#"{
                 "level": "voxunami_cave:mini_cosmos",
                 "terrain": {
-                    "family": "base_blocks:planet_v1",
+                    "family": "voxunami_cave:planet_v1",
                     "parameters": { "seed": 99, "radius": 10000, "hill_height": 20,
                         "largest_hill_wavelength_log2": 7, "hill_octave_count": 4 }
                 },
@@ -494,7 +494,7 @@ fn pack_schema_writes_the_schema_of_bodies_with_cave_s_families_and_levels() {
     let schema: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(
         schema["$defs"]["family"]["enum"],
-        serde_json::json!(["base_blocks:planet_v1"])
+        serde_json::json!(["voxunami_cave:planet_v1"])
     );
     assert_eq!(
         schema["$defs"]["level"]["enum"],

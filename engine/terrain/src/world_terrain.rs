@@ -209,14 +209,14 @@ mod tests {
 
     use super::*;
     use crate::density::Heightfield;
-    use crate::generator::{FieldTerrainGenerator, TerrainMaterials};
+    use crate::generator::{FieldTerrainGenerator, SurfaceLayers};
     use crate::noise::FractalNoise;
 
-    const MATERIALS: TerrainMaterials = TerrainMaterials {
+    const MATERIALS: SurfaceLayers = SurfaceLayers {
         air: 0,
-        stone: 1,
-        dirt: 2,
-        grass: 3,
+        deep: 1,
+        subsurface: 2,
+        surface: 3,
     };
 
     fn id(text: &str) -> NamespacedId {
@@ -448,7 +448,7 @@ mod tests {
         );
         assert_eq!(
             new_region.channel(fixture.layout.material).uniform_value(),
-            Some(MATERIALS.stone)
+            Some(MATERIALS.deep)
         );
     }
 

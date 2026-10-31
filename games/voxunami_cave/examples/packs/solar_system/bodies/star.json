@@ -2,7 +2,7 @@
   "level": "voxunami_cave:mini_cosmos",
   "position": [-3000000, 0, 0],
   "terrain": {
-    "family": "base_blocks:planet_v1",
+    "family": "voxunami_cave:planet_v1",
     "parameters": { "seed": 7, "radius": 40000 }
   },
   "extent_bricks": 1252,

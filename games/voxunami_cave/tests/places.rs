@@ -103,7 +103,7 @@ fn moons() -> Vec<RawPack> {
                 "level": "voxunami_cave:mini_cosmos",
                 "position": [400000, 0, 0],
                 "terrain": {
-                    "family": "base_blocks:planet_v1",
+                    "family": "voxunami_cave:planet_v1",
                     "parameters": { "seed": 99, "radius": 10000, "hill_height": 20,
                         "largest_hill_wavelength_log2": 7, "hill_octave_count": 4,
                         "cave_wavelength_log2": 5, "cave_half_thickness": 0.05 }

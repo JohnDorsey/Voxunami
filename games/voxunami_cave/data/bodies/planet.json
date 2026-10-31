@@ -1,7 +1,7 @@
 {
   "level": "voxunami_cave:mini_cosmos",
   "terrain": {
-    "family": "base_blocks:planet_v1",
+    "family": "voxunami_cave:planet_v1",
     "parameters": {
       "seed": "world",
       "radius": 63710,

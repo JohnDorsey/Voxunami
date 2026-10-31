@@ -24,10 +24,10 @@ use voxel_space::{
     VoxelBox, VoxelCoordinate,
 };
 
-use crate::density::DensityField;
-use crate::generator::{TerrainGenerator, TerrainMaterials};
-use crate::interval::Interval;
-use crate::noise::mix;
+use terrain::DensityField;
+use terrain::Interval;
+use terrain::mix;
+use terrain::{SurfaceLayers, TerrainGenerator};
 
 /// A light year in metres, which are voxels.
 pub const LIGHT_YEAR: i128 = 9_460_730_472_580_800;
@@ -526,12 +526,12 @@ impl GreatRiversGenerator {
     }
 
     /// Water for every layer of the ground: a river is made of one block.
-    fn materials(&self) -> TerrainMaterials {
-        TerrainMaterials {
+    fn materials(&self) -> SurfaceLayers {
+        SurfaceLayers {
             air: self.air,
-            stone: self.water,
-            dirt: self.water,
-            grass: self.water,
+            deep: self.water,
+            subsurface: self.water,
+            surface: self.water,
         }
     }
 }
@@ -573,12 +573,12 @@ impl TerrainGenerator for GreatRiversGenerator {
 
     fn coarse_node(&self, cube: BrickCube, unlit: u8) -> Option<CoarseNode> {
         let near = self.rivers.field.near_cube(cube);
-        crate::coarse::coarse_node_of_field(&near, self.materials(), cube, unlit)
+        terrain::coarse_node_of_field(&near, self.materials(), cube, unlit)
     }
 
     fn may_show(&self, cube: BrickCube) -> bool {
         let near = self.rivers.field.near_cube(cube);
-        crate::coarse::cube_may_show(&near, cube)
+        terrain::cube_may_show(&near, cube)
     }
 }
 

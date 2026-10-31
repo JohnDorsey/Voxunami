@@ -9,7 +9,7 @@ use content_registry::{IdentifierRegistry, Registry};
 use namespaced_id::NamespacedId;
 use terrain::{
     FamilyError, FieldTerrainGenerator, FractalNoise, GeneratorFamily, GeneratorId, Heightfield,
-    TerrainGenerator, TerrainMaterials, WorldTerrain,
+    SurfaceLayers, TerrainGenerator, WorldTerrain,
 };
 use voxel_grid::{Brick, ChannelDefinition, ChannelValueKind, Grid, GridLayout};
 use voxel_space::{BrickBox, BrickCoordinate, VoxelCoordinate};
@@ -62,7 +62,7 @@ pub fn flat_family_id() -> NamespacedId {
 #[derive(Debug)]
 struct FlatFamily {
     material: voxel_grid::ChannelIndex,
-    materials: TerrainMaterials,
+    materials: SurfaceLayers,
 }
 
 impl GeneratorFamily for FlatFamily {
@@ -168,11 +168,11 @@ impl Game {
         let layout = GridLayout::new(self.channel_definitions()).unwrap();
         let family: Arc<dyn GeneratorFamily> = Arc::new(FlatFamily {
             material: layout.channel_index(&id("core:block")).unwrap(),
-            materials: TerrainMaterials {
+            materials: SurfaceLayers {
                 air: self.raw_block("base_blocks:air"),
-                stone: self.raw_block("base_blocks:stone"),
-                dirt: self.raw_block("base_blocks:dirt"),
-                grass: self.raw_block("base_blocks:grass"),
+                deep: self.raw_block("base_blocks:stone"),
+                subsurface: self.raw_block("base_blocks:dirt"),
+                surface: self.raw_block("base_blocks:grass"),
             },
         });
         vec![(flat_family_id(), family)]
@@ -199,11 +199,11 @@ impl Game {
     pub fn generator_registry(&self) -> Registry<Arc<dyn TerrainGenerator>> {
         let layout = GridLayout::new(self.channel_definitions()).unwrap();
         let material = layout.channel_index(&id("core:block")).unwrap();
-        let materials = TerrainMaterials {
+        let materials = SurfaceLayers {
             air: self.raw_block("base_blocks:air"),
-            stone: self.raw_block("base_blocks:stone"),
-            dirt: self.raw_block("base_blocks:dirt"),
-            grass: self.raw_block("base_blocks:grass"),
+            deep: self.raw_block("base_blocks:stone"),
+            subsurface: self.raw_block("base_blocks:dirt"),
+            surface: self.raw_block("base_blocks:grass"),
         };
         let flat = |height: f64| -> Arc<dyn TerrainGenerator> {
             Arc::new(FieldTerrainGenerator::new(

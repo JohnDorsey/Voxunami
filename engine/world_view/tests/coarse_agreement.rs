@@ -9,20 +9,19 @@ use std::collections::HashMap;
 use block_models::BlockTable;
 use coarse_cells::{CELLS_PER_NODE, CoarseNode, FULL_LIGHT};
 use region_octree::BrickCube;
-use terrain::{
-    FieldTerrainGenerator, RollingHillsSettings, TerrainGenerator, TerrainMaterials, rolling_hills,
-};
+use terrain::test_support::{RollingHillsSettings, rolling_hills};
+use terrain::{FieldTerrainGenerator, SurfaceLayers, TerrainGenerator};
 use voxel_grid::test_support::StandardTestLayout;
 use voxel_grid::{Brick, ChannelStorage};
 use voxel_meshing::{BrickChannels, BrickNeighbourhood, coarse_node_of_brick};
 use voxel_space::{BrickCoordinate, FaceDirection, LevelOfDetail, LocalVoxelIndex};
 
 const AIR: u32 = 0;
-const MATERIALS: TerrainMaterials = TerrainMaterials {
+const MATERIALS: SurfaceLayers = SurfaceLayers {
     air: AIR,
-    stone: 1,
-    dirt: 2,
-    grass: 3,
+    deep: 1,
+    subsurface: 2,
+    surface: 3,
 };
 
 struct Exact {
@@ -327,7 +326,7 @@ fn the_coarse_node_of_hills_from_the_generator_meshes_to_grass_on_top_and_far_fe
     let grass_area: u64 = mesh
         .quads
         .iter()
-        .filter(|quad| quad.face == FaceDirection::PositiveY && quad.material == MATERIALS.grass)
+        .filter(|quad| quad.face == FaceDirection::PositiveY && quad.material == MATERIALS.surface)
         .map(area)
         .sum();
     eprintln!(

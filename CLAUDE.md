@@ -30,7 +30,8 @@ Run a game: `cargo run --release -p launcher -- cave` (`--help` lists options; `
   preserved byte-for-byte on load/save, never dropped.
 - The client's view of the world comes only from the server message stream (singleplayer runs an
   integrated server). This is what makes replay recording work.
-- A terrain generator version is a file format: never edit a released one, add a new version.
+- A terrain generator version is a file format: never edit a released one, add a new version. (From the first release; until it
+  there are no worlds to keep, so ids and versions may change for a better design: the owner, 2026-10-30.)
 
 ## Workflow
 - Claude commits and pushes when a phase is done (the owner lifted the old no-commit rule). Each phase ends with passing

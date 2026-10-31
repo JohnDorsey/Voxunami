@@ -1,6 +1,8 @@
 //! Where a player goes to see the great rivers: the eyes in view of a knot, for `/tp base_blocks:great_river_narrowest` and `..._widest` (`places.rs`, `docs/great-rivers-spec.md`).
 
-use terrain::{DensityField, GreatRivers, RiverKnot};
+use terrain::DensityField;
+
+use crate::generators::{GreatRivers, RiverKnot};
 use voxel_space::{LevelOfDetail, VoxelCoordinate};
 
 /// The way a camera with these angles (radians) looks, in the axes of the level: yaw about +y (positive turns toward -x), then pitch up.

@@ -4,8 +4,7 @@ use std::sync::Arc;
 
 use base_blocks::{
     BaseBlockIds, BaseBlocks, block_channel_identifier, block_registry_kind,
-    great_rivers_generator_identifier, light_channel_identifier, orientation_channel_identifier,
-    rolling_hills_generator_identifier, state_channel_identifier,
+    light_channel_identifier, orientation_channel_identifier, state_channel_identifier,
 };
 use block_models::BlockDefinition;
 use content_registry::{IdentifierRegistry, Registry};
@@ -20,6 +19,9 @@ use voxel_space::FaceDirection;
 use world_storage::{GeneratorRecipe, LoadContext, RecipeError, WorldData};
 use world_view::ViewChannels;
 
+use crate::generators::{
+    self, great_rivers_generator_identifier, rolling_hills_generator_identifier,
+};
 use crate::items::{CREATIVE_ONLY, CREATIVE_ONLY_BY_DEFAULT, PLACEABLE, PLACEABLE_BY_DEFAULT};
 use crate::multiscale_light;
 
@@ -163,17 +165,17 @@ impl CaveContent {
                 let block_channel = layout
                     .channel_index(&block_channel_identifier())
                     .expect("the layout has the block channel");
-                ids.terrain_generators(seed, block_channel)
+                generators::terrain_generators(&ids, seed, block_channel)
             }),
             families: Arc::new(move |layout| {
                 let block_channel = layout
                     .channel_index(&block_channel_identifier())
                     .expect("the layout has the block channel");
-                ids.generator_families(block_channel)
+                generators::generator_families(&ids, block_channel)
             }),
             // The planet of a new world is a body of the game's own data (`data/bodies/planet.json`); packs may add more.
             body_support: BodySupport {
-                families: base_blocks::family_data(),
+                families: generators::family_data(),
                 levels: vec![mini_cosmos_id(), overworld_id()],
             },
             builtin_bodies: vec![(
@@ -194,7 +196,7 @@ impl CaveContent {
     }
 
     /// Adds a terrain generator that is data to a world of this game (a planet of another size or seed, for instance): `recipe` names the instance, the family
-    /// (`base_blocks:planet_v1` is the planets) and the parameters. The world keeps the recipe, and a client that joins makes the same generator from it.
+    /// (`voxunami_cave:planet_v1` is the planets) and the parameters. The world keeps the recipe, and a client that joins makes the same generator from it.
     pub fn add_generator_recipe(
         &self,
         world: &mut WorldData,
@@ -317,9 +319,8 @@ mod tests {
             GridLayout::new(vec![content.blocks.block_channel()])
                 .expect("one channel is a valid layout"),
         );
-        let generators = content
-            .blocks
-            .terrain_generators(5, content.block_channel());
+        let generators =
+            generators::terrain_generators(&content.blocks, 5, content.block_channel());
         let default = generators
             .runtime_id(&rolling_hills_generator_identifier())
             .unwrap();

@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
+use super::planet::PlanetSettings;
 use data_packs::{FamilyData, FamilyParameters, FamilyProblem};
 use serde_json::{Map, Value, json};
-use terrain::PlanetSettings;
 
 /// The keys, in the order of the settings.
 const KEYS: [&str; 7] = [

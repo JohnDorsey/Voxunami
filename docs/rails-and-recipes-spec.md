@@ -39,7 +39,7 @@ and nothing that reads the clock may read the wall clock or count ticks itself.
 
 A **recipe** is `(instance identifier, family identifier, parameters)`:
 
-- A **family** is code, and a file format like every generator: `base_blocks:planet_v1` is the algorithm of `terrain::planet` and never changes once a world has used it.
+- A **family** is code, and a file format like every generator: `voxunami_cave:planet_v1` is the algorithm of `generators::planet` and never changes once a world has used it.
   It is registered with the game next to the generators (a `GeneratorFamilies` registry: `build(seed-independent parameters, block channel, materials) -> generator`),
   and it gives its parameters a canonical byte form and a JSON form (so a pack can write them).
 - An **instance** is a name chosen by the data (`voxunami_cave:mini_cosmos/planet`); it is the identifier in the world's table of generators, so a ship file, the world file

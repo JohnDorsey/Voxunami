@@ -1,11 +1,11 @@
 //! How the parameters of the planet family are written in a body file: what a good one becomes (the bytes of a recipe), what every bad one is told, and that the
 //! generated schema and the reader agree.
 
-use base_blocks::{planet_family_data, planet_family_identifier};
 use data_packs::{FamilyData, FamilyProblem};
 use jsonschema::Validator;
 use serde_json::{Value, json};
-use terrain::PlanetSettings;
+use voxunami_cave::generators::PlanetSettings;
+use voxunami_cave::generators::{planet_family_data, planet_family_identifier};
 
 fn data() -> std::sync::Arc<dyn FamilyData> {
     planet_family_data()
@@ -33,7 +33,7 @@ fn problems(parameters: &Value) -> Vec<(String, String)> {
 fn the_family_is_the_one_the_plugin_makes_generators_with() {
     // (The data side of a family has the name of its code side, which a world's recipes are made with.)
     assert_eq!(
-        base_blocks::family_data()
+        voxunami_cave::generators::family_data()
             .iter()
             .map(|(name, _)| name.clone())
             .collect::<Vec<_>>(),

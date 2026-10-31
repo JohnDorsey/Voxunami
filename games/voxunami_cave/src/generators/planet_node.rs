@@ -16,10 +16,10 @@ use coarse_cells::{CELLS_PER_NODE, CoarseCell, CoarseNode, NODE_EDGE};
 use region_octree::BrickCube;
 use voxel_space::{LevelOfDetail, VoxelBox};
 
-use crate::coarse::coarse_node_from_fills;
-use crate::density::DensityField;
-use crate::generator::{SURFACE_LAYER_DEPTH, TerrainMaterials};
-use crate::planet::PlanetGround;
+use crate::generators::planet::PlanetGround;
+use terrain::DensityField;
+use terrain::coarse_node_from_fills;
+use terrain::{SURFACE_LAYER_DEPTH, SurfaceLayers};
 
 /// How many times the height of the ground is asked for to guess where the first column of a row ends: the first guess is the ground without hills, and each
 /// time the column is run to the end that the last height gave and the height there asked for again.
@@ -315,7 +315,7 @@ impl NodeColumns {
 /// The coarse node of a cube of bricks of a planet's ground, or `None` for a cube of level 0 (a brick, which is generated).
 pub(crate) fn coarse_node_of_planet(
     ground: &PlanetGround,
-    materials: TerrainMaterials,
+    materials: SurfaceLayers,
     cube: BrickCube,
     unlit: u8,
 ) -> Option<CoarseNode> {
@@ -344,7 +344,7 @@ pub(crate) fn coarse_node_of_planet(
         && ground.bounds(&around, detail).lower() > 0.0
     {
         return Some(CoarseNode::uniform(CoarseCell {
-            block: materials.stone,
+            block: materials.deep,
             fill: 255,
             light: unlit,
             exposure: 0,
@@ -371,8 +371,8 @@ mod tests {
     use voxel_space::{BrickCoordinate, LocalVoxelIndex, VoxelCoordinate};
 
     use super::*;
-    use crate::planet::test_fixtures::{MATERIALS, ball, small_planet};
-    use crate::planet::{PlanetSettings, planet};
+    use crate::generators::planet::test_fixtures::{MATERIALS, ball, small_planet};
+    use crate::generators::planet::{PlanetSettings, planet};
 
     const UNLIT: u8 = 9;
 
@@ -420,7 +420,7 @@ mod tests {
     fn planet_node(settings: PlanetSettings, cube: BrickCube) -> CoarseNode {
         let fixture = voxel_grid::test_support::StandardTestLayout::default();
         let generator = planet(settings, fixture.material, MATERIALS);
-        crate::TerrainGenerator::coarse_node(&generator, cube, UNLIT).unwrap()
+        terrain::TerrainGenerator::coarse_node(&generator, cube, UNLIT).unwrap()
     }
 
     // ---- symmetry ----
@@ -615,9 +615,9 @@ mod tests {
                     assert!(drawn.len() >= 3, "level {level} axis {axis}: {column:?}");
                     let blocks: Vec<u32> =
                         drawn.iter().take(2 + dirt_cells).map(|c| c.block).collect();
-                    let mut expected = vec![MATERIALS.grass];
-                    expected.extend(vec![MATERIALS.dirt; dirt_cells]);
-                    expected.push(MATERIALS.stone);
+                    let mut expected = vec![MATERIALS.surface];
+                    expected.extend(vec![MATERIALS.subsurface; dirt_cells]);
+                    expected.push(MATERIALS.deep);
                     assert_eq!(
                         blocks, expected,
                         "level {level}, axis {axis}, outward positive {outward_positive}"
@@ -636,17 +636,17 @@ mod tests {
         let node = planet_node(ball(farthest + 1.5), cube);
         assert_ne!(
             node.uniform_cell().map(|cell| cell.block),
-            Some(MATERIALS.stone)
+            Some(MATERIALS.deep)
         );
         let corner = node.cell(LocalVoxelIndex::new(31, 31, 31));
         assert!(
-            corner.block == MATERIALS.dirt || corner.block == MATERIALS.grass,
+            corner.block == MATERIALS.subsurface || corner.block == MATERIALS.surface,
             "{corner:?}"
         );
         // The cell in the middle of the node, deep in the ground, is stone.
         assert_eq!(
             node.cell(LocalVoxelIndex::new(10, 5, 10)).block,
-            MATERIALS.stone
+            MATERIALS.deep
         );
     }
 
@@ -657,12 +657,12 @@ mod tests {
         let cube = BrickCube::new(BrickCoordinate::new(0, 12, 0), 1).unwrap();
         let node = planet_node(ball(451.0), cube);
         let top_row = node.cell(LocalVoxelIndex::new(0, 31, 0));
-        assert_eq!(top_row.block, MATERIALS.dirt, "{top_row:?}");
+        assert_eq!(top_row.block, MATERIALS.subsurface, "{top_row:?}");
         assert!(top_row.fill == 255);
         // And the one under it has three cells of ground over it: stone.
         assert_eq!(
             node.cell(LocalVoxelIndex::new(0, 29, 0)).block,
-            MATERIALS.stone
+            MATERIALS.deep
         );
     }
 
@@ -711,7 +711,7 @@ mod tests {
             BrickCube::new(BrickCoordinate::new(origin[0], origin[1], origin[2]), level).unwrap()
         };
         let node = |origin, level| {
-            crate::TerrainGenerator::coarse_node(&generator, cube(origin, level), UNLIT)
+            terrain::TerrainGenerator::coarse_node(&generator, cube(origin, level), UNLIT)
         };
         assert_eq!(
             node([-8, 24, -8], 3).unwrap().uniform_cell(),
@@ -720,7 +720,7 @@ mod tests {
         assert_eq!(
             node([-4, -4, -4], 2).unwrap().uniform_cell(),
             Some(CoarseCell {
-                block: MATERIALS.stone,
+                block: MATERIALS.deep,
                 fill: 255,
                 light: UNLIT,
                 exposure: 0
@@ -917,7 +917,7 @@ mod tests {
                 for direction in DIRECTIONS {
                     let cube = cube_at_the_surface(direction, 500.0, level);
                     let from_columns = NodeColumns::new(&ground, cube).unwrap().fills();
-                    let asked = crate::coarse::fills_of_field_cell_by_cell(&ground, cube).unwrap();
+                    let asked = terrain::fills_of_field_cell_by_cell(&ground, cube).unwrap();
                     for (&a, &b) in from_columns.iter().zip(&asked) {
                         if a == 0 && b == 0 || a == 255 && b == 255 {
                             continue;
@@ -959,7 +959,7 @@ mod tests {
             .map(|&(settings, cube)| {
                 let node = planet_node(settings, cube);
                 assert_eq!(node.uniform_cell(), None, "{cube:?} should have a surface");
-                crate::coarse::node_digest(&node)
+                terrain::node_digest(&node)
             })
             .collect();
         eprintln!("OBSERVED {observed:?}");

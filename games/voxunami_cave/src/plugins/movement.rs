@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::generators::GreatRivers;
 use game_shell::GameContent;
 use namespaced_id::NamespacedId;
 use player_presence::{PlayerPose, Presence, SharedPresence, lock};
@@ -11,7 +12,6 @@ use plugin_host::{
 };
 use protocol::ClientId;
 use server::ServerWorld;
-use terrain::GreatRivers;
 use voxel_grid::ChannelIndex;
 use voxel_space::{Displacement, GridId, LevelIndex, Orientation, VoxelCoordinate, WorldPosition};
 
