@@ -53,7 +53,7 @@ fn terrain_refresh_age(index: usize) -> u64 {
 const PLACEMENT_SIZE: u64 = 64;
 
 /// How many different avatar colours there are. Their material values are the last of all the values a quad can
-/// carry ([`AVATAR_MATERIAL_BASE`] and the 15 after it), which no game material can reach, so games have every
+/// carry (`AVATAR_MATERIAL_BASE` and the 15 after it), which no game material can reach, so games have every
 /// value below [`MAXIMUM_GAME_MATERIALS`].
 pub const AVATAR_COLOR_COUNT: usize = 16;
 /// The material value of the first avatar colour. The shader knows it too (`AVATAR_BASE` in `voxel.wgsl`).
@@ -229,7 +229,7 @@ pub struct Atmosphere {
     /// How bright, from 0 to 255, the sky makes every face the sun can reach, from whichever side (a face on the side away from the sun is shaded as ever). The sky is
     /// the sun's light scattered, so it goes where the sun does: a place the sun does not reach has none. 0 is none.
     pub sky_light: u8,
-    /// Whether the terrain and everything drawn casts shadows (see [`crate::shadow`]): the sun lights only what it reaches, and the sky's light is cut to
+    /// Whether the terrain and everything drawn casts shadows (see `crate::shadow`): the sun lights only what it reaches, and the sky's light is cut to
     /// [`Atmosphere::sky_light_in_shadow`] where it does not. The renderer draws the shadow maps for it (they cost a second drawing of what is near the sun's way,
     /// finest for what is near the camera), and only while there is a sun or a sky light to shade. `false`, the default, is no shadows, and pictures as they were.
     pub shadows: bool,

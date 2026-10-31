@@ -44,3 +44,5 @@ Run a game: `cargo run --release -p launcher -- cave` (`--help` lists options; `
 - Mutation experiments (deliberately breaking code to check tests bite) must set
   `PROPTEST_DISABLE_FAILURE_PERSISTENCE=1`; `proptest-regressions/` files are only for real failures.
 - Checks: `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check`.
+  CI (`.github/workflows/ci.yml`) also runs `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS="-D warnings"`, so a documentation link to a private or missing item fails it.
+- A test that waits for a worker thread waits for the condition, with a deadline (`tick_until` in `games/voxunami_cave/tests/common/mod.rs`), never for a fixed time.

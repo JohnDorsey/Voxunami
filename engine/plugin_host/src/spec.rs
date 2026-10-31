@@ -60,7 +60,7 @@ pub struct SystemSpec {
     pub before: Vec<NamespacedId>,
     pub reads: Vec<ChannelIndex>,
     pub writes: Vec<ChannelIndex>,
-    /// The components of entities it reads, by identifier (see [`entities_resource`]).
+    /// The components of entities it reads, by identifier (see `entities_resource`).
     pub component_reads: Vec<NamespacedId>,
     pub component_writes: Vec<NamespacedId>,
 }

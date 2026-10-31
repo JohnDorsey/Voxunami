@@ -6,7 +6,7 @@
 //! the player is. So where a player is does not depend on their word, and the same inputs give the same positions on every machine.
 //!
 //! Terrain collision is what a block's shape says, except that flames and the like
-//! ([`BlockTable::is_passable`]) are not in the way, and terrain that cannot be read is a wall.
+//! (blocks with the `passable` property) are not in the way, and terrain that cannot be read is a wall.
 //!
 //! A body is simulated in a *frame*: the root grid of a level, or a ship it is aboard. In a level, ships that are near are colliders that
 //! stand where the ships are, and the body that ends a step standing on a block of one is put aboard it. Aboard, the body is in the

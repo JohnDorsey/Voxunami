@@ -185,7 +185,7 @@ pub mod engine {
 
     /// Which face of a block, in each state, is its docking face: the face a ship docks by (a face code, 0 for a block that is not a docking
     /// port). A face that looks one way in a state looks the way the grid is turned to when the block's grid is, so a docking port is turned
-    /// with its ship (see [`crate::BlockTable::turned_state`]).
+    /// with its ship (see `BlockTable`, which turns a state with its ship).
     pub const DOCKING_FACE: PropertyKey<u8> = PropertyKey::new(
         "engine:docking_face",
         0,

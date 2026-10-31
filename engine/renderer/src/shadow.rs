@@ -9,7 +9,7 @@
 //!
 //! * The cascades are measured from the camera and from nothing else; every number is relative to the camera, as the renderer's positions are. How many there are, and how
 //!   they grow, comes from how far the picture is drawn ([`half_widths`]), so the cost grows with the logarithm of the distance and not with the distance.
-//! * A map is kept while the camera stays near the middle of it ([`SLACK`]) and the sun near where it was ([`SUN_DRIFT`]), and drawn again only when it is not: a cascade that
+//! * A map is kept while the camera stays near the middle of it (`SLACK`) and the sun near where it was ([`SUN_DRIFT`]), and drawn again only when it is not: a cascade that
 //!   covers a mountain range has all the terrain of the picture in it, and drawing that in every frame is what the renderer cannot afford. The middle of a map is on a grid
 //!   of the world, so a map drawn again lies where it did, and what a place looks up in a kept map is found by moving the camera's place, not by drawing it again.
 //! * A map covers the sphere round the camera that the cascade is for ([`Cascade::reach`]), and it is a picture of everything that can be between that sphere and the sun
@@ -169,7 +169,7 @@ pub fn texel_of(half_width: f32) -> f32 {
     2.0 * half_width / CASCADE_RESOLUTION as f32
 }
 
-/// How far from the camera a place may be to be looked up in a cascade of this half width: the square it covers, less the [`SLACK`] the camera may have moved in, less the
+/// How far from the camera a place may be to be looked up in a cascade of this half width: the square it covers, less the `SLACK` the camera may have moved in, less the
 /// texels kept at the edge.
 pub fn reach_of(half_width: f32) -> f32 {
     half_width * (1.0 - SLACK) - EDGE_TEXELS * texel_of(half_width)
@@ -187,7 +187,7 @@ pub const LAST_DOUBLING_HALF_WIDTH: f32 = 512.0;
 pub const LAST_QUADRUPLING_HALF_WIDTH: f32 = 2048.0;
 
 /// The half widths of the cascades for a picture drawn to this distance (the distance where the fog is complete): the finest is [`FIRST_HALF_WIDTH`], each is double the one
-/// before up to [`LAST_DOUBLING_HALF_WIDTH`], four times after that up to [`LAST_QUADRUPLING_HALF_WIDTH`] and eight times after that, and the last is the first whose reach
+/// before up to `LAST_DOUBLING_HALF_WIDTH`, four times after that up to `LAST_QUADRUPLING_HALF_WIDTH` and eight times after that, and the last is the first whose reach
 /// is the distance. At most [`MAXIMUM_CASCADES`] (the eleven reach 59 million voxels): further than that the last is the coarsest, and the rest of the picture is not shadowed.
 pub fn half_widths(distance: f32) -> Vec<f32> {
     let wanted = if distance.is_nan() { 0.0 } else { distance };
@@ -238,7 +238,7 @@ pub struct Cascade {
     pub texel: f32,
     /// How far from the camera a place may be to be looked up here ([`reach_of`]).
     pub reach: f32,
-    /// The middle of the map across the light (along `right` and `up`), relative to the camera: the camera's place rounded to a step of the world ([`SLACK`] of the half width, a
+    /// The middle of the map across the light (along `right` and `up`), relative to the camera: the camera's place rounded to a step of the world (`SLACK` of the half width, a
     /// whole number of texels), so that a texel is always the same piece of the world and a shadow does not swim when the map is drawn again.
     pub centre: [f32; 2],
     /// The depth (distance toward the sun, from the camera) where depth is 0: below every place a lookup can be for.
@@ -292,7 +292,7 @@ impl Cascade {
     }
 
     /// Whether the map, drawn for a camera that has since moved by `moved` (the camera's place now relative to where it was), still holds everything within its reach of the
-    /// camera: the camera has not gone further than [`SLACK`] of the half width from where it was, along any of the three directions of the light.
+    /// camera: the camera has not gone further than `SLACK` of the half width from where it was, along any of the three directions of the light.
     pub fn holds_after_moving(&self, basis: &LightBasis, moved: Vec3) -> bool {
         let slack = self.half_width * SLACK;
         moved.dot(basis.right).abs() <= slack

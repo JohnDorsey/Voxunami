@@ -1,6 +1,6 @@
 //! Saving and loading worlds.
 //!
-//! A world file is a [container](container) of checksummed sections. The engine defines a few
+//! A world file is a [container] of checksummed sections. The engine defines a few
 //! ([engine_sections]); plugins may add their own, which are opaque to everything here. The rule
 //! the whole crate is built around: **loading and saving a world must never lose data, even when
 //! plugins that wrote it are not installed.**

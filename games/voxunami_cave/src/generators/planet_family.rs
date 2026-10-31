@@ -30,7 +30,7 @@ impl PlanetSettings {
     }
 
     /// Everything that makes these settings no planet, each as the name of the field and why: a radius that is not above nothing and at most
-    /// [`GREATEST_RADIUS`], a negative or not finite height of the hills or thickness of the caves, a wavelength past the greatest the noise takes (where the
+    /// `GREATEST_RADIUS`, a negative or not finite height of the hills or thickness of the caves, a wavelength past the greatest the noise takes (where the
     /// generator would panic or make nonsense). In the order of the fields.
     pub fn problems(&self) -> Vec<(&'static str, String)> {
         let mut problems = Vec::new();

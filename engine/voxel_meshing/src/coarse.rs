@@ -167,7 +167,7 @@ fn uniform_node(
     })
 }
 
-/// The mesh of a coarse node (`docs/specs/lod-spec.md`, 38g): a cube for each cell that is filled by at least [`DRAWN_FILL`] (half), in the units of the cells
+/// The mesh of a coarse node (`docs/specs/lod-spec.md`, 38g): a cube for each cell that is filled by at least [`coarse_cells::DRAWN_FILL`] (half), in the units of the cells
 /// (one unit is a cell, `2^level` voxels; the renderer scales it), with a face wherever the cell next to it is not a cube. Cubes of the same block and light
 /// along a face are merged into one rectangle, as for a brick.
 ///

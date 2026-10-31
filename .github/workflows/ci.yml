@@ -15,17 +15,22 @@ jobs:
   check:
     name: ${{ matrix.system }}
     runs-on: ${{ matrix.system }}
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
         system: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-      - name: Toolchain (the version rust-toolchain.toml names)
-        run: rustup show
+      - name: Toolchain (rust-toolchain.toml says stable; the newest, since the crates name the version they need)
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - name: Format
         run: cargo fmt --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Documentation (a link to what is gone or private is a warning, and a warning is an error)
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
       - name: Tests
         run: cargo test --workspace

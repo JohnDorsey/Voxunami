@@ -469,7 +469,7 @@ impl CharacterBody {
     /// is inside the terrain is first moved the shortest way out of it (straight up, down or sideways: the
     /// least distance, and up before the others at the same distance), so that it does not stay half in a
     /// block, or fall through the ground, as the physics alone would leave it. If there is no room within
-    /// [`MAXIMUM_CLEARANCE_DISTANCE`] it stays where it was put.
+    /// `MAXIMUM_CLEARANCE_DISTANCE` it stays where it was put.
     pub fn update_terrain(&mut self, source: &mut impl CollisionSource) {
         if std::mem::take(&mut self.needs_clearance) {
             self.move_out(source, false, MAXIMUM_CLEARANCE_DISTANCE);
@@ -485,7 +485,7 @@ impl CharacterBody {
     /// The step alone does not do this well. A controller slides a character out of an overlap along the surface of whichever collider it
     /// finds first, with no regard to what is behind the character, so something that comes down on a character presses it into the floor
     /// (and the floor pushes it back, so it shakes), and the colliders of terrain leave out boxes buried in solid terrain, so a character
-    /// pressed deep enough touches nothing and goes on down through it. If there is no room within [`MAXIMUM_PUSH_DISTANCE`] the
+    /// pressed deep enough touches nothing and goes on down through it. If there is no room within `MAXIMUM_PUSH_DISTANCE` the
     /// character stays where it is.
     pub fn keep_clear(&mut self, source: &mut impl CollisionSource) {
         self.move_out(source, true, MAXIMUM_PUSH_DISTANCE);

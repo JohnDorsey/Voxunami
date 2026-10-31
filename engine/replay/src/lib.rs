@@ -2,7 +2,7 @@
 //!
 //! The client's whole picture of the world comes from the server's message stream, so a recording of
 //! that stream is a complete replay of what the client saw. [`RecordingConnection`] wraps a client's
-//! connection and writes every frame it receives to a file ([`file`] defines the format);
+//! connection and writes every frame it receives to a file ([`mod@file`] defines the format);
 //! [`ReplayConnection`] reads such a file and plays the part of the server, so the unchanged client
 //! code rebuilds the same views tick by tick, to be watched, rendered to video or checked.
 //!

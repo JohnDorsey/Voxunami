@@ -42,7 +42,7 @@ impl RollingHillsSettings {
 /// Hills over a flat base, riddled with thin sheet-like caves.
 ///
 /// The output for given settings is part of a world's file format and must never change; see
-/// [`TerrainGenerator`]. Register a changed design under a new version name instead.
+/// [`terrain::TerrainGenerator`]. Register a changed design under a new version name instead.
 pub fn rolling_hills(
     settings: RollingHillsSettings,
     material_channel: ChannelIndex,
