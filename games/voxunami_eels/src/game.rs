@@ -167,6 +167,14 @@ mod tests {
     use super::*;
     use crate::messages::Player;
 
+    #[test]
+    fn every_client_plugin_is_the_half_of_a_server_plugin_of_its_name() {
+        assert_eq!(
+            game_shell::unpaired_client_plugins::<Eels>(),
+            Vec::<NamespacedId>::new()
+        );
+    }
+
     fn player(client: u32, slot: u8, alive: bool, wins: u32) -> Player {
         Player {
             client: ClientId::new(client),

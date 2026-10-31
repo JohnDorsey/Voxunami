@@ -137,6 +137,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_client_plugin_is_the_half_of_a_server_plugin_of_its_name() {
+        assert_eq!(
+            game_shell::unpaired_client_plugins::<Game2048>(),
+            Vec::<NamespacedId>::new()
+        );
+    }
+
+    #[test]
     fn directions_between_neighbours_and_nothing_else() {
         let origin = VoxelCoordinate::new(5, 5, 5);
         for direction in FaceDirection::ALL {

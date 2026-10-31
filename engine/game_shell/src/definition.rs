@@ -220,3 +220,32 @@ pub trait GameDefinition: Sized + 'static {
         Vec::new()
     }
 }
+
+/// The client plugins of a game whose identifier is no server plugin's. A client plugin is the client half of a server plugin and has its identifier, written
+/// out again beside it: nothing but this ties the two, so a game checks it (a test of each game calls this and expects none), and a name that drifts is
+/// found at once instead of as a half that does nothing.
+pub fn unpaired_client_plugins<G: GameDefinition>() -> Vec<NamespacedId> {
+    let content = G::new_content();
+    let servers: HashSet<NamespacedId> = G::plugins(&content)
+        .iter()
+        .map(|plugin| plugin.id())
+        .collect();
+    let mut unpaired: Vec<NamespacedId> = G::client_plugins(&content)
+        .iter()
+        .map(|plugin| plugin.id())
+        .filter(|id| !servers.contains(id))
+        .collect();
+    unpaired.sort();
+    unpaired
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::ExampleGame;
+
+    #[test]
+    fn a_game_with_no_client_plugins_has_none_that_are_unpaired() {
+        assert!(unpaired_client_plugins::<ExampleGame>().is_empty());
+    }
+}

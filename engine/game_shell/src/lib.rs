@@ -36,7 +36,9 @@ pub mod view;
 mod windowed;
 
 pub use data_packs::{BodySupport, PackErrors, RawFile, RawPack};
-pub use definition::{CameraStart, CoarseDetail, GameContent, GameDefinition};
+pub use definition::{
+    CameraStart, CoarseDetail, GameContent, GameDefinition, unpaired_client_plugins,
+};
 pub use identity::Identity;
 pub use package::{ContentPackage, FamilyFactory, GeneratorFactory, PackageSpec, no_families};
 pub use package_data::{PackageData, PackageError, check_materials};

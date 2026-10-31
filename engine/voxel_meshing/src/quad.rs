@@ -1,7 +1,8 @@
 use voxel_space::{BRICK_EDGE_LENGTH, FaceDirection};
 
-/// The brightness of a face that nothing dims: the light value of games that have no lighting.
-pub const FULL_LIGHT: u8 = 255;
+/// The brightness of a face that nothing dims: the light value of games that have no lighting. It is the one number the coarse cells and the mesher both mean by it, so it is
+/// `coarse_cells`' and is not written again.
+pub use coarse_cells::FULL_LIGHT;
 
 /// The largest block id a quad can carry; the rest of the word holds the light.
 pub const MAXIMUM_MATERIAL: u32 = (1 << 24) - 1;
