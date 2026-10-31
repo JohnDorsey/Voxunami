@@ -1750,8 +1750,12 @@ M1 step 1 (2026-10-30; `architecture-review.md` 7.1): is an orbit stable? `games
   24 steps (`MOST_STEPS`), so it moves 39 metres under a pull of the place it began in. A model of exactly that (`x' = x + v dt + a dt^2/2`, `v' = v + a dt`) gives AM -1.88e-4, energy +3.76e-4, radius +1.59 m
   against the seen -1.76e-4, +3.53e-4, +1.78 m; a textbook explicit step gives twice the first two; a symplectic step or velocity Verlet gives nothing. Either work out the pull at every solver step or
   kick the velocity at the middle of the tick; neither is done.
-- **Cost, found on the way:** a free ship at that speed costs 10.7 to 10.9 milliseconds a tick (a cube; 21 percent of a tick) against 0.03 for one at rest and 0.05 for the world without a ship, because
-  it is cut into 24 solver steps: 6 ms at 1,000 metres a second, 11 ms at 786 (the step count is `ceil(speed x tick / 0.8)` and the 24 steps are the most). A ship far from everything costs as much.
-  Two ships would cost two. The same cost is paid by a ship that only coasts.
+- **Cost, found on the way, and what it is (profiled 2026-10-31; the first explanation, 24 solver steps, was wrong):** a free ship at that speed costs 10.7 to 12 milliseconds a tick (a cube; a quarter of a tick) against 0.03
+  for one at rest. **Rapier's steps are not it**: `BodyWorld::step` of one fast cube costs 0.04 ms a tick at 786 metres a second whether it is cut into 3 steps or 24 (measured in a world of its own; 0.08 ms in the server). The time is
+  in `engine:grid_bodies_move`, in `keep_terrain`: 99 percent of the system. `bricks_to_change` asks for the terrain colliders of **a cube** of bricks round the ship, as wide as its speed makes it (`margin = 8 voxels + 0.25 s x speed`
+  to look ahead, 2 + 0.1 s x speed needed), and does it once for **each ring** of 8 voxels out to the lookahead, each time going over every brick of the whole cube again: about 47,000 visits (into `BTreeMap`s) a tick at 786 m/s. About 110
+  bricks a tick come into the cube and 110 go out, each a collider set or removed (air, at that height), and the planet, whose box of extent holds the ship, is asked all over again as a second ground. Cost by speed (a cube 2 km over the planet):
+  0.06 ms at rest, 0.3 at 100 m/s, 2.0 at 400, 14.7 at 786, **168 at 1,500** (more than a tick: the server falls behind); far from the planet (one ground, not two) 4.5 ms at 786 and 70 at 1,500. It grows about as the speed to the third or
+  fourth power (volume of the cube times the number of rings). It is paid by a ship that only coasts, and by two ships twice.
 - Tests: two that pass (it goes round near its circle, 36 degrees in a tenth of a lap; what is wrong today, with bounds around what was measured) and one criterion (`#[ignore]`: energy and angular momentum
   change by less than 1e-5 in a tenth of a lap) that fails by a factor of about 35 at the tenth. The three run on one measurement of 1,050 ticks (11 seconds). A hundred laps would take three hours.

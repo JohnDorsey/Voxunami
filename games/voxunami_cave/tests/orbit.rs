@@ -111,7 +111,7 @@ fn orbit_of(scene: &Scene, number: u64, planet: &Planet) -> Orbit {
 }
 
 /// The orbit of a ship put in a circle 2 km over the hills, at the start and then every [`SAMPLE_EVERY`] ticks, [`SAMPLES`] times. Worked out once for all the tests that read it
-/// (about ten seconds: a ship at orbital speed is cut into 24 solver steps a tick, which costs 11 milliseconds a tick for one cube).
+/// (about ten seconds: a ship at orbital speed costs about 11 milliseconds a tick, nearly all of it the terrain colliders asked for round a fast ship, `grid_bodies::keep_terrain`, `build-log.md`).
 fn a_tenth_of_a_lap() -> &'static [Orbit] {
     static MEASURED: OnceLock<Vec<Orbit>> = OnceLock::new();
     MEASURED.get_or_init(|| {
