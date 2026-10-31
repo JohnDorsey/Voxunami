@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 
 use block_models::Shape;
 use common::{
-    PlayerExt, Scene, make_ship, player_pose, pose_at, say, ship_id, ship_pose, tick_and_follow,
-    top_of_the_column,
+    PlayerExt, Scene, bricks_prefetched, make_ship, player_pose, pose_at, say, ship_id, ship_pose,
+    tick_and_follow, tick_until, tick_until_quiet, top_of_the_column,
 };
 use game_shell::{GameContent, GameDefinition, KeyCode};
 use server::GridView;
@@ -776,7 +776,17 @@ fn the_ground_a_ship_falling_toward_a_planet_will_want_is_made_by_a_worker_meanw
     scene.run(move |world| {
         *slot.lock().unwrap() = (world.bricks_prefetched(), world.bricks_generated())
     });
-    let (prefetched, generated) = *counts.lock().unwrap();
+    let (mut prefetched, generated) = *counts.lock().unwrap();
+    if prefetched < 1 {
+        // (The ship has landed; the worker may only be slow.)
+        tick_until(
+            &mut scene,
+            "the worker to make a brick",
+            |scene| scene.ticks(1),
+            |scene| bricks_prefetched(scene) >= 1,
+        );
+        prefetched = bricks_prefetched(&mut scene);
+    }
     assert!(
         prefetched >= 1,
         "the worker made {prefetched} and the ticks {generated}"
@@ -799,11 +809,12 @@ fn the_bricks_round_a_walker_on_a_planet_are_made_by_a_worker_before_they_walk_i
         tick_and_follow(&mut scene, &mut player, 1);
         std::thread::sleep(std::time::Duration::from_millis(3));
     }
-    let counts = std::sync::Arc::new(std::sync::Mutex::new(0));
-    let slot = std::sync::Arc::clone(&counts);
-    scene.run(move |world| *slot.lock().unwrap() = world.bricks_prefetched());
-    let prefetched = *counts.lock().unwrap();
-    assert!(prefetched >= 1, "the worker made {prefetched}");
+    tick_until(
+        &mut scene,
+        "the worker to make a brick for the walker",
+        |scene| tick_and_follow(scene, &mut player, 1),
+        |scene| bricks_prefetched(scene) >= 1,
+    );
 }
 
 #[test]
@@ -944,25 +955,19 @@ fn a_ship_rests_on_a_second_planet_two_hundred_kilometres_from_the_first_and_bot
 fn the_bricks_under_a_player_who_falls_toward_a_planet_are_made_by_a_worker_as_they_come() {
     let mut scene = Scene::new();
     make_the_planet(&mut scene);
-    // (The bricks round the pole were asked for when the planet was made, and the worker is given the time to make them.)
-    for _ in 0..60 {
-        scene.ticks(1);
-        std::thread::sleep(std::time::Duration::from_millis(30));
-    }
-    let before = prefetched_so_far(&mut scene);
+    // (The bricks round the pole were asked for when the planet was made, and the worker is given the time to make them, all of them.)
+    let before = tick_until_quiet(
+        &mut scene,
+        "the bricks round the pole",
+        |scene| scene.ticks(1),
+        bricks_prefetched,
+    );
     // Away from the pole, a hundred voxels over the ground.
     let mut player = scene.rig.join_walking([3000.5, 450.0, 0.5], 0.0, 0.0);
-    for _ in 0..60 {
-        tick_and_follow(&mut scene, &mut player, 1);
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    let made = prefetched_so_far(&mut scene) - before;
-    assert!(made >= 40, "the worker made {made} for the fall");
-}
-
-fn prefetched_so_far(scene: &mut Scene) -> u64 {
-    let found = std::sync::Arc::new(std::sync::Mutex::new(0));
-    let slot = std::sync::Arc::clone(&found);
-    scene.run(move |world| *slot.lock().unwrap() = world.bricks_prefetched());
-    std::mem::take(&mut *found.lock().unwrap())
+    tick_until(
+        &mut scene,
+        "the bricks under a player who falls",
+        |scene| tick_and_follow(scene, &mut player, 1),
+        |scene| bricks_prefetched(scene) - before >= 40,
+    );
 }

@@ -8,8 +8,8 @@ use voxunami_cave::generators::{
 };
 
 use common::{
-    PlayerExt, SEED, Scene, make_ship, player_pose, pose_at, say, ship_id, tick_and_follow,
-    top_of_the_column,
+    PlayerExt, SEED, Scene, bricks_prefetched, make_ship, player_pose, pose_at, say, ship_id,
+    tick_and_follow, tick_until, top_of_the_column,
 };
 use game_shell::{GameContent, GameDefinition};
 use server::GridView;
@@ -716,16 +716,13 @@ fn the_bricks_where_players_arrive_on_a_planet_are_made_before_anyone_arrives() 
     let mut scene = Scene::in_a_new_world();
     // The 5 x 5 x 5 bricks round the pole, those of them that are in the planet's extent (all are). The worker is a thread, so the ticks are given the
     // time of a server's, and the test waits for the bricks, not for a fixed time (a busy machine takes longer; it failed once at 88 under the load of
-    // another test run). It gives up after twenty seconds.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    let mut prefetched = 0;
-    while prefetched < 100 && std::time::Instant::now() < deadline {
-        scene.ticks(1);
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        let found = Arc::new(Mutex::new(0));
-        let slot = Arc::clone(&found);
-        scene.run(move |world| *slot.lock().unwrap() = world.bricks_prefetched());
-        prefetched = *found.lock().unwrap();
-    }
+    // another test run).
+    tick_until(
+        &mut scene,
+        "the bricks round the pole",
+        |scene| scene.ticks(1),
+        |scene| bricks_prefetched(scene) >= 100,
+    );
+    let prefetched = bricks_prefetched(&mut scene);
     assert!(prefetched >= 100, "{prefetched} made ahead");
 }

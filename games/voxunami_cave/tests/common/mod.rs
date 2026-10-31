@@ -412,6 +412,60 @@ pub fn tick_and_follow(scene: &mut Scene, player: &mut Player, count: usize) {
     }
 }
 
+/// How long a test waits for a worker thread before it gives up and says what it waited for.
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How many bricks the worker that makes terrain ahead has made so far. (It runs a tick of the server to ask.)
+pub fn bricks_prefetched(scene: &mut Scene) -> u64 {
+    let found = Arc::new(Mutex::new(0));
+    let slot = Arc::clone(&found);
+    scene.run(move |world| *slot.lock().unwrap() = world.bricks_prefetched());
+    std::mem::take(&mut *found.lock().unwrap())
+}
+
+/// Ticks the server (by `step`, which may also move a player) until `done` says so. A worker is a thread and the ticks of a test take microseconds, so each is
+/// given a few milliseconds of a server's time, and the wait is for what the test needs and not for a time: a busy machine (a build server with two cores)
+/// takes longer, and a test that waited a fixed time failed there. Gives up after thirty seconds.
+pub fn tick_until(
+    scene: &mut Scene,
+    what: &str,
+    mut step: impl FnMut(&mut Scene),
+    mut done: impl FnMut(&mut Scene) -> bool,
+) {
+    let deadline = std::time::Instant::now() + PATIENCE;
+    while !done(scene) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "gave up waiting for {what}"
+        );
+        step(scene);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// Ticks until `count` has not changed for twenty looks in a row (a worker that has made everything it was asked for), and gives that count.
+pub fn tick_until_quiet(
+    scene: &mut Scene,
+    what: &str,
+    mut step: impl FnMut(&mut Scene),
+    mut count: impl FnMut(&mut Scene) -> u64,
+) -> u64 {
+    let deadline = std::time::Instant::now() + PATIENCE;
+    let (mut last, mut steady) = (count(scene), 0);
+    while steady < 20 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "gave up waiting for {what} to be quiet"
+        );
+        step(scene);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let now = count(scene);
+        steady = if now == last { steady + 1 } else { 0 };
+        last = now;
+    }
+    last
+}
+
 /// The updates for the renderer that the player's view makes in the ticks that follow, until it is quiet.
 pub fn view_after(scene: &mut Scene, player: &mut Player) -> Vec<world_view::MeshUpdate> {
     let mut updates = Vec::new();
