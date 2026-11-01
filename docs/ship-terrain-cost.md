@@ -53,3 +53,4 @@ A free 3-voxel cube of stone, 2 km over Cave's planet, costs the server this muc
 - Golden sessions change only with a reason written down beside the new pin, and a check that only that reason changed them (the F5 move did it by writing the old names back).
 - A ship of several grids, a hinge, a tether, grids that travel together: the cost should be of what moves, not of how many bodies there are, and a body that is a part of a ship should not ask for the
   terrain round the whole ship again.
+- The prototype ball joint (`decisions/joints-and-cars.md`) starts with a bounds per car, the sum of its longest dimensions as a diameter; whether two cars cost more than one is to be measured before any of the five options above is chosen.

@@ -16,7 +16,7 @@ every such name and every `docs/...` path in the code and the documents is a rea
 
 - `design-decisions.md`: the rules that hold for every game and the shape of the project, in standing form (what, who, where to read
   more). Read before architectural work. It points to one document per area in `decisions/` (`world-and-sky.md`,
-  `players-and-ships.md`, `plugins-and-clients.md`, `packs-and-content.md`), each about 10 to 17 KB: read the one for the area you touch.
+  `players-and-ships.md`, `joints-and-cars.md`, `plugins-and-clients.md`, `packs-and-content.md`), each about 10 to 17 KB: read the one for the area you touch.
   The story of each decision (the phase, the numbers, what was found) is in `history/decision-diary.md`. A number that is also in the
   code belongs in the code and its tests, with a pointer.
 - `plan.md`: the build plan, what is proposed, what is open.
@@ -43,6 +43,7 @@ The world and the sky: `lod-spec.md` (levels of detail), `planet-spec.md`, `rail
 - `decision-diary.md`: the old, whole text of `design-decisions.md` (2026-10-30), kept for the stories and numbers behind the standing rules. Not maintained.
 - `build-log.md`: what each phase built and measured (about 290 KB). `grep -n "^Phase" docs/history/build-log.md` lists the phases.
 - `plugin-architecture-review.md`: the 2026-10-17 reasoning behind the plugin shape.
+- `joint-probe.md` (2026-11-01: do Rapier joints hold when over-constrained, with its program in `spikes/joints/`).
 - `light-spike.md`, `lod-spike.md`, `physics-spike.md`, with their programs in `spikes/` and pictures in `multiscale-modes/`.
   The programs were written against the code of their day and are **not kept compiling**; to run one, check out the commit it names.
 

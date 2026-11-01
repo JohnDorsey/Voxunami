@@ -1,0 +1,15 @@
+# Throwaway joint experiments (see ../../joint-probe.md). A standalone project, not part of the
+# workspace: `cd docs/history/spikes/joints && cargo run --release` (and `--bin noise`).
+[package]
+name = "joint_probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+rapier3d = { version = "=0.36.1", features = ["enhanced-determinism"] }
+
+[profile.release]
+debug = false

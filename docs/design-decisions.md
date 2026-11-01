@@ -15,6 +15,7 @@ a choice Claude made that the owner has not looked at.
 ## Decisions by area
 - The world and the sky (light, levels of detail, planets, orbits, rivers, the sun, coordinates): `decisions/world-and-sky.md`.
 - Players and ships (entities, identity, ships, aboard): `decisions/players-and-ships.md`.
+- Joints between the cars of a ship (words, the dev ball joint, physics; nothing built yet): `decisions/joints-and-cars.md`.
 - Plugins, messages, the client and the user interface: `decisions/plugins-and-clients.md`.
 - Data packs and the content package: `decisions/packs-and-content.md`.
 
