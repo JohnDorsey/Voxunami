@@ -57,6 +57,31 @@ What was checked, and how:
   (5e-7) changed nothing in either build, so this is not rounding noise amplified.
 - Not found out: why the old build's coarse answer differs. A guess is that some constant in the contact code is `f32`-sized, which I have not looked for.
 
+## The walker that creeps and hops (investigated 2026-11-01)
+**What it is.** A character standing still on a flat floor, when the direction of gravity (so `up`) is not exactly the floor's vertical and keeps changing a little, is moved by the controller.
+Reproduction: `spikes/joints/walker_creep_test.rs` (a test for `engine/physics/tests/`, run in the build before the f64 move at `ad636db` and after it).
+
+**Verified, by tracing every writer of the character's centre and the controller's move at each step:**
+- On a planet the pull points at the planet's centre, so on a flat voxel floor 0.5 voxel from the pole's axis, 10 km up, `up` is tilted 5e-5 rad from the floor's vertical.
+- With the tilt *constant* neither build moves at all (600 and 3,600 steps). With it *changing* both move; the change can be as small as 1e-12 a step in f64.
+- Every downward move of the controller (a gravity step, 2.2 mm) then has a sideways part of its length times the tilt (2.2175e-3 x 4.98e-5 = 1.1044e-7, seen to four places). That is the creep, toward where
+  the pull points: about 1.7e-8 a tick in the planet scene (a millimetre an hour), 3.6e-6 a second in the reproduction with a changing tilt (f32: 4e-9).
+- The controller keeps a skin of 0.01 and pushes a body 1e-5 off a surface it touches (`normal_nudge_factor`). At rest it cycles: 1e-5 up, back down; in the reproduction, every second or so, three
+  gravity steps (2 to 7 mm) take it into the skin and the next pass, which has almost nothing to move, pops it out by up to 1.1 to 1.6 cm in one go (traced: the height before and after each stage of a tick).
+  The height of the eyes therefore **hops by up to 1.6 cm, about once a second**, in f64 at any rate of change of the tilt tried (1e-12 to 1e-6 a step; 87 to 103 hops in 120 s).
+  The f32 build does the same only when the tilt changes by 1e-6 a step or more (0.0034 degrees a second; 86 hops in 120 s), and not at all below 1e-8 a step.
+- So the f64 move did not make this up; it made a behaviour that needs a fast change in f32 happen at any change.
+
+**Not verified:** why f32 does not enter the cycle at small changes. The guess is that a distance in the contact code is compared with a constant sized for f32 and the move is dropped, which I have not looked for.
+**Not known:** how often a player meets a gravity that changes. Standing on a planet that goes round a rail the change is about 5e-12 a step (from the creep's own feedback), which the reproduction says is enough to hop;
+but the planet scene (`bodies.rs`, 200 ticks) showed no hop, only the 1e-5 nudges, so the reproduction may be harsher than the game. A ship that turns under a standing player changes it far faster.
+
+**Can a player notice it?** 1.5 cm of eye height is about 13 pixels at a metre's distance (1080 lines, 70 degrees) and 2 mm about 2; a hop about once a second would be a visible shimmer of the floor and things on it,
+if it happens in play. Not tested in play. The creep (a millimetre an hour) cannot be seen.
+
+**A fix is not made.** Options: do the gravity step along the floor's normal (or skip it) while the character is grounded and has no velocity along `up`; drop the sideways part of a downward move that is shorter than the
+skin; keep the shape's turn unchanged until `up` has changed by more than a threshold. Each changes how a character stands and needs the regression test the reproduction can become.
+
 ## Determinism
 `rapier3d-f64` 0.36.1 has the `enhanced-determinism` feature (crates.io metadata: `simba/libm_force`, `parry3d-f64/enhanced-determinism`). In the source it replaces the hash map of pairs with an ordered
 `IndexMap` and fixes the transcendental functions to libm; it cannot be combined with `simd8`. Without it the solve order can differ between runs on one machine (Rapier's own regression test for
