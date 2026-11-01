@@ -32,6 +32,8 @@ This file records the talk that came before any code; the measurements behind th
 - Cars collide with each other. Coupling across physics frames is refused for now.
 
 ## Physics (decided for the prototype; the reasoning is in `joint-probe.md`)
+- **Rapier works in f64** (done 2026-11-01, before any joint was built): the joint error floor was f32 rounding of the distance from the frame's origin (about 1 mm at the frame's edge), and it is now rounding of an `f64`.
+  The measurements above were taken in `f32` and are to be repeated in `f64` when the joint is built.
 - **A tree of cars on Rapier multibody joints, one coupling per pair of cars.** A second coupling on the same pair, and a coupling that would close a loop, are refused with a message
   (Rapier's multibody set refuses them itself: `insert` returns `None`). The root car of a coupled group is **the heaviest car**. An immobilized joint is a fixed multibody joint.
 - Impulse joints are the fallback if loops cannot be done another way; then at least 16 substeps (`num_solver_iterations`), not more (see `joint-probe.md`).

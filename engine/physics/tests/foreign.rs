@@ -448,7 +448,8 @@ fn a_run_about_a_ship_that_moves_ends_in_the_same_state_every_time_and_on_every_
 
 /// Moved once, on purpose, 2026-10-22: the default gravity is 5 metres a second a second (was 32), and the jump 3.6 metres a second (was 9: the same jump of 1.3 metres).
 /// (Moved on purpose, Phase 38a: 10_938_225_372_350_862_205 before. Orientations are f64 (Phase 38a, 2026-10-23): a yaw and a pitch are turned into a quaternion in f64 and rounded once to the f32 the solver takes, which is not always the f32 the old arithmetic in f32 gave, to the last bit. Control: with `from_yaw_pitch` put back to the f32 arithmetic and nothing else changed, the old value came back; so this is the only thing that moved it.)
-const PINNED_RUN: u64 = 6_737_149_441_902_238_511;
+/// (Moved on purpose, 2026-11-01: 6_737_149_441_902_238_511 before. Rapier works in f64 now (`rapier3d-f64`, with `enhanced-determinism`), and a hash is of the bits of the numbers, so every one of them moved. Nothing else is claimed to be the same bit for bit. The behaviour of ships and characters is checked by the other tests of this file, which pass as they were.)
+const PINNED_RUN: u64 = 11_533_809_196_757_911_678;
 
 #[test]
 fn the_blocks_of_a_brick_that_is_not_the_first_of_a_turned_ship_are_where_the_turned_ship_puts_them()
@@ -752,7 +753,8 @@ fn ships_that_fall_on_a_character_and_sail_into_it_leave_it_in_the_same_state_ev
     assert_eq!(first, PINNED_PUSHED_RUN);
 }
 
-const PINNED_PUSHED_RUN: u64 = 1_210_939_939_087_579_234;
+/// (Moved on purpose, 2026-11-01: 1_210_939_939_087_579_234 before. Rapier works in f64 now (`rapier3d-f64`, with `enhanced-determinism`), and a hash is of the bits of the numbers, so every one of them moved. Nothing else is claimed to be the same bit for bit.)
+const PINNED_PUSHED_RUN: u64 = 18_060_407_862_709_529_696;
 
 #[test]
 fn a_block_built_where_a_character_stands_moves_it_out_the_shortest_way_and_it_stays_on_the_floor()

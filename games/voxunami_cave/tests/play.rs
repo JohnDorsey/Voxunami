@@ -1759,14 +1759,15 @@ fn a_scripted_walk_over_the_hills_ends_in_the_same_place_every_time_and_on_every
 
 /// (Moved once, on purpose, 2026-10-22, all but the first and the fifth: the pull of the planet is 5 metres a second a second and a jump 3.6 metres a second, was 32 and 9. The first
 /// and the fifth, where the player stands still at the end of a stage on the ground, are the numbers they were.)
+/// (Moved on purpose, 2026-11-01, all seven, the stages where the player stands still as well: Rapier works in f64 now (`rapier3d-f64`, with `enhanced-determinism`; owner, 2026-11-01), and these hashes are of the bits of numbers the solver gives, so they moved. The tests of behaviour in the same file pass as they were; the physics crate's own pinned runs were taken on Windows and are the same on Linux. Before: 468_518_576_783_366_090, 3_621_015_791_496_737_235, 15_049_547_940_405_347_413, 17_907_881_989_766_520_762, 2_040_764_607_994_219_951, 3_385_291_536_655_073_884, 10_975_456_705_509_759_913.)
 const PINNED_WALK: [u64; 7] = [
-    468_518_576_783_366_090,
-    3_621_015_791_496_737_235,
-    15_049_547_940_405_347_413,
-    17_907_881_989_766_520_762,
-    2_040_764_607_994_219_951,
-    3_385_291_536_655_073_884,
-    10_975_456_705_509_759_913,
+    1_379_356_507_961_547_303,
+    1_133_577_438_540_254_254,
+    14_385_258_987_634_865_794,
+    18_072_151_560_661_330_409,
+    3_544_292_697_220_490_373,
+    11_577_932_431_833_636_429,
+    10_410_253_221_858_733_063,
 ];
 
 #[test]

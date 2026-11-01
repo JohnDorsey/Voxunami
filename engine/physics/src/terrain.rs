@@ -42,7 +42,7 @@ const EDGE: usize = BRICK_EDGE_LENGTH;
 
 /// How far, in voxels, the boxes of a brick reach into the next brick where the terrain is solid on both
 /// sides of the seam.
-const SEAM_OVERLAP: f32 = 0.05;
+const SEAM_OVERLAP: Real = 0.05;
 
 /// The colliders of one brick of terrain, in a frame whose origin is the corner of `origin`.
 pub(crate) struct BrickColliders {
@@ -191,8 +191,8 @@ pub(crate) fn build_brick(
                     // and a body crossing from one to the other does not catch on the seam.
                     let start = [x, y, z];
                     let size = [width, height, depth];
-                    let mut low = [0.0f32; 3];
-                    let mut high = [0.0f32; 3];
+                    let mut low = [0.0; 3];
+                    let mut high = [0.0; 3];
                     for axis in 0..3 {
                         for positive in [false, true] {
                             let on_edge = if positive {
@@ -231,8 +231,8 @@ pub(crate) fn build_brick(
                             }
                         }
                     }
-                    let min = [0, 1, 2].map(|axis| start[axis] as f32 - low[axis]);
-                    let max = [0, 1, 2].map(|axis| (start[axis] + size[axis]) as f32 + high[axis]);
+                    let min = [0, 1, 2].map(|axis| start[axis] as Real - low[axis]);
+                    let max = [0, 1, 2].map(|axis| (start[axis] + size[axis]) as Real + high[axis]);
                     boxes.push((
                         Pose::from_translation(Vector::new(
                             (min[0] + max[0]) / 2.0,
@@ -254,7 +254,7 @@ pub(crate) fn build_brick(
             for x in 0..EDGE {
                 if let Cell::Partial(shape) = cells[index(x, y, z)].clone() {
                     for part in shapes[shape].iter() {
-                        let eighths = |value: u8| f32::from(value) / 8.0;
+                        let eighths = |value: u8| Real::from(value) / 8.0;
                         let min = [
                             eighths(part.min[0]),
                             eighths(part.min[1]),
@@ -267,9 +267,9 @@ pub(crate) fn build_brick(
                         ];
                         boxes.push((
                             Pose::from_translation(Vector::new(
-                                x as f32 + (min[0] + max[0]) / 2.0,
-                                y as f32 + (min[1] + max[1]) / 2.0,
-                                z as f32 + (min[2] + max[2]) / 2.0,
+                                x as Real + (min[0] + max[0]) / 2.0,
+                                y as Real + (min[1] + max[1]) / 2.0,
+                                z as Real + (min[2] + max[2]) / 2.0,
                             )),
                             SharedShape::cuboid(
                                 (max[0] - min[0]) / 2.0,
@@ -284,9 +284,9 @@ pub(crate) fn build_brick(
     }
     let at = |brick: BrickCoordinate| {
         Vector::new(
-            ((brick.x() - origin.x()) * BRICK_EDGE_LENGTH as i128) as f32,
-            ((brick.y() - origin.y()) * BRICK_EDGE_LENGTH as i128) as f32,
-            ((brick.z() - origin.z()) * BRICK_EDGE_LENGTH as i128) as f32,
+            ((brick.x() - origin.x()) * BRICK_EDGE_LENGTH as i128) as Real,
+            ((brick.y() - origin.y()) * BRICK_EDGE_LENGTH as i128) as Real,
+            ((brick.z() - origin.z()) * BRICK_EDGE_LENGTH as i128) as Real,
         )
     };
     BrickColliders {
@@ -386,7 +386,7 @@ mod tests {
     ) -> (u64, usize) {
         let made = build_brick(source, brick, origin);
         let mut state: u64 = 0xcbf2_9ce4_8422_2325;
-        let mut feed = |value: u32| {
+        let mut feed = |value: u64| {
             for byte in value.to_le_bytes() {
                 state ^= u64::from(byte);
                 state = state.wrapping_mul(0x0000_0100_0000_01b3);
@@ -442,5 +442,6 @@ mod tests {
         assert_eq!(combined, PINNED_BOXES, "boxes per brick: {counts:?}");
     }
 
-    const PINNED_BOXES: u64 = 17_322_980_413_275_256_541;
+    /// (Moved on purpose, 2026-11-01: 17_322_980_413_275_256_541 before. The boxes are hashed by the bits of their numbers, which are f64 now. Control: the number of boxes of every one of the 24 bricks is what it was.)
+    const PINNED_BOXES: u64 = 11_949_953_974_692_931_949;
 }

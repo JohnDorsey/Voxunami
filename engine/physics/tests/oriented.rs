@@ -44,11 +44,8 @@ fn turned(turn: Turn, vector: [f64; 3]) -> [f64; 3] {
 
 fn gravity_after(turn: Turn) -> [f32; 3] {
     // The character's own gravity, turned (the script jumps onto a block with the character's own jump, which is made for it).
-    turned(
-        turn,
-        [0.0, -f64::from(CharacterSettings::default().gravity), 0.0],
-    )
-    .map(|component| component as f32)
+    turned(turn, [0.0, -CharacterSettings::default().gravity, 0.0])
+        .map(|component| component as f32)
 }
 
 /// Whether two quaternions are the same turn (a quaternion and its negative are).
@@ -195,7 +192,7 @@ fn gravity_along_minus_y_with_the_step_that_takes_it_is_the_step_without() {
                 if own {
                     body.step(input);
                 } else {
-                    body.step_with_gravity(input, [0.0, -body.settings().gravity, 0.0]);
+                    body.step_with_gravity(input, [0.0, -(body.settings().gravity as f32), 0.0]);
                 }
             }
             hashes.push(body.state_hash());
@@ -242,7 +239,7 @@ fn assert_turned_like(turn: Turn) {
             // which of the two it is at the moment of the look depends on the arithmetic of the step (at a gravity of 5 a step's worth is 0.08 and
             // is seen; at 32 it was taken away at once and was not).
             let one_step_of_gravity = if axis == 1 && before.2 && after.2 {
-                f64::from(CharacterSettings::default().gravity) / 60.0 + 1e-3
+                CharacterSettings::default().gravity / 60.0 + 1e-3
             } else {
                 0.0
             };

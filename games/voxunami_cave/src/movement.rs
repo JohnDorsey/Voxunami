@@ -609,7 +609,7 @@ fn step_aboard(
     }
     let gravity = world.gravity_in(id, player.body.eye_position()).unwrap_or([
         0.0,
-        -player.body.settings().gravity,
+        -(player.body.settings().gravity as f32),
         0.0,
     ]);
     let input = input_for(player);

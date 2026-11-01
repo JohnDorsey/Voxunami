@@ -4,8 +4,9 @@
 //! ([`WorldPosition`](voxel_space::WorldPosition), [`MoveInput`]). It follows the architecture of
 //! `docs/history/physics-spike.md`:
 //!
-//! - Rapier works in `f32`, so each body lives in a *local frame* (a brick of the world as origin)
-//!   near it, which is rebuilt when the body has gone some way from its origin;
+//! - Rapier works in `f64` (the `rapier3d-f64` package; the crate's `f32` interface meets it in one place, `real.rs`), and each body still lives in a *local frame*
+//!   (a brick of the world as origin) near it, which is rebuilt when the body has gone some way from its origin, so that the numbers stay small and a place
+//!   maps to a brick and an offset in it;
 //! - terrain colliders are made lazily, from bricks, out of what a [`CollisionSource`] says each voxel
 //!   is: whole cubes as a voxel collider of just the voxels that can be touched, and blocks that
 //!   fill part of their cell as boxes;
@@ -20,6 +21,7 @@ mod bodies;
 mod character;
 mod mass;
 mod motion;
+mod real;
 mod terrain;
 
 pub use bodies::{BodyError, BodyId, BodyKind, BodySettings, BodyState, BodyWorld};

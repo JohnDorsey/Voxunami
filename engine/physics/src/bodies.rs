@@ -6,6 +6,7 @@ use voxel_space::{
 };
 
 use crate::mass::BodyMass;
+use crate::real::{array, matrix, real, vector, world_position};
 use crate::terrain::{BrickHint, Collision, CollisionSource, build_brick};
 
 const EDGE: usize = BRICK_EDGE_LENGTH;
@@ -37,7 +38,7 @@ pub struct BodyState {
 }
 
 /// The farthest, in voxels, that the fastest point of a body is let move in one solver step.
-const MOST_A_STEP_MOVES: f32 = 0.8;
+const MOST_A_STEP_MOVES: Real = 0.8;
 /// The most solver steps a tick is cut into, which bounds the cost of a fast body: 24 keep a body to 0.8 voxels a step up to 384 voxels a second
 /// (at 20 ticks a second); faster, a step is longer than that.
 const MOST_STEPS: u32 = 24;
@@ -141,10 +142,10 @@ impl BodyWorld {
     /// An empty world whose frame has the corner of `origin` as its origin.
     pub fn new(origin: BrickCoordinate, settings: BodySettings) -> Self {
         let parameters = IntegrationParameters {
-            dt: settings.time_step / settings.substeps.max(1) as f32,
+            dt: real(settings.time_step) / Real::from(settings.substeps.max(1)),
             // No speed limit (the default is 400 metres a second). Past what `MOST_STEPS` can cut a tick for, a body may go through thin ground, and the
             // result is not promised to be the same on every machine; below it, it is.
-            normalized_max_linear_velocity: f32::MAX,
+            normalized_max_linear_velocity: Real::MAX,
             ..IntegrationParameters::default()
         };
         Self {
@@ -182,24 +183,22 @@ impl BodyWorld {
     fn local(&self, position: WorldPosition) -> Vector {
         let (brick, offset) = (position.brick(), position.offset());
         let along = |brick: i128, origin: i128, offset: f32| {
-            ((brick - origin) * EDGE as i128) as f64 + f64::from(offset)
+            ((brick - origin) * EDGE as i128) as Real + Real::from(offset)
         };
         Vector::new(
-            along(brick.x(), self.origin.x(), offset[0]) as f32,
-            along(brick.y(), self.origin.y(), offset[1]) as f32,
-            along(brick.z(), self.origin.z(), offset[2]) as f32,
+            along(brick.x(), self.origin.x(), offset[0]),
+            along(brick.y(), self.origin.y(), offset[1]),
+            along(brick.z(), self.origin.z(), offset[2]),
         )
     }
 
     /// The position in the world of a place in the frame, or `None` if it is not finite.
     fn world(&self, local: Vector) -> Option<WorldPosition> {
-        local
-            .is_finite()
-            .then(|| WorldPosition::new(self.origin, [local.x, local.y, local.z]))
+        world_position(self.origin, local)
     }
 
     fn rotation_of(orientation: Orientation) -> Rotation {
-        let [x, y, z, w] = orientation.components_single();
+        let [x, y, z, w] = orientation.components();
         Rotation::from_xyzw(x, y, z, w).normalize()
     }
 
@@ -222,8 +221,8 @@ impl BodyWorld {
             self.local(state.position),
             Self::rotation_of(state.orientation),
         ))
-        .linvel(Vector::from_array(state.linear_velocity))
-        .angvel(Vector::from_array(state.angular_velocity))
+        .linvel(vector(state.linear_velocity))
+        .angvel(vector(state.angular_velocity))
         // Until it is given a mass, it weighs one and turns like a ball.
         .additional_mass_properties(MassProperties::new(Vector::ZERO, 1.0, Vector::ONE));
         let handle = self.bodies.insert(builder);
@@ -287,8 +286,8 @@ impl BodyWorld {
         );
         let rapier = &mut self.bodies[handle];
         rapier.set_position(pose, true);
-        rapier.set_linvel(Vector::from_array(state.linear_velocity), true);
-        rapier.set_angvel(Vector::from_array(state.angular_velocity), true);
+        rapier.set_linvel(vector(state.linear_velocity), true);
+        rapier.set_angvel(vector(state.angular_velocity), true);
         Ok(())
     }
 
@@ -299,11 +298,11 @@ impl BodyWorld {
             .get(&id)
             .ok_or(BodyError::UnknownBody(id))?
             .handle;
-        let tensor = Matrix::from_cols_array_2d(&mass.inertia);
+        let tensor = matrix(&mass.inertia);
         self.bodies[handle].set_additional_mass_properties(
             MassProperties::with_inertia_matrix(
-                Vector::from_array(mass.centre_of_mass),
-                mass.mass,
+                vector(mass.centre_of_mass),
+                real(mass.mass),
                 tensor,
             ),
             true,
@@ -314,12 +313,11 @@ impl BodyWorld {
     /// Where a body is and how it moves, or `None` if there is no such body or the solver has made it not a number.
     pub fn state(&self, id: BodyId) -> Option<BodyState> {
         let body = self.bodies.get(self.by_id.get(&id)?.handle)?;
-        let [x, y, z, w] = body.rotation().normalize().to_array();
         Some(BodyState {
             position: self.world(body.translation())?,
-            orientation: Orientation::from_single_components([x, y, z, w])?,
-            linear_velocity: body.linvel().to_array(),
-            angular_velocity: body.angvel().to_array(),
+            orientation: Orientation::from_components(body.rotation().normalize().to_array())?,
+            linear_velocity: array(body.linvel()),
+            angular_velocity: array(body.angvel()),
         })
     }
 
@@ -347,9 +345,9 @@ impl BodyWorld {
             let component =
                 |value: i128| i32::try_from(value).map_err(|_| BodyError::BrickOutOfRange);
             Ok(IVector::new(
-                component(voxel.x())?,
-                component(voxel.y())?,
-                component(voxel.z())?,
+                i64::from(component(voxel.x())?),
+                i64::from(component(voxel.y())?),
+                i64::from(component(voxel.z())?),
             ))
         };
         // Look first, so a brick that is out of range changes nothing (its far corner is the one that is out: bricks start on multiples of 32).
@@ -375,14 +373,14 @@ impl BodyWorld {
                             Collision::Full => wanted[z * EDGE + y] |= 1 << x,
                             Collision::Partial(parts) => {
                                 for part in parts.iter() {
-                                    let eighths = |value: u8| f32::from(value) / 8.0;
+                                    let eighths = |value: u8| Real::from(value) / 8.0;
                                     let min = part.min.map(eighths);
                                     let max = part.max.map(eighths);
                                     boxes.push((
                                         Pose::from_translation(Vector::new(
-                                            x as f32 + (min[0] + max[0]) / 2.0,
-                                            y as f32 + (min[1] + max[1]) / 2.0,
-                                            z as f32 + (min[2] + max[2]) / 2.0,
+                                            x as Real + (min[0] + max[0]) / 2.0,
+                                            y as Real + (min[1] + max[1]) / 2.0,
+                                            z as Real + (min[2] + max[2]) / 2.0,
                                         )),
                                         SharedShape::cuboid(
                                             (max[0] - min[0]) / 2.0,
@@ -465,9 +463,9 @@ impl BodyWorld {
         if !boxes.is_empty() {
             let collider = ColliderBuilder::compound(boxes)
                 .translation(Vector::new(
-                    first.x() as f32,
-                    first.y() as f32,
-                    first.z() as f32,
+                    first.x() as Real,
+                    first.y() as Real,
+                    first.z() as Real,
                 ))
                 .density(0.0)
                 .friction(0.6);
@@ -514,8 +512,8 @@ impl BodyWorld {
         let (low, high) = self.bounds_of(id)?;
         let frame = self.bodies.get(self.by_id.get(&frame)?.handle)?;
         let (translation, turn) = (frame.translation(), frame.rotation().inverse());
-        let mut seen_low = Vector::splat(f32::INFINITY);
-        let mut seen_high = Vector::splat(f32::NEG_INFINITY);
+        let mut seen_low = Vector::splat(Real::INFINITY);
+        let mut seen_high = Vector::splat(Real::NEG_INFINITY);
         for corner in 0..8u8 {
             let point = Vector::new(
                 if corner & 1 == 0 { low.x } else { high.x },
@@ -532,8 +530,8 @@ impl BodyWorld {
     /// The box around the bounds of all the colliders of a body, in the frame, or `None` for a body that is not there or has none.
     fn bounds_of(&self, id: BodyId) -> Option<(Vector, Vector)> {
         let body = self.by_id.get(&id)?;
-        let mut low = Vector::splat(f32::INFINITY);
-        let mut high = Vector::splat(f32::NEG_INFINITY);
+        let mut low = Vector::splat(Real::INFINITY);
+        let mut high = Vector::splat(Real::NEG_INFINITY);
         for &handle in self.bodies[body.handle].colliders() {
             let bounds = self.colliders[handle].compute_aabb();
             low = low.min(bounds.mins);
@@ -549,10 +547,11 @@ impl BodyWorld {
         margin: f32,
         origin: BrickCoordinate,
     ) -> Option<voxel_space::BrickBox> {
-        let brick = |value: f32, origin: i128| {
-            origin.saturating_add((f64::from(value) / EDGE as f64).floor() as i128)
+        let brick = |value: Real, origin: i128| {
+            origin.saturating_add((value / EDGE as Real).floor() as i128)
         };
-        let (low, high) = (low - Vector::splat(margin), high + Vector::splat(margin));
+        let margin = Vector::splat(real(margin));
+        let (low, high) = (low - margin, high + margin);
         voxel_space::BrickBox::new(
             BrickCoordinate::new(
                 brick(low.x, origin.x()),
@@ -593,11 +592,11 @@ impl BodyWorld {
             .ok_or(BodyError::UnknownBody(id))?
             .handle;
         let body = &mut self.bodies[handle];
-        let force = Vector::from_array(force);
+        let force = vector(force);
         match at {
             None => body.add_force(force, true),
             Some(place) => {
-                let point = body.position() * Vector::from_array(place);
+                let point = body.position() * vector(place);
                 body.add_force_at_point(force, point, true);
             }
         }
@@ -612,7 +611,7 @@ impl BodyWorld {
             .get(&id)
             .ok_or(BodyError::UnknownBody(id))?
             .handle;
-        self.bodies[handle].add_torque(Vector::from_array(torque), true);
+        self.bodies[handle].add_torque(vector(torque), true);
         Ok(())
     }
 
@@ -625,16 +624,16 @@ impl BodyWorld {
             .get(&id)
             .ok_or(BodyError::UnknownBody(id))?
             .handle;
-        self.bodies[handle].add_force(Vector::from_array(force), false);
+        self.bodies[handle].add_force(vector(force), false);
         Ok(())
     }
 
     /// Moves everything one tick: gravity and the forces applied since the last call, then collisions, in
     /// [`BodySettings::substeps`] steps. The forces are then forgotten.
     pub fn step(&mut self) {
-        let gravity = Vector::from_array(self.settings.gravity);
+        let gravity = vector(self.settings.gravity);
         let steps = self.steps_for_this_tick();
-        self.parameters.dt = self.settings.time_step / steps as f32;
+        self.parameters.dt = real(self.settings.time_step) / Real::from(steps);
         for _ in 0..steps {
             self.pipeline.step(
                 gravity,
@@ -663,7 +662,7 @@ impl BodyWorld {
     /// colliders that ships are made of.) At most [`MOST_STEPS`]. A tick in which nothing is fast is cut as the settings say, bit for bit.
     fn steps_for_this_tick(&self) -> u32 {
         let base = self.settings.substeps.max(1);
-        let mut fastest = 0.0f32;
+        let mut fastest: Real = 0.0;
         for (_, body) in self.bodies.iter() {
             if !body.is_dynamic() {
                 continue;
@@ -680,12 +679,12 @@ impl BodyWorld {
                         let aabb = self.colliders[handle].compute_aabb();
                         (aabb.center() - middle).length() + aabb.half_extents().length()
                     })
-                    .fold(0.0f32, f32::max);
+                    .fold(0.0, Real::max);
                 speed += turn * reach;
             }
             fastest = fastest.max(speed);
         }
-        let needed = (fastest * self.settings.time_step / MOST_A_STEP_MOVES).ceil();
+        let needed = (fastest * real(self.settings.time_step) / MOST_A_STEP_MOVES).ceil();
         (needed as u32).clamp(base, MOST_STEPS.max(base))
     }
 
@@ -693,9 +692,9 @@ impl BodyWorld {
     /// are more exact than they were.
     pub fn recentre(&mut self, origin: BrickCoordinate) {
         let shift = Vector::new(
-            ((origin.x() - self.origin.x()) * EDGE as i128) as f32,
-            ((origin.y() - self.origin.y()) * EDGE as i128) as f32,
-            ((origin.z() - self.origin.z()) * EDGE as i128) as f32,
+            ((origin.x() - self.origin.x()) * EDGE as i128) as Real,
+            ((origin.y() - self.origin.y()) * EDGE as i128) as Real,
+            ((origin.z() - self.origin.z()) * EDGE as i128) as Real,
         );
         for (_, body) in self.bodies.iter_mut() {
             let pose = *body.position();
@@ -737,7 +736,7 @@ impl BodyWorld {
                 .chain(rapier.linvel().to_array())
                 .chain(rapier.angvel().to_array())
             {
-                feed(u64::from(value.to_bits()));
+                feed(value.to_bits());
             }
         }
         state
@@ -1748,26 +1747,22 @@ mod tests {
         };
         ship_of(&mut world, 1, &hull, state, BodyKind::Dynamic);
         run(&mut world, 5);
-        // (The solver holds it as f32: the turn that was set, rounded to f32, is what stays.)
-        assert_eq!(
-            world
-                .state(BodyId(1))
-                .unwrap()
-                .orientation
-                .components_single(),
-            orientation.components_single()
-        );
+        // (The solver holds it as f64, and the turn is normalised again each time it is read: what was set stays, to rounding.)
+        let held = world.state(BodyId(1)).unwrap().orientation.components();
+        for (held, set) in held.into_iter().zip(orientation.components()) {
+            assert!((held - set).abs() < 1e-12, "{held} against {set}");
+        }
         run(&mut world, 120);
         assert!(world.is_asleep(BodyId(1)));
         // No corner of the hull is below the ground, to within the skin of a contact, and the lowest is on it.
         let final_state = world.state(BodyId(1)).unwrap();
-        let [x, y, z, w] = final_state.orientation.components_single();
+        let [x, y, z, w] = final_state.orientation.components();
         let turn = Rotation::from_xyzw(x, y, z, w);
-        let origin_height = height_of(&world, 1);
-        let mut lowest = f32::MAX;
-        for corner_x in [0.0f32, 4.0] {
-            for corner_y in [0.0f32, 4.0] {
-                for corner_z in [0.0f32, 4.0] {
+        let origin_height = f64::from(height_of(&world, 1));
+        let mut lowest = Real::MAX;
+        for corner_x in [0.0, 4.0] {
+            for corner_y in [0.0, 4.0] {
+                for corner_z in [0.0, 4.0] {
                     let corner = turn * Vector::new(corner_x, corner_y, corner_z);
                     lowest = lowest.min(origin_height + corner.y);
                 }
@@ -1917,6 +1912,9 @@ mod tests {
         assert_eq!(first.state_hash(), second.state_hash());
         // Written down once; a change in it is a change in the simulation (and Windows and Linux must agree on it).
         // (Moved on purpose, Phase 38a: 8_592_658_610_343_128_269 before. Orientations are f64 (Phase 38a, 2026-10-23): a yaw and a pitch are turned into a quaternion in f64 and rounded once to the f32 the solver takes, which is not always the f32 the old arithmetic in f32 gave, to the last bit. Control: with `from_yaw_pitch` put back to the f32 arithmetic and nothing else changed, the old value came back; so this is the only thing that moved it.)
-        assert_eq!(first.state_hash(), 13_989_029_006_912_403_583);
+        // (Moved on purpose, 2026-11-01: 13_989_029_006_912_403_583 before. Rapier works in f64 now (`rapier3d-f64`, with `enhanced-determinism`), and a hash is of the bits of the numbers, so every one of them moved. Nothing else is claimed to be the same bit for bit. Control, in `docs/history/joint-probe.md`: the falling ship is the same to four places until its first hard
+        // impact (25.6 metres a second, 0.43 of a metre a substep); the impact then resolves as the old f32 build resolves it with four times the substeps (about 6.2, -3.9, 7.1 metres a second after it, in both),
+        // where the old f32 build with the usual three gave about 2.5, 5.0, 5.6. The same scene with 12 substeps agrees between the two to a fifth of a percent.)
+        assert_eq!(first.state_hash(), 17_811_401_868_764_439_420);
     }
 }

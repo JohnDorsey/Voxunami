@@ -40,6 +40,23 @@ All numbers are from one run on the owner's machine. A "step" is one Rapier step
   (a run with `rapier3d-f64` would say). Consistent and 1 mm-mismatched pivots behave alike.
 - So: more substeps is not better. 16 is the value to use; do not raise it for accuracy.
 
+## The move to Rapier in f64 (2026-11-01, owner's decision)
+`engine/physics` now uses the `rapier3d-f64` package (0.36.1, `enhanced-determinism`), renamed in `Cargo.toml` so the source still says `rapier3d`. Its interface keeps `f32` for speeds, forces and the offset in a
+`WorldPosition`; `engine/physics/src/real.rs` is where numbers cross. Orientations already were `f64` and now reach the solver unrounded. The position of a body is carried to whole bricks in `f64`, so only the offset in a
+brick is rounded to `f32` (about 2 micrometres), not a place that is 16 km from the frame's origin (1 millimetre). `CharacterSettings` is `f64`.
+
+What was checked, and how:
+- **Windows and Linux agree to the bit.** The pinned hashes of the physics crate (ships, characters, ships against characters, terrain boxes) were taken on Windows and pass under Linux (WSL).
+- **Every test of behaviour passed unchanged** in `physics` (39, 19, 14, 43); only hash pins moved, and a note by each says why. Two tests of `voxunami_cave` were changed in what they claim, not only in a number:
+  a held ship's turn is exact and a moved ship's is the solver's `f64` one (the test used to claim that the solver rounded to `f32`), and a walker on a planet that goes round a rail is within a tenth of a millimetre of
+  where it stood (it was the same to the bit). Measured every ten ticks, that walker moves 4e-6 of a voxel in the first 80 ticks and then rests; with the solver in `f32` it did not move. **The cause is not found.**
+- **The box counts of the 24 terrain bricks are the old ones**; only their hash moved.
+- **A hard impact resolves differently, and the new answer is the nearer to the converged one.** Busy scene of `bodies.rs`: a ship of 4, turned, dropped from 14 m, hits the ground at 25.6 m/s, which is 0.43 m a substep.
+  The two builds are the same to four places until that impact. After it, with the usual 3 substeps, the old build gave a velocity of about (2.5, 5.0, 5.6) and the new about (6.2, -3.9, 7.1). With 12 substeps both give
+  about (6.2, -3.9, 7.1), within a fifth of a percent of each other. (With 48 the two agree at the impact to a percent and then tumble differently.) One scene, so it is evidence, not proof. A start moved by one `f32` step
+  (5e-7) changed nothing in either build, so this is not rounding noise amplified.
+- Not found out: why the old build's coarse answer differs. A guess is that some constant in the contact code is `f32`-sized, which I have not looked for.
+
 ## Determinism
 `rapier3d-f64` 0.36.1 has the `enhanced-determinism` feature (crates.io metadata: `simba/libm_force`, `parry3d-f64/enhanced-determinism`). In the source it replaces the hash map of pairs with an ordered
 `IndexMap` and fixes the transcendental functions to libm; it cannot be combined with `simd8`. Without it the solve order can differ between runs on one machine (Rapier's own regression test for

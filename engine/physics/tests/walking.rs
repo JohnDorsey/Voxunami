@@ -401,7 +401,7 @@ fn a_fall_gets_no_faster_than_the_terminal_speed() {
     run(&mut body, &mut scene, STILL, 1200);
     assert_eq!(
         body.velocity()[1],
-        -CharacterSettings::default().terminal_speed
+        -(CharacterSettings::default().terminal_speed as f32)
     );
     assert!(eye(&body)[1] < 2000.0 - 200.0);
 }
@@ -1175,7 +1175,8 @@ fn a_character_put_where_there_is_no_clear_space_above_stays_where_it_was_put_an
 }
 
 /// Moved once, on purpose, 2026-10-22: the default gravity is 5 metres a second a second (was 32), and the jump 3.6 metres a second (was 9: the same jump of 1.3 metres).
-const PINNED_SCRIPTED_RUN: u64 = 4_984_977_719_643_994_898;
+/// (Moved on purpose, 2026-11-01: 4_984_977_719_643_994_898 before. Rapier works in f64 now (`rapier3d-f64`, with `enhanced-determinism`), and a hash is of the bits of the numbers, so every one of them moved. Nothing else is claimed to be the same bit for bit. The walking, jumping, stepping and falling tests of this file pass as they were.)
+const PINNED_SCRIPTED_RUN: u64 = 9_152_686_280_970_739_222;
 
 /// Whether the character's box reaches into any solid thing of the scene by more than a hair.
 fn is_inside_something(body: &CharacterBody, scene: &mut Scene) -> bool {
@@ -1183,14 +1184,10 @@ fn is_inside_something(body: &CharacterBody, scene: &mut Scene) -> bool {
     let eye = eye(body);
     let center = [
         eye[0],
-        eye[1] - f64::from(settings.eye_height - settings.height / 2.0),
+        eye[1] - (settings.eye_height - settings.height / 2.0),
         eye[2],
     ];
-    let half = [
-        f64::from(settings.radius),
-        f64::from(settings.height / 2.0),
-        f64::from(settings.radius),
-    ];
+    let half = [settings.radius, settings.height / 2.0, settings.radius];
     let tolerance = 0.06;
     let low = [0, 1, 2].map(|axis| (center[axis] - half[axis]).floor() as i128);
     let high = [0, 1, 2].map(|axis| (center[axis] + half[axis]).floor() as i128);
@@ -1390,13 +1387,13 @@ fn a_jump_is_one_impulse_whatever_the_key_does_and_the_speed_up_falls_at_the_pul
         jump: true,
         ..STILL
     };
-    let pull = CharacterSettings::default().gravity / 60.0;
+    let pull = (CharacterSettings::default().gravity / 60.0) as f32;
     let mut speeds = Vec::new();
     for _ in 0..40 {
         run(&mut body, &mut scene, jump, 1);
         speeds.push(body.velocity()[1]);
     }
-    let start = CharacterSettings::default().jump_speed - pull;
+    let start = CharacterSettings::default().jump_speed as f32 - pull;
     assert!((speeds[0] - start).abs() < 1e-4, "{speeds:?}");
     for step in 1..speeds.len() {
         assert!(
@@ -1442,7 +1439,7 @@ fn a_character_in_the_air_that_is_displaced_is_there_at_once_and_goes_on_with_th
     // sixty) over sixty.
     run(&mut body, &mut scene, STILL, 1);
     let next = eye(&body);
-    let pull = f64::from(CharacterSettings::default().gravity) / 60.0;
+    let pull = CharacterSettings::default().gravity / 60.0;
     let expected = (f64::from(speed[1]) - pull) / 60.0;
     assert!(
         (next[1] - after[1] - expected).abs() < 1e-3,

@@ -271,9 +271,10 @@ fn a_held_ship_stays_in_the_air_until_it_is_let_go_and_a_ship_put_somewhere_goes
 }
 
 #[test]
-fn a_held_ship_keeps_a_turn_that_is_not_an_f32_to_the_bit_and_a_ship_the_solver_moves_has_the_f32_one()
+fn a_held_ship_keeps_a_turn_that_is_not_an_f32_to_the_bit_and_a_ship_the_solver_moves_keeps_the_solvers_f64_one()
  {
-    // A planet is held, and its turn has to stay exact (an f32 one is metres out at its far side); a ship the solver moves is the solver's, which works in f32.
+    // A planet is held, and its turn has to stay exact (an f32 one is metres out at its far side); a ship the solver moves is the solver's, which works in f64 now (it
+    // rounded the turn to f32 before 2026-11-01), so it is a unit turn to f64 rounding and is not rounded to f32.
     let components = [0.123_456_789_012_345_67f64, -0.5, 0.25, 0.0];
     let w = (1.0 - components.iter().map(|c| c * c).sum::<f64>()).sqrt();
     let turn =
@@ -289,10 +290,18 @@ fn a_held_ship_keeps_a_turn_that_is_not_an_f32_to_the_bit_and_a_ship_the_solver_
     assert_eq!(ship_pose(&scene, 0).orientation, turn);
     let moved = ship_pose(&scene, 1);
     assert!(height_of(moved) < FLOOR + 20.0, "it fell");
-    assert_eq!(
-        moved.orientation.components(),
-        moved.orientation.components_single().map(f64::from)
+    let solver_turn = moved.orientation.components();
+    assert_ne!(
+        solver_turn,
+        moved.orientation.components_single().map(f64::from),
+        "the solver's turn is not rounded to f32"
     );
+    let length = solver_turn
+        .iter()
+        .map(|part| part * part)
+        .sum::<f64>()
+        .sqrt();
+    assert!((length - 1.0).abs() < 1.0e-12, "{length}");
 }
 
 #[test]
@@ -514,7 +523,8 @@ fn the_poses_of_the_ships_are_the_same_whatever_is_kept_of_their_speeds() {
     // (It changed in Phase 32j, when a tick is cut into more solver steps while any point of a ship moves faster than about 48 voxels a second, which
     // the spinning ships of this scene do for a few ticks: 4_233_839_071_203_554_194 before.)
     // (And in Phase 38a: 15_101_816_868_498_766_766 before. Orientations are f64 (Phase 38a, 2026-10-23): a yaw and a pitch are turned into a quaternion in f64 and rounded once to the f32 the solver takes, which is not always the f32 the old arithmetic in f32 gave, to the last bit. Control: with `from_yaw_pitch` put back to the f32 arithmetic and nothing else changed, the old value came back; so this is the only thing that moved it. The hash is of the orientation rounded to f32, so this is the only change.)
-    assert_eq!(hash_of_poses(&busy_scene()), 5_664_689_377_588_003_914);
+    // (And on 2026-11-01: 5_664_689_377_588_003_914 before. Rapier works in f64 now (`rapier3d-f64`, with `enhanced-determinism`; owner, 2026-11-01), and these hashes are of the bits of numbers the solver gives, so they moved. The tests of behaviour in the same file pass as they were; the physics crate's own pinned runs were taken on Windows and are the same on Linux.)
+    assert_eq!(hash_of_poses(&busy_scene()), 1_543_824_201_772_118_877);
 }
 
 #[test]
@@ -526,7 +536,8 @@ fn the_same_ships_move_the_same_bits_every_time_and_on_every_machine() {
     // (It changed again in Phase 32h, with the terrain a ship has colliders for: 16_582_222_097_314_237_682 before; see the test of the poses.)
     // (And in Phase 32j, with the steps of a fast tick: 8_675_827_597_625_099_639 before; see the test of the poses.)
     // (And in Phase 38a: 8_817_648_817_650_209_632 before; see the test of the poses.)
-    assert_eq!(hash_of_ships(&first), 15_605_515_214_656_621_284);
+    // (And on 2026-11-01: 15_605_515_214_656_621_284 before; see the test of the poses.)
+    assert_eq!(hash_of_ships(&first), 17_869_319_792_822_264_929);
 }
 
 /// A cube of 4 let go over the natural ground (not the flat floor of the other tests: it is what a player has), `height` voxels above where

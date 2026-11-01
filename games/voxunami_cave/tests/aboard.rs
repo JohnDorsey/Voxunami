@@ -709,7 +709,8 @@ fn a_scripted_run_aboard_ends_in_the_same_bits_every_time_and_on_every_machine()
     // Taken on Windows; the test passes on Linux too, so the two agree to the bit.
     // (Moved once, on purpose, 2026-10-22: the pull of the planet is 5 and a jump 3.6 metres a second; was 32 and 9, a jump of the same height.)
     // (Moved on purpose, Phase 38a: 1_723_153_240_201_899_822 before. Orientations are f64 (Phase 38a, 2026-10-23): a yaw and a pitch are turned into a quaternion in f64 and rounded once to the f32 the solver takes, which is not always the f32 the old arithmetic in f32 gave, to the last bit. Control: with `from_yaw_pitch` put back to the f32 arithmetic and nothing else changed, the old value came back; so this is the only thing that moved it.)
-    assert_eq!(first, 168_849_048_036_750_818);
+    // (Moved on purpose, 2026-11-01: 168_849_048_036_750_818 before. Rapier works in f64 now (`rapier3d-f64`, with `enhanced-determinism`; owner, 2026-11-01), and these hashes are of the bits of numbers the solver gives, so they moved. The tests of behaviour in the same file pass as they were; the physics crate's own pinned runs were taken on Windows and are the same on Linux.)
+    assert_eq!(first, 10_856_507_688_139_911_524);
 }
 
 #[test]

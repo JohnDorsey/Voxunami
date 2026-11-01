@@ -86,11 +86,12 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
   the world as it stands, and only then writes, so the order and the bricks never matter, and what was written wakes the voxels around it. Chance is `lattice::voxel_random(seed, clock, level,
   voxel, purpose)`, with the rule's own clock saved with the world (a server's tick starts again at 0). Limits on work are per rule (light: a budget of voxels a tick; fire: only fires within range
   of a player). Not extracted: a trait for a rule, since two rules do not show what is common; sampling random voxels in an active region (coral, growing grass) has no home yet.
-- Physics (confirmed by the owner): Rapier (rapier3d 0.36.1) behind a Voxunami adapter crate, with
+- Physics (confirmed by the owner): Rapier behind a Voxunami adapter crate, with
   `enhanced-determinism`, single-threaded stepping on the server, a local floating-origin frame, large merged voxel
   colliders for terrain, and gravity, buoyancy and drag applied as per-body forces. Evidence and caveats are in
-  `docs/history/physics-spike.md`. Built so far for players only (Phases 15 and 16, below); rigid structures, buoyancy and
-  joints are not.
+  `docs/history/physics-spike.md`. **Rapier works in f64** (the `rapier3d-f64` package, 0.36.1, with `enhanced-determinism`; owner, 2026-11-01): the interface of
+  `engine/physics` keeps `f32` for speeds, forces and the offset in a `WorldPosition`, and `engine/physics/src/real.rs` is where the two meet. Windows and Linux agree to the bit on the
+  pinned runs (`joint-probe.md`). Built so far: players (Phases 15 and 16, below) and ships as rigid bodies (Phase 32); buoyancy and joints are not.
 - Players' bodies (decided with the physics, Phases 15 and 16): the server moves them. A client says which keys are
   held and which way it faces; it never says where it is, and a game that moves players ignores pose messages. This is what
   keeps recordings and every other player's view honest, and what makes the movement the same on every machine.

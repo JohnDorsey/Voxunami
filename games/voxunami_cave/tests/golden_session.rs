@@ -345,8 +345,12 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// Cave's generators are Cave's (2026-10-30; the F5 move out of `terrain` and `base_blocks`): their identifiers are `voxunami_cave:...` where they were `base_blocks:...`, and that is all that
 /// changed. Checked, not assumed: with the five identifiers (four generators and the planet family) written back as they were, this session gave the old values below to the digit; with the new ones it is
 /// 10 bytes longer (the welcome and the saved world name them) and the hashes differ because the bytes do.
+/// Rapier in f64 (2026-11-01): the stream hash is 17_151_338_716_148_404_135 before and the stream 7,204,150 bytes, 600 fewer now. The saved world is the same to the hash, which is the control that
+/// matters: what was built, broken and grown is what it was, and only the numbers the solver gives (the poses and speeds of ships and bodies in the stream) differ. The 600 bytes are not
+/// accounted for message by message; they are in the size of the messages that carry those numbers, and the arrangement test below, which runs the same session with the plugins listed in
+/// other orders, gives the same values as this one.
 const PINNED: (u64, usize, u64) = (
-    17_151_338_716_148_404_135,
-    7_204_150,
+    18_195_685_852_877_378_881,
+    7_203_550,
     7_542_728_601_885_368_666,
 );

@@ -1,25 +1,26 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
-use rapier3d::glamx::Mat3;
+use rapier3d::glamx::DMat3;
 use rapier3d::prelude::*;
 use voxel_space::{
     BRICK_EDGE_LENGTH, BrickCoordinate, GridId, GridPose, VoxelCoordinate, WorldPosition,
 };
 
+use crate::real::{array, real, single, vector, world_position};
 use crate::terrain::{Collision, CollisionSource, build_brick};
 
 /// How far, in bricks, from its frame's origin a character may get before the frame is rebuilt
-/// around it. `f32` is exact enough far beyond this; the limit only keeps every number small.
+/// around it. `Real` is exact enough far beyond this; the limit only keeps every number small.
 const FRAME_RADIUS_BRICKS: i128 = 6;
 
 /// How far from the character terrain has colliders, in voxels: a few, and the way it goes in a few steps. (A brick of natural terrain costs ten
 /// milliseconds or more to generate and make colliders of, on the thread of the tick, so the 27 bricks around the one a character is in, as it first
 /// had, stopped the game for a tenth of a second each time it walked into a new brick.) They are let go a little farther out, so that a
 /// character at the edge of the margin does not make and drop the same brick every step.
-const TERRAIN_LOOKAHEAD_VOXELS: f32 = 8.0;
-const TERRAIN_LOOKAHEAD_SECONDS: f32 = 0.25;
-const TERRAIN_KEEP_EXTRA_VOXELS: f32 = 16.0;
+const TERRAIN_LOOKAHEAD_VOXELS: Real = 8.0;
+const TERRAIN_LOOKAHEAD_SECONDS: Real = 0.25;
+const TERRAIN_KEEP_EXTRA_VOXELS: Real = 16.0;
 
 /// The same for the bricks of a grid that is not the one the character's frame belongs to, counted in that grid's bricks.
 const FOREIGN_RADIUS_BRICKS: i128 = 1;
@@ -28,17 +29,17 @@ const FOREIGN_RADIUS_BRICKS: i128 = 1;
 /// at a time. An eighth is the finest a block's shape goes, so no ledge is stepped over. Two bricks is far
 /// enough for a character put some way into a hill, and keeps the search, which may have terrain
 /// generated for it, small.
-const MAXIMUM_CLEARANCE_DISTANCE: f32 = 64.0;
-const CLEARANCE_STEP: f32 = 0.125;
+const MAXIMUM_CLEARANCE_DISTANCE: Real = 64.0;
+const CLEARANCE_STEP: Real = 0.125;
 
 /// How far, in voxels, a character that something has moved into is pushed at most in a tick to find room (see
 /// [`CharacterBody::keep_clear`]): more than a ship that moves a few voxels a tick goes into it. Less than the distance for a character
 /// that is put somewhere, because this search can run every tick for a character that is stuck, and the character is not lost if it fails.
-const MAXIMUM_PUSH_DISTANCE: f32 = 8.0;
+const MAXIMUM_PUSH_DISTANCE: Real = 8.0;
 
 /// The ways a character put inside terrain is moved, in the order tried at one distance: up first (onto
 /// the ground it was put into), then down, then sideways.
-const CLEARANCE_DIRECTIONS: [[f32; 3]; 6] = [
+const CLEARANCE_DIRECTIONS: [[Real; 3]; 6] = [
     [0.0, 1.0, 0.0],
     [0.0, -1.0, 0.0],
     [1.0, 0.0, 0.0],
@@ -49,14 +50,14 @@ const CLEARANCE_DIRECTIONS: [[f32; 3]; 6] = [
 
 /// How much smaller than the character the box is that is tested against the terrain when it is put
 /// somewhere: resting on the ground, or against a wall, with the controller's small gap, is not inside it.
-const CLEARANCE_MARGIN: f32 = 0.02;
+const CLEARANCE_MARGIN: Real = 0.02;
 
 /// A pull of gravity weaker than this (voxels per second per second) is none: the direction of nothing is not a direction.
-const LEAST_PULL: f32 = 1.0e-6;
+const LEAST_PULL: Real = 1.0e-6;
 
 /// How close to straight opposite two directions of up are for the turn from one to the other to be a half turn about the character's
 /// right, which is the one turn between them that the shortest way does not name.
-const OPPOSITE: f32 = -0.999_999;
+const OPPOSITE: Real = -0.999_999;
 
 /// What a character is like. Lengths are in voxels (a voxel is a metre in Voxunami Cave) and times
 /// in seconds. The defaults are close to those of the games that taught people what walking in a
@@ -64,29 +65,29 @@ const OPPOSITE: f32 = -0.999_999;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CharacterSettings {
     /// Half the width of the character.
-    pub radius: f32,
+    pub radius: Real,
     /// Standing height.
-    pub height: f32,
+    pub height: Real,
     /// How high above the feet the eyes are.
-    pub eye_height: f32,
+    pub eye_height: Real,
     /// Downward acceleration while walking.
-    pub gravity: f32,
+    pub gravity: Real,
     /// The upward speed of a jump: with the gravity, the height of a jump is `jump_speed^2 / (2 *
     /// gravity)`.
-    pub jump_speed: f32,
-    pub walk_speed: f32,
-    pub sprint_speed: f32,
-    pub fly_speed: f32,
-    pub fly_sprint_speed: f32,
+    pub jump_speed: Real,
+    pub walk_speed: Real,
+    pub sprint_speed: Real,
+    pub fly_speed: Real,
+    pub fly_sprint_speed: Real,
     /// The fastest a falling character goes.
-    pub terminal_speed: f32,
+    pub terminal_speed: Real,
     /// How fast the horizontal speed follows what the player asks for, on the ground and in the air.
-    pub ground_acceleration: f32,
-    pub air_acceleration: f32,
+    pub ground_acceleration: Real,
+    pub air_acceleration: Real,
     /// The highest step a walking character climbs without jumping: slabs and the steps of stairs.
-    pub step_height: f32,
+    pub step_height: Real,
     /// The time one step of [`CharacterBody::step`] stands for.
-    pub time_step: f32,
+    pub time_step: Real,
 }
 
 impl Default for CharacterSettings {
@@ -152,7 +153,7 @@ impl std::fmt::Debug for ForeignGrid<'_> {
 /// The collider of one brick of a foreign grid, and the pose it was last put at (as the bits of its numbers).
 struct ForeignBrick {
     collider: Option<ColliderHandle>,
-    placed: Option<[u32; 7]>,
+    placed: Option<[u64; 7]>,
 }
 
 /// A body that is moved with the player's input through the terrain: it falls, walks, jumps and
@@ -216,7 +217,7 @@ impl CharacterBody {
         let parameters = IntegrationParameters {
             dt: settings.time_step,
             // No speed limit (the default is 400 metres a second).
-            normalized_max_linear_velocity: f32::MAX,
+            normalized_max_linear_velocity: Real::MAX,
             ..IntegrationParameters::default()
         };
         let mut body = Self {
@@ -238,8 +239,8 @@ impl CharacterBody {
                     min_width: CharacterLength::Absolute(settings.radius * 0.5),
                     include_dynamic_bodies: false,
                 }),
-                max_slope_climb_angle: 50.0_f32.to_radians(),
-                min_slope_slide_angle: 50.0_f32.to_radians(),
+                max_slope_climb_angle: Real::to_radians(50.0),
+                min_slope_slide_angle: Real::to_radians(50.0),
                 snap_to_ground: None,
                 normal_nudge_factor: 1.0e-5,
             },
@@ -289,7 +290,7 @@ impl CharacterBody {
 
     /// Which way is up for the character, a unit vector in the axes of its frame, as of its last step.
     pub fn up(&self) -> [f32; 3] {
-        self.up.to_array()
+        array(self.up)
     }
 
     /// The turn of the character's frame, as the quaternion `[x, y, z, w]` that takes the axes a character has when it stands in a
@@ -301,9 +302,10 @@ impl CharacterBody {
         }
         let right = self.heading.cross(self.up);
         let back = -self.heading;
-        Rotation::from_mat3(&Mat3::from_cols(right, self.up, back))
+        Rotation::from_mat3(&DMat3::from_cols(right, self.up, back))
             .normalize()
             .to_array()
+            .map(single)
     }
 
     /// Whether the frame is the plain one: up is `+y` and the character faces `-z` at yaw 0. Then nothing about the character is
@@ -321,12 +323,12 @@ impl CharacterBody {
         self.clear_terrain();
         self.needs_clearance = true;
         self.origin = eye.brick();
-        self.velocity = Vector::from_array(velocity);
+        self.velocity = vector(velocity);
         if frame_rotation == [0.0, 0.0, 0.0, 1.0] {
             self.up = Vector::Y;
             self.heading = Vector::NEG_Z;
         } else {
-            let [x, y, z, w] = frame_rotation;
+            let [x, y, z, w] = frame_rotation.map(real);
             let turn = Rotation::from_xyzw(x, y, z, w).normalize();
             self.up = turn * Vector::Y;
             self.heading = turn * Vector::NEG_Z;
@@ -372,7 +374,7 @@ impl CharacterBody {
 
     /// The velocity, in voxels a second.
     pub fn velocity(&self) -> [f32; 3] {
-        self.velocity.to_array()
+        array(self.velocity)
     }
 
     /// Whether the character stands on something.
@@ -397,7 +399,7 @@ impl CharacterBody {
     /// is and the character goes through it: the next [`CharacterBody::update_terrain`] makes the terrain where the character is now, and [`CharacterBody::keep_clear`]
     /// (which a game calls each tick) lifts it out of what it was moved into, as out of what is built into it.
     pub fn displace(&mut self, delta: [f32; 3]) {
-        self.center += Vector::from_array(delta);
+        self.center += vector(delta);
     }
 
     /// Puts the character with its eyes at a position, at rest and in the air. If that is inside the
@@ -421,14 +423,14 @@ impl CharacterBody {
         let edge = BRICK_EDGE_LENGTH as i128;
         let offset = position.offset();
         Vector::new(
-            ((brick.x() - self.origin.x()) * edge) as f32 + offset[0],
-            ((brick.y() - self.origin.y()) * edge) as f32 + offset[1],
-            ((brick.z() - self.origin.z()) * edge) as f32 + offset[2],
+            ((brick.x() - self.origin.x()) * edge) as Real + Real::from(offset[0]),
+            ((brick.y() - self.origin.y()) * edge) as Real + Real::from(offset[1]),
+            ((brick.z() - self.origin.z()) * edge) as Real + Real::from(offset[2]),
         )
     }
 
     fn world_position(&self, local: Vector) -> WorldPosition {
-        WorldPosition::new(self.origin, local.to_array())
+        world_position(self.origin, local).expect("the character's place is finite")
     }
 
     fn brick_of_center(&self) -> BrickCoordinate {
@@ -492,7 +494,12 @@ impl CharacterBody {
     }
 
     /// Moves the character the shortest way out of the terrain, and of the blocks of other grids if `among_other_grids`, within `limit`.
-    fn move_out(&mut self, source: &mut impl CollisionSource, among_other_grids: bool, limit: f32) {
+    fn move_out(
+        &mut self,
+        source: &mut impl CollisionSource,
+        among_other_grids: bool,
+        limit: Real,
+    ) {
         let put_at = self.center;
         if !self.is_inside(put_at, source, among_other_grids) {
             return;
@@ -557,26 +564,26 @@ impl CharacterBody {
     /// world does not have counts as solid, as the source's contract says.
     fn overlaps_terrain(&self, center: Vector, source: &mut impl CollisionSource) -> bool {
         let own = [
-            f64::from(self.settings.radius - CLEARANCE_MARGIN),
-            f64::from(self.settings.height / 2.0 - CLEARANCE_MARGIN),
-            f64::from(self.settings.radius - CLEARANCE_MARGIN),
+            self.settings.radius - CLEARANCE_MARGIN,
+            self.settings.height / 2.0 - CLEARANCE_MARGIN,
+            self.settings.radius - CLEARANCE_MARGIN,
         ];
         // A character turned over is held by the box along the axes of the frame that reaches as far each way as the turned one does:
         // exact for a frame turned by quarter turns, and a little more than needed for any other.
         let half = match self.shape_turn {
             None => own,
             Some(turn) => {
-                let matrix = Mat3::from_quat(turn);
+                let matrix = DMat3::from_quat(turn);
                 [0, 1, 2].map(|axis| {
                     (0..3)
-                        .map(|column| f64::from(matrix.col(column)[axis].abs()) * own[column])
+                        .map(|column| matrix.col(column)[axis].abs() * own[column])
                         .sum()
                 })
             }
         };
         let edge = BRICK_EDGE_LENGTH as i128;
         let origin = [self.origin.x(), self.origin.y(), self.origin.z()].map(|brick| brick * edge);
-        let center = center.to_array().map(f64::from);
+        let center = center.to_array();
         let low = [0, 1, 2].map(|axis| (center[axis] - half[axis]).floor() as i128);
         let high = [0, 1, 2].map(|axis| (center[axis] + half[axis]).floor() as i128);
         for x in low[0]..=high[0] {
@@ -622,17 +629,22 @@ impl CharacterBody {
             || (here.y() - self.origin.y()).abs() > FRAME_RADIUS_BRICKS
             || (here.z() - self.origin.z()).abs() > FRAME_RADIUS_BRICKS
         {
-            let world = self.world_position(self.center);
+            let edge = BRICK_EDGE_LENGTH as i128;
+            let shift = Vector::new(
+                ((here.x() - self.origin.x()) * edge) as Real,
+                ((here.y() - self.origin.y()) * edge) as Real,
+                ((here.z() - self.origin.z()) * edge) as Real,
+            );
             self.clear_terrain();
             self.origin = here;
-            self.center = Vector::new(world.offset()[0], world.offset()[1], world.offset()[2]);
+            self.center -= shift;
         }
         // The bricks within the lookahead of the character (and, farther out, those that are kept): a box of bricks around the middle of the body.
         let lookahead =
             TERRAIN_LOOKAHEAD_VOXELS + TERRAIN_LOOKAHEAD_SECONDS * self.velocity.length();
-        let bricks_within = |distance: f32| {
-            let brick = |value: f32, origin: i128| {
-                origin.saturating_add((f64::from(value) / BRICK_EDGE_LENGTH as f64).floor() as i128)
+        let bricks_within = |distance: Real| {
+            let brick = |value: Real, origin: i128| {
+                origin.saturating_add((value / BRICK_EDGE_LENGTH as Real).floor() as i128)
             };
             let (low, high) = (
                 self.center - Vector::splat(distance),
@@ -797,9 +809,9 @@ impl CharacterBody {
         let frame = WorldPosition::new(self.origin, [0.0; 3]);
         let origin = grid.pose.origin_relative_to(frame);
         let matrix = grid.pose.rotation_matrix();
-        let [x, y, z, w] = grid.pose.orientation.components_single();
+        let [x, y, z, w] = grid.pose.orientation.components();
         let turn = Rotation::from_xyzw(x, y, z, w).normalize();
-        let edge = BRICK_EDGE_LENGTH as f64;
+        let edge = BRICK_EDGE_LENGTH as Real;
         let mut moved = false;
         let keys: Vec<(GridId, BrickCoordinate)> = self
             .foreign
@@ -808,15 +820,15 @@ impl CharacterBody {
             .collect();
         for key in keys {
             let corner = [
-                key.1.x() as f64 * edge,
-                key.1.y() as f64 * edge,
-                key.1.z() as f64 * edge,
+                key.1.x() as Real * edge,
+                key.1.y() as Real * edge,
+                key.1.z() as Real * edge,
             ];
-            let translation: [f32; 3] = [0, 1, 2].map(|axis| {
-                (origin[axis]
+            let translation: [Real; 3] = [0, 1, 2].map(|axis| {
+                origin[axis]
                     + matrix[axis][0] * corner[0]
                     + matrix[axis][1] * corner[1]
-                    + matrix[axis][2] * corner[2]) as f32
+                    + matrix[axis][2] * corner[2]
             });
             let bits = [
                 translation[0].to_bits(),
@@ -878,7 +890,7 @@ impl CharacterBody {
     /// One step of [`CharacterSettings::time_step`] in a world whose gravity is the character's own, straight down: the character
     /// follows what the player asks, and gravity, and is stopped by the terrain.
     pub fn step(&mut self, input: MoveInput) {
-        self.step_with_gravity(input, [0.0, -self.settings.gravity, 0.0]);
+        self.step_pulled(input, Vector::new(0.0, -self.settings.gravity, 0.0));
     }
 
     /// One step, pulled by `gravity`: an acceleration in the axes of the character's frame, whatever the world's field is where it is
@@ -886,16 +898,20 @@ impl CharacterBody {
     /// whatever floor that makes, and the way it faces is carried along as the pull turns. A pull of nothing leaves the character
     /// weightless: it keeps its frame and drifts on at the speed it had.
     pub fn step_with_gravity(&mut self, input: MoveInput, gravity: [f32; 3]) {
+        self.step_pulled(input, vector(gravity));
+    }
+
+    fn step_pulled(&mut self, input: MoveInput, gravity: Vector) {
         let settings = self.settings;
         let dt = settings.time_step;
-        let pull = if gravity[0] == 0.0 && gravity[2] == 0.0 {
+        let pull = if gravity.x == 0.0 && gravity.z == 0.0 {
             // The plain case is exact without a square root.
-            gravity[1].abs()
+            gravity.y.abs()
         } else {
-            Vector::from_array(gravity).length()
+            gravity.length()
         };
         let pull = if pull > LEAST_PULL {
-            self.turn_up_to(-Vector::from_array(gravity) / pull);
+            self.turn_up_to(-gravity / pull);
             pull
         } else {
             0.0
@@ -903,7 +919,7 @@ impl CharacterBody {
         let level = self.is_level();
 
         // Not the standard library's sin and cos, which differ between platforms.
-        let (sin, cos) = (libm::sinf(input.yaw), libm::cosf(input.yaw));
+        let (sin, cos) = (libm::sin(real(input.yaw)), libm::cos(real(input.yaw)));
         let (forward, right) = if level {
             (Vector::new(-sin, 0.0, -cos), Vector::new(cos, 0.0, -sin))
         } else {
@@ -913,7 +929,7 @@ impl CharacterBody {
                 across * cos + self.heading * sin,
             )
         };
-        let mut wish = forward * f32::from(input.forward) + right * f32::from(input.strafe);
+        let mut wish = forward * Real::from(input.forward) + right * Real::from(input.strafe);
         if wish.length_squared() > 1.0 {
             wish = wish.normalize();
         }
@@ -923,7 +939,8 @@ impl CharacterBody {
             } else {
                 settings.fly_speed
             };
-            let target = (wish + self.up * f32::from(input.vertical)).clamp_length_max(1.0) * speed;
+            let target =
+                (wish + self.up * Real::from(input.vertical)).clamp_length_max(1.0) * speed;
             self.velocity =
                 approach_vector(self.velocity, target, settings.ground_acceleration * dt);
         } else {
@@ -1005,7 +1022,7 @@ impl CharacterBody {
     }
 
     /// A vector as the part across the character's up and the length along it.
-    fn split(&self, vector: Vector) -> (Vector, f32) {
+    fn split(&self, vector: Vector) -> (Vector, Real) {
         if self.up == Vector::Y {
             (Vector::new(vector.x, 0.0, vector.z), vector.y)
         } else {
@@ -1015,7 +1032,7 @@ impl CharacterBody {
     }
 
     /// The vector that has `across` across the character's up and `along` along it.
-    fn join(&self, across: Vector, along: f32) -> Vector {
+    fn join(&self, across: Vector, along: Real) -> Vector {
         if self.up == Vector::Y {
             Vector::new(across.x, along, across.z)
         } else {
@@ -1036,7 +1053,7 @@ impl CharacterBody {
     /// the character is not moved.
     fn move_through_terrain(
         &self,
-        dt: f32,
+        dt: Real,
         desired: Vector,
     ) -> (
         rapier3d::control::EffectiveCharacterMovement,
@@ -1084,7 +1101,7 @@ impl CharacterBody {
             .into_iter()
             .chain(self.velocity.to_array())
         {
-            feed(u64::from(value.to_bits()));
+            feed(value.to_bits());
         }
         feed(u64::from(self.grounded));
         feed(u64::from(self.flying));
@@ -1097,7 +1114,7 @@ impl CharacterBody {
                 .into_iter()
                 .chain(self.heading.to_array())
             {
-                feed(u64::from(value.to_bits()));
+                feed(value.to_bits());
             }
         }
         state
@@ -1134,7 +1151,7 @@ fn max_brick() -> BrickCoordinate {
 
 /// How far from the wall, as a fraction of the slide, the slide made again leans: enough that the controller, which counts a surface
 /// within its gap of the character as touched, does not meet the wall again and take its slope's hair for a downward slide once more.
-const SLIDE_LEAN_FROM_WALL: f32 = 0.05;
+const SLIDE_LEAN_FROM_WALL: Real = 0.05;
 
 /// A move across the up with what runs into `wall` taken out: it goes along the wall, level, and leans a little away from it. A move that
 /// does not run into it is as it was.
@@ -1150,7 +1167,7 @@ fn slide_along(across: Vector, wall: Vector, up: Vector) -> Vector {
 }
 
 /// Moves `value` toward `target` by at most `amount`, in a straight line.
-fn approach_vector(value: Vector, target: Vector, amount: f32) -> Vector {
+fn approach_vector(value: Vector, target: Vector, amount: Real) -> Vector {
     let difference = target - value;
     let distance = difference.length();
     if distance <= amount || distance == 0.0 {
