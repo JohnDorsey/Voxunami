@@ -115,7 +115,7 @@ fn blocks_seen_by(player: &Player, content: &Content2048) -> Blocks {
 }
 
 /// Which way a player faces, in degrees of yaw, to look along a horizontal direction.
-fn yaw_toward(direction: FaceDirection) -> f32 {
+fn yaw_toward(direction: FaceDirection) -> f64 {
     match direction {
         FaceDirection::NegativeZ => 0.0,
         FaceDirection::NegativeX => 90.0,
@@ -154,7 +154,7 @@ impl Rig {
         }
     }
 
-    fn join(&mut self, position: [f64; 3], yaw_degrees: f32, pitch_degrees: f32) -> Player {
+    fn join(&mut self, position: [f64; 3], yaw_degrees: f64, pitch_degrees: f64) -> Player {
         let connection = self.connector.connect().unwrap();
         self.join_with(Box::new(connection), position, yaw_degrees, pitch_degrees)
     }
@@ -163,8 +163,8 @@ impl Rig {
         &mut self,
         connection: Box<dyn Connection>,
         position: [f64; 3],
-        yaw_degrees: f32,
-        pitch_degrees: f32,
+        yaw_degrees: f64,
+        pitch_degrees: f64,
     ) -> Player {
         let start = camera_at(position, yaw_degrees, pitch_degrees);
         self.joined += 1;

@@ -3,7 +3,7 @@
 use block_models::BlockTable;
 use renderer::{Atmosphere, Avatar, Camera, OverlayRect, VoxelRenderer};
 use transport::Connection;
-use voxel_space::{BrickCoordinate, WorldPosition};
+use voxel_space::WorldPosition;
 use world_view::MeshUpdate;
 
 use crate::definition::GameDefinition;
@@ -172,18 +172,8 @@ pub fn hexadecimal_voxel_coordinates(position: WorldPosition) -> String {
 }
 
 /// A camera at a position given in voxels, with angles in degrees.
-pub fn camera_at(position: [f64; 3], yaw_degrees: f32, pitch_degrees: f32) -> Camera {
-    let brick = BrickCoordinate::new(
-        (position[0].floor() as i128).div_euclid(32),
-        (position[1].floor() as i128).div_euclid(32),
-        (position[2].floor() as i128).div_euclid(32),
-    );
-    let offset = [
-        (position[0] - (brick.x() * 32) as f64) as f32,
-        (position[1] - (brick.y() * 32) as f64) as f32,
-        (position[2] - (brick.z() * 32) as f64) as f32,
-    ];
-    let mut camera = Camera::new(WorldPosition::new(brick, offset));
+pub fn camera_at(position: [f64; 3], yaw_degrees: f64, pitch_degrees: f64) -> Camera {
+    let mut camera = Camera::new(WorldPosition::from_voxels(position));
     camera.yaw = yaw_degrees.to_radians();
     camera.pitch = pitch_degrees.to_radians();
     camera
@@ -191,6 +181,8 @@ pub fn camera_at(position: [f64; 3], yaw_degrees: f32, pitch_degrees: f32) -> Ca
 
 #[cfg(test)]
 mod tests {
+    use voxel_space::BrickCoordinate;
+
     use super::*;
 
     #[test]
@@ -198,8 +190,8 @@ mod tests {
         let camera = camera_at([-1.0, 110.5, 70.0], 90.0, -30.0);
         assert_eq!(camera.position.brick(), BrickCoordinate::new(-1, 3, 2));
         assert_eq!(camera.position.offset(), [31.0, 14.5, 6.0]);
-        assert!((camera.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
-        assert!((camera.pitch + std::f32::consts::FRAC_PI_6).abs() < 1e-6);
+        assert!((camera.yaw - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+        assert!((camera.pitch + std::f64::consts::FRAC_PI_6).abs() < 1e-12);
     }
 
     #[test]

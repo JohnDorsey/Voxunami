@@ -78,7 +78,7 @@ fn a_new_world_is_space_first_and_the_overworld_second_with_a_planet_in_space() 
     );
     let radius = PlanetSettings::one_percent_of_earth(SEED).radius;
     let mass_for_ten = 10.0 * radius * radius / 6.674e-11;
-    assert!((f64::from(planet.mass) / mass_for_ten - 1.0).abs() < 1.0e-6);
+    assert!((planet.mass / mass_for_ten - 1.0).abs() < 1.0e-6);
     assert_eq!(terrain.mass, planet.mass);
     // The extent holds the ground, hills and all: the hills of a face are 320 voxels at the most and the blend of three can be 1.8 times that.
     let extent = terrain.extent;
@@ -384,7 +384,7 @@ fn a_player_standing_on_the_planet_breaks_the_ground_under_them_and_the_planet_s
     let top = top_of_the_column(0, 0);
 
     // Looking straight down at the voxel they stand on.
-    player.camera.pitch = (-89.0f32).to_radians();
+    player.camera.pitch = (-89.0f64).to_radians();
     player.hold(&[]);
     tick_and_follow(&mut scene, &mut player, 3);
     scene.rig.settle(&mut [&mut player]);
@@ -432,7 +432,7 @@ fn a_player_standing_on_the_planet_places_a_block_on_the_ground_ahead_of_them_an
     tick_and_follow(&mut scene, &mut player, 60);
 
     // Looking down at the ground a voxel or two ahead.
-    player.camera.pitch = (-45.0f32).to_radians();
+    player.camera.pitch = (-45.0f64).to_radians();
     player.hold(&[]);
     tick_and_follow(&mut scene, &mut player, 3);
     scene.rig.settle(&mut [&mut player]);
@@ -464,7 +464,7 @@ fn a_pilot_whose_ship_cannot_be_found_and_who_goes_to_the_world_spawn_of_a_level
     // A deck of stone three over the ground at the pole, held; a pilot who lands on it, takes the controls and tells it to go with them.
     make_ship(
         &mut scene,
-        pose_at(-10.0, (ground + 3.0) as f32, -4.0),
+        pose_at(-10.0, ground + 3.0, -4.0),
         true,
         [30, 2, 8],
         |_| true,
@@ -542,7 +542,7 @@ fn in_survival_a_block_broken_on_the_planet_leaves_its_item_and_the_player_stand
     tick_and_follow(&mut scene, &mut player, 60);
     assert!(say(&mut scene, &mut player, "/gamemode survival").contains("survival"));
     // Looking straight down at the voxel they stand on, they break it.
-    player.camera.pitch = (-89.0f32).to_radians();
+    player.camera.pitch = (-89.0f64).to_radians();
     player.hold(&[]);
     tick_and_follow(&mut scene, &mut player, 3);
     scene.rig.settle(&mut [&mut player]);

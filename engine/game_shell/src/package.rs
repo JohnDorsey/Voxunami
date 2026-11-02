@@ -201,12 +201,12 @@ impl ContentPackage {
             recipe: GeneratorRecipe,
             level: LevelIndex,
             body: Body,
-            mass: f32,
+            mass: f64,
             /// The period of its orbit, if it has one: the file's, or the one the mass of what it goes round gives.
             period: Option<f64>,
         }
         let mut ready: Vec<Ready> = Vec::new();
-        // What each body weighs as a ship (an `f32`), for the period of an orbit round it.
+        // What each body weighs, for the period of an orbit round it.
         let mut masses: BTreeMap<NamespacedId, f64> = BTreeMap::new();
         for (identifier, body) in &self.bodies {
             let trouble = |why: String| format!("{identifier}: {why}");
@@ -233,7 +233,7 @@ impl ContentPackage {
                     gravity * parameters.surface_radius * parameters.surface_radius / pull_strength
                 }
             };
-            if !(mass > 0.0 && mass <= f64::from(f32::MAX)) {
+            if !(mass > 0.0 && mass <= data_packs::GREATEST_MASS) {
                 return Err(trouble(format!(
                     "{mass} kilograms is not a weight a ship can have"
                 )));
@@ -257,7 +257,7 @@ impl ContentPackage {
                 // (What it goes round is a body made before it, which is not a ship yet: the rest of the rail is made right here for what it can say.)
                 rail_of(rail, period, |_| Centre::Point([0.0; 3])).map_err(trouble)?;
             }
-            masses.insert(identifier.clone(), f64::from(mass as f32));
+            masses.insert(identifier.clone(), mass);
             ready.push(Ready {
                 period,
                 identifier: identifier.clone(),
@@ -268,7 +268,7 @@ impl ContentPackage {
                 },
                 level,
                 body: body.clone(),
-                mass: mass as f32,
+                mass,
             });
         }
         let layout = Arc::clone(world.main().overrides.layout());
@@ -329,7 +329,7 @@ impl ContentPackage {
     }
 
     /// The period of the orbit of a body: the file's if it has one, and if it goes round a body, the one that Kepler's third law gives, T = 2 pi sqrt(a^3 / mu) with mu the game's
-    /// pull strength times the mass of that body as a ship. When the file has one too and it is more than [`PERIOD_TOLERANCE`] of the computed one away (its size: a retrograde
+    /// pull strength times the mass of that body. When the file has one too and it is more than [`PERIOD_TOLERANCE`] of the computed one away (its size: a retrograde
     /// orbit is as right as a prograde one) the file's is the one used and `told` says that it is not the one the mass gives. An orbit round a point has no mass, so it needs a period.
     fn period_of(
         &self,
@@ -932,7 +932,7 @@ mod tests {
             )
         );
         // As heavy as it must be to pull 4 metres a second a second at its surface, 50 voxels from its middle.
-        let mass = (4.0f64 * 50.0 * 50.0 / pull()) as f32;
+        let mass = 4.0f64 * 50.0 * 50.0 / pull();
         assert_eq!(ship.mass, mass);
         let terrain = ship.terrain.expect("a body has terrain");
         assert_eq!(terrain.mass, mass);
@@ -1013,7 +1013,7 @@ mod tests {
             .map(|recipe| recipe.instance.to_string())
             .collect();
         assert_eq!(names, ["test_game:boulder", "my_pack:pebble"]);
-        let ships: Vec<f32> = world.grids().iter().map(|(_, ship)| ship.mass).collect();
+        let ships: Vec<f64> = world.grids().iter().map(|(_, ship)| ship.mass).collect();
         assert_eq!(ships.len(), 2);
         assert_eq!(ships[1], 12.0);
         // At the origin, because the file said no place.
@@ -1244,10 +1244,7 @@ mod tests {
             voxel_space::WorldPosition::from_voxels(state.position.unwrap())
         );
         assert_eq!(planet.pose.orientation, state.orientation.unwrap());
-        assert_eq!(
-            planet.linear_velocity,
-            state.velocity.map(|component| component as f32)
-        );
+        assert_eq!(planet.linear_velocity, state.velocity);
         assert_ne!(planet.linear_velocity, [0.0; 3]);
 
         // A body that only turns stays where the file put it and does not move.
@@ -1308,9 +1305,14 @@ mod tests {
         assert!((orbit.phase - degrees(10.0)).abs() < 1e-12);
         // At the start it is where the ellipse puts it: not on the circle of the same radius.
         let state = rail.state(0.0, [0.0; 3], [0.0; 3]);
+        // (The exact offset from the centre, which the world adds whole bricks first: at 10^9 voxels the sum in voxels, `state.position`, is an `f64` 1e-7 voxel apart from the next,
+        // and the pose is not rounded to it. It once was, to an `f32` offset of 2e-6 voxel, which hid the difference.)
+        let exact = state.offset.unwrap();
         assert_eq!(
             comet.pose.position,
-            voxel_space::WorldPosition::from_voxels(state.position.unwrap())
+            voxel_space::WorldPosition::new(voxel_space::BrickCoordinate::ORIGIN, [0.0; 3])
+                .translated_by_bricks(exact.bricks, exact.rest)
+                .unwrap()
         );
         let place = state.position.unwrap();
         let distance = (place[0] * place[0] + place[1] * place[1] + place[2] * place[2]).sqrt();
@@ -1325,9 +1327,9 @@ mod tests {
 
     // ---- the period of an orbit and the mass of what it goes round
 
-    /// The period that Kepler's third law gives round a body of this many kilograms (as a ship weighs it: an `f32`) at this semi-major axis, with the game's pull strength.
+    /// The period that Kepler's third law gives round a body of this many kilograms at this semi-major axis, with the game's pull strength.
     fn kepler_period(radius: f64, kilograms: f64) -> f64 {
-        let mu = pull() * f64::from(kilograms as f32);
+        let mu = pull() * kilograms;
         std::f64::consts::TAU * (radius * radius * radius / mu).sqrt()
     }
 
@@ -1362,7 +1364,7 @@ mod tests {
         )
         .unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
-        // The star weighs 1e20 kilograms in the fixture, as a ship: an `f32`, which is 2e-8 more, so a period 1e-8 less than with the `f64`.
+        // The star weighs 1e20 kilograms in the fixture, and the ship that is the star weighs exactly that.
         let expected = kepler_period(1.0e6, 1.0e20);
         assert!(
             (orbit.period - expected).abs() <= 1.0e-12 * expected,
@@ -1370,8 +1372,6 @@ mod tests {
             orbit.period
         );
         assert!(orbit.period > 0.0);
-        let with_the_f64 = std::f64::consts::TAU * (1.0e18f64 / (pull() * 1.0e20)).sqrt();
-        assert!((orbit.period - with_the_f64).abs() > 1.0e-9 * expected);
     }
 
     #[test]
@@ -1489,9 +1489,7 @@ mod tests {
         assert!((distance - 2.0e4).abs() < 1e-2, "{distance}");
         let own = std::f64::consts::TAU * 2.0e4 / 500.0;
         let relative: Vec<f64> = (0..3)
-            .map(|axis| {
-                f64::from(moon.linear_velocity[axis]) - f64::from(planet.linear_velocity[axis])
-            })
+            .map(|axis| moon.linear_velocity[axis] - planet.linear_velocity[axis])
             .collect();
         let speed =
             (relative[0] * relative[0] + relative[1] * relative[1] + relative[2] * relative[2])

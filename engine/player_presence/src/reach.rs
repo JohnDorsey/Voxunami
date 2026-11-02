@@ -86,7 +86,7 @@ mod tests {
 
     use super::*;
 
-    fn player_at(x: f32, y: f32, z: f32) -> PlayerPose {
+    fn player_at(x: f64, y: f64, z: f64) -> PlayerPose {
         PlayerPose {
             position: WorldPosition::new(BrickCoordinate::ORIGIN, [x, y, z]),
             yaw: 0.0,
@@ -116,7 +116,7 @@ mod tests {
             level: LevelIndex::MAIN,
             pose: GridPose::new(
                 WorldPosition::new(BrickCoordinate::new(3, 1, 6), [4.0, 18.0, 8.0]),
-                Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0),
+                Orientation::from_yaw_pitch(std::f64::consts::FRAC_PI_2, 0.0),
             ),
         };
         let near_it = PlayerPose {

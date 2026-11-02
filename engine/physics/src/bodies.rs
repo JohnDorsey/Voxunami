@@ -6,7 +6,7 @@ use voxel_space::{
 };
 
 use crate::mass::BodyMass;
-use crate::real::{array, matrix, real, vector, world_position};
+use crate::real::{array, matrix, vector, world_position};
 use crate::terrain::{BrickHint, Collision, CollisionSource, build_brick};
 
 const EDGE: usize = BRICK_EDGE_LENGTH;
@@ -33,8 +33,8 @@ pub enum BodyKind {
 pub struct BodyState {
     pub position: WorldPosition,
     pub orientation: Orientation,
-    pub linear_velocity: [f32; 3],
-    pub angular_velocity: [f32; 3],
+    pub linear_velocity: [f64; 3],
+    pub angular_velocity: [f64; 3],
 }
 
 /// The farthest, in voxels, that the fastest point of a body is let move in one solver step.
@@ -46,11 +46,11 @@ const MOST_STEPS: u32 = 24;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BodySettings {
     /// How long one call to [`BodyWorld::step`] is, in seconds: a tick of the server.
-    pub time_step: f32,
+    pub time_step: f64,
     /// How many steps of the solver a call is cut into. More are steadier (a body resting on another does not jitter) and cost more.
     pub substeps: u32,
     /// The acceleration of gravity, in voxels per second per second.
-    pub gravity: [f32; 3],
+    pub gravity: [f64; 3],
 }
 
 impl Default for BodySettings {
@@ -103,8 +103,8 @@ struct Body {
 
 /// Rigid bodies made of voxels, and the terrain they hit, in one Rapier world.
 ///
-/// Rapier works in `f32`, so everything is in a *local frame*: a brick of the level is the origin of it, and positions are exact only
-/// within some tens of thousands of voxels of it ([`BodyWorld::recentre`] moves it). A body's voxels are in the body's own coordinates;
+/// Everything is in a *local frame*: a brick of the level is the origin of it, which keeps the numbers small and the positions exact to a part in 10^16 of their distance
+/// from it ([`BodyWorld::recentre`] moves it). A body's voxels are in the body's own coordinates;
 /// terrain is in the frame's. Everything is stepped on one thread in the order bodies were made, with Rapier's `enhanced-determinism`,
 /// so the same calls give the same bits on every machine.
 pub struct BodyWorld {
@@ -142,7 +142,7 @@ impl BodyWorld {
     /// An empty world whose frame has the corner of `origin` as its origin.
     pub fn new(origin: BrickCoordinate, settings: BodySettings) -> Self {
         let parameters = IntegrationParameters {
-            dt: real(settings.time_step) / Real::from(settings.substeps.max(1)),
+            dt: settings.time_step / Real::from(settings.substeps.max(1)),
             // No speed limit (the default is 400 metres a second). Past what `MOST_STEPS` can cut a tick for, a body may go through thin ground, and the
             // result is not promised to be the same on every machine; below it, it is.
             normalized_max_linear_velocity: Real::MAX,
@@ -182,8 +182,8 @@ impl BodyWorld {
     /// Where a position is in the frame, in voxels from its origin.
     fn local(&self, position: WorldPosition) -> Vector {
         let (brick, offset) = (position.brick(), position.offset());
-        let along = |brick: i128, origin: i128, offset: f32| {
-            ((brick - origin) * EDGE as i128) as Real + Real::from(offset)
+        let along = |brick: i128, origin: i128, offset: f64| {
+            ((brick - origin) * EDGE as i128) as Real + offset
         };
         Vector::new(
             along(brick.x(), self.origin.x(), offset[0]),
@@ -300,11 +300,7 @@ impl BodyWorld {
             .handle;
         let tensor = matrix(&mass.inertia);
         self.bodies[handle].set_additional_mass_properties(
-            MassProperties::with_inertia_matrix(
-                vector(mass.centre_of_mass),
-                real(mass.mass),
-                tensor,
-            ),
+            MassProperties::with_inertia_matrix(vector(mass.centre_of_mass), mass.mass, tensor),
             true,
         );
         Ok(())
@@ -495,7 +491,7 @@ impl BodyWorld {
     /// The bricks of the level, in the world, that a body's colliders come within `margin` voxels of, as they stand now (the box around the
     /// turned body, so a little more than it fills if it is turned), or `None` for a body with no blocks yet or one that is not there. It
     /// is what terrain a body needs colliders of, as far ahead as it can get in the time that is wanted.
-    pub fn bricks_near(&self, id: BodyId, margin: f32) -> Option<voxel_space::BrickBox> {
+    pub fn bricks_near(&self, id: BodyId, margin: f64) -> Option<voxel_space::BrickBox> {
         let (low, high) = self.bounds_of(id)?;
         Self::bricks_between(low, high, margin, self.origin)
     }
@@ -506,7 +502,7 @@ impl BodyWorld {
     pub fn bricks_near_in(
         &self,
         id: BodyId,
-        margin: f32,
+        margin: f64,
         frame: BodyId,
     ) -> Option<voxel_space::BrickBox> {
         let (low, high) = self.bounds_of(id)?;
@@ -544,13 +540,13 @@ impl BodyWorld {
     fn bricks_between(
         low: Vector,
         high: Vector,
-        margin: f32,
+        margin: f64,
         origin: BrickCoordinate,
     ) -> Option<voxel_space::BrickBox> {
         let brick = |value: Real, origin: i128| {
             origin.saturating_add((value / EDGE as Real).floor() as i128)
         };
-        let margin = Vector::splat(real(margin));
+        let margin = Vector::splat(margin);
         let (low, high) = (low - margin, high + margin);
         voxel_space::BrickBox::new(
             BrickCoordinate::new(
@@ -583,8 +579,8 @@ impl BodyWorld {
     pub fn apply_force(
         &mut self,
         id: BodyId,
-        force: [f32; 3],
-        at: Option<[f32; 3]>,
+        force: [f64; 3],
+        at: Option<[f64; 3]>,
     ) -> Result<(), BodyError> {
         let handle = self
             .by_id
@@ -605,7 +601,7 @@ impl BodyWorld {
 
     /// Turns a body with a torque (an axis scaled by voxel masses times voxels squared per second per second, in the world's axes) about its
     /// centre of mass, for the next [`BodyWorld::step`] only.
-    pub fn apply_torque(&mut self, id: BodyId, torque: [f32; 3]) -> Result<(), BodyError> {
+    pub fn apply_torque(&mut self, id: BodyId, torque: [f64; 3]) -> Result<(), BodyError> {
         let handle = self
             .by_id
             .get(&id)
@@ -618,7 +614,7 @@ impl BodyWorld {
     /// Pushes a body with a force for the next [`BodyWorld::step`] only, like [`BodyWorld::apply_force`] at its centre of mass, except that it
     /// does not wake a body that is asleep. It is for forces that are always there, such as gravity, which a body at rest has no need to be
     /// woken by: if something else wakes it, the force is on it again.
-    pub fn apply_steady_force(&mut self, id: BodyId, force: [f32; 3]) -> Result<(), BodyError> {
+    pub fn apply_steady_force(&mut self, id: BodyId, force: [f64; 3]) -> Result<(), BodyError> {
         let handle = self
             .by_id
             .get(&id)
@@ -633,7 +629,7 @@ impl BodyWorld {
     pub fn step(&mut self) {
         let gravity = vector(self.settings.gravity);
         let steps = self.steps_for_this_tick();
-        self.parameters.dt = real(self.settings.time_step) / Real::from(steps);
+        self.parameters.dt = self.settings.time_step / Real::from(steps);
         for _ in 0..steps {
             self.pipeline.step(
                 gravity,
@@ -684,7 +680,7 @@ impl BodyWorld {
             }
             fastest = fastest.max(speed);
         }
-        let needed = (fastest * real(self.settings.time_step) / MOST_A_STEP_MOVES).ceil();
+        let needed = (fastest * self.settings.time_step / MOST_A_STEP_MOVES).ceil();
         (needed as u32).clamp(base, MOST_STEPS.max(base))
     }
 
@@ -815,7 +811,7 @@ mod tests {
         }
     }
 
-    fn at(x: f32, y: f32, z: f32) -> WorldPosition {
+    fn at(x: f64, y: f64, z: f64) -> WorldPosition {
         WorldPosition::new(BrickCoordinate::ORIGIN, [x, y, z])
     }
 
@@ -871,7 +867,7 @@ mod tests {
     fn a_body_that_falls_faster_than_the_floor_is_thick_still_stops_on_it() {
         for thickness in [1, 3] {
             for size in [1, 4] {
-                for speed in [100.0f32, 250.0, 400.0] {
+                for speed in [100.0f64, 250.0, 400.0] {
                     let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, heavy_planet());
                     for x in -1..=1 {
                         for z in -1..=1 {
@@ -887,10 +883,10 @@ mod tests {
                     ship_of(&mut world, 1, &hull, state, BodyKind::Dynamic);
                     run(&mut world, 40);
                     let height = world.state(BodyId(1)).unwrap().position.offset()[1]
-                        + world.state(BodyId(1)).unwrap().position.brick().y() as f32 * 32.0;
+                        + world.state(BodyId(1)).unwrap().position.brick().y() as f64 * 32.0;
                     // On top of the floor: its corner is on the floor or, if it came to rest on another face, a cube's width above (not below the top).
                     assert!(
-                        (-0.2..=size as f32 + 0.2).contains(&height),
+                        (-0.2..=size as f64 + 0.2).contains(&height),
                         "a cube of {size} at {speed} on a floor of {thickness} ended at {height}"
                     );
                 }
@@ -918,7 +914,7 @@ mod tests {
     #[test]
     fn no_speed_is_clamped() {
         // Rapier clamps a body at 400 metres a second by default; a ship in free fall, with the ground far below, keeps any speed it is given.
-        for speed in [399.0f32, 401.0, 2_000.0, 20_000.0] {
+        for speed in [399.0f64, 401.0, 2_000.0, 20_000.0] {
             let mut world = BodyWorld::new(
                 BrickCoordinate::ORIGIN,
                 BodySettings {
@@ -952,13 +948,13 @@ mod tests {
         }
     }
 
-    fn height_of(world: &BodyWorld, id: u64) -> f32 {
+    fn height_of(world: &BodyWorld, id: u64) -> f64 {
         let state = world.state(BodyId(id)).unwrap();
         let (brick, offset) = (state.position.brick(), state.position.offset());
-        brick.y() as f32 * 32.0 + offset[1]
+        brick.y() as f64 * 32.0 + offset[1]
     }
 
-    fn speed_of(world: &BodyWorld, id: u64) -> f32 {
+    fn speed_of(world: &BodyWorld, id: u64) -> f64 {
         let [x, y, z] = world.state(BodyId(id)).unwrap().linear_velocity;
         (x * x + y * y + z * z).sqrt()
     }
@@ -1037,7 +1033,7 @@ mod tests {
                 BodyId(1),
                 BodyState {
                     position: at(40.0, 5.0, 36.0),
-                    orientation: Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0),
+                    orientation: Orientation::from_yaw_pitch(std::f64::consts::FRAC_PI_2, 0.0),
                     linear_velocity: [0.0; 3],
                     angular_velocity: [0.0; 3],
                 },
@@ -1128,7 +1124,7 @@ mod tests {
             .add_body(
                 BodyId(2),
                 BodyState {
-                    orientation: Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0),
+                    orientation: Orientation::from_yaw_pitch(std::f64::consts::FRAC_PI_2, 0.0),
                     ..resting_at(at(0.0, 0.0, 0.0))
                 },
                 BodyKind::Fixed,
@@ -1430,17 +1426,17 @@ mod tests {
         BodyWorld::new(BrickCoordinate::ORIGIN, heavy_planet())
     }
 
-    fn place_of(world: &BodyWorld, id: u64) -> [f32; 3] {
+    fn place_of(world: &BodyWorld, id: u64) -> [f64; 3] {
         let state = world.state(BodyId(id)).unwrap();
         let (brick, offset) = (state.position.brick(), state.position.offset());
         [
-            brick.x() as f32 * 32.0 + offset[0],
-            brick.y() as f32 * 32.0 + offset[1],
-            brick.z() as f32 * 32.0 + offset[2],
+            brick.x() as f64 * 32.0 + offset[0],
+            brick.y() as f64 * 32.0 + offset[1],
+            brick.z() as f64 * 32.0 + offset[2],
         ]
     }
 
-    fn moving(position: WorldPosition, linear: [f32; 3], angular: [f32; 3]) -> BodyState {
+    fn moving(position: WorldPosition, linear: [f64; 3], angular: [f64; 3]) -> BodyState {
         BodyState {
             position,
             orientation: Orientation::IDENTITY,
@@ -1758,7 +1754,7 @@ mod tests {
         let final_state = world.state(BodyId(1)).unwrap();
         let [x, y, z, w] = final_state.orientation.components();
         let turn = Rotation::from_xyzw(x, y, z, w);
-        let origin_height = f64::from(height_of(&world, 1));
+        let origin_height = height_of(&world, 1);
         let mut lowest = Real::MAX;
         for corner_x in [0.0, 4.0] {
             for corner_y in [0.0, 4.0] {
@@ -1915,6 +1911,10 @@ mod tests {
         // (Moved on purpose, 2026-11-01: 13_989_029_006_912_403_583 before. Rapier works in f64 now (`rapier3d-f64`, with `enhanced-determinism`), and a hash is of the bits of the numbers, so every one of them moved. Nothing else is claimed to be the same bit for bit. Control, in `docs/history/joint-probe.md`: the falling ship is the same to four places until its first hard
         // impact (25.6 metres a second, 0.43 of a metre a substep); the impact then resolves as the old f32 build resolves it with four times the substeps (about 6.2, -3.9, 7.1 metres a second after it, in both),
         // where the old f32 build with the usual three gave about 2.5, 5.0, 5.6. The same scene with 12 substeps agrees between the two to a fifth of a percent.)
-        assert_eq!(first.state_hash(), 17_811_401_868_764_439_420);
+        // (Moved on purpose, 2026-11-02: 17_811_401_868_764_439_420 before. The interface is `f64`, so the inputs are no longer rounded to `f32`: the time step 1/20, the yaw and pitch
+        // 0.7 and -0.4, and the mass, centre of mass and inertia of a hull (worked out in `f64` and rounded to `f32` before). Control: with those three put back to what the `f32` gave
+        // (the time step as `f64::from(1.0f32 / 20.0)`, the angles as `f64::from(0.7f32)` and `f64::from(-0.4f32)`, the three mass quantities rounded to `f32` and widened) and nothing
+        // else changed, the old value came back bit for bit; so the three roundings are the only thing that moved it.)
+        assert_eq!(first.state_hash(), 5_759_799_545_177_561_133);
     }
 }

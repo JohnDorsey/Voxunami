@@ -109,7 +109,7 @@ fn a_new_world_begins_on_a_morning_on_the_ground_of_the_planet_with_the_planet_i
     let distance = from_the_middle
         .iter()
         .map(|part| part * part)
-        .sum::<f32>()
+        .sum::<f64>()
         .sqrt();
     assert!(
         distance < 1.0,

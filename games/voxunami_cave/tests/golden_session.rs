@@ -349,8 +349,12 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// matters: what was built, broken and grown is what it was, and only the numbers the solver gives (the poses and speeds of ships and bodies in the stream) differ. The 600 bytes are not
 /// accounted for message by message; they are in the size of the messages that carry those numbers, and the arrangement test below, which runs the same session with the plugins listed in
 /// other orders, gives the same values as this one.
+/// Positions and angles are `f64` (2026-11-02; protocol 11, the sections that hold poses at version 4, the terrain at 3): the stream is 7,205,917 bytes where it was 7,203,550, 2,367 more (the offsets and
+/// angles are 4 and 8 bytes longer, and the numbers the solver gives are not the ones they were), and the saved world is different (the sections are the new versions). Control, as for the other
+/// two games' sessions but by the end state, because the solver's numbers are in this stream: the old build and this one printed every entity at the end of the script (the player, and the stack of
+/// stone they picked up and dropped): every coordinate is the same to the 9 decimals printed. Hashes before: 18_195_685_852_877_378_881 and 7_542_728_601_885_368_666.
 const PINNED: (u64, usize, u64) = (
-    18_195_685_852_877_378_881,
-    7_203_550,
-    7_542_728_601_885_368_666,
+    13_855_926_902_016_341_522,
+    7_205_917,
+    10_204_815_550_639_449_865,
 );

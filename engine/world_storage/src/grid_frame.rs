@@ -31,7 +31,7 @@ impl GridFrame {
         let (brick, local) = voxel.split();
         let centre = WorldPosition::try_new(
             brick,
-            [local.x(), local.y(), local.z()].map(|axis| f32::from(axis) + 0.5),
+            [local.x(), local.y(), local.z()].map(|axis| f64::from(axis) + 0.5),
         )?;
         match self {
             Self::Level(_) => Some(centre),

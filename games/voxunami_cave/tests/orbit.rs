@@ -43,10 +43,10 @@ fn the_planet(scene: &Scene) -> Planet {
         .grids()
         .get(ship_id(0))
         .expect("the planet is the first ship of a new world");
-    let mass = f64::from(planet.terrain.expect("it has terrain").mass);
+    let mass = planet.terrain.expect("it has terrain").mass;
     Planet {
-        gravitational_parameter: f64::from(settings.pull_strength) * mass,
-        softening: f64::from(settings.softening),
+        gravitational_parameter: settings.pull_strength * mass,
+        softening: settings.softening,
     }
 }
 
@@ -73,7 +73,7 @@ fn put_in_orbit(scene: &mut Scene, distance: f64, speed: f64) -> u64 {
     let number = 1;
     scene.run(move |world| {
         world
-            .set_grid_velocity(ship_id(number), [speed as f32, 0.0, 0.0], [0.0; 3])
+            .set_grid_velocity(ship_id(number), [speed, 0.0, 0.0], [0.0; 3])
             .unwrap();
     });
     number
@@ -98,7 +98,7 @@ fn orbit_of(scene: &Scene, number: u64, planet: &Planet) -> Orbit {
         .get(ship_id(number))
         .expect("the ship is there");
     let origin = voxunami_cave::aboard::in_voxels(ship.pose.position);
-    let middle = [0, 1, 2].map(|axis| origin[axis] + f64::from(ship.centre_of_mass[axis]));
+    let middle = [0, 1, 2].map(|axis| origin[axis] + ship.centre_of_mass[axis]);
     let velocity = ship.linear_velocity.map(f64::from);
     let distance = (middle[0] * middle[0] + middle[1] * middle[1] + middle[2] * middle[2]).sqrt();
     let speed_squared = velocity.iter().map(|part| part * part).sum::<f64>();

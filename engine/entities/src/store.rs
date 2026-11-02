@@ -202,11 +202,11 @@ impl EntityStore {
     }
 
     /// The entities of `grid` within `radius` voxels of `position`, in order of identifier.
-    pub fn near(&self, grid: GridId, position: WorldPosition, radius: f32) -> Vec<EntityId> {
+    pub fn near(&self, grid: GridId, position: WorldPosition, radius: f64) -> Vec<EntityId> {
         if !radius.is_finite() || radius < 0.0 {
             return Vec::new();
         }
-        let edge = BRICK_EDGE_LENGTH as f32;
+        let edge = BRICK_EDGE_LENGTH as f64;
         let offset = position.offset();
         let reach = |axis: usize| {
             (

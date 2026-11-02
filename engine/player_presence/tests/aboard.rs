@@ -121,7 +121,7 @@ fn second() -> LevelIndex {
     LevelIndex::new(1)
 }
 
-fn at(brick: [i128; 3], offset: [f32; 3]) -> WorldPosition {
+fn at(brick: [i128; 3], offset: [f64; 3]) -> WorldPosition {
     WorldPosition::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), offset)
 }
 
@@ -129,7 +129,7 @@ fn at(brick: [i128; 3], offset: [f32; 3]) -> WorldPosition {
 fn quarter_turned_ship() -> GridPose {
     GridPose::new(
         at([2, 0, 0], [1.0, 2.0, 3.0]),
-        Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0),
+        Orientation::from_yaw_pitch(std::f64::consts::FRAC_PI_2, 0.0),
     )
 }
 
@@ -308,10 +308,11 @@ fn a_player_aboard_a_ship_that_is_in_a_file_is_where_the_ship_was_when_it_was_pu
             .unwrap();
     });
     let moved = rig.presence().pose_of(rig.server.world(), PLAYER).unwrap();
-    assert_eq!(
-        moved.position.relative_to(before.position),
-        [0.0, 0.0, -1.0]
-    );
+    // (A quarter turn of a quaternion in `f64` leaves a residue of 2e-16 where the `f32` the pose was once rounded to the exact 0.)
+    let along = moved.position.relative_to(before.position);
+    for (found, wanted) in along.into_iter().zip([0.0, 0.0, -1.0]) {
+        assert!((found - wanted).abs() < 1.0e-12, "{along:?}");
+    }
 }
 
 #[test]

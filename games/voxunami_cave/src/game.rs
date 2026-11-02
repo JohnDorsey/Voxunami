@@ -99,7 +99,7 @@ pub fn light_scheme<C: Connection>(session: &CaveSession<C>) -> Option<LightSche
 
 /// The least mass, in kilograms, of a ship that pulls other things toward it: a moon, not a ship that someone built (a ship of a thousand tonnes, 10^6
 /// kilograms, pulls a player a metre from it by about two hundred-thousandths of a metre a second a second; this is ten million million times its mass).
-pub const PULLING_MASS: f32 = 1.0e19;
+pub const PULLING_MASS: f64 = 1.0e19;
 
 impl GameDefinition for Cave {
     type Content = CaveContent;
@@ -116,7 +116,7 @@ impl GameDefinition for Cave {
     }
 
     /// Space has no pull of its own.
-    fn level_gravity() -> Vec<(NamespacedId, [f32; 3])> {
+    fn level_gravity() -> Vec<(NamespacedId, [f64; 3])> {
         vec![(mini_cosmos_id(), [0.0; 3])]
     }
 
@@ -200,8 +200,8 @@ Window commands (start with a period): .ambient 0-255 sets how bright a face is 
         }
     }
 
-    fn reach() -> f32 {
-        REACH as f32
+    fn reach() -> f64 {
+        REACH
     }
 
     fn server_moves_players() -> bool {

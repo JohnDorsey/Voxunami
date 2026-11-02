@@ -60,8 +60,8 @@ pub fn rail_id() -> NamespacedId {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ShipFlight {
     pub pose: GridPose,
-    pub linear_velocity: [f32; 3],
-    pub angular_velocity: [f32; 3],
+    pub linear_velocity: [f64; 3],
+    pub angular_velocity: [f64; 3],
     pub held: bool,
     pub on_pilot_logout: PilotLogout,
 }
@@ -87,7 +87,7 @@ fn encode_flight(flight: &ShipFlight) -> Vec<u8> {
         .iter()
         .chain(&flight.angular_velocity)
     {
-        writer.write_u32(component.to_bits());
+        writer.write_u64(component.to_bits());
     }
     writer.write_u8(u8::from(flight.held));
     writer.write_u8(match flight.on_pilot_logout {
@@ -100,9 +100,9 @@ fn encode_flight(flight: &ShipFlight) -> Vec<u8> {
 fn decode_flight(payload: &[u8]) -> Result<ShipFlight, DecodeError> {
     let mut reader = ByteReader::new(payload);
     let pose = read_grid_pose(&mut reader)?;
-    let mut components = [0f32; 6];
+    let mut components = [0f64; 6];
     for component in &mut components {
-        *component = f32::from_bits(reader.read_u32()?);
+        *component = f64::from_bits(reader.read_u64()?);
         if !component.is_finite() {
             return Err(DecodeError::Invalid("a speed is not a number"));
         }
@@ -132,7 +132,7 @@ fn decode_flight(payload: &[u8]) -> Result<ShipFlight, DecodeError> {
 struct TerrainRecord {
     generator: NamespacedId,
     extent: BrickBox,
-    mass: f32,
+    mass: f64,
 }
 
 fn encode_terrain(generator: &NamespacedId, terrain: &GridTerrain) -> Vec<u8> {
@@ -141,7 +141,7 @@ fn encode_terrain(generator: &NamespacedId, terrain: &GridTerrain) -> Vec<u8> {
     for corner in [terrain.extent.min(), terrain.extent.max()] {
         write_brick_coordinate(&mut writer, corner);
     }
-    writer.write_u32(terrain.mass.to_bits());
+    writer.write_u64(terrain.mass.to_bits());
     writer.into_bytes()
 }
 
@@ -152,7 +152,7 @@ fn decode_terrain(payload: &[u8]) -> Result<TerrainRecord, DecodeError> {
         read_brick_coordinate(&mut reader)?,
         read_brick_coordinate(&mut reader)?,
     ];
-    let mass = f32::from_bits(reader.read_u32()?);
+    let mass = f64::from_bits(reader.read_u64()?);
     if !mass.is_finite() || mass < 0.0 {
         return Err(DecodeError::Invalid("a mass is not a weight"));
     }
@@ -262,6 +262,8 @@ impl ParsedShip {
                 section.version == sections::POSES_VERSION
             } else if section.identifier == rail_id() {
                 section.version == sections::RAIL_VERSION
+            } else if section.identifier == terrain_id() {
+                section.version == sections::TERRAIN_VERSION
             } else {
                 section.version == sections::SUPPORTED_VERSION
             };
@@ -584,6 +586,8 @@ impl ShipFormat {
                 sections::POSES_VERSION
             } else if identifier == rail_id() {
                 sections::RAIL_VERSION
+            } else if identifier == terrain_id() {
+                sections::TERRAIN_VERSION
             } else {
                 sections::SUPPORTED_VERSION
             },

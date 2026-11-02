@@ -56,7 +56,7 @@ with its numbers and what was found, is in `history/decision-diary.md`. Entries 
   or split, and cannot be held, pushed, piloted or told to vanish. A ship docked to a planet can be undocked (the side not on the ground leaves).
 - *Mine:* a planet weighs what its terrain declares (the pull at its surface fixes the mass, M = g R^2 / G) and has no body in `grid_bodies`; **a level's pull is
   the level's own** and **only a ship over `pull_mass_threshold` pulls** (Cave: 10^19 kg). Its body for a walker is fixed in the frame of its level with
-  colliders only near a free ship, from the stored brick or else the generator, and not at all farther than 4,096 bricks from the frame's origin (`f32`).
+  colliders only near a free ship, from the stored brick or else the generator, and not at all farther than 4,096 bricks from the frame's origin (a limit set when positions were `f32`, kept now that they are `f64`).
 - *Mine:* a planet is known from anywhere in its level, drawn in detail by the same view that draws a level, and its nodes are the generator's, not
   corrected by the server (an edit shows in the bricks near the viewer). A generator may give a solid core and a view leaves out cubes hidden behind it.
 - *Mine:* a new world is space first and the overworld second, with the planet made with it (2,100 bricks each way, held); the world the tests of the
@@ -84,7 +84,7 @@ with its numbers and what was found, is in `history/decision-diary.md`. Entries 
 
 **Coordinates and levels of detail**
 - A coordinate of more than 64 bits goes on the wire as a length-prefixed integer (a byte for the number of bytes, then the zigzag value); a number has one encoding (owner, 2026-10-27).
-- **Coordinates are 128 bits** (owner, 2026-10-27): `VoxelCoordinate` and `BrickCoordinate` are `i128` within +-2^120 voxels, `WorldPosition` an `i128` brick and an `f32` offset,
+- **Coordinates are 128 bits** (owner, 2026-10-27): `VoxelCoordinate` and `BrickCoordinate` are `i128` within +-2^120 voxels, `WorldPosition` an `i128` brick and an `f64` offset (an `f32` one until 2026-11-02),
   the octree keys `u128`, and the octree's root level 116. Saves: a clean break (readers of older versions were deleted; a section of another version is refused, or kept
   as it is if a game's). Terrain stays the same to the bit. **Speed is a requirement: any new per-voxel loop checks once whether the position is within 2^62 and then
   works in 64 bits** (the first version made terrain 2.2 times slower). Squares of distances can overflow `i128` across the range and are compared exactly after a check

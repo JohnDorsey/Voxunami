@@ -200,7 +200,7 @@ impl Rig {
         connection: Box<dyn Connection>,
         who: u8,
         position: [f64; 3],
-        pitch: f32,
+        pitch: f64,
     ) -> Player {
         let server = &mut self.server;
         Session::<_, ExampleGame>::connect(
@@ -222,7 +222,7 @@ impl Rig {
         connection: Box<dyn Connection>,
         who: u8,
         position: [f64; 3],
-        pitch: f32,
+        pitch: f64,
         detail: CoarseDetail,
     ) -> Player {
         let mut player = self.join(connection, who, position, pitch);
@@ -599,9 +599,9 @@ fn camera_in_the_planet(rig: &Rig, player: &Player) -> [f64; 3] {
     let brick = local.brick();
     let offset = local.offset();
     [
-        brick.x() as f64 * 32.0 + f64::from(offset[0]),
-        brick.y() as f64 * 32.0 + f64::from(offset[1]),
-        brick.z() as f64 * 32.0 + f64::from(offset[2]),
+        brick.x() as f64 * 32.0 + offset[0],
+        brick.y() as f64 * 32.0 + offset[1],
+        brick.z() as f64 * 32.0 + offset[2],
     ]
 }
 

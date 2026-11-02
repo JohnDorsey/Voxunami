@@ -10,7 +10,7 @@ mine and marked; what I checked in the code is marked **[code]**, what I believe
   Only root grids exist: `ServerWorld::grid` answers `NoSuchGrid` for any id that is not a level's root (`engine/server/src/grid_view.rs`).
   Ids from `1 << 32` up are reserved for allocated grids; the counter is not saved because nothing allocates.
 - **[code]** `EntityPose` is already a frame and a local pose (`grid`, `position`, `orientation`), and the entity store is keyed by grid.
-  Orientation is a full quaternion, so a turned frame needs no new type. `WorldPosition` is an exact integer brick plus an `f32` offset.
+  Orientation is a full quaternion, so a turned frame needs no new type. `WorldPosition` is an exact integer brick plus an `f32` offset (an `f64` one since 2026-11-02).
 - **[code]** The renderer places each brick by a camera-relative translation computed exactly from integers, and draws it axis-aligned.
   There is no rotation and no per-grid matrix (`placements` in `voxel_renderer.rs`). Picking (`world_view::ray`) is a voxel walk in world
   space. A client's break or place message names a voxel of the level, not of a grid.

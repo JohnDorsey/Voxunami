@@ -16,7 +16,7 @@ use voxel_space::{GridId, GridPose, LevelIndex};
 use world_storage::{MovingGrid, ParkedGrid, ShipFiles};
 
 /// Where a returning pilot says they start: nowhere near the ship, so that what puts them back aboard it is the world's memory of them.
-const ELSEWHERE: [f64; 3] = [200.0, FLOOR as f64 + 30.0, 200.0];
+const ELSEWHERE: [f64; 3] = [200.0, FLOOR + 30.0, 200.0];
 
 const PILOT_REPLY: &str = "you pilot ship 0: W A S D fly it the way you look, space and shift go up and down, control goes faster; /ship pilot again lets go";
 const VANISH_ON: &str =
@@ -70,7 +70,7 @@ fn deck_on_the_floor() -> (Scene, Player) {
 fn walker_on_the_floor_deck(scene: &mut Scene, x: f64) -> Player {
     let mut walker = scene
         .rig
-        .join_walking([x, f64::from(FLOOR) + 2.0 + 8.0, 24.0], 0.0, 0.0);
+        .join_walking([x, FLOOR + 2.0 + 8.0, 24.0], 0.0, 0.0);
     scene.rig.settle(&mut [&mut walker]);
     tick_and_follow(scene, &mut walker, 60);
     walker

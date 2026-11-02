@@ -184,7 +184,7 @@ impl CaveContent {
                     .expect("a constant identifier is valid"),
                 include_str!("../data/bodies/planet.json"),
             )],
-            pull_strength: f64::from(crate::game::Cave::gravity().pull_strength),
+            pull_strength: crate::game::Cave::gravity().pull_strength,
             default_generator: rolling_hills_generator_identifier(),
             assignment_cube_level: ASSIGNMENT_CUBE_LEVEL,
             ambient_light: AMBIENT_LIGHT,

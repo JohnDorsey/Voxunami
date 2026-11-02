@@ -82,8 +82,8 @@ pub trait GameContent: Debug + Send {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CameraStart {
     pub position: [f64; 3],
-    pub yaw_degrees: f32,
-    pub pitch_degrees: f32,
+    pub yaw_degrees: f64,
+    pub pitch_degrees: f64,
 }
 
 /// How a game draws terrain that is far away: as coarse nodes (`docs/specs/lod-spec.md`), which the client makes from the terrain generators and the server corrects where
@@ -122,7 +122,7 @@ pub trait GameDefinition: Sized + 'static {
     fn default_seed() -> u64;
     fn default_camera() -> CameraStart;
     /// How far, in voxels, the crosshair reaches.
-    fn reach() -> f32;
+    fn reach() -> f64;
 
     fn new_content() -> Self::Content;
 
@@ -137,7 +137,7 @@ pub trait GameDefinition: Sized + 'static {
     }
 
     /// The levels whose own pull is not the base of [`GameDefinition::gravity`], by identifier (a level in space has none). A level a world does not have is ignored.
-    fn level_gravity() -> Vec<(NamespacedId, [f32; 3])> {
+    fn level_gravity() -> Vec<(NamespacedId, [f64; 3])> {
         Vec::new()
     }
 

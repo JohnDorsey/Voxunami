@@ -45,13 +45,15 @@ fn cave_messages_have_their_pinned_bytes() {
         (
             "a spawn",
             Spawn(pose).encode(),
-            // (Protocol 9: a coordinate is a length and the bytes of its zigzag value: the brick (3, -2, 7) is 01 06, 01 03, 01 0e.)
-            "01060103010e0000c03f85ebff41000000000000803e000080bf",
+            // (Protocol 9: a coordinate is a length and the bytes of its zigzag value: the brick (3, -2, 7) is 01 06, 01 03, 01 0e. Protocol 11: the offset and the angles are `f64`, as in
+            // the presence messages, which the same numbers pin in `player_presence`'s `wire_format.rs`.)
+            "01060103010e000000000000f83f3d0ad7a370fd3f400000000000000000000000000000d03f000000000000f0bf",
         ),
         (
             "a movement request",
             request.encode(),
-            "01ff0001000020c00000403f",
+            // (Protocol 11: the two angles are `f64`: -2.5 was the `f32` 000020c0 and is now 00000000000004c0, and 0.75 was 0000403f and is now 000000000000e83f.)
+            "01ff000100000000000004c0000000000000e83f",
         ),
         (
             "a block to set",

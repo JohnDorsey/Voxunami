@@ -32,11 +32,11 @@ fn ship_pose(scene: &Scene, number: u64) -> GridPose {
         .pose
 }
 
-fn height_of(pose: GridPose) -> f32 {
-    pose.position.brick().y() as f32 * 32.0 + pose.position.offset()[1]
+fn height_of(pose: GridPose) -> f64 {
+    pose.position.brick().y() as f64 * 32.0 + pose.position.offset()[1]
 }
 
-fn velocity_of(scene: &Scene, number: u64) -> [f32; 3] {
+fn velocity_of(scene: &Scene, number: u64) -> [f64; 3] {
     scene
         .rig
         .server
@@ -73,7 +73,7 @@ fn ships_fall_at_the_pull_of_cave_five_metres_a_second_a_second() {
 fn a_ship_falls_onto_the_ground_rests_on_it_and_the_player_sees_it_fall() {
     let mut scene = Scene::new();
     flat_floor(&mut scene);
-    let mut player = scene.rig.join([16.5, FLOOR as f64 + 14.0, 40.5], 0.0, 0.0);
+    let mut player = scene.rig.join([16.5, FLOOR + 14.0, 40.5], 0.0, 0.0);
     scene.rig.settle(&mut [&mut player]);
     make_a_cube(&mut scene, 4, pose_at(14.0, FLOOR + 10.0, 14.0));
     let edited_bricks = scene.rig.server.world().main().overrides.brick_count();
@@ -283,7 +283,7 @@ fn a_held_ship_keeps_a_turn_that_is_not_an_f32_to_the_bit_and_a_ship_the_solver_
     let mut scene = Scene::new();
     heavy_planet(&mut scene);
     flat_floor(&mut scene);
-    let turned = |x: f32| GridPose::new(pose_at(x, FLOOR + 20.0, 14.0).position, turn);
+    let turned = |x: f64| GridPose::new(pose_at(x, FLOOR + 20.0, 14.0).position, turn);
     make_a_cube_that_may_be_held(&mut scene, 3, turned(14.0), true);
     make_a_cube_that_may_be_held(&mut scene, 3, turned(40.0), false);
     scene.ticks(60);
@@ -369,7 +369,7 @@ fn flames_are_not_in_the_way_of_a_ship() {
 }
 
 /// Space: no gravity of the level, and a body of at least a million kilograms pulls at a strength that shows in a few ticks.
-fn pulling_space(threshold: Option<f32>) -> GravitySettings {
+fn pulling_space(threshold: Option<f64>) -> GravitySettings {
     GravitySettings {
         base: [0.0; 3],
         pull_strength: 1e-3,
@@ -381,7 +381,7 @@ fn pulling_space(threshold: Option<f32>) -> GravitySettings {
 #[test]
 fn a_ship_that_weighs_enough_pulls_the_ships_near_it_toward_its_centre_and_one_that_does_not_pulls_nothing()
  {
-    let pulled = |threshold: Option<f32>| {
+    let pulled = |threshold: Option<f64>| {
         let mut scene = Scene::new();
         scene.run(move |world| world.set_gravity_settings(pulling_space(threshold)));
         // A cube of 16 voxels along an edge: 4,096 blocks of 1,000 kilograms, held; and a small one 30 voxels from it.
@@ -394,7 +394,7 @@ fn a_ship_that_weighs_enough_pulls_the_ships_near_it_toward_its_centre_and_one_t
     // Toward the big one's centre, (208, 408, 8), from the small one's, (173, 403, 3): a distance of 35.7, an acceleration of
     // G m / (d^2 + 1) = 1e-3 * 4.096e6 / 1275 = 3.2 for eleven ticks of a twentieth of a second (the tick that made the ship is one). The pull
     // is at the centre of mass, not at the corner a ship is placed by: the two are 5 voxels apart.
-    let toward = [35.0f32, 5.0, 5.0];
+    let toward = [35.0f64, 5.0, 5.0];
     let distance = (toward[0] * toward[0] + toward[1] * toward[1] + toward[2] * toward[2]).sqrt();
     let acceleration = 1e-3 * 4.096e6 / (distance * distance + 1.0);
     let seconds = 0.55;
@@ -479,11 +479,11 @@ fn hash_of_ships(scene: &Scene) -> u64 {
         }
         for value in offset
             .into_iter()
-            .chain(ship.pose.orientation.components_single())
+            .chain(ship.pose.orientation.components())
             .chain(ship.linear_velocity)
             .chain(ship.angular_velocity)
         {
-            feed(u64::from(value.to_bits()));
+            feed(value.to_bits());
         }
     }
     state
@@ -504,11 +504,8 @@ fn hash_of_poses(scene: &Scene) -> u64 {
         for value in [brick.x(), brick.y(), brick.z()] {
             feed(value as u64);
         }
-        for value in offset
-            .into_iter()
-            .chain(ship.pose.orientation.components_single())
-        {
-            feed(u64::from(value.to_bits()));
+        for value in offset.into_iter().chain(ship.pose.orientation.components()) {
+            feed(value.to_bits());
         }
     }
     state
@@ -524,7 +521,11 @@ fn the_poses_of_the_ships_are_the_same_whatever_is_kept_of_their_speeds() {
     // the spinning ships of this scene do for a few ticks: 4_233_839_071_203_554_194 before.)
     // (And in Phase 38a: 15_101_816_868_498_766_766 before. Orientations are f64 (Phase 38a, 2026-10-23): a yaw and a pitch are turned into a quaternion in f64 and rounded once to the f32 the solver takes, which is not always the f32 the old arithmetic in f32 gave, to the last bit. Control: with `from_yaw_pitch` put back to the f32 arithmetic and nothing else changed, the old value came back; so this is the only thing that moved it. The hash is of the orientation rounded to f32, so this is the only change.)
     // (And on 2026-11-01: 5_664_689_377_588_003_914 before. Rapier works in f64 now (`rapier3d-f64`, with `enhanced-determinism`; owner, 2026-11-01), and these hashes are of the bits of numbers the solver gives, so they moved. The tests of behaviour in the same file pass as they were; the physics crate's own pinned runs were taken on Windows and are the same on Linux.)
-    assert_eq!(hash_of_poses(&busy_scene()), 1_543_824_201_772_118_877);
+    // (And on 2026-11-02: 1_543_824_201_772_118_877 before. Positions, speeds and angles are `f64` everywhere that is physics (owner, 2026-11-02); the hash is of the bits of poses that have an `f64` offset now.
+    // Control: the old build and this one printed the position and both speeds of each of the three ships of this scene in voxels, with the same inputs: the largest difference in any coordinate is
+    // 1.3e-5 for the ship that falls clear and 2.2e-3 and 9.0e-3 for the two that slide and spin on the ground, which is as far as that kind of scene moves with a change of this size (the note of
+    // Phase 32h above found 0.003 and 0.004 from a change of which terrain the solver sees).)
+    assert_eq!(hash_of_poses(&busy_scene()), 16_099_571_271_623_696_968);
 }
 
 #[test]
@@ -537,7 +538,8 @@ fn the_same_ships_move_the_same_bits_every_time_and_on_every_machine() {
     // (And in Phase 32j, with the steps of a fast tick: 8_675_827_597_625_099_639 before; see the test of the poses.)
     // (And in Phase 38a: 8_817_648_817_650_209_632 before; see the test of the poses.)
     // (And on 2026-11-01: 15_605_515_214_656_621_284 before; see the test of the poses.)
-    assert_eq!(hash_of_ships(&first), 17_869_319_792_822_264_929);
+    // (And on 2026-11-02: 17_869_319_792_822_264_929 before; see the test of the poses.)
+    assert_eq!(hash_of_ships(&first), 13_859_437_887_424_448_532);
 }
 
 /// A cube of 4 let go over the natural ground (not the flat floor of the other tests: it is what a player has), `height` voxels above where
@@ -573,7 +575,7 @@ fn bricks_generated_each_tick_by_a_block_of_ship_falling_to_natural_ground(
     // (The ground at x = 16, z = 16 is 102 high, in the world of the seed of these tests.)
     make_ship(
         &mut scene,
-        pose_at(14.0, 102.0 + height as f32, 14.0),
+        pose_at(14.0, 102.0 + height as f64, 14.0),
         false,
         size,
         |_| true,
@@ -609,7 +611,7 @@ fn a_ship_that_falls_a_long_way_has_the_ground_ready_for_it_and_stops_on_it() {
     heavy_planet(&mut scene);
     flat_floor(&mut scene);
     make_a_cube(&mut scene, 4, pose_at(14.0, FLOOR + 300.0, 14.0));
-    let mut fastest = 0.0f32;
+    let mut fastest = 0.0f64;
     for _ in 0..250 {
         scene.ticks(1);
         fastest = fastest.max(-velocity_of(&scene, 0)[1]);
@@ -631,7 +633,7 @@ fn a_ship_that_falls_faster_than_the_floor_is_thick_stops_on_it() {
     heavy_planet(&mut scene);
     flat_floor(&mut scene);
     make_a_cube(&mut scene, 4, pose_at(14.0, FLOOR + 1000.0, 14.0));
-    let mut fastest = 0.0f32;
+    let mut fastest = 0.0f64;
     for _ in 0..400 {
         scene.ticks(1);
         fastest = fastest.max(-velocity_of(&scene, 0)[1]);

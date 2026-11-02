@@ -53,7 +53,7 @@ fn kinds() -> EntityKinds {
     kinds
 }
 
-fn pose(level: u32, brick: [i128; 3], offset: [f32; 3]) -> EntityPose {
+fn pose(level: u32, brick: [i128; 3], offset: [f64; 3]) -> EntityPose {
     EntityPose::new(
         GridId::root(LevelIndex::new(level)),
         WorldPosition::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), offset),
@@ -384,7 +384,7 @@ fn make_ship(world: &mut WorldData, pose: GridPose) -> GridId {
 fn someone_aboard_a_ship_is_saved_in_the_frame_of_the_ship_with_the_place_it_has_in_the_world() {
     let game = Game::new(&ALL_PLUGINS);
     let mut world = world_with_entities(&game);
-    let quarter = std::f32::consts::FRAC_PI_2;
+    let quarter = std::f64::consts::FRAC_PI_2;
     let ship_pose = GridPose::new(
         WorldPosition::new(BrickCoordinate::new(2, 0, 0), [1.0, 2.0, 3.0]),
         Orientation::from_yaw_pitch(quarter, 0.0),

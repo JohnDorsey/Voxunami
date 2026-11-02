@@ -80,7 +80,7 @@ fn wisp_pose(start: i128, step: u64) -> EntityPose {
         GridId::MAIN,
         WorldPosition::new(
             BrickCoordinate::new(start + (step * 3 / 32) as i128, 0, 0),
-            [(step * 3 % 32) as f32, 5.0, 5.0],
+            [(step * 3 % 32) as f64, 5.0, 5.0],
         ),
         Orientation::IDENTITY,
     )
@@ -92,7 +92,7 @@ pub fn rider_pose(ship: GridId, count: u64) -> EntityPose {
         ship,
         WorldPosition::new(
             BrickCoordinate::new(0, 0, 0),
-            [2.0 + (count % 7) as f32, 3.0, 2.0],
+            [2.0 + (count % 7) as f64, 3.0, 2.0],
         ),
         Orientation::from_yaw_pitch(0.3, 0.0),
     )
@@ -112,11 +112,11 @@ fn ship_at_tick(count: u64, world: &mut ServerWorld, marble: u32, glass: u32) {
         let along = count as i128 - 8;
         GridPose::new(
             WorldPosition::new(BrickCoordinate::new(0, 0, 0), [0.0, 4.0, 0.0]).translated([
-                along as f32,
+                along as f64,
                 0.0,
                 0.0,
             ]),
-            Orientation::from_yaw_pitch(0.1 * along as f32, 0.0),
+            Orientation::from_yaw_pitch(0.1 * along as f64, 0.0),
         )
     };
     match count {

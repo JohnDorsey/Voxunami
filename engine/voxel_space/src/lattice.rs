@@ -449,7 +449,7 @@ mod tests {
             assert_eq!(found, rotation);
             assert!((closeness - 1.0).abs() < 1e-6, "{closeness}");
         }
-        let tilted = Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2 + 0.05, 0.02);
+        let tilted = Orientation::from_yaw_pitch(std::f64::consts::FRAC_PI_2 + 0.05, 0.02);
         let (found, closeness) = LatticeRotation::nearest(tilted);
         assert_eq!(found.apply([0, 0, 1]), [1, 0, 0]);
         assert!(closeness > 0.999 && closeness < 1.0, "{closeness}");

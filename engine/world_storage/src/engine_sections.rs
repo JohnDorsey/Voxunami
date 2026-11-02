@@ -57,9 +57,13 @@ use voxel_space::{BrickBox, EntityPose, GridId, GridPose, LatticeRotation, Latti
 /// override bricks and the recipes) that this program writes and reads: 2, in which a coordinate in them is three wide integers.
 pub const SUPPORTED_VERSION: u32 = 2;
 
-/// The version of the sections that hold poses (`engine:entities`, `engine:grids` and a ship file's flight) that this program writes and reads: 3, in which a
-/// coordinate is three wide integers (2 had `f64` orientations; 1 had `f32`).
-pub const POSES_VERSION: u32 = 3;
+/// The version of the sections that hold poses (`engine:entities`, `engine:grids` and a ship file's flight) that this program writes and reads: 4, in which the offset of a
+/// position in its brick and the speeds of a ship are `f64` (3 had them `f32`, with a coordinate of three wide integers; 2 had `f64` orientations; 1 had `f32`).
+pub const POSES_VERSION: u32 = 4;
+
+/// The version of a ship file's `engine:grid_terrain` that this program writes and reads: 3, in which the mass is an `f64` (2 had it an `f32`; it was written at the version of
+/// the plain sections, [`SUPPORTED_VERSION`], then).
+pub const TERRAIN_VERSION: u32 = 3;
 
 /// The version of a ship file's `engine:rail` that this program writes and reads: 2, in which every orbit has a ratio (1 - e) and a periapsis after its phase (1 was circles
 /// only, and is not read: there is no upgrade, so when the first release makes this the first version the numbering can start again).

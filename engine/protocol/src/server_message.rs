@@ -851,11 +851,11 @@ mod tests {
             ]
         );
         let mut changed = vec![14, 1, 0x85, 0x80, 0x80, 0x80, 0x10];
-        // The brick, then the offset as the bits of 32-bit floats and the orientation as the bits of 64-bit floats (since version 7).
+        // The brick, then the offset and the orientation as the bits of 64-bit floats (the orientation since version 7, the offset since 11).
         changed.extend([0, 0, 0]);
-        changed.extend(1.0f32.to_bits().to_le_bytes());
-        changed.extend(2.0f32.to_bits().to_le_bytes());
-        changed.extend(3.0f32.to_bits().to_le_bytes());
+        changed.extend(1.0f64.to_bits().to_le_bytes());
+        changed.extend(2.0f64.to_bits().to_le_bytes());
+        changed.extend(3.0f64.to_bits().to_le_bytes());
         for component in [0.0f64, 0.0, 0.0, 1.0] {
             changed.extend(component.to_bits().to_le_bytes());
         }

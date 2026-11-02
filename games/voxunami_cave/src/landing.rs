@@ -7,8 +7,8 @@ use voxel_space::{
 };
 
 /// How far over the ground, in voxels, the eyes of a player standing are (`physics::CharacterSettings::eye_height`), and a little more so that the body is not put
-/// in the ground by the rounding of an `f32`.
-pub const EYES_OVER_THE_GROUND: f32 = 1.62 + 0.02;
+/// in the ground (the little was set for the rounding of an `f32` position at the surface of a planet; an `f64` rounds 10^8 times less and the margin is kept as it was).
+pub const EYES_OVER_THE_GROUND: f64 = 1.62 + 0.02;
 
 /// The place of the eyes of a player standing on the ground at the top of the first planet in `level` (the highest of the voxels of the column of the planet's
 /// +y axis that are not air, with what has been dug or built there counted), in the world's axes; `None` if the level has no planet, or its column is air all
@@ -40,7 +40,7 @@ pub fn on_a_planet(
                 Ok(block) if block != air => {
                     // The middle of the voxel column, and the eyes over its top.
                     let (above, local) = VoxelCoordinate::try_new(0, y + 1, 0).ok()?.split();
-                    let eyes = WorldPosition::new(above, [0.5, f32::from(local.y()), 0.5])
+                    let eyes = WorldPosition::new(above, [0.5, f64::from(local.y()), 0.5])
                         .translated([0.0, EYES_OVER_THE_GROUND, 0.0]);
                     return planet.pose.local_to_world(eyes);
                 }

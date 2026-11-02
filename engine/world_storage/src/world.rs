@@ -354,10 +354,7 @@ impl WorldData {
             let (centre, centre_velocity) = match rail.orbit.map(|orbit| orbit.around) {
                 Some(Centre::Point(point)) => (Some(Centre::Point(point)), [0.0; 3]),
                 Some(Centre::Grid(parent)) => match self.grids.get(parent) {
-                    Some(parent_ship) => (
-                        Some(Centre::Grid(parent)),
-                        parent_ship.linear_velocity.map(f64::from),
-                    ),
+                    Some(parent_ship) => (Some(Centre::Grid(parent)), parent_ship.linear_velocity),
                     None => continue,
                 },
                 None => (None, [0.0; 3]),
@@ -395,8 +392,8 @@ impl WorldData {
             if let Some(orientation) = state.orientation {
                 ship.pose.orientation = orientation;
             }
-            ship.linear_velocity = state.velocity.map(|component| component as f32);
-            ship.angular_velocity = state.angular_velocity.map(|component| component as f32);
+            ship.linear_velocity = state.velocity;
+            ship.angular_velocity = state.angular_velocity;
         }
         not_placed
     }

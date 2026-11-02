@@ -320,7 +320,7 @@ impl Rig {
     /// The player reports being this many voxels along x from the origin (and a little way up and along z), and a tick passes.
     pub fn player_at(&mut self, x: f64) {
         let brick = (x / 32.0).floor() as i128;
-        let offset = (x - (brick * 32) as f64) as f32;
+        let offset = x - (brick * 32) as f64;
         self.connection
             .send(
                 ClientMessage::GameMessage {

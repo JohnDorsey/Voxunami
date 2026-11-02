@@ -11,14 +11,14 @@ use crate::arena::{ARENA_EDGE, Cell};
 use crate::round::Eel;
 
 /// The middle of a cell, moved by `offset`.
-fn position_of(cell: Cell, offset: [f32; 3]) -> WorldPosition {
+fn position_of(cell: Cell, offset: [f64; 3]) -> WorldPosition {
     let (brick, local) = VoxelCoordinate::new(cell[0], cell[1], cell[2]).split();
     WorldPosition::new(
         brick,
         [
-            f32::from(local.x()) + 0.5,
-            f32::from(local.y()) + 0.5,
-            f32::from(local.z()) + 0.5,
+            f64::from(local.x()) + 0.5,
+            f64::from(local.y()) + 0.5,
+            f64::from(local.z()) + 0.5,
         ],
     )
     .translated(offset)
@@ -26,12 +26,12 @@ fn position_of(cell: Cell, offset: [f32; 3]) -> WorldPosition {
 
 /// The camera of a player whose eel is `eel`, which has moved `fraction` (from 0 to just under 1)
 /// of the way to its next cell. A dead eel does not move.
-pub fn eel_pose(eel: &Eel, fraction: f32) -> PlayerPose {
+pub fn eel_pose(eel: &Eel, fraction: f64) -> PlayerPose {
     let orientation = eel.orientation();
     let advance = if eel.is_alive() { fraction } else { 0.0 };
     let heading = orientation.heading().offset();
     let behind = orientation.view_offset();
-    let offset = std::array::from_fn(|axis| behind[axis] + heading[axis] as f32 * advance);
+    let offset = std::array::from_fn(|axis| behind[axis] + heading[axis] as f64 * advance);
     PlayerPose {
         position: position_of(eel.head(), offset),
         yaw: orientation.view_yaw(),
@@ -44,7 +44,7 @@ pub fn spectator_pose() -> PlayerPose {
     let corner = ARENA_EDGE - 4;
     PlayerPose {
         position: position_of([3, corner, 3], [0.0; 3]),
-        yaw: -3.0 * std::f32::consts::FRAC_PI_4,
+        yaw: -3.0 * std::f64::consts::FRAC_PI_4,
         pitch: -0.45,
     }
 }
@@ -68,10 +68,10 @@ mod tests {
         fn clear_inside(&mut self) {}
     }
 
-    fn voxels_of(position: WorldPosition) -> [f32; 3] {
+    fn voxels_of(position: WorldPosition) -> [f64; 3] {
         let brick = position.brick();
         std::array::from_fn(|axis| {
-            [brick.x(), brick.y(), brick.z()][axis] as f32 * 32.0 + position.offset()[axis]
+            [brick.x(), brick.y(), brick.z()][axis] as f64 * 32.0 + position.offset()[axis]
         })
     }
 
@@ -89,18 +89,18 @@ mod tests {
         assert_eq!(
             at,
             [
-                head[0] as f32 + 0.5,
-                head[1] as f32 + 0.5 + 2.5,
-                head[2] as f32 + 0.5 - 6.0
+                head[0] as f64 + 0.5,
+                head[1] as f64 + 0.5 + 2.5,
+                head[2] as f64 + 0.5 - 6.0
             ]
         );
         assert!(
-            (pose.yaw - std::f32::consts::PI).abs() < 1e-6,
+            (pose.yaw - std::f64::consts::PI).abs() < 1e-6,
             "looking toward +z"
         );
         assert!(pose.pitch < 0.0);
         // A third of the way to the next cell is a third of a cell on.
-        let later = voxels_of(eel_pose(eel, 1.0 / STEP_TICKS as f32).position);
+        let later = voxels_of(eel_pose(eel, 1.0 / STEP_TICKS as f64).position);
         assert!((later[2] - at[2] - 1.0 / 3.0).abs() < 1e-5);
         assert_eq!((later[0], later[1]), (at[0], at[1]));
     }
@@ -126,7 +126,7 @@ mod tests {
         let pose = spectator_pose();
         let at = voxels_of(pose.position);
         assert!(
-            at.iter().all(|&c| (0.0..ARENA_EDGE as f32).contains(&c)),
+            at.iter().all(|&c| (0.0..ARENA_EDGE as f64).contains(&c)),
             "{at:?}"
         );
         assert!(pose.pitch < 0.0 && pose.yaw < 0.0);

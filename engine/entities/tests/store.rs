@@ -67,7 +67,7 @@ fn kinds() -> EntityKinds {
     kinds
 }
 
-fn pose_at(level: u32, brick: [i128; 3], offset: [f32; 3]) -> EntityPose {
+fn pose_at(level: u32, brick: [i128; 3], offset: [f64; 3]) -> EntityPose {
     EntityPose::new(
         GridId::root(LevelIndex::new(level)),
         WorldPosition::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), offset),
@@ -137,7 +137,7 @@ fn what_the_kind_does_not_declare_is_refused_naming_both() {
 }
 
 /// A pose in the frame of a ship (an allocated grid), at a brick and an offset of its own coordinates.
-fn pose_aboard(ship: GridId, brick: [i128; 3], offset: [f32; 3]) -> EntityPose {
+fn pose_aboard(ship: GridId, brick: [i128; 3], offset: [f64; 3]) -> EntityPose {
     EntityPose::new(
         ship,
         WorldPosition::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), offset),
@@ -276,7 +276,7 @@ fn near_finds_what_is_in_reach_in_that_grid_in_order_of_id() {
     assert_eq!(store.near(GridId::MAIN, centre, 2.0), [here, close]);
     assert_eq!(store.near(GridId::MAIN, centre, 1.99), [here]);
     assert!(store.near(GridId::MAIN, centre, -1.0).is_empty());
-    assert!(store.near(GridId::MAIN, centre, f32::NAN).is_empty());
+    assert!(store.near(GridId::MAIN, centre, f64::NAN).is_empty());
 }
 
 #[test]
@@ -381,11 +381,11 @@ proptest! {
     #[test]
     fn near_is_exactly_the_entities_asked_one_by_one(
         placed in proptest::collection::vec(
-            (0u32..2, -2i128..3, -2i128..3, -2i128..3, 0.0f32..32.0, 0.0f32..32.0, 0.0f32..32.0),
+            (0u32..2, -2i128..3, -2i128..3, -2i128..3, 0.0f64..32.0, 0.0f64..32.0, 0.0f64..32.0),
             0..40,
         ),
-        centre in (-2i128..3, -2i128..3, -2i128..3, 0.0f32..32.0, 0.0f32..32.0, 0.0f32..32.0),
-        radius in 0.0f32..90.0,
+        centre in (-2i128..3, -2i128..3, -2i128..3, 0.0f64..32.0, 0.0f64..32.0, 0.0f64..32.0),
+        radius in 0.0f64..90.0,
         grid in 0u32..2,
     ) {
         let mut store = EntityStore::new();

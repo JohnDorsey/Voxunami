@@ -150,8 +150,8 @@ pub struct PlayOptions {
     pub packs: Option<PathBuf>,
     pub autosave_seconds: Option<f32>,
     pub camera: [f64; 3],
-    pub yaw_degrees: f32,
-    pub pitch_degrees: f32,
+    pub yaw_degrees: f64,
+    pub pitch_degrees: f64,
     pub benchmark: bool,
 }
 

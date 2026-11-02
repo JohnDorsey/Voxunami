@@ -16,11 +16,11 @@ per section: identifier | section version (varint) | payload length (varint)
 Sections have distinct identifiers. The checksum covers the identifier and version as well as the payload, so any
 single damaged byte anywhere in a section is detected. Unknown sections are carried along untouched.
 
-## Engine sections (all version 1, except `engine:generators`, which is version 2, and the sections that hold poses, which are version 2)
+## Engine sections (all version 1, except `engine:generators`, which is version 2, and the sections that hold poses, which are version 4)
 
 **Poses (2026-10-23, Phase 38a).** An orientation is four `f64` (it was four `f32`), so that a turned planet is placed exactly (an `f32` turn can put a point 5 x 10^7 m out
-by metres, measured). The sections that hold poses are `engine:entities`, `engine:grids` and a ship file's `engine:grid_flight`: this program writes them as version 2 and
-reads version 1 too, an `f32` turn read as exactly the same turn. A version it does not know is refused. The other sections are still version 1.
+by metres, measured). The sections that hold poses are `engine:entities`, `engine:grids` and a ship file's `engine:grid_flight`: this program writes them as version 4 and reads no other. A version it does not know is refused. The other sections are still version 1.
+**Positions and speeds (2026-11-02).** The offset of a position inside its brick is three `f64` (it was three `f32`), and so are the six speeds of a ship in its `engine:grid_flight`: nothing that is physics is rounded to `f32` in a file (version 3 had the `f32` offset, with the coordinate of three wide integers; 2 had `f64` orientations, and 1 `f32` ones). Old worlds are not read: until a first release there is no upgrade code, and the version is what shows what can be removed then.
 
 A world file has a list of levels, in `engine:levels`. Files written before levels existed have an `engine:generators` and
 an `engine:override_bricks` instead, which describe one level; they load as a world of one level that the game names, and
@@ -42,8 +42,8 @@ Everything else in the file refers to content by *file id*: an index into a regi
 
 The generator table is the registry kind `engine:terrain_generator`.
 
-**A ship file's `engine:grid_terrain`** (optional, version 1; Phase 39a): for a planet, the terrain generator version that makes the bricks the ship does not store, by name (an identifier, looked up in the reading world's generator table like the content of a
-channel), the box of bricks it makes (the lowest and the highest corner, each three zigzag varints) and the mass in kilograms (`f32` bits; finite and not negative). The ship's `engine:ship` section then holds only its edits. A file with no such section is a ship that
+**A ship file's `engine:grid_terrain`** (optional, version 3: the mass is an `f64`, 2026-11-02; Phase 39a): for a planet, the terrain generator version that makes the bricks the ship does not store, by name (an identifier, looked up in the reading world's generator table like the content of a
+channel), the box of bricks it makes (the lowest and the highest corner, each three zigzag varints) and the mass in kilograms (`f64` bits since version 3; finite and not negative). The ship's `engine:ship` section then holds only its edits. A file with no such section is a ship that
 nothing generates.
 
 **A ship file's `engine:rail`** (optional, version 2; Phase 40d; version 2 of 2026-11-02 added ellipses, and version 1 is not read): for a ship on rails, how it moves, as a function of the time of the world (`engine:clock`): a byte of flags (1 a spin, 2 an orbit); the spin's axis (a unit vector), period and angle; the orbit's centre (a byte, 0 and a point of the level or 1 and the number of another ship, which has a lower number), normal, radius, period, phase, ratio (1 - eccentricity: from 2^-64 to 1) and periapsis (radians; a circle has a ratio of 1 and a periapsis of nothing); every number the bits of an `f64`, little-endian. Seconds and radians; a negative period goes the other way. A ship with no rail has no such section, so its file is what it was; a ship file is refused if the section is damaged, has a direction that is not a unit vector, a period of nothing, a ratio or periapsis out of range, or is of another version. The place in the file's flight section is where the ship was when it was saved; a ship on a rail is put where its rail says in the first tick after it is in memory.

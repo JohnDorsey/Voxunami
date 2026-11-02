@@ -25,7 +25,7 @@ pub struct PlacerView {
     /// Where their eyes are, in voxels.
     pub eyes: [f64; 3],
     /// The way they look, a unit vector.
-    pub forward: [f32; 3],
+    pub forward: [f64; 3],
 }
 
 impl PlacerView {
@@ -41,9 +41,9 @@ impl PlacerView {
         let nowhere = WorldPosition::new(BrickCoordinate::ORIGIN, [0.0; 3]);
         Some(Self {
             eyes: [
-                brick.x() as f64 * edge + f64::from(offset[0]),
-                brick.y() as f64 * edge + f64::from(offset[1]),
-                brick.z() as f64 * edge + f64::from(offset[2]),
+                brick.x() as f64 * edge + offset[0],
+                brick.y() as f64 * edge + offset[1],
+                brick.z() as f64 * edge + offset[2],
             ],
             forward: GridPose::new(nowhere, view).direction_to_world([0.0, 0.0, -1.0]),
         })
@@ -127,7 +127,7 @@ mod tests {
     }
 
     /// A player at this place looking this way.
-    fn looking(eyes: [f64; 3], forward: [f32; 3]) -> PlacerView {
+    fn looking(eyes: [f64; 3], forward: [f64; 3]) -> PlacerView {
         PlacerView { eyes, forward }
     }
 

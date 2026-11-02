@@ -19,9 +19,9 @@ pub fn voxels_of(position: WorldPosition) -> [f64; 3] {
     let offset = position.offset();
     let edge = BRICK_EDGE_LENGTH as f64;
     [
-        brick.x() as f64 * edge + f64::from(offset[0]),
-        brick.y() as f64 * edge + f64::from(offset[1]),
-        brick.z() as f64 * edge + f64::from(offset[2]),
+        brick.x() as f64 * edge + offset[0],
+        brick.y() as f64 * edge + offset[1],
+        brick.z() as f64 * edge + offset[2],
     ]
 }
 

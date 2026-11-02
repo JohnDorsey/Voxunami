@@ -9,9 +9,9 @@ fn voxels(position: WorldPosition) -> [f64; 3] {
     let brick = position.brick();
     let offset = position.offset();
     [
-        (brick.x() * BRICK_EDGE_LENGTH as i128) as f64 + f64::from(offset[0]),
-        (brick.y() * BRICK_EDGE_LENGTH as i128) as f64 + f64::from(offset[1]),
-        (brick.z() * BRICK_EDGE_LENGTH as i128) as f64 + f64::from(offset[2]),
+        (brick.x() * BRICK_EDGE_LENGTH as i128) as f64 + offset[0],
+        (brick.y() * BRICK_EDGE_LENGTH as i128) as f64 + offset[1],
+        (brick.z() * BRICK_EDGE_LENGTH as i128) as f64 + offset[2],
     ]
 }
 
@@ -51,7 +51,7 @@ mod tests {
 
     use super::*;
 
-    fn at(brick: [i128; 3], offset: [f32; 3]) -> WorldPosition {
+    fn at(brick: [i128; 3], offset: [f64; 3]) -> WorldPosition {
         WorldPosition::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), offset)
     }
 

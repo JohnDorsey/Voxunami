@@ -19,15 +19,13 @@ fn raft_and_a_player_looking_at_it() -> (Scene, Player) {
     let mut scene = Scene::new();
     flat_floor(&mut scene);
     build_raft(&mut scene, 20, FLOOR as i128 + 6, 22, 8);
-    let mut player = scene
-        .rig
-        .join_walking([24.0, FLOOR as f64 + 3.0, 34.0], 0.0, 30.0);
+    let mut player = scene.rig.join_walking([24.0, FLOOR + 3.0, 34.0], 0.0, 30.0);
     scene.rig.settle(&mut [&mut player]);
     tick_and_follow(&mut scene, &mut player, 20);
     (scene, player)
 }
 
-fn ship_speed(scene: &Scene, number: u64) -> [f32; 3] {
+fn ship_speed(scene: &Scene, number: u64) -> [f64; 3] {
     scene
         .rig
         .server
@@ -51,7 +49,7 @@ fn a_ship_is_made_of_the_built_blocks_joined_to_the_one_the_player_looks_at_and_
     let pose = ship_pose(&scene, 0);
     let at = in_voxels(pose.position);
     assert!(
-        at[0] == 20.0 && at[2] == 22.0 && (at[1] - (FLOOR as f64 + 6.0)).abs() < 0.3,
+        at[0] == 20.0 && at[2] == 22.0 && (at[1] - (FLOOR + 6.0)).abs() < 0.3,
         "{pose:?}"
     );
     assert_eq!(pose.orientation, voxel_space::Orientation::IDENTITY);
@@ -61,7 +59,7 @@ fn a_ship_is_made_of_the_built_blocks_joined_to_the_one_the_player_looks_at_and_
     let middle = VoxelCoordinate::new(24, FLOOR as i128 + 6, 26);
     assert_eq!(player.mesher().is_opaque_at(middle), Some(false));
     let at = in_voxels(ship_pose(&scene, 0).position);
-    assert!((at[1] - FLOOR as f64).abs() < 0.1, "{at:?}");
+    assert!((at[1] - FLOOR).abs() < 0.1, "{at:?}");
     assert!(
         (at[0] - 20.0).abs() < 0.1 && (at[2] - 22.0).abs() < 0.1,
         "{at:?}"
@@ -155,9 +153,7 @@ fn of_two_ships_the_nearer_is_the_one_meant_and_a_ship_beyond_reach_is_none() {
             |_| true,
         );
     }
-    let mut player = scene
-        .rig
-        .join_walking([24.0, FLOOR as f64 + 3.0, 34.0], 0.0, 0.0);
+    let mut player = scene.rig.join_walking([24.0, FLOOR + 3.0, 34.0], 0.0, 0.0);
     scene.rig.settle(&mut [&mut player]);
     tick_and_follow(&mut scene, &mut player, 20);
     player.take_command_replies();
@@ -320,7 +316,7 @@ fn a_pilot_who_lets_go_walks_again_and_the_ship_they_left_falls() {
     // Without a pilot the ship falls, with the player who is aboard it, and lies on the floor.
     tick_and_follow(&mut scene, &mut player, 120);
     let at = in_voxels(ship_pose(&scene, 0).position);
-    assert!((at[1] - FLOOR as f64).abs() < 0.1, "{at:?}");
+    assert!((at[1] - FLOOR).abs() < 0.1, "{at:?}");
     assert_eq!(player_pose(&scene, 1).grid, ship_id(0));
     // And their keys walk them: W takes them north along the ship, off its edge, and they leave it.
     player.hold(&[KeyCode::KeyW]);
@@ -336,7 +332,7 @@ fn only_one_player_pilots_a_ship_and_a_player_who_goes_away_stops_piloting() {
     assert!(say(&mut scene, &mut player, "/ship pilot").starts_with("you pilot ship 0"));
     let mut other = scene
         .rig
-        .join_walking_as(2, [24.0, FLOOR as f64 + 12.0, 24.0], 0.0, 0.0);
+        .join_walking_as(2, [24.0, FLOOR + 12.0, 24.0], 0.0, 0.0);
     scene.rig.settle(&mut [&mut other]);
     tick_and_follow(&mut scene, &mut player, 60);
     other.advance().unwrap();
@@ -406,7 +402,7 @@ fn scripted_flight() -> u64 {
             _ => None,
         };
         if let Some(keys) = keys {
-            player.camera.yaw = 0.01 * tick as f32;
+            player.camera.yaw = 0.01 * tick as f64;
             player.camera.pitch = 0.0;
             player.hold(keys);
         }
@@ -420,11 +416,11 @@ fn scripted_flight() -> u64 {
             }
             for value in offset
                 .into_iter()
-                .chain(ship.pose.orientation.components_single())
+                .chain(ship.pose.orientation.components())
                 .chain(ship.linear_velocity)
                 .chain(ship.angular_velocity)
             {
-                feed(u64::from(value.to_bits()));
+                feed(value.to_bits());
             }
         }
         let pose = player_pose(&scene, 1);
@@ -433,9 +429,9 @@ fn scripted_flight() -> u64 {
             .position
             .offset()
             .into_iter()
-            .chain(pose.orientation.components_single())
+            .chain(pose.orientation.components())
         {
-            feed(u64::from(value.to_bits()));
+            feed(value.to_bits());
         }
     }
     // (So that the number locks something: they flew a long way, and walked off.)
@@ -456,7 +452,13 @@ fn a_scripted_flight_ends_in_the_same_bits_every_time_and_on_every_machine() {
     // (Moved once, on purpose, 2026-10-22: the pull of the planet is 5 metres a second a second, was 32, and the pilot's thrust holds the ship up against it.)
     // (Moved on purpose, Phase 38a: 1_611_522_163_103_596_451 before. Orientations are f64 (Phase 38a, 2026-10-23): a yaw and a pitch are turned into a quaternion in f64 and rounded once to the f32 the solver takes, which is not always the f32 the old arithmetic in f32 gave, to the last bit. Control: with `from_yaw_pitch` put back to the f32 arithmetic and nothing else changed, the old value came back; so this is the only thing that moved it.)
     // (Moved on purpose, 2026-11-01: 14_857_158_006_750_149_408 before. Rapier works in f64 now (`rapier3d-f64`, with `enhanced-determinism`; owner, 2026-11-01), and these hashes are of the bits of numbers the solver gives, so they moved. The tests of behaviour in the same file pass as they were; the physics crate's own pinned runs were taken on Windows and are the same on Linux.)
-    assert_eq!(first, 4_439_882_624_160_151_608);
+    // (Moved on purpose again, 2026-11-02: 4_439_882_624_160_151_608 before. Positions, speeds and angles are `f64` everywhere that is physics (owner, 2026-11-02); the hash is of the bits of the
+    // ship's and the player's poses and the ship's speeds, which are `f64` now. Control: the old build and this one printed the poses and speeds in voxels at each of the 420 ticks, with the angles the
+    // script sets made the `f32` they were. The ship agrees to 4.0e-6 voxel in every tick, and the player to 3.9e-7 until tick 361, the one in which they walk off the ship; from there the two differ:
+    // 2.8e-3 voxel at 361, then by 4.2e-3 more each tick (a vertical speed 0.083 metres a second different after the step off), and 0.24 voxel at tick 419 when they have fallen 90 voxels. **Not explained:**
+    // the step off is a contact that ends, which the controller (its skin of 0.01, its nudge of 1e-5) decides from positions that were `f32` and are `f64`; the same kind of difference as the creeping
+    // of a standing walker in `docs/history/joint-probe.md`, but not traced. The tests of behaviour in the same file pass as they were.)
+    assert_eq!(first, 17_783_923_537_324_820_895);
 }
 
 #[test]
@@ -623,7 +625,7 @@ fn in_survival_a_block_broken_from_a_ship_leaves_its_item_in_the_ship_and_a_play
     // The player stands under the middle of the raft, looking straight up at it: the block they break is a couple of voxels from their eyes.
     player.send_command(&format!("/tp 24 {} 26", FLOOR as i128 + 3));
     tick_and_follow(&mut scene, &mut player, 5);
-    player.camera.pitch = 89.0f32.to_radians();
+    player.camera.pitch = 89.0f64.to_radians();
     player.hold(&[]);
     tick_and_follow(&mut scene, &mut player, 3);
     scene.rig.settle(&mut [&mut player]);

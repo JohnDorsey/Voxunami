@@ -38,7 +38,7 @@ impl Site {
                     let ship = world
                         .create_grid(
                             LevelIndex::MAIN,
-                            pose_at(origin[0] as f32, origin[1] as f32, origin[2] as f32),
+                            pose_at(origin[0] as f64, origin[1] as f64, origin[2] as f64),
                         )
                         .unwrap();
                     world.set_grid_held(ship, true).unwrap();

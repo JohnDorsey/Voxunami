@@ -9,23 +9,23 @@ use voxel_space::{BrickCoordinate, GridPose, Orientation, VoxelCoordinate, World
 pub const MAXIMUM_BLOCKS: usize = 4096;
 
 /// How far, in voxels, `/ship create` looks for the block to take.
-pub const LOOK_REACH: f32 = 24.0;
+pub const LOOK_REACH: f64 = 24.0;
 
 /// How near, in voxels, a ship must be to a player who is not aboard one for `/ship push`, `hold` and `pilot` to mean it.
 pub const NEAR: f64 = 48.0;
 
 /// How fast a pilot's keys speed a ship up, in voxels a second a second; the sprint key doubles it.
-pub const THRUST: f32 = 24.0;
+pub const THRUST: f64 = 24.0;
 
 /// How much faster the sprint key makes the thrust.
-pub const BOOST: f32 = 2.0;
+pub const BOOST: f64 = 2.0;
 
 /// How much of its speed a piloted ship loses in a second, so that it stops when the keys are let go: the fastest it goes is
 /// [`THRUST`] over this.
-pub const DRAG: f32 = 1.0;
+pub const DRAG: f64 = 1.0;
 
 /// The length of a tick in seconds: a push that is a change of speed is a force for one tick.
-pub const TICK_SECONDS: f32 = 0.05;
+pub const TICK_SECONDS: f64 = 0.05;
 
 /// The voxels joined to `start` through faces (6-connected) that `wanted` says yes to, in order, or `None` if there are more than
 /// `limit`. Empty if `start` is not wanted.
@@ -83,25 +83,25 @@ pub struct PilotKeys {
 /// gravity, speeds up toward where the keys point (forward is the way the pilot looks, up is the world's), and loses a part of its
 /// speed each second, so that with no keys it hangs where it is.
 pub fn pilot_force(
-    mass: f32,
-    gravity: [f32; 3],
-    velocity: [f32; 3],
+    mass: f64,
+    gravity: [f64; 3],
+    velocity: [f64; 3],
     keys: PilotKeys,
     view: Orientation,
-) -> [f32; 3] {
+) -> [f64; 3] {
     let turn = GridPose::new(WorldPosition::new(BrickCoordinate::ORIGIN, [0.0; 3]), view);
     let forward = turn.direction_to_world([0.0, 0.0, -1.0]);
     let right = turn.direction_to_world([1.0, 0.0, 0.0]);
     let boost = if keys.sprint { BOOST } else { 1.0 };
     [0, 1, 2].map(|axis| {
         let up = if axis == 1 {
-            f32::from(keys.vertical)
+            f64::from(keys.vertical)
         } else {
             0.0
         };
         let wish = THRUST
             * boost
-            * (f32::from(keys.forward) * forward[axis] + f32::from(keys.strafe) * right[axis] + up);
+            * (f64::from(keys.forward) * forward[axis] + f64::from(keys.strafe) * right[axis] + up);
         mass * (wish - gravity[axis] - DRAG * velocity[axis])
     })
 }
@@ -230,7 +230,7 @@ mod tests {
             [0.0, THRUST, 0.0]
         );
         // The sprint key doubles it, and a quarter turn to the left (positive yaw) points forward along -x.
-        let left = Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0);
+        let left = Orientation::from_yaw_pitch(std::f64::consts::FRAC_PI_2, 0.0);
         let force = pilot_force(1.0, gravity, none, keys(1, 0, 0, true), left);
         assert!((force[0] + THRUST * BOOST).abs() < 1e-3, "{force:?}");
         assert!(force[1].abs() < 1e-3 && force[2].abs() < 1e-3, "{force:?}");

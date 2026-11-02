@@ -74,11 +74,11 @@ pub fn read_grid(reader: &mut ByteReader<'_>) -> Result<GridId, DecodeError> {
     Ok(GridId::new(reader.read_varint()?))
 }
 
-/// A position and an orientation: the brick and the offset in it, and the four components of the orientation (as `f64`).
+/// A position and an orientation: the brick and the offset in it (three `f64`), and the four components of the orientation (as `f64`).
 fn write_placement(writer: &mut ByteWriter, position: WorldPosition, orientation: Orientation) {
     write_brick_coordinate(writer, position.brick());
     for component in position.offset() {
-        writer.write_u32(component.to_bits());
+        writer.write_u64(component.to_bits());
     }
     for component in orientation.components() {
         writer.write_u64(component.to_bits());
@@ -89,9 +89,9 @@ fn read_placement(
     reader: &mut ByteReader<'_>,
 ) -> Result<(WorldPosition, Orientation), DecodeError> {
     let brick = read_brick_coordinate(reader)?;
-    let mut offset = [0f32; 3];
+    let mut offset = [0f64; 3];
     for component in &mut offset {
-        *component = f32::from_bits(reader.read_u32()?);
+        *component = f64::from_bits(reader.read_u64()?);
         if !(0.0..32.0).contains(component) {
             return Err(DecodeError::Invalid(
                 "a position offset is outside its brick",
@@ -197,9 +197,10 @@ mod tests {
                 "0106",
                 "0103",
                 "010e",
-                "0000c03f",
-                "0000fc41",
-                "00000000",
+                // (Since version 11 the offset is three `f64`: 1.5, 31.5 and 0. It was "0000c03f", "0000fc41" and "00000000", three `f32`.)
+                "000000000000f83f",
+                "0000000000803f40",
+                "0000000000000000",
                 "0000000000000000",
                 "0000000000000000",
                 "0000000000000000",
@@ -227,7 +228,7 @@ mod tests {
         writer.write_wide_signed(0);
         writer.write_wide_signed(0);
         for _ in 0..3 {
-            writer.write_u32(0f32.to_bits());
+            writer.write_u64(0f64.to_bits());
         }
         for component in [0.0f64, 0.0, 0.0, 1.0] {
             writer.write_u64(component.to_bits());
@@ -243,9 +244,9 @@ mod tests {
             Orientation::IDENTITY,
         ));
         // The grid is one byte and the brick three (a length byte alone is zero), so the first offset starts at byte 4.
-        for bad in [-1.0f32, 32.0, f32::NAN, f32::INFINITY] {
+        for bad in [-1.0f64, 32.0, f64::NAN, f64::INFINITY] {
             let mut bytes = good.clone();
-            bytes[4..8].copy_from_slice(&bad.to_bits().to_le_bytes());
+            bytes[4..12].copy_from_slice(&bad.to_bits().to_le_bytes());
             assert!(decoded(&bytes).is_err(), "{bad}");
         }
         let mut bytes = good;

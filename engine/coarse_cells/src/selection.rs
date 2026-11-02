@@ -155,8 +155,8 @@ fn span(cube: BrickCube, viewer: WorldPosition) -> [(f64, f64); 3] {
     let origin = cube.origin();
     let edge = cube.edge_length() as f64 * BRICK_EDGE;
     let (brick, offset) = (viewer.brick(), viewer.offset());
-    let along = |origin: i128, brick: i128, offset: f32| {
-        let low = (origin - brick) as f64 * BRICK_EDGE - f64::from(offset);
+    let along = |origin: i128, brick: i128, offset: f64| {
+        let low = (origin - brick) as f64 * BRICK_EDGE - offset;
         (low, low + edge)
     };
     [
@@ -250,7 +250,7 @@ pub struct ViewSelection {
 /// other is a moment after it has moved, but they know the brick, and the same cubes follow from the same brick.
 pub fn brick_centre(brick: BrickCoordinate) -> WorldPosition {
     let middle = BRICK_EDGE / 2.0;
-    WorldPosition::new(brick, [middle as f32; 3])
+    WorldPosition::new(brick, [middle; 3])
 }
 
 /// The cubes of the terrain of a level that are drawn for a viewer in `brick`: bricks near it and nodes beyond, with the settings in `view`. A cube that
@@ -352,7 +352,7 @@ mod tests {
         }
     }
 
-    fn at(brick: [i128; 3], offset: [f32; 3]) -> WorldPosition {
+    fn at(brick: [i128; 3], offset: [f64; 3]) -> WorldPosition {
         WorldPosition::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), offset)
     }
 
@@ -936,7 +936,7 @@ mod tests {
      {
         // The ship is turned a quarter about the vertical axis, and its origin is at (100, 0, 0) bricks in the world; a viewer at a place in the world is
         // at the place of the ship's axes that the inverse of its pose gives, and the nodes are those of an unturned ship with the viewer there.
-        let turn = Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0);
+        let turn = Orientation::from_yaw_pitch(std::f64::consts::FRAC_PI_2, 0.0);
         let pose = GridPose::new(at([100, 0, 0], [0.0; 3]), turn);
         // A point 40 voxels along the ship's x axis and 10 up: in the world, turned.
         let local = at([1, 0, 0], [8.0, 10.0, 0.0]);

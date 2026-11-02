@@ -60,13 +60,13 @@ pub fn local_voxel_index() -> impl Strategy<Value = LocalVoxelIndex> {
 
 /// Any orientation a body can have: a unit quaternion made from random turns about the three axes.
 pub fn orientation() -> impl Strategy<Value = crate::Orientation> {
-    (-6.3f32..6.3, -1.5f32..1.5)
+    (-6.3f64..6.3, -1.5f64..1.5)
         .prop_map(|(yaw, pitch)| crate::Orientation::from_yaw_pitch(yaw, pitch))
 }
 
 /// A position anywhere in the supported range, biased like [`voxel_coordinate`].
 pub fn world_position() -> impl Strategy<Value = crate::WorldPosition> {
-    (voxel_coordinate(), 0.0f32..32.0, 0.0f32..32.0, 0.0f32..32.0)
+    (voxel_coordinate(), 0.0f64..32.0, 0.0f64..32.0, 0.0f64..32.0)
         .prop_map(|(voxel, x, y, z)| crate::WorldPosition::new(voxel.split().0, [x, y, z]))
 }
 

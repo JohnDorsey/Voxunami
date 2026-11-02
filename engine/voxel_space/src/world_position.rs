@@ -1,14 +1,14 @@
 use crate::{BRICK_EDGE_LENGTH, BrickCoordinate};
 
-const EDGE: f32 = BRICK_EDGE_LENGTH as f32;
+const EDGE: f64 = BRICK_EDGE_LENGTH as f64;
 
-/// The vector from one position to another, as whole bricks and an `f32` rest: exact in bricks however far apart the positions are and however far both are from
-/// the origin, which an `f32` vector of voxels cannot be. A thing that moves with something else (a frame that follows a planet) is moved by one.
+/// The vector from one position to another, as whole bricks and an `f64` rest: exact in bricks however far apart the positions are and however far both are from
+/// the origin, which an `f64` vector of voxels cannot be. A thing that moves with something else (a frame that follows a planet) is moved by one.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Displacement {
     pub bricks: [i128; 3],
     /// In voxels; any size (the difference of two offsets is less than a brick, and the sum of several may be more).
-    pub offset: [f32; 3],
+    pub offset: [f64; 3],
 }
 
 impl Displacement {
@@ -28,21 +28,19 @@ impl Displacement {
 
     /// As plain numbers, in voxels.
     pub fn in_voxels(self) -> [f64; 3] {
-        let edge = f64::from(EDGE);
-        [0, 1, 2].map(|axis| self.bricks[axis] as f64 * edge + f64::from(self.offset[axis]))
+        [0, 1, 2].map(|axis| self.bricks[axis] as f64 * EDGE + self.offset[axis])
     }
 }
 
-/// A continuous position in a grid: a whole brick plus an `f32` offset inside it.
+/// A continuous position in a grid: a whole brick plus an `f64` offset inside it.
 ///
-/// A single `f32` loses precision far from the origin (a quarter-millimetre at 1 km, a whole metre
-/// at 10 000 km). Keeping the large part as an exact integer brick and only the small part as a
-/// float keeps full precision at any distance. Offsets are in voxel units from the brick's lowest
-/// corner and are normalized into `[0, 32)`.
+/// A single `f64` loses precision far from the origin (a millimetre at 10^13 voxels, a whole metre at 10^16). Keeping the large part as an exact integer brick and only the
+/// small part as a float keeps the precision of the offset (a part in 10^16 of a brick, 4e-15 voxel at the most) at any distance. Offsets are in voxel units from the
+/// brick's lowest corner and are normalized into `[0, 32)`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WorldPosition {
     brick: BrickCoordinate,
-    offset: [f32; 3],
+    offset: [f64; 3],
 }
 
 // A position is always finite (the constructor insists), so it equals itself.
@@ -51,7 +49,7 @@ impl Eq for WorldPosition {}
 impl WorldPosition {
     /// Carries whole bricks out of `offset`, so any finite offset is accepted. Panics if the
     /// offset is not finite or the position would leave the supported coordinate range.
-    pub fn new(brick: BrickCoordinate, offset: [f32; 3]) -> Self {
+    pub fn new(brick: BrickCoordinate, offset: [f64; 3]) -> Self {
         assert!(
             offset.iter().all(|component| component.is_finite()),
             "position offset must be finite"
@@ -61,7 +59,7 @@ impl WorldPosition {
 
     /// Like [`WorldPosition::new`], but `None` for an offset that is not finite or a position that would leave the supported coordinate
     /// range, which `new` panics at.
-    pub fn try_new(brick: BrickCoordinate, offset: [f32; 3]) -> Option<Self> {
+    pub fn try_new(brick: BrickCoordinate, offset: [f64; 3]) -> Option<Self> {
         let mut carries = [0i128; 3];
         let mut normalized = offset;
         for axis in 0..3 {
@@ -90,25 +88,23 @@ impl WorldPosition {
     }
 
     /// Voxel units from the brick's lowest corner, each in `[0, 32)`.
-    pub fn offset(self) -> [f32; 3] {
+    pub fn offset(self) -> [f64; 3] {
         self.offset
     }
 
-    /// This position as plain numbers, in voxels from the origin of its grid: exact to a bit of the sum (the brick is exact, and an `f32` offset in an `f64`).
+    /// This position as plain numbers, in voxels from the origin of its grid: exact to a bit of the sum (the brick is exact, and the offset an `f64`).
     pub fn in_voxels(self) -> [f64; 3] {
-        let edge = f64::from(EDGE);
         [0, 1, 2].map(|axis| {
             let brick = [self.brick.x(), self.brick.y(), self.brick.z()][axis];
-            brick as f64 * edge + f64::from(self.offset[axis])
+            brick as f64 * EDGE + self.offset[axis]
         })
     }
 
-    /// The position at these voxels from the origin of the grid: the brick they are in, and the `f32` rest. `None` for numbers that are not finite or that leave the
+    /// The position at these voxels from the origin of the grid: the brick they are in, and the rest. `None` for numbers that are not finite or that leave the
     /// supported coordinate range.
     pub fn try_from_voxels(position: [f64; 3]) -> Option<Self> {
-        let edge = f64::from(EDGE);
-        let brick = position.map(|component| (component / edge).floor());
-        let offset = [0, 1, 2].map(|axis| (position[axis] - brick[axis] * edge) as f32);
+        let brick = position.map(|component| (component / EDGE).floor());
+        let offset = [0, 1, 2].map(|axis| position[axis] - brick[axis] * EDGE);
         // (A cast to an integer saturates, so a number past the end of the world is a brick past it, which the coordinate refuses; a number that is not one has an
         // offset that is not, which `try_new` refuses.)
         let brick =
@@ -151,22 +147,20 @@ impl WorldPosition {
     }
 
     /// This position moved by whole `bricks` and a `rest` of voxels (any size, but the exactness is of a rest below a brick): the bricks are added to the brick, exact
-    /// however far the position is from the origin, and only the rest to the `f32` offset, which is rounded once. `None` for a rest that is not a number or a position
+    /// however far the position is from the origin, and only the rest to the offset, which is rounded once. `None` for a rest that is not a number or a position
     /// that leaves the supported coordinate range.
     pub fn translated_by_bricks(self, bricks: [i128; 3], rest: [f64; 3]) -> Option<Self> {
-        let edge = f64::from(EDGE);
         let mut whole = [0i128; 3];
-        let mut offset = [0.0f32; 3];
+        let mut offset = [0.0f64; 3];
         for axis in 0..3 {
             if !rest[axis].is_finite() {
                 return None;
             }
-            // The sum of the two offsets is made in f64 and carried into the bricks before it is rounded to an f32, which near a brick's edge is a part in a million
-            // short of what it is below a brick's size (the sum may be as large as two bricks, where an f32 is twice as far from the next).
-            let sum = f64::from(self.offset[axis]) + rest[axis];
-            let carry = (sum / edge).floor();
+            // The sum of the two offsets is carried into the bricks before it is used as an offset, so that the offset stays below a brick.
+            let sum = self.offset[axis] + rest[axis];
+            let carry = (sum / EDGE).floor();
             whole[axis] = bricks[axis].checked_add(carry as i128)?;
-            offset[axis] = (sum - carry * edge) as f32;
+            offset[axis] = sum - carry * EDGE;
         }
         let brick = self.brick.checked_offset(whole[0], whole[1], whole[2])?;
         Self::try_new(brick, offset)
@@ -176,16 +170,15 @@ impl WorldPosition {
     /// delta that is not a number or that leaves the supported coordinate range. (Working out `in_voxels` + `delta` in `f64` and making a position of it is not the
     /// same: at 10^18 voxels an `f64` is a hundred voxels apart from the next, and a small delta is lost in the sum.)
     pub fn translated_by_voxels(self, delta: [f64; 3]) -> Option<Self> {
-        let edge = f64::from(EDGE);
         let mut bricks = [0i128; 3];
         let mut rest = [0.0f64; 3];
         for axis in 0..3 {
             if !delta[axis].is_finite() {
                 return None;
             }
-            let whole = (delta[axis] / edge).floor();
+            let whole = (delta[axis] / EDGE).floor();
             // Exact: the part of the delta below the brick is the same bits as in the delta.
-            rest[axis] = delta[axis] - whole * edge;
+            rest[axis] = delta[axis] - whole * EDGE;
             // (A cast to an integer saturates, so a delta past the end of the world is bricks past it, which the coordinate refuses.)
             bricks[axis] = whole as i128;
         }
@@ -193,7 +186,7 @@ impl WorldPosition {
     }
 
     /// This position moved by `delta` voxels.
-    pub fn translated(self, delta: [f32; 3]) -> Self {
+    pub fn translated(self, delta: [f64; 3]) -> Self {
         Self::new(
             self.brick,
             [
@@ -204,11 +197,11 @@ impl WorldPosition {
         )
     }
 
-    /// The vector from `origin` to this position, in voxels. Exact for nearby positions however far
-    /// both are from the grid origin, which is what camera-relative rendering relies on.
-    pub fn relative_to(self, origin: Self) -> [f32; 3] {
-        let component = |this: i128, other: i128, this_offset: f32, other_offset: f32| {
-            ((this - other) as f64 * f64::from(EDGE) + f64::from(this_offset - other_offset)) as f32
+    /// The vector from `origin` to this position, in voxels. Exact for nearby positions however far both are from the grid origin (the bricks are subtracted whole),
+    /// which camera-relative rendering relies on; the renderer rounds it to the `f32` the graphics card has.
+    pub fn relative_to(self, origin: Self) -> [f64; 3] {
+        let component = |this: i128, other: i128, this_offset: f64, other_offset: f64| {
+            (this - other) as f64 * EDGE + (this_offset - other_offset)
         };
         [
             component(
@@ -297,8 +290,9 @@ mod tests {
     }
 
     #[test]
-    fn a_carry_into_the_next_brick_is_made_before_the_offset_is_rounded_to_an_f32() {
-        // 30 + (3 + 2^-21) is 33 + 2^-21: an f32 near 33 is 2^-18 apart from the next and would lose the 2^-21, but near 1 (after the carry) it is 2^-23 apart.
+    fn a_rest_that_passes_the_edge_of_a_brick_is_carried_into_the_next() {
+        // 30 + (3 + 2^-21) is 33 + 2^-21, exact in an `f64`: one brick on, and 1 + 2^-21 into it. (When the offset was an `f32` the sum had to be carried before it was rounded: an
+        // `f32` near 33 is 2^-18 apart from the next and would lose the 2^-21. Now the sum is the only rounding.)
         let near = WorldPosition::new(brick(3, -4, 5), [30.0, 30.0, 30.0]);
         let rest = 3.0 + 1.0 / 2_097_152.0;
         let moved = near
@@ -356,7 +350,7 @@ mod tests {
         assert_eq!(last.displaced(too_many_bricks), None);
         let not_a_number = Displacement {
             bricks: [0; 3],
-            offset: [f32::NAN, 0.0, 0.0],
+            offset: [f64::NAN, 0.0, 0.0],
         };
         assert_eq!(last.displaced(not_a_number), None);
     }
@@ -415,11 +409,11 @@ mod tests {
             last
         );
         assert_eq!(
-            WorldPosition::try_new(brick(0, 0, 0), [f32::NAN, 0.0, 0.0]),
+            WorldPosition::try_new(brick(0, 0, 0), [f64::NAN, 0.0, 0.0]),
             None
         );
         assert_eq!(
-            WorldPosition::try_new(brick(0, 0, 0), [0.0, f32::INFINITY, 0.0]),
+            WorldPosition::try_new(brick(0, 0, 0), [0.0, f64::INFINITY, 0.0]),
             None
         );
         // Where it can be made it is what `new` makes, carries and all.
@@ -462,7 +456,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "must be finite")]
     fn non_finite_offsets_are_rejected() {
-        WorldPosition::new(brick(0, 0, 0), [f32::NAN, 0.0, 0.0]);
+        WorldPosition::new(brick(0, 0, 0), [f64::NAN, 0.0, 0.0]);
     }
 
     #[test]
@@ -503,9 +497,9 @@ mod tests {
         #[test]
         fn a_position_displaced_by_the_displacement_to_another_is_that_other_to_within_a_hair(
             base in [-1000i128..1000, -1000..1000, -1000..1000],
-            offset in [0.0f32..32.0, 0.0..32.0, 0.0..32.0],
+            offset in [0.0f64..32.0, 0.0..32.0, 0.0..32.0],
             other_base in [-1000i128..1000, -1000..1000, -1000..1000],
-            other_offset in [0.0f32..32.0, 0.0..32.0, 0.0..32.0],
+            other_offset in [0.0f64..32.0, 0.0..32.0, 0.0..32.0],
         ) {
             let a = WorldPosition::new(brick(base[0], base[1], base[2]), offset);
             let b = WorldPosition::new(brick(other_base[0], other_base[1], other_base[2]), other_offset);
@@ -518,7 +512,7 @@ mod tests {
     proptest! {
         #[test]
         fn normalized_offsets_stay_in_range_and_preserve_the_position(
-            offset in [-5000.0f32..5000.0, -5000.0..5000.0, -5000.0..5000.0],
+            offset in [-5000.0f64..5000.0, -5000.0..5000.0, -5000.0..5000.0],
             base in [-1000i128..1000, -1000..1000, -1000..1000],
         ) {
             let origin = WorldPosition::new(brick(base[0], base[1], base[2]), [0.0; 3]);

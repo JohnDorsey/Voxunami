@@ -440,9 +440,9 @@ fn detaching_blocks_moves_them_out_of_the_terrain_into_a_ship_exactly_where_they
         WorldPosition::new(
             low_brick,
             [
-                low_local.x() as f32,
-                low_local.y() as f32,
-                low_local.z() as f32
+                low_local.x() as f64,
+                low_local.y() as f64,
+                low_local.z() as f64
             ]
         )
     );
@@ -677,7 +677,7 @@ fn forces_held_ships_and_speeds_are_for_ships_that_exist_and_forces_are_taken_on
     assert_eq!(free.linear_velocity, [1.0, 2.0, 3.0]);
 }
 
-fn at(x: f32, y: f32, z: f32) -> WorldPosition {
+fn at(x: f64, y: f64, z: f64) -> WorldPosition {
     WorldPosition::new(BrickCoordinate::ORIGIN, [x, y, z])
 }
 
@@ -735,11 +735,11 @@ fn a_ship_on_a_rail_is_put_where_the_rail_says_at_the_time_of_the_world_every_ti
         assert_eq!(ship.pose.orientation, state.orientation.unwrap());
         assert_eq!(
             ship.linear_velocity,
-            state.velocity.map(|component| component as f32)
+            state.velocity.map(|component| component)
         );
         assert_eq!(
             ship.angular_velocity,
-            state.angular_velocity.map(|component| component as f32)
+            state.angular_velocity.map(|component| component)
         );
         seen.push(ship.pose.position);
     }
@@ -809,10 +809,8 @@ fn a_ship_that_goes_round_another_is_where_the_other_is_and_moves_with_it() {
         assert!((distance - 2.0e4).abs() < 1e-2, "{distance} at {ticks}");
         // And its speed is the planet's and its own.
         let own = 2.0 * std::f64::consts::PI * 2.0e4 / 500.0;
-        let relative = [0, 1, 2].map(|axis| {
-            f64::from(moon_ship.linear_velocity[axis])
-                - f64::from(planet_ship.linear_velocity[axis])
-        });
+        let relative = [0, 1, 2]
+            .map(|axis| moon_ship.linear_velocity[axis] - planet_ship.linear_velocity[axis]);
         let speed =
             (relative[0] * relative[0] + relative[1] * relative[1] + relative[2] * relative[2])
                 .sqrt();
@@ -884,7 +882,7 @@ fn a_moon_of_a_planet_of_a_star_10_to_the_18_voxels_out_keeps_its_distances_and_
 }
 
 #[test]
-fn a_ship_5_x_10_to_the_17_voxels_from_what_it_goes_round_is_where_the_turn_worked_out_at_120_digits_puts_it_to_the_last_bit_of_an_f32()
+fn a_ship_5_x_10_to_the_17_voxels_from_what_it_goes_round_is_where_the_turn_worked_out_at_120_digits_puts_it_to_a_billionth_of_a_voxel()
  {
     // The radius of an orbit that was as far as a coordinate went before coordinates were 128 bits (a ninth of 2^60 voxels): an f64 of it is 64 voxels from the next, so an f64
     // orbit is that far out however well the turn is worked out. Round a ship at brick (1000, -2000, 3000) and offset (3.5, 7.25, 30), a year of 9 x 10^8 seconds, a phase of one radian,
@@ -920,9 +918,10 @@ fn a_ship_5_x_10_to_the_17_voxels_from_what_it_goes_round_is_where_the_turn_work
     );
     let expected = [18.927409849581174, 9.655737331008694, 1.4475123486614843];
     for axis in 0..3 {
-        // (Half a step of an f32 between 16 and 32 is 0.95 x 10^-6.)
+        // (The exact offset is on a grid of 2^-32 voxel, so the pose is within 1.2e-10 of the reference, which is `exact_circle_reference.py`'s rounded to an `f64`; the bound has room.
+        // It was 1e-6, half a step of an `f32` between 16 and 32, when the offset of a position was an `f32`.)
         assert!(
-            (f64::from(found.offset()[axis]) - expected[axis]).abs() < 1.0e-6,
+            (found.offset()[axis] - expected[axis]).abs() < 1.0e-9,
             "{:?} against {expected:?}",
             found.offset()
         );
@@ -930,7 +929,7 @@ fn a_ship_5_x_10_to_the_17_voxels_from_what_it_goes_round_is_where_the_turn_work
 }
 
 #[test]
-fn a_ship_6_x_10_to_the_26_voxels_from_what_it_goes_round_is_where_the_turn_worked_out_at_120_digits_puts_it_to_the_last_bit_of_an_f32()
+fn a_ship_6_x_10_to_the_26_voxels_from_what_it_goes_round_is_where_the_turn_worked_out_at_120_digits_puts_it_to_a_billionth_of_a_voxel()
  {
     // The size of the universe in metres, for voxels of a metre: a brick position of 10^25, which an `i64` could not hold (it ends at 9 x 10^18). The same ship and the
     // same turn as the test before, a radius of 6 x 10^26; the expected place is `exact_circle_reference.py`'s, at 120 digits.
@@ -965,8 +964,9 @@ fn a_ship_6_x_10_to_the_26_voxels_from_what_it_goes_round_is_where_the_turn_work
     );
     let expected = [6.879435126977078, 2.548914014534149, 24.42621732003802];
     for axis in 0..3 {
+        // (Within 1.2e-10 of the reference, as in the test before.)
         assert!(
-            (f64::from(found.offset()[axis]) - expected[axis]).abs() < 1.0e-6,
+            (found.offset()[axis] - expected[axis]).abs() < 1.0e-9,
             "{:?} against {expected:?}",
             found.offset()
         );
@@ -1044,9 +1044,9 @@ fn a_ship_on_an_ellipse_round_another_ship_is_where_the_ellipse_worked_out_at_12
             "radius {radius}"
         );
         for axis in 0..3 {
-            // (Half a step of an f32 between 16 and 32 is 0.95 x 10^-6.)
+            // (Within 1.2e-10 of the reference, as in the test before; the bound was 1e-6, half a step of an `f32`, when the offset of a position was an `f32`.)
             assert!(
-                (f64::from(found.offset()[axis]) - expected[axis]).abs() < 1.0e-6,
+                (found.offset()[axis] - expected[axis]).abs() < 1.0e-9,
                 "radius {radius}: {:?} against {expected:?}",
                 found.offset()
             );
@@ -1096,7 +1096,7 @@ fn what_stands_on_a_body_on_a_rail_does_not_feel_what_it_goes_round_since_it_fal
     let felt = world.gravity_in(moon, local).unwrap();
     assert!(felt[0].abs() < 1e-3 && felt[2].abs() < 1e-3, "{felt:?}");
     assert!(
-        (f64::from(-felt[1]) - own).abs() < 1e-2 * own.max(1.0),
+        ((-felt[1]) - own).abs() < 1e-2 * own.max(1.0),
         "{felt:?} against {own}"
     );
     // In the level the planet's pull is there: 6.674e-11 * 6e20 / 400,000^2 = 0.25 toward -x, at that place.
@@ -1148,7 +1148,7 @@ fn what_stands_on_a_moon_of_a_moon_feels_neither_of_the_bodies_it_goes_round_and
     let small_moon = world
         .create_grid(LevelIndex::MAIN, GridPose::identity())
         .unwrap();
-    for (ship, mass) in [(planet, 6.0e20f32), (moon, 6.0e19), (small_moon, 1.0e19)] {
+    for (ship, mass) in [(planet, 6.0e20f64), (moon, 6.0e19), (small_moon, 1.0e19)] {
         world.data.grids_mut().get_mut(ship).unwrap().mass = mass;
     }
     world
@@ -1168,10 +1168,7 @@ fn what_stands_on_a_moon_of_a_moon_feels_neither_of_the_bodies_it_goes_round_and
     let felt = world.gravity_in(small_moon, at(0.0, 100.0, 0.0)).unwrap();
     let own = 6.674e-11 * 1.0e19 * 100.0 / (10_001.0f64 * 10_001.0f64.sqrt());
     assert!(felt[0].abs() < 1e-3 && felt[2].abs() < 1e-3, "{felt:?}");
-    assert!(
-        (f64::from(-felt[1]) - own).abs() < 1e-2 * own.max(1.0),
-        "{felt:?}"
-    );
+    assert!(((-felt[1]) - own).abs() < 1e-2 * own.max(1.0), "{felt:?}");
     // On the moon: its own pull, and the small moon's, which goes round the moon and pulls the moon with it (6.674e-11 x 10^19 / 20,000^2 = 1.67 toward +x);
     // and not the planet's 0.25 toward -x, which the moon goes round.
     let on_the_moon = world.gravity_in(moon, at(0.0, 100.0, 0.0)).unwrap();
@@ -1212,7 +1209,7 @@ fn what_stands_on_a_moon_of_a_moon_feels_neither_of_the_bodies_it_goes_round_and
 // ---- the sphere of influence of a planet on a rail ----
 
 /// A planet whose ground reaches `reach` bricks either way, weighing `mass`, in the main level, on this rail.
-fn planet_on(world: &mut ServerWorld, reach: u32, mass: f32, rail: Option<Rail>) -> GridId {
+fn planet_on(world: &mut ServerWorld, reach: u32, mass: f64, rail: Option<Rail>) -> GridId {
     let planet = world
         .create_grid(LevelIndex::MAIN, GridPose::identity())
         .unwrap();
@@ -1632,7 +1629,7 @@ fn what_is_in_the_level_within_the_sphere_of_a_planet_on_a_rail_falls_with_it_an
     let felt = world.gravity_in(GridId::MAIN, inside).unwrap();
     assert!(felt[0].abs() < 1e-3 && felt[2].abs() < 1e-3, "{felt:?}");
     assert!(
-        (f64::from(-felt[1]) - own).abs() < 1e-2 * own.max(1.0),
+        ((-felt[1]) - own).abs() < 1e-2 * own.max(1.0),
         "{felt:?} against {own}"
     );
     // Outside it, the pull is the level's: the star's is felt (0.25 toward it, on the -x side, 6.674e-11 x 6e20 / 400,000^2).
@@ -1752,7 +1749,7 @@ fn a_level_can_have_a_pull_of_its_own_and_a_planet_in_one_in_space_pulls_toward_
     let mut world = ServerWorld::new(data, Arc::default());
     // A planet of 63,710 metres, whose mass is the one that pulls 10 metres a second a second at that distance (G in metres).
     let radius = 63_710.0f64;
-    let mass = (10.0 * radius * radius / 6.674e-11) as f32;
+    let mass = 10.0 * radius * radius / 6.674e-11;
     world.set_gravity_settings(GravitySettings {
         base: [0.0, -5.0, 0.0],
         pull_strength: 6.674e-11,
@@ -1774,7 +1771,7 @@ fn a_level_can_have_a_pull_of_its_own_and_a_planet_in_one_in_space_pulls_toward_
     assert!(ship.held);
 
     // Over the planet's top, in the level in space, the pull is the planet's alone: toward its centre, 10 and a hair under (the softening).
-    let over = |x: f32, y: f32, z: f32, brick: [i128; 3]| {
+    let over = |x: f64, y: f64, z: f64, brick: [i128; 3]| {
         WorldPosition::new(
             BrickCoordinate::new(brick[0], brick[1], brick[2]),
             [x, y, z],
@@ -1785,12 +1782,12 @@ fn a_level_can_have_a_pull_of_its_own_and_a_planet_in_one_in_space_pulls_toward_
     let expected = 10.0 * (radius / top_voxel_height) * (radius / top_voxel_height);
     assert!(top[0].abs() < 1e-3 && top[2].abs() < 1e-3, "{top:?}");
     assert!(
-        (f64::from(-top[1]) - expected).abs() < 1e-3,
+        ((-top[1]) - expected).abs() < 1e-3,
         "{top:?} against {expected}"
     );
     // And on the far side, the other way.
     let bottom = world.gravity_at(space, over(0.0, 0.0, 0.0, [0, -1990, 0]));
-    assert!(bottom[1] > 0.0 && (f64::from(bottom[1]) - expected).abs() < 1e-3);
+    assert!(bottom[1] > 0.0 && (bottom[1] - expected).abs() < 1e-3);
     // The main level keeps its own pull, and the planet in the level in space is no part of it.
     assert_eq!(
         world.gravity_at(LevelIndex::MAIN, over(0.0, 0.0, 0.0, [0, 1990, 0])),
@@ -1889,7 +1886,7 @@ fn a_ship_that_weighs_enough_pulls_toward_its_centre_of_mass_and_not_itself_and_
     // 4e6 kg at a distance of 50 from the centre, (28, 8, 8) in the world (the ship is 20 along x and its centre is (8, 8, 8) in it): along x toward it, G m / d^2 = 1.6 (plus a hair of softening and the y and z).
     let pull = world.gravity_at(LevelIndex::MAIN, at(78.0, 8.0, 8.0));
     assert!(
-        (pull[0] + 1e-3 * 4e6 / 2501.0 * 50.0 / 2501.0f32.sqrt()).abs() < 1e-3,
+        (pull[0] + 1e-3 * 4e6 / 2501.0 * 50.0 / 2501.0f64.sqrt()).abs() < 1e-3,
         "{pull:?}"
     );
     assert!(pull[1].abs() < 1e-5 && pull[2].abs() < 1e-5);
@@ -1923,7 +1920,7 @@ fn a_ship_that_weighs_enough_pulls_toward_its_centre_of_mass_and_not_itself_and_
 
 /// A ship that is a row of ten blocks along x, turning about the vertical axis at one radian a second about its middle, with a walker in it
 /// at each of these places (in the ship's coordinates). Returns the world, the ship, the block channel and the walkers.
-fn row_with_walkers(places: &[[f32; 3]]) -> (ServerWorld, GridId, ChannelIndex, Vec<EntityId>) {
+fn row_with_walkers(places: &[[f64; 3]]) -> (ServerWorld, GridId, ChannelIndex, Vec<EntityId>) {
     let (mut world, walker) = world_with_a_walker();
     let block = block_channel(world.data().main());
     let ship = world
@@ -1963,7 +1960,7 @@ fn row_with_walkers(places: &[[f32; 3]]) -> (ServerWorld, GridId, ChannelIndex, 
 }
 
 fn halves() -> Vec<SplitPart> {
-    let part = |range: std::ops::Range<i128>, x: f32| SplitPart {
+    let part = |range: std::ops::Range<i128>, x: f64| SplitPart {
         voxels: range.map(|x| VoxelCoordinate::new(x, 0, 0)).collect(),
         centre_of_mass: [x, 0.5, 0.5],
     };
@@ -2099,7 +2096,7 @@ fn blocks_can_be_detached_from_a_ship_into_a_ship_that_is_where_they_were_turned
     // The ship is turned a quarter about the vertical axis and turns at a radian a second about its middle, which is 5 along its x.
     let turned = GridPose::new(
         WorldPosition::new(BrickCoordinate::ORIGIN, [3.0, 40.0, 3.0]),
-        Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0),
+        Orientation::from_yaw_pitch(std::f64::consts::FRAC_PI_2, 0.0),
     );
     world.set_grid_pose(ship, turned).unwrap();
     let taken: Vec<VoxelCoordinate> = (6..10).map(|x| VoxelCoordinate::new(x, 0, 0)).collect();
@@ -2183,7 +2180,7 @@ pub(crate) fn world_with_a_walker() -> (ServerWorld, NamespacedId) {
 pub(crate) fn aboard(
     ship: GridId,
     brick: [i128; 3],
-    offset: [f32; 3],
+    offset: [f64; 3],
     turn: Orientation,
 ) -> EntityPose {
     EntityPose::new(
@@ -2229,7 +2226,7 @@ fn an_entity_can_be_in_the_frame_of_a_ship_that_is_there_and_of_nothing_else() {
 #[test]
 fn removing_a_ship_puts_what_was_aboard_in_the_level_where_it_was_and_turned_as_it_was() {
     let (mut world, walker) = world_with_a_walker();
-    let quarter = std::f32::consts::FRAC_PI_2;
+    let quarter = std::f64::consts::FRAC_PI_2;
     let pose = GridPose::new(
         WorldPosition::new(BrickCoordinate::new(2, 0, 0), [1.0, 2.0, 3.0]),
         Orientation::from_yaw_pitch(quarter, 0.0),

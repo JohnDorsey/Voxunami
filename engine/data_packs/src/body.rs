@@ -40,8 +40,8 @@ pub const POSITION_LIMIT: f64 = 1.0e15;
 pub const SMALLEST_ORBIT_RATIO: f64 = 1.0 / ((1u128 << 64) as f64);
 /// The most bricks either way of its centre that the ground of a body may reach.
 pub const GREATEST_EXTENT_BRICKS: i64 = 1_000_000;
-/// The most a body may weigh, in kilograms (a ship's mass is an `f32`).
-const GREATEST_MASS: f64 = f32::MAX as f64;
+/// The most a body may weigh, in kilograms: a bound on what content can ask for (some 170 million suns), far inside what an `f64` ship mass and a rail's period can hold.
+pub const GREATEST_MASS: f64 = f32::MAX as f64;
 
 /// How heavy a body is.
 #[derive(Clone, Copy, Debug, PartialEq)]

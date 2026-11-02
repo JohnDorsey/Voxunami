@@ -44,7 +44,7 @@ impl BodyMotion {
             }
         }
         Self {
-            mass: f64::from(mass.mass),
+            mass: mass.mass,
             centre,
             linear_velocity,
             angular_velocity,

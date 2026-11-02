@@ -6,9 +6,9 @@ mod common;
 use common::{FLOOR, Scene, flat_floor, make_ship, pose_at, ship_id, tick_and_follow};
 use server::ShipSettings;
 
-fn height_of_the_ship(scene: &Scene) -> Option<f32> {
+fn height_of_the_ship(scene: &Scene) -> Option<f64> {
     let ship = scene.rig.server.world().grids().get(ship_id(0))?;
-    Some(ship.pose.position.brick().y() as f32 * 32.0 + ship.pose.position.offset()[1])
+    Some(ship.pose.position.brick().y() as f64 * 32.0 + ship.pose.position.offset()[1])
 }
 
 #[test]
@@ -22,9 +22,7 @@ fn a_ship_that_falls_stops_where_it_is_when_the_player_goes_away_is_put_in_a_fil
         .server
         .set_ship_settings(ShipSettings::new(40.0, 80.0).unwrap());
     // A flying player, near where the ship is made.
-    let mut player = scene
-        .rig
-        .join([20.0, f64::from(FLOOR) + 12.0, 20.0], 0.0, 0.0);
+    let mut player = scene.rig.join([20.0, FLOOR + 12.0, 20.0], 0.0, 0.0);
     scene.rig.settle(&mut [&mut player]);
     make_ship(
         &mut scene,
@@ -79,7 +77,7 @@ fn a_ship_that_falls_stops_where_it_is_when_the_player_goes_away_is_put_in_a_fil
         .get_parked(ship_id(0))
         .unwrap()
         .pose;
-    let parked_height = parked.position.brick().y() as f32 * 32.0 + parked.position.offset()[1];
+    let parked_height = parked.position.brick().y() as f64 * 32.0 + parked.position.offset()[1];
     if let Some(stopped) = stopped {
         assert_eq!(parked_height, stopped);
     }
@@ -127,9 +125,7 @@ fn a_ship_nobody_is_near_does_not_fall_and_one_a_player_comes_near_does() {
             .frozen
     );
 
-    let mut player = scene
-        .rig
-        .join([20.0, f64::from(FLOOR) + 12.0, 20.0], 0.0, 0.0);
+    let mut player = scene.rig.join([20.0, FLOOR + 12.0, 20.0], 0.0, 0.0);
     scene.rig.settle(&mut [&mut player]);
     tick_and_follow(&mut scene, &mut player, 120);
     let rested = height_of_the_ship(&scene).unwrap();
@@ -157,9 +153,7 @@ fn what_a_ship_holds_is_the_same_after_it_has_been_in_a_file() {
         .rig
         .server
         .set_ship_settings(ShipSettings::new(40.0, 80.0).unwrap());
-    let mut player = scene
-        .rig
-        .join([20.0, f64::from(FLOOR) + 12.0, 20.0], 0.0, 0.0);
+    let mut player = scene.rig.join([20.0, FLOOR + 12.0, 20.0], 0.0, 0.0);
     scene.rig.settle(&mut [&mut player]);
     make_ship(
         &mut scene,
@@ -251,9 +245,7 @@ fn the_light_of_a_ship_waits_while_it_is_frozen_and_is_made_when_a_player_comes_
     );
     assert_eq!(light_beside_the_lamp(&scene), 0);
 
-    let mut player = scene
-        .rig
-        .join([20.0, f64::from(FLOOR) + 12.0, 20.0], 0.0, 0.0);
+    let mut player = scene.rig.join([20.0, FLOOR + 12.0, 20.0], 0.0, 0.0);
     scene.rig.settle(&mut [&mut player]);
     tick_and_follow(&mut scene, &mut player, 10);
     assert!(

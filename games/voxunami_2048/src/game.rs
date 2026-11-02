@@ -112,8 +112,8 @@ W A S D move, Space and Shift go up and down, Ctrl moves five times faster. Comm
         }
     }
 
-    fn reach() -> f32 {
-        REACH as f32
+    fn reach() -> f64 {
+        REACH
     }
 
     fn new_content() -> Content2048 {

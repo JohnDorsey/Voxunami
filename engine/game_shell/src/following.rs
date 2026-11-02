@@ -25,7 +25,7 @@ pub struct PoseFollower {
     /// The last position told, and when it was first seen.
     last: Option<(WorldPosition, Instant)>,
     /// The speed worked out from the last two positions, in voxels a second.
-    velocity: [f32; 3],
+    velocity: [f64; 3],
 }
 
 impl PoseFollower {
@@ -43,7 +43,7 @@ impl PoseFollower {
         match self.last {
             Some((last, _)) if last == told => {}
             Some((last, since)) => {
-                let seconds = now.duration_since(since).as_secs_f32().max(0.005);
+                let seconds = now.duration_since(since).as_secs_f64().max(0.005);
                 let moved = told.relative_to(last);
                 // A jump a long way in one go (a teleport) is not a speed.
                 let far = moved.iter().any(|component| component.abs() > 8.0);
@@ -65,23 +65,23 @@ impl PoseFollower {
             self.velocity = [0.0; 3];
             return told;
         }
-        let seconds = waited.min(LONGEST_CARRY_ON).as_secs_f32();
+        let seconds = waited.min(LONGEST_CARRY_ON).as_secs_f64();
         told.translated(self.velocity.map(|speed| speed * seconds))
     }
 }
 
 /// How fast a view turns toward the angles the server gives it, as a share of what is left to turn
 /// each second (a turn is mostly done in about a tenth of a second).
-const TURN_RATE: f32 = 14.0;
+const TURN_RATE: f64 = 14.0;
 
 /// An angle (radians) moved toward `target` by the way of the shorter turn, by an amount that
 /// depends on `seconds`. Never goes past the target, and a target far round the other way is reached
 /// by the short way: from just under a half turn to just over it is a small step. Uses only
 /// arithmetic, so it is the same on every machine.
-pub fn turned_toward(current: f32, target: f32, seconds: f32) -> f32 {
-    let whole = std::f32::consts::TAU;
+pub fn turned_toward(current: f64, target: f64, seconds: f64) -> f64 {
+    let whole = std::f64::consts::TAU;
     let difference =
-        (target - current + std::f32::consts::PI).rem_euclid(whole) - std::f32::consts::PI;
+        (target - current + std::f64::consts::PI).rem_euclid(whole) - std::f64::consts::PI;
     current + difference * (seconds * TURN_RATE).clamp(0.0, 1.0)
 }
 
@@ -91,27 +91,27 @@ mod tests {
 
     use super::*;
 
-    fn at(x: f32) -> WorldPosition {
+    fn at(x: f64) -> WorldPosition {
         WorldPosition::new(BrickCoordinate::new(0, 0, 0), [x, 10.0, 5.0])
     }
 
-    fn x_of(position: WorldPosition) -> f32 {
+    fn x_of(position: WorldPosition) -> f64 {
         let brick = position.brick();
-        brick.x() as f32 * 32.0 + position.offset()[0]
+        brick.x() as f64 * 32.0 + position.offset()[0]
     }
 
     const TICK: Duration = Duration::from_millis(50);
 
     #[test]
     fn a_view_turns_toward_its_angle_the_short_way_and_never_past_it() {
-        use std::f32::consts::{FRAC_PI_2, PI};
+        use std::f64::consts::{FRAC_PI_2, PI};
         // Part of the way after a short time, all of it after a long one.
         let part = turned_toward(0.0, FRAC_PI_2, 0.016);
         assert!(0.0 < part && part < FRAC_PI_2 * 0.5, "{part}");
         assert!((turned_toward(0.0, FRAC_PI_2, 1.0) - FRAC_PI_2).abs() < 1e-5);
         assert_eq!(turned_toward(1.0, 1.0, 0.016), 1.0);
         // From 170 degrees to -170 degrees is 20 degrees by the short way, and it goes up past 180.
-        let (from, to) = (170f32.to_radians(), (-170f32).to_radians());
+        let (from, to) = (170f64.to_radians(), (-170f64).to_radians());
         let step = turned_toward(from, to, 1.0);
         assert!((step - (to + 2.0 * PI)).abs() < 1e-4, "{step}");
         // No time, no turn.
@@ -132,7 +132,7 @@ mod tests {
         // Moving at 5 voxels a second, told every 50 ms.
         let mut shown = Vec::new();
         for tick in 0..6u32 {
-            let told = at(10.0 + 0.25 * tick as f32);
+            let told = at(10.0 + 0.25 * tick as f64);
             let arrived = start + TICK * tick;
             // Three frames between each pair of positions told.
             for frame in 0..3u32 {
@@ -143,7 +143,7 @@ mod tests {
         // After the first two positions the speed is known, and the view is ahead of the last
         // position told by speed times the time since: it keeps up with a player moving at 5.
         for (x, now) in shown.iter().skip(6) {
-            let seconds = now.duration_since(start).as_secs_f32();
+            let seconds = now.duration_since(start).as_secs_f64();
             let truth = 10.0 + 5.0 * seconds;
             assert!((x - truth).abs() < 0.1, "{x} against {truth}");
         }

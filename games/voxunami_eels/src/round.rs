@@ -212,9 +212,9 @@ impl Match {
 
     /// How far a live eel is between its last step and its next, from 0 to just under 1, for
     /// showing it moving smoothly.
-    pub fn fraction_of_step(&self) -> f32 {
+    pub fn fraction_of_step(&self) -> f64 {
         if self.phase == Phase::Running {
-            self.ticks_into_step as f32 / STEP_TICKS as f32
+            self.ticks_into_step as f64 / STEP_TICKS as f64
         } else {
             0.0
         }
@@ -541,7 +541,7 @@ mod tests {
         assert_eq!(game.fraction_of_step(), 0.0, "counting down");
         start(&mut game, &mut arena);
         // Running: the share goes up a third a tick and starts again at each step.
-        let third = 1.0 / STEP_TICKS as f32;
+        let third = 1.0 / STEP_TICKS as f64;
         let mut share = game.fraction_of_step();
         for _ in 0..2 * STEP_TICKS {
             game.tick(&mut arena);

@@ -62,7 +62,10 @@ fn a_ship_comes_back_from_its_file_as_it_was_and_the_file_is_the_same_every_time
 /// Moved on purpose again (coordinates of up to 128 bits, 2026-10-27): 12_409_944_318_068_720_745 before. A brick coordinate is three length-prefixed integers, and the plain sections
 /// are version 2 and the flight is version 3. 5 bytes more, 17,071 in all: the flight's brick (-3, 2, 7) and the stored brick (1, 1, 0) take a byte more for each coordinate that is not
 /// zero, and nothing else changed. Taken on Windows; Linux is checked to agree.
-const PINNED_FILE: u64 = 18_065_490_053_042_193_640;
+///
+/// Moved on purpose again (the position offset and the speeds are `f64`, 2026-11-02): 18_065_490_053_042_193_640 before. The flight is version 4: its position has three `f64` where it had three
+/// `f32` (12 bytes more) and its six speeds are `f64` (24 bytes more): 17,107 bytes, 36 more than the 17,071, which is exactly those, so nothing else in the file changed.
+const PINNED_FILE: u64 = 8_889_856_688_177_959_116;
 
 #[test]
 fn a_world_that_numbers_its_content_otherwise_reads_the_ship_and_means_the_same_blocks() {
@@ -277,10 +280,10 @@ fn a_flight_that_is_not_a_number_or_not_a_flag_is_refused() {
             .unwrap();
         let length = flight.payload.len();
         match damage {
-            // The first speed's four bytes (after the pose) become a NaN.
+            // The first speed's eight bytes (after the pose) become a NaN.
             0 => {
-                let at = length - 2 - 6 * 4;
-                flight.payload[at..at + 4].copy_from_slice(&f32::NAN.to_bits().to_le_bytes());
+                let at = length - 2 - 6 * 8;
+                flight.payload[at..at + 8].copy_from_slice(&f64::NAN.to_bits().to_le_bytes());
             }
             1 => flight.payload[length - 2] = 9,
             _ => flight.payload[length - 1] = 9,

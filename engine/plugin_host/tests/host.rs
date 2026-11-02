@@ -1432,7 +1432,7 @@ fn cow() -> EntityKindSpec {
         .component(Mood(0), false)
 }
 
-fn pose_at(x: f32) -> EntityPose {
+fn pose_at(x: f64) -> EntityPose {
     EntityPose::new(
         GridId::MAIN,
         WorldPosition::new(BrickCoordinate::new(0, 0, 0), [x, 5.0, 5.0]),
@@ -1869,7 +1869,7 @@ fn a_rule_asks_where_down_is_for_the_voxels_it_looks_at_and_gets_the_answer_in_t
                         .world()
                         .create_grid(voxel_space::LevelIndex::MAIN, upside_down)
                         .unwrap();
-                    let show = |gravity: [f32; 3]| {
+                    let show = |gravity: [f64; 3]| {
                         format!(
                             "{:.1} {:.1} {:.1}",
                             gravity[0] + 0.0,

@@ -1125,9 +1125,9 @@ fn fires_burn_only_near_players_and_are_frozen_where_nobody_is() {
     let position = position_of(&builder.camera);
     let mut visitor = rig.join(
         [
-            position.brick().x() as f64 * 32.0 + f64::from(position.offset()[0]),
-            position.brick().y() as f64 * 32.0 + f64::from(position.offset()[1]),
-            position.brick().z() as f64 * 32.0 + f64::from(position.offset()[2]),
+            position.brick().x() as f64 * 32.0 + position.offset()[0],
+            position.brick().y() as f64 * 32.0 + position.offset()[1],
+            position.brick().z() as f64 * 32.0 + position.offset()[2],
         ],
         0.0,
         0.0,
@@ -1220,9 +1220,9 @@ fn a_world_saved_while_it_burns_keeps_the_fire_and_it_goes_on_burning_when_loade
     assert_eq!(server_block(&resumed, spot), resumed.content.blocks.fire);
     let mut visitor = resumed.join(
         [
-            position.brick().x() as f64 * 32.0 + f64::from(position.offset()[0]),
-            position.brick().y() as f64 * 32.0 + f64::from(position.offset()[1]),
-            position.brick().z() as f64 * 32.0 + f64::from(position.offset()[2]),
+            position.brick().x() as f64 * 32.0 + position.offset()[0],
+            position.brick().y() as f64 * 32.0 + position.offset()[1],
+            position.brick().z() as f64 * 32.0 + position.offset()[2],
         ],
         0.0,
         0.0,
@@ -1295,7 +1295,7 @@ fn the_keys_held_walk_the_player_the_way_they_face_and_jumping_takes_them_up_and
     assert!((walked[0] - start[0]).abs() < 0.01, "straight ahead");
 
     // Turned a quarter to the right, W walks toward +x.
-    player.camera.yaw = -std::f32::consts::FRAC_PI_2;
+    player.camera.yaw = -std::f64::consts::FRAC_PI_2;
     player.hold(&[KeyCode::KeyW]);
     tick_and_follow(&mut rig, &mut player, 20);
     assert!(voxels_of(&player.camera)[0] - walked[0] > 2.5);
@@ -1353,7 +1353,7 @@ fn breaking_the_ground_under_a_walker_lets_them_fall() {
     let mut rig = Rig::new();
     let mut player = standing_walker(&mut rig);
     // They look straight down at what they stand on.
-    player.camera.look_by(0.0, -std::f32::consts::FRAC_PI_2);
+    player.camera.look_by(0.0, -std::f64::consts::FRAC_PI_2);
     player.hold(&[]);
     tick_and_follow(&mut rig, &mut player, 3);
     let before = voxels_of(&player.camera)[1];
@@ -1604,12 +1604,13 @@ fn a_player_teleported_into_the_terrain_is_moved_out_of_it_and_never_left_inside
         tick_and_follow(&mut rig, &mut player, 30);
         let eyes = voxels_of(&player.camera);
         assert_standing(&player, &format!("({x}, {z})"));
-        // The shortest way out is sideways, off a taller column, or up onto it: never far.
+        // The shortest way out is sideways, off a taller column, or up onto it: never far. (Up onto it puts the eyes at the top of the column and the eye height, exactly: 101.62 over
+        // a column of 99, measured. The position was an `f32` once and stood a hair under that; the bound has a millionth of a voxel of room for the `f64` sum.)
         assert!(
             (eyes[0] - x).abs() < 1.0
                 && (eyes[2] - z).abs() < 1.0
-                && eyes[1] < tallest + 1.62 + 1.0,
-            "({x}, {z}): moved far: eyes at {eyes:?}"
+                && eyes[1] < tallest + 1.62 + 1.0 + 1.0e-6,
+            "({x}, {z}): moved far: eyes at {eyes:?}, tallest {tallest}"
         );
     }
 }
@@ -1715,7 +1716,7 @@ fn position_hash(camera: &renderer::Camera) -> u64 {
     feed(position.brick().y() as u64);
     feed(position.brick().z() as u64);
     for component in position.offset() {
-        feed(u64::from(component.to_bits()));
+        feed(component.to_bits());
     }
     state
 }
@@ -1726,7 +1727,7 @@ fn scripted_walk() -> Vec<u64> {
     let mut rig = Rig::new();
     let mut player = rig.join_walking([40.5, 150.0, -20.5], 0.0, 0.0);
     rig.settle(&mut [&mut player]);
-    let script: [(&[KeyCode], f32, usize); 7] = [
+    let script: [(&[KeyCode], f64, usize); 7] = [
         (&[], 0.0, 150),
         (&[KeyCode::KeyW], 0.3, 60),
         (&[KeyCode::KeyW, KeyCode::Space], 0.3, 40),
@@ -1760,14 +1761,18 @@ fn a_scripted_walk_over_the_hills_ends_in_the_same_place_every_time_and_on_every
 /// (Moved once, on purpose, 2026-10-22, all but the first and the fifth: the pull of the planet is 5 metres a second a second and a jump 3.6 metres a second, was 32 and 9. The first
 /// and the fifth, where the player stands still at the end of a stage on the ground, are the numbers they were.)
 /// (Moved on purpose, 2026-11-01, all seven, the stages where the player stands still as well: Rapier works in f64 now (`rapier3d-f64`, with `enhanced-determinism`; owner, 2026-11-01), and these hashes are of the bits of numbers the solver gives, so they moved. The tests of behaviour in the same file pass as they were; the physics crate's own pinned runs were taken on Windows and are the same on Linux. Before: 468_518_576_783_366_090, 3_621_015_791_496_737_235, 15_049_547_940_405_347_413, 17_907_881_989_766_520_762, 2_040_764_607_994_219_951, 3_385_291_536_655_073_884, 10_975_456_705_509_759_913.)
+/// (Moved on purpose again, 2026-11-02, all seven: positions, speeds and angles are `f64` everywhere that is physics (owner, 2026-11-02), so the position the hash is of has an `f64` offset and no longer an `f32` one.
+/// Control: the old build and this one printed the player's position in voxels after each of the seven stages, with the yaw of the script made the `f32` it was in this one: the largest difference in any
+/// coordinate of any stage is 9.1e-7 voxel, which is what the `f32` offset of the old position rounded. Before: 1_379_356_507_961_547_303, 1_133_577_438_540_254_254, 14_385_258_987_634_865_794,
+/// 18_072_151_560_661_330_409, 3_544_292_697_220_490_373, 11_577_932_431_833_636_429, 10_410_253_221_858_733_063.)
 const PINNED_WALK: [u64; 7] = [
-    1_379_356_507_961_547_303,
-    1_133_577_438_540_254_254,
-    14_385_258_987_634_865_794,
-    18_072_151_560_661_330_409,
-    3_544_292_697_220_490_373,
-    11_577_932_431_833_636_429,
-    10_410_253_221_858_733_063,
+    13_015_731_850_334_539_439,
+    14_343_493_821_658_957_453,
+    12_563_257_530_139_088_280,
+    15_672_342_859_615_098_604,
+    16_811_545_147_278_240_579,
+    13_423_915_352_390_491_331,
+    12_194_306_667_150_267_568,
 ];
 
 #[test]

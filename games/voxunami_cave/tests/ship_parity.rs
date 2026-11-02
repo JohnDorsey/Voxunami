@@ -60,9 +60,7 @@ fn a_fire_burns_a_plank_away_in_the_terrain_and_aboard_a_ship() {
     for place in BOTH {
         let mut scene = Scene::new();
         flat_floor(&mut scene);
-        let mut player = scene
-            .rig
-            .join([10.0, f64::from(FLOOR) + 6.0, 10.0], 0.0, 0.0);
+        let mut player = scene.rig.join([10.0, FLOOR + 6.0, 10.0], 0.0, 0.0);
         scene.rig.settle(&mut [&mut player]);
         let site = burning_plank(&mut scene, place);
         tick_and_follow(&mut scene, &mut player, 400);
@@ -82,9 +80,7 @@ fn a_fire_waits_while_no_player_is_near_and_burns_when_one_comes_in_the_terrain_
         let mut scene = Scene::new();
         flat_floor(&mut scene);
         // A player far from the fire (more than its range of 64 voxels).
-        let mut player = scene
-            .rig
-            .join([300.0, f64::from(FLOOR) + 6.0, 300.0], 0.0, 0.0);
+        let mut player = scene.rig.join([300.0, FLOOR + 6.0, 300.0], 0.0, 0.0);
         scene.rig.settle(&mut [&mut player]);
         let site = burning_plank(&mut scene, place);
         tick_and_follow(&mut scene, &mut player, 150);
@@ -172,9 +168,7 @@ fn a_player_can_change_a_block_within_reach_and_not_beyond_it_in_the_terrain_and
         let content = CaveContent::new();
         let mut scene = Scene::new();
         flat_floor(&mut scene);
-        let mut player = scene
-            .rig
-            .join([10.0, f64::from(FLOOR) + 6.0, 10.0], 0.0, 0.0);
+        let mut player = scene.rig.join([10.0, FLOOR + 6.0, 10.0], 0.0, 0.0);
         scene.rig.settle(&mut [&mut player]);
         let site = Site::new(&mut scene, place, origin());
         site.set(

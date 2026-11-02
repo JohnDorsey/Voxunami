@@ -80,11 +80,11 @@ impl CollisionSource for Deck {
     }
 }
 
-fn at(x: f32, y: f32, z: f32) -> WorldPosition {
+fn at(x: f64, y: f64, z: f64) -> WorldPosition {
     position(x, y, z)
 }
 
-fn ship_at(x: f32, y: f32, z: f32, yaw: f32) -> GridPose {
+fn ship_at(x: f64, y: f64, z: f64, yaw: f64) -> GridPose {
     GridPose::new(at(x, y, z), Orientation::from_yaw_pitch(yaw, 0.0))
 }
 
@@ -106,7 +106,7 @@ fn run_pulled(
     level: &mut Scene,
     ship: &mut Deck,
     pose: GridPose,
-    gravity: [f32; 3],
+    gravity: [f64; 3],
     input: MoveInput,
     count: usize,
 ) {
@@ -127,14 +127,14 @@ fn feet(body: &CharacterBody) -> f64 {
     eye(body)[1] - 1.62
 }
 
-fn eye_in(pose: &GridPose, body: &CharacterBody) -> [f32; 3] {
+fn eye_in(pose: &GridPose, body: &CharacterBody) -> [f64; 3] {
     let local = pose.world_to_local(body.eye_position()).unwrap();
     let brick = local.brick();
     let offset = local.offset();
     [
-        brick.x() as f32 * 32.0 + offset[0],
-        brick.y() as f32 * 32.0 + offset[1],
-        brick.z() as f32 * 32.0 + offset[2],
+        brick.x() as f64 * 32.0 + offset[0],
+        brick.y() as f64 * 32.0 + offset[1],
+        brick.z() as f64 * 32.0 + offset[2],
     ]
 }
 
@@ -156,9 +156,9 @@ fn a_character_falls_onto_a_ship_that_is_turned_and_stands_on_its_deck() {
     let wanted = middle.translated([0.0, 1.62, 0.0]);
     let wanted_brick = wanted.brick();
     let wanted_at = [
-        wanted_brick.x() as f64 * 32.0 + f64::from(wanted.offset()[0]),
-        wanted_brick.y() as f64 * 32.0 + f64::from(wanted.offset()[1]),
-        wanted_brick.z() as f64 * 32.0 + f64::from(wanted.offset()[2]),
+        wanted_brick.x() as f64 * 32.0 + wanted.offset()[0],
+        wanted_brick.y() as f64 * 32.0 + wanted.offset()[1],
+        wanted_brick.z() as f64 * 32.0 + wanted.offset()[2],
     ];
     assert!(
         (eyes[1] - wanted_at[1]).abs() < 0.03,
@@ -192,7 +192,7 @@ fn a_wall_of_a_ship_stops_a_character_who_walks_into_it_and_it_slides_along_it()
         yaw: 0.6,
         ..FORWARD
     };
-    let mut deepest = f32::INFINITY;
+    let mut deepest = f64::INFINITY;
     for _ in 0..240 {
         run(&mut body, &mut level, &mut ship, pose, into_the_wall, 1);
         deepest = deepest.min(eye_in(&pose, &body)[2]);
@@ -200,7 +200,7 @@ fn a_wall_of_a_ship_stops_a_character_who_walks_into_it_and_it_slides_along_it()
     // It never got into the wall, whose face is at local z = 1. Its box is square and stands along the axes of the level, not of the
     // ship, so a corner of it is what touches the face: it reaches 0.3 * (cos + sin of the turn) across it, and the controller leaves
     // a gap of 0.01.
-    let reach = 0.3 * (libm::cosf(0.6) + libm::sinf(0.6));
+    let reach = 0.3 * (libm::cos(0.6) + libm::sin(0.6));
     assert!(
         (deepest - (1.0 + reach + 0.01)).abs() < 0.01,
         "walking into it, it was at {deepest}"
@@ -220,7 +220,7 @@ fn a_wall_of_a_ship_stops_a_character_who_walks_into_it_and_it_slides_along_it()
                 body.velocity()
             );
         }
-        assert!(eye_in(&pose, &body)[2] > 1.0 + 0.3 * (libm::cosf(0.6) + libm::sinf(0.6)));
+        assert!(eye_in(&pose, &body)[2] > 1.0 + 0.3 * (libm::cos(0.6) + libm::sin(0.6)));
     }
     // At 0.8 of a turn from the wall's face it goes along the wall at sin(0.8) of 4.3 a second, 3.08, for a second and a half: 4.6 less
     // the first step or two. (The controller alone loses the whole of the slide where the wall meets the floor, a few steps in, for a
@@ -232,8 +232,8 @@ fn a_wall_of_a_ship_stops_a_character_who_walks_into_it_and_it_slides_along_it()
 #[test]
 fn a_wall_of_any_turn_is_slid_along_for_as_far_as_the_walker_goes_not_only_one_along_the_axes() {
     // Several turns, both ways along the wall, and a lean toward it that is slight and one that is steep.
-    for yaw in [0.0f32, 0.3, 0.6, 1.0, 2.2, -0.9] {
-        for lean in [0.3f32, 0.8, -0.3, -0.8] {
+    for yaw in [0.0f64, 0.3, 0.6, 1.0, 2.2, -0.9] {
+        for lean in [0.3f64, 0.8, -0.3, -0.8] {
             let pose = ship_at(40.0, 40.0, 40.0, yaw);
             let mut level = Scene::with_floor(39);
             let mut ship = Deck::wall();
@@ -264,7 +264,7 @@ fn a_wall_of_any_turn_is_slid_along_for_as_far_as_the_walker_goes_not_only_one_a
                 90,
             );
             // Positive lean turns toward local -x. The speed along the wall is 4.3 sin(lean); allow the first steps to be spent starting.
-            let wanted = -4.3 * libm::sinf(lean) * 1.5;
+            let wanted = -4.3 * libm::sin(lean) * 1.5;
             let went = eye_in(&pose, &body)[0] - before;
             assert!(
                 (went - wanted).abs() < 0.35,
@@ -284,7 +284,7 @@ fn a_ship_that_moves_takes_its_colliders_with_it() {
     // The wall stands along x from 40 to 60 at z 40 to 41. A character at x = 30 walking along +x (yaw -pi/2: positive yaw turns toward
     // -x) is beside the wall's end and walks past it: nothing is there.
     let east = MoveInput {
-        yaw: -std::f32::consts::FRAC_PI_2,
+        yaw: -std::f64::consts::FRAC_PI_2,
         ..FORWARD
     };
     run(&mut body, &mut level, &mut ship, first, east, 60);
@@ -292,7 +292,7 @@ fn a_ship_that_moves_takes_its_colliders_with_it() {
     assert!(walked > 33.0, "{walked}");
     // The ship moves, to where its end is one voxel ahead of the character, in a tick; the character walks into it, and its half width
     // (0.3) and the gap the controller leaves (0.01) are what is left of the voxel.
-    let second = ship_at(walked as f32 + 1.0, 40.0, 40.0, 0.0);
+    let second = ship_at(walked + 1.0, 40.0, 40.0, 0.0);
     run(&mut body, &mut level, &mut ship, second, east, 120);
     let stopped = eye(&body)[0];
     assert!(
@@ -430,7 +430,7 @@ fn scripted_run() -> u64 {
     {
         for step in 0..count {
             // The ship drifts and turns a little each step.
-            let moved = (stage * 100 + step) as f32;
+            let moved = (stage * 100 + step) as f64;
             let pose = ship_at(25.0 + moved * 0.01, 40.0, 25.0, 0.4 + moved * 0.002);
             run(&mut body, &mut level, &mut ship, pose, input, 1);
         }
@@ -449,7 +449,11 @@ fn a_run_about_a_ship_that_moves_ends_in_the_same_state_every_time_and_on_every_
 /// Moved once, on purpose, 2026-10-22: the default gravity is 5 metres a second a second (was 32), and the jump 3.6 metres a second (was 9: the same jump of 1.3 metres).
 /// (Moved on purpose, Phase 38a: 10_938_225_372_350_862_205 before. Orientations are f64 (Phase 38a, 2026-10-23): a yaw and a pitch are turned into a quaternion in f64 and rounded once to the f32 the solver takes, which is not always the f32 the old arithmetic in f32 gave, to the last bit. Control: with `from_yaw_pitch` put back to the f32 arithmetic and nothing else changed, the old value came back; so this is the only thing that moved it.)
 /// (Moved on purpose, 2026-11-01: 6_737_149_441_902_238_511 before. Rapier works in f64 now (`rapier3d-f64`, with `enhanced-determinism`), and a hash is of the bits of the numbers, so every one of them moved. Nothing else is claimed to be the same bit for bit. The behaviour of ships and characters is checked by the other tests of this file, which pass as they were.)
-const PINNED_RUN: u64 = 11_533_809_196_757_911_678;
+/// (Moved on purpose, 2026-11-02: 11_533_809_196_757_911_678 before. The interface is `f64`: no input, setting or kept position is rounded to `f32` any more. Control: the old build and the new print the eyes after
+/// each of the four stages, and the first three agree to `f32` precision (30.2999992, 43.63 and 31.7000008 against 30.3, 43.63 and 31.7; (28.62981796, 26.3007565) against (28.62981830, 26.3007566); (25.06023216, 27.32958031) against (25.06023336, 27.32957867)), but after
+/// the fourth, 90 steps of a sprint over the turning deck, the old build was at (29.2812, 41.63, 23.0056) and the new at (29.2932, 41.63, 22.9767): 1 to 3 hundredths of a voxel apart. Rounding the inputs to `f32` does not bring the new one back to the old (it gives (29.2932, 41.63, 22.9767), the same as the unrounded new run), so
+/// it is not the inputs. I have not found what it is; **a guess, not verified:** the old character kept an `f32` position, which the controller's skin of 0.01 and its nudge of 1e-5 see differently from an `f64` one (see "The walker that creeps and hops" in `docs/history/joint-probe.md`).)
+const PINNED_RUN: u64 = 4_700_859_628_265_865_838;
 
 #[test]
 fn the_blocks_of_a_brick_that_is_not_the_first_of_a_turned_ship_are_where_the_turned_ship_puts_them()
@@ -468,7 +472,7 @@ fn the_blocks_of_a_brick_that_is_not_the_first_of_a_turned_ship_are_where_the_tu
     assert!(body.is_grounded());
     let wanted = middle.translated([0.0, 1.62, 0.0]);
     let (brick, offset) = (wanted.brick(), wanted.offset());
-    let wanted_height = brick.y() as f64 * 32.0 + f64::from(offset[1]);
+    let wanted_height = brick.y() as f64 * 32.0 + offset[1];
     assert!(
         (eye(&body)[1] - wanted_height).abs() < 0.03,
         "{:?} against {wanted_height}",
@@ -485,8 +489,8 @@ fn standing_on_the_floor(
     level: &mut Scene,
     ship: &mut Deck,
     pose: GridPose,
-    x: f32,
-    z: f32,
+    x: f64,
+    z: f64,
 ) -> CharacterBody {
     let mut body = CharacterBody::new(at(x, 41.7, z), physics::CharacterSettings::default());
     run(&mut body, level, ship, pose, STILL, 60);
@@ -510,7 +514,7 @@ fn a_ship_falls_onto_a_standing_character() -> (CharacterBody, f64, u64) {
     );
     let (mut lowest, mut hash) = (f64::INFINITY, 0u64);
     for step in 1..=72 {
-        let height = (52.0 - 1.4 * step as f32).max(40.0);
+        let height = (52.0 - 1.4 * step as f64).max(40.0);
         let pose = ship_at(16.5, height, 16.5, 0.0);
         run(&mut body, &mut level, &mut ship, pose, STILL, 1);
         lowest = lowest.min(feet(&body));
@@ -537,13 +541,13 @@ fn a_ship_that_falls_onto_a_standing_character_lifts_it_onto_itself_and_does_not
 fn a_ship_that_falls_onto_a_character_in_a_turned_frame_lifts_it_along_its_own_up() {
     // The frame is turned so that up is +x: the floor is the wall x <= 39, with its face at 40, gravity pulls toward -x, and a box of two
     // along x (and eight across) falls along -x onto a character standing at the middle of its footprint.
-    let half = std::f32::consts::FRAC_1_SQRT_2;
+    let half = std::f64::consts::FRAC_1_SQRT_2;
     let mut level = Scene::of(|voxel| voxel.x() <= 39);
     let mut ship = Deck::block([2, 8, 8]);
     let pulled = [-32.0, 0.0, 0.0];
     let mut body = CharacterBody::new(at(41.7, 20.5, 20.5), physics::CharacterSettings::default());
     body.reframe(at(41.7, 20.5, 20.5), [0.0; 3], [0.0, 0.0, -half, half]);
-    let ship_at_height = |height: f32| ship_at(height, 16.5, 16.5, 0.0);
+    let ship_at_height = |height: f64| ship_at(height, 16.5, 16.5, 0.0);
     let mut lowest = f64::INFINITY;
     run_pulled(
         &mut body,
@@ -562,7 +566,7 @@ fn a_ship_that_falls_onto_a_character_in_a_turned_frame_lifts_it_along_its_own_u
         eye(&body)
     );
     for step in 1..=12 {
-        let height = (52.0 - 1.4 * step as f32).max(40.0);
+        let height = (52.0 - 1.4 * step as f64).max(40.0);
         run_pulled(
             &mut body,
             &mut level,
@@ -603,7 +607,7 @@ fn a_ship_that_overlaps_a_character_by_less_than_the_margin_does_not_move_it_and
     let mut ship = Deck::block([8, 8, 8]);
     let far = ship_at(100.0, 40.0, 28.5, 0.0);
     let mut body = standing_on_the_floor(&mut level, &mut ship, far, 20.5, 32.5);
-    let mut keep_clear_with_the_face_at = |face: f32| {
+    let mut keep_clear_with_the_face_at = |face: f64| {
         body.update_foreign(&mut [ForeignGrid {
             id: GridId::new(GridId::FIRST_ALLOCATED),
             pose: ship_at(face, 40.0, 28.5, 0.0),
@@ -625,7 +629,7 @@ fn a_ship_that_sails_into_a_character_in_a_turned_frame_comes_as_near_as_the_wid
     // Up is +x (the floor is the wall x <= 39), so the character is 1.8 along x and 0.6 across, along y and z. A box of eight sails along
     // -y toward it, 0.2 a step: the nearest it gets is the half width of the character, and not the half of its length (0.9), which is
     // what a box that was not turned with the character would keep it away by.
-    let half = std::f32::consts::FRAC_1_SQRT_2;
+    let half = std::f64::consts::FRAC_1_SQRT_2;
     let mut level = Scene::of(|voxel| voxel.x() <= 39);
     let mut ship = Deck::block([8, 8, 8]);
     let pulled = [-32.0, 0.0, 0.0];
@@ -633,7 +637,7 @@ fn a_ship_that_sails_into_a_character_in_a_turned_frame_comes_as_near_as_the_wid
     body.reframe(at(41.7, 20.5, 20.5), [0.0; 3], [0.0, 0.0, -half, half]);
     // The box stands on the wall (x from 40 to 48) and covers the character in z (16.5 to 24.5); its face toward the character is at
     // y = 33 - 0.2 a step.
-    let face_after = |step: u32| 33.0 - 0.2 * step as f32;
+    let face_after = |step: u32| 33.0 - 0.2 * step as f64;
     let ship_at_step = |step: u32| ship_at(40.0, face_after(step), 16.5, 0.0);
     run_pulled(
         &mut body,
@@ -655,7 +659,7 @@ fn a_ship_that_sails_into_a_character_in_a_turned_frame_comes_as_near_as_the_wid
             STILL,
             1,
         );
-        let (face, across) = (f64::from(face_after(step)), eye(&body)[1]);
+        let (face, across) = (face_after(step), eye(&body)[1]);
         assert!(across <= face - 0.27, "step {step}: inside the box");
         // Once it has reached the character it pushes it along, and what is left between them is the half width and at most an eighth.
         if face < 20.5 {
@@ -676,18 +680,18 @@ fn a_ship_that_sails_into_a_character_in_a_turned_frame_comes_as_near_as_the_wid
 /// A box of `thickness` along x (eight along y and z) that starts with its west face 12.5 east of a character who stands on the floor and
 /// goes west `speed` voxels a step, until it is 12 past the place the character stood. After each step the character is out of the box,
 /// and above the floor. Returns whether it was ahead of the box (to the west of it) after every step, and a hash of its state after every step.
-fn sail_into_a_standing_character(thickness: i128, speed: f32) -> (bool, u64) {
+fn sail_into_a_standing_character(thickness: i128, speed: f64) -> (bool, u64) {
     let mut level = Scene::with_floor(39);
     let mut ship = Deck::block([thickness, 8, 8]);
-    let face_after = move |step: u32| 33.0 - speed * step as f32;
+    let face_after = move |step: u32| 33.0 - speed * step as f64;
     let at_step = move |step: u32| ship_at(face_after(step), 40.0, 28.5, 0.0);
     let mut body = standing_on_the_floor(&mut level, &mut ship, at_step(0), 20.5, 32.5);
-    let steps = ((12.5 + thickness as f32 + 12.0) / speed).ceil() as u32;
+    let steps = ((12.5 + thickness as f64 + 12.0) / speed).ceil() as u32;
     let (mut ahead, mut hash) = (true, 0u64);
     for step in 1..=steps {
         run(&mut body, &mut level, &mut ship, at_step(step), STILL, 1);
         hash = hash.rotate_left(5) ^ body.state_hash();
-        let (face, x) = (f64::from(face_after(step)), eye(&body)[0]);
+        let (face, x) = (face_after(step), eye(&body)[0]);
         let wall = thickness as f64;
         // The box is x from `face` to `face + thickness`, and the box of the character is 0.6 wide, less the margin a quarter either way.
         assert!(
@@ -709,7 +713,7 @@ fn sail_into_a_standing_character(thickness: i128, speed: f32) -> (bool, u64) {
 fn a_ship_that_moves_into_a_standing_character_pushes_it_ahead_of_it_at_any_speed_up_to_a_jump_of_more_than_half_its_thickness()
  {
     // 0.2 a step is 4 a second; 1.2 is 24; 3 is 60, a step of more than a third of the box and less than a half of it.
-    for speed in [0.2f32, 1.2, 3.0] {
+    for speed in [0.2f64, 1.2, 3.0] {
         assert!(
             sail_into_a_standing_character(8, speed).0,
             "speed {speed}: not ahead of the box all the way"
@@ -722,7 +726,7 @@ fn a_ship_that_moves_into_a_standing_character_pushes_it_ahead_of_it_at_any_spee
 
 #[test]
 fn a_thin_wall_that_jumps_over_a_character_leaves_it_out_of_the_wall_and_not_in_the_floor() {
-    for speed in [0.2f32, 1.0, 3.0, 6.0] {
+    for speed in [0.2f64, 1.0, 3.0, 6.0] {
         sail_into_a_standing_character(1, speed);
     }
 }
@@ -731,7 +735,7 @@ fn a_thin_wall_that_jumps_over_a_character_leaves_it_out_of_the_wall_and_not_in_
 fn pushed_run() -> u64 {
     let mut hash = a_ship_falls_onto_a_standing_character().2;
     for (thickness, speed) in [
-        (8, 0.2f32),
+        (8, 0.2f64),
         (8, 1.2),
         (8, 3.0),
         (8, 6.0),
@@ -754,7 +758,9 @@ fn ships_that_fall_on_a_character_and_sail_into_it_leave_it_in_the_same_state_ev
 }
 
 /// (Moved on purpose, 2026-11-01: 1_210_939_939_087_579_234 before. Rapier works in f64 now (`rapier3d-f64`, with `enhanced-determinism`), and a hash is of the bits of the numbers, so every one of them moved. Nothing else is claimed to be the same bit for bit.)
-const PINNED_PUSHED_RUN: u64 = 18_060_407_862_709_529_696;
+/// (Moved on purpose, 2026-11-02: 18_060_407_862_709_529_696 before. The interface is `f64`: no input, setting or kept position is rounded to `f32` any more. Control: the box that falls onto the standing character ends with the character's eyes at
+/// (20.5, 43.63, 20.5) in both builds (43.63000011 before, 43.62999999834 now) and its feet at their lowest, 40.00111092 before and 40.00111111 now: the same to the `f32` they were rounded to. The ships that sail into it are not printed.)
+const PINNED_PUSHED_RUN: u64 = 6_387_865_914_725_287_125;
 
 #[test]
 fn a_block_built_where_a_character_stands_moves_it_out_the_shortest_way_and_it_stays_on_the_floor()
@@ -884,7 +890,7 @@ fn a_character_inside_a_ship_with_no_room_near_stays_where_it_is_and_the_search_
 #[test]
 fn a_walker_exactly_along_an_axis_does_not_climb_a_slope_steeper_than_it_walks_up_a_step_at_a_time()
 {
-    for degrees in [70.0f32, 77.0] {
+    for degrees in [70.0f64, 77.0] {
         let mut level = Scene::with_floor(39);
         let mut ship = Deck::block([20, 20, 20]);
         let pose = GridPose::new(

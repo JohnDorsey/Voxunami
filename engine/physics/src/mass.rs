@@ -79,9 +79,9 @@ impl MassMoments {
             [-xz, -yz, trace - zz],
         ];
         Some(BodyMass {
-            mass: self.mass as f32,
-            centre_of_mass: centre.map(|axis| axis as f32),
-            inertia: tensor.map(|row| row.map(|entry| entry as f32)),
+            mass: self.mass,
+            centre_of_mass: centre.map(|axis| axis),
+            inertia: tensor.map(|row| row.map(|entry| entry)),
         })
     }
 }
@@ -89,10 +89,10 @@ impl MassMoments {
 /// What a body's mass is: the total, where the centre is (in the body's own coordinates), and the tensor of inertia about the centre.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BodyMass {
-    pub mass: f32,
-    pub centre_of_mass: [f32; 3],
+    pub mass: f64,
+    pub centre_of_mass: [f64; 3],
     /// `inertia[row][column]`, symmetric.
-    pub inertia: [[f32; 3]; 3],
+    pub inertia: [[f64; 3]; 3],
 }
 
 #[cfg(test)]
@@ -106,7 +106,7 @@ mod tests {
         MassMoments::sum((0..length).map(|x| MassMoments::of_voxel([x, 0, 0], mass)))
     }
 
-    fn close(a: f32, b: f32) -> bool {
+    fn close(a: f64, b: f64) -> bool {
         (a - b).abs() <= 1e-4 * (1.0 + b.abs())
     }
 
@@ -205,10 +205,10 @@ mod tests {
         .unwrap();
         let (centre, tensor) = directly(&voxels);
         for i in 0..3 {
-            assert!((f64::from(properties.centre_of_mass[i]) - centre[i]).abs() < 1e-5);
+            assert!((properties.centre_of_mass[i] - centre[i]).abs() < 1e-5);
             for j in 0..3 {
                 assert!(
-                    (f64::from(properties.inertia[i][j]) - tensor[i][j]).abs() < 1e-4,
+                    (properties.inertia[i][j] - tensor[i][j]).abs() < 1e-4,
                     "{i}{j}: {:?} vs {tensor:?}",
                     properties.inertia
                 );
@@ -268,10 +268,10 @@ mod tests {
             .unwrap();
             let (centre, tensor) = directly(&voxels);
             for i in 0..3 {
-                prop_assert!((f64::from(properties.centre_of_mass[i]) - centre[i]).abs() < 1e-4);
+                prop_assert!((properties.centre_of_mass[i] - centre[i]).abs() < 1e-4);
                 for j in 0..3 {
                     let scale = 1.0 + tensor[i][j].abs();
-                    prop_assert!((f64::from(properties.inertia[i][j]) - tensor[i][j]).abs() <= 1e-4 * scale);
+                    prop_assert!((properties.inertia[i][j] - tensor[i][j]).abs() <= 1e-4 * scale);
                     prop_assert!(properties.inertia[i][j] == properties.inertia[j][i]);
                 }
             }
@@ -292,8 +292,8 @@ mod tests {
         };
         let (a, b) = (make(), make());
         assert_eq!(
-            a.inertia.map(|row| row.map(f32::to_bits)),
-            b.inertia.map(|row| row.map(f32::to_bits))
+            a.inertia.map(|row| row.map(f64::to_bits)),
+            b.inertia.map(|row| row.map(f64::to_bits))
         );
     }
 }

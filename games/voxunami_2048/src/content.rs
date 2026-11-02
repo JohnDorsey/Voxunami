@@ -165,7 +165,7 @@ impl Content2048 {
             families: no_families(),
             body_support: BodySupport::default(),
             builtin_bodies: Vec::new(),
-            pull_strength: f64::from(GravitySettings::default().pull_strength),
+            pull_strength: GravitySettings::default().pull_strength,
             default_generator: numbered_hills_generator_identifier(),
             assignment_cube_level: ASSIGNMENT_CUBE_LEVEL,
             ambient_light: 0,

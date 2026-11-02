@@ -23,7 +23,7 @@ marked **[belief]**. This builds on `planet-spec.md` (planets are ships), `movin
 - **[code]** The tick (`ServerWorld::tick`) starts at zero at each start of a server and is not saved. Nothing in the world has a time.
 - **[code]** `data_packs` loads JSON packs (blocks and patches) on the server only; a client learns the result through the content package, which "holds no
   generators" (`content-package-spec.md`).
-- **[code]** The bodies of a level are in frames, one for each place (`Frame`): `BodyWorld` is `f32` around a brick of origin, and a frame's origin never moves.
+- **[code]** The bodies of a level are in frames, one for each place (`Frame`): `BodyWorld` is `f32` around a brick of origin (`f64` since 2026-11-01), and a frame's origin never moves.
 
 ## 3. The design
 
@@ -131,7 +131,7 @@ Each ends with tests (first), clippy, rustfmt, the Windows and Linux suites, mut
 
 ## 6. Risks I see
 
-- **Precision.** Orbit radii of 10^9 m are fine in `f64` and in a `WorldPosition` (a brick and an `f32` offset in it), but a frame's local `f32` coordinates are only exact within
+- **Precision.** Orbit radii of 10^9 m are fine in `f64` and in a `WorldPosition` (a brick and an `f32` offset in it; an `f64` one since 2026-11-02), but a frame's local coordinates, `f32` when this was written and `f64` since 2026-11-01 (the limits are kept), are only exact within
   tens of kilometres of its origin, so a frame follows a planet and does not use world coordinates. **[belief]** this works; the proof is the test that a ship rests on a planet
   that is moving at 30 km/s for a minute, and is where it should be.
 - **Rapier and a fast kinematic body.** The planet turns and carries its ground; at the equator of a 63 km planet that turns once an hour the ground moves at 110 m/s, which

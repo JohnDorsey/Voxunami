@@ -43,7 +43,7 @@ impl Client {
         });
     }
 
-    fn pose_at(&mut self, x: f32) {
+    fn pose_at(&mut self, x: f64) {
         let pose = PlayerPose {
             position: WorldPosition::new(BrickCoordinate::ORIGIN, [x, 1.0, 1.0]),
             yaw: 0.0,

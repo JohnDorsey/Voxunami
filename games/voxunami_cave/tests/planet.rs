@@ -26,7 +26,7 @@ use world_storage::GridTerrain;
 /// The radius of the planet, in voxels (metres).
 const RADIUS: f64 = 63_710.0;
 /// The mass that pulls 10 metres a second a second at that distance from the centre, with the real G.
-const MASS: f32 = (10.0 * RADIUS * RADIUS / 6.674e-11) as f32;
+const MASS: f64 = 10.0 * RADIUS * RADIUS / 6.674e-11;
 /// How high the top of the planet is, in the world, at x = 0, z = 0.
 const TOP_OF_THE_PLANET: f64 = 400.0;
 
@@ -42,7 +42,7 @@ fn make_the_planet(scene: &mut Scene) -> f64 {
     make_a_planet(
         scene,
         GridPose::new(
-            WorldPosition::new(BrickCoordinate::ORIGIN, [0.0, centre as f32, 0.0]),
+            WorldPosition::new(BrickCoordinate::ORIGIN, [0.0, centre, 0.0]),
             Orientation::IDENTITY,
         ),
     );
@@ -401,7 +401,7 @@ fn a_slab_put_on_a_planet_upside_down_is_a_ceiling_to_a_walker_and_not_a_floor()
 /// is 63,679 in the planet's coordinates from x = -2 to 5 and z = 5 to 9, and one higher at x = 2 and 3 just before z = 5, which is why the cubes are put half a voxel
 /// from the step: a cube flush against a step and pulled sideways into it keeps moving a hundredth of a metre a second and does not go to sleep).
 const CUBE: i128 = 4;
-const PLACE: [f32; 2] = [0.5, 5.5];
+const PLACE: [f64; 2] = [0.5, 5.5];
 /// The columns, in the planet's coordinates, that a cube put at [`PLACE`] has under it.
 const COLUMNS_X: std::ops::Range<i128> = 0..5;
 const COLUMNS_Z: std::ops::Range<i128> = 5..10;
@@ -423,7 +423,7 @@ fn place_of_the_ship(scene: &Scene, number: u64) -> [f64; 3] {
     [brick.x(), brick.y(), brick.z()]
         .into_iter()
         .zip(offset)
-        .map(|(index, offset)| index as f64 * 32.0 + f64::from(offset))
+        .map(|(index, offset)| index as f64 * 32.0 + offset)
         .collect::<Vec<_>>()
         .try_into()
         .unwrap()
@@ -433,7 +433,7 @@ fn place_of_the_ship(scene: &Scene, number: u64) -> [f64; 3] {
 fn drop_a_cube_over_the_ground(scene: &mut Scene, ground: f64, height: f64) {
     make_ship(
         scene,
-        pose_at(PLACE[0], (ground + height) as f32, PLACE[1]),
+        pose_at(PLACE[0], ground + height, PLACE[1]),
         false,
         [CUBE; 3],
         |_| true,
@@ -467,7 +467,7 @@ fn a_ship_released_over_a_planet_falls_onto_the_ground_it_generates_and_rests_on
         "the ship is at {height}, the ground at {ground}"
     );
     assert!(
-        (x - f64::from(PLACE[0])).abs() < 0.1 && (z - f64::from(PLACE[1])).abs() < 0.1,
+        (x - PLACE[0]).abs() < 0.1 && (z - PLACE[1]).abs() < 0.1,
         "it stayed where it fell: {x} {z}"
     );
     // At rest, and so it stays, to the bit.
@@ -538,7 +538,7 @@ fn a_ship_resting_on_a_planet_falls_into_a_hole_dug_under_it_and_rests_on_the_bo
         "it rested at {resting} and is at {fallen}"
     );
     assert!(
-        (x - f64::from(PLACE[0])).abs() < 0.1 && (z - f64::from(PLACE[1])).abs() < 0.1,
+        (x - PLACE[0]).abs() < 0.1 && (z - PLACE[1]).abs() < 0.1,
         "{x} {z}"
     );
 }
@@ -555,7 +555,7 @@ fn a_ship_released_over_a_planet_that_is_turned_and_far_from_the_origin_rests_on
     make_a_planet(
         &mut scene,
         GridPose::new(
-            WorldPosition::new(BrickCoordinate::ORIGIN, [0.0, 300.0, (700 - ground) as f32]),
+            WorldPosition::new(BrickCoordinate::ORIGIN, [0.0, 300.0, (700 - ground) as f64]),
             turned,
         ),
     );
@@ -595,7 +595,7 @@ fn a_planet_that_is_moved_has_its_ground_where_it_is_put_and_one_that_is_gone_ha
     scene.ticks(3);
     // The planet is moved: 7 along x and 100 up.
     let moved = GridPose::new(
-        WorldPosition::new(BrickCoordinate::ORIGIN, [7.0, (centre + 100.0) as f32, 0.0]),
+        WorldPosition::new(BrickCoordinate::ORIGIN, [7.0, (centre + 100.0), 0.0]),
         Orientation::IDENTITY,
     );
     scene.run(move |world| world.set_grid_pose(planet(), moved).unwrap());
@@ -603,7 +603,7 @@ fn a_planet_that_is_moved_has_its_ground_where_it_is_put_and_one_that_is_gone_ha
     // A cube over the same patch of the moved planet.
     make_ship(
         &mut scene,
-        pose_at(PLACE[0] + 7.0, (ground + 10.0) as f32, PLACE[1]),
+        pose_at(PLACE[0] + 7.0, ground + 10.0, PLACE[1]),
         false,
         [CUBE; 3],
         |_| true,
@@ -614,7 +614,7 @@ fn a_planet_that_is_moved_has_its_ground_where_it_is_put_and_one_that_is_gone_ha
         (height - ground).abs() < 0.05,
         "the ship is at {height}, the ground at {ground}"
     );
-    assert!((x - (f64::from(PLACE[0]) + 7.0)).abs() < 0.1, "{x}");
+    assert!((x - (PLACE[0] + 7.0)).abs() < 0.1, "{x}");
 
     // The planet goes, and the pull of the level comes back: nothing is under the ship.
     scene.run(|world| {
@@ -639,7 +639,7 @@ fn bricks_made_by_a_cube(height: f64, held: bool, with_a_planet: bool, ticks: us
     };
     make_ship(
         &mut scene,
-        pose_at(PLACE[0], (ground + centre + height) as f32, PLACE[1]),
+        pose_at(PLACE[0], ground + centre + height, PLACE[1]),
         held,
         [CUBE; 3],
         |_| true,
@@ -682,7 +682,7 @@ fn a_ship_that_goes_away_from_a_planet_and_comes_back_finds_its_ground_where_it_
     scene.ticks(80);
     assert!((place_of_the_ship(&scene, 1)[1] - ground).abs() < 0.05);
     // It is taken a hundred voxels up and kept there for a while (the colliders of the ground it left are let go), and put back where it was, at rest.
-    let away = pose_at(PLACE[0], (ground + 100.0) as f32, PLACE[1]);
+    let away = pose_at(PLACE[0], ground + 100.0, PLACE[1]);
     scene.run(move |world| {
         world.set_grid_pose(ship_id(1), away).unwrap();
         world
@@ -690,7 +690,7 @@ fn a_ship_that_goes_away_from_a_planet_and_comes_back_finds_its_ground_where_it_
             .unwrap();
     });
     scene.ticks(10);
-    let back = pose_at(PLACE[0], (ground + 3.0) as f32, PLACE[1]);
+    let back = pose_at(PLACE[0], ground + 3.0, PLACE[1]);
     scene.run(move |world| {
         world.set_grid_pose(ship_id(1), back).unwrap();
         world
@@ -715,7 +715,7 @@ fn a_ship_rests_on_what_is_built_on_a_planet_past_the_bricks_its_generator_makes
     make_a_planet_that_reaches(
         &mut scene,
         GridPose::new(
-            WorldPosition::new(BrickCoordinate::ORIGIN, [0.0, centre as f32, 0.0]),
+            WorldPosition::new(BrickCoordinate::ORIGIN, [0.0, centre, 0.0]),
             Orientation::IDENTITY,
         ),
         1990,
@@ -744,7 +744,7 @@ fn a_ship_rests_on_what_is_built_on_a_planet_past_the_bricks_its_generator_makes
     let top_of_the_slab = (slab + 1) as f64 + centre;
     make_ship(
         &mut scene,
-        pose_at(PLACE[0], (top_of_the_slab + 12.0) as f32, PLACE[1]),
+        pose_at(PLACE[0], top_of_the_slab + 12.0, PLACE[1]),
         false,
         [CUBE; 3],
         |_| true,
@@ -911,7 +911,7 @@ fn a_ship_rests_on_a_second_planet_two_hundred_kilometres_from_the_first_and_bot
                 GridPose::new(
                     WorldPosition::new(
                         BrickCoordinate::new(200_000 / 32, 0, 0),
-                        [0.0, second_centre as f32, 0.0],
+                        [0.0, second_centre, 0.0],
                     ),
                     Orientation::IDENTITY,
                 ),
@@ -932,8 +932,8 @@ fn a_ship_rests_on_a_second_planet_two_hundred_kilometres_from_the_first_and_bot
     make_ship(
         &mut scene,
         pose_at(
-            (200_000 / 32 * 32) as f32 + PLACE[0],
-            (ground + 10.0) as f32,
+            (200_000 / 32 * 32) as f64 + PLACE[0],
+            ground + 10.0,
             PLACE[1],
         ),
         false,

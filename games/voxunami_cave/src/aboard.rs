@@ -25,9 +25,9 @@ pub fn in_voxels(position: WorldPosition) -> [f64; 3] {
     let (brick, offset) = (position.brick(), position.offset());
     let edge = BRICK_EDGE_LENGTH as f64;
     [
-        brick.x() as f64 * edge + f64::from(offset[0]),
-        brick.y() as f64 * edge + f64::from(offset[1]),
-        brick.z() as f64 * edge + f64::from(offset[2]),
+        brick.x() as f64 * edge + offset[0],
+        brick.y() as f64 * edge + offset[1],
+        brick.z() as f64 * edge + offset[2],
     ]
 }
 
@@ -118,7 +118,7 @@ pub fn stands_on(
     hull: &mut impl SolidAt,
     ship: &MovingGrid,
     feet: WorldPosition,
-    down: [f32; 3],
+    down: [f64; 3],
 ) -> bool {
     let Some(local) = ship.pose.world_to_local(feet) else {
         return false;
@@ -203,7 +203,7 @@ mod tests {
         (ship, block, state)
     }
 
-    fn at(x: f32, y: f32, z: f32) -> WorldPosition {
+    fn at(x: f64, y: f64, z: f64) -> WorldPosition {
         WorldPosition::new(BrickCoordinate::ORIGIN, [x, y, z])
     }
 
@@ -319,7 +319,7 @@ mod tests {
             orientation_channel: None,
             collisions: &collisions,
         };
-        let down = [0.0, -32.0, 0.0].map(|c: f32| c / 32.0);
+        let down = [0.0, -32.0, 0.0].map(|c: f64| c / 32.0);
         // The top of the floor is at 2. Feet on it, a hair above it (the gap the controller leaves), and not on it.
         assert!(stands_on(&mut hull, &ship, at(5.0, 2.0, 5.0), down));
         assert!(stands_on(&mut hull, &ship, at(5.0, 2.05, 5.0), down));

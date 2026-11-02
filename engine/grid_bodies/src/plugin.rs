@@ -17,12 +17,13 @@ use crate::collision::{BlockCollisions, GeneratedHull, ShipHull, WorldTerrain};
 use crate::connectivity::{Connectivity, Outcome};
 use crate::docking::{Docking, Port, PortView, approach, docked_pose, torque_of_force};
 
-/// How far, in bricks, from the origin of a frame a ship may be: `f32` is exact enough within it. A ship that is not within this of the origin of any
+/// How far, in bricks, from the origin of a frame a ship may be. (Chosen when Rapier worked in `f32`, which is exact to a hundredth of a voxel at 500 bricks; it works in `f64` now, which is exact
+/// to 1e-10 of one there, and the limit is kept: raising it is open.) A ship that is not within this of the origin of any
 /// frame of its level makes a frame of its own, centred on it, so ships far apart are all simulated; a ship that goes twice as far from the origin of
 /// its frame is taken out of it and put in another (a frame is a place, not a ship's).
 pub const FRAME_RADIUS_BRICKS: i128 = 500;
 
-/// How far from the origin of a level's frame the origin of a planet may be, in bricks (4,096 is 131,072 voxels, where an `f32` is exact to a hundredth of one):
+/// How far from the origin of a level's frame the origin of a planet may be, in bricks (4,096 is 131,072 voxels, where an `f32` was exact to a hundredth of one; an `f64` is exact to 1e-11 and the limit is kept, raising it is open):
 /// the planet's voxels are in its own coordinates, which are as far from the frame as it is. A planet farther than this has no body, and the ships over it fall
 /// through it (a planet that large needs a frame of its own).
 pub const PLANET_REACH_BRICKS: i128 = 4096;
@@ -30,17 +31,17 @@ pub const PLANET_REACH_BRICKS: i128 = 4096;
 /// How far from a ship's bounds terrain has colliders, in voxels: a few, and the way the ship goes in a few ticks. (A brick of natural terrain
 /// costs ten milliseconds or more to generate and make colliders of, on the thread of the tick, so a ship that has colliders for all the bricks
 /// within a brick of its bounds, as it first had, stopped the game for a quarter of a second each time it crossed from one brick to the next.)
-const TERRAIN_LOOKAHEAD_VOXELS: f32 = 8.0;
-const TERRAIN_LOOKAHEAD_SECONDS: f32 = 0.25;
+const TERRAIN_LOOKAHEAD_VOXELS: f64 = 8.0;
+const TERRAIN_LOOKAHEAD_SECONDS: f64 = 0.25;
 /// The terrain a ship *needs* colliders of now: the bricks its bounds reach in the next two ticks (its speed for a tenth of a second) and two voxels more. These
 /// are always made in the tick, whatever it costs, so that a ship never reaches a brick that has none.
-const TERRAIN_NEEDED_VOXELS: f32 = 2.0;
-const TERRAIN_NEEDED_SECONDS: f32 = 0.1;
+const TERRAIN_NEEDED_VOXELS: f64 = 2.0;
+const TERRAIN_NEEDED_SECONDS: f64 = 0.1;
 /// The rest of the lookahead is *wanted*, not needed: it is made nearest first, at most this many bricks a tick. It is a count and not a time, so that what
 /// is simulated is the same on every machine (a brick of natural terrain costs 5 to 25 ms to generate and make colliders of, so this bounds a tick).
 const TERRAIN_WANTED_BRICKS_PER_TICK: usize = 1;
 /// How much farther each ring of the wanted bricks reaches, in voxels: the nearer a brick is in rings, the sooner it is made.
-const TERRAIN_RING_VOXELS: f32 = 8.0;
+const TERRAIN_RING_VOXELS: f64 = 8.0;
 
 /// How many voxels of ships the checks for a ship that was cut in two may look at in a tick, all the ships together. A count and not a time, for
 /// the same reason as the budget of terrain. A cut that does not separate anything is found in a few steps; one that does costs about the size of the
@@ -48,13 +49,13 @@ const TERRAIN_RING_VOXELS: f32 = 8.0;
 const SPLIT_VISITS_PER_TICK: usize = 4096;
 /// How much farther before the colliders of terrain are let go, so that a ship at the edge of the margin does not make and drop the same brick
 /// every tick.
-const TERRAIN_KEEP_EXTRA_VOXELS: f32 = 16.0;
+const TERRAIN_KEEP_EXTRA_VOXELS: f64 = 16.0;
 
 /// How many ticks a pair of ships that could not be docked is left alone before it is tried again: a second.
 const REFUSED_RETRY_TICKS: u64 = 20;
 
 /// How much gravity may change, as a share of its size (or of one voxel a second squared, if that is more), before it wakes a ship that sleeps.
-const GRAVITY_CHANGE_THAT_WAKES: f32 = 1e-3;
+const GRAVITY_CHANGE_THAT_WAKES: f64 = 1e-3;
 
 /// How near two places of a frame must be to be the same one, in voxels: a ship that a planet carried is where the frame has it to within the rounding of the
 /// arithmetic of carrying it, which is millionths of a voxel; one that someone moved is at least this far from it.
@@ -188,12 +189,12 @@ struct Ship {
     ports: BTreeMap<BrickCoordinate, Vec<Port>>,
     kind: BodyKind,
     /// How much the ship weighs and where its centre of mass is in its coordinates, as last worked out.
-    mass: f32,
-    centre_of_mass: [f32; 3],
+    mass: f64,
+    centre_of_mass: [f64; 3],
     /// The gravity the ship was last pulled by: a ship at rest sleeps while it is the same, and is woken when it changes.
-    gravity: [f32; 3],
+    gravity: [f64; 3],
     /// What the simulation last said of where the ship is and how fast it moves: if the world says other, something else moved it.
-    written: (GridPose, [f32; 3], [f32; 3]),
+    written: (GridPose, [f64; 3], [f64; 3]),
 }
 
 /// A planet (a ship with terrain) in the simulation: a body that is fixed, whose colliders are only of the bricks that ships are near.
@@ -239,7 +240,7 @@ struct Follow {
     /// How far it has gone since, as of this tick.
     shift: Displacement,
     /// How fast it goes in the world, as of this tick.
-    velocity: [f32; 3],
+    velocity: [f64; 3],
 }
 
 impl Follow {
@@ -261,7 +262,7 @@ fn local_in(follow: Option<Follow>, world: WorldPosition) -> Option<WorldPositio
 }
 
 /// How fast something goes in such a frame, from how fast it goes in the world.
-fn velocity_in(follow: Option<Follow>, world: [f32; 3]) -> [f32; 3] {
+fn velocity_in(follow: Option<Follow>, world: [f64; 3]) -> [f64; 3] {
     match follow {
         None => world,
         Some(follow) => [0, 1, 2].map(|axis| world[axis] - follow.velocity[axis]),
@@ -269,7 +270,7 @@ fn velocity_in(follow: Option<Follow>, world: [f32; 3]) -> [f32; 3] {
 }
 
 /// How fast something goes in the world, from how fast it goes in such a frame.
-fn velocity_from(follow: Option<Follow>, local: [f32; 3]) -> [f32; 3] {
+fn velocity_from(follow: Option<Follow>, local: [f64; 3]) -> [f64; 3] {
     match follow {
         None => local,
         Some(follow) => [0, 1, 2].map(|axis| local[axis] + follow.velocity[axis]),
@@ -291,8 +292,8 @@ fn ship_state_in(
     follow: Option<Follow>,
     kind: BodyKind,
     pose: GridPose,
-    linear_velocity: [f32; 3],
-    angular_velocity: [f32; 3],
+    linear_velocity: [f64; 3],
+    angular_velocity: [f64; 3],
 ) -> Option<BodyState> {
     Some(BodyState {
         position: local_in(follow, pose.position)?,
@@ -308,14 +309,14 @@ fn ship_state_in(
 
 /// Where a body that is at `state` at the end of a step of `time_step` seconds was at the start of it, going as it goes. A kinematic body is set to this before the
 /// step, so that it ends the step where the world says it is, and what rests on it is carried as the planet turns and goes, and not a step ahead of it.
-fn state_before(state: BodyState, time_step: f32) -> BodyState {
+fn state_before(state: BodyState, time_step: f64) -> BodyState {
     let position = state
         .position
         .translated(state.linear_velocity.map(|speed| -speed * time_step));
     let [x, y, z] = state.angular_velocity.map(f64::from);
     let speed = libm::sqrt(x * x + y * y + z * z);
     let orientation = if speed > 0.0 {
-        let half = 0.5 * speed * f64::from(time_step);
+        let half = 0.5 * speed * time_step;
         let (sine, cosine) = (libm::sin(half) / speed, libm::cos(half));
         match Orientation::from_components([x * sine, y * sine, z * sine, cosine]) {
             Some(turn) => turn.inverse().compose(state.orientation),
@@ -339,9 +340,9 @@ fn planet_state(
     follow: Option<Follow>,
     moves: bool,
     pose: GridPose,
-    linear_velocity: [f32; 3],
-    angular_velocity: [f32; 3],
-    time_step: f32,
+    linear_velocity: [f64; 3],
+    angular_velocity: [f64; 3],
+    time_step: f64,
 ) -> Option<BodyState> {
     let end_of_tick = BodyState {
         position: local_in(follow, pose.position)?,
@@ -377,7 +378,7 @@ struct Bodies {
     checks: BTreeMap<GridId, Check>,
     changed_terrain_bricks: BTreeSet<(LevelIndex, BrickCoordinate)>,
     /// What the world is to be told of the weight of ships, at the end of the step.
-    weighed: BTreeMap<GridId, (f32, [f32; 3])>,
+    weighed: BTreeMap<GridId, (f64, [f64; 3])>,
     /// Pairs of ships (the lower id first) that could not be docked, and the tick before which they are not tried again nor pulled together: the
     /// attempt works out the whole of the smaller ship, and a pair whose blocks meet and are pushed about by the bodies would be tried every tick.
     refused: BTreeMap<(GridId, GridId), u64>,
@@ -1173,7 +1174,7 @@ impl Bodies {
                 &planet.bricks
             }
         };
-        let bricks_near = |body: BodyId, margin: f32| match ground {
+        let bricks_near = |body: BodyId, margin: f64| match ground {
             Ground::Level => level.bodies.bricks_near(body, margin),
             Ground::Planet(id) => level.bodies.bricks_near_in(body, margin, BodyId(id.get())),
         };
@@ -1267,10 +1268,10 @@ impl Bodies {
                 };
                 let force = gravity.map(|component| component * record.mass);
                 // A change in gravity wakes a ship that is asleep (a heavy ship came near); the same gravity does not, so a ship at rest sleeps.
-                let change: f32 = (0..3)
+                let change: f64 = (0..3)
                     .map(|axis| (gravity[axis] - record.gravity[axis]).abs())
                     .sum();
-                let size: f32 = gravity.iter().map(|component| component.abs()).sum();
+                let size: f64 = gravity.iter().map(|component| component.abs()).sum();
                 record.gravity = gravity;
                 let body = BodyId(id.get());
                 let _ = if change > GRAVITY_CHANGE_THAT_WAKES * size.max(1.0) {
@@ -1579,8 +1580,8 @@ impl Bodies {
         let (linear, angular) = match (held, motions) {
             (false, [Some(one), Some(other)]) => match BodyMotion::join(&[one, other]) {
                 Some(whole) => (
-                    whole.linear_velocity.map(|speed| speed as f32),
-                    whole.angular_velocity.map(|speed| speed as f32),
+                    whole.linear_velocity.map(|speed| speed),
+                    whole.angular_velocity.map(|speed| speed),
                 ),
                 None => ([0.0; 3], [0.0; 3]),
             },
@@ -1708,18 +1709,17 @@ impl Bodies {
                 // Rapier works out a lever from a centre of mass it updates when it steps, which is not the one just set for a ship made this tick.
                 let pull = force.map(|component| component * sign);
                 let (at, centre) = (port.local_centre(), record.centre_of_mass);
-                let arm = [0, 1, 2].map(|axis| at[axis] - f64::from(centre[axis]));
+                let arm = [0, 1, 2].map(|axis| at[axis] - centre[axis]);
                 let lever = torque_of_force(ship.pose.rotation_matrix(), arm, pull);
                 // The second ship turns toward line and the first the other way.
                 let turn = [0, 1, 2].map(|axis| lever[axis] - twist[axis] * sign);
                 let body = BodyId(id.get());
-                let _ =
-                    level
-                        .bodies
-                        .apply_force(body, pull.map(|component| component as f32), None);
                 let _ = level
                     .bodies
-                    .apply_torque(body, turn.map(|component| component as f32));
+                    .apply_force(body, pull.map(|component| component), None);
+                let _ = level
+                    .bodies
+                    .apply_torque(body, turn.map(|component| component));
             }
         }
     }
@@ -1857,7 +1857,7 @@ impl Weigher<'_> {
                             voxels.iter().map(|v| v.y() as f64 + 0.5).sum::<f64>() / count,
                             voxels.iter().map(|v| v.z() as f64 + 0.5).sum::<f64>() / count,
                         ]
-                        .map(|value| value as f32)
+                        .map(|value| value)
                     },
                     |properties| properties.centre_of_mass,
                 );
@@ -1950,10 +1950,10 @@ mod tests {
 
     fn body_at(
         brick: (i128, i128, i128),
-        offset: [f32; 3],
+        offset: [f64; 3],
         orientation: Orientation,
-        linear: [f32; 3],
-        angular: [f32; 3],
+        linear: [f64; 3],
+        angular: [f64; 3],
     ) -> BodyState {
         BodyState {
             position: WorldPosition::new(BrickCoordinate::new(brick.0, brick.1, brick.2), offset),
@@ -1963,7 +1963,7 @@ mod tests {
         }
     }
 
-    fn follows(shift_bricks: [i128; 3], shift_offset: [f32; 3], velocity: [f32; 3]) -> Follow {
+    fn follows(shift_bricks: [i128; 3], shift_offset: [f64; 3], velocity: [f64; 3]) -> Follow {
         Follow {
             planet: GridId::new(GridId::FIRST_ALLOCATED + 1),
             anchor: WorldPosition::new(BrickCoordinate::new(7, 8, 9), [1.0; 3]),
@@ -2083,7 +2083,7 @@ mod tests {
     #[test]
     fn two_places_are_the_same_within_a_thousandth_of_a_voxel_on_every_axis() {
         let at =
-            |x: f32, y: f32, z: f32| WorldPosition::new(BrickCoordinate::new(3, 4, 5), [x, y, z]);
+            |x: f64, y: f64, z: f64| WorldPosition::new(BrickCoordinate::new(3, 4, 5), [x, y, z]);
         let place = at(10.0, 10.0, 10.0);
         assert!(same_place(place, place));
         assert!(same_place(place, at(10.0009, 9.9991, 10.0)));

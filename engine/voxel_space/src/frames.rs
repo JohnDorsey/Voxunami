@@ -83,9 +83,9 @@ impl GridPose {
         let brick = position.brick();
         let offset = position.offset();
         [
-            brick.x() as f64 * EDGE + f64::from(offset[0]),
-            brick.y() as f64 * EDGE + f64::from(offset[1]),
-            brick.z() as f64 * EDGE + f64::from(offset[2]),
+            brick.x() as f64 * EDGE + offset[0],
+            brick.y() as f64 * EDGE + offset[1],
+            brick.z() as f64 * EDGE + offset[2],
         ]
     }
 
@@ -95,19 +95,16 @@ impl GridPose {
         let (brick, origin_brick) = (world.brick(), self.position.brick());
         let (offset, origin_offset) = (world.offset(), self.position.offset());
         [
-            (brick.x() - origin_brick.x()) as f64 * EDGE
-                + (f64::from(offset[0]) - f64::from(origin_offset[0])),
-            (brick.y() - origin_brick.y()) as f64 * EDGE
-                + (f64::from(offset[1]) - f64::from(origin_offset[1])),
-            (brick.z() - origin_brick.z()) as f64 * EDGE
-                + (f64::from(offset[2]) - f64::from(origin_offset[2])),
+            (brick.x() - origin_brick.x()) as f64 * EDGE + (offset[0] - origin_offset[0]),
+            (brick.y() - origin_brick.y()) as f64 * EDGE + (offset[1] - origin_offset[1]),
+            (brick.z() - origin_brick.z()) as f64 * EDGE + (offset[2] - origin_offset[2]),
         ]
     }
 
     /// `origin` moved by a vector of voxels, with whole bricks carried exactly.
     fn displaced(origin: WorldPosition, vector: [f64; 3]) -> Option<WorldPosition> {
         let mut bricks = [0i128; 3];
-        let mut offset = [0.0f32; 3];
+        let mut offset = [0.0f64; 3];
         let origin_offset = origin.offset();
         for axis in 0..3 {
             if !vector[axis].is_finite() {
@@ -116,7 +113,7 @@ impl GridPose {
             let whole = (vector[axis] / EDGE).floor();
             // The cast saturates, and an out-of-range brick is refused below.
             bricks[axis] = whole as i128;
-            offset[axis] = (f64::from(origin_offset[axis]) + (vector[axis] - whole * EDGE)) as f32;
+            offset[axis] = origin_offset[axis] + (vector[axis] - whole * EDGE);
         }
         let brick = origin
             .brick()
@@ -161,15 +158,13 @@ impl GridPose {
     }
 
     /// A direction (gravity, a velocity) in the grid's axes, in the world's axes.
-    pub fn direction_to_world(&self, direction: [f32; 3]) -> [f32; 3] {
-        Self::turn(self.rotation_matrix(), direction.map(f64::from))
-            .map(|component| component as f32)
+    pub fn direction_to_world(&self, direction: [f64; 3]) -> [f64; 3] {
+        Self::turn(self.rotation_matrix(), direction.map(f64::from)).map(|component| component)
     }
 
     /// A direction in the world's axes, in the grid's axes.
-    pub fn direction_to_local(&self, direction: [f32; 3]) -> [f32; 3] {
-        Self::turn_back(self.rotation_matrix(), direction.map(f64::from))
-            .map(|component| component as f32)
+    pub fn direction_to_local(&self, direction: [f64; 3]) -> [f64; 3] {
+        Self::turn_back(self.rotation_matrix(), direction.map(f64::from)).map(|component| component)
     }
 
     /// Where a thing placed at `position` in the grid and turned `orientation` there is in the world: its position, and its turn (the
@@ -272,7 +267,7 @@ mod tests {
     use super::*;
     use crate::{BRICK_COORDINATE_MAXIMUM, BRICK_COORDINATE_MINIMUM};
 
-    fn at(x: i128, y: i128, z: i128, offset: [f32; 3]) -> WorldPosition {
+    fn at(x: i128, y: i128, z: i128, offset: [f64; 3]) -> WorldPosition {
         WorldPosition::new(BrickCoordinate::new(x, y, z), offset)
     }
 
@@ -299,7 +294,7 @@ mod tests {
         assert!(low.local_to_world(at(0, 0, 0, [1.5, 0.0, 0.0])).is_some());
     }
 
-    fn close(a: WorldPosition, b: WorldPosition, tolerance: f32) -> bool {
+    fn close(a: WorldPosition, b: WorldPosition, tolerance: f64) -> bool {
         a.relative_to(b).iter().all(|c| c.abs() <= tolerance)
     }
 
@@ -309,7 +304,7 @@ mod tests {
             VoxelCoordinate::new(voxel[0], voxel[1], voxel[2]).split().0,
             {
                 let local = VoxelCoordinate::new(voxel[0], voxel[1], voxel[2]).split().1;
-                [local.x() as f32, local.y() as f32, local.z() as f32]
+                [local.x() as f64, local.y() as f64, local.z() as f64]
             },
         );
         pose(position, rotation.orientation())
@@ -350,7 +345,7 @@ mod tests {
         );
         let turned = pose(
             at(0, 0, 0, [0.0; 3]),
-            Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0),
+            Orientation::from_yaw_pitch(std::f64::consts::FRAC_PI_2, 0.0),
         );
         let matrix = turned.rotation_matrix();
         assert!((matrix[0][2] - 1.0).abs() < 1e-6 && (matrix[2][0] + 1.0).abs() < 1e-6);
@@ -373,7 +368,7 @@ mod tests {
     fn a_quarter_turn_about_the_vertical_axis_carries_z_onto_x() {
         let grid = pose(
             at(0, 0, 0, [0.0; 3]),
-            Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0),
+            Orientation::from_yaw_pitch(std::f64::consts::FRAC_PI_2, 0.0),
         );
         let world = grid.local_to_world(at(0, 0, 0, [0.0, 0.0, 10.0])).unwrap();
         assert!(
@@ -495,7 +490,7 @@ mod tests {
         fn a_position_survives_a_trip_into_the_world_and_back(
             orientation in any_orientation(),
             origin in prop::array::uniform3(-1000i128..1000),
-            local in prop::array::uniform3(-5000.0f32..5000.0),
+            local in prop::array::uniform3(-5000.0f64..5000.0),
         ) {
             let grid = pose(at(origin[0], origin[1], origin[2], [3.0, 9.0, 27.0]), orientation);
             let local = at(0, 0, 0, local);
@@ -506,12 +501,12 @@ mod tests {
         #[test]
         fn turning_never_changes_a_distance(
             orientation in any_orientation(),
-            a in prop::array::uniform3(-500.0f32..500.0),
-            b in prop::array::uniform3(-500.0f32..500.0),
+            a in prop::array::uniform3(-500.0f64..500.0),
+            b in prop::array::uniform3(-500.0f64..500.0),
         ) {
             let grid = pose(at(7, 7, 7, [1.0; 3]), orientation);
             let (a, b) = (at(0, 0, 0, a), at(0, 0, 0, b));
-            let squared = |v: [f32; 3]| v.iter().map(|c| c * c).sum::<f32>();
+            let squared = |v: [f64; 3]| v.iter().map(|c| c * c).sum::<f64>();
             let local = squared(a.relative_to(b));
             let world = squared(
                 grid.local_to_world(a).unwrap().relative_to(grid.local_to_world(b).unwrap()),
@@ -522,7 +517,7 @@ mod tests {
         #[test]
         fn a_direction_survives_a_trip_into_the_world_and_back(
             orientation in any_orientation(),
-            direction in prop::array::uniform3(-100.0f32..100.0),
+            direction in prop::array::uniform3(-100.0f64..100.0),
         ) {
             let grid = pose(at(0, 0, 0, [0.0; 3]), orientation);
             let back = grid.direction_to_local(grid.direction_to_world(direction));
@@ -558,7 +553,7 @@ mod tests {
      {
         // A grid a quarter turn about the vertical axis from the world, a thing in it tipped up a quarter turn: the thing faces -z
         // in the grid, so the tip takes it to +y; the grid's turn about y leaves +y alone.
-        let quarter = std::f32::consts::FRAC_PI_2;
+        let quarter = std::f64::consts::FRAC_PI_2;
         let grid = pose(
             at(2, 0, 0, [1.0, 2.0, 3.0]),
             Orientation::from_yaw_pitch(quarter, 0.0),
@@ -592,7 +587,7 @@ mod tests {
             grid_turn in any_orientation(),
             thing_turn in any_orientation(),
             origin in prop::array::uniform3(-1000i128..1000),
-            local in prop::array::uniform3(-5000.0f32..5000.0),
+            local in prop::array::uniform3(-5000.0f64..5000.0),
         ) {
             let grid = pose(at(origin[0], origin[1], origin[2], [3.0, 9.0, 27.0]), grid_turn);
             let local = at(0, 0, 0, local);
@@ -610,7 +605,7 @@ mod tests {
     fn a_point_fifty_thousand_kilometres_out_on_a_turned_planet_is_placed_to_a_hundredth_of_a_millimetre_where_an_f32_turn_can_miss_by_metres()
      {
         // A planet (a ship) turned about the vertical axis, and a point on it 5 * 10^7 voxels from its origin along x.
-        let angle = 0.7f32;
+        let angle = 0.7f64;
         let radius = 5.0e7f64;
         let at_radius = at(1_562_500, 0, 0, [0.0; 3]);
         let expected = |angle: f64| [radius * libm::cos(angle), 0.0, -radius * libm::sin(angle)];
@@ -619,14 +614,14 @@ mod tests {
                 .local_to_world(at_radius)
                 .unwrap();
             [
-                world.brick().x() as f64 * 32.0 + f64::from(world.offset()[0]),
-                world.brick().y() as f64 * 32.0 + f64::from(world.offset()[1]),
-                world.brick().z() as f64 * 32.0 + f64::from(world.offset()[2]),
+                world.brick().x() as f64 * 32.0 + world.offset()[0],
+                world.brick().y() as f64 * 32.0 + world.offset()[1],
+                world.brick().z() as f64 * 32.0 + world.offset()[2],
             ]
         };
         let exact_turn = Orientation::from_yaw_pitch(angle, 0.0);
         let found = world_vector(exact_turn);
-        let wanted = expected(f64::from(angle));
+        let wanted = expected(angle);
         for axis in 0..3 {
             assert!(
                 (found[axis] - wanted[axis]).abs() < 1e-5,
@@ -639,8 +634,9 @@ mod tests {
         // miss is 3.78 metres (measured), and for the turn above 0.05.
         let mut worst = 0.0f64;
         for step in 1..200 {
-            let turn = Orientation::from_yaw_pitch(step as f32 * 0.031, step as f32 * 0.017);
-            let rounded = Orientation::from_single_components(turn.components_single()).unwrap();
+            let turn = Orientation::from_yaw_pitch(step as f64 * 0.031, step as f64 * 0.017);
+            let rounded =
+                Orientation::from_components(turn.components_single().map(f64::from)).unwrap();
             let (exact, single) = (world_vector(turn), world_vector(rounded));
             let miss = (0..3)
                 .map(|axis| (exact[axis] - single[axis]) * (exact[axis] - single[axis]))
@@ -667,10 +663,12 @@ mod tests {
 
     #[test]
     fn conversions_are_the_same_bit_for_bit_on_every_machine() {
-        // Values written down once (checked against a separate calculation in Python, which reproduces the bits: the matrix of the `f64` orientation, then
-        // the rounding to `f32` that `displaced` does before it carries into the next brick); a change in them is a change in the simulation.
-        // (The third offset was 1077386288 when an orientation was `f32`: ten `f32` steps from the exact answer, because the orientation was rounded; and the first component of the direction was 880643037, a speck of about 1e-8, where the exact answer is 0: the
-        // pitch and yaw leave the first row of the matrix with no y.)
+        // Values written down once (checked against a separate calculation in Python, which reproduces the bits: the matrix of the orientation, then the sum that `displaced`
+        // does before it carries into the next brick); a change in them is a change in the simulation.
+        // (Moved on purpose, 2026-11-02, when positions and directions became `f64`: they were the `f32` bits [1106136256, 1104209478, 1077386272] for the offset, which are
+        // 29.78747559, 26.11243820 and 2.86890411, and [0, 3253455527, 3242680791] for the direction, -29.47395134 and -12.46138668 after an exact 0; they are now 29.78747285,
+        // 26.11243772 and 2.86890736, and -29.47395181 and -12.46138695 after -8.9e-16, which is the rounding of the matrix where the exact answer is 0: the pitch and yaw
+        // leave the first row of the matrix with no y.)
         let grid = pose(
             at(3, -2, 5, [1.25, 30.5, 7.0]),
             Orientation::from_yaw_pitch(0.9, -0.4),
@@ -686,10 +684,21 @@ mod tests {
         );
         assert_eq!(world.brick(), BrickCoordinate::new(0, -1, 2));
         assert_eq!(
-            world.offset().map(f32::to_bits),
-            [1106136256, 1104209478, 1077386272]
+            world.offset().map(f64::to_bits),
+            [
+                4629077645910090304,
+                4628043215482295000,
+                4613642623849773568
+            ]
         );
-        assert_eq!(direction.map(f32::to_bits), [0, 3253455527, 3242680791]);
+        assert_eq!(
+            direction.map(f64::to_bits),
+            [
+                13605374474286268416,
+                13852361434435658488,
+                13846576792114784108
+            ]
+        );
         assert_eq!(voxel, Some(VoxelCoordinate::new(129, -48, 141)));
     }
 }

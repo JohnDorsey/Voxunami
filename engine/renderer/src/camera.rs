@@ -1,5 +1,11 @@
-use glam::{Mat4, Quat, Vec3, Vec4};
+use glam::{DVec3, Mat4, Quat, Vec3, Vec4};
 use voxel_space::WorldPosition;
+
+/// A vector of voxels as the graphics card has it: `f32`. Positions are `f64`; this is where the renderer rounds one, after it has been made relative to the camera (so
+/// that it is small, and the rounding is a hundred-millionth of its distance).
+pub(crate) fn gpu_vector(vector: [f64; 3]) -> Vec3 {
+    Vec3::new(vector[0] as f32, vector[1] as f32, vector[2] as f32)
+}
 
 /// A first-person camera. Its position is a [`WorldPosition`], so it stays precise at any distance
 /// from the origin; everything drawn is placed relative to it.
@@ -9,8 +15,10 @@ use voxel_space::WorldPosition;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera {
     pub position: WorldPosition,
-    pub yaw: f32,
-    pub pitch: f32,
+    /// The player's view angles in radians: `f64`, as the simulation has them (they are what the character controller turns its input by); the graphics card's `f32` is
+    /// made of them in [`Camera::rotation`].
+    pub yaw: f64,
+    pub pitch: f64,
     /// The turn of the frame `yaw` and `pitch` are measured in: the identity for a player standing in the world, and the turn of a
     /// player's room for one aboard a ship that has turned, so that the camera looks where the angles point in that room. The angles are
     /// still what the player's mouse turns.
@@ -23,7 +31,7 @@ pub struct Camera {
 
 impl Camera {
     /// Pitch is limited just short of straight up or down so the view never flips.
-    pub const MAXIMUM_PITCH: f32 = 89.0 * std::f32::consts::PI / 180.0;
+    pub const MAXIMUM_PITCH: f64 = 89.0 * std::f64::consts::PI / 180.0;
 
     /// Looking along -z with a 70 degree field of view.
     pub fn new(position: WorldPosition) -> Self {
@@ -39,7 +47,8 @@ impl Camera {
 
     /// The turn of the view: the angles' turn, then the frame's. A camera in no frame is the angles' turn alone, to the bit.
     pub fn rotation(&self) -> Quat {
-        let angles = Quat::from_rotation_y(self.yaw) * Quat::from_rotation_x(self.pitch);
+        let angles =
+            Quat::from_rotation_y(self.yaw as f32) * Quat::from_rotation_x(self.pitch as f32);
         if self.frame_rotation == Quat::IDENTITY {
             angles
         } else {
@@ -60,19 +69,19 @@ impl Camera {
     }
 
     /// Turns the camera, clamping pitch to [`Camera::MAXIMUM_PITCH`].
-    pub fn look_by(&mut self, yaw_delta: f32, pitch_delta: f32) {
+    pub fn look_by(&mut self, yaw_delta: f64, pitch_delta: f64) {
         self.yaw += yaw_delta;
         self.pitch = (self.pitch + pitch_delta).clamp(-Self::MAXIMUM_PITCH, Self::MAXIMUM_PITCH);
     }
 
-    /// Moves by `movement` given in the camera's own axes (x right, y up, z backwards).
-    pub fn move_relative(&mut self, movement: Vec3) {
-        let world_movement = self.rotation() * movement;
+    /// Moves by `movement` given in the camera's own axes (x right, y up, z backwards), in `f64`: only the direction comes from the view's `f32` turn.
+    pub fn move_relative(&mut self, movement: DVec3) {
+        let world_movement = self.rotation().as_dquat() * movement;
         self.position = self.position.translated(world_movement.to_array());
     }
 
     /// Moves by `movement` given in world axes.
-    pub fn move_in_world(&mut self, movement: Vec3) {
+    pub fn move_in_world(&mut self, movement: DVec3) {
         self.position = self.position.translated(movement.to_array());
     }
 
@@ -215,12 +224,12 @@ mod tests {
         assert!(close(camera.up(), Vec3::Z));
         assert!(close(camera.right(), Vec3::X));
         // The angles are the room's: a quarter yaw in it turns toward the room's -x, which a tip about x leaves where it is.
-        camera.look_by(std::f32::consts::FRAC_PI_2, 0.0);
+        camera.look_by(std::f64::consts::FRAC_PI_2, 0.0);
         assert!(close(camera.forward(), Vec3::NEG_X));
         // Moving by the camera's own axes goes along the turned view, and what is seen follows it too.
         camera = camera_at_origin();
         camera.frame_rotation = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
-        camera.move_relative(Vec3::NEG_Z * 40.0);
+        camera.move_relative(DVec3::NEG_Z * 40.0);
         assert_eq!(camera.position.brick(), BrickCoordinate::new(0, 1, 0));
         assert!((camera.position.offset()[1] - 8.0).abs() < 1e-3);
         let clip = camera.view_projection(1.0) * Vec4::new(0.0, 10.0, 0.0, 1.0);
@@ -234,10 +243,10 @@ mod tests {
     #[test]
     fn positive_yaw_turns_left_and_positive_pitch_looks_up() {
         let mut camera = camera_at_origin();
-        camera.look_by(std::f32::consts::FRAC_PI_2, 0.0);
+        camera.look_by(std::f64::consts::FRAC_PI_2, 0.0);
         assert!(close(camera.forward(), Vec3::NEG_X));
         let mut camera = camera_at_origin();
-        camera.look_by(0.0, std::f32::consts::FRAC_PI_4);
+        camera.look_by(0.0, std::f64::consts::FRAC_PI_4);
         assert!(camera.forward().y > 0.7 && camera.forward().z < -0.7);
     }
 
@@ -253,8 +262,8 @@ mod tests {
     #[test]
     fn relative_movement_follows_the_facing_direction_and_crosses_bricks() {
         let mut camera = camera_at_origin();
-        camera.look_by(std::f32::consts::FRAC_PI_2, 0.0); // facing -x
-        camera.move_relative(Vec3::NEG_Z * 40.0); // forward 40 voxels
+        camera.look_by(std::f64::consts::FRAC_PI_2, 0.0); // facing -x
+        camera.move_relative(DVec3::NEG_Z * 40.0); // forward 40 voxels
         assert_eq!(camera.position.brick(), BrickCoordinate::new(-2, 0, 0));
         assert!((camera.position.offset()[0] - 24.0).abs() < 1e-3);
         assert!(camera.position.offset()[2].abs() < 1e-3);
@@ -295,7 +304,7 @@ mod tests {
     #[test]
     fn the_frustum_follows_the_cameras_rotation() {
         let mut camera = camera_at_origin();
-        camera.look_by(std::f32::consts::FRAC_PI_2, 0.0); // facing -x
+        camera.look_by(std::f64::consts::FRAC_PI_2, 0.0); // facing -x
         let frustum = Frustum::from_view_projection(camera.view_projection(1.0));
         assert!(frustum.intersects_sphere(Vec3::new(-10.0, 0.0, 0.0), 1.0));
         assert!(!frustum.intersects_sphere(Vec3::new(0.0, 0.0, -10.0), 1.0));

@@ -263,7 +263,7 @@ pub struct Appearance {
     pub size: [u8; 3],
     /// The palette value it is drawn in: a block's number, to look like that block.
     pub material: u32,
-    pub centre_offset: [f32; 3],
+    pub centre_offset: [f64; 3],
 }
 
 type MessageHook = Box<dyn FnMut(&[u8]) -> bool + Send>;

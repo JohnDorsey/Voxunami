@@ -61,7 +61,7 @@ pub enum DetachError {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SplitPart {
     pub voxels: BTreeSet<VoxelCoordinate>,
-    pub centre_of_mass: [f32; 3],
+    pub centre_of_mass: [f64; 3],
 }
 
 /// Why a ship could not be split.
@@ -101,15 +101,15 @@ pub(crate) struct ShipStorage {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GridForce {
     pub grid: GridId,
-    pub force: [f32; 3],
-    pub at: Option<[f32; 3]>,
+    pub force: [f64; 3],
+    pub at: Option<[f64; 3]>,
 }
 
 /// A torque asked of a ship (see [`ServerWorld::apply_grid_torque`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GridTorque {
     pub grid: GridId,
-    pub torque: [f32; 3],
+    pub torque: [f64; 3],
 }
 
 /// A voxel whose value in a watched channel changed (see [`ServerWorld::watch_channels`]).
@@ -138,7 +138,8 @@ pub(crate) struct OutgoingGameMessage {
 
 /// How far from the middle of a planet on a rail it carries what is near it, as a multiple of the reach of its ground.
 const INFLUENCE_PER_REACH: f64 = 1.5;
-/// The most a planet carries, in voxels: what `f32` is exact in.
+/// The most a planet carries, in voxels. (Set where an `f32` position in the planet's frame is exact to a hundredth, 131 km; positions are `f64` now, so that reason is gone and the
+/// number is kept as it was, not worked out again: `docs/reference/pack-format.md` promises it.)
 const GREATEST_INFLUENCE: f64 = 120_000.0;
 /// What a planet carries it keeps carrying out to this many times its sphere.
 const INFLUENCE_LEAVING: f64 = 1.25;
@@ -206,7 +207,7 @@ pub struct ServerWorld {
     grid_torques: Vec<GridTorque>,
     gravity: GravitySettings,
     /// The pull of the levels whose own is not `gravity.base`.
-    level_gravity: BTreeMap<LevelIndex, [f32; 3]>,
+    level_gravity: BTreeMap<LevelIndex, [f64; 3]>,
     /// Where ships go when they are put away and come from when they are asked for; none in a world made without (see
     /// [`ServerWorld::set_ship_storage`]).
     ships: Option<ShipStorage>,
@@ -429,7 +430,7 @@ impl ServerWorld {
         &self,
         grid: GridId,
         position: WorldPosition,
-        radius: f32,
+        radius: f64,
     ) -> Vec<EntityId> {
         self.data.entities().near(grid, position, radius)
     }
@@ -875,9 +876,9 @@ impl ServerWorld {
         let origin_in_grid = WorldPosition::new(
             origin_brick,
             [
-                origin_local.x() as f32,
-                origin_local.y() as f32,
-                origin_local.z() as f32,
+                origin_local.x() as f64,
+                origin_local.y() as f64,
+                origin_local.z() as f64,
             ],
         );
         let (pose, linear, angular) = match self.data.grids().get(from) {
@@ -898,7 +899,7 @@ impl ServerWorld {
                         .iter()
                         .map(|v| [v.x(), v.y(), v.z()][axis] as f64 + 0.5)
                         .sum();
-                    (sum / count) as f32
+                    sum / count
                 });
                 let linear = ship
                     .pose
@@ -940,8 +941,8 @@ impl ServerWorld {
     pub fn apply_grid_force(
         &mut self,
         grid: GridId,
-        force: [f32; 3],
-        at: Option<[f32; 3]>,
+        force: [f64; 3],
+        at: Option<[f64; 3]>,
     ) -> Result<(), AccessError> {
         self.data
             .grids()
@@ -953,7 +954,7 @@ impl ServerWorld {
 
     /// Turns a ship with a torque (kilograms times voxels squared per second per second, an axis in the world's directions) about its centre of
     /// mass, for the next step of the bodies only. A torque does not push the ship's centre.
-    pub fn apply_grid_torque(&mut self, grid: GridId, torque: [f32; 3]) -> Result<(), AccessError> {
+    pub fn apply_grid_torque(&mut self, grid: GridId, torque: [f64; 3]) -> Result<(), AccessError> {
         self.data
             .grids()
             .get(grid)
@@ -983,14 +984,14 @@ impl ServerWorld {
     }
 
     /// Gives a level a pull of its own where it is not the base of [`GravitySettings`]: none, in a level in space, so that what is there falls toward what pulls.
-    pub fn set_level_gravity(&mut self, level: LevelIndex, base: [f32; 3]) {
+    pub fn set_level_gravity(&mut self, level: LevelIndex, base: [f64; 3]) {
         self.level_gravity.insert(level, base);
     }
 
     /// The acceleration of gravity at a place of a level, in the level's axes, in voxels per second per second: the level's own, and the
     /// pull of every ship of the level that weighs enough (see [`GravitySettings`]). A ship's own pull is nothing at its centre of mass, which
     /// is where it is pulled, so nothing needs to leave it out.
-    pub fn gravity_at(&self, level: LevelIndex, position: WorldPosition) -> [f32; 3] {
+    pub fn gravity_at(&self, level: LevelIndex, position: WorldPosition) -> [f64; 3] {
         self.gravity_at_without(level, position, &[])
     }
 
@@ -1000,7 +1001,7 @@ impl ServerWorld {
         level: LevelIndex,
         position: WorldPosition,
         left_out: &[GridId],
-    ) -> [f32; 3] {
+    ) -> [f64; 3] {
         let pulls = self
             .data
             .grids()
@@ -1045,7 +1046,7 @@ impl ServerWorld {
     /// The acceleration of gravity at a place of a grid, in the grid's own axes: for the terrain of a level the level's, and for a ship
     /// that of the place in the world where the ship's place is, turned into the ship's axes. So it changes as a ship turns, and rules and
     /// bodies aboard fall toward the world's down (or toward a ship that pulls). `local` is a position in the grid.
-    pub fn gravity_in(&self, grid: GridId, local: WorldPosition) -> Result<[f32; 3], AccessError> {
+    pub fn gravity_in(&self, grid: GridId, local: WorldPosition) -> Result<[f64; 3], AccessError> {
         match grid.root_level() {
             Some(level) => {
                 if self.data.level(level).is_none() {
@@ -1098,8 +1099,8 @@ impl ServerWorld {
     pub fn set_grid_mass(
         &mut self,
         grid: GridId,
-        mass: f32,
-        centre_of_mass: [f32; 3],
+        mass: f64,
+        centre_of_mass: [f64; 3],
     ) -> Result<(), AccessError> {
         let ship = self
             .data
@@ -1184,8 +1185,8 @@ impl ServerWorld {
     pub fn set_grid_velocity(
         &mut self,
         grid: GridId,
-        linear: [f32; 3],
-        angular: [f32; 3],
+        linear: [f64; 3],
+        angular: [f64; 3],
     ) -> Result<(), AccessError> {
         let ship = self
             .data
@@ -1334,7 +1335,7 @@ impl ServerWorld {
     }
 
     /// How far from the middle of a planet on a rail it carries what is near it, in voxels: one and a half times the reach of its ground (the farthest brick
-    /// its terrain makes, from the middle), and no more than the bodies of ships are exact in (`f32` is exact to a hundredth within 131 km). `None` for a ship that
+    /// its terrain makes, from the middle), and no more than 120,000 voxels (a limit set where an `f32` position was exact to a hundredth; it is kept, and `docs/reference/pack-format.md` promises it). `None` for a ship that
     /// is not a planet or is not on a rail: it carries nothing.
     pub fn influence_radius(&self, planet: GridId) -> Option<f64> {
         let ship = self.data.grids().get(planet)?;
@@ -1364,7 +1365,7 @@ impl ServerWorld {
 
     /// The acceleration of gravity at a place of the level of a planet on a rail for what falls with the planet: everything's pull but that of what the planet
     /// goes round (see [`ServerWorld::gravity_in`]).
-    pub fn gravity_in_the_free_fall_of(&self, planet: GridId, position: WorldPosition) -> [f32; 3] {
+    pub fn gravity_in_the_free_fall_of(&self, planet: GridId, position: WorldPosition) -> [f64; 3] {
         let level = self
             .data
             .grids()
@@ -1505,7 +1506,7 @@ impl ServerWorld {
         let at = {
             let [x, y, z] = [0, 1, 2].map(|axis| {
                 let brick = [place.brick().x(), place.brick().y(), place.brick().z()][axis];
-                brick as f64 * 32.0 + f64::from(place.offset()[axis])
+                brick as f64 * 32.0 + place.offset()[axis]
             });
             [x, y, z]
         };

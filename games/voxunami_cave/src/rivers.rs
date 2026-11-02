@@ -6,8 +6,8 @@ use crate::generators::{GreatRivers, RiverKnot};
 use voxel_space::{LevelOfDetail, VoxelCoordinate};
 
 /// The way a camera with these angles (radians) looks, in the axes of the level: yaw about +y (positive turns toward -x), then pitch up.
-pub fn forward(yaw: f32, pitch: f32) -> [f64; 3] {
-    let (yaw, pitch) = (f64::from(yaw), f64::from(pitch));
+pub fn forward(yaw: f64, pitch: f64) -> [f64; 3] {
+    let (yaw, pitch) = (yaw, pitch);
     [
         -libm::cos(pitch) * libm::sin(yaw),
         libm::sin(pitch),
@@ -55,7 +55,7 @@ mod tests {
                 .zip(wanted)
                 .all(|(found, wanted)| (found - wanted).abs() < 1.0e-6)
         };
-        let quarter = std::f32::consts::FRAC_PI_2;
+        let quarter = std::f64::consts::FRAC_PI_2;
         assert!(close(forward(0.0, 0.0), [0.0, 0.0, -1.0]));
         assert!(close(forward(quarter, 0.0), [-1.0, 0.0, 0.0]));
         assert!(close(forward(0.0, quarter), [0.0, 1.0, 0.0]));

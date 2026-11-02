@@ -931,7 +931,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
     /// The solid voxel under the crosshair, within the game's reach: of the terrain of the level, or of a ship, whichever the ray
     /// reaches first. A ship is aimed at by turning the ray into the ship's own coordinates.
     pub fn target(&self) -> Option<RayHit> {
-        let forward = self.camera.forward().to_array();
+        let forward = self.camera.forward().to_array().map(f64::from);
         let terrain = cast_ray(
             GridId::root(self.level()),
             self.camera.position,

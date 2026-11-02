@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use client::ClientError;
-use glam::Vec3;
+use glam::DVec3;
 use namespaced_id::NamespacedId;
 use renderer::{GraphicsContext, RenderStatistics, VoxelRenderer, describe, new_instance};
 use transport::Connection;
@@ -32,9 +32,9 @@ use crate::view::{
     show_entity_boxes, show_other_players, show_screen,
 };
 
-const MOVEMENT_SPEED: f32 = 24.0; // voxels per second
-const SPRINT_MULTIPLIER: f32 = 5.0;
-const MOUSE_SENSITIVITY: f32 = 0.0025; // radians per pixel
+const MOVEMENT_SPEED: f64 = 24.0; // voxels per second
+const SPRINT_MULTIPLIER: f64 = 5.0;
+const MOUSE_SENSITIVITY: f64 = 0.0025; // radians per pixel
 const POSE_INTERVAL: Duration = Duration::from_millis(50);
 
 /// How often what the keys ask is sent again when it has not changed.
@@ -408,9 +408,9 @@ impl<G: GameDefinition> Viewer<G> {
         self.window.set_cursor_visible(!self.mouse_captured);
     }
 
-    fn move_camera(&mut self, seconds: f32) {
+    fn move_camera(&mut self, seconds: f64) {
         let held = |code: KeyCode| self.keys.contains(&code);
-        let mut movement = Vec3::ZERO;
+        let mut movement = DVec3::ZERO;
         if held(KeyCode::KeyW) {
             movement.z -= 1.0;
         }
@@ -438,7 +438,7 @@ impl<G: GameDefinition> Viewer<G> {
             };
         let camera = &mut self.session.camera;
         camera.move_relative(movement.normalize_or_zero() * speed * seconds);
-        camera.move_in_world(Vec3::Y * vertical * speed * seconds);
+        camera.move_in_world(DVec3::Y * vertical * speed * seconds);
     }
 
     /// Tells a server that moves the player what the keys ask: when that changes, and now and then so
@@ -457,7 +457,7 @@ impl<G: GameDefinition> Viewer<G> {
     }
 
     /// Takes in what the server has sent. Returns an error to stop the game with.
-    fn follow_server(&mut self, now: Instant, seconds: f32) -> Result<(), ClientError> {
+    fn follow_server(&mut self, now: Instant, seconds: f64) -> Result<(), ClientError> {
         match self.session.mode() {
             Mode::Playing if G::server_moves_players() => {
                 self.send_movement(now);
@@ -505,7 +505,7 @@ impl<G: GameDefinition> Viewer<G> {
     /// Draws one frame. Returns false when the game should close.
     fn frame(&mut self) -> Result<bool, String> {
         let now = Instant::now();
-        let seconds = now.duration_since(self.last_frame).as_secs_f32().min(0.1);
+        let seconds = now.duration_since(self.last_frame).as_secs_f64().min(0.1);
         self.last_frame = now;
         if self
             .exit_after
@@ -766,10 +766,10 @@ impl<G: GameDefinition> ApplicationHandler for App<G> {
             && viewer.session.mode() == Mode::Playing
             && !G::server_sets_view()
         {
-            viewer.session.camera.look_by(
-                -delta.0 as f32 * MOUSE_SENSITIVITY,
-                -delta.1 as f32 * MOUSE_SENSITIVITY,
-            );
+            viewer
+                .session
+                .camera
+                .look_by(-delta.0 * MOUSE_SENSITIVITY, -delta.1 * MOUSE_SENSITIVITY);
         }
     }
 
