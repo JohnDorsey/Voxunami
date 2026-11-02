@@ -15,29 +15,85 @@ trajectory time warp would give. What is checked in the code is marked **[code]*
 
 ## A. Elliptical orbits
 
-**Shape of the change [mine].** `Orbit` gains `eccentricity` (0 up to but not including 1), `periapsis` (the angle of the nearest point in the orbit's plane, from the same reference direction the circle starts at), and `epoch` (a `RailTime`).
-`radius` becomes the semi-major axis (for a circle it is the radius), `period` stays, `phase` becomes the **mean anomaly at the epoch**. With `eccentricity` 0 and epoch 0 the result must be **the same bits as the circle today**: that is the first test.
-An epoch is needed because a ship that is put on a rail is put there at some tick, not at tick 0: a phase "at time 0" would be a huge angle (n x t) rounded to `f64`, where an epoch keeps the angle in [0, 2 pi).
+**Shape of the change [mine; revised 2026-11-01 after the owner's questions, see A2].** `Orbit` gains `ratio` = 1 - e (the periapsis distance over the semi-major axis; **not** the eccentricity, A2 says why) and `periapsis` (the angle of the nearest point in the orbit's plane, from the same reference direction the circle starts at).
+`radius` becomes the semi-major axis a (for a circle it is the radius), `period` stays (given for a planet, worked out from the parent's mass and a for a ship), `phase` stays the mean anomaly at tick 0. With `ratio` 1.0 the result must be **the same bits as the circle today**: that is the first test.
+**No epoch for ellipses (the owner asked whether higher precision when the orbit is made would do instead; it does, and I had the reason wrong).** I first proposed an epoch because the phase "at time 0" of a ship put on a rail at tick N looked like a huge angle (n x t) rounded to `f64`. It is not: `turn_fraction` already takes the turns gone since tick 0 modulo one *in whole numbers*,
+so the phase at tick 0 of an orbit made at tick N is the phase at N less the turns gone by N, worked out exactly and rounded once, into [0, 2 pi): the precision an epoch would give. An epoch is for hyperbolas (no period; the time of periapsis is the natural number) and perhaps for ellipses very near a parabola (A2, point 2); decide then.
 
 **Mathematics, all in whole numbers [mine, standard].**
-1. Mean anomaly M = phase + (time - epoch) / period, as a fraction of a turn in 128 bits (the existing `turn_fraction`, exact however long the world has run).
-2. Kepler's equation E - e sin E = M, solved by Newton's method in 126-bit fixed point with a fixed number of steps and a bisection bracket as a guard (a count, never a time: `design-decisions.md`), starting from a good first estimate for the eccentricity
-   **[source]** (Danby, Markley and Mikkola starting values are the usual ones; the search results I read agree that Newton, Danby and Halley all work for e below 1). Cost: a handful of CORDIC sine and cosine (about 130 shift-and-add steps each): microseconds.
+1. Mean anomaly M = phase + time / period, as a fraction of a turn in 128 bits (the existing `turn_fraction`, exact however long the world has run).
+2. Kepler's equation E - e sin E = M, solved by Newton's method in 126-bit fixed point with a fixed number of steps and a bisection bracket as a guard (a count, never a time: `design-decisions.md`), starting from the root of the cubic E^3/6 + (1 - e) E = M
+   (A2, point 5: **[measured]** this start keeps the count at 6 to 8 steps (126 to 254 bits) for every e, where the usual starting values (Danby, Markley and Mikkola **[source]**) need more and more as e goes to 1). Cost: about 8 CORDIC sine and cosine (about 130 shift-and-add steps each): a few microseconds (A2, point 6).
 3. Position in the plane: x = a (cos E - e), y = a sqrt(1 - e^2) sin E, with the fixed-point square root that the plane code already has; turned by the periapsis angle and into the plane's basis (`exact_circle::plane`), multiplied in 256 bits as the circle is.
 4. Speed: v = (a n / r) (-sin E, sqrt(1 - e^2) cos E), n = 2 pi / period, r = a (1 - e cos E), as `f64` from the same exact sine and cosine (as the circle does now).
-5. Hyperbolas (e above 1, for flybys and escapes) use sinh and cosh and a different Kepler equation, M = e sinh H - H, with no period; **a second step**, after the ellipse is pinned. Parabolas are not made.
+5. Hyperbolas (e above 1, for flybys and escapes) use sinh and cosh and a different Kepler equation, M = e sinh H - H, with no period; **a second step**, after the ellipse is pinned. Parabolas are not made (`ratio` 0 is one; the same pair covers hyperbolas as `ratio` below 0).
 
 **Conversions [mine].** State to elements (position and velocity against the parent, and the parent's mass parameter mu = G M, which the game has: planets declare a mass, `planet-spec.md`): the standard vectors h = r x v, the eccentricity vector, a from the energy. The degenerate cases (a circle has no periapsis; a flat orbit has no
 plane) get a fixed rule (reference direction; the level's +y). Elements to state is the code above. A round trip must return the state to within what the elements' `f64` hold (about 1e-16 of the orbit's size).
 
 **Steps, tests first.**
 - A0. Pin the circle as it is (bits of `Orbit::at` for a spread of parameters; the tests in `tests/rail.rs` already do much of it).
-- A1. A reference program (like `tools/exact_circle_reference.py`, `mpmath` at 120 digits) for ellipses: eccentricities 0, 0.01, 0.1, 0.5, 0.9, 0.99, 0.999, mean anomalies from 0 round to a turn, including near periapsis for the high ones.
+- A1. A reference program (like `tools/exact_circle_reference.py`, `mpmath` at 120 digits) for ellipses: eccentricities 0, 0.01, 0.1, 0.5, 0.9, 0.99, 0.999, and 1 - e of 1e-6, 1e-12 and 1e-18 (A2), mean anomalies from 0 round to a turn, including near periapsis for the high ones.
 - A2. `exact_kepler.rs`: the solver; tested against A1, with a worst-case count of steps; the same bits on Windows and Linux (it is all integers).
-- A3. `Orbit::{eccentricity, periapsis, epoch}`; ship file `engine:rail` version 2 (version 1 reads as e = 0, epoch 0); the data pack syntax (`pack-format.md`, whose examples are checked by a test); checks on the numbers (e < 1, a above 0).
+- A3. `Orbit::{ratio, periapsis}`; ship file `engine:rail` version 2 (version 1 reads as `ratio` 1.0); the data pack syntax (`pack-format.md`, whose examples are checked by a test); checks on the numbers (`ratio` above 0 and at most 1, a above 0).
 - A4. State to elements and back; tests: a round trip, a circle gives e = 0, the speed is the derivative of the position (finite differences of the exact positions), energy and angular momentum are constant along a rail to within the speed's `f64`.
 - A5. The spec (`rails-and-recipes-spec.md`) and `design-decisions.md`.
 - Then (separate): hyperbolas; the patched-conics list of segments (the sphere of influence crossings found on the exact rail, at ticks); the conversions from a free ship to a rail and back in `grid_lifecycle`.
+
+## A2. How many bits the rails need (the owner's questions, with measurements, 2026-11-01)
+
+The owner asked: is 128-bit fixed point enough for orbits across the universe; how are orbits of extreme eccentricity stored; does the apoapsis go to infinity before an orbit is hyperbolic; what would 256 bits cost. The reproductions are in `history/spikes/rails/`
+(`kepler_conditioning.py`, `kepler_iterations.py`, `cordic_bench/`; they need `mpmath` for the references).
+
+**1. Evaluating a rail is enough at every size the universe has.** **[code]** Positions are `i128` bricks (2^132 voxels, 5 x 10^39 m), an orbit's radius is limited to 2^120 voxels, the observable universe is 8.8 x 10^26 m (2^89.5); the test
+`an_orbit_a_very_long_way_out_is_where_the_exact_turn_puts_it_to_a_small_fraction_of_a_voxel` (`engine/world_storage/tests/rail.rs`) checks offsets out to a radius of 2^90 against worked-out values to within 2^-31 voxel, and the sine and cosine are tested against 120 digits.
+**[mine, arithmetic]** The rounding of the angle moves a body by a few x 2 pi R x 2^-126: a few 1e-10 voxel at R = 2^90 (about the size of the 2^-32 grid of the output, and the existing test's tolerance is 2^-31), a few 1e-7 at 2^100, a fraction of a voxel at the cap of 2^120.
+A `WorldPosition` shows 2e-6 at best, so none of it is seen out to 2^100.
+The longest period (2^80 seconds, `LONGEST_PERIOD`) and the time (an `i128`) are not limits either.
+
+**2. Eccentric ellipses: the limit is the time near periapsis, not the size.** Rounding the mean anomaly to 2^-126 of a turn moves a body at periapsis by 2 pi x 2^-126 x sqrt(2) x q x (1 - e)^(-3/2) (q the periapsis distance): there the body is fast and the period is long.
+**[measured]** (`kepler_conditioning.py`: the exact Kepler solution at M = 0 and one unit later, `mpmath` at 1200 bits) the formula agrees with the exact displacement to four digits where e is near 1. For q = 1e9 m, the metres one unit of M moves the body at periapsis:
+
+| apoapsis / periapsis | 1 - e | at 126 bits | at 254 bits |
+|---|---|---|---|
+| 1e3 | 2e-3 | 1.2e-24 | 3.4e-63 |
+| 1e6 | 2e-6 | 3.7e-20 | 1.1e-58 |
+| 1e9 | 2e-9 | 1.2e-15 | 3.4e-54 |
+| 1e12 | 2e-12 | 3.7e-11 | 1.1e-49 |
+| 1e15 | 2e-15 | 1.2e-6 | 3.4e-45 |
+| 1e18 | 2e-18 | 3.7e-2 | 1.1e-40 |
+| 1e21 | 2e-21 | 1.2e3 | 3.4e-36 |
+
+The largest apoapsis / periapsis for which that stays within the output grid (2^-32 voxel), from the formula: at 126 bits 3.4e16 for q = 1e3 m, 3.4e14 for 1e6 m, **3.4e12 for 1e9 m**, 3.4e10 for 1e12 m; at 254 bits 1.7e42, 1.7e40, 1.7e38, 1.7e36.
+**[mine]** For a centre of one solar mass and the longest period (2^80 s), a = 1.7e22 m, so with q = 1e9 m the ratio is 3.4e13: about 7 nm at periapsis, invisible; a centre a million times heavier, about 7 micrometres. This is the least error any 126-bit design has (the rounding of M alone):
+the solver is not written and adds a few units, and its own accuracy near a parabola is untested.
+
+**3. Storing the shape: not as the eccentricity.** **[mine, arithmetic]** An `f64` e is a multiple of 1.1e-16 just below 1. At a ratio of 1e12 (1 - e = 2e-12) it has four digits, so the periapsis a(1 - e) is uncertain by 5e-5 of itself (50 km at 1e9 m), and an ellipse of ratio 2e16 cannot be told from a parabola.
+So the plan stores the semi-major axis a and `ratio` = 1 - e, both `f64`: a circle is `ratio` exactly 1.0; the periapsis a x ratio and the apoapsis a x (2 - ratio) are products, with no cancellation; `ratio` 0 is a parabola and below 0 a hyperbola, so the same pair serves step 2.
+The alternative, periapsis and apoapsis distances, reads better but breaks at the parabola. Confidence: medium.
+
+**4. Does the apoapsis go to infinity before the orbit is hyperbolic? Yes.** With the periapsis fixed, apoapsis a (2 - ratio) and the period (as a^1.5) both go to infinity as `ratio` goes to 0. The energy crosses zero smoothly (negative: ellipse; zero: parabola; positive: hyperbola), so there is no gap, only a stretch where the ellipses are very long.
+Two limits stop it first here: the period is at most 2^80 s, and (patched conics) a ship leaves its parent's sphere of influence before an apoapsis beyond it, so only orbits round the root body (a comet round a star) can have an extreme ratio.
+
+**5. The solver near a parabola.** **[measured]** (`kepler_iterations.py`: guarded Newton and Halley, `mpmath`) Steps to reach 2^-126, for 1 - e from 0.5 down to 1e-30 and M from 1e-30 to 3.1, worst case. From the usual start (M + e sin M) Newton needs 6 steps at 1 - e = 0.5 and **63 at 1e-30** (Halley 37);
+from the root of the cubic E^3/6 + (1 - e) E = M it needs **6 to 7 at every e** (Halley 5); at 2^-254, 7 to 8 (Halley 6). So "a handful of steps" holds only with the cubic start. Each step is one sine and cosine, plus one for the answer.
+
+**6. What wider costs.** **[measured]** (`cordic_bench`: the sine and cosine only, a release build; three steady runs, a fourth run disturbed by other work had the same ratios; the 126-bit limb version is bit-identical to the repo's on six angles, the 254-bit one is within 15 units of the last place of `mpmath` and the 190-bit one within 13):
+
+| width | ns per sine and cosine | against today |
+|---|---|---|
+| 126 bits, `i128`, as `exact_circle.rs` | 450 to 570 | 1 |
+| 126 bits, the same algorithm on 64-bit limbs | 690 to 810 | 1.5 |
+| 190 bits | 1,560 to 1,760 | 3.1 to 3.5 |
+| 254 bits | 2,700 to 2,900 | 5 to 6 |
+
+**[estimate]** An ellipse is about 8 sine-and-cosines and some products: 4 to 5 microseconds at 126 bits, about 25 at 254. The server makes 20 ticks a second (**[code]** `config.rs`), so 50 elliptical bodies cost about 5 ms in a second of one core at 126 bits and 25 ms at 254.
+A rail is a function of the tick, so a ship nobody observes needs no evaluation at all. **Not measured:** the rest of a 256-bit rail: a 256 x 256 to 512 product, a real multi-limb reduction in `turn_fraction` (its modulus is below 2^87 today), 256 steps of long division in `fraction_in_turns`,
+references at 160 digits, a new rail format; I would guess one or two phases of work. The door stays open: the stored elements do not depend on the width the sine and cosine are worked in, so widening later changes bits below 1e-10 voxel of the results, not the files.
+
+**7. Where I land.** Stay at 126 bits. It is right for every size of orbit the universe has, and for ellipses up to the ratios of point 2, which is more than any orbit inside a sphere of influence can have. What 254 bits buy is ratios above 1e12 to 1e16 at nanometre accuracy, which the period limit and the
+spheres of influence rule out for anything inside a sphere of influence. The costs are 5 to 6 times on the hottest rail path and a rewrite of the arithmetic. Confidence: fairly high on points 1 to 4, medium on 6 and 7 (unbuilt parts).
+The things that do need care are the ones above: `ratio` instead of the eccentricity, the cubic start, and a test at `1 - e` of 1e-18.
 
 ## B. Ships on exact rails, Rapier only where only Rapier helps
 
@@ -53,8 +109,10 @@ plane) get a fixed rule (reference direction; the level's +y). Elements to state
    gets exactly and Rapier only the small difference.
 4. *The two-level rule.* The sum of the outside forces on all the cars, over the whole mass, is the rail's acceleration; the cars feel in their frame what they feel less that acceleration (so a car pushed by an engine and one that is not are pushed against each other, and the whole is not moved twice). **[mine]** Standard: the centre of mass moves as if
    all the outside forces acted on a point mass; the rest is relative motion. A gravity that differs across the ship (tides) is left out. **Felt acceleration** (`future-goals.md`) comes out of it for free: a player aboard feels the frame's acceleration.
-5. *Contact with something outside* (a planet's ground, another ship): needs both in one frame. A ship that comes near another or the ground leaves its own frame for the shared one (the planet's, as ships near a planet are today); while there it is a dynamic body; an impulse changes its rail
-   (its elements are made again from the state it leaves with). A ship that is in no contact is kinematic on its rail. The conversion cost is the `f64` rounding of small relative numbers, about 1e-16 (section "What reading a ship back ... costs" of `joint-probe.md` measures the other, larger, `f32` costs this avoids).
+5. *Contact with something outside* (a planet's ground, another ship). **What "a shared frame" means:** Rapier finds a contact only between bodies that are in the same Rapier world, in the same coordinates. A ship's own frame (point 3) holds only its own cars, so it can touch nothing outside.
+   When a ship comes within reach of something it could touch, its cars are moved **into a frame that holds both**: near a planet, the planet's following frame, which exists today (**[code]** `Follow`: the planet's terrain is kinematic in it and the ships near the planet are dynamic bodies in it);
+   for two ships, a frame that follows the heavier one's rail, in which both are dynamic and every number is some hundreds of metres, so `f64` is plenty. While there a ship is a dynamic body as it is now, and an impulse changes its rail: its elements are made again from the state it leaves with once it is clear.
+   A ship that is in no contact is kinematic on its rail. It is not an area of effect: the frame is chosen by who is near what, and nothing is carried. **The part I am least sure of** is the rule for entering and leaving (a distance with a margin, so that a ship does not flip in and out; three ships in a pile): to design when B reaches it. The conversion cost is the `f64` rounding of small relative numbers, about 1e-16 (section "What reading a ship back ... costs" of `joint-probe.md` measures the other, larger, `f32` costs this avoids).
 6. *Freeze and park become "go on rails".* The loss of speed (`set_grid_frozen`) is replaced by making the elements from the state; loading is the elements at the clock. A ship that coasted unobserved keeps **the same elements** (not made again from a state), so a teleport to it and away again cannot change its orbit. A ship that was pushed or thrusted while observed has new elements.
    Parked ships are then carried exactly by the clock (today a parked ship is left behind by a planet that moves on).
 7. *Precision decision [mine].* A relative state in `f64` integrates a burn well enough (a ship 1e9 m from its parent is placed to 1e-7 m per step; a million steps of rounding are 1e-4 m at the worst). What needs 128 bits is the **absolute** place and the angles of the rails of the parent chain (an angle over 10^12 seconds), which are already so.
@@ -88,10 +146,11 @@ alpha the angle between the normal and the sun line, so the trajectory is the in
 
 **Open points.** The integrator's order and step rule (E1 and C1 decide); how a program is entered in the UI (not this document); what a sail does when it meets a shadow (the planet's, cheaply, by a cylinder test at stage points) or the heating of its sail; time warp as a game clock that runs faster than ticks (`future-goals.md` already lists it); how many programs a server keeps for ships nobody watches.
 
-## Questions that decide the work
+## Questions and the owner's answers (2026-11-01)
 
-1. **Gravity model on rails.** Patched conics: a ship feels only its sphere's parent, the parent moves on its own rail. Should observed free flight use the *same* model (a kinematic body on the rail), so that observed and unobserved flight agree? (My advice: yes. The n-body pull of everything that weighs enough, which the game uses now, is then used only inside a shared frame for contacts.)
-2. **Period.** For a ship that is put on a rail, the period comes from the parent's mu and the semi-major axis (consistent with its gravity). For planets in data packs, keep an explicit `period` as now, or compute it from the mass, or accept either?
-3. **Hyperbolas** in the first step or the second? (My advice: the second.)
-4. **Epoch.** Add an epoch to every orbit (planets default to 0), as above?
-5. **Order of work.** A, then E1 to E3, then the ships' conversions (B5, B6), then C? Or the conversions first, with circles?
+1. **Gravity model on rails.** Patched conics: a ship feels only its parent's pull, and observed free flight is the same model, a kinematic body on its rail, so that observed and unobserved flight agree. **Yes.** The n-body pull of everything massive, which the game uses now, is then used only inside a shared frame for contacts (B5).
+2. **Period.** For a ship on a rail it is **computed** from the parent's mass parameter and the semi-major axis. For planets in data packs **either is accepted**; when both are given and they differ, the pack's explicit values are used and **an error is logged**.
+   *Open detail:* what "differ" means. Pack authors write round numbers (a period of 3600 s, a mass of 1e22 kg), which I expect are rarely consistent to better than a few parts in a thousand, so a tight tolerance would log an error for most hand-written planets. My proposal: relative 1e-3 on the period; the owner may prefer another.
+3. **Hyperbolas** are the second step, after the ellipse.
+4. **Epoch.** Not needed: see A (the phase at tick 0, worked out exactly when the orbit is made). Revisit for hyperbolas.
+5. **Order of work.** A, then E1 to E3, then the ships' conversions (B5, B6), then C. The owner asked the rail-precision questions first: A2 answers them; **to confirm:** stay at 126 bits, and store `ratio` = 1 - e (point 3 of A2).

@@ -1,0 +1,13 @@
+# Throwaway: what a CORDIC sine and cosine costs at 126, 190 and 254 bits (see ../../../../orbits-and-thrust-plan.md, section A2). A standalone project, not part of the
+# workspace. The tables of angles are made, not kept: `python gen_tables.py` (needs `mpmath`), then `cargo run --release`, then `python check.py` to compare the printed
+# results with `mpmath`. Do it in a directory with a short path on Windows.
+[package]
+name = "cordic_bench"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[profile.release]
+opt-level = 3
