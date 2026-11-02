@@ -102,7 +102,7 @@ fn length(vector: [f64; 3]) -> f64 {
     libm::sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2])
 }
 
-fn unit(vector: [f64; 3], what: &'static str) -> Result<[f64; 3], RailError> {
+pub(crate) fn unit(vector: [f64; 3], what: &'static str) -> Result<[f64; 3], RailError> {
     if !finite(&vector) {
         return Err(RailError::Invalid("a direction is made of numbers"));
     }
@@ -190,7 +190,7 @@ fn mantissa_and_exponent(period: f64) -> (u64, i32) {
 /// the turns are `units / (units_per_second x mantissa x 2^exponent)` and only the remainder after the whole turns is divided. (An `f64` of seconds divided by an `f64`
 /// period loses a digit for every ten turns: after twelve thousand years of a planet's years it is a metre out.) The denominator is below 2^112 for every period a rail
 /// can have.
-fn turn_fraction(time: RailTime, period: f64) -> (u128, u128) {
+pub(crate) fn turn_fraction(time: RailTime, period: f64) -> (u128, u128) {
     if !usable_period(period) {
         return (0, 1);
     }

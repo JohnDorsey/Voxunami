@@ -174,7 +174,7 @@ impl Ellipse {
 
     /// E - e sin E and its slope 1 - e cos E, without the cancellation near E = 0: E - e sin E = ratio E + e (E - sin E), with E - sin E from its series where E is small, and
     /// 1 - e cos E = ratio + 2 e sin^2(E / 2).
-    fn equation_in_f64(eccentric: f64, ratio: f64, e: f64) -> (f64, f64) {
+    pub(crate) fn equation_in_f64(eccentric: f64, ratio: f64, e: f64) -> (f64, f64) {
         let value = if eccentric < 0.5 {
             let square = eccentric * eccentric;
             // E - sin E = E^3/6 - E^5/120 + E^7/5040 - ...: each term from the one before.

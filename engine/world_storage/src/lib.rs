@@ -17,6 +17,7 @@ pub mod engine_sections;
 mod exact_circle;
 mod exact_kepler;
 pub mod file;
+mod fit_orbit;
 mod grid_frame;
 mod moving_grids;
 pub mod rail;

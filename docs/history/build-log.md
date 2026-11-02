@@ -1698,6 +1698,7 @@ Elliptical orbits, steps A0 and A1 (`orbits-and-thrust-plan.md`; no behaviour ch
   A table row found an `i128` overflow (a sine of -4 units next to a half turn); fixed with a regression test. Not used by anything yet (`expect(dead_code)` says so and fails when A3 uses it).
 - A3: `Orbit::{ratio, periapsis}`, `Orbit::elliptical`; `engine:rail` version 2 (every orbit has a ratio and a periapsis; version 1 is not read; first built as a flag and changed on the owner's veto); pack keys `eccentricity` or `ratio`, and `periapsis`; the generated schema; `rail_of`; the guide's comet. A ratio of 1.0 is the 26 pinned circles to the bit. Over 400 random orbits against the 120-digit reference the worst place error was half a step of 2^-32 voxel and the worst velocity error 4e-16 of the speed.
   34 mutations caught (20 in the orbit, 14 in the packs). See the plan for the numbers.
+- A4: `Orbit::from_state` (`fit_orbit.rs`): the orbit through a place and a velocity with a mass parameter, in `f64` and `libm` with an exact phase. 9 tests, 6 pins; the place is within 4e-13 of a radius, twenty thousand ticks on, for ratios over 0.05 and 1.2e-11 for ratios of 1e-9; 13 mutations caught and one equivalent. The mass change (the owner's choice (b)) is a test. See the plan.
 - A3b: the `period` of an orbit round a body is optional and is worked out from the body's mass (`pull_strength` x its mass as a ship); a given one that is more than a relative 1e-3 from it is used and warned about; an orbit round a point needs one. 5 tests, 8 mutations caught.
 
 ## Measured
