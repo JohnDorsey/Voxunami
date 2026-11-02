@@ -163,7 +163,18 @@ The things that do need care are the ones above: `ratio` instead of the eccentri
 **Experiments, after A** (each a throwaway in `docs/history/spikes/`, then a decision).
 - E1. Integrate a circular and an eccentric orbit for 10^5 to 10^7 steps in `f64` (leapfrog, a symplectic Runge-Kutta-Nystrom, an 8th-order method) and compare with the exact rail: the error against steps and against orbit size. Decides section B7.
 - E2. A kinematic ship on a rail with two cars and a hinge in a frame that follows the rail: the rail unchanged to the bit by anything the cars do; the cars' motion the same as in a still frame; the cost.
-- E3. A ship that coasts through park and load many times: no change of orbit (the owner's goal), against today's behaviour.
+- E3. **Done (2026-11-02): a ship that coasts through park and load many times** (`history/spikes/rails/park_cycles_test.rs`). Today's code zeroes the velocity of a frozen ship (`set_grid_frozen`, **[code]**, not measured here), so the orbit is lost at once; the question measured is what the best way that saves a *state* costs, against keeping the elements.
+  A cycle is a save and a load every 1/100 to 1/500 of a period, 1,000 cycles, for a low orbit round an Earth-weight planet (a = 6.8e6, ratio 0.9, 5,581 s), a moon's orbit (3.84e8, 0.945) and a planet's year round a star (1.5e11, 0.983). The figure is how far the ship is from where the original orbit puts it **a thousand periods after the last cycle**, in radii:
+  | the orbit is kept by | after 1 cycle | after 1,000 cycles |
+  |---|---|---|
+  | **its elements** (written and read, nothing made from a state) | **0, exactly** | **0, exactly** (the axis and the period do not move by one bit) |
+  | a state: `f32` place (a brick and an `f32` offset) and **`f32` speed** (the saved pose today) | 5e-4 | **5e-3 to 1.2e-2**; the period 1e-7 out at the first cycle, 7e-7 to 2e-6 at the last |
+  | a state: `f32` place, `f64` speed | 2e-9 (5e-12 for the planet) | 1e-8 for the low orbit, 8e-10 for the moon, 2e-11 for the planet |
+  | a state: exact place, `f64` speed | 3e-12 | 2e-10 at worst |
+  **What it says.** (1) Keeping the elements is exact and a state is not: the owner's goal needs the elements kept, as the plan said. (2) **The `f32` speed is the weak link, by six orders of magnitude** (a speed of 7.8 km/s rounded to 1e-7 is a millimetre a second, a period 1e-7 out, 5e-4 of a radius a thousand periods on); the `f32` offset in the brick is nearly free (it costs 1e-8 of a radius
+  for the low orbit and less for the others, because the offset is rounded to 2e-6 voxel and a radius is 7e6 or more). So if the question of widening the position (the owner's, after A to E) is only for the sake of orbits, **the answer is no: the position can stay `f32`, and the speed of a ship that is re-fitted must not be an `f32` of the whole speed.**
+  (3) For B: a re-fit after a burn or a bump must be made from the **exact state of the rail plus the change of speed that the physics gave** (the two-level rule, B4), not from the `f32` speed of a body in Rapier's interface; and a re-fit at an apsis for a change of mass (the owner's rule in `future-goals.md`) is made from the rail's exact state, which has no `f32` in it.
+  (4) Each cycle that is made from a state costs 3e-12 to 5e-4 of a radius in a thousand periods; the cost is in the first cycle, then it walks slowly (1,000 cycles cost 10 times one).
 
 ## C. Long burns and previews
 
