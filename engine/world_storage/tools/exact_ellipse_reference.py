@@ -3,7 +3,8 @@
     python exact_ellipse_reference.py selfcheck   # checks this program against mathematics, and against the circle that is the ellipse with ratio 1.0
     python exact_ellipse_reference.py constants   # the constant of exact_kepler.rs: one over two pi with 126 bits after the point
     python exact_ellipse_reference.py kepler      # rows for the test of the Kepler solver: (ratio, mean anomaly, eccentric anomaly, sine, cosine, x, y, amplification)
-    python exact_ellipse_reference.py orbits      # rows for the test of `Orbit`: the offset and the velocity at a tick, from the elements as the program keeps them
+    python exact_ellipse_reference.py orbits      # rows for the test of `Orbit`: the offset and the velocity at a tick, from the elements as the program keeps them,
+                                                  # and the amplification 1 / (1 - e cos E) there, which decides how exactly the program can be asked to agree
 
 Run it with `mpmath` installed (`pip install mpmath`), from this directory. Nothing here is read by the build: the rows are pasted into the Rust tests.
 
@@ -101,6 +102,13 @@ def offset(normal, radius, ratio, periapsis, period, phase, tick, ticks_per_seco
     return bricks, [c - 32 * b for c, b in zip(voxels, bricks)], velocity
 
 
+def amplification_at(ratio, period, phase, tick, ticks_per_second):
+    """1 / (1 - e cos E) where the orbit is at that tick: how much the equation magnifies the rounding of the mean anomaly."""
+    e = 1 - mpf(ratio)
+    eccentric = solve_eccentric_anomaly(mean_anomaly_at(period, phase, tick, ticks_per_second), e)
+    return float(1 / (1 - e * cos(eccentric)))
+
+
 def in_voxels(bricks, rest):
     return [32 * b + r for b, r in zip(bricks, rest)]
 
@@ -142,7 +150,7 @@ def orbit_cases():
         ([0.2672612419124244, -0.5345224838248488, 0.8017837257372732], 8.8e26, 1e-6, 3.0, 6.3e12, 1.0, 99_999_999_999),
         ([0.0, 1.0, 0.0], 1.0e22, 1e-12, 0.5, 1.0e22 ** 1.5 / 1.0e10, 0.0, 1),  # a very long ellipse, one tick after the start
         ([0.0, 1.0, 0.0], 1.0e22, 1e-12, 0.5, 1.0e22 ** 1.5 / 1.0e10, 0.0, 987_654_321_012_345),
-        ([0.95, 0.1, 0.2], 7.0e6, 0.3, 2.0, 5_400.0, 6.28, 123_456_789),
+        ([0.95, 0.1, 0.2], 7.0e6, 0.3, 2.0, 5_400.0, 6.2, 123_456_789),
         ([-0.3, 0.5, -0.8], 2.2e13, 0.02, -3.0, -4.4e8, -2.5, 55_555_555_555),
     ]
     for normal, radius, ratio, periapsis, period, phase, tick in ellipses:
@@ -178,13 +186,14 @@ def kepler():
 
 def orbits():
     cases = orbit_cases()
-    print("// (normal, radius, ratio, periapsis, period, phase, tick, ticks a second, bricks, rest, velocity)")
+    print("// (normal, radius, ratio, periapsis, period, phase, tick, ticks a second, bricks, rest, velocity, amplification)")
     print("const ELLIPSES: [PinnedEllipse; %d] = [" % len(cases))
     for normal, radius, ratio, periapsis, period, phase, tick, ticks_per_second in cases:
         bricks, rest, velocity = offset(normal, radius, ratio, periapsis, period, phase, tick, ticks_per_second)
-        print("    (%r, %r, %r, %r, %r, %r, %d, %d, %r, [%s], [%s])," % (
+        print("    (%r, %r, %r, %r, %r, %r, %d, %d, %r, [%s], [%s], %r)," % (
             normal, radius, ratio, periapsis, period, phase, tick, ticks_per_second, bricks,
-            ", ".join(repr(float(x)) for x in rest), ", ".join(repr(float(x)) for x in velocity)))
+            ", ".join(repr(float(x)) for x in rest), ", ".join(repr(float(x)) for x in velocity),
+            amplification_at(ratio, period, phase, tick, ticks_per_second)))
     print("];")
 
 

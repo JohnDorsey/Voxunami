@@ -93,37 +93,16 @@ impl Wide {
     }
 
     /// `self - other`.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "used by exact_kepler, which Orbit uses from step A3 of docs/orbits-and-thrust-plan.md"
-        )
-    )]
     pub(crate) fn minus(self, other: Self) -> Self {
         self.plus(other.negated())
     }
 
     /// Whether `self` is at least `other`, both taken as numbers that are not negative.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "used by exact_kepler, which Orbit uses from step A3 of docs/orbits-and-thrust-plan.md"
-        )
-    )]
     pub(crate) fn is_at_least(self, other: Self) -> bool {
         self.high > other.high || (self.high == other.high && self.low >= other.low)
     }
 
     /// `self / divisor` rounded down, for a number that is not negative and a divisor above nothing and below 2^127; a quotient that does not fit in 128 bits is the largest there is.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "used by exact_kepler, which Orbit uses from step A3 of docs/orbits-and-thrust-plan.md"
-        )
-    )]
     pub(crate) fn divided_by(self, divisor: u128) -> u128 {
         debug_assert!(divisor != 0 && divisor < 1 << 127);
         if self.high >= divisor {
@@ -143,13 +122,6 @@ impl Wide {
     }
 
     /// The square root of `self` rounded down, for a number below 2^254. The root is found a bit at a time from the top (no division, no `f64`), so it is the same on every machine.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "used by exact_kepler, which Orbit uses from step A3 of docs/orbits-and-thrust-plan.md"
-        )
-    )]
     pub(crate) fn square_root(self) -> u128 {
         debug_assert!(!self.is_negative() && self.high < 1 << 126);
         let mut remainder = self;

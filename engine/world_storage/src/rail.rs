@@ -10,16 +10,20 @@
 //! - an **orbit**: the body goes round a centre on a circle of `radius` voxels in the plane that has `normal` for its normal, once in `period` seconds,
 //!   counter-clockwise looking down the normal, from `phase` at time 0. The circle starts toward the +x axis taken into the plane (toward +z when the normal is
 //!   nearly along x). The centre is a point of the level, or another body, which may itself be on a rail (a moon goes round a planet that goes round a star).
-//!
-//! Circular only to begin with; the orbit is a type so that an ellipse can be added to it without changing a file.
+//!   An orbit may be an **ellipse**: `radius` is then its semi-major axis, `ratio` (1 - e, the periapsis over the semi-major axis, so 1.0 is a circle) says how
+//!   long and thin it is, `periapsis` is the angle in the plane of the nearest point from the direction the circle starts toward, and `phase` is the mean anomaly at
+//!   time 0 (`exact_kepler`; the definition is in `engine/world_storage/tools/exact_ellipse_reference.py`). The ratio and not the eccentricity is kept because an `f64` e
+//!   near 1 has no digits left to say how near it is.
 
 use std::f64::consts::TAU;
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use voxel_space::{GridId, Orientation};
 
-use crate::exact_circle;
 pub use crate::exact_circle::ExactOffset;
+use crate::exact_circle::{self, Fixed};
+use crate::exact_kepler::Ellipse;
+pub use crate::exact_kepler::SMALLEST_RATIO;
 
 /// Why a spin or an orbit cannot be made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -50,17 +54,21 @@ pub struct Spin {
     pub angle: f64,
 }
 
-/// A circle gone round at a steady rate.
+/// A circle or an ellipse gone round at a steady rate.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Orbit {
     pub around: Centre,
-    /// A unit vector: the circle is counter-clockwise looking down it.
+    /// A unit vector: the orbit is counter-clockwise looking down it.
     pub normal: [f64; 3],
-    /// In voxels.
+    /// In voxels: the radius of a circle, the semi-major axis of an ellipse.
     pub radius: f64,
+    /// The periapsis over the semi-major axis, which is 1 - e: 1.0 is a circle, and a small number a long thin ellipse. From [`SMALLEST_RATIO`] to 1.
+    pub ratio: f64,
+    /// The angle in the plane, in radians, of the nearest point, from the direction a circle starts toward, counter-clockwise looking down the normal.
+    pub periapsis: f64,
     /// Seconds for one time round; negative for the other way.
     pub period: f64,
-    /// How far round it is at time 0, in radians.
+    /// How far round it is at time 0, in radians: for a circle from where it starts (and the periapsis), for an ellipse the mean anomaly.
     pub phase: f64,
 }
 
@@ -129,6 +137,11 @@ fn usable_period(period: f64) -> bool {
 /// Whether an orbit can have this radius and phase.
 fn usable_circle(radius: f64, phase: f64) -> bool {
     radius > 0.0 && radius <= LARGEST_RADIUS && phase.abs() <= LARGEST_PHASE
+}
+
+/// Whether an orbit can have this ratio and periapsis: a ratio from [`SMALLEST_RATIO`] to 1, and an angle that can be a fraction of a turn to the last of 128 bits, as a phase can.
+fn usable_shape(ratio: f64, periapsis: f64) -> bool {
+    (SMALLEST_RATIO..=1.0).contains(&ratio) && periapsis.abs() <= LARGEST_PHASE
 }
 
 /// A time of the world, as a whole number of units and how many make a second, so that it is exact however long the world has run: a tick of the clock, or a time
@@ -266,11 +279,25 @@ impl Spin {
 }
 
 impl Orbit {
-    /// An orbit round `around` in the plane with this normal (any vector that is not nothing).
+    /// A circle round `around` in the plane with this normal (any vector that is not nothing).
     pub fn new(
         around: Centre,
         normal: [f64; 3],
         radius: f64,
+        period: f64,
+        phase: f64,
+    ) -> Result<Self, RailError> {
+        Self::elliptical(around, normal, radius, 1.0, 0.0, period, phase)
+    }
+
+    /// An ellipse round `around` in the plane with this normal (any vector that is not nothing): `radius` is the semi-major axis, `ratio` is 1 - e (1.0 is a circle), and
+    /// `periapsis` is the angle in radians of the nearest point.
+    pub fn elliptical(
+        around: Centre,
+        normal: [f64; 3],
+        radius: f64,
+        ratio: f64,
+        periapsis: f64,
         period: f64,
         phase: f64,
     ) -> Result<Self, RailError> {
@@ -296,23 +323,40 @@ impl Orbit {
                 "an orbit has a period that is not nothing and not above 2^80 seconds",
             ));
         }
+        if !usable_shape(ratio, periapsis) {
+            return Err(RailError::Invalid(
+                "an orbit has a ratio (1 - e) from 2^-64 to 1 and a periapsis of at most 2^63 radians",
+            ));
+        }
         Ok(Self {
             around,
             normal: unit(normal, "the normal of an orbit")?,
             radius,
+            ratio,
+            periapsis,
             period,
             phase,
         })
     }
 
     /// Where the body is from the centre at `time`, exact, and how fast it moves round it. The angle is the phase and the part of a turn gone, added as fractions of a turn
-    /// of 128 bits; the sine and cosine, the plane and the radius multiplied in are whole numbers too (see [`crate::exact_circle`]).
+    /// of 128 bits; the sine and cosine, the plane and the radius multiplied in are whole numbers too (see [`crate::exact_circle`]). For an ellipse that angle is the mean
+    /// anomaly, from which [`crate::exact_kepler`] works out the place.
     fn at(&self, time: RailTime) -> (ExactOffset, [f64; 3]) {
         let (remainder, whole_turn) = turn_fraction(time, self.period);
-        let turns = exact_circle::fraction_in_turns(remainder, whole_turn)
+        let gone = exact_circle::fraction_in_turns(remainder, whole_turn)
             .wrapping_add(exact_circle::turns_of_radians(self.phase));
-        let angle = exact_circle::sine_and_cosine(turns);
         let (first, second) = exact_circle::plane(self.normal);
+        if self.ratio != 1.0 {
+            return self.on_an_ellipse(gone, first, second);
+        }
+        // A circle: the periapsis only says where it starts (not at all, for the circles of before ellipses, whose bits are pinned).
+        let turns = if self.periapsis == 0.0 {
+            gone
+        } else {
+            gone.wrapping_add(exact_circle::turns_of_radians(self.periapsis))
+        };
+        let angle = exact_circle::sine_and_cosine(turns);
         let offset = exact_circle::circle_point(self.radius, angle, first, second);
         // The speed is worked out from the same sine, cosine and plane, as plain numbers: it is as large as a radius a period, and a part in 10^16 of that is nothing.
         let (sine, cosine) = (
@@ -325,6 +369,53 @@ impl Orbit {
         (
             offset,
             [0, 1, 2].map(|axis| speed * (cosine * second[axis] - sine * first[axis])),
+        )
+    }
+
+    /// As [`Self::at`] for an ellipse, from the mean anomaly and the two directions of the plane. In the plane of the orbit the body is at x toward the periapsis and y a
+    /// quarter turn on, in units of the semi-major axis; the direction of travel is (-sin E, sqrt(1 - e^2) cos E) over the distance from the focus, which is 1 - e cos E in
+    /// the same units; and the periapsis angle turns both into the two directions of the plane.
+    fn on_an_ellipse(
+        &self,
+        mean_anomaly: u128,
+        first: [Fixed; 3],
+        second: [Fixed; 3],
+    ) -> (ExactOffset, [f64; 3]) {
+        let anomaly = Ellipse::new(self.ratio).anomaly(mean_anomaly);
+        let turned = (self.periapsis != 0.0)
+            .then(|| exact_circle::sine_and_cosine(exact_circle::turns_of_radians(self.periapsis)));
+        // (x, y) turned by the periapsis angle: x' = x cos - y sin, y' = x sin + y cos.
+        let rotate = |x: Fixed, y: Fixed| match turned {
+            None => (x, y),
+            Some((sine, cosine)) => (
+                exact_circle::multiplied(x, cosine, 126) - exact_circle::multiplied(y, sine, 126),
+                exact_circle::multiplied(x, sine, 126) + exact_circle::multiplied(y, cosine, 126),
+            ),
+        };
+        let (x, y) = rotate(anomaly.x, anomaly.y);
+        // (The point in the plane is a cosine and a sine of something that is not an angle, up to twice as long as a unit vector: `circle_point` multiplies them in as they are.)
+        let offset = exact_circle::circle_point(self.radius, (y, x), first, second);
+        // The speed is worked out from the same numbers as plain numbers, as the circle's is: n a over the distance, with n = 2 pi over the period.
+        let scale = self.radius * (TAU / self.period) / exact_circle::float_of(anomaly.distance);
+        let (toward, along) = (
+            -exact_circle::float_of(anomaly.sine) * scale,
+            exact_circle::float_of(anomaly.velocity_y) * scale,
+        );
+        let (toward, along) = match turned {
+            None => (toward, along),
+            Some((sine, cosine)) => {
+                let (sine, cosine) = (exact_circle::float_of(sine), exact_circle::float_of(cosine));
+                (
+                    toward * cosine - along * sine,
+                    toward * sine + along * cosine,
+                )
+            }
+        };
+        let first = first.map(exact_circle::float_of);
+        let second = second.map(exact_circle::float_of);
+        (
+            offset,
+            [0, 1, 2].map(|axis| toward * first[axis] + along * second[axis]),
         )
     }
 }
@@ -367,6 +458,8 @@ impl Rail {
 
 const HAS_SPIN: u8 = 1;
 const HAS_ORBIT: u8 = 2;
+/// The orbit is not a circle that starts toward the first direction: its ratio and its periapsis follow its phase. (A circle is written without, as it always was.)
+const HAS_ELLIPSE: u8 = 4;
 const ABOUT_A_POINT: u8 = 0;
 const ABOUT_A_GRID: u8 = 1;
 
@@ -388,12 +481,20 @@ fn read_number(reader: &mut ByteReader<'_>) -> Result<f64, DecodeError> {
     Ok(f64::from_bits(reader.read_u64()?))
 }
 
-/// The bytes of a rail (the payload of a ship file's `engine:rail`): a byte of flags (1 a spin, 2 an orbit); the spin's axis, period and angle; the orbit's centre
-/// (a byte, 0 and a point or 1 and the number of a body), normal, radius, period and phase. Every number is the bits of an `f64`, little-endian.
+/// The bytes of a rail (the payload of a ship file's `engine:rail`): a byte of flags (1 a spin, 2 an orbit, 4 that the orbit is an ellipse); the spin's axis, period and
+/// angle; the orbit's centre (a byte, 0 and a point or 1 and the number of a body), normal, radius, period and phase, and for an ellipse its ratio and periapsis. Every
+/// number is the bits of an `f64`, little-endian. An orbit that is a circle starting toward the first direction (a ratio of 1.0 and a periapsis of nothing) is written with
+/// no flag 4 and nothing after the phase, which is what it was before ellipses, so the file of a ship on a circle is the same bytes.
 pub fn encode_rail(rail: &Rail) -> Vec<u8> {
     let mut writer = ByteWriter::new();
+    let is_ellipse = |orbit: &Orbit| orbit.ratio != 1.0 || orbit.periapsis != 0.0;
     let flags = if rail.spin.is_some() { HAS_SPIN } else { 0 }
-        | if rail.orbit.is_some() { HAS_ORBIT } else { 0 };
+        | if rail.orbit.is_some() { HAS_ORBIT } else { 0 }
+        | if rail.orbit.as_ref().is_some_and(is_ellipse) {
+            HAS_ELLIPSE
+        } else {
+            0
+        };
     writer.write_u8(flags);
     if let Some(spin) = &rail.spin {
         write_vector(&mut writer, spin.axis);
@@ -415,17 +516,25 @@ pub fn encode_rail(rail: &Rail) -> Vec<u8> {
         writer.write_u64(orbit.radius.to_bits());
         writer.write_u64(orbit.period.to_bits());
         writer.write_u64(orbit.phase.to_bits());
+        if is_ellipse(orbit) {
+            writer.write_u64(orbit.ratio.to_bits());
+            writer.write_u64(orbit.periapsis.to_bits());
+        }
     }
     writer.into_bytes()
 }
 
-/// The rail of a payload. Refuses what [`Spin::new`] and [`Orbit::new`] refuse (the directions must be unit vectors already: what was written was read back as it
-/// was, to the bit), a flag or a centre this program does not know, bytes that end too soon and bytes after the end.
+/// The rail of a payload. Refuses what [`Spin::new`] and [`Orbit::elliptical`] refuse (the directions must be unit vectors already: what was written was read back as it
+/// was, to the bit), a flag or a centre this program does not know, the flag of an ellipse with no orbit or on a circle that is not one (a circle has one way to be written),
+/// bytes that end too soon and bytes after the end.
 pub fn decode_rail(payload: &[u8]) -> Result<Rail, DecodeError> {
     let mut reader = ByteReader::new(payload);
     let flags = reader.read_u8()?;
-    if flags & !(HAS_SPIN | HAS_ORBIT) != 0 {
+    if flags & !(HAS_SPIN | HAS_ORBIT | HAS_ELLIPSE) != 0 {
         return Err(DecodeError::Invalid("a rail with a flag nobody knows"));
+    }
+    if flags & HAS_ELLIPSE != 0 && flags & HAS_ORBIT == 0 {
+        return Err(DecodeError::Invalid("an ellipse that is no orbit"));
     }
     let spin = if flags & HAS_SPIN != 0 {
         let spin = Spin {
@@ -450,12 +559,27 @@ pub fn decode_rail(payload: &[u8]) -> Result<Rail, DecodeError> {
                 ));
             }
         };
+        let normal = read_vector(&mut reader)?;
+        let radius = read_number(&mut reader)?;
+        let period = read_number(&mut reader)?;
+        let phase = read_number(&mut reader)?;
+        let (ratio, periapsis) = if flags & HAS_ELLIPSE != 0 {
+            let shape = (read_number(&mut reader)?, read_number(&mut reader)?);
+            if shape == (1.0, 0.0) {
+                return Err(DecodeError::Invalid("a circle written as an ellipse"));
+            }
+            shape
+        } else {
+            (1.0, 0.0)
+        };
         let orbit = Orbit {
             around,
-            normal: read_vector(&mut reader)?,
-            radius: read_number(&mut reader)?,
-            period: read_number(&mut reader)?,
-            phase: read_number(&mut reader)?,
+            normal,
+            radius,
+            ratio,
+            periapsis,
+            period,
+            phase,
         };
         let centre_is_good = match orbit.around {
             Centre::Point(point) => finite(&point),
@@ -466,6 +590,7 @@ pub fn decode_rail(payload: &[u8]) -> Result<Rail, DecodeError> {
             && orbit.radius.is_finite()
             && orbit.phase.is_finite()
             && usable_circle(orbit.radius, orbit.phase)
+            && usable_shape(orbit.ratio, orbit.periapsis)
             && usable_period(orbit.period))
         {
             return Err(DecodeError::Invalid("an orbit that is no orbit"));

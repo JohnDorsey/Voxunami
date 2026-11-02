@@ -17,13 +17,6 @@
 //!
 //! What it costs: three Newton steps, each a sine and cosine (about 130 steps of shifts and adds) and a long division (128 steps), and one more sine and cosine for the answer:
 //! some microseconds.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Orbit uses it from step A3 of docs/orbits-and-thrust-plan.md"
-    )
-)]
 
 use std::f64::consts::{PI, TAU};
 
@@ -43,7 +36,7 @@ const TURN: f64 = (1u128 << 127) as f64 * 2.0;
 const STEPS: usize = 3;
 
 /// The smallest ratio, 2^-64: the ratio is kept in 126 bits after the point, and an `f64` of at least this has no bit below 2^-116, so it is kept exactly.
-pub(crate) const SMALLEST_RATIO: f64 = 1.0 / ((1u128 << 64) as f64);
+pub const SMALLEST_RATIO: f64 = 1.0 / ((1u128 << 64) as f64);
 
 /// An ellipse, from what is worked out once for it.
 #[derive(Clone, Copy, Debug)]
@@ -73,6 +66,8 @@ pub(crate) struct Anomaly {
     pub(crate) y: Fixed,
     /// The distance from the focus in units of a: 1 - e cos E, which is also the slope of Kepler's equation.
     pub(crate) distance: Fixed,
+    /// The second part of the direction of travel, sqrt(1 - e^2) cos E (the first is -sin E); the speed is that over the distance, times n a.
+    pub(crate) velocity_y: Fixed,
 }
 
 impl Ellipse {
@@ -108,6 +103,7 @@ impl Ellipse {
             x: cosine - self.eccentricity,
             y: multiplied(self.minor, sine, 126),
             distance: ONE - multiplied(self.eccentricity, cosine, 126),
+            velocity_y: multiplied(self.minor, cosine, 126),
         }
     }
 

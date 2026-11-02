@@ -6,7 +6,8 @@
 //! periods from 0.05 second to 2^80, either way round, phases up to 2^62 radians, ticks up to `u64::MAX` and several clock rates. If one moves, find out why before
 //! changing the number.
 
-use world_storage::rail::{Centre, Orbit, Rail, RailTime};
+use voxel_space::GridId;
+use world_storage::rail::{Centre, Orbit, Rail, RailTime, Spin, decode_rail, encode_rail};
 
 /// `(normal, radius, period, phase, tick, ticks a second, bricks, rest as bits, velocity as bits)` of the offset from the centre of the orbit at that tick.
 type Pin = (
@@ -392,23 +393,102 @@ const PINS: [Pin; 26] = [
 
 #[test]
 fn a_circle_is_where_it_was_to_the_bit() {
-    for (index, (normal, radius, period, phase, tick, per_second, bricks, rest, velocity)) in
-        PINS.into_iter().enumerate()
-    {
-        let rail = Rail {
-            spin: None,
-            orbit: Some(
-                Orbit::new(Centre::Point([0.0; 3]), normal, radius, period, phase).unwrap(),
-            ),
-        };
-        let state = rail.state(RailTime::of_tick(tick, per_second), [0.0; 3], [0.0; 3]);
-        let offset = state.offset.expect("an orbit has an offset");
-        assert_eq!(offset.bricks, bricks, "bricks of pin {index}");
-        assert_eq!(offset.rest.map(f64::to_bits), rest, "rest of pin {index}");
-        assert_eq!(
-            state.velocity.map(f64::to_bits),
-            velocity,
-            "velocity of pin {index}"
-        );
+    for (index, pin) in PINS.into_iter().enumerate() {
+        let (normal, radius, period, phase, ..) = pin;
+        let orbit = Orbit::new(Centre::Point([0.0; 3]), normal, radius, period, phase).unwrap();
+        check(index, pin, orbit);
+    }
+}
+
+#[test]
+fn an_ellipse_with_a_ratio_of_one_and_no_periapsis_is_the_same_circle_to_the_bit() {
+    for (index, pin) in PINS.into_iter().enumerate() {
+        let (normal, radius, period, phase, ..) = pin;
+        let orbit = Orbit::elliptical(
+            Centre::Point([0.0; 3]),
+            normal,
+            radius,
+            1.0,
+            0.0,
+            period,
+            phase,
+        )
+        .unwrap();
+        check(index, pin, orbit);
+    }
+}
+
+fn check(index: usize, pin: Pin, orbit: Orbit) {
+    let (_, _, _, _, tick, per_second, bricks, rest, velocity) = pin;
+    let rail = Rail {
+        spin: None,
+        orbit: Some(orbit),
+    };
+    let state = rail.state(RailTime::of_tick(tick, per_second), [0.0; 3], [0.0; 3]);
+    let offset = state.offset.expect("an orbit has an offset");
+    assert_eq!(offset.bricks, bricks, "bricks of pin {index}");
+    assert_eq!(offset.rest.map(f64::to_bits), rest, "rest of pin {index}");
+    assert_eq!(
+        state.velocity.map(f64::to_bits),
+        velocity,
+        "velocity of pin {index}"
+    );
+}
+
+/// The bytes of a rail (`engine:rail` in a ship file) as the program before ellipses wrote them: a spin, a circle about a point, and both with a circle about a ship.
+fn bytes_of(hex: &str) -> Vec<u8> {
+    (0..hex.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).unwrap())
+        .collect()
+}
+
+#[test]
+fn a_rail_with_a_circle_is_written_as_the_bytes_it_always_was_and_read_back_from_them() {
+    let rails = [
+        (
+            Rail {
+                spin: Some(Spin::new([0.0, 1.0, 0.0], 86_400.0, 0.5).unwrap()),
+                orbit: None,
+            },
+            "010000000000000000000000000000f03f0000000000000000000000000018f540000000000000e03f",
+        ),
+        (
+            Rail {
+                spin: None,
+                orbit: Some(
+                    Orbit::new(
+                        Centre::Point([1.0, 2.0, 3.0]),
+                        [0.0, 1.0, 0.0],
+                        1.5e9,
+                        31_557_600.0,
+                        1.0,
+                    )
+                    .unwrap(),
+                ),
+            },
+            "0200000000000000f03f000000000000004000000000000008400000000000000000000000000000f03f0000000000000000000000c00b5ad641000000007e187e41000000000000f03f",
+        ),
+        (
+            Rail {
+                spin: Some(Spin::new([0.6, 0.8, 0.0], -3_600.0, -2.0).unwrap()),
+                orbit: Some(
+                    Orbit::new(
+                        Centre::Grid(GridId::new(7)),
+                        [0.6, 0.8, 0.0],
+                        5.0e17,
+                        -9.0e8,
+                        -1.0,
+                    )
+                    .unwrap(),
+                ),
+            },
+            "03333333333333e33f9a9999999999e93f0000000000000000000000000020acc000000000000000c00107333333333333e33f9a9999999999e93f000000000000000000c84e676dc19b430000008074d2cac1000000000000f0bf",
+        ),
+    ];
+    for (rail, hex) in rails {
+        let bytes = bytes_of(hex);
+        assert_eq!(encode_rail(&rail), bytes);
+        assert_eq!(decode_rail(&bytes).unwrap(), rail);
     }
 }

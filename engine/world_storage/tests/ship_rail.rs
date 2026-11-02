@@ -1,6 +1,7 @@
 //! A ship on a rail (a planet that goes round something and turns): its file has the rail, as a section of its own, and the rail survives being written,
 //! put away, brought back and saved with a world. A ship with no rail has no such section, so its file is what it was before rails.
 
+use voxel_space::GridId;
 use world_storage::container::{Section, read_container, write_container};
 use world_storage::rail::{Centre, Orbit, Rail, Spin, encode_rail};
 use world_storage::test_support::{ALL_PLUGINS, Game, main_level_id, sample_world};
@@ -157,4 +158,85 @@ fn a_world_with_a_planet_on_a_rail_saves_and_loads_it_with_the_rail() {
     other.load_all_ships(&mut loaded, &files);
     assert_eq!(loaded.grids().get(planet_id).unwrap().rail, Some(a_rail()));
     assert_eq!(loaded.grids().get(plain_id).unwrap().rail, None);
+}
+
+/// A moon on an ellipse about another ship, spinning.
+fn an_elliptical_rail() -> Rail {
+    Rail {
+        spin: Some(Spin::new([0.0, 1.0, 0.0], 86_400.0, 0.25).unwrap()),
+        orbit: Some(
+            Orbit::elliptical(
+                Centre::Grid(GridId::new(3)),
+                [0.6, 0.8, 0.0],
+                3.84e8,
+                0.945,
+                1.8,
+                2.36e6,
+                5.5,
+            )
+            .unwrap(),
+        ),
+    }
+}
+
+fn rail_payload(bytes: &[u8]) -> Vec<u8> {
+    read_container(bytes)
+        .unwrap()
+        .into_iter()
+        .find(|section| section.identifier == rail_id())
+        .expect("a rail section")
+        .payload
+}
+
+#[test]
+fn a_ship_on_an_ellipse_is_saved_with_it_and_comes_back_with_it_and_a_circle_is_as_it_was() {
+    let game = Game::new(&ALL_PLUGINS);
+    let world = game.new_world();
+    let format = game.ship_format(&world);
+    let planet = game.sample_planet(&world, 0);
+    let on_an_ellipse = MovingGrid {
+        rail: Some(an_elliptical_rail()),
+        ..planet.clone()
+    };
+    let bytes = format.encode(&on_an_ellipse, &main_level_id()).unwrap();
+    // The section is the bytes of the rail, with the flag of an ellipse; the file is the same when written again, and reads back as it was.
+    assert_eq!(rail_payload(&bytes), encode_rail(&an_elliptical_rail()));
+    assert_eq!(rail_payload(&bytes)[0] & 0b100, 0b100);
+    assert_eq!(
+        format.encode(&on_an_ellipse, &main_level_id()).unwrap(),
+        bytes
+    );
+    assert_eq!(
+        format.decode(&bytes).unwrap().rail,
+        Some(an_elliptical_rail())
+    );
+    // A ship on a circle has the section it always had: no flag, nothing after the phase.
+    let on_a_circle = MovingGrid {
+        rail: Some(a_rail()),
+        ..planet
+    };
+    let circle_bytes = format.encode(&on_a_circle, &main_level_id()).unwrap();
+    assert_eq!(rail_payload(&circle_bytes)[0] & 0b100, 0);
+    assert_eq!(rail_payload(&circle_bytes), encode_rail(&a_rail()));
+}
+
+#[test]
+fn a_ship_on_an_ellipse_put_away_and_brought_back_still_has_it() {
+    let game = Game::new(&ALL_PLUGINS);
+    let mut world = sample_world(&game);
+    let planet = MovingGrid {
+        rail: Some(an_elliptical_rail()),
+        ..game.sample_planet(&world, 0)
+    };
+    let id_of_planet = world.grids_mut().create(planet);
+    let format = game.ship_format(&world);
+    let mut files = MemoryShipFiles::new();
+    world
+        .park_ship(id_of_planet, false, &mut files, &format)
+        .unwrap();
+    world.load_ship(id_of_planet, &files, &format).unwrap();
+    assert_eq!(
+        world.grids().get(id_of_planet).unwrap().rail,
+        Some(an_elliptical_rail())
+    );
 }
