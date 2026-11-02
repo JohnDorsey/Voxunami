@@ -73,7 +73,7 @@ impl<'a> Context<'a> {
         &self,
         grid: GridId,
         local: voxel_space::WorldPosition,
-    ) -> Result<[f32; 3], AccessError> {
+    ) -> Result<[f64; 3], AccessError> {
         self.world.gravity_in(grid, local)
     }
 
@@ -148,7 +148,7 @@ impl<'a> Context<'a> {
         &self,
         grid: GridId,
         position: WorldPosition,
-        radius: f32,
+        radius: f64,
     ) -> Vec<EntityId> {
         self.check_component(&entities_resource(), false);
         self.world.entities_near(grid, position, radius)

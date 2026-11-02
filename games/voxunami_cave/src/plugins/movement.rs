@@ -70,9 +70,9 @@ fn voxels(position: WorldPosition) -> [f64; 3] {
     let brick = position.brick();
     let offset = position.offset();
     [
-        brick.x() as f64 * 32.0 + f64::from(offset[0]),
-        brick.y() as f64 * 32.0 + f64::from(offset[1]),
-        brick.z() as f64 * 32.0 + f64::from(offset[2]),
+        brick.x() as f64 * 32.0 + offset[0],
+        brick.y() as f64 * 32.0 + offset[1],
+        brick.z() as f64 * 32.0 + offset[2],
     ]
 }
 
@@ -188,8 +188,8 @@ fn go_to_coordinates(
             .expect("a coordinate that was read is a number")
     });
     let [now_x, now_y, now_z] = voxels(now);
-    // (The position is made of an `f32` offset in a brick, so a place that was not moved is the one asked for,
-    // to within what an `f32` holds.)
+    // (The position is a brick and an `f64` offset in it, so a place that was not moved is the one asked for to far better than the 1e-3 allowed here, which was
+    // set for the rounding of an `f32`.)
     let moved = [now_x - x, now_y - y, now_z - z]
         .iter()
         .any(|difference| difference.abs() > 1.0e-3);
@@ -305,9 +305,9 @@ fn go_to_a_place(
             let position = WorldPosition::new(
                 brick,
                 [
-                    f32::from(local.x()) + 0.5,
-                    f32::from(local.y()) + 0.5,
-                    f32::from(local.z()) + 0.5,
+                    f64::from(local.x()) + 0.5,
+                    f64::from(local.y()) + 0.5,
+                    f64::from(local.z()) + 0.5,
                 ],
             );
             (

@@ -21,8 +21,8 @@ impl Orientation {
     /// The rotation of a body turned `yaw` radians about the vertical axis (positive turns toward
     /// -x, as the camera's yaw does), then tipped up by `pitch` radians. Uses `libm`, so the result
     /// is the same on every machine.
-    pub fn from_yaw_pitch(yaw: f32, pitch: f32) -> Self {
-        let (half_yaw, half_pitch) = (f64::from(yaw) * 0.5, f64::from(pitch) * 0.5);
+    pub fn from_yaw_pitch(yaw: f64, pitch: f64) -> Self {
+        let (half_yaw, half_pitch) = (yaw * 0.5, pitch * 0.5);
         let (yaw_sin, yaw_cos) = (libm::sin(half_yaw), libm::cos(half_yaw));
         let (pitch_sin, pitch_cos) = (libm::sin(half_pitch), libm::cos(half_pitch));
         // Yaw about +y, then pitch about the turned x axis: q = yaw * pitch.
@@ -48,17 +48,12 @@ impl Orientation {
         ((length_squared - 1.0).abs() <= LENGTH_TOLERANCE).then_some(Self(components))
     }
 
-    /// The orientation with these `f32` components, exactly (every `f32` is an `f64`): what an older file or a graphics or physics library holds.
-    pub fn from_single_components(components: [f32; 4]) -> Option<Self> {
-        Self::from_components(components.map(f64::from))
-    }
-
     /// The components `[x, y, z, w]`.
     pub fn components(self) -> [f64; 4] {
         self.0
     }
 
-    /// The components rounded to `f32`, for the libraries that work in it (the graphics card, the physics engine). Rounding is the only loss.
+    /// The components rounded to `f32`, for the graphics card, which works in it. Rounding is the only loss.
     pub fn components_single(self) -> [f32; 4] {
         self.0.map(|component| component as f32)
     }
@@ -132,7 +127,7 @@ mod tests {
 
     #[test]
     fn a_quarter_turn_of_yaw_is_a_half_root_two_about_the_vertical_axis() {
-        let turned = Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0).components();
+        let turned = Orientation::from_yaw_pitch(std::f64::consts::FRAC_PI_2, 0.0).components();
         let half_root_two = std::f64::consts::FRAC_1_SQRT_2;
         assert!((turned[1] - half_root_two).abs() < 1e-7, "{turned:?}");
         assert!((turned[3] - half_root_two).abs() < 1e-7, "{turned:?}");
@@ -165,7 +160,7 @@ mod tests {
 
     #[test]
     fn turns_about_one_axis_add_when_composed() {
-        let (first, second) = (0.7f32, -1.9f32);
+        let (first, second) = (0.7f64, -1.9f64);
         let composed = Orientation::from_yaw_pitch(first, 0.0)
             .compose(Orientation::from_yaw_pitch(second, 0.0));
         let expected = Orientation::from_yaw_pitch(first + second, 0.0).components();
@@ -181,7 +176,7 @@ mod tests {
     fn composing_is_not_commutative_and_does_the_inner_turn_first() {
         // Tipped up a quarter turn about x first, then turned a quarter about the vertical axis: the product (yaw about y) * (pitch about
         // x), worked out by hand for two quarter turns, is the quaternion (1/2, 1/2, -1/2, 1/2). The other order is another turn.
-        let quarter = std::f32::consts::FRAC_PI_2;
+        let quarter = std::f64::consts::FRAC_PI_2;
         let tip = Orientation::from_yaw_pitch(0.0, quarter);
         let turn = Orientation::from_yaw_pitch(quarter, 0.0);
         let [x, y, z, w] = turn.compose(tip).components();
@@ -199,8 +194,8 @@ mod tests {
     proptest! {
         #[test]
         fn a_turn_composed_with_its_inverse_is_no_turn_in_either_order(
-            yaw in -20.0f32..20.0,
-            pitch in -1.5f32..1.5,
+            yaw in -20.0f64..20.0,
+            pitch in -1.5f64..1.5,
         ) {
             let turn = Orientation::from_yaw_pitch(yaw, pitch);
             for composed in [turn.compose(turn.inverse()), turn.inverse().compose(turn)] {
@@ -212,8 +207,8 @@ mod tests {
 
         #[test]
         fn any_yaw_and_pitch_make_a_unit_orientation_that_is_accepted_back(
-            yaw in -20.0f32..20.0,
-            pitch in -3.2f32..3.2,
+            yaw in -20.0f64..20.0,
+            pitch in -3.2f64..3.2,
         ) {
             let orientation = Orientation::from_yaw_pitch(yaw, pitch);
             prop_assert!((length_squared(orientation) - 1.0).abs() < 1e-12);

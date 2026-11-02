@@ -30,8 +30,8 @@ pub struct MergePlan<'a> {
     /// the default and is not now. Called only for a turn that is not none.
     pub turn: &'a dyn TurnValues,
     /// How the merged ship moves: the caller works it out from the masses (the server does not know them).
-    pub linear_velocity: [f32; 3],
-    pub angular_velocity: [f32; 3],
+    pub linear_velocity: [f64; 3],
+    pub angular_velocity: [f64; 3],
 }
 
 impl std::fmt::Debug for MergePlan<'_> {
@@ -74,9 +74,9 @@ fn point_of(position: WorldPosition) -> [f64; 3] {
     let brick = position.brick();
     let offset = position.offset();
     [
-        brick.x() as f64 * 32.0 + f64::from(offset[0]),
-        brick.y() as f64 * 32.0 + f64::from(offset[1]),
-        brick.z() as f64 * 32.0 + f64::from(offset[2]),
+        brick.x() as f64 * 32.0 + offset[0],
+        brick.y() as f64 * 32.0 + offset[1],
+        brick.z() as f64 * 32.0 + offset[2],
     ]
 }
 
@@ -85,7 +85,7 @@ fn position_of(point: [f64; 3]) -> Option<WorldPosition> {
     let brick = BrickCoordinate::try_new(whole[0], whole[1], whole[2]).ok()?;
     WorldPosition::try_new(
         brick,
-        [0, 1, 2].map(|axis| (point[axis] - whole[axis] as f64 * 32.0) as f32),
+        [0, 1, 2].map(|axis| point[axis] - whole[axis] as f64 * 32.0),
     )
 }
 
@@ -378,15 +378,15 @@ mod tests {
             .unwrap()
     }
 
-    fn at(x: f32, y: f32, z: f32) -> WorldPosition {
+    fn at(x: f64, y: f64, z: f64) -> WorldPosition {
         WorldPosition::new(BrickCoordinate::ORIGIN, [x, y, z])
     }
 
     /// The pose of a ship at this place in the world, turned a quarter about the vertical axis `quarters` times.
-    fn pose(x: f32, y: f32, z: f32, quarters: f32) -> GridPose {
+    fn pose(x: f64, y: f64, z: f64, quarters: f64) -> GridPose {
         GridPose::new(
             at(x, y, z),
-            Orientation::from_yaw_pitch(quarters * std::f32::consts::FRAC_PI_2, 0.0),
+            Orientation::from_yaw_pitch(quarters * std::f64::consts::FRAC_PI_2, 0.0),
         )
     }
 
@@ -466,7 +466,7 @@ mod tests {
             assert_eq!(ship.voxels.get(block, there), BLOCK);
             let before = point_of(
                 small_pose
-                    .local_to_world(at(x as f32 + 0.5, 0.5, 0.5))
+                    .local_to_world(at(x as f64 + 0.5, 0.5, 0.5))
                     .unwrap(),
             );
             let now = world_point(
@@ -875,7 +875,7 @@ mod tests {
         // The walker is turned the quarter, and stands on the same block.
         let found = world.entities().get(on_it).unwrap().pose;
         assert_eq!(found.grid, planet);
-        let turned = Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0).components();
+        let turned = Orientation::from_yaw_pitch(std::f64::consts::FRAC_PI_2, 0.0).components();
         for (a, b) in found.orientation.components().iter().zip(turned) {
             assert!(
                 (a - b).abs() < 1e-6,

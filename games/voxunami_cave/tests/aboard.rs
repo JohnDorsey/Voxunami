@@ -32,10 +32,7 @@ fn a_walker_who_lands_on_a_ship_is_aboard_it_standing_in_its_coordinates() {
     assert_eq!(player_pose(&scene, 1), standing);
     // The world has them where the deck puts them: 5 above the floor and the eyes 1.62 above that.
     let eyes = eyes_in_the_world(&scene, 1);
-    assert!(
-        (eyes[1] - (FLOOR as f64 + 5.0 + 1.62)).abs() < 0.03,
-        "{eyes:?}"
-    );
+    assert!((eyes[1] - (FLOOR + 5.0 + 1.62)).abs() < 0.03, "{eyes:?}");
     assert!((eyes[0] - 20.0).abs() < 0.01 && (eyes[2] - 24.0).abs() < 0.01);
 }
 
@@ -60,7 +57,7 @@ fn a_ship_that_moves_carries_the_walker_exactly_and_the_walker_does_not_move_in_
     );
     assert!((after[1] - before[1]).abs() < 1e-4 && (after[2] - before[2]).abs() < 1e-4);
     each_tick(&mut scene, &mut player, 30, |world, tick| {
-        let x = 10.0 + 0.1 * (tick as f32 + 1.0);
+        let x = 10.0 + 0.1 * (tick as f64 + 1.0);
         world
             .set_grid_pose(ship_id(0), pose_at(x, FLOOR + 3.0, 20.0))
             .unwrap();
@@ -84,7 +81,7 @@ fn walking_aboard_is_in_the_coordinates_of_the_ship_whichever_way_it_faces() {
             BrickCoordinate::ORIGIN,
             [20.0 + 4.0, FLOOR + 3.0, 24.0 + 15.0],
         ),
-        Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0),
+        Orientation::from_yaw_pitch(std::f64::consts::FRAC_PI_2, 0.0),
     );
     scene.run(move |world| world.set_grid_pose(ship_id(0), turned).unwrap());
     player.advance().unwrap();
@@ -113,12 +110,10 @@ fn walking_aboard_is_in_the_coordinates_of_the_ship_whichever_way_it_faces() {
 #[test]
 fn landing_on_a_ship_that_moves_the_walker_comes_to_rest_in_it_and_goes_with_it() {
     let mut scene = scene_with_a_deck();
-    let mut player = scene
-        .rig
-        .join_walking([20.0, FLOOR as f64 + 13.0, 24.0], 0.0, 0.0);
+    let mut player = scene.rig.join_walking([20.0, FLOOR + 13.0, 24.0], 0.0, 0.0);
     // The deck goes east at four a second from now, while the walker falls.
     let moving = |world: &mut server::ServerWorld, tick: usize| {
-        let x = 5.0 + 0.2 * (tick as f32 + 1.0);
+        let x = 5.0 + 0.2 * (tick as f64 + 1.0);
         world
             .set_grid_pose(ship_id(0), pose_at(x, FLOOR + 3.0, 20.0))
             .unwrap();
@@ -155,7 +150,7 @@ fn walking_off_the_edge_of_a_ship_that_moves_leaves_it_with_the_speed_it_had() {
     let mut player = walker_on_the_deck(&mut scene);
     // The deck sets off east at six a second (the walker is not pushed), and the walker walks toward its -z edge, four away.
     let moving = |world: &mut server::ServerWorld, tick: usize| {
-        let x = 5.0 + 0.3 * (tick as f32 + 1.0);
+        let x = 5.0 + 0.3 * (tick as f64 + 1.0);
         world
             .set_grid_pose(ship_id(0), pose_at(x, FLOOR + 3.0, 20.0))
             .unwrap();
@@ -196,10 +191,7 @@ fn walking_off_the_edge_of_a_ship_that_moves_leaves_it_with_the_speed_it_had() {
     let pose = player_pose(&scene, 1);
     assert!(pose.grid.root_level().is_some());
     let landed = in_voxels(pose.position);
-    assert!(
-        (landed[1] - (FLOOR as f64 + 1.62)).abs() < 0.05,
-        "{landed:?}"
-    );
+    assert!((landed[1] - (FLOOR + 1.62)).abs() < 0.05, "{landed:?}");
 }
 
 #[test]
@@ -211,7 +203,7 @@ fn a_ship_that_turns_carries_the_walker_round_without_moving_them_in_it() {
     each_tick(&mut scene, &mut player, 60, move |world, tick| {
         let turned = GridPose::new(
             origin,
-            Orientation::from_yaw_pitch(0.02 * (tick as f32 + 1.0), 0.0),
+            Orientation::from_yaw_pitch(0.02 * (tick as f64 + 1.0), 0.0),
         );
         world.set_grid_pose(ship_id(0), turned).unwrap();
     });
@@ -237,7 +229,7 @@ fn a_ship_that_turns_carries_the_walker_round_without_moving_them_in_it() {
     );
     // The view is carried with the ship: they look where the ship's -z points, in the world, turned 1.2 radians from where it did.
     let ship_ahead = ship_pose(&scene, 0).direction_to_world([0.0, 0.0, -1.0]);
-    let looking = player.camera.forward().to_array();
+    let looking = player.camera.forward().to_array().map(f64::from);
     for axis in 0..3 {
         assert!(
             (looking[axis] - ship_ahead[axis]).abs() < 1e-4,
@@ -249,7 +241,7 @@ fn a_ship_that_turns_carries_the_walker_round_without_moving_them_in_it() {
 
 /// The pose that puts the middle of a ship (its origin plus `half`, in its own coordinates) at `centre` in the world, turned as
 /// `orientation` says: what a ship that turns about its middle is at each moment.
-fn about_the_middle(centre: [f32; 3], half: [f32; 3], orientation: Orientation) -> GridPose {
+fn about_the_middle(centre: [f64; 3], half: [f64; 3], orientation: Orientation) -> GridPose {
     let origin = WorldPosition::new(BrickCoordinate::ORIGIN, [0.0; 3]);
     let turned = GridPose::new(origin, orientation).direction_to_world(half);
     GridPose::new(
@@ -262,18 +254,13 @@ fn about_the_middle(centre: [f32; 3], half: [f32; 3], orientation: Orientation) 
 }
 
 /// A turn of `angle` radians about the z axis.
-fn roll(angle: f32) -> Orientation {
-    Orientation::from_components([
-        0.0,
-        0.0,
-        libm::sin(f64::from(angle) / 2.0),
-        libm::cos(f64::from(angle) / 2.0),
-    ])
-    .unwrap()
+fn roll(angle: f64) -> Orientation {
+    Orientation::from_components([0.0, 0.0, libm::sin(angle / 2.0), libm::cos(angle / 2.0)])
+        .unwrap()
 }
 
 /// The middle of the cabin of these tests, in the air high above the floor.
-const CABIN_MIDDLE: [f32; 3] = [24.0, FLOOR + 20.0, 24.0];
+const CABIN_MIDDLE: [f64; 3] = [24.0, FLOOR + 20.0, 24.0];
 
 /// A hollow cabin of stone, 8 along each edge with walls a voxel thick, held, with its middle at `CABIN_MIDDLE`; and a walker who falls
 /// onto its floor from a little way up inside it, and is aboard it standing still.
@@ -287,11 +274,10 @@ fn walker_in_a_cabin(scene: &mut Scene) -> Player {
         |[x, y, z]| [x, y, z].iter().any(|&edge| edge == 0 || edge == 7),
     );
     // The floor inside is at the middle's height less 3; the walker's eyes start half a voxel above where they will be standing.
-    let mut player = scene.rig.join_walking(
-        [24.0, f64::from(CABIN_MIDDLE[1]) - 3.0 + 1.62 + 0.5, 24.0],
-        0.0,
-        0.0,
-    );
+    let mut player =
+        scene
+            .rig
+            .join_walking([24.0, CABIN_MIDDLE[1] - 3.0 + 1.62 + 0.5, 24.0], 0.0, 0.0);
     scene.rig.settle(&mut [&mut player]);
     tick_and_follow(scene, &mut player, 60);
     player
@@ -311,9 +297,9 @@ fn a_cabin_turned_on_its_side_has_the_walker_fall_to_the_wall_that_is_now_its_fl
     );
 
     // The cabin rolls a quarter turn about the line through its middle along z, a degree a tick.
-    let quarter = std::f32::consts::FRAC_PI_2;
+    let quarter = std::f64::consts::FRAC_PI_2;
     each_tick(&mut scene, &mut player, 90, move |world, tick| {
-        let angle = quarter * (tick as f32 + 1.0) / 90.0;
+        let angle = quarter * (tick as f64 + 1.0) / 90.0;
         world
             .set_grid_pose(
                 ship_id(0),
@@ -340,7 +326,7 @@ fn a_cabin_turned_on_its_side_has_the_walker_fall_to_the_wall_that_is_now_its_fl
     // In the world: on the floor of the rotated cabin, which is where the floor of the unrotated one was, 3 below the middle.
     let eyes = eyes_in_the_world(&scene, 1);
     assert!(
-        (eyes[1] - (f64::from(CABIN_MIDDLE[1]) - 3.0 + 1.62)).abs() < 0.08,
+        (eyes[1] - (CABIN_MIDDLE[1] - 3.0 + 1.62)).abs() < 0.08,
         "{eyes:?}"
     );
     // Standing quietly there, to the bit.
@@ -354,7 +340,7 @@ fn a_cabin_turned_over_in_a_moment_has_the_walker_fall_to_what_is_now_its_floor_
     let mut player = walker_in_a_cabin(&mut scene);
     assert_eq!(player_pose(&scene, 1).grid, ship_id(0));
     // A half turn about z, all at once: the world's down is now the ship's up.
-    let over = about_the_middle(CABIN_MIDDLE, [4.0; 3], roll(std::f32::consts::PI));
+    let over = about_the_middle(CABIN_MIDDLE, [4.0; 3], roll(std::f64::consts::PI));
     scene.run(move |world| world.set_grid_pose(ship_id(0), over).unwrap());
     player.advance().unwrap();
     tick_and_follow(&mut scene, &mut player, 60);
@@ -371,7 +357,7 @@ fn a_cabin_turned_over_in_a_moment_has_the_walker_fall_to_what_is_now_its_floor_
     // In the world they are standing on the floor of the turned cabin, 3 below its middle.
     let eyes = eyes_in_the_world(&scene, 1);
     assert!(
-        (eyes[1] - (f64::from(CABIN_MIDDLE[1]) - 3.0 + 1.62)).abs() < 0.05,
+        (eyes[1] - (CABIN_MIDDLE[1] - 3.0 + 1.62)).abs() < 0.05,
         "{eyes:?}"
     );
 }
@@ -395,10 +381,7 @@ fn a_ship_taken_from_under_the_walker_leaves_them_in_the_world_where_they_were_t
     // And they fall the five voxels the deck was above the floor, and stand on it.
     tick_and_follow(&mut scene, &mut player, 40);
     let landed = in_voxels(player_pose(&scene, 1).position);
-    assert!(
-        (landed[1] - (FLOOR as f64 + 1.62)).abs() < 0.05,
-        "{landed:?}"
-    );
+    assert!((landed[1] - (FLOOR + 1.62)).abs() < 0.05, "{landed:?}");
     assert!((landed[0] - 20.0).abs() < 0.05 && (landed[2] - 24.0).abs() < 0.05);
     assert!(player_pose(&scene, 1).grid.root_level().is_some());
 }
@@ -414,7 +397,7 @@ fn a_ship_taken_from_under_a_walker_does_not_turn_their_view_and_they_walk_the_w
     scene.run(move |world| world.set_grid_pose(ship_id(0), turned).unwrap());
     let mut player = scene
         .rig
-        .join_walking([50.0, FLOOR as f64 + 3.0, 50.0], 30.0, -10.0);
+        .join_walking([50.0, FLOOR + 3.0, 50.0], 30.0, -10.0);
     scene.rig.settle(&mut [&mut player]);
     player.send_command(&format!("/tp 20 {} 24", FLOOR as i128 + 13));
     tick_and_follow(&mut scene, &mut player, 80);
@@ -505,7 +488,7 @@ fn a_walker_who_climbs_onto_a_ship_from_the_ground_is_aboard_it_once_they_stand_
     );
     // Facing east (yaw a quarter to the right), on the floor, 3 from the deck's face.
     let mut player = scene.rig.join_walking(
-        [16.5, f64::from(FLOOR) + 1.62 + 0.3, 24.0],
+        [16.5, FLOOR + 1.62 + 0.3, 24.0],
         -90.0, // (degrees: a quarter turn to the right, facing +x)
         0.0,
     );
@@ -545,7 +528,7 @@ fn a_flyer_over_a_ship_is_not_aboard_it_and_is_not_carried() {
     // (A flying player stays where they are put.)
     let mut player = scene
         .rig
-        .join([20.0, f64::from(FLOOR) + 5.0 + 1.62 + 0.5, 24.0], 0.0, 0.0);
+        .join([20.0, FLOOR + 5.0 + 1.62 + 0.5, 24.0], 0.0, 0.0);
     scene.rig.settle(&mut [&mut player]);
     tick_and_follow(&mut scene, &mut player, 40);
     let hovering = player_pose(&scene, 1);
@@ -577,10 +560,9 @@ fn a_passenger_who_logs_out_aboard_is_aboard_when_they_come_back_even_if_the_shi
     scene.run(move |world| world.set_grid_pose(ship_id(0), moved).unwrap());
     scene.ticks(5);
     // They come back, as the same install, from the other side of the world as far as their own program knows.
-    let mut back =
-        scene
-            .rig
-            .join_walking_as(1, [-300.0, f64::from(FLOOR) + 40.0, -300.0], 0.0, 0.0);
+    let mut back = scene
+        .rig
+        .join_walking_as(1, [-300.0, FLOOR + 40.0, -300.0], 0.0, 0.0);
     scene.rig.settle(&mut [&mut back]);
     tick_and_follow(&mut scene, &mut back, 30);
     // (The connection is the second; the entity is the one they had.)
@@ -635,10 +617,7 @@ fn teleporting_a_passenger_puts_them_in_the_level_at_the_place_asked_and_not_abo
         (x - 50.0).abs() < 0.01 && (z - 50.0).abs() < 0.01,
         "{x} {z}"
     );
-    assert!(
-        (y - (FLOOR as f64 + 1.62)).abs() < 0.05,
-        "fell to the floor: {y}"
-    );
+    assert!((y - (FLOOR + 1.62)).abs() < 0.05, "fell to the floor: {y}");
     // And their view is the world's again: upright, not the turn of any room.
     assert_eq!(player.camera.forward().to_array(), [0.0, 0.0, -1.0]);
     assert_eq!(player.camera.up().to_array(), [0.0, 1.0, 0.0]);
@@ -655,9 +634,7 @@ fn scripted_run() -> u64 {
         }
     };
     let mut scene = scene_with_a_deck();
-    let mut player = scene
-        .rig
-        .join_walking([20.0, FLOOR as f64 + 13.0, 24.0], 0.0, 0.0);
+    let mut player = scene.rig.join_walking([20.0, FLOOR + 13.0, 24.0], 0.0, 0.0);
     let origin = ship_pose(&scene, 0).position;
     for tick in 0..260usize {
         let keys: &[KeyCode] = match tick {
@@ -669,13 +646,13 @@ fn scripted_run() -> u64 {
             _ => &[],
         };
         if tick == 60 || tick == 80 || tick == 82 || tick == 120 || tick == 130 || tick == 200 {
-            player.camera.yaw = 0.01 * tick as f32;
+            player.camera.yaw = 0.01 * tick as f64;
             player.hold(keys);
         }
         scene.run(move |world| {
             let turned = GridPose::new(
-                origin.translated([0.05 * tick as f32, 0.0, 0.0]),
-                Orientation::from_yaw_pitch(0.004 * tick as f32, 0.0),
+                origin.translated([0.05 * tick as f64, 0.0, 0.0]),
+                Orientation::from_yaw_pitch(0.004 * tick as f64, 0.0),
             );
             world.set_grid_pose(ship_id(0), turned).unwrap();
             world
@@ -689,11 +666,8 @@ fn scripted_run() -> u64 {
         for value in [brick.x(), brick.y(), brick.z()] {
             feed(value as u64);
         }
-        for value in offset
-            .into_iter()
-            .chain(pose.orientation.components_single())
-        {
-            feed(u64::from(value.to_bits()));
+        for value in offset.into_iter().chain(pose.orientation.components()) {
+            feed(value.to_bits());
         }
     }
     let at_the_end = player_pose(&scene, 1).grid;
@@ -710,7 +684,10 @@ fn a_scripted_run_aboard_ends_in_the_same_bits_every_time_and_on_every_machine()
     // (Moved once, on purpose, 2026-10-22: the pull of the planet is 5 and a jump 3.6 metres a second; was 32 and 9, a jump of the same height.)
     // (Moved on purpose, Phase 38a: 1_723_153_240_201_899_822 before. Orientations are f64 (Phase 38a, 2026-10-23): a yaw and a pitch are turned into a quaternion in f64 and rounded once to the f32 the solver takes, which is not always the f32 the old arithmetic in f32 gave, to the last bit. Control: with `from_yaw_pitch` put back to the f32 arithmetic and nothing else changed, the old value came back; so this is the only thing that moved it.)
     // (Moved on purpose, 2026-11-01: 168_849_048_036_750_818 before. Rapier works in f64 now (`rapier3d-f64`, with `enhanced-determinism`; owner, 2026-11-01), and these hashes are of the bits of numbers the solver gives, so they moved. The tests of behaviour in the same file pass as they were; the physics crate's own pinned runs were taken on Windows and are the same on Linux.)
-    assert_eq!(first, 10_856_507_688_139_911_524);
+    // (Moved on purpose again, 2026-11-02: 10_856_507_688_139_911_524 before. Positions, speeds and angles are `f64` everywhere that is physics (owner, 2026-11-02); the hash is of the bits of the
+    // player's pose, which has an `f64` offset now. Control: the old build and this one printed the pose of the player and of the ship in voxels at each of the 260 ticks, with the angles the script
+    // sets made the `f32` they were: the largest difference in any coordinate is 1.1e-5 voxel for the player and 9.5e-7 for the ship, which is what the old `f32` offsets rounded.)
+    assert_eq!(first, 7_437_150_576_752_084_304);
 }
 
 #[test]
@@ -786,9 +763,7 @@ fn a_world_saved_with_a_passenger_aboard_holds_them_in_the_frame_of_the_ship_and
 fn another_player_sees_a_passenger_where_the_ship_has_them_and_not_where_their_coordinates_say() {
     let mut scene = scene_with_a_deck();
     // A flyer who watches from beside the deck.
-    let mut watcher = scene
-        .rig
-        .join([20.0, f64::from(FLOOR) + 8.0, 40.0], 0.0, 0.0);
+    let mut watcher = scene.rig.join([20.0, FLOOR + 8.0, 40.0], 0.0, 0.0);
     scene.rig.settle(&mut [&mut watcher]);
     let mut passenger = walker_on_the_deck(&mut scene);
     // Turn and move the ship, so that the coordinates of the passenger in it (15, 4) are nowhere near where they are in the world.
@@ -839,7 +814,7 @@ fn a_walker_over_a_hole_in_the_deck_falls_through_it_and_leaves_the_ship() {
     let pose = player_pose(&scene, 1);
     assert!(pose.grid.root_level().is_some(), "left the ship");
     let [x, y, z] = in_voxels(pose.position);
-    assert!((y - (FLOOR as f64 + 1.62)).abs() < 0.05, "{y}");
+    assert!((y - (FLOOR + 1.62)).abs() < 0.05, "{y}");
     assert!(
         (x - 20.0).abs() < 0.05 && (z - 24.0).abs() < 0.05,
         "{x} {z}"
@@ -909,14 +884,12 @@ fn landing_on_a_ship_that_moves_fast_the_walker_slides_back_on_it_by_the_speed_t
         [120, 2, 8],
         |_| true,
     );
-    let mut player = scene
-        .rig
-        .join_walking([30.0, FLOOR as f64 + 9.0, 24.0], 0.0, 0.0);
+    let mut player = scene.rig.join_walking([30.0, FLOOR + 9.0, 24.0], 0.0, 0.0);
     // The deck goes east at 20 a second, a metre a tick, from the start. The walker falls from above with no speed along x, so on
     // landing they are going 20 west of it: the ground's friction (80 a second a second) stops that in 20^2 / 160 = 2.5 voxels.
     let moving = |world: &mut server::ServerWorld, tick: usize| {
         world
-            .set_grid_pose(ship_id(0), pose_at(1.0 * tick as f32, FLOOR + 3.0, 20.0))
+            .set_grid_pose(ship_id(0), pose_at(1.0 * tick as f64, FLOOR + 3.0, 20.0))
             .unwrap();
         world
             .set_grid_velocity(ship_id(0), [20.0, 0.0, 0.0], [0.0; 3])
@@ -961,15 +934,13 @@ fn landing_on_a_ship_that_is_turned_and_moving_the_walker_slides_back_along_the_
         GridPose::new(
             WorldPosition::new(
                 BrickCoordinate::ORIGIN,
-                [26.0, FLOOR + 3.0, 124.0 - tick as f32],
+                [26.0, FLOOR + 3.0, 124.0 - tick as f64],
             ),
-            Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0),
+            Orientation::from_yaw_pitch(std::f64::consts::FRAC_PI_2, 0.0),
         )
     };
     make_ship(&mut scene, pose_at_tick(0), true, [120, 2, 8], |_| true);
-    let mut player = scene
-        .rig
-        .join_walking([30.0, FLOOR as f64 + 9.0, 24.0], 0.0, 0.0);
+    let mut player = scene.rig.join_walking([30.0, FLOOR + 9.0, 24.0], 0.0, 0.0);
     // A voxel a tick, 20 a second. The walker falls from above with no speed along the world's z, so on landing they are going 20 the
     // other way relative to the deck, along its x: the ground's friction (80 a second a second) stops that in 20^2 / 160 = 2.5 voxels.
     // Taken as a speed in the deck's axes without being turned, it would be 20 along the deck's z, across it.
@@ -1010,8 +981,8 @@ fn leaving_a_ship_that_is_turned_and_moving_gives_the_speed_in_the_worlds_axes()
     );
     let moving = move |world: &mut server::ServerWorld, tick: usize| {
         let pose = GridPose::new(
-            origin.translated([0.0, 0.0, -0.3 * tick as f32]),
-            Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0),
+            origin.translated([0.0, 0.0, -0.3 * tick as f64]),
+            Orientation::from_yaw_pitch(std::f64::consts::FRAC_PI_2, 0.0),
         );
         world.set_grid_pose(ship_id(0), pose).unwrap();
         world
@@ -1056,7 +1027,7 @@ fn boarding_and_leaving_do_not_turn_the_view() {
     scene.run(move |world| world.set_grid_pose(ship_id(0), turned).unwrap());
     let mut player = scene
         .rig
-        .join_walking([50.0, FLOOR as f64 + 3.0, 50.0], 30.0, -10.0);
+        .join_walking([50.0, FLOOR + 3.0, 50.0], 30.0, -10.0);
     scene.rig.settle(&mut [&mut player]);
     assert!(
         player_pose(&scene, 1).grid.root_level().is_some(),
@@ -1154,10 +1125,9 @@ fn a_ship_in_the_next_brick_is_in_the_walkers_world_so_the_walker_is_stopped_by_
         [8, 3, 8],
         |_| true,
     );
-    let mut player =
-        scene
-            .rig
-            .join_walking([24.5, f64::from(FLOOR) + 1.62 + 0.3, 24.0], -90.0, 0.0);
+    let mut player = scene
+        .rig
+        .join_walking([24.5, FLOOR + 1.62 + 0.3, 24.0], -90.0, 0.0);
     scene.rig.settle(&mut [&mut player]);
     tick_and_follow(&mut scene, &mut player, 40);
     player.hold(&[KeyCode::KeyW]);
@@ -1178,16 +1148,11 @@ fn a_ship_in_the_next_brick_is_in_the_walkers_world_so_the_walker_is_stopped_by_
 fn a_ship_that_falls_on_a_walker_lifts_them_onto_itself_and_does_not_press_them_into_the_ground() {
     let mut scene = Scene::new();
     flat_floor(&mut scene);
-    let mut player = scene
-        .rig
-        .join_walking([20.0, FLOOR as f64 + 3.0, 32.0], 0.0, 0.0);
+    let mut player = scene.rig.join_walking([20.0, FLOOR + 3.0, 32.0], 0.0, 0.0);
     scene.rig.settle(&mut [&mut player]);
     tick_and_follow(&mut scene, &mut player, 40);
     let standing = eyes_in_the_world(&scene, 1)[1];
-    assert!(
-        (standing - (f64::from(FLOOR) + 1.62)).abs() < 0.03,
-        "{standing}"
-    );
+    assert!((standing - (FLOOR + 1.62)).abs() < 0.03, "{standing}");
     // A free box of 8 by 2 by 8 is made twelve above the floor, over the walker, and falls.
     make_ship(
         &mut scene,
@@ -1209,15 +1174,12 @@ fn a_ship_that_falls_on_a_walker_lifts_them_onto_itself_and_does_not_press_them_
     // Lifted onto the box where it first touched them (its top then is about 204.7, the eyes 1.62 above it) and carried down with it: not
     // thrown up by the speed the box had when they came to stand on it. (They were thrown ten voxels high.)
     assert!(
-        highest < f64::from(FLOOR) + 7.0,
+        highest < FLOOR + 7.0,
         "thrown up by the box: the eyes went up to {highest}"
     );
     // Up and onto it, which is the shortest way out, and aboard it: they stand on a block of it.
     let eyes = eyes_in_the_world(&scene, 1);
-    assert!(
-        (eyes[1] - (f64::from(FLOOR) + 2.0 + 1.62)).abs() < 0.1,
-        "{eyes:?}"
-    );
+    assert!((eyes[1] - (FLOOR + 2.0 + 1.62)).abs() < 0.1, "{eyes:?}");
     assert!((eyes[0] - 20.0).abs() < 0.1 && (eyes[2] - 32.0).abs() < 0.1);
     assert_eq!(player_pose(&scene, 1).grid, ship_id(0));
 }
@@ -1225,7 +1187,7 @@ fn a_ship_that_falls_on_a_walker_lifts_them_onto_itself_and_does_not_press_them_
 /// A box `thickness` along x (8 along y and z) held on the floor with its west face 12 east of a walker who stands, which goes west by
 /// `step` voxels a tick until it is 12 past them. After each tick the walker is out of the box and above the floor. Returns whether they were
 /// west of the box, ahead of it, after every tick.
-fn sail_into_a_standing_walker(thickness: i128, step: f32) -> bool {
+fn sail_into_a_standing_walker(thickness: i128, step: f64) -> bool {
     let mut scene = Scene::new();
     flat_floor(&mut scene);
     make_ship(
@@ -1235,16 +1197,14 @@ fn sail_into_a_standing_walker(thickness: i128, step: f32) -> bool {
         [thickness, 8, 8],
         |_| true,
     );
-    let mut player = scene
-        .rig
-        .join_walking([20.0, FLOOR as f64 + 3.0, 32.0], 0.0, 0.0);
+    let mut player = scene.rig.join_walking([20.0, FLOOR + 3.0, 32.0], 0.0, 0.0);
     scene.rig.settle(&mut [&mut player]);
     tick_and_follow(&mut scene, &mut player, 40);
-    let ticks = ((12.0 + thickness as f32 + 12.0) / step).ceil() as usize;
+    let ticks = ((12.0 + thickness as f64 + 12.0) / step).ceil() as usize;
     let mut ahead = true;
     for tick in 0..ticks {
         each_tick(&mut scene, &mut player, 1, move |world, _| {
-            let x = 32.0 - step * (tick as f32 + 1.0);
+            let x = 32.0 - step * (tick as f64 + 1.0);
             world
                 .set_grid_pose(ship_id(0), pose_at(x, FLOOR, 28.0))
                 .unwrap();
@@ -1252,7 +1212,7 @@ fn sail_into_a_standing_walker(thickness: i128, step: f32) -> bool {
                 .set_grid_velocity(ship_id(0), [-step * 20.0, 0.0, 0.0], [0.0; 3])
                 .unwrap();
         });
-        let face = f64::from(32.0 - step * (tick as f32 + 1.0));
+        let face = 32.0 - step * (tick as f64 + 1.0);
         let eyes = eyes_in_the_world(&scene, 1);
         let wall = thickness as f64;
         assert!(
@@ -1262,7 +1222,7 @@ fn sail_into_a_standing_walker(thickness: i128, step: f32) -> bool {
             face + wall
         );
         assert!(
-            eyes[1] > f64::from(FLOOR) + 1.62 - 0.05,
+            eyes[1] > FLOOR + 1.62 - 0.05,
             "thickness {thickness}, {step} a tick, tick {tick}: pressed into the ground: the eyes are at {}",
             eyes[1]
         );
@@ -1276,7 +1236,7 @@ fn a_ship_that_sails_into_a_walker_pushes_them_ahead_of_it_and_a_ship_that_jumps
  {
     // Four a second, which is two tenths a tick; and 24 a second, 1.2 a tick; and 60 a second: three a tick, a third of the box and less
     // than the half of it.
-    for step in [0.2f32, 1.2, 3.0] {
+    for step in [0.2f64, 1.2, 3.0] {
         assert!(
             sail_into_a_standing_walker(8, step),
             "{step} a tick: not ahead of the box all the way"
@@ -1285,7 +1245,7 @@ fn a_ship_that_sails_into_a_walker_pushes_them_ahead_of_it_and_a_ship_that_jumps
     // 6 a tick (120 a second) carries the box past the middle of the walker in a tick, and the nearest way out is the far side. And a wall one
     // thick that goes over the walker in a tick or less.
     sail_into_a_standing_walker(8, 6.0);
-    for step in [0.2f32, 1.2, 3.0, 6.0] {
+    for step in [0.2f64, 1.2, 3.0, 6.0] {
         sail_into_a_standing_walker(1, step);
     }
 }

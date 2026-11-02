@@ -10,7 +10,7 @@ use common::{
 use voxel_space::{BrickCoordinate, GridPose, Orientation, WorldPosition};
 
 /// What the world has of a ship: where it is, how it moves, and whether it is held.
-fn state_of(scene: &Scene, number: u64) -> (GridPose, [f32; 3], [f32; 3], bool) {
+fn state_of(scene: &Scene, number: u64) -> (GridPose, [f64; 3], [f64; 3], bool) {
     let ship = scene
         .rig
         .server
@@ -57,7 +57,7 @@ fn a_ship_in_flight_is_saved_and_a_restarted_server_has_it_where_and_as_it_was()
     // And it goes on: it comes down on the floor and rests there, having drifted on the way.
     scene.ticks(400);
     let (pose, velocity, ..) = state_of(&scene, 0);
-    let height = pose.position.brick().y() as f32 * 32.0 + pose.position.offset()[1];
+    let height = pose.position.brick().y() as f64 * 32.0 + pose.position.offset()[1];
     assert!(
         (height - FLOOR).abs() < 0.1,
         "it rests on the floor: {height}"
@@ -115,7 +115,7 @@ fn a_player_who_logged_out_aboard_a_ship_logs_in_aboard_it_at_the_same_place_aft
     // They log in again (the same player: the same key), somewhere else in the world: they are aboard, where they left.
     let mut back = scene
         .rig
-        .join_walking_as(1, [200.0, f64::from(FLOOR) + 30.0, 200.0], 0.0, 0.0);
+        .join_walking_as(1, [200.0, FLOOR + 30.0, 200.0], 0.0, 0.0);
     scene.rig.settle(&mut [&mut back]);
     assert_eq!(player_pose(&scene, 1).grid, ship_id(0));
     assert_eq!(eyes_in_their_frame(&scene, 1), place_in_the_ship);

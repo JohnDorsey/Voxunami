@@ -310,7 +310,9 @@ const PINNED_RECORDING_LENGTH: usize = 84_923;
 // Coordinates of 128 bits (2026-10-27; protocol 9): the checksum and the length (84,807 to 84,915, 108 more) moved because a coordinate is a length byte and its bytes. Not compared frame by frame
 // with the code before (as the comment above says of this recording); the three golden sessions of the games were, and show the values the same and only the bytes longer.
 // The world's clock in the welcome (2026-10-28; protocol 10): 8 bytes more (84,915 to 84,923: a `u64`, predicted) and the version, so the checksum moved.
-const PINNED_RECORDING_CHECKSUM: u32 = 3_004_670_074;
+// Positions are `f64` (2026-11-02; protocol 11): the checksum changed once, for the protocol version in the welcome (11, was 10); the length did not (this recording has no pose in it),
+// and with the version put back to 10 (and the wire to the `f32` form, which changes nothing here) the old checksum, 3_004_670_074, came back.
+const PINNED_RECORDING_CHECKSUM: u32 = 4_054_084_584;
 
 #[test]
 fn identical_sessions_make_byte_identical_recordings() {
@@ -514,7 +516,7 @@ fn a_wisp_that_rides_the_ship_is_in_the_world_where_the_ship_puts_it_in_every_vi
                     [0.0; 3],
                 ));
             let length =
-                |vector: [f32; 3]| vector.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+                |vector: [f64; 3]| vector.iter().map(|axis| axis * axis).sum::<f64>().sqrt();
             assert!((length(from_the_origin) - length(there)).abs() < 1e-3);
             aboard_views += 1;
             last_world_position = Some(position);

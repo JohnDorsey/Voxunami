@@ -24,7 +24,7 @@ fn ship() -> GridId {
 fn pose_at(voxel: [i128; 3], orientation: Orientation) -> GridPose {
     let (brick, local) = VoxelCoordinate::new(voxel[0], voxel[1], voxel[2]).split();
     GridPose::new(
-        WorldPosition::new(brick, [local.x(), local.y(), local.z()].map(f32::from)),
+        WorldPosition::new(brick, [local.x(), local.y(), local.z()].map(f64::from)),
         orientation,
     )
 }
@@ -415,7 +415,7 @@ fn a_ship_between_the_player_and_the_ground_is_aimed_at_first_and_the_ground_pas
     // Looking straight down from 110 at ground whose top is at 103 (the ground is 102 high).
     let ground = ground_height(&player, 16, 16);
     let mut camera = camera_at([16.5, f64::from(ground as i32) + 7.0, 16.5], 0.0, 0.0);
-    camera.look_by(0.0, -std::f32::consts::FRAC_PI_2);
+    camera.look_by(0.0, -std::f64::consts::FRAC_PI_2);
     player.camera = camera;
     player.teleport_to_camera();
     scene.rig.settle(&mut [&mut player]);

@@ -456,7 +456,7 @@ fn a_client_that_never_says_hello_is_dropped_after_the_timeout() {
 }
 
 /// The pull at the origin of the main level and of the second level of [`two_level_world`], as a server with this config works it out on its first tick.
-fn pulls_at_the_origins(game: &Game, config: ServerConfig) -> [[f32; 3]; 2] {
+fn pulls_at_the_origins(game: &Game, config: ServerConfig) -> [[f64; 3]; 2] {
     let (world, second) = two_level_world(game);
     let seen = Arc::new(Mutex::new(Vec::new()));
     let slot = Arc::clone(&seen);
@@ -1803,7 +1803,7 @@ fn cow_catalog() -> EntityCatalog {
     catalog
 }
 
-fn pose_in(brick_x: i128, offset_x: f32) -> EntityPose {
+fn pose_in(brick_x: i128, offset_x: f64) -> EntityPose {
     EntityPose::new(
         GridId::MAIN,
         WorldPosition::new(BrickCoordinate::new(brick_x, 0, 0), [offset_x, 5.0, 5.0]),
@@ -2188,7 +2188,7 @@ fn replication_benchmark() {
                     world
                         .spawn_entity(
                             &id("test:cow"),
-                            pose_in(brick_x, (index % 30) as f32),
+                            pose_in(brick_x, (index % 30) as f64),
                             ComponentBag::new(),
                         )
                         .unwrap();
@@ -2197,7 +2197,7 @@ fn replication_benchmark() {
                 for index in 0..ENTITIES {
                     if (index + tick.get()) % moving_every == 0 {
                         let brick_x = (index % 8) as i128 - 4;
-                        let offset = ((index + tick.get()) % 30) as f32;
+                        let offset = ((index + tick.get()) % 30) as f64;
                         world
                             .set_entity_pose(EntityId::new(index + 1), pose_in(brick_x, offset))
                             .unwrap();
@@ -2866,7 +2866,7 @@ fn a_ship_removed_in_the_tick_it_was_edited_is_gone_from_the_picture_without_tro
 // ---- entities aboard ships ----
 
 /// A pose in the frame of a ship at a brick and an offset of its own coordinates.
-fn aboard_at(ship: GridId, brick_x: i128, offset_x: f32) -> EntityPose {
+fn aboard_at(ship: GridId, brick_x: i128, offset_x: f64) -> EntityPose {
     EntityPose::new(
         ship,
         WorldPosition::new(BrickCoordinate::new(brick_x, 0, 0), [offset_x, 5.0, 5.0]),

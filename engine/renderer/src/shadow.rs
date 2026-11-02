@@ -151,9 +151,9 @@ impl LightBasis {
         let brick = position.brick();
         let offset = position.offset();
         let world = [
-            brick.x() as f64 * 32.0 + f64::from(offset[0]),
-            brick.y() as f64 * 32.0 + f64::from(offset[1]),
-            brick.z() as f64 * 32.0 + f64::from(offset[2]),
+            brick.x() as f64 * 32.0 + offset[0],
+            brick.y() as f64 * 32.0 + offset[1],
+            brick.z() as f64 * 32.0 + offset[2],
         ];
         let along = |axis: Vec3| {
             world[0] * f64::from(axis.x)
@@ -581,7 +581,7 @@ mod tests {
         assert!((half - 0.5).abs() < 1e-6);
     }
 
-    fn camera_light(x: i128, y: i128, z: i128, offset: [f32; 3], basis: &LightBasis) -> [f64; 2] {
+    fn camera_light(x: i128, y: i128, z: i128, offset: [f64; 3], basis: &LightBasis) -> [f64; 2] {
         basis.coordinates_of(WorldPosition::new(BrickCoordinate::new(x, y, z), offset))
     }
 
@@ -598,7 +598,7 @@ mod tests {
                     12_345 + step as i128,
                     -77,
                     5,
-                    [position.rem_euclid(32.0), 3.0, 4.5],
+                    [f64::from(position.rem_euclid(32.0)), 3.0, 4.5],
                     &basis,
                 );
                 let cascade = Cascade::new(half_width, camera);

@@ -219,7 +219,7 @@ impl Ships {
         match (arguments.word(0), details) {
             ("create", []) => self.create(world, client, false),
             ("create", ["all"]) => self.create(world, client, true),
-            ("push", [x, y, z]) => match [x, y, z].map(|word| word.parse::<f32>()) {
+            ("push", [x, y, z]) => match [x, y, z].map(|word| word.parse::<f64>()) {
                 [Ok(x), Ok(y), Ok(z)] if [x, y, z].iter().all(|value| value.is_finite()) => {
                     self.push(world, client, [x, y, z])
                 }
@@ -283,7 +283,7 @@ impl Ships {
             Some(crate::block_properties::passable(&self.table)),
         );
         // The first block along the look in the terrain of the level or in any ship of it (the ray is cast in each grid's own coordinates).
-        let mut grids: Vec<(GridId, WorldPosition, [f32; 3])> =
+        let mut grids: Vec<(GridId, WorldPosition, [f64; 3])> =
             vec![(GridId::root(level), eyes, direction)];
         for (id, ship) in world.data().grids().iter() {
             if ship.level != level {
@@ -372,7 +372,7 @@ impl Ships {
     }
 
     /// `/ship push`: changes the ship's speed by this much, with a force for one tick.
-    fn push(&self, world: &mut ServerWorld, client: ClientId, change: [f32; 3]) -> String {
+    fn push(&self, world: &mut ServerWorld, client: ClientId, change: [f64; 3]) -> String {
         let ship = match self.target(world, &lock(&self.presence), client) {
             Ok(ship) => ship,
             Err(problem) => return problem,
@@ -434,7 +434,7 @@ impl Ships {
             .docked_pairs(moving)
             .into_iter()
             .filter_map(|pair| {
-                let centre = pair.first.local_centre().map(|component| component as f32);
+                let centre = pair.first.local_centre().map(|component| component);
                 let place = moving
                     .pose
                     .local_to_world(WorldPosition::new(BrickCoordinate::ORIGIN, centre))?;
@@ -442,7 +442,7 @@ impl Ships {
                 let distance = arm
                     .iter()
                     .map(|component| component * component)
-                    .sum::<f32>();
+                    .sum::<f64>();
                 Some((distance, pair))
             })
             .min_by(|(first, _), (second, _)| first.total_cmp(second));

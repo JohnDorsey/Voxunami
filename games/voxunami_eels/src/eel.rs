@@ -10,7 +10,7 @@
 //! not turn it. An eel heading up or down remembers which horizontal way it faced before, so that
 //! turning left or right from there is relative to that.
 
-use std::f32::consts::{FRAC_PI_2, PI};
+use std::f64::consts::{FRAC_PI_2, PI};
 
 use voxel_space::FaceDirection;
 
@@ -177,7 +177,7 @@ impl Orientation {
     }
 
     /// The camera's yaw (radians): 0 looks toward -z and a positive angle turns left.
-    pub fn view_yaw(self) -> f32 {
+    pub fn view_yaw(self) -> f64 {
         match self.facing {
             FaceDirection::NegativeZ => 0.0,
             FaceDirection::NegativeX => FRAC_PI_2,
@@ -188,9 +188,9 @@ impl Orientation {
 
     /// The camera's pitch: a little down when heading level, along the heading when it is vertical
     /// (short of straight, which the camera cannot be).
-    pub fn view_pitch(self) -> f32 {
-        const STRAIGHT: f32 = FRAC_PI_2 - 0.05;
-        const LEVEL: f32 = -0.35;
+    pub fn view_pitch(self) -> f64 {
+        const STRAIGHT: f64 = FRAC_PI_2 - 0.05;
+        const LEVEL: f64 = -0.35;
         match self.heading {
             FaceDirection::PositiveY => STRAIGHT,
             FaceDirection::NegativeY => -STRAIGHT,
@@ -200,11 +200,11 @@ impl Orientation {
 
     /// Where the camera is, in voxels from the middle of the head: behind it, and when heading level
     /// above it.
-    pub fn view_offset(self) -> [f32; 3] {
-        const BEHIND: f32 = 6.0;
-        const ABOVE: f32 = 2.5;
+    pub fn view_offset(self) -> [f64; 3] {
+        const BEHIND: f64 = 6.0;
+        const ABOVE: f64 = 2.5;
         let heading = self.heading.offset();
-        let mut offset = heading.map(|step| -(step as f32) * BEHIND);
+        let mut offset = heading.map(|step| -(step as f64) * BEHIND);
         if !is_vertical(self.heading) {
             offset[1] += ABOVE;
         }

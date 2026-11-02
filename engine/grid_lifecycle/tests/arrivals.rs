@@ -34,7 +34,7 @@ fn deck_place() -> WorldPosition {
 
 /// Where the passenger numbered `number` (from 0) stands when there are several: a voxel along from the one before.
 fn place_of_passenger(number: usize) -> WorldPosition {
-    WorldPosition::new(BrickCoordinate::ORIGIN, [1.5 + number as f32, 2.0, 1.5])
+    WorldPosition::new(BrickCoordinate::ORIGIN, [1.5 + number as f64, 2.0, 1.5])
 }
 
 /// The voxel of the world that the cell (1, 1, 1) of the deck is in when the ship is at `landing()`: the one stone that is put in its way.
@@ -758,7 +758,7 @@ fn an_answer_about_one_ship_withdraws_the_questions_about_that_ship_and_no_other
         first.pose = landing();
         let mut apart = game.sample_ship(world, 0);
         apart.pose = GridPose::new(
-            landing().position.translated([APART as f32, 0.0, 0.0]),
+            landing().position.translated([APART as f64, 0.0, 0.0]),
             Orientation::IDENTITY,
         );
         vec![
@@ -886,7 +886,7 @@ fn a_player_who_leaves_without_answering_is_not_waited_for_and_is_asked_again_wh
 /// A world with the ship at `landing()` and a planet in the main level: a ship with terrain, held, made by the level's own generator (solid below height 10 in the
 /// planet's own coordinates), with its origin `planet_height` up. Nothing is stored in the planet and nothing is in the level but its ground.
 fn world_with_a_ship_and_a_planet(
-    planet_height: f32,
+    planet_height: f64,
 ) -> impl FnOnce(&Game, &mut WorldData) -> Vec<GridId> {
     move |game, world| {
         let mut ship = game.sample_ship(world, 0);

@@ -104,7 +104,7 @@ mod tests {
 
     use super::*;
 
-    fn pose(x: f32) -> EntityPose {
+    fn pose(x: f64) -> EntityPose {
         EntityPose::new(
             GridId::MAIN,
             WorldPosition::new(BrickCoordinate::ORIGIN, [x, 1.0, 1.0]),
@@ -116,7 +116,7 @@ mod tests {
         text.parse().unwrap()
     }
 
-    fn state(raw: u64, x: f32) -> EntityState {
+    fn state(raw: u64, x: f64) -> EntityState {
         EntityState {
             id: EntityId::new(raw),
             kind: id("test:cow"),

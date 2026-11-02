@@ -12,10 +12,10 @@ use voxel_space::VoxelCoordinate;
 #[derive(Clone, Copy)]
 struct Turn {
     matrix: [[i128; 3]; 3],
-    quaternion: [f32; 4],
+    quaternion: [f64; 4],
 }
 
-const HALF_ROOT_TWO: f32 = std::f32::consts::FRAC_1_SQRT_2;
+const HALF_ROOT_TWO: f64 = std::f64::consts::FRAC_1_SQRT_2;
 
 /// x' = y, y' = -x: what was up is now along +x (a quarter turn about z, the way that takes y to x).
 const UP_BECOMES_PLUS_X: Turn = Turn {
@@ -42,15 +42,14 @@ fn turned(turn: Turn, vector: [f64; 3]) -> [f64; 3] {
         .map(|row| (0..3).map(|axis| row[axis] as f64 * vector[axis]).sum())
 }
 
-fn gravity_after(turn: Turn) -> [f32; 3] {
+fn gravity_after(turn: Turn) -> [f64; 3] {
     // The character's own gravity, turned (the script jumps onto a block with the character's own jump, which is made for it).
-    turned(turn, [0.0, -CharacterSettings::default().gravity, 0.0])
-        .map(|component| component as f32)
+    turned(turn, [0.0, -CharacterSettings::default().gravity, 0.0]).map(|component| component)
 }
 
 /// Whether two quaternions are the same turn (a quaternion and its negative are).
-fn same_turn(a: [f32; 4], b: [f32; 4]) -> bool {
-    let dot: f32 = (0..4).map(|axis| a[axis] * b[axis]).sum();
+fn same_turn(a: [f64; 4], b: [f64; 4]) -> bool {
+    let dot: f64 = (0..4).map(|axis| a[axis] * b[axis]).sum();
     dot.abs() > 1.0 - 1e-6
 }
 
@@ -86,7 +85,7 @@ fn scene_turned(turn: Turn) -> Scene {
 }
 
 /// The turn of the frame of a character put in `turn` and stepped in its gravity.
-fn frame_after(turn: Turn) -> [f32; 4] {
+fn frame_after(turn: Turn) -> [f64; 4] {
     let mut body = spawn(5.0, 5.0, 5.0);
     body.reframe(position(5.0, 5.0, 5.0), [0.0; 3], turn.quaternion);
     let mut scene = Scene::default();
@@ -107,10 +106,10 @@ fn state(body: &CharacterBody) -> ([f64; 3], [f64; 3], bool) {
 /// The same script of keys in a scene turned, with the gravity turned with it. Returns the state after each stage, unturned.
 fn script_in(turn: Turn) -> Vec<([f64; 3], [f64; 3], bool)> {
     let start = turned(turn, [20.5, 12.0, 24.0]);
-    let mut body = spawn(start[0] as f32, start[1] as f32, start[2] as f32);
+    let mut body = spawn(start[0], start[1], start[2]);
     // Put in the frame the turned room has, as a character carried into a ship is: standing in it from the first step.
     body.reframe(
-        position(start[0] as f32, start[1] as f32, start[2] as f32),
+        position(start[0], start[1], start[2]),
         [0.0; 3],
         turn.quaternion,
     );
@@ -192,7 +191,7 @@ fn gravity_along_minus_y_with_the_step_that_takes_it_is_the_step_without() {
                 if own {
                     body.step(input);
                 } else {
-                    body.step_with_gravity(input, [0.0, -(body.settings().gravity as f32), 0.0]);
+                    body.step_with_gravity(input, [0.0, -body.settings().gravity, 0.0]);
                 }
             }
             hashes.push(body.state_hash());
@@ -297,12 +296,12 @@ fn a_character_falls_along_the_gravity_it_is_given_and_rests_against_the_wall_it
     // Its feet are on the wall: along its up, the length of the body below the eyes.
     let feet = body.feet_position();
     let brick = feet.brick();
-    let along_x = brick.x() as f64 * 32.0 + f64::from(feet.offset()[0]);
+    let along_x = brick.x() as f64 * 32.0 + feet.offset()[0];
     assert!((along_x - 10.0).abs() < 0.05, "{along_x}");
 }
 
 /// A vector turned by the turn of a frame, a quaternion `[x, y, z, w]`.
-fn rotated(rotation: [f32; 4], v: [f32; 3]) -> [f32; 3] {
+fn rotated(rotation: [f64; 4], v: [f64; 3]) -> [f64; 3] {
     let ([x, y, z], c) = ([rotation[0], rotation[1], rotation[2]], rotation[3]);
     let q = [x, y, z];
     let t = [
@@ -363,8 +362,8 @@ fn the_direction_the_character_faces_is_carried_as_gravity_turns_not_reset() {
 
     // Gravity swings, over 45 steps, from -y to -z: up goes from +y to +z.
     for step in 1..=45 {
-        let angle = std::f32::consts::FRAC_PI_2 * step as f32 / 45.0;
-        let gravity = [0.0, -32.0 * libm::cosf(angle), -32.0 * libm::sinf(angle)];
+        let angle = std::f64::consts::FRAC_PI_2 * step as f64 / 45.0;
+        let gravity = [0.0, -32.0 * libm::cos(angle), -32.0 * libm::sin(angle)];
         body.update_terrain(&mut scene);
         body.step_with_gravity(STILL, gravity);
     }
@@ -386,8 +385,8 @@ fn the_direction_the_character_faces_is_carried_as_gravity_turns_not_reset() {
     // A tip about z instead (gravity from -y toward -x) leaves it facing -z, the axis it turned about being its facing.
     let mut body = spawn(5.0, 5.0, 5.0);
     for step in 0..=45 {
-        let angle = std::f32::consts::FRAC_PI_2 * step as f32 / 45.0;
-        let gravity = [-32.0 * libm::sinf(angle), -32.0 * libm::cosf(angle), 0.0];
+        let angle = std::f64::consts::FRAC_PI_2 * step as f64 / 45.0;
+        let gravity = [-32.0 * libm::sin(angle), -32.0 * libm::cos(angle), 0.0];
         body.update_terrain(&mut scene);
         body.step_with_gravity(STILL, gravity);
     }
@@ -461,7 +460,7 @@ fn moving_a_character_to_another_frame_keeps_its_speed_and_state_and_puts_its_ey
     }
     assert!(body.is_grounded());
     // Into a frame whose up is +x: a quarter turn about z.
-    let half = std::f32::consts::FRAC_1_SQRT_2;
+    let half = std::f64::consts::FRAC_1_SQRT_2;
     let turn = [0.0, 0.0, -half, half]; // up (0, 1, 0) goes to (1, 0, 0)
     body.reframe(position(50.0, 60.0, 70.0), [1.0, 2.0, 3.0], turn);
     assert_eq!(eye(&body), [50.0, 60.0, 70.0]);
@@ -491,7 +490,7 @@ fn a_character_put_in_the_ground_of_a_turned_frame_is_lifted_out_along_its_up() 
     // A wall with its face at x = 10, up along +x; the character is put 0.5 into it.
     let mut scene = Scene::of(|voxel| voxel.x() <= 9);
     let mut body = spawn(30.0, 14.0, 16.5);
-    let half = std::f32::consts::FRAC_1_SQRT_2;
+    let half = std::f64::consts::FRAC_1_SQRT_2;
     // The feet are 1.62 below the eyes along up, so eyes at x = 11.12 put the feet at 9.5, half a voxel in.
     body.reframe(
         position(11.12, 14.0, 16.5),
@@ -516,7 +515,7 @@ fn a_character_put_into_a_block_of_a_turned_frame_leaves_it_by_the_first_of_the_
     // cube. Sideways, across the cube, is the nearest way out (0.5 and the half of the character's width 0.28 over: 0.875 in steps of an
     // eighth); up and down need the length of the body (1.5). The ways are tried in the character's own order: up, down, then the ways
     // across, which for up along +x begin with -y (the turn that takes +y to +x takes +x to -y). In the world's order +y would be first.
-    let half = std::f32::consts::FRAC_1_SQRT_2;
+    let half = std::f64::consts::FRAC_1_SQRT_2;
     let mut scene = Scene::default();
     scene.cube(10, 10, 10);
     let mut body = spawn(30.0, 14.0, 16.5);
@@ -559,16 +558,16 @@ fn feet_are_the_length_of_the_body_below_the_eyes_along_the_up() {
         body.step(STILL);
     }
     let feet = body.feet_position();
-    let height = f64::from(feet.offset()[1]) + feet.brick().y() as f64 * 32.0;
+    let height = feet.offset()[1] + feet.brick().y() as f64 * 32.0;
     assert!((height - 10.0).abs() < 0.05, "{height}");
     // The middle of the body is half its height above them, and the eyes 1.62 above them.
     let middle = body.middle_position();
-    let middle_height = f64::from(middle.offset()[1]) + middle.brick().y() as f64 * 32.0;
+    let middle_height = middle.offset()[1] + middle.brick().y() as f64 * 32.0;
     assert!(
         (middle_height - height - 0.9).abs() < 1e-5,
         "{middle_height}"
     );
     let eyes = body.eye_position();
-    let eye_height = f64::from(eyes.offset()[1]) + eyes.brick().y() as f64 * 32.0;
+    let eye_height = eyes.offset()[1] + eyes.brick().y() as f64 * 32.0;
     assert!((eye_height - height - 1.62).abs() < 1e-5);
 }

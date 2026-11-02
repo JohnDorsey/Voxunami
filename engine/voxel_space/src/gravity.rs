@@ -14,14 +14,14 @@ use crate::{BRICK_EDGE_LENGTH, WorldPosition};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GravitySettings {
     /// The acceleration of the level itself, in voxels per second per second, the same everywhere: 5 downward is what characters fall in (a metric number for a planet that is not the Earth; owner, 2026-10-22).
-    pub base: [f32; 3],
+    pub base: [f64; 3],
     /// The `G` of a body's pull, in voxels cubed per kilogram per second squared. The real one for metres is 6.674e-11, at which only a
     /// body the size of a moon pulls noticeably.
-    pub pull_strength: f32,
+    pub pull_strength: f64,
     /// The least mass, in kilograms, a body must have to pull anything at all: `None` for no body to. This is what "sufficiently huge" is.
-    pub pull_mass_threshold: Option<f32>,
+    pub pull_mass_threshold: Option<f64>,
     /// How far from a centre of mass, in voxels, the pull stops growing as the distance shrinks.
-    pub softening: f32,
+    pub softening: f64,
 }
 
 impl Default for GravitySettings {
@@ -40,7 +40,7 @@ impl Default for GravitySettings {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MassPull {
     pub position: WorldPosition,
-    pub mass: f32,
+    pub mass: f64,
 }
 
 /// The acceleration at a place, in the world's axes, in voxels per second per second: the level's and the sum of the pulls of the bodies
@@ -49,13 +49,13 @@ pub fn gravity_at(
     settings: &GravitySettings,
     pulls: impl IntoIterator<Item = MassPull>,
     at: WorldPosition,
-) -> [f32; 3] {
+) -> [f64; 3] {
     let mut total = settings.base.map(f64::from);
     let Some(threshold) = settings.pull_mass_threshold else {
         return settings.base;
     };
-    let strength = f64::from(settings.pull_strength);
-    let softening = f64::from(settings.softening);
+    let strength = settings.pull_strength;
+    let softening = settings.softening;
     for pull in pulls {
         if pull.mass < threshold || pull.mass <= 0.0 {
             continue;
@@ -64,12 +64,12 @@ pub fn gravity_at(
         let square: f64 = toward.iter().map(|component| component * component).sum();
         let softened = square + softening * softening;
         // G m r / (r^2 + s^2)^(3/2): the unit vector toward the body, over the softened square of the distance.
-        let scale = strength * f64::from(pull.mass) / (softened * softened.sqrt());
+        let scale = strength * pull.mass / (softened * softened.sqrt());
         for axis in 0..3 {
             total[axis] += scale * toward[axis];
         }
     }
-    total.map(|component| component as f32)
+    total.map(|component| component)
 }
 
 /// The vector from one position to another, in voxels, with the bricks differenced first so that it is exact for positions near each other
@@ -77,9 +77,8 @@ pub fn gravity_at(
 fn vector_between(from: WorldPosition, to: WorldPosition) -> [f64; 3] {
     let (a, b) = (from.brick(), to.brick());
     let (from_offset, to_offset) = (from.offset(), to.offset());
-    let along = |to: i128, from: i128, to_offset: f32, from_offset: f32| {
-        (to - from) as f64 * BRICK_EDGE_LENGTH as f64
-            + (f64::from(to_offset) - f64::from(from_offset))
+    let along = |to: i128, from: i128, to_offset: f64, from_offset: f64| {
+        (to - from) as f64 * BRICK_EDGE_LENGTH as f64 + (to_offset - from_offset)
     };
     [
         along(b.x(), a.x(), to_offset[0], from_offset[0]),
@@ -94,11 +93,11 @@ mod tests {
 
     use super::*;
 
-    fn at(x: f32, y: f32, z: f32) -> WorldPosition {
+    fn at(x: f64, y: f64, z: f64) -> WorldPosition {
         WorldPosition::new(BrickCoordinate::ORIGIN, [x, y, z])
     }
 
-    fn pulling(threshold: Option<f32>) -> GravitySettings {
+    fn pulling(threshold: Option<f64>) -> GravitySettings {
         GravitySettings {
             base: [0.0, -32.0, 0.0],
             pull_strength: 1e-3,
@@ -161,7 +160,7 @@ mod tests {
         let near = gravity_at(&settings, [body], at(8.0, 7.0, 7.0));
         // At the softening distance: G m r / (2 r^2)^(3/2) with r = 1.
         assert!(
-            (near[0] + 1e-3 * 1e9 / (2.0f32 * 2.0f32.sqrt())).abs() < 1.0,
+            (near[0] + 1e-3 * 1e9 / (2.0f64 * 2.0f64.sqrt())).abs() < 1.0,
             "{near:?}"
         );
         let light = MassPull {
@@ -210,7 +209,7 @@ mod tests {
         // The same two bodies and place a billion voxels along: the same answer to the precision of the offsets.
         let shifted = |position: WorldPosition| {
             WorldPosition::new(BrickCoordinate::new(31_250_000, 0, 0), position.offset())
-                .translated([position.brick().x() as f32 * 32.0, 0.0, 0.0])
+                .translated([position.brick().x() as f64 * 32.0, 0.0, 0.0])
         };
         let far = gravity_at(
             &settings,
@@ -244,11 +243,17 @@ mod tests {
         ];
         let first = gravity_at(&settings, pulls, at(1.25, 2.5, -3.75));
         let second = gravity_at(&settings, pulls, at(1.25, 2.5, -3.75));
-        assert_eq!(first.map(f32::to_bits), second.map(f32::to_bits));
-        // Written down once; a change in it is a change in the simulation.
+        assert_eq!(first.map(f64::to_bits), second.map(f64::to_bits));
+        // Written down once; a change in it is a change in the simulation. (Moved on purpose, 2026-11-02, when the pull became `f64`: it was the `f32` bits
+        // [3256905950, 3240464763, 1099147622], which are -40.11022186, -10.34801769 and 16.45771408; these are -40.11022215, -10.34801630 and 16.45771366, the same to the
+        // `f32` they were rounded to.)
         assert_eq!(
-            first.map(f32::to_bits),
-            [3_256_905_950, 3_240_464_763, 1_099_147_622]
+            first.map(f64::to_bits),
+            [
+                13854213866087136079,
+                13845387070203856266,
+                4625325652250716787
+            ]
         );
     }
 }

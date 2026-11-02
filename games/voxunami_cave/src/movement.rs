@@ -51,8 +51,8 @@ pub struct Placement {
     pub position: WorldPosition,
     /// The turn of their view in the frame.
     pub orientation: Orientation,
-    pub yaw: f32,
-    pub pitch: f32,
+    pub yaw: f64,
+    pub pitch: f64,
 }
 
 impl Placement {
@@ -214,11 +214,7 @@ impl Movement {
             // A player who was aboard a ship when they last played is in its frame at once.
             let frame_rotation = placement.frame_rotation();
             if placement.frame.root_level().is_none() || frame_rotation != Orientation::IDENTITY {
-                body.reframe(
-                    placement.position,
-                    [0.0; 3],
-                    frame_rotation.components_single(),
-                );
+                body.reframe(placement.position, [0.0; 3], frame_rotation.components());
             }
             PlayerBody {
                 body,
@@ -375,9 +371,7 @@ fn agree_with(player: &mut PlayerBody, placement: &Placement, carried: Option<Di
         // `ServerWorld::carried_by_rails` says by how much). The body is carried by the same, and keeps its velocity (which is against whatever carried it). (A record
         // that is not the body's is not always the newer: a player who has just come in is where the body was put, and the record catches up when the body has stepped.)
         if let Some(carried) = carried {
-            player
-                .body
-                .displace(carried.in_voxels().map(|part| part as f32));
+            player.body.displace(carried.in_voxels().map(|part| part));
         }
         return;
     }
@@ -394,7 +388,7 @@ fn agree_with(player: &mut PlayerBody, placement: &Placement, carried: Option<Di
     player.body.reframe(
         placement.position,
         velocity,
-        placement.frame_rotation().components_single(),
+        placement.frame_rotation().components(),
     );
     player.frame = placement.frame;
     player.level = placement.level;
@@ -554,19 +548,19 @@ fn board(player: &mut PlayerBody, id: GridId, world: &ServerWorld) {
     // They stand on it, so they are not moving away from it: a walker that a ship has fallen away from, or has lifted onto itself, is not
     // thrown up at the speed it had. (Moving toward it is the controller's to stop, as it always did.)
     let up = player.body.up();
-    let away: f32 = (0..3).map(|axis| relative[axis] * up[axis]).sum();
+    let away: f64 = (0..3).map(|axis| relative[axis] * up[axis]).sum();
     if away > 0.0 {
         for axis in 0..3 {
             relative[axis] -= up[axis] * away;
         }
     }
-    let turn = Orientation::from_single_components(player.body.frame_rotation())
-        .unwrap_or(Orientation::IDENTITY);
+    let turn =
+        Orientation::from_components(player.body.frame_rotation()).unwrap_or(Orientation::IDENTITY);
     let frame_rotation = ship.pose.orientation.inverse().compose(turn);
     player.body.reframe(
         local,
         ship.pose.direction_to_local(relative),
-        frame_rotation.components_single(),
+        frame_rotation.components(),
     );
     player.frame = id;
 }
@@ -609,7 +603,7 @@ fn step_aboard(
     }
     let gravity = world.gravity_in(id, player.body.eye_position()).unwrap_or([
         0.0,
-        -(player.body.settings().gravity as f32),
+        -player.body.settings().gravity,
         0.0,
     ]);
     let input = input_for(player);
@@ -620,7 +614,7 @@ fn step_aboard(
     // Has it left? Nothing of the ship under it, or far from the ship; or nothing of the ship is left.
     let left = match (world.data().grids().get(id), ships.get(&id)) {
         (Some(ship), Some(bounds)) => {
-            let down = player.body.up().map(|axis| -f64::from(axis));
+            let down = player.body.up().map(|axis| -axis);
             has_left(
                 &mut blocks.source(world, id, ship),
                 &bounds.extent,
@@ -650,12 +644,12 @@ fn leave(player: &mut PlayerBody, world: &ServerWorld) {
     let in_the_ship = ship.pose.direction_to_world(player.body.velocity());
     let carried = ship.velocity_at(world_eyes);
     let velocity = [0, 1, 2].map(|axis| in_the_ship[axis] + carried[axis]);
-    let turn = Orientation::from_single_components(player.body.frame_rotation())
-        .unwrap_or(Orientation::IDENTITY);
+    let turn =
+        Orientation::from_components(player.body.frame_rotation()).unwrap_or(Orientation::IDENTITY);
     let frame_rotation = ship.pose.orientation.compose(turn);
     player
         .body
-        .reframe(world_eyes, velocity, frame_rotation.components_single());
+        .reframe(world_eyes, velocity, frame_rotation.components());
     player.frame = GridId::root(ship.level);
     player.level = ship.level;
 }
@@ -667,8 +661,8 @@ fn moved_pose(client: ClientId, player: &PlayerBody) -> Moved {
         yaw: player.request.input.yaw,
         pitch: player.request.pitch,
     };
-    let frame_rotation = Orientation::from_single_components(player.body.frame_rotation())
-        .unwrap_or(Orientation::IDENTITY);
+    let frame_rotation =
+        Orientation::from_components(player.body.frame_rotation()).unwrap_or(Orientation::IDENTITY);
     Moved {
         client,
         frame: player.frame,

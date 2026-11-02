@@ -255,15 +255,12 @@ fn a_replay_draws_exactly_what_a_walker_carried_by_a_ship_that_turns_saw() {
     let mut scene = common::scene_with_a_deck();
     let connection = scene.rig.connector.connect().unwrap();
     let recorded = record_connection(connection, &path).unwrap();
-    let mut player = scene.rig.join_walking_over(
-        recorded,
-        1,
-        [20.0, common::FLOOR as f64 + 13.0, 24.0],
-        0.0,
-        -20.0,
-    );
+    let mut player =
+        scene
+            .rig
+            .join_walking_over(recorded, 1, [20.0, common::FLOOR + 13.0, 24.0], 0.0, -20.0);
     let mut updates = Vec::new();
-    let mut looking_in_the_ship: Vec<[f32; 3]> = Vec::new();
+    let mut looking_in_the_ship: Vec<[f64; 3]> = Vec::new();
     // (Which way they look is theirs to say; they say it.)
     player.send_pose();
     let origin = common::ship_pose(&scene, 0).position;
@@ -271,7 +268,7 @@ fn a_replay_draws_exactly_what_a_walker_carried_by_a_ship_that_turns_saw() {
     const LANDED: usize = 40;
     for tick in 0..LANDED + 140 {
         scene.run(move |world| {
-            let ridden = tick.saturating_sub(LANDED) as f32;
+            let ridden = tick.saturating_sub(LANDED) as f64;
             let pose = voxel_space::GridPose::new(
                 origin.translated([0.04 * ridden, 0.0, 0.0]),
                 voxel_space::Orientation::from_yaw_pitch(0.01 * ridden, 0.0),
@@ -285,7 +282,8 @@ fn a_replay_draws_exactly_what_a_walker_carried_by_a_ship_that_turns_saw() {
         // does not change as the ship turns.
         if tick >= 40 {
             let ship = common::ship_pose(&scene, 0);
-            looking_in_the_ship.push(ship.direction_to_local(player.camera.forward().to_array()));
+            looking_in_the_ship
+                .push(ship.direction_to_local(player.camera.forward().to_array().map(f64::from)));
         }
     }
     {
@@ -303,9 +301,9 @@ fn a_replay_draws_exactly_what_a_walker_carried_by_a_ship_that_turns_saw() {
     let final_camera = player.camera;
     // They look 20 degrees down, in the ship's axes, and the same way in them for the whole of the ride, though the ship turned a
     // radian and more in it.
-    let pitch = -20.0f32.to_radians();
+    let pitch = -20.0f64.to_radians();
     for looking in &looking_in_the_ship {
-        assert!((looking[1] - libm::sinf(pitch)).abs() < 1e-3, "{looking:?}");
+        assert!((looking[1] - libm::sin(pitch)).abs() < 1e-3, "{looking:?}");
         for axis in 0..3 {
             assert!(
                 (looking[axis] - looking_in_the_ship[0][axis]).abs() < 1e-3,
@@ -420,13 +418,10 @@ fn a_replay_draws_exactly_what_a_player_saw_who_made_a_ship_flew_it_turned_it_an
     common::build_raft(&mut scene, 20, common::FLOOR as i128 + 6, 22, 8);
     let connection = scene.rig.connector.connect().unwrap();
     let recorded = record_connection(connection, &path).unwrap();
-    let mut player = scene.rig.join_walking_over(
-        recorded,
-        1,
-        [24.0, common::FLOOR as f64 + 3.0, 34.0],
-        0.0,
-        30.0,
-    );
+    let mut player =
+        scene
+            .rig
+            .join_walking_over(recorded, 1, [24.0, common::FLOOR + 3.0, 34.0], 0.0, 30.0);
     let mut updates = Vec::new();
     player.send_pose();
     step_drawing(&mut scene, &mut player, &mut updates, 20);
@@ -511,13 +506,13 @@ fn a_replay_draws_exactly_what_a_player_saw_who_made_a_ship_flew_it_turned_it_an
     let across = libm::sqrt(to_ship[0] * to_ship[0] + to_ship[2] * to_ship[2]);
     // (Their view still has the turn of the room they left in it, so what they turn by is the difference of directions in the world.)
     let (wanted_yaw, wanted_pitch) = (
-        libm::atan2(-to_ship[0], -to_ship[2]) as f32,
-        libm::atan2(to_ship[1], across) as f32,
+        libm::atan2(-to_ship[0], -to_ship[2]) as f64,
+        libm::atan2(to_ship[1], across) as f64,
     );
     let forward = player.camera.forward().to_array();
     let (yaw, pitch) = (
-        libm::atan2(-f64::from(forward[0]), -f64::from(forward[2])) as f32,
-        libm::asin(f64::from(forward[1])) as f32,
+        libm::atan2(-f64::from(forward[0]), -f64::from(forward[2])) as f64,
+        libm::asin(f64::from(forward[1])) as f64,
     );
     player
         .camera

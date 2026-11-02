@@ -17,7 +17,7 @@ use voxel_space::{
 use voxunami_cave::content::CaveContent;
 
 /// Whole bricks from the origin of the world (the light works in cells of bricks), and a ship held there.
-const ORIGIN: [f32; 3] = [32.0, 224.0, 32.0];
+const ORIGIN: [f64; 3] = [32.0, 224.0, 32.0];
 
 /// The box the light is looked at in: the ships are 12 by 12 on the floor, with room above for the light.
 const BOX: ([i128; 3], [i128; 3]) = ([0, 0, 0], [14, 7, 14]);

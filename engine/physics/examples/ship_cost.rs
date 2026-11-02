@@ -74,7 +74,7 @@ fn bricks_of(hull: &Hull) -> Vec<BrickCoordinate> {
     bricks
 }
 
-fn start(x: f32, y: f32, z: f32) -> BodyState {
+fn start(x: f64, y: f64, z: f64) -> BodyState {
     BodyState {
         position: WorldPosition::new(BrickCoordinate::ORIGIN, [x, y, z]),
         orientation: Orientation::IDENTITY,
@@ -160,13 +160,13 @@ fn many_ships() {
     let mass = mass_of(&hull);
     let brick = BrickCoordinate::ORIGIN;
     for index in 0..100u64 {
-        let (column, row) = ((index % 10) as f32, (index / 10) as f32);
+        let (column, row) = ((index % 10) as f64, (index / 10) as f64);
         world
             .add_body(
                 BodyId(index),
                 start(
                     column * 20.0 - 100.0,
-                    2.0 + (index % 3) as f32 * 3.0,
+                    2.0 + (index % 3) as f64 * 3.0,
                     row * 20.0 - 100.0,
                 ),
                 BodyKind::Dynamic,

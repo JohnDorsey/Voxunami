@@ -114,7 +114,7 @@ impl GameDefinition for ExampleGame {
         }
     }
 
-    fn reach() -> f32 {
+    fn reach() -> f64 {
         10.0
     }
 
@@ -164,7 +164,7 @@ impl GameDefinition for ExampleSpaceGame {
         ExampleGame::default_camera()
     }
 
-    fn reach() -> f32 {
+    fn reach() -> f64 {
         ExampleGame::reach()
     }
 
@@ -184,7 +184,7 @@ impl GameDefinition for ExampleSpaceGame {
         }
     }
 
-    fn level_gravity() -> Vec<(NamespacedId, [f32; 3])> {
+    fn level_gravity() -> Vec<(NamespacedId, [f64; 3])> {
         vec![(id("example:space"), [0.0; 3])]
     }
 }
@@ -245,7 +245,7 @@ impl GameDefinition for ExampleSunGame {
         ExampleGame::default_camera()
     }
 
-    fn reach() -> f32 {
+    fn reach() -> f64 {
         ExampleGame::reach()
     }
 
@@ -298,7 +298,7 @@ impl GameDefinition for ExampleDetailGame {
         ExampleGame::default_camera()
     }
 
-    fn reach() -> f32 {
+    fn reach() -> f64 {
         ExampleGame::reach()
     }
 
@@ -378,7 +378,7 @@ impl GameDefinition for ExamplePanickingGame {
         ExampleGame::default_camera()
     }
 
-    fn reach() -> f32 {
+    fn reach() -> f64 {
         ExampleGame::reach()
     }
 

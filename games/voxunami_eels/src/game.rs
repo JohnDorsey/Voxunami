@@ -122,7 +122,7 @@ impl GameDefinition for Eels {
         }
     }
 
-    fn reach() -> f32 {
+    fn reach() -> f64 {
         0.0
     }
 

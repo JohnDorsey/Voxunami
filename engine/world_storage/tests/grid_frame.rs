@@ -18,7 +18,7 @@ fn a_voxel_of_terrain_is_where_it_is_and_a_voxel_of_a_ship_is_turned_and_placed_
     // A quarter turn about the vertical axis: the ship's +x is the world's -z. Its origin is at (100, 50, 200).
     ship.pose = GridPose::new(
         WorldPosition::new(BrickCoordinate::new(3, 1, 6), [4.0, 18.0, 8.0]),
-        Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0),
+        Orientation::from_yaw_pitch(std::f64::consts::FRAC_PI_2, 0.0),
     );
     let id = world.grids_mut().create(ship);
 
@@ -37,9 +37,9 @@ fn a_voxel_of_terrain_is_where_it_is_and_a_voxel_of_a_ship_is_turned_and_placed_
     let (level, place) = world.voxel_in_world(id, at(2, 1, 0)).unwrap();
     assert_eq!(level, LevelIndex::MAIN);
     let found = [
-        place.brick().x() as f32 * 32.0 + place.offset()[0],
-        place.brick().y() as f32 * 32.0 + place.offset()[1],
-        place.brick().z() as f32 * 32.0 + place.offset()[2],
+        place.brick().x() as f64 * 32.0 + place.offset()[0],
+        place.brick().y() as f64 * 32.0 + place.offset()[1],
+        place.brick().z() as f64 * 32.0 + place.offset()[2],
     ];
     let origin = [100.0, 50.0, 200.0];
     let wanted = [origin[0] + 0.5, origin[1] + 1.5, origin[2] - 2.5];

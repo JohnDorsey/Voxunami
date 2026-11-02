@@ -16,8 +16,8 @@ const PLANET: u64 = 2;
 const MOON: u64 = 3;
 
 const TICKS_A_SECOND: f64 = 20.0;
-/// The pull of the game (the `G` of the masses), as an `f32` is the one the game uses.
-const PULL_STRENGTH: f64 = 6.674e-11_f32 as f64;
+/// The pull of the game (the `G` of the masses).
+const PULL_STRENGTH: f64 = 6.674e-11;
 
 fn the_packs() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/packs")
@@ -34,16 +34,14 @@ fn scene() -> Scene {
 }
 
 fn mass_of(scene: &Scene, number: u64) -> f64 {
-    f64::from(
-        scene
-            .rig
-            .server
-            .world()
-            .grids()
-            .get(ship_id(number))
-            .expect("the body is there")
-            .mass,
-    )
+    scene
+        .rig
+        .server
+        .world()
+        .grids()
+        .get(ship_id(number))
+        .expect("the body is there")
+        .mass
 }
 
 fn the_tick(scene: &Scene) -> u64 {

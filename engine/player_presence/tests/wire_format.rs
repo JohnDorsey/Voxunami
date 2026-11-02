@@ -7,7 +7,7 @@ use player_presence::{
 use protocol::{ClientId, Message, PlayerKey};
 use voxel_space::{BrickCoordinate, WorldPosition};
 
-fn pose(x: i128, offset: [f32; 3], yaw: f32, pitch: f32) -> PlayerPose {
+fn pose(x: i128, offset: [f64; 3], yaw: f64, pitch: f64) -> PlayerPose {
     PlayerPose {
         position: WorldPosition::new(BrickCoordinate::new(x, -2, 7), offset),
         yaw,
@@ -23,8 +23,9 @@ fn the_presence_messages_have_their_pinned_bytes() {
         (
             "a pose",
             PoseReport(first).encode(),
-            // (Protocol 9: the brick (3, -2, 7) is three length-prefixed integers, 01 06, 01 03, 01 0e.)
-            "01060103010e0000c03f85ebff41000000000000803e000080bf",
+            // (Protocol 9: the brick (3, -2, 7) is three length-prefixed integers, 01 06, 01 03, 01 0e. Protocol 11: the offset and the two angles are `f64`, 8 bytes each:
+            // 1.5 is 000000000000f83f, 31.99 is 3d0ad7a370fd3f40, 0.25 is 000000000000d03f and -1 is 000000000000f0bf; they were the `f32` 0000c03f, 85ebff41, 0000803e and 000080bf.)
+            "01060103010e000000000000f83f3d0ad7a370fd3f400000000000000000000000000000d03f000000000000f0bf",
         ),
         (
             "a level change",
@@ -34,7 +35,7 @@ fn the_presence_messages_have_their_pinned_bytes() {
         (
             "where a returning player is",
             PlayerPlaced(first.position).encode(),
-            "01060103010e0000c03f85ebff4100000000",
+            "01060103010e000000000000f83f3d0ad7a370fd3f400000000000000000",
         ),
         (
             "a player's connection",
@@ -48,7 +49,7 @@ fn the_presence_messages_have_their_pinned_bytes() {
                 pitch: -1.0,
             }
             .encode(),
-            "0000803e000080bf",
+            "000000000000d03f000000000000f0bf",
         ),
         (
             "a player's key",

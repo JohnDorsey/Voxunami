@@ -1363,7 +1363,7 @@ impl VoxelRenderer {
         let mut drawables: Vec<Drawable> = Vec::new();
         for &coordinate in self.bricks.keys() {
             let corner = WorldPosition::new(coordinate, [0.0; 3]).relative_to(camera.position);
-            let corner = Vec3::from_array(corner);
+            let corner = crate::camera::gpu_vector(corner);
             drawables.push(Drawable {
                 mesh: MeshKey::Held(BrickKey::Terrain(coordinate)),
                 placement: Placement {
@@ -1379,7 +1379,7 @@ impl VoxelRenderer {
         // Coarse nodes of the terrain: a node of detail level `n` is `2^n` bricks along an edge, drawn from its mesh in cells of `2^n` voxels.
         for &cube in self.coarse_nodes.keys() {
             let scale = cell_scale(cube.level());
-            let corner = Vec3::from_array(
+            let corner = crate::camera::gpu_vector(
                 WorldPosition::new(cube.origin(), [0.0; 3]).relative_to(camera.position),
             );
             let (middle, radius) = node_sphere(corner, scale);
@@ -1475,7 +1475,7 @@ impl VoxelRenderer {
         // Avatars are placed like bricks: by where their model's corner is relative to the camera.
         let eye = Vec3::splat(f32::from(AVATAR_EYE_VOXEL) + 0.5);
         for avatar in &self.avatars {
-            let relative = Vec3::from_array(avatar.position.relative_to(camera.position));
+            let relative = crate::camera::gpu_vector(avatar.position.relative_to(camera.position));
             drawables.push(Drawable {
                 mesh: MeshKey::Avatar(avatar.color as usize % AVATAR_COLOR_COUNT),
                 placement: Placement {
@@ -1490,7 +1490,8 @@ impl VoxelRenderer {
         }
         let avatars_end = drawables.len();
         for entity_box in &self.entity_boxes {
-            let relative = Vec3::from_array(entity_box.position.relative_to(camera.position));
+            let relative =
+                crate::camera::gpu_vector(entity_box.position.relative_to(camera.position));
             drawables.push(Drawable {
                 mesh: MeshKey::Box(entity_box.key()),
                 placement: Placement {
@@ -1658,7 +1659,7 @@ impl VoxelRenderer {
                 .filter(|kept| kept.cascade.half_width == half_width);
             // How the map that is kept stands: where the camera is from where it was, how far the light has turned, what has changed.
             let moved = kept.map_or(Vec3::ZERO, |kept| {
-                Vec3::from_array(camera.position.relative_to(kept.camera))
+                crate::camera::gpu_vector(camera.position.relative_to(kept.camera))
             });
             let standing = kept.map(|kept| Standing {
                 holds: kept.cascade.holds_after_moving(&kept.basis, moved),

@@ -51,7 +51,7 @@ fn a_character_falls_and_comes_to_rest_on_the_floor_and_stays_there_without_a_tr
 fn walking_goes_the_way_the_player_faces_at_walking_speed_and_sprinting_goes_faster() {
     // Yaw 0 faces -z and a quarter turn to the left faces -x.
     for (yaw_degrees, direction) in [
-        (0.0f32, [0.0, -1.0]),
+        (0.0f64, [0.0, -1.0]),
         (90.0, [-1.0, 0.0]),
         (180.0, [0.0, 1.0]),
         (-90.0, [1.0, 0.0]),
@@ -149,7 +149,7 @@ fn a_wall_stops_the_character_and_it_slides_along_it() {
 /// A floor topped at 7 with a wall along z of the blocks on it, one high (more than a character steps up), whose face is at x = 15 and
 /// reaches from z = 0 to 41. A character on the floor at (`x`, `z`) walks with the yaw `yaw` and its keys held, which is toward -z and
 /// leaning into the wall for a yaw above 0: `steps` steps. Returns where it ended and the most steps in a row that it did not move.
-fn walk_into_a_step(yaw: f32, x: f32, z: f32, steps: usize) -> ([f64; 3], usize) {
+fn walk_into_a_step(yaw: f64, x: f64, z: f64, steps: usize) -> ([f64; 3], usize) {
     let mut scene = Scene::with_floor(6);
     for wall_x in 0..=14 {
         for wall_z in 0..=40 {
@@ -197,8 +197,8 @@ fn a_walker_never_stops_dead_against_a_wall_that_is_free_to_slide_along_for_any_
     let mut stuck = Vec::new();
     for yaw_hundredths in (10..130).step_by(5) {
         for start in 0..6 {
-            let yaw = yaw_hundredths as f32 / 100.0;
-            let x = 15.6 + start as f32 * 0.23;
+            let yaw = yaw_hundredths as f64 / 100.0;
+            let x = 15.6 + start as f64 * 0.23;
             let (end, longest_still) = walk_into_a_step(yaw, x, 30.0, 150);
             if longest_still > 0 {
                 stuck.push((yaw, x, end));
@@ -298,6 +298,31 @@ fn a_jump_clears_a_block_and_a_quarter_and_not_two_blocks() {
     assert!(highest < STANDING_EYE_HEIGHT + 1.4, "{highest}");
 }
 
+/// A BUG, found on 2026-11-02 and present before (on the `f32` interface, in the committed code, with yaw 0.0): a character walking exactly along an axis into the foot of a
+/// stair stops at it (the eyes stay at 11.63 and z at 14.31) where one 1e-9 radian off the axis climbs it (12.63). The default look direction, yaw 0, is such an axis, so a
+/// player who faces straight at a stair and walks cannot climb it. Not looked into yet; this test is what a fix has to pass.
+#[test]
+#[ignore = "a bug in the controller: exactly axis-aligned, it does not climb a stair"]
+fn a_character_walking_exactly_along_an_axis_into_a_stair_climbs_it() {
+    for yaw in [0.0f64, 1.0e-9] {
+        let (mut body, mut scene) = standing_on_a_floor();
+        let stair = Shape::stair(FaceDirection::NegativeZ);
+        for x in 0..40 {
+            for z in 8..14 {
+                scene.shape(x, 10, z, &stair);
+            }
+        }
+        edited(&mut body, &mut scene);
+        run(&mut body, &mut scene, MoveInput { yaw, ..FORWARD }, 60);
+        assert!(
+            eye(&body)[1] > STANDING_EYE_HEIGHT + 0.4,
+            "yaw {yaw}: the eyes are at {}, z {}",
+            eye(&body)[1],
+            eye(&body)[2]
+        );
+    }
+}
+
 #[test]
 fn slabs_and_the_steps_of_stairs_are_walked_up_without_jumping_and_a_block_is_not() {
     // A bottom slab (half a block high) in the way.
@@ -333,7 +358,9 @@ fn slabs_and_the_steps_of_stairs_are_walked_up_without_jumping_and_a_block_is_no
             scene.shape(x, 10, z, &stair);
         }
     }
-    let yaw = 90.0f32.to_radians(); // toward -x
+    // Toward -x. (This is `90.0f32.to_radians()` as an `f64`, 4e-8 of a radian off the exact quarter turn, as it was when the yaw was an `f32`: walking exactly along an axis
+    // into the edge of a step does not climb it, which is the bug of the test below, found when the interface became `f64`, 2026-11-02.)
+    let yaw = f64::from(90.0f32.to_radians());
     edited(&mut body, &mut scene);
     run(&mut body, &mut scene, MoveInput { yaw, ..FORWARD }, 60);
     assert!(
@@ -401,7 +428,7 @@ fn a_fall_gets_no_faster_than_the_terminal_speed() {
     run(&mut body, &mut scene, STILL, 1200);
     assert_eq!(
         body.velocity()[1],
-        -(CharacterSettings::default().terminal_speed as f32)
+        -CharacterSettings::default().terminal_speed
     );
     assert!(eye(&body)[1] < 2000.0 - 200.0);
 }
@@ -511,7 +538,7 @@ fn terrain_that_is_not_available_is_a_wall_not_a_void() {
         &mut body,
         &mut scene,
         MoveInput {
-            yaw: (-90.0f32).to_radians(),
+            yaw: (-90.0f64).to_radians(),
             ..FORWARD
         },
         120,
@@ -538,7 +565,7 @@ fn a_long_walk_across_many_bricks_is_smooth_and_the_frame_is_rebuilt_without_a_j
     let mut last = eye(&body);
     let input = MoveInput {
         sprint: true,
-        yaw: (-90.0f32).to_radians(),
+        yaw: (-90.0f64).to_radians(),
         ..FORWARD
     };
     let first_origin = body.frame_origin();
@@ -616,7 +643,7 @@ fn walking_across_the_bricks_of_a_floor_makes_the_colliders_of_a_brick_or_two_at
     run(&mut body, &mut scene, STILL, 60);
     // East, sprinting, for 400 steps: 37 voxels, over the edge of the brick and a little into the next two.
     let east = MoveInput {
-        yaw: -std::f32::consts::FRAC_PI_2,
+        yaw: -std::f64::consts::FRAC_PI_2,
         sprint: true,
         ..FORWARD
     };
@@ -646,7 +673,7 @@ fn a_character_falling_fast_has_the_colliders_of_the_ground_before_it_is_close()
         assert!(steps < 5000, "the ground was never asked about");
     }
     let speed = -body.velocity()[1];
-    let height_above_the_brick = (eye(&body)[1] - 64.0) as f32;
+    let height_above_the_brick = eye(&body)[1] - 64.0;
     assert!(speed > 40.0, "it fell fast: {speed}");
     assert!(
         height_above_the_brick > 8.0 + 0.15 * speed,
@@ -661,17 +688,17 @@ fn terrain_a_character_walks_away_from_is_kept_for_a_while_so_that_walking_back_
     let mut body = spawn(16.5, 43.0, 16.5);
     run(&mut body, &mut scene, STILL, 60);
     let walk_to =
-        |body: &mut CharacterBody, scene: &mut Scene, yaw: f32, until: &dyn Fn(f32) -> bool| {
+        |body: &mut CharacterBody, scene: &mut Scene, yaw: f64, until: &dyn Fn(f64) -> bool| {
             let input = MoveInput { yaw, ..FORWARD };
             for _ in 0..4000 {
-                if until(eye(body)[0] as f32) {
+                if until(eye(body)[0]) {
                     break;
                 }
                 run(body, scene, input, 1);
             }
             run(body, scene, STILL, 60);
         };
-    let east = -std::f32::consts::FRAC_PI_2;
+    let east = -std::f64::consts::FRAC_PI_2;
     walk_to(&mut body, &mut scene, east, &|x| x >= 27.0);
     assert!(eye(&body)[0] >= 27.0, "it walked east: {:?}", eye(&body));
     // Back to 20: the next brick east (from 32) is 12 voxels away, more than the 8 it was wanted from and less than the 24 it is kept to.
@@ -771,7 +798,7 @@ fn a_scripted_run_ends_in_the_same_state_every_time_and_on_every_machine() {
 }
 
 /// Puts the character with its eyes where a character whose feet are at `feet` has them, at (x, z).
-fn teleport_feet(body: &mut CharacterBody, x: f32, feet: f32, z: f32) {
+fn teleport_feet(body: &mut CharacterBody, x: f64, feet: f64, z: f64) {
     body.teleport(position(x, feet + 1.62, z));
 }
 
@@ -787,7 +814,7 @@ fn feet_of(body: &CharacterBody) -> f64 {
 #[test]
 fn a_character_teleported_into_the_ground_is_lifted_onto_it_not_left_in_it() {
     // Terrain whose surface is at 10; the feet are put 1, 2 and 7 voxels below it, and a few hundredths.
-    for depth in [0.05_f32, 1.0, 2.0, 7.0] {
+    for depth in [0.05_f64, 1.0, 2.0, 7.0] {
         let (mut body, mut scene) = standing_on_a_floor();
         teleport_feet(&mut body, 16.5, 10.0 - depth, 16.5);
         settle(&mut body, &mut scene);
@@ -848,7 +875,7 @@ fn assert_cleared(
 fn a_character_put_beside_a_taller_step_is_moved_the_shortest_way_out_of_it_for_any_overlap() {
     // A floor with a one-voxel step at x = 17, and the east edge of the character `overlap` into the step.
     // The shortest way out is sideways, back off the step, not up onto it.
-    for overlap in [0.03_f32, 0.08, 0.15, 0.29] {
+    for overlap in [0.03_f64, 0.08, 0.15, 0.29] {
         let (mut body, mut scene) = standing_on_a_floor();
         for z in 14..=19 {
             scene.cube(17, 10, z);
@@ -857,22 +884,13 @@ fn a_character_put_beside_a_taller_step_is_moved_the_shortest_way_out_of_it_for_
         teleport_feet(&mut body, x, 10.0, 16.5);
         settle(&mut body, &mut scene);
         let what = format!("overlap {overlap}");
-        assert_cleared(
-            &body,
-            &mut scene,
-            [f64::from(x), 16.5],
-            f64::from(overlap) + 0.15,
-            &what,
-        );
+        assert_cleared(&body, &mut scene, [x, 16.5], overlap + 0.15, &what);
         assert!(
             (feet_of(&body) - 10.0).abs() < 0.03,
             "{what}: feet {}",
             feet_of(&body)
         );
-        assert!(
-            eye(&body)[0] < f64::from(x),
-            "{what}: moved away from the step"
-        );
+        assert!(eye(&body)[0] < x, "{what}: moved away from the step");
     }
 }
 
@@ -904,7 +922,7 @@ fn a_character_put_deep_in_a_mass_of_blocks_that_are_not_whole_is_moved_out_of_i
         min: [0, 0, 0],
         max: [8, 7, 8],
     }]);
-    for feet in [10.3_f32, 11.2, 12.5] {
+    for feet in [10.3_f64, 11.2, 12.5] {
         let (mut body, mut scene) = standing_on_a_floor();
         for x in 12..=21 {
             for z in 12..=21 {
@@ -949,7 +967,7 @@ fn a_character_put_in_the_air_or_on_the_ground_is_not_lifted() {
 fn a_character_put_inside_a_slab_is_lifted_onto_the_top_of_the_slab() {
     // A floor with a bottom slab (half a block) on it; the feet are put in the slab, a few hundredths and
     // a quarter of a block up from the floor.
-    for height in [0.02_f32, 0.25] {
+    for height in [0.02_f64, 0.25] {
         let (mut body, mut scene) = standing_on_a_floor();
         scene.shape(16, 10, 16, &Shape::half(FaceDirection::NegativeY));
         edited(&mut body, &mut scene);
@@ -971,7 +989,7 @@ fn a_character_put_beside_a_step_that_is_not_a_whole_block_is_moved_out_of_it_to
         min: [0, 0, 0],
         max: [8, 7, 8],
     }]);
-    for overlap in [0.03_f32, 0.15, 0.29] {
+    for overlap in [0.03_f64, 0.15, 0.29] {
         let (mut body, mut scene) = standing_on_a_floor();
         for z in 14..=19 {
             scene.shape(17, 10, z, &tall);
@@ -981,13 +999,7 @@ fn a_character_put_beside_a_step_that_is_not_a_whole_block_is_moved_out_of_it_to
         teleport_feet(&mut body, x, 10.0, 16.5);
         settle(&mut body, &mut scene);
         let what = format!("overlap {overlap}");
-        assert_cleared(
-            &body,
-            &mut scene,
-            [f64::from(x), 16.5],
-            f64::from(overlap) + 0.15,
-            &what,
-        );
+        assert_cleared(&body, &mut scene, [x, 16.5], overlap + 0.15, &what);
         assert!(
             (feet_of(&body) - 10.0).abs() < 0.03,
             "{what}: feet {}",
@@ -1015,7 +1027,7 @@ fn tunnel_under(roof_top: i128) -> (CharacterBody, Scene) {
 fn a_character_put_with_its_head_in_a_ceiling_goes_down_into_the_room_not_up_through_the_roof() {
     // Feet a little up, so that the head (1.8 above them) is in the roof; a thin roof and a very thick one.
     for roof_top in [12_i128, 200] {
-        for feet in [10.3_f32, 10.5] {
+        for feet in [10.3_f64, 10.5] {
             let (mut body, mut scene) = tunnel_under(roof_top);
             teleport_feet(&mut body, 16.5, feet, 16.5);
             settle(&mut body, &mut scene);
@@ -1063,7 +1075,7 @@ fn clearing_works_for_negative_coordinates_and_a_frame_that_is_not_at_the_origin
             scene.cube(base_x + 31, 10, z);
             scene.cube(base_x + 32, 10, z);
         }
-        let put = |offset_x: f32| {
+        let put = |offset_x: f64| {
             WorldPosition::new(
                 BrickCoordinate::new(brick_x, 0, brick_z),
                 [offset_x, 10.0 + 1.62, 16.5],
@@ -1176,7 +1188,11 @@ fn a_character_put_where_there_is_no_clear_space_above_stays_where_it_was_put_an
 
 /// Moved once, on purpose, 2026-10-22: the default gravity is 5 metres a second a second (was 32), and the jump 3.6 metres a second (was 9: the same jump of 1.3 metres).
 /// (Moved on purpose, 2026-11-01: 4_984_977_719_643_994_898 before. Rapier works in f64 now (`rapier3d-f64`, with `enhanced-determinism`), and a hash is of the bits of the numbers, so every one of them moved. Nothing else is claimed to be the same bit for bit. The walking, jumping, stepping and falling tests of this file pass as they were.)
-const PINNED_SCRIPTED_RUN: u64 = 9_152_686_280_970_739_222;
+/// (Moved on purpose, 2026-11-02: 9_152_686_280_970_739_222 before. The interface is `f64`, so the inputs, the settings of the character and the position it keeps are no longer rounded to `f32`.
+/// Control: the end state of the run is printed after each stage by the old build and the new, and they agree to the `f32` they were rounded to at every one of the seven stages and after the flight:
+/// the eyes at (29.292097, 11.909177, 34.404771) and (29.292097, 11.909167, 34.404773), ..., (31.7, 18.28611, 40.1) in both, and after the flight (19.638787, 25.215195, 25.628687) and (19.638787, 25.215186, 25.628689).
+/// What was not done: the old hash was not reproduced by rounding the inputs, because the old character also kept its position as a `WorldPosition` with an `f32` offset and rounded it each step.)
+const PINNED_SCRIPTED_RUN: u64 = 10_820_974_358_118_061_167;
 
 /// Whether the character's box reaches into any solid thing of the scene by more than a hair.
 fn is_inside_something(body: &CharacterBody, scene: &mut Scene) -> bool {
@@ -1246,7 +1262,7 @@ mod properties {
             -1i8..=1,
             any::<bool>(),
             any::<bool>(),
-            -3.2f32..3.2,
+            -3.2f64..3.2,
         )
             .prop_map(|(forward, strafe, vertical, jump, sprint, yaw)| MoveInput {
                 forward,
@@ -1296,7 +1312,7 @@ mod properties {
         #[test]
         fn a_character_put_anywhere_is_moved_out_of_the_terrain_and_not_left_in_it(
             blocks in scene_with_tall_blocks(),
-            put in (12.0f32..22.0, 2.0f32..16.0, 12.0f32..22.0),
+            put in (12.0f64..22.0, 2.0f64..16.0, 12.0f64..22.0),
             flying in any::<bool>(),
             spawned in any::<bool>(),
         ) {
@@ -1334,8 +1350,8 @@ mod properties {
         #[test]
         fn a_character_put_into_the_top_of_hills_is_moved_out_of_them(
             heights in proptest::collection::vec(0i128..4, 15 * 15),
-            at in (14.0f32..20.0, 14.0f32..20.0),
-            depth in prop_oneof![Just(0.3f32), Just(1.0f32), Just(1.7f32)],
+            at in (14.0f64..20.0, 14.0f64..20.0),
+            depth in prop_oneof![Just(0.3f64), Just(1.0f64), Just(1.7f64)],
         ) {
             let mut scene = Scene::with_floor(9);
             let height_of = |x: i128, z: i128| heights[((z - 10) * 15 + (x - 10)) as usize];
@@ -1347,7 +1363,7 @@ mod properties {
                 }
             }
             let (x, z) = at;
-            let columns = |centre: f32| [(centre - 0.28).floor() as i128, (centre + 0.28).floor() as i128];
+            let columns = |centre: f64| [(centre - 0.28).floor() as i128, (centre + 0.28).floor() as i128];
             let tallest = columns(x)
                 .into_iter()
                 .flat_map(|cx| columns(z).map(move |cz| height_of(cx, cz)))
@@ -1355,7 +1371,7 @@ mod properties {
                 .unwrap();
             let mut body = spawn(8.5, 12.0, 8.5);
             run(&mut body, &mut scene, STILL, 5);
-            teleport_feet(&mut body, x, (10 + tallest) as f32 - depth, z);
+            teleport_feet(&mut body, x, (10 + tallest) as f64 - depth, z);
             run(&mut body, &mut scene, STILL, 120);
             prop_assert!(!is_inside_something(&body, &mut scene), "put at {:?} depth {}, now {:?}", at, depth, eye(&body));
             // (How exactly it rests is the controller's: put within a hair of two walls at once, a body can be
@@ -1363,10 +1379,10 @@ mod properties {
             // not inside anything and not carried off.)
             // The shortest way out is never longer than straight up out of the depth it was put at, plus the
             // step of the search and the hair of the margin, so it is moved no further than that.
-            let at_most = f64::from(depth) + 0.25;
+            let at_most = depth + 0.25;
             prop_assert!(
-                (eye(&body)[0] - f64::from(x)).abs() <= at_most
-                    && (eye(&body)[2] - f64::from(z)).abs() <= at_most
+                (eye(&body)[0] - x).abs() <= at_most
+                    && (eye(&body)[2] - z).abs() <= at_most
                     && feet_of(&body) <= (10 + tallest) as f64 + 0.25,
                 "carried off: put at {:?} depth {}, now {:?}",
                 at,
@@ -1387,13 +1403,13 @@ fn a_jump_is_one_impulse_whatever_the_key_does_and_the_speed_up_falls_at_the_pul
         jump: true,
         ..STILL
     };
-    let pull = (CharacterSettings::default().gravity / 60.0) as f32;
+    let pull = CharacterSettings::default().gravity / 60.0;
     let mut speeds = Vec::new();
     for _ in 0..40 {
         run(&mut body, &mut scene, jump, 1);
         speeds.push(body.velocity()[1]);
     }
-    let start = CharacterSettings::default().jump_speed as f32 - pull;
+    let start = CharacterSettings::default().jump_speed - pull;
     assert!((speeds[0] - start).abs() < 1e-4, "{speeds:?}");
     for step in 1..speeds.len() {
         assert!(
@@ -1440,7 +1456,7 @@ fn a_character_in_the_air_that_is_displaced_is_there_at_once_and_goes_on_with_th
     run(&mut body, &mut scene, STILL, 1);
     let next = eye(&body);
     let pull = CharacterSettings::default().gravity / 60.0;
-    let expected = (f64::from(speed[1]) - pull) / 60.0;
+    let expected = (speed[1] - pull) / 60.0;
     assert!(
         (next[1] - after[1] - expected).abs() < 1e-3,
         "{after:?} then {next:?} at {speed:?}, wanted {expected}"
@@ -1463,7 +1479,7 @@ fn a_character_that_is_displaced_sideways_along_a_floor_goes_on_standing_and_one
         "{standing:?} then {there:?}"
     );
     // Down into the floor, by a few hundredths of a voxel, one, three and seven voxels: it is lifted onto it, as a character put there would be.
-    for depth in [0.05_f32, 1.0, 3.0, 7.0] {
+    for depth in [0.05_f64, 1.0, 3.0, 7.0] {
         let (mut body, mut scene) = standing_on_a_floor();
         body.displace([0.0, -depth, 0.0]);
         run(&mut body, &mut scene, STILL, 90);

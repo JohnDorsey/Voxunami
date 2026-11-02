@@ -91,7 +91,7 @@ fn from_the_middle(scene: &Scene, number: u64) -> [f64; 3] {
 }
 
 /// A raft of stone over the wanderer (`common::raft_over`).
-fn raft_over(scene: &mut Scene, offset: [f64; 3], held: bool, against: [f32; 3]) -> u64 {
+fn raft_over(scene: &mut Scene, offset: [f64; 3], held: bool, against: [f64; 3]) -> u64 {
     common::raft_over(scene, WANDERER, offset, held, against)
 }
 
@@ -99,7 +99,7 @@ fn raft_over(scene: &mut Scene, offset: [f64; 3], held: bool, against: [f32; 3])
 fn follow_a_raft(
     scene: &mut Scene,
     offset: [f64; 3],
-    against: [f32; 3],
+    against: [f64; 3],
     ticks: usize,
 ) -> (Vec<[f64; 3]>, Vec<[f64; 3]>) {
     let raft = raft_over(scene, offset, false, against);
@@ -329,7 +329,7 @@ fn a_held_ship_near_a_planet_on_a_fast_orbit_goes_with_it_and_one_beyond_its_sph
     // Two hundred voxels over the pole is in the sphere (16,320); thirty thousand is not.
     // (A ship that is held has no speed in the world: that is what holding it does, and it is made so here, against the ground. Near the planet it goes with it all
     // the same.)
-    let still_in_the_world = velocity(&scene, WANDERER).map(|part| -part as f32);
+    let still_in_the_world = velocity(&scene, WANDERER).map(|part| -part);
     let near = raft_over(&mut scene, [0.0, 10_200.0, 0.0], true, still_in_the_world);
     let far = raft_over(&mut scene, [0.0, 30_000.0, 0.0], true, [0.0; 3]);
     let far_at_first = (ship_pose(&scene, far), velocity(&scene, far));
@@ -419,7 +419,7 @@ fn a_ship_moved_or_turned_or_sped_by_something_else_while_a_planet_carries_it_go
     let kept = velocity(&scene, raft);
     scene.run(move |world| {
         world
-            .set_grid_velocity(ship_id(raft), kept.map(|part| part as f32), [0.0, 2.0, 0.0])
+            .set_grid_velocity(ship_id(raft), kept.map(|part| part), [0.0, 2.0, 0.0])
             .unwrap();
     });
     scene.ticks(9);
@@ -449,7 +449,7 @@ fn a_ship_moved_or_turned_or_sped_by_something_else_while_a_planet_carries_it_go
         world
             .set_grid_velocity(
                 ship_id(raft),
-                [ground[0] as f32, ground[1] as f32 + 10.0, ground[2] as f32],
+                [ground[0], ground[1] + 10.0, ground[2]],
                 [0.0; 3],
             )
             .unwrap();
@@ -477,7 +477,7 @@ fn two_ships_that_dock_over_a_planet_on_a_fast_orbit_become_one_that_goes_with_t
     make(&mut scene, at, false, second);
     // At rest against the ground, as ships made by someone standing on it would be.
     for number in [THE_RAFT, THE_RAFT + 1] {
-        let speed = velocity(&scene, WANDERER).map(|part| part as f32);
+        let speed = velocity(&scene, WANDERER).map(|part| part);
         scene.run(move |world| {
             world
                 .set_grid_velocity(ship_id(number), speed, [0.0; 3])

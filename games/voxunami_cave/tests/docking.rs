@@ -16,7 +16,7 @@ use voxel_space::{
 };
 use voxunami_cave::content::{CaveContent, dev_docking_port_id};
 
-fn pose(x: f32, y: f32, z: f32, orientation: Orientation) -> GridPose {
+fn pose(x: f64, y: f64, z: f64, orientation: Orientation) -> GridPose {
     GridPose::new(
         WorldPosition::new(BrickCoordinate::ORIGIN, [x, y, z]),
         orientation,
@@ -45,7 +45,7 @@ fn ships(scene: &Scene) -> Vec<GridId> {
 }
 
 fn mass_of(scene: &Scene, id: GridId) -> f64 {
-    f64::from(scene.rig.server.world().grids().get(id).unwrap().mass)
+    scene.rig.server.world().grids().get(id).unwrap().mass
 }
 
 fn velocity_of(scene: &Scene, id: GridId) -> [f64; 3] {
@@ -319,7 +319,7 @@ fn ships_that_are_off_to_the_side_and_turned_a_little_are_pulled_and_twisted_int
 
 /// The first ship with a port on its east face (as `a_pair`'s), and a second whose port faces west, rolled about the docking axis by `quarters`
 /// quarter turns (an eighth is `0.5`), with a bottom slab of stone beside its port, at a gap of 2 metres. Weightless.
-fn rolled_pair(quarters: f32) -> Scene {
+fn rolled_pair(quarters: f64) -> Scene {
     let mut scene = Scene::new();
     weightless(&mut scene);
     let (first, _) = a_pair();
@@ -343,12 +343,12 @@ fn rolled_pair(quarters: f32) -> Scene {
         ([2, 0, 0], stone(), PLAIN),
     ];
     // Rolled about x by the angle: the middle of its port face, 0.5 along y and z from its origin, is then at the offset the roll gives.
-    let angle = quarters * std::f32::consts::FRAC_PI_2;
-    let (sine, cosine) = (libm::sinf(angle), libm::cosf(angle));
+    let angle = quarters * std::f64::consts::FRAC_PI_2;
+    let (sine, cosine) = (libm::sin(angle), libm::cos(angle));
     let (y, z) = (0.5 * cosine - 0.5 * sine, 0.5 * sine + 0.5 * cosine);
     // The first's east face is at x = 24, 230.5, 20.5; the second's port face is to be there, 2 metres further along.
     let origin = (26.0, 230.5 - y, 20.5 - z);
-    let half = f64::from(angle) / 2.0;
+    let half = angle / 2.0;
     let orientation =
         Orientation::from_components([libm::sin(half), 0.0, 0.0, libm::cos(half)]).unwrap();
     make(
@@ -581,9 +581,7 @@ fn a_player_and_two_ships(first: Vec<Placed>, second: Vec<Placed>) -> (Scene, co
     use common::{FLOOR, flat_floor};
     let mut scene = Scene::new();
     flat_floor(&mut scene);
-    let mut player = scene
-        .rig
-        .join([22.0, f64::from(FLOOR) + 5.0, 30.0], 0.0, 0.0);
+    let mut player = scene.rig.join([22.0, FLOOR + 5.0, 30.0], 0.0, 0.0);
     scene.rig.settle(&mut [&mut player]);
     weightless(&mut scene);
     let level = FLOOR + 10.0;
@@ -812,9 +810,7 @@ fn wood_of_the_second_ship_left_after_a_while(docking: bool) -> (usize, u64) {
     }
     let (mut scene, report) = Scene::reporting();
     common::flat_floor(&mut scene);
-    let mut player = scene
-        .rig
-        .join([22.0, f64::from(common::FLOOR) + 5.0, 30.0], 0.0, 0.0);
+    let mut player = scene.rig.join([22.0, common::FLOOR + 5.0, 30.0], 0.0, 0.0);
     scene.rig.settle(&mut [&mut player]);
     weightless(&mut scene);
     let level = common::FLOOR + 10.0;
@@ -879,7 +875,7 @@ fn wood_of_the_second_ship_left_after_a_while(docking: bool) -> (usize, u64) {
         left += blocks_of(&scene, id)
             .iter()
             .filter(|(voxel, (block, _, _))| {
-                *block == wood && origin + voxel.x() as f32 + 0.5 > 24.0
+                *block == wood && origin + voxel.x() as f64 + 0.5 > 24.0
             })
             .count();
     }
@@ -919,7 +915,7 @@ fn a_planet_under_the_patch(scene: &mut Scene) -> f64 {
         let planet = world
             .create_grid(
                 LevelIndex::MAIN,
-                pose(0.0, centre as f32, 0.0, Orientation::IDENTITY),
+                pose(0.0, centre, 0.0, Orientation::IDENTITY),
             )
             .unwrap();
         world
@@ -928,7 +924,7 @@ fn a_planet_under_the_patch(scene: &mut Scene) -> f64 {
                 world_storage::GridTerrain {
                     generator,
                     extent: voxel_space::BrickBox::around(BrickCoordinate::ORIGIN, 2000),
-                    mass: (10.0 * 63_710.0f64 * 63_710.0 / 6.674e-11) as f32,
+                    mass: (10.0 * 63_710.0f64 * 63_710.0 / 6.674e-11),
                 },
             )
             .unwrap();
@@ -979,12 +975,7 @@ fn a_ship_with_a_port_that_comes_to_a_port_built_on_a_planet_is_written_into_the
     ];
     make(
         &mut scene,
-        pose(
-            1.0,
-            (centre + 63_681.0 + 1.5) as f32,
-            6.0,
-            Orientation::IDENTITY,
-        ),
+        pose(1.0, centre + 63_681.0 + 1.5, 6.0, Orientation::IDENTITY),
         false,
         blocks,
     );
@@ -1054,12 +1045,7 @@ fn a_ship_whose_blocks_would_be_in_blocks_of_the_planet_is_not_written_into_it_a
     ];
     make(
         &mut scene,
-        pose(
-            1.0,
-            (centre + 63_681.0 + 1.5) as f32,
-            6.0,
-            Orientation::IDENTITY,
-        ),
+        pose(1.0, centre + 63_681.0 + 1.5, 6.0, Orientation::IDENTITY),
         false,
         blocks,
     );
@@ -1083,12 +1069,7 @@ fn a_held_ship_a_tenth_of_a_metre_from_a_port_of_a_planet_is_not_docked_for_noth
         ([0, 0, 0], port_block(), facing(FaceDirection::NegativeY)),
         ([0, 1, 0], stone(), PLAIN),
     ];
-    let at = pose(
-        1.0,
-        (centre + 63_681.0 + 0.1) as f32,
-        6.0,
-        Orientation::IDENTITY,
-    );
+    let at = pose(1.0, centre + 63_681.0 + 0.1, 6.0, Orientation::IDENTITY);
     make(&mut scene, at, true, blocks);
     build_a_port_on_the_planet(&mut scene);
     scene.ticks(100);
@@ -1119,12 +1100,7 @@ fn a_planet_with_a_ship_docked_and_a_player() -> (Scene, common::Player) {
     ];
     make(
         &mut scene,
-        pose(
-            1.0,
-            (centre + 63_681.0 + 1.5) as f32,
-            6.0,
-            Orientation::IDENTITY,
-        ),
+        pose(1.0, centre + 63_681.0 + 1.5, 6.0, Orientation::IDENTITY),
         false,
         blocks,
     );
@@ -1197,7 +1173,7 @@ fn a_ship_docked_to_a_planet_can_be_undocked_and_leaves_with_its_blocks_and_does
     tick_and_follow(&mut scene, &mut player, 5);
     let again = pose(
         1.0,
-        (centre_of_the_patch() + 63_681.0 + 1.5) as f32,
+        centre_of_the_patch() + 63_681.0 + 1.5,
         6.0,
         Orientation::IDENTITY,
     );
@@ -1265,12 +1241,7 @@ fn a_pilot_aboard_a_ship_that_docks_with_a_planet_stands_on_the_planet_and_does_
     }
     make(
         &mut scene,
-        pose(
-            0.0,
-            (centre + 63_681.0 + 1.5) as f32,
-            5.0,
-            Orientation::IDENTITY,
-        ),
+        pose(0.0, centre + 63_681.0 + 1.5, 5.0, Orientation::IDENTITY),
         true,
         blocks,
     );

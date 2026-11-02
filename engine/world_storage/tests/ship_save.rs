@@ -114,7 +114,10 @@ fn a_world_with_ships_is_a_world_file_and_a_file_for_each_ship_that_the_world_fi
 /// now): the levels section 428 more (the assignment tree is 116 levels deep, not 56, so the one assigned cube takes 420 more leaves of a byte each; a leaf number takes a seventh bit,
 /// which gives one leaf a second byte; and 7 coordinates of the 4 edited bricks that are not zero take a byte more each) and the ships section 15 more (poses, bounds and offsets, the
 /// same way). Taken on Windows; Linux is checked to agree.
-const PINNED_WORLD: u64 = 1_744_918_755_505_601_542;
+///
+/// Moved on purpose again (the position offset is `f64`, 2026-11-02): 1_744_918_755_505_601_542 before, 34,580 bytes, now 34,604: 24 more, which is the offsets of the two poses in the ships
+/// section (3 x 4 bytes more each) and nothing else; the checksums of the ship files in the section changed with the files. The poses version is 4.
+const PINNED_WORLD: u64 = 14_058_630_622_722_535_491;
 
 #[test]
 fn a_world_loaded_has_its_ships_in_their_files_and_asks_for_them_one_by_one_as_they_were() {

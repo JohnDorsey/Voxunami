@@ -118,7 +118,7 @@ fn the_server_puts_the_player_back_along_the_way_they_look_whichever_way_that_is
     let mut straight_ahead = 0;
     for turns in 0..4 {
         // (The rig takes degrees.)
-        let degrees = 90.0 * turns as f32;
+        let degrees = 90.0 * turns as f64;
         let yaw = degrees.to_radians();
         let mut scene = Scene::in_a_new_world();
         let mut player = scene

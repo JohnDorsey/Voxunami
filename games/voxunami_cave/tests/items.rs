@@ -29,7 +29,7 @@ fn tick(rig: &mut Rig, player: &mut Player, count: usize) {
 
 /// A player hovering `height` above the ground at the column (16, 16), looking down, and the voxel of that
 /// ground.
-fn hovering(rig: &mut Rig, height: f32) -> (Player, VoxelCoordinate) {
+fn hovering(rig: &mut Rig, height: f64) -> (Player, VoxelCoordinate) {
     let mut player = rig.join([16.5, 110.0, 16.5], 0.0, 0.0);
     rig.settle(&mut [&mut player]);
     player.camera = above_ground(&player, 16, 16, height);

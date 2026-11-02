@@ -30,7 +30,7 @@ pub struct GridTerrain {
     /// The bricks it makes, in the ship's own coordinates.
     pub extent: BrickBox,
     /// What the ship weighs in kilograms, declared: a ship whose bricks are not stored has no blocks to add up. The centre of mass is the ship's field of that name.
-    pub mass: f32,
+    pub mass: f64,
 }
 
 /// A grid of voxels that is not the terrain of a level: a ship. Its voxels are in its own coordinates, and its pose says where
@@ -42,12 +42,12 @@ pub struct MovingGrid {
     pub pose: GridPose,
     /// How fast the origin of the ship moves, in voxels a second, and how fast it turns (an axis scaled by radians a second). Bodies
     /// write them as they move the ship; a ship made anew has none.
-    pub linear_velocity: [f32; 3],
-    pub angular_velocity: [f32; 3],
+    pub linear_velocity: [f64; 3],
+    pub angular_velocity: [f64; 3],
     /// How much the ship weighs in kilograms and where its centre of mass is in its own coordinates, as the bodies work it out from its blocks
     /// (zero where nothing has). A ship of enough mass pulls things toward its centre of mass (see `voxel_space::gravity_at`).
-    pub mass: f32,
-    pub centre_of_mass: [f32; 3],
+    pub mass: f64,
+    pub centre_of_mass: [f64; 3],
     /// A held ship does not move: gravity, forces and collisions leave it where it is, and everything else collides with it.
     pub held: bool,
     /// A frozen ship is held, and its rules wait, because no player is near it (see `server::ShipSettings`). It is not saved: a ship that
@@ -97,7 +97,7 @@ impl MovingGrid {
     /// How fast a place in the world moves because the ship carries it, in voxels a second in the world's axes: the speed of the ship's centre
     /// of mass, and what its turning adds, which is the turn (an axis scaled by radians a second) crossed with the vector from the
     /// centre of mass to the place. It is the speed on record: a ship that is held has none until whoever moves it says how fast.
-    pub fn velocity_at(&self, place: WorldPosition) -> [f32; 3] {
+    pub fn velocity_at(&self, place: WorldPosition) -> [f64; 3] {
         let centre = WorldPosition::new(BrickCoordinate::ORIGIN, self.centre_of_mass);
         let Some(centre) = self.pose.local_to_world(centre) else {
             return self.linear_velocity;
@@ -109,7 +109,7 @@ impl MovingGrid {
             turn[2] * arm[0] - turn[0] * arm[2],
             turn[0] * arm[1] - turn[1] * arm[0],
         ];
-        [0, 1, 2].map(|axis| (f64::from(self.linear_velocity[axis]) + carried[axis]) as f32)
+        [0, 1, 2].map(|axis| self.linear_velocity[axis] + carried[axis])
     }
 
     /// The bricks of the level (its root grid's, in the level's coordinates) that the ship's bricks are in or touch, as a box: the box
@@ -138,7 +138,7 @@ impl MovingGrid {
         for corner in &corners {
             let brick = corner.brick();
             let offset = corner.offset();
-            let upper = |value: i128, offset: f32| if offset != 0.0 { value } else { value - 1 };
+            let upper = |value: i128, offset: f64| if offset != 0.0 { value } else { value - 1 };
             min = BrickCoordinate::new(
                 min.x().min(brick.x()),
                 min.y().min(brick.y()),
@@ -476,12 +476,12 @@ mod tests {
         ship.pose = GridPose::new(
             WorldPosition::new(BrickCoordinate::new(2, 0, 0), [1.0, 2.0, 3.0]),
             // Turned a quarter about the vertical axis: its x is the world's -z.
-            Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0),
+            Orientation::from_yaw_pitch(std::f64::consts::FRAC_PI_2, 0.0),
         );
         ship.centre_of_mass = [4.0, 1.0, 4.0];
         ship.linear_velocity = [1.0, 2.0, 3.0];
         let there =
-            |x: f32, y: f32, z: f32| WorldPosition::new(BrickCoordinate::new(2, 0, 0), [x, y, z]);
+            |x: f64, y: f64, z: f64| WorldPosition::new(BrickCoordinate::new(2, 0, 0), [x, y, z]);
         // Not turning: every place moves at the ship's speed.
         assert_eq!(ship.velocity_at(there(7.0, 2.0, 9.0)), [1.0, 2.0, 3.0]);
         // Turning at 2 radians a second about the vertical axis. The centre of mass is the ship's (4, 1, 4) turned: from the origin
@@ -490,7 +490,12 @@ mod tests {
         // (0, 0, -6).
         ship.angular_velocity = [0.0, 2.0, 0.0];
         let centre = there(5.0, 3.0, -1.0);
-        assert_eq!(ship.velocity_at(centre), [1.0, 2.0, 3.0]);
+        // (At the centre of mass itself: the speed of the ship, to the rounding of the place, 2e-15 here. When the speeds were `f32` the rounding of the answer hid that, and the test said "exactly".)
+        let at_the_centre = ship.velocity_at(centre);
+        assert!(
+            (0..3).all(|axis| (at_the_centre[axis] - [1.0, 2.0, 3.0][axis]).abs() < 1e-12),
+            "{at_the_centre:?}"
+        );
         let moved = ship.velocity_at(there(8.0, 3.0, -1.0));
         assert!(
             (moved[0] - 1.0).abs() < 1e-5
@@ -584,7 +589,7 @@ mod tests {
 
     #[test]
     fn the_bricks_a_ship_touches_in_the_world_are_found_for_a_move_a_turn_and_a_ship_with_none() {
-        let at = |x: i128, offset: [f32; 3]| {
+        let at = |x: i128, offset: [f64; 3]| {
             GridPose::new(
                 WorldPosition::new(BrickCoordinate::new(x, 0, 0), offset),
                 voxel_space::Orientation::IDENTITY,
@@ -635,7 +640,7 @@ mod tests {
         // At an angle the box of the world is larger than the ship.
         let slanted = GridPose::new(
             WorldPosition::new(BrickCoordinate::new(0, 0, 0), [0.0; 3]),
-            voxel_space::Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_4, 0.0),
+            voxel_space::Orientation::from_yaw_pitch(std::f64::consts::FRAC_PI_4, 0.0),
         );
         let (low, high) = bounds(&ship_with_bricks(&[[0, 0, 0]], slanted)).unwrap();
         assert!(low[0] <= 0 && high[0] >= 1 && low[2] <= -1 && high[2] >= 0);

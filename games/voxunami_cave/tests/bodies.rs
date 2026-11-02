@@ -75,8 +75,8 @@ fn the_planet_of_a_new_world_is_a_body_of_the_games_own_data_and_makes_the_small
     assert_eq!(planet.level, LevelIndex::MAIN);
     assert_eq!(planet.pose, GridPose::identity());
     assert!(planet.held && !planet.frozen);
-    let pull = f64::from(Cave::gravity().pull_strength);
-    let mass = (10.0 * 63_710.0 * 63_710.0 / pull) as f32;
+    let pull = Cave::gravity().pull_strength;
+    let mass = 10.0 * 63_710.0 * 63_710.0 / pull;
     assert_eq!(planet.mass.to_bits(), mass.to_bits());
     let terrain = planet.terrain.expect("the planet has terrain");
     assert_eq!(terrain.mass.to_bits(), mass.to_bits());
@@ -145,8 +145,8 @@ fn a_pack_puts_a_second_planet_in_a_new_world_after_the_first() {
     let moon = world.grids().get(ship_id(1)).unwrap();
     assert_eq!(moon.level, LevelIndex::MAIN);
     assert!(moon.held);
-    let pull = f64::from(Cave::gravity().pull_strength);
-    assert_eq!(moon.mass, (8.0 * 10_000.0 * 10_000.0 / pull) as f32);
+    let pull = Cave::gravity().pull_strength;
+    assert_eq!(moon.mass, (8.0 * 10_000.0 * 10_000.0 / pull));
     assert_eq!(
         moon.terrain.unwrap().extent,
         BrickBox::around(BrickCoordinate::ORIGIN, 340)
@@ -291,7 +291,7 @@ fn a_planet_on_a_rail_is_where_the_clock_says_every_tick_and_a_client_sees_it_go
     let speed: f64 = ship
         .linear_velocity
         .iter()
-        .map(|component| f64::from(*component) * f64::from(*component))
+        .map(|component| (*component) * (*component))
         .sum::<f64>()
         .sqrt();
     assert!(

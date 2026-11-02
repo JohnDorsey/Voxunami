@@ -99,7 +99,7 @@ fn mesh_of(voxels: &[([u8; 3], u32)]) -> voxel_meshing::PackedBrickMesh {
     mesh.pack()
 }
 
-fn camera_at(brick: BrickCoordinate, offset: [f32; 3]) -> Camera {
+fn camera_at(brick: BrickCoordinate, offset: [f64; 3]) -> Camera {
     Camera::new(WorldPosition::new(brick, offset))
 }
 
@@ -268,7 +268,7 @@ fn is_blue(pixel: [u8; 4]) -> bool {
     pixel[2] > pixel[0].saturating_add(60) && pixel[2] > pixel[1].saturating_add(30)
 }
 
-fn avatar_at(brick: BrickCoordinate, offset: [f32; 3], color: u32) -> Avatar {
+fn avatar_at(brick: BrickCoordinate, offset: [f64; 3], color: u32) -> Avatar {
     Avatar {
         position: WorldPosition::new(brick, offset),
         color,
@@ -375,10 +375,10 @@ fn all_six_faces_wind_so_they_show_from_outside_and_the_sun_shades_them_differen
         let mut renderer = new_renderer(&context);
         place_voxels(&mut renderer, ORIGIN_BRICK, &CUBE);
         // (camera offset, yaw, pitch) looking at the cube centre from each side, 6 voxels away.
-        let half_pi = std::f32::consts::FRAC_PI_2;
+        let half_pi = std::f64::consts::FRAC_PI_2;
         let views = [
             ("+z", [16.5, 16.5, 22.5], 0.0, 0.0),
-            ("-z", [16.5, 16.5, 10.5], std::f32::consts::PI, 0.0),
+            ("-z", [16.5, 16.5, 10.5], std::f64::consts::PI, 0.0),
             ("+x", [22.5, 16.5, 16.5], half_pi, 0.0),
             ("-x", [10.5, 16.5, 16.5], -half_pi, 0.0),
             ("+y", [16.5, 22.5, 16.5], 0.0, -Camera::MAXIMUM_PITCH),
@@ -676,7 +676,7 @@ fn depth_of_two_walls(
         }
     }
     let (brick_z, yaw) = if nearer_first {
-        (distance_in_bricks, std::f32::consts::PI)
+        (distance_in_bricks, std::f64::consts::PI)
     } else {
         (-distance_in_bricks, 0.0)
     };
@@ -773,9 +773,9 @@ fn camera_in_voxels(position: [i128; 3]) -> Camera {
             position[2].div_euclid(32),
         ),
         [
-            position[0].rem_euclid(32) as f32,
-            position[1].rem_euclid(32) as f32,
-            position[2].rem_euclid(32) as f32,
+            position[0].rem_euclid(32) as f64,
+            position[1].rem_euclid(32) as f64,
+            position[2].rem_euclid(32) as f64,
         ],
     )
 }
@@ -1137,7 +1137,7 @@ fn a_slab_fills_only_half_of_its_cell_and_is_drawn_through_the_detailed_pipeline
         // Seen from above the slab's top is a red surface, and from below its bottom.
         let top = camera_at(ORIGIN_BRICK, [16.5, 22.0, 16.5]);
         let mut from_above = top;
-        from_above.look_by(0.0, -std::f32::consts::FRAC_PI_2);
+        from_above.look_by(0.0, -std::f64::consts::FRAC_PI_2);
         assert!(is_red(pixel(
             &render(&mut renderer, &from_above),
             SIZE / 2,
@@ -1276,7 +1276,7 @@ fn a_face_is_as_bright_as_its_light_says() {
     }
 }
 
-fn box_at(offset: [f32; 3], size: [u8; 3], material: u32) -> EntityBox {
+fn box_at(offset: [f64; 3], size: [u8; 3], material: u32) -> EntityBox {
     EntityBox {
         position: WorldPosition::new(ORIGIN_BRICK, offset),
         size,
@@ -1709,7 +1709,7 @@ fn a_ship() -> GridId {
 }
 
 /// A ship at this voxel (given as brick and offset), turned this way.
-fn pose(brick: [i128; 3], offset: [f32; 3], orientation: Orientation) -> GridPose {
+fn pose(brick: [i128; 3], offset: [f64; 3], orientation: Orientation) -> GridPose {
     GridPose::new(
         WorldPosition::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), offset),
         orientation,
@@ -1819,12 +1819,12 @@ fn a_ship_turned_45_degrees_shows_the_diagonal_of_its_block() {
             renderer.set_grid_pose(a_ship(), pose([0, 0, 0], [16.0, 16.0, 16.0], orientation));
             place_ship_voxels(&mut renderer, a_ship(), ORIGIN_BRICK, &[([0, 0, 0], RED)]);
             let mut camera = camera_at(ORIGIN_BRICK, [16.5, 19.0, 16.5]);
-            camera.pitch = -std::f32::consts::FRAC_PI_2;
+            camera.pitch = -std::f64::consts::FRAC_PI_2;
             settled(&mut renderer, &camera)
         };
         let straight = drawn_width(&seen(Orientation::IDENTITY));
         let turned = drawn_width(&seen(Orientation::from_yaw_pitch(
-            std::f32::consts::FRAC_PI_4,
+            std::f64::consts::FRAC_PI_4,
             0.0,
         )));
         let ratio = turned as f32 / straight as f32;
@@ -2042,7 +2042,7 @@ fn a_ship_is_drawn_when_the_camera_is_inside_its_brick_and_looks_at_the_far_side
             &[([30, 16, 16], RED)],
         );
         let mut camera = camera_at(ORIGIN_BRICK, [28.5, 16.5, 16.5]);
-        camera.yaw = -std::f32::consts::FRAC_PI_2;
+        camera.yaw = -std::f64::consts::FRAC_PI_2;
         let (image, statistics) = renderer.render_to_rgba(&camera, SIZE, SIZE);
         let _ = image;
         assert_eq!(statistics.bricks_drawn, 1, "{name}");
@@ -2183,7 +2183,7 @@ fn planet_with_the_face_this_deep(radius: f32, depth: f64) -> SunOccluder {
     SunOccluder::Ball {
         centre: WorldPosition::new(
             BrickCoordinate::new(0, 0, brick as i128),
-            [16.5, 16.5, (z - brick * 32.0) as f32],
+            [16.5, 16.5, z - brick * 32.0],
         ),
         radius,
     }
@@ -2234,7 +2234,9 @@ fn the_shader_and_the_reference_agree_on_the_sunset_of_a_planet() {
         renderer.set_sun_occluders(&[planet]);
         let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
         let middle = Vec3::from_array(
-            WorldPosition::new(ORIGIN_BRICK, [16.5, 16.5, 17.0]).relative_to(camera.position),
+            WorldPosition::new(ORIGIN_BRICK, [16.5, 16.5, 17.0])
+                .relative_to(camera.position)
+                .map(|component| component as f32),
         );
         let (balls, ground) = renderer::balls_and_ground(&[planet], camera.position);
         // The sun from well up in the sky of the face to well below its horizon (the face looks along +z, which is up for the planet): the shader's share of the sun that
@@ -2268,7 +2270,9 @@ fn a_face_at_the_ground_of_a_planet_is_lit_by_a_normal_turned_to_the_way_out_and
         let full = fully_lit_face(&context);
         let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
         let middle = Vec3::from_array(
-            WorldPosition::new(ORIGIN_BRICK, [16.5, 16.5, 17.0]).relative_to(camera.position),
+            WorldPosition::new(ORIGIN_BRICK, [16.5, 16.5, 17.0])
+                .relative_to(camera.position)
+                .map(|component| component as f32),
         );
         // The face looks along +z. A planet with its way out along +x from the face (the face is on its flank) turns the normal to 45 degrees; a planet whose way out is
         // along +z (the face is squarely on top of it) does not. A sun along +x lights the first by the cosine of 45 degrees and the second not at all. (The face is 5
@@ -2280,7 +2284,7 @@ fn a_face_at_the_ground_of_a_planet_is_lit_by_a_normal_turned_to_the_way_out_and
             SunOccluder::Ball {
                 centre: WorldPosition::new(
                     BrickCoordinate::new(brick as i128, 0, 0),
-                    [(x - brick * 32.0) as f32, 16.5, 17.0],
+                    [(x - brick * 32.0), 16.5, 17.0],
                 ),
                 radius: 1000.0,
             }
@@ -2293,7 +2297,7 @@ fn a_face_at_the_ground_of_a_planet_is_lit_by_a_normal_turned_to_the_way_out_and
             SunOccluder::Ball {
                 centre: WorldPosition::new(
                     BrickCoordinate::new(brick as i128, 0, 0),
-                    [(x - brick * 32.0) as f32, 16.5, 17.0],
+                    [(x - brick * 32.0), 16.5, 17.0],
                 ),
                 radius: 1000.0,
             }
@@ -2347,7 +2351,9 @@ fn the_sky_goes_with_the_sun_past_a_planet_and_the_twilight_is_narrower_the_high
         renderer.set_sun_occluders(&[planet]);
         let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
         let middle = Vec3::from_array(
-            WorldPosition::new(ORIGIN_BRICK, [16.5, 16.5, 17.0]).relative_to(camera.position),
+            WorldPosition::new(ORIGIN_BRICK, [16.5, 16.5, 17.0])
+                .relative_to(camera.position)
+                .map(|component| component as f32),
         );
         let (balls, ground) = renderer::balls_and_ground(&[planet], camera.position);
         let mut partly = 0;
@@ -2383,7 +2389,9 @@ fn a_face_inside_a_ball_is_lit_as_the_terminator_of_the_ball_says_in_its_directi
         renderer.set_sun_occluders(&[planet]);
         let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
         let middle = Vec3::from_array(
-            WorldPosition::new(ORIGIN_BRICK, [16.5, 16.5, 17.0]).relative_to(camera.position),
+            WorldPosition::new(ORIGIN_BRICK, [16.5, 16.5, 17.0])
+                .relative_to(camera.position)
+                .map(|component| component as f32),
         );
         let (balls, ground) = renderer::balls_and_ground(&[planet], camera.position);
         let mut lit = 0;
@@ -2624,7 +2632,7 @@ fn shadow_atmosphere(level: u8, sun: [f32; 3], shadows: bool) -> Atmosphere {
 }
 
 /// A camera at a place given in cells of a node of this level (whole numbers), looking this way, with the near plane scaled to the level too.
-fn camera_in_cells(level: u8, cells: [i128; 3], yaw: f32, pitch: f32) -> Camera {
+fn camera_in_cells(level: u8, cells: [i128; 3], yaw: f64, pitch: f64) -> Camera {
     let mut camera = camera_in_voxels(cells.map(|cell| cell << level));
     camera.yaw = yaw;
     camera.pitch = pitch;
@@ -2740,7 +2748,7 @@ fn shadow_scene_setup(scene: ShadowScene, level: u8) -> (Camera, [i128; 3], Vec<
         }
         ShadowScene::Roof => {
             let cells = [24, 5, 16];
-            let camera = camera_in_cells(level, cells, std::f32::consts::FRAC_PI_2, -0.25);
+            let camera = camera_in_cells(level, cells, std::f64::consts::FRAC_PI_2, -0.25);
             // The roof is over x from 0 to 10 at the height of 7 to 8; the sun comes in from the east at 53 degrees, so the floor is dark from the west edge to x = 5.5 and light
             // from there, though still under the roof.
             let shadowed = [
@@ -3105,7 +3113,7 @@ fn a_map_is_kept_while_nothing_changes_and_the_camera_stays_near_its_middle_and_
             assert!(first.shadow_cascades_drawn >= 1, "{name} level {level}");
             // The camera moves by a fifth of a cell along x, y, z and all of them (far less than the slack of the cascades that serve the scene, which are eight cells wide or
             // more): nothing is drawn again, and the shadow is where the sun puts it for the camera in its new place.
-            let a_fifth = (scale_of(level) * 0.2) as f32;
+            let a_fifth = scale_of(level) * 0.2;
             let cell_cells = cells.map(|cell| cell as f64);
             for movement in [
                 [a_fifth, 0.0, 0.0],
@@ -3120,9 +3128,8 @@ fn a_map_is_kept_while_nothing_changes_and_the_camera_stays_near_its_middle_and_
                     kept.shadow_cascades_drawn, 0,
                     "{name} level {level} {movement:?}: a map was drawn again"
                 );
-                let moved_cells = std::array::from_fn(|axis| {
-                    cell_cells[axis] + f64::from(movement[axis]) / scale_of(level)
-                });
+                let moved_cells =
+                    std::array::from_fn(|axis| cell_cells[axis] + movement[axis] / scale_of(level));
                 let (failures, seen) = shadow_failures(
                     &mut renderer,
                     level,
@@ -3140,9 +3147,7 @@ fn a_map_is_kept_while_nothing_changes_and_the_camera_stays_near_its_middle_and_
             }
             // Twenty cells along x is more than the slack of the narrowest cascade that serves the scene: that one is drawn again.
             let mut far = camera;
-            far.position = far
-                .position
-                .translated([(scale_of(level) * 20.0) as f32, 0.0, 0.0]);
+            far.position = far.position.translated([scale_of(level) * 20.0, 0.0, 0.0]);
             let (_, redrawn) = renderer.render_to_rgba(&far, SIZE, SIZE);
             assert!(
                 redrawn.shadow_cascades_drawn >= 1,
@@ -3283,7 +3288,7 @@ fn a_player_standing_on_the_floor_shades_it_and_moving_changes_the_shadow_in_the
             assert!((0.97..1.03).contains(&light), "{name}: x = {x}: {light}");
         }
         // A player whose eyes are 1.5 voxels over the floor at x = 22: the figure is two voxels high, so the sun at 53 degrees puts its shadow at about 20.5.
-        let at = |x: f32| Avatar {
+        let at = |x: f64| Avatar {
             position: WorldPosition::new(ORIGIN_BRICK, [x, 2.5, 16.5]),
             color: 3,
         };
@@ -3333,7 +3338,7 @@ fn place_in_voxels(voxels: [f64; 3]) -> WorldPosition {
     let brick = voxels.map(|part| (part / 32.0).floor());
     WorldPosition::new(
         BrickCoordinate::new(brick[0] as i128, brick[1] as i128, brick[2] as i128),
-        std::array::from_fn(|axis| (voxels[axis] - brick[axis] * 32.0) as f32),
+        std::array::from_fn(|axis| voxels[axis] - brick[axis] * 32.0),
     )
 }
 
@@ -3357,7 +3362,7 @@ fn side_face_light(
         renderer.set_sun_occluders(&[ball]);
     }
     let mut camera = camera_at(ORIGIN_BRICK, [10.0, 16.5, 16.5]);
-    camera.yaw = -std::f32::consts::FRAC_PI_2;
+    camera.yaw = -std::f64::consts::FRAC_PI_2;
     let atmosphere = |shadows| Atmosphere {
         sun_light,
         sky_light,
@@ -3568,8 +3573,8 @@ fn camera_aimed_at(eye: [f64; 3], target: [f64; 3]) -> Camera {
     )
     .normalize();
     let mut camera = Camera::new(place_in_voxels(eye));
-    camera.yaw = libm::atan2f(-forward.x, -forward.z);
-    camera.pitch = libm::asinf(forward.y);
+    camera.yaw = f64::from(libm::atan2f(-forward.x, -forward.z));
+    camera.pitch = f64::from(libm::asinf(forward.y));
     camera.vertical_field_of_view = 0.17;
     camera
 }
@@ -4149,7 +4154,7 @@ fn sky_picture(renderer: &mut VoxelRenderer, direction: Vec3) -> (Vec<u8>, Camer
 fn star_picture(renderer: &mut VoxelRenderer, direction: Vec3) -> Vec<u8> {
     let target = std::array::from_fn(|axis| SKY_EYE[axis] + f64::from(direction[axis]) * 100.0);
     let aimed = camera_aimed_at(SKY_EYE, target);
-    let half_pixel = aimed.vertical_field_of_view / SIZE as f32 / 2.0;
+    let half_pixel = f64::from(aimed.vertical_field_of_view / SIZE as f32 / 2.0);
     let mut best: Option<(f64, Vec<u8>)> = None;
     for (yaw, pitch) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
         let mut camera = aimed;

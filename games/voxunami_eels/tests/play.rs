@@ -116,7 +116,7 @@ fn voxels_of(camera: &renderer::Camera) -> [f64; 3] {
             position.brick().z(),
         ][axis] as f64
             * 32.0
-            + f64::from(position.offset()[axis])
+            + position.offset()[axis]
     })
 }
 
@@ -170,7 +170,7 @@ fn a_player_joining_gets_a_colour_an_eel_and_a_countdown_then_swims_with_the_cam
         (camera[2] - (head[2] as f64 - 5.5)).abs() < 1e-3,
         "{camera:?}"
     );
-    assert!((player.camera.yaw - std::f32::consts::PI).abs() < 1e-4);
+    assert!((player.camera.yaw - std::f64::consts::PI).abs() < 1e-4);
     assert!(player.camera.pitch < 0.0);
 
     // The eel's head is in the world, in its colour, and the wall is round the arena.
@@ -244,9 +244,9 @@ fn steering_turns_the_eel_and_the_view_and_a_roll_changes_the_wall_it_leaves() {
     rig.steps(&mut [&mut player], 10);
     // The view has turned to look along +x: yaw -90 degrees, whichever way round.
     let turned =
-        (player.camera.yaw + std::f32::consts::FRAC_PI_2).rem_euclid(std::f32::consts::TAU);
+        (player.camera.yaw + std::f64::consts::FRAC_PI_2).rem_euclid(std::f64::consts::TAU);
     assert!(
-        turned < 0.05 || turned > std::f32::consts::TAU - 0.05,
+        turned < 0.05 || turned > std::f64::consts::TAU - 0.05,
         "{}",
         player.camera.yaw
     );

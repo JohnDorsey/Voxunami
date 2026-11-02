@@ -15,8 +15,8 @@ fn kind(text: &str) -> NamespacedId {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlayerPose {
     pub position: WorldPosition,
-    pub yaw: f32,
-    pub pitch: f32,
+    pub yaw: f64,
+    pub pitch: f64,
 }
 
 /// What a client knows of a player: where they are in the world (a player aboard a ship is where the ship puts them), which level
@@ -59,8 +59,8 @@ impl PlayerPose {
     pub fn distance_to_voxel(&self, voxel: VoxelCoordinate) -> f64 {
         let brick = self.position.brick();
         let offset = self.position.offset();
-        let along = |voxel: i128, brick: i128, offset: f32| {
-            (voxel - brick * BRICK_EDGE_LENGTH as i128) as f64 + 0.5 - f64::from(offset)
+        let along = |voxel: i128, brick: i128, offset: f64| {
+            (voxel - brick * BRICK_EDGE_LENGTH as i128) as f64 + 0.5 - offset
         };
         let (dx, dy, dz) = (
             along(voxel.x(), brick.x(), offset[0]),
@@ -74,9 +74,8 @@ impl PlayerPose {
     pub fn distance_to_position(&self, position: WorldPosition) -> f64 {
         let (brick, offset) = (self.position.brick(), self.position.offset());
         let (other_brick, other_offset) = (position.brick(), position.offset());
-        let along = |other: i128, this: i128, other_offset: f32, offset: f32| {
-            ((other - this) * BRICK_EDGE_LENGTH as i128) as f64
-                + (f64::from(other_offset) - f64::from(offset))
+        let along = |other: i128, this: i128, other_offset: f64, offset: f64| {
+            ((other - this) * BRICK_EDGE_LENGTH as i128) as f64 + (other_offset - offset)
         };
         let (dx, dy, dz) = (
             along(other_brick.x(), brick.x(), other_offset[0], offset[0]),
@@ -90,15 +89,15 @@ impl PlayerPose {
 fn write_position(writer: &mut ByteWriter, position: WorldPosition) {
     write_brick_coordinate(writer, position.brick());
     for component in position.offset() {
-        writer.write_u32(component.to_bits());
+        writer.write_u64(component.to_bits());
     }
 }
 
 fn read_position(reader: &mut ByteReader<'_>) -> Result<WorldPosition, DecodeError> {
     let brick = read_brick_coordinate(reader)?;
-    let mut offset = [0f32; 3];
+    let mut offset = [0f64; 3];
     for component in &mut offset {
-        *component = f32::from_bits(reader.read_u32()?);
+        *component = f64::from_bits(reader.read_u64()?);
         if !(0.0..32.0).contains(component) {
             return Err(DecodeError::Invalid(
                 "a position offset is outside its brick",
@@ -110,14 +109,14 @@ fn read_position(reader: &mut ByteReader<'_>) -> Result<WorldPosition, DecodeErr
 
 fn write_pose(writer: &mut ByteWriter, pose: &PlayerPose) {
     write_position(writer, pose.position);
-    writer.write_u32(pose.yaw.to_bits());
-    writer.write_u32(pose.pitch.to_bits());
+    writer.write_u64(pose.yaw.to_bits());
+    writer.write_u64(pose.pitch.to_bits());
 }
 
 fn read_pose(reader: &mut ByteReader<'_>) -> Result<PlayerPose, DecodeError> {
     let position = read_position(reader)?;
-    let yaw = f32::from_bits(reader.read_u32()?);
-    let pitch = f32::from_bits(reader.read_u32()?);
+    let yaw = f64::from_bits(reader.read_u64()?);
+    let pitch = f64::from_bits(reader.read_u64()?);
     if !yaw.is_finite() || !pitch.is_finite() {
         return Err(DecodeError::Invalid("a view angle is not a number"));
     }
@@ -151,7 +150,7 @@ impl Message for PoseReport {
     }
 
     fn samples() -> Vec<Self> {
-        let pose = |x: i128, offset: [f32; 3], yaw: f32, pitch: f32| {
+        let pose = |x: i128, offset: [f64; 3], yaw: f64, pitch: f64| {
             Self(PlayerPose {
                 position: WorldPosition::new(BrickCoordinate::new(x, -2, 7), offset),
                 yaw,
@@ -291,8 +290,8 @@ impl Message for PlayerClient {
 /// orientation is the same turn as a quaternion; the angles are kept so that nothing recovers them from it).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlayerLook {
-    pub yaw: f32,
-    pub pitch: f32,
+    pub yaw: f64,
+    pub pitch: f64,
 }
 
 impl Message for PlayerLook {
@@ -302,15 +301,15 @@ impl Message for PlayerLook {
 
     fn encode(&self) -> Vec<u8> {
         let mut writer = ByteWriter::new();
-        writer.write_u32(self.yaw.to_bits());
-        writer.write_u32(self.pitch.to_bits());
+        writer.write_u64(self.yaw.to_bits());
+        writer.write_u64(self.pitch.to_bits());
         writer.into_bytes()
     }
 
     fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
         let mut reader = ByteReader::new(payload);
-        let yaw = f32::from_bits(reader.read_u32()?);
-        let pitch = f32::from_bits(reader.read_u32()?);
+        let yaw = f64::from_bits(reader.read_u64()?);
+        let pitch = f64::from_bits(reader.read_u64()?);
         reader.finish()?;
         if !yaw.is_finite() || !pitch.is_finite() {
             return Err(DecodeError::Invalid("a view angle is not a number"));
@@ -338,7 +337,7 @@ mod tests {
 
     use super::*;
 
-    fn pose(x: i128, offset: [f32; 3], yaw: f32, pitch: f32) -> PlayerPose {
+    fn pose(x: i128, offset: [f64; 3], yaw: f64, pitch: f64) -> PlayerPose {
         PlayerPose {
             position: WorldPosition::new(BrickCoordinate::new(x, -2, 7), offset),
             yaw,
@@ -359,7 +358,7 @@ mod tests {
         );
         // A frame turned a quarter about x (up is now +z) and a player facing straight ahead (-z, in the frame): the view is the
         // frame's turn, which takes -z to +y.
-        let quarter = std::f32::consts::FRAC_PI_2;
+        let quarter = std::f64::consts::FRAC_PI_2;
         let frame = Orientation::from_yaw_pitch(0.0, quarter);
         let ahead = pose(0, [1.0; 3], 0.0, 0.0);
         let view = ahead.view_orientation(frame);
@@ -384,10 +383,10 @@ mod tests {
     proptest! {
         #[test]
         fn the_frame_is_found_again_from_the_view_whatever_the_angles(
-            yaw in -10.0f32..10.0,
-            pitch in -1.5f32..1.5,
-            frame_yaw in -10.0f32..10.0,
-            frame_pitch in -1.5f32..1.5,
+            yaw in -10.0f64..10.0,
+            pitch in -1.5f64..1.5,
+            frame_yaw in -10.0f64..10.0,
+            frame_pitch in -1.5f64..1.5,
         ) {
             let looking = pose(0, [1.0; 3], yaw, pitch);
             let frame = Orientation::from_yaw_pitch(frame_yaw, frame_pitch);
@@ -443,9 +442,9 @@ mod tests {
             let centre = WorldPosition::new(
                 brick,
                 [
-                    local.x() as f32 + 0.5,
-                    local.y() as f32 + 0.5,
-                    local.z() as f32 + 0.5,
+                    local.x() as f64 + 0.5,
+                    local.y() as f64 + 0.5,
+                    local.z() as f64 + 0.5,
                 ],
             );
             assert_eq!(
@@ -495,29 +494,29 @@ mod tests {
         trailing.push(0);
         assert!(PoseReport::decode(&trailing).is_err());
         // Offsets outside their brick, and angles that are not numbers.
-        for bad in [-1.0f32, 32.0, f32::NAN, f32::INFINITY] {
+        for bad in [-1.0f64, 32.0, f64::NAN, f64::INFINITY] {
             assert!(
                 PoseReport::decode(&encode_raw_pose([bad, 0.0, 0.0], 0.0, 0.0)).is_err(),
                 "{bad}"
             );
         }
-        for bad in [f32::NAN, f32::INFINITY] {
+        for bad in [f64::NAN, f64::INFINITY] {
             assert!(PoseReport::decode(&encode_raw_pose([1.0; 3], bad, 0.0)).is_err());
             assert!(PoseReport::decode(&encode_raw_pose([1.0; 3], 0.0, bad)).is_err());
         }
     }
 
     /// A pose message built by hand, so values `WorldPosition` would refuse can be sent.
-    fn encode_raw_pose(offset: [f32; 3], yaw: f32, pitch: f32) -> Vec<u8> {
+    fn encode_raw_pose(offset: [f64; 3], yaw: f64, pitch: f64) -> Vec<u8> {
         let mut writer = ByteWriter::new();
         for component in [0i128, 0, 0] {
             writer.write_wide_signed(component);
         }
         for component in offset {
-            writer.write_u32(component.to_bits());
+            writer.write_u64(component.to_bits());
         }
-        writer.write_u32(yaw.to_bits());
-        writer.write_u32(pitch.to_bits());
+        writer.write_u64(yaw.to_bits());
+        writer.write_u64(pitch.to_bits());
         writer.into_bytes()
     }
 

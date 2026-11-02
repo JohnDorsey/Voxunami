@@ -113,7 +113,7 @@ pub fn at(x: i128, y: i128, z: i128) -> VoxelCoordinate {
     VoxelCoordinate::new(x, y, z)
 }
 
-pub fn position(x: f32, y: f32, z: f32) -> WorldPosition {
+pub fn position(x: f64, y: f64, z: f64) -> WorldPosition {
     WorldPosition::new(BrickCoordinate::new(0, 0, 0), [x, y, z])
 }
 
@@ -123,13 +123,13 @@ pub fn eye(body: &CharacterBody) -> [f64; 3] {
     let brick = eye.brick();
     let offset = eye.offset();
     [
-        brick.x() as f64 * 32.0 + f64::from(offset[0]),
-        brick.y() as f64 * 32.0 + f64::from(offset[1]),
-        brick.z() as f64 * 32.0 + f64::from(offset[2]),
+        brick.x() as f64 * 32.0 + offset[0],
+        brick.y() as f64 * 32.0 + offset[1],
+        brick.z() as f64 * 32.0 + offset[2],
     ]
 }
 
-pub fn spawn(x: f32, y: f32, z: f32) -> CharacterBody {
+pub fn spawn(x: f64, y: f64, z: f64) -> CharacterBody {
     CharacterBody::new(position(x, y, z), CharacterSettings::default())
 }
 

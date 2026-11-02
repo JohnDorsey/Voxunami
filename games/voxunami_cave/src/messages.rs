@@ -50,7 +50,7 @@ impl Message for Spawn {
 pub struct MoveRequest {
     pub input: MoveInput,
     /// Radians; positive looks up.
-    pub pitch: f32,
+    pub pitch: f64,
 }
 
 const JUMP_FLAG: u8 = 1;
@@ -70,8 +70,8 @@ impl Message for MoveRequest {
         writer.write_u8(
             if input.jump { JUMP_FLAG } else { 0 } | if input.sprint { SPRINT_FLAG } else { 0 },
         );
-        writer.write_u32(input.yaw.to_bits());
-        writer.write_u32(self.pitch.to_bits());
+        writer.write_u64(input.yaw.to_bits());
+        writer.write_u64(self.pitch.to_bits());
         writer.into_bytes()
     }
 
@@ -88,8 +88,8 @@ impl Message for MoveRequest {
         if flags & !(JUMP_FLAG | SPRINT_FLAG) != 0 {
             return Err(DecodeError::Invalid("unknown movement flags"));
         }
-        let yaw = f32::from_bits(reader.read_u32()?);
-        let pitch = f32::from_bits(reader.read_u32()?);
+        let yaw = f64::from_bits(reader.read_u64()?);
+        let pitch = f64::from_bits(reader.read_u64()?);
         if !yaw.is_finite() || !pitch.is_finite() {
             return Err(DecodeError::Invalid("an angle is not a number"));
         }
@@ -341,13 +341,13 @@ mod tests {
         let mut bad_flags = good.clone();
         bad_flags[3] = 4;
         assert!(MoveRequest::decode(&bad_flags).is_err());
-        for angle_at in [4, 8] {
+        for angle_at in [4, 12] {
             let mut not_a_number = good.clone();
-            not_a_number[angle_at..angle_at + 4].copy_from_slice(&f32::NAN.to_bits().to_le_bytes());
+            not_a_number[angle_at..angle_at + 8].copy_from_slice(&f64::NAN.to_bits().to_le_bytes());
             assert!(MoveRequest::decode(&not_a_number).is_err(), "{angle_at}");
             let mut infinite = good.clone();
-            infinite[angle_at..angle_at + 4]
-                .copy_from_slice(&f32::INFINITY.to_bits().to_le_bytes());
+            infinite[angle_at..angle_at + 8]
+                .copy_from_slice(&f64::INFINITY.to_bits().to_le_bytes());
             assert!(MoveRequest::decode(&infinite).is_err(), "{angle_at}");
         }
     }

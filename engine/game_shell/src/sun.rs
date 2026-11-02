@@ -10,7 +10,7 @@
 
 use libm::{cos, sin};
 use renderer::{Heavens, SunOccluder, balls_and_ground, daylight_at, zenith};
-use voxel_space::{BrickCoordinate, WorldPosition};
+use voxel_space::WorldPosition;
 
 /// The sky of a level with a sun.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -269,18 +269,13 @@ pub fn sun_view(
 
 /// A position from a place in voxels (a brick and the offset in it, as everything that is drawn is placed).
 pub fn position_of_voxels(voxels: [f64; 3]) -> WorldPosition {
-    let edge = voxel_space::BRICK_EDGE_LENGTH as f64;
-    let whole = voxels.map(|part| (part / edge).floor());
-    // (An offset a hair under a whole brick rounds to the whole brick as an `f32`: the next brick takes it.)
-    WorldPosition::try_new(
-        BrickCoordinate::new(whole[0] as i128, whole[1] as i128, whole[2] as i128),
-        std::array::from_fn(|axis| (voxels[axis] - whole[axis] * edge) as f32),
-    )
-    .expect("a place in the world")
+    WorldPosition::from_voxels(voxels)
 }
 
 #[cfg(test)]
 mod tests {
+    use voxel_space::BrickCoordinate;
+
     use super::*;
 
     /// A sun that goes round in 1,200 seconds from 6 in the morning, over a pole at the top of the world, and lights all it can.

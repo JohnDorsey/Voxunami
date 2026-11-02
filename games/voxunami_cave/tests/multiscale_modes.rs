@@ -372,7 +372,7 @@ fn pictures() {
         }
         player.advance().unwrap();
         let updates = player.settle(|| {}).unwrap();
-        player.camera.look_by(0.0, -std::f32::consts::FRAC_PI_2);
+        player.camera.look_by(0.0, -std::f64::consts::FRAC_PI_2);
         let mut renderer = VoxelRenderer::new(context, wgpu::TextureFormat::Rgba8UnormSrgb);
         configure_renderer(
             &mut renderer,

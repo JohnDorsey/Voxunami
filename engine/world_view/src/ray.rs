@@ -9,7 +9,7 @@ pub struct RayHit {
     pub voxel: VoxelCoordinate,
     pub previous: VoxelCoordinate,
     /// How far along the ray, in voxels, it enters the voxel it hit.
-    pub distance: f32,
+    pub distance: f64,
 }
 
 /// Finds the first solid voxel within `maximum_distance` voxels along `direction` from `start`, in the grid `grid`, whose voxels `is_solid`
@@ -22,8 +22,8 @@ pub struct RayHit {
 pub fn cast_ray(
     grid: GridId,
     start: WorldPosition,
-    direction: [f32; 3],
-    maximum_distance: f32,
+    direction: [f64; 3],
+    maximum_distance: f64,
     mut is_solid: impl FnMut(VoxelCoordinate) -> Option<bool>,
 ) -> Option<RayHit> {
     let length =
@@ -42,11 +42,11 @@ pub fn cast_ray(
         cell[1] as u8,
         cell[2] as u8,
     ));
-    let fraction: [f32; 3] = std::array::from_fn(|axis| offset[axis] - cell[axis]);
+    let fraction: [f64; 3] = std::array::from_fn(|axis| offset[axis] - cell[axis]);
 
     let mut step = [0i128; 3];
-    let mut next_boundary = [f32::INFINITY; 3];
-    let mut boundary_spacing = [f32::INFINITY; 3];
+    let mut next_boundary = [f64::INFINITY; 3];
+    let mut boundary_spacing = [f64::INFINITY; 3];
     for axis in 0..3 {
         if direction[axis] > 0.0 {
             step[axis] = 1;
@@ -93,16 +93,16 @@ mod tests {
 
     use super::*;
 
-    fn at(x: f32, y: f32, z: f32) -> WorldPosition {
+    fn at(x: f64, y: f64, z: f64) -> WorldPosition {
         // Positions given in voxels around the origin; split into a brick and an offset.
-        let brick = |value: f32| (value / 32.0).floor() as i128;
+        let brick = |value: f64| (value / 32.0).floor() as i128;
         let b = BrickCoordinate::new(brick(x), brick(y), brick(z));
         WorldPosition::new(
             b,
             [
-                x - (b.x() * 32) as f32,
-                y - (b.y() * 32) as f32,
-                z - (b.z() * 32) as f32,
+                x - (b.x() * 32) as f64,
+                y - (b.y() * 32) as f64,
+                z - (b.z() * 32) as f64,
             ],
         )
     }
@@ -176,7 +176,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            (hit.distance - 1.5 * 2.0f32.sqrt()).abs() < 1e-5,
+            (hit.distance - 1.5 * 2.0f64.sqrt()).abs() < 1e-5,
             "{}",
             hit.distance
         );
@@ -233,7 +233,7 @@ mod tests {
             cast_ray(
                 GridId::MAIN,
                 at(0.0, 0.0, 0.0),
-                [f32::NAN, 0.0, 0.0],
+                [f64::NAN, 0.0, 0.0],
                 10.0,
                 |_| Some(true)
             ),
@@ -291,10 +291,10 @@ mod tests {
         /// Aiming from anywhere at the centre of a single solid voxel hits exactly that voxel.
         #[test]
         fn aiming_at_a_lone_voxel_hits_it(
-            origin in [-30.0f32..30.0, -30.0f32..30.0, -30.0f32..30.0],
+            origin in [-30.0f64..30.0, -30.0f64..30.0, -30.0f64..30.0],
             target in [-8i128..8, -8i128..8, -8i128..8],
         ) {
-            let center = [target[0] as f32 + 0.5, target[1] as f32 + 0.5, target[2] as f32 + 0.5];
+            let center = [target[0] as f64 + 0.5, target[1] as f64 + 0.5, target[2] as f64 + 0.5];
             let direction = [center[0] - origin[0], center[1] - origin[1], center[2] - origin[2]];
             let start_voxel = voxel(origin[0].floor() as i128, origin[1].floor() as i128, origin[2].floor() as i128);
             prop_assume!(start_voxel != voxel(target[0], target[1], target[2]));

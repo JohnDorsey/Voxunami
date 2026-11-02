@@ -13,7 +13,7 @@ means a cell is `2^n` voxels along each edge. Detail level 0 is full detail.
 - **[code]** `voxel_space::LevelOfDetail` exists (a `u8`, 0 to 116, `edge_length_in_voxels() = 1 << n`; it was 0 to 60 until the coarse levels were taken to the octree's root), and `DensityField::sample` and `bounds`
   already take a footprint of that type, so the generators were designed with coarse sampling in mind. `TerrainGenerator` has one method,
   `generate_brick`, at full detail only.
-- **[code]** Voxel coordinates are `i128` within ±2^120 (they were `i64` within ±2^60 when this was written), bricks are 32 voxels (2^5) per edge, `WorldPosition` is a brick plus an `f32` offset in it, and
+- **[code]** Voxel coordinates are `i128` within ±2^120 (they were `i64` within ±2^60 when this was written), bricks are 32 voxels (2^5) per edge, `WorldPosition` is a brick plus an `f32` offset in it (an `f64` one since 2026-11-02), and
   rendering is camera-relative. A cell of detail level 40 (2^40 voxels, about 1.1 × 10^12 m at a metre a voxel) fits with room to spare, and so does one of level 116 (2^116 voxels), in an `f32` scale of the renderer.
 - **[code]** The renderer draws a brick as instanced packed quads (`voxel.wgsl`), placed by a per-brick `Placement` (an offset relative to the camera and a
   3 × 3 matrix for the grid's turn). Meshes are keyed `(grid, brick)` (`upload_grid_brick`, `remove_grid_brick`). There is no scale in `Placement`. The
@@ -23,7 +23,7 @@ means a cell is `2^n` voxels along each edge. Detail level 0 is full detail.
 - **[code]** Ships are different: nothing generates a ship's voxels, so `GridsSpawned` is followed by `BrickContents` for **every** brick of the ship
   (protocol version 6). A ship is known to a client only when it is in the watched region.
 - **[code]** `Orientation` is `[f32; 4]` and compares bit for bit; 62 files use it (356 mentions). `GridPose` and `EntityPose` hold it.
-- **[belief]** Rapier (the physics engine) is built with `f32`. I have not checked. If so, only dynamic ships go through it; a planet would be a held
+- **[belief]** Rapier (the physics engine) is built with `f32`. I have not checked. (It was not: it is `rapier3d-f64` since 2026-11-01.) If so, only dynamic ships go through it; a planet would be a held
   ship, which physics does not move.
 - **[code]** `design-decisions.md` listed "nested clipmap LOD shells" among the foundations. This phase replaces that (section 3.3).
 

@@ -89,8 +89,10 @@ Every game gets: multiplayer, replay recording to video, lossless save round-tri
 - Physics (confirmed by the owner): Rapier behind a Voxunami adapter crate, with
   `enhanced-determinism`, single-threaded stepping on the server, a local floating-origin frame, large merged voxel
   colliders for terrain, and gravity, buoyancy and drag applied as per-body forces. Evidence and caveats are in
-  `docs/history/physics-spike.md`. **Rapier works in f64** (the `rapier3d-f64` package, 0.36.1, with `enhanced-determinism`; owner, 2026-11-01): the interface of
-  `engine/physics` keeps `f32` for speeds, forces and the offset in a `WorldPosition`, and `engine/physics/src/real.rs` is where the two meet. Windows and Linux agree to the bit on the
+  `docs/history/physics-spike.md`. **Rapier works in f64** (the `rapier3d-f64` package, 0.36.1, with `enhanced-determinism`; owner, 2026-11-01): and **so does everything
+  that is physics** (owner, 2026-11-02: no `f32` for a speed or a position now that Rapier works in `f64`): speeds, forces, masses, the offset in a `WorldPosition` (a brick and an `f64` offset, 4e-15 voxel at the most), the angles a player looks by and the
+  quaternions are `f64` in the engine, the games, the wire (protocol 11) and the files (poses 4, terrain 3); `f32` is left to the graphics card (the camera rounds to it in `gpu_vector` and `rotation`), colours,
+  the sky's light and the screen, and to wall-clock timers. `engine/physics/src/real.rs` only turns Rapier's own vector types into arrays and back. Windows and Linux agree to the bit on the
   pinned runs (`joint-probe.md`). Built so far: players (Phases 15 and 16, below) and ships as rigid bodies (Phase 32); buoyancy and joints are not.
 - Players' bodies (decided with the physics, Phases 15 and 16): the server moves them. A client says which keys are
   held and which way it faces; it never says where it is, and a game that moves players ignores pose messages. This is what

@@ -251,7 +251,7 @@ pub fn docked_pose(
     let origin: [i128; 3] = [0, 1, 2].map(|axis| offset[axis] - (corner[axis] - 1) / 2);
     let place = {
         let (brick, local) = VoxelCoordinate::new(origin[0], origin[1], origin[2]).split();
-        WorldPosition::new(brick, [local.x(), local.y(), local.z()].map(f32::from))
+        WorldPosition::new(brick, [local.x(), local.y(), local.z()].map(f64::from))
     };
     let position = first_pose.local_to_world(place)?;
     let orientation = first_pose.orientation.compose(turn.orientation());
@@ -523,7 +523,7 @@ impl Docking {
         let masses: Vec<f64> = parts.iter().map(|(_, mass)| *mass).collect();
         let direction = moving
             .pose
-            .direction_to_world(pair.first.face.offset().map(|component| component as f32));
+            .direction_to_world(pair.first.face.offset().map(|component| component as f64));
         let split = world.split_grid(ship, parts.into_iter().map(|(part, _)| part).collect())?;
         let (first_side, second_side) = (split[0], split[1]);
         // Apart: the side of the first port goes back, the side of the second forward, sharing the speed out so that momentum stays.
@@ -541,8 +541,7 @@ impl Docking {
             for (part, change) in shares {
                 if let Some(grid) = world.data().grids().get(part) {
                     let (linear, angular) = (grid.linear_velocity, grid.angular_velocity);
-                    let faster =
-                        [0, 1, 2].map(|axis| linear[axis] + direction[axis] * change as f32);
+                    let faster = [0, 1, 2].map(|axis| linear[axis] + direction[axis] * change);
                     let _ = world.set_grid_velocity(part, faster, angular);
                 }
             }
@@ -599,8 +598,8 @@ impl Docking {
         let ship = world.detach_blocks(planet, &voxels)?;
         // Away from the side that stays: the way the face of its port looks, which is toward the side that leaves.
         let direction =
-            pose.direction_to_world(staying_port.face.offset().map(|component| component as f32));
-        let speed = self.settings.separation_speed as f32;
+            pose.direction_to_world(staying_port.face.offset().map(|component| component as f64));
+        let speed = self.settings.separation_speed;
         let _ =
             world.set_grid_velocity(ship, direction.map(|component| component * speed), [0.0; 3]);
         let released = if planet < ship {
@@ -698,7 +697,7 @@ mod tests {
         }
     }
 
-    fn pose(x: f32, y: f32, z: f32, orientation: Orientation) -> GridPose {
+    fn pose(x: f64, y: f64, z: f64, orientation: Orientation) -> GridPose {
         GridPose::new(
             WorldPosition::new(BrickCoordinate::ORIGIN, [x, y, z]),
             orientation,
@@ -719,13 +718,13 @@ mod tests {
     }
 
     /// An orientation that does `orientation` and then turns by `angle` about a world axis.
-    fn tilted(orientation: Orientation, axis: [f32; 3], angle: f32) -> Orientation {
-        let half = f64::from(angle) / 2.0;
+    fn tilted(orientation: Orientation, axis: [f64; 3], angle: f64) -> Orientation {
+        let half = angle / 2.0;
         let sine = libm::sin(half);
         Orientation::from_components([
-            f64::from(axis[0]) * sine,
-            f64::from(axis[1]) * sine,
-            f64::from(axis[2]) * sine,
+            axis[0] * sine,
+            axis[1] * sine,
+            axis[2] * sine,
             libm::cos(half),
         ])
         .unwrap()
@@ -808,7 +807,7 @@ mod tests {
             let roll = tilted(
                 docked.orientation,
                 [1.0, 0.0, 0.0],
-                quarters as f32 * std::f32::consts::FRAC_PI_2,
+                quarters as f64 * std::f64::consts::FRAC_PI_2,
             );
             let rolled = GridPose::new(docked.position, roll);
             let (one, two) = views((first, first_pose), (second, rolled));
@@ -819,7 +818,7 @@ mod tests {
         let roll = tilted(
             docked.orientation,
             [1.0, 0.0, 0.0],
-            std::f32::consts::FRAC_PI_4,
+            std::f64::consts::FRAC_PI_4,
         );
         let (one, two) = views(
             (first, first_pose),
@@ -838,17 +837,14 @@ mod tests {
         let settings = DockingSettings::default();
         let (first, second, first_pose, docked) = a_docked_pair();
         // The second tilted 6 degrees about the vertical axis: it is to be turned back about the vertical, the other way.
-        let angle = 6.0f32.to_radians();
+        let angle = 6.0f64.to_radians();
         let tilt = tilted(docked.orientation, [0.0, 1.0, 0.0], angle);
         let (one, two) = views(
             (first, first_pose),
             (second, GridPose::new(docked.position, tilt)),
         );
         let how = approach(&one, &two);
-        assert!(
-            (how.twist_angle() - f64::from(angle)).abs() < 1e-4,
-            "{how:?}"
-        );
+        assert!((how.twist_angle() - angle).abs() < 1e-4, "{how:?}");
         let on_second = settings.twist(&how);
         // 6 of the 30 degrees to full strength: a fifth of the torque, about the vertical, against the tilt.
         assert!(
@@ -859,7 +855,7 @@ mod tests {
             "{on_second:?}"
         );
         // Whatever the size of the tilt, the torque is no more than the whole.
-        let big = tilted(docked.orientation, [0.0, 1.0, 0.0], 80.0f32.to_radians());
+        let big = tilted(docked.orientation, [0.0, 1.0, 0.0], 80.0f64.to_radians());
         let (one, two) = views(
             (first, first_pose),
             (second, GridPose::new(docked.position, big)),
@@ -877,12 +873,12 @@ mod tests {
         let settings = DockingSettings::default();
         let first_pose = pose(0.0, 0.0, 0.0, Orientation::IDENTITY);
         let (first, second) = (port(0, 0, 0, EAST), port(0, 0, 0, WEST));
-        for gap in [0.5f32, 1.0, 3.0, 5.9] {
+        for gap in [0.5f64, 1.0, 3.0, 5.9] {
             // The second ship's west face is `gap` metres along x from the first's east face (which is at x = 1).
             let second_pose = pose(1.0 + gap, 0.0, 0.0, Orientation::IDENTITY);
             let (one, two) = views((first, first_pose), (second, second_pose));
             let how = approach(&one, &two);
-            assert!((how.distance - f64::from(gap)).abs() < 1e-5);
+            assert!((how.distance - gap).abs() < 1e-5);
             assert!(settings.pulls(&one, &two, &how), "gap {gap}");
             let on_first = settings.attraction(&how);
             assert!(
@@ -989,7 +985,7 @@ mod tests {
     fn ports_snap_within_three_tenths_of_a_metre_and_ten_degrees_and_not_beyond_either() {
         let settings = DockingSettings::default();
         let (first, second, first_pose, docked) = a_docked_pair();
-        let try_it = |away: f32, degrees: f32| {
+        let try_it = |away: f64, degrees: f64| {
             let moved = GridPose::new(
                 WorldPosition::new(BrickCoordinate::ORIGIN, [1.0 + away, 0.0, 0.0]),
                 tilted(docked.orientation, [0.0, 0.0, 1.0], degrees.to_radians()),

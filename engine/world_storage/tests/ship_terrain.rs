@@ -58,7 +58,10 @@ fn a_planet_comes_back_from_its_file_with_its_terrain_and_its_edits_and_the_file
 ///
 /// Moved on purpose (coordinates of up to 128 bits, 2026-10-27): 9_544_620_368_787_940_474 before, 17,126 bytes, now 17,137: the 5 of the ship (see `ship_files.rs`) and the 6 coordinates of the
 /// extent (-20 and 20), a byte more each. Taken on Windows; Linux is checked to agree.
-const PINNED_PLANET_FILE: u64 = 9_689_798_688_269_038_243;
+///
+/// Moved on purpose again (position offset, speeds and mass are `f64`, 2026-11-02): 9_689_798_688_269_038_243 before, 17,137 bytes, now 17,177: 40 more, the 36 of the ship (see `ship_files.rs`) and the 4
+/// of the mass, and nothing else. The flight is version 4 and the terrain section is version 3.
+const PINNED_PLANET_FILE: u64 = 5_869_702_282_553_743_674;
 
 #[test]
 fn a_ship_that_nothing_generates_has_no_terrain_section() {
@@ -193,10 +196,10 @@ fn file_with_terrain_section(
     write_container(&sections)
 }
 
-/// The version this program writes the plain sections at.
-const CURRENT: u32 = world_storage::engine_sections::SUPPORTED_VERSION;
+/// The version this program writes the terrain section at (3: the mass is an `f64`; 2 had an `f32` and is not read).
+const CURRENT: u32 = world_storage::engine_sections::TERRAIN_VERSION;
 
-fn terrain_payload(extent: [[i128; 3]; 2], mass: f32, trailing: bool) -> Vec<u8> {
+fn terrain_payload(extent: [[i128; 3]; 2], mass: f64, trailing: bool) -> Vec<u8> {
     let mut writer = ByteWriter::new();
     writer.write_identifier(&id("fancy_terrain:cliffs_v1"));
     for corner in extent {
@@ -204,7 +207,7 @@ fn terrain_payload(extent: [[i128; 3]; 2], mass: f32, trailing: bool) -> Vec<u8>
             writer.write_wide_signed(component);
         }
     }
-    writer.write_u32(mass.to_bits());
+    writer.write_u64(mass.to_bits());
     if trailing {
         writer.write_u8(0);
     }
@@ -232,7 +235,7 @@ fn a_damaged_terrain_section_is_found_not_believed() {
         (
             "a mass that is not a number",
             CURRENT,
-            terrain_payload([[-20; 3], [20; 3]], f32::NAN, false),
+            terrain_payload([[-20; 3], [20; 3]], f64::NAN, false),
         ),
         (
             "a negative mass",
@@ -242,7 +245,7 @@ fn a_damaged_terrain_section_is_found_not_believed() {
         (
             "an infinite mass",
             CURRENT,
-            terrain_payload([[-20; 3], [20; 3]], f32::INFINITY, false),
+            terrain_payload([[-20; 3], [20; 3]], f64::INFINITY, false),
         ),
         (
             "a byte too many",

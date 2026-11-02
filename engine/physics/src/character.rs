@@ -7,7 +7,7 @@ use voxel_space::{
     BRICK_EDGE_LENGTH, BrickCoordinate, GridId, GridPose, VoxelCoordinate, WorldPosition,
 };
 
-use crate::real::{array, real, single, vector, world_position};
+use crate::real::{array, vector, world_position};
 use crate::terrain::{Collision, CollisionSource, build_brick};
 
 /// How far, in bricks, from its frame's origin a character may get before the frame is rebuilt
@@ -125,7 +125,7 @@ pub struct MoveInput {
     pub sprint: bool,
     /// Which way the player faces, in radians, as the camera's yaw: 0 is toward -z and positive
     /// turns toward -x.
-    pub yaw: f32,
+    pub yaw: f64,
 }
 
 /// A grid other than the one a character's frame belongs to, as the character meets it: a ship, to a character in a level (or the level, to
@@ -289,14 +289,14 @@ impl CharacterBody {
     }
 
     /// Which way is up for the character, a unit vector in the axes of its frame, as of its last step.
-    pub fn up(&self) -> [f32; 3] {
+    pub fn up(&self) -> [f64; 3] {
         array(self.up)
     }
 
     /// The turn of the character's frame, as the quaternion `[x, y, z, w]` that takes the axes a character has when it stands in a
     /// plain level (right `+x`, up `+y`, back `+z`, facing `-z` at yaw 0) to its own in the axes of the grid. The identity until gravity
     /// has turned. A player's view is this turn and then the angles they give.
-    pub fn frame_rotation(&self) -> [f32; 4] {
+    pub fn frame_rotation(&self) -> [f64; 4] {
         if self.is_level() {
             return [0.0, 0.0, 0.0, 1.0];
         }
@@ -305,7 +305,6 @@ impl CharacterBody {
         Rotation::from_mat3(&DMat3::from_cols(right, self.up, back))
             .normalize()
             .to_array()
-            .map(single)
     }
 
     /// Whether the frame is the plain one: up is `+y` and the character faces `-z` at yaw 0. Then nothing about the character is
@@ -319,7 +318,7 @@ impl CharacterBody {
     /// ground, and whether it flies, are as they were: a character carried from a level to a ship it stands on is still standing. The
     /// terrain is the new frame's; the next [`CharacterBody::update_terrain`] makes it, and lifts the character out of it if it was put
     /// inside.
-    pub fn reframe(&mut self, eye: WorldPosition, velocity: [f32; 3], frame_rotation: [f32; 4]) {
+    pub fn reframe(&mut self, eye: WorldPosition, velocity: [f64; 3], frame_rotation: [f64; 4]) {
         self.clear_terrain();
         self.needs_clearance = true;
         self.origin = eye.brick();
@@ -328,7 +327,7 @@ impl CharacterBody {
             self.up = Vector::Y;
             self.heading = Vector::NEG_Z;
         } else {
-            let [x, y, z, w] = frame_rotation.map(real);
+            let [x, y, z, w] = frame_rotation;
             let turn = Rotation::from_xyzw(x, y, z, w).normalize();
             self.up = turn * Vector::Y;
             self.heading = turn * Vector::NEG_Z;
@@ -373,7 +372,7 @@ impl CharacterBody {
     }
 
     /// The velocity, in voxels a second.
-    pub fn velocity(&self) -> [f32; 3] {
+    pub fn velocity(&self) -> [f64; 3] {
         array(self.velocity)
     }
 
@@ -398,7 +397,7 @@ impl CharacterBody {
     /// stands or flies. It is for a character that the world has carried, as a planet that goes round carries what is in the air near it. The terrain stays where it
     /// is and the character goes through it: the next [`CharacterBody::update_terrain`] makes the terrain where the character is now, and [`CharacterBody::keep_clear`]
     /// (which a game calls each tick) lifts it out of what it was moved into, as out of what is built into it.
-    pub fn displace(&mut self, delta: [f32; 3]) {
+    pub fn displace(&mut self, delta: [f64; 3]) {
         self.center += vector(delta);
     }
 
@@ -423,9 +422,9 @@ impl CharacterBody {
         let edge = BRICK_EDGE_LENGTH as i128;
         let offset = position.offset();
         Vector::new(
-            ((brick.x() - self.origin.x()) * edge) as Real + Real::from(offset[0]),
-            ((brick.y() - self.origin.y()) * edge) as Real + Real::from(offset[1]),
-            ((brick.z() - self.origin.z()) * edge) as Real + Real::from(offset[2]),
+            ((brick.x() - self.origin.x()) * edge) as Real + offset[0],
+            ((brick.y() - self.origin.y()) * edge) as Real + offset[1],
+            ((brick.z() - self.origin.z()) * edge) as Real + offset[2],
         )
     }
 
@@ -897,7 +896,7 @@ impl CharacterBody {
     /// (a ship that is turned over has the level's gravity pointing up in its own axes). Up is against it, so a character walks on
     /// whatever floor that makes, and the way it faces is carried along as the pull turns. A pull of nothing leaves the character
     /// weightless: it keeps its frame and drifts on at the speed it had.
-    pub fn step_with_gravity(&mut self, input: MoveInput, gravity: [f32; 3]) {
+    pub fn step_with_gravity(&mut self, input: MoveInput, gravity: [f64; 3]) {
         self.step_pulled(input, vector(gravity));
     }
 
@@ -919,7 +918,7 @@ impl CharacterBody {
         let level = self.is_level();
 
         // Not the standard library's sin and cos, which differ between platforms.
-        let (sin, cos) = (libm::sin(real(input.yaw)), libm::cos(real(input.yaw)));
+        let (sin, cos) = (libm::sin(input.yaw), libm::cos(input.yaw));
         let (forward, right) = if level {
             (Vector::new(-sin, 0.0, -cos), Vector::new(cos, 0.0, -sin))
         } else {

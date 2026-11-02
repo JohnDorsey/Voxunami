@@ -102,7 +102,7 @@ impl Rig {
     }
 
     /// A player at `position` (in voxels) looking along the given angles, joined to the server.
-    pub fn join(&mut self, position: [f64; 3], yaw: f32, pitch: f32) -> Player {
+    pub fn join(&mut self, position: [f64; 3], yaw: f64, pitch: f64) -> Player {
         let connection = self.connector.connect().unwrap();
         self.join_with(Box::new(connection), position, yaw, pitch)
     }
@@ -111,8 +111,8 @@ impl Rig {
         &mut self,
         connection: Box<dyn Connection>,
         position: [f64; 3],
-        yaw: f32,
-        pitch: f32,
+        yaw: f64,
+        pitch: f64,
     ) -> Player {
         self.joined += 1;
         self.join_as(connection, self.joined, position, yaw, pitch)
@@ -125,8 +125,8 @@ impl Rig {
         connection: Box<dyn Connection>,
         who: u8,
         position: [f64; 3],
-        yaw: f32,
-        pitch: f32,
+        yaw: f64,
+        pitch: f64,
     ) -> Player {
         let start = camera_at(position, yaw, pitch);
         let identity = Identity::from_secret([who; 32]);
@@ -149,14 +149,14 @@ impl Rig {
     }
 
     /// A player who is walking: they fall, and stand on what is under them.
-    pub fn join_walking(&mut self, position: [f64; 3], yaw: f32, pitch: f32) -> Player {
+    pub fn join_walking(&mut self, position: [f64; 3], yaw: f64, pitch: f64) -> Player {
         self.joined += 1;
         self.join_walking_as(self.joined, position, yaw, pitch)
     }
 
     /// A walking player who is the install numbered `who` (the same number is the same player, as a key file is), at `position` if the
     /// server has no earlier place for them.
-    pub fn join_walking_as(&mut self, who: u8, position: [f64; 3], yaw: f32, pitch: f32) -> Player {
+    pub fn join_walking_as(&mut self, who: u8, position: [f64; 3], yaw: f64, pitch: f64) -> Player {
         let connection: Box<dyn Connection> = Box::new(self.connector.connect().unwrap());
         self.join_walking_over(connection, who, position, yaw, pitch)
     }
@@ -167,8 +167,8 @@ impl Rig {
         connection: Box<dyn Connection>,
         who: u8,
         position: [f64; 3],
-        yaw: f32,
-        pitch: f32,
+        yaw: f64,
+        pitch: f64,
     ) -> Player {
         let start = camera_at(position, yaw, pitch);
         let identity = Identity::from_secret([who; 32]);
@@ -218,14 +218,14 @@ pub fn ground_height(player: &Player, x: i128, z: i128) -> i128 {
 }
 
 /// A camera `height` voxels above the ground of a column, looking straight down.
-pub fn above_ground(player: &Player, x: i128, z: i128, height: f32) -> Camera {
-    let ground = ground_height(player, x, z) as f32 + 1.0;
+pub fn above_ground(player: &Player, x: i128, z: i128, height: f64) -> Camera {
+    let ground = ground_height(player, x, z) as f64 + 1.0;
     let mut camera = camera_at(
-        [x as f64 + 0.5, f64::from(ground + height), z as f64 + 0.5],
+        [x as f64 + 0.5, (ground + height), z as f64 + 0.5],
         0.0,
         0.0,
     );
-    camera.look_by(0.0, -std::f32::consts::FRAC_PI_2); // clamped to just short of straight down
+    camera.look_by(0.0, -std::f64::consts::FRAC_PI_2); // clamped to just short of straight down
     camera
 }
 
@@ -237,9 +237,9 @@ pub fn position_of(camera: &Camera) -> WorldPosition {
 pub fn voxels_of(camera: &Camera) -> [f64; 3] {
     let position = position_of(camera);
     [
-        position.brick().x() as f64 * 32.0 + f64::from(position.offset()[0]),
-        position.brick().y() as f64 * 32.0 + f64::from(position.offset()[1]),
-        position.brick().z() as f64 * 32.0 + f64::from(position.offset()[2]),
+        position.brick().x() as f64 * 32.0 + position.offset()[0],
+        position.brick().y() as f64 * 32.0 + position.offset()[1],
+        position.brick().z() as f64 * 32.0 + position.offset()[2],
     ]
 }
 
@@ -296,7 +296,7 @@ impl Plugin for Script {
 }
 
 /// The height of the top of the floor `flat_floor` makes.
-pub const FLOOR: f32 = 201.0;
+pub const FLOOR: f64 = 201.0;
 
 /// A flat floor of stone three voxels thick, from 0 to 64 along x and z, above the hills of the terrain: ground that is the same everywhere,
 /// since the terrain of Cave is bumpy and a ship on a slope rolls.
@@ -323,7 +323,7 @@ pub fn flat_floor(scene: &mut Scene) {
 
 /// A deck of stone `length` along x, 8 along z and 2 thick, held, with its origin at `(x, height above the floor, 20)`: its top is
 /// `height + 2` above the floor.
-pub fn deck(scene: &mut Scene, x: f32, height: f32, length: i128) {
+pub fn deck(scene: &mut Scene, x: f64, height: f64, length: i128) {
     make_ship(
         scene,
         pose_at(x, FLOOR + height, 20.0),
@@ -509,7 +509,7 @@ pub fn scene_with_a_deck() -> Scene {
 pub fn walker_on_the_deck(scene: &mut Scene) -> Player {
     let mut player = scene
         .rig
-        .join_walking([20.0, FLOOR as f64 + 5.0 + 8.0, 24.0], 0.0, 0.0);
+        .join_walking([20.0, FLOOR + 5.0 + 8.0, 24.0], 0.0, 0.0);
     scene.rig.settle(&mut [&mut player]);
     tick_and_follow(scene, &mut player, 60);
     player
@@ -591,7 +591,7 @@ pub fn ship_id(number: u64) -> GridId {
 }
 
 /// A pose in the main level, unturned, with the origin at this place in voxels.
-pub fn pose_at(x: f32, y: f32, z: f32) -> GridPose {
+pub fn pose_at(x: f64, y: f64, z: f64) -> GridPose {
     GridPose::new(
         WorldPosition::new(BrickCoordinate::ORIGIN, [x, y, z]),
         Orientation::IDENTITY,
@@ -654,7 +654,7 @@ pub fn raft_over(
     planet: u64,
     offset: [f64; 3],
     held: bool,
-    against: [f32; 3],
+    against: [f64; 3],
 ) -> u64 {
     let number = scene.rig.server.world().grids().iter().count() as u64;
     let middle = ship_voxels(scene, planet);
@@ -674,10 +674,7 @@ pub fn raft_over(
             .grids()
             .get(ship_id(planet))
             .expect("the planet is there");
-        let place = planet
-            .pose
-            .position
-            .translated(offset.map(|part| part as f32));
+        let place = planet.pose.position.translated(offset.map(|part| part));
         // The ground goes at the planet's velocity and the turn of the planet about its middle: omega cross offset.
         let turn = planet.angular_velocity.map(f64::from);
         let round = [
@@ -686,7 +683,7 @@ pub fn raft_over(
             turn[0] * offset[1] - turn[1] * offset[0],
         ];
         let speed =
-            [0, 1, 2].map(|axis| planet.linear_velocity[axis] + round[axis] as f32 + against[axis]);
+            [0, 1, 2].map(|axis| planet.linear_velocity[axis] + round[axis] + against[axis]);
         world
             .set_grid_pose(ship_id(number), GridPose::new(place, Orientation::IDENTITY))
             .unwrap();

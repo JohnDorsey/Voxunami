@@ -157,7 +157,7 @@ pub fn balls_and_ground(occluders: &[SunOccluder], camera: WorldPosition) -> (Ve
         .iter()
         .filter_map(|occluder| match *occluder {
             SunOccluder::Ball { centre, radius } => Some(SunBall {
-                centre: Vec3::from_array(centre.relative_to(camera)),
+                centre: crate::camera::gpu_vector(centre.relative_to(camera)),
                 radius,
             }),
             SunOccluder::FlatGround => None,

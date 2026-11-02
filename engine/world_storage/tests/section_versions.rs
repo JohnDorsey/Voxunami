@@ -32,7 +32,7 @@ fn entity_pose_bytes(pose: &EntityPose) -> Vec<u8> {
 fn each_section_is_read_at_the_one_version_this_program_writes_and_at_no_other() {
     assert_eq!(
         (SUPPORTED_VERSION, POSES_VERSION, GENERATORS_VERSION),
-        (2, 3, 3)
+        (2, 4, 3)
     );
     let table = [
         (entities_id(), POSES_VERSION),
@@ -233,7 +233,7 @@ fn a_ship_file_has_its_flight_at_the_poses_version_and_a_flight_of_another_versi
         .find(|section| section.identifier.to_string() == "engine:grid_flight")
         .unwrap();
     assert_eq!(flight.version, POSES_VERSION);
-    for version in [0, 1, 2, 4] {
+    for version in [0, 1, 2, 3, 5] {
         let mut changed = sections.clone();
         changed
             .iter_mut()

@@ -9,7 +9,9 @@
 use block_models::{PropertyKind, PropertySchema};
 use serde_json::{Value, json};
 
-use crate::body::{BodyContext, GREATEST_EXTENT_BRICKS, POSITION_LIMIT, SMALLEST_ORBIT_RATIO};
+use crate::body::{
+    BodyContext, GREATEST_EXTENT_BRICKS, GREATEST_MASS, POSITION_LIMIT, SMALLEST_ORBIT_RATIO,
+};
 use crate::shape::{FACE_NAMES, SHAPE_NAMES};
 
 /// The schemas of the four kinds of file a pack has.
@@ -269,7 +271,7 @@ fn body(context: &BodyContext<'_>) -> Value {
             "mass": {
                 "type": "number",
                 "exclusiveMinimum": 0,
-                "maximum": f64::from(f32::MAX),
+                "maximum": GREATEST_MASS,
                 "description": "how heavy it is, in kilograms (give this or surface_gravity)"
             },
             "surface_gravity": {

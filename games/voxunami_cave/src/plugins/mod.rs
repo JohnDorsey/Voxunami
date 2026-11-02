@@ -97,7 +97,7 @@ pub fn cave_plugins_reporting(
 /// Where players start: the world's spawn.
 pub fn world_spawn() -> WorldPosition {
     let [x, y, z] = Cave::default_camera().position;
-    WorldPosition::new(BrickCoordinate::ORIGIN, [x as f32, y as f32, z as f32])
+    WorldPosition::new(BrickCoordinate::ORIGIN, [x, y, z])
 }
 
 /// How ships dock in Cave: the dev docking port, with the distances, forces and angles the owner chose (see [`DockingSettings`]).

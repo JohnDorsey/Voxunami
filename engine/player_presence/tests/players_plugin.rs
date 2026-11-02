@@ -49,7 +49,7 @@ struct Rig {
     presence: SharedPresence,
 }
 
-fn pose(x: f32) -> PlayerPose {
+fn pose(x: f64) -> PlayerPose {
     PlayerPose {
         position: WorldPosition::new(BrickCoordinate::new(0, 0, 0), [x, 5.0, 5.0]),
         yaw: 0.5,

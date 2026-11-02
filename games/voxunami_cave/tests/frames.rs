@@ -86,7 +86,7 @@ fn light_in_a_ship(pose: GridPose) -> Vec<u32> {
     light_of(&scene.rig, grid, [0, 0, 0])
 }
 
-fn pose(brick: [i128; 3], offset: [f32; 3], rotation: LatticeRotation) -> GridPose {
+fn pose(brick: [i128; 3], offset: [f64; 3], rotation: LatticeRotation) -> GridPose {
     GridPose::new(
         WorldPosition::new(BrickCoordinate::new(brick[0], brick[1], brick[2]), offset),
         rotation.orientation(),

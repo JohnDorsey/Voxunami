@@ -20,7 +20,7 @@ pub const STACK_SIZE: u32 = 64;
 pub const FALL_INTERVAL_TICKS: u64 = 4;
 
 /// How close, in voxels, a player's eyes must be to an item for it to come into their inventory.
-pub const PICKUP_RADIUS: f32 = 3.0;
+pub const PICKUP_RADIUS: f64 = 3.0;
 
 /// An item that has fallen below this height is gone (it fell out of the world).
 pub const LOWEST_DROP_VOXEL: i128 = -1000;
@@ -29,7 +29,7 @@ pub const LOWEST_DROP_VOXEL: i128 = -1000;
 pub const LOWEST_DROP_DISTANCE: f64 = 1000.0;
 
 /// A pull of gravity this weak or less (in voxels a second a second) is none: an item does not fall in it.
-pub const MOST_GRAVITY_THAT_IS_NONE: f32 = 1.0e-3;
+pub const MOST_GRAVITY_THAT_IS_NONE: f64 = 1.0e-3;
 
 fn identifier(text: &str) -> NamespacedId {
     text.parse().expect("constant identifier is valid")
@@ -136,9 +136,9 @@ pub fn centre_of(voxel: VoxelCoordinate) -> WorldPosition {
     WorldPosition::new(
         brick,
         [
-            f32::from(local.x()) + 0.5,
-            f32::from(local.y()) + 0.5,
-            f32::from(local.z()) + 0.5,
+            f64::from(local.x()) + 0.5,
+            f64::from(local.y()) + 0.5,
+            f64::from(local.z()) + 0.5,
         ],
     )
 }

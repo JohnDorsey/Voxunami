@@ -95,7 +95,7 @@ pub fn find(world: &WorldData, name: &NamespacedId) -> Option<Place> {
 
 /// One coordinate as a player typed it: the whole voxel (exact for any number of digits of a whole number) and how far into it, as a fraction. `None` for what is not a
 /// finite number.
-pub fn parse_coordinate(text: &str) -> Option<(i128, f32)> {
+pub fn parse_coordinate(text: &str) -> Option<(i128, f64)> {
     if let Ok(whole) = text.parse::<i128>() {
         return Some((whole, 0.0));
     }
@@ -104,20 +104,20 @@ pub fn parse_coordinate(text: &str) -> Option<(i128, f32)> {
         return None;
     }
     let floor = value.floor();
-    Some((floor as i128, (value - floor) as f32))
+    Some((floor as i128, (value - floor)))
 }
 
 /// The position of three coordinates as `parse_coordinate` gives them, or `None` if it is outside the world.
-pub fn position_of(coordinates: [(i128, f32); 3]) -> Option<WorldPosition> {
+pub fn position_of(coordinates: [(i128, f64); 3]) -> Option<WorldPosition> {
     let voxel =
         VoxelCoordinate::try_new(coordinates[0].0, coordinates[1].0, coordinates[2].0).ok()?;
     let (brick, local) = voxel.split();
     Some(WorldPosition::new(
         brick,
         [
-            f32::from(local.x()) + coordinates[0].1,
-            f32::from(local.y()) + coordinates[1].1,
-            f32::from(local.z()) + coordinates[2].1,
+            f64::from(local.x()) + coordinates[0].1,
+            f64::from(local.y()) + coordinates[1].1,
+            f64::from(local.z()) + coordinates[2].1,
         ],
     ))
 }
@@ -131,7 +131,7 @@ pub enum BodyArrival {
     /// On the ground at a latitude and a longitude, in degrees.
     Direction { latitude: f64, longitude: f64 },
     /// At a place in the body's own axes, in voxels.
-    Point([(i128, f32); 3]),
+    Point([(i128, f64); 3]),
 }
 
 /// Where a player has arrived on a body.
@@ -222,9 +222,7 @@ pub fn land_on_body(
     // The middle of the voxel, and the eyes over its top: the voxel's extent along the direction is half the sum of the parts of the direction.
     let up_the_voxel = 0.5 * (direction[0].abs() + direction[1].abs() + direction[2].abs());
     let eyes = [0, 1, 2].map(|axis| {
-        ground[axis] as f64
-            + 0.5
-            + direction[axis] * (up_the_voxel + f64::from(EYES_OVER_THE_GROUND))
+        ground[axis] as f64 + 0.5 + direction[axis] * (up_the_voxel + EYES_OVER_THE_GROUND)
     });
     // A check of the answer against the ground it was found in (the two are made by different code, and a player put in the ground is pushed out by the ticks after, where
     // nothing would say so): the voxels at the eyes and just under them are air.

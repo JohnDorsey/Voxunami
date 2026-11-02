@@ -49,9 +49,9 @@ impl Hull {
                 let centre = WorldPosition::new(
                     brick,
                     [
-                        f32::from(local.x()) + 0.5,
-                        f32::from(local.y()) + 0.5,
-                        f32::from(local.z()) + 0.5,
+                        f64::from(local.x()) + 0.5,
+                        f64::from(local.y()) + 0.5,
+                        f64::from(local.z()) + 0.5,
                     ],
                 );
                 cells.push((voxel, centre));
@@ -114,7 +114,7 @@ impl Hull {
     ) -> Option<GridPose> {
         offsets_within(radius).into_iter().find_map(|[x, y, z]| {
             let moved = GridPose::new(
-                pose.position.translated([x as f32, y as f32, z as f32]),
+                pose.position.translated([x as f64, y as f64, z as f64]),
                 pose.orientation,
             );
             self.is_free(&moved, solid_at).then_some(moved)
@@ -126,7 +126,7 @@ impl Hull {
 pub fn voxel_of(place: WorldPosition) -> VoxelCoordinate {
     let offset = place.offset();
     // (An offset is in [0, 32); a float that rounded up to 32 is the last voxel.)
-    let index = |value: f32| value.floor().clamp(0.0, 31.0) as u8;
+    let index = |value: f64| value.floor().clamp(0.0, 31.0) as u8;
     place.brick().voxel_at(LocalVoxelIndex::new(
         index(offset[0]),
         index(offset[1]),
@@ -254,7 +254,7 @@ impl<'a> Obstacles<'a> {
     pub fn in_terrain(&mut self, place: WorldPosition) -> bool {
         let voxel = voxel_of(place);
         let offset = place.offset();
-        let inside = [0, 1, 2].map(|axis| f64::from(offset[axis] - offset[axis].floor()));
+        let inside = [0, 1, 2].map(|axis| offset[axis] - offset[axis].floor());
         is_inside(&self.terrain_at(voxel), inside)
     }
 
@@ -266,7 +266,7 @@ impl<'a> Obstacles<'a> {
             let (brick, offset) = (local.brick(), local.offset());
             let here = [0, 1, 2].map(|axis| {
                 let brick_start = [brick.x(), brick.y(), brick.z()][axis] * 32;
-                brick_start as f64 + f64::from(offset[axis])
+                brick_start as f64 + offset[axis]
             });
             GeneratedHull {
                 world: &*self.world,
@@ -291,7 +291,7 @@ impl<'a> Obstacles<'a> {
             let (brick, offset) = (local.brick(), local.offset());
             let here = [0, 1, 2].map(|axis| {
                 let brick_start = [brick.x(), brick.y(), brick.z()][axis] * 32;
-                brick_start as f64 + f64::from(offset[axis])
+                brick_start as f64 + offset[axis]
             });
             ShipHull {
                 voxels,
@@ -435,7 +435,7 @@ mod tests {
         Hull::of(&ship, &collisions(), block, state, None)
     }
 
-    fn pose_at(x: f32, y: f32, z: f32) -> GridPose {
+    fn pose_at(x: f64, y: f64, z: f64) -> GridPose {
         GridPose::new(
             WorldPosition::new(BrickCoordinate::ORIGIN, [x, y, z]),
             Orientation::IDENTITY,
@@ -531,7 +531,7 @@ mod tests {
         let row = hull(&[[0, 0, 0], [1, 0, 0], [2, 0, 0]]);
         let quarter = GridPose::new(
             WorldPosition::new(BrickCoordinate::ORIGIN, [10.0, 5.0, 10.0]),
-            Orientation::from_yaw_pitch(std::f32::consts::FRAC_PI_2, 0.0),
+            Orientation::from_yaw_pitch(std::f64::consts::FRAC_PI_2, 0.0),
         );
         // The cells' centres are at ship x = 0.5, 1.5, 2.5: world z = 10 - those, in the voxels 9, 8, 7 (x stays 10, y stays 5).
         let only_the_last = voxels_where(|voxel| voxel == [10, 5, 7]);
