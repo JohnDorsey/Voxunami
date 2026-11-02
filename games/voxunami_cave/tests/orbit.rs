@@ -9,16 +9,20 @@
 //! The first two tests say what holds and what is wrong for a ship that is a body of the solver's. **A ship that coasts clear of the planet's ground is not** (step B of
 //! `orbits-and-thrust-plan.md`, 2026-11-02): after a second without a push it is put on a rail, the orbit its place and its speed are on, and goes round on it exactly. The third
 //! test is the criterion the review asked for, and it holds for such a ship: a circle clear of what the planet's extent says its ground reaches (2,100 bricks, 67,200 voxels,
-//! and a margin) neither gains nor loses energy or angular momentum, however long it goes. The last tests say that it is on a rail and stays on the same elements.
+//! and a margin) neither gains nor loses energy or angular momentum, however long it goes. The next tests say that it is on a rail and stays on the same elements. The last ones
+//! say that a ship on a rail is, to the bit, where an untouched one is after it was frozen and let go, put in its file and brought back, or saved with its world and loaded by
+//! another server (the owner's rule of 2026-11-02: a path that was planned to the millimetre loses nothing by any of these), and what it would lose if its orbit were made
+//! again from its place and speed.
 
 mod common;
 
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use common::{Scene, make_ship, ship_id};
 use game_shell::GameDefinition;
 use voxel_space::{GridPose, Orientation, WorldPosition};
 use voxunami_cave::Cave;
+use world_storage::rail::{ExactOffset, Rail, RailTime};
 
 /// The edge of the cube that is the ship, in voxels.
 const EDGE: i128 = 3;
@@ -299,4 +303,243 @@ fn a_ship_that_is_inside_what_the_extent_of_the_planet_says_is_ground_stays_a_bo
     let measured = measured_at(DISTANCE);
     assert_eq!(measured.rail_after_the_first_sample, None);
     assert_eq!(measured.rail_at_the_end, None);
+}
+
+// ---- the orbit through storage ----
+//
+// A ship on a rail is its elements (eight `f64`, written as their bits, and the number of the body it goes round), the clock of the world, and nothing that the world makes up as it goes: where it is and how fast it
+// goes are worked out from those every tick. So nothing a ship goes through (frozen and let go, put in its file and brought back, a world saved and a server made from the
+// save) may change them by a bit, and each of these tests runs a ship through one of those and says that it is, to the bit, where an untouched ship of the same make is.
+// What a ship would lose if its orbit were made again from its place and speed (what every push does today) is the last test.
+
+/// How much faster than a circle the ship of the storage tests goes: an ellipse, so that the ratio, the periapsis and the phase of its elements are not those of a circle.
+const ELLIPSE: f64 = 1.03;
+/// How many ticks the ship waits frozen, or in its file, in the tests of storage.
+const WAIT: usize = 100;
+/// The ticks of a second, as the server of these tests counts them.
+const TICKS_A_SECOND: u32 = 20;
+
+/// A ship on an ellipse round the planet that has been on its rail for a while: the scene, the ship's number and its rail.
+fn a_ship_on_an_ellipse() -> (Scene, u64, Rail) {
+    let mut scene = Scene::in_a_new_world();
+    let planet = the_planet(&scene);
+    let number = put_in_orbit(
+        &mut scene,
+        HIGH_DISTANCE,
+        ELLIPSE * circular_speed(&planet, HIGH_DISTANCE),
+    );
+    scene.ticks(SAMPLE_EVERY);
+    let rail = rail_of_the_ship(&scene, number)
+        .expect("a ship that is left alone for a second is on a rail");
+    (scene, number, rail)
+}
+
+/// What a ship is, as far as its way goes: the rail, and where it is and how fast it goes (all compared to the bit).
+#[derive(Debug, PartialEq)]
+struct Look {
+    rail: Option<Rail>,
+    pose: GridPose,
+    velocity: [f64; 3],
+}
+
+fn look_at(scene: &Scene, number: u64) -> Look {
+    let ship = scene
+        .rig
+        .server
+        .world()
+        .grids()
+        .get(ship_id(number))
+        .expect("the ship is there");
+    Look {
+        rail: ship.rail,
+        pose: ship.pose,
+        velocity: ship.linear_velocity,
+    }
+}
+
+/// The ticks of one round of a cycle below (a wait, a change, a wait and a change back): every cycle takes this many, and so does the control, so that all of them are looked at
+/// at the same tick of the world.
+const ROUND: usize = 2 * WAIT + 2;
+
+fn freeze_and_thaw(mut scene: Scene, number: u64) -> Scene {
+    scene.run(move |world| world.set_grid_frozen(ship_id(number), true).unwrap());
+    scene.ticks(WAIT);
+    scene.run(move |world| world.set_grid_frozen(ship_id(number), false).unwrap());
+    scene.ticks(WAIT);
+    scene
+}
+
+fn park_and_bring_in(mut scene: Scene, number: u64) -> Scene {
+    // (A ship that waits for those aboard stays in its file until it is asked for: the lifecycle brings back any other as soon as the rules of its distance allow.)
+    scene.run(move |world| world.park_ship(ship_id(number), true).unwrap());
+    scene.ticks(WAIT);
+    scene.run(move |world| world.load_ship(ship_id(number)).unwrap());
+    scene.ticks(WAIT);
+    scene
+}
+
+/// What a restart of the program does: the world is saved, and a server made from the save goes on. (It takes no ticks of its own; these are the ticks that make a round.)
+fn save_and_restart(scene: Scene, _number: u64) -> Scene {
+    let mut scene = scene.restarted();
+    scene.ticks(ROUND);
+    scene
+}
+
+/// The same ticks with nothing done: the control.
+fn nothing(mut scene: Scene, _number: u64) -> Scene {
+    scene.ticks(ROUND);
+    scene
+}
+
+/// How a fresh ship on an ellipse looks after it went through `cycle`.
+fn after(cycle: impl FnOnce(Scene, u64) -> Scene) -> Look {
+    let (scene, number, _) = a_ship_on_an_ellipse();
+    let scene = cycle(scene, number);
+    look_at(&scene, number)
+}
+
+/// The control for `rounds` rounds.
+fn untouched_for(rounds: usize) -> Look {
+    after(|mut scene, number| {
+        for _ in 0..rounds {
+            scene = nothing(scene, number);
+        }
+        scene
+    })
+}
+
+fn is_the_same_as_the_control(look: &Look, control: &Look) {
+    assert!(
+        look.rail.is_some(),
+        "the ship is on its rail, or the comparison says nothing"
+    );
+    assert_eq!(look.rail, control.rail, "the elements");
+    assert_eq!(look.pose, control.pose, "where it is, and how it is turned");
+    assert_eq!(look.velocity, control.velocity, "how fast it goes");
+}
+
+#[test]
+fn a_ship_on_a_rail_that_is_frozen_and_let_go_is_where_an_untouched_one_is_to_the_bit() {
+    is_the_same_as_the_control(&after(freeze_and_thaw), &untouched_for(1));
+}
+
+#[test]
+fn a_ship_on_a_rail_that_is_put_in_its_file_and_brought_back_is_where_an_untouched_one_is_to_the_bit()
+ {
+    is_the_same_as_the_control(&after(park_and_bring_in), &untouched_for(1));
+}
+
+#[test]
+fn a_ship_on_a_rail_in_a_world_that_is_saved_and_a_server_made_from_the_save_is_where_an_untouched_one_is_to_the_bit()
+ {
+    is_the_same_as_the_control(&after(save_and_restart), &untouched_for(1));
+}
+
+#[test]
+fn a_ship_that_goes_through_all_three_again_and_again_is_still_where_an_untouched_one_is_to_the_bit()
+ {
+    let look = after(|mut scene, number| {
+        for _ in 0..3 {
+            scene = freeze_and_thaw(scene, number);
+            scene = park_and_bring_in(scene, number);
+            scene = save_and_restart(scene, number);
+        }
+        scene
+    });
+    is_the_same_as_the_control(&look, &untouched_for(9));
+}
+
+#[test]
+fn a_ship_brought_back_from_its_file_is_where_an_untouched_one_is_in_the_tick_it_comes_back_and_in_every_one_after()
+ {
+    // The file keeps neither the weight of a ship nor its centre of mass (the bodies work them out from the blocks again), and a rail places the centre of mass: if the ship were
+    // put by its origin for a tick, it would jump by the distance of the two.
+    let (mut control, number, _) = a_ship_on_an_ellipse();
+    let (mut cycled, _, _) = a_ship_on_an_ellipse();
+    cycled.run(move |world| world.park_ship(ship_id(number), true).unwrap());
+    control.ticks(1);
+    cycled.ticks(WAIT);
+    control.ticks(WAIT);
+    cycled.run(move |world| world.load_ship(ship_id(number)).unwrap());
+    control.ticks(1);
+    for tick in 0..4 {
+        is_the_same_as_the_control(&look_at(&cycled, number), &look_at(&control, number));
+        assert_ne!(
+            cycled
+                .rig
+                .server
+                .world()
+                .grids()
+                .get(ship_id(number))
+                .unwrap()
+                .centre_of_mass,
+            [0.0; 3],
+            "tick {tick}: the ship has its centre of mass again"
+        );
+        control.ticks(1);
+        cycled.ticks(1);
+    }
+}
+
+/// Where a rail says a body is from its centre at this tick.
+fn place_at(rail: &Rail, tick: u64) -> ExactOffset {
+    rail.state(RailTime::of_tick(tick, TICKS_A_SECOND), [0.0; 3], [0.0; 3])
+        .offset
+        .expect("a rail with an orbit says where the body is")
+}
+
+fn distance_between(first: ExactOffset, second: ExactOffset) -> f64 {
+    (0..3)
+        .map(|axis| {
+            let difference = (first.bricks[axis] - second.bricks[axis]) as f64 * 32.0
+                + (first.rest[axis] - second.rest[axis]);
+            difference * difference
+        })
+        .sum::<f64>()
+        .sqrt()
+}
+
+/// What stands against making an orbit again from the place and the speed of a ship, which is what a push does today: **the orbit it makes is not the one the ship was on**, by the
+/// last digits of every element, and the two paths part a little more with every lap. For an ellipse like this (a ratio of 0.94, a lap of ten minutes) it is a nanometre a lap; for
+/// a thin ellipse it is far more (`orbits-and-thrust-plan.md`, E1), and a path that was planned to the millimetre cannot afford it. So nothing but a push or a collision may do it.
+#[test]
+fn an_orbit_made_again_from_the_place_and_the_speed_of_a_ship_on_it_is_not_the_orbit_it_was_and_the_paths_part_by_a_nanometre_a_lap()
+ {
+    let (mut scene, number, rail) = a_ship_on_an_ellipse();
+    let made_again: Arc<Mutex<Option<(u64, Rail)>>> = Arc::default();
+    let slot = Arc::clone(&made_again);
+    scene.run(move |world| {
+        let now = world.data().clock();
+        let refit = world
+            .coasting_rail(ship_id(number), RailTime::of_tick(now, TICKS_A_SECOND))
+            .expect("a ship on its rail can coast");
+        *slot.lock().unwrap() = Some((now, refit));
+    });
+    let (now, refit) = made_again.lock().unwrap().take().unwrap();
+    assert_ne!(
+        refit, rail,
+        "the digits of the fit are not the digits it was given"
+    );
+    let (stored, fitted) = (rail.orbit.unwrap(), refit.orbit.unwrap());
+    // Every element is the same to the last few digits of an `f64`.
+    for (name, was, is) in [
+        ("radius", stored.radius, fitted.radius),
+        ("ratio", stored.ratio, fitted.ratio),
+        ("period", stored.period, fitted.period),
+    ] {
+        assert!(
+            ((was - is) / was).abs() < 1.0e-13,
+            "{name}: {was} then {is}"
+        );
+    }
+    let lap = (stored.period * f64::from(TICKS_A_SECOND)) as u64;
+    for laps in [1, 10, 1_000] {
+        let tick = now + laps * lap + 7;
+        let apart = distance_between(place_at(&rail, tick), place_at(&refit, tick));
+        // (Measured: 1.0e-9 voxel after a lap, 9.8e-9 after ten, 9.8e-7 after a thousand, 9.0e-4 after a million.)
+        assert!(
+            apart > 0.0 && apart < 3.0e-9 * laps as f64,
+            "after {laps} laps the paths are {apart} voxels apart"
+        );
+    }
 }
