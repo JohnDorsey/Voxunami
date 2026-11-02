@@ -1,6 +1,7 @@
 """Reference values for the elliptical orbits of `docs/orbits-and-thrust-plan.md` (section A, step A1), worked out with `mpmath` at 120 digits.
 
     python exact_ellipse_reference.py selfcheck   # checks this program against mathematics, and against the circle that is the ellipse with ratio 1.0
+    python exact_ellipse_reference.py constants   # the constant of exact_kepler.rs: one over two pi with 126 bits after the point
     python exact_ellipse_reference.py kepler      # rows for the test of the Kepler solver: (ratio, mean anomaly, eccentric anomaly, sine, cosine, x, y, amplification)
     python exact_ellipse_reference.py orbits      # rows for the test of `Orbit`: the offset and the velocity at a tick, from the elements as the program keeps them
 
@@ -150,6 +151,11 @@ def orbit_cases():
 
 
 # ---- the output
+
+def constants():
+    print("/// One over two pi with 126 bits after the point, rounded to the nearest.")
+    print("const ONE_OVER_TAU: Fixed = 0x%032x;" % int(floor(ONE / TWO_PI + mpf(1) / 2)))
+
 
 def kepler():
     turns_list = mean_anomaly_turns()
@@ -320,6 +326,8 @@ if __name__ == "__main__":
     command = sys.argv[1:]
     if command == ["selfcheck"]:
         selfcheck()
+    elif command == ["constants"]:
+        constants()
     elif command == ["kepler"]:
         kepler()
     elif command == ["orbits"]:

@@ -1693,6 +1693,9 @@ Elliptical orbits, steps A0 and A1 (`orbits-and-thrust-plan.md`; no behaviour ch
   the CORDIC rounding and the final 2^-32 rounding are each caught; the same bits under WSL Linux.
 - A1: `engine/world_storage/tools/exact_ellipse_reference.py` (`mpmath`, 120 digits): the definition of the elements and of the place and speed, rows for the Kepler solver and for `Orbit`, and a self-check against Kepler's equation,
   vis-viva, angular momentum, equal areas, finite differences and the circle (see the plan for the numbers). Eight wrong copies are each caught by the self-check.
+- A2: `engine/world_storage/src/exact_kepler.rs` (`Ellipse::new(ratio)`, `anomaly(mean_anomaly)`) and `wide.rs` (`Wide` moved out of `exact_circle.rs`, with an exact long division and square root). An `f64` first guess (cubic, then eight stable Newton steps),
+  then three Newton steps in whole numbers; E right to about 8 units of 2^-128 turn per unit of 1 / (1 - e cos E) on the 207 reference rows; 2.7 microseconds a solve (release). 23 tests (14 + 9), 13 pins (the same bits under WSL Linux), 22 mutations caught.
+  A table row found an `i128` overflow (a sine of -4 units next to a half turn); fixed with a regression test. Not used by anything yet (`expect(dead_code)` says so and fails when A3 uses it).
 
 ## Measured
 Storage (Ryzen 7600X, release, one thread, best of 7, counting allocator; the single-voxel `get` figures include

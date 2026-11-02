@@ -9,8 +9,10 @@
 //!
 //! What it costs: about 130 steps of shifts and adds for a sine and cosine, and some dozens of 128-bit products; microseconds for an orbit.
 
+use crate::wide::Wide;
+
 /// One, with 126 bits after the point.
-const ONE: i128 = 1 << 126;
+pub(crate) const ONE: i128 = 1 << 126;
 
 /// The sort of number a coordinate of a unit vector is held as: `value x 2^-126`.
 pub(crate) type Fixed = i128;
@@ -148,9 +150,8 @@ const ANGLES: [u128; 127] = [
 /// What the steps of a rotation make too long, undone: the product of `1 / sqrt(1 + 4^-step)`, 126 bits after the point.
 const GAIN: i128 = 0x26dd3b6a10d79699fd7e424af5ff503a;
 /// One over two pi times 2^192, rounded down, as three 64-bit parts, the largest first.
-const INVERSE_TAU: [u64; 3] = [0x28be60db9391054a, 0x7f09d5f47d4d3770, 0x36d8a5664f10e410];
-
-const MASK_64: u128 = (1 << 64) - 1;
+pub(crate) const INVERSE_TAU: [u64; 3] =
+    [0x28be60db9391054a, 0x7f09d5f47d4d3770, 0x36d8a5664f10e410];
 
 /// What a body that goes round is from its centre, exact: whole bricks of 32 voxels and a rest below a brick, in steps of 2^-32 voxel. (An `f64` of voxels is as
 /// far from the next as 2^-52 of itself, which is a hundred voxels at 10^18.)
@@ -168,98 +169,8 @@ impl ExactOffset {
     }
 }
 
-/// 256 bits, in two's complement: what two 128-bit numbers make when multiplied.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Wide {
-    high: u128,
-    low: u128,
-}
-
-impl Wide {
-    const ZERO: Self = Self { high: 0, low: 0 };
-    const ONE: Self = Self { high: 0, low: 1 };
-
-    fn of_product(first: u128, second: u128) -> Self {
-        let (first_high, first_low) = (first >> 64, first & MASK_64);
-        let (second_high, second_low) = (second >> 64, second & MASK_64);
-        let low_low = first_low * second_low;
-        let low_high = first_low * second_high;
-        let high_low = first_high * second_low;
-        let high_high = first_high * second_high;
-        // (Three numbers below 2^64 added: it fits.)
-        let middle = (low_low >> 64) + (low_high & MASK_64) + (high_low & MASK_64);
-        Self {
-            high: high_high + (low_high >> 64) + (high_low >> 64) + (middle >> 64),
-            low: (low_low & MASK_64) | (middle << 64),
-        }
-    }
-
-    fn plus(self, other: Self) -> Self {
-        let (low, carry) = self.low.overflowing_add(other.low);
-        Self {
-            high: self
-                .high
-                .wrapping_add(other.high)
-                .wrapping_add(u128::from(carry)),
-            low,
-        }
-    }
-
-    fn negated(self) -> Self {
-        Self {
-            high: !self.high,
-            low: !self.low,
-        }
-        .plus(Self::ONE)
-    }
-
-    fn is_negative(self) -> bool {
-        self.high >> 127 == 1
-    }
-
-    /// Shifted left by `bits`, the bits that fall off lost.
-    fn shifted_left(self, bits: u32) -> Self {
-        match bits {
-            0 => self,
-            1..=127 => Self {
-                high: (self.high << bits) | (self.low >> (128 - bits)),
-                low: self.low << bits,
-            },
-            128..=255 => Self {
-                high: self.low << (bits - 128),
-                low: 0,
-            },
-            _ => Self::ZERO,
-        }
-    }
-
-    /// Shifted right by `bits`, the sign copied in (so a negative number is rounded down).
-    fn shifted_right(self, bits: u32) -> Self {
-        let sign = if self.is_negative() { u128::MAX } else { 0 };
-        match bits {
-            0 => self,
-            1..=127 => Self {
-                high: (self.high >> bits) | (sign << (128 - bits)),
-                low: (self.low >> bits) | (self.high << (128 - bits)),
-            },
-            128 => Self {
-                high: sign,
-                low: self.high,
-            },
-            129..=255 => Self {
-                high: sign,
-                low: (self.high >> (bits - 128)) | (sign << (256 - bits)),
-            },
-            _ => Self {
-                high: sign,
-                low: sign,
-            },
-        }
-    }
-}
-
 /// `value` (an `f64` below `2^(127 - bits)` in size) as a fixed number with `bits` after the point, rounded toward nothing.
-fn fixed_of(value: f64, bits: i32) -> Fixed {
+pub(crate) fn fixed_of(value: f64, bits: i32) -> Fixed {
     let (mantissa, exponent) = split(value);
     // value = mantissa x 2^exponent, and the fixed number is that x 2^bits.
     let shift = exponent + bits;
@@ -293,7 +204,7 @@ pub(crate) fn float_of(value: Fixed) -> f64 {
 
 /// `first x second` with `bits` after the point in the answer, rounded to the nearest: the numbers have the points where they have them, and `bits` is the sum of
 /// theirs less the answer's. The answer must fit, which it does for everything here: a unit vector's coordinates are at most one.
-fn multiplied(first: Fixed, second: Fixed, bits: u32) -> Fixed {
+pub(crate) fn multiplied(first: Fixed, second: Fixed, bits: u32) -> Fixed {
     let negative = (first < 0) != (second < 0);
     let product = Wide::of_product(first.unsigned_abs(), second.unsigned_abs());
     let half = Wide::ONE.shifted_left(bits - 1);
