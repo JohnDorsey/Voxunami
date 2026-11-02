@@ -1,0 +1,21 @@
+[package]
+name = "e4_wide"
+version = "0.0.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+astro-float = "0.9.6"
+malachite-float = "0.14.0"
+malachite-base = "0.14.0"
+malachite-nz = "0.14.0"
+dashu-float = "0.6.2"
+dashu-int = "0.6.2"
+dashu-base = "0.6.1"
+puremp = "0.3.2"
+malachite-q = "0.14.0"
+
+[profile.release]
+opt-level = 3
+debug = false
