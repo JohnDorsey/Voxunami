@@ -139,9 +139,31 @@ second in Cave; it is saved with the world, so a restart goes on from where it w
 - **`spin`**: the body turns once in `period` seconds (negative the other way) about `axis`, which is where its own up goes (a tilt is an axis that is not `[0, 1, 0]`); `angle` is
   how far it has turned at time 0, in degrees (0).
 - **`orbit`**: it goes round `around` on a circle of `radius` voxels (at most 10^15), once in `period` seconds (negative the other way), counter-clockwise looking down `normal`
-  (up if left out), from `phase` degrees at time 0 (0). The circle starts toward the +x axis taken into its plane. `around` is a point of the level (`[x, y, z]`) or another body
+  (up if left out), from `phase` degrees at time 0 (0). The circle starts toward the +x axis taken into its plane. With `eccentricity` or `ratio` it is an ellipse (below). `around` is a point of the level (`[x, y, z]`) or another body
   (`"my_pack:star"`), which must be made before this one (bodies are made in the order of the packs and then of their files' names, so name them to sort). A body that goes round
   has its place from the orbit, and gives no `position`; a body that only spins stays where it was put. A moon goes round a planet that goes round a star.
+- **An ellipse** is an orbit with **`eccentricity`** (from 0, a circle, up to but not including 1) **or `ratio`** (1 - eccentricity, from 2^-64 to 1: for an orbit so long and thin that
+  its eccentricity has no digits left to say how near 1 it is; a ratio of 1e-12 is an eccentricity of 0.999999999999; one or the other, not both), and **`periapsis`**, the angle in degrees of
+  the nearest point from where a circle starts, counter-clockwise looking down `normal` (0). `radius` is then the semi-major axis: the nearest point is at `radius x ratio` and the farthest at
+  `radius x (2 - ratio)`. `period` is the time to go once round, and `phase` is the *mean anomaly* at time 0 (degrees; 0 is the nearest point, 180 the farthest). The rail is worked out in whole
+  numbers like a circle's, the same on every machine. The body goes fastest at the nearest point, at `2 pi radius / period x sqrt((2 - ratio) / ratio)` voxels a second: a circle's speed times 1.4e6 for a ratio of 1e-12.
+  `period` is what you say, and is not checked against the mass of what it goes round.
+
+**An ellipse, in full** (a comet round a point; this file is checked with the others, so it is right):
+
+```json
+{
+  "level": "voxunami_cave:mini_cosmos",
+  "terrain": { "family": "voxunami_cave:planet_v1", "parameters": { "seed": 7, "radius": 300 } },
+  "extent_bricks": 12,
+  "surface_gravity": 2,
+  "rail": {
+    "orbit": { "around": [0, 0, 0], "normal": [0, 1, 0], "radius": 1.5e9, "eccentricity": 0.0167,
+               "periapsis": 102.9, "period": 31557600, "phase": 90 }
+  }
+}
+```
+
 - A body on a rail is in free fall with what it goes round: what stands on it feels its pull and not the pull of what it goes round.
 - **What a planet on a rail carries.** Everything within one and a half times the reach of its ground (`extent_bricks`; at most 120,000 voxels) of its middle goes with it:
   players and items in the air, and ships, free or held. Ships are simulated in a frame that goes with the planet, so they fall to it, rest on it and are carried round by its
@@ -149,7 +171,7 @@ second in Cave; it is saved with the world, so a restart goes on from where it w
   carried stays so a quarter farther out than it was taken in. Blocks built in space, which stand still in the world, are not solid to what a planet carries (blocks built on
   the planet are). A ship made empty near a planet that moves starts at rest in the world, so it is going at the planet's speed against it; one carved from a planet or from
   another ship has the speed of the blocks it was carved from. There is no speed limit (Rapier's default of 400 metres a second is turned off); past some 380 voxels a second a tick can no longer be cut finely enough to keep a ship from going through thin ground, and the result is not promised to be the same on every machine.
-- *Not yet:* ellipses; ships on rails of their own; time faster than real. `docs/specs/rails-and-recipes-spec.md`.
+- *Not yet:* ships on rails of their own; time faster than real. `docs/specs/rails-and-recipes-spec.md`.
 - **A solar system** is a few bodies that go round each other: `games/voxunami_cave/examples/packs/solar_system` has a star, a planet and a moon (the star is a large planet: a ball of ground, with no light of its own yet). Periods there are those the game's pull would keep, `T = 2 pi sqrt(r^3 / (G M))` with `G` 6.674e-11 and the mass the file's `surface_gravity` gives (`g r r / G`). Name the files so that what is gone round sorts first (`star`, `star_planet`, `star_planet_moon`).
 
 A body is made when a *world* is made: the planets of a world that exists are not changed by a pack added later, and do not go if the pack is taken away (the

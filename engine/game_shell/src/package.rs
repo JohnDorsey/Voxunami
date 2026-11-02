@@ -451,10 +451,12 @@ fn rail_of(data: &BodyRail, centre_of: impl Fn(&NamespacedId) -> Centre) -> Resu
                 Around::Point(point) => Centre::Point(*point),
                 Around::Body(name) => centre_of(name),
             };
-            Orbit::new(
+            Orbit::elliptical(
                 around,
                 orbit.normal,
                 orbit.radius,
+                orbit.ratio,
+                radians(orbit.periapsis_degrees),
                 orbit.period,
                 radians(orbit.phase_degrees),
             )
@@ -1190,6 +1192,68 @@ mod tests {
         assert_eq!(rock.linear_velocity, [0.0; 3]);
         assert!(rock.rail.unwrap().orbit.is_none());
         assert_ne!(rock.angular_velocity, [0.0; 3]);
+    }
+
+    #[test]
+    fn the_smallest_ratio_of_a_pack_is_the_smallest_ratio_of_a_rail() {
+        // (`data_packs` does not know `world_storage`, so the limit is written in both; this is what keeps them one.)
+        assert_eq!(
+            data_packs::SMALLEST_ORBIT_RATIO,
+            world_storage::rail::SMALLEST_RATIO
+        );
+    }
+
+    #[test]
+    fn a_body_on_an_ellipse_is_made_on_it_and_put_where_the_rail_says() {
+        let mut content = package();
+        content
+            .apply_packs(&[pack_of_bodies(&[
+                (
+                    "comet",
+                    &body_with(
+                        "",
+                        r#"{ "orbit": { "around": [0, 0, 0], "normal": [0, 1, 0], "radius": 1e9, "period": 5e7,
+                                        "eccentricity": 0.25, "periapsis": 30, "phase": 10 } }"#,
+                    ),
+                ),
+                (
+                    "ratio_only",
+                    &body_with(
+                        "",
+                        r#"{ "orbit": { "around": [0, 0, 0], "radius": 1e9, "period": 5e7, "ratio": 1e-12 } }"#,
+                    ),
+                ),
+            ])])
+            .unwrap();
+        let mut world = content.new_world(5);
+        content.add_bodies(&mut world).unwrap();
+        let ships: Vec<_> = world
+            .grids()
+            .iter()
+            .map(|(id, ship)| (id, ship.clone()))
+            .collect();
+        let (_, comet) = &ships[1];
+        let rail = comet.rail.expect("the comet is on a rail");
+        let orbit = rail.orbit.unwrap();
+        assert_eq!((orbit.radius, orbit.period), (1.0e9, 5.0e7));
+        assert_eq!(orbit.ratio, 1.0 - 0.25);
+        assert!((orbit.periapsis - degrees(30.0)).abs() < 1e-12);
+        assert!((orbit.phase - degrees(10.0)).abs() < 1e-12);
+        // At the start it is where the ellipse puts it: not on the circle of the same radius.
+        let state = rail.state(0.0, [0.0; 3], [0.0; 3]);
+        assert_eq!(
+            comet.pose.position,
+            voxel_space::WorldPosition::from_voxels(state.position.unwrap())
+        );
+        let place = state.position.unwrap();
+        let distance = (place[0] * place[0] + place[1] * place[1] + place[2] * place[2]).sqrt();
+        assert!(
+            distance < 0.99e9,
+            "{distance} is not nearer than a circle's 1e9"
+        );
+        // The ratio alone makes the long thin one.
+        let (_, thin) = &ships[2];
+        assert_eq!(thin.rail.unwrap().orbit.unwrap().ratio, 1.0e-12);
     }
 
     #[test]

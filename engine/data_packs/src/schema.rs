@@ -9,7 +9,7 @@
 use block_models::{PropertyKind, PropertySchema};
 use serde_json::{Value, json};
 
-use crate::body::{BodyContext, GREATEST_EXTENT_BRICKS, POSITION_LIMIT};
+use crate::body::{BodyContext, GREATEST_EXTENT_BRICKS, POSITION_LIMIT, SMALLEST_ORBIT_RATIO};
 use crate::shape::{FACE_NAMES, SHAPE_NAMES};
 
 /// The schemas of the four kinds of file a pack has.
@@ -202,6 +202,29 @@ fn body(context: &BodyContext<'_>) -> Value {
             })
         })
         .collect();
+    // (The orbit's schema is a value of its own: the macro that writes the whole of this would pass its limit of recursion.)
+    let orbit = json!({
+        "type": "object",
+        "required": ["around", "radius", "period"],
+        "additionalProperties": false,
+        "not": { "required": ["eccentricity", "ratio"] },
+        "properties": {
+            "around": {
+                "description": "what it goes round: a body of the world made before it (such as `my_pack:star`), or a point of the level in voxels",
+                "oneOf": [
+                    { "type": "string", "pattern": identifier_pattern() },
+                    { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "number" } }
+                ]
+            },
+            "normal": { "$ref": "#/$defs/direction", "default": [0, 1, 0], "description": "the circle goes counter-clockwise looking down this (up if left out)" },
+            "radius": { "type": "number", "exclusiveMinimum": 0, "maximum": POSITION_LIMIT, "description": "voxels: the radius of a circle, the semi-major axis of an ellipse" },
+            "eccentricity": { "type": "number", "minimum": 0, "exclusiveMaximum": 1, "default": 0, "description": "how long the ellipse is, from 0 (a circle) up to but not including 1; not with `ratio`" },
+            "ratio": { "type": "number", "minimum": SMALLEST_ORBIT_RATIO, "maximum": 1, "default": 1, "description": "1 - eccentricity, for an ellipse so long that its eccentricity has no digits left to say it; not with `eccentricity`" },
+            "periapsis": { "type": "number", "default": 0, "description": "where the nearest point of an ellipse is, in degrees from where a circle starts, counter-clockwise looking down the normal" },
+            "period": { "$ref": "#/$defs/period", "description": "seconds to go once round; negative goes the other way" },
+            "phase": { "type": "number", "default": 0, "description": "how far round it is at time 0, in degrees (for an ellipse, the mean anomaly)" }
+        }
+    });
     json!({
         "$schema": DIALECT,
         "title": "A Voxunami body",
@@ -270,24 +293,7 @@ fn body(context: &BodyContext<'_>) -> Value {
                             "angle": { "type": "number", "default": 0, "description": "how far it has turned at time 0, in degrees" }
                         }
                     },
-                    "orbit": {
-                        "type": "object",
-                        "required": ["around", "radius", "period"],
-                        "additionalProperties": false,
-                        "properties": {
-                            "around": {
-                                "description": "what it goes round: a body of the world made before it (such as `my_pack:star`), or a point of the level in voxels",
-                                "oneOf": [
-                                    { "type": "string", "pattern": identifier_pattern() },
-                                    { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "number" } }
-                                ]
-                            },
-                            "normal": { "$ref": "#/$defs/direction", "default": [0, 1, 0], "description": "the circle goes counter-clockwise looking down this (up if left out)" },
-                            "radius": { "type": "number", "exclusiveMinimum": 0, "maximum": POSITION_LIMIT, "description": "voxels" },
-                            "period": { "$ref": "#/$defs/period", "description": "seconds to go once round; negative goes the other way" },
-                            "phase": { "type": "number", "default": 0, "description": "how far round it is at time 0, in degrees" }
-                        }
-                    }
+                    "orbit": orbit
                 }
             }
         },

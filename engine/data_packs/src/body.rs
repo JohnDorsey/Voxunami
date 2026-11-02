@@ -22,10 +22,22 @@ const KEYS: [&str; 7] = [
 const TERRAIN_KEYS: [&str; 2] = ["family", "parameters"];
 const RAIL_KEYS: [&str; 2] = ["spin", "orbit"];
 const SPIN_KEYS: [&str; 3] = ["axis", "period", "angle"];
-const ORBIT_KEYS: [&str; 5] = ["around", "normal", "radius", "period", "phase"];
+const ORBIT_KEYS: [&str; 8] = [
+    "around",
+    "normal",
+    "radius",
+    "eccentricity",
+    "ratio",
+    "periapsis",
+    "period",
+    "phase",
+];
 
 /// The farthest a body may be from the origin of its level along an axis, in voxels.
 pub const POSITION_LIMIT: f64 = 1.0e15;
+/// The smallest `ratio` (1 - eccentricity) of an orbit, 2^-64: the rail keeps the ratio in 126 bits, and a number of this size or more is kept exactly
+/// (`world_storage::rail::SMALLEST_RATIO` is the same number; a test of the game shell, which knows both crates, keeps them one).
+pub const SMALLEST_ORBIT_RATIO: f64 = 1.0 / ((1u128 << 64) as f64);
 /// The most bricks either way of its centre that the ground of a body may reach.
 pub const GREATEST_EXTENT_BRICKS: i64 = 1_000_000;
 /// The most a body may weigh, in kilograms (a ship's mass is an `f32`).
@@ -55,12 +67,17 @@ pub enum Around {
     Body(NamespacedId),
 }
 
-/// A circle gone round at a steady rate, as a file says it.
+/// A circle or an ellipse gone round at a steady rate, as a file says it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OrbitData {
     pub around: Around,
     pub normal: [f64; 3],
+    /// The radius of a circle, the semi-major axis of an ellipse.
     pub radius: f64,
+    /// 1 - eccentricity: 1.0 (a circle) if the file says neither the eccentricity nor the ratio.
+    pub ratio: f64,
+    /// Where the nearest point is, from where a circle starts.
+    pub periapsis_degrees: f64,
     pub period: f64,
     pub phase_degrees: f64,
 }
@@ -407,6 +424,11 @@ fn read_orbit(walk: &mut Walk, value: &Value, path: &Path) -> Option<OrbitData> 
         }
         Some(number)
     });
+    let ratio = read_ratio(walk, object, path);
+    let periapsis = match object.get("periapsis") {
+        Some(periapsis) => walk.number(periapsis, &path.key("periapsis")),
+        None => Some(0.0),
+    };
     let period = walk
         .require(object, "period", path)
         .and_then(|period| walk.period(period, &path.key("period")));
@@ -418,9 +440,58 @@ fn read_orbit(walk: &mut Walk, value: &Value, path: &Path) -> Option<OrbitData> 
         around: around?,
         normal: normal?,
         radius: radius?,
+        ratio: ratio?,
+        periapsis_degrees: periapsis?,
         period: period?,
         phase_degrees: phase?,
     })
+}
+
+/// How long and thin an orbit is, as 1 - eccentricity: from `ratio`, or from `eccentricity` (the familiar number, from 0 up to but not including 1), or 1.0, a circle,
+/// if neither is said.
+fn read_ratio(
+    walk: &mut Walk,
+    object: &serde_json::Map<String, Value>,
+    path: &Path,
+) -> Option<f64> {
+    match (object.get("eccentricity"), object.get("ratio")) {
+        (Some(_), Some(_)) => {
+            walk.fail(
+                path,
+                "an orbit has an \"eccentricity\" or a \"ratio\" (1 - eccentricity), not both",
+            );
+            None
+        }
+        (Some(eccentricity), None) => {
+            let eccentricity_path = path.key("eccentricity");
+            let number = walk.number(eccentricity, &eccentricity_path)?;
+            if (0.0..1.0).contains(&number) {
+                return Some(1.0 - number);
+            }
+            walk.fail(
+                &eccentricity_path,
+                format!(
+                    "an eccentricity is from 0 up to but not including 1, found {eccentricity}; for one nearer to 1 than 1e-16, give the \"ratio\" (1 - eccentricity) instead"
+                ),
+            );
+            None
+        }
+        (None, Some(ratio)) => {
+            let ratio_path = path.key("ratio");
+            let number = walk.number(ratio, &ratio_path)?;
+            if (SMALLEST_ORBIT_RATIO..=1.0).contains(&number) {
+                return Some(number);
+            }
+            walk.fail(
+                &ratio_path,
+                format!(
+                    "a ratio (1 - eccentricity) is from {SMALLEST_ORBIT_RATIO:e} up to 1, found {ratio}"
+                ),
+            );
+            None
+        }
+        (None, None) => Some(1.0),
+    }
 }
 
 fn read_around(walk: &mut Walk, value: &Value, path: &Path) -> Option<Around> {

@@ -91,6 +91,8 @@ fn a_body_may_turn_and_may_go_round_a_point_or_another_body_and_says_how_in_seco
             around: Around::Point([1000.0, 0.0, -50.0]),
             normal: [0.0, 0.0, 1.0],
             radius: 1.5e6,
+            ratio: 1.0,
+            periapsis_degrees: 0.0,
             period: 31_557_600.0,
             phase_degrees: 90.0
         })
@@ -264,6 +266,120 @@ fn a_rail_that_is_wrong_says_what_and_where() {
         orbit(r#""around": [0, 0, 0], "radius": 100, "period": 10, "phase": null"#),
         "/rail/orbit/phase",
         "expected a number, found null",
+    );
+}
+
+/// An orbit about the origin with these keys after its period (each beginning with a comma), as the orbit it becomes.
+fn orbit_with(more: &str) -> OrbitData {
+    body(&with_rail(&format!(
+        r#"{{ "orbit": {{ "around": [0, 0, 0], "radius": 100, "period": 10{more} }} }}"#
+    )))
+    .unwrap()
+    .1
+    .rail
+    .unwrap()
+    .orbit
+    .unwrap()
+}
+
+#[test]
+fn an_orbit_may_be_an_ellipse_by_its_eccentricity_or_by_its_ratio_and_has_a_periapsis_in_degrees() {
+    // A circle if the shape is not said: a ratio of 1 and the periapsis nothing.
+    let circle = orbit_with("");
+    assert_eq!((circle.ratio, circle.periapsis_degrees), (1.0, 0.0));
+    // The eccentricity says how long it is, as the familiar number; the program keeps 1 - e.
+    let earth = orbit_with(r#", "eccentricity": 0.0167, "periapsis": 102.9"#);
+    assert_eq!(
+        (earth.ratio, earth.periapsis_degrees),
+        (1.0 - 0.0167, 102.9)
+    );
+    assert_eq!(orbit_with(r#", "eccentricity": 0"#).ratio, 1.0);
+    // The ratio says it where 1 - e is too near 1 - 1e-16 to write as an eccentricity.
+    assert_eq!(orbit_with(r#", "ratio": 1e-18"#).ratio, 1.0e-18);
+    assert_eq!(orbit_with(r#", "ratio": 1"#).ratio, 1.0);
+    // The ends: the smallest ratio, and the largest eccentricity a number below 1 can be.
+    let smallest = format!(r#", "ratio": {:e}"#, data_packs::SMALLEST_ORBIT_RATIO);
+    assert_eq!(
+        orbit_with(&smallest).ratio,
+        data_packs::SMALLEST_ORBIT_RATIO
+    );
+    let nearly_one = 1.0 - f64::EPSILON / 2.0;
+    assert_eq!(
+        orbit_with(&format!(r#", "eccentricity": {nearly_one:?}"#)).ratio,
+        1.0 - nearly_one
+    );
+    // A periapsis is a number of degrees as a phase is, of either sign.
+    assert_eq!(orbit_with(r#", "periapsis": -45"#).periapsis_degrees, -45.0);
+}
+
+#[test]
+fn an_ellipse_that_is_wrong_says_what_and_where() {
+    let one = |more: &str, path: &str, message: &str| {
+        let text = with_rail(&format!(
+            r#"{{ "orbit": {{ "around": [0, 0, 0], "radius": 100, "period": 10{more} }} }}"#
+        ));
+        assert_eq!(errors(&text), [format!("{FILE}: {path}: {message}")]);
+    };
+    one(
+        r#", "eccentricity": 0.5, "ratio": 0.5"#,
+        "/rail/orbit",
+        "an orbit has an \"eccentricity\" or a \"ratio\" (1 - eccentricity), not both",
+    );
+    let eccentricity = "an eccentricity is from 0 up to but not including 1";
+    let nearer = "for one nearer to 1 than 1e-16, give the \"ratio\" (1 - eccentricity) instead";
+    one(
+        r#", "eccentricity": 1"#,
+        "/rail/orbit/eccentricity",
+        &format!("{eccentricity}, found 1; {nearer}"),
+    );
+    one(
+        r#", "eccentricity": -0.1"#,
+        "/rail/orbit/eccentricity",
+        &format!("{eccentricity}, found -0.1; {nearer}"),
+    );
+    one(
+        r#", "eccentricity": "round""#,
+        "/rail/orbit/eccentricity",
+        "expected a number, found text",
+    );
+    let smallest = data_packs::SMALLEST_ORBIT_RATIO;
+    let ratio = format!("a ratio (1 - eccentricity) is from {smallest:e} up to 1");
+    one(
+        r#", "ratio": 0"#,
+        "/rail/orbit/ratio",
+        &format!("{ratio}, found 0"),
+    );
+    one(
+        r#", "ratio": 1.5"#,
+        "/rail/orbit/ratio",
+        &format!("{ratio}, found 1.5"),
+    );
+    one(
+        r#", "ratio": 1e-30"#,
+        "/rail/orbit/ratio",
+        &format!("{ratio}, found 1e-30"),
+    );
+    one(
+        r#", "ratio": true"#,
+        "/rail/orbit/ratio",
+        "expected a number, found true or false",
+    );
+    one(
+        r#", "periapsis": null"#,
+        "/rail/orbit/periapsis",
+        "expected a number, found null",
+    );
+    // A misspelt key is found among the keys of an orbit, which now include the three.
+    let text = with_rail(
+        r#"{ "orbit": { "around": [0, 0, 0], "radius": 100, "period": 10, "eccentricty": 0.1 } }"#,
+    );
+    let found = errors(&text);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found[0].contains(
+            "/rail/orbit/eccentricty: unknown key \"eccentricty\" (did you mean \"eccentricity\"?)"
+        ) && found[0].contains("\"eccentricity\", \"ratio\", \"periapsis\""),
+        "{found:?}"
     );
 }
 

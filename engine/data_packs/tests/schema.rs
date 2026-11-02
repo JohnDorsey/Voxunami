@@ -721,6 +721,56 @@ fn corpus() -> Vec<Case> {
             "an orbit in no plane",
             r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": [0, 0, 0], "normal": [0, 0, 0], "radius": 100, "period": 60 } } }"#,
         ),
+        ok(
+            Body,
+            "an ellipse by its eccentricity and its periapsis",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": [0, 0, 0], "radius": 1e6, "period": 60, "eccentricity": 0.0167, "periapsis": 102.9 } } }"#,
+        ),
+        ok(
+            Body,
+            "an ellipse by its ratio",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": [0, 0, 0], "radius": 1e6, "period": 60, "ratio": 1e-18 } } }"#,
+        ),
+        ok(
+            Body,
+            "an ellipse with the smallest ratio",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": [0, 0, 0], "radius": 1e6, "period": 60, "ratio": 5.421010862427522e-20 } } }"#,
+        ),
+        bad(
+            Body,
+            "an orbit with an eccentricity and a ratio",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": [0, 0, 0], "radius": 1e6, "period": 60, "eccentricity": 0.5, "ratio": 0.5 } } }"#,
+        ),
+        bad(
+            Body,
+            "an eccentricity of one",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": [0, 0, 0], "radius": 1e6, "period": 60, "eccentricity": 1 } } }"#,
+        ),
+        bad(
+            Body,
+            "an eccentricity below nothing",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": [0, 0, 0], "radius": 1e6, "period": 60, "eccentricity": -0.1 } } }"#,
+        ),
+        bad(
+            Body,
+            "a ratio of nothing",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": [0, 0, 0], "radius": 1e6, "period": 60, "ratio": 0 } } }"#,
+        ),
+        bad(
+            Body,
+            "a ratio above one",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": [0, 0, 0], "radius": 1e6, "period": 60, "ratio": 1.5 } } }"#,
+        ),
+        bad(
+            Body,
+            "a ratio below the smallest",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": [0, 0, 0], "radius": 1e6, "period": 60, "ratio": 1e-30 } } }"#,
+        ),
+        bad(
+            Body,
+            "a periapsis that is no number",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": [0, 0, 0], "radius": 1e6, "period": 60, "periapsis": "near" } } }"#,
+        ),
         bad(
             Body,
             "an orbit with a phase that is no number",

@@ -65,7 +65,10 @@ same numbers (a test pins the generator's output for it, bit for bit, against `s
 
 - `spin`: the planet turns about an axis (in its parent's frame) once in `period` seconds, from an `angle` at tick 0.
 - `orbit`: the planet's centre goes round a `parent` (another planet of the level, or a fixed point) on a circle of `radius` in a plane (a normal), once in `period` seconds, from
-  a `phase` at tick 0. *Circular only to begin with*; the type is an enum so that Kepler's ellipses (`eccentricity`, `argument of periapsis`) can be added without changing a file.
+  a `phase` at tick 0. **An ellipse (2026-11-02, step A3 of `docs/orbits-and-thrust-plan.md`):** `radius` is then the semi-major axis, `ratio` = 1 - e (the periapsis over the semi-major axis; 1.0 is a circle,
+  and an `f64` holds a ratio of 1e-18 exactly where it holds an eccentricity of 1 - 1e-18 as 1), `periapsis` is the angle of the nearest point from where a circle starts, and `phase` is the mean anomaly at tick 0.
+  Kepler's equation is solved in whole numbers (`engine/world_storage/src/exact_kepler.rs`: an `f64` first guess, three Newton steps in 126 bits; 2.7 microseconds), right to the sine's own
+  accuracy except at the sharpest ellipses near their nearest point, where the equation magnifies it (documented in the plan, A2). A circle is the same bits as before, and in a ship file the same bytes.
 - Position and orientation are **a pure function of the world clock**: `libm` sine and cosine in `f64`, the same bits on every machine; no state is integrated, so there
   is nothing to drift and nothing to save but the clock. The velocity is the analytic derivative.
 - **Exact in time and in place (after 40f, 2026-10-27).** The time of a rail is a `RailTime`, a whole number of units (the world gives the tick itself; seconds as an `f64` are for data
@@ -114,7 +117,7 @@ Each ends with tests (first), clippy, rustfmt, the Windows and Linux suites, mut
 
 ## 5. Questions for the owner (my default first; I build the default unless told)
 
-1. **Circular orbits first, ellipses later?** *Default: yes.* An elliptical orbit is a function of time too (Kepler's equation needs an iteration or a series; it is doable
+1. **Circular orbits first, ellipses later?** *Default: yes. Ellipses are built (2026-11-02, A3 of `docs/orbits-and-thrust-plan.md`).* An elliptical orbit is a function of time too (Kepler's equation needs an iteration or a series; it is doable
    with `libm`), but a circle is enough to put a moon round a planet and a planet round a star.
 2. **The sun.** *Built (40f) as a ball of ground, not the default below; say if you want the other.* A body with a mass and no terrain (a point that pulls) or a planet with a large ball of ground? *Default: a body with a mass and a radius and no terrain* (it
    cannot be walked on, and is drawn by the client as a light); it is a ship with `terrain: None`, `held`, a mass, so the pull code already treats it (the threshold of

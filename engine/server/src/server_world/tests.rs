@@ -973,6 +973,87 @@ fn a_ship_6_x_10_to_the_26_voxels_from_what_it_goes_round_is_where_the_turn_work
     }
 }
 
+/// `(radius, ratio, periapsis, the brick, the offset in it)` of the place the ellipse puts a ship.
+type EllipseCase = (f64, f64, f64, [i128; 3], [f64; 3]);
+
+#[test]
+fn a_ship_on_an_ellipse_round_another_ship_is_where_the_ellipse_worked_out_at_120_digits_puts_it() {
+    // The same centre (brick (1000, -2000, 3000), offset (3.5, 7.25, 30)), the same year of 9 x 10^8 seconds, phase of one radian and 123,456,789 ticks at twenty a second, but a
+    // long ellipse: a semi-major axis of 5 x 10^17 and a ratio of 0.05, and one the size of the universe (6 x 10^26) with a ratio of 1e-6. The expected places are those of
+    // `exact_ellipse_reference.py` (`offset`, plus the centre), at 120 digits.
+    let cases: [EllipseCase; 2] = [
+        (
+            5.0e17,
+            0.05,
+            0.8,
+            [
+                -13_969_245_464_157_118,
+                10_476_934_098_116_587,
+                11_427_775_334_074_660,
+            ],
+            [10.987798329006955, 18.616195351347038, 30.939499312998983],
+        ),
+        (
+            6.0e26,
+            1.0e-6,
+            -2.0,
+            [
+                8_663_271_653_576_905_669_928_917,
+                -6_497_453_740_182_678_651_312_709,
+                -23_603_185_089_804_907_253_314_142,
+            ],
+            [5.67201703317131, 2.3880532875515854, 31.605249245008604],
+        ),
+    ];
+    for (radius, ratio, periapsis, bricks, expected) in cases {
+        let mut world = world_for_rails();
+        let centre = world
+            .create_grid(
+                LevelIndex::MAIN,
+                GridPose::new(
+                    WorldPosition::new(BrickCoordinate::new(1000, -2000, 3000), [3.5, 7.25, 30.0]),
+                    Orientation::IDENTITY,
+                ),
+            )
+            .unwrap();
+        let body = world
+            .create_grid(LevelIndex::MAIN, GridPose::identity())
+            .unwrap();
+        let rail = Rail {
+            spin: None,
+            orbit: Some(
+                Orbit::elliptical(
+                    Centre::Grid(centre),
+                    [0.6, 0.8, 0.0],
+                    radius,
+                    ratio,
+                    periapsis,
+                    9.0e8,
+                    1.0,
+                )
+                .unwrap(),
+            ),
+        };
+        world.set_grid_rail(body, Some(rail)).unwrap();
+        world.data.set_clock(123_456_789);
+        world.apply_rails(20);
+        let found = world.data().grids().get(body).unwrap().pose.position;
+        assert_eq!(
+            [found.brick().x(), found.brick().y(), found.brick().z()],
+            bricks,
+            "radius {radius}"
+        );
+        for axis in 0..3 {
+            // (Half a step of an f32 between 16 and 32 is 0.95 x 10^-6.)
+            assert!(
+                (f64::from(found.offset()[axis]) - expected[axis]).abs() < 1.0e-6,
+                "radius {radius}: {:?} against {expected:?}",
+                found.offset()
+            );
+        }
+    }
+}
+
 #[test]
 fn what_stands_on_a_body_on_a_rail_does_not_feel_what_it_goes_round_since_it_falls_with_it() {
     let mut world = world_for_rails();

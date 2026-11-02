@@ -387,6 +387,10 @@ mod tests {
             "my_pack/bodies/moon.json",
             &json_block_after(&guide, "## A body"),
         );
+        packs.write(
+            "my_pack/bodies/comet.json",
+            &json_block_after(&guide, "**An ellipse, in full**"),
+        );
         assert_eq!(
             run(vec!["check-pack".into(), "cave".into(), packs.argument()]),
             Ok(())

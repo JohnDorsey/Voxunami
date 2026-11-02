@@ -72,7 +72,7 @@ with its numbers and what was found, is in `history/decision-diary.md`. Entries 
 - **A planet is a body: a file of a pack (`bodies/NAME.json`)** naming a level, a place, a family with its parameters, the extent of the ground and its weight.
   The family has a data side that reads parameters and makes their JSON Schema; the game's own planet is a body of the game's own data; a world takes its
   bodies when it is made, never when loaded; a pack whose body cannot be made is refused at load.
-- **A rail is part of a ship (a spin and/or a circular orbit) and a pure function of the world's clock** (`libm` in `f64`, pinned to the bit), so nothing is integrated
+- **A rail is part of a ship (a spin and/or an orbit, a circle or an ellipse) and a pure function of the world's clock** (`libm` in `f64`, pinned to the bit), so nothing is integrated
   and nothing drifts. The engine puts ships on their rails in order of their numbers, so a moon follows its planet. A body on a rail is in free fall with what it
   goes round. A rail is a function of whole ticks (`RailTime`), and an orbit's offset is worked out in 128-bit fixed point (`ExactOffset`) and kept as bricks and a rest.
   Limits: a radius of at most 2^120 voxels, a period of at most 2^80 seconds, a phase of at most 2^63 radians.
