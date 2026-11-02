@@ -90,6 +90,14 @@ So on a ship that turns, a standing player's eye height jerks by about a centime
 **A fix is not made.** Options: do the gravity step along the floor's normal (or skip it) while the character is grounded and has no velocity along `up`; drop the sideways part of a downward move that is shorter than the
 skin; keep the shape's turn unchanged until `up` has changed by more than a threshold. Each changes how a character stands and needs the regression test the reproduction can become.
 
+## What reading a ship back as f32 and giving it to the solver again costs (2026-11-01)
+Rapier keeps each body's pose and speed in `f64` in the `BodyWorld` of its frame between ticks. After each step the plugin reads the state and writes it into the grid (`write_back`: the offset in a brick and the speeds
+become `f32`); it gives a ship to the solver again (`set_state`) only when something else changed the grid (`moved` in `sync_ship`, comparing with what it wrote), when it is first added, when it moves to another frame
+(after 2 x 500 bricks, 32 km), when it is frozen (the grid's speed is zeroed, so the comparison differs), and when it is loaded. Measured (`spikes/joints/refeed_test.rs`), a body at 840 m/s for an hour (72,000 ticks),
+against the same run left alone: read back and given again every tick, 2.7 cm out; every 20 ticks 0.8 mm; every 400 ticks (about what frame moves are) 0.03 mm; ten times 0.003 mm. A slow turning body, every 400 ticks: 0.05 mm.
+Re-rounding a value that is already an `f32` changes nothing, so a ship that sits still through any number of freezes and loads loses nothing after the first. A frozen ship loses its speed *by design*
+(`set_grid_frozen`), which is not a rounding.
+
 ## Determinism
 `rapier3d-f64` 0.36.1 has the `enhanced-determinism` feature (crates.io metadata: `simba/libm_force`, `parry3d-f64/enhanced-determinism`). In the source it replaces the hash map of pairs with an ordered
 `IndexMap` and fixes the transcendental functions to libm; it cannot be combined with `simd8`. Without it the solve order can differ between runs on one machine (Rapier's own regression test for
