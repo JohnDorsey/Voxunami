@@ -512,3 +512,288 @@ fn a_frozen_ship_on_a_rail_goes_on_round_and_one_that_is_not_loses_its_speed() {
         [0.0; 3]
     );
 }
+
+// ---- a change of the mass of the planet (the owner's rule, 2026-11-02) ----
+
+/// A tick as the server runs it for what is on rails: the clock passes, the rails put ships where they say, the ships that coast are put on rails or taken off, and the rails put
+/// them again (where nothing changed, nothing moves).
+fn server_tick(world: &mut ServerWorld, tick: u64) {
+    world.data.set_clock(tick);
+    world.apply_rails(TICKS);
+    world.update_coasting(TICKS);
+    world.apply_rails(TICKS);
+}
+
+/// A ship on an ellipse round the planet of `space`: it starts at the far end, 10,000 voxels along x, the near end is 5,000 (the semi-major axis is 7,500 and the ratio 2/3), and it has
+/// gone on a rail at tick 21. Returns the world, the ship and the planet, with the clock at 21.
+fn a_ship_on_an_ellipse() -> (ServerWorld, GridId, GridId) {
+    let (mut world, planet) = space();
+    let mu = PULL * 1.0e22;
+    let speed = libm::sqrt(mu * (2.0 / 10_000.0 - 1.0 / 7_500.0));
+    let ship = ship_at(&mut world, [10_000.0, 0.0, 0.0], [0.0, 0.0, speed]);
+    for tick in 0..=21 {
+        server_tick(&mut world, tick);
+    }
+    assert!(rail_of(&world, ship).is_some(), "on a rail at tick 21");
+    (world, ship, planet)
+}
+
+fn orbit_of(world: &ServerWorld, ship: GridId) -> Orbit {
+    rail_of(world, ship).unwrap().orbit.unwrap()
+}
+
+/// Runs the server's ticks after `from` until the rail of the ship is not `old`, or `last` has been run, and says the tick in which it changed.
+fn until_the_rail_changes(
+    world: &mut ServerWorld,
+    ship: GridId,
+    old: Option<Rail>,
+    from: u64,
+    last: u64,
+) -> Option<u64> {
+    for tick in from + 1..=last {
+        server_tick(world, tick);
+        if rail_of(world, ship) != old {
+            return Some(tick);
+        }
+    }
+    None
+}
+
+/// The ticks after `from` up to `last` in which a rail passes an end, as a ship works that out: the stretch of time that a tick stands for, half a tick either side of it.
+fn ticks_of_the_end(orbit: Orbit, from: u64, last: u64, periapsis: bool) -> Vec<u64> {
+    (from + 1..=last)
+        .filter(|&tick| {
+            let passed = orbit.apsides_passed(
+                RailTime::of_half_ticks(2 * tick - 1, TICKS),
+                RailTime::of_half_ticks(2 * tick + 1, TICKS),
+            );
+            if periapsis {
+                passed.periapsis
+            } else {
+                passed.apoapsis
+            }
+        })
+        .collect()
+}
+
+/// How far from the planet a ship is, in voxels.
+fn from_the_planet(world: &ServerWorld, ship: GridId, planet: GridId) -> f64 {
+    distance_between(
+        world.data().grids().get(planet).unwrap().pose.position,
+        world.data().grids().get(ship).unwrap().pose.position,
+    )
+}
+
+fn periapsis_of(orbit: Orbit) -> f64 {
+    orbit.radius * orbit.ratio
+}
+
+fn apoapsis_of(orbit: Orbit) -> f64 {
+    orbit.radius * (2.0 - orbit.ratio)
+}
+
+#[test]
+fn a_planet_that_weighs_more_is_answered_at_the_nearest_point_and_the_ship_cannot_fall_into_it() {
+    let (mut world, ship, planet) = a_ship_on_an_ellipse();
+    let old = rail_of(&world, ship);
+    let before = orbit_of(&world, ship);
+    assert!((periapsis_of(before) / 5_000.0 - 1.0).abs() < 1e-6);
+    assert!((apoapsis_of(before) / 10_000.0 - 1.0).abs() < 1e-6);
+    // (An increase of a fifth: the speed at the nearest point is that of a circle for 1.333 times the mass, so it is still the nearest point with a mass of up to that.)
+    let mass = 1.2e22;
+    world.set_grid_mass(planet, mass, [0.0; 3]).unwrap();
+    // The first end that comes is the nearest, half a period on; a ship does not answer at the far end that comes after it.
+    let expected = ticks_of_the_end(before, 21, 400, true)[0];
+    assert!(expected < ticks_of_the_end(before, 21, 400, false)[0]);
+    let tick = until_the_rail_changes(&mut world, ship, old, 21, 400).expect("answered");
+    assert_eq!(
+        tick, expected,
+        "answered in the tick that passes the nearest point"
+    );
+    let after = orbit_of(&world, ship);
+    assert!((after.mass_parameter() / (PULL * mass) - 1.0).abs() < 1e-12);
+    // The nearest point stays where it was, to the part of a tick that the ship is from it, and the far end comes in.
+    assert!(
+        (periapsis_of(after) / periapsis_of(before) - 1.0).abs() < 5e-3,
+        "{} against {}",
+        periapsis_of(after),
+        periapsis_of(before)
+    );
+    assert!(apoapsis_of(after) < 0.8 * apoapsis_of(before), "{after:?}");
+    assert!(
+        (from_the_planet(&world, ship, planet) / periapsis_of(before) - 1.0).abs() < 5e-3,
+        "it was at the nearest point"
+    );
+    // And it is not answered again: the mass the elements say is the mass now.
+    let kept = rail_of(&world, ship);
+    for later in tick + 1..tick + 400 {
+        server_tick(&mut world, later);
+    }
+    assert_eq!(rail_of(&world, ship), kept);
+}
+
+#[test]
+fn a_planet_that_weighs_less_is_answered_at_the_far_point_and_the_ship_cannot_be_thrown_out() {
+    let (mut world, ship, planet) = a_ship_on_an_ellipse();
+    let old = rail_of(&world, ship);
+    let before = orbit_of(&world, ship);
+    let mass = 0.7e22;
+    world.set_grid_mass(planet, mass, [0.0; 3]).unwrap();
+    // The first end that comes is the nearest; the ship lets it pass and answers at the far one.
+    let near = ticks_of_the_end(before, 21, 400, true)[0];
+    let far = ticks_of_the_end(before, 21, 400, false)[0];
+    assert!(near < far);
+    let tick = until_the_rail_changes(&mut world, ship, old, 21, 400).expect("answered");
+    assert_eq!(
+        tick, far,
+        "answered at the far end, not at the near one at {near}"
+    );
+    let after = orbit_of(&world, ship);
+    assert!((after.mass_parameter() / (PULL * mass) - 1.0).abs() < 1e-12);
+    assert!(
+        (apoapsis_of(after) / apoapsis_of(before) - 1.0).abs() < 5e-3,
+        "{} against {}",
+        apoapsis_of(after),
+        apoapsis_of(before)
+    );
+    assert!(
+        periapsis_of(after) > 1.2 * periapsis_of(before),
+        "{after:?}"
+    );
+    assert!(
+        (from_the_planet(&world, ship, planet) / apoapsis_of(before) - 1.0).abs() < 5e-3,
+        "it was at the far end"
+    );
+}
+
+#[test]
+fn the_answer_is_continuous_in_the_place_and_in_the_speed() {
+    // Two worlds that are the same until the tick of the answer: in one the planet weighs what it did, so its ship goes on on the old rail, and in the other it weighs more.
+    let (mut changed, ship, planet) = a_ship_on_an_ellipse();
+    let (mut unchanged, other, _) = a_ship_on_an_ellipse();
+    assert_eq!(ship, other);
+    let old = rail_of(&changed, ship);
+    changed.set_grid_mass(planet, 1.5e22, [0.0; 3]).unwrap();
+    let tick = until_the_rail_changes(&mut changed, ship, old, 21, 400).expect("answered");
+    for later in 22..=tick {
+        server_tick(&mut unchanged, later);
+    }
+    assert_eq!(rail_of(&unchanged, ship), old);
+    let (new, was) = (
+        changed.data().grids().get(ship).unwrap(),
+        unchanged.data().grids().get(ship).unwrap(),
+    );
+    assert!(
+        distance_between(was.pose.position, new.pose.position) < 1e-6,
+        "{:?} then {:?}",
+        was.pose.position,
+        new.pose.position
+    );
+    for axis in 0..3 {
+        assert!(
+            (was.linear_velocity[axis] - new.linear_velocity[axis]).abs() < 1e-6,
+            "{:?} then {:?}",
+            was.linear_velocity,
+            new.linear_velocity
+        );
+    }
+}
+
+#[test]
+fn a_circle_has_no_ends_and_is_answered_at_once() {
+    let (mut world, ship) = a_circle_at_the_start_of_the_clock();
+    for tick in 0..=21 {
+        server_tick(&mut world, tick);
+    }
+    let old = rail_of(&world, ship);
+    assert!(old.is_some());
+    world
+        .set_grid_mass(GridId::new(GridId::FIRST_ALLOCATED), 1.2e22, [0.0; 3])
+        .unwrap();
+    let tick = until_the_rail_changes(&mut world, ship, old, 21, 400).expect("answered");
+    assert_eq!(tick, 22);
+    assert!((orbit_of(&world, ship).mass_parameter() / (PULL * 1.2e22) - 1.0).abs() < 1e-12);
+}
+
+#[test]
+fn a_decrease_that_leaves_the_ship_no_ellipse_takes_it_off_its_rail_at_the_far_end() {
+    // One that the speed at the far end is too great for (the speed of escape there falls to 5,166 voxels a second, and it goes 6,670), and a planet that pulls nothing.
+    for mass in [0.2e22, 1.0e10] {
+        let (mut world, ship, planet) = a_ship_on_an_ellipse();
+        let old = rail_of(&world, ship);
+        let before = orbit_of(&world, ship);
+        world.set_grid_mass(planet, mass, [0.0; 3]).unwrap();
+        let far = ticks_of_the_end(before, 21, 400, false)[0];
+        let tick = until_the_rail_changes(&mut world, ship, old, 21, 400).expect("answered");
+        assert_eq!(tick, far, "mass {mass}");
+        assert_eq!(rail_of(&world, ship), None, "mass {mass}");
+        // It goes on as it was going.
+        let speed = world.data().grids().get(ship).unwrap().linear_velocity;
+        assert!(speed.iter().any(|part| *part != 0.0));
+    }
+}
+
+#[test]
+fn a_change_of_the_mass_that_is_nothing_is_not_answered() {
+    let (mut world, ship, planet) = a_ship_on_an_ellipse();
+    let old = rail_of(&world, ship);
+    world
+        .set_grid_mass(planet, 1.0e22 * (1.0 + 1.0e-12), [0.0; 3])
+        .unwrap();
+    assert_eq!(until_the_rail_changes(&mut world, ship, old, 21, 600), None);
+}
+
+#[test]
+fn a_change_of_the_pull_strength_is_a_change_of_the_mass_parameter_and_answered_alike() {
+    let (mut world, ship, _) = a_ship_on_an_ellipse();
+    let old = rail_of(&world, ship);
+    let before = orbit_of(&world, ship);
+    let settings = *world.gravity_settings();
+    world.set_gravity_settings(GravitySettings {
+        pull_strength: settings.pull_strength * 1.3,
+        ..settings
+    });
+    let near = ticks_of_the_end(before, 21, 400, true)[0];
+    let tick = until_the_rail_changes(&mut world, ship, old, 21, 400).expect("answered");
+    assert_eq!(tick, near);
+    assert!((orbit_of(&world, ship).mass_parameter() / (PULL * 1.3 * 1.0e22) - 1.0).abs() < 1e-12);
+}
+
+#[test]
+fn a_change_that_is_more_than_the_eccentricity_turns_the_end_it_is_answered_at_into_the_other_end_and_moves_the_other_by_more()
+ {
+    // The owner's rule keeps the distance at the end of the ellipse where the answer is made, but as an end: how much a ship's speed there is from that of a circle for the new mass
+    // says which end it is after. At the nearest point the speed is that of a circle for (1 + e) times the mass (e = 1/3 here), so a planet that weighs half as much again
+    // (more than 4/3) makes that point the *far* end of the new ellipse, and the near end goes down by what is left: here a fifth. Likewise a ship at the far end, whose speed is that of a
+    // circle for (1 - e) = 2/3 of the mass, is at the *near* end of the orbit round a planet of half the mass, and the far end goes out. Both orbits are what a ship of that state
+    // has round that mass; nothing here is made safe, and the check of the orbit (above the ground and inside the sphere) is what takes a ship off its rail if it is not.
+    let (mut world, ship, planet) = a_ship_on_an_ellipse();
+    let old = rail_of(&world, ship);
+    let before = orbit_of(&world, ship);
+    world.set_grid_mass(planet, 1.5e22, [0.0; 3]).unwrap();
+    let near = ticks_of_the_end(before, 21, 400, true)[0];
+    let tick = until_the_rail_changes(&mut world, ship, old, 21, 400).expect("answered");
+    assert_eq!(tick, near);
+    let after = orbit_of(&world, ship);
+    assert!(
+        (apoapsis_of(after) / periapsis_of(before) - 1.0).abs() < 5e-3,
+        "{after:?}"
+    );
+    assert!(
+        periapsis_of(after) < 0.85 * periapsis_of(before),
+        "{after:?}"
+    );
+
+    let (mut world, ship, planet) = a_ship_on_an_ellipse();
+    let old = rail_of(&world, ship);
+    world.set_grid_mass(planet, 0.5e22, [0.0; 3]).unwrap();
+    let far = ticks_of_the_end(before, 21, 400, false)[0];
+    let tick = until_the_rail_changes(&mut world, ship, old, 21, 400).expect("answered");
+    assert_eq!(tick, far);
+    let after = orbit_of(&world, ship);
+    assert!(
+        (periapsis_of(after) / apoapsis_of(before) - 1.0).abs() < 5e-3,
+        "{after:?}"
+    );
+    assert!(apoapsis_of(after) > 1.2 * apoapsis_of(before), "{after:?}");
+}

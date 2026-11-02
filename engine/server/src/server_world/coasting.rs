@@ -33,6 +33,10 @@ const NEAR_MARGIN: f64 = 64.0;
 /// The seconds a ship would go on at the speed it closes at, for how near it may come.
 const NEAR_SECONDS: f64 = 1.0;
 
+/// How much a mass parameter has to differ from the one an orbit was made with, as a part of it, to be a change (one in a billion: the period and the axis of an orbit say the
+/// mass they were made with to a part in 10^15, and the mass of a planet is not worked out to better than that).
+const MASS_CHANGE_THAT_COUNTS: f64 = 1.0e-9;
+
 /// Why a ship is not on a rail that goes round a planet.
 #[derive(Clone, Debug, PartialEq)]
 pub enum NotCoasting {
@@ -137,11 +141,36 @@ impl ServerWorld {
         let (parent, planet, place) = self
             .planet_that_pulls_most(grid, ship, middle)
             .ok_or(NotCoasting::NoPlanetPulls)?;
-        let mu = self.gravity.pull_strength * planet.mass;
+        let orbit = self.orbit_from_the_state(ship, parent, planet, place, time)?;
+        if let Some(near) = self.near(grid, ship, Some(parent), 2.0) {
+            return Err(NotCoasting::SomethingNear(near));
+        }
+        Ok(Rail {
+            spin: None,
+            orbit: Some(orbit),
+        })
+    }
+
+    /// The orbit a ship's speed and `place` (its centre of mass from the middle of the planet) are on round `planet`, with the mass the planet has now, if it is one the ship may go on a
+    /// rail in: it does not come lower than the ground and what the planet carries, and does not go out of the planet's sphere of influence.
+    fn orbit_from_the_state(
+        &self,
+        ship: &MovingGrid,
+        parent: GridId,
+        planet: &MovingGrid,
+        place: [f64; 3],
+        time: RailTime,
+    ) -> Result<Orbit, NotCoasting> {
         let relative_velocity: [f64; 3] =
             [0, 1, 2].map(|axis| ship.linear_velocity[axis] - planet.linear_velocity[axis]);
-        let orbit = Orbit::from_place(Centre::Grid(parent), place, relative_velocity, mu, time)
-            .map_err(NotCoasting::NoOrbit)?;
+        let orbit = Orbit::from_place(
+            Centre::Grid(parent),
+            place,
+            relative_velocity,
+            self.mass_parameter_of(planet),
+            time,
+        )
+        .map_err(NotCoasting::NoOrbit)?;
         // How low it comes, and how far out it goes.
         let lowest = orbit.radius * orbit.ratio;
         let least = self.least_to_go_round(parent, planet);
@@ -154,13 +183,17 @@ impl ServerWorld {
                 return Err(NotCoasting::PastTheSphere { farthest, sphere });
             }
         }
-        if let Some(near) = self.near(grid, ship, Some(parent), 2.0) {
-            return Err(NotCoasting::SomethingNear(near));
+        Ok(orbit)
+    }
+
+    /// `G M` of a planet, in voxels cubed a second squared: what it pulls with, which is nothing if it weighs less than what pulls.
+    fn mass_parameter_of(&self, planet: &MovingGrid) -> f64 {
+        match self.gravity.pull_mass_threshold {
+            Some(threshold) if planet.mass >= threshold && planet.mass > 0.0 => {
+                self.gravity.pull_strength * planet.mass
+            }
+            _ => 0.0,
         }
-        Ok(Rail {
-            spin: None,
-            orbit: Some(orbit),
-        })
     }
 
     /// Where the centre of mass of a ship is in the world.
@@ -308,6 +341,64 @@ impl ServerWorld {
             || self.near(grid, ship, Some(parent), 1.0).is_some()
     }
 
+    /// Answers a change of the mass of the planet a ship goes round, as the owner chose (2026-11-02): a ship that is on a rail made for another mass parameter than the planet has now
+    /// (the elements say the one they were made with: [`Orbit::mass_parameter`]) is made an orbit again from its place and its speed, which a change of mass does not touch, **at the
+    /// end of the ellipse where that is safe**. A change keeps the distance at the end it is made at, since the speed there is across the radius, and moves the other end: an
+    /// **increase** is answered at the periapsis (the far end comes in: it cannot fall into the planet) and a **decrease** at the apoapsis (the near end goes out: it cannot be
+    /// thrown out), and at the other end the ship waits. A circle has no ends and answers at once. An end is passed in the tick whose half-tick either side it is in, so the ship is the
+    /// nearest tick to it. A ship that is on no ellipse with the new mass (it would escape, or the planet pulls nothing, or the orbit would be in the ground) is taken off its rail,
+    /// as it is, to go on as the bodies have it.
+    fn answer_a_change_of_mass(&mut self, grid: GridId, ticks_per_second: u32) {
+        let now = self.data.clock();
+        let Some(ship) = self.data.grids().get(grid) else {
+            return;
+        };
+        let Some(orbit) = ship.rail.and_then(|rail| rail.orbit) else {
+            return;
+        };
+        let Centre::Grid(parent) = orbit.around else {
+            return;
+        };
+        let Some(planet) = self.data.grids().get(parent) else {
+            return;
+        };
+        let (known, now_mu) = (orbit.mass_parameter(), self.mass_parameter_of(planet));
+        let change = now_mu / known - 1.0;
+        if change.abs() <= MASS_CHANGE_THAT_COUNTS {
+            return;
+        }
+        let answers_now = orbit.ratio == 1.0 || {
+            let passed = orbit.apsides_passed(
+                RailTime::of_half_ticks((2 * now).saturating_sub(1), ticks_per_second),
+                RailTime::of_half_ticks(2 * now + 1, ticks_per_second),
+            );
+            if change > 0.0 {
+                passed.periapsis
+            } else {
+                passed.apoapsis
+            }
+        };
+        if !answers_now {
+            return;
+        }
+        let fitted = self.middle_of(ship).and_then(|middle| {
+            let place = planet.pose.position.displacement_to(middle).in_voxels();
+            self.orbit_from_the_state(
+                ship,
+                parent,
+                planet,
+                place,
+                RailTime::of_tick(now, ticks_per_second),
+            )
+            .ok()
+        });
+        let rail = fitted.map(|orbit| Rail {
+            spin: None,
+            orbit: Some(orbit),
+        });
+        let _ = self.set_grid_rail(grid, rail);
+    }
+
     /// Puts quiet ships on rails and takes off those that have to come off, as the last of what is done in a tick before the rails are applied: a ship that has been undisturbed
     /// for [`QUIET_SECONDS`] and can coast is put on the orbit its place and speed are on, and one on a rail of this module that is held, turns, has something near it, or goes
     /// round nothing is taken off, as it is, at the place and the speed the rail gave it.
@@ -329,6 +420,8 @@ impl ServerWorld {
                     if self.has_to_leave_its_rail(id) {
                         self.quiet_since.remove(&id);
                         let _ = self.set_grid_rail(id, None);
+                    } else {
+                        self.answer_a_change_of_mass(id, ticks_per_second);
                     }
                 }
                 Some(_) => {}

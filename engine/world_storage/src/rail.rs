@@ -72,6 +72,15 @@ pub struct Orbit {
     pub phase: f64,
 }
 
+/// Which ends of an ellipse a body passed in a stretch of time (see [`Orbit::apsides_passed`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Apsides {
+    /// The nearest point to the centre, the periapsis.
+    pub periapsis: bool,
+    /// The farthest, the apoapsis.
+    pub apoapsis: bool,
+}
+
 /// How a body moves.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rail {
@@ -162,6 +171,21 @@ impl RailTime {
         Self {
             units: i128::from(tick),
             units_per_second: ticks_per_second,
+        }
+    }
+}
+
+impl RailTime {
+    /// The time `half_ticks` half ticks into a clock that makes `ticks_per_second` ticks a second: an even number is a tick, an odd one halfway between two. For asking where a body is
+    /// in its orbit at the middle of the stretch of time that a tick stands for.
+    pub fn of_half_ticks(half_ticks: u64, ticks_per_second: u32) -> Self {
+        assert!(
+            ticks_per_second > 0 && ticks_per_second <= 1 << 30,
+            "a clock makes ticks"
+        );
+        Self {
+            units: i128::from(half_ticks),
+            units_per_second: 2 * ticks_per_second,
         }
     }
 }
@@ -337,6 +361,57 @@ impl Orbit {
             period,
             phase,
         })
+    }
+
+    /// The mass parameter, `G M` of what the orbit goes round in voxels cubed a second squared, that the period and the semi-major axis say (`mu = n^2 a^3`, Kepler's third law). An
+    /// orbit made from a state (`Orbit::from_place`) has the period of the mass it was made with, so this is that mass, to the rounding of two numbers: it is how a ship that is
+    /// on a rail knows the mass it was made for.
+    pub fn mass_parameter(&self) -> f64 {
+        let rate = TAU / self.period;
+        rate * rate * self.radius * self.radius * self.radius
+    }
+
+    /// The mean anomaly at `time`, as a fraction of a turn of 128 bits.
+    fn mean_anomaly(&self, time: RailTime) -> u128 {
+        let (remainder, whole_turn) = turn_fraction(time, self.period);
+        exact_circle::fraction_in_turns(remainder, whole_turn)
+            .wrapping_add(exact_circle::turns_of_radians(self.phase))
+    }
+
+    /// Which ends of the ellipse the body passes after `from` up to and including `to` (a stretch that starts where the one before ended passes each end once, never twice).
+    /// Worked out from the mean anomaly in whole numbers: the periapsis is at 0 and the apoapsis at half a turn. A circle has no ends, and passes neither. A stretch of a whole turn
+    /// or more passes both.
+    pub fn apsides_passed(&self, from: RailTime, to: RailTime) -> Apsides {
+        if self.ratio == 1.0 {
+            return Apsides::default();
+        }
+        // (The whole numbers know a part of a turn, not how many turns: a stretch as long as the period passes both ends whatever they say.)
+        let seconds = |time: RailTime| time.units as f64 / f64::from(time.units_per_second);
+        if seconds(to) - seconds(from) >= self.period.abs() {
+            return Apsides {
+                periapsis: true,
+                apoapsis: true,
+            };
+        }
+        let (before, after) = (self.mean_anomaly(from), self.mean_anomaly(to));
+        let forward = self.period > 0.0;
+        // How far round, in the way the body goes, a mean anomaly is from where it was before.
+        let gone = |anomaly: u128| {
+            if forward {
+                anomaly.wrapping_sub(before)
+            } else {
+                before.wrapping_sub(anomaly)
+            }
+        };
+        let reached = gone(after);
+        let passed = |end: u128| {
+            let distance = gone(end);
+            distance != 0 && distance <= reached
+        };
+        Apsides {
+            periapsis: passed(0),
+            apoapsis: passed(1 << 127),
+        }
     }
 
     /// Where the body is from the centre at `time`, exact, and how fast it moves round it. The angle is the phase and the part of a turn gone, added as fractions of a turn
