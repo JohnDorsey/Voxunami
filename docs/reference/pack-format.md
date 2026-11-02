@@ -147,7 +147,10 @@ second in Cave; it is saved with the world, so a restart goes on from where it w
   the nearest point from where a circle starts, counter-clockwise looking down `normal` (0). `radius` is then the semi-major axis: the nearest point is at `radius x ratio` and the farthest at
   `radius x (2 - ratio)`. `period` is the time to go once round, and `phase` is the *mean anomaly* at time 0 (degrees; 0 is the nearest point, 180 the farthest). The rail is worked out in whole
   numbers like a circle's, the same on every machine. The body goes fastest at the nearest point, at `2 pi radius / period x sqrt((2 - ratio) / ratio)` voxels a second: a circle's speed times 1.4e6 for a ratio of 1e-12.
-  `period` is what you say, and is not checked against the mass of what it goes round.
+  **`period` may be left out for an orbit round a body**: it is then worked out from the mass of that body, T = 2 pi sqrt(a^3 / (G M)) with G the game's pull strength and a the `radius`
+  (the semi-major axis), positive, so a body that weighs what its `mass` or its `surface_gravity` says is gone round in the time Kepler's third law gives. If you give one as well and it is
+  more than a thousandth different from that (the sign does not matter: negative is the other way round), yours is used and the load prints a warning saying so. An orbit round a *point*
+  has no mass to go by, and needs its `period`.
 
 **An ellipse, in full** (a comet round a point; this file is checked with the others, so it is right):
 

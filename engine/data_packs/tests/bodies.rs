@@ -93,7 +93,7 @@ fn a_body_may_turn_and_may_go_round_a_point_or_another_body_and_says_how_in_seco
             radius: 1.5e6,
             ratio: 1.0,
             periapsis_degrees: 0.0,
-            period: 31_557_600.0,
+            period: Some(31_557_600.0),
             phase_degrees: 90.0
         })
     );
@@ -107,7 +107,7 @@ fn a_body_may_turn_and_may_go_round_a_point_or_another_body_and_says_how_in_seco
     // What is left out: the normal is up, the phase and the angle nothing.
     assert_eq!(orbit.normal, [0.0, 1.0, 0.0]);
     assert_eq!(orbit.phase_degrees, 0.0);
-    assert_eq!(orbit.period, -50.0);
+    assert_eq!(orbit.period, Some(-50.0));
     let (_, turning) = body(&with_rail(
         r#"{ "spin": { "axis": [1, 1, 0], "period": 10 } }"#,
     ))
@@ -213,11 +213,6 @@ fn a_rail_that_is_wrong_says_what_and_where() {
         "missing \"radius\"",
     );
     one(
-        orbit(r#""around": [0, 0, 0], "radius": 100"#),
-        "/rail/orbit",
-        "missing \"period\"",
-    );
-    one(
         orbit(r#""around": [0, 0], "radius": 100, "period": 10"#),
         "/rail/orbit/around",
         "a centre is a body (\"my_pack:star\") or a point of the level (3 numbers), found a list of 2",
@@ -280,6 +275,30 @@ fn orbit_with(more: &str) -> OrbitData {
     .unwrap()
     .orbit
     .unwrap()
+}
+
+#[test]
+fn an_orbit_may_leave_its_period_out_for_the_mass_of_what_it_goes_round_to_say() {
+    // (Whether there is a mass to say it is for the world that makes the bodies; here it is only that the file may leave it out.)
+    let orbit = body(&with_rail(
+        r#"{ "orbit": { "around": "my_pack:star", "radius": 100 } }"#,
+    ))
+    .unwrap()
+    .1
+    .rail
+    .unwrap()
+    .orbit
+    .unwrap();
+    assert_eq!(orbit.period, None);
+    // A period that is there is still a number that is not nothing.
+    assert_eq!(
+        errors(&with_rail(
+            r#"{ "orbit": { "around": [0, 0, 0], "radius": 100, "period": 0 } }"#
+        )),
+        [format!(
+            "{FILE}: /rail/orbit/period: a period is a number of seconds that is not 0, found 0"
+        )]
+    );
 }
 
 #[test]

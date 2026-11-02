@@ -78,7 +78,8 @@ pub struct OrbitData {
     pub ratio: f64,
     /// Where the nearest point is, from where a circle starts.
     pub periapsis_degrees: f64,
-    pub period: f64,
+    /// Seconds to go once round (negative the other way); left out, it is for the mass of what it goes round to say.
+    pub period: Option<f64>,
     pub phase_degrees: f64,
 }
 
@@ -429,9 +430,10 @@ fn read_orbit(walk: &mut Walk, value: &Value, path: &Path) -> Option<OrbitData> 
         Some(periapsis) => walk.number(periapsis, &path.key("periapsis")),
         None => Some(0.0),
     };
-    let period = walk
-        .require(object, "period", path)
-        .and_then(|period| walk.period(period, &path.key("period")));
+    let period = match object.get("period") {
+        Some(period) => walk.period(period, &path.key("period")).map(Some),
+        None => Some(None),
+    };
     let phase = match object.get("phase") {
         Some(phase) => walk.number(phase, &path.key("phase")),
         None => Some(0.0),

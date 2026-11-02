@@ -723,6 +723,11 @@ fn corpus() -> Vec<Case> {
         ),
         ok(
             Body,
+            "an orbit about a body with no period, which the mass of the body gives",
+            r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": "test_game:star", "radius": 100 } } }"#,
+        ),
+        ok(
+            Body,
             "an ellipse by its eccentricity and its periapsis",
             r#"{ "level": "test_game:space", "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 5 } }, "extent_bricks": 2, "mass": 1, "rail": { "orbit": { "around": [0, 0, 0], "radius": 1e6, "period": 60, "eccentricity": 0.0167, "periapsis": 102.9 } } }"#,
         ),

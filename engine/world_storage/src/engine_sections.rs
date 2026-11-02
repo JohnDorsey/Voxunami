@@ -61,6 +61,10 @@ pub const SUPPORTED_VERSION: u32 = 2;
 /// coordinate is three wide integers (2 had `f64` orientations; 1 had `f32`).
 pub const POSES_VERSION: u32 = 3;
 
+/// The version of a ship file's `engine:rail` that this program writes and reads: 2, in which every orbit has a ratio (1 - e) and a periapsis after its phase (1 was circles
+/// only, and is not read: there is no upgrade, so when the first release makes this the first version the numbering can start again).
+pub const RAIL_VERSION: u32 = 2;
+
 /// The version of `engine:generators` that this program writes and reads: 3, in which a leaf's level has seven bits (levels run to 116).
 pub const GENERATORS_VERSION: u32 = 3;
 

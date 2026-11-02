@@ -1696,8 +1696,9 @@ Elliptical orbits, steps A0 and A1 (`orbits-and-thrust-plan.md`; no behaviour ch
 - A2: `engine/world_storage/src/exact_kepler.rs` (`Ellipse::new(ratio)`, `anomaly(mean_anomaly)`) and `wide.rs` (`Wide` moved out of `exact_circle.rs`, with an exact long division and square root). An `f64` first guess (cubic, then eight stable Newton steps),
   then three Newton steps in whole numbers; E right to about 8 units of 2^-128 turn per unit of 1 / (1 - e cos E) on the 207 reference rows; 2.7 microseconds a solve (release). 23 tests (14 + 9), 13 pins (the same bits under WSL Linux), 22 mutations caught.
   A table row found an `i128` overflow (a sine of -4 units next to a half turn); fixed with a regression test. Not used by anything yet (`expect(dead_code)` says so and fails when A3 uses it).
-- A3: `Orbit::{ratio, periapsis}`, `Orbit::elliptical`; `engine:rail` flag 4 (a circle's bytes unchanged); pack keys `eccentricity` or `ratio`, and `periapsis`; the generated schema; `rail_of`; the guide's comet. A ratio of 1.0 is the 26 pinned circles to the bit. Over 400 random orbits against the 120-digit reference the worst place error was half a step of 2^-32 voxel and the worst velocity error 4e-16 of the speed.
-  34 mutations caught (20 in the orbit, 14 in the packs). A period from the mass is not done (A3b). See the plan for the numbers.
+- A3: `Orbit::{ratio, periapsis}`, `Orbit::elliptical`; `engine:rail` version 2 (every orbit has a ratio and a periapsis; version 1 is not read; first built as a flag and changed on the owner's veto); pack keys `eccentricity` or `ratio`, and `periapsis`; the generated schema; `rail_of`; the guide's comet. A ratio of 1.0 is the 26 pinned circles to the bit. Over 400 random orbits against the 120-digit reference the worst place error was half a step of 2^-32 voxel and the worst velocity error 4e-16 of the speed.
+  34 mutations caught (20 in the orbit, 14 in the packs). See the plan for the numbers.
+- A3b: the `period` of an orbit round a body is optional and is worked out from the body's mass (`pull_strength` x its mass as a ship); a given one that is more than a relative 1e-3 from it is used and warned about; an orbit round a point needs one. 5 tests, 8 mutations caught.
 
 ## Measured
 Storage (Ryzen 7600X, release, one thread, best of 7, counting allocator; the single-voxel `get` figures include

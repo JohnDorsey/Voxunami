@@ -29,8 +29,8 @@ use world_view::ViewChannels;
 use crate::definition::GameContent;
 use crate::package_data::{PackageData, check_materials};
 use data_packs::{
-    Around, Body, BodyRail, BodySupport, PackErrors, RawPack, Weight, load_packs, read_body,
-    read_family_parameters,
+    Around, Body, BodyRail, BodySupport, OrbitData, PackErrors, RawPack, Weight, load_packs,
+    read_body, read_family_parameters,
 };
 
 /// Makes a game's terrain generators for a world seed. The layout is the world's, for finding the
@@ -184,6 +184,12 @@ impl ContentPackage {
     /// order of the package: the game's own, then those of the packs. A body that is told how hard it pulls at its surface weighs what that takes at the game's
     /// pull strength: `g * r * r / pull_strength`, with `r` the radius its family reads. Nothing is made if any of them cannot be: the message names the body.
     pub fn add_bodies(&self, world: &mut WorldData) -> Result<(), String> {
+        self.make_bodies(world, &mut Vec::new())
+    }
+
+    /// As [`Self::add_bodies`], and what it found that is wrong but does not stop a body from being made goes in `told`, one line each (a period of an orbit that is not the one
+    /// the mass of what it goes round gives).
+    fn make_bodies(&self, world: &mut WorldData, told: &mut Vec<String>) -> Result<(), String> {
         let pull_strength = self.spec.pull_strength;
         if !(pull_strength > 0.0 && pull_strength.is_finite()) {
             return Err(format!(
@@ -196,8 +202,12 @@ impl ContentPackage {
             level: LevelIndex,
             body: Body,
             mass: f32,
+            /// The period of its orbit, if it has one: the file's, or the one the mass of what it goes round gives.
+            period: Option<f64>,
         }
         let mut ready: Vec<Ready> = Vec::new();
+        // What each body weighs as a ship (an `f32`), for the period of an orbit round it.
+        let mut masses: BTreeMap<NamespacedId, f64> = BTreeMap::new();
         for (identifier, body) in &self.bodies {
             let trouble = |why: String| format!("{identifier}: {why}");
             let level = world
@@ -228,6 +238,7 @@ impl ContentPackage {
                     "{mass} kilograms is not a weight a ship can have"
                 )));
             }
+            let mut period = None;
             if let Some(rail) = &body.rail {
                 if let Some(orbit) = &rail.orbit
                     && let Around::Body(centre) = &orbit.around
@@ -237,10 +248,18 @@ impl ContentPackage {
                         "it goes round {centre}, which is no body made before it"
                     )));
                 }
+                if let Some(orbit) = &rail.orbit {
+                    period = Some(
+                        self.period_of(identifier, orbit, &masses, told)
+                            .map_err(trouble)?,
+                    );
+                }
                 // (What it goes round is a body made before it, which is not a ship yet: the rest of the rail is made right here for what it can say.)
-                rail_of(rail, |_| Centre::Point([0.0; 3])).map_err(trouble)?;
+                rail_of(rail, period, |_| Centre::Point([0.0; 3])).map_err(trouble)?;
             }
+            masses.insert(identifier.clone(), f64::from(mass as f32));
             ready.push(Ready {
+                period,
                 identifier: identifier.clone(),
                 recipe: GeneratorRecipe {
                     instance: identifier.clone(),
@@ -260,6 +279,7 @@ impl ContentPackage {
             level,
             body,
             mass,
+            period,
         } in ready
         {
             let generator = self
@@ -269,7 +289,7 @@ impl ContentPackage {
                 .rail
                 .as_ref()
                 .map(|rail| {
-                    rail_of(rail, |name| {
+                    rail_of(rail, period, |name| {
                         Centre::Grid(*made.get(name).expect("it was found to be made before"))
                     })
                 })
@@ -308,10 +328,46 @@ impl ContentPackage {
         Ok(())
     }
 
-    /// Whether the bodies of the package can be made in a new world: makes them in one with the levels the package says it has, and throws it away.
-    fn check_bodies(&self) -> Result<(), String> {
+    /// The period of the orbit of a body: the file's if it has one, and if it goes round a body, the one that Kepler's third law gives, T = 2 pi sqrt(a^3 / mu) with mu the game's
+    /// pull strength times the mass of that body as a ship. When the file has one too and it is more than [`PERIOD_TOLERANCE`] of the computed one away (its size: a retrograde
+    /// orbit is as right as a prograde one) the file's is the one used and `told` says that it is not the one the mass gives. An orbit round a point has no mass, so it needs a period.
+    fn period_of(
+        &self,
+        identifier: &NamespacedId,
+        orbit: &OrbitData,
+        masses: &BTreeMap<NamespacedId, f64>,
+        told: &mut Vec<String>,
+    ) -> Result<f64, String> {
+        let Around::Body(centre) = &orbit.around else {
+            return orbit.period.ok_or_else(|| {
+                "an orbit round a point needs a period: a point has no mass to work one out from"
+                    .to_owned()
+            });
+        };
+        let mass = masses[centre];
+        let mu = self.spec.pull_strength * mass;
+        let computed =
+            std::f64::consts::TAU * libm::sqrt(orbit.radius * orbit.radius * orbit.radius / mu);
+        let Some(given) = orbit.period else {
+            return Ok(computed);
+        };
+        if (given.abs() - computed).abs() > PERIOD_TOLERANCE * computed {
+            told.push(format!(
+                "{identifier}: its period of {given:?} seconds is {:.3} percent from the {computed:?} seconds that Kepler's third law gives for a semi-major axis of {:?} voxels round {centre}, \
+                 which weighs {mass:?} kilograms at a pull strength of {:?}; the period of the file is used",
+                100.0 * (given.abs() - computed) / computed,
+                orbit.radius,
+                self.spec.pull_strength,
+            ));
+        }
+        Ok(given)
+    }
+
+    /// Whether the bodies of the package can be made in a new world: makes them in one with the levels the package says it has, and throws it away. What it found that is wrong but
+    /// not enough to refuse the packs is returned, one line each.
+    fn check_bodies(&self) -> Result<Vec<String>, String> {
         if self.bodies.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let levels: Vec<(NamespacedId, NamespacedId)> = self
             .spec
@@ -320,7 +376,9 @@ impl ContentPackage {
             .iter()
             .map(|level| (level.clone(), self.spec.default_generator.clone()))
             .collect();
-        self.add_bodies(&mut self.new_world_of(0, &levels))
+        let mut told = Vec::new();
+        self.make_bodies(&mut self.new_world_of(0, &levels), &mut told)?;
+        Ok(told)
     }
 
     /// Adds a terrain generator made from a recipe to a world of this package (see [`WorldData::add_generator_recipe`]), with the package's families.
@@ -427,15 +485,24 @@ impl ContentPackage {
             .map_err(|error| pack_problem(error.to_string()))?;
         check_materials(&table).map_err(|error| pack_problem(error.to_string()))?;
         // The bodies must be makeable, which only a world can say (their weight, the names of their generators): in a world of no seed that is thrown away.
-        candidate.check_bodies().map_err(pack_problem)?;
+        let mut warnings = loaded.warnings;
+        warnings.extend(candidate.check_bodies().map_err(pack_problem)?);
         *self = candidate;
-        Ok(loaded.warnings)
+        Ok(warnings)
     }
 }
 
+/// How far from the period that the mass of what it goes round gives the period of an orbit in a file may be, in parts of that period, before the packs are told (the owner's
+/// choice, 2026-11-01: a pack author writes round numbers, and a tighter tolerance would complain of most of them).
+const PERIOD_TOLERANCE: f64 = 1.0e-3;
+
 /// A rail as the world holds it, from the numbers of a body file (seconds, degrees, bodies by name): the centre an orbit goes round, when it is a body, is
 /// what `centre_of` makes of its name.
-fn rail_of(data: &BodyRail, centre_of: impl Fn(&NamespacedId) -> Centre) -> Result<Rail, String> {
+fn rail_of(
+    data: &BodyRail,
+    period: Option<f64>,
+    centre_of: impl Fn(&NamespacedId) -> Centre,
+) -> Result<Rail, String> {
     let radians = |degrees: f64| degrees * (std::f64::consts::PI / 180.0);
     let spin = data
         .spin
@@ -457,12 +524,12 @@ fn rail_of(data: &BodyRail, centre_of: impl Fn(&NamespacedId) -> Centre) -> Resu
                 orbit.radius,
                 orbit.ratio,
                 radians(orbit.periapsis_degrees),
-                orbit.period,
+                period.ok_or("an orbit has no period")?,
                 radians(orbit.phase_degrees),
             )
+            .map_err(|error| error.to_string())
         })
-        .transpose()
-        .map_err(|error| error.to_string())?;
+        .transpose()?;
     Ok(Rail { spin, orbit })
 }
 
@@ -1254,6 +1321,128 @@ mod tests {
         // The ratio alone makes the long thin one.
         let (_, thin) = &ships[2];
         assert_eq!(thin.rail.unwrap().orbit.unwrap().ratio, 1.0e-12);
+    }
+
+    // ---- the period of an orbit and the mass of what it goes round
+
+    /// The period that Kepler's third law gives round a body of this many kilograms (as a ship weighs it: an `f32`) at this semi-major axis, with the game's pull strength.
+    fn kepler_period(radius: f64, kilograms: f64) -> f64 {
+        let mu = pull() * f64::from(kilograms as f32);
+        std::f64::consts::TAU * (radius * radius * radius / mu).sqrt()
+    }
+
+    /// A star of this body text and a moon on this orbit (the text of an `orbit` object), made in a world: what the packs said while they were loaded, and the moon's orbit.
+    fn moon_round(star: &str, orbit: &str) -> Result<(Vec<String>, Orbit), String> {
+        let mut content = package();
+        let warnings = content
+            .apply_packs(&[pack_of_bodies(&[
+                ("a_star", star),
+                (
+                    "moon",
+                    &body_with("", &format!(r#"{{ "orbit": {orbit} }}"#)),
+                ),
+            ])])
+            .map_err(|errors| errors.to_string())?;
+        let mut world = content.new_world(5);
+        content.add_bodies(&mut world)?;
+        // [the boulder, the star, the moon]
+        let moon = world.grids().iter().nth(2).unwrap().1.clone();
+        Ok((warnings, moon.rail.unwrap().orbit.unwrap()))
+    }
+
+    fn a_star() -> String {
+        body_with("", r#"{ "spin": { "axis": [0, 1, 0], "period": 1000 } }"#)
+    }
+
+    #[test]
+    fn an_orbit_without_a_period_has_the_one_the_mass_of_what_it_goes_round_gives() {
+        let (warnings, orbit) = moon_round(
+            &a_star(),
+            r#"{ "around": "my_pack:a_star", "radius": 1e6 }"#,
+        )
+        .unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        // The star weighs 1e20 kilograms in the fixture, as a ship: an `f32`, which is 2e-8 more, so a period 1e-8 less than with the `f64`.
+        let expected = kepler_period(1.0e6, 1.0e20);
+        assert!(
+            (orbit.period - expected).abs() <= 1.0e-12 * expected,
+            "{} against {expected}",
+            orbit.period
+        );
+        assert!(orbit.period > 0.0);
+        let with_the_f64 = std::f64::consts::TAU * (1.0e18f64 / (pull() * 1.0e20)).sqrt();
+        assert!((orbit.period - with_the_f64).abs() > 1.0e-9 * expected);
+    }
+
+    #[test]
+    fn a_body_that_is_told_its_surface_pull_gives_its_mass_to_the_period_too() {
+        let star = a_star().replace("\"mass\": 1e20", "\"surface_gravity\": 4");
+        let (warnings, orbit) =
+            moon_round(&star, r#"{ "around": "my_pack:a_star", "radius": 5e5 }"#).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        // g r^2 / G with the radius of the ground the family reads (50), as in the test of the weight above.
+        let expected = kepler_period(5.0e5, 4.0 * 50.0 * 50.0 / pull());
+        assert!((orbit.period - expected).abs() <= 1.0e-12 * expected);
+    }
+
+    #[test]
+    fn a_period_that_is_given_and_agrees_with_the_mass_to_a_thousandth_is_used_and_not_remarked_on()
+    {
+        let computed = kepler_period(1.0e6, 1.0e20);
+        for given in [
+            computed * 1.0009,
+            computed * 0.9991,
+            -computed * 1.0005,
+            computed,
+        ] {
+            let orbit =
+                format!(r#"{{ "around": "my_pack:a_star", "radius": 1e6, "period": {given:?} }}"#);
+            let (warnings, made) = moon_round(&a_star(), &orbit).unwrap();
+            assert!(warnings.is_empty(), "{given}: {warnings:?}");
+            assert_eq!(made.period, given);
+        }
+    }
+
+    #[test]
+    fn a_period_that_is_given_and_is_more_than_a_thousandth_from_the_mass_is_used_with_a_warning() {
+        let computed = kepler_period(1.0e6, 1.0e20);
+        for given in [
+            computed * 1.0011,
+            computed * 0.9989,
+            -computed * 1.12,
+            50_000.0,
+        ] {
+            let orbit =
+                format!(r#"{{ "around": "my_pack:a_star", "radius": 1e6, "period": {given:?} }}"#);
+            let (warnings, made) = moon_round(&a_star(), &orbit).unwrap();
+            // The period of the file is the one used, and the pack is told that it is not the one the mass gives.
+            assert_eq!(made.period, given, "{given}");
+            assert_eq!(warnings.len(), 1, "{given}: {warnings:?}");
+            let warning = &warnings[0];
+            assert!(
+                warning.starts_with("my_pack:moon: its period of ")
+                    && warning.contains("my_pack:a_star")
+                    && warning.contains("the period of the file is used")
+                    && warning.contains(&format!("{:?}", computed)),
+                "{warning}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_orbit_round_a_point_has_no_mass_to_give_a_period_and_one_with_a_period_is_not_checked() {
+        let error = moon_round(&a_star(), r#"{ "around": [0, 0, 0], "radius": 1e6 }"#).unwrap_err();
+        assert!(
+            error.contains("my_pack:moon: an orbit round a point needs a period"),
+            "{error}"
+        );
+        let (warnings, orbit) = moon_round(
+            &a_star(),
+            r#"{ "around": [0, 0, 0], "radius": 1e6, "period": 12345 }"#,
+        )
+        .unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(orbit.period, 12_345.0);
     }
 
     #[test]

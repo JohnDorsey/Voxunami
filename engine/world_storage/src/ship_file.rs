@@ -194,7 +194,7 @@ pub enum ShipFileError {
         section: NamespacedId,
         source: DecodeError,
     },
-    #[error("section {section} is version {version}, newer than this program understands")]
+    #[error("section {section} is version {version}, which this program does not read")]
     UnsupportedSection { section: NamespacedId, version: u32 },
     #[error("the file has no {0} section, so it is not the file of a ship")]
     MissingSection(NamespacedId),
@@ -260,6 +260,8 @@ impl ParsedShip {
             }
             let readable = if section.identifier == flight_id() {
                 section.version == sections::POSES_VERSION
+            } else if section.identifier == rail_id() {
+                section.version == sections::RAIL_VERSION
             } else {
                 section.version == sections::SUPPORTED_VERSION
             };
@@ -580,6 +582,8 @@ impl ShipFormat {
         let section = |identifier, payload| Section {
             version: if identifier == flight_id() {
                 sections::POSES_VERSION
+            } else if identifier == rail_id() {
+                sections::RAIL_VERSION
             } else {
                 sections::SUPPORTED_VERSION
             },

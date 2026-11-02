@@ -579,11 +579,11 @@ fn an_ellipse() -> Orbit {
 }
 
 /// Where the ratio and the periapsis are in the bytes of a rail that is only an orbit about a point: the flags, the centre's kind and point, the normal, the radius, the period
-/// and the phase come first (a circle's bytes), and the two numbers after.
+/// and the phase come first, and the two numbers after (version 2 of `engine:rail`: every orbit has them, a circle with 1.0 and nothing).
 const RATIO_AT: usize = 1 + 1 + 24 + 24 + 8 + 8 + 8;
 
 #[test]
-fn an_ellipse_is_written_as_a_circle_with_a_flag_and_two_numbers_after_it() {
+fn an_orbit_is_written_with_its_ratio_and_its_periapsis_after_its_phase() {
     let ellipse_bytes = encode_rail(&rail_of(an_ellipse()));
     let circle = Orbit::new(
         Centre::Point([1.0, 2.0, 3.0]),
@@ -594,10 +594,16 @@ fn an_ellipse_is_written_as_a_circle_with_a_flag_and_two_numbers_after_it() {
     )
     .unwrap();
     let circle_bytes = encode_rail(&rail_of(circle));
-    // The flag 4 is the only change to the first byte, and what comes after the phase is the ratio and the periapsis as the bits of `f64`s.
+    // The flags are the same (an orbit); what comes before the ratio is the same; a circle has a ratio of 1.0 and a periapsis of nothing, an ellipse its own.
     assert_eq!(circle_bytes[0], 0b010);
-    assert_eq!(ellipse_bytes[0], 0b110);
-    assert_eq!(ellipse_bytes[1..RATIO_AT], circle_bytes[1..]);
+    assert_eq!(ellipse_bytes[0], 0b010);
+    assert_eq!(ellipse_bytes.len(), RATIO_AT + 16);
+    assert_eq!(ellipse_bytes[1..RATIO_AT], circle_bytes[1..RATIO_AT]);
+    assert_eq!(
+        circle_bytes[RATIO_AT..RATIO_AT + 8],
+        1.0f64.to_bits().to_le_bytes()
+    );
+    assert_eq!(circle_bytes[RATIO_AT + 8..], 0.0f64.to_bits().to_le_bytes());
     assert_eq!(
         ellipse_bytes[RATIO_AT..RATIO_AT + 8],
         0.0167f64.to_bits().to_le_bytes()
@@ -606,18 +612,12 @@ fn an_ellipse_is_written_as_a_circle_with_a_flag_and_two_numbers_after_it() {
         ellipse_bytes[RATIO_AT + 8..],
         1.8f64.to_bits().to_le_bytes()
     );
-    // A circle with a periapsis is an ellipse as far as the file goes (it is not the circle that starts toward the first direction), and a ratio of 1.0 is written plainly.
-    let turned = Orbit::elliptical(
-        Centre::Point([1.0, 2.0, 3.0]),
-        [0.0, 1.0, 0.0],
-        1.5e9,
-        1.0,
-        0.5,
-        31_557_600.0,
-        1.0,
-    )
-    .unwrap();
-    assert_eq!(encode_rail(&rail_of(turned))[0], 0b110);
+    // A rail with no orbit has no such numbers.
+    let spinning = Rail {
+        spin: Some(world_storage::rail::Spin::new([0.0, 1.0, 0.0], 60.0, 0.0).unwrap()),
+        orbit: None,
+    };
+    assert_eq!(encode_rail(&spinning).len(), 1 + 24 + 8 + 8);
 }
 
 #[test]
@@ -701,18 +701,12 @@ fn bytes_that_are_not_an_ellipse_are_refused() {
     ] {
         assert!(decode_rail(&bytes).is_err(), "{what}");
     }
-    // The flag with nothing to apply it to: no orbit.
-    assert!(
-        decode_rail(&[0b100]).is_err(),
-        "an ellipse flag and no orbit"
-    );
-    // The flag on a circle that starts toward the first direction: a circle is written plainly, and there is one way to write it.
-    let mut plain = write(RATIO_AT, 1.0);
-    plain[RATIO_AT + 8..].copy_from_slice(&0.0f64.to_bits().to_le_bytes());
-    assert!(
-        decode_rail(&plain).is_err(),
-        "a circle written as an ellipse"
-    );
+    // The flag of version 1 of an ellipse (4) is nothing to this program, which has the numbers for every orbit.
+    for flags in [0b100u8, 0b110, 0b111] {
+        let mut flagged = good.clone();
+        flagged[0] = flags;
+        assert!(decode_rail(&flagged).is_err(), "flags {flags:#b}");
+    }
 }
 
 /// The bits the program gave for the rows above (in the same order), once they agreed with the 120-digit values: `(bricks, rest as bits, velocity as bits)`. The same on every machine,

@@ -435,7 +435,8 @@ fn check(index: usize, pin: Pin, orbit: Orbit) {
     );
 }
 
-/// The bytes of a rail (`engine:rail` in a ship file) as the program before ellipses wrote them: a spin, a circle about a point, and both with a circle about a ship.
+/// The bytes of a rail (`engine:rail` in a ship file, version 2): a spin, a circle about a point, and both with a circle about a ship. A circle is written as the program
+/// before ellipses wrote it, with a ratio of 1.0 and a periapsis of nothing (`000000000000f03f0000000000000000`) after the phase.
 fn bytes_of(hex: &str) -> Vec<u8> {
     (0..hex.len())
         .step_by(2)
@@ -444,7 +445,7 @@ fn bytes_of(hex: &str) -> Vec<u8> {
 }
 
 #[test]
-fn a_rail_with_a_circle_is_written_as_the_bytes_it_always_was_and_read_back_from_them() {
+fn a_rail_with_a_circle_is_written_as_pinned_and_read_back_from_them() {
     let rails = [
         (
             Rail {
@@ -467,7 +468,7 @@ fn a_rail_with_a_circle_is_written_as_the_bytes_it_always_was_and_read_back_from
                     .unwrap(),
                 ),
             },
-            "0200000000000000f03f000000000000004000000000000008400000000000000000000000000000f03f0000000000000000000000c00b5ad641000000007e187e41000000000000f03f",
+            "0200000000000000f03f000000000000004000000000000008400000000000000000000000000000f03f0000000000000000000000c00b5ad641000000007e187e41000000000000f03f000000000000f03f0000000000000000",
         ),
         (
             Rail {
@@ -483,7 +484,7 @@ fn a_rail_with_a_circle_is_written_as_the_bytes_it_always_was_and_read_back_from
                     .unwrap(),
                 ),
             },
-            "03333333333333e33f9a9999999999e93f0000000000000000000000000020acc000000000000000c00107333333333333e33f9a9999999999e93f000000000000000000c84e676dc19b430000008074d2cac1000000000000f0bf",
+            "03333333333333e33f9a9999999999e93f0000000000000000000000000020acc000000000000000c00107333333333333e33f9a9999999999e93f000000000000000000c84e676dc19b430000008074d2cac1000000000000f0bf000000000000f03f0000000000000000",
         ),
     ];
     for (rail, hex) in rails {

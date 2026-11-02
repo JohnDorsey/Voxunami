@@ -458,8 +458,6 @@ impl Rail {
 
 const HAS_SPIN: u8 = 1;
 const HAS_ORBIT: u8 = 2;
-/// The orbit is not a circle that starts toward the first direction: its ratio and its periapsis follow its phase. (A circle is written without, as it always was.)
-const HAS_ELLIPSE: u8 = 4;
 const ABOUT_A_POINT: u8 = 0;
 const ABOUT_A_GRID: u8 = 1;
 
@@ -481,20 +479,13 @@ fn read_number(reader: &mut ByteReader<'_>) -> Result<f64, DecodeError> {
     Ok(f64::from_bits(reader.read_u64()?))
 }
 
-/// The bytes of a rail (the payload of a ship file's `engine:rail`): a byte of flags (1 a spin, 2 an orbit, 4 that the orbit is an ellipse); the spin's axis, period and
-/// angle; the orbit's centre (a byte, 0 and a point or 1 and the number of a body), normal, radius, period and phase, and for an ellipse its ratio and periapsis. Every
-/// number is the bits of an `f64`, little-endian. An orbit that is a circle starting toward the first direction (a ratio of 1.0 and a periapsis of nothing) is written with
-/// no flag 4 and nothing after the phase, which is what it was before ellipses, so the file of a ship on a circle is the same bytes.
+/// The bytes of a rail (the payload of a ship file's `engine:rail`, version [`crate::engine_sections::RAIL_VERSION`]): a byte of flags (1 a spin, 2 an orbit); the spin's axis,
+/// period and angle; the orbit's centre (a byte, 0 and a point or 1 and the number of a body), normal, radius, period, phase, ratio and periapsis. Every number is the bits of an
+/// `f64`, little-endian. A circle has a ratio of 1.0 and a periapsis of nothing.
 pub fn encode_rail(rail: &Rail) -> Vec<u8> {
     let mut writer = ByteWriter::new();
-    let is_ellipse = |orbit: &Orbit| orbit.ratio != 1.0 || orbit.periapsis != 0.0;
     let flags = if rail.spin.is_some() { HAS_SPIN } else { 0 }
-        | if rail.orbit.is_some() { HAS_ORBIT } else { 0 }
-        | if rail.orbit.as_ref().is_some_and(is_ellipse) {
-            HAS_ELLIPSE
-        } else {
-            0
-        };
+        | if rail.orbit.is_some() { HAS_ORBIT } else { 0 };
     writer.write_u8(flags);
     if let Some(spin) = &rail.spin {
         write_vector(&mut writer, spin.axis);
@@ -516,25 +507,19 @@ pub fn encode_rail(rail: &Rail) -> Vec<u8> {
         writer.write_u64(orbit.radius.to_bits());
         writer.write_u64(orbit.period.to_bits());
         writer.write_u64(orbit.phase.to_bits());
-        if is_ellipse(orbit) {
-            writer.write_u64(orbit.ratio.to_bits());
-            writer.write_u64(orbit.periapsis.to_bits());
-        }
+        writer.write_u64(orbit.ratio.to_bits());
+        writer.write_u64(orbit.periapsis.to_bits());
     }
     writer.into_bytes()
 }
 
 /// The rail of a payload. Refuses what [`Spin::new`] and [`Orbit::elliptical`] refuse (the directions must be unit vectors already: what was written was read back as it
-/// was, to the bit), a flag or a centre this program does not know, the flag of an ellipse with no orbit or on a circle that is not one (a circle has one way to be written),
-/// bytes that end too soon and bytes after the end.
+/// was, to the bit), a flag or a centre this program does not know, bytes that end too soon and bytes after the end.
 pub fn decode_rail(payload: &[u8]) -> Result<Rail, DecodeError> {
     let mut reader = ByteReader::new(payload);
     let flags = reader.read_u8()?;
-    if flags & !(HAS_SPIN | HAS_ORBIT | HAS_ELLIPSE) != 0 {
+    if flags & !(HAS_SPIN | HAS_ORBIT) != 0 {
         return Err(DecodeError::Invalid("a rail with a flag nobody knows"));
-    }
-    if flags & HAS_ELLIPSE != 0 && flags & HAS_ORBIT == 0 {
-        return Err(DecodeError::Invalid("an ellipse that is no orbit"));
     }
     let spin = if flags & HAS_SPIN != 0 {
         let spin = Spin {
@@ -563,15 +548,8 @@ pub fn decode_rail(payload: &[u8]) -> Result<Rail, DecodeError> {
         let radius = read_number(&mut reader)?;
         let period = read_number(&mut reader)?;
         let phase = read_number(&mut reader)?;
-        let (ratio, periapsis) = if flags & HAS_ELLIPSE != 0 {
-            let shape = (read_number(&mut reader)?, read_number(&mut reader)?);
-            if shape == (1.0, 0.0) {
-                return Err(DecodeError::Invalid("a circle written as an ellipse"));
-            }
-            shape
-        } else {
-            (1.0, 0.0)
-        };
+        let ratio = read_number(&mut reader)?;
+        let periapsis = read_number(&mut reader)?;
         let orbit = Orbit {
             around,
             normal,

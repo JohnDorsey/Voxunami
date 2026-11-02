@@ -205,7 +205,7 @@ fn body(context: &BodyContext<'_>) -> Value {
     // (The orbit's schema is a value of its own: the macro that writes the whole of this would pass its limit of recursion.)
     let orbit = json!({
         "type": "object",
-        "required": ["around", "radius", "period"],
+        "required": ["around", "radius"],
         "additionalProperties": false,
         "not": { "required": ["eccentricity", "ratio"] },
         "properties": {
@@ -221,7 +221,7 @@ fn body(context: &BodyContext<'_>) -> Value {
             "eccentricity": { "type": "number", "minimum": 0, "exclusiveMaximum": 1, "default": 0, "description": "how long the ellipse is, from 0 (a circle) up to but not including 1; not with `ratio`" },
             "ratio": { "type": "number", "minimum": SMALLEST_ORBIT_RATIO, "maximum": 1, "default": 1, "description": "1 - eccentricity, for an ellipse so long that its eccentricity has no digits left to say it; not with `eccentricity`" },
             "periapsis": { "type": "number", "default": 0, "description": "where the nearest point of an ellipse is, in degrees from where a circle starts, counter-clockwise looking down the normal" },
-            "period": { "$ref": "#/$defs/period", "description": "seconds to go once round; negative goes the other way" },
+            "period": { "$ref": "#/$defs/period", "description": "seconds to go once round; negative goes the other way. Left out, it is worked out from the mass of the body it goes round (not for an orbit round a point)" },
             "phase": { "type": "number", "default": 0, "description": "how far round it is at time 0, in degrees (for an ellipse, the mean anomaly)" }
         }
     });

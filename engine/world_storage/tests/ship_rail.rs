@@ -62,8 +62,8 @@ fn a_ship_with_no_rail_has_no_rail_section_and_one_with_a_rail_comes_back_with_i
 }
 
 /// The file of a planet on a rail with its rail section replaced by these bytes (at this version).
-/// The version this program writes the plain sections at.
-const CURRENT: u32 = world_storage::engine_sections::SUPPORTED_VERSION;
+/// The version this program writes the rail section at (2: every orbit has a ratio and a periapsis; 1 was circles only and is not read).
+const CURRENT: u32 = world_storage::engine_sections::RAIL_VERSION;
 
 fn file_with_rail_section(game: &Game, version: u32, payload: Vec<u8>) -> Vec<u8> {
     let world = game.new_world();
@@ -108,6 +108,13 @@ fn a_damaged_rail_section_is_found_not_believed_and_one_of_a_newer_version_is_re
             "{what}: {error}"
         );
     }
+    // Version 1, from before ellipses, is not read either: the program has no upgrade for it.
+    let error =
+        ParsedShip::parse(&file_with_rail_section(&game, CURRENT - 1, good.clone())).unwrap_err();
+    assert!(
+        matches!(error, ShipFileError::UnsupportedSection { version, .. } if version == CURRENT - 1),
+        "{error}"
+    );
     let error = ParsedShip::parse(&file_with_rail_section(&game, CURRENT + 1, good)).unwrap_err();
     assert!(
         matches!(error, ShipFileError::UnsupportedSection { version, .. } if version == CURRENT + 1),
@@ -179,6 +186,15 @@ fn an_elliptical_rail() -> Rail {
     }
 }
 
+fn rail_version(bytes: &[u8]) -> u32 {
+    read_container(bytes)
+        .unwrap()
+        .into_iter()
+        .find(|section| section.identifier == rail_id())
+        .expect("a rail section")
+        .version
+}
+
 fn rail_payload(bytes: &[u8]) -> Vec<u8> {
     read_container(bytes)
         .unwrap()
@@ -201,7 +217,7 @@ fn a_ship_on_an_ellipse_is_saved_with_it_and_comes_back_with_it_and_a_circle_is_
     let bytes = format.encode(&on_an_ellipse, &main_level_id()).unwrap();
     // The section is the bytes of the rail, with the flag of an ellipse; the file is the same when written again, and reads back as it was.
     assert_eq!(rail_payload(&bytes), encode_rail(&an_elliptical_rail()));
-    assert_eq!(rail_payload(&bytes)[0] & 0b100, 0b100);
+    assert_eq!(rail_version(&bytes), CURRENT);
     assert_eq!(
         format.encode(&on_an_ellipse, &main_level_id()).unwrap(),
         bytes
@@ -210,13 +226,13 @@ fn a_ship_on_an_ellipse_is_saved_with_it_and_comes_back_with_it_and_a_circle_is_
         format.decode(&bytes).unwrap().rail,
         Some(an_elliptical_rail())
     );
-    // A ship on a circle has the section it always had: no flag, nothing after the phase.
+    // A ship on a circle has the same section, with a ratio of 1.0 and a periapsis of nothing; both are at the version of the rail.
     let on_a_circle = MovingGrid {
         rail: Some(a_rail()),
         ..planet
     };
     let circle_bytes = format.encode(&on_a_circle, &main_level_id()).unwrap();
-    assert_eq!(rail_payload(&circle_bytes)[0] & 0b100, 0);
+    assert_eq!(rail_version(&circle_bytes), CURRENT);
     assert_eq!(rail_payload(&circle_bytes), encode_rail(&a_rail()));
 }
 
