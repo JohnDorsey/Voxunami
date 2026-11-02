@@ -68,9 +68,10 @@ Reproduction: `spikes/joints/walker_creep_test.rs` (a test for `engine/physics/t
   the pull points: about 1.7e-8 a tick in the planet scene (a millimetre an hour), 3.6e-6 a second in the reproduction with a changing tilt (f32: 4e-9).
 - The controller keeps a skin of 0.01 and pushes a body 1e-5 off a surface it touches (`normal_nudge_factor`). At rest it cycles: 1e-5 up, back down; in the reproduction, every second or so, three
   gravity steps (2 to 7 mm) take it into the skin and the next pass, which has almost nothing to move, pops it out by up to 1.1 to 1.6 cm in one go (traced: the height before and after each stage of a tick).
-  The height of the eyes therefore **hops by up to 1.6 cm, about once a second**, in f64 at any rate of change of the tilt tried (1e-12 to 1e-6 a step; 87 to 103 hops in 120 s).
-  The f32 build does the same only when the tilt changes by 1e-6 a step or more (0.0034 degrees a second; 86 hops in 120 s), and not at all below 1e-8 a step.
-- So the f64 move did not make this up; it made a behaviour that needs a fast change in f32 happen at any change.
+  The height of the eyes therefore **hops by up to 1.6 cm, about once a second**, in f64 at any rate of change of the tilt tried (1e-12 to 1e-6 a step; 87 to 103 hops in 120 s), **when the tilt is already there
+  (5e-5) from the first step**. The f32 build does the same only when the tilt changes by 1e-6 a step or more (0.0034 degrees a second; 86 hops in 120 s), and not at all below 1e-8 a step.
+  **Corrected in the turning-ship study below:** when the character stands level first and the tilt then grows from nothing, f64 does not hop at slow rates (largest jerk 1e-5 at 1e-4 rad/s). What decides it is not found.
+- So the f64 move did not make the hop up; in one setup it makes a behaviour that needs a fast change in f32 happen at any change.
 
 **Not verified:** why f32 does not enter the cycle at small changes. The guess is that a distance in the contact code is compared with a constant sized for f32 and the move is dropped, which I have not looked for.
 **Not known:** how often a player meets a gravity that changes. Standing on a planet that goes round a rail the change is about 5e-12 a step (from the creep's own feedback), which the reproduction says is enough to hop;
@@ -78,6 +79,13 @@ but the planet scene (`bodies.rs`, 200 ticks) showed no hop, only the 1e-5 nudge
 
 **Can a player notice it?** 1.5 cm of eye height is about 13 pixels at a metre's distance (1080 lines, 70 degrees) and 2 mm about 2; a hop about once a second would be a visible shimmer of the floor and things on it,
 if it happens in play. Not tested in play. The creep (a millimetre an hour) cannot be seen.
+
+**On turning ships** (`spikes/joints/walker_turning_test.rs`; the character stands level for 4 s, then the pull turns in its frame at a steady rate, about one horizontal axis or a diagonal one, until the tilt is 0.6 rad,
+which is what a player aboard a ship that rolls is given; physics crate only, not played). In both builds:
+- Rates of 1e-4 and 1e-3 rad/s: at most one jerk of over half a millimetre in 60 s (f64: none at 1e-4).
+- Rates of 1e-2 to 0.2 rad/s: **a jerk of about 1 cm (the skin) every few degrees of roll**: f64 4 to 9 in the 34 degrees, f32 7 to 23. f64 is not worse here.
+- The character also **slides 0.2 to 0.4 m sideways during a 34 degree roll**, at any rate (the box turns about its middle, so the feet swing and the controller moves the middle); the eyes sink 4 to 11 cm. Same in f32.
+So on a ship that turns, a standing player's eye height jerks by about a centimetre several times during a roll, before and after the f64 move. Whether the camera shows it is not tested.
 
 **A fix is not made.** Options: do the gravity step along the floor's normal (or skip it) while the character is grounded and has no velocity along `up`; drop the sideways part of a downward move that is shorter than the
 skin; keep the shape's turn unchanged until `up` has changed by more than a threshold. Each changes how a character stands and needs the regression test the reproduction can become.
