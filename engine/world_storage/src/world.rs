@@ -12,7 +12,7 @@ use terrain::{
     WorldTerrainError,
 };
 use voxel_grid::{Brick, ChannelDefinition, ChannelValueKind, Grid, GridLayout, GridLayoutError};
-use voxel_space::{BrickCoordinate, EntityPose, GridId, LevelIndex, WorldPosition};
+use voxel_space::{BrickCoordinate, EntityPose, GridId, GridPose, LevelIndex, WorldPosition};
 
 use crate::container::{ContainerError, Section, read_container, write_container};
 use crate::engine_sections::{
@@ -337,7 +337,7 @@ impl WorldData {
     /// and how fast it turns. Ships are taken in order of their numbers, so what a ship goes round (a ship with a lower number) has been put in its place already,
     /// and its place and speed are what the ship that goes round it starts from. A ship that goes round another is put at the other's place and its offset from it
     /// added to the place itself (exact in bricks, and the offset itself exact to a small fraction of a voxel: see [`crate::rail::ExactOffset`]), not to the other's place as plain
-    /// numbers, which at a hundred thousand times the distance of the Sun is not enough to say where a moon is. A ship that only turns stays where it is. Returns the ships whose place the world cannot hold (an orbit past the end of the
+    /// numbers, which at a hundred thousand times the distance of the Sun is not enough to say where a moon is. A ship that only turns stays where it is. What the rail places is the ship's **centre of mass**, so the origin of its coordinates is put at the rail's place less the centre of mass turned as the ship is turned (the same for a planet, whose centre of mass is its origin). Returns the ships whose place the world cannot hold (an orbit past the end of the
     /// coordinates), which are left where they were; and ships that go round one that is not there stay as they are.
     pub fn put_ships_on_their_rails(&mut self, time: impl Into<RailTime>) -> Vec<GridId> {
         let time = time.into();
@@ -386,12 +386,28 @@ impl WorldData {
                 None => None,
             };
             let ship = self.grids.get_mut(id).expect("the ship was just found");
+            let orientation = state.orientation.unwrap_or(ship.pose.orientation);
+            // What a rail has is where the centre of mass goes: the origin of the ship's coordinates is that less the centre of mass, turned as the ship is. (A planet's
+            // centre of mass is its origin, and a ship that is not turned has its origin as far from its middle as it was.)
+            let position = match position {
+                Some(middle) if ship.centre_of_mass != [0.0; 3] => {
+                    let aside = GridPose::new(middle, orientation)
+                        .direction_to_world(ship.centre_of_mass)
+                        .map(|part| -part);
+                    match middle.translated_by_voxels(aside) {
+                        Some(origin) => Some(origin),
+                        None => {
+                            not_placed.push(id);
+                            continue;
+                        }
+                    }
+                }
+                other => other,
+            };
             if let Some(position) = position {
                 ship.pose.position = position;
             }
-            if let Some(orientation) = state.orientation {
-                ship.pose.orientation = orientation;
-            }
+            ship.pose.orientation = orientation;
             ship.linear_velocity = state.velocity;
             ship.angular_velocity = state.angular_velocity;
         }

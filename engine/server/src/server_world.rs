@@ -222,6 +222,8 @@ pub struct ServerWorld {
     carried_ships: BTreeMap<GridId, GridId>,
     /// How far the world moved each entity in the last call of `apply_rails`, for those it did (see [`ServerWorld::carried_by_rails`]).
     carried_entities: BTreeMap<EntityId, Displacement>,
+    /// The tick of the clock at which each free ship that could coast began to be left alone (see [`coasting`]).
+    quiet_since: BTreeMap<GridId, u64>,
 }
 
 impl ServerWorld {
@@ -251,6 +253,7 @@ impl ServerWorld {
             carried_by: BTreeMap::new(),
             carried_ships: BTreeMap::new(),
             carried_entities: BTreeMap::new(),
+            quiet_since: BTreeMap::new(),
         }
     }
 
@@ -927,12 +930,51 @@ impl ServerWorld {
     }
 
     /// Moves a ship (clients that watch it are told in this tick's updates).
+    /// A ship that someone moves is no longer left alone: if it was coasting on a rail it is taken off it (see `server_world/coasting.rs`).
     pub fn set_grid_pose(&mut self, grid: GridId, pose: GridPose) -> Result<(), AccessError> {
         self.data
             .grids_mut()
             .get_mut(grid)
             .ok_or(AccessError::NoSuchGrid(grid))?
             .pose = pose;
+        self.disturb(grid);
+        Ok(())
+    }
+
+    /// Writes where the bodies have put a ship and how fast it goes. It is what the bodies do every tick, so it is not a disturbance: the ship stays on a rail or goes on counting
+    /// the time it has been left alone (a call of [`ServerWorld::set_grid_pose`] or [`ServerWorld::set_grid_velocity`] is anyone else's, and is).
+    pub fn move_grid_by_bodies(
+        &mut self,
+        grid: GridId,
+        pose: GridPose,
+        linear: [f64; 3],
+        angular: [f64; 3],
+    ) -> Result<(), AccessError> {
+        let ship = self
+            .data
+            .grids_mut()
+            .get_mut(grid)
+            .ok_or(AccessError::NoSuchGrid(grid))?;
+        ship.pose = pose;
+        ship.linear_velocity = linear;
+        ship.angular_velocity = angular;
+        Ok(())
+    }
+
+    /// Writes how fast the bodies have a ship going, as [`ServerWorld::move_grid_by_bodies`], leaving its pose.
+    pub fn slow_grid_by_bodies(
+        &mut self,
+        grid: GridId,
+        linear: [f64; 3],
+        angular: [f64; 3],
+    ) -> Result<(), AccessError> {
+        let ship = self
+            .data
+            .grids_mut()
+            .get_mut(grid)
+            .ok_or(AccessError::NoSuchGrid(grid))?;
+        ship.linear_velocity = linear;
+        ship.angular_velocity = angular;
         Ok(())
     }
 
@@ -948,6 +990,7 @@ impl ServerWorld {
             .grids()
             .get(grid)
             .ok_or(AccessError::NoSuchGrid(grid))?;
+        self.disturb(grid);
         self.grid_forces.push(GridForce { grid, force, at });
         Ok(())
     }
@@ -959,6 +1002,7 @@ impl ServerWorld {
             .grids()
             .get(grid)
             .ok_or(AccessError::NoSuchGrid(grid))?;
+        self.disturb(grid);
         self.grid_torques.push(GridTorque { grid, torque });
         Ok(())
     }
@@ -1129,7 +1173,9 @@ impl ServerWorld {
             .grids_mut()
             .get_mut(grid)
             .ok_or(AccessError::NoSuchGrid(grid))?;
-        if frozen && !ship.frozen {
+        // (A ship that is on a rail is where the clock says and goes on round: it has no speed of its own to lose.)
+        let on_a_rail = ship.terrain.is_none() && ship.rail.is_some();
+        if frozen && !ship.frozen && !on_a_rail {
             ship.linear_velocity = [0.0; 3];
             ship.angular_velocity = [0.0; 3];
         }
@@ -1178,6 +1224,7 @@ impl ServerWorld {
             ship.angular_velocity = [0.0; 3];
         }
         ship.held = held;
+        self.disturb(grid);
         Ok(())
     }
 
@@ -1195,6 +1242,7 @@ impl ServerWorld {
             .ok_or(AccessError::NoSuchGrid(grid))?;
         ship.linear_velocity = linear;
         ship.angular_velocity = angular;
+        self.disturb(grid);
         Ok(())
     }
 
@@ -1340,15 +1388,8 @@ impl ServerWorld {
     pub fn influence_radius(&self, planet: GridId) -> Option<f64> {
         let ship = self.data.grids().get(planet)?;
         ship.rail?;
-        let extent = ship.terrain?.extent;
-        let reach_in_bricks = [extent.min(), extent.max()]
-            .into_iter()
-            .flat_map(|corner| [corner.x(), corner.y(), corner.z()])
-            .map(i128::abs)
-            .max()
-            .unwrap_or(0);
-        let edge = voxel_space::BRICK_EDGE_LENGTH as f64;
-        Some((reach_in_bricks as f64 * edge * INFLUENCE_PER_REACH).min(GREATEST_INFLUENCE))
+        let reach = coasting::terrain_reach(ship.terrain?.extent);
+        Some((reach * INFLUENCE_PER_REACH).min(GREATEST_INFLUENCE))
     }
 
     /// The planet on a rail in a level that carries a place: the one whose sphere of influence ([`ServerWorld::influence_radius`]) it is in, and if it is in
@@ -1697,6 +1738,9 @@ impl ServerWorld {
         Ok(brick)
     }
 }
+
+mod coasting;
+pub use coasting::NotCoasting;
 
 #[cfg(test)]
 pub(crate) mod tests;

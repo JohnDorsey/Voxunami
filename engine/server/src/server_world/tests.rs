@@ -12,6 +12,8 @@ use world_storage::{GridTerrain, LevelData};
 
 use super::*;
 
+mod coasting_ships;
+
 /// A generator that counts how many bricks it is asked for.
 #[derive(Debug)]
 struct Counting {
@@ -1687,6 +1689,43 @@ fn a_ship_whose_rail_puts_it_past_the_end_of_the_world_is_left_where_it_is_and_n
         Vec::<GridId>::new()
     );
     assert_eq!(world.data().grids().get(lost).unwrap().pose, there);
+}
+
+#[test]
+fn it_is_the_centre_of_mass_of_a_ship_that_is_on_the_rail_and_the_origin_is_put_back_from_it_by_the_turn_of_the_ship()
+ {
+    // A ship that weighs most at one end is pulled at its centre of mass, which is where an orbit goes: the origin of its coordinates is where the rail's place is less the
+    // centre of mass turned as the ship is turned. A planet's centre of mass is its origin, so nothing moves for it.
+    let mut world = world_for_rails();
+    let turned = Orientation::from_yaw_pitch(0.7, 0.2);
+    let pose = GridPose::new(at(1.0, 2.0, 3.0), turned);
+    let rail = orbit_about(Centre::Point([1000.0, 0.0, -50.0]), 100.0, 10.0);
+    let centred = world.create_grid(LevelIndex::MAIN, pose).unwrap();
+    let off_centre = world.create_grid(LevelIndex::MAIN, pose).unwrap();
+    world.set_grid_rail(centred, Some(rail)).unwrap();
+    world.set_grid_rail(off_centre, Some(rail)).unwrap();
+    let middle = [3.0, -1.5, 8.0];
+    world.set_grid_mass(off_centre, 1.0e3, middle).unwrap();
+    world.data.set_clock(37);
+    world.apply_rails(20);
+    let on_the_rail = world.data().grids().get(centred).unwrap().pose.position;
+    let ship = world.data().grids().get(off_centre).unwrap();
+    assert_eq!(ship.pose.orientation, turned);
+    assert_ne!(ship.pose.position, on_the_rail);
+    let its_middle = ship
+        .pose
+        .local_to_world(WorldPosition::new(BrickCoordinate::ORIGIN, middle))
+        .unwrap();
+    let off = its_middle.displacement_to(on_the_rail).in_voxels();
+    assert!(
+        off.iter().all(|part| part.abs() < 1.0e-9),
+        "the centre of mass is {off:?} from the rail"
+    );
+    // Its velocity is the rail's, as the centre of mass has it.
+    assert_eq!(
+        ship.linear_velocity,
+        world.data().grids().get(centred).unwrap().linear_velocity
+    );
 }
 
 #[test]

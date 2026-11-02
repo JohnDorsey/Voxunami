@@ -489,3 +489,25 @@ fn the_orbit_made_from_a_state_is_pinned_to_the_bit() {
         );
     }
 }
+
+#[test]
+fn an_orbit_from_a_place_given_as_plain_voxels_is_the_orbit_from_the_state_of_that_place() {
+    // A ship that is not on a rail has its place as an f64 and no exact offset: `from_place` is what `from_state` does with the plain numbers of an offset, to the bit.
+    let orbit = an_orbit([0.3, 0.8, -0.2], 6.8e6, 0.9, 1.1, 5581.0, 0.7);
+    let mu = mu_of(6.8e6, 5581.0);
+    let (offset, velocity) = state_at(orbit, 1234);
+    let from_state = fit(offset, velocity, mu, 1234).unwrap();
+    let from_place = Orbit::from_place(
+        Centre::Point(NOWHERE),
+        offset.in_voxels(),
+        velocity,
+        mu,
+        time(1234),
+    )
+    .unwrap();
+    assert_eq!(from_place, from_state);
+    assert_eq!(
+        Orbit::from_place(Centre::Point(NOWHERE), NOWHERE, velocity, mu, time(1234)),
+        Err(RailError::Invalid("a body on its centre is on no orbit"))
+    );
+}

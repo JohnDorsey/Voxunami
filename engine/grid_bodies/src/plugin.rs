@@ -278,6 +278,17 @@ fn velocity_from(follow: Option<Follow>, local: [f64; 3]) -> [f64; 3] {
 }
 
 /// Whether two places of a frame are the same (see [`SAME_PLACE_VOXELS`]).
+/// What a ship is to the solver. A ship that is held or frozen does not move; **neither does one that is on a rail**: it is where the clock puts it whatever the solver does, so it
+/// is a fixed body that other ships are stopped by, and it asks for no terrain of a planet (a fixed ship is held against it). The world takes a ship off its rail before anything near
+/// it could meet it or push it (`server::ServerWorld::update_coasting`), and then it is the solver's again.
+fn body_kind(held: bool, frozen: bool, on_a_rail: bool) -> BodyKind {
+    if held || frozen || on_a_rail {
+        BodyKind::Fixed
+    } else {
+        BodyKind::Dynamic
+    }
+}
+
 fn same_place(first: WorldPosition, second: WorldPosition) -> bool {
     first
         .displacement_to(second)
@@ -718,11 +729,7 @@ impl Bodies {
         let Some(ship) = world.data().grids().get(id) else {
             return;
         };
-        let kind = if ship.held || ship.frozen {
-            BodyKind::Fixed
-        } else {
-            BodyKind::Dynamic
-        };
+        let kind = body_kind(ship.held, ship.frozen, ship.rail.is_some());
         let carrier = world.carrier_of(id);
         let Some(key) = self.frame_of(id) else {
             // A ship is put in the first frame of its level that goes with the planet that carries it (or with none, if none does) and that it is near the origin of,
@@ -1305,8 +1312,7 @@ impl Bodies {
                     if now == record.written {
                         continue;
                     }
-                    if world.set_grid_pose(*id, now.0).is_ok() {
-                        let _ = world.set_grid_velocity(*id, now.1, now.2);
+                    if world.move_grid_by_bodies(*id, now.0, now.1, now.2).is_ok() {
                         record.written = now;
                     }
                 }
@@ -1321,7 +1327,7 @@ impl Bodies {
                     // A body asleep has no speed, whatever it was last written with: that is what someone who steps onto it should find.
                     let (pose, linear, angular) = record.written;
                     if (linear != [0.0; 3] || angular != [0.0; 3])
-                        && world.set_grid_velocity(*id, [0.0; 3], [0.0; 3]).is_ok()
+                        && world.slow_grid_by_bodies(*id, [0.0; 3], [0.0; 3]).is_ok()
                     {
                         record.written = (pose, [0.0; 3], [0.0; 3]);
                     }
@@ -1338,8 +1344,7 @@ impl Bodies {
                 if now == record.written {
                     continue;
                 }
-                if world.set_grid_pose(*id, now.0).is_ok() {
-                    let _ = world.set_grid_velocity(*id, now.1, now.2);
+                if world.move_grid_by_bodies(*id, now.0, now.1, now.2).is_ok() {
                     record.written = now;
                 }
             }
@@ -2078,6 +2083,15 @@ mod tests {
         assert_eq!(local_in(None, world), Some(world));
         assert_eq!(velocity_in(None, [1.0, 2.0, 3.0]), [1.0, 2.0, 3.0]);
         assert_eq!(velocity_from(None, [1.0, 2.0, 3.0]), [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn a_ship_that_is_held_or_frozen_or_on_a_rail_is_a_fixed_body_and_any_other_is_dynamic() {
+        assert_eq!(body_kind(false, false, false), BodyKind::Dynamic);
+        assert_eq!(body_kind(true, false, false), BodyKind::Fixed);
+        assert_eq!(body_kind(false, true, false), BodyKind::Fixed);
+        assert_eq!(body_kind(false, false, true), BodyKind::Fixed);
+        assert_eq!(body_kind(true, true, true), BodyKind::Fixed);
     }
 
     #[test]

@@ -57,7 +57,18 @@ impl Orbit {
         mu: f64,
         time: RailTime,
     ) -> Result<Self, RailError> {
-        let place = offset.in_voxels();
+        Self::from_place(around, offset.in_voxels(), velocity, mu, time)
+    }
+
+    /// The same, for a place given as plain numbers of voxels from the centre: what a ship that is not on a rail has (its place is an `f64` offset in a brick, and the
+    /// difference from the centre's is an `f64` of the size of the distance, which is as near as the working below can use).
+    pub fn from_place(
+        around: Centre,
+        place: [f64; 3],
+        velocity: [f64; 3],
+        mu: f64,
+        time: RailTime,
+    ) -> Result<Self, RailError> {
         if !(mu > 0.0 && mu.is_finite())
             || !place.iter().chain(&velocity).all(|part| part.is_finite())
         {

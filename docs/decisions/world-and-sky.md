@@ -76,6 +76,11 @@ with its numbers and what was found, is in `history/decision-diary.md`. Entries 
   and nothing drifts. The engine puts ships on their rails in order of their numbers, so a moon follows its planet. A body on a rail is in free fall with what it
   goes round. A rail is a function of whole ticks (`RailTime`), and an orbit's offset is worked out in 128-bit fixed point (`ExactOffset`) and kept as bricks and a rest.
   Limits: a radius of at most 2^120 voxels, a period of at most 2^80 seconds, a phase of at most 2^63 radians.
+- **A free ship that nothing disturbs goes on a rail, round the planet that pulls it most (2026-11-02, step B1 of `orbits-and-thrust-plan.md`).** After a second without a push, a move, a hold or
+  anything near it, a ship that does not turn and is clear of the planet's extent is given the orbit its centre of mass and its speed are on (`Orbit::from_place`); the bodies hold it there (a fixed
+  body), and anything that disturbs it takes the rail off where it is. Observed or not, saved and brought back or not, a ship on a rail is where the clock says, with the same elements. Its gravity
+  is the planet's alone (patched conics). The rules and what they leave out are in `orbits-and-thrust-plan.md` ("B1 as built"). A tumbling ship, one inside the extent of a planet and one near
+  something stay bodies of the solver's, with the solver's error.
 - **A planet on a rail has a sphere of influence** (one and a half times the reach of its ground, at most 120,000 voxels): everything in the level inside it goes with the
   planet, moved by the planet's displacement of the tick before anything looks at the world; ships in it are simulated in a frame that goes with it, and a planet on a
   rail is a kinematic body. The prices (a ship made at rest near a moving planet is going at its speed against it, and so on) are in the diary.
