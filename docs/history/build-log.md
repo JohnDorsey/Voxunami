@@ -1688,6 +1688,12 @@ Phase 27d (entities in the world file):
   identifier and bytes, so one whose plugin is missing is loaded, kept and saved as it was, and is not shown to clients. 9 mutations are caught.
 - Server: a world saved in play and reloaded tells joining clients of its entities, and the counter keeps ids unique.
 
+Elliptical orbits, steps A0 and A1 (`orbits-and-thrust-plan.md`; no behaviour changed):
+- A0: `engine/world_storage/tests/rail_circle_bits.rs`, 26 circles pinned to the bit (bricks, rest, velocity) from the unchanged code; an ellipse with `ratio` 1.0 must give them again. Mutations: the speed's rounding order,
+  the CORDIC rounding and the final 2^-32 rounding are each caught; the same bits under WSL Linux.
+- A1: `engine/world_storage/tools/exact_ellipse_reference.py` (`mpmath`, 120 digits): the definition of the elements and of the place and speed, rows for the Kepler solver and for `Orbit`, and a self-check against Kepler's equation,
+  vis-viva, angular momentum, equal areas, finite differences and the circle (see the plan for the numbers). Eight wrong copies are each caught by the self-check.
+
 ## Measured
 Storage (Ryzen 7600X, release, one thread, best of 7, counting allocator; the single-voxel `get` figures include
 loop and bounds overhead, so bulk decode will be faster):
