@@ -21,6 +21,7 @@ every such name and every `docs/...` path in the code and the documents is a rea
   code belongs in the code and its tests, with a pointer.
 - `plan.md`: the build plan, what is proposed, what is open.
 - `future-goals.md`: owner wishes that are not scheduled, with what each would need.
+- `orbits-and-thrust-plan.md`: a plan for elliptical orbits and an investigation of ships kept on exact rails and of long burns with previews. **A proposal**; nothing is built.
 - `ship-terrain-cost.md`: what a fast ship costs the server and the options to cut it, **held back** until ships of several grids are understood.
 - `architecture-review.md`: the direction review of 2026-10-29: findings and proposals (milestones M0 to M4, eleven decisions).
   **Proposals, not decisions**, apart from what `design-decisions.md` records as taken.
