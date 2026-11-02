@@ -52,6 +52,18 @@ const CLEARANCE_DIRECTIONS: [[Real; 3]; 6] = [
 /// somewhere: resting on the ground, or against a wall, with the controller's small gap, is not inside it.
 const CLEARANCE_MARGIN: Real = 0.02;
 
+/// How near, in voxels, the controller lets the character come to a surface: its skin. The controller leaves a character that runs into something at
+/// exactly this distance from it, which matters to [`CharacterBody::step_up`].
+const SKIN: Real = 0.01;
+
+/// How much of the step height a raise may fall short of and still count as a raise by all of it. A raise that nothing is in the way of is the move asked
+/// for, to the last bit; one that something above is in the way of stops a skin short of it, so half a skin tells the two apart.
+const RAISE_TOLERANCE: Real = SKIN / 2.0;
+
+/// How much of the room a body on a step needs ahead of it may be missing, for rounding. A move that nothing is in the way of is what was asked, to
+/// the last bit, and one that something is in the way of falls short by about a skin, so a millionth tells the two apart.
+const ROOM_TOLERANCE: Real = 1.0e-6;
+
 /// A pull of gravity weaker than this (voxels per second per second) is none: the direction of nothing is not a direction.
 const LEAST_PULL: Real = 1.0e-6;
 
@@ -150,6 +162,15 @@ impl std::fmt::Debug for ForeignGrid<'_> {
     }
 }
 
+/// What a move through the terrain came to.
+struct TerrainMove {
+    movement: rapier3d::control::EffectiveCharacterMovement,
+    /// The normal of the last upright surface (a wall) the move ran into.
+    wall: Option<Vector>,
+    /// The normal of the first surface the move ran into that faces up, a floor or a slope.
+    floor: Option<Vector>,
+}
+
 /// The collider of one brick of a foreign grid, and the pose it was last put at (as the bits of its numbers).
 struct ForeignBrick {
     collider: Option<ColliderHandle>,
@@ -232,7 +253,7 @@ impl CharacterBody {
             shape_turn: None,
             controller: KinematicCharacterController {
                 up: Vector::Y,
-                offset: CharacterLength::Absolute(0.01),
+                offset: CharacterLength::Absolute(SKIN),
                 slide: true,
                 autostep: Some(CharacterAutostep {
                     max_height: CharacterLength::Absolute(settings.step_height),
@@ -973,18 +994,31 @@ impl CharacterBody {
         let (sideways, wall) = self.move_through_terrain(dt, desired_across);
         let mut sideways = sideways.translation;
         if let Some(wall) = wall {
-            // The slide along a wall, where the wall meets the floor, can come out as nothing: the shape cast gives the wall a normal with a
-            // hair of slope (a hundred-thousandth), so the slide has a hair of downward speed, and the controller takes the floor, which it
-            // meets at once, to be a slope the walker must not slide down and gives up. It happens to the wall of a ship that is not along
-            // the axes of the frame, and now and then to the wall of terrain that is. When it moved the character hardly at all and the
-            // slide along the wall is something, the slide is made here, level and along the wall (leaning a little away from it, so
-            // that the wall is not met again), and goes through the terrain the same way; it is taken if it gets the character most of
-            // the way. (Head on, or into a corner, the slide is nothing, or is stopped again, and nothing changes.)
-            let slide = slide_along(desired_across, wall, self.up);
-            if sideways.length() < 0.1 * slide.length() {
-                let (again, _) = self.move_through_terrain(dt, slide);
-                if again.translation.length() > 0.5 * slide.length() {
-                    sideways = again.translation;
+            // A wall that stopped a walker on the ground may be a step that the controller did not climb (see `step_up`).
+            let stepped = if self.grounded
+                && !self.flying
+                && stopped_by(wall, self.up, desired_across, sideways)
+            {
+                self.step_up(dt, desired_across)
+            } else {
+                None
+            };
+            if let Some(stepped) = stepped {
+                sideways = stepped;
+            } else {
+                // The slide along a wall, where the wall meets the floor, can come out as nothing: the shape cast gives the wall a normal with a
+                // hair of slope (a hundred-thousandth), so the slide has a hair of downward speed, and the controller takes the floor, which it
+                // meets at once, to be a slope the walker must not slide down and gives up. It happens to the wall of a ship that is not along
+                // the axes of the frame, and now and then to the wall of terrain that is. When it moved the character hardly at all and the
+                // slide along the wall is something, the slide is made here, level and along the wall (leaning a little away from it, so
+                // that the wall is not met again), and goes through the terrain the same way; it is taken if it gets the character most of
+                // the way. (Head on, or into a corner, the slide is nothing, or is stopped again, and nothing changes.)
+                let slide = slide_along(desired_across, wall, self.up);
+                if sideways.length() < 0.1 * slide.length() {
+                    let (again, _) = self.move_through_terrain(dt, slide);
+                    if again.translation.length() > 0.5 * slide.length() {
+                        sideways = again.translation;
+                    }
                 }
             }
         }
@@ -1059,6 +1093,18 @@ impl CharacterBody {
         rapier3d::control::EffectiveCharacterMovement,
         Option<Vector>,
     ) {
+        let made = self.move_from(&self.controller, self.center, dt, desired);
+        (made.movement, made.wall)
+    }
+
+    /// What `controller` makes of a move of a body with its middle at `center`; nothing is moved.
+    fn move_from(
+        &self,
+        controller: &KinematicCharacterController,
+        center: Vector,
+        dt: Real,
+        desired: Vector,
+    ) -> TerrainMove {
         let query = self.broad_phase.as_query_pipeline(
             self.narrow_phase.query_dispatcher(),
             &self.bodies,
@@ -1066,20 +1112,81 @@ impl CharacterBody {
             QueryFilter::default(),
         );
         let pose = match self.shape_turn {
-            None => Pose::from_translation(self.center),
-            Some(turn) => Pose::from_parts(self.center, turn),
+            None => Pose::from_translation(center),
+            Some(turn) => Pose::from_parts(center, turn),
         };
         let mut wall = None;
+        let mut floor = None;
         let up = self.up;
         let movement =
-            self.controller
-                .move_shape(dt, &query, &self.shape, &pose, desired, |collision| {
-                    let normal = collision.hit.normal1;
-                    if normal.dot(up).abs() < 0.5 {
-                        wall = Some(normal);
-                    }
-                });
-        (movement, wall)
+            controller.move_shape(dt, &query, &self.shape, &pose, desired, |collision| {
+                let normal = collision.hit.normal1;
+                if normal.dot(up).abs() < 0.5 {
+                    wall = Some(normal);
+                } else if normal.dot(up) > 0.0 && floor.is_none() {
+                    floor = Some(normal);
+                }
+            });
+        TerrainMove {
+            movement,
+            wall,
+            floor,
+        }
+    }
+
+    /// Climbs onto what has stopped a walker, if it is a step, where the controller's own stepping has not: the body is raised by the step height,
+    /// goes on by `across` (a move across the character's up), and is let down onto what it has come to, each by the controller's ordinary move with
+    /// its stepping off. Returns the whole move, or `None` if the body cannot be raised so far, has no room on the step (as much as the
+    /// controller's stepping asks for), or does not come down onto a floor that can be walked on. It is for a walker that stands on the ground and that
+    /// a wall has stopped (see [`stopped_by`]); what the controller's stepping climbs is as it was.
+    ///
+    /// Why the controller's stepping does not climb every step it should: a body that has run into the face of a step is exactly the skin away from
+    /// it (the controller stops a body at the `target_distance` of its cast, which is the skin), and the stepping then casts the body straight up along
+    /// that face, with the same `target_distance`, to see that nothing is above it, and gives up if it hits. That cast is a graze at the very distance
+    /// at which a cast counts a hit, and parry drops a hit there only if the cast moves away from the contact (`normal_vel >= 0.0`, in
+    /// `shape_cast_support_map_support_map.rs`), so whether it hits is the sign of the rounding of the contact's normal (about 1e-14; seen as
+    /// `(1e-14, -1e-14, -1.0)` against a face at `z = 19`). Where the toss goes the wrong way the walker stops at the foot of the step. Where the walker starts, and the
+    /// nudge (1e-4 instead of 1e-5 only changes which places lose it), do not decide it. The controller's ordinary moves do not mind a surface they go
+    /// along at that distance: a slide along a wall is made of them.
+    fn step_up(&self, dt: Real, across: Vector) -> Option<Vector> {
+        let direction = across.normalize_or_zero();
+        if direction == Vector::ZERO {
+            return None;
+        }
+        let steps = KinematicCharacterController {
+            autostep: None,
+            ..self.controller
+        };
+        let height = self.settings.step_height + SKIN;
+        let rise = self
+            .move_from(&steps, self.center, dt, self.up * height)
+            .movement
+            .translation;
+        let (_, risen) = self.split(rise);
+        if risen < height - RAISE_TOLERANCE {
+            return None;
+        }
+        // Room for the body on the step: ahead of it, the width the controller wants, with nothing in the way.
+        let raised = self.center + rise;
+        let room = self.settings.radius * 0.5 + SKIN;
+        let probe = self
+            .move_from(&steps, raised, dt, direction * room)
+            .movement
+            .translation;
+        if probe.dot(direction) < room - ROOM_TOLERANCE {
+            return None;
+        }
+        let ahead = self
+            .move_from(&steps, raised, dt, across)
+            .movement
+            .translation;
+        // It must come down onto a floor that can be walked on: not a slope steeper than the controller climbs, which a step up that is a
+        // slope's would otherwise be a way to climb one a step at a time.
+        let landing = self.move_from(&steps, raised + ahead, dt, -self.up * height);
+        let walkable = landing.floor.is_some_and(|normal| {
+            normal.dot(self.up) >= libm::cos(self.controller.max_slope_climb_angle)
+        });
+        walkable.then(|| rise + ahead + landing.movement.translation)
     }
 
     /// A hash of the character's position, speed and state, bit for bit: two runs of the same
@@ -1152,6 +1259,13 @@ fn max_brick() -> BrickCoordinate {
 /// How far from the wall, as a fraction of the slide, the slide made again leans: enough that the controller, which counts a surface
 /// within its gap of the character as touched, does not meet the wall again and take its slope's hair for a downward slide once more.
 const SLIDE_LEAN_FROM_WALL: Real = 0.05;
+
+/// Whether `wall` stopped a move: `desired` (across `up`) goes into the wall, and `moved` went less than half of the way into it.
+fn stopped_by(wall: Vector, up: Vector, desired: Vector, moved: Vector) -> bool {
+    let into = -(wall - up * wall.dot(up)).normalize_or_zero();
+    let wanted = desired.dot(into);
+    wanted > 0.0 && moved.dot(into) < 0.5 * wanted
+}
 
 /// A move across the up with what runs into `wall` taken out: it goes along the wall, level, and leans a little away from it. A move that
 /// does not run into it is as it was.

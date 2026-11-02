@@ -60,6 +60,20 @@ Entities on the wire, who a player is, players as entities, ships a player can m
 - Cost: only on placement, and only when inside terrain; a failed search is about a millisecond plus the generation of the bricks it looks at,
   which is why the limit is two bricks and not more.
 
+## Decided (a walker that a wall stops climbs the step the controller declined; found 2026-11-02)
+- **A character that walked exactly along an axis into the foot of a stair (yaw 0.0, the default look direction) stopped at it.** The cause is in Rapier's own
+  stepping, not in the f64 interface or the nudge: it casts the body up along the face of the step, a graze at exactly the distance a hit counts at, and
+  whether that hits is the sign of a 1e-14 rounding in the contact's normal (measured, and the mechanism is in `docs/history/joint-probe.md`).
+- **Rapier's stepping is still tried first, and `CharacterBody::step_up` is the second try**, for a grounded walker that a wall has stopped (less than half of
+  its push into the wall got through): raise the body by the step height, go on by the move, let it down, each by the controller's ordinary move with its
+  stepping off (those mind a graze no more than a slide along a wall does). It takes the step only if the body could be raised by all of it, has the room on the
+  step that Rapier's stepping asks for (half the radius and the skin), and comes down onto a floor not steeper than the controller climbs (50 degrees).
+- **Why a second try and not a replacement**: where Rapier's stepping climbs, nothing changed, to the bit (the pinned hashes of the scripted run and of
+  both ship runs are the ones from before); a replacement would have moved all of them with nothing to say which of the moves was a fix.
+- **Kept as the controller has it**: a step with less room above than a step and a skin (0.61) is not climbed, even if the body would fit after the step.
+- Tests: `a_character_walking_exactly_along_any_axis_into_a_stair_climbs_it_from_wherever_it_starts` (four directions, four places each),
+  `..._is_stopped_by_what_it_may_not_climb` (a block, a wall, a ledge with no room on it, a stair under a low ceiling) and, in `foreign.rs`, a steep slope.
+
 ## Decided (players are entities; built in Phase 27f)
 - **A player is an entity** of kind `player_presence:player`, with the key (server only), the connection number and the look angles (told to
   clients) and `engine:hidden`. Its pose is the player's pose; its level is the root grid. A player who leaves is hidden, not removed: it is

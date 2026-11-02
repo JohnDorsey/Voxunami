@@ -90,6 +90,35 @@ So on a ship that turns, a standing player's eye height jerks by about a centime
 **A fix is not made.** Options: do the gravity step along the floor's normal (or skip it) while the character is grounded and has no velocity along `up`; drop the sideways part of a downward move that is shorter than the
 skin; keep the shape's turn unchanged until `up` has changed by more than a threshold. Each changes how a character stands and needs the regression test the reproduction can become.
 
+## The walker that does not climb the stair it faces exactly (investigated 2026-11-02)
+**What it is.** A character walking exactly along an axis into the foot of a stair (half a block per step, under the 0.6 it climbs) stops at it: `yaw` 0.0 forwards (the default look direction), and 0.0 with
+`forward` -1 or `strafe` +-1 for the other three directions. One 1e-9 radian off the axis climbs it. Present before the f64 interface (commit 0b17130, `f32` yaw 0.0), so not caused by it. It stayed
+unseen because the stair test walked at `90.0f32.to_radians()`, 4e-8 off the exact quarter turn.
+
+**Verified** (by tracing every move of the controller, each hit with its normal, and by repeating the casts of its stepping from outside on the same poses; the scene is the test's, eyes stop at 11.63, z 14.31):
+- The stepping (`handle_stairs`) is entered and returns `false` at its **first** test, the cast of the body straight up by the step height (0.61). That cast **hits**, with the stair's own face as the normal:
+  `(1.1e-7, -2.2e-7, 1.0)` at time 0.0047 in the forward case, `(1.1e-14, -1.1e-14, -1.0)` at time 0 against a face at z = 19 in a backwards one. The casts forward at the raised height and down onto the step are clear.
+- The body is exactly the skin (0.01) from the face. The controller stops a body that runs into something at the `target_distance` of its cast, which is the skin, and the stepping's up cast uses the
+  same `target_distance`, so it starts at the distance at which a cast counts a hit, and goes along the face. In parry (`shape_cast_support_map_support_map.rs`) a hit that starts there is dropped
+  only if the cast is moving away from the contact (`normal_vel >= 0.0`); along a face it is neither, and the sign of the rounding of the normal decides.
+- So it is a toss that the walker cannot win by anything it does. Over four directions from four places each, 3 of 16 stop with the nudge at 1e-5. With the nudge at 1e-4 (Rapier's default) the original
+  case climbs and **two other places stop** instead: the nudge only changes which places lose. (The nudge of 1e-5 is also exactly the controller's cutoff for a move worth making, `len > 1e-5`, so a
+  move that is only into the face leaves a nudge that is dropped: at yaw 0 the body ended at z = 14.31, not 14.31001, while at 1e-9 the nudge was made. That is consistent with the trace, not shown by a
+  count of it. It is not the cause: with the nudge always made, places still stop.)
+- At a yaw of 1e-9 the first hit of the move is the floor, the nudge lifts the body 1e-5 and the second hit is the face at time 1e-5; the stepping then goes through, which can only happen if the up cast returned
+  nothing. That cast is the same graze and came out the other way.
+
+**The fix** is a second try (`CharacterBody::step_up`) when the controller's stepping has declined: see `decisions/players-and-ships.md`. The controller's ordinary moves are not troubled by the graze (a hit
+there is a slide along the face, which they are made of), so the try is built from three of them. Rapier's stepping is tried first and what it climbs is untouched: the pinned hashes of the scripted run and of
+both ship runs are unchanged. The stricter test (four directions, four places) fails 3 of 16 before and none after; the original test passes.
+**Mutations** (each applied alone to `step_up`'s code): taking the second try away, the raise check, the room check, the stopped-by condition, the grounded condition and the slope check are each caught by a
+test (the room check also by a ship run's hash). Two checks that an earlier version had, that the body is grounded after the drop and that it is not lower than it began, were not caught by anything, and
+cannot be: a floor was hit if the body is grounded, and a body that is walking moves less than its width a step. They were removed.
+
+**Not verified.** That other casts of the controller's stepping are free of the same toss (the one forward at the raised height and the one down onto the step are clear in everything traced, which is not a
+proof). The cost of the second try: it runs only on a step where a grounded walker is stopped by a wall, with two to four extra moves; not measured. Linux: see the commit message for what was run.
+**Not done.** `normal_nudge_factor` stays 1e-5; whether the nudge being dropped when it equals the cutoff matters anywhere else is not looked at.
+
 ## What reading a ship back as f32 and giving it to the solver again costs (2026-11-01)
 Rapier keeps each body's pose and speed in `f64` in the `BodyWorld` of its frame between ticks. After each step the plugin reads the state and writes it into the grid (`write_back`: the offset in a brick and the speeds
 become `f32`); it gives a ship to the solver again (`set_state`) only when something else changed the grid (`moved` in `sync_ship`, comparing with what it wrote), when it is first added, when it moves to another frame

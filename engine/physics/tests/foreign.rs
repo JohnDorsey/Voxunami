@@ -876,3 +876,31 @@ fn a_character_inside_a_ship_with_no_room_near_stays_where_it_is_and_the_search_
     // Eight voxels in each of six ways by eighths, and a dozen voxels looked at for each place: not the sixty-four of a character that is put.
     assert!(level.asked < 10_000, "{} voxels looked at", level.asked);
 }
+
+/// A walker that stops at the foot of a slope steeper than the controller climbs (50 degrees) does not get up it a step at a time. The foot of such a
+/// slope is a step to a body raised by the step height, which can walk onto it, and what it comes down onto is the slope: that is not a floor to
+/// walk on. The slope is the top of a ship, a block turned about x so that its top rises away from the character at 70 and at 77 degrees, and the
+/// character walks exactly along -z into it from the floor, where the step is made only if the walker is let down onto any floor at all.
+#[test]
+fn a_walker_exactly_along_an_axis_does_not_climb_a_slope_steeper_than_it_walks_up_a_step_at_a_time()
+{
+    for degrees in [70.0f32, 77.0] {
+        let mut level = Scene::with_floor(39);
+        let mut ship = Deck::block([20, 20, 20]);
+        let pose = GridPose::new(
+            at(6.5, 40.0, 5.0),
+            Orientation::from_yaw_pitch(0.0, degrees.to_radians()),
+        );
+        let mut body = standing_on_the_floor(&mut level, &mut ship, pose, 16.5, 32.0);
+        run(&mut body, &mut level, &mut ship, pose, FORWARD, 120);
+        let eyes = eye(&body);
+        assert!(
+            eyes[2] < 28.0,
+            "{degrees} degrees: it has not got to the slope: {eyes:?}"
+        );
+        assert!(
+            eyes[1] < 40.0 + 1.62 + 0.05,
+            "{degrees} degrees: it has climbed the slope: {eyes:?}"
+        );
+    }
+}

@@ -298,6 +298,233 @@ fn a_jump_clears_a_block_and_a_quarter_and_not_two_blocks() {
     assert!(highest < STANDING_EYE_HEIGHT + 1.4, "{highest}");
 }
 
+/// A BUG, found on 2026-11-02 and present before (in the committed code, with yaw 0.0): a character walking exactly along an axis into the foot of a stair stops at it (the
+/// eyes stay at 11.63 and z at 14.31) where one 1e-9 radian off the axis climbs it (12.63). The default look direction, yaw 0, is such an axis.
+#[test]
+fn a_character_walking_exactly_along_an_axis_into_a_stair_climbs_it() {
+    for yaw in [0.0, 1.0e-9] {
+        let (mut body, mut scene) = standing_on_a_floor();
+        let stair = Shape::stair(FaceDirection::NegativeZ);
+        for x in 0..40 {
+            for z in 8..14 {
+                scene.shape(x, 10, z, &stair);
+            }
+        }
+        edited(&mut body, &mut scene);
+        run(&mut body, &mut scene, MoveInput { yaw, ..FORWARD }, 60);
+        assert!(
+            eye(&body)[1] > STANDING_EYE_HEIGHT + 0.4,
+            "yaw {yaw}: the eyes are at {}, z {}",
+            eye(&body)[1],
+            eye(&body)[2]
+        );
+    }
+}
+
+/// A walk exactly along an axis, which is what the yaw 0.0 gives (a quarter turn of it is not exact: the cosine of a quarter turn is not nothing): the
+/// keys held, whether it goes along x or z and toward which end, and the high side of a stair that rises the way it goes.
+struct AxisWalk {
+    name: &'static str,
+    input: MoveInput,
+    along_x: bool,
+    sign: i128,
+    rises: FaceDirection,
+}
+
+const AXIS_WALKS: [AxisWalk; 4] = [
+    AxisWalk {
+        name: "forwards",
+        input: MoveInput {
+            forward: 1,
+            ..STILL
+        },
+        along_x: false,
+        sign: -1,
+        rises: FaceDirection::NegativeZ,
+    },
+    AxisWalk {
+        name: "backwards",
+        input: MoveInput {
+            forward: -1,
+            ..STILL
+        },
+        along_x: false,
+        sign: 1,
+        rises: FaceDirection::PositiveZ,
+    },
+    AxisWalk {
+        name: "to the right",
+        input: MoveInput { strafe: 1, ..STILL },
+        along_x: true,
+        sign: 1,
+        rises: FaceDirection::PositiveX,
+    },
+    AxisWalk {
+        name: "to the left",
+        input: MoveInput {
+            strafe: -1,
+            ..STILL
+        },
+        along_x: true,
+        sign: -1,
+        rises: FaceDirection::NegativeX,
+    },
+];
+
+/// Where a character that walks into something stands: across the walk, along it, and how many whole voxels past the one it stands in the first voxel of what it
+/// walks into is. Where it stops is not the same distance from it each time, and the controller's arithmetic depends on that, so they differ in
+/// everything: round numbers and not, near and far.
+const AXIS_STARTS: [(f32, f32, i128); 4] = [
+    (16.5, 16.5, 2),
+    (16.25, 16.5, 2),
+    (20.123, 17.77, 3),
+    (9.7, 16.31, 1),
+];
+
+/// What puts the blocks of one voxel column of a scene for [`walk_into`]: the scene, the column's x and z, and how deep it is.
+type Builder<'a> = dyn Fn(&mut Scene, i128, i128, i128) + 'a;
+
+/// Walks a character that stands on the floor at the place `start` says, exactly along an axis as `walk` says, for `ticks` steps, into what `build` makes.
+/// `build` is asked for every voxel column along the walk, from six before the first voxel of what the character walks into to six after it, and across it
+/// a good way each side: it is given the scene, the x and z of the column, and how deep it is (0 for the first voxel of what is walked into, and
+/// less than that on the character's side of it). It puts blocks from y = 10, the top of the floor, up. Returns where the eyes ended.
+fn walk_into(
+    walk: &AxisWalk,
+    start: (f32, f32, i128),
+    build: impl Fn(&mut Scene, i128, i128, i128),
+    ticks: usize,
+) -> [f64; 3] {
+    let (across, along, gap) = start;
+    let (x, z) = if walk.along_x {
+        (along, across)
+    } else {
+        (across, along)
+    };
+    let mut scene = Scene::with_floor(9);
+    let mut body = spawn(x, 14.0, z);
+    run(&mut body, &mut scene, STILL, 120);
+    assert!(body.is_grounded());
+    let first = (if walk.along_x { x } else { z }).floor() as i128 + walk.sign * (gap + 1);
+    for depth in -6..6 {
+        for other in -10..50 {
+            let column = first + walk.sign * depth;
+            if walk.along_x {
+                build(&mut scene, column, other, depth);
+            } else {
+                build(&mut scene, other, column, depth);
+            }
+        }
+    }
+    run(&mut body, &mut scene, walk.input, ticks);
+    eye(&body)
+}
+
+/// The same for the four directions that are exactly along an axis: forwards, backwards and to either side, from several places.
+#[test]
+fn a_character_walking_exactly_along_any_axis_into_a_stair_climbs_it_from_wherever_it_starts() {
+    let mut stuck = Vec::new();
+    for walk in &AXIS_WALKS {
+        let stair = Shape::stair(walk.rises);
+        for start in AXIS_STARTS {
+            let eye = walk_into(
+                walk,
+                start,
+                |scene, x, z, depth| {
+                    if depth >= 0 {
+                        scene.shape(x, 10, z, &stair);
+                    }
+                },
+                90,
+            );
+            if eye[1] < STANDING_EYE_HEIGHT + 0.4 {
+                stuck.push(format!(
+                    "{} from {start:?}: the eyes are at {eye:?}",
+                    walk.name
+                ));
+            }
+        }
+    }
+    assert!(
+        stuck.is_empty(),
+        "stopped at the foot of a stair:
+{}",
+        stuck.join(
+            "
+"
+        )
+    );
+}
+
+/// What a character that walks exactly along an axis may not climb it does not: a block, a wall, a ledge with no room on it to stand, and a stair with less
+/// room above it than the controller asks for. (Those two are the controller's rules for steps: room for half the radius of the body on the step, and a step
+/// and a skin of room above the head, so that a body that would fit under the ceiling after the step is not let up.)
+#[test]
+fn a_character_walking_exactly_along_any_axis_is_stopped_by_what_it_may_not_climb() {
+    let low_ceiling = Shape::from_boxes(&[ShapeBox {
+        min: [0, 3, 0],
+        max: [8, 8, 8],
+    }]);
+    let mut climbed = Vec::new();
+    for walk in &AXIS_WALKS {
+        let stair = Shape::stair(walk.rises);
+        // Half a block high, an eighth deep, at the far end of its voxel, and the wall behind it is the next voxel.
+        let axis = if walk.along_x { 0 } else { 2 };
+        let (low, high) = if walk.sign < 0 { (0, 1) } else { (7, 8) };
+        let (mut min, mut max) = ([0; 3], [8, 4, 8]);
+        (min[axis], max[axis]) = (low, high);
+        let ledge = Shape::from_boxes(&[ShapeBox { min, max }]);
+        for start in AXIS_STARTS {
+            let walks_into: [(&str, &Builder<'_>); 4] = [
+                ("a block", &|scene, x, z, depth| {
+                    if depth >= 0 {
+                        scene.cube(x, 10, z);
+                    }
+                }),
+                ("a wall", &|scene, x, z, depth| {
+                    if depth >= 0 {
+                        for y in 10..14 {
+                            scene.cube(x, y, z);
+                        }
+                    }
+                }),
+                ("a ledge with a wall behind it", &|scene, x, z, depth| {
+                    if depth == 0 {
+                        scene.shape(x, 10, z, &ledge);
+                    } else if depth > 0 {
+                        for y in 10..14 {
+                            scene.cube(x, y, z);
+                        }
+                    }
+                }),
+                ("a stair under a low ceiling", &|scene, x, z, depth| {
+                    if depth >= 0 {
+                        scene.shape(x, 10, z, &stair);
+                    }
+                    scene.shape(x, 12, z, &low_ceiling);
+                }),
+            ];
+            for (what, build) in walks_into {
+                let eye = walk_into(walk, start, build, 90);
+                if (eye[1] - STANDING_EYE_HEIGHT).abs() > 0.06 {
+                    climbed.push(format!(
+                        "{} into {what} from {start:?}: the eyes are at {eye:?}",
+                        walk.name
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        climbed.is_empty(),
+        "climbed what it may not:
+{}",
+        climbed.join(
+            "
+"
+        )
+    );
+}
+
 #[test]
 fn slabs_and_the_steps_of_stairs_are_walked_up_without_jumping_and_a_block_is_not() {
     // A bottom slab (half a block high) in the way.
