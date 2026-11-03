@@ -25,6 +25,22 @@ phases; what works so far:
   an error symbol; an unlisted file of another size is ignored.
 - With no `atlas.json`, the empty atlas asks for the tile size (16 until you say otherwise) and creates the file.
 
-Not built yet: the editing canvas and tools, renaming, saving tile images, the quit dialog, and importing a picture.
+- The right half edits the selected tiles. With several selected they appear as one canvas in their atlas
+  arrangement (empty places are hatched and cannot be drawn on), and a stroke can cross from tile to tile.
+  Mouse wheel zooms, middle-drag pans, a grid shows when zoomed in. The left button draws with the primary color,
+  the right button with the secondary color.
+- Tools: pencil, eraser, line, horizontal line, vertical line, horizontal and vertical parallelogram, eye
+  dropper, fill bucket (exact color match, side by side pixels only). `[` and `]` resize: both axes together,
+  Shift for the width, Alt for the height; the lines and parallelograms have one width.
+- Colors: a picker with hue, saturation, value and alpha, a hex field (`#RRGGBB` or `#RRGGBBAA`), the two
+  drawing colors, and the 16 most recently used colors (click one to use it; right-click for the secondary).
+- Ctrl+Z undoes, Ctrl+Y or Ctrl+Shift+Z redoes (the history is per tile and kept while you switch tiles).
+  Ctrl+S saves the shown tiles that changed, Ctrl+Shift+S saves every changed tile. A tile with unsaved changes
+  has an orange dot in the atlas, and `*` after its name. Until the quit dialog exists, the window will not close
+  while a tile that has a file has unsaved changes. A tile that has no file yet keeps its pixels in `atlas.json`
+  after every edit.
+
+Not built yet: the noise brush, air brush and rectangle selection with copy and paste, renaming, the quit dialog,
+and importing a picture.
 
 Tests for the logic: `python -m unittest discover -s tools/virtual_atlas` from the repository root.

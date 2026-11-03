@@ -1956,5 +1956,897 @@ class WindowTests(ProjectFixture):
         self.draw(application)
 
 
+class ToolSettingsTests(unittest.TestCase):
+    def test_plain_brackets_change_both_axes_of_a_brush_and_never_go_below_one(self):
+        settings = va.ToolSettings()
+        settings.adjust("pencil", 1, True, True, (16, 16))
+        self.assertEqual(settings.brush_sizes["pencil"], (2, 2))
+        settings.adjust("pencil", -1, True, True, (16, 16))
+        settings.adjust("pencil", -1, True, True, (16, 16))
+        self.assertEqual(settings.brush_sizes["pencil"], (1, 1))
+
+    def test_shift_changes_only_the_width_and_alt_only_the_height(self):
+        settings = va.ToolSettings()
+        settings.adjust("pencil", 1, True, False, (16, 16))
+        settings.adjust("pencil", 1, True, False, (16, 16))
+        settings.adjust("pencil", 1, False, True, (16, 16))
+        self.assertEqual(settings.brush_sizes["pencil"], (3, 2))
+        settings.adjust("pencil", -1, True, False, (16, 16))
+        self.assertEqual(settings.brush_sizes["pencil"], (2, 2))
+
+    def test_every_size_is_reachable_odd_or_even(self):
+        settings = va.ToolSettings()
+        seen = set()
+        for _ in range(10):
+            settings.adjust("eraser", 1, True, True, (16, 16))
+            seen.add(settings.brush_sizes["eraser"][0])
+        self.assertEqual(seen, set(range(2, 12)))
+
+    def test_a_brush_is_limited_to_the_canvas_on_each_axis(self):
+        settings = va.ToolSettings()
+        for _ in range(100):
+            settings.adjust("pencil", 1, True, True, (8, 32))
+        self.assertEqual(settings.brush_sizes["pencil"], (32, 8))
+
+    def test_pencil_and_eraser_have_separate_sizes(self):
+        settings = va.ToolSettings()
+        settings.adjust("pencil", 3, True, True, (16, 16))
+        self.assertEqual(settings.brush_sizes["eraser"], (1, 1))
+
+    def test_all_line_tools_share_one_width_changed_by_plain_brackets_only(self):
+        settings = va.ToolSettings()
+        settings.adjust("line", 2, True, True, (16, 16))
+        self.assertEqual(settings.line_width, 3)
+        settings.adjust("horizontal_parallelogram", 1, True, True, (16, 16))
+        self.assertEqual(settings.line_width, 4)
+        settings.adjust("vertical_line", 1, True, False, (16, 16))
+        settings.adjust("vertical_line", 1, False, True, (16, 16))
+        self.assertEqual(settings.line_width, 4)
+        settings.adjust("line", -10, True, True, (16, 16))
+        self.assertEqual(settings.line_width, 1)
+
+    def test_tools_without_a_size_ignore_the_keys(self):
+        settings = va.ToolSettings()
+        settings.adjust("fill", 1, True, True, (16, 16))
+        settings.adjust("eyedropper", 1, True, True, (16, 16))
+        self.assertEqual((settings.brush_sizes, settings.line_width), ({"pencil": (1, 1), "eraser": (1, 1)}, 1))
+
+    def test_footprint_sizes_for_the_outline(self):
+        settings = va.ToolSettings()
+        settings.brush_sizes["pencil"] = (3, 2)
+        settings.line_width = 5
+        self.assertEqual(settings.footprint_size("pencil"), (3, 2))
+        self.assertEqual(settings.footprint_size("line"), (5, 5))
+        self.assertEqual(settings.footprint_size("horizontal_parallelogram"), (5, 1))
+        self.assertEqual(settings.footprint_size("vertical_parallelogram"), (1, 5))
+        self.assertEqual(settings.footprint_size("fill"), (1, 1))
+
+
+class CanvasSessionTests(unittest.TestCase):
+    def layout(self, size=8, tiles=None):
+        tiles = tiles or {(0, 0): solid_tile(BLUE, size)}
+        return va.compose_canvas(tiles, size)
+
+    def start(self, layout, tool, pixel, color=RED, settings=None):
+        return va.CanvasSession(layout, tool, settings or va.ToolSettings(), color, pixel)
+
+    def painted(self, session):
+        return {(int(c), int(r)) for r, c in numpy.argwhere(numpy.any(session.pixels != session.base, axis=2))}
+
+    def test_pencil_writes_the_exact_color_alpha_included_and_leaves_the_layout_alone(self):
+        layout = self.layout()
+        session = self.start(layout, "pencil", (3, 3), (10, 20, 30, 77))
+        self.assertEqual(tuple(session.pixels[3, 3]), (10, 20, 30, 77))
+        self.assertTrue(numpy.all(layout.pixels == BLUE))
+        self.assertTrue(session.changed)
+
+    def test_pencil_uses_its_size_with_the_even_size_rule(self):
+        settings = va.ToolSettings()
+        settings.brush_sizes["pencil"] = (2, 3)
+        session = self.start(self.layout(), "pencil", (4, 4), settings=settings)
+        self.assertEqual(self.painted(session), {(3, 3), (4, 3), (3, 4), (4, 4), (3, 5), (4, 5)})
+
+    def test_dragging_paints_every_pixel_between(self):
+        session = self.start(self.layout(), "pencil", (0, 0))
+        session.move((5, 0))
+        self.assertEqual(self.painted(session), {(column, 0) for column in range(6)})
+        session.move((5, 3))
+        self.assertEqual(len(self.painted(session)), 9)
+
+    def test_a_fast_diagonal_jump_leaves_no_gaps(self):
+        session = self.start(self.layout(), "pencil", (0, 0))
+        session.move((7, 7))
+        self.assertEqual(self.painted(session), {(i, i) for i in range(8)})
+
+    def test_the_eraser_makes_pixels_fully_transparent_whatever_the_color(self):
+        session = self.start(self.layout(), "eraser", (2, 2), color=RED)
+        self.assertEqual(tuple(session.pixels[2, 2]), va.TRANSPARENT)
+        session.move((4, 2))
+        self.assertEqual(int((session.pixels[2, :, 3] == 0).sum()), 3)
+
+    def test_nothing_is_drawn_over_empty_places_between_tiles(self):
+        layout = self.layout(4, {(0, 0): solid_tile(BLUE), (2, 0): solid_tile(BLUE)})
+        session = self.start(layout, "pencil", (0, 1))
+        session.move((11, 1))
+        self.assertTrue(numpy.all(session.pixels[1, 4:8] == 0), "the empty place stays empty")
+        self.assertTrue(numpy.all(session.pixels[1, 0:4] == RED))
+        self.assertTrue(numpy.all(session.pixels[1, 8:12] == RED))
+
+    def test_a_stroke_may_start_and_run_outside_the_canvas(self):
+        session = self.start(self.layout(), "pencil", (-5, -5))
+        session.move((3, 3))
+        self.assertTrue(session.changed)
+        outside = self.start(self.layout(), "pencil", (-5, -5))
+        outside.move((-2, -9))
+        self.assertFalse(outside.changed)
+
+    def test_a_line_is_a_preview_that_follows_the_pointer_and_leaves_no_trace_of_earlier_positions(self):
+        session = self.start(self.layout(), "line", (0, 0))
+        session.move((7, 7))
+        self.assertEqual(self.painted(session), {(i, i) for i in range(8)})
+        session.move((7, 0))
+        self.assertEqual(self.painted(session), {(column, 0) for column in range(8)})
+        session.move((0, 0))
+        self.assertEqual(self.painted(session), {(0, 0)})
+
+    def test_a_line_uses_the_shared_line_width(self):
+        settings = va.ToolSettings()
+        settings.line_width = 3
+        session = self.start(self.layout(), "line", (1, 4), settings=settings)
+        session.move((6, 4))
+        self.assertEqual(self.painted(session), {(c, r) for c in range(1, 7) for r in range(3, 6)})
+
+    def test_horizontal_and_vertical_lines_lock_to_their_axis(self):
+        horizontal = self.start(self.layout(), "horizontal_line", (1, 2))
+        horizontal.move((6, 7))
+        self.assertEqual(self.painted(horizontal), {(column, 2) for column in range(1, 7)})
+        vertical = self.start(self.layout(), "vertical_line", (2, 1))
+        vertical.move((7, 6))
+        self.assertEqual(self.painted(vertical), {(2, row) for row in range(1, 7)})
+
+    def test_parallelogram_tools_draw_their_shapes(self):
+        settings = va.ToolSettings()
+        settings.line_width = 3
+        horizontal = self.start(self.layout(), "horizontal_parallelogram", (2, 0), settings=settings)
+        horizontal.move((4, 2))
+        self.assertEqual(self.painted(horizontal), {(1, 0), (2, 0), (3, 0), (2, 1), (3, 1), (4, 1), (3, 2), (4, 2), (5, 2)})
+        vertical = self.start(self.layout(), "vertical_parallelogram", (0, 2), settings=settings)
+        vertical.move((2, 4))
+        self.assertEqual(self.painted(vertical), {(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (2, 5)})
+
+    def test_fill_paints_the_clicked_region_on_press_and_ignores_movement(self):
+        tile = solid_tile(BLUE, 8)
+        tile[:, 4] = GREEN
+        session = self.start(self.layout(8, {(0, 0): tile}), "fill", (0, 0))
+        self.assertEqual(int(numpy.all(session.pixels == RED, axis=2).sum()), 32)
+        session.move((7, 7))
+        self.assertEqual(int(numpy.all(session.pixels == RED, axis=2).sum()), 32)
+
+    def test_fill_with_the_color_already_there_changes_nothing(self):
+        session = self.start(self.layout(), "fill", (0, 0), color=BLUE)
+        self.assertFalse(session.changed)
+
+    def test_fill_does_not_leak_through_an_empty_place_into_a_tile_on_the_other_side(self):
+        # The empty place holds transparent pixels, so a fill of a transparent tile would run through it.
+        layout = self.layout(4, {(0, 0): solid_tile(TRANSPARENT), (2, 0): solid_tile(TRANSPARENT)})
+        session = self.start(layout, "fill", (0, 0))
+        self.assertTrue(numpy.all(session.pixels[:, 0:4] == RED))
+        self.assertTrue(numpy.all(session.pixels[:, 8:12] == 0), "the tile across the gap is untouched")
+
+    def test_fill_does_not_cross_into_an_empty_place_and_does_nothing_outside(self):
+        layout = self.layout(4, {(0, 0): solid_tile(BLUE), (2, 0): solid_tile(BLUE)})
+        session = self.start(layout, "fill", (0, 0))
+        self.assertEqual(int(numpy.all(session.pixels == RED, axis=2).sum()), 16)
+        self.assertFalse(self.start(layout, "fill", (5, 1)).changed, "an empty place")
+        self.assertFalse(self.start(layout, "fill", (-1, 1)).changed, "outside")
+
+    def test_tools_that_do_not_draw_are_refused(self):
+        with self.assertRaises(ValueError):
+            self.start(self.layout(), "eyedropper", (0, 0))
+
+    def test_pick_color(self):
+        layout = self.layout(4, {(0, 0): random_tile(1), (2, 0): random_tile(2)})
+        self.assertEqual(va.pick_color(layout, (1, 2)), tuple(int(v) for v in layout.pixels[2, 1]))
+        self.assertIsNone(va.pick_color(layout, (5, 1)), "an empty place")
+        self.assertIsNone(va.pick_color(layout, (-1, 0)))
+        self.assertIsNone(va.pick_color(layout, (0, 99)))
+        self.assertEqual(va.pick_color(layout, (9, 0)), tuple(int(v) for v in layout.pixels[0, 9]))
+
+
+class HexColorTests(unittest.TestCase):
+    def test_parsing(self):
+        self.assertEqual(va.parse_hex_color("#ff8000"), (255, 128, 0, 255))
+        self.assertEqual(va.parse_hex_color("ff800040"), (255, 128, 0, 64))
+        self.assertEqual(va.parse_hex_color("#f80"), (255, 136, 0, 255))
+        self.assertEqual(va.parse_hex_color("#f808"), (255, 136, 0, 136))
+        self.assertEqual(va.parse_hex_color("  #FFFFFF "), (255, 255, 255, 255))
+
+    def test_rejects_what_is_not_a_color(self):
+        for text in ["", "#", "#ff", "#fffff", "#ggg000", "#ff80000", "red"]:
+            self.assertIsNone(va.parse_hex_color(text), text)
+
+    def test_formatting_round_trips_and_hides_full_alpha(self):
+        self.assertEqual(va.format_hex_color((255, 128, 0, 255)), "#ff8000")
+        self.assertEqual(va.format_hex_color((255, 128, 0, 64)), "#ff800040")
+        for color in [(0, 0, 0, 0), (1, 2, 3, 4), (255, 255, 255, 255)]:
+            self.assertEqual(va.parse_hex_color(va.format_hex_color(color)), color)
+
+
+class ColorStateTests(unittest.TestCase):
+    def test_starts_with_black_and_white_and_edits_the_primary(self):
+        state = va.ColorState()
+        self.assertEqual((state.get("primary"), state.get("secondary"), state.active_slot), ((0, 0, 0, 255), (255, 255, 255, 255), "primary"))
+
+    def test_set_color_affects_only_that_slot(self):
+        state = va.ColorState()
+        state.set_color((10, 20, 30, 40), "secondary")
+        self.assertEqual(state.get("secondary"), (10, 20, 30, 40))
+        self.assertEqual(state.get("primary"), (0, 0, 0, 255))
+        state.set_color((1, 2, 3, 4))
+        self.assertEqual(state.get(), (1, 2, 3, 4))
+
+    def test_hsv_from_rgb(self):
+        state = va.ColorState()
+        state.set_color((255, 0, 0, 255))
+        self.assertEqual(state.get_hsva()[:3], (0.0, 1.0, 1.0))
+        state.set_color((0, 255, 0, 128))
+        hue, saturation, value, alpha = state.get_hsva()
+        self.assertAlmostEqual(hue, 1 / 3)
+        self.assertAlmostEqual(alpha, 128 / 255)
+
+    def test_a_grey_keeps_the_hue_it_had_and_black_keeps_hue_and_saturation(self):
+        state = va.ColorState()
+        state.set_hsva(0.6, 0.8, 0.9, 1.0)
+        state.set_color((128, 128, 128, 255))
+        self.assertAlmostEqual(state.get_hsva()[0], 0.6)
+        state.set_hsva(0.3, 0.7, 0.5, 1.0)
+        state.set_color((0, 0, 0, 255))
+        hue, saturation, value, _ = state.get_hsva()
+        self.assertEqual((round(hue, 3), round(saturation, 3), value), (0.3, 0.7, 0.0))
+
+    def test_dragging_to_black_in_the_picker_does_not_lose_hue_or_saturation(self):
+        state = va.ColorState()
+        state.set_hsva(0.5, 0.6, 0.0, 1.0)
+        self.assertEqual(state.get(), (0, 0, 0, 255))
+        self.assertEqual(state.get_hsva()[:3], (0.5, 0.6, 0.0))
+
+    def test_set_hsva_makes_rgb_and_clamps(self):
+        state = va.ColorState()
+        state.set_hsva(0.0, 1.0, 1.0, 0.5)
+        self.assertEqual(state.get(), (255, 0, 0, 128))
+        state.set_hsva(5.0, -3.0, 9.0, 2.0)
+        self.assertEqual(state.get(), (255, 255, 255, 255))
+
+    def test_history_puts_the_newest_first_without_repeats_and_is_capped(self):
+        state = va.ColorState()
+        state.remember((1, 1, 1, 255))
+        state.remember((2, 2, 2, 255))
+        state.remember((1, 1, 1, 255))
+        self.assertEqual(state.history, [(1, 1, 1, 255), (2, 2, 2, 255)])
+        for value in range(40):
+            state.remember((value, 0, 0, 255))
+        self.assertEqual(len(state.history), va.COLOR_HISTORY_LENGTH)
+        self.assertEqual(state.history[0], (39, 0, 0, 255))
+
+
+class CanvasViewTests(unittest.TestCase):
+    def setUp(self):
+        self.view = va.CanvasView()
+        self.view.rect = va.pygame.Rect(100, 50, 400, 300)
+
+    def test_fit_uses_the_largest_whole_zoom_and_centers(self):
+        self.view.fit(16, 16)
+        self.assertEqual(self.view.zoom, 18)  # 300 // 16
+        self.assertEqual(self.view.pixel_rectangle(0, 0, 16, 16).center, (300, 200))
+
+    def test_fit_never_goes_below_one_for_a_huge_canvas(self):
+        self.view.fit(1000, 1000)
+        self.assertEqual(self.view.zoom, 1)
+
+    def test_pixel_at_and_pixel_rectangle_agree(self):
+        self.view.fit(16, 16)
+        for column, row in [(0, 0), (5, 9), (15, 15)]:
+            rectangle = self.view.pixel_rectangle(column, row)
+            self.assertEqual(self.view.pixel_at(rectangle.topleft), (column, row))
+            self.assertEqual(self.view.pixel_at((rectangle.right - 1, rectangle.bottom - 1)), (column, row))
+        self.assertEqual(self.view.pixel_at((self.view.origin_x - 1, self.view.origin_y)), (-1, 0))
+
+    def test_zoom_keeps_the_pixel_under_the_pointer(self):
+        self.view.fit(16, 16)
+        anchor = (250, 160)
+        before = self.view.pixel_at(anchor)
+        self.view.zoom_by(3, anchor)
+        self.assertEqual(self.view.zoom, 21)
+        self.assertEqual(self.view.pixel_at(anchor), before)
+        self.view.zoom_by(-100, anchor)
+        self.assertEqual(self.view.zoom, 1)
+        self.view.zoom_by(1000, anchor)
+        self.assertEqual(self.view.zoom, va.MAXIMUM_CANVAS_ZOOM)
+
+    def test_panning_moves_the_picture(self):
+        self.view.fit(16, 16)
+        rectangle = self.view.pixel_rectangle(0, 0)
+        self.view.pan_by(10, -5)
+        self.assertEqual(self.view.pixel_rectangle(0, 0).topleft, (rectangle.x + 10, rectangle.y - 5))
+
+    def test_only_the_visible_pixels_are_listed(self):
+        self.view.zoom = 10
+        self.view.origin_x, self.view.origin_y = 100, 50
+        self.assertEqual(self.view.visible_pixels(100, 100), (0, 0, 40, 30))
+        self.view.origin_x = -95
+        first_column, _, last_column, _ = self.view.visible_pixels(100, 100)
+        self.assertEqual(first_column, 19)
+        self.assertEqual(last_column, 60)
+        self.assertEqual(self.view.visible_pixels(5, 5)[2:], (5, 5))
+
+
+class ProjectEditingTests(ProjectFixture):
+    def edit(self, project, change, coordinates=None):
+        """Select tiles, draw `change(canvas_pixels)` on their canvas and commit it."""
+        project.selection = set(coordinates or project.tiles)
+        layout = va.compose_canvas({c: project.tiles[c].pixels for c in project.selection}, project.tile_size)
+        canvas = layout.pixels.copy()
+        change(canvas)
+        return project.apply_canvas_edit(layout, canvas)
+
+    def paint(self, row, column, color=RED):
+        def change(canvas):
+            canvas[row, column] = color
+
+        return change
+
+    def test_an_edit_changes_the_tile_marks_it_modified_and_refreshes_its_picture_revision(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE))})
+        record = project.tiles[(0, 0)]
+        revision = record.revision
+        self.assertTrue(self.edit(project, self.paint(1, 2)))
+        self.assertEqual(tuple(record.pixels[1, 2]), RED)
+        self.assertTrue(record.is_modified)
+        self.assertGreater(record.revision, revision)
+        self.assertEqual(tuple(record.disk_pixels[1, 2]), BLUE, "the file's pixels are untouched")
+
+    def test_an_edit_that_changes_nothing_is_not_recorded(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE))})
+        self.assertFalse(self.edit(project, lambda canvas: None))
+        self.assertFalse(project.history.can_undo(project.shown_records()))
+
+    def test_undo_and_redo_restore_pixels_and_the_modified_mark_follows_the_file(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE))})
+        record = project.tiles[(0, 0)]
+        self.edit(project, self.paint(0, 0))
+        self.edit(project, self.paint(1, 1, GREEN))
+        self.assertTrue(project.undo())
+        self.assertEqual(tuple(record.pixels[1, 1]), BLUE)
+        self.assertEqual(tuple(record.pixels[0, 0]), RED)
+        self.assertTrue(project.undo())
+        self.assertFalse(record.is_modified, "back to what the file has")
+        self.assertFalse(project.undo())
+        self.assertTrue(project.redo())
+        self.assertTrue(record.is_modified)
+        self.assertTrue(project.redo())
+        self.assertEqual(tuple(record.pixels[1, 1]), GREEN)
+        self.assertFalse(project.redo())
+
+    def test_an_edit_across_two_tiles_is_one_undo_step_and_history_survives_switching_tiles(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE)), (1, 0): ("b.png", solid_tile(BLUE))})
+
+        def across(canvas):
+            canvas[0, 3] = RED
+            canvas[0, 4] = RED
+
+        self.edit(project, across)
+        project.select_only((1, 0))
+        self.assertTrue(project.undo())
+        self.assertEqual(tuple(project.tiles[(0, 0)].pixels[0, 3]), BLUE)
+        self.assertTrue(numpy.all(project.tiles[(0, 0)].pixels == BLUE))
+        self.assertTrue(numpy.all(project.tiles[(1, 0)].pixels == BLUE))
+
+    def test_undo_looks_only_at_the_shown_tiles(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE)), (1, 0): ("b.png", solid_tile(BLUE))})
+        self.edit(project, self.paint(0, 0), [(0, 0)])
+        self.edit(project, self.paint(0, 0), [(1, 0)])
+        project.select_only((0, 0))
+        project.undo()
+        self.assertTrue(numpy.all(project.tiles[(0, 0)].pixels == BLUE))
+        self.assertEqual(tuple(project.tiles[(1, 0)].pixels[0, 0]), RED)
+
+    def test_error_tiles_are_not_shown_and_cannot_be_edited(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE)), (1, 0): ("gone.png", None)})
+        project.selection = {(0, 0), (1, 0)}
+        self.assertEqual([record.name for record in project.shown_records()], ["a.png"])
+
+    def test_new_tiles_are_written_to_atlas_json_on_every_edit_and_every_undo(self):
+        project = self.make_project({(0, 0): ("n.png", None)}, data={(0, 0): va.encode_tile_data(solid_tile(BLUE))})
+        self.edit(project, self.paint(2, 2))
+        stored = va.decode_tile_data(self.saved().coordinates_to_data[(0, 0)], 4)
+        self.assertEqual(tuple(stored[2, 2]), RED)
+        project.undo()
+        stored = va.decode_tile_data(self.saved().coordinates_to_data[(0, 0)], 4)
+        self.assertEqual(tuple(stored[2, 2]), BLUE)
+        project.redo()
+        self.assertEqual(tuple(va.decode_tile_data(self.saved().coordinates_to_data[(0, 0)], 4)[2, 2]), RED)
+
+    def test_a_failed_save_of_a_new_tile_edit_leaves_the_old_pixels_and_no_history(self):
+        project = self.make_project({(0, 0): ("n.png", None)}, data={(0, 0): va.encode_tile_data(solid_tile(BLUE))})
+        record = project.tiles[(0, 0)]
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.edit(project, self.paint(0, 0))
+        self.assertTrue(numpy.all(record.pixels == BLUE))
+        self.assertFalse(project.history.can_undo([record]))
+
+    def test_a_failed_save_during_undo_keeps_the_pixels_and_the_step_still_available(self):
+        project = self.make_project({(0, 0): ("n.png", None)}, data={(0, 0): va.encode_tile_data(solid_tile(BLUE))})
+        record = project.tiles[(0, 0)]
+        self.edit(project, self.paint(0, 0))
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                project.undo()
+        self.assertEqual(tuple(record.pixels[0, 0]), RED)
+        self.assertTrue(project.undo(), "the step was not lost")
+        self.assertEqual(tuple(record.pixels[0, 0]), BLUE)
+
+    def test_saving_writes_the_png_and_clears_the_modified_mark(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE))})
+        self.edit(project, self.paint(1, 1))
+        self.assertTrue(project.has_unsaved_file_changes)
+        project.save_tile((0, 0))
+        self.assertFalse(project.tiles[(0, 0)].is_modified)
+        self.assertFalse(project.has_unsaved_file_changes)
+        self.assertEqual(tuple(va.read_image_pixels(self.folder / "a.png")[1, 1]), RED)
+
+    def test_saving_a_new_tile_creates_its_file_and_removes_its_stored_data(self):
+        project = self.make_project({(0, 0): ("n.png", None)}, data={(0, 0): va.encode_tile_data(solid_tile(GREEN))})
+        project.save_tile((0, 0))
+        self.assertTrue((self.folder / "n.png").exists())
+        self.assertEqual(self.saved().coordinates_to_data, {})
+        self.assertEqual(self.saved().coordinates_to_names, {(0, 0): "n.png"})
+        self.assertFalse(project.tiles[(0, 0)].is_new)
+
+    def test_saving_a_new_tile_never_overwrites_an_existing_file_even_one_the_program_ignores(self):
+        va.write_png_atomically(self.folder / "n.png", solid_tile(RED, 8))
+        project = self.make_project({(0, 0): ("n.png", None)}, data={(0, 0): va.encode_tile_data(solid_tile(GREEN))}, write_atlas=True)
+        # the 8x8 file makes the tile an error tile (stored data next to a wrong-size file), so build a clash differently
+        self.assertIsNotNone(project.tiles[(0, 0)].error)
+        with self.assertRaises(ValueError):
+            project.save_tile((0, 0))
+        self.assertEqual(va.read_image_size(self.folder / "n.png"), (8, 8))
+
+    def test_a_name_that_appeared_in_the_folder_after_loading_blocks_saving_a_new_tile(self):
+        project = self.make_project({(0, 0): ("n.png", None)}, data={(0, 0): va.encode_tile_data(solid_tile(GREEN))})
+        va.write_png_atomically(self.folder / "n.png", solid_tile(RED, 8))
+        with self.assertRaises(FileExistsError):
+            project.save_tile((0, 0))
+        self.assertEqual(va.read_image_size(self.folder / "n.png"), (8, 8))
+        self.assertTrue(project.tiles[(0, 0)].is_new)
+
+    def test_save_tiles_skips_clean_and_error_tiles_and_reports_failures(self):
+        project = self.make_project(
+            {(0, 0): ("a.png", solid_tile(BLUE)), (1, 0): ("b.png", solid_tile(BLUE)), (2, 0): ("gone.png", None)}
+        )
+        self.edit(project, self.paint(0, 0), [(0, 0)])
+        saved, failures = project.save_tiles([(0, 0), (1, 0), (2, 0)])
+        self.assertEqual((saved, failures), (1, []))
+        self.edit(project, self.paint(1, 1), [(0, 0)])
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            saved, failures = project.save_tiles([(0, 0)])
+        self.assertEqual(saved, 0)
+        self.assertIn("a.png", failures[0])
+        self.assertTrue(project.tiles[(0, 0)].is_modified)
+
+    def test_save_all_saves_every_modified_tile(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE)), (1, 0): ("b.png", solid_tile(BLUE))})
+        self.edit(project, self.paint(0, 0), [(0, 0)])
+        self.edit(project, self.paint(0, 0), [(1, 0)])
+        project.selection = set()
+        self.assertEqual(project.save_all_tiles(), (2, []))
+        self.assertFalse(project.has_unsaved_file_changes)
+
+    def test_returning_a_tile_forgets_its_history(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE))})
+        record = project.tiles[(0, 0)]
+        self.edit(project, self.paint(0, 0))
+        project.save_tile((0, 0))
+        project.return_to_unplaced([(0, 0)])
+        self.assertFalse(project.history.can_undo([record]))
+
+
+class EditorLayoutTests(unittest.TestCase):
+    def test_every_part_fits_inside_the_editor_and_nothing_overlaps(self):
+        for size in [(640, 780), (450, 600), (900, 900)]:
+            rect = va.pygame.Rect(10, 10, *size)
+            areas = va.compute_editor_areas(rect, list(va.TOOL_LABELS))
+            parts = {"header": areas.header, "canvas": areas.canvas, "options": areas.options, "square": areas.square,
+                     "hue": areas.hue_bar, "alpha": areas.alpha_bar, "primary": areas.primary_swatch,
+                     "secondary": areas.secondary_swatch, "hex": areas.hex_field}
+            parts.update({f"tool {tool}": rectangle for tool, rectangle in areas.tool_buttons.items()})
+            parts.update({f"history {index}": rectangle for index, rectangle in enumerate(areas.history)})
+            for name, rectangle in parts.items():
+                self.assertTrue(rect.contains(rectangle), f"{name} {rectangle} outside {rect}")
+            names = list(parts)
+            for index, first in enumerate(names):
+                for second in names[index + 1:]:
+                    self.assertFalse(parts[first].colliderect(parts[second]), f"{first} overlaps {second} at {size}")
+            self.assertGreater(areas.canvas.height, 100, size)
+
+    def test_all_sixteen_recent_colors_have_room_when_the_editor_is_wide_enough(self):
+        areas = va.compute_editor_areas(va.pygame.Rect(0, 0, 640, 780), list(va.TOOL_LABELS))
+        self.assertEqual(len(areas.history), va.COLOR_HISTORY_LENGTH)
+
+
+class EditorTests(ProjectFixture):
+    """Drives the editor with mouse and key events the way a user would, and checks the tiles."""
+
+    @classmethod
+    def setUpClass(cls):
+        va.pygame.init()
+
+    def setUp(self):
+        super().setUp()
+        placed = {(0, 0): ("a.png", solid_tile(BLUE, 8)), (1, 0): ("b.png", solid_tile(GREEN, 8)), (3, 3): ("c.png", solid_tile(RED, 8))}
+        self.tile_size = 8
+        self.project = self.make_project(placed, tile_size=8)
+        self.application = va.Application(self.project, va.pygame.Surface((1280, 800)))
+        self.editor = self.application.editor
+
+    def select(self, *coordinates):
+        self.project.selection = set(coordinates)
+        self.editor.sync()
+
+    def position(self, column, row):
+        return self.editor.view.pixel_rectangle(column, row).center
+
+    def send(self, kind, position, button=1):
+        event_type = {"down": va.pygame.MOUSEBUTTONDOWN, "up": va.pygame.MOUSEBUTTONUP}[kind]
+        self.application.handle_event(va.pygame.event.Event(event_type, pos=position, button=button))
+
+    def move(self, position):
+        self.application.handle_event(va.pygame.event.Event(va.pygame.MOUSEMOTION, pos=position, rel=(0, 0), buttons=(1, 0, 0)))
+
+    def drag(self, start, end, button=1):
+        self.send("down", start, button)
+        self.move(end)
+        self.send("up", end, button)
+
+    def key(self, key, modifiers=0):
+        self.application.handle_event(va.pygame.event.Event(va.pygame.KEYDOWN, key=key, mod=modifiers, unicode="", scancode=0))
+
+    def click_tool(self, tool):
+        self.send("down", self.editor.areas.tool_buttons[tool].center)
+        self.send("up", self.editor.areas.tool_buttons[tool].center)
+
+    def pixel(self, coordinate, column, row):
+        return tuple(int(v) for v in self.project.tiles[coordinate].pixels[row, column])
+
+    def test_the_canvas_shows_the_selected_tiles_and_the_name_above_it(self):
+        self.select((0, 0))
+        self.assertEqual(self.editor.header_text(), "a.png")
+        self.select((0, 0), (1, 0))
+        self.assertEqual(self.editor.header_text(), "(multiple files)")
+        self.assertEqual(self.editor.layout.pixels.shape, (8, 16, 4))
+        self.select()
+        self.assertEqual(self.editor.header_text(), "")
+        self.assertIsNone(self.editor.layout)
+
+    def test_the_name_gets_an_asterisk_when_any_shown_tile_is_modified(self):
+        self.select((0, 0), (1, 0))
+        self.drag(self.position(1, 1), self.position(2, 1))
+        self.assertEqual(self.editor.header_text(), "(multiple files)*")
+        self.select((1, 0))
+        self.assertEqual(self.editor.header_text(), "b.png")
+
+    def test_drawing_with_the_pencil_changes_the_tile_and_its_atlas_picture_and_marks_it_unsaved(self):
+        self.select((0, 0))
+        self.editor.colors.set_color(RED, "primary")
+        self.drag(self.position(1, 1), self.position(5, 1))
+        self.assertEqual(self.pixel((0, 0), 3, 1), RED)
+        self.assertEqual(self.pixel((0, 0), 0, 1), BLUE)
+        self.assertTrue(self.project.tiles[(0, 0)].is_modified)
+        self.application.draw()
+        atlas_rectangle = self.application.atlas_panel.tile_screen_rect((0, 0))
+        cell = atlas_rectangle.width // 8
+        sample = (atlas_rectangle.x + 3 * cell + cell // 2, atlas_rectangle.y + 1 * cell + cell // 2)
+        self.assertEqual(tuple(self.application.surface.get_at(sample))[:3], RED[:3], "the thumbnail shows the edit")
+
+    def test_the_right_button_draws_with_the_secondary_color(self):
+        self.select((0, 0))
+        self.editor.colors.set_color(RED, "primary")
+        self.editor.colors.set_color(GREEN, "secondary")
+        self.send("down", self.position(2, 2), 3)
+        self.send("up", self.position(2, 2), 3)
+        self.assertEqual(self.pixel((0, 0), 2, 2), GREEN)
+
+    def test_a_stroke_is_one_undo_step_and_undo_redo_keys_work(self):
+        self.select((0, 0))
+        self.drag(self.position(0, 0), self.position(7, 0))
+        self.assertEqual(self.pixel((0, 0), 7, 0), (0, 0, 0, 255))
+        self.key(va.pygame.K_z, va.pygame.KMOD_CTRL)
+        self.assertEqual(self.pixel((0, 0), 7, 0), BLUE)
+        self.assertEqual(self.pixel((0, 0), 0, 0), BLUE, "the whole stroke went in one step")
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified)
+        self.key(va.pygame.K_y, va.pygame.KMOD_CTRL)
+        self.assertEqual(self.pixel((0, 0), 7, 0), (0, 0, 0, 255))
+        self.key(va.pygame.K_z, va.pygame.KMOD_CTRL)
+        self.key(va.pygame.K_z, va.pygame.KMOD_CTRL | va.pygame.KMOD_SHIFT)
+        self.assertEqual(self.pixel((0, 0), 7, 0), (0, 0, 0, 255), "Ctrl+Shift+Z redoes")
+
+    def test_the_eraser_makes_transparent_and_does_not_enter_the_color_history(self):
+        self.select((0, 0))
+        self.click_tool("eraser")
+        self.drag(self.position(0, 3), self.position(3, 3))
+        self.assertEqual(self.pixel((0, 0), 2, 3), va.TRANSPARENT)
+        self.assertEqual(self.editor.colors.history, [])
+
+    def test_a_used_color_enters_the_history(self):
+        self.select((0, 0))
+        self.editor.colors.set_color(RED, "primary")
+        self.drag(self.position(0, 0), self.position(1, 0))
+        self.assertEqual(self.editor.colors.history, [RED])
+
+    def test_a_stroke_that_changes_nothing_adds_no_history_entry_and_no_undo_step(self):
+        self.select((0, 0))
+        self.editor.colors.set_color(BLUE, "primary")
+        self.drag(self.position(0, 0), self.position(3, 0))
+        self.assertEqual(self.editor.colors.history, [])
+        self.assertFalse(self.project.history.can_undo(self.project.shown_records()))
+
+    def test_clicking_a_history_swatch_selects_that_color_and_right_click_sets_the_secondary(self):
+        self.editor.colors.remember(RED)
+        self.editor.colors.remember(GREEN)
+        swatches = self.editor.areas.history
+        self.send("down", swatches[1].center)
+        self.send("up", swatches[1].center)
+        self.assertEqual(self.editor.colors.get("primary"), RED)
+        self.send("down", swatches[0].center, 3)
+        self.send("up", swatches[0].center, 3)
+        self.assertEqual(self.editor.colors.get("secondary"), GREEN)
+
+    def test_brackets_resize_the_brush_and_shift_and_alt_choose_the_axis(self):
+        self.select((0, 0))
+        self.key(va.pygame.K_RIGHTBRACKET)
+        self.assertEqual(self.editor.settings.brush_sizes["pencil"], (2, 2))
+        self.key(va.pygame.K_RIGHTBRACKET, va.pygame.KMOD_SHIFT)
+        self.assertEqual(self.editor.settings.brush_sizes["pencil"], (3, 2))
+        self.key(va.pygame.K_RIGHTBRACKET, va.pygame.KMOD_ALT)
+        self.assertEqual(self.editor.settings.brush_sizes["pencil"], (3, 3))
+        self.key(va.pygame.K_LEFTBRACKET, va.pygame.KMOD_SHIFT)
+        self.key(va.pygame.K_LEFTBRACKET, va.pygame.KMOD_ALT)
+        self.assertEqual(self.editor.settings.brush_sizes["pencil"], (2, 2))
+        self.key(va.pygame.K_LEFTBRACKET)
+        self.key(va.pygame.K_LEFTBRACKET)
+        self.assertEqual(self.editor.settings.brush_sizes["pencil"], (1, 1))
+
+    def test_a_bigger_brush_paints_a_bigger_area_with_the_even_size_rule(self):
+        self.select((0, 0))
+        self.editor.settings.brush_sizes["pencil"] = (2, 3)
+        self.editor.colors.set_color(RED, "primary")
+        self.send("down", self.position(4, 4))
+        self.send("up", self.position(4, 4))
+        painted = {(c, r) for r in range(8) for c in range(8) if self.pixel((0, 0), c, r) == RED}
+        self.assertEqual(painted, {(3, 3), (4, 3), (3, 4), (4, 4), (3, 5), (4, 5)})
+
+    def test_line_width_changes_with_brackets_for_line_tools_only(self):
+        self.select((0, 0))
+        self.click_tool("line")
+        self.key(va.pygame.K_RIGHTBRACKET)
+        self.key(va.pygame.K_RIGHTBRACKET, va.pygame.KMOD_SHIFT)
+        self.assertEqual(self.editor.settings.line_width, 2)
+        self.assertEqual(self.editor.settings.brush_sizes["pencil"], (1, 1))
+
+    def test_a_line_is_drawn_on_release_between_the_press_and_release_points(self):
+        self.select((0, 0))
+        self.click_tool("horizontal_line")
+        self.editor.colors.set_color(RED, "primary")
+        self.send("down", self.position(1, 4))
+        self.move(self.position(6, 7))
+        self.assertEqual(self.pixel((0, 0), 3, 4), BLUE, "a preview is not yet an edit")
+        self.send("up", self.position(6, 7))
+        self.assertEqual({c for c in range(8) if self.pixel((0, 0), c, 4) == RED}, set(range(1, 7)))
+        self.assertEqual(self.pixel((0, 0), 3, 7), BLUE)
+
+    def test_escape_cancels_a_stroke_in_progress(self):
+        self.select((0, 0))
+        self.send("down", self.position(1, 1))
+        self.move(self.position(5, 1))
+        self.key(va.pygame.K_ESCAPE)
+        self.send("up", self.position(5, 1))
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified)
+
+    def test_fill_bucket_fills_the_clicked_region(self):
+        self.select((0, 0))
+        self.drag(self.position(4, 0), self.position(4, 7))  # a black column splits nothing yet
+        self.click_tool("fill")
+        self.editor.colors.set_color(RED, "primary")
+        self.send("down", self.position(0, 0))
+        self.send("up", self.position(0, 0))
+        self.assertEqual(self.pixel((0, 0), 0, 0), RED)
+        self.assertEqual(self.pixel((0, 0), 3, 7), RED)
+        self.assertEqual(self.pixel((0, 0), 4, 3), (0, 0, 0, 255))
+        self.assertEqual(self.pixel((0, 0), 5, 3), BLUE)
+
+    def test_eye_dropper_picks_into_the_slot_of_the_button_and_follows_a_drag(self):
+        self.select((0, 0), (1, 0))
+        self.click_tool("eyedropper")
+        self.send("down", self.position(1, 1))
+        self.assertEqual(self.editor.colors.get("primary"), BLUE)
+        self.move(self.position(10, 1))
+        self.assertEqual(self.editor.colors.get("primary"), GREEN)
+        self.send("up", self.position(10, 1))
+        self.send("down", self.position(2, 2), 3)
+        self.send("up", self.position(2, 2), 3)
+        self.assertEqual(self.editor.colors.get("secondary"), BLUE)
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified)
+
+    def test_a_stroke_across_two_tiles_edits_both_and_is_undone_together(self):
+        self.select((0, 0), (1, 0))
+        self.editor.colors.set_color(RED, "primary")
+        self.drag(self.position(5, 2), self.position(10, 2))
+        self.assertEqual(self.pixel((0, 0), 6, 2), RED)
+        self.assertEqual(self.pixel((1, 0), 1, 2), RED)
+        self.key(va.pygame.K_z, va.pygame.KMOD_CTRL)
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified or self.project.tiles[(1, 0)].is_modified)
+
+    def test_tiles_far_apart_show_an_empty_place_between_that_cannot_be_drawn_on(self):
+        self.select((0, 0), (3, 3))
+        self.assertEqual(self.editor.layout.pixels.shape, (32, 32, 4))
+        self.editor.colors.set_color(RED, "primary")
+        self.drag(self.position(0, 0), self.position(31, 31))
+        self.assertEqual(self.pixel((0, 0), 5, 5), RED)
+        self.assertEqual(self.pixel((3, 3), 7, 7), RED)
+        self.assertEqual(self.project.tiles[(0, 0)].pixels.shape, (8, 8, 4))
+        self.application.draw()
+
+    def test_a_tile_that_cannot_be_edited_leaves_the_canvas_empty_with_the_reason(self):
+        project = self.make_project({(0, 0): ("gone.png", None)}, tile_size=8)
+        application = va.Application(project, va.pygame.Surface((1280, 800)))
+        project.select_only((0, 0))
+        application.draw()
+        self.assertIsNone(application.editor.layout)
+        self.assertIn("missing", application.editor.message_for_empty_canvas())
+
+    def test_the_wheel_zooms_around_the_pointer_and_the_middle_button_pans(self):
+        self.select((0, 0))
+        position = self.position(3, 3)
+        zoom = self.editor.view.zoom
+        self.application.pointer = position
+        self.application.handle_event(va.pygame.event.Event(va.pygame.MOUSEWHEEL, x=0, y=1))
+        self.assertEqual(self.editor.view.zoom, zoom + 1)
+        self.assertEqual(self.editor.view.pixel_at(position), (3, 3))
+        origin = (self.editor.view.origin_x, self.editor.view.origin_y)
+        self.send("down", position, 2)
+        self.move((position[0] + 30, position[1] + 10))
+        self.send("up", (position[0] + 30, position[1] + 10), 2)
+        self.assertEqual((self.editor.view.origin_x, self.editor.view.origin_y), (origin[0] + 30, origin[1] + 10))
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified)
+
+    def test_the_view_is_fitted_again_only_when_the_selection_changes(self):
+        self.select((0, 0))
+        self.editor.view.zoom_by(2, self.position(0, 0))
+        zoomed = self.editor.view.zoom
+        self.drag(self.position(1, 1), self.position(2, 1))
+        self.assertEqual(self.editor.view.zoom, zoomed, "editing keeps the zoom")
+        self.select((1, 0))
+        self.assertNotEqual(self.editor.view.zoom, zoomed)
+
+    def test_dragging_in_the_color_square_hue_bar_and_alpha_bar_sets_the_color(self):
+        areas = self.editor.areas
+        self.send("down", (areas.hue_bar.centerx, areas.hue_bar.y + areas.hue_bar.height // 3))
+        self.send("up", areas.hue_bar.center)
+        hue = self.editor.colors.get_hsva()[0]
+        self.assertAlmostEqual(hue, (areas.hue_bar.height // 3) / (areas.hue_bar.height - 1), places=2)
+        self.send("down", (areas.square.right - 1, areas.square.y))
+        self.assertEqual(self.editor.colors.get_hsva()[1:3], (1.0, 1.0))
+        self.move((areas.square.x, areas.square.bottom - 1))
+        self.assertEqual(self.editor.colors.get_hsva()[1:3], (0.0, 0.0))
+        self.send("up", (areas.square.x, areas.square.bottom - 1))
+        self.send("down", (areas.alpha_bar.centerx, areas.alpha_bar.centery))
+        self.send("up", (areas.alpha_bar.centerx, areas.alpha_bar.centery))
+        self.assertAlmostEqual(self.editor.colors.get()[3] / 255, 0.5, delta=0.03)
+
+    def test_the_alpha_of_the_color_is_written_to_the_tile(self):
+        self.select((0, 0))
+        self.editor.colors.set_color((10, 20, 30, 40), "primary")
+        self.send("down", self.position(2, 2))
+        self.send("up", self.position(2, 2))
+        self.assertEqual(self.pixel((0, 0), 2, 2), (10, 20, 30, 40))
+
+    def test_typing_a_hex_color_sets_the_active_slot(self):
+        areas = self.editor.areas
+        self.send("down", areas.secondary_swatch.center)
+        self.send("up", areas.secondary_swatch.center)
+        self.send("down", areas.hex_field.center)
+        self.assertTrue(self.editor.hex_focused)
+        self.editor.hex_field.select_all()
+        self.application.handle_event(va.pygame.event.Event(va.pygame.TEXTINPUT, text="#ff8000"))
+        self.key(va.pygame.K_RETURN)
+        self.assertEqual(self.editor.colors.get("secondary"), (255, 128, 0, 255))
+        self.assertFalse(self.editor.hex_focused)
+
+    def test_a_bad_hex_color_is_flagged_and_keeps_the_field_open(self):
+        self.send("down", self.editor.areas.hex_field.center)
+        self.editor.hex_field.set_text("#zz")
+        self.key(va.pygame.K_RETURN)
+        self.assertTrue(self.editor.hex_invalid)
+        self.assertTrue(self.editor.hex_focused)
+        self.application.draw()
+        self.key(va.pygame.K_ESCAPE)
+        self.assertFalse(self.editor.hex_focused)
+
+    def test_clicking_away_applies_a_typed_color(self):
+        self.send("down", self.editor.areas.hex_field.center)
+        self.editor.hex_field.set_text("#102030")
+        self.send("down", self.application.atlas_panel.rect.center)
+        self.assertEqual(self.editor.colors.get(), (16, 32, 48, 255))
+
+    def test_ctrl_s_saves_the_shown_modified_tiles_and_ctrl_shift_s_saves_all(self):
+        self.select((0, 0))
+        self.drag(self.position(0, 0), self.position(1, 0))
+        self.select((1, 0))
+        self.drag(self.position(0, 0), self.position(1, 0))
+        self.select((0, 0))
+        self.key(va.pygame.K_s, va.pygame.KMOD_CTRL)
+        self.assertEqual(va.read_image_pixels(self.folder / "a.png")[0, 0].tolist(), [0, 0, 0, 255])
+        self.assertEqual(va.read_image_pixels(self.folder / "b.png")[0, 0].tolist(), list(GREEN))
+        self.assertIn("Saved 1 tile", self.application.message)
+        self.key(va.pygame.K_s, va.pygame.KMOD_CTRL | va.pygame.KMOD_SHIFT)
+        self.assertEqual(va.read_image_pixels(self.folder / "b.png")[0, 0].tolist(), [0, 0, 0, 255])
+        self.assertFalse(self.project.has_unsaved_file_changes)
+
+    def test_saving_with_nothing_to_save_says_so(self):
+        self.select((0, 0))
+        self.key(va.pygame.K_s, va.pygame.KMOD_CTRL)
+        self.assertEqual(self.application.message, "Nothing to save.")
+
+    def test_closing_the_window_with_unsaved_changes_is_held_back_until_they_are_saved(self):
+        self.select((0, 0))
+        self.drag(self.position(0, 0), self.position(1, 0))
+        self.assertTrue(self.application.handle_event(va.pygame.event.Event(va.pygame.QUIT)))
+        self.assertIn("Unsaved changes", self.application.message)
+        self.key(va.pygame.K_s, va.pygame.KMOD_CTRL)
+        self.assertFalse(self.application.handle_event(va.pygame.event.Event(va.pygame.QUIT)))
+
+    def test_closing_is_allowed_when_only_new_tiles_are_unsaved_because_atlas_json_holds_them(self):
+        project = self.make_project({(0, 0): ("n.png", None)}, data={(0, 0): va.encode_tile_data(solid_tile(BLUE, 8))}, tile_size=8)
+        application = va.Application(project, va.pygame.Surface((1280, 800)))
+        self.assertFalse(application.handle_event(va.pygame.event.Event(va.pygame.QUIT)))
+
+    def test_editing_a_new_tile_keeps_it_in_atlas_json_and_a_failed_write_is_reported(self):
+        project = self.make_project({(0, 0): ("n.png", None)}, data={(0, 0): va.encode_tile_data(solid_tile(BLUE, 8))}, tile_size=8)
+        application = va.Application(project, va.pygame.Surface((1280, 800)))
+        editor = application.editor
+        project.select_only((0, 0))
+        editor.sync()
+        position = editor.view.pixel_rectangle(2, 2).center
+        application.handle_event(va.pygame.event.Event(va.pygame.MOUSEBUTTONDOWN, pos=position, button=1))
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            application.handle_event(va.pygame.event.Event(va.pygame.MOUSEBUTTONUP, pos=position, button=1))
+        self.assertIn("Could not save", application.message)
+        self.assertTrue(numpy.all(project.tiles[(0, 0)].pixels == BLUE))
+        application.handle_event(va.pygame.event.Event(va.pygame.MOUSEBUTTONDOWN, pos=position, button=1))
+        application.handle_event(va.pygame.event.Event(va.pygame.MOUSEBUTTONUP, pos=position, button=1))
+        stored = va.decode_tile_data(va.read_atlas_file(self.folder / "atlas.json").coordinates_to_data[(0, 0)], 8)
+        self.assertEqual(tuple(stored[2, 2]), (0, 0, 0, 255))
+
+    def test_every_tool_draws_its_outline_and_the_window_draws_without_error(self):
+        self.select((0, 0), (1, 0))
+        self.editor.pointer = self.position(3, 3)
+        for tool in va.TOOL_LABELS:
+            self.click_tool(tool)
+            self.application.draw()
+        self.editor.pointer = (-5, -5)
+        self.application.draw()
+
+    def test_the_canvas_picture_shows_the_pixels_and_hatches_empty_places(self):
+        self.select((0, 0), (3, 3))
+        self.application.draw()
+        surface = self.application.surface
+        view = self.editor.view
+        self.assertEqual(tuple(surface.get_at(view.pixel_rectangle(2, 2).center))[:3], BLUE[:3])
+        self.assertEqual(tuple(surface.get_at(view.pixel_rectangle(26, 26).center))[:3], RED[:3])
+        hatched = surface.get_at(view.pixel_rectangle(20, 4).center)
+        self.assertLess(sum(tuple(hatched)[:3]), 200, "an empty place is dark, not a tile")
+        self.assertNotEqual(tuple(hatched)[:3], BLUE[:3])
+
+
 if __name__ == "__main__":
     unittest.main()

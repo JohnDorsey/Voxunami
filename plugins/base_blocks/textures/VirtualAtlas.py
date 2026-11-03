@@ -1183,6 +1183,7 @@ class AtlasProject:
         self.unplaced: list[UnplacedTile] = []
         self.existing_names: set[str] = set()
         self._stale_data_coordinates: list[Coordinate] = []
+        self.history = EditHistory()
         self._scan(loaded)
 
     @classmethod
@@ -1250,6 +1251,103 @@ class AtlasProject:
         self._scan(atlas_file)
         return True
 
+    # Editing the pixels --------------------------------------------------------------------------------
+
+    def shown_records(self) -> list[TileRecord]:
+        """The selected tiles that can be edited, in reading order: what the canvas shows."""
+        return [
+            self.tiles[coordinate]
+            for coordinate in sorted(self.selection, key=reading_order_key)
+            if self.tiles[coordinate].error is None
+        ]
+
+    def _replace_pixels(self, new_pixels: dict[TileRecord, numpy.ndarray]) -> None:
+        """Give tiles new pixels. New tiles keep their pixels in atlas.json, so it is rewritten; if that fails
+        the old pixels come back and the OSError is raised."""
+        old_pixels = {record: record.pixels for record in new_pixels}
+        for record, pixels in new_pixels.items():
+            record.pixels = pixels.copy()
+            record.revision += 1
+        try:
+            if any(record.is_new for record in new_pixels):
+                self.save_atlas_file()
+        except BaseException:
+            for record, pixels in old_pixels.items():
+                record.pixels = pixels
+            raise
+
+    def apply_canvas_edit(self, layout: CanvasLayout, new_canvas_pixels: numpy.ndarray) -> bool:
+        """Make an edited canvas the new content of its tiles, as one step in the history. False if nothing changed."""
+        changes: dict[TileRecord, tuple[numpy.ndarray, numpy.ndarray]] = {}
+        for coordinate, pixels in extract_canvas_tiles(layout, new_canvas_pixels).items():
+            record = self.tiles[coordinate]
+            if not numpy.array_equal(record.pixels, pixels):
+                changes[record] = (record.pixels, pixels)
+        if not changes:
+            return False
+        self._replace_pixels({record: after for record, (_, after) in changes.items()})
+        self.history.record(changes)
+        return True
+
+    def undo(self) -> bool:
+        """Step back the latest edit among the shown tiles."""
+        return self._step_history(is_undo=True)
+
+    def redo(self) -> bool:
+        return self._step_history(is_undo=False)
+
+    def _step_history(self, is_undo: bool) -> bool:
+        shown = self.shown_records()
+        restored = self.history.undo(shown) if is_undo else self.history.redo(shown)
+        if restored is None:
+            return False
+        try:
+            self._replace_pixels(restored)
+        except BaseException:
+            (self.history.redo if is_undo else self.history.undo)(list(restored))
+            raise
+        return True
+
+    # Saving tile files ------------------------------------------------------------------------------------
+
+    @property
+    def has_unsaved_file_changes(self) -> bool:
+        """Some tile with a PNG file has changes the file does not have (new tiles are kept in atlas.json instead)."""
+        return any(record.is_modified and not record.is_new for record in self.tiles.values())
+
+    def save_tile(self, coordinate: Coordinate) -> None:
+        """Write a tile to its PNG file. Raises OSError (FileExistsError if a new tile's name is taken)."""
+        record = self.tiles[coordinate]
+        if record.error is not None:
+            raise ValueError("an error tile cannot be saved")
+        was_new = record.is_new
+        path = self.folder / record.name
+        if was_new and (path.exists() or record.name.casefold() in self.existing_names):
+            raise FileExistsError(f"{record.name} already exists in the folder")
+        write_png_atomically(path, record.pixels)
+        record.disk_pixels = record.pixels.copy()
+        self.existing_names.add(record.name.casefold())
+        if was_new:
+            self.save_atlas_file()
+
+    def save_tiles(self, coordinates: Iterable[Coordinate]) -> tuple[int, list[str]]:
+        """Save every modified tile among `coordinates`. Returns how many were saved and a message for each failure."""
+        saved = 0
+        failures: list[str] = []
+        for coordinate in sorted(coordinates, key=reading_order_key):
+            record = self.tiles[coordinate]
+            if record.error is not None or not record.is_modified:
+                continue
+            try:
+                self.save_tile(coordinate)
+                saved += 1
+            except OSError as error:
+                failures.append(f"{record.name}: {error}")
+        return saved, failures
+
+    def save_all_tiles(self) -> tuple[int, list[str]]:
+        return self.save_tiles(list(self.tiles))
+
     # Selection ------------------------------------------------------------------------------------------
 
     def select_only(self, coordinate: Coordinate) -> None:
@@ -1307,8 +1405,260 @@ class AtlasProject:
                 self.selection.discard(coordinate)
             self.unplaced.sort(key=lambda tile: tile.name.casefold())
 
+        removed = [self.tiles[coordinate] for coordinate in coordinates]
         self._commit(change)
+        for record in removed:
+            self.history.forget(record)
         return True
+
+
+# ----------------------------------------------------------------------------------------------------------
+# Tools, colors and strokes on the canvas
+# ----------------------------------------------------------------------------------------------------------
+
+TOOL_LABELS = {
+    "pencil": "Pencil",
+    "eraser": "Eraser",
+    "line": "Line",
+    "horizontal_line": "Horizontal line",
+    "vertical_line": "Vertical line",
+    "horizontal_parallelogram": "H parallelogram",
+    "vertical_parallelogram": "V parallelogram",
+    "eyedropper": "Eye dropper",
+    "fill": "Fill bucket",
+}
+BRUSH_TOOLS = ("pencil", "eraser")
+LINE_TOOLS = ("line", "horizontal_line", "vertical_line", "horizontal_parallelogram", "vertical_parallelogram")
+STROKE_TOOLS = BRUSH_TOOLS + LINE_TOOLS + ("fill",)
+COLOR_HISTORY_LENGTH = 16
+MAXIMUM_CANVAS_ZOOM = 64
+
+
+class ToolSettings:
+    """The sizes of the tools. The pencil and the eraser have a width and a height each; every line tool
+    shares one width."""
+
+    def __init__(self) -> None:
+        self.brush_sizes: dict[str, tuple[int, int]] = {"pencil": (1, 1), "eraser": (1, 1)}
+        self.line_width = 1
+
+    def footprint_size(self, tool: str) -> tuple[int, int]:
+        """(width, height) of the area a tool covers around the cursor pixel, for drawing its outline."""
+        if tool in BRUSH_TOOLS:
+            return self.brush_sizes[tool]
+        if tool in ("line", "horizontal_line", "vertical_line"):
+            return (self.line_width, self.line_width)
+        if tool == "horizontal_parallelogram":
+            return (self.line_width, 1)
+        if tool == "vertical_parallelogram":
+            return (1, self.line_width)
+        return (1, 1)
+
+    def adjust(
+        self, tool: str, delta: int, change_width: bool, change_height: bool, canvas_shape: tuple[int, int]
+    ) -> None:
+        """Make the tool bigger (delta > 0) or smaller. Sizes stay between 1 and the size of the canvas."""
+        canvas_height, canvas_width = canvas_shape
+        if tool in BRUSH_TOOLS:
+            width, height = self.brush_sizes[tool]
+            if change_width:
+                width = max(1, min(width + delta, canvas_width))
+            if change_height:
+                height = max(1, min(height + delta, canvas_height))
+            self.brush_sizes[tool] = (width, height)
+        elif tool in LINE_TOOLS and change_width and change_height:
+            # A line has one width, changed by the plain bracket keys only.
+            self.line_width = max(1, min(self.line_width + delta, max(canvas_width, canvas_height)))
+
+
+class CanvasSession:
+    """One press, drag and release of a drawing tool on the canvas.
+
+    `pixels` is what the canvas should look like now; the layout's own pixels are not touched, so the stroke
+    can be shown as a preview and thrown away.
+    """
+
+    def __init__(self, layout: CanvasLayout, tool: str, settings: ToolSettings, color: Color, start: Coordinate):
+        if tool not in STROKE_TOOLS:
+            raise ValueError(f"{tool!r} does not draw")
+        self.layout = layout
+        self.tool = tool
+        self.color = TRANSPARENT if tool == "eraser" else color
+        self.base = layout.pixels
+        self.pixels = layout.pixels.copy()
+        self.shape = self.base.shape[:2]
+        self.brush_width, self.brush_height = settings.brush_sizes.get(tool, (1, 1))
+        self.line_width = settings.line_width
+        self.start = start
+        self.last = start
+        if tool in BRUSH_TOOLS:
+            self._paint(swept_rectangle_brush_mask(self.shape, start, start, self.brush_width, self.brush_height))
+        elif tool == "fill":
+            self._paint(flood_fill_mask(self.base, start[0], start[1], layout.editable_mask))
+        else:
+            self._preview_shape(start)
+
+    def _paint(self, mask: numpy.ndarray) -> None:
+        apply_color_to_mask(self.pixels, mask & self.layout.editable_mask, self.color)
+
+    def _shape_mask(self, pixel: Coordinate) -> numpy.ndarray:
+        if self.tool == "line":
+            return thick_line_mask(self.shape, self.start, pixel, self.line_width)
+        if self.tool == "horizontal_line":
+            return thick_line_mask(self.shape, self.start, (pixel[0], self.start[1]), self.line_width)
+        if self.tool == "vertical_line":
+            return thick_line_mask(self.shape, self.start, (self.start[0], pixel[1]), self.line_width)
+        if self.tool == "horizontal_parallelogram":
+            return horizontal_parallelogram_mask(self.shape, self.start, pixel, self.line_width)
+        return vertical_parallelogram_mask(self.shape, self.start, pixel, self.line_width)
+
+    def _preview_shape(self, pixel: Coordinate) -> None:
+        self.pixels = self.base.copy()
+        self._paint(self._shape_mask(pixel))
+
+    def move(self, pixel: Coordinate) -> None:
+        if pixel == self.last:
+            return
+        if self.tool in BRUSH_TOOLS:
+            self._paint(swept_rectangle_brush_mask(self.shape, self.last, pixel, self.brush_width, self.brush_height))
+        elif self.tool in LINE_TOOLS:
+            self._preview_shape(pixel)
+        self.last = pixel
+
+    @property
+    def changed(self) -> bool:
+        return not numpy.array_equal(self.pixels, self.base)
+
+
+def pick_color(layout: CanvasLayout, pixel: Coordinate) -> Optional[Color]:
+    """The color of a canvas pixel, or None outside the canvas or over an empty place."""
+    column, row = pixel
+    height, width = layout.pixels.shape[:2]
+    if not (0 <= column < width and 0 <= row < height) or not layout.editable_mask[row, column]:
+        return None
+    red, green, blue, alpha = (int(value) for value in layout.pixels[row, column])
+    return (red, green, blue, alpha)
+
+
+def parse_hex_color(text: str) -> Optional[Color]:
+    """RGB, RGBA, RRGGBB or RRGGBBAA hexadecimal, with or without a leading #. None if it is not one."""
+    digits = text.strip().lstrip("#")
+    if len(digits) in (3, 4):
+        digits = "".join(character * 2 for character in digits)
+    if len(digits) not in (6, 8) or any(character not in "0123456789abcdefABCDEF" for character in digits):
+        return None
+    values = [int(digits[index : index + 2], 16) for index in range(0, len(digits), 2)]
+    return (values[0], values[1], values[2], values[3] if len(values) == 4 else 255)
+
+
+def format_hex_color(color: Color) -> str:
+    """#RRGGBB for an opaque color, #RRGGBBAA otherwise."""
+    text = "#" + "".join(f"{value:02x}" for value in color)
+    return text[:7] if color[3] == 255 else text
+
+
+class ColorState:
+    """The two drawing colors (left and right mouse button), which one is being edited, and recent colors.
+
+    The hue, saturation and value of each color are kept as well as the RGB, because a grey or black color has no
+    hue or saturation of its own, and dragging in a color picker must not lose them.
+    """
+
+    SLOTS = ("primary", "secondary")
+
+    def __init__(self) -> None:
+        self.colors: dict[str, Color] = {"primary": (0, 0, 0, 255), "secondary": (255, 255, 255, 255)}
+        self.hsv: dict[str, tuple[float, float, float]] = {"primary": (0.0, 0.0, 0.0), "secondary": (0.0, 0.0, 1.0)}
+        self.active_slot = "primary"
+        self.history: list[Color] = []
+
+    def get(self, slot: Optional[str] = None) -> Color:
+        return self.colors[slot or self.active_slot]
+
+    def get_hsva(self, slot: Optional[str] = None) -> tuple[float, float, float, float]:
+        slot = slot or self.active_slot
+        hue, saturation, value = self.hsv[slot]
+        return (hue, saturation, value, self.colors[slot][3] / 255.0)
+
+    def set_color(self, color: Color, slot: Optional[str] = None) -> None:
+        """Set a slot to an RGBA color (typed in, picked with the eye dropper, or taken from the history)."""
+        import colorsys
+
+        slot = slot or self.active_slot
+        hue, saturation, value = colorsys.rgb_to_hsv(color[0] / 255.0, color[1] / 255.0, color[2] / 255.0)
+        old_hue, old_saturation, _ = self.hsv[slot]
+        if value == 0:
+            hue, saturation = old_hue, old_saturation
+        elif saturation == 0:
+            hue = old_hue
+        self.colors[slot] = tuple(color)  # type: ignore[assignment]
+        self.hsv[slot] = (hue, saturation, value)
+
+    def set_hsva(self, hue: float, saturation: float, value: float, alpha: float, slot: Optional[str] = None) -> None:
+        """Set a slot from the color picker's hue, saturation, value and alpha (each 0..1)."""
+        import colorsys
+
+        slot = slot or self.active_slot
+        hue, saturation, value, alpha = (max(0.0, min(1.0, number)) for number in (hue, saturation, value, alpha))
+        red, green, blue = (int(round(channel * 255)) for channel in colorsys.hsv_to_rgb(hue, saturation, value))
+        self.colors[slot] = (red, green, blue, int(round(alpha * 255)))
+        self.hsv[slot] = (hue, saturation, value)
+
+    def remember(self, color: Color) -> None:
+        """Add a color that was used to the front of the history of recent colors."""
+        color = tuple(color)  # type: ignore[assignment]
+        if color in self.history:
+            self.history.remove(color)  # type: ignore[arg-type]
+        self.history.insert(0, color)  # type: ignore[arg-type]
+        del self.history[COLOR_HISTORY_LENGTH:]
+
+
+class CanvasView:
+    """Where the canvas picture is in its area of the window: a whole number of screen pixels per canvas pixel."""
+
+    def __init__(self) -> None:
+        self.rect = pygame.Rect(0, 0, 100, 100)
+        self.zoom = 1
+        self.origin_x = 0
+        self.origin_y = 0
+
+    def fit(self, width: int, height: int) -> None:
+        """Zoom in as far as fits the whole canvas in the area and center it."""
+        self.zoom = max(1, min(MAXIMUM_CANVAS_ZOOM, self.rect.width // max(width, 1), self.rect.height // max(height, 1)))
+        self.origin_x = self.rect.centerx - width * self.zoom // 2
+        self.origin_y = self.rect.centery - height * self.zoom // 2
+
+    def pixel_at(self, position: tuple[int, int]) -> Coordinate:
+        """The canvas pixel under a screen position. May be outside the canvas."""
+        return ((position[0] - self.origin_x) // self.zoom, (position[1] - self.origin_y) // self.zoom)
+
+    def pixel_rectangle(self, column: int, row: int, width: int = 1, height: int = 1) -> pygame.Rect:
+        return pygame.Rect(
+            self.origin_x + column * self.zoom, self.origin_y + row * self.zoom, width * self.zoom, height * self.zoom
+        )
+
+    def zoom_by(self, steps: int, anchor: tuple[int, int]) -> None:
+        """Zoom in or out, keeping the canvas pixel under `anchor` where it is."""
+        new_zoom = max(1, min(MAXIMUM_CANVAS_ZOOM, self.zoom + steps))
+        if new_zoom == self.zoom:
+            return
+        column = (anchor[0] - self.origin_x) / self.zoom
+        row = (anchor[1] - self.origin_y) / self.zoom
+        self.zoom = new_zoom
+        self.origin_x = int(round(anchor[0] - column * new_zoom))
+        self.origin_y = int(round(anchor[1] - row * new_zoom))
+
+    def pan_by(self, delta_x: int, delta_y: int) -> None:
+        self.origin_x += delta_x
+        self.origin_y += delta_y
+
+    def visible_pixels(self, width: int, height: int) -> tuple[int, int, int, int]:
+        """(first column, first row, past-last column, past-last row) of the canvas pixels in the area."""
+        first_column = max(0, (self.rect.x - self.origin_x) // self.zoom)
+        first_row = max(0, (self.rect.y - self.origin_y) // self.zoom)
+        last_column = min(width, -(-(self.rect.right - self.origin_x) // self.zoom))
+        last_row = min(height, -(-(self.rect.bottom - self.origin_y) // self.zoom))
+        return (first_column, first_row, last_column, last_row)
 
 
 # ----------------------------------------------------------------------------------------------------------
@@ -1836,6 +2186,515 @@ class AtlasInteraction:
 
 
 # ----------------------------------------------------------------------------------------------------------
+# The editor on the right: canvas, tools and colors
+# ----------------------------------------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class EditorAreas:
+    header: pygame.Rect
+    canvas: pygame.Rect
+    tool_buttons: dict[str, pygame.Rect]
+    options: pygame.Rect
+    square: pygame.Rect
+    hue_bar: pygame.Rect
+    alpha_bar: pygame.Rect
+    primary_swatch: pygame.Rect
+    secondary_swatch: pygame.Rect
+    hex_field: pygame.Rect
+    history: list[pygame.Rect]
+
+
+def compute_editor_areas(rect: pygame.Rect, tools: list[str]) -> EditorAreas:
+    """Place the parts of the editor: the name above, the canvas, the tool buttons, the color picker below."""
+    margin, gap = scaled(10), scaled(6)
+    width = rect.width - 2 * margin
+    header = pygame.Rect(rect.x + margin, rect.y + margin, width, scaled(30))
+    square_size = scaled(120)
+    color_top = rect.bottom - margin - square_size
+    options = pygame.Rect(rect.x + margin, color_top - scaled(30), width, scaled(22))
+    columns, button_height = 4, scaled(28)
+    rows = -(-len(tools) // columns)
+    tools_top = options.y - gap - rows * button_height - (rows - 1) * gap
+    button_width = (width - (columns - 1) * gap) // columns
+    tool_buttons = {
+        tool: pygame.Rect(
+            rect.x + margin + (index % columns) * (button_width + gap),
+            tools_top + (index // columns) * (button_height + gap),
+            button_width,
+            button_height,
+        )
+        for index, tool in enumerate(tools)
+    }
+    canvas_top = header.bottom + gap
+    canvas = pygame.Rect(rect.x + margin, canvas_top, width, max(scaled(60), tools_top - scaled(8) - canvas_top))
+    left = rect.x + margin
+    square = pygame.Rect(left, color_top, square_size, square_size)
+    hue_bar = pygame.Rect(square.right + gap, color_top, scaled(16), square_size)
+    alpha_bar = pygame.Rect(hue_bar.right + gap, color_top, scaled(16), square_size)
+    swatch_left = alpha_bar.right + scaled(20)
+    swatch_size = scaled(48)
+    primary_swatch = pygame.Rect(swatch_left, color_top, swatch_size, swatch_size)
+    secondary_swatch = pygame.Rect(primary_swatch.right + gap, color_top, swatch_size, swatch_size)
+    hex_field = pygame.Rect(swatch_left, color_top + swatch_size + gap, 2 * swatch_size + gap, scaled(28))
+    history_left = secondary_swatch.right + scaled(16)
+    history_swatch = scaled(22)
+    history_columns = max(2, (rect.right - margin - history_left) // (history_swatch + 4))
+    history = []
+    for index in range(COLOR_HISTORY_LENGTH):
+        column, row = index % history_columns, index // history_columns
+        if (row + 1) * (history_swatch + 4) > square_size:
+            break
+        history.append(pygame.Rect(history_left + column * (history_swatch + 4), color_top + row * (history_swatch + 4), history_swatch, history_swatch))
+    return EditorAreas(header, canvas, tool_buttons, options, square, hue_bar, alpha_bar, primary_swatch, secondary_swatch, hex_field, history)
+
+
+def saturation_value_square(hue: float, size: int) -> pygame.Surface:
+    """The picture of a color picker's square for one hue: saturation grows to the right, value falls downward."""
+    import colorsys
+
+    saturation = numpy.linspace(0.0, 1.0, size)[None, :, None]
+    value = numpy.linspace(1.0, 0.0, size)[:, None, None]
+    pure = numpy.array(colorsys.hsv_to_rgb(hue, 1.0, 1.0))
+    rgb = (value * ((1.0 - saturation) + saturation * pure) * 255).astype(numpy.uint8)
+    return pygame.image.frombuffer(rgb.tobytes(), (size, size), "RGB")
+
+
+def hue_gradient(width: int, height: int) -> pygame.Surface:
+    import colorsys
+
+    column = numpy.array([colorsys.hsv_to_rgb(row / max(height - 1, 1), 1.0, 1.0) for row in range(height)])
+    rgb = numpy.repeat((column * 255).astype(numpy.uint8)[:, None, :], width, axis=1)
+    return pygame.image.frombuffer(rgb.tobytes(), (width, height), "RGB")
+
+
+def hatch_surface(width: int, height: int) -> pygame.Surface:
+    """Diagonal stripes, drawn where the canvas has no tile."""
+    surface = pygame.Surface((width, height))
+    surface.fill((20, 22, 26))
+    spacing = scaled(10)
+    for offset in range(-height, width, spacing):
+        pygame.draw.line(surface, (44, 48, 56), (offset, height), (offset + height, 0), 1)
+    return surface
+
+
+class EditorPanel:
+    """The right half of the window: the canvas for the selected tiles, the tools and the color picker.
+
+    The window passes in mouse and key events with screen positions; this class draws the canvas, runs strokes
+    through CanvasSession and commits them to the project.
+    """
+
+    def __init__(self, project: AtlasProject, fonts: Fonts):
+        self.project = project
+        self.fonts = fonts
+        self.tool = "pencil"
+        self.settings = ToolSettings()
+        self.colors = ColorState()
+        self.view = CanvasView()
+        self.layout: Optional[CanvasLayout] = None
+        self.session: Optional[CanvasSession] = None
+        self.rect = pygame.Rect(0, 0, 100, 100)
+        self.areas = compute_editor_areas(self.rect, list(TOOL_LABELS))
+        self.hex_field = TextField("", lambda character: character in "#0123456789abcdefABCDEF", 9)
+        self.hex_focused = False
+        self.hex_invalid = False
+        self.color_drag: Optional[str] = None
+        self.panning_from: Optional[tuple[int, int]] = None
+        self.pointer = (-1, -1)
+        self.message = ""
+        self._signature: Optional[tuple] = None
+        self._coordinate_signature: Optional[tuple] = None
+        self._checker: Optional[pygame.Surface] = None
+        self._hatches: dict[tuple[int, int], pygame.Surface] = {}
+        self._squares: dict[tuple[int, int], pygame.Surface] = {}
+        self._hue_gradients: dict[tuple[int, int], pygame.Surface] = {}
+
+    # State ------------------------------------------------------------------------------------------------
+
+    def set_rect(self, rect: pygame.Rect) -> None:
+        self.rect = rect
+        self.areas = compute_editor_areas(rect, list(TOOL_LABELS))
+        self.view.rect = self.areas.canvas
+        self._checker = None
+        if self.layout is not None:
+            self.view.fit(self.layout.pixels.shape[1], self.layout.pixels.shape[0])
+
+    def sync(self) -> None:
+        """Rebuild the canvas when the selection or the pixels of the selected tiles have changed."""
+        entries = [
+            (coordinate, self.project.tiles[coordinate])
+            for coordinate in sorted(self.project.selection, key=reading_order_key)
+            if self.project.tiles[coordinate].error is None
+        ]
+        signature = tuple((coordinate, id(record), record.revision) for coordinate, record in entries)
+        if signature == self._signature:
+            return
+        self._signature = signature
+        self.session = None
+        if not entries:
+            self.layout = None
+            self._coordinate_signature = None
+            return
+        self.layout = compose_canvas({coordinate: record.pixels for coordinate, record in entries}, self.project.tile_size)
+        coordinate_signature = tuple(coordinate for coordinate, _ in entries)
+        if coordinate_signature != self._coordinate_signature:
+            self._coordinate_signature = coordinate_signature
+            self.view.rect = self.areas.canvas
+            self.view.fit(self.layout.pixels.shape[1], self.layout.pixels.shape[0])
+
+    def contains(self, position: tuple[int, int]) -> bool:
+        return self.rect.collidepoint(position)
+
+    def canvas_shape(self) -> tuple[int, int]:
+        return self.layout.pixels.shape[:2] if self.layout is not None else (self.project.tile_size, self.project.tile_size)
+
+    def header_text(self) -> str:
+        selected = [self.project.tiles[coordinate] for coordinate in sorted(self.project.selection, key=reading_order_key)]
+        if not selected:
+            return ""
+        marker = "*" if any(record.is_modified for record in selected) else ""
+        return f"{selected[0].name if len(selected) == 1 else '(multiple files)'}{marker}"
+
+    # Mouse ------------------------------------------------------------------------------------------------
+
+    def mouse_down(self, button: int, position: tuple[int, int]) -> None:
+        self.sync()
+        self.pointer = position
+        areas = self.areas
+        if self.hex_focused and not (button == 1 and areas.hex_field.collidepoint(position)):
+            self.apply_hex_field()
+            self.hex_focused = False
+        if button == 1:
+            if areas.hex_field.collidepoint(position):
+                self.hex_focused = True
+                return
+            for tool, rectangle in areas.tool_buttons.items():
+                if rectangle.collidepoint(position):
+                    self.tool = tool
+                    return
+            if areas.primary_swatch.collidepoint(position):
+                self.colors.active_slot = "primary"
+                return
+            if areas.secondary_swatch.collidepoint(position):
+                self.colors.active_slot = "secondary"
+                return
+            for color, rectangle in zip(self.colors.history, areas.history):
+                if rectangle.collidepoint(position):
+                    self.colors.set_color(color, "primary")
+                    self.colors.active_slot = "primary"
+                    return
+            for name, rectangle in (("square", areas.square), ("hue", areas.hue_bar), ("alpha", areas.alpha_bar)):
+                if rectangle.collidepoint(position):
+                    self.color_drag = name
+                    self._drag_color(position)
+                    return
+        elif button == 3:
+            for color, rectangle in zip(self.colors.history, areas.history):
+                if rectangle.collidepoint(position):
+                    self.colors.set_color(color, "secondary")
+                    return
+        if areas.canvas.collidepoint(position):
+            if button == 2:
+                self.panning_from = position
+            elif button in (1, 3) and self.layout is not None:
+                self._press_on_canvas(button, position)
+
+    def _press_on_canvas(self, button: int, position: tuple[int, int]) -> None:
+        slot = "primary" if button == 1 else "secondary"
+        pixel = self.view.pixel_at(position)
+        if self.tool == "eyedropper":
+            color = pick_color(self.layout, pixel)
+            if color is not None:
+                self.colors.set_color(color, slot)
+            self.color_drag = f"dropper_{slot}"
+            return
+        self.session = CanvasSession(self.layout, self.tool, self.settings, self.colors.get(slot), pixel)
+
+    def mouse_move(self, position: tuple[int, int]) -> None:
+        self.pointer = position
+        if self.color_drag is not None:
+            if self.color_drag.startswith("dropper_") and self.layout is not None:
+                color = pick_color(self.layout, self.view.pixel_at(position))
+                if color is not None:
+                    self.colors.set_color(color, self.color_drag.removeprefix("dropper_"))
+            else:
+                self._drag_color(position)
+        elif self.panning_from is not None:
+            self.view.pan_by(position[0] - self.panning_from[0], position[1] - self.panning_from[1])
+            self.panning_from = position
+        elif self.session is not None:
+            self.session.move(self.view.pixel_at(position))
+
+    def mouse_up(self, button: int, position: tuple[int, int]) -> None:
+        self.pointer = position
+        if button == 2:
+            self.panning_from = None
+        if self.color_drag is not None and button in (1, 3):
+            self.color_drag = None
+        if self.session is not None and button in (1, 3):
+            self.session.move(self.view.pixel_at(position))
+            session, self.session = self.session, None
+            self._commit(session)
+
+    def _commit(self, session: CanvasSession) -> None:
+        if not session.changed:
+            return
+        try:
+            self.project.apply_canvas_edit(session.layout, session.pixels)
+        except OSError as error:
+            self.message = f"Could not save {ATLAS_FILE_NAME}: {error}"
+            return
+        if session.tool != "eraser":
+            self.colors.remember(session.color)
+        self.sync()
+
+    def wheel(self, steps: int, position: tuple[int, int]) -> None:
+        if self.layout is not None and self.areas.canvas.collidepoint(position):
+            self.view.zoom_by(steps, position)
+
+    def _drag_color(self, position: tuple[int, int]) -> None:
+        areas = self.areas
+        hue, saturation, value, alpha = self.colors.get_hsva()
+        if self.color_drag == "square":
+            saturation = (position[0] - areas.square.x) / max(areas.square.width - 1, 1)
+            value = 1.0 - (position[1] - areas.square.y) / max(areas.square.height - 1, 1)
+        elif self.color_drag == "hue":
+            hue = (position[1] - areas.hue_bar.y) / max(areas.hue_bar.height - 1, 1)
+        elif self.color_drag == "alpha":
+            alpha = 1.0 - (position[1] - areas.alpha_bar.y) / max(areas.alpha_bar.height - 1, 1)
+        self.colors.set_hsva(hue, saturation, value, alpha)
+
+    # Keyboard ---------------------------------------------------------------------------------------------
+
+    def apply_hex_field(self) -> None:
+        color = parse_hex_color(self.hex_field.text)
+        if color is None:
+            self.hex_invalid = True
+            return
+        self.hex_invalid = False
+        self.colors.set_color(color)
+
+    def lose_focus(self) -> None:
+        """Called when the user clicks somewhere else: a typed color is applied."""
+        if self.hex_focused:
+            self.apply_hex_field()
+            self.hex_focused = False
+
+    def hex_key_down(self, event: pygame.event.Event) -> None:
+        if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            self.apply_hex_field()
+            if not self.hex_invalid:
+                self.hex_focused = False
+        elif event.key == pygame.K_ESCAPE:
+            self.hex_focused = False
+            self.hex_invalid = False
+        else:
+            self.hex_field.handle_key_down(event.key, event.mod)
+            self.hex_invalid = False
+
+    def key_down(self, key: int, modifiers: int, scancode: int = 0) -> bool:
+        """Editor shortcuts. Returns True if the key was used."""
+        control = bool(modifiers & pygame.KMOD_CTRL)
+        shift = bool(modifiers & pygame.KMOD_SHIFT)
+        alt = bool(modifiers & pygame.KMOD_ALT)
+        self.sync()
+        if control and key == pygame.K_z and not shift:
+            return self._history_step(self.project.undo)
+        if control and (key == pygame.K_y or (key == pygame.K_z and shift)):
+            return self._history_step(self.project.redo)
+        if control and key == pygame.K_s:
+            self._save(self.project.selection if not shift else list(self.project.tiles))
+            return True
+        if key in (pygame.K_LEFTBRACKET, pygame.K_RIGHTBRACKET) and not control:
+            change_width, change_height = (True, False) if shift and not alt else (False, True) if alt and not shift else (True, True)
+            self.settings.adjust(self.tool, 1 if key == pygame.K_RIGHTBRACKET else -1, change_width, change_height, self.canvas_shape())
+            return True
+        return False
+
+    def _history_step(self, step: Callable[[], bool]) -> bool:
+        try:
+            step()
+        except OSError as error:
+            self.message = f"Could not save {ATLAS_FILE_NAME}: {error}"
+        self.sync()
+        return True
+
+    def _save(self, coordinates: Iterable[Coordinate]) -> None:
+        saved, failures = self.project.save_tiles(coordinates)
+        if failures:
+            self.message = "Could not save " + "; ".join(failures)
+        elif saved:
+            self.message = f"Saved {saved} tile{'' if saved == 1 else 's'}."
+        else:
+            self.message = "Nothing to save."
+        self.sync()
+
+    # Drawing ----------------------------------------------------------------------------------------------
+
+    def draw(self, surface: pygame.Surface, caret_visible: bool) -> None:
+        self.sync()
+        pygame.draw.rect(surface, Theme.PANEL, self.rect)
+        pygame.draw.rect(surface, Theme.PANEL_BORDER, self.rect, width=1)
+        header = self.header_text()
+        if header:
+            draw_text(surface, self.fonts.large, header, Theme.TEXT, self.areas.header.midleft, "midleft")
+        self.draw_canvas(surface)
+        self.draw_tools(surface)
+        self.draw_colors(surface, caret_visible)
+
+    def message_for_empty_canvas(self) -> str:
+        selected = [self.project.tiles[coordinate] for coordinate in self.project.selection]
+        if not selected:
+            return "Select a tile in the atlas to edit it."
+        if len(selected) == 1:
+            return f"This tile cannot be edited: {selected[0].error}."
+        return "None of the selected tiles can be edited."
+
+    def draw_canvas(self, surface: pygame.Surface) -> None:
+        area = self.areas.canvas
+        pygame.draw.rect(surface, Theme.BACKGROUND, area)
+        if self.layout is None:
+            lines = wrap_text(self.fonts.normal, self.message_for_empty_canvas(), area.width - scaled(40))
+            for number, line in enumerate(lines):
+                draw_text(surface, self.fonts.normal, line, Theme.TEXT_DIMMED, (area.centerx, area.centery + number * scaled(20)), "midtop")
+            return
+        layout, view = self.layout, self.view
+        pixels = self.session.pixels if self.session is not None else layout.pixels
+        height, width = pixels.shape[:2]
+        surface.set_clip(area)
+        image_rectangle = view.pixel_rectangle(0, 0, width, height)
+        visible = image_rectangle.clip(area)
+        if self._checker is None or self._checker.get_width() < area.width or self._checker.get_height() < area.height:
+            self._checker = checkerboard(max(area.width, area.height) + 16)
+        surface.blit(self._checker, visible, pygame.Rect(0, 0, visible.width, visible.height))
+        first_column, first_row, last_column, last_row = view.visible_pixels(width, height)
+        if last_column > first_column and last_row > first_row:
+            crop = numpy.ascontiguousarray(pixels[first_row:last_row, first_column:last_column])
+            picture = pygame.image.frombuffer(crop.tobytes(), (crop.shape[1], crop.shape[0]), "RGBA")
+            picture = pygame.transform.scale(picture, (crop.shape[1] * view.zoom, crop.shape[0] * view.zoom))
+            surface.blit(picture, view.pixel_rectangle(first_column, first_row).topleft)
+        self.draw_empty_places(surface, layout)
+        self.draw_overlay(surface, layout, width, height, (first_column, first_row, last_column, last_row))
+        surface.set_clip(None)
+
+    def draw_empty_places(self, surface: pygame.Surface, layout: CanvasLayout) -> None:
+        size = layout.tile_size
+        cell_columns, cell_rows = layout.pixels.shape[1] // size, layout.pixels.shape[0] // size
+        for cell_row in range(cell_rows):
+            for cell_column in range(cell_columns):
+                if (layout.first_column + cell_column, layout.first_row + cell_row) in layout.tile_coordinates:
+                    continue
+                rectangle = self.view.pixel_rectangle(cell_column * size, cell_row * size, size, size)
+                if rectangle.colliderect(self.areas.canvas):
+                    key = (rectangle.width, rectangle.height)
+                    if key not in self._hatches:
+                        self._hatches[key] = hatch_surface(*key)
+                    surface.blit(self._hatches[key], rectangle)
+
+    def draw_overlay(self, surface: pygame.Surface, layout: CanvasLayout, width: int, height: int, visible: tuple[int, int, int, int]) -> None:
+        view, area = self.view, self.areas.canvas
+        overlay = pygame.Surface(area.size, pygame.SRCALPHA)
+        image = view.pixel_rectangle(0, 0, width, height).move(-area.x, -area.y)
+        first_column, first_row, last_column, last_row = visible
+
+        def vertical_line(column: int, color: tuple[int, int, int, int]) -> None:
+            x = view.pixel_rectangle(column, 0).x - area.x
+            pygame.draw.line(overlay, color, (x, image.top), (x, image.bottom))
+
+        def horizontal_line(row: int, color: tuple[int, int, int, int]) -> None:
+            y = view.pixel_rectangle(0, row).y - area.y
+            pygame.draw.line(overlay, color, (image.left, y), (image.right, y))
+
+        if view.zoom >= 6:
+            for column in range(first_column, last_column + 1):
+                vertical_line(column, (150, 156, 168, 46))
+            for row in range(first_row, last_row + 1):
+                horizontal_line(row, (150, 156, 168, 46))
+        size = layout.tile_size
+        for column in range(0, width + 1, size):
+            vertical_line(column, (90, 170, 255, 150))
+        for row in range(0, height + 1, size):
+            horizontal_line(row, (90, 170, 255, 150))
+        surface.blit(overlay, area.topleft)
+        if self.tool_uses_outline() and area.collidepoint(self.pointer) and self.session is None:
+            self.draw_footprint_outline(surface)
+
+    def tool_uses_outline(self) -> bool:
+        return self.panning_from is None and self.color_drag is None
+
+    def draw_footprint_outline(self, surface: pygame.Surface) -> None:
+        column, row = self.view.pixel_at(self.pointer)
+        width, height = self.settings.footprint_size(self.tool)
+        rectangle = self.view.pixel_rectangle(column - width // 2, row - height // 2, width, height)
+        pygame.draw.rect(surface, (0, 0, 0), rectangle.inflate(2, 2), width=1)
+        pygame.draw.rect(surface, (255, 255, 255), rectangle, width=1)
+
+    def options_text(self) -> str:
+        if self.tool in BRUSH_TOOLS:
+            width, height = self.settings.brush_sizes[self.tool]
+            return f"Size {width} x {height}     [ ] both    Shift+[ ] width    Alt+[ ] height"
+        if self.tool in LINE_TOOLS:
+            return f"Width {self.settings.line_width}     [ ] change"
+        return ""
+
+    def draw_tools(self, surface: pygame.Surface) -> None:
+        for tool, rectangle in self.areas.tool_buttons.items():
+            hovered = rectangle.collidepoint(self.pointer)
+            draw_button(surface, rectangle, TOOL_LABELS[tool], self.fonts.small, hovered)
+            if tool == self.tool:
+                pygame.draw.rect(surface, Theme.ACCENT, rectangle, width=2, border_radius=4)
+        draw_text(surface, self.fonts.small, self.options_text(), Theme.TEXT_DIMMED, self.areas.options.midleft, "midleft")
+
+    def draw_swatch(self, surface: pygame.Surface, rectangle: pygame.Rect, color: Color) -> None:
+        surface.blit(checkerboard(max(rectangle.size)), rectangle, (0, 0, rectangle.width, rectangle.height))
+        swatch = pygame.Surface(rectangle.size, pygame.SRCALPHA)
+        swatch.fill(color)
+        surface.blit(swatch, rectangle)
+        pygame.draw.rect(surface, Theme.PANEL_BORDER, rectangle, width=1)
+
+    def draw_colors(self, surface: pygame.Surface, caret_visible: bool) -> None:
+        areas = self.areas
+        hue, saturation, value, alpha = self.colors.get_hsva()
+        key = (int(hue * 255), areas.square.width)
+        if key not in self._squares:
+            if len(self._squares) > 64:
+                self._squares.clear()
+            self._squares[key] = saturation_value_square(key[0] / 255.0, areas.square.width)
+        surface.blit(self._squares[key], areas.square)
+        pygame.draw.rect(surface, Theme.PANEL_BORDER, areas.square, width=1)
+        marker = (areas.square.x + int(saturation * (areas.square.width - 1)), areas.square.y + int((1.0 - value) * (areas.square.height - 1)))
+        pygame.draw.circle(surface, (0, 0, 0), marker, scaled(6), 2)
+        pygame.draw.circle(surface, (255, 255, 255), marker, scaled(5), 1)
+        gradient_key = (areas.hue_bar.width, areas.hue_bar.height)
+        if gradient_key not in self._hue_gradients:
+            self._hue_gradients[gradient_key] = hue_gradient(*gradient_key)
+        surface.blit(self._hue_gradients[gradient_key], areas.hue_bar)
+        y = areas.hue_bar.y + int(hue * (areas.hue_bar.height - 1))
+        pygame.draw.line(surface, (255, 255, 255), (areas.hue_bar.x - 2, y), (areas.hue_bar.right + 1, y), 2)
+        self.draw_alpha_bar(surface, areas.alpha_bar, alpha)
+        for slot, rectangle in (("primary", areas.primary_swatch), ("secondary", areas.secondary_swatch)):
+            self.draw_swatch(surface, rectangle, self.colors.get(slot))
+            if slot == self.colors.active_slot:
+                pygame.draw.rect(surface, Theme.ACCENT, rectangle.inflate(4, 4), width=2)
+        if not self.hex_focused:
+            self.hex_field.set_text(format_hex_color(self.colors.get()))
+        self.hex_field.draw(surface, areas.hex_field, self.fonts.normal, self.hex_focused, caret_visible, self.hex_invalid)
+        for color, rectangle in zip(self.colors.history, areas.history):
+            self.draw_swatch(surface, rectangle, color)
+
+    def draw_alpha_bar(self, surface: pygame.Surface, rectangle: pygame.Rect, alpha: float) -> None:
+        surface.blit(checkerboard(max(rectangle.size)), rectangle, (0, 0, rectangle.width, rectangle.height))
+        red, green, blue, _ = self.colors.get()
+        ramp = numpy.zeros((rectangle.height, rectangle.width, 4), dtype=numpy.uint8)
+        ramp[..., 0], ramp[..., 1], ramp[..., 2] = red, green, blue
+        ramp[..., 3] = (numpy.linspace(255, 0, rectangle.height)[:, None]).astype(numpy.uint8)
+        surface.blit(pygame.image.frombuffer(ramp.tobytes(), rectangle.size, "RGBA"), rectangle)
+        y = rectangle.y + int((1.0 - alpha) * (rectangle.height - 1))
+        pygame.draw.line(surface, (255, 255, 255), (rectangle.x - 2, y), (rectangle.right + 1, y), 2)
+
+
+# ----------------------------------------------------------------------------------------------------------
 # The window
 # ----------------------------------------------------------------------------------------------------------
 
@@ -1925,6 +2784,7 @@ class Application:
         self.atlas_panel = AtlasPanel(project)
         self.unplaced_panel = UnplacedPanel(project)
         self.interaction = AtlasInteraction(project, self.atlas_panel, self.unplaced_panel)
+        self.editor = EditorPanel(project, self.fonts)
         self.tile_size_field = TextField(str(project.tile_size), lambda character: character.isdigit(), 4)
         self.tile_size_field_focused = False
         self.tile_size_field_invalid = False
@@ -1941,6 +2801,7 @@ class Application:
         self.layout = compute_layout(self.surface.get_size())
         self.atlas_panel.rect = self.layout.atlas
         self.unplaced_panel.rect = self.layout.unplaced
+        self.editor.set_rect(self.layout.editor)
         self.atlas_panel.clamp_scroll()
         self.unplaced_panel.clamp_scroll()
 
@@ -1967,12 +2828,19 @@ class Application:
     def handle_event(self, event: pygame.event.Event) -> bool:
         """Deal with one event. Returns False when the program should close."""
         if event.type == pygame.QUIT:
+            if self.project.has_unsaved_file_changes:
+                # Until the dialog that asks what to do exists, closing must not throw changes away.
+                self.message = "Unsaved changes: save them with Ctrl+Shift+S before closing."
+                self.needs_redraw = True
+                return True
             return False
         try:
             self._handle_event(event)
         except OSError as error:
             self.interaction.cancel()
             self.message = f"Could not save {ATLAS_FILE_NAME}: {error}"
+        if self.editor.message:
+            self.message, self.editor.message = self.editor.message, ""
         if event.type in (
             pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION, pygame.MOUSEWHEEL,
             pygame.KEYDOWN, pygame.TEXTINPUT, pygame.WINDOWSIZECHANGED, pygame.WINDOWEXPOSED, pygame.VIDEORESIZE,
@@ -1987,17 +2855,31 @@ class Application:
         elif event.type == pygame.MOUSEMOTION:
             self.pointer = event.pos
             self.interaction.mouse_move(event.pos)
-        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            self.editor.mouse_move(event.pos)
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button in (1, 2, 3):
             self.pointer = event.pos
-            self._handle_press(event.pos)
-        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            if self.editor.contains(event.pos):
+                self._leave_tile_size_field()
+                self.editor.mouse_down(event.button, event.pos)
+            elif event.button == 1:
+                self.editor.lose_focus()
+                self._handle_press(event.pos)
+        elif event.type == pygame.MOUSEBUTTONUP and event.button in (1, 2, 3):
             self.pointer = event.pos
-            self.interaction.mouse_up(event.pos)
+            self.editor.mouse_up(event.button, event.pos)
+            if event.button == 1:
+                self.interaction.mouse_up(event.pos)
         elif event.type == pygame.MOUSEWHEEL:
-            self._handle_wheel(event)
+            if self.editor.contains(self.pointer):
+                self.editor.wheel(event.y, self.pointer)
+            else:
+                self._handle_wheel(event)
         elif event.type == pygame.TEXTINPUT and self.tile_size_field_focused:
             self.tile_size_field.insert_text(event.text)
             self.tile_size_field_invalid = False
+        elif event.type == pygame.TEXTINPUT and self.editor.hex_focused:
+            self.editor.hex_field.insert_text(event.text)
+            self.editor.hex_invalid = False
         elif event.type == pygame.KEYDOWN:
             self._handle_key(event)
 
@@ -2011,10 +2893,13 @@ class Application:
             if "create" in rectangles and rectangles["create"].collidepoint(position):
                 self.create_atlas_file()
                 return
+        self._leave_tile_size_field()
+        self.interaction.mouse_down(position, bool(pygame.key.get_mods() & pygame.KMOD_CTRL))
+
+    def _leave_tile_size_field(self) -> None:
         if self.tile_size_field_focused:
             self.apply_tile_size_field()
             self.tile_size_field_focused = False
-        self.interaction.mouse_down(position, bool(pygame.key.get_mods() & pygame.KMOD_CTRL))
 
     def _handle_wheel(self, event: pygame.event.Event) -> None:
         modifiers = pygame.key.get_mods()
@@ -2040,8 +2925,13 @@ class Application:
             else:
                 self.tile_size_field.handle_key_down(event.key, event.mod)
                 self.tile_size_field_invalid = False
+        elif self.editor.hex_focused:
+            self.editor.hex_key_down(event)
+        elif self.editor.key_down(event.key, event.mod, getattr(event, "scancode", 0)):
+            pass
         elif event.key == pygame.K_ESCAPE:
             self.interaction.cancel()
+            self.editor.session = None
 
     # Actions ----------------------------------------------------------------------------------------------
 
@@ -2071,7 +2961,7 @@ class Application:
         return (pygame.time.get_ticks() // 500) % 2 == 0
 
     def wants_redraw(self) -> bool:
-        if self.tile_size_field_focused and self.caret_visible() != self._last_caret_visible:
+        if (self.tile_size_field_focused or self.editor.hex_focused) and self.caret_visible() != self._last_caret_visible:
             return True
         return self.needs_redraw
 
@@ -2091,7 +2981,7 @@ class Application:
         )
         self.draw_atlas()
         self.draw_unplaced()
-        self.draw_editor_placeholder()
+        self.editor.draw(self.surface, self.caret_visible())
         self.draw_drag_feedback()
         self.draw_status()
         self.draw_tooltip()
@@ -2168,30 +3058,6 @@ class Application:
             if rectangle.colliderect(panel.rect):
                 self.draw_tile(rectangle, None, tile.pixels, (id(tile), 0))
         self.surface.set_clip(None)
-
-    def draw_editor_placeholder(self) -> None:
-        rectangle = self.layout.editor
-        self.draw_panel_frame(rectangle)
-        selected = sorted(self.project.selection, key=reading_order_key)
-        surface = self.surface
-        if not selected:
-            draw_text(surface, self.fonts.normal, "Select a tile in the atlas to edit it.", Theme.TEXT_DIMMED, rectangle.center, "center")
-            return
-        if len(selected) > 1:
-            draw_text(surface, self.fonts.large, "(multiple files)", Theme.TEXT, (rectangle.centerx, rectangle.y + scaled(24)), "midtop")
-            return
-        record = self.project.tiles[selected[0]]
-        marker = "*" if record.is_modified else ""
-        draw_text(surface, self.fonts.large, f"{record.name}{marker}", Theme.TEXT, (rectangle.centerx, rectangle.y + scaled(24)), "midtop")
-        if record.error is not None:
-            lines = wrap_text(self.fonts.normal, f"This tile cannot be edited: {record.error}.", rectangle.width - scaled(40))
-            for number, line in enumerate(lines):
-                draw_text(surface, self.fonts.normal, line, Theme.ERROR, (rectangle.centerx, rectangle.centery + number * scaled(20)), "midtop")
-            return
-        side = min(rectangle.width, rectangle.height - scaled(120)) - scaled(40)
-        side = max(record.pixels.shape[0], side - side % record.pixels.shape[0])
-        picture = self.tile_picture((id(record), record.revision), record.pixels, side)
-        surface.blit(picture, picture.get_rect(center=(rectangle.centerx, rectangle.centery + scaled(10))))
 
     def draw_drag_feedback(self) -> None:
         drag = self.interaction.drag
