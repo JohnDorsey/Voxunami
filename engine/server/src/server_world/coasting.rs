@@ -18,17 +18,22 @@
 //! pushed, never for a ship that was left alone, which keeps the same elements however many times it is saved and brought back.
 //!
 //! **What is asked of a ship every tick, and what once.** Every tick, for every ship that is not on a rail, only the rules that need no orbit are asked (a free ship that turns nothing, in
-//! a level with no pull of its own, with a planet that pulls it and nothing near it: a few comparisons and a loop over the grids). Only when a ship has passed them for the whole
+//! a level with no pull of its own, with a planet that pulls it and nothing near it: a few comparisons, the planets, and a search of the ships that are near: see [`neighbours`], which finds them without looking at every ship). Only when a ship has passed them for the whole
 //! [`QUIET_SECONDS`], undisturbed, is the orbit made from its state (114 to 145 microseconds) to see whether it is one the ship may have (it exists, does not come too low, does not leave
 //! the sphere of influence); if it is not, the second begins again. So a ship that is pushed every tick is never fitted, one that is left alone is fitted once, and one whose orbit is refused is
 //! fitted once a second and a tick, where every one was fitted every tick before. The cost is that the orbit-dependent rules are looked at at the end of the second and not at each tick of it:
 //! a ship that was quiet but whose orbit was refused for a while and is allowed at the end goes on a rail at the end, though it was allowed for less than a second.
+
+use std::collections::HashMap;
 
 use voxel_space::{BrickBox, GridId, WorldPosition};
 use world_storage::MovingGrid;
 use world_storage::rail::{Centre, Orbit, Rail, RailError, RailTime};
 
 use super::*;
+
+pub(super) mod neighbours;
+use neighbours::{Body, ShipsInTheWay, is_in_the_way};
 
 /// Seconds a ship has to be undisturbed before it goes on a rail.
 pub const QUIET_SECONDS: u64 = 1;
@@ -82,6 +87,7 @@ struct Candidate<'a> {
 }
 
 /// Where the middle of a grid is (the origin of a planet, whose centre of mass is there) and how far from it its bricks reach, in voxels.
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Reach {
     centre: WorldPosition,
     radius: f64,
@@ -137,18 +143,99 @@ pub(super) fn is_a_coasting_rail(rail: &Rail) -> bool {
             .is_some_and(|orbit| matches!(orbit.around, Centre::Grid(_)))
 }
 
+/// A planet that has a sphere of influence: a ship inside it, that does not go round it, is not put on a rail.
+struct Sphere {
+    id: GridId,
+    level: LevelIndex,
+    position: WorldPosition,
+    radius: f64,
+}
+
+/// What [`ServerWorld::near`] asks of the world, found once for the ships of a tick. Nothing it is found from changes while [`ServerWorld::update_coasting`] goes through the
+/// ships (it puts ships on rails and takes them off, and a rail is not part of it: the places, speeds and reach of the grids, their levels, the planets' spheres and what they
+/// carry stay as they are), and a ship that is asked about is checked against what it was when this was made.
+pub(super) struct Neighbours {
+    ships: ShipsInTheWay,
+    /// What each ship was.
+    bodies: HashMap<GridId, Body>,
+    /// Every grid with terrain, in the order of their numbers.
+    planets: Vec<(GridId, Body)>,
+    spheres: Vec<Sphere>,
+    carriers: Vec<Carrier>,
+}
+
+impl Neighbours {
+    pub(super) fn of(world: &ServerWorld) -> Neighbours {
+        let (mut ships, mut planets) = (Vec::new(), Vec::new());
+        for (id, grid) in world.data.grids().iter() {
+            let body = Body::of(grid);
+            if grid.terrain.is_some() {
+                planets.push((id, body));
+            } else {
+                ships.push((id, body));
+            }
+        }
+        Neighbours {
+            ships: ShipsInTheWay::find(&ships),
+            bodies: ships.into_iter().collect(),
+            planets,
+            spheres: world.spheres(),
+            carriers: world.carriers(),
+        }
+    }
+
+    /// The first grid, in the order of their numbers, that is in the way of the ship `grid` (`mine`) with this room, not counting `chain`: the lowest of the ships in its way
+    /// and of the planets. A ship that is not one of those this was made of (one that has terrain) is for looking at every grid.
+    fn in_the_way(
+        &self,
+        world: &ServerWorld,
+        grid: GridId,
+        mine: &Body,
+        chain: &[GridId],
+        factor: f64,
+    ) -> Option<GridId> {
+        let among_ships = match self.ships.lowest(grid, factor, chain) {
+            Some(found) => found,
+            None => return world.in_the_way_looking_at_every_grid(mine, chain, factor),
+        };
+        let among_planets = self
+            .planets
+            .iter()
+            .find(|(id, other)| {
+                !chain.contains(id)
+                    && other.level() == mine.level()
+                    && is_in_the_way(mine, other, factor)
+            })
+            .map(|(id, _)| *id);
+        match (among_ships, among_planets) {
+            (Some(ship), Some(planet)) => Some(ship.min(planet)),
+            (ship, planet) => ship.or(planet),
+        }
+    }
+}
+
 impl ServerWorld {
     /// The rail a ship is on if it coasts round the planet that pulls it most, at `time`, or why it cannot be on one. Nothing changes. It is the orbit that the ship's place (its
     /// centre of mass) and its speed are on, with the pull of that planet alone.
     pub fn coasting_rail(&self, grid: GridId, time: RailTime) -> Result<Rail, NotCoasting> {
+        self.coasting_rail_with(None, grid, time)
+    }
+
+    /// As [`ServerWorld::coasting_rail`], with what is in the way of each ship already found for this tick (`known`), or looking at every grid.
+    fn coasting_rail_with(
+        &self,
+        known: Option<&Neighbours>,
+        grid: GridId,
+        time: RailTime,
+    ) -> Result<Rail, NotCoasting> {
         let Candidate {
             ship,
             parent,
             planet,
             place,
-        } = self.coasting_candidate(grid)?;
+        } = self.coasting_candidate(known, grid)?;
         let orbit = self.orbit_from_the_state(ship, parent, planet, place, time)?;
-        if let Some(near) = self.near(grid, ship, Some(parent), 2.0) {
+        if let Some(near) = self.near_with(known, grid, ship, Some(parent), 2.0) {
             return Err(NotCoasting::SomethingNear(near));
         }
         Ok(Rail {
@@ -158,18 +245,26 @@ impl ServerWorld {
     }
 
     /// Whether a ship passes the rules of [`ServerWorld::coasting_rail`] that do not need its orbit: it is a free ship that turns nothing, in a level with no pull of its own, with a
-    /// planet that pulls it, and nothing near it. These are a few comparisons and a loop over the grids. The rules that do need the orbit (it does not come too low, it does not leave the
+    /// planet that pulls it, and nothing near it. These are a few comparisons, the planets, and a search of the tree of the ships ([`neighbours`]). The rules that do need the orbit (it does not come too low, it does not leave the
     /// sphere of influence, it is one at all) cost an orbit made from a state, 114 to 145 microseconds, and are asked only when the second of quiet is up.
-    fn may_be_put_on_a_rail(&self, grid: GridId) -> Result<(), NotCoasting> {
-        let candidate = self.coasting_candidate(grid)?;
-        match self.near(grid, candidate.ship, Some(candidate.parent), 2.0) {
+    fn may_be_put_on_a_rail(
+        &self,
+        known: Option<&Neighbours>,
+        grid: GridId,
+    ) -> Result<(), NotCoasting> {
+        let candidate = self.coasting_candidate(known, grid)?;
+        match self.near_with(known, grid, candidate.ship, Some(candidate.parent), 2.0) {
             Some(near) => Err(NotCoasting::SomethingNear(near)),
             None => Ok(()),
         }
     }
 
     /// The ship and the planet that pulls it, and where it is from the planet, if the rules of [`ServerWorld::may_be_put_on_a_rail`] that look at one ship are met.
-    fn coasting_candidate(&self, grid: GridId) -> Result<Candidate<'_>, NotCoasting> {
+    fn coasting_candidate(
+        &self,
+        known: Option<&Neighbours>,
+        grid: GridId,
+    ) -> Result<Candidate<'_>, NotCoasting> {
         let ship = self.data.grids().get(grid).ok_or(NotCoasting::NotAShip)?;
         if ship.terrain.is_some() {
             return Err(NotCoasting::NotAShip);
@@ -190,7 +285,7 @@ impl ServerWorld {
         }
         let middle = self.middle_of(ship).ok_or(NotCoasting::NoPlanetPulls)?;
         let (parent, planet, place) = self
-            .planet_that_pulls_most(grid, ship, middle)
+            .planet_that_pulls_most(known, grid, ship, middle)
             .ok_or(NotCoasting::NoPlanetPulls)?;
         Ok(Candidate {
             ship,
@@ -259,13 +354,24 @@ impl ServerWorld {
     /// distance; of two that pull alike the one with the lower number.
     fn planet_that_pulls_most(
         &self,
+        known: Option<&Neighbours>,
         grid: GridId,
         ship: &MovingGrid,
         middle: WorldPosition,
     ) -> Option<(GridId, &MovingGrid, [f64; 3])> {
         let threshold = self.gravity.pull_mass_threshold?;
         let mut best: Option<(f64, GridId, &MovingGrid, [f64; 3])> = None;
-        for (id, planet) in self.data.grids().iter() {
+        // The grids with terrain are all there is to look at: the snapshot of a tick has them, and a ship does not look at every ship for them.
+        let grids: Box<dyn Iterator<Item = (GridId, &MovingGrid)> + '_> = match known {
+            Some(known) => Box::new(
+                known
+                    .planets
+                    .iter()
+                    .filter_map(|(id, _)| Some((*id, self.data.grids().get(*id)?))),
+            ),
+            None => Box::new(self.data.grids().iter()),
+        };
+        for (id, planet) in grids {
             if id >= grid
                 || planet.level != ship.level
                 || planet.terrain.is_none()
@@ -316,9 +422,14 @@ impl ServerWorld {
     /// Some other grid whose gap from the ship is less than `factor` times the margin and how far the ship would go in a second at the speed it closes at, a planet whose sphere of
     /// influence the ship is in, or a planet on a rail that carries the ship (what is within its sphere; a quarter farther out when `factor` is above 1). A ship that goes on a
     /// rail needs twice the room (`factor` 2) that one that is on a rail keeps (`factor` 1), so that it does not go on and off. What the ship goes round and what that goes round
-    /// are not counted: the orbit has its own rule for them.
-    fn near(
+    /// are not counted: the orbit has its own rule for them. The first of the grids in the order of their numbers is the one that is given.
+    ///
+    /// What is in the way of each ship is either found once for the tick (`known`, which [`ServerWorld::update_coasting`] makes: a tick costs what the ships have near them) or
+    /// looked for among every grid for this one (`None`). **The two give the same answers**, which the tests of `near_ships.rs` pin against the program that always looked at
+    /// every grid.
+    pub(super) fn near_with(
         &self,
+        known: Option<&Neighbours>,
         grid: GridId,
         ship: &MovingGrid,
         goes_round: Option<GridId>,
@@ -330,33 +441,43 @@ impl ServerWorld {
             chain
         });
         chain.push(grid);
-        let mine = reach(ship);
-        for (id, other) in self.data.grids().iter() {
-            if chain.contains(&id) || other.level != ship.level {
-                continue;
+        let mine = match known.and_then(|known| known.bodies.get(&grid)) {
+            Some(body) => {
+                debug_assert_eq!(
+                    *body,
+                    Body::of(ship),
+                    "a ship moved while its neighbours were known"
+                );
+                *body
             }
-            let theirs = reach(other);
-            let apart = size(mine.centre.displacement_to(theirs.centre).in_voxels());
-            let velocity: [f64; 3] =
-                [0, 1, 2].map(|axis| other.linear_velocity[axis] - ship.linear_velocity[axis]);
-            let gap = apart - mine.radius - theirs.radius;
-            if gap < factor * (NEAR_MARGIN + size(velocity) * NEAR_SECONDS) {
-                return Some(id);
-            }
+            None => Body::of(ship),
+        };
+        let in_the_way = match known {
+            Some(known) => known.in_the_way(self, grid, &mine, &chain, factor),
+            None => self.in_the_way_looking_at_every_grid(&mine, &chain, factor),
+        };
+        if in_the_way.is_some() {
+            return in_the_way;
         }
         // (A planet that is not what the ship goes round, and that the ship is within the sphere of influence of: there it pulls more than what the ship goes round.)
         let place = self.middle_of(ship)?;
-        for (id, other) in self.data.grids().iter() {
-            if chain.contains(&id) || other.level != ship.level || other.terrain.is_none() {
+        let (spheres_here, carriers_here);
+        let (spheres, carriers): (&[Sphere], &[Carrier]) = match known {
+            Some(known) => (&known.spheres, &known.carriers),
+            None => {
+                spheres_here = self.spheres();
+                carriers_here = self.carriers();
+                (&spheres_here, &carriers_here)
+            }
+        };
+        for sphere in spheres {
+            if chain.contains(&sphere.id) || sphere.level != ship.level {
                 continue;
             }
-            if let Some(sphere) = self.sphere_of_influence(id)
-                && size(other.pose.position.displacement_to(place).in_voxels()) < sphere
-            {
-                return Some(id);
+            if size(sphere.position.displacement_to(place).in_voxels()) < sphere.radius {
+                return Some(sphere.id);
             }
         }
-        let carriers = self.carriers();
         let limit = if factor > 1.0 { INFLUENCE_LEAVING } else { 1.0 };
         carriers
             .iter()
@@ -367,9 +488,44 @@ impl ServerWorld {
             .map(|carrier| carrier.id)
     }
 
+    /// The first grid, in the order of their numbers, that is in the way of a ship in the sense of [`is_in_the_way`], not counting `chain`: every grid is looked at.
+    fn in_the_way_looking_at_every_grid(
+        &self,
+        mine: &Body,
+        chain: &[GridId],
+        factor: f64,
+    ) -> Option<GridId> {
+        self.data
+            .grids()
+            .iter()
+            .find(|(id, other)| {
+                !chain.contains(id)
+                    && other.level == mine.level()
+                    && is_in_the_way(mine, &Body::of(other), factor)
+            })
+            .map(|(id, _)| id)
+    }
+
+    /// Every planet that has a sphere of influence, in the order of their numbers.
+    fn spheres(&self) -> Vec<Sphere> {
+        self.data
+            .grids()
+            .iter()
+            .filter(|(_, other)| other.terrain.is_some())
+            .filter_map(|(id, other)| {
+                Some(Sphere {
+                    id,
+                    level: other.level,
+                    position: other.pose.position,
+                    radius: self.sphere_of_influence(id)?,
+                })
+            })
+            .collect()
+    }
+
     /// Whether a ship that is on a rail of this module has to come off it: it is held, turns, is in a level with a pull of its own, goes round nothing that is there, or
     /// something is near.
-    fn has_to_leave_its_rail(&self, grid: GridId) -> bool {
+    fn has_to_leave_its_rail(&self, known: Option<&Neighbours>, grid: GridId) -> bool {
         let Some(ship) = self.data.grids().get(grid) else {
             return false;
         };
@@ -389,7 +545,9 @@ impl ServerWorld {
                 .unwrap_or(&self.gravity.base)
                 != &[0.0; 3]
             || self.data.grids().get(parent).is_none()
-            || self.near(grid, ship, Some(parent), 1.0).is_some()
+            || self
+                .near_with(known, grid, ship, Some(parent), 1.0)
+                .is_some()
     }
 
     /// Answers a change of the mass of the planet a ship goes round, as the owner chose (2026-11-02): a ship that is on a rail made for another mass parameter than the planet has now
@@ -458,6 +616,8 @@ impl ServerWorld {
         let now = self.data.clock();
         let time = RailTime::of_tick(now, ticks_per_second);
         let wait = QUIET_SECONDS * u64::from(ticks_per_second);
+        // What is in the way of each ship is found once: nothing it is found from changes while the ships are gone through (a rail is all that does).
+        let known = Neighbours::of(self);
         let ships: Vec<GridId> = self
             .data
             .grids()
@@ -474,7 +634,7 @@ impl ServerWorld {
                 .map(is_a_coasting_rail);
             match coasting {
                 Some(true) => {
-                    if self.has_to_leave_its_rail(id) {
+                    if self.has_to_leave_its_rail(Some(&known), id) {
                         self.quiet_since.remove(&id);
                         let _ = self.set_grid_rail(id, None);
                     } else {
@@ -482,13 +642,13 @@ impl ServerWorld {
                     }
                 }
                 Some(false) => {}
-                None => match self.may_be_put_on_a_rail(id) {
+                None => match self.may_be_put_on_a_rail(Some(&known), id) {
                     Ok(()) => {
                         let since = *self.quiet_since.entry(id).or_insert(now);
                         if now.saturating_sub(since) >= wait {
                             // The second is up: only now is the orbit made from the state, to see whether it is one the ship may have. If it is not, the second begins again.
                             self.quiet_since.remove(&id);
-                            if let Ok(rail) = self.coasting_rail(id, time) {
+                            if let Ok(rail) = self.coasting_rail_with(Some(&known), id, time) {
                                 let _ = self.set_grid_rail(id, Some(rail));
                             }
                         }
@@ -499,6 +659,8 @@ impl ServerWorld {
                 },
             }
         }
+        self.ship_pairs_asked
+            .set(self.ship_pairs_asked.get() + known.ships.pairs_tested());
         let grids = self.data.grids();
         self.quiet_since.retain(|id, _| grids.get(*id).is_some());
     }

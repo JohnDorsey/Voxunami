@@ -228,6 +228,8 @@ pub struct ServerWorld {
     rail_memo: RailMemo,
     /// How many orbits were made from a state (see [`ServerWorld::rail_work`]).
     orbit_fits: Cell<u64>,
+    /// How many pairs of ships were asked whether one is in the way of the other (see [`ServerWorld::rail_work`]).
+    ship_pairs_asked: Cell<u64>,
 }
 
 /// How much work the rails have cost since the world was made, for measuring and for tests of the savings (see [`ServerWorld::rail_work`]).
@@ -241,6 +243,8 @@ pub struct RailWork {
     pub orbits_prepared: u64,
     /// Orbits made from a ship's place and speed (114 to 145 microseconds each) to see whether a ship may go on a rail, or to answer a change of the mass of a planet.
     pub orbit_fits: u64,
+    /// Pairs of ships that were asked whether one is in the way of the other, of all the pairs there are: a tick asks for the pairs that can be near, and not for every pair.
+    pub ship_pairs_asked: u64,
     /// Ships whose last answer is kept for the second putting of a tick.
     pub rails_remembered: usize,
 }
@@ -275,6 +279,7 @@ impl ServerWorld {
             quiet_since: BTreeMap::new(),
             rail_memo: RailMemo::default(),
             orbit_fits: Cell::new(0),
+            ship_pairs_asked: Cell::new(0),
         }
     }
 
@@ -285,6 +290,7 @@ impl ServerWorld {
             rail_answers_reused: self.rail_memo.reused(),
             orbits_prepared: self.rail_memo.preparations(),
             orbit_fits: self.orbit_fits.get(),
+            ship_pairs_asked: self.ship_pairs_asked.get(),
             rails_remembered: self.rail_memo.remembered(),
         }
     }

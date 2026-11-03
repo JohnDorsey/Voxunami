@@ -8,7 +8,7 @@ use crate::server_world::NotCoasting;
 /// The `G` of these worlds, in voxels cubed per kilogram per second squared.
 const PULL: f64 = 6.674e-11;
 /// How many ticks a second.
-const TICKS: u32 = 20;
+pub(super) const TICKS: u32 = 20;
 /// The ground of the planets here reaches a hundred bricks, 3,200 voxels.
 const REACH: f64 = 3_200.0;
 
@@ -17,7 +17,7 @@ fn time(tick: u64) -> RailTime {
 }
 
 /// A world with no pull of its own in its level, where anything of a mass of a quadrillion kilograms pulls, and a planet of ten sextillion (6.7e11 is its `G M`).
-fn space() -> (ServerWorld, GridId) {
+pub(super) fn space() -> (ServerWorld, GridId) {
     let mut world = world_for_rails();
     world.set_gravity_settings(GravitySettings {
         base: [0.0; 3],
@@ -36,7 +36,7 @@ fn circular_speed(mass: f64, distance: f64) -> f64 {
 }
 
 /// A ship at this place (in voxels from the middle of the planet, which is at the origin) going at this speed.
-fn ship_at(world: &mut ServerWorld, place: [f64; 3], velocity: [f64; 3]) -> GridId {
+pub(super) fn ship_at(world: &mut ServerWorld, place: [f64; 3], velocity: [f64; 3]) -> GridId {
     let ship = world
         .create_grid(
             LevelIndex::MAIN,
