@@ -12,6 +12,7 @@ Each line: the function, the width in bits, the arguments and the result, each n
 The inputs are the same on every run (a seeded generator), so a regeneration changes nothing unless this file does.
 """
 import random
+import sys
 from fractions import Fraction
 from math import isqrt
 
@@ -170,4 +171,5 @@ def round_sqrt(value, bits):
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(newline="\n")
     main()

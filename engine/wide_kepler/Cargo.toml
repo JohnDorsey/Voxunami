@@ -1,0 +1,19 @@
+[package]
+name = "wide_kepler"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Where a body is on an ellipse at a time, in numbers of any width from 128 bits: Kepler's equation and the place and speed that follow, correct to the width asked for."
+
+[dependencies]
+libm = "0.2"
+thiserror.workspace = true
+wide_float.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+wide_float = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

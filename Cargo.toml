@@ -43,6 +43,7 @@ voxunami_2048 = { path = "games/voxunami_2048" }
 voxunami_cave = { path = "games/voxunami_cave" }
 voxunami_eels = { path = "games/voxunami_eels" }
 wide_float = { path = "engine/wide_float" }
+wide_kepler = { path = "engine/wide_kepler" }
 world_view = { path = "engine/world_view" }
 world_storage = { path = "engine/world_storage" }
 

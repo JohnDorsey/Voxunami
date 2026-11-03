@@ -3907,6 +3907,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "wide_kepler"
+version = "0.0.0"
+dependencies = [
+ "libm",
+ "proptest",
+ "thiserror 2.0.21",
+ "wide_float",
+]
+
+[[package]]
 name = "winapi-util"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4200,6 +4210,8 @@ dependencies = [
  "thiserror 2.0.21",
  "voxel_grid",
  "voxel_space",
+ "wide_float",
+ "wide_kepler",
  "world_storage",
 ]
 
