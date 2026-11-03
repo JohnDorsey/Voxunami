@@ -14,8 +14,8 @@ coordinates_to_data holds the pixels of a tile that has no PNG file yet. The ent
 saved as a file. Unknown top-level keys are kept when the file is rewritten.
 
 This file is organised in sections: file formats and folder scanning, atlas arrangement rules, painting
-algorithms, edit history, then the user interface. Everything before the user interface is plain functions
-with no window, so it can be tested without one (tools/virtual_atlas/test_virtual_atlas.py).
+algorithms, edit history, the project (tiles, selection, saving), then the user interface. Everything except the
+drawing is plain logic that can be tested without a window (tools/virtual_atlas/test_virtual_atlas.py).
 """
 
 from __future__ import annotations
@@ -37,8 +37,10 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Callable, Hashable, Iterable, Optional
 
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 try:
     import numpy
+    import pygame
     from PIL import Image
 except ImportError as missing_module_error:
     sys.exit(
@@ -380,6 +382,10 @@ class TileRecord:
     pixels: Optional[numpy.ndarray]
     disk_pixels: Optional[numpy.ndarray]
     error: Optional[str] = None
+    # Increased whenever pixels change, so that pictures drawn from them know to be drawn again.
+    revision: int = 0
+    # The stored base64 of an error tile whose data could not be used, kept so that saving does not drop it.
+    preserved_data_text: Optional[str] = None
 
     @property
     def is_new(self) -> bool:
@@ -468,13 +474,17 @@ def scan_tile_folder(folder: Path, atlas_file: AtlasFile, tile_size: int) -> Fol
         try:
             data_pixels = decode_tile_data(data_text, tile_size)
         except TileDataError as error:
-            tiles[coordinate] = TileRecord(name, None, None, f"the stored pixel data {error}")
+            tiles[coordinate] = TileRecord(name, None, None, f"the stored pixel data {error}", preserved_data_text=data_text)
             continue
         if actual_name is None:
             tiles[coordinate] = TileRecord(name, data_pixels, None)
         elif disk_pixels is None:
             tiles[coordinate] = TileRecord(
-                name, None, None, f"stored pixel data exists, but the file on disk {disk_problem}"
+                name,
+                None,
+                None,
+                f"stored pixel data exists, but the file on disk {disk_problem}",
+                preserved_data_text=data_text,
             )
         elif numpy.array_equal(data_pixels, disk_pixels):
             stale_data_coordinates.append(coordinate)
@@ -1149,13 +1159,1193 @@ class EditHistory:
 
 
 # ----------------------------------------------------------------------------------------------------------
+# The project: tiles, selection and saving
+# ----------------------------------------------------------------------------------------------------------
+
+
+class AtlasProject:
+    """The tiles of one folder, which of them are selected, and the saving of atlas.json after every change.
+
+    Every change to the arrangement is written to atlas.json at once. If the write fails the change is undone and
+    the OSError is raised, so memory and disk never disagree.
+    """
+
+    def __init__(self, folder: Path, atlas_file: Optional[AtlasFile] = None):
+        self.folder = Path(folder)
+        self.atlas_file_exists = atlas_file is not None
+        loaded = atlas_file if atlas_file is not None else AtlasFile(None)
+        self.tile_size_is_saved = loaded.tile_size is not None
+        # Until atlas.json says otherwise the size is provisional, and can be changed.
+        self.tile_size = loaded.tile_size if loaded.tile_size is not None else DEFAULT_TILE_SIZE
+        self.other_settings = dict(loaded.other_settings)
+        self.selection: set[Coordinate] = set()
+        self.tiles: dict[Coordinate, TileRecord] = {}
+        self.unplaced: list[UnplacedTile] = []
+        self.existing_names: set[str] = set()
+        self._stale_data_coordinates: list[Coordinate] = []
+        self._scan(loaded)
+
+    @classmethod
+    def open(cls, folder: Path) -> "AtlasProject":
+        """Open a folder. Raises AtlasFileError if atlas.json is unusable."""
+        folder = Path(folder)
+        project = cls(folder, read_atlas_file(folder / ATLAS_FILE_NAME))
+        if project._stale_data_coordinates:
+            try:
+                project.save_atlas_file()
+            except OSError as error:
+                logger.warning("could not remove stored pixel data that equals its file: %s", error)
+        return project
+
+    def _scan(self, atlas_file: AtlasFile) -> None:
+        scan = scan_tile_folder(self.folder, atlas_file, self.tile_size)
+        self.tiles = scan.tiles
+        self.unplaced = scan.unplaced
+        self.existing_names = scan.existing_names
+        self._stale_data_coordinates = scan.stale_data_coordinates
+        self.selection &= set(self.tiles)
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.tiles
+
+    def build_atlas_file(self) -> AtlasFile:
+        """What atlas.json should contain for the current state."""
+        data: dict[Coordinate, str] = {}
+        for coordinate, record in self.tiles.items():
+            if record.is_new:
+                data[coordinate] = encode_tile_data(record.pixels)
+            elif record.preserved_data_text is not None:
+                data[coordinate] = record.preserved_data_text
+        return AtlasFile(
+            self.tile_size,
+            {coordinate: record.name for coordinate, record in self.tiles.items()},
+            data,
+            dict(self.other_settings),
+        )
+
+    def save_atlas_file(self) -> None:
+        write_atlas_file(self.folder / ATLAS_FILE_NAME, self.build_atlas_file())
+        self.atlas_file_exists = True
+        self.tile_size_is_saved = True
+
+    def _commit(self, change: Callable[[], None]) -> None:
+        saved_state = (dict(self.tiles), list(self.unplaced), set(self.selection))
+        change()
+        try:
+            self.save_atlas_file()
+        except BaseException:
+            self.tiles, self.unplaced, self.selection = saved_state
+            raise
+
+    def set_tile_size(self, tile_size: int) -> bool:
+        """Change the provisional tile size and look at the folder again. False if that is not allowed now."""
+        if self.tile_size_is_saved or any(record.is_modified for record in self.tiles.values()):
+            return False
+        if not MINIMUM_TILE_SIZE <= tile_size <= MAXIMUM_TILE_SIZE:
+            return False
+        atlas_file = self.build_atlas_file()
+        atlas_file.tile_size = tile_size
+        self.tile_size = tile_size
+        self._scan(atlas_file)
+        return True
+
+    # Selection ------------------------------------------------------------------------------------------
+
+    def select_only(self, coordinate: Coordinate) -> None:
+        self.selection = {coordinate}
+
+    def toggle_selection(self, coordinate: Coordinate) -> None:
+        self.selection ^= {coordinate}
+
+    def clear_selection(self) -> None:
+        self.selection = set()
+
+    # Changes to the arrangement -------------------------------------------------------------------------
+
+    def move_selection(self, grabbed: Coordinate, drop: Coordinate) -> bool:
+        """Drag the selected tiles by `grabbed` and let go over `drop`. False if the move is refused."""
+        moves = plan_group_move(self.tiles, self.selection, grabbed, drop)
+        if moves is None:
+            return False
+        if not moves:
+            return True
+
+        def change() -> None:
+            self.tiles = move_keys(self.tiles, moves)
+            self.selection = {moves.get(coordinate, coordinate) for coordinate in self.selection}
+
+        self._commit(change)
+        return True
+
+    def place_unplaced_tile(self, index: int, target: Coordinate) -> bool:
+        """Put the unplaced tile at `index` on an empty place. False if the place is not free."""
+        if not can_place_unplaced_tile(self.tiles, target):
+            return False
+
+        def change() -> None:
+            tile = self.unplaced.pop(index)
+            self.tiles[target] = TileRecord(tile.name, tile.pixels.copy(), tile.pixels)
+
+        self._commit(change)
+        return True
+
+    def can_return_to_unplaced(self, coordinates: Iterable[Coordinate]) -> bool:
+        records = [self.tiles.get(coordinate) for coordinate in coordinates]
+        return bool(records) and all(record is not None and record.can_return_to_unplaced for record in records)
+
+    def return_to_unplaced(self, coordinates: Iterable[Coordinate]) -> bool:
+        """Take tiles out of the atlas. Only tiles that are exactly their file may leave; all or none."""
+        coordinates = list(coordinates)
+        if not self.can_return_to_unplaced(coordinates):
+            return False
+
+        def change() -> None:
+            for coordinate in coordinates:
+                record = self.tiles.pop(coordinate)
+                self.unplaced.append(UnplacedTile(record.name, record.disk_pixels))
+                self.selection.discard(coordinate)
+            self.unplaced.sort(key=lambda tile: tile.name.casefold())
+
+        self._commit(change)
+        return True
+
+
+# ----------------------------------------------------------------------------------------------------------
+# User interface: theme, text and the grid of tiles
+# ----------------------------------------------------------------------------------------------------------
+
+USER_INTERFACE_SCALE = 1.0
+DRAG_START_DISTANCE = 4
+MINIMUM_ZOOM = 1
+MAXIMUM_ZOOM = 24
+
+
+def scaled(value: float) -> int:
+    """A size in pixels adjusted for the screen's scaling (1 on an ordinary screen)."""
+    return max(1, int(round(value * USER_INTERFACE_SCALE)))
+
+
+class Theme:
+    BACKGROUND = (22, 24, 28)
+    PANEL = (30, 33, 38)
+    PANEL_BORDER = (52, 56, 64)
+    TEXT = (218, 222, 228)
+    TEXT_DIMMED = (140, 146, 156)
+    ACCENT = (90, 170, 255)
+    BUTTON = (50, 55, 64)
+    BUTTON_HOVERED = (66, 73, 86)
+    DISABLED_TEXT = (96, 100, 108)
+    FIELD = (18, 20, 24)
+    ERROR = (230, 96, 96)
+    ERROR_BACKGROUND = (74, 30, 32)
+    UNSAVED = (255, 170, 60)
+    VALID = (96, 214, 136)
+    INVALID = (232, 92, 92)
+    CHECKER_LIGHT = (66, 68, 74)
+    CHECKER_DARK = (52, 54, 60)
+    TOOLTIP_BACKGROUND = (10, 11, 14)
+
+
+class Fonts:
+    def __init__(self) -> None:
+        names = "segoeui,arial,helvetica,dejavusans"
+        self.small = pygame.font.SysFont(names, scaled(13))
+        self.normal = pygame.font.SysFont(names, scaled(15))
+        self.large = pygame.font.SysFont(names, scaled(20))
+
+
+def draw_text(
+    surface: pygame.Surface,
+    font: pygame.font.Font,
+    text: str,
+    color: tuple[int, int, int],
+    position: tuple[int, int],
+    anchor: str = "topleft",
+) -> pygame.Rect:
+    rendered = font.render(text, True, color)
+    rectangle = rendered.get_rect(**{anchor: position})
+    surface.blit(rendered, rectangle)
+    return rectangle
+
+
+def wrap_text(font: pygame.font.Font, text: str, width: int) -> list[str]:
+    """Break `text` into lines no wider than `width` pixels (a single longer word keeps its own line)."""
+    lines: list[str] = []
+    for paragraph in text.split("\n"):
+        line = ""
+        for word in paragraph.split(" "):
+            candidate = word if not line else f"{line} {word}"
+            if line and font.size(candidate)[0] > width:
+                lines.append(line)
+                line = word
+            else:
+                line = candidate
+        lines.append(line)
+    return lines
+
+
+class SystemTextClipboard:
+    """Plain text on the operating system's clipboard, through tkinter (which is only loaded when first needed)."""
+
+    def __init__(self) -> None:
+        self._root = None
+
+    def _tk_root(self):
+        if self._root is None:
+            import tkinter
+
+            self._root = tkinter.Tk()
+            self._root.withdraw()
+        return self._root
+
+    def get_text(self) -> str:
+        try:
+            return str(self._tk_root().clipboard_get())
+        except Exception:  # a clipboard that cannot be read must never crash the editor
+            return ""
+
+    def set_text(self, text: str) -> None:
+        try:
+            root = self._tk_root()
+            root.clipboard_clear()
+            root.clipboard_append(text)
+            root.update()
+        except Exception:  # see get_text
+            logger.warning("could not write to the clipboard")
+
+
+class TextField:
+    """A single line of editable text with a cursor and a selection. It handles keys but does not draw itself."""
+
+    def __init__(
+        self,
+        text: str = "",
+        accepted_characters: Optional[Callable[[str], bool]] = None,
+        maximum_length: int = 255,
+        clipboard: Optional[object] = None,
+    ):
+        self.accepted_characters = accepted_characters
+        self.maximum_length = maximum_length
+        self.clipboard = clipboard if clipboard is not None else SystemTextClipboard()
+        self.text = text
+        self.cursor = len(text)
+        self.anchor = len(text)
+
+    @property
+    def selection(self) -> tuple[int, int]:
+        return (min(self.cursor, self.anchor), max(self.cursor, self.anchor))
+
+    @property
+    def has_selection(self) -> bool:
+        return self.cursor != self.anchor
+
+    @property
+    def selected_text(self) -> str:
+        start, end = self.selection
+        return self.text[start:end]
+
+    def set_text(self, text: str) -> None:
+        self.text = text[: self.maximum_length]
+        self.cursor = self.anchor = len(self.text)
+
+    def select(self, start: int, end: int) -> None:
+        self.anchor, self.cursor = start, end
+
+    def select_all(self) -> None:
+        self.select(0, len(self.text))
+
+    def _move_cursor(self, position: int, extend_selection: bool) -> None:
+        self.cursor = max(0, min(position, len(self.text)))
+        if not extend_selection:
+            self.anchor = self.cursor
+
+    def delete_selection(self) -> None:
+        start, end = self.selection
+        self.text = self.text[:start] + self.text[end:]
+        self.cursor = self.anchor = start
+
+    def insert_text(self, text: str) -> None:
+        if self.accepted_characters is not None:
+            text = "".join(character for character in text if self.accepted_characters(character))
+        text = "".join(character for character in text if character.isprintable())
+        start, end = self.selection
+        room = self.maximum_length - (len(self.text) - (end - start))
+        text = text[: max(room, 0)]
+        self.text = self.text[:start] + text + self.text[end:]
+        self.cursor = self.anchor = start + len(text)
+
+    def handle_key_down(self, key: int, modifiers: int) -> bool:
+        """Edit with a key press. Returns True if the key was used."""
+        control = bool(modifiers & pygame.KMOD_CTRL)
+        shift = bool(modifiers & pygame.KMOD_SHIFT)
+        if control and key == pygame.K_a:
+            self.select_all()
+        elif control and key == pygame.K_c:
+            if self.has_selection:
+                self.clipboard.set_text(self.selected_text)
+        elif control and key == pygame.K_x:
+            if self.has_selection:
+                self.clipboard.set_text(self.selected_text)
+                self.delete_selection()
+        elif control and key == pygame.K_v:
+            self.insert_text(self.clipboard.get_text().replace("\r", "").replace("\n", " "))
+        elif key == pygame.K_LEFT:
+            if self.has_selection and not shift:
+                self._move_cursor(self.selection[0], False)
+            else:
+                self._move_cursor(self.cursor - 1, shift)
+        elif key == pygame.K_RIGHT:
+            if self.has_selection and not shift:
+                self._move_cursor(self.selection[1], False)
+            else:
+                self._move_cursor(self.cursor + 1, shift)
+        elif key == pygame.K_HOME:
+            self._move_cursor(0, shift)
+        elif key == pygame.K_END:
+            self._move_cursor(len(self.text), shift)
+        elif key == pygame.K_BACKSPACE:
+            if not self.has_selection:
+                self._move_cursor(self.cursor - 1, True)
+            self.delete_selection()
+        elif key == pygame.K_DELETE:
+            if not self.has_selection:
+                self._move_cursor(self.cursor + 1, True)
+            self.delete_selection()
+        else:
+            return False
+        return True
+
+    def draw(
+        self,
+        surface: pygame.Surface,
+        rectangle: pygame.Rect,
+        font: pygame.font.Font,
+        focused: bool,
+        caret_visible: bool,
+        invalid: bool = False,
+    ) -> None:
+        pygame.draw.rect(surface, Theme.FIELD, rectangle, border_radius=3)
+        border = Theme.ERROR if invalid else (Theme.ACCENT if focused else Theme.PANEL_BORDER)
+        pygame.draw.rect(surface, border, rectangle, width=1, border_radius=3)
+        padding = scaled(6)
+        text_origin = (rectangle.x + padding, rectangle.centery)
+        if focused and self.has_selection:
+            start, end = self.selection
+            left = text_origin[0] + font.size(self.text[:start])[0]
+            width = font.size(self.text[start:end])[0]
+            pygame.draw.rect(surface, (44, 84, 130), (left, rectangle.y + 3, width, rectangle.height - 6))
+        draw_text(surface, font, self.text, Theme.TEXT, text_origin, "midleft")
+        if focused and caret_visible:
+            caret_x = text_origin[0] + font.size(self.text[: self.cursor])[0]
+            pygame.draw.line(surface, Theme.TEXT, (caret_x, rectangle.y + 4), (caret_x, rectangle.bottom - 5))
+
+
+def draw_button(
+    surface: pygame.Surface,
+    rectangle: pygame.Rect,
+    label: str,
+    font: pygame.font.Font,
+    hovered: bool,
+    enabled: bool = True,
+) -> None:
+    fill = Theme.BUTTON_HOVERED if hovered and enabled else Theme.BUTTON
+    pygame.draw.rect(surface, fill, rectangle, border_radius=4)
+    pygame.draw.rect(surface, Theme.PANEL_BORDER, rectangle, width=1, border_radius=4)
+    draw_text(surface, font, label, Theme.TEXT if enabled else Theme.DISABLED_TEXT, rectangle.center, "center")
+
+
+# ----------------------------------------------------------------------------------------------------------
+# The grid of tiles: geometry, scrolling, and what is under the pointer
+# ----------------------------------------------------------------------------------------------------------
+
+
+def default_zoom(tile_size: int) -> int:
+    """The whole number of screen pixels per tile pixel that makes a tile about 64 pixels across."""
+    return max(MINIMUM_ZOOM, min(MAXIMUM_ZOOM, round(scaled(64) / tile_size)))
+
+
+@dataclasses.dataclass(frozen=True)
+class GridGeometry:
+    """Where tiles are in the content of a panel (before scrolling), in screen pixels.
+
+    Tiles are `cell` pixels square and `gap` pixels of the panel's background apart, so empty places and the
+    spaces between tiles look the same.
+    """
+
+    tile_size: int
+    zoom: int
+
+    @property
+    def cell(self) -> int:
+        return self.tile_size * self.zoom
+
+    @property
+    def gap(self) -> int:
+        return max(3, self.cell // 8)
+
+    @property
+    def pitch(self) -> int:
+        return self.cell + self.gap
+
+    def tile_origin(self, coordinate: Coordinate) -> tuple[int, int]:
+        column, row = coordinate
+        return (self.gap + column * self.pitch, self.gap + row * self.pitch)
+
+    def exact_coordinate(self, x: int, y: int) -> Optional[Coordinate]:
+        """The place whose tile covers this point, or None for a point in a gap or outside."""
+        if x < self.gap or y < self.gap:
+            return None
+        column, column_offset = divmod(x - self.gap, self.pitch)
+        row, row_offset = divmod(y - self.gap, self.pitch)
+        if column_offset >= self.cell or row_offset >= self.cell:
+            return None
+        return (column, row)
+
+    def nearest_coordinate(self, x: int, y: int) -> Coordinate:
+        """The place this point belongs to: each place owns half of the gap around its tile. May be negative."""
+        return ((x - self.gap // 2) // self.pitch, (y - self.gap // 2) // self.pitch)
+
+    def content_size(self, columns: int, rows: int) -> tuple[int, int]:
+        return (self.gap + columns * self.pitch, self.gap + rows * self.pitch)
+
+
+class TileGridPanel:
+    """A scrolling, zoomable grid of tile places inside a rectangle of the window."""
+
+    def __init__(self, tile_size: int):
+        self.rect = pygame.Rect(0, 0, 100, 100)
+        self.scroll_x = 0
+        self.scroll_y = 0
+        self.set_tile_size(tile_size)
+
+    def set_tile_size(self, tile_size: int) -> None:
+        self.tile_size = tile_size
+        self.zoom = default_zoom(tile_size)
+        self.scroll_x = self.scroll_y = 0
+
+    @property
+    def geometry(self) -> GridGeometry:
+        return GridGeometry(self.tile_size, self.zoom)
+
+    def extent(self) -> tuple[int, int]:
+        """(columns, rows) of places to show."""
+        raise NotImplementedError
+
+    def clamp_scroll(self) -> None:
+        content_width, content_height = self.geometry.content_size(*self.extent())
+        self.scroll_x = max(0, min(self.scroll_x, content_width - self.rect.width))
+        self.scroll_y = max(0, min(self.scroll_y, content_height - self.rect.height))
+
+    def content_point(self, position: tuple[int, int]) -> tuple[int, int]:
+        return (position[0] - self.rect.x + self.scroll_x, position[1] - self.rect.y + self.scroll_y)
+
+    def tile_screen_rect(self, coordinate: Coordinate) -> pygame.Rect:
+        x, y = self.geometry.tile_origin(coordinate)
+        return pygame.Rect(x - self.scroll_x + self.rect.x, y - self.scroll_y + self.rect.y, self.geometry.cell, self.geometry.cell)
+
+    def scroll_by(self, delta_x: int, delta_y: int) -> None:
+        self.scroll_x += delta_x
+        self.scroll_y += delta_y
+        self.clamp_scroll()
+
+    def zoom_by(self, steps: int, anchor: tuple[int, int]) -> None:
+        """Zoom in or out by whole steps, keeping the content under `anchor` (a screen position) where it is."""
+        new_zoom = max(MINIMUM_ZOOM, min(MAXIMUM_ZOOM, self.zoom + steps))
+        if new_zoom == self.zoom:
+            return
+        old_pitch = self.geometry.pitch
+        content_x, content_y = self.content_point(anchor)
+        self.zoom = new_zoom
+        ratio = self.geometry.pitch / old_pitch
+        self.scroll_x = int(content_x * ratio) - (anchor[0] - self.rect.x)
+        self.scroll_y = int(content_y * ratio) - (anchor[1] - self.rect.y)
+        self.clamp_scroll()
+
+    def visible_coordinates(self) -> Iterable[Coordinate]:
+        geometry = self.geometry
+        columns, rows = self.extent()
+        first_column = max(0, (self.scroll_x - geometry.gap) // geometry.pitch)
+        last_column = min(columns - 1, (self.scroll_x + self.rect.width) // geometry.pitch)
+        first_row = max(0, (self.scroll_y - geometry.gap) // geometry.pitch)
+        last_row = min(rows - 1, (self.scroll_y + self.rect.height) // geometry.pitch)
+        for row in range(first_row, last_row + 1):
+            for column in range(first_column, last_column + 1):
+                yield (column, row)
+
+
+class AtlasPanel(TileGridPanel):
+    def __init__(self, project: AtlasProject):
+        self.project = project
+        super().__init__(project.tile_size)
+
+    def extent(self) -> tuple[int, int]:
+        return atlas_extent(self.project.tiles)
+
+    def tile_at(self, position: tuple[int, int]) -> Optional[Coordinate]:
+        coordinate = self.geometry.exact_coordinate(*self.content_point(position))
+        return coordinate if coordinate in self.project.tiles else None
+
+    def drop_coordinate(self, position: tuple[int, int]) -> Coordinate:
+        return self.geometry.nearest_coordinate(*self.content_point(position))
+
+
+class UnplacedPanel(TileGridPanel):
+    """The tiles whose files are in the folder but not in atlas.json, in rows that wrap at the panel's width."""
+
+    def __init__(self, project: AtlasProject):
+        self.project = project
+        super().__init__(project.tile_size)
+
+    def columns(self) -> int:
+        geometry = self.geometry
+        return max(1, (self.rect.width - geometry.gap) // geometry.pitch)
+
+    def extent(self) -> tuple[int, int]:
+        columns = self.columns()
+        return (columns, max(1, -(-len(self.project.unplaced) // columns)))
+
+    def coordinate_of_index(self, index: int) -> Coordinate:
+        columns = self.columns()
+        return (index % columns, index // columns)
+
+    def tile_at(self, position: tuple[int, int]) -> Optional[int]:
+        coordinate = self.geometry.exact_coordinate(*self.content_point(position))
+        if coordinate is None:
+            return None
+        index = coordinate[1] * self.columns() + coordinate[0]
+        return index if coordinate[0] < self.columns() and index < len(self.project.unplaced) else None
+
+
+# ----------------------------------------------------------------------------------------------------------
+# Clicking and dragging tiles
+# ----------------------------------------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class Drag:
+    source: str  # "atlas", "unplaced", or "background" (a click on empty space, which cannot be dragged)
+    start_position: tuple[int, int]
+    grabbed_coordinate: Optional[Coordinate] = None
+    unplaced_index: Optional[int] = None
+    # What a release without dragging does to the selection: "select_only", "toggle_off", "clear" or None.
+    click_action: Optional[str] = None
+    started: bool = False
+    pointer: tuple[int, int] = (0, 0)
+    # Where it would land: a place in the atlas, or "unplaced" for the section below.
+    drop_coordinate: Optional[Coordinate] = None
+    drops_on_unplaced: bool = False
+    drop_is_valid: bool = False
+
+
+class AtlasInteraction:
+    """Mouse handling for the atlas and the unplaced section: selecting, and dragging tiles to rearrange them.
+
+    It knows nothing about drawing; the window passes in mouse positions and reads `drag` to draw feedback.
+    """
+
+    def __init__(self, project: AtlasProject, atlas_panel: AtlasPanel, unplaced_panel: UnplacedPanel):
+        self.project = project
+        self.atlas_panel = atlas_panel
+        self.unplaced_panel = unplaced_panel
+        self.drag: Optional[Drag] = None
+
+    @property
+    def dragging(self) -> bool:
+        return self.drag is not None and self.drag.started
+
+    def mouse_down(self, position: tuple[int, int], control_held: bool) -> None:
+        selection = self.project.selection
+        if self.atlas_panel.rect.collidepoint(position):
+            coordinate = self.atlas_panel.tile_at(position)
+            if coordinate is None:
+                self.drag = Drag("background", position, click_action=None if control_held else "clear")
+                return
+            click_action = None
+            if control_held:
+                if coordinate in selection:
+                    click_action = "toggle_off"
+                else:
+                    selection.add(coordinate)
+            elif coordinate in selection:
+                click_action = "select_only"
+            else:
+                self.project.select_only(coordinate)
+            self.drag = Drag("atlas", position, grabbed_coordinate=coordinate, click_action=click_action)
+        elif self.unplaced_panel.rect.collidepoint(position):
+            index = self.unplaced_panel.tile_at(position)
+            if index is not None:
+                self.drag = Drag("unplaced", position, unplaced_index=index)
+
+    def mouse_move(self, position: tuple[int, int]) -> None:
+        drag = self.drag
+        if drag is None or drag.source == "background":
+            return
+        if not drag.started:
+            distance = max(abs(position[0] - drag.start_position[0]), abs(position[1] - drag.start_position[1]))
+            if distance < scaled(DRAG_START_DISTANCE):
+                return
+            drag.started = True
+            drag.click_action = None
+        drag.pointer = position
+        drag.drop_coordinate = None
+        drag.drops_on_unplaced = False
+        drag.drop_is_valid = False
+        if drag.source == "atlas":
+            if self.unplaced_panel.rect.collidepoint(position):
+                drag.drops_on_unplaced = True
+                drag.drop_is_valid = self.project.can_return_to_unplaced(self.project.selection)
+            elif self.atlas_panel.rect.collidepoint(position):
+                drag.drop_coordinate = self.atlas_panel.drop_coordinate(position)
+                moves = plan_group_move(
+                    self.project.tiles, self.project.selection, drag.grabbed_coordinate, drag.drop_coordinate
+                )
+                drag.drop_is_valid = moves is not None
+        elif self.atlas_panel.rect.collidepoint(position):
+            drag.drop_coordinate = self.atlas_panel.drop_coordinate(position)
+            drag.drop_is_valid = can_place_unplaced_tile(self.project.tiles, drag.drop_coordinate)
+
+    def mouse_up(self, position: tuple[int, int]) -> None:
+        """Finish the click or drag. Raises OSError if atlas.json could not be written (the change is undone)."""
+        drag, self.drag = self.drag, None
+        if drag is None:
+            return
+        if drag.started:
+            self.drag = drag
+            self.mouse_move(position)
+            self.drag = None
+            if not drag.drop_is_valid:
+                return
+            if drag.source == "atlas":
+                if drag.drops_on_unplaced:
+                    self.project.return_to_unplaced(self.project.selection)
+                else:
+                    self.project.move_selection(drag.grabbed_coordinate, drag.drop_coordinate)
+            else:
+                self.project.place_unplaced_tile(drag.unplaced_index, drag.drop_coordinate)
+            return
+        if drag.click_action == "select_only":
+            self.project.select_only(drag.grabbed_coordinate)
+        elif drag.click_action == "toggle_off":
+            self.project.toggle_selection(drag.grabbed_coordinate)
+        elif drag.click_action == "clear":
+            self.project.clear_selection()
+
+    def cancel(self) -> None:
+        self.drag = None
+
+
+# ----------------------------------------------------------------------------------------------------------
+# The window
+# ----------------------------------------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class WindowLayout:
+    atlas_title: pygame.Rect
+    atlas: pygame.Rect
+    unplaced_title: pygame.Rect
+    unplaced: pygame.Rect
+    editor: pygame.Rect
+    status: pygame.Rect
+
+
+def compute_layout(size: tuple[int, int]) -> WindowLayout:
+    """The window is divided in half: the atlas (with the unplaced tiles below it) on the left, the editor on the right."""
+    width, height = size
+    margin = scaled(8)
+    title_height = scaled(24)
+    status_height = scaled(26)
+    body_bottom = height - status_height
+    left_x = margin
+    left_width = width // 2 - margin - margin // 2
+    right_x = width // 2 + margin // 2
+    right_width = width - right_x - margin
+    unplaced_height = max(scaled(110), (body_bottom - margin) * 3 // 10)
+    unplaced_bottom = body_bottom - margin
+    unplaced = pygame.Rect(left_x, unplaced_bottom - unplaced_height, left_width, unplaced_height)
+    unplaced_title = pygame.Rect(left_x, unplaced.y - title_height, left_width, title_height)
+    atlas_title = pygame.Rect(left_x, margin, left_width, title_height)
+    atlas = pygame.Rect(left_x, atlas_title.bottom, left_width, max(1, unplaced_title.y - margin - atlas_title.bottom))
+    editor = pygame.Rect(right_x, margin, right_width, body_bottom - 2 * margin)
+    return WindowLayout(atlas_title, atlas, unplaced_title, unplaced, editor, pygame.Rect(0, body_bottom, width, status_height))
+
+
+def checkerboard(size: int) -> pygame.Surface:
+    surface = pygame.Surface((size, size))
+    square = max(4, scaled(8))
+    for row in range(0, size, square):
+        for column in range(0, size, square):
+            light = ((row // square) + (column // square)) % 2 == 0
+            surface.fill(Theme.CHECKER_LIGHT if light else Theme.CHECKER_DARK, (column, row, square, square))
+    return surface
+
+
+class TileSurfaceCache:
+    """Pictures of tiles at the size they are drawn, made once and reused until the tile changes."""
+
+    LIMIT = 4000
+
+    def __init__(self) -> None:
+        self._surfaces: dict[tuple, pygame.Surface] = {}
+        self._checkerboards: dict[int, pygame.Surface] = {}
+
+    def clear(self) -> None:
+        self._surfaces.clear()
+
+    def get(self, key: Hashable, pixels: numpy.ndarray, cell: int) -> pygame.Surface:
+        full_key = (key, cell)
+        surface = self._surfaces.get(full_key)
+        if surface is None:
+            if len(self._surfaces) > self.LIMIT:
+                self._surfaces.clear()
+            surface = self._render(pixels, cell)
+            self._surfaces[full_key] = surface
+        return surface
+
+    def _render(self, pixels: numpy.ndarray, cell: int) -> pygame.Surface:
+        height, width = pixels.shape[:2]
+        tile = pygame.image.frombuffer(numpy.ascontiguousarray(pixels).tobytes(), (width, height), "RGBA")
+        background = self._checkerboards.get(cell)
+        if background is None:
+            background = self._checkerboards[cell] = checkerboard(cell)
+        surface = background.copy()
+        surface.blit(pygame.transform.scale(tile, (cell, cell)), (0, 0))
+        return surface
+
+
+class Application:
+    """The window: draws everything and turns events into calls on the project."""
+
+    def __init__(self, project: AtlasProject, surface: pygame.Surface):
+        self.project = project
+        self.surface = surface
+        self.fonts = Fonts()
+        self.cache = TileSurfaceCache()
+        self.atlas_panel = AtlasPanel(project)
+        self.unplaced_panel = UnplacedPanel(project)
+        self.interaction = AtlasInteraction(project, self.atlas_panel, self.unplaced_panel)
+        self.tile_size_field = TextField(str(project.tile_size), lambda character: character.isdigit(), 4)
+        self.tile_size_field_focused = False
+        self.tile_size_field_invalid = False
+        self.message = ""
+        self.pointer = (-1, -1)
+        self.needs_redraw = True
+        self._last_caret_visible = True
+        self.layout = compute_layout(surface.get_size())
+        self.update_layout()
+
+    # Layout -----------------------------------------------------------------------------------------------
+
+    def update_layout(self) -> None:
+        self.layout = compute_layout(self.surface.get_size())
+        self.atlas_panel.rect = self.layout.atlas
+        self.unplaced_panel.rect = self.layout.unplaced
+        self.atlas_panel.clamp_scroll()
+        self.unplaced_panel.clamp_scroll()
+
+    def empty_state_rectangles(self) -> dict[str, pygame.Rect]:
+        """Where the controls shown in an empty atlas are."""
+        area = self.layout.atlas
+        row_height = scaled(30)
+        top = area.centery - scaled(60)
+        rectangles = {"message": pygame.Rect(area.x, top, area.width, scaled(26))}
+        next_top = top + scaled(46)
+        if not self.project.tile_size_is_saved:
+            label_width, field_width, button_width, spacing = scaled(78), scaled(64), scaled(150), scaled(8)
+            left = area.centerx - (label_width + field_width + button_width + 2 * spacing) // 2
+            rectangles["label"] = pygame.Rect(left, next_top, label_width, row_height)
+            rectangles["field"] = pygame.Rect(left + label_width + spacing, next_top, field_width, row_height)
+            rectangles["create"] = pygame.Rect(rectangles["field"].right + spacing, next_top, button_width, row_height)
+            next_top += scaled(48)
+        import_width = scaled(230)
+        rectangles["import"] = pygame.Rect(area.centerx - import_width // 2, next_top, import_width, row_height)
+        return rectangles
+
+    # Events -----------------------------------------------------------------------------------------------
+
+    def handle_event(self, event: pygame.event.Event) -> bool:
+        """Deal with one event. Returns False when the program should close."""
+        if event.type == pygame.QUIT:
+            return False
+        try:
+            self._handle_event(event)
+        except OSError as error:
+            self.interaction.cancel()
+            self.message = f"Could not save {ATLAS_FILE_NAME}: {error}"
+        if event.type in (
+            pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION, pygame.MOUSEWHEEL,
+            pygame.KEYDOWN, pygame.TEXTINPUT, pygame.WINDOWSIZECHANGED, pygame.WINDOWEXPOSED, pygame.VIDEORESIZE,
+        ):
+            self.needs_redraw = True
+        return True
+
+    def _handle_event(self, event: pygame.event.Event) -> None:
+        if event.type in (pygame.VIDEORESIZE, pygame.WINDOWSIZECHANGED):
+            self.surface = pygame.display.get_surface() or self.surface
+            self.update_layout()
+        elif event.type == pygame.MOUSEMOTION:
+            self.pointer = event.pos
+            self.interaction.mouse_move(event.pos)
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            self.pointer = event.pos
+            self._handle_press(event.pos)
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            self.pointer = event.pos
+            self.interaction.mouse_up(event.pos)
+        elif event.type == pygame.MOUSEWHEEL:
+            self._handle_wheel(event)
+        elif event.type == pygame.TEXTINPUT and self.tile_size_field_focused:
+            self.tile_size_field.insert_text(event.text)
+            self.tile_size_field_invalid = False
+        elif event.type == pygame.KEYDOWN:
+            self._handle_key(event)
+
+    def _handle_press(self, position: tuple[int, int]) -> None:
+        self.message = ""
+        if self.project.is_empty:
+            rectangles = self.empty_state_rectangles()
+            if "field" in rectangles and rectangles["field"].collidepoint(position):
+                self.tile_size_field_focused = True
+                return
+            if "create" in rectangles and rectangles["create"].collidepoint(position):
+                self.create_atlas_file()
+                return
+        if self.tile_size_field_focused:
+            self.apply_tile_size_field()
+            self.tile_size_field_focused = False
+        self.interaction.mouse_down(position, bool(pygame.key.get_mods() & pygame.KMOD_CTRL))
+
+    def _handle_wheel(self, event: pygame.event.Event) -> None:
+        modifiers = pygame.key.get_mods()
+        for panel in (self.atlas_panel, self.unplaced_panel):
+            if panel.rect.collidepoint(self.pointer):
+                if modifiers & pygame.KMOD_CTRL:
+                    panel.zoom_by(event.y, self.pointer)
+                    self.cache.clear()
+                elif modifiers & pygame.KMOD_SHIFT:
+                    panel.scroll_by(-event.y * scaled(60), 0)
+                else:
+                    panel.scroll_by(-event.x * scaled(60), -event.y * scaled(60))
+                return
+
+    def _handle_key(self, event: pygame.event.Event) -> None:
+        if self.tile_size_field_focused:
+            if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                self.apply_tile_size_field()
+                self.tile_size_field_focused = False
+            elif event.key == pygame.K_ESCAPE:
+                self.tile_size_field.set_text(str(self.project.tile_size))
+                self.tile_size_field_focused = False
+            else:
+                self.tile_size_field.handle_key_down(event.key, event.mod)
+                self.tile_size_field_invalid = False
+        elif event.key == pygame.K_ESCAPE:
+            self.interaction.cancel()
+
+    # Actions ----------------------------------------------------------------------------------------------
+
+    def apply_tile_size_field(self) -> None:
+        text = self.tile_size_field.text
+        if text.isdigit() and MINIMUM_TILE_SIZE <= int(text) <= MAXIMUM_TILE_SIZE:
+            if int(text) != self.project.tile_size and self.project.set_tile_size(int(text)):
+                for panel in (self.atlas_panel, self.unplaced_panel):
+                    panel.set_tile_size(self.project.tile_size)
+                self.cache.clear()
+            self.tile_size_field_invalid = False
+        else:
+            self.tile_size_field_invalid = True
+            self.message = f"The tile size must be a whole number from {MINIMUM_TILE_SIZE} to {MAXIMUM_TILE_SIZE}."
+
+    def create_atlas_file(self) -> None:
+        self.apply_tile_size_field()
+        if self.tile_size_field_invalid:
+            return
+        self.tile_size_field_focused = False
+        self.project.save_atlas_file()
+        self.message = f"Created {ATLAS_FILE_NAME} with tile size {self.project.tile_size}."
+
+    # Drawing ----------------------------------------------------------------------------------------------
+
+    def caret_visible(self) -> bool:
+        return (pygame.time.get_ticks() // 500) % 2 == 0
+
+    def wants_redraw(self) -> bool:
+        if self.tile_size_field_focused and self.caret_visible() != self._last_caret_visible:
+            return True
+        return self.needs_redraw
+
+    def tile_picture(self, key: Hashable, pixels: numpy.ndarray, cell: int) -> pygame.Surface:
+        return self.cache.get(key, pixels, cell)
+
+    def draw(self) -> None:
+        surface = self.surface
+        self._last_caret_visible = self.caret_visible()
+        surface.fill(Theme.BACKGROUND)
+        layout = self.layout
+        count = len(self.project.tiles)
+        draw_text(surface, self.fonts.normal, f"Atlas ({count} tile{'' if count == 1 else 's'})", Theme.TEXT, layout.atlas_title.midleft, "midleft")
+        draw_text(
+            surface, self.fonts.normal, f"Not in the atlas ({len(self.project.unplaced)})", Theme.TEXT,
+            layout.unplaced_title.midleft, "midleft",
+        )
+        self.draw_atlas()
+        self.draw_unplaced()
+        self.draw_editor_placeholder()
+        self.draw_drag_feedback()
+        self.draw_status()
+        self.draw_tooltip()
+        self.needs_redraw = False
+
+    def draw_panel_frame(self, rectangle: pygame.Rect) -> None:
+        pygame.draw.rect(self.surface, Theme.PANEL, rectangle)
+        pygame.draw.rect(self.surface, Theme.PANEL_BORDER, rectangle, width=1)
+
+    def draw_tile(self, rectangle: pygame.Rect, record: Optional[TileRecord], pixels: Optional[numpy.ndarray], key: Hashable) -> None:
+        surface = self.surface
+        if record is not None and record.error is not None:
+            pygame.draw.rect(surface, Theme.ERROR_BACKGROUND, rectangle)
+            pygame.draw.rect(surface, Theme.ERROR, rectangle, width=2)
+            size = rectangle.height
+            triangle = [
+                (rectangle.centerx, rectangle.y + size // 5),
+                (rectangle.x + size // 5, rectangle.bottom - size // 5),
+                (rectangle.right - size // 5, rectangle.bottom - size // 5),
+            ]
+            pygame.draw.polygon(surface, Theme.ERROR, triangle, width=max(2, size // 24))
+            draw_text(surface, self.fonts.large, "!", Theme.ERROR, (rectangle.centerx, rectangle.centery + size // 8), "center")
+        else:
+            surface.blit(self.tile_picture(key, pixels, rectangle.width), rectangle)
+        if record is not None and record.is_modified:
+            radius = max(3, rectangle.width // 12)
+            center = (rectangle.right - radius - 2, rectangle.y + radius + 2)
+            pygame.draw.circle(surface, Theme.BACKGROUND, center, radius + 1)
+            pygame.draw.circle(surface, Theme.UNSAVED, center, radius)
+
+    def draw_atlas(self) -> None:
+        panel = self.atlas_panel
+        self.draw_panel_frame(panel.rect)
+        self.surface.set_clip(panel.rect)
+        for coordinate in panel.visible_coordinates():
+            record = self.project.tiles.get(coordinate)
+            if record is None:
+                continue
+            rectangle = panel.tile_screen_rect(coordinate)
+            self.draw_tile(rectangle, record, record.pixels, (id(record), record.revision))
+            if coordinate in self.project.selection:
+                pygame.draw.rect(self.surface, Theme.ACCENT, rectangle.inflate(6, 6), width=2)
+        if self.project.is_empty:
+            self.draw_empty_state()
+        self.surface.set_clip(None)
+
+    def draw_empty_state(self) -> None:
+        rectangles = self.empty_state_rectangles()
+        draw_text(self.surface, self.fonts.large, "The atlas is empty.", Theme.TEXT, rectangles["message"].center, "center")
+        if "field" in rectangles:
+            draw_text(self.surface, self.fonts.normal, "Tile size", Theme.TEXT_DIMMED, rectangles["label"].midleft, "midleft")
+            self.tile_size_field.draw(
+                self.surface, rectangles["field"], self.fonts.normal, self.tile_size_field_focused,
+                self.caret_visible(), self.tile_size_field_invalid,
+            )
+            draw_button(
+                self.surface, rectangles["create"], f"Create {ATLAS_FILE_NAME}", self.fonts.normal,
+                rectangles["create"].collidepoint(self.pointer),
+            )
+        draw_button(self.surface, rectangles["import"], "Import image as atlas", self.fonts.normal, False, enabled=False)
+
+    def draw_unplaced(self) -> None:
+        panel = self.unplaced_panel
+        self.draw_panel_frame(panel.rect)
+        self.surface.set_clip(panel.rect)
+        if not self.project.unplaced:
+            draw_text(
+                self.surface, self.fonts.small, "Tile images in this folder that are not in the atlas appear here.",
+                Theme.TEXT_DIMMED, (panel.rect.centerx, panel.rect.centery), "center",
+            )
+        for index, tile in enumerate(self.project.unplaced):
+            coordinate = panel.coordinate_of_index(index)
+            rectangle = panel.tile_screen_rect(coordinate)
+            if rectangle.colliderect(panel.rect):
+                self.draw_tile(rectangle, None, tile.pixels, (id(tile), 0))
+        self.surface.set_clip(None)
+
+    def draw_editor_placeholder(self) -> None:
+        rectangle = self.layout.editor
+        self.draw_panel_frame(rectangle)
+        selected = sorted(self.project.selection, key=reading_order_key)
+        surface = self.surface
+        if not selected:
+            draw_text(surface, self.fonts.normal, "Select a tile in the atlas to edit it.", Theme.TEXT_DIMMED, rectangle.center, "center")
+            return
+        if len(selected) > 1:
+            draw_text(surface, self.fonts.large, "(multiple files)", Theme.TEXT, (rectangle.centerx, rectangle.y + scaled(24)), "midtop")
+            return
+        record = self.project.tiles[selected[0]]
+        marker = "*" if record.is_modified else ""
+        draw_text(surface, self.fonts.large, f"{record.name}{marker}", Theme.TEXT, (rectangle.centerx, rectangle.y + scaled(24)), "midtop")
+        if record.error is not None:
+            lines = wrap_text(self.fonts.normal, f"This tile cannot be edited: {record.error}.", rectangle.width - scaled(40))
+            for number, line in enumerate(lines):
+                draw_text(surface, self.fonts.normal, line, Theme.ERROR, (rectangle.centerx, rectangle.centery + number * scaled(20)), "midtop")
+            return
+        side = min(rectangle.width, rectangle.height - scaled(120)) - scaled(40)
+        side = max(record.pixels.shape[0], side - side % record.pixels.shape[0])
+        picture = self.tile_picture((id(record), record.revision), record.pixels, side)
+        surface.blit(picture, picture.get_rect(center=(rectangle.centerx, rectangle.centery + scaled(10))))
+
+    def draw_drag_feedback(self) -> None:
+        drag = self.interaction.drag
+        if drag is None or not drag.started:
+            return
+        surface = self.surface
+        color = Theme.VALID if drag.drop_is_valid else Theme.INVALID
+        if drag.source == "atlas":
+            offset = (drag.pointer[0] - drag.start_position[0], drag.pointer[1] - drag.start_position[1])
+            if drag.drops_on_unplaced:
+                pygame.draw.rect(surface, color, self.unplaced_panel.rect, width=3)
+            elif drag.drop_coordinate is not None:
+                shift = (drag.drop_coordinate[0] - drag.grabbed_coordinate[0], drag.drop_coordinate[1] - drag.grabbed_coordinate[1])
+                self.atlas_panel_clip()
+                for column, row in self.project.selection:
+                    destination = (column + shift[0], row + shift[1])
+                    if destination[0] >= 0 and destination[1] >= 0:
+                        pygame.draw.rect(surface, color, self.atlas_panel.tile_screen_rect(destination).inflate(6, 6), width=3)
+                surface.set_clip(None)
+            for coordinate in self.project.selection:
+                record = self.project.tiles[coordinate]
+                if record.error is None:
+                    picture = self.tile_picture((id(record), record.revision), record.pixels, self.atlas_panel.geometry.cell).copy()
+                    picture.set_alpha(150)
+                    surface.blit(picture, self.atlas_panel.tile_screen_rect(coordinate).move(offset))
+        else:
+            tile = self.project.unplaced[drag.unplaced_index]
+            cell = self.unplaced_panel.geometry.cell
+            picture = self.tile_picture((id(tile), 0), tile.pixels, cell).copy()
+            picture.set_alpha(150)
+            surface.blit(picture, picture.get_rect(center=drag.pointer))
+            if drag.drop_coordinate is not None:
+                self.atlas_panel_clip()
+                pygame.draw.rect(surface, color, self.atlas_panel.tile_screen_rect(drag.drop_coordinate).inflate(6, 6), width=3)
+                surface.set_clip(None)
+
+    def atlas_panel_clip(self) -> None:
+        self.surface.set_clip(self.atlas_panel.rect)
+
+    def draw_status(self) -> None:
+        rectangle = self.layout.status
+        if self.message:
+            draw_text(self.surface, self.fonts.normal, self.message, Theme.ERROR if "Could not" in self.message else Theme.TEXT_DIMMED, (rectangle.x + scaled(10), rectangle.centery), "midleft")
+
+    def hover_text(self) -> Optional[str]:
+        if self.interaction.dragging:
+            return None
+        if self.atlas_panel.rect.collidepoint(self.pointer):
+            coordinate = self.atlas_panel.tile_at(self.pointer)
+            if coordinate is not None:
+                record = self.project.tiles[coordinate]
+                return record.name if record.error is None else f"{record.name}\n{record.error}"
+            if self.project.is_empty and self.empty_state_rectangles()["import"].collidepoint(self.pointer):
+                return "Importing a picture is not built yet."
+        elif self.unplaced_panel.rect.collidepoint(self.pointer):
+            index = self.unplaced_panel.tile_at(self.pointer)
+            if index is not None:
+                return self.project.unplaced[index].name
+        return None
+
+    def draw_tooltip(self) -> None:
+        text = self.hover_text()
+        if not text:
+            return
+        font = self.fonts.small
+        lines = wrap_text(font, text, scaled(360))
+        width = max(font.size(line)[0] for line in lines) + scaled(12)
+        height = len(lines) * font.get_linesize() + scaled(8)
+        size = self.surface.get_size()
+        x = min(self.pointer[0] + scaled(14), size[0] - width - 2)
+        y = min(self.pointer[1] + scaled(18), size[1] - height - 2)
+        rectangle = pygame.Rect(x, y, width, height)
+        pygame.draw.rect(self.surface, Theme.TOOLTIP_BACKGROUND, rectangle, border_radius=3)
+        pygame.draw.rect(self.surface, Theme.PANEL_BORDER, rectangle, width=1, border_radius=3)
+        for number, line in enumerate(lines):
+            draw_text(self.surface, font, line, Theme.TEXT, (x + scaled(6), y + scaled(4) + number * font.get_linesize()))
+
+
+# ----------------------------------------------------------------------------------------------------------
 # Entry point
 # ----------------------------------------------------------------------------------------------------------
 
 
+def initialise_pygame() -> pygame.Surface:
+    """Start pygame and open the window, using the screen's real pixels (not the blurry scaled ones) on Windows."""
+    global USER_INTERFACE_SCALE
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            ctypes.windll.user32.SetProcessDPIAware()
+            USER_INTERFACE_SCALE = max(1.0, min(3.0, ctypes.windll.user32.GetDpiForSystem() / 96.0))
+        except (AttributeError, OSError):
+            pass
+    pygame.init()
+    pygame.key.start_text_input()
+    pygame.display.set_caption("VirtualAtlas")
+    return pygame.display.set_mode((scaled(1280), scaled(800)), pygame.RESIZABLE)
+
+
+def run_application(project: AtlasProject, surface: Optional[pygame.Surface] = None) -> None:
+    surface = surface if surface is not None else initialise_pygame()
+    pygame.display.set_caption(f"VirtualAtlas - {project.folder.name}")
+    application = Application(project, surface)
+    clock = pygame.time.Clock()
+    running = True
+    while running:
+        for event in pygame.event.get():
+            if not application.handle_event(event):
+                running = False
+        if application.wants_redraw():
+            application.draw()
+            pygame.display.flip()
+        clock.tick(60)
+    pygame.quit()
+
+
+def show_refusal_window(problems: list[str]) -> None:
+    """Tell the user why atlas.json cannot be used, in a window, until it is closed."""
+    surface = initialise_pygame()
+    pygame.display.set_caption("VirtualAtlas - cannot start")
+    fonts = Fonts()
+    clock = pygame.time.Clock()
+    running = True
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
+                running = False
+        surface.fill(Theme.BACKGROUND)
+        width = surface.get_width() - 2 * scaled(24)
+        draw_text(surface, fonts.large, f"{ATLAS_FILE_NAME} cannot be used, so VirtualAtlas did not start.", Theme.ERROR, (scaled(24), scaled(20)))
+        y = scaled(64)
+        for problem in problems:
+            for number, line in enumerate(wrap_text(fonts.normal, problem, width - scaled(16))):
+                draw_text(surface, fonts.normal, ("- " if number == 0 else "  ") + line, Theme.TEXT, (scaled(24), y))
+                y += scaled(22)
+        draw_text(surface, fonts.small, "Fix or remove the entries above in atlas.json, then start the program again. Close this window to quit.", Theme.TEXT_DIMMED, (scaled(24), y + scaled(12)))
+        pygame.display.flip()
+        clock.tick(30)
+    pygame.quit()
+
+
 def main() -> int:
-    print("VirtualAtlas: the user interface is not built yet (phase 1 holds the logic only).", file=sys.stderr)
-    return 2
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    folder = Path(__file__).resolve().parent
+    try:
+        project = AtlasProject.open(folder)
+    except AtlasFileError as error:
+        for problem in error.problems:
+            print(f"{ATLAS_FILE_NAME}: {problem}", file=sys.stderr)
+        show_refusal_window(error.problems)
+        return 1
+    run_application(project)
+    return 0
 
 
 if __name__ == "__main__":
