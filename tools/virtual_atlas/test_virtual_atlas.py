@@ -3084,6 +3084,353 @@ class QuitDialogTests(ProjectFixture):
                         self.assertFalse(parts[first].colliderect(parts[second]), (first, second, size))
 
 
+def striped_picture(width, height):
+    """A picture whose every pixel tells where it is: red is the column, green the row (both modulo 256)."""
+    pixels = numpy.zeros((height, width, 4), dtype=numpy.uint8)
+    pixels[..., 0] = numpy.arange(width)[None, :] % 256
+    pixels[..., 1] = numpy.arange(height)[:, None] % 256
+    pixels[..., 3] = 255
+    return pixels
+
+
+class ProjectImportTests(ProjectFixture):
+    def test_the_tiles_of_a_picture_become_new_tiles_at_their_places_with_their_pixels_in_atlas_json(self):
+        project = self.make_project(write_atlas=False, tile_size=4)
+        project.set_tile_size(4)
+        picture = striped_picture(8, 8)
+        tiles = va.slice_image_into_tiles(picture, 4, "crop")
+        names = project.import_tiles(tiles)
+        self.assertEqual(names[(1, 0)], "tile_00_01.png")
+        self.assertEqual(sorted(project.tiles, key=va.reading_order_key), [(0, 0), (1, 0), (0, 1), (1, 1)])
+        self.assertTrue(numpy.array_equal(project.tiles[(1, 1)].pixels, picture[4:8, 4:8]))
+        self.assertTrue(all(record.is_new for record in project.tiles.values()))
+        saved = self.saved()
+        self.assertEqual(saved.tile_size, 4)
+        self.assertEqual(saved.coordinates_to_names[(0, 1)], "tile_01_00.png")
+        self.assertEqual(sorted(saved.coordinates_to_data), sorted(project.tiles))
+        self.assertEqual([entry.name for entry in self.folder.iterdir() if entry.suffix == ".png"], [])
+        self.assertEqual(project.unsaved_tiles(), sorted(project.tiles, key=va.reading_order_key))
+
+    def test_saving_the_imported_tiles_writes_their_files_and_empties_the_stored_data(self):
+        project = self.make_project(write_atlas=False, tile_size=4)
+        project.set_tile_size(4)
+        project.import_tiles(va.slice_image_into_tiles(striped_picture(8, 4), 4, "crop"))
+        self.assertEqual(project.save_all_tiles(), (2, []))
+        self.assertEqual(sorted(entry.name for entry in self.folder.iterdir() if entry.suffix == ".png"), ["tile_00_00.png", "tile_00_01.png"])
+        self.assertEqual(self.saved().coordinates_to_data, {})
+
+    def test_names_avoid_every_png_in_the_folder_even_ones_that_are_not_tiles(self):
+        va.write_png_atomically(self.folder / "tile_00_00.png", solid_tile(RED, 8))
+        project = self.make_project(unplaced=[("Tile_00_01.png", solid_tile(GREEN))], write_atlas=False, tile_size=4)
+        project.set_tile_size(4)
+        names = project.import_tiles(va.slice_image_into_tiles(striped_picture(8, 4), 4, "crop"))
+        self.assertEqual(names, {(0, 0): "tile_00_00_2.png", (1, 0): "tile_00_01_2.png"})
+
+    def test_an_atlas_that_already_has_tiles_refuses_an_import_and_stays_as_it_was(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE))})
+        before = (self.folder / "atlas.json").read_bytes()
+        with self.assertRaises(ValueError):
+            project.import_tiles({(0, 0): solid_tile(RED)})
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+
+    def test_nothing_to_import_and_tiles_of_the_wrong_size_are_refused(self):
+        project = self.make_project(write_atlas=False, tile_size=4)
+        project.set_tile_size(4)
+        with self.assertRaises(ValueError):
+            project.import_tiles({})
+        with self.assertRaises(ValueError):
+            project.import_tiles({(0, 0): solid_tile(RED, 5)})
+        self.assertTrue(project.is_empty)
+
+    def test_when_atlas_json_cannot_be_written_nothing_is_imported_and_the_tile_size_stays_open(self):
+        project = self.make_project(write_atlas=False, tile_size=4)
+        project.set_tile_size(4)
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                project.import_tiles({(0, 0): solid_tile(RED)})
+        self.assertTrue(project.is_empty)
+        self.assertFalse(project.tile_size_is_saved)
+        self.assertFalse((self.folder / "atlas.json").exists())
+
+    def test_an_atlas_json_that_has_a_tile_size_but_no_tiles_can_be_imported_into(self):
+        project = self.make_project(tile_size=4)
+        self.assertTrue(project.tile_size_is_saved)
+        project.import_tiles({(0, 0): solid_tile(RED), (2, 1): solid_tile(GREEN)})
+        self.assertEqual(sorted(self.saved().coordinates_to_names), [(0, 0), (2, 1)])
+
+
+class ImportDialogTests(unittest.TestCase):
+    def test_an_even_picture_has_nothing_to_choose(self):
+        dialog = va.ImportDialog(striped_picture(32, 16), 16, "p.png")
+        self.assertFalse(dialog.can_choose_mode)
+        self.assertEqual(dialog.tile_count, 2)
+        self.assertEqual(sorted(dialog.tiles()), [(0, 0), (1, 0)])
+
+    def test_a_picture_that_does_not_divide_evenly_offers_pad_and_crop_and_pad_is_the_start(self):
+        dialog = va.ImportDialog(striped_picture(37, 20), 16, "p.png")
+        self.assertTrue(dialog.can_choose_mode)
+        self.assertEqual(dialog.mode, "pad")
+        self.assertEqual(dialog.tile_count, 6)
+        dialog.set_mode("crop")
+        self.assertEqual((dialog.mode, dialog.tile_count), ("crop", 2))
+        self.assertEqual(sorted(dialog.tiles()), [(0, 0), (1, 0)])
+        dialog.set_mode("pad")
+        self.assertEqual(len(dialog.tiles()), 6)
+
+    def test_a_picture_smaller_than_a_tile_can_only_be_padded(self):
+        dialog = va.ImportDialog(striped_picture(10, 10), 16, "p.png")
+        self.assertFalse(dialog.can_choose_mode)
+        dialog.set_mode("crop")
+        self.assertEqual((dialog.mode, dialog.tile_count), ("pad", 1))
+
+    def test_a_picture_that_would_make_too_many_tiles_is_flagged_with_the_numbers(self):
+        dialog = va.ImportDialog(striped_picture(64, 64), 4, "p.png")
+        self.assertEqual(dialog.tile_count, 256)
+        self.assertIsNone(dialog.problem())
+        with mock.patch.object(va, "MAXIMUM_IMPORT_TILES", 100):
+            self.assertIn("256", dialog.problem())
+            self.assertIn("100", dialog.problem())
+
+    def test_the_mode_cannot_be_something_else(self):
+        dialog = va.ImportDialog(striped_picture(37, 20), 16, "p.png")
+        dialog.set_mode("stretch")
+        self.assertEqual(dialog.mode, "pad")
+
+    def test_the_parts_fit_inside_the_panel_and_the_window_without_overlapping(self):
+        for size in [(1280, 800), (900, 600), (700, 520)]:
+            areas = va.import_dialog_areas(size)
+            window = va.pygame.Rect(0, 0, *size)
+            self.assertTrue(window.contains(areas["panel"]), size)
+            parts = {name: rectangle for name, rectangle in areas.items() if name != "panel"}
+            for name, rectangle in parts.items():
+                self.assertTrue(areas["panel"].contains(rectangle), (name, size))
+            names = list(parts)
+            for index, first in enumerate(names):
+                for second in names[index + 1:]:
+                    self.assertFalse(parts[first].colliderect(parts[second]), (first, second, size))
+
+
+class FilePickerTests(unittest.TestCase):
+    def pick(self, **dialog_behaviour):
+        import tkinter
+        from tkinter import filedialog
+
+        with mock.patch.object(tkinter, "Tk") as window, mock.patch.object(filedialog, "askopenfilename", **dialog_behaviour) as ask:
+            result = va.SystemFilePicker().choose_picture()
+        window.return_value.destroy.assert_called_once()
+        return result, ask
+
+    def test_the_chosen_file_is_returned_as_a_path(self):
+        result, ask = self.pick(return_value="C:/art/sheet.png")
+        self.assertEqual(result, Path("C:/art/sheet.png"))
+        self.assertIn("png", str(ask.call_args.kwargs["filetypes"][0][1]))
+
+    def test_giving_up_in_the_dialog_returns_none(self):
+        self.assertIsNone(self.pick(return_value="")[0])
+
+    def test_a_dialog_that_fails_returns_none_and_still_closes_its_window(self):
+        self.assertIsNone(self.pick(side_effect=RuntimeError("no display"))[0])
+
+
+class FakeFilePicker:
+    def __init__(self, path=None):
+        self.path = path
+        self.calls = 0
+
+    def choose_picture(self):
+        self.calls += 1
+        return self.path
+
+
+class ImportWindowTests(ProjectFixture):
+    @classmethod
+    def setUpClass(cls):
+        va.pygame.init()
+
+    def setUp(self):
+        super().setUp()
+        self.picture_folder = tempfile.TemporaryDirectory()
+        self.picture_path = Path(self.picture_folder.name) / "sheet.png"
+        va.write_png_atomically(self.picture_path, striped_picture(40, 24))
+        self.picker = FakeFilePicker(self.picture_path)
+        self.project = self.make_project(write_atlas=False, tile_size=16)
+        self.application = va.Application(self.project, va.pygame.Surface((1280, 800)))
+        self.application.file_picker = self.picker
+
+    def tearDown(self):
+        self.picture_folder.cleanup()
+        super().tearDown()
+
+    def send(self, kind, position, button=1):
+        event_type = {"down": va.pygame.MOUSEBUTTONDOWN, "up": va.pygame.MOUSEBUTTONUP}[kind]
+        return self.application.handle_event(va.pygame.event.Event(event_type, pos=position, button=button))
+
+    def click(self, position):
+        self.send("down", position)
+        return self.send("up", position)
+
+    def key(self, key):
+        return self.application.handle_event(va.pygame.event.Event(va.pygame.KEYDOWN, key=key, mod=0, unicode="", scancode=0))
+
+    def click_import_button(self):
+        self.application.draw()
+        self.click(self.application.empty_state_rectangles()["import"].center)
+
+    def press(self, name):
+        return self.click(self.application.import_dialog_areas()[name].center)
+
+    def test_the_button_asks_for_a_picture_and_shows_what_will_be_made_of_it(self):
+        self.click_import_button()
+        self.assertEqual(self.picker.calls, 1)
+        dialog = self.application.import_dialog
+        self.assertIsNotNone(dialog)
+        self.assertEqual((dialog.pixels.shape, dialog.tile_size, dialog.source_name), ((24, 40, 4), 16, "sheet.png"))
+        self.application.draw()
+
+    def test_importing_fills_the_atlas_with_unsaved_tiles_and_closes_the_dialog(self):
+        self.click_import_button()
+        self.press("import")
+        self.assertIsNone(self.application.import_dialog)
+        self.assertEqual(sorted(self.project.tiles, key=va.reading_order_key), [(column, row) for row in range(2) for column in range(3)])
+        self.assertEqual(self.project.tiles[(2, 1)].name, "tile_01_02.png")
+        self.assertEqual(self.project.unsaved_tiles(), sorted(self.project.tiles, key=va.reading_order_key))
+        self.assertIn("Imported 6 tiles", self.application.message)
+        self.assertEqual(sorted(self.saved().coordinates_to_names), sorted(self.project.tiles))
+        padded = self.project.tiles[(2, 1)].pixels
+        self.assertTrue(numpy.all(padded[8:] == 0), "the part below the picture is transparent")
+        self.assertEqual(tuple(padded[0, 0]), (32, 16, 0, 255))
+        self.application.draw()
+
+    def test_crop_leaves_the_partial_tiles_out(self):
+        self.click_import_button()
+        self.press("crop")
+        self.assertEqual(self.application.import_dialog.mode, "crop")
+        self.application.draw()
+        self.press("import")
+        self.assertEqual(sorted(self.project.tiles), [(0, 0), (1, 0)])
+
+    def test_pad_can_be_chosen_again_after_crop(self):
+        self.click_import_button()
+        self.press("crop")
+        self.press("pad")
+        self.assertEqual(self.application.import_dialog.mode, "pad")
+
+    def test_cancelling_the_file_picker_changes_nothing(self):
+        self.picker.path = None
+        self.click_import_button()
+        self.assertIsNone(self.application.import_dialog)
+        self.assertTrue(self.project.is_empty)
+
+    def test_a_file_that_is_not_a_picture_is_reported_and_no_dialog_opens(self):
+        broken = Path(self.picture_folder.name) / "broken.png"
+        broken.write_bytes(b"this is not a picture")
+        self.picker.path = broken
+        self.click_import_button()
+        self.assertIsNone(self.application.import_dialog)
+        self.assertIn("Could not read", self.application.message)
+        self.assertIn("broken.png", self.application.message)
+
+    def test_the_tile_size_typed_in_the_field_is_the_one_used_and_is_saved_with_the_import(self):
+        self.application.tile_size_field.set_text("8")
+        self.click_import_button()
+        self.assertEqual(self.application.import_dialog.tile_size, 8)
+        self.press("import")
+        self.assertEqual(self.saved().tile_size, 8)
+        self.assertEqual(len(self.project.tiles), 15)
+
+    def test_a_tile_size_that_is_not_allowed_stops_the_import_before_the_picker_opens(self):
+        self.application.tile_size_field.set_text("0")
+        self.click_import_button()
+        self.assertEqual(self.picker.calls, 0)
+        self.assertIsNone(self.application.import_dialog)
+        self.assertTrue(self.application.tile_size_field_invalid)
+
+    def test_escape_cancels_and_enter_imports(self):
+        self.click_import_button()
+        self.key(va.pygame.K_ESCAPE)
+        self.assertIsNone(self.application.import_dialog)
+        self.assertTrue(self.project.is_empty)
+        self.click_import_button()
+        self.key(va.pygame.K_RETURN)
+        self.assertEqual(len(self.project.tiles), 6)
+
+    def test_the_cancel_button_closes_the_dialog(self):
+        self.click_import_button()
+        self.press("cancel")
+        self.assertIsNone(self.application.import_dialog)
+        self.assertTrue(self.project.is_empty)
+
+    def test_nothing_behind_the_dialog_reacts(self):
+        self.click_import_button()
+        self.click(self.application.empty_state_rectangles()["import"].center)
+        self.assertEqual(self.picker.calls, 1, "the button behind the dialog was not pressed again")
+        self.application.tile_size_field_focused = False
+        self.click(self.application.empty_state_rectangles()["field"].center)
+        self.assertFalse(self.application.tile_size_field_focused)
+
+    def test_a_picture_that_would_make_too_many_tiles_cannot_be_imported(self):
+        with mock.patch.object(va, "MAXIMUM_IMPORT_TILES", 4):
+            self.click_import_button()
+            self.application.draw()
+            self.press("import")
+            self.assertIsNotNone(self.application.import_dialog)
+            self.assertIn("6", self.application.import_dialog.problem())
+            self.assertTrue(self.project.is_empty)
+            self.press("crop")
+            self.assertEqual(self.application.import_dialog.error, "", "choosing again clears the old complaint")
+            self.press("import")
+        self.assertIsNone(self.application.import_dialog)
+        self.assertEqual(len(self.project.tiles), 2)
+
+    def test_a_picture_that_makes_exactly_the_most_tiles_is_allowed(self):
+        with mock.patch.object(va, "MAXIMUM_IMPORT_TILES", 6):
+            self.click_import_button()
+            self.assertIsNone(self.application.import_dialog.problem())
+            self.press("import")
+        self.assertEqual(len(self.project.tiles), 6)
+
+    def test_when_atlas_json_cannot_be_written_the_dialog_stays_open_and_says_so(self):
+        self.click_import_button()
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            self.press("import")
+        self.assertIsNotNone(self.application.import_dialog)
+        self.assertIn("disk full", self.application.import_dialog.error)
+        self.assertTrue(self.project.is_empty)
+        self.application.draw()
+        self.press("import")
+        self.assertEqual(len(self.project.tiles), 6)
+
+    def test_closing_the_window_while_the_dialog_is_open_closes_it_without_importing(self):
+        self.click_import_button()
+        self.assertFalse(self.application.handle_event(va.pygame.event.Event(va.pygame.QUIT)))
+
+    def test_closing_after_an_import_asks_about_every_new_tile(self):
+        self.click_import_button()
+        self.press("import")
+        self.assertTrue(self.application.handle_event(va.pygame.event.Event(va.pygame.QUIT)))
+        self.assertEqual(self.application.quit_dialog.remaining, 6)
+
+    def test_the_dialog_draws_in_both_modes_and_in_a_small_window(self):
+        self.click_import_button()
+        self.application.draw()
+        self.press("crop")
+        self.application.draw()
+        small = va.Application(self.project, va.pygame.Surface((700, 520)))
+        small.file_picker = self.picker
+        small.import_dialog = va.ImportDialog(striped_picture(40, 24), 16, "sheet.png")
+        small.draw()
+        even = va.ImportDialog(striped_picture(32, 32), 16, "even.png")
+        small.import_dialog = even
+        small.draw()
+        small.import_dialog = va.ImportDialog(striped_picture(5, 5), 16, "tiny.png")
+        small.draw()
+
+    def test_the_button_hint_says_what_it_does(self):
+        self.application.pointer = self.application.empty_state_rectangles()["import"].center
+        self.assertIn("picture", self.application.hover_text())
+        self.assertNotIn("not built", self.application.hover_text())
+
+
 class EditorTests(ProjectFixture):
     """Drives the editor with mouse and key events the way a user would, and checks the tiles."""
 

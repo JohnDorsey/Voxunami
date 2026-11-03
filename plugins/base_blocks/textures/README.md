@@ -60,6 +60,14 @@ phases; what works so far:
   save or Cancel (Esc), with the current picture next to the one on disk. The box "Do this for all" gives the
   same answer to the tiles still to come. Enter saves. A tile with no file that is not saved stays in `atlas.json`.
 
-Not built yet: importing a picture.
+- Importing: an empty atlas has the button "Import image as atlas". Choose the tile size first (the field next to
+  "Create atlas.json"), then the button opens the system file dialog; a dialog shows the picture with the tile
+  grid on it. If the picture does not divide evenly into tiles you choose between padding the partial tiles at the
+  right and bottom edge with transparency (the start, nothing is lost) and cropping them away. Import makes the
+  tiles at their places in the picture, named `tile_<row>_<column>.png` (a number is added if a PNG file in the
+  folder already has the name). They are new tiles: their pixels are in `atlas.json`, and they become files when
+  you save them (Ctrl+Shift+S, or when the program asks while closing). At most 2048 tiles can be made at once.
+
+All of the planned features are built.
 
 Tests for the logic: `python -m unittest discover -s tools/virtual_atlas` from the repository root.

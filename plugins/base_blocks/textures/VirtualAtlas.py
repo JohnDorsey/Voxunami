@@ -59,6 +59,8 @@ TILE_FILE_EXTENSION = ".png"
 TEMPORARY_FILE_PREFIX = ".virtualatlas-"
 TEMPORARY_FILE_SUFFIX = ".tmp"
 HISTORY_DEPTH = 100
+# A picture that would be cut into more tiles than this is refused: a tile size of 1 would make millions.
+MAXIMUM_IMPORT_TILES = 2048
 
 # A tile's place in the atlas: (column, row), counted from the top left, starting at 0.
 Coordinate = tuple[int, int]
@@ -1349,6 +1351,29 @@ class AtlasProject:
     def save_all_tiles(self) -> tuple[int, list[str]]:
         return self.save_tiles(list(self.tiles))
 
+    def import_tiles(self, tiles: dict[Coordinate, numpy.ndarray]) -> dict[Coordinate, str]:
+        """Fill an empty atlas with tiles cut from a picture. They are new tiles: their pixels are kept in atlas.json
+        until each is saved as a file. Returns the names given to them (see default_import_names).
+
+        Raises ValueError if the atlas has tiles or the tiles are not of the tile size, and OSError (nothing
+        changes) if atlas.json cannot be written.
+        """
+        if self.tiles:
+            raise ValueError("the atlas is not empty")
+        if not tiles:
+            raise ValueError("there is nothing to import")
+        for pixels in tiles.values():
+            if pixels.shape != (self.tile_size, self.tile_size, 4):
+                raise ValueError(f"a tile to import is not {self.tile_size} x {self.tile_size} pixels")
+        names = default_import_names(tiles, self.existing_names)
+
+        def change() -> None:
+            self.tiles = {coordinate: TileRecord(names[coordinate], pixels.copy(), None) for coordinate, pixels in tiles.items()}
+            self.selection = set()
+
+        self._commit(change)
+        return names
+
     # Names ------------------------------------------------------------------------------------------------
 
     def rename_problem(self, coordinate: Coordinate, new_name: str) -> Optional[str]:
@@ -1519,6 +1544,113 @@ class QuitDialog:
 
     def cancel(self) -> str:
         return "cancel"
+
+
+class ImportDialog:
+    """What the user sees and chooses before a picture is cut into tiles: the picture, the tile size it will be cut
+    at, and what to do with the partial tiles at the right and bottom edge ("pad" them with transparency, or "crop"
+    them away)."""
+
+    def __init__(self, pixels: numpy.ndarray, tile_size: int, source_name: str):
+        self.pixels = pixels
+        self.tile_size = tile_size
+        self.source_name = source_name
+        height, width = pixels.shape[:2]
+        self.grid = describe_import_grid(width, height, tile_size)
+        self.mode = "pad"  # loses nothing
+        self.error = ""
+
+    @property
+    def crop_possible(self) -> bool:
+        return self.grid.full_columns > 0 and self.grid.full_rows > 0
+
+    @property
+    def can_choose_mode(self) -> bool:
+        return not self.grid.divides_evenly and self.crop_possible
+
+    def set_mode(self, mode: str) -> None:
+        if mode == "pad" or (mode == "crop" and self.can_choose_mode):
+            self.mode = mode
+
+    @property
+    def columns(self) -> int:
+        return self.grid.full_columns + (1 if self.mode == "pad" and self.grid.remainder_width else 0)
+
+    @property
+    def rows(self) -> int:
+        return self.grid.full_rows + (1 if self.mode == "pad" and self.grid.remainder_height else 0)
+
+    @property
+    def tile_count(self) -> int:
+        return self.columns * self.rows
+
+    def tiles(self) -> dict[Coordinate, numpy.ndarray]:
+        return slice_image_into_tiles(self.pixels, self.tile_size, self.mode)
+
+    def problem(self) -> Optional[str]:
+        if self.tile_count > MAXIMUM_IMPORT_TILES:
+            return (
+                f"This would make {self.tile_count} tiles; at most {MAXIMUM_IMPORT_TILES} can be imported. "
+                "Use a larger tile size, a smaller picture, or crop."
+            )
+        return None
+
+
+def import_dialog_areas(window_size: tuple[int, int]) -> dict[str, pygame.Rect]:
+    """Where the parts of the import dialog are: the panel, the preview, the lines of text, the two choices for
+    partial tiles, the row for a problem and the buttons."""
+    width = min(scaled(720), window_size[0] - scaled(40))
+    height = min(scaled(560), window_size[1] - scaled(40))
+    panel = pygame.Rect(0, 0, width, height)
+    panel.center = (window_size[0] // 2, window_size[1] // 2)
+    margin, gap = scaled(20), scaled(12)
+    button_height, button_width = scaled(34), scaled(130)
+    buttons_top = panel.bottom - margin - button_height
+    error_top = buttons_top - gap - scaled(20)
+    crop_top = error_top - scaled(6) - scaled(24)
+    pad_top = crop_top - scaled(4) - scaled(24)
+    info_top = pad_top - gap - scaled(38)
+    content_width = panel.width - 2 * margin
+    preview_top = panel.y + scaled(76)
+    return {
+        "panel": panel,
+        "preview": pygame.Rect(panel.x + margin, preview_top, content_width, max(scaled(60), info_top - gap - preview_top)),
+        "info": pygame.Rect(panel.x + margin, info_top, content_width, scaled(38)),
+        "pad": pygame.Rect(panel.x + margin, pad_top, content_width, scaled(24)),
+        "crop": pygame.Rect(panel.x + margin, crop_top, content_width, scaled(24)),
+        "error": pygame.Rect(panel.x + margin, error_top, content_width, scaled(20)),
+        "import": pygame.Rect(panel.right - margin - 2 * button_width - gap, buttons_top, button_width, button_height),
+        "cancel": pygame.Rect(panel.right - margin - button_width, buttons_top, button_width, button_height),
+    }
+
+
+class SystemFilePicker:
+    """The operating system's dialog for choosing a picture file, through tkinter (loaded only when first needed)."""
+
+    def choose_picture(self) -> Optional[Path]:
+        """The chosen file, or None if the user gave up or no dialog could be shown."""
+        try:
+            import tkinter
+            from tkinter import filedialog
+
+            root = tkinter.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            try:
+                chosen = filedialog.askopenfilename(
+                    parent=root,
+                    title="Choose a picture to cut into tiles",
+                    filetypes=[
+                        ("Pictures", "*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tga *.tif *.tiff"),
+                        ("All files", "*.*"),
+                    ],
+                )
+            finally:
+                root.destroy()
+        except Exception:  # a dialog that cannot open must never crash the editor
+            logger.warning("could not show the file dialog", exc_info=True)
+            return None
+        return Path(chosen) if chosen else None
 
 
 def quit_dialog_areas(window_size: tuple[int, int], show_checkbox: bool) -> dict[str, pygame.Rect]:
@@ -3607,6 +3739,8 @@ class Application:
         self.needs_redraw = True
         self._last_caret_visible = True
         self.quit_dialog: Optional[QuitDialog] = None
+        self.import_dialog: Optional[ImportDialog] = None
+        self.file_picker = SystemFilePicker()
         self.closing = False
         self.layout = compute_layout(surface.get_size())
         self.update_layout()
@@ -3644,6 +3778,7 @@ class Application:
     def handle_event(self, event: pygame.event.Event) -> bool:
         """Deal with one event. Returns False when the program should close."""
         if event.type == pygame.QUIT:
+            self.import_dialog = None  # closing the window gives up an import that has not started
             if self.quit_dialog is None:
                 if not self.project.unsaved_tiles():
                     return False
@@ -3653,6 +3788,8 @@ class Application:
         try:
             if self.quit_dialog is not None:
                 self._handle_dialog_event(event)
+            elif self.import_dialog is not None:
+                self._handle_import_event(event)
             else:
                 self._handle_event(event)
         except OSError as error:
@@ -3670,6 +3807,75 @@ class Application:
     def dialog_areas(self) -> dict[str, pygame.Rect]:
         assert self.quit_dialog is not None
         return quit_dialog_areas(self.surface.get_size(), self.quit_dialog.remaining > 1)
+
+    def import_dialog_areas(self) -> dict[str, pygame.Rect]:
+        return import_dialog_areas(self.surface.get_size())
+
+    def start_import(self) -> None:
+        """Ask for a picture and, if it can be read, show what will be made of it."""
+        self.apply_tile_size_field()
+        if self.tile_size_field_invalid:
+            return
+        self.tile_size_field_focused = False
+        path = self.file_picker.choose_picture()
+        if path is None:
+            return
+        try:
+            pixels = read_image_pixels(path)
+        except TileImageError as error:
+            self.message = f"Could not read {path.name}: {error}"
+            return
+        self.import_dialog = ImportDialog(pixels, self.project.tile_size, path.name)
+
+    def _do_import(self) -> None:
+        dialog = self.import_dialog
+        assert dialog is not None
+        problem = dialog.problem()
+        if problem is not None:
+            dialog.error = problem
+            return
+        try:
+            names = self.project.import_tiles(dialog.tiles())
+        except OSError as error:
+            dialog.error = f"Could not save {ATLAS_FILE_NAME}: {error}"
+            return
+        except ValueError as error:
+            dialog.error = str(error)
+            return
+        self.import_dialog = None
+        count = len(names)
+        self.message = (
+            f"Imported {count} tile{'' if count == 1 else 's'} from {dialog.source_name}. "
+            "They are not saved as files yet (Ctrl+Shift+S)."
+        )
+
+    def _handle_import_event(self, event: pygame.event.Event) -> None:
+        """While the import dialog is open it gets every event; the window behind it does nothing."""
+        dialog = self.import_dialog
+        assert dialog is not None
+        if event.type in (pygame.VIDEORESIZE, pygame.WINDOWSIZECHANGED):
+            self.surface = pygame.display.get_surface() or self.surface
+            self.update_layout()
+        elif event.type == pygame.MOUSEMOTION:
+            self.pointer = event.pos
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            self.pointer = event.pos
+            areas = self.import_dialog_areas()
+            if dialog.can_choose_mode and areas["pad"].collidepoint(event.pos):
+                dialog.set_mode("pad")
+                dialog.error = ""
+            elif dialog.can_choose_mode and areas["crop"].collidepoint(event.pos):
+                dialog.set_mode("crop")
+                dialog.error = ""
+            elif areas["import"].collidepoint(event.pos):
+                self._do_import()
+            elif areas["cancel"].collidepoint(event.pos):
+                self.import_dialog = None
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                self.import_dialog = None
+            elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                self._do_import()
 
     def _handle_dialog_event(self, event: pygame.event.Event) -> None:
         """While the quit dialog is open it gets every event; the window behind it does nothing."""
@@ -3750,6 +3956,9 @@ class Application:
                 return
             if "create" in rectangles and rectangles["create"].collidepoint(position):
                 self.create_atlas_file()
+                return
+            if rectangles["import"].collidepoint(position):
+                self.start_import()
                 return
         self._leave_tile_size_field()
         # Placing a pasted picture must happen while its tiles are still the ones shown.
@@ -3849,9 +4058,91 @@ class Application:
         self.draw_status()
         if self.quit_dialog is not None:
             self.draw_quit_dialog(self.quit_dialog)
+        elif self.import_dialog is not None:
+            self.draw_import_dialog(self.import_dialog)
         else:
             self.draw_tooltip()
         self.needs_redraw = False
+
+    def draw_import_preview(self, box: pygame.Rect, dialog: ImportDialog) -> None:
+        """The picture with the tile grid on it, as it will be cut."""
+        surface = self.surface
+        pygame.draw.rect(surface, Theme.FIELD, box)
+        tile = dialog.tile_size
+        height, width = dialog.pixels.shape[:2]
+        canvas_width, canvas_height = max(width, dialog.columns * tile), max(height, dialog.rows * tile)
+        scale = min(box.width / canvas_width, box.height / canvas_height)
+        scale = float(int(scale)) if scale >= 1 else scale
+        area = pygame.Rect(0, 0, max(1, int(canvas_width * scale)), max(1, int(canvas_height * scale)))
+        area.center = box.center
+        surface.set_clip(box)
+        surface.blit(checkerboard(max(area.size)), area, (0, 0, area.width, area.height))
+        picture = pygame.image.frombuffer(numpy.ascontiguousarray(dialog.pixels).tobytes(), (width, height), "RGBA")
+        surface.blit(pygame.transform.scale(picture, (max(1, int(width * scale)), max(1, int(height * scale)))), area.topleft)
+        kept = pygame.Rect(area.x, area.y, int(dialog.columns * tile * scale), int(dialog.rows * tile * scale))
+        if dialog.mode == "crop":
+            dimming = pygame.Surface(area.size, pygame.SRCALPHA)
+            dimming.fill((0, 0, 0, 170))
+            dimming.fill((0, 0, 0, 0), pygame.Rect(0, 0, kept.width, kept.height))
+            surface.blit(dimming, area.topleft)
+        if tile * scale >= 3:
+            for column in range(dialog.columns + 1):
+                x = area.x + int(column * tile * scale)
+                pygame.draw.line(surface, Theme.ACCENT, (x, kept.y), (x, kept.bottom))
+            for row in range(dialog.rows + 1):
+                y = area.y + int(row * tile * scale)
+                pygame.draw.line(surface, Theme.ACCENT, (kept.x, y), (kept.right, y))
+        pygame.draw.rect(surface, Theme.ACCENT, kept, width=1)
+        surface.set_clip(None)
+        pygame.draw.rect(surface, Theme.PANEL_BORDER, box, width=1)
+
+    def draw_import_dialog(self, dialog: ImportDialog) -> None:
+        surface = self.surface
+        dimming = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        dimming.fill((0, 0, 0, 170))
+        surface.blit(dimming, (0, 0))
+        areas = self.import_dialog_areas()
+        panel = areas["panel"]
+        pygame.draw.rect(surface, Theme.PANEL, panel, border_radius=6)
+        pygame.draw.rect(surface, Theme.ACCENT, panel, width=1, border_radius=6)
+        draw_text(surface, self.fonts.large, f"Cut {dialog.source_name} into tiles", Theme.TEXT, (panel.x + scaled(20), panel.y + scaled(16)))
+        height, width = dialog.pixels.shape[:2]
+        draw_text(
+            surface, self.fonts.small, f"{width} x {height} pixels, tile size {dialog.tile_size}"
+            + ("" if self.project.tile_size_is_saved else " (change it in the atlas panel before importing)"),
+            Theme.TEXT_DIMMED, (panel.x + scaled(20), panel.y + scaled(44)),
+        )
+        self.draw_import_preview(areas["preview"], dialog)
+        grid = dialog.grid
+        if grid.divides_evenly:
+            first = f"It divides evenly into {grid.full_columns} x {grid.full_rows} tiles."
+        elif not dialog.crop_possible:
+            first = "The picture is smaller than one tile; it will be padded with transparency."
+        else:
+            first = (
+                f"{grid.full_columns} x {grid.full_rows} whole tiles, and a part {grid.remainder_width} pixels wide "
+                f"and {grid.remainder_height} tall is left over at the right and bottom edge."
+            )
+        count = dialog.tile_count
+        for number, line in enumerate((first, f"This makes {count} tile{'' if count == 1 else 's'}.")):
+            draw_text(surface, self.fonts.small, line, Theme.TEXT, (areas["info"].x, areas["info"].y + number * scaled(18)))
+        if dialog.can_choose_mode:
+            for mode, name, label in (
+                ("pad", "pad", "Pad the partial tiles with transparency (keeps every pixel)"),
+                ("crop", "crop", "Crop the partial tiles away"),
+            ):
+                rectangle = areas[name]
+                circle = (rectangle.x + scaled(10), rectangle.centery)
+                pygame.draw.circle(surface, Theme.FIELD, circle, scaled(8))
+                pygame.draw.circle(surface, Theme.ACCENT if dialog.mode == mode else Theme.PANEL_BORDER, circle, scaled(8), 1)
+                if dialog.mode == mode:
+                    pygame.draw.circle(surface, Theme.ACCENT, circle, scaled(4))
+                draw_text(surface, self.fonts.normal, label, Theme.TEXT, (rectangle.x + scaled(28), rectangle.centery), "midleft")
+        message = dialog.error or dialog.problem()
+        if message:
+            draw_text(surface, self.fonts.small, message, Theme.ERROR, areas["error"].midleft, "midleft")
+        for name, label in (("import", "Import"), ("cancel", "Cancel")):
+            draw_button(surface, areas[name], label, self.fonts.normal, areas[name].collidepoint(self.pointer))
 
     def draw_dialog_picture(self, box: pygame.Rect, pixels: Optional[numpy.ndarray], label: str) -> None:
         surface = self.surface
@@ -3952,7 +4243,10 @@ class Application:
                 self.surface, rectangles["create"], f"Create {ATLAS_FILE_NAME}", self.fonts.normal,
                 rectangles["create"].collidepoint(self.pointer),
             )
-        draw_button(self.surface, rectangles["import"], "Import image as atlas", self.fonts.normal, False, enabled=False)
+        draw_button(
+            self.surface, rectangles["import"], "Import image as atlas", self.fonts.normal,
+            rectangles["import"].collidepoint(self.pointer),
+        )
 
     def draw_unplaced(self) -> None:
         panel = self.unplaced_panel
@@ -4022,7 +4316,7 @@ class Application:
                 record = self.project.tiles[coordinate]
                 return record.name if record.error is None else f"{record.name}\n{record.error}"
             if self.project.is_empty and self.empty_state_rectangles()["import"].collidepoint(self.pointer):
-                return "Importing a picture is not built yet."
+                return "Choose a picture and cut it into tiles of the tile size."
         elif self.unplaced_panel.rect.collidepoint(self.pointer):
             index = self.unplaced_panel.tile_at(self.pointer)
             if index is not None:
