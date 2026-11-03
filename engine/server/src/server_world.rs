@@ -233,10 +233,12 @@ pub struct ServerWorld {
 /// How much work the rails have cost since the world was made, for measuring and for tests of the savings (see [`ServerWorld::rail_work`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RailWork {
-    /// Orbits worked out to put a ship on its rail (a place and a speed, 30 to 55 microseconds each).
+    /// Orbits worked out to put a ship on its rail (a place and a speed, 8 to 20 microseconds each once the orbit is prepared).
     pub rail_evaluations: u64,
     /// Times the answer of the putting before it was used instead: the second putting of a tick asks what the first did.
     pub rail_answers_reused: u64,
+    /// Times what an orbit needs whatever the time is (its plane, its periapsis, its minor axis) was worked out: once for an orbit that stays on a ship, not once a tick.
+    pub orbits_prepared: u64,
     /// Orbits made from a ship's place and speed (114 to 145 microseconds each) to see whether a ship may go on a rail, or to answer a change of the mass of a planet.
     pub orbit_fits: u64,
     /// Ships whose last answer is kept for the second putting of a tick.
@@ -281,6 +283,7 @@ impl ServerWorld {
         RailWork {
             rail_evaluations: self.rail_memo.evaluations(),
             rail_answers_reused: self.rail_memo.reused(),
+            orbits_prepared: self.rail_memo.preparations(),
             orbit_fits: self.orbit_fits.get(),
             rails_remembered: self.rail_memo.remembered(),
         }

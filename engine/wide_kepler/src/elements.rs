@@ -117,28 +117,94 @@ impl Elements {
         turns_gone(&self.period, &self.phase, time, turns_width)
     }
 
-    /// Where the body is at `time`, and its speed, in numbers of `precision` bits.
+    /// Where the body is at `time`, and its speed, in numbers of `precision` bits: [`Elements::prepare`] and then [`PreparedElements::place_at`], so that the two ways are the
+    /// same to the bit.
     pub fn place_at(&self, time: Time, precision: Precision) -> Result<Place, KeplerError> {
+        self.prepare(precision)?.place_at(time)
+    }
+
+    /// Everything a place at `precision` bits needs of these elements that is the same whatever the time is (the directions of the plane, the sine and cosine of the
+    /// periapsis, the minor axis, the rate, pi), worked out once, for a caller that asks for one orbit at many times. 7 of the 27 microseconds of a place at 128 bits.
+    pub fn prepare(&self, precision: Precision) -> Result<PreparedElements, KeplerError> {
         self.validate()?;
-        check_time(time)?;
         let width = precision.widened_by(GUARD);
-        let turns_width = width.widened_by(TURN_GUARD);
         let at = |number: &WideFloat| number.rounded_to(width);
-
-        // The mean anomaly: the phase and the part of a turn gone, worked out in a width that holds its whole part and still leaves the fraction.
-        let (two_pi_for_turns, fraction) = self.mean_anomaly_with_two_pi(time, turns_width)?;
-        let mean = at(&(&two_pi_for_turns * &fraction));
-
-        // Kepler's equation is solved on the half turn: a mean anomaly in the second half is the mirror image of one in the first.
         let pi = WideFloat::pi(width);
         let two_pi = pi.times_power_of_two(1)?;
-        let reflected = mean.compare(&pi) == Ordering::Greater;
-        let mean_on_the_half_turn = if reflected { &two_pi - &mean } else { mean };
         let ratio = at(&self.ratio);
         let one = WideFloat::from_i64(1, width);
         let two = WideFloat::from_i64(2, width);
         let e = &one - &ratio;
-        let eccentric = eccentric_anomaly(&ratio, &mean_on_the_half_turn)?;
+        // The part of the speed that is along the second direction of the plane has sqrt(1 - e^2) in it.
+        let minor = (&ratio * &(&two - &ratio)).sqrt()?;
+        let radius = at(&self.radius);
+        let rate = two_pi.divide(&at(&self.period))?;
+        let speed_scale = &rate * &radius;
+        // The periapsis turns the place in the plane into its two directions.
+        let (sine_of_periapsis, cosine_of_periapsis) = at(&self.periapsis).sin_cos();
+        let directions = plane(&self.normal.each_ref().map(at))?;
+        Ok(PreparedElements {
+            precision,
+            turns: Turns::new(&self.period, &self.phase, width.widened_by(TURN_GUARD))?,
+            pi,
+            two_pi,
+            ratio,
+            e,
+            one,
+            minor,
+            radius,
+            speed_scale,
+            sine_of_periapsis,
+            cosine_of_periapsis,
+            plane: directions,
+        })
+    }
+}
+
+/// [`Elements`] with what does not depend on the time worked out ([`Elements::prepare`]): a place is then worked out for a time from this without the plane, the periapsis
+/// or the rate being worked out again. **It gives the place [`Elements::place_at`] gives, to the bit, at every time and however often it is asked** (`place_at` is
+/// `prepare` and this), and it holds about a kilobyte of numbers.
+#[derive(Clone, Debug)]
+pub struct PreparedElements {
+    /// The width of the place that is given.
+    precision: Precision,
+    turns: Turns,
+    /// pi, and 2 pi, at the working width.
+    pi: WideFloat,
+    two_pi: WideFloat,
+    ratio: WideFloat,
+    /// 1 - the ratio: the eccentricity, as a number of its own because the ratio may be 2^-64.
+    e: WideFloat,
+    one: WideFloat,
+    /// sqrt(1 - e^2), from the ratio.
+    minor: WideFloat,
+    radius: WideFloat,
+    /// The rate of the mean anomaly (2 pi over the period) times the radius: the speed is this over the distance in units of the radius.
+    speed_scale: WideFloat,
+    sine_of_periapsis: WideFloat,
+    cosine_of_periapsis: WideFloat,
+    /// The two directions in the plane, as unit vectors.
+    plane: ([WideFloat; 3], [WideFloat; 3]),
+}
+
+impl PreparedElements {
+    /// Where the body is at `time`, and its speed, in numbers of the width these were prepared for.
+    pub fn place_at(&self, time: Time) -> Result<Place, KeplerError> {
+        check_time(time)?;
+        let width = self.pi.precision();
+
+        // The mean anomaly: the phase and the part of a turn gone, worked out in a width that holds its whole part and still leaves the fraction.
+        let fraction = self.turns.fraction_at(time)?;
+        let mean = (&self.turns.two_pi * &fraction).rounded_to(width);
+
+        // Kepler's equation is solved on the half turn: a mean anomaly in the second half is the mirror image of one in the first.
+        let reflected = mean.compare(&self.pi) == Ordering::Greater;
+        let mean_on_the_half_turn = if reflected {
+            &self.two_pi - &mean
+        } else {
+            mean
+        };
+        let eccentric = eccentric_anomaly(&self.ratio, &mean_on_the_half_turn)?;
 
         // sin E, cos E, and 1 - cos E = 2 sin^2(E / 2), from the half angle so that nothing cancels.
         let (sine_half, cosine_half) = eccentric.times_power_of_two(-1)?.sin_cos();
@@ -146,37 +212,72 @@ impl Elements {
         let half_versine = &sine_half * &sine_half;
         let cosine = &(&cosine_half * &cosine_half) - &half_versine;
         // The place in the plane in units of the semi-major axis from the focus, toward the periapsis and a quarter turn on; the distance from the focus is the slope of the
-        // equation; and the part of the speed that is along the second of them has sqrt(1 - e^2) in it.
-        let minor = (&ratio * &(&two - &ratio)).sqrt()?;
-        let x = &ratio - &half_versine.times_power_of_two(1)?;
-        let side = if reflected { -&one } else { one.clone() };
-        let y = &(&minor * &sine) * &side;
-        let distance = &ratio + &(&e * &half_versine).times_power_of_two(1)?;
-        let radius = at(&self.radius);
-        let rate = two_pi.divide(&at(&self.period))?;
-        let speed = (&rate * &radius).divide(&distance)?;
+        // equation.
+        let x = &self.ratio - &half_versine.times_power_of_two(1)?;
+        let side = if reflected {
+            -&self.one
+        } else {
+            self.one.clone()
+        };
+        let y = &(&self.minor * &sine) * &side;
+        let distance = &self.ratio + &(&self.e * &half_versine).times_power_of_two(1)?;
+        let speed = self.speed_scale.divide(&distance)?;
         let toward = -&(&(&speed * &sine) * &side);
-        let along = &(&speed * &minor) * &cosine;
+        let along = &(&speed * &self.minor) * &cosine;
 
         // The periapsis turns both into the two directions of the plane.
-        let (sine_of_periapsis, cosine_of_periapsis) = at(&self.periapsis).sin_cos();
         let turned = |a: &WideFloat, b: &WideFloat| {
             (
-                &(a * &cosine_of_periapsis) - &(b * &sine_of_periapsis),
-                &(a * &sine_of_periapsis) + &(b * &cosine_of_periapsis),
+                &(a * &self.cosine_of_periapsis) - &(b * &self.sine_of_periapsis),
+                &(a * &self.sine_of_periapsis) + &(b * &self.cosine_of_periapsis),
             )
         };
-        let (place_first, place_second) = turned(&(&x * &radius), &(&y * &radius));
+        let (place_first, place_second) = turned(&(&x * &self.radius), &(&y * &self.radius));
         let (speed_first, speed_second) = turned(&toward, &along);
 
-        let (first, second) = plane(&self.normal.each_ref().map(at))?;
+        let (first, second) = &self.plane;
         let combine = |a: &WideFloat, b: &WideFloat| -> [WideFloat; 3] {
-            [0, 1, 2].map(|axis| (&(a * &first[axis]) + &(b * &second[axis])).rounded_to(precision))
+            [0, 1, 2]
+                .map(|axis| (&(a * &first[axis]) + &(b * &second[axis])).rounded_to(self.precision))
         };
         Ok(Place {
             position: combine(&place_first, &place_second),
             velocity: combine(&speed_first, &speed_second),
         })
+    }
+}
+
+/// What the part of a turn gone needs of an orbit whatever the time is, in `turns_width` bits: 2 pi, the period, and the phase over 2 pi.
+#[derive(Clone, Debug)]
+pub(crate) struct Turns {
+    two_pi: WideFloat,
+    period: WideFloat,
+    phase_turns: WideFloat,
+}
+
+impl Turns {
+    pub(crate) fn new(
+        period: &WideFloat,
+        phase: &WideFloat,
+        turns_width: Precision,
+    ) -> Result<Turns, KeplerError> {
+        let two_pi = WideFloat::pi(turns_width).times_power_of_two(1)?;
+        let phase_turns = phase.rounded_to(turns_width).divide(&two_pi)?;
+        Ok(Turns {
+            two_pi,
+            period: period.rounded_to(turns_width),
+            phase_turns,
+        })
+    }
+
+    /// The part of a turn the body is at, from 0 up to one, at `time` (which has been checked), in the width of the turns: the phase over 2 pi and the time over the
+    /// period, taken modulo one **exactly**.
+    pub(crate) fn fraction_at(&self, time: Time) -> Result<WideFloat, KeplerError> {
+        let turns_width = self.two_pi.precision();
+        let units = WideFloat::from_i128(time.units, turns_width);
+        let per_second = WideFloat::from_i64(i64::from(time.units_per_second), turns_width);
+        let turns = units.divide(&(&per_second * &self.period))?;
+        fraction_of(&(&fraction_of(&turns)? + &self.phase_turns))
     }
 }
 
@@ -188,13 +289,9 @@ pub(crate) fn turns_gone(
     time: Time,
     turns_width: Precision,
 ) -> Result<(WideFloat, WideFloat), KeplerError> {
-    let two_pi = WideFloat::pi(turns_width).times_power_of_two(1)?;
-    let units = WideFloat::from_i128(time.units, turns_width);
-    let per_second = WideFloat::from_i64(i64::from(time.units_per_second), turns_width);
-    let turns = units.divide(&(&per_second * &period.rounded_to(turns_width)))?;
-    let phase_turns = phase.rounded_to(turns_width).divide(&two_pi)?;
-    let fraction = fraction_of(&(&fraction_of(&turns)? + &phase_turns))?;
-    Ok((two_pi, fraction))
+    let turns = Turns::new(period, phase, turns_width)?;
+    let fraction = turns.fraction_at(time)?;
+    Ok((turns.two_pi, fraction))
 }
 
 /// Whether a time is one the clock can hold.

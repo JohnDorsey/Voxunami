@@ -908,6 +908,10 @@ fn a_tick_works_out_each_rail_once_though_the_rails_put_the_ships_twice() {
         "and the second putting of each tick asked the same"
     );
     assert_eq!(work.rails_remembered, 2);
+    assert_eq!(
+        work.orbits_prepared, 2,
+        "and what does not depend on the time was worked out once for each, not once a tick"
+    );
     // Taken off their rails, the planets are forgotten, and nothing is worked out for them.
     for planet in &planets {
         world.set_grid_rail(*planet, None).unwrap();
@@ -915,6 +919,7 @@ fn a_tick_works_out_each_rail_once_though_the_rails_put_the_ships_twice() {
     server_tick(&mut world, 11);
     assert_eq!(world.rail_work().rails_remembered, 0);
     assert_eq!(world.rail_work().rail_evaluations, 20);
+    assert_eq!(world.rail_work().orbits_prepared, 2);
 }
 
 #[test]

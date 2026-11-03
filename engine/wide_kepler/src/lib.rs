@@ -17,11 +17,15 @@
 //! machine), in the form `ratio E + e (E - sin E) - M`, which has no cancellation that matters, from the left or the right alike because the function is convex
 //! on the half turn it is solved in; the iteration ends when a step is under 2^-(width + 8) of the answer, so how many steps it takes is a property of the numbers
 //! and not of the machine or the clock.
+//!
+//! **One orbit at many times.** A rail is asked for the same orbit at one tick after another, so what a place needs of an orbit whatever the time is (the directions of
+//! its plane, the sine and cosine of the periapsis, the minor axis, the rate) is worked out once, [`Elements::prepare`], and [`PreparedElements::place_at`] is the rest
+//! (19.7 of the 27 microseconds of a place of an ellipse at 128 bits). [`Elements::place_at`] is the two in a row, so the two ways give the same bits.
 
 mod elements;
 mod error;
 mod fit;
 mod kepler;
 
-pub use elements::{Elements, Place, Time};
+pub use elements::{Elements, Place, PreparedElements, Time};
 pub use error::KeplerError;

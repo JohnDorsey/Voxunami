@@ -24,7 +24,7 @@ use std::f64::consts::TAU;
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use voxel_space::{GridId, Orientation};
 use wide_float::{Precision, WideFloat};
-use wide_kepler::{Elements, KeplerError, Time};
+use wide_kepler::{Elements, KeplerError, PreparedElements, Time};
 
 pub use crate::exact_offset::ExactOffset;
 
@@ -513,9 +513,20 @@ impl Orbit {
     /// phase and the part of a turn gone, the mean anomaly, Kepler's equation, the periapsis and the plane) from the elements as they are, in a width that leaves the last bit of
     /// it below 2^-64 voxel (see [`answer_precision`]), and rounded once, to whole bricks and a rest in steps of 2^-32 voxel; the speed is the same working rounded to an `f64`.
     fn at(&self, time: RailTime) -> (ExactOffset, [f64; 3]) {
-        let place = self
-            .elements
-            .place_at(time.wide(), answer_precision(&self.elements.radius))
+        Self::at_prepared(&self.prepare(), time)
+    }
+
+    /// What the place of this orbit needs whatever the time is, worked out once (see [`RailMemo`], which keeps it while the orbit does not change).
+    fn prepare(&self) -> PreparedElements {
+        self.elements
+            .prepare(answer_precision(&self.elements.radius))
+            .expect("an orbit made by this module is one `wide_kepler` works out")
+    }
+
+    /// As [`Orbit::at`], from the orbit as [`Orbit::prepare`] made it.
+    fn at_prepared(prepared: &PreparedElements, time: RailTime) -> (ExactOffset, [f64; 3]) {
+        let place = prepared
+            .place_at(time.wide())
             .expect("an orbit made by this module is one `wide_kepler` works out");
         (
             ExactOffset::of_voxels(&place.position),
@@ -601,22 +612,27 @@ impl Rail {
     }
 }
 
-/// What an orbit said of its body at a time, kept so that the same question is not worked out twice. The server puts the ships on their rails at the start of a tick and
-/// again after the logic of it (to put a ship that came into memory, or was put on a rail, where its rail says), and an orbit is a pure function of the time, so the
-/// second putting needs no working out. **The memory never changes an answer**: it keeps, for each ship, the orbit and the time it was asked at, and gives the answer back only
-/// for the very same orbit (every element, width and all) at the very same time; anything else is worked out and put in its place. A spin is a few `f64` operations and is
-/// never kept. What the orbit goes round is not a part of what it says (that is added after), so a moved centre does not spoil an answer.
+/// What an orbit said of its body at a time, kept so that the same question is not worked out twice, and what an orbit needs whatever the time is, kept so that it is worked
+/// out once while the orbit does not change. The server puts the ships on their rails at the start of a tick and again after the logic of it (to put a ship that came into
+/// memory, or was put on a rail, where its rail says), and an orbit is a pure function of the time, so the second putting needs no working out; and a ship that goes round
+/// for thousands of ticks needs its plane, the sine and cosine of its periapsis and its minor axis (a quarter of the cost of a place) once, not at every tick.
+/// **The memory never changes an answer**: it keeps, for each ship, the orbit, what was prepared from it and the time and answer it was last asked, and gives the answer back
+/// only for the very same orbit (every element, width and all) at the very same time, and uses what was prepared only for the very same orbit; anything else is worked out and
+/// put in its place. A spin is a few `f64` operations and is never kept. What the orbit goes round is not a part of what it says (that is added after), so a moved centre does
+/// not spoil an answer.
 #[derive(Clone, Debug, Default)]
 pub struct RailMemo {
     entries: HashMap<GridId, Remembered>,
     evaluations: u64,
     reused: u64,
+    preparations: u64,
 }
 
 #[derive(Clone, Debug)]
 struct Remembered {
-    time: RailTime,
     orbit: Orbit,
+    prepared: PreparedElements,
+    time: RailTime,
     offset: ExactOffset,
     speed: [f64; 3],
 }
@@ -642,20 +658,29 @@ impl RailMemo {
     }
 
     fn orbit_at(&mut self, grid: GridId, orbit: &Orbit, time: RailTime) -> (ExactOffset, [f64; 3]) {
-        if let Some(kept) = self.entries.get(&grid)
-            && kept.time == time
+        if let Some(kept) = self.entries.get_mut(&grid)
             && kept.orbit == *orbit
         {
-            self.reused += 1;
-            return (kept.offset, kept.speed);
+            if kept.time == time {
+                self.reused += 1;
+                return (kept.offset, kept.speed);
+            }
+            // The same orbit at another time: what does not depend on the time is kept.
+            let (offset, speed) = Orbit::at_prepared(&kept.prepared, time);
+            self.evaluations += 1;
+            (kept.time, kept.offset, kept.speed) = (time, offset, speed);
+            return (offset, speed);
         }
-        let (offset, speed) = orbit.at(time);
+        let prepared = orbit.prepare();
+        let (offset, speed) = Orbit::at_prepared(&prepared, time);
+        self.preparations += 1;
         self.evaluations += 1;
         self.entries.insert(
             grid,
             Remembered {
-                time,
                 orbit: orbit.clone(),
+                prepared,
+                time,
                 offset,
                 speed,
             },
@@ -673,7 +698,7 @@ impl RailMemo {
         self.entries.len()
     }
 
-    /// How many times an orbit was worked out (a place and a speed, 30 to 55 microseconds), since this was made.
+    /// How many times an orbit was worked out for a time (a place and a speed: 8 microseconds for a circle and 20 for an ellipse at the widths of a ship, once the orbit is prepared), since this was made.
     pub fn evaluations(&self) -> u64 {
         self.evaluations
     }
@@ -681,6 +706,12 @@ impl RailMemo {
     /// How many times an answer that was kept was given back instead.
     pub fn reused(&self) -> u64 {
         self.reused
+    }
+
+    /// How many times what an orbit needs whatever the time is was worked out (about 7 microseconds), which is once for an orbit that stays on a ship and not once for each
+    /// time it is asked.
+    pub fn preparations(&self) -> u64 {
+        self.preparations
     }
 }
 

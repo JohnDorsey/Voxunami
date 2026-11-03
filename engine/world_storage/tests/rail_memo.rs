@@ -139,3 +139,79 @@ fn what_is_not_on_a_rail_any_more_is_forgotten() {
     memory.state(grid(1), &rail(6.8e6, 5581.0), time(5), NOWHERE, NOWHERE);
     assert_eq!(memory.evaluations(), 5);
 }
+
+/// An orbit as `orbit` makes it with the periapsis moved by `nudge` radians: a different orbit by a hair, which no rounding of the answer would show.
+fn orbit_nudged(nudge: f64) -> Orbit {
+    Orbit::elliptical(
+        Centre::Point([100.0, 0.0, -50.0]),
+        [0.3, 0.9, -0.2],
+        6.8e6,
+        0.7,
+        1.1 + nudge,
+        5581.0,
+        0.4,
+    )
+    .unwrap()
+}
+
+#[test]
+fn an_orbit_is_prepared_once_however_many_times_it_is_asked_and_every_answer_is_the_rails() {
+    let mut memory = RailMemo::default();
+    let rail = rail(6.8e6, 5581.0);
+    // Fifty ticks, then a long jump and back: only the time changes, so what does not depend on it is worked out once.
+    let ticks: Vec<u64> = (0..50).chain([987_654_321, 5, 987_654_322, 0]).collect();
+    for &tick in &ticks {
+        let (centre, velocity) = ([1.0e6, 2.0, -3.0], [4.0, 5.0, 6.0]);
+        assert_eq!(
+            memory.state(grid(1), &rail, time(tick), centre, velocity),
+            rail.state(time(tick), centre, velocity),
+            "tick {tick}"
+        );
+    }
+    assert_eq!(
+        (memory.evaluations(), memory.reused(), memory.preparations()),
+        (ticks.len() as u64, 0, 1)
+    );
+    // The same rail on another ship is a memory of its own.
+    memory.state(grid(2), &rail, time(3), NOWHERE, NOWHERE);
+    assert_eq!(memory.preparations(), 2);
+}
+
+#[test]
+fn an_orbit_that_changed_is_prepared_again_and_never_answers_with_the_old_one() {
+    let mut memory = RailMemo::default();
+    let (before, after) = (orbit_nudged(0.0), orbit_nudged(1.0e-15));
+    assert_ne!(before, after);
+    let on = |orbit: &Orbit| Rail {
+        spin: None,
+        orbit: Some(orbit.clone()),
+    };
+    // Before, after, after at another time, before again: each answer is its own rail's, and each change of orbit prepares again, but a change of time does not.
+    for (orbit, tick, preparations) in [
+        (&before, 10, 1),
+        (&after, 10, 2),
+        (&after, 11, 2),
+        (&before, 12, 3),
+        (&before, 13, 3),
+    ] {
+        let rail = on(orbit);
+        assert_eq!(
+            memory.state(grid(1), &rail, time(tick), NOWHERE, NOWHERE),
+            rail.state(time(tick), NOWHERE, NOWHERE),
+            "tick {tick}"
+        );
+        assert_eq!(memory.preparations(), preparations, "tick {tick}");
+    }
+}
+
+#[test]
+fn what_was_forgotten_is_prepared_again() {
+    let mut memory = RailMemo::default();
+    let rail = rail(6.8e6, 5581.0);
+    memory.state(grid(1), &rail, time(5), NOWHERE, NOWHERE);
+    memory.state(grid(1), &rail, time(6), NOWHERE, NOWHERE);
+    assert_eq!(memory.preparations(), 1);
+    memory.keep_only(|_| false);
+    memory.state(grid(1), &rail, time(7), NOWHERE, NOWHERE);
+    assert_eq!(memory.preparations(), 2);
+}

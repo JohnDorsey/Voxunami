@@ -6,7 +6,7 @@
 //! The pin is made from the program as it was before the prepared form (2026-11-03).
 
 use wide_float::{Precision, WideFloat};
-use wide_kepler::{Elements, Place, Time};
+use wide_kepler::{Elements, KeplerError, Place, PreparedElements, Time};
 
 fn at(bits: u32) -> Precision {
     Precision::of(bits)
@@ -175,14 +175,17 @@ fn describe(place: &Place) -> String {
     format!("{:?}|{:?}", place.position, place.velocity)
 }
 
-/// The hash of every place of every case at every time and width, and how many places that is.
-fn digest(mut place_of: impl FnMut(&Elements, Time, Precision) -> Place) -> (u64, usize) {
+/// The hash of every place of every case at every time and width, and how many places that is. `place_of` is given which case and which width it is (the indices in
+/// `cases()` and `PRECISIONS`), for a caller that has kept something for each.
+fn digest(
+    mut place_of: impl FnMut(usize, usize, &Elements, Time, Precision) -> Place,
+) -> (u64, usize) {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     let mut count = 0;
-    for case in cases() {
+    for (case_index, case) in cases().into_iter().enumerate() {
         for time in TIMES {
-            for bits in PRECISIONS {
-                let place = place_of(&case.elements, time, at(bits));
+            for (bits_index, bits) in PRECISIONS.into_iter().enumerate() {
+                let place = place_of(case_index, bits_index, &case.elements, time, at(bits));
                 hash = hash_of(&format!("{}@{bits}:", case.name), hash);
                 hash = hash_of(&describe(&place), hash);
                 count += 1;
@@ -198,11 +201,124 @@ const PLACES_COUNT: usize = 10 * 8 * 3;
 
 #[test]
 fn the_places_of_a_grid_of_orbits_and_times_are_the_same_to_the_bit() {
-    let (hash, count) = digest(|elements, time, precision| {
+    let (hash, count) = digest(|_, _, elements, time, precision| {
         elements
             .place_at(time, precision)
             .unwrap_or_else(|error| panic!("{elements:?} at {time:?}: {error}"))
     });
     assert_eq!(count, PLACES_COUNT);
     assert_eq!(hash, PLACES_PIN, "the places changed: {hash}");
+}
+
+/// `PRECISIONS[bits_index]` of each case, prepared once: what a rail keeps while the orbit does not change.
+fn prepared_orbits() -> Vec<Vec<PreparedElements>> {
+    cases()
+        .iter()
+        .map(|case| {
+            PRECISIONS
+                .iter()
+                .map(|&bits| {
+                    case.elements
+                        .prepare(at(bits))
+                        .unwrap_or_else(|error| panic!("{}: {error}", case.name))
+                })
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn a_prepared_orbit_gives_the_pinned_places_to_the_bit() {
+    // Each orbit prepared once, before any time is asked, and asked for all eight times of the grid.
+    let prepared = prepared_orbits();
+    let (hash, count) = digest(|case_index, bits_index, _, time, _| {
+        prepared[case_index][bits_index].place_at(time).unwrap()
+    });
+    assert_eq!(count, PLACES_COUNT);
+    assert_eq!(
+        hash, PLACES_PIN,
+        "the prepared places are not the pinned ones: {hash}"
+    );
+}
+
+#[test]
+fn a_prepared_orbit_gives_the_place_place_at_gives_however_often_and_in_whatever_order_it_is_asked()
+{
+    let prepared = prepared_orbits();
+    for (case_index, case) in cases().iter().enumerate() {
+        for (bits_index, &bits) in PRECISIONS.iter().enumerate() {
+            let orbit = &prepared[case_index][bits_index];
+            // Forward, backward, and each twice running: nothing a time leaves behind changes the next.
+            let order = TIMES
+                .iter()
+                .chain(TIMES.iter().rev())
+                .flat_map(|time| [time, time]);
+            for &time in order {
+                assert_eq!(
+                    orbit.place_at(time),
+                    case.elements.place_at(time, at(bits)),
+                    "{} at {time:?}, {bits} bits",
+                    case.name
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn preparing_refuses_the_elements_place_at_refuses_and_a_time_is_refused_when_it_is_asked() {
+    let good = elements([0.0, 0.6, 0.8], 2000.0, 0.9, 0.3, 61.0, 1.0, at(128));
+    let narrow = |mut elements: Elements, change: &dyn Fn(&mut Elements)| {
+        change(&mut elements);
+        elements
+    };
+    let bad = [
+        narrow(good.clone(), &|e| {
+            e.normal = [0.0; 3].map(|v| wide(v, at(128)))
+        }),
+        narrow(good.clone(), &|e| e.radius = wide(0.0, at(128))),
+        narrow(good.clone(), &|e| {
+            e.radius = wide(f64::from_bits((1023 + 121) << 52), at(128))
+        }),
+        narrow(good.clone(), &|e| {
+            e.ratio = wide(1.0 / 36893488147419103232.0, at(128))
+        }),
+        narrow(good.clone(), &|e| e.ratio = wide(1.5, at(128))),
+        narrow(good.clone(), &|e| e.period = wide(0.0, at(128))),
+        narrow(good.clone(), &|e| e.period = wide(1.0e-9, at(128))),
+        narrow(good.clone(), &|e| {
+            e.periapsis = wide(f64::from_bits((1023 + 64) << 52), at(128))
+        }),
+        narrow(good.clone(), &|e| {
+            e.phase = wide(-f64::from_bits((1023 + 64) << 52), at(128))
+        }),
+    ];
+    let time = TIMES[2];
+    for elements in &bad {
+        let refused = elements.place_at(time, at(128)).unwrap_err();
+        assert!(matches!(refused, KeplerError::Invalid(_)), "{refused:?}");
+        assert_eq!(elements.prepare(at(128)).unwrap_err(), refused);
+    }
+    // Elements that are good prepare, and it is the time that is refused, with the error `place_at` gives.
+    let prepared = good.prepare(at(128)).unwrap();
+    for time in [
+        Time {
+            units: 1 << 96,
+            units_per_second: 20,
+        },
+        Time {
+            units: -(1 << 96),
+            units_per_second: 20,
+        },
+        Time {
+            units: 5,
+            units_per_second: 0,
+        },
+    ] {
+        let refused = good.place_at(time, at(128)).unwrap_err();
+        assert!(matches!(refused, KeplerError::Invalid(_)), "{refused:?}");
+        assert_eq!(prepared.place_at(time).unwrap_err(), refused);
+    }
+    // And a refused time does not spoil the orbit.
+    assert_eq!(prepared.place_at(time), good.place_at(time, at(128)));
 }
