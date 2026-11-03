@@ -12,9 +12,8 @@ const MOST_STEPS: usize = 64;
 
 /// `E - e sin E` and its slope `1 - e cos E` in `f64`, without the cancellation near E = 0: `E - e sin E = ratio E + e (E - sin E)`, with `E - sin E` from its series
 /// where E is small, and `1 - e cos E = ratio + 2 e sin^2(E / 2)`. `ratio` and `e` are given apart (they add up to one) because `e` is the difference of one and a ratio that
-/// may be 2^-64. Here it makes the first guess of the solver, which is not part of the answer, only of how many steps it takes to get there; `world_storage` uses it to put a
-/// state on an orbit, in `f64`.
-pub fn equation_in_f64(eccentric: f64, ratio: f64, e: f64) -> (f64, f64) {
+/// may be 2^-64. Here it makes the first guess of the solver, which is not part of the answer, only of how many steps it takes to get there.
+fn equation_in_f64(eccentric: f64, ratio: f64, e: f64) -> (f64, f64) {
     let value = if eccentric < 0.5 {
         let square = eccentric * eccentric;
         // E - sin E = E^3/6 - E^5/120 + E^7/5040 - ...: each term from the one before.
@@ -126,3 +125,6 @@ fn initial_guess(
         by_ratio
     })
 }
+
+#[cfg(test)]
+mod tests;

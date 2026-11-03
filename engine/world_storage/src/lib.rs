@@ -14,7 +14,6 @@
 
 pub mod container;
 pub mod engine_sections;
-mod exact_circle;
 mod exact_offset;
 pub mod file;
 mod fit_orbit;
@@ -26,7 +25,6 @@ mod ship_files;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 mod translation;
-mod wide;
 mod world;
 
 pub use container::{ContainerError, Section};

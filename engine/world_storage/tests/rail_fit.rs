@@ -174,6 +174,28 @@ fn the_orbit_a_state_is_on_is_the_orbit_it_came_from() {
     }
 }
 
+#[test]
+fn the_orbit_found_puts_the_body_in_the_very_same_place_and_at_the_same_speed() {
+    // The state is exact (a place on the grid of 2^-32 voxel, a speed that is a double), and so is the orbit through it: asked for the place at the tick of the fit, the rail gives
+    // the very same offset, bricks and rest, even at 8.8e26 voxels where a double of the place is a hundred thousand voxels from the next; and the speed to the last bit or two.
+    for (normal, radius, ratio, periapsis, period, phase, tick) in FIT_CASES {
+        let original = an_orbit(normal, radius, ratio, periapsis, period, phase);
+        let (offset, velocity) = state_at(&original, tick);
+        let found = fit(offset, velocity, mu_of(radius, period), tick).unwrap();
+        let (again, found_velocity) = state_at(&found, tick);
+        assert_eq!(again, offset, "radius {radius}, tick {tick}");
+        for axis in 0..3 {
+            assert!(
+                (found_velocity[axis] - velocity[axis]).abs()
+                    <= 4.0 * f64::EPSILON * size(velocity),
+                "radius {radius}, axis {axis}: {} against {}",
+                found_velocity[axis],
+                velocity[axis]
+            );
+        }
+    }
+}
+
 fn any_normal() -> impl Strategy<Value = [f64; 3]> {
     prop::array::uniform3(-1.0f64..1.0).prop_filter("a direction that is not nothing", |normal| {
         normal.iter().map(|part| part * part).sum::<f64>() > 0.04
@@ -225,7 +247,11 @@ proptest! {
 }
 
 #[test]
-fn a_circle_is_found_a_circle() {
+fn a_circle_is_found_as_the_orbit_its_state_is_on_and_is_not_snapped_to_a_circle() {
+    // The owner's rule of 2026-11-03: nothing is made a circle because it is near enough. A state read from a circle (a place rounded to a step of 2^-32 voxel and a speed
+    // rounded to a double) is on an ellipse that is a circle to what that rounding says, and the orbit found is that ellipse: an eccentricity of a few parts in 10^14 at the
+    // most, and not nothing. (The map may show it as a circle. A rail and a file do not.)
+    let mut not_exactly_circles = 0;
     for (normal, radius, period, phase, tick) in [
         ([0.0, 1.0, 0.0], 1.5e11, 3.156e7, 0.3, 4_000_000u64),
         ([0.6, 0.8, 0.0], 3.84e8, -2.36e6, 5.5, 18_446_744_073_709),
@@ -234,15 +260,38 @@ fn a_circle_is_found_a_circle() {
     ] {
         let original = an_orbit(normal, radius, 1.0, 0.0, period, phase);
         let found = fitted(&original, mu_of(radius, period.abs()), tick).unwrap();
-        // (A circle has no nearest point: what a state of `f64`s can say of its shape is nothing below a few parts in 10^15, so it is a circle, and starts toward the first direction.)
-        assert_eq!(
-            (found.ratio(), found.periapsis()),
-            (1.0, 0.0),
-            "radius {radius}"
+        let eccentricity = 1.0 - found.ratio();
+        assert!(
+            eccentricity.abs() < 1.0e-13,
+            "radius {radius}: an eccentricity of {eccentricity}"
         );
+        not_exactly_circles += usize::from(!found.is_circle());
         assert!((found.radius() - radius).abs() <= 1.0e-12 * radius);
         the_same_motion(&original, &found, tick, 1.0e-10, 1.0e-10);
     }
+    assert!(
+        not_exactly_circles > 0,
+        "a state read from a circle is on an ellipse that is a hair off, in at least one of these"
+    );
+}
+
+#[test]
+fn a_state_that_is_exactly_a_circle_is_exactly_a_circle() {
+    // Every number is a double and v^2 = mu / r: the eccentricity is exactly nothing, so the ratio is exactly 1 and the circle starts toward the first direction.
+    let found = Orbit::from_place(
+        Centre::Point(NOWHERE),
+        [4.0, 0.0, 0.0],
+        [0.0, 0.5, 0.0],
+        1.0,
+        time(0),
+    )
+    .unwrap();
+    assert!(found.is_circle());
+    assert_eq!(
+        (found.ratio(), found.periapsis(), found.phase()),
+        (1.0, 0.0, 0.0)
+    );
+    assert_eq!(found.radius(), 4.0);
 }
 
 #[test]
@@ -264,10 +313,15 @@ fn an_orbit_that_is_nearly_a_circle_is_found_with_the_little_eccentricity_it_has
         );
         the_same_motion(&original, &found, 777_777, 1.0e-11, 1.0e-11);
     }
-    // At a few parts in 10^15 it is a circle as far as any state can say.
+    // At a few parts in 10^15 it is the ellipse it is: the state says an eccentricity of 1e-15 to its own rounding (a few parts in 10^16), and nothing makes it a circle.
     let original = an_orbit([0.3, 0.9, -0.2], 5.0e8, 1.0 - 1.0e-15, 1.1, 3.0e5, 1.5);
     let found = fitted(&original, mu_of(5.0e8, 3.0e5), 777_777).unwrap();
-    assert_eq!((found.ratio(), found.periapsis()), (1.0, 0.0));
+    assert!(!found.is_circle());
+    assert!(
+        ((1.0 - found.ratio()) - 1.0e-15).abs() < 5.0e-16,
+        "an eccentricity of {}",
+        1.0 - found.ratio()
+    );
 }
 
 #[test]
@@ -367,22 +421,25 @@ fn a_state_that_is_no_ellipse_is_refused() {
         fit(place, along.map(|part| part * escape), mu, 100),
         "exactly escape",
     );
-    // A hair below the speed of escape says nothing of the shape (the energy is the difference of two terms that agree to 4e-14 of themselves, which is the noise of the
-    // difference): refused, on an orbit small enough that the period it would give is still a period a rail can have. A speed comfortably below it is a very long ellipse.
+    // A hair below the speed of escape is a very long ellipse, as long as the energy says (owner, 2026-11-03: no rule calls it something else, only the limits of an orbit refuse
+    // it). Here it is 1.2e13 times the distance and has a period of 1e21 seconds, which a rail may have. A speed comfortably below escape is a long ellipse too.
     let small = an_orbit([0.0, 1.0, 0.0], 1.0e6, 0.5, 0.0, 100.0, 0.0);
     let small_mu = mu_of(1.0e6, 100.0);
     let (small_place, small_velocity) = state_at(&small, 100);
     let small_distance = size(small_place.in_voxels());
     let small_escape = libm::sqrt(2.0 * small_mu / small_distance);
     let small_along = small_velocity.map(|part| part / size(small_velocity));
-    refused(
-        fit(
-            small_place,
-            small_along.map(|part| part * small_escape * (1.0 - 2.0e-14)),
-            small_mu,
-            100,
-        ),
-        "a hair below escape",
+    let hair = fit(
+        small_place,
+        small_along.map(|part| part * small_escape * (1.0 - 2.0e-14)),
+        small_mu,
+        100,
+    )
+    .unwrap();
+    assert!(
+        hair.radius() > 1.0e12 * small_distance && hair.radius() < 1.0e14 * small_distance,
+        "{}",
+        hair.radius()
     );
     let long = fit(
         small_place,
@@ -392,6 +449,16 @@ fn a_state_that_is_no_ellipse_is_refused() {
     )
     .unwrap();
     assert!(long.radius() > 1.0e5 * small_distance, "{}", long.radius());
+    // Past the limits of an orbit it is refused as an orbit, not as a state: a body falling nearly straight (a ratio under 2^-64) is an ellipse that is too thin.
+    let nearly_straight = [
+        -small_place.in_voxels()[0] / small_distance * 100.0,
+        -small_place.in_voxels()[1] / small_distance * 100.0 + 1.0e-12,
+        -small_place.in_voxels()[2] / small_distance * 100.0,
+    ];
+    refused(
+        fit(small_place, nearly_straight, small_mu, 100),
+        "a fall that is too straight",
+    );
     // No plane: at rest, or going straight at the centre or straight away from it.
     refused(fit(place, [0.0; 3], mu, 100), "at rest");
     let toward = place.in_voxels().map(|part| -part / distance * speed * 0.1);
@@ -419,58 +486,23 @@ fn a_state_that_is_no_ellipse_is_refused() {
     refused(fit(nowhere, velocity, mu, 100), "on the centre");
 }
 
-/// The elements the program made from the state of each of `FIT_CASES` once they agreed with the originals above, as bits: `(normal, radius, ratio, periapsis, period, phase)`.
-/// The same on every machine (the working is `f64` and `libm`, and whole numbers for the phase), which an orbit that is simulation must be.
-const FIT_PINS: [([u64; 3], u64, u64, u64, u64, u64); 6] = [
-    (
-        [0x0, 0x3ff0000000000000, 0x0],
-        0x424176592dfffffe,
-        0x3f9119ce075f6fd3,
-        0x3ffccccccccccccd,
-        0x417e1913fffffffc,
-        0x3fd3333333333333,
-    ),
-    (
-        [0x3fe3333333333333, 0x3fe999999999999a, 0x3c767091424eea80],
-        0x41b6e36000000000,
-        0x3fee3d70a3d70a3d,
-        0xc004000000000001,
-        0x4142016000000000,
-        0x4016000000000000,
-    ),
-    (
-        [0x3fca8bc441a3d031, 0xbfe0975aa906621c, 0x3fea8bc441a3d02d],
-        0x415ab3f000000002,
-        0x3fd3333333333332,
-        0x4000000000000000,
-        0x40b5180000000003,
-        0x4018ccccccccdcc2,
-    ),
-    (
-        [0x0, 0x0, 0x3ff0000000000000],
-        0x426d1a94a1ffffff,
-        0x3f847ae147ae147d,
-        0x0,
-        0x41cad2747fffffff,
-        0x3fefffffffffffea,
-    ),
-    (
-        [0x3fe279a74590331c, 0x3fe279a74590331c, 0x3fe279a74590331c],
-        0x442b1ae4d6e2ef4f,
-        0x3fe0000000000001,
-        0x4007ffffffffffff,
-        0x4338de76816d7ffe,
-        0x4000000000000002,
-    ),
-    (
-        [0x0, 0x3ff0000000000000, 0x0],
-        0x4586bf59fcb70388,
-        0x3fc999999999999c,
-        0xc008000000000000,
-        0x4296eb550c600002,
-        0x4008000000000001,
-    ),
+/// A hash (FNV-1a, 64 bits) of the bytes of the rail of the orbit that the program made from the state of each of `FIT_CASES`: the whole orbit, every width and every bit, in the
+/// one saved form. **A pin of this kind says that nothing changed, not that it is right**: that the orbit is the one the state is on is said by the tests above and by
+/// `wide_kepler/tests/fit.rs` (against mpmath). The same on every machine (the working is correctly rounded arithmetic, and the first guess of the equation is `libm`).
+const FIT_PINS: [u64; 6] = [
+    1545547729738000925,
+    12118255020271295730,
+    6348552640013143729,
+    18009045622719197610,
+    11985338282532676710,
+    9991506606563232817,
 ];
+
+fn fnv(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
 
 #[test]
 fn the_orbit_made_from_a_state_is_pinned_to_the_bit() {
@@ -479,27 +511,27 @@ fn the_orbit_made_from_a_state_is_pinned_to_the_bit() {
     {
         let original = an_orbit(normal, radius, ratio, periapsis, period, phase);
         let found = fitted(&original, mu_of(radius, period), tick).unwrap();
+        let bytes = world_storage::rail::encode_rail(&rail_of(&found));
         assert_eq!(
-            (
-                found.normal().map(f64::to_bits),
-                found.radius().to_bits(),
-                found.ratio().to_bits(),
-                found.periapsis().to_bits(),
-                found.period().to_bits(),
-                found.phase().to_bits()
-            ),
+            fnv(&bytes),
             pin,
-            "radius {radius}, ratio {ratio}, tick {tick}"
+            "radius {radius}, ratio {ratio}, tick {tick}: {found:?} is {} bytes",
+            bytes.len()
         );
     }
 }
 
 #[test]
 fn an_orbit_from_a_place_given_as_plain_voxels_is_the_orbit_from_the_state_of_that_place() {
-    // A ship that is not on a rail has its place as an f64 and no exact offset: `from_place` is what `from_state` does with the plain numbers of an offset, to the bit.
+    // A ship that is not on a rail has its place as an f64 and no exact offset: `from_place` is what `from_state` does with the plain numbers of an offset, to the bit, where the
+    // plain numbers are the offset (a rest in steps of a thousandth, so that the sum is a double).
     let orbit = an_orbit([0.3, 0.8, -0.2], 6.8e6, 0.9, 1.1, 5581.0, 0.7);
     let mu = mu_of(6.8e6, 5581.0);
     let (offset, velocity) = state_at(&orbit, 1234);
+    let offset = ExactOffset {
+        rest: offset.rest.map(|rest| (rest * 1024.0).round() / 1024.0),
+        ..offset
+    };
     let from_state = fit(offset, velocity, mu, 1234).unwrap();
     let from_place = Orbit::from_place(
         Centre::Point(NOWHERE),

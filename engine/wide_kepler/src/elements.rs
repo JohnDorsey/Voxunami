@@ -48,7 +48,7 @@ const MOST_UNITS: u128 = 1 << 96;
 
 /// Bits over the working width for the part of a turn gone: `time / period` has up to 116 whole bits (the clock is under 2^96 units, a period over 2^-20 seconds) that the
 /// fraction after them does not have, and the mean anomaly is magnified up to 2^64 by the equation, so 116 + 64 + the roundings are under 192.
-const TURN_GUARD: u32 = 192;
+pub(crate) const TURN_GUARD: u32 = 192;
 
 impl Elements {
     /// Whether these are the elements of an orbit this program works out: the limits are those of `world_storage`'s rails (a ratio from 2^-64, a radius under 2^121
@@ -114,13 +114,7 @@ impl Elements {
         time: Time,
         turns_width: Precision,
     ) -> Result<(WideFloat, WideFloat), KeplerError> {
-        let two_pi = WideFloat::pi(turns_width).times_power_of_two(1)?;
-        let units = WideFloat::from_i128(time.units, turns_width);
-        let per_second = WideFloat::from_i64(i64::from(time.units_per_second), turns_width);
-        let turns = units.divide(&(&per_second * &self.period.rounded_to(turns_width)))?;
-        let phase_turns = self.phase.rounded_to(turns_width).divide(&two_pi)?;
-        let fraction = fraction_of(&(&fraction_of(&turns)? + &phase_turns))?;
-        Ok((two_pi, fraction))
+        turns_gone(&self.period, &self.phase, time, turns_width)
     }
 
     /// Where the body is at `time`, and its speed, in numbers of `precision` bits.
@@ -186,8 +180,25 @@ impl Elements {
     }
 }
 
+/// 2 pi and the part of a turn a body of this `period` (seconds) and `phase` (radians at time 0) is at, from 0 up to one, at `time` (which has been checked), both in
+/// `turns_width` bits: the phase over 2 pi and the time over the period, taken modulo one **exactly**.
+pub(crate) fn turns_gone(
+    period: &WideFloat,
+    phase: &WideFloat,
+    time: Time,
+    turns_width: Precision,
+) -> Result<(WideFloat, WideFloat), KeplerError> {
+    let two_pi = WideFloat::pi(turns_width).times_power_of_two(1)?;
+    let units = WideFloat::from_i128(time.units, turns_width);
+    let per_second = WideFloat::from_i64(i64::from(time.units_per_second), turns_width);
+    let turns = units.divide(&(&per_second * &period.rounded_to(turns_width)))?;
+    let phase_turns = phase.rounded_to(turns_width).divide(&two_pi)?;
+    let fraction = fraction_of(&(&fraction_of(&turns)? + &phase_turns))?;
+    Ok((two_pi, fraction))
+}
+
 /// Whether a time is one the clock can hold.
-fn check_time(time: Time) -> Result<(), KeplerError> {
+pub(crate) fn check_time(time: Time) -> Result<(), KeplerError> {
     if time.units_per_second == 0 {
         return Err(KeplerError::Invalid("a second is some units of time"));
     }
@@ -200,7 +211,7 @@ fn check_time(time: Time) -> Result<(), KeplerError> {
 }
 
 /// The part of a number after its whole part (from 0 up to, not including, 1; below zero it is the part after the greatest whole number below it).
-fn fraction_of(number: &WideFloat) -> Result<WideFloat, KeplerError> {
+pub(crate) fn fraction_of(number: &WideFloat) -> Result<WideFloat, KeplerError> {
     let whole = number.floor_to_i128().ok_or(KeplerError::Invalid(
         "an orbit is not gone round that many times",
     ))?;
@@ -210,7 +221,9 @@ fn fraction_of(number: &WideFloat) -> Result<WideFloat, KeplerError> {
 /// The two directions in the plane of an orbit with this normal, as unit vectors: the circle starts toward the first and goes toward the second. The first is the +x
 /// axis (the +z axis where the normal's x is 0.9 or more, by the number it is given and not by the unit vector made of it, as `world_storage` always decided) with its
 /// part along the normal taken out; the second is the normal crossed with the first, so that the circle goes counter-clockwise looking down the normal.
-fn plane(normal: &[WideFloat; 3]) -> Result<([WideFloat; 3], [WideFloat; 3]), KeplerError> {
+pub(crate) fn plane(
+    normal: &[WideFloat; 3],
+) -> Result<([WideFloat; 3], [WideFloat; 3]), KeplerError> {
     let precision = normal[0].precision();
     let threshold = WideFloat::from_f64(0.9, precision)?;
     let reference = if normal[0].abs().compare(&threshold) == Ordering::Less {
@@ -238,7 +251,7 @@ fn plane(normal: &[WideFloat; 3]) -> Result<([WideFloat; 3], [WideFloat; 3]), Ke
     Ok((first, second))
 }
 
-fn unit_vector(vector: &[WideFloat; 3]) -> Result<[WideFloat; 3], KeplerError> {
+pub(crate) fn unit_vector(vector: &[WideFloat; 3]) -> Result<[WideFloat; 3], KeplerError> {
     let squares = &(&vector[0].square() + &vector[1].square()) + &vector[2].square();
     let size = squares.sqrt()?;
     Ok([

@@ -20,8 +20,8 @@
 
 mod elements;
 mod error;
+mod fit;
 mod kepler;
 
 pub use elements::{Elements, Place, Time};
 pub use error::KeplerError;
-pub use kepler::equation_in_f64;

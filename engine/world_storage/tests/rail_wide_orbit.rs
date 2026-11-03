@@ -479,3 +479,21 @@ fn a_radius_no_double_holds_is_written_as_pinned() {
     assert_eq!(encode_rail(&rail), expected);
     assert_eq!(decode_rail(&expected).unwrap(), rail);
 }
+
+#[test]
+fn the_eccentricity_is_exact_however_small() {
+    // The ratio is kept and not the eccentricity, so that 1 less a ratio near 1 is not a difference that has lost its digits: 2^-80 of a ratio of 1 - 2^-80 is itself.
+    let precision = at(256);
+    let ratio = &WideFloat::from_i64(1, precision)
+        - &WideFloat::from_i64(1, precision)
+            .times_power_of_two(-80)
+            .unwrap();
+    let mut elements = wide_elements(256);
+    elements.ratio = ratio;
+    let orbit = Orbit::from_elements(Centre::Point(NOWHERE), elements).unwrap();
+    assert_eq!(orbit.eccentricity(), 1.0 / (1u128 << 80) as f64);
+    assert!(!orbit.is_circle());
+    let circle = Orbit::new(Centre::Point(NOWHERE), [0.0, 1.0, 0.0], 100.0, 60.0, 0.0).unwrap();
+    assert_eq!(circle.eccentricity(), 0.0);
+    assert!(circle.is_circle());
+}

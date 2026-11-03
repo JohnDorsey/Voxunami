@@ -14,8 +14,8 @@
 //!   what the planet goes round pulls more).
 //!
 //! A ship has to be undisturbed for [`QUIET_SECONDS`] before it goes on a rail, so one that is pushed now and then does not go on and off. Its orbit is made from its place and its
-//! speed at the time (`Orbit::from_place`); that costs a rounding of 1e-16 of the size of the state and is made again only when the ship was pushed, never for a ship that
-//! was left alone, which keeps the same elements however many times it is saved and brought back.
+//! speed at the time (`Orbit::from_place`), the orbit the numbers of that state are on (to 128 bits, with nothing snapped to a circle), and is made again only when the ship was
+//! pushed, never for a ship that was left alone, which keeps the same elements however many times it is saved and brought back.
 
 use voxel_space::{BrickBox, GridId, WorldPosition};
 use world_storage::MovingGrid;
@@ -36,6 +36,12 @@ const NEAR_SECONDS: f64 = 1.0;
 /// How much a mass parameter has to differ from the one an orbit was made with, as a part of it, to be a change (one in a billion: the period and the axis of an orbit say the
 /// mass they were made with to a part in 10^15, and the mass of a planet is not worked out to better than that).
 const MASS_CHANGE_THAT_COUNTS: f64 = 1.0e-9;
+
+/// The eccentricity under which a ship that is on a rail answers a change of the mass of its planet at once and does not wait for an end of its ellipse: the two ends of such
+/// an ellipse are within that many parts of its size of each other, so there is nothing to choose between them. (The owner's figure, 2026-11-03, for orbits close enough to
+/// circular to be shown as circles in the map. It decides **when** the ship is put on the orbit its state is on; it does not change any orbit: a rail and a file keep the
+/// ellipse they have, and an orbit that is exactly a circle has no ends at all.)
+const NEARLY_A_CIRCLE: f64 = 1.0e-14;
 
 /// Why a ship is not on a rail that goes round a planet.
 #[derive(Clone, Debug, PartialEq)]
@@ -369,7 +375,7 @@ impl ServerWorld {
         if change.abs() <= MASS_CHANGE_THAT_COUNTS {
             return;
         }
-        let answers_now = orbit.is_circle() || {
+        let answers_now = orbit.eccentricity() < NEARLY_A_CIRCLE || {
             let passed = orbit.apsides_passed(
                 RailTime::of_half_ticks((2 * now).saturating_sub(1), ticks_per_second),
                 RailTime::of_half_ticks(2 * now + 1, ticks_per_second),

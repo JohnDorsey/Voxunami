@@ -25,7 +25,6 @@ use voxel_space::{GridId, Orientation};
 use wide_float::{Precision, WideFloat};
 use wide_kepler::{Elements, KeplerError, Time};
 
-use crate::exact_circle;
 pub use crate::exact_offset::ExactOffset;
 
 /// The smallest ratio, 2^-64: an ellipse as thin as this is the sharpest `wide_kepler` solves (Kepler's equation has a slope as small as the ratio, which its guard bits are
@@ -39,6 +38,15 @@ pub enum RailError {
     NoDirection(&'static str),
     #[error("{0}")]
     Invalid(&'static str),
+}
+
+impl From<KeplerError> for RailError {
+    fn from(error: KeplerError) -> Self {
+        match error {
+            KeplerError::Invalid(message) => RailError::Invalid(message),
+            _ => RailError::Invalid("the elements of an orbit are not those of an orbit"),
+        }
+    }
 }
 
 /// What an orbit goes round.
@@ -113,7 +121,7 @@ fn length(vector: [f64; 3]) -> f64 {
     libm::sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2])
 }
 
-pub(crate) fn unit(vector: [f64; 3], what: &'static str) -> Result<[f64; 3], RailError> {
+fn unit(vector: [f64; 3], what: &'static str) -> Result<[f64; 3], RailError> {
     if !finite(&vector) {
         return Err(RailError::Invalid("a direction is made of numbers"));
     }
@@ -207,7 +215,7 @@ impl From<f64> for RailTime {
 
 impl RailTime {
     /// As `wide_kepler` has a time.
-    fn wide(self) -> Time {
+    pub(crate) fn wide(self) -> Time {
         Time {
             units: self.units,
             units_per_second: self.units_per_second,
@@ -215,9 +223,21 @@ impl RailTime {
     }
 }
 
+/// `value.abs()` as a whole number times a power of two, `(mantissa, exponent)`: exact for every `f64` that is a number.
+fn split(value: f64) -> (u64, i32) {
+    let bits = value.abs().to_bits();
+    let exponent_bits = ((bits >> 52) & 0x7ff) as i32;
+    let fraction_bits = bits & ((1 << 52) - 1);
+    if exponent_bits == 0 {
+        (fraction_bits, -1074)
+    } else {
+        (fraction_bits | (1 << 52), exponent_bits - 1075)
+    }
+}
+
 /// `period.abs()` as a whole number times a power of two, `(mantissa, exponent)`, with the mantissa odd. Exact for every period that is a number and not nothing.
 fn mantissa_and_exponent(period: f64) -> (u64, i32) {
-    let (mantissa, exponent) = exact_circle::split(period);
+    let (mantissa, exponent) = split(period);
     let even = mantissa.trailing_zeros();
     (mantissa >> even, exponent + even as i32)
 }
@@ -229,7 +249,7 @@ fn mantissa_and_exponent(period: f64) -> (u64, i32) {
 /// the turns are `units / (units_per_second x mantissa x 2^exponent)` and only the remainder after the whole turns is divided. (An `f64` of seconds divided by an `f64`
 /// period loses a digit for every ten turns: after twelve thousand years of a planet's years it is a metre out.) The denominator is below 2^112 for every period a rail
 /// can have.
-pub(crate) fn turn_fraction(time: RailTime, period: f64) -> (u128, u128) {
+fn turn_fraction(time: RailTime, period: f64) -> (u128, u128) {
     if !usable_period(period) {
         return (0, 1);
     }
@@ -371,10 +391,7 @@ impl Orbit {
                 "the centre of an orbit is made of numbers",
             ));
         }
-        elements.validate().map_err(|error| match error {
-            KeplerError::Invalid(message) => RailError::Invalid(message),
-            _ => RailError::Invalid("the elements of an orbit are not those of an orbit"),
-        })?;
+        elements.validate()?;
         if !at_most_a_power_of_two(&elements.radius, LARGEST_RADIUS_EXPONENT)
             || !at_most_a_power_of_two(&elements.period.abs(), LONGEST_ORBIT_PERIOD_EXPONENT)
         {
@@ -419,6 +436,12 @@ impl Orbit {
     pub fn is_circle(&self) -> bool {
         let one = WideFloat::from_i64(1, self.elements.ratio.precision());
         self.elements.ratio.compare(&one) == Ordering::Equal
+    }
+
+    /// The eccentricity (1 less the ratio), as the nearest `f64`: exact however small it is, because the ratio is kept and not the eccentricity (see [`Orbit::ratio`]).
+    pub fn eccentricity(&self) -> f64 {
+        let one = WideFloat::from_i64(1, self.elements.ratio.precision());
+        (&one - &self.elements.ratio).to_f64()
     }
 
     /// How near to its centre the body comes, in voxels, as an `f64` (the semi-major axis times the ratio).

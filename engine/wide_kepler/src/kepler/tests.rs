@@ -1,7 +1,8 @@
-//! The `f64` form of Kepler's equation (the first guess of the solver, and what putting a state on an orbit uses) against its definition at 256 bits.
+//! The `f64` form of Kepler's equation (the first guess of the solver) against its definition at 256 bits.
 
 use wide_float::{Precision, WideFloat};
-use wide_kepler::equation_in_f64;
+
+use super::equation_in_f64;
 
 fn wide(value: f64) -> WideFloat {
     WideFloat::from_f64(value, Precision::of(256)).unwrap()
