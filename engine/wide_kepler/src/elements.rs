@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 use wide_float::{Precision, WideFloat};
 
 use crate::KeplerError;
-use crate::kepler::{eccentric_anomaly, hyperbolic_anomaly, sinh_and_cosh};
+use crate::kepler::{HyperbolicAnomaly, eccentric_anomaly, hyperbolic_anomaly};
 
 /// The elements of an orbit: the same as `world_storage::rail::Orbit` has, as numbers of any width.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -362,11 +362,14 @@ impl PreparedElements {
         } else {
             self.one.clone()
         };
-        let anomaly = hyperbolic_anomaly(size, &mean.abs())?;
+        // (The solver has the sinh and cosh of half the anomaly by its end: it kept them across its steps.)
+        let HyperbolicAnomaly {
+            sinh_half,
+            cosh_half,
+            ..
+        } = hyperbolic_anomaly(size, &mean.abs())?;
 
         // sinh H, cosh H, and cosh H - 1 = 2 sinh^2(H / 2), from the half angle so that nothing cancels.
-        let half = anomaly.times_power_of_two(-1)?;
-        let (sinh_half, cosh_half) = sinh_and_cosh(&half)?;
         let sinh = (&sinh_half * &cosh_half).times_power_of_two(1)?;
         let half_versine = &sinh_half * &sinh_half;
         let cosh = &self.one + &half_versine.times_power_of_two(1)?;
