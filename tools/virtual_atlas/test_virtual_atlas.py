@@ -2390,10 +2390,10 @@ class ProjectEditingTests(ProjectFixture):
     def test_saving_writes_the_png_and_clears_the_modified_mark(self):
         project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE))})
         self.edit(project, self.paint(1, 1))
-        self.assertTrue(project.has_unsaved_file_changes)
+        self.assertEqual(project.unsaved_tiles(), [(0, 0)])
         project.save_tile((0, 0))
         self.assertFalse(project.tiles[(0, 0)].is_modified)
-        self.assertFalse(project.has_unsaved_file_changes)
+        self.assertEqual(project.unsaved_tiles(), [])
         self.assertEqual(tuple(va.read_image_pixels(self.folder / "a.png")[1, 1]), RED)
 
     def test_saving_a_new_tile_creates_its_file_and_removes_its_stored_data(self):
@@ -2441,7 +2441,7 @@ class ProjectEditingTests(ProjectFixture):
         self.edit(project, self.paint(0, 0), [(1, 0)])
         project.selection = set()
         self.assertEqual(project.save_all_tiles(), (2, []))
-        self.assertFalse(project.has_unsaved_file_changes)
+        self.assertEqual(project.unsaved_tiles(), [])
 
     def test_returning_a_tile_forgets_its_history(self):
         project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE))})
@@ -2796,6 +2796,294 @@ class ImageClipboardTests(unittest.TestCase):
         self.assertTrue(numpy.array_equal(clipboard.get_image(), pixels))
 
 
+class ProjectRenameTests(ProjectFixture):
+    def paint_tile(self, project, coordinate, row=0, column=0, color=RED):
+        record = project.tiles[coordinate]
+        layout = va.compose_canvas({coordinate: record.pixels}, self.tile_size)
+        canvas = layout.pixels.copy()
+        canvas[row, column] = color
+        return project.apply_canvas_edit(layout, canvas)
+
+    def test_renaming_a_tile_with_a_file_renames_the_file_and_atlas_json_and_keeps_the_pixels(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE))})
+        self.assertTrue(project.rename_tile((0, 0), "stone.png"))
+        self.assertFalse((self.folder / "a.png").exists())
+        self.assertTrue(numpy.array_equal(va.read_image_pixels(self.folder / "stone.png"), solid_tile(BLUE)))
+        self.assertEqual(self.saved().coordinates_to_names, {(0, 0): "stone.png"})
+        self.assertEqual(project.tiles[(0, 0)].name, "stone.png")
+        self.assertFalse(project.tiles[(0, 0)].is_modified)
+
+    def test_renaming_keeps_unsaved_edits_and_their_history(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE))})
+        record = project.tiles[(0, 0)]
+        self.paint_tile(project, (0, 0))
+        project.rename_tile((0, 0), "b.png")
+        self.assertEqual(tuple(record.pixels[0, 0]), RED)
+        self.assertTrue(record.is_modified)
+        self.assertEqual(tuple(va.read_image_pixels(self.folder / "b.png")[0, 0]), BLUE, "the file is the old picture")
+        project.select_only((0, 0))
+        self.assertTrue(project.undo())
+        self.assertFalse(record.is_modified)
+
+    def test_a_new_tile_is_renamed_in_atlas_json_and_gets_no_file(self):
+        project = self.make_project({(0, 0): ("n.png", None)}, data={(0, 0): va.encode_tile_data(solid_tile(GREEN))})
+        self.assertTrue(project.rename_tile((0, 0), "grass.png"))
+        self.assertEqual(self.saved().coordinates_to_names, {(0, 0): "grass.png"})
+        self.assertEqual(list(self.saved().coordinates_to_data), [(0, 0)])
+        self.assertEqual([entry.name for entry in self.folder.iterdir() if entry.suffix == ".png"], [])
+        project.save_tile((0, 0))
+        self.assertTrue((self.folder / "grass.png").exists())
+
+    def test_the_old_name_becomes_free_and_the_new_one_taken(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE)), (1, 0): ("c.png", solid_tile(RED))})
+        project.rename_tile((0, 0), "b.png")
+        self.assertIsNone(project.rename_problem((1, 0), "a.png"))
+        self.assertIsNotNone(project.rename_problem((1, 0), "b.png"))
+
+    def test_the_same_name_changes_nothing(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE))})
+        before = (self.folder / "atlas.json").read_bytes()
+        self.assertFalse(project.rename_tile((0, 0), "a.png"))
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+
+    def test_only_the_letter_case_can_change(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE))})
+        self.assertTrue(project.rename_tile((0, 0), "A.png"))
+        self.assertEqual([entry.name for entry in self.folder.iterdir() if entry.suffix == ".png"], ["A.png"])
+        self.assertEqual(self.saved().coordinates_to_names, {(0, 0): "A.png"})
+
+    def test_a_bad_name_is_refused_with_the_reason_and_nothing_changes(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE))})
+        for name in ["", "a", "a.jpg", "x/y.png", "CON.png", " a.png"]:
+            self.assertIsNotNone(project.rename_problem((0, 0), name), name)
+            with self.assertRaises(ValueError):
+                project.rename_tile((0, 0), name)
+        self.assertTrue((self.folder / "a.png").exists())
+        self.assertEqual(project.tiles[(0, 0)].name, "a.png")
+
+    def test_a_name_used_by_another_tile_an_unplaced_file_or_an_ignored_file_is_refused(self):
+        va.write_png_atomically(self.folder / "wrong_size.png", solid_tile(RED, 8))
+        project = self.make_project(
+            {(0, 0): ("a.png", solid_tile(BLUE)), (1, 0): ("b.png", solid_tile(RED)), (2, 0): ("n.png", None)},
+            unplaced=[("loose.png", solid_tile(GREEN))],
+            data={(2, 0): va.encode_tile_data(solid_tile(GREEN))},
+        )
+        for name in ["b.png", "B.PNG", "loose.png", "wrong_size.png", "n.png", "N.png"]:
+            self.assertIn("already used", project.rename_problem((0, 0), name), name)
+        self.assertIn("already used", project.rename_problem((2, 0), "a.png"))
+        self.assertIn("already used", project.rename_problem((2, 0), "wrong_size.png"))
+        with self.assertRaises(ValueError):
+            project.rename_tile((0, 0), "wrong_size.png")
+        self.assertEqual(va.read_image_size(self.folder / "wrong_size.png"), (8, 8))
+
+    def test_a_file_that_appeared_in_the_folder_since_loading_is_never_overwritten(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE))})
+        va.write_png_atomically(self.folder / "new.png", solid_tile(RED, 8))
+        with self.assertRaises(OSError):
+            project.rename_tile((0, 0), "new.png")
+        self.assertEqual(va.read_image_size(self.folder / "new.png"), (8, 8))
+        self.assertTrue((self.folder / "a.png").exists())
+        self.assertEqual(project.tiles[(0, 0)].name, "a.png")
+
+    def test_a_file_is_never_renamed_over_another_even_where_the_system_would_allow_it(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE))})
+        va.write_png_atomically(self.folder / "new.png", solid_tile(RED, 8))
+        with mock.patch.object(va.os, "rename") as rename:
+            with self.assertRaises(FileExistsError):
+                project.rename_tile((0, 0), "new.png")
+        rename.assert_not_called()
+
+    def test_an_error_tile_cannot_be_renamed(self):
+        project = self.make_project({(0, 0): ("gone.png", None)})
+        self.assertIn("cannot be renamed", project.rename_problem((0, 0), "other.png"))
+        with self.assertRaises(ValueError):
+            project.rename_tile((0, 0), "other.png")
+
+    def test_when_atlas_json_cannot_be_written_the_file_goes_back_to_its_name(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE))})
+        before = (self.folder / "atlas.json").read_bytes()
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                project.rename_tile((0, 0), "b.png")
+        self.assertTrue((self.folder / "a.png").exists())
+        self.assertFalse((self.folder / "b.png").exists())
+        self.assertEqual(project.tiles[(0, 0)].name, "a.png")
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertIsNone(project.rename_problem((0, 0), "c.png"))
+
+    def test_when_the_file_cannot_be_renamed_nothing_changes(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE))})
+        before = (self.folder / "atlas.json").read_bytes()
+        with mock.patch.object(va.os, "rename", side_effect=PermissionError("in use")):
+            with self.assertRaises(OSError):
+                project.rename_tile((0, 0), "b.png")
+        self.assertEqual(project.tiles[(0, 0)].name, "a.png")
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+
+    def test_a_new_tile_whose_atlas_json_write_fails_keeps_its_name(self):
+        project = self.make_project({(0, 0): ("n.png", None)}, data={(0, 0): va.encode_tile_data(solid_tile(GREEN))})
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                project.rename_tile((0, 0), "m.png")
+        self.assertEqual(project.tiles[(0, 0)].name, "n.png")
+        self.assertEqual(self.saved().coordinates_to_names, {(0, 0): "n.png"})
+
+
+class UnsavedTilesTests(ProjectFixture):
+    def test_the_unsaved_tiles_are_the_modified_ones_including_new_tiles_in_reading_order(self):
+        project = self.make_project(
+            {(1, 0): ("b.png", solid_tile(BLUE)), (0, 1): ("n.png", None), (0, 0): ("a.png", solid_tile(BLUE)), (2, 0): ("gone.png", None)},
+            data={(0, 1): va.encode_tile_data(solid_tile(GREEN))},
+        )
+        self.assertEqual(project.unsaved_tiles(), [(0, 1)])
+        for coordinate in [(1, 0), (0, 0)]:
+            record = project.tiles[coordinate]
+            layout = va.compose_canvas({coordinate: record.pixels}, 4)
+            canvas = layout.pixels.copy()
+            canvas[0, 0] = RED
+            project.apply_canvas_edit(layout, canvas)
+        self.assertEqual(project.unsaved_tiles(), [(0, 0), (1, 0), (0, 1)])
+        project.save_all_tiles()
+        self.assertEqual(project.unsaved_tiles(), [])
+
+
+class QuitDialogTests(ProjectFixture):
+    def make_two(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE)), (1, 0): ("b.png", solid_tile(GREEN))})
+        for coordinate in [(0, 0), (1, 0)]:
+            record = project.tiles[coordinate]
+            layout = va.compose_canvas({coordinate: record.pixels}, 4)
+            canvas = layout.pixels.copy()
+            canvas[0, 0] = RED
+            project.apply_canvas_edit(layout, canvas)
+        return project
+
+    def disk(self, name, row=0, column=0):
+        return tuple(int(v) for v in va.read_image_pixels(self.folder / name)[row, column])
+
+    def test_it_asks_about_each_unsaved_tile_in_reading_order(self):
+        project = self.make_two()
+        dialog = va.QuitDialog(project)
+        self.assertEqual((dialog.record.name, dialog.remaining), ("a.png", 2))
+        self.assertEqual(dialog.discard(), "ask")
+        self.assertEqual((dialog.record.name, dialog.remaining), ("b.png", 1))
+        self.assertEqual(dialog.discard(), "quit")
+
+    def test_save_writes_the_file_and_asks_about_the_next_tile(self):
+        project = self.make_two()
+        dialog = va.QuitDialog(project)
+        self.assertEqual(dialog.save(), "ask")
+        self.assertEqual(self.disk("a.png"), RED)
+        self.assertEqual(self.disk("b.png"), GREEN)
+        self.assertEqual(dialog.save(), "quit")
+        self.assertEqual(self.disk("b.png"), RED)
+
+    def test_dont_save_leaves_the_file_and_the_unsaved_pixels_alone(self):
+        project = self.make_two()
+        dialog = va.QuitDialog(project)
+        dialog.discard()
+        dialog.discard()
+        self.assertEqual(self.disk("a.png"), BLUE)
+        self.assertTrue(project.tiles[(0, 0)].is_modified)
+
+    def test_cancel_changes_nothing_and_tiles_already_saved_stay_saved(self):
+        project = self.make_two()
+        dialog = va.QuitDialog(project)
+        dialog.save()
+        self.assertEqual(dialog.cancel(), "cancel")
+        self.assertEqual(self.disk("a.png"), RED)
+        self.assertEqual(self.disk("b.png"), GREEN)
+
+    def test_do_this_for_all_saves_every_remaining_tile(self):
+        project = self.make_two()
+        dialog = va.QuitDialog(project)
+        dialog.toggle_apply_to_all()
+        self.assertEqual(dialog.save(), "quit")
+        self.assertEqual((self.disk("a.png"), self.disk("b.png")), (RED, RED))
+
+    def test_do_this_for_all_can_skip_every_remaining_tile(self):
+        project = self.make_two()
+        dialog = va.QuitDialog(project)
+        dialog.discard()
+        dialog.toggle_apply_to_all()
+        self.assertEqual(dialog.discard(), "quit")
+        self.assertEqual((self.disk("a.png"), self.disk("b.png")), (BLUE, GREEN))
+
+    def test_the_checkbox_only_counts_for_the_tiles_still_to_come(self):
+        project = self.make_two()
+        dialog = va.QuitDialog(project)
+        dialog.save()
+        dialog.toggle_apply_to_all()
+        self.assertEqual(dialog.remaining, 1)
+        self.assertEqual(dialog.save(), "quit")
+
+    def test_a_failed_save_stays_on_that_tile_with_the_reason_and_saves_nothing_after_it(self):
+        project = self.make_two()
+        dialog = va.QuitDialog(project)
+        dialog.toggle_apply_to_all()
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            self.assertEqual(dialog.save(), "ask")
+        self.assertIn("a.png", dialog.error)
+        self.assertIn("disk full", dialog.error)
+        self.assertEqual(dialog.record.name, "a.png")
+        self.assertEqual(dialog.discard(), "quit", "with the box still ticked, every tile is skipped")
+        self.assertEqual(self.disk("b.png"), GREEN)
+
+    def test_an_error_goes_away_when_the_next_answer_works(self):
+        project = self.make_two()
+        dialog = va.QuitDialog(project)
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            dialog.save()
+        self.assertTrue(dialog.error)
+        self.assertEqual(dialog.save(), "ask")
+        self.assertEqual(dialog.error, "")
+
+    def test_a_tile_that_has_no_file_yet_shows_nothing_on_the_disk_side_and_is_written_by_save(self):
+        project = self.make_project({(0, 0): ("n.png", None)}, data={(0, 0): va.encode_tile_data(solid_tile(GREEN))})
+        dialog = va.QuitDialog(project)
+        self.assertIsNone(dialog.disk_pixels)
+        self.assertTrue(numpy.array_equal(dialog.current_pixels, solid_tile(GREEN)))
+        self.assertEqual(dialog.save(), "quit")
+        self.assertEqual(self.disk("n.png"), GREEN)
+
+    def test_dont_save_on_a_tile_with_no_file_leaves_it_in_atlas_json(self):
+        project = self.make_project({(0, 0): ("n.png", None)}, data={(0, 0): va.encode_tile_data(solid_tile(GREEN))})
+        va.QuitDialog(project).discard()
+        self.assertFalse((self.folder / "n.png").exists())
+        self.assertEqual(list(self.saved().coordinates_to_data), [(0, 0)])
+
+    def test_the_two_pictures_are_the_current_pixels_and_what_the_file_has(self):
+        project = self.make_two()
+        dialog = va.QuitDialog(project)
+        self.assertEqual(tuple(dialog.current_pixels[0, 0]), RED)
+        self.assertEqual(tuple(dialog.disk_pixels[0, 0]), BLUE)
+
+    def test_a_tile_is_drawn_at_a_whole_number_of_screen_pixels_per_pixel_when_it_fits(self):
+        box = va.pygame.Rect(100, 50, 220, 220)
+        picture = va.fit_picture_rectangle(box, 8)
+        self.assertEqual(picture.size, (216, 216))
+        self.assertEqual(picture.center, box.center)
+        self.assertEqual(va.fit_picture_rectangle(box, 16).size, (208, 208))
+        self.assertEqual(va.fit_picture_rectangle(box, 220).size, (220, 220))
+        self.assertEqual(va.fit_picture_rectangle(box, 1000).size, (220, 220), "a big tile is shrunk to the box")
+
+    def test_the_parts_fit_inside_the_panel_and_the_window_without_overlapping(self):
+        for size in [(1280, 800), (900, 600), (640, 480)]:
+            for checkbox in (True, False):
+                areas = va.quit_dialog_areas(size, checkbox)
+                window = va.pygame.Rect(0, 0, *size)
+                self.assertTrue(window.contains(areas["panel"]), size)
+                parts = {name: rectangle for name, rectangle in areas.items() if name != "panel"}
+                if not checkbox:
+                    self.assertNotIn("checkbox", parts)
+                for name, rectangle in parts.items():
+                    self.assertTrue(areas["panel"].contains(rectangle), (name, size))
+                names = list(parts)
+                for index, first in enumerate(names):
+                    for second in names[index + 1:]:
+                        self.assertFalse(parts[first].colliderect(parts[second]), (first, second, size))
+
+
 class EditorTests(ProjectFixture):
     """Drives the editor with mouse and key events the way a user would, and checks the tiles."""
 
@@ -3114,25 +3402,12 @@ class EditorTests(ProjectFixture):
         self.assertIn("Saved 1 tile", self.application.message)
         self.key(va.pygame.K_s, va.pygame.KMOD_CTRL | va.pygame.KMOD_SHIFT)
         self.assertEqual(va.read_image_pixels(self.folder / "b.png")[0, 0].tolist(), [0, 0, 0, 255])
-        self.assertFalse(self.project.has_unsaved_file_changes)
+        self.assertEqual(self.project.unsaved_tiles(), [])
 
     def test_saving_with_nothing_to_save_says_so(self):
         self.select((0, 0))
         self.key(va.pygame.K_s, va.pygame.KMOD_CTRL)
         self.assertEqual(self.application.message, "Nothing to save.")
-
-    def test_closing_the_window_with_unsaved_changes_is_held_back_until_they_are_saved(self):
-        self.select((0, 0))
-        self.drag(self.position(0, 0), self.position(1, 0))
-        self.assertTrue(self.application.handle_event(va.pygame.event.Event(va.pygame.QUIT)))
-        self.assertIn("Unsaved changes", self.application.message)
-        self.key(va.pygame.K_s, va.pygame.KMOD_CTRL)
-        self.assertFalse(self.application.handle_event(va.pygame.event.Event(va.pygame.QUIT)))
-
-    def test_closing_is_allowed_when_only_new_tiles_are_unsaved_because_atlas_json_holds_them(self):
-        project = self.make_project({(0, 0): ("n.png", None)}, data={(0, 0): va.encode_tile_data(solid_tile(BLUE, 8))}, tile_size=8)
-        application = va.Application(project, va.pygame.Surface((1280, 800)))
-        self.assertFalse(application.handle_event(va.pygame.event.Event(va.pygame.QUIT)))
 
     def test_editing_a_new_tile_keeps_it_in_atlas_json_and_a_failed_write_is_reported(self):
         project = self.make_project({(0, 0): ("n.png", None)}, data={(0, 0): va.encode_tile_data(solid_tile(BLUE, 8))}, tile_size=8)
@@ -3623,6 +3898,329 @@ class EditorTests(ProjectFixture):
             self.send("down", self.position(3, 3))
             self.send("up", self.position(3, 3))
             self.application.draw()
+
+
+    # Phase 5: renaming and the quit dialog -----------------------------------------------------------------
+
+    def click_name(self):
+        center = self.editor.areas.header.center
+        self.send("down", center)
+        self.send("up", center)
+
+    def type_text(self, text):
+        self.application.handle_event(va.pygame.event.Event(va.pygame.TEXTINPUT, text=text))
+
+    def rename_to(self, name):
+        self.click_name()
+        self.editor.name_field.select_all()
+        self.type_text(name)
+
+    def png_names(self):
+        return sorted(entry.name for entry in self.folder.iterdir() if entry.suffix == ".png")
+
+    def test_clicking_the_name_of_a_single_tile_starts_editing_it(self):
+        self.select((0, 0))
+        self.click_name()
+        self.assertTrue(self.editor.name_focused)
+        self.assertEqual(self.editor.name_field.text, "a.png")
+
+    def test_the_name_of_several_tiles_or_of_none_cannot_be_edited(self):
+        self.select((0, 0), (1, 0))
+        self.click_name()
+        self.assertFalse(self.editor.name_focused)
+        self.select()
+        self.click_name()
+        self.assertFalse(self.editor.name_focused)
+
+    def test_the_name_of_a_tile_that_cannot_be_edited_cannot_be_edited(self):
+        project = self.make_project({(0, 0): ("gone.png", None)}, tile_size=8)
+        application = va.Application(project, va.pygame.Surface((1280, 800)))
+        project.select_only((0, 0))
+        application.editor.sync()
+        center = application.editor.areas.header.center
+        application.handle_event(va.pygame.event.Event(va.pygame.MOUSEBUTTONDOWN, pos=center, button=1))
+        self.assertFalse(application.editor.name_focused)
+
+    def test_typing_a_name_and_pressing_enter_renames_the_file_at_once(self):
+        self.select((0, 0))
+        self.rename_to("stone.png")
+        self.key(va.pygame.K_RETURN)
+        self.assertEqual(self.png_names(), ["b.png", "c.png", "stone.png"])
+        self.assertEqual(self.editor.header_text(), "stone.png")
+        self.assertFalse(self.editor.name_focused)
+        self.assertEqual(self.saved().coordinates_to_names[(0, 0)], "stone.png")
+        self.assertIn("Renamed", self.application.message)
+
+    def test_characters_a_file_name_cannot_contain_are_not_typed(self):
+        self.select((0, 0))
+        self.rename_to("x/y:z*.png")
+        self.assertEqual(self.editor.name_field.text, "xyz.png")
+
+    def test_a_name_that_is_not_allowed_keeps_the_field_open_with_the_reason(self):
+        self.select((0, 0))
+        self.rename_to("stone")
+        self.key(va.pygame.K_RETURN)
+        self.assertTrue(self.editor.name_focused)
+        self.assertTrue(self.editor.name_invalid)
+        self.assertIn("must end with", self.application.message)
+        self.assertEqual(self.png_names(), ["a.png", "b.png", "c.png"])
+        self.application.draw()
+        self.key(va.pygame.K_ESCAPE)
+        self.assertFalse(self.editor.name_focused)
+        self.assertEqual(self.editor.header_text(), "a.png")
+
+    def test_a_name_that_another_file_has_is_refused_and_that_file_is_not_touched(self):
+        self.select((0, 0))
+        self.rename_to("B.png")
+        self.key(va.pygame.K_RETURN)
+        self.assertTrue(self.editor.name_invalid)
+        self.assertIn("already used", self.application.message)
+        self.assertEqual(self.pixel((1, 0), 0, 0), GREEN)
+        self.assertEqual(va.read_image_pixels(self.folder / "b.png")[0, 0].tolist(), list(GREEN))
+
+    def test_typing_again_clears_the_flag(self):
+        self.select((0, 0))
+        self.rename_to("stone")
+        self.key(va.pygame.K_RETURN)
+        self.type_text(".png")
+        self.assertFalse(self.editor.name_invalid)
+
+    def test_clicking_away_applies_a_valid_name(self):
+        self.select((0, 0))
+        self.rename_to("stone.png")
+        self.send("down", self.application.unplaced_panel.rect.center)
+        self.assertEqual(self.png_names(), ["b.png", "c.png", "stone.png"])
+        self.assertFalse(self.editor.name_focused)
+
+    def test_clicking_away_from_a_name_that_is_not_allowed_drops_it_and_says_why(self):
+        self.select((0, 0))
+        self.rename_to("stone")
+        self.send("down", self.application.unplaced_panel.rect.center)
+        self.assertEqual(self.png_names(), ["a.png", "b.png", "c.png"])
+        self.assertFalse(self.editor.name_focused)
+        self.assertIn("must end with", self.application.message)
+
+    def test_clicking_another_tile_in_the_atlas_renames_the_first_before_the_selection_changes(self):
+        self.select((0, 0))
+        self.rename_to("stone.png")
+        position = self.application.atlas_panel.tile_screen_rect((1, 0)).center
+        self.send("down", position)
+        self.send("up", position)
+        self.assertEqual(self.png_names(), ["b.png", "c.png", "stone.png"])
+        self.assertEqual(self.project.selection, {(1, 0)})
+
+    def test_clicking_a_tool_or_the_canvas_while_editing_the_name_applies_it_first(self):
+        self.select((0, 0))
+        self.rename_to("stone.png")
+        self.click_tool("eraser")
+        self.assertEqual(self.png_names(), ["b.png", "c.png", "stone.png"])
+        self.assertFalse(self.editor.name_focused)
+        self.assertEqual(self.editor.tool, "eraser")
+        self.click_name()
+        self.editor.name_field.set_text("grass.png")
+        self.send("down", self.position(3, 3))
+        self.send("up", self.position(3, 3))
+        self.assertFalse(self.editor.name_focused)
+        self.assertIn("grass.png", self.png_names())
+
+    def test_a_name_that_cannot_reach_the_disk_is_reported_and_dropped(self):
+        self.select((0, 0))
+        self.rename_to("stone.png")
+        with mock.patch.object(va.os, "rename", side_effect=PermissionError("in use")):
+            self.key(va.pygame.K_RETURN)
+        self.assertIn("Could not rename", self.application.message)
+        self.assertFalse(self.editor.name_focused)
+        self.assertEqual(self.png_names(), ["a.png", "b.png", "c.png"])
+
+    def test_ctrl_a_in_the_name_selects_it_without_the_extension_and_not_the_canvas(self):
+        self.select((0, 0))
+        self.click_name()
+        self.key(va.pygame.K_a, va.pygame.KMOD_CTRL)
+        self.assertEqual(self.editor.name_field.selection, (0, 1))
+        self.assertEqual(self.editor.tool, "pencil")
+        self.assertIsNone(self.editor.selection_rectangle)
+        self.editor.name_field.set_text("grass.top.png")
+        self.key(va.pygame.K_a, va.pygame.KMOD_CTRL)
+        self.assertEqual(self.editor.name_field.selection, (0, 9))
+
+    def test_typing_over_the_selected_stem_keeps_the_extension(self):
+        self.select((0, 0))
+        self.click_name()
+        self.key(va.pygame.K_a, va.pygame.KMOD_CTRL)
+        self.type_text("dirt")
+        self.assertEqual(self.editor.name_field.text, "dirt.png")
+
+    def test_keys_typed_into_the_name_do_not_reach_the_canvas(self):
+        self.select((0, 0))
+        self.click_name()
+        self.key(va.pygame.K_RIGHTBRACKET)
+        self.assertEqual(self.editor.settings.brush_sizes["pencil"], (1, 1))
+        self.key(va.pygame.K_s, va.pygame.KMOD_CTRL)
+        self.assertEqual(self.application.message, "")
+
+    def test_choosing_other_tiles_without_the_mouse_ends_the_edit_without_renaming(self):
+        self.select((0, 0))
+        self.rename_to("stone.png")
+        self.select((1, 0))
+        self.assertFalse(self.editor.name_focused)
+        self.assertEqual(self.png_names(), ["a.png", "b.png", "c.png"])
+
+    def test_renaming_keeps_unsaved_edits_and_saving_afterwards_writes_the_new_file(self):
+        self.select((0, 0))
+        self.drag(self.position(0, 0), self.position(1, 0))
+        self.rename_to("stone.png")
+        self.key(va.pygame.K_RETURN)
+        self.assertEqual(self.editor.header_text(), "stone.png*")
+        self.key(va.pygame.K_s, va.pygame.KMOD_CTRL)
+        self.assertEqual(va.read_image_pixels(self.folder / "stone.png")[0, 0].tolist(), [0, 0, 0, 255])
+        self.assertEqual(self.png_names(), ["b.png", "c.png", "stone.png"])
+
+    def test_the_window_draws_the_name_field_in_each_state(self):
+        self.select((0, 0))
+        self.editor.pointer = self.editor.areas.header.center
+        self.application.draw()
+        self.click_name()
+        self.application.draw()
+        self.type_text("!")
+        self.editor.name_invalid = True
+        self.application.draw()
+
+    def unsaved_tiles_in_two_places(self):
+        self.select((0, 0))
+        self.drag(self.position(0, 0), self.position(1, 0))
+        self.select((1, 0))
+        self.drag(self.position(0, 0), self.position(1, 0))
+        self.select()
+
+    def quit_event(self):
+        return self.application.handle_event(va.pygame.event.Event(va.pygame.QUIT))
+
+    def press_dialog(self, name):
+        center = self.application.dialog_areas()[name].center
+        self.application.handle_event(va.pygame.event.Event(va.pygame.MOUSEBUTTONDOWN, pos=center, button=1))
+        return self.application.handle_event(va.pygame.event.Event(va.pygame.MOUSEBUTTONUP, pos=center, button=1))
+
+    def test_closing_with_nothing_unsaved_closes_at_once(self):
+        self.assertFalse(self.quit_event())
+
+    def test_closing_with_unsaved_changes_opens_the_dialog_instead(self):
+        self.select((0, 0))
+        self.drag(self.position(0, 0), self.position(1, 0))
+        self.assertTrue(self.quit_event())
+        self.assertIsNotNone(self.application.quit_dialog)
+        self.assertEqual(self.application.quit_dialog.record.name, "a.png")
+        self.application.draw()
+
+    def test_closing_with_only_a_tile_that_has_no_file_asks_too(self):
+        project = self.make_project({(0, 0): ("n.png", None)}, data={(0, 0): va.encode_tile_data(solid_tile(BLUE, 8))}, tile_size=8)
+        application = va.Application(project, va.pygame.Surface((1280, 800)))
+        self.assertTrue(application.handle_event(va.pygame.event.Event(va.pygame.QUIT)))
+        self.assertIsNotNone(application.quit_dialog)
+        application.draw()
+
+    def test_the_save_button_writes_the_tile_and_closes(self):
+        self.select((0, 0))
+        self.drag(self.position(0, 0), self.position(1, 0))
+        self.quit_event()
+        self.assertFalse(self.press_dialog("save"))
+        self.assertEqual(va.read_image_pixels(self.folder / "a.png")[0, 0].tolist(), [0, 0, 0, 255])
+        self.application.draw()  # the real loop draws once more after the answer, before it ends
+
+    def test_the_dont_save_button_closes_and_leaves_the_file(self):
+        self.select((0, 0))
+        self.drag(self.position(0, 0), self.position(1, 0))
+        self.quit_event()
+        self.assertFalse(self.press_dialog("discard"))
+        self.assertEqual(va.read_image_pixels(self.folder / "a.png")[0, 0].tolist(), list(BLUE))
+
+    def test_the_cancel_button_and_escape_keep_the_program_open_and_nothing_is_saved(self):
+        self.select((0, 0))
+        self.drag(self.position(0, 0), self.position(1, 0))
+        self.quit_event()
+        self.assertTrue(self.press_dialog("cancel"))
+        self.assertIsNone(self.application.quit_dialog)
+        self.assertEqual(va.read_image_pixels(self.folder / "a.png")[0, 0].tolist(), list(BLUE))
+        self.quit_event()
+        self.assertTrue(self.application.handle_event(va.pygame.event.Event(va.pygame.KEYDOWN, key=va.pygame.K_ESCAPE, mod=0, unicode="", scancode=0)))
+        self.assertIsNone(self.application.quit_dialog)
+        self.assertTrue(self.project.tiles[(0, 0)].is_modified)
+
+    def test_enter_in_the_dialog_saves(self):
+        self.select((0, 0))
+        self.drag(self.position(0, 0), self.position(1, 0))
+        self.quit_event()
+        self.assertFalse(self.application.handle_event(va.pygame.event.Event(va.pygame.KEYDOWN, key=va.pygame.K_RETURN, mod=0, unicode="", scancode=0)))
+        self.assertEqual(va.read_image_pixels(self.folder / "a.png")[0, 0].tolist(), [0, 0, 0, 255])
+
+    def test_closing_the_window_again_while_the_dialog_is_open_changes_nothing(self):
+        self.select((0, 0))
+        self.drag(self.position(0, 0), self.position(1, 0))
+        self.quit_event()
+        dialog = self.application.quit_dialog
+        self.assertTrue(self.quit_event())
+        self.assertIs(self.application.quit_dialog, dialog)
+
+    def test_nothing_behind_the_dialog_reacts_while_it_is_open(self):
+        self.select((0, 0))
+        self.drag(self.position(0, 0), self.position(1, 0))
+        self.quit_event()
+        self.click_tool("eraser")
+        self.assertEqual(self.editor.tool, "pencil")
+        self.send("down", self.application.atlas_panel.tile_screen_rect((1, 0)).center)
+        self.assertEqual(self.project.selection, {(0, 0)})
+        self.key(va.pygame.K_s, va.pygame.KMOD_CTRL | va.pygame.KMOD_SHIFT)
+        self.assertEqual(va.read_image_pixels(self.folder / "a.png")[0, 0].tolist(), list(BLUE))
+        self.assertIsNotNone(self.application.quit_dialog)
+
+    def test_two_unsaved_tiles_are_asked_about_in_turn(self):
+        self.unsaved_tiles_in_two_places()
+        self.quit_event()
+        self.assertIn("checkbox", self.application.dialog_areas())
+        self.assertTrue(self.press_dialog("discard"))
+        self.assertEqual(self.application.quit_dialog.record.name, "b.png")
+        self.assertNotIn("checkbox", self.application.dialog_areas())
+        self.assertFalse(self.press_dialog("save"))
+        self.assertEqual(va.read_image_pixels(self.folder / "a.png")[0, 0].tolist(), list(BLUE))
+        self.assertEqual(va.read_image_pixels(self.folder / "b.png")[0, 0].tolist(), [0, 0, 0, 255])
+
+    def test_the_checkbox_applies_the_answer_to_every_remaining_tile(self):
+        self.unsaved_tiles_in_two_places()
+        self.quit_event()
+        self.press_dialog("checkbox")
+        self.assertTrue(self.application.quit_dialog.apply_to_all)
+        self.application.draw()
+        self.assertFalse(self.press_dialog("save"))
+        self.assertEqual(va.read_image_pixels(self.folder / "a.png")[0, 0].tolist(), [0, 0, 0, 255])
+        self.assertEqual(va.read_image_pixels(self.folder / "b.png")[0, 0].tolist(), [0, 0, 0, 255])
+
+    def test_a_failed_save_leaves_the_dialog_open_and_shows_the_reason(self):
+        self.select((0, 0))
+        self.drag(self.position(0, 0), self.position(1, 0))
+        self.quit_event()
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            self.assertTrue(self.press_dialog("save"))
+        self.assertIn("disk full", self.application.quit_dialog.error)
+        self.application.draw()
+        self.assertFalse(self.press_dialog("discard"))
+
+    def test_the_dialog_shows_the_current_tile_and_the_file_side_by_side(self):
+        self.select((0, 0))
+        self.drag(self.position(0, 0), self.position(1, 0))
+        self.quit_event()
+        self.application.draw()
+        areas = self.application.dialog_areas()
+        surface = self.application.surface
+        current = va.fit_picture_rectangle(areas["current"], 8)
+        disk = va.fit_picture_rectangle(areas["disk"], 8)
+        self.assertEqual(tuple(surface.get_at((current.x + 2, current.y + 2)))[:3], (0, 0, 0))
+        self.assertEqual(tuple(surface.get_at((disk.x + 2, disk.y + 2)))[:3], BLUE[:3])
+        self.assertEqual(tuple(surface.get_at((current.right - 3, current.bottom - 3)))[:3], BLUE[:3])
+
+    def test_the_dialog_draws_in_a_small_window_and_for_a_tile_with_no_file(self):
+        project = self.make_project({(0, 0): ("n.png", None), (1, 0): ("m.png", None)}, data={(0, 0): va.encode_tile_data(solid_tile(BLUE, 8)), (1, 0): va.encode_tile_data(solid_tile(RED, 8))}, tile_size=8)
+        application = va.Application(project, va.pygame.Surface((700, 520)))
+        application.handle_event(va.pygame.event.Event(va.pygame.QUIT))
+        application.draw()
 
 
 if __name__ == "__main__":

@@ -49,10 +49,17 @@ phases; what works so far:
   drawing colors, and the 16 most recently used colors (click one to use it; right-click for the secondary).
 - Ctrl+Z undoes, Ctrl+Y or Ctrl+Shift+Z redoes (the history is per tile and kept while you switch tiles).
   Ctrl+S saves the shown tiles that changed, Ctrl+Shift+S saves every changed tile. A tile with unsaved changes
-  has an orange dot in the atlas, and `*` after its name. Until the quit dialog exists, the window will not close
-  while a tile that has a file has unsaved changes. A tile that has no file yet keeps its pixels in `atlas.json`
-  after every edit.
+  has an orange dot in the atlas, and `*` after its name. A tile that has no file yet keeps its pixels in
+  `atlas.json` after every edit.
+- Renaming: with one tile shown, click its name above the canvas and type. Enter renames at once, on disk (the
+  PNG file and `atlas.json`); Esc gives up; clicking elsewhere applies a name that is allowed and drops one that
+  is not (the status line says why). Ctrl+A selects the name without `.png`. A name is refused if it is not a valid
+  `.png` file name or if any PNG file in the folder already has it, even one the program ignores; a file is never
+  replaced. Renaming is not part of Ctrl+Z.
+- Closing the window with unsaved tiles (including tiles that have no file yet) asks about each one: Save, Don't
+  save or Cancel (Esc), with the current picture next to the one on disk. The box "Do this for all" gives the
+  same answer to the tiles still to come. Enter saves. A tile with no file that is not saved stays in `atlas.json`.
 
-Not built yet: renaming, the quit dialog, and importing a picture.
+Not built yet: importing a picture.
 
 Tests for the logic: `python -m unittest discover -s tools/virtual_atlas` from the repository root.

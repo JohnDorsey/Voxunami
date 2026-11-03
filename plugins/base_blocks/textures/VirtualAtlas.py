@@ -1311,10 +1311,10 @@ class AtlasProject:
 
     # Saving tile files ------------------------------------------------------------------------------------
 
-    @property
-    def has_unsaved_file_changes(self) -> bool:
-        """Some tile with a PNG file has changes the file does not have (new tiles are kept in atlas.json instead)."""
-        return any(record.is_modified and not record.is_new for record in self.tiles.values())
+    def unsaved_tiles(self) -> list[Coordinate]:
+        """The tiles that differ from their PNG file or have none, in reading order. (A tile with no file keeps its
+        pixels in atlas.json, but its file does not exist until it is saved.)"""
+        return sorted((coordinate for coordinate, record in self.tiles.items() if record.is_modified), key=reading_order_key)
 
     def save_tile(self, coordinate: Coordinate) -> None:
         """Write a tile to its PNG file. Raises OSError (FileExistsError if a new tile's name is taken)."""
@@ -1348,6 +1348,55 @@ class AtlasProject:
 
     def save_all_tiles(self) -> tuple[int, list[str]]:
         return self.save_tiles(list(self.tiles))
+
+    # Names ------------------------------------------------------------------------------------------------
+
+    def rename_problem(self, coordinate: Coordinate, new_name: str) -> Optional[str]:
+        """Why the tile cannot be called `new_name`, or None. Every PNG file in the folder counts as taken (the ones
+        the program ignores and the ones not in the atlas included), and so does the name of every other tile, even
+        one that has no file yet."""
+        record = self.tiles[coordinate]
+        if record.error is not None:
+            return f"this tile cannot be renamed: {record.error}"
+        taken = set(self.existing_names)
+        taken.discard(record.name.casefold())
+        taken |= {other.name.casefold() for other_coordinate, other in self.tiles.items() if other_coordinate != coordinate}
+        return find_name_problem(new_name, taken)
+
+    def rename_tile(self, coordinate: Coordinate, new_name: str) -> bool:
+        """Rename a tile now: its file (if it has one) and its entry in atlas.json. False if the name is the same.
+
+        Raises ValueError with the reason if the name is not allowed, and OSError if the disk refuses; in both cases
+        nothing has changed. A file is never replaced.
+        """
+        record = self.tiles[coordinate]
+        if new_name == record.name:
+            return False
+        problem = self.rename_problem(coordinate, new_name)
+        if problem is not None:
+            raise ValueError(problem)
+        old_name = record.name
+        old_path, new_path = self.folder / old_name, self.folder / new_name
+        has_file = not record.is_new
+        if has_file:
+            if new_path.exists() and not os.path.samefile(old_path, new_path):
+                raise FileExistsError(f"{new_name} already exists in the folder")
+            os.rename(old_path, new_path)
+        record.name = new_name
+        try:
+            self.save_atlas_file()
+        except BaseException:
+            record.name = old_name
+            if has_file:
+                try:
+                    os.rename(new_path, old_path)
+                except OSError:
+                    logger.warning("could not give %s back its name %s", new_name, old_name)
+            raise
+        if has_file:
+            self.existing_names.discard(old_name.casefold())
+            self.existing_names.add(new_name.casefold())
+        return True
 
     # Selection ------------------------------------------------------------------------------------------
 
@@ -1411,6 +1460,102 @@ class AtlasProject:
         for record in removed:
             self.history.forget(record)
         return True
+
+
+class QuitDialog:
+    """What to do with each tile that has unsaved changes when the window is closed, one tile at a time.
+
+    save(), discard() and cancel() answer for the tile shown and return "ask" (the dialog goes on, with the next
+    tile or with an error), "quit" (every tile has been dealt with) or "cancel". With `apply_to_all` set, an answer
+    is given for every tile still to come. A tile without a file that is not saved stays in atlas.json.
+    """
+
+    def __init__(self, project: AtlasProject):
+        self.project = project
+        self.coordinates = project.unsaved_tiles()
+        self.position = 0
+        self.apply_to_all = False
+        self.error = ""
+
+    @property
+    def record(self) -> TileRecord:
+        return self.project.tiles[self.coordinates[self.position]]
+
+    @property
+    def remaining(self) -> int:
+        return len(self.coordinates) - self.position
+
+    @property
+    def current_pixels(self) -> numpy.ndarray:
+        return self.record.pixels
+
+    @property
+    def disk_pixels(self) -> Optional[numpy.ndarray]:
+        return self.record.disk_pixels
+
+    def toggle_apply_to_all(self) -> None:
+        self.apply_to_all = not self.apply_to_all
+
+    def _answer(self, save: bool) -> str:
+        while True:
+            if save:
+                try:
+                    self.project.save_tile(self.coordinates[self.position])
+                except OSError as error:
+                    self.error = f"Could not save {self.record.name}: {error}"
+                    return "ask"
+            self.error = ""
+            self.position += 1
+            if self.position >= len(self.coordinates):
+                return "quit"
+            if not self.apply_to_all:
+                return "ask"
+
+    def save(self) -> str:
+        return self._answer(save=True)
+
+    def discard(self) -> str:
+        return self._answer(save=False)
+
+    def cancel(self) -> str:
+        return "cancel"
+
+
+def quit_dialog_areas(window_size: tuple[int, int], show_checkbox: bool) -> dict[str, pygame.Rect]:
+    """Where the parts of the quit dialog are: the panel, the two pictures, the checkbox row (when there is more
+    than one tile to ask about), the row for an error and the three buttons."""
+    width = min(scaled(640), window_size[0] - scaled(40))
+    height = min(scaled(430), window_size[1] - scaled(40))
+    panel = pygame.Rect(0, 0, width, height)
+    panel.center = (window_size[0] // 2, window_size[1] // 2)
+    margin, gap = scaled(20), scaled(16)
+    box = max(scaled(60), min(scaled(220), (width - 2 * margin - gap) // 2, height - scaled(228)))
+    left = panel.centerx - (2 * box + gap) // 2
+    top = panel.y + scaled(98)
+    areas = {
+        "panel": panel,
+        "current": pygame.Rect(left, top, box, box),
+        "disk": pygame.Rect(left + box + gap, top, box, box),
+    }
+    row_top = top + box + gap
+    if show_checkbox:
+        areas["checkbox"] = pygame.Rect(panel.x + margin, row_top, panel.width - 2 * margin, scaled(24))
+    areas["error"] = pygame.Rect(panel.x + margin, row_top + scaled(24) + gap // 2, panel.width - 2 * margin, scaled(20))
+    button_height = scaled(34)
+    button_width = (panel.width - 2 * margin - 2 * gap) // 3
+    for index, name in enumerate(("save", "discard", "cancel")):
+        areas[name] = pygame.Rect(
+            panel.x + margin + index * (button_width + gap), panel.bottom - margin - button_height, button_width, button_height
+        )
+    return areas
+
+
+def fit_picture_rectangle(box: pygame.Rect, tile_size: int) -> pygame.Rect:
+    """The square in `box` a tile is drawn in: a whole number of screen pixels per tile pixel when it fits."""
+    side = tile_size * (box.width // tile_size) if tile_size <= box.width else box.width
+    picture = pygame.Rect(0, 0, side, side)
+    picture.center = box.center
+    return picture
 
 
 # ----------------------------------------------------------------------------------------------------------
@@ -2628,6 +2773,11 @@ class EditorPanel:
         self.hex_field = TextField("", lambda character: character in "#0123456789abcdefABCDEF", 9)
         self.hex_focused = False
         self.hex_invalid = False
+        # The name above the canvas is a text field when a single tile is shown and the name is clicked.
+        self.name_field = TextField("", lambda character: character not in _INVALID_NAME_CHARACTERS)
+        self.name_focused = False
+        self.name_invalid = False
+        self._name_coordinate: Optional[Coordinate] = None
         self.color_drag: Optional[str] = None
         self.panning_from: Optional[tuple[int, int]] = None
         self.pointer = (-1, -1)
@@ -2661,6 +2811,7 @@ class EditorPanel:
             return
         self._signature = signature
         self.session = None
+        self.name_focused = False  # other tiles are shown now: the edit of a name is over
         if not entries:
             self.layout = None
             self._coordinate_signature = None
@@ -2676,6 +2827,56 @@ class EditorPanel:
 
     def contains(self, position: tuple[int, int]) -> bool:
         return self.rect.collidepoint(position)
+
+    def editable_name_coordinate(self) -> Optional[Coordinate]:
+        """The tile whose name can be edited: the only selected tile, if it is not an error tile."""
+        if len(self.project.selection) != 1:
+            return None
+        (coordinate,) = self.project.selection
+        return coordinate if self.project.tiles[coordinate].error is None else None
+
+    def _start_name_edit(self) -> None:
+        coordinate = self.editable_name_coordinate()
+        if coordinate is None:
+            return
+        self._name_coordinate = coordinate
+        self.name_field.set_text(self.project.tiles[coordinate].name)
+        self.name_focused = True
+        self.name_invalid = False
+
+    def apply_name_field(self) -> bool:
+        """Rename the tile to the text. Returns False (and flags the field) if the name is not allowed, so that the
+        user can fix it; True when the edit is over, whether the tile was renamed or the disk refused."""
+        coordinate = self._name_coordinate
+        if coordinate is None or coordinate not in self.project.tiles:
+            return True
+        record = self.project.tiles[coordinate]
+        new_name = self.name_field.text
+        try:
+            if self.project.rename_tile(coordinate, new_name):
+                self.message = f"Renamed to {new_name}."
+        except ValueError as problem:
+            self.message = f"Could not rename: {problem}"
+            self.name_invalid = True
+            return False
+        except OSError as error:
+            self.message = f"Could not rename {record.name}: {error}"
+        return True
+
+    def name_key_down(self, event: pygame.event.Event) -> None:
+        if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            if self.apply_name_field():
+                self.name_focused = False
+        elif event.key == pygame.K_ESCAPE:
+            self.name_focused = False
+            self.name_invalid = False
+        elif event.mod & pygame.KMOD_CTRL and event.key == pygame.K_a:
+            text = self.name_field.text
+            stem_end = len(text) - len(TILE_FILE_EXTENSION) if text.lower().endswith(TILE_FILE_EXTENSION) else len(text)
+            self.name_field.select(0, stem_end)  # the extension is not part of the name that is being chosen
+        else:
+            self.name_field.handle_key_down(event.key, event.mod)
+            self.name_invalid = False
 
     def _forget_selection(self) -> None:
         """Other tiles are shown: what was selected or pasted on the old canvas means nothing now."""
@@ -2739,6 +2940,9 @@ class EditorPanel:
         if self.hex_focused and not (button == 1 and areas.hex_field.collidepoint(position)):
             self.apply_hex_field()
             self.hex_focused = False
+        if self.name_focused and not (button == 1 and areas.header.collidepoint(position)):
+            self.apply_name_field()  # a name that is not allowed is dropped; the message says why
+            self.name_focused = False
         if self.shape_dropdown_open:
             # A press closes the menu. Choosing an option or pressing the menu itself is all it does; a press on
             # the canvas must not also draw.
@@ -2752,6 +2956,10 @@ class EditorPanel:
             if (menu is not None and menu.collidepoint(position)) or areas.canvas.collidepoint(position):
                 return
         if button == 1:
+            if areas.header.collidepoint(position):
+                if not self.name_focused:
+                    self._start_name_edit()
+                return
             if areas.hex_field.collidepoint(position):
                 self.hex_focused = True
                 return
@@ -3014,10 +3222,13 @@ class EditorPanel:
         self.colors.set_color(color)
 
     def lose_focus(self) -> None:
-        """Called when the user clicks somewhere else: a typed color is applied."""
+        """Called when the user clicks somewhere else: a typed color or name is applied."""
         if self.hex_focused:
             self.apply_hex_field()
             self.hex_focused = False
+        if self.name_focused:
+            self.apply_name_field()
+            self.name_focused = False
 
     def hex_key_down(self, event: pygame.event.Event) -> None:
         if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
@@ -3097,8 +3308,12 @@ class EditorPanel:
         pygame.draw.rect(surface, Theme.PANEL, self.rect)
         pygame.draw.rect(surface, Theme.PANEL_BORDER, self.rect, width=1)
         header = self.header_text()
-        if header:
-            draw_text(surface, self.fonts.large, header, Theme.TEXT, self.areas.header.midleft, "midleft")
+        if self.name_focused:
+            self.name_field.draw(surface, self.areas.header, self.fonts.normal, True, caret_visible, self.name_invalid)
+        elif header:
+            if self.editable_name_coordinate() is not None and self.areas.header.collidepoint(self.pointer):
+                pygame.draw.rect(surface, Theme.PANEL_BORDER, self.areas.header, width=1, border_radius=3)
+            draw_text(surface, self.fonts.large, header, Theme.TEXT, self.areas.header.move(scaled(6), 0).midleft, "midleft")
         self.draw_canvas(surface)
         self.draw_tools(surface)
         self.draw_colors(surface, caret_visible)
@@ -3391,6 +3606,8 @@ class Application:
         self.pointer = (-1, -1)
         self.needs_redraw = True
         self._last_caret_visible = True
+        self.quit_dialog: Optional[QuitDialog] = None
+        self.closing = False
         self.layout = compute_layout(surface.get_size())
         self.update_layout()
 
@@ -3427,14 +3644,17 @@ class Application:
     def handle_event(self, event: pygame.event.Event) -> bool:
         """Deal with one event. Returns False when the program should close."""
         if event.type == pygame.QUIT:
-            if self.project.has_unsaved_file_changes:
-                # Until the dialog that asks what to do exists, closing must not throw changes away.
-                self.message = "Unsaved changes: save them with Ctrl+Shift+S before closing."
+            if self.quit_dialog is None:
+                if not self.project.unsaved_tiles():
+                    return False
+                self.quit_dialog = QuitDialog(self.project)
                 self.needs_redraw = True
-                return True
-            return False
+            return True
         try:
-            self._handle_event(event)
+            if self.quit_dialog is not None:
+                self._handle_dialog_event(event)
+            else:
+                self._handle_event(event)
         except OSError as error:
             self.interaction.cancel()
             self.message = f"Could not save {ATLAS_FILE_NAME}: {error}"
@@ -3445,7 +3665,43 @@ class Application:
             pygame.KEYDOWN, pygame.TEXTINPUT, pygame.WINDOWSIZECHANGED, pygame.WINDOWEXPOSED, pygame.VIDEORESIZE,
         ):
             self.needs_redraw = True
-        return True
+        return not self.closing
+
+    def dialog_areas(self) -> dict[str, pygame.Rect]:
+        assert self.quit_dialog is not None
+        return quit_dialog_areas(self.surface.get_size(), self.quit_dialog.remaining > 1)
+
+    def _handle_dialog_event(self, event: pygame.event.Event) -> None:
+        """While the quit dialog is open it gets every event; the window behind it does nothing."""
+        dialog = self.quit_dialog
+        assert dialog is not None
+        outcome = "ask"
+        if event.type in (pygame.VIDEORESIZE, pygame.WINDOWSIZECHANGED):
+            self.surface = pygame.display.get_surface() or self.surface
+            self.update_layout()
+        elif event.type == pygame.MOUSEMOTION:
+            self.pointer = event.pos
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            self.pointer = event.pos
+            areas = self.dialog_areas()
+            if "checkbox" in areas and areas["checkbox"].collidepoint(event.pos):
+                dialog.toggle_apply_to_all()
+            elif areas["save"].collidepoint(event.pos):
+                outcome = dialog.save()
+            elif areas["discard"].collidepoint(event.pos):
+                outcome = dialog.discard()
+            elif areas["cancel"].collidepoint(event.pos):
+                outcome = dialog.cancel()
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                outcome = dialog.cancel()
+            elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                outcome = dialog.save()
+        if outcome == "quit":
+            self.closing = True
+            self.quit_dialog = None  # the window may be drawn once more before the loop ends
+        elif outcome == "cancel":
+            self.quit_dialog = None
 
     def _handle_event(self, event: pygame.event.Event) -> None:
         if event.type in (pygame.VIDEORESIZE, pygame.WINDOWSIZECHANGED):
@@ -3479,6 +3735,9 @@ class Application:
         elif event.type == pygame.TEXTINPUT and self.editor.hex_focused:
             self.editor.hex_field.insert_text(event.text)
             self.editor.hex_invalid = False
+        elif event.type == pygame.TEXTINPUT and self.editor.name_focused:
+            self.editor.name_field.insert_text(event.text)
+            self.editor.name_invalid = False
         elif event.type == pygame.KEYDOWN:
             self._handle_key(event)
 
@@ -3528,6 +3787,8 @@ class Application:
                 self.tile_size_field_invalid = False
         elif self.editor.hex_focused:
             self.editor.hex_key_down(event)
+        elif self.editor.name_focused:
+            self.editor.name_key_down(event)
         elif self.editor.key_down(event.key, event.mod, getattr(event, "scancode", 0)):
             pass
         elif event.key == pygame.K_ESCAPE:
@@ -3562,7 +3823,8 @@ class Application:
         return (pygame.time.get_ticks() // 500) % 2 == 0
 
     def wants_redraw(self) -> bool:
-        if (self.tile_size_field_focused or self.editor.hex_focused) and self.caret_visible() != self._last_caret_visible:
+        focused = self.tile_size_field_focused or self.editor.hex_focused or self.editor.name_focused
+        if focused and self.caret_visible() != self._last_caret_visible:
             return True
         return self.needs_redraw
 
@@ -3585,8 +3847,56 @@ class Application:
         self.editor.draw(self.surface, self.caret_visible())
         self.draw_drag_feedback()
         self.draw_status()
-        self.draw_tooltip()
+        if self.quit_dialog is not None:
+            self.draw_quit_dialog(self.quit_dialog)
+        else:
+            self.draw_tooltip()
         self.needs_redraw = False
+
+    def draw_dialog_picture(self, box: pygame.Rect, pixels: Optional[numpy.ndarray], label: str) -> None:
+        surface = self.surface
+        draw_text(surface, self.fonts.normal, label, Theme.TEXT_DIMMED, (box.centerx, box.y - scaled(6)), "midbottom")
+        pygame.draw.rect(surface, Theme.FIELD, box)
+        if pixels is None:
+            draw_text(surface, self.fonts.normal, "no file yet", Theme.TEXT_DIMMED, box.center, "center")
+        else:
+            rectangle = fit_picture_rectangle(box, pixels.shape[0])
+            surface.blit(checkerboard(rectangle.width), rectangle, (0, 0, rectangle.width, rectangle.height))
+            picture = pygame.image.frombuffer(numpy.ascontiguousarray(pixels).tobytes(), (pixels.shape[1], pixels.shape[0]), "RGBA")
+            surface.blit(pygame.transform.scale(picture, rectangle.size), rectangle)
+        pygame.draw.rect(surface, Theme.PANEL_BORDER, box, width=1)
+
+    def draw_quit_dialog(self, dialog: QuitDialog) -> None:
+        surface = self.surface
+        dimming = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        dimming.fill((0, 0, 0, 170))
+        surface.blit(dimming, (0, 0))
+        areas = self.dialog_areas()
+        panel = areas["panel"]
+        pygame.draw.rect(surface, Theme.PANEL, panel, border_radius=6)
+        pygame.draw.rect(surface, Theme.ACCENT, panel, width=1, border_radius=6)
+        draw_text(surface, self.fonts.large, f"Save changes to {dialog.record.name}?", Theme.TEXT, (panel.x + scaled(20), panel.y + scaled(16)))
+        position = len(dialog.coordinates) - dialog.remaining + 1
+        draw_text(
+            surface, self.fonts.small, f"Tile {position} of {len(dialog.coordinates)} with unsaved changes",
+            Theme.TEXT_DIMMED, (panel.x + scaled(20), panel.y + scaled(44)),
+        )
+        self.draw_dialog_picture(areas["current"], dialog.current_pixels, "Current")
+        self.draw_dialog_picture(areas["disk"], dialog.disk_pixels, "On disk")
+        if "checkbox" in areas:
+            box = pygame.Rect(areas["checkbox"].x, areas["checkbox"].y + scaled(3), scaled(18), scaled(18))
+            pygame.draw.rect(surface, Theme.FIELD, box, border_radius=3)
+            pygame.draw.rect(surface, Theme.ACCENT if dialog.apply_to_all else Theme.PANEL_BORDER, box, width=1, border_radius=3)
+            if dialog.apply_to_all:
+                pygame.draw.lines(surface, Theme.ACCENT, False, [(box.x + 4, box.centery), (box.centerx - 1, box.bottom - 5), (box.right - 4, box.y + 4)], 2)
+            draw_text(
+                surface, self.fonts.normal, f"Do this for all {dialog.remaining} tiles still to ask about", Theme.TEXT,
+                (box.right + scaled(8), box.centery), "midleft",
+            )
+        if dialog.error:
+            draw_text(surface, self.fonts.small, dialog.error, Theme.ERROR, areas["error"].midleft, "midleft")
+        for name, label in (("save", "Save"), ("discard", "Don't save"), ("cancel", "Cancel")):
+            draw_button(surface, areas[name], label, self.fonts.normal, areas[name].collidepoint(self.pointer))
 
     def draw_panel_frame(self, rectangle: pygame.Rect) -> None:
         pygame.draw.rect(self.surface, Theme.PANEL, rectangle)
