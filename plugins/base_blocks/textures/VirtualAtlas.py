@@ -29,6 +29,7 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import sys
 import tempfile
@@ -1424,28 +1425,55 @@ TOOL_LABELS = {
     "vertical_line": "Vertical line",
     "horizontal_parallelogram": "H parallelogram",
     "vertical_parallelogram": "V parallelogram",
+    "noise_brush": "Noise brush",
+    "airbrush": "Air brush",
+    "select": "Select",
     "eyedropper": "Eye dropper",
     "fill": "Fill bucket",
 }
 BRUSH_TOOLS = ("pencil", "eraser")
 LINE_TOOLS = ("line", "horizontal_line", "vertical_line", "horizontal_parallelogram", "vertical_parallelogram")
-STROKE_TOOLS = BRUSH_TOOLS + LINE_TOOLS + ("fill",)
+# The noise brush and the air brush have one diameter each, changed with the bracket keys.
+DIAMETER_TOOLS = ("noise_brush", "airbrush")
+STROKE_TOOLS = BRUSH_TOOLS + LINE_TOOLS + DIAMETER_TOOLS + ("fill",)
+BRUSH_SHAPES = ("circle", "square")
+# The sliders each brush shows: (name of the setting in ToolSettings.fractions, label).
+SLIDERS = {
+    "noise_brush": (("noise_density", "Density"), ("noise_opacity", "Opacity")),
+    "airbrush": (("airbrush_hardness", "Hardness"), ("airbrush_opacity", "Opacity")),
+}
 COLOR_HISTORY_LENGTH = 16
 MAXIMUM_CANVAS_ZOOM = 64
 
 
 class ToolSettings:
-    """The sizes of the tools. The pencil and the eraser have a width and a height each; every line tool
-    shares one width."""
+    """The sizes and other settings of the tools. The pencil and the eraser have a width and a height each; every
+    line tool shares one width; the noise brush and the air brush have a diameter each and sliders (fractions
+    from 0 to 1, kept to whole percents)."""
 
     def __init__(self) -> None:
         self.brush_sizes: dict[str, tuple[int, int]] = {"pencil": (1, 1), "eraser": (1, 1)}
         self.line_width = 1
+        self.diameters: dict[str, int] = {"noise_brush": 5, "airbrush": 9}
+        self.noise_shape = "circle"
+        self.fractions: dict[str, float] = {
+            "noise_density": 0.5,
+            "noise_opacity": 1.0,
+            "airbrush_hardness": 0.3,
+            "airbrush_opacity": 1.0,
+        }
+
+    def set_fraction(self, name: str, value: float) -> None:
+        if name not in self.fractions:
+            raise KeyError(name)
+        self.fractions[name] = round(max(0.0, min(1.0, value)), 2)
 
     def footprint_size(self, tool: str) -> tuple[int, int]:
         """(width, height) of the area a tool covers around the cursor pixel, for drawing its outline."""
         if tool in BRUSH_TOOLS:
             return self.brush_sizes[tool]
+        if tool in DIAMETER_TOOLS:
+            return (self.diameters[tool], self.diameters[tool])
         if tool in ("line", "horizontal_line", "vertical_line"):
             return (self.line_width, self.line_width)
         if tool == "horizontal_parallelogram":
@@ -1466,9 +1494,17 @@ class ToolSettings:
             if change_height:
                 height = max(1, min(height + delta, canvas_height))
             self.brush_sizes[tool] = (width, height)
+        elif tool in DIAMETER_TOOLS and change_width and change_height:
+            self.diameters[tool] = max(1, min(self.diameters[tool] + delta, max(canvas_width, canvas_height)))
         elif tool in LINE_TOOLS and change_width and change_height:
             # A line has one width, changed by the plain bracket keys only.
             self.line_width = max(1, min(self.line_width + delta, max(canvas_width, canvas_height)))
+
+
+def slider_fraction(rectangle: pygame.Rect, x: int) -> float:
+    """The value (0 to 1, in whole percents) of a slider whose track is `rectangle`, for a pointer at `x`."""
+    position = (x - rectangle.x) / max(rectangle.width - 1, 1)
+    return round(max(0.0, min(1.0, position)), 2)
 
 
 class CanvasSession:
@@ -1478,7 +1514,15 @@ class CanvasSession:
     can be shown as a preview and thrown away.
     """
 
-    def __init__(self, layout: CanvasLayout, tool: str, settings: ToolSettings, color: Color, start: Coordinate):
+    def __init__(
+        self,
+        layout: CanvasLayout,
+        tool: str,
+        settings: ToolSettings,
+        color: Color,
+        start: Coordinate,
+        random_source: Optional[RandomSource] = None,
+    ):
         if tool not in STROKE_TOOLS:
             raise ValueError(f"{tool!r} does not draw")
         self.layout = layout
@@ -1491,8 +1535,23 @@ class CanvasSession:
         self.line_width = settings.line_width
         self.start = start
         self.last = start
+        self.settings = settings
+        self.random_source = random_source if random_source is not None else random.Random()
+        self.airbrush: Optional[AirbrushStroke] = None
         if tool in BRUSH_TOOLS:
             self._paint(swept_rectangle_brush_mask(self.shape, start, start, self.brush_width, self.brush_height))
+        elif tool == "noise_brush":
+            self._stamp_noise(start)
+        elif tool == "airbrush":
+            self.airbrush = AirbrushStroke(
+                self.base,
+                self.color,
+                settings.diameters["airbrush"],
+                settings.fractions["airbrush_hardness"],
+                settings.fractions["airbrush_opacity"],
+                layout.editable_mask,
+            )
+            self._stamp_air_path(start, start)
         elif tool == "fill":
             self._paint(flood_fill_mask(self.base, start[0], start[1], layout.editable_mask))
         else:
@@ -1500,6 +1559,26 @@ class CanvasSession:
 
     def _paint(self, mask: numpy.ndarray) -> None:
         apply_color_to_mask(self.pixels, mask & self.layout.editable_mask, self.color)
+
+    def _stamp_noise(self, pixel: Coordinate) -> None:
+        settings = self.settings
+        noise_stamp(
+            self.pixels,
+            pixel[0],
+            pixel[1],
+            self.color,
+            settings.diameters["noise_brush"],
+            settings.noise_shape,
+            settings.fractions["noise_density"],
+            settings.fractions["noise_opacity"],
+            self.random_source,
+            self.layout.editable_mask,
+        )
+
+    def _stamp_air_path(self, start: Coordinate, end: Coordinate) -> None:
+        assert self.airbrush is not None
+        self.airbrush.stamp_path(start, end)
+        self.pixels = self.airbrush.result()
 
     def _shape_mask(self, pixel: Coordinate) -> numpy.ndarray:
         if self.tool == "line":
@@ -1521,6 +1600,12 @@ class CanvasSession:
             return
         if self.tool in BRUSH_TOOLS:
             self._paint(swept_rectangle_brush_mask(self.shape, self.last, pixel, self.brush_width, self.brush_height))
+        elif self.tool == "noise_brush":
+            # One stamp for each pixel the pointer moved over; the pixel it started on was stamped already.
+            for stamp_pixel in line_pixels(self.last, pixel)[1:]:
+                self._stamp_noise(stamp_pixel)
+        elif self.tool == "airbrush":
+            self._stamp_air_path(self.last, pixel)
         elif self.tool in LINE_TOOLS:
             self._preview_shape(pixel)
         self.last = pixel
@@ -1538,6 +1623,25 @@ def pick_color(layout: CanvasLayout, pixel: Coordinate) -> Optional[Color]:
         return None
     red, green, blue, alpha = (int(value) for value in layout.pixels[row, column])
     return (red, green, blue, alpha)
+
+
+@dataclasses.dataclass
+class FloatingPaste:
+    """Pasted pixels that hover over the canvas, can be moved, and only become an edit when they are placed."""
+
+    pixels: numpy.ndarray
+    column: int
+    row: int
+
+    @property
+    def rectangle(self) -> tuple[int, int, int, int]:
+        """(left, top, right, bottom) of the whole picture, even the part that hangs over the canvas edge."""
+        height, width = self.pixels.shape[:2]
+        return (self.column, self.row, self.column + width, self.row + height)
+
+    def contains(self, pixel: Coordinate) -> bool:
+        left, top, right, bottom = self.rectangle
+        return left <= pixel[0] < right and top <= pixel[1] < bottom
 
 
 def parse_hex_color(text: str) -> Optional[Color]:
@@ -1683,6 +1787,7 @@ class Theme:
     TEXT = (218, 222, 228)
     TEXT_DIMMED = (140, 146, 156)
     ACCENT = (90, 170, 255)
+    SLIDER_FILL = (40, 78, 118)
     BUTTON = (50, 55, 64)
     BUTTON_HOVERED = (66, 73, 86)
     DISABLED_TEXT = (96, 100, 108)
@@ -1763,6 +1868,189 @@ class SystemTextClipboard:
             root.update()
         except Exception:  # see get_text
             logger.warning("could not write to the clipboard")
+
+
+def encode_dib(pixels: numpy.ndarray) -> bytes:
+    """A device independent bitmap with a version 5 header: 32 bits per pixel, blue green red alpha, bottom row
+    first, the way the Windows clipboard keeps pictures that have transparency."""
+    import struct
+
+    height, width = pixels.shape[:2]
+    bitmap_info_header = struct.pack(
+        "<IiiHHIIiiII", 124, width, height, 1, 32, 3, width * height * 4, 0, 0, 0, 0
+    )
+    masks = struct.pack("<IIII", 0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000)
+    color_space = struct.pack("<I", 0x73524742)  # "sRGB"
+    color_space_details = bytes(36) + bytes(12) + struct.pack("<I", 4) + bytes(12)  # endpoints, gamma, intent, profile
+    header = bitmap_info_header + masks + color_space + color_space_details
+    assert len(header) == 124
+    blue_green_red_alpha = pixels[::-1][..., [2, 1, 0, 3]]
+    return header + numpy.ascontiguousarray(blue_green_red_alpha).tobytes()
+
+
+def _picture_to_pixels(picture: Image.Image) -> numpy.ndarray:
+    return numpy.array(picture.convert("RGBA"), dtype=numpy.uint8)
+
+
+def decode_image_bytes(data: bytes, formats: Optional[list[str]] = None) -> Optional[numpy.ndarray]:
+    """RGBA pixels of picture data (a PNG, or any other format Pillow reads), or None if it is not a picture."""
+    try:
+        with Image.open(io.BytesIO(data), formats=formats) as picture:
+            return _picture_to_pixels(picture)
+    except (OSError, ValueError, SyntaxError, Image.DecompressionBombError):
+        return None
+
+
+def decode_dib(data: bytes) -> Optional[numpy.ndarray]:
+    """RGBA pixels of a device independent bitmap as the Windows clipboard holds it (no file header).
+
+    Windows puts color masks after the header even behind a version 5 header, which already holds them, so the
+    pixels are taken to be the last bytes of the data rather than found by adding up the sizes of the parts.
+    The data is given to Pillow as a bitmap file that says where the pixels begin.
+    """
+    import struct
+
+    if len(data) < 40:
+        return None
+    header_size, width, height, _planes, bit_count, _compression = struct.unpack_from("<IiiHHI", data)
+    pixel_bytes = (width * bit_count + 31) // 32 * 4 * abs(height)
+    if header_size < 40 or header_size > len(data) or width <= 0 or height == 0 or bit_count <= 0:
+        return None
+    offset = max(len(data) - pixel_bytes, header_size)
+    file_header = b"BM" + struct.pack("<IHHI", 14 + len(data), 0, 0, 14 + offset)
+    return decode_image_bytes(file_header + data, ["BMP"])
+
+
+class SystemImageClipboard:
+    """Pictures on the operating system's clipboard. Only Windows is supported: elsewhere nothing is ever read
+    and writing reports failure, and the editor then pastes what it copied itself.
+
+    Pictures are written as PNG (which keeps transparency in programs that read it) and as a bitmap with an alpha
+    channel. A picture is read from PNG first, then from a bitmap.
+    """
+
+    CF_DIB = 8
+    CF_DIBV5 = 17
+    GMEM_MOVEABLE = 0x0002
+    OPEN_ATTEMPTS = 20
+
+    def __init__(self) -> None:
+        self._functions = None
+
+    def _api(self):
+        if self._functions is None:
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            # Handles and pointers are 64 bits wide: without these declarations ctypes would cut them to 32.
+            user32.OpenClipboard.argtypes = [wintypes.HWND]
+            user32.OpenClipboard.restype = wintypes.BOOL
+            user32.CloseClipboard.restype = wintypes.BOOL
+            user32.EmptyClipboard.restype = wintypes.BOOL
+            user32.IsClipboardFormatAvailable.argtypes = [wintypes.UINT]
+            user32.IsClipboardFormatAvailable.restype = wintypes.BOOL
+            user32.GetClipboardData.argtypes = [wintypes.UINT]
+            user32.GetClipboardData.restype = ctypes.c_void_p
+            user32.SetClipboardData.argtypes = [wintypes.UINT, ctypes.c_void_p]
+            user32.SetClipboardData.restype = ctypes.c_void_p
+            user32.RegisterClipboardFormatW.argtypes = [wintypes.LPCWSTR]
+            user32.RegisterClipboardFormatW.restype = wintypes.UINT
+            kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+            kernel32.GlobalAlloc.restype = ctypes.c_void_p
+            kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+            kernel32.GlobalLock.restype = ctypes.c_void_p
+            kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+            kernel32.GlobalUnlock.restype = wintypes.BOOL
+            kernel32.GlobalSize.argtypes = [ctypes.c_void_p]
+            kernel32.GlobalSize.restype = ctypes.c_size_t
+            kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
+            kernel32.GlobalFree.restype = ctypes.c_void_p
+            self._functions = (ctypes, user32, kernel32)
+        return self._functions
+
+    def _window_handle(self):
+        try:
+            return pygame.display.get_wm_info().get("window")
+        except pygame.error:
+            return None
+
+    def _open(self, user32) -> bool:
+        import time
+
+        for _ in range(self.OPEN_ATTEMPTS):  # another program may hold the clipboard for a moment
+            if user32.OpenClipboard(self._window_handle()):
+                return True
+            time.sleep(0.01)
+        return False
+
+    def get_image(self) -> Optional[numpy.ndarray]:
+        if sys.platform != "win32":
+            return None
+        try:
+            ctypes, user32, kernel32 = self._api()
+            if not self._open(user32):
+                return None
+            try:
+                png_format = user32.RegisterClipboardFormatW("PNG")
+                for clipboard_format in (png_format, self.CF_DIBV5, self.CF_DIB):
+                    if not user32.IsClipboardFormatAvailable(clipboard_format):
+                        continue
+                    handle = user32.GetClipboardData(clipboard_format)
+                    if not handle:
+                        continue
+                    pointer = kernel32.GlobalLock(handle)
+                    if not pointer:
+                        continue
+                    try:
+                        data = ctypes.string_at(pointer, kernel32.GlobalSize(handle))
+                    finally:
+                        kernel32.GlobalUnlock(handle)
+                    pixels = decode_image_bytes(data, ["PNG"]) if clipboard_format == png_format else decode_dib(data)
+                    if pixels is not None:
+                        return pixels
+                return None
+            finally:
+                user32.CloseClipboard()
+        except Exception:  # a clipboard that cannot be read must never crash the editor
+            logger.warning("could not read a picture from the clipboard", exc_info=True)
+            return None
+
+    def set_image(self, pixels: numpy.ndarray) -> bool:
+        """Put the picture on the clipboard in place of what was there. False if that did not work."""
+        if sys.platform != "win32":
+            return False
+        try:
+            ctypes, user32, kernel32 = self._api()
+            if not self._open(user32):
+                return False
+            try:
+                user32.EmptyClipboard()
+                written = False
+                for clipboard_format, data in (
+                    (user32.RegisterClipboardFormatW("PNG"), encode_png(pixels)),
+                    (self.CF_DIBV5, encode_dib(pixels)),
+                ):
+                    handle = kernel32.GlobalAlloc(self.GMEM_MOVEABLE, len(data))
+                    if not handle:
+                        continue
+                    pointer = kernel32.GlobalLock(handle)
+                    if not pointer:
+                        kernel32.GlobalFree(handle)
+                        continue
+                    ctypes.memmove(pointer, data, len(data))
+                    kernel32.GlobalUnlock(handle)
+                    if user32.SetClipboardData(clipboard_format, handle):
+                        written = True  # the clipboard owns the memory now
+                    else:
+                        kernel32.GlobalFree(handle)
+                return written
+            finally:
+                user32.CloseClipboard()
+        except Exception:  # see get_image
+            logger.warning("could not write a picture to the clipboard", exc_info=True)
+            return False
 
 
 class TextField:
@@ -1903,6 +2191,30 @@ def draw_button(
     pygame.draw.rect(surface, fill, rectangle, border_radius=4)
     pygame.draw.rect(surface, Theme.PANEL_BORDER, rectangle, width=1, border_radius=4)
     draw_text(surface, font, label, Theme.TEXT if enabled else Theme.DISABLED_TEXT, rectangle.center, "center")
+
+
+def draw_slider(surface: pygame.Surface, rectangle: pygame.Rect, label: str, fraction: float, font: pygame.font.Font) -> None:
+    """A track filled up to `fraction`, with its name and value in whole percents written on it."""
+    pygame.draw.rect(surface, Theme.FIELD, rectangle, border_radius=4)
+    filled = rectangle.copy()
+    filled.width = int(round(rectangle.width * fraction))
+    if filled.width > 0:
+        pygame.draw.rect(surface, Theme.SLIDER_FILL, filled, border_radius=4)
+    pygame.draw.rect(surface, Theme.PANEL_BORDER, rectangle, width=1, border_radius=4)
+    draw_text(surface, font, f"{label} {int(round(fraction * 100))}%", Theme.TEXT, rectangle.center, "center")
+
+
+def draw_dashed_outline(surface: pygame.Surface, rectangle: pygame.Rect) -> None:
+    """A rectangle of black and white dashes, visible on any picture."""
+    pygame.draw.rect(surface, (0, 0, 0), rectangle, width=1)
+    dash = scaled(4)
+    left, top, right, bottom = rectangle.left, rectangle.top, rectangle.right - 1, rectangle.bottom - 1
+    for start in range(left, right + 1, 2 * dash):
+        pygame.draw.line(surface, (255, 255, 255), (start, top), (min(start + dash - 1, right), top))
+        pygame.draw.line(surface, (255, 255, 255), (start, bottom), (min(start + dash - 1, right), bottom))
+    for start in range(top, bottom + 1, 2 * dash):
+        pygame.draw.line(surface, (255, 255, 255), (left, start), (left, min(start + dash - 1, bottom)))
+        pygame.draw.line(surface, (255, 255, 255), (right, start), (right, min(start + dash - 1, bottom)))
 
 
 # ----------------------------------------------------------------------------------------------------------
@@ -2196,6 +2508,7 @@ class EditorAreas:
     canvas: pygame.Rect
     tool_buttons: dict[str, pygame.Rect]
     options: pygame.Rect
+    controls: pygame.Rect
     square: pygame.Rect
     hue_bar: pygame.Rect
     alpha_bar: pygame.Rect
@@ -2213,9 +2526,11 @@ def compute_editor_areas(rect: pygame.Rect, tools: list[str]) -> EditorAreas:
     square_size = scaled(120)
     color_top = rect.bottom - margin - square_size
     options = pygame.Rect(rect.x + margin, color_top - scaled(30), width, scaled(22))
+    # The sliders and the shape menu of the noise brush and the air brush; empty for the other tools.
+    controls = pygame.Rect(rect.x + margin, options.y - gap - scaled(24), width, scaled(24))
     columns, button_height = 4, scaled(28)
     rows = -(-len(tools) // columns)
-    tools_top = options.y - gap - rows * button_height - (rows - 1) * gap
+    tools_top = controls.y - gap - rows * button_height - (rows - 1) * gap
     button_width = (width - (columns - 1) * gap) // columns
     tool_buttons = {
         tool: pygame.Rect(
@@ -2246,7 +2561,7 @@ def compute_editor_areas(rect: pygame.Rect, tools: list[str]) -> EditorAreas:
         if (row + 1) * (history_swatch + 4) > square_size:
             break
         history.append(pygame.Rect(history_left + column * (history_swatch + 4), color_top + row * (history_swatch + 4), history_swatch, history_swatch))
-    return EditorAreas(header, canvas, tool_buttons, options, square, hue_bar, alpha_bar, primary_swatch, secondary_swatch, hex_field, history)
+    return EditorAreas(header, canvas, tool_buttons, options, controls, square, hue_bar, alpha_bar, primary_swatch, secondary_swatch, hex_field, history)
 
 
 def saturation_value_square(hue: float, size: int) -> pygame.Surface:
@@ -2294,6 +2609,20 @@ class EditorPanel:
         self.view = CanvasView()
         self.layout: Optional[CanvasLayout] = None
         self.session: Optional[CanvasSession] = None
+        self.random_source = random.Random()
+        self.clipboard = SystemImageClipboard()
+        # The pixels of the last copy made here, used when the system clipboard cannot hold or give a picture.
+        self.internal_image: Optional[numpy.ndarray] = None
+        self.internal_is_newer = False
+        # The rectangle chosen with the select tool, (left, top, right, bottom) in canvas pixels, and a pasted
+        # picture that has not been placed yet.
+        self.selection_rectangle: Optional[tuple[int, int, int, int]] = None
+        self.floating: Optional[FloatingPaste] = None
+        self.selecting_from: Optional[Coordinate] = None
+        self.selection_moved = False
+        self.floating_drag: Optional[tuple[Coordinate, int, int]] = None
+        self.shape_dropdown_open = False
+        self.slider_drag: Optional[str] = None
         self.rect = pygame.Rect(0, 0, 100, 100)
         self.areas = compute_editor_areas(self.rect, list(TOOL_LABELS))
         self.hex_field = TextField("", lambda character: character in "#0123456789abcdefABCDEF", 9)
@@ -2335,16 +2664,25 @@ class EditorPanel:
         if not entries:
             self.layout = None
             self._coordinate_signature = None
+            self._forget_selection()
             return
         self.layout = compose_canvas({coordinate: record.pixels for coordinate, record in entries}, self.project.tile_size)
         coordinate_signature = tuple(coordinate for coordinate, _ in entries)
         if coordinate_signature != self._coordinate_signature:
             self._coordinate_signature = coordinate_signature
+            self._forget_selection()
             self.view.rect = self.areas.canvas
             self.view.fit(self.layout.pixels.shape[1], self.layout.pixels.shape[0])
 
     def contains(self, position: tuple[int, int]) -> bool:
         return self.rect.collidepoint(position)
+
+    def _forget_selection(self) -> None:
+        """Other tiles are shown: what was selected or pasted on the old canvas means nothing now."""
+        self.selection_rectangle = None
+        self.floating = None
+        self.selecting_from = None
+        self.floating_drag = None
 
     def canvas_shape(self) -> tuple[int, int]:
         return self.layout.pixels.shape[:2] if self.layout is not None else (self.project.tile_size, self.project.tile_size)
@@ -2356,6 +2694,42 @@ class EditorPanel:
         marker = "*" if any(record.is_modified for record in selected) else ""
         return f"{selected[0].name if len(selected) == 1 else '(multiple files)'}{marker}"
 
+    def choose_tool(self, tool: str) -> None:
+        """Make `tool` the current tool. What the select tool had selected or pasted is finished first."""
+        self.shape_dropdown_open = False
+        if tool != "select":
+            self.finish_selection()
+        self.tool = tool
+
+    def control_rectangles(self) -> dict[str, pygame.Rect]:
+        """The sliders (named like ToolSettings.fractions) and the shape menu ("noise_shape") of the current tool."""
+        if self.tool not in SLIDERS:
+            return {}
+        names = [name for name, _label in SLIDERS[self.tool]]
+        gap = scaled(8)
+        area = self.areas.controls
+        left = area.x
+        rectangles = {}
+        if self.tool == "noise_brush":
+            menu_width = scaled(110)
+            rectangles["noise_shape"] = pygame.Rect(left, area.y, menu_width, area.height)
+            left += menu_width + gap
+        slider_width = (area.right - left - (len(names) - 1) * gap) // len(names)
+        for name in names:
+            rectangles[name] = pygame.Rect(left, area.y, slider_width, area.height)
+            left += slider_width + gap
+        return rectangles
+
+    def shape_option_rectangles(self) -> dict[str, pygame.Rect]:
+        """The choices of the shape menu while it is open, stacked above the menu."""
+        menu = self.control_rectangles().get("noise_shape")
+        if menu is None:
+            return {}
+        return {
+            shape: pygame.Rect(menu.x, menu.y - (len(BRUSH_SHAPES) - index) * menu.height, menu.width, menu.height)
+            for index, shape in enumerate(BRUSH_SHAPES)
+        }
+
     # Mouse ------------------------------------------------------------------------------------------------
 
     def mouse_down(self, button: int, position: tuple[int, int]) -> None:
@@ -2365,13 +2739,33 @@ class EditorPanel:
         if self.hex_focused and not (button == 1 and areas.hex_field.collidepoint(position)):
             self.apply_hex_field()
             self.hex_focused = False
+        if self.shape_dropdown_open:
+            # A press closes the menu. Choosing an option or pressing the menu itself is all it does; a press on
+            # the canvas must not also draw.
+            self.shape_dropdown_open = False
+            menu = self.control_rectangles().get("noise_shape")
+            if button == 1:
+                for shape, rectangle in self.shape_option_rectangles().items():
+                    if rectangle.collidepoint(position):
+                        self.settings.noise_shape = shape
+                        return
+            if (menu is not None and menu.collidepoint(position)) or areas.canvas.collidepoint(position):
+                return
         if button == 1:
             if areas.hex_field.collidepoint(position):
                 self.hex_focused = True
                 return
             for tool, rectangle in areas.tool_buttons.items():
                 if rectangle.collidepoint(position):
-                    self.tool = tool
+                    self.choose_tool(tool)
+                    return
+            for name, rectangle in self.control_rectangles().items():
+                if rectangle.collidepoint(position):
+                    if name == "noise_shape":
+                        self.shape_dropdown_open = True
+                    else:
+                        self.slider_drag = name
+                        self.settings.set_fraction(name, slider_fraction(rectangle, position[0]))
                     return
             if areas.primary_swatch.collidepoint(position):
                 self.colors.active_slot = "primary"
@@ -2409,7 +2803,28 @@ class EditorPanel:
                 self.colors.set_color(color, slot)
             self.color_drag = f"dropper_{slot}"
             return
-        self.session = CanvasSession(self.layout, self.tool, self.settings, self.colors.get(slot), pixel)
+        if self.tool == "select":
+            if button == 1:
+                self._press_select(pixel)
+            return
+        self.session = CanvasSession(
+            self.layout, self.tool, self.settings, self.colors.get(slot), pixel, self.random_source
+        )
+
+    def _press_select(self, pixel: Coordinate) -> None:
+        if self.floating is not None:
+            if self.floating.contains(pixel):
+                self.floating_drag = (pixel, self.floating.column, self.floating.row)
+                return
+            self.commit_floating()
+        self.selecting_from = pixel
+        self.selection_moved = False
+        self._set_selection(pixel, pixel)
+
+    def _set_selection(self, corner: Coordinate, other_corner: Coordinate) -> None:
+        rectangle = rectangle_from_corners(corner, other_corner, self.canvas_shape())
+        left, top, right, bottom = rectangle
+        self.selection_rectangle = rectangle if right > left and bottom > top else None
 
     def mouse_move(self, position: tuple[int, int]) -> None:
         self.pointer = position
@@ -2420,9 +2835,22 @@ class EditorPanel:
                     self.colors.set_color(color, self.color_drag.removeprefix("dropper_"))
             else:
                 self._drag_color(position)
+        elif self.slider_drag is not None:
+            rectangle = self.control_rectangles().get(self.slider_drag)
+            if rectangle is not None:
+                self.settings.set_fraction(self.slider_drag, slider_fraction(rectangle, position[0]))
         elif self.panning_from is not None:
             self.view.pan_by(position[0] - self.panning_from[0], position[1] - self.panning_from[1])
             self.panning_from = position
+        elif self.floating_drag is not None and self.floating is not None:
+            pressed, column, row = self.floating_drag
+            pixel = self.view.pixel_at(position)
+            self.floating.column = column + pixel[0] - pressed[0]
+            self.floating.row = row + pixel[1] - pressed[1]
+        elif self.selecting_from is not None:
+            pixel = self.view.pixel_at(position)
+            self.selection_moved = self.selection_moved or pixel != self.selecting_from
+            self._set_selection(self.selecting_from, pixel)
         elif self.session is not None:
             self.session.move(self.view.pixel_at(position))
 
@@ -2432,6 +2860,16 @@ class EditorPanel:
             self.panning_from = None
         if self.color_drag is not None and button in (1, 3):
             self.color_drag = None
+        if button == 1:
+            self.slider_drag = None
+            self.floating_drag = None
+            if self.selecting_from is not None:
+                pixel = self.view.pixel_at(position)
+                self.selection_moved = self.selection_moved or pixel != self.selecting_from
+                self._set_selection(self.selecting_from, pixel)
+                if not self.selection_moved:
+                    self.selection_rectangle = None  # a click that did not drag deselects
+                self.selecting_from = None
         if self.session is not None and button in (1, 3):
             self.session.move(self.view.pixel_at(position))
             session, self.session = self.session, None
@@ -2448,6 +2886,106 @@ class EditorPanel:
         if session.tool != "eraser":
             self.colors.remember(session.color)
         self.sync()
+
+    # Selection and clipboard ------------------------------------------------------------------------------
+
+    def _apply_pixels(self, new_pixels: numpy.ndarray) -> bool:
+        """Make the canvas look like `new_pixels` as one edit. False if that changes nothing or cannot be saved."""
+        layout = self.layout
+        if layout is None or numpy.array_equal(new_pixels, layout.pixels):
+            return False
+        try:
+            self.project.apply_canvas_edit(layout, new_pixels)
+        except OSError as error:
+            self.message = f"Could not save {ATLAS_FILE_NAME}: {error}"
+            return False
+        self.sync()
+        return True
+
+    def select_all(self) -> None:
+        self.sync()
+        if self.layout is None:
+            return
+        self.commit_floating()
+        self.choose_tool("select")
+        height, width = self.layout.pixels.shape[:2]
+        self.selection_rectangle = (0, 0, width, height)
+
+    def finish_selection(self) -> None:
+        """Place a pasted picture that is still floating and drop the selection."""
+        self.commit_floating()
+        self.selection_rectangle = None
+        self.selecting_from = None
+
+    def commit_floating(self) -> None:
+        paste, self.floating, self.floating_drag = self.floating, None, None
+        if paste is None or self.layout is None:
+            return
+        self._apply_pixels(paste_pixels(self.layout.pixels, paste.pixels, paste.column, paste.row, self.layout.editable_mask))
+        left, top, right, bottom = paste.rectangle
+        self._set_selection((left, top), (right - 1, bottom - 1))
+
+    def cancel_floating(self) -> None:
+        self.floating = None
+        self.floating_drag = None
+
+    def copy_selection(self, verb: str = "Copied") -> bool:
+        """Copy the selected pixels. Nothing is copied, and the clipboard is left alone, without a selection."""
+        self.commit_floating()
+        if self.layout is None or self.selection_rectangle is None:
+            return False
+        pixels = crop_pixels(self.layout.pixels, self.selection_rectangle)
+        height, width = pixels.shape[:2]
+        self.internal_image = pixels
+        self.internal_is_newer = not self.clipboard.set_image(pixels)
+        self.message = f"{verb} {width} x {height} pixels."
+        if self.internal_is_newer:
+            self.message += " The system clipboard refused them, so they can be pasted inside this program only."
+        return True
+
+    def _clear_selection_pixels(self) -> None:
+        if self.layout is None or self.selection_rectangle is None:
+            return
+        pixels = self.layout.pixels.copy()
+        clear_rectangle(pixels, self.selection_rectangle, self.layout.editable_mask)
+        self._apply_pixels(pixels)
+
+    def cut_selection(self) -> None:
+        if self.copy_selection("Cut"):
+            self._clear_selection_pixels()
+
+    def delete_selection(self) -> None:
+        if self.floating is not None:
+            self.cancel_floating()
+        else:
+            self._clear_selection_pixels()
+
+    def _paste_source(self) -> Optional[numpy.ndarray]:
+        """The picture to paste: what is on the system clipboard, unless this program's own copy is newer."""
+        if not self.internal_is_newer:
+            image = self.clipboard.get_image()
+            if image is not None:
+                return image
+        return self.internal_image
+
+    def paste(self) -> None:
+        self.sync()
+        if self.layout is None:
+            self.message = "Select a tile to paste into."
+            return
+        image = self._paste_source()
+        if image is None:
+            self.message = "Nothing to paste."
+            return
+        self.commit_floating()
+        self.choose_tool("select")
+        if self.selection_rectangle is not None:
+            column, row = self.selection_rectangle[:2]
+        else:
+            height, width = self.layout.pixels.shape[:2]
+            column, row = self.view.visible_pixels(width, height)[:2]
+        self.floating = FloatingPaste(image, column, row)
+        self.message = "Drag the pasted picture to move it. Enter places it, Esc throws it away."
 
     def wheel(self, steps: int, position: tuple[int, int]) -> None:
         if self.layout is not None and self.areas.canvas.collidepoint(position):
@@ -2499,6 +3037,28 @@ class EditorPanel:
         shift = bool(modifiers & pygame.KMOD_SHIFT)
         alt = bool(modifiers & pygame.KMOD_ALT)
         self.sync()
+        if control and key == pygame.K_a:
+            self.select_all()
+            return True
+        if control and key == pygame.K_c:
+            self.copy_selection()
+            return True
+        if control and key == pygame.K_x:
+            self.cut_selection()
+            return True
+        if control and key == pygame.K_v:
+            self.paste()
+            return True
+        if key == pygame.K_DELETE and not control:
+            self.delete_selection()
+            return True
+        if self.floating is not None:
+            if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                self.commit_floating()
+                return True
+            if key == pygame.K_ESCAPE or (control and key == pygame.K_z and not shift):
+                self.cancel_floating()
+                return True
         if control and key == pygame.K_z and not shift:
             return self._history_step(self.project.undo)
         if control and (key == pygame.K_y or (key == pygame.K_z and shift)):
@@ -2542,6 +3102,7 @@ class EditorPanel:
         self.draw_canvas(surface)
         self.draw_tools(surface)
         self.draw_colors(surface, caret_visible)
+        self.draw_shape_menu(surface)
 
     def message_for_empty_canvas(self) -> str:
         selected = [self.project.tiles[coordinate] for coordinate in self.project.selection]
@@ -2561,6 +3122,9 @@ class EditorPanel:
             return
         layout, view = self.layout, self.view
         pixels = self.session.pixels if self.session is not None else layout.pixels
+        if self.floating is not None:
+            paste = self.floating
+            pixels = paste_pixels(pixels, paste.pixels, paste.column, paste.row, layout.editable_mask)
         height, width = pixels.shape[:2]
         surface.set_clip(area)
         image_rectangle = view.pixel_rectangle(0, 0, width, height)
@@ -2617,20 +3181,38 @@ class EditorPanel:
         for row in range(0, height + 1, size):
             horizontal_line(row, (90, 170, 255, 150))
         surface.blit(overlay, area.topleft)
+        marked = self.floating.rectangle if self.floating is not None else self.selection_rectangle
+        if marked is not None:
+            left, top, right, bottom = marked
+            draw_dashed_outline(surface, view.pixel_rectangle(left, top, right - left, bottom - top))
         if self.tool_uses_outline() and area.collidepoint(self.pointer) and self.session is None:
             self.draw_footprint_outline(surface)
 
     def tool_uses_outline(self) -> bool:
-        return self.panning_from is None and self.color_drag is None
+        return (
+            self.panning_from is None
+            and self.color_drag is None
+            and self.slider_drag is None
+            and not self.shape_dropdown_open
+            and self.tool != "select"
+        )
 
     def draw_footprint_outline(self, surface: pygame.Surface) -> None:
         column, row = self.view.pixel_at(self.pointer)
         width, height = self.settings.footprint_size(self.tool)
         rectangle = self.view.pixel_rectangle(column - width // 2, row - height // 2, width, height)
-        pygame.draw.rect(surface, (0, 0, 0), rectangle.inflate(2, 2), width=1)
-        pygame.draw.rect(surface, (255, 255, 255), rectangle, width=1)
+        is_round = self.tool == "airbrush" or (self.tool == "noise_brush" and self.settings.noise_shape == "circle")
+        draw_outline = pygame.draw.ellipse if is_round and width > 2 else pygame.draw.rect
+        draw_outline(surface, (0, 0, 0), rectangle.inflate(2, 2), width=1)
+        draw_outline(surface, (255, 255, 255), rectangle, width=1)
 
     def options_text(self) -> str:
+        if self.tool in DIAMETER_TOOLS:
+            return f"Diameter {self.settings.diameters[self.tool]}     [ ] change"
+        if self.tool == "select":
+            if self.floating is not None:
+                return "Drag to move     Enter places     Esc throws away"
+            return "Ctrl+A all    Ctrl+C copy    Ctrl+X cut    Ctrl+V paste    Delete clear"
         if self.tool in BRUSH_TOOLS:
             width, height = self.settings.brush_sizes[self.tool]
             return f"Size {width} x {height}     [ ] both    Shift+[ ] width    Alt+[ ] height"
@@ -2645,6 +3227,23 @@ class EditorPanel:
             if tool == self.tool:
                 pygame.draw.rect(surface, Theme.ACCENT, rectangle, width=2, border_radius=4)
         draw_text(surface, self.fonts.small, self.options_text(), Theme.TEXT_DIMMED, self.areas.options.midleft, "midleft")
+        labels = dict(SLIDERS.get(self.tool, ()))
+        for name, rectangle in self.control_rectangles().items():
+            if name == "noise_shape":
+                draw_button(surface, rectangle, f"Shape: {self.settings.noise_shape.title()}", self.fonts.small, rectangle.collidepoint(self.pointer))
+                tip = rectangle.right - scaled(12)
+                middle = rectangle.centery
+                pygame.draw.polygon(surface, Theme.TEXT_DIMMED, [(tip - 4, middle - 2), (tip + 4, middle - 2), (tip, middle + 3)])
+            else:
+                draw_slider(surface, rectangle, labels[name], self.settings.fractions[name], self.fonts.small)
+
+    def draw_shape_menu(self, surface: pygame.Surface) -> None:
+        if not self.shape_dropdown_open:
+            return
+        for shape, rectangle in self.shape_option_rectangles().items():
+            draw_button(surface, rectangle, shape.title(), self.fonts.small, rectangle.collidepoint(self.pointer))
+            if shape == self.settings.noise_shape:
+                pygame.draw.rect(surface, Theme.ACCENT, rectangle, width=2, border_radius=4)
 
     def draw_swatch(self, surface: pygame.Surface, rectangle: pygame.Rect, color: Color) -> None:
         surface.blit(checkerboard(max(rectangle.size)), rectangle, (0, 0, rectangle.width, rectangle.height))
@@ -2894,6 +3493,8 @@ class Application:
                 self.create_atlas_file()
                 return
         self._leave_tile_size_field()
+        # Placing a pasted picture must happen while its tiles are still the ones shown.
+        self.editor.finish_selection()
         self.interaction.mouse_down(position, bool(pygame.key.get_mods() & pygame.KMOD_CTRL))
 
     def _leave_tile_size_field(self) -> None:

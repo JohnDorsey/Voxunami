@@ -5,6 +5,7 @@ Run from the repository root:  python -m unittest discover -s tools/virtual_atla
 
 import base64
 import importlib.util
+import io
 import json
 import logging
 import os
@@ -2456,7 +2457,7 @@ class EditorLayoutTests(unittest.TestCase):
         for size in [(640, 780), (450, 600), (900, 900)]:
             rect = va.pygame.Rect(10, 10, *size)
             areas = va.compute_editor_areas(rect, list(va.TOOL_LABELS))
-            parts = {"header": areas.header, "canvas": areas.canvas, "options": areas.options, "square": areas.square,
+            parts = {"header": areas.header, "canvas": areas.canvas, "options": areas.options, "controls": areas.controls, "square": areas.square,
                      "hue": areas.hue_bar, "alpha": areas.alpha_bar, "primary": areas.primary_swatch,
                      "secondary": areas.secondary_swatch, "hex": areas.hex_field}
             parts.update({f"tool {tool}": rectangle for tool, rectangle in areas.tool_buttons.items()})
@@ -2474,6 +2475,327 @@ class EditorLayoutTests(unittest.TestCase):
         self.assertEqual(len(areas.history), va.COLOR_HISTORY_LENGTH)
 
 
+class CyclingRandom:
+    """Returns the given numbers over and over, one per call."""
+
+    def __init__(self, *numbers):
+        self.numbers = list(numbers)
+        self.calls = 0
+
+    def random(self):
+        self.calls += 1
+        return self.numbers[(self.calls - 1) % len(self.numbers)]
+
+
+class FakeImageClipboard:
+    """Stands in for the system clipboard, so the tests never touch the real one."""
+
+    def __init__(self, image=None, can_write=True):
+        self.image = image
+        self.can_write = can_write
+        self.writes = []
+
+    def get_image(self):
+        return None if self.image is None else self.image.copy()
+
+    def set_image(self, pixels):
+        if not self.can_write:
+            return False
+        self.image = pixels.copy()
+        self.writes.append(pixels.copy())
+        return True
+
+
+class AdvancedToolSettingsTests(unittest.TestCase):
+    def test_the_noise_brush_and_the_air_brush_start_with_these_settings(self):
+        settings = va.ToolSettings()
+        self.assertEqual(settings.diameters, {"noise_brush": 5, "airbrush": 9})
+        self.assertEqual(settings.noise_shape, "circle")
+        self.assertEqual(
+            settings.fractions,
+            {"noise_density": 0.5, "noise_opacity": 1.0, "airbrush_hardness": 0.3, "airbrush_opacity": 1.0},
+        )
+
+    def test_plain_brackets_change_the_diameter_of_the_current_brush_only(self):
+        settings = va.ToolSettings()
+        settings.adjust("noise_brush", 2, True, True, (16, 16))
+        self.assertEqual(settings.diameters, {"noise_brush": 7, "airbrush": 9})
+        settings.adjust("airbrush", -3, True, True, (16, 16))
+        self.assertEqual(settings.diameters, {"noise_brush": 7, "airbrush": 6})
+
+    def test_shift_or_alt_alone_do_not_change_a_diameter(self):
+        settings = va.ToolSettings()
+        settings.adjust("noise_brush", 1, True, False, (16, 16))
+        settings.adjust("airbrush", 1, False, True, (16, 16))
+        self.assertEqual(settings.diameters, {"noise_brush": 5, "airbrush": 9})
+
+    def test_a_diameter_stays_between_one_and_the_longer_side_of_the_canvas(self):
+        settings = va.ToolSettings()
+        settings.adjust("noise_brush", -100, True, True, (8, 32))
+        self.assertEqual(settings.diameters["noise_brush"], 1)
+        settings.adjust("noise_brush", 100, True, True, (8, 32))
+        self.assertEqual(settings.diameters["noise_brush"], 32)
+
+    def test_the_outline_of_both_brushes_is_a_square_of_the_diameter(self):
+        settings = va.ToolSettings()
+        self.assertEqual(settings.footprint_size("noise_brush"), (5, 5))
+        self.assertEqual(settings.footprint_size("airbrush"), (9, 9))
+
+    def test_a_fraction_is_clamped_and_kept_to_whole_percents(self):
+        settings = va.ToolSettings()
+        settings.set_fraction("noise_density", 1.7)
+        settings.set_fraction("noise_opacity", -0.2)
+        settings.set_fraction("airbrush_hardness", 0.456)
+        self.assertEqual(settings.fractions["noise_density"], 1.0)
+        self.assertEqual(settings.fractions["noise_opacity"], 0.0)
+        self.assertEqual(settings.fractions["airbrush_hardness"], 0.46)
+        with self.assertRaises(KeyError):
+            settings.set_fraction("pencil_hardness", 0.5)
+
+    def test_every_slider_names_a_fraction_that_exists(self):
+        settings = va.ToolSettings()
+        self.assertEqual(set(va.SLIDERS), {"noise_brush", "airbrush"})
+        for tool, sliders in va.SLIDERS.items():
+            for name, label in sliders:
+                self.assertIn(name, settings.fractions, tool)
+                self.assertTrue(label)
+
+
+class SliderTests(unittest.TestCase):
+    def test_the_fraction_follows_the_pointer_along_the_track_and_is_clamped(self):
+        rectangle = va.pygame.Rect(100, 10, 101, 20)
+        self.assertEqual(va.slider_fraction(rectangle, 100), 0.0)
+        self.assertEqual(va.slider_fraction(rectangle, 200), 1.0)
+        self.assertEqual(va.slider_fraction(rectangle, 150), 0.5)
+        self.assertEqual(va.slider_fraction(rectangle, 125), 0.25)
+        self.assertEqual(va.slider_fraction(rectangle, 0), 0.0)
+        self.assertEqual(va.slider_fraction(rectangle, 5000), 1.0)
+
+    def test_the_fraction_is_rounded_to_a_whole_percent(self):
+        rectangle = va.pygame.Rect(0, 0, 1001, 20)
+        self.assertEqual(va.slider_fraction(rectangle, 333), 0.33)
+
+
+class AdvancedSessionTests(unittest.TestCase):
+    def layout(self, size=9, tiles=None, color=BLUE):
+        tiles = tiles or {(0, 0): solid_tile(color, size)}
+        return va.compose_canvas(tiles, size)
+
+    def start(self, layout, tool, pixel, color=RED, settings=None, random_source=None):
+        return va.CanvasSession(layout, tool, settings or va.ToolSettings(), color, pixel, random_source)
+
+    def painted(self, session):
+        return {(int(c), int(r)) for r, c in numpy.argwhere(numpy.any(session.pixels != session.base, axis=2))}
+
+    def noise_settings(self, diameter=5, shape="circle", density=0.5, opacity=1.0):
+        settings = va.ToolSettings()
+        settings.diameters["noise_brush"] = diameter
+        settings.noise_shape = shape
+        settings.fractions["noise_density"] = density
+        settings.fractions["noise_opacity"] = opacity
+        return settings
+
+    def air_settings(self, diameter=5, hardness=0.5, opacity=1.0):
+        settings = va.ToolSettings()
+        settings.diameters["airbrush"] = diameter
+        settings.fractions["airbrush_hardness"] = hardness
+        settings.fractions["airbrush_opacity"] = opacity
+        return settings
+
+    def test_the_new_tools_draw(self):
+        self.assertIn("noise_brush", va.STROKE_TOOLS)
+        self.assertIn("airbrush", va.STROKE_TOOLS)
+        self.assertNotIn("select", va.STROKE_TOOLS)
+        with self.assertRaises(ValueError):
+            self.start(self.layout(), "select", (1, 1))
+
+    def test_a_noise_press_stamps_the_footprint_where_the_rolls_are_true_and_leaves_the_layout_alone(self):
+        layout = self.layout()
+        settings = self.noise_settings(5, "circle", 0.5)
+        session = self.start(layout, "noise_brush", (4, 4), settings=settings, random_source=ScriptedRandom(0.0))
+        expected = {(4 + footprint.column_offset, 4 + footprint.row_offset) for footprint in va.brush_footprint(5, "circle")}
+        self.assertEqual(self.painted(session), expected)
+        self.assertEqual(len(expected), 21)
+        self.assertTrue(numpy.all(layout.pixels == BLUE))
+        for column, row in expected:
+            self.assertEqual(tuple(session.pixels[row, column]), RED)
+
+    def test_density_zero_changes_nothing(self):
+        session = self.start(self.layout(), "noise_brush", (4, 4), settings=self.noise_settings(density=0.0), random_source=random.Random(1))
+        session.move((8, 8))
+        self.assertFalse(session.changed)
+
+    def test_every_pixel_of_movement_is_one_stamp_with_its_own_rolls(self):
+        settings = self.noise_settings(1, "square", 0.5)
+        source = CyclingRandom(0.1, 0.9)
+        session = self.start(self.layout(), "noise_brush", (0, 0), settings=settings, random_source=source)
+        session.move((3, 0))
+        self.assertEqual(source.calls, 4, "the pressed pixel and each pixel moved over, not more")
+        self.assertEqual(self.painted(session), {(0, 0), (2, 0)})
+
+    def test_a_fast_jump_stamps_every_pixel_on_the_way(self):
+        settings = self.noise_settings(1, "square", 1.0)
+        session = self.start(self.layout(8), "noise_brush", (0, 0), settings=settings, random_source=random.Random(1))
+        session.move((7, 7))
+        self.assertEqual(self.painted(session), {(i, i) for i in range(8)})
+
+    def test_moving_to_the_same_pixel_stamps_nothing_more(self):
+        source = ScriptedRandom(0.0)
+        session = self.start(self.layout(), "noise_brush", (4, 4), settings=self.noise_settings(3, "square", 1.0), random_source=source)
+        calls = source.calls
+        session.move((4, 4))
+        self.assertEqual(source.calls, calls)
+
+    def test_hits_on_the_same_pixel_add_up_within_a_stroke_below_full_opacity(self):
+        layout = self.layout(8, color=TRANSPARENT)
+        settings = self.noise_settings(3, "square", 1.0, 0.5)
+        session = self.start(layout, "noise_brush", (2, 2), settings=settings, random_source=random.Random(1))
+        session.move((3, 2))
+        alphas = [int(session.pixels[2, column, 3]) for column in range(0, 6)]
+        # Stamps cover columns 1-3 and 2-4: columns 2 and 3 are hit twice.
+        self.assertEqual(alphas, [0, 128, 192, 192, 128, 0])
+
+    def test_the_stroke_matches_stamping_directly(self):
+        layout = self.layout()
+        settings = self.noise_settings(5, "circle", 0.4, 0.7)
+        session = self.start(layout, "noise_brush", (2, 2), settings=settings, random_source=random.Random(7))
+        session.move((6, 5))
+        reference = layout.pixels.copy()
+        source = random.Random(7)
+        for column, row in va.line_pixels((2, 2), (6, 5)):
+            va.noise_stamp(reference, column, row, RED, 5, "circle", 0.4, 0.7, source, layout.editable_mask)
+        self.assertTrue(numpy.array_equal(session.pixels, reference))
+
+    def test_the_square_shape_is_used_when_chosen(self):
+        session = self.start(self.layout(), "noise_brush", (4, 4), settings=self.noise_settings(4, "square", 1.0), random_source=ScriptedRandom(0.0))
+        self.assertEqual(len(self.painted(session)), 16)
+
+    def test_nothing_is_drawn_over_empty_places_between_tiles(self):
+        layout = self.layout(4, {(0, 0): solid_tile(BLUE), (2, 0): solid_tile(BLUE)})
+        session = self.start(layout, "noise_brush", (0, 2), settings=self.noise_settings(3, "square", 1.0), random_source=random.Random(1))
+        session.move((11, 2))
+        self.assertTrue(numpy.all(session.pixels[:, 4:8] == 0))
+        self.assertTrue(numpy.any(session.pixels[:, 0:4] == RED))
+        self.assertTrue(numpy.any(session.pixels[:, 8:12] == RED))
+
+    def test_without_a_given_random_source_the_noise_brush_still_works(self):
+        session = self.start(self.layout(), "noise_brush", (4, 4), settings=self.noise_settings(3, "square", 1.0))
+        self.assertEqual(len(self.painted(session)), 9)
+
+    def test_an_air_brush_press_equals_one_stamp_of_the_stroke_it_is_built_on(self):
+        layout = self.layout()
+        settings = self.air_settings(5, 0.5, 0.8)
+        session = self.start(layout, "airbrush", (4, 4), settings=settings)
+        stroke = va.AirbrushStroke(layout.pixels, RED, 5, 0.5, 0.8, layout.editable_mask)
+        stroke.stamp(4, 4)
+        self.assertTrue(numpy.array_equal(session.pixels, stroke.result()))
+        self.assertTrue(session.changed)
+        self.assertTrue(numpy.all(layout.pixels == BLUE))
+
+    def test_passing_over_the_same_pixels_again_within_a_stroke_does_not_pile_up(self):
+        settings = self.air_settings(5, 0.0, 0.5)
+        once = self.start(self.layout(), "airbrush", (0, 4), settings=settings)
+        once.move((8, 4))
+        twice = self.start(self.layout(), "airbrush", (0, 4), settings=settings)
+        twice.move((8, 4))
+        twice.move((0, 4))
+        twice.move((8, 4))
+        self.assertTrue(numpy.array_equal(once.pixels, twice.pixels))
+
+    def test_a_separate_stroke_composites_over_the_earlier_one(self):
+        settings = self.air_settings(1, 1.0, 0.5)
+        first = self.start(self.layout(8, color=TRANSPARENT), "airbrush", (3, 3), settings=settings)
+        second = va.compose_canvas({(0, 0): first.pixels}, 8)
+        second_session = self.start(second, "airbrush", (3, 3), settings=settings)
+        self.assertEqual(int(first.pixels[3, 3, 3]), 128)
+        self.assertEqual(int(second_session.pixels[3, 3, 3]), 192)
+
+    def test_an_air_brush_at_zero_opacity_changes_nothing(self):
+        session = self.start(self.layout(), "airbrush", (4, 4), settings=self.air_settings(5, 0.5, 0.0))
+        self.assertFalse(session.changed)
+
+    def test_the_air_brush_leaves_empty_places_alone_and_may_overhang_the_edge(self):
+        layout = self.layout(4, {(0, 0): solid_tile(BLUE), (2, 0): solid_tile(BLUE)})
+        session = self.start(layout, "airbrush", (0, 0), settings=self.air_settings(9, 1.0, 1.0))
+        session.move((11, 3))
+        self.assertTrue(numpy.all(session.pixels[:, 4:8] == 0))
+        self.assertTrue(numpy.any(session.pixels[:, 8:12] == RED))
+
+
+class ImageClipboardTests(unittest.TestCase):
+    def test_a_picture_survives_the_clipboard_format_to_the_exact_pixel_alpha_included(self):
+        for seed, size in [(1, (1, 1)), (2, (5, 3)), (3, (7, 2)), (4, (16, 16)), (5, (3, 9))]:
+            pixels = numpy.random.default_rng(seed).integers(0, 256, size=(*size, 4), dtype=numpy.uint8)
+            decoded = va.decode_dib(va.encode_dib(pixels))
+            self.assertTrue(numpy.array_equal(decoded, pixels), size)
+
+    def test_an_image_without_alpha_is_read_as_opaque(self):
+        picture = Image.new("RGB", (3, 2), (10, 20, 30))
+        picture.putpixel((2, 1), (200, 100, 50))
+        buffer = io.BytesIO()
+        picture.save(buffer, format="BMP")
+        device_independent_bitmap = buffer.getvalue()[14:]  # a BMP file is a bitmap with a 14 byte file header
+        decoded = va.decode_dib(device_independent_bitmap)
+        self.assertEqual(decoded.shape, (2, 3, 4))
+        self.assertEqual(tuple(decoded[0, 0]), (10, 20, 30, 255))
+        self.assertEqual(tuple(decoded[1, 2]), (200, 100, 50, 255))
+
+    def test_a_bitmap_as_windows_made_it_from_a_dot_net_bitmap_is_read_in_place(self):
+        # Copied from the Windows clipboard (CF_DIBV5) after .NET put a 4 x 3 bitmap there: a 124 byte header, twelve
+        # more bytes of color masks, then the rows from the bottom one up. Transparent pixels came out light gray.
+        data = bytes.fromhex(
+            "7c0000000400000003000000010020000300000030000000000000000000000000000000000000000000ff0000ff0000"
+            "ff0000000000000042475273000000000000000000000000000000000000000000000000000000000000000000000000"
+            "000000000000000000000000040000000000000000000000000000000000ff0000ff0000ff000000d3d3d300ff0000ff"
+            "d3d3d30000ffffffd3d3d300d3d3d3001e140affd3d3d3000000ffffd3d3d300d3d3d30000ff00ff"
+        )
+        self.assertEqual(len(data), 184)
+        gray = (211, 211, 211, 255)
+        expected = [
+            [(255, 0, 0, 255), gray, gray, (0, 255, 0, 255)],
+            [gray, gray, (10, 20, 30, 255), gray],
+            [gray, (0, 0, 255, 255), gray, (255, 255, 0, 255)],
+        ]
+        decoded = va.decode_dib(data)
+        self.assertEqual([[tuple(int(v) for v in pixel) for pixel in row] for row in decoded], expected)
+
+    def test_masks_after_a_version_5_header_do_not_shift_the_pixels(self):
+        pixels = numpy.random.default_rng(3).integers(0, 256, size=(3, 4, 4), dtype=numpy.uint8)
+        encoded = va.encode_dib(pixels)
+        with_masks = encoded[:124] + bytes(12) + encoded[124:]
+        self.assertTrue(numpy.array_equal(va.decode_dib(with_masks), pixels))
+
+    def test_a_bitmap_cut_short_or_with_an_impossible_header_is_not_a_picture(self):
+        encoded = va.encode_dib(solid_tile(RED, 4))
+        self.assertIsNone(va.decode_dib(encoded[:60]))
+        self.assertIsNone(va.decode_dib(bytes(60)))
+
+    def test_a_png_is_read_with_its_alpha(self):
+        pixels = numpy.array([[[255, 0, 0, 128], [0, 255, 0, 0]]], dtype=numpy.uint8)
+        self.assertTrue(numpy.array_equal(va.decode_image_bytes(va.encode_png(pixels)), pixels))
+
+    def test_data_that_is_not_a_picture_gives_none(self):
+        self.assertIsNone(va.decode_dib(b"not a bitmap"))
+        self.assertIsNone(va.decode_image_bytes(b"not a picture"))
+        self.assertIsNone(va.decode_dib(b""))
+
+    def test_other_systems_have_no_system_image_clipboard(self):
+        with mock.patch.object(va.sys, "platform", "linux"):
+            clipboard = va.SystemImageClipboard()
+            self.assertIsNone(clipboard.get_image())
+            self.assertFalse(clipboard.set_image(solid_tile(RED, 2)))
+
+    @unittest.skipUnless(
+        sys.platform == "win32" and os.environ.get("VIRTUAL_ATLAS_TEST_REAL_CLIPBOARD") == "1",
+        "writes to the real clipboard: set VIRTUAL_ATLAS_TEST_REAL_CLIPBOARD=1 on Windows to run it",
+    )
+    def test_the_real_windows_clipboard_round_trips_a_picture_with_alpha(self):
+        pixels = numpy.random.default_rng(9).integers(0, 256, size=(6, 5, 4), dtype=numpy.uint8)
+        clipboard = va.SystemImageClipboard()
+        self.assertTrue(clipboard.set_image(pixels))
+        self.assertTrue(numpy.array_equal(clipboard.get_image(), pixels))
+
+
 class EditorTests(ProjectFixture):
     """Drives the editor with mouse and key events the way a user would, and checks the tiles."""
 
@@ -2488,6 +2810,8 @@ class EditorTests(ProjectFixture):
         self.project = self.make_project(placed, tile_size=8)
         self.application = va.Application(self.project, va.pygame.Surface((1280, 800)))
         self.editor = self.application.editor
+        self.clipboard = FakeImageClipboard()
+        self.editor.clipboard = self.clipboard
 
     def select(self, *coordinates):
         self.project.selection = set(coordinates)
@@ -2846,6 +3170,459 @@ class EditorTests(ProjectFixture):
         hatched = surface.get_at(view.pixel_rectangle(20, 4).center)
         self.assertLess(sum(tuple(hatched)[:3]), 200, "an empty place is dark, not a tile")
         self.assertNotEqual(tuple(hatched)[:3], BLUE[:3])
+
+
+    # Phase 4: the noise brush, the air brush and the rectangle selection -------------------------------------
+
+    def region(self, coordinate, left, top, right, bottom):
+        return self.project.tiles[coordinate].pixels[top:bottom, left:right].copy()
+
+    def select_rectangle(self, first, second):
+        self.click_tool("select")
+        self.drag(self.position(*first), self.position(*second))
+
+    def paste_picture(self, image):
+        self.clipboard.image = image
+        self.key(va.pygame.K_v, va.pygame.KMOD_CTRL)
+
+    def test_the_noise_brush_draws_with_the_chosen_color_and_leaves_the_rest(self):
+        self.select((0, 0))
+        self.editor.random_source = ScriptedRandom(0.0)
+        self.click_tool("noise_brush")
+        self.editor.colors.set_color(RED, "primary")
+        self.send("down", self.position(4, 4))
+        self.send("up", self.position(4, 4))
+        painted = {(c, r) for r in range(8) for c in range(8) if self.pixel((0, 0), c, r) == RED}
+        self.assertEqual(painted, {(4 + f.column_offset, 4 + f.row_offset) for f in va.brush_footprint(5, "circle")})
+        self.assertEqual(self.editor.colors.history, [RED])
+
+    def test_the_air_brush_draws_a_soft_spot_in_one_undo_step(self):
+        self.select((0, 0))
+        self.click_tool("airbrush")
+        self.editor.colors.set_color(RED, "primary")
+        self.editor.settings.diameters["airbrush"] = 5
+        self.editor.settings.fractions["airbrush_hardness"] = 0.0
+        self.drag(self.position(2, 4), self.position(5, 4))
+        self.assertEqual(self.pixel((0, 0), 4, 4), RED)
+        self.assertNotIn(self.pixel((0, 0), 4, 2), (RED, BLUE), "the edge is a mix")
+        self.key(va.pygame.K_z, va.pygame.KMOD_CTRL)
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified)
+
+    def test_brackets_change_the_diameter_of_the_brush_that_is_active(self):
+        self.select((0, 0))
+        self.click_tool("noise_brush")
+        self.key(va.pygame.K_RIGHTBRACKET)
+        self.key(va.pygame.K_RIGHTBRACKET, va.pygame.KMOD_SHIFT)
+        self.assertEqual(self.editor.settings.diameters, {"noise_brush": 6, "airbrush": 9})
+        self.click_tool("airbrush")
+        self.key(va.pygame.K_LEFTBRACKET)
+        self.assertEqual(self.editor.settings.diameters, {"noise_brush": 6, "airbrush": 8})
+
+    def test_only_the_two_brushes_have_controls_below_the_tools(self):
+        for tool in va.TOOL_LABELS:
+            self.click_tool(tool)
+            expected = {"noise_brush": 3, "airbrush": 2}.get(tool, 0)
+            self.assertEqual(len(self.editor.control_rectangles()), expected, tool)
+
+    def test_the_controls_fit_inside_the_row_without_overlapping(self):
+        for tool in ("noise_brush", "airbrush"):
+            self.click_tool(tool)
+            rectangles = list(self.editor.control_rectangles().values())
+            for rectangle in rectangles:
+                self.assertTrue(self.editor.areas.controls.contains(rectangle), tool)
+            for index, first in enumerate(rectangles):
+                for second in rectangles[index + 1:]:
+                    self.assertFalse(first.colliderect(second), tool)
+
+    def test_dragging_in_a_slider_sets_its_value_and_does_not_draw(self):
+        self.select((0, 0))
+        self.click_tool("noise_brush")
+        track = self.editor.control_rectangles()["noise_density"]
+        self.send("down", (track.x + (track.width - 1) // 4, track.centery))
+        self.assertAlmostEqual(self.editor.settings.fractions["noise_density"], 0.25, delta=0.02)
+        self.move((track.right + 50, track.centery))
+        self.assertEqual(self.editor.settings.fractions["noise_density"], 1.0)
+        self.move((track.x - 50, track.centery))
+        self.assertEqual(self.editor.settings.fractions["noise_density"], 0.0)
+        self.send("up", (track.x - 50, track.centery))
+        self.move((track.centerx, track.centery))
+        self.assertEqual(self.editor.settings.fractions["noise_density"], 0.0, "released: the slider no longer follows")
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified)
+        self.assertEqual(self.editor.settings.fractions["noise_opacity"], 1.0)
+
+    def test_the_air_brush_sliders_are_hardness_and_opacity(self):
+        self.click_tool("airbrush")
+        rectangles = self.editor.control_rectangles()
+        self.assertEqual(list(rectangles), ["airbrush_hardness", "airbrush_opacity"])
+        track = rectangles["airbrush_opacity"]
+        self.send("down", (track.x + (track.width - 1) // 2, track.centery))
+        self.send("up", (track.x + (track.width - 1) // 2, track.centery))
+        self.assertAlmostEqual(self.editor.settings.fractions["airbrush_opacity"], 0.5, delta=0.02)
+
+    def test_the_shape_dropdown_opens_offers_both_shapes_and_applies_the_choice(self):
+        self.select((0, 0))
+        self.click_tool("noise_brush")
+        dropdown = self.editor.control_rectangles()["noise_shape"]
+        self.send("down", dropdown.center)
+        self.send("up", dropdown.center)
+        self.assertTrue(self.editor.shape_dropdown_open)
+        options = self.editor.shape_option_rectangles()
+        self.assertEqual(list(options), list(va.BRUSH_SHAPES))
+        self.send("down", options["square"].center)
+        self.send("up", options["square"].center)
+        self.assertEqual(self.editor.settings.noise_shape, "square")
+        self.assertFalse(self.editor.shape_dropdown_open)
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified, "the click chose a shape, it did not draw")
+        self.application.draw()
+
+    def test_clicking_elsewhere_closes_the_dropdown_without_a_change_or_a_stroke(self):
+        self.select((0, 0))
+        self.click_tool("noise_brush")
+        dropdown = self.editor.control_rectangles()["noise_shape"]
+        self.send("down", dropdown.center)
+        self.send("up", dropdown.center)
+        self.send("down", self.position(3, 3))
+        self.send("up", self.position(3, 3))
+        self.assertFalse(self.editor.shape_dropdown_open)
+        self.assertEqual(self.editor.settings.noise_shape, "circle")
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified)
+
+    def test_the_dropdown_closes_when_another_tool_is_chosen(self):
+        self.click_tool("noise_brush")
+        dropdown = self.editor.control_rectangles()["noise_shape"]
+        self.send("down", dropdown.center)
+        self.send("up", dropdown.center)
+        self.click_tool("pencil")
+        self.assertFalse(self.editor.shape_dropdown_open)
+        self.assertEqual(self.editor.tool, "pencil")
+
+    def test_dragging_with_the_select_tool_selects_the_rectangle_between_both_pixels(self):
+        self.select((0, 0))
+        self.select_rectangle((1, 2), (4, 5))
+        self.assertEqual(self.editor.selection_rectangle, (1, 2, 5, 6))
+        self.drag(self.position(4, 5), self.position(1, 2))
+        self.assertEqual(self.editor.selection_rectangle, (1, 2, 5, 6))
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified)
+        self.assertFalse(self.project.history.can_undo(self.project.shown_records()))
+
+    def test_a_selection_dragged_past_the_canvas_is_clipped_to_it(self):
+        self.select((0, 0))
+        self.select_rectangle((2, 2), (12, 3))
+        self.assertEqual(self.editor.selection_rectangle, (2, 2, 8, 4))
+
+    def test_a_click_without_dragging_clears_the_selection(self):
+        self.select((0, 0))
+        self.select_rectangle((1, 1), (3, 3))
+        self.send("down", self.position(5, 5))
+        self.send("up", self.position(5, 5))
+        self.assertIsNone(self.editor.selection_rectangle)
+
+    def test_the_selection_is_shown_while_it_is_dragged(self):
+        self.select((0, 0))
+        self.click_tool("select")
+        self.send("down", self.position(1, 1))
+        self.move(self.position(3, 3))
+        self.assertEqual(self.editor.selection_rectangle, (1, 1, 4, 4))
+        self.application.draw()
+        self.send("up", self.position(3, 3))
+
+    def test_the_right_button_does_not_select(self):
+        self.select((0, 0))
+        self.click_tool("select")
+        self.drag(self.position(1, 1), self.position(3, 3), button=3)
+        self.assertIsNone(self.editor.selection_rectangle)
+
+    def test_ctrl_a_selects_the_whole_canvas_and_switches_to_the_select_tool(self):
+        self.select((0, 0), (1, 0))
+        self.assertEqual(self.editor.tool, "pencil")
+        self.key(va.pygame.K_a, va.pygame.KMOD_CTRL)
+        self.assertEqual(self.editor.tool, "select")
+        self.assertEqual(self.editor.selection_rectangle, (0, 0, 16, 8))
+
+    def test_ctrl_a_with_no_tile_shown_selects_nothing(self):
+        self.key(va.pygame.K_a, va.pygame.KMOD_CTRL)
+        self.assertIsNone(self.editor.selection_rectangle)
+
+    def test_ctrl_c_copies_the_selected_pixels_exactly_and_changes_no_tile(self):
+        self.select((0, 0))
+        self.editor.colors.set_color((10, 20, 30, 40), "primary")
+        self.send("down", self.position(2, 2))
+        self.send("up", self.position(2, 2))
+        before = self.project.tiles[(0, 0)].pixels.copy()
+        self.select_rectangle((1, 1), (3, 3))
+        self.key(va.pygame.K_c, va.pygame.KMOD_CTRL)
+        self.assertEqual(len(self.clipboard.writes), 1)
+        copied = self.clipboard.image
+        self.assertEqual(copied.shape, (3, 3, 4))
+        self.assertTrue(numpy.array_equal(copied, before[1:4, 1:4]))
+        self.assertEqual(tuple(copied[1, 1]), (10, 20, 30, 40))
+        self.assertTrue(numpy.array_equal(self.project.tiles[(0, 0)].pixels, before))
+        self.assertIn("Copied", self.application.message)
+
+    def test_ctrl_c_with_no_selection_copies_nothing(self):
+        self.select((0, 0))
+        sentinel = solid_tile(GREEN, 2)
+        self.clipboard.image = sentinel
+        self.key(va.pygame.K_c, va.pygame.KMOD_CTRL)
+        self.assertEqual(self.clipboard.writes, [])
+        self.assertTrue(numpy.array_equal(self.clipboard.image, sentinel))
+        self.assertIsNone(self.editor.internal_image)
+
+    def test_ctrl_x_copies_then_clears_in_one_undo_step(self):
+        self.select((0, 0))
+        self.select_rectangle((2, 1), (4, 2))
+        self.key(va.pygame.K_x, va.pygame.KMOD_CTRL)
+        self.assertEqual(self.clipboard.image.shape, (2, 3, 4))
+        self.assertTrue(numpy.all(self.clipboard.image == BLUE))
+        self.assertTrue(numpy.all(self.region((0, 0), 2, 1, 5, 3) == 0))
+        self.assertEqual(self.pixel((0, 0), 1, 1), BLUE)
+        self.assertEqual(self.pixel((0, 0), 5, 1), BLUE)
+        self.key(va.pygame.K_z, va.pygame.KMOD_CTRL)
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified)
+
+    def test_delete_clears_the_selection_and_leaves_the_clipboard_alone(self):
+        self.select((0, 0))
+        self.select_rectangle((0, 0), (1, 1))
+        self.key(va.pygame.K_DELETE)
+        self.assertTrue(numpy.all(self.region((0, 0), 0, 0, 2, 2) == 0))
+        self.assertEqual(self.pixel((0, 0), 2, 2), BLUE)
+        self.assertEqual(self.clipboard.writes, [])
+        self.assertIsNone(self.clipboard.image)
+
+    def test_delete_without_a_selection_does_nothing(self):
+        self.select((0, 0))
+        self.key(va.pygame.K_DELETE)
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified)
+
+    def test_cutting_the_whole_canvas_keeps_the_empty_places_between_tiles_empty(self):
+        self.select((0, 0), (3, 3))
+        self.key(va.pygame.K_a, va.pygame.KMOD_CTRL)
+        self.key(va.pygame.K_x, va.pygame.KMOD_CTRL)
+        self.assertTrue(numpy.all(self.project.tiles[(0, 0)].pixels == 0))
+        self.assertTrue(numpy.all(self.project.tiles[(3, 3)].pixels == 0))
+        self.assertEqual(self.project.tiles[(3, 3)].pixels.shape, (8, 8, 4))
+        self.assertEqual(self.clipboard.image.shape, (32, 32, 4))
+        self.assertEqual(set(self.project.tiles), {(0, 0), (1, 0), (3, 3)})
+
+    def test_a_paste_floats_over_the_canvas_until_it_is_committed(self):
+        self.select((0, 0))
+        picture = solid_tile((255, 0, 0, 128), 2)
+        self.paste_picture(picture)
+        self.assertEqual(self.editor.tool, "select")
+        self.assertIsNotNone(self.editor.floating)
+        self.assertEqual((self.editor.floating.column, self.editor.floating.row), (0, 0))
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified, "a floating paste is not yet an edit")
+        self.application.draw()
+        self.key(va.pygame.K_RETURN)
+        expected = va.alpha_over(solid_tile(BLUE, 2), picture)
+        self.assertTrue(numpy.array_equal(self.region((0, 0), 0, 0, 2, 2), expected))
+        self.assertEqual(self.pixel((0, 0), 2, 0), BLUE)
+        self.assertIsNone(self.editor.floating)
+        self.assertTrue(self.project.tiles[(0, 0)].is_modified)
+
+    def test_a_paste_lands_on_the_top_left_of_the_selection(self):
+        self.select((0, 0))
+        self.select_rectangle((3, 2), (5, 4))
+        self.paste_picture(solid_tile(GREEN, 2))
+        self.assertEqual((self.editor.floating.column, self.editor.floating.row), (3, 2))
+
+    def test_a_floating_paste_is_dragged_by_the_mouse(self):
+        self.select((0, 0))
+        self.paste_picture(solid_tile(GREEN, 2))
+        self.drag(self.position(0, 0), self.position(3, 4))
+        self.assertEqual((self.editor.floating.column, self.editor.floating.row), (3, 4))
+        self.key(va.pygame.K_RETURN)
+        self.assertEqual(self.pixel((0, 0), 3, 4), GREEN)
+        self.assertEqual(self.pixel((0, 0), 4, 5), GREEN)
+        self.assertEqual(self.pixel((0, 0), 0, 0), BLUE)
+
+    def test_escape_throws_a_floating_paste_away(self):
+        self.select((0, 0))
+        self.paste_picture(solid_tile(GREEN, 2))
+        self.key(va.pygame.K_ESCAPE)
+        self.assertIsNone(self.editor.floating)
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified)
+        self.assertFalse(self.project.history.can_undo(self.project.shown_records()))
+
+    def test_clicking_outside_the_floating_paste_commits_it_and_starts_a_new_selection(self):
+        self.select((0, 0))
+        self.paste_picture(solid_tile(GREEN, 2))
+        self.send("down", self.position(6, 6))
+        self.assertIsNone(self.editor.floating)
+        self.assertEqual(self.pixel((0, 0), 1, 1), GREEN)
+        self.move(self.position(7, 7))
+        self.send("up", self.position(7, 7))
+        self.assertEqual(self.editor.selection_rectangle, (6, 6, 8, 8))
+
+    def test_choosing_another_tool_commits_the_paste_and_drops_the_selection(self):
+        self.select((0, 0))
+        self.paste_picture(solid_tile(GREEN, 2))
+        self.click_tool("pencil")
+        self.assertEqual(self.pixel((0, 0), 0, 0), GREEN)
+        self.assertIsNone(self.editor.floating)
+        self.assertIsNone(self.editor.selection_rectangle)
+
+    def test_choosing_other_tiles_in_the_atlas_commits_the_paste_to_the_old_tiles_first(self):
+        self.select((0, 0))
+        self.paste_picture(solid_tile(RED, 2))
+        position = self.application.atlas_panel.tile_screen_rect((1, 0)).center
+        self.send("down", position)
+        self.send("up", position)
+        self.assertEqual(self.pixel((0, 0), 0, 0), RED)
+        self.assertEqual(self.pixel((1, 0), 0, 0), GREEN, "the tile that was chosen afterwards is not painted")
+        self.assertEqual(self.project.selection, {(1, 0)})
+        self.assertIsNone(self.editor.floating)
+        self.assertIsNone(self.editor.selection_rectangle)
+
+    def test_undo_while_a_paste_floats_throws_only_the_paste_away(self):
+        self.select((0, 0))
+        self.editor.colors.set_color(RED, "primary")
+        self.send("down", self.position(7, 7))
+        self.send("up", self.position(7, 7))
+        self.paste_picture(solid_tile(GREEN, 2))
+        self.key(va.pygame.K_z, va.pygame.KMOD_CTRL)
+        self.assertIsNone(self.editor.floating)
+        self.assertEqual(self.pixel((0, 0), 7, 7), RED, "the earlier edit is still there")
+        self.assertEqual(self.pixel((0, 0), 0, 0), BLUE)
+
+    def test_a_committed_paste_is_one_undo_step(self):
+        self.select((0, 0), (1, 0))
+        self.paste_picture(solid_tile(RED, 16))
+        self.key(va.pygame.K_RETURN)
+        self.assertEqual(self.pixel((0, 0), 7, 7), RED)
+        self.assertEqual(self.pixel((1, 0), 7, 7), RED)
+        self.key(va.pygame.K_z, va.pygame.KMOD_CTRL)
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified or self.project.tiles[(1, 0)].is_modified)
+
+    def test_a_paste_larger_than_the_canvas_is_clipped(self):
+        self.select((0, 0))
+        self.paste_picture(solid_tile(GREEN, 20))
+        self.key(va.pygame.K_RETURN)
+        self.assertTrue(numpy.all(self.project.tiles[(0, 0)].pixels == GREEN))
+        self.assertEqual(self.project.tiles[(0, 0)].pixels.shape, (8, 8, 4))
+
+    def test_a_paste_over_empty_places_changes_only_the_tiles(self):
+        self.select((0, 0), (3, 3))
+        self.paste_picture(solid_tile(GREEN, 40))
+        self.key(va.pygame.K_RETURN)
+        self.assertTrue(numpy.all(self.project.tiles[(0, 0)].pixels == GREEN))
+        self.assertTrue(numpy.all(self.project.tiles[(3, 3)].pixels == GREEN))
+        self.assertEqual(set(self.project.tiles), {(0, 0), (1, 0), (3, 3)})
+
+    def test_a_paste_that_changes_nothing_leaves_no_undo_step(self):
+        self.select((0, 0))
+        self.paste_picture(solid_tile(TRANSPARENT, 3))
+        self.key(va.pygame.K_RETURN)
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified)
+        self.assertFalse(self.project.history.can_undo(self.project.shown_records()))
+
+    def test_with_nothing_to_paste_the_user_is_told(self):
+        self.select((0, 0))
+        self.key(va.pygame.K_v, va.pygame.KMOD_CTRL)
+        self.assertIsNone(self.editor.floating)
+        self.assertIn("Nothing to paste", self.application.message)
+
+    def test_a_paste_uses_the_system_clipboard_first_and_the_copy_made_here_otherwise(self):
+        self.select((0, 0))
+        self.select_rectangle((0, 0), (1, 1))
+        self.key(va.pygame.K_c, va.pygame.KMOD_CTRL)
+        self.clipboard.image = solid_tile(GREEN, 3)
+        self.key(va.pygame.K_v, va.pygame.KMOD_CTRL)
+        self.assertEqual(self.editor.floating.pixels.shape, (3, 3, 4), "something copied elsewhere since")
+        self.key(va.pygame.K_ESCAPE)
+        self.clipboard.image = None
+        self.key(va.pygame.K_v, va.pygame.KMOD_CTRL)
+        self.assertEqual(self.editor.floating.pixels.shape, (2, 2, 4), "the system clipboard has no picture")
+
+    def test_a_copy_the_system_clipboard_refused_still_wins_over_an_older_picture_there(self):
+        self.select((0, 0))
+        self.clipboard.image = solid_tile(GREEN, 3)
+        self.clipboard.can_write = False
+        self.select_rectangle((0, 0), (1, 1))
+        self.key(va.pygame.K_c, va.pygame.KMOD_CTRL)
+        self.assertIn("inside this program", self.application.message)
+        self.key(va.pygame.K_v, va.pygame.KMOD_CTRL)
+        self.assertEqual(self.editor.floating.pixels.shape, (2, 2, 4))
+        self.key(va.pygame.K_ESCAPE)
+        self.clipboard.can_write = True
+        self.select_rectangle((0, 0), (2, 2))
+        self.key(va.pygame.K_c, va.pygame.KMOD_CTRL)
+        self.clipboard.image = solid_tile(GREEN, 5)
+        self.key(va.pygame.K_v, va.pygame.KMOD_CTRL)
+        self.assertEqual(self.editor.floating.pixels.shape, (5, 5, 4), "after a good copy the system clipboard leads again")
+
+    def test_the_selection_is_dropped_when_other_tiles_are_chosen_but_kept_through_an_edit(self):
+        self.select((0, 0))
+        self.select_rectangle((1, 1), (3, 3))
+        self.key(va.pygame.K_DELETE)
+        self.assertEqual(self.editor.selection_rectangle, (1, 1, 4, 4))
+        self.select((1, 0))
+        self.assertIsNone(self.editor.selection_rectangle)
+
+    def test_the_window_draws_the_selection_and_the_floating_paste(self):
+        self.select((0, 0))
+        self.select_rectangle((1, 1), (3, 3))
+        self.application.draw()
+        self.paste_picture(solid_tile(RED, 2))
+        self.application.draw()
+        center = self.editor.view.pixel_rectangle(1, 1).center
+        self.assertEqual(tuple(self.application.surface.get_at(center))[:3], RED[:3], "the paste is shown over the tile")
+        self.assertEqual(self.pixel((0, 0), 1, 1), BLUE)
+
+    def test_delete_throws_a_floating_paste_away_and_clears_nothing(self):
+        self.select((0, 0))
+        self.select_rectangle((1, 1), (3, 3))
+        self.paste_picture(solid_tile(GREEN, 2))
+        self.key(va.pygame.K_DELETE)
+        self.assertIsNone(self.editor.floating)
+        self.assertEqual(self.pixel((0, 0), 1, 1), BLUE)
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified)
+
+    def test_a_paste_with_nothing_selected_lands_on_the_top_left_of_the_visible_canvas(self):
+        self.select((0, 0), (1, 0))
+        view = self.editor.view
+        view.zoom_by(10, self.position(0, 0))
+        view.origin_x = view.rect.x - 3 * view.zoom
+        view.origin_y = view.rect.y - 2 * view.zoom
+        self.paste_picture(solid_tile(GREEN, 2))
+        self.assertEqual((self.editor.floating.column, self.editor.floating.row), (3, 2))
+
+    def test_a_selection_dragged_entirely_outside_the_canvas_selects_nothing(self):
+        self.select((0, 0))
+        self.select_rectangle((-1, 3), (-2, 5))
+        self.assertIsNone(self.editor.selection_rectangle)
+
+    def test_the_floating_paste_is_grabbed_on_its_last_pixel_but_not_one_past_it(self):
+        self.select((0, 0))
+        self.paste_picture(solid_tile(GREEN, 2))
+        self.send("down", self.position(1, 1))
+        self.assertIsNotNone(self.editor.floating_drag)
+        self.send("up", self.position(1, 1))
+        self.send("down", self.position(2, 0))
+        self.assertIsNone(self.editor.floating, "one pixel to the right is outside: the paste is placed")
+        self.send("up", self.position(2, 0))
+        self.paste_picture(solid_tile(GREEN, 2))
+        self.send("down", self.position(0, 2))
+        self.assertIsNone(self.editor.floating, "one pixel below is outside")
+        self.send("up", self.position(0, 2))
+
+    def test_a_keyboard_shortcut_that_changes_the_tool_closes_the_shape_menu(self):
+        self.select((0, 0))
+        self.click_tool("noise_brush")
+        menu = self.editor.control_rectangles()["noise_shape"]
+        self.send("down", menu.center)
+        self.send("up", menu.center)
+        self.assertTrue(self.editor.shape_dropdown_open)
+        self.key(va.pygame.K_a, va.pygame.KMOD_CTRL)
+        self.assertEqual(self.editor.tool, "select")
+        self.assertFalse(self.editor.shape_dropdown_open)
+
+    def test_a_tool_that_needs_no_tile_works_without_one_shown(self):
+        for tool in ("noise_brush", "airbrush", "select"):
+            self.click_tool(tool)
+            self.send("down", self.position(3, 3))
+            self.send("up", self.position(3, 3))
+            self.application.draw()
 
 
 if __name__ == "__main__":
