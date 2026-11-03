@@ -2061,15 +2061,15 @@ class Theme:
     BACKGROUND = (22, 24, 28)
     PANEL = (30, 33, 38)
     PANEL_BORDER = (52, 56, 64)
-    TEXT = (218, 222, 228)
-    TEXT_DIMMED = (140, 146, 156)
+    TEXT = (255, 255, 255)
+    TEXT_DIMMED = (208, 212, 220)
     ACCENT = (90, 170, 255)
     SLIDER_FILL = (40, 78, 118)
     BUTTON = (50, 55, 64)
     BUTTON_HOVERED = (66, 73, 86)
-    DISABLED_TEXT = (96, 100, 108)
+    DISABLED_TEXT = (164, 169, 178)
     FIELD = (18, 20, 24)
-    ERROR = (230, 96, 96)
+    ERROR = (255, 128, 128)
     ERROR_BACKGROUND = (74, 30, 32)
     UNSAVED = (255, 170, 60)
     VALID = (96, 214, 136)
@@ -2470,6 +2470,82 @@ def draw_button(
     draw_text(surface, font, label, Theme.TEXT if enabled else Theme.DISABLED_TEXT, rectangle.center, "center")
 
 
+def draw_tool_icon(surface: pygame.Surface, tool: str, rectangle: pygame.Rect, color: tuple[int, int, int]) -> None:
+    """The picture on a tool's button, drawn with lines and shapes on a 24 by 24 grid scaled to the button."""
+    unit = min(rectangle.width, rectangle.height) / 30.0
+    center_x, center_y = rectangle.center
+    thickness = max(1, int(round(2 * unit)))
+    hairline = max(1, int(round(1.4 * unit)))
+
+    def point(x: float, y: float) -> tuple[float, float]:
+        return (center_x + (x - 12) * unit, center_y + (y - 12) * unit)
+
+    def polygon(coordinates: list[tuple[float, float]], width: int = 0) -> None:
+        pygame.draw.polygon(surface, color, [point(x, y) for x, y in coordinates], width)
+
+    def line(start: tuple[float, float], end: tuple[float, float], width: int = thickness) -> None:
+        pygame.draw.line(surface, color, point(*start), point(*end), width)
+
+    def dot(x: float, y: float, radius: float, dot_color: tuple[int, int, int] = color) -> None:
+        pygame.draw.circle(surface, dot_color, point(x, y), max(1.0, radius * unit))
+
+    def dashes(start: tuple[float, float], end: tuple[float, float]) -> None:
+        length = math.hypot(end[0] - start[0], end[1] - start[1])
+        for offset in range(0, int(length), 4):
+            first = offset / length
+            last = min(offset + 2, length) / length
+            line(
+                (start[0] + (end[0] - start[0]) * first, start[1] + (end[1] - start[1]) * first),
+                (start[0] + (end[0] - start[0]) * last, start[1] + (end[1] - start[1]) * last),
+                hairline,
+            )
+
+    if tool == "pencil":
+        polygon([(15, 4), (20, 9), (10, 19), (5, 14)])
+        polygon([(5, 14), (10, 19), (3, 21)], hairline)
+    elif tool == "eraser":
+        polygon([(3, 15), (13, 5), (21, 13), (11, 21)], hairline)
+        polygon([(3, 15), (9, 9), (17, 17), (11, 21)])
+    elif tool == "line":
+        line((4, 20), (20, 4))
+        dot(4, 20, 2.2)
+        dot(20, 4, 2.2)
+    elif tool == "horizontal_line":
+        line((3, 12), (21, 12))
+        line((3, 8), (3, 16), hairline)
+        line((21, 8), (21, 16), hairline)
+    elif tool == "vertical_line":
+        line((12, 3), (12, 21))
+        line((8, 3), (16, 3), hairline)
+        line((8, 21), (16, 21), hairline)
+    elif tool == "horizontal_parallelogram":
+        polygon([(8, 7), (21, 7), (16, 17), (3, 17)], thickness)
+    elif tool == "vertical_parallelogram":
+        polygon([(7, 3), (17, 8), (17, 21), (7, 16)], thickness)
+    elif tool == "noise_brush":
+        for x, y in [(5, 6), (11, 4), (18, 7), (8, 11), (14, 12), (20, 13), (4, 16), (10, 18), (16, 19), (21, 20), (7, 21)]:
+            dot(x, y, 1.6)
+    elif tool == "airbrush":
+        for radius, strength in ((10, 0.22), (7, 0.45), (4, 1.0)):
+            shade = tuple(int(Theme.BUTTON[channel] + (color[channel] - Theme.BUTTON[channel]) * strength) for channel in range(3))
+            dot(12, 12, radius, shade)  # type: ignore[arg-type]
+    elif tool == "select":
+        dashes((4, 6), (20, 6))
+        dashes((20, 6), (20, 18))
+        dashes((20, 18), (4, 18))
+        dashes((4, 18), (4, 6))
+    elif tool == "eyedropper":
+        line((5, 19), (14, 10), thickness + 1)
+        dot(4, 20, 1.8)
+        dot(17, 7, 4)
+        line((13, 4), (20, 11), thickness)
+    elif tool == "fill":
+        polygon([(3, 12), (10, 5), (18, 13), (11, 20)], hairline)
+        polygon([(3, 12), (10, 19), (11, 20), (6, 15)])
+        polygon([(21, 13), (23, 17), (19, 17)])
+        dot(21, 18, 2)
+
+
 def draw_slider(surface: pygame.Surface, rectangle: pygame.Rect, label: str, fraction: float, font: pygame.font.Font) -> None:
     """A track filled up to `fraction`, with its name and value in whole percents written on it."""
     pygame.draw.rect(surface, Theme.FIELD, rectangle, border_radius=4)
@@ -2805,17 +2881,12 @@ def compute_editor_areas(rect: pygame.Rect, tools: list[str]) -> EditorAreas:
     options = pygame.Rect(rect.x + margin, color_top - scaled(30), width, scaled(22))
     # The sliders and the shape menu of the noise brush and the air brush; empty for the other tools.
     controls = pygame.Rect(rect.x + margin, options.y - gap - scaled(24), width, scaled(24))
-    columns, button_height = 4, scaled(28)
-    rows = -(-len(tools) // columns)
-    tools_top = controls.y - gap - rows * button_height - (rows - 1) * gap
-    button_width = (width - (columns - 1) * gap) // columns
+    # The tools are icons in one row; the name of a tool is shown when the pointer rests on its button.
+    button_height, button_gap = scaled(36), scaled(4)
+    tools_top = controls.y - gap - button_height
+    button_width = (width - (len(tools) - 1) * button_gap) // len(tools)
     tool_buttons = {
-        tool: pygame.Rect(
-            rect.x + margin + (index % columns) * (button_width + gap),
-            tools_top + (index // columns) * (button_height + gap),
-            button_width,
-            button_height,
-        )
+        tool: pygame.Rect(rect.x + margin + index * (button_width + button_gap), tools_top, button_width, button_height)
         for index, tool in enumerate(tools)
     }
     canvas_top = header.bottom + gap
@@ -2906,7 +2977,11 @@ class EditorPanel:
         self.hex_focused = False
         self.hex_invalid = False
         # The name above the canvas is a text field when a single tile is shown and the name is clicked.
-        self.name_field = TextField("", lambda character: character not in _INVALID_NAME_CHARACTERS)
+        # The field holds the name without its extension (.png); the extension is shown beside it and cannot be edited.
+        self.name_field = TextField(
+            "", lambda character: character not in _INVALID_NAME_CHARACTERS, 255 - len(TILE_FILE_EXTENSION)
+        )
+        self.name_extension = TILE_FILE_EXTENSION
         self.name_focused = False
         self.name_invalid = False
         self._name_coordinate: Optional[Coordinate] = None
@@ -2972,7 +3047,9 @@ class EditorPanel:
         if coordinate is None:
             return
         self._name_coordinate = coordinate
-        self.name_field.set_text(self.project.tiles[coordinate].name)
+        name = self.project.tiles[coordinate].name
+        self.name_extension = name[-len(TILE_FILE_EXTENSION):]  # the letter case a file already has is kept
+        self.name_field.set_text(name[: -len(TILE_FILE_EXTENSION)])
         self.name_focused = True
         self.name_invalid = False
 
@@ -2983,7 +3060,10 @@ class EditorPanel:
         if coordinate is None or coordinate not in self.project.tiles:
             return True
         record = self.project.tiles[coordinate]
-        new_name = self.name_field.text
+        stem = self.name_field.text
+        if stem.lower().endswith(self.name_extension.lower()):
+            stem = stem[: -len(self.name_extension)]  # someone typed the extension out: it is not doubled
+        new_name = stem + self.name_extension
         try:
             if self.project.rename_tile(coordinate, new_name):
                 self.message = f"Renamed to {new_name}."
@@ -3002,13 +3082,20 @@ class EditorPanel:
         elif event.key == pygame.K_ESCAPE:
             self.name_focused = False
             self.name_invalid = False
-        elif event.mod & pygame.KMOD_CTRL and event.key == pygame.K_a:
-            text = self.name_field.text
-            stem_end = len(text) - len(TILE_FILE_EXTENSION) if text.lower().endswith(TILE_FILE_EXTENSION) else len(text)
-            self.name_field.select(0, stem_end)  # the extension is not part of the name that is being chosen
         else:
             self.name_field.handle_key_down(event.key, event.mod)
             self.name_invalid = False
+
+    def name_field_areas(self) -> tuple[pygame.Rect, pygame.Rect]:
+        """Where the name field and the extension beside it are while a name is edited. The field is as wide as its
+        text needs, with some room to type."""
+        header, font = self.areas.header, self.fonts.normal
+        extension_width = font.size(self.name_extension)[0]
+        wanted = font.size(self.name_field.text)[0] + 2 * scaled(6) + scaled(40)
+        width = max(scaled(120), min(wanted, header.width - extension_width - scaled(10)))
+        field = pygame.Rect(header.x, header.y, width, header.height)
+        extension = pygame.Rect(field.right + scaled(4), header.y, extension_width, header.height)
+        return field, extension
 
     def _forget_selection(self) -> None:
         """Other tiles are shown: what was selected or pasted on the old canvas means nothing now."""
@@ -3054,12 +3141,13 @@ class EditorPanel:
         return rectangles
 
     def shape_option_rectangles(self) -> dict[str, pygame.Rect]:
-        """The choices of the shape menu while it is open, stacked above the menu."""
+        """The choices of the shape menu while it is open, stacked below the menu (above it they would cover the
+        buttons of the tools)."""
         menu = self.control_rectangles().get("noise_shape")
         if menu is None:
             return {}
         return {
-            shape: pygame.Rect(menu.x, menu.y - (len(BRUSH_SHAPES) - index) * menu.height, menu.width, menu.height)
+            shape: pygame.Rect(menu.x, menu.y + (index + 1) * menu.height, menu.width, menu.height)
             for index, shape in enumerate(BRUSH_SHAPES)
         }
 
@@ -3441,7 +3529,9 @@ class EditorPanel:
         pygame.draw.rect(surface, Theme.PANEL_BORDER, self.rect, width=1)
         header = self.header_text()
         if self.name_focused:
-            self.name_field.draw(surface, self.areas.header, self.fonts.normal, True, caret_visible, self.name_invalid)
+            field, extension = self.name_field_areas()
+            self.name_field.draw(surface, field, self.fonts.normal, True, caret_visible, self.name_invalid)
+            draw_text(surface, self.fonts.normal, self.name_extension, Theme.TEXT_DIMMED, extension.midleft, "midleft")
         elif header:
             if self.editable_name_coordinate() is not None and self.areas.header.collidepoint(self.pointer):
                 pygame.draw.rect(surface, Theme.PANEL_BORDER, self.areas.header, width=1, border_radius=3)
@@ -3567,10 +3657,17 @@ class EditorPanel:
             return f"Width {self.settings.line_width}     [ ] change"
         return ""
 
+    def tool_at(self, position: tuple[int, int]) -> Optional[str]:
+        for tool, rectangle in self.areas.tool_buttons.items():
+            if rectangle.collidepoint(position):
+                return tool
+        return None
+
     def draw_tools(self, surface: pygame.Surface) -> None:
         for tool, rectangle in self.areas.tool_buttons.items():
             hovered = rectangle.collidepoint(self.pointer)
-            draw_button(surface, rectangle, TOOL_LABELS[tool], self.fonts.small, hovered)
+            draw_button(surface, rectangle, "", self.fonts.small, hovered)
+            draw_tool_icon(surface, tool, rectangle, Theme.ACCENT if tool == self.tool else Theme.TEXT)
             if tool == self.tool:
                 pygame.draw.rect(surface, Theme.ACCENT, rectangle, width=2, border_radius=4)
         draw_text(surface, self.fonts.small, self.options_text(), Theme.TEXT_DIMMED, self.areas.options.midleft, "midleft")
@@ -4321,6 +4418,10 @@ class Application:
             index = self.unplaced_panel.tile_at(self.pointer)
             if index is not None:
                 return self.project.unplaced[index].name
+        elif self.editor.contains(self.pointer):
+            tool = self.editor.tool_at(self.pointer)
+            if tool is not None:
+                return TOOL_LABELS[tool]
         return None
 
     def draw_tooltip(self) -> None:

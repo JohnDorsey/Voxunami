@@ -29,7 +29,7 @@ phases; what works so far:
   arrangement (empty places are hatched and cannot be drawn on), and a stroke can cross from tile to tile.
   Mouse wheel zooms, middle-drag pans, a grid shows when zoomed in. The left button draws with the primary color,
   the right button with the secondary color.
-- Tools: pencil, eraser, line, horizontal line, vertical line, horizontal and vertical parallelogram, noise
+- Tools (icons in one row; rest the pointer on one to see its name): pencil, eraser, line, horizontal line, vertical line, horizontal and vertical parallelogram, noise
   brush, air brush, select, eye dropper, fill bucket (exact color match, side by side pixels only). `[` and `]`
   resize: both axes together, Shift for the width, Alt for the height; the lines and parallelograms have one
   width, and the noise brush and air brush have one diameter.
@@ -51,11 +51,11 @@ phases; what works so far:
   Ctrl+S saves the shown tiles that changed, Ctrl+Shift+S saves every changed tile. A tile with unsaved changes
   has an orange dot in the atlas, and `*` after its name. A tile that has no file yet keeps its pixels in
   `atlas.json` after every edit.
-- Renaming: with one tile shown, click its name above the canvas and type. Enter renames at once, on disk (the
-  PNG file and `atlas.json`); Esc gives up; clicking elsewhere applies a name that is allowed and drops one that
-  is not (the status line says why). Ctrl+A selects the name without `.png`. A name is refused if it is not a valid
-  `.png` file name or if any PNG file in the folder already has it, even one the program ignores; a file is never
-  replaced. Renaming is not part of Ctrl+Z.
+- Renaming: with one tile shown, click its name above the canvas and type. The `.png` stays beside the field, out
+  of the way (a `.png` you type yourself is not doubled). Enter renames at once, on disk (the PNG file and
+  `atlas.json`); Esc gives up; clicking elsewhere applies a name that is allowed and drops one that is not (the
+  status line says why). A name is refused if it is not a valid file name or if any PNG file in the folder already
+  has it, even one the program ignores; a file is never replaced. Renaming is not part of Ctrl+Z.
 - Closing the window with unsaved tiles (including tiles that have no file yet) asks about each one: Save, Don't
   save or Cancel (Esc), with the current picture next to the one on disk. The box "Do this for all" gives the
   same answer to the tiles still to come. Enter saves. A tile with no file that is not saved stays in `atlas.json`.

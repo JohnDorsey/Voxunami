@@ -4269,7 +4269,8 @@ class EditorTests(ProjectFixture):
         self.select((0, 0))
         self.click_name()
         self.assertTrue(self.editor.name_focused)
-        self.assertEqual(self.editor.name_field.text, "a.png")
+        self.assertEqual(self.editor.name_field.text, "a", "the extension is not part of the field")
+        self.assertEqual(self.editor.name_extension, ".png")
 
     def test_the_name_of_several_tiles_or_of_none_cannot_be_edited(self):
         self.select((0, 0), (1, 0))
@@ -4290,7 +4291,7 @@ class EditorTests(ProjectFixture):
 
     def test_typing_a_name_and_pressing_enter_renames_the_file_at_once(self):
         self.select((0, 0))
-        self.rename_to("stone.png")
+        self.rename_to("stone")
         self.key(va.pygame.K_RETURN)
         self.assertEqual(self.png_names(), ["b.png", "c.png", "stone.png"])
         self.assertEqual(self.editor.header_text(), "stone.png")
@@ -4300,16 +4301,16 @@ class EditorTests(ProjectFixture):
 
     def test_characters_a_file_name_cannot_contain_are_not_typed(self):
         self.select((0, 0))
-        self.rename_to("x/y:z*.png")
-        self.assertEqual(self.editor.name_field.text, "xyz.png")
+        self.rename_to("x/y:z*")
+        self.assertEqual(self.editor.name_field.text, "xyz")
 
     def test_a_name_that_is_not_allowed_keeps_the_field_open_with_the_reason(self):
         self.select((0, 0))
-        self.rename_to("stone")
+        self.rename_to("")
         self.key(va.pygame.K_RETURN)
         self.assertTrue(self.editor.name_focused)
         self.assertTrue(self.editor.name_invalid)
-        self.assertIn("must end with", self.application.message)
+        self.assertIn("nothing before the extension", self.application.message)
         self.assertEqual(self.png_names(), ["a.png", "b.png", "c.png"])
         self.application.draw()
         self.key(va.pygame.K_ESCAPE)
@@ -4318,7 +4319,7 @@ class EditorTests(ProjectFixture):
 
     def test_a_name_that_another_file_has_is_refused_and_that_file_is_not_touched(self):
         self.select((0, 0))
-        self.rename_to("B.png")
+        self.rename_to("B")
         self.key(va.pygame.K_RETURN)
         self.assertTrue(self.editor.name_invalid)
         self.assertIn("already used", self.application.message)
@@ -4327,29 +4328,29 @@ class EditorTests(ProjectFixture):
 
     def test_typing_again_clears_the_flag(self):
         self.select((0, 0))
-        self.rename_to("stone")
+        self.rename_to("")
         self.key(va.pygame.K_RETURN)
-        self.type_text(".png")
+        self.type_text("x")
         self.assertFalse(self.editor.name_invalid)
 
     def test_clicking_away_applies_a_valid_name(self):
         self.select((0, 0))
-        self.rename_to("stone.png")
+        self.rename_to("stone")
         self.send("down", self.application.unplaced_panel.rect.center)
         self.assertEqual(self.png_names(), ["b.png", "c.png", "stone.png"])
         self.assertFalse(self.editor.name_focused)
 
     def test_clicking_away_from_a_name_that_is_not_allowed_drops_it_and_says_why(self):
         self.select((0, 0))
-        self.rename_to("stone")
+        self.rename_to("")
         self.send("down", self.application.unplaced_panel.rect.center)
         self.assertEqual(self.png_names(), ["a.png", "b.png", "c.png"])
         self.assertFalse(self.editor.name_focused)
-        self.assertIn("must end with", self.application.message)
+        self.assertIn("nothing before the extension", self.application.message)
 
     def test_clicking_another_tile_in_the_atlas_renames_the_first_before_the_selection_changes(self):
         self.select((0, 0))
-        self.rename_to("stone.png")
+        self.rename_to("stone")
         position = self.application.atlas_panel.tile_screen_rect((1, 0)).center
         self.send("down", position)
         self.send("up", position)
@@ -4358,7 +4359,7 @@ class EditorTests(ProjectFixture):
 
     def test_clicking_a_tool_or_the_canvas_while_editing_the_name_applies_it_first(self):
         self.select((0, 0))
-        self.rename_to("stone.png")
+        self.rename_to("stone")
         self.click_tool("eraser")
         self.assertEqual(self.png_names(), ["b.png", "c.png", "stone.png"])
         self.assertFalse(self.editor.name_focused)
@@ -4372,30 +4373,107 @@ class EditorTests(ProjectFixture):
 
     def test_a_name_that_cannot_reach_the_disk_is_reported_and_dropped(self):
         self.select((0, 0))
-        self.rename_to("stone.png")
+        self.rename_to("stone")
         with mock.patch.object(va.os, "rename", side_effect=PermissionError("in use")):
             self.key(va.pygame.K_RETURN)
         self.assertIn("Could not rename", self.application.message)
         self.assertFalse(self.editor.name_focused)
         self.assertEqual(self.png_names(), ["a.png", "b.png", "c.png"])
 
-    def test_ctrl_a_in_the_name_selects_it_without_the_extension_and_not_the_canvas(self):
+    def test_ctrl_a_in_the_name_selects_all_of_it_and_not_the_canvas(self):
         self.select((0, 0))
         self.click_name()
         self.key(va.pygame.K_a, va.pygame.KMOD_CTRL)
         self.assertEqual(self.editor.name_field.selection, (0, 1))
         self.assertEqual(self.editor.tool, "pencil")
         self.assertIsNone(self.editor.selection_rectangle)
-        self.editor.name_field.set_text("grass.top.png")
+        self.editor.name_field.set_text("grass.top")
         self.key(va.pygame.K_a, va.pygame.KMOD_CTRL)
         self.assertEqual(self.editor.name_field.selection, (0, 9))
 
-    def test_typing_over_the_selected_stem_keeps_the_extension(self):
+    def test_typing_over_the_selected_name_changes_it_and_the_extension_stays(self):
         self.select((0, 0))
         self.click_name()
         self.key(va.pygame.K_a, va.pygame.KMOD_CTRL)
         self.type_text("dirt")
-        self.assertEqual(self.editor.name_field.text, "dirt.png")
+        self.assertEqual(self.editor.name_field.text, "dirt")
+        self.key(va.pygame.K_RETURN)
+        self.assertEqual(self.png_names(), ["b.png", "c.png", "dirt.png"])
+
+    def test_an_extension_typed_out_is_not_doubled(self):
+        self.select((0, 0))
+        self.rename_to("stone.png")
+        self.key(va.pygame.K_RETURN)
+        self.assertEqual(self.png_names(), ["b.png", "c.png", "stone.png"])
+
+    def test_the_letter_case_of_the_extension_a_file_has_is_kept(self):
+        project = self.make_project({(0, 0): ("Loud.PNG", solid_tile(BLUE, 8))}, tile_size=8)
+        application = va.Application(project, va.pygame.Surface((1280, 800)))
+        project.select_only((0, 0))
+        application.editor.sync()
+        center = application.editor.areas.header.center
+        application.handle_event(va.pygame.event.Event(va.pygame.MOUSEBUTTONDOWN, pos=center, button=1))
+        self.assertEqual((application.editor.name_field.text, application.editor.name_extension), ("Loud", ".PNG"))
+        application.editor.name_field.set_text("Quiet")
+        application.handle_event(va.pygame.event.Event(va.pygame.KEYDOWN, key=va.pygame.K_RETURN, mod=0, unicode="", scancode=0))
+        self.assertEqual(project.tiles[(0, 0)].name, "Quiet.PNG")
+
+    def test_the_extension_is_drawn_beside_the_field_and_not_inside_it(self):
+        self.select((0, 0))
+        self.click_name()
+        field, extension = self.editor.name_field_areas()
+        header = self.editor.areas.header
+        self.assertTrue(header.contains(field) and header.contains(extension))
+        self.assertGreaterEqual(extension.left, field.right)
+        self.editor.name_field.set_text("a" * 200)
+        field, extension = self.editor.name_field_areas()
+        self.assertTrue(header.contains(field) and header.contains(extension))
+        self.assertGreaterEqual(extension.left, field.right)
+
+    def test_the_name_field_cannot_hold_more_than_a_file_name_has_room_for(self):
+        self.select((0, 0))
+        self.click_name()
+        self.key(va.pygame.K_a, va.pygame.KMOD_CTRL)
+        self.type_text("x" * 400)
+        self.assertEqual(len(self.editor.name_field.text) + len(self.editor.name_extension), 255)
+
+    def test_the_tools_are_icons_in_one_row_in_the_order_of_the_list(self):
+        buttons = self.editor.areas.tool_buttons
+        self.assertEqual(list(buttons), list(va.TOOL_LABELS))
+        rectangles = list(buttons.values())
+        self.assertEqual({(rectangle.y, rectangle.size) for rectangle in rectangles}, {(rectangles[0].y, rectangles[0].size)})
+        for first, second in zip(rectangles, rectangles[1:]):
+            self.assertLess(first.right, second.left)
+
+    def test_resting_on_a_tool_shows_its_name(self):
+        for tool, label in va.TOOL_LABELS.items():
+            self.application.pointer = self.editor.areas.tool_buttons[tool].center
+            self.assertEqual(self.application.hover_text(), label)
+        self.application.pointer = self.editor.areas.square.center
+        self.assertIsNone(self.application.hover_text())
+        self.application.pointer = self.editor.areas.tool_buttons["pencil"].center
+        self.application.draw()
+
+    def test_every_tool_has_its_own_icon_that_is_drawn(self):
+        blank = va.pygame.Surface((40, 36))
+        blank.fill(va.Theme.BUTTON)
+        blank_pixels = va.pygame.surfarray.array3d(blank).tobytes()
+        pictures = {}
+        for tool in va.TOOL_LABELS:
+            surface = va.pygame.Surface((40, 36))
+            surface.fill(va.Theme.BUTTON)
+            va.draw_tool_icon(surface, tool, surface.get_rect(), va.Theme.TEXT)
+            pictures[tool] = va.pygame.surfarray.array3d(surface).tobytes()
+            self.assertNotEqual(pictures[tool], blank_pixels, tool)
+        self.assertEqual(len(set(pictures.values())), len(pictures), "no two tools share an icon")
+
+    def test_the_text_is_bright_the_brightest_is_white_and_the_darkest_is_still_a_light_grey(self):
+        texts = [va.Theme.TEXT, va.Theme.TEXT_DIMMED, va.Theme.DISABLED_TEXT, va.Theme.ERROR]
+        self.assertEqual(va.Theme.TEXT, (255, 255, 255))
+        self.assertTrue(all(min(color) >= 128 for color in texts), texts)
+        self.assertGreaterEqual(min(va.Theme.DISABLED_TEXT), 150)
+        self.assertGreater(sum(va.Theme.TEXT), sum(va.Theme.TEXT_DIMMED))
+        self.assertGreater(sum(va.Theme.TEXT_DIMMED), sum(va.Theme.DISABLED_TEXT))
 
     def test_keys_typed_into_the_name_do_not_reach_the_canvas(self):
         self.select((0, 0))
@@ -4407,7 +4485,7 @@ class EditorTests(ProjectFixture):
 
     def test_choosing_other_tiles_without_the_mouse_ends_the_edit_without_renaming(self):
         self.select((0, 0))
-        self.rename_to("stone.png")
+        self.rename_to("stone")
         self.select((1, 0))
         self.assertFalse(self.editor.name_focused)
         self.assertEqual(self.png_names(), ["a.png", "b.png", "c.png"])
@@ -4415,7 +4493,7 @@ class EditorTests(ProjectFixture):
     def test_renaming_keeps_unsaved_edits_and_saving_afterwards_writes_the_new_file(self):
         self.select((0, 0))
         self.drag(self.position(0, 0), self.position(1, 0))
-        self.rename_to("stone.png")
+        self.rename_to("stone")
         self.key(va.pygame.K_RETURN)
         self.assertEqual(self.editor.header_text(), "stone.png*")
         self.key(va.pygame.K_s, va.pygame.KMOD_CTRL)
