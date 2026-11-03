@@ -420,11 +420,11 @@ fn a_state_that_is_no_ellipse_is_refused() {
 const FIT_PINS: [([u64; 3], u64, u64, u64, u64, u64); 6] = [
     (
         [0x0, 0x3ff0000000000000, 0x8000000000000000],
-        0x424176592dfffffa,
-        0x3f9119ce075f6fd4,
+        0x424176592dfffffe,
+        0x3f9119ce075f6fd3,
         0x3ffccccccccccccd,
-        0x417e1913fffffff0,
-        0x3fd3333333333331,
+        0x417e1913fffffffc,
+        0x3fd3333333333333,
     ),
     (
         [0x3fe3333333333333, 0x3fe999999999999a, 0x3c767091424eea80],
@@ -453,8 +453,8 @@ const FIT_PINS: [([u64; 3], u64, u64, u64, u64, u64); 6] = [
     (
         [0x3fe279a74590331c, 0x3fe279a74590331c, 0x3fe279a74590331c],
         0x442b1ae4d6e2ef4f,
-        0x3fdffffffffffffd,
-        0x4007fffffffffffe,
+        0x3fe0000000000001,
+        0x4007ffffffffffff,
         0x4338de76816d7ffe,
         0x4000000000000002,
     ),

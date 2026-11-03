@@ -1,21 +1,19 @@
 """Reference values for `src/exact_circle.rs`, worked out with `mpmath` at 120 digits.
 
-    python exact_circle_reference.py constants   # the tables of exact_circle.rs: ANGLES, GAIN and INVERSE_TAU
+    python exact_circle_reference.py constants   # the table of exact_circle.rs: INVERSE_TAU
     python exact_circle_reference.py vectors     # the expected values that exact_circle/tests.rs and tests/rail.rs pin
 
 Run it with `mpmath` installed (`pip install mpmath`). Nothing here is read by the build: the values it prints are pasted into the Rust source, and the tests
-check the program against them. A change to a table is a change to where every planet on a rail is, so it goes with new expected values and a note in
-`docs/design-decisions.md`.
+check the program against them. (Until 2026-11-03 this script also made the tables of the fixed-point sine and cosine that placed the planets; they are gone, and where a planet is now comes from `engine/wide_kepler`.)
 """
 import math
 import random
 import sys
 
-from mpmath import floor, mp, mpf, pi, sin, cos, sqrt, atan
+from mpmath import floor, mp, mpf, pi, sin, cos, sqrt
 
 mp.dps = 120
 ONE = 1 << 126
-STEPS = 127  # CORDIC steps 0..126
 
 
 def fixed(value):
@@ -24,20 +22,9 @@ def fixed(value):
 
 
 def constants():
-    # The angle whose tangent is 2^-step, in turns with 128 bits after the point.
-    angles = [int(floor(atan(mpf(2) ** -step) / (2 * pi) * (mpf(2) ** 128) + mpf(1) / 2)) for step in range(STEPS)]
-    # What the steps make too long: the product of 1 / sqrt(1 + 4^-step), 126 bits after the point.
-    gain = mpf(1)
-    for step in range(STEPS):
-        gain /= sqrt(1 + mpf(2) ** (-2 * step))
     # One over two pi, times 2^192, rounded down: three 64-bit parts, the largest first.
     inverse_tau = int(floor((mpf(2) ** 192) / (2 * pi)))
     limbs = [(inverse_tau >> (64 * part)) & ((1 << 64) - 1) for part in (2, 1, 0)]
-    print("const ANGLES: [u128; %d] = [" % STEPS)
-    for angle in angles:
-        print("    0x%032x," % angle)
-    print("];")
-    print("const GAIN: i128 = 0x%032x;" % fixed(gain))
     print("const INVERSE_TAU: [u64; 3] = [" + ", ".join("0x%016x" % limb for limb in limbs) + "];")
 
 
@@ -82,14 +69,6 @@ def offset(normal, radius, period, phase, tick, ticks_per_second, shift=(0, 0, 0
 
 def vectors():
     random.seed(20261027)
-    turns = [0, 1, 1 << 126, 1 << 127, 3 << 126, (1 << 128) - 1, (1 << 125) + 12345, (1 << 124) - 1]
-    turns += [random.getrandbits(128) for _ in range(40)]
-    print("const SINE_AND_COSINE: [(u128, i128, i128); %d] = [" % len(turns))
-    for t in turns:
-        angle = 2 * pi * mpf(t) / (mpf(2) ** 128)
-        print("    (0x%032x, %d, %d)," % (t, fixed(sin(angle)), fixed(cos(angle))))
-    print("];")
-
     normals = [
         [0.0, 1.0, 0.0],
         [1.0, 0.0, 0.0],

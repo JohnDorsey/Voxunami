@@ -15,7 +15,7 @@
 pub mod container;
 pub mod engine_sections;
 mod exact_circle;
-mod exact_kepler;
+mod exact_offset;
 pub mod file;
 mod fit_orbit;
 mod grid_frame;

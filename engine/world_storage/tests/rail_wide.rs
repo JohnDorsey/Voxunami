@@ -1,6 +1,7 @@
-//! The wide Kepler evaluator (`wide_kepler`) against the rails the game has (`exact_kepler` and `exact_circle`, in 126-bit fixed point): for the same elements the two must
-//! put a body in the same place, to what the fixed point can say, and give it the same speed. This is the bridge for widening the rails of the game: the numbers a ship has
-//! today are doubles, which any width holds exactly, so whatever a wide rail does with them it must not move a ship that is on a rail now.
+//! The rails against the wide Kepler evaluator (`wide_kepler`): a rail's answer is the evaluator's answer at a width that leaves the last bit below 2^-64 voxel, rounded once.
+//! The position is whole bricks and a rest in steps of 2^-32 voxel, so it is within half a step of the wide place; the speed is the `f64` nearest to the wide speed. Before 2026-11-03
+//! the rails had a 126-bit fixed point of their own, and this was the bridge from it (for the same doubles the two put a body where the fixed point could say: within 1.2e-10 voxel
+//! on six pinned orbits, within half a step in a sweep of six thousand orbits up to a radius of 2^80, and 0.27 voxel off at 2^120, where the fixed point ran out of bits).
 
 use proptest::prelude::*;
 use wide_float::{Precision, WideFloat};
@@ -9,6 +10,9 @@ use world_storage::rail::{Centre, ExactOffset, Orbit, Rail, RailTime};
 
 const NOWHERE: [f64; 3] = [0.0; 3];
 const TICKS_A_SECOND: u32 = 20;
+
+/// Half a step of the rest, and a hair over for the width the place is worked out in, in voxels.
+const HALF_A_STEP: f64 = 1.000_001 / 8_589_934_592.0;
 
 fn at(bits: u64) -> Precision {
     Precision::new(bits).unwrap()
@@ -38,14 +42,14 @@ fn voxels_of(offset: &ExactOffset, precision: Precision) -> [WideFloat; 3] {
     })
 }
 
-/// How far apart the rail and the wide evaluator put a body, in voxels, and how different their speeds are in the fraction of the speed.
+/// How far apart the rail's place and the wide evaluator's put a body, in voxels, and how far apart their speeds are as a fraction of the speed.
 fn differences(orbit: Orbit, tick: u64) -> (f64, f64) {
     differences_between_ticks(orbit, tick, tick)
 }
 
 /// As [`differences`], with the rail asked at one tick and the wide evaluator at another (the same, but for a negative control).
 fn differences_between_ticks(orbit: Orbit, rail_tick: u64, wide_tick: u64) -> (f64, f64) {
-    let precision = at(256);
+    let precision = at(320);
     let rail = Rail {
         spin: None,
         orbit: Some(orbit),
@@ -103,27 +107,29 @@ fn orbit(
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(300))]
 
-    /// The place of the body, in voxels: the rail's is exact to 2^-32 voxel and its own few units (and a part in 10^20 of a turn for the sharpest of ellipses at their
-    /// periapsis, a radius of 1e12 voxels making that 1e-8), so the two agree to a millionth of a voxel; the speed to a part in 10^9.
+    /// The place of the body is the wide evaluator's, within half a step of 2^-32 voxel (a hair over, for the width it is worked out in), from the smallest radius to the largest
+    /// an orbit has, and the speed is the `f64` nearest the wide speed: the component off by at most half an ulp of itself, which is 1.2e-16 of the speed at most.
     #[test]
-    fn the_wide_evaluator_puts_a_body_where_the_rail_does(
+    fn the_rail_puts_a_body_where_the_wide_evaluator_does(
         normal in proptest::array::uniform3(-1.0f64..1.0),
-        radius in 10.0f64..1.0e12,
-        ratio in prop_oneof![Just(1.0), 0.001f64..1.0, 1.0e-12f64..1.0e-3],
+        radius_exponent in -10.0f64..120.0,
+        ratio in prop_oneof![Just(1.0), 0.001f64..1.0, 1.0e-12f64..1.0e-3, 1.0e-19f64..1.0e-12],
         periapsis in -10.0f64..10.0,
-        period in 20.0f64..1.0e7,
+        period_exponent in -4.0f64..80.0,
         phase in -100.0f64..100.0,
-        tick in 0u64..2_000_000_000,
+        tick in any::<u64>(),
     ) {
         prop_assume!(normal.iter().any(|component| component.abs() > 1.0e-3));
+        let radius = libm::exp2(radius_exponent);
+        let period = libm::exp2(period_exponent).max(0.05);
         let (apart, speed_apart) = differences(orbit(normal, radius, ratio, periapsis, period, phase), tick);
-        prop_assert!(apart < 1.0e-6, "{apart} voxels apart");
-        prop_assert!(speed_apart < 1.0e-9, "the speeds differ by {speed_apart} of the speed");
+        prop_assert!(apart <= HALF_A_STEP, "{apart} voxels apart");
+        prop_assert!(speed_apart <= 1.2e-16, "the speeds differ by {speed_apart} of the speed");
     }
 }
 
 #[test]
-fn the_wide_evaluator_agrees_with_the_rails_that_are_pinned_in_the_game() {
+fn the_rail_agrees_with_the_wide_evaluator_on_the_orbits_that_are_pinned_in_the_game() {
     // The orbits of `rail_ellipse.rs` and `rail_circle_bits.rs`: a low orbit round an Earth-weight planet, a moon's, a planet's year, a comet, and a circle with a periapsis.
     let cases = [
         (
@@ -148,15 +154,14 @@ fn the_wide_evaluator_agrees_with_the_rails_that_are_pinned_in_the_game() {
     for (orbit, tick) in cases {
         let (apart, speed_apart) = differences(orbit, tick);
         println!(
-            "{:>12.3e} voxels apart, speeds differ by {speed_apart:.1e}: {orbit:?} at tick {tick}",
-            apart
+            "{apart:>12.3e} voxels apart, speeds differ by {speed_apart:.1e}: {orbit:?} at tick {tick}"
         );
         assert!(
-            apart < 1.0e-6,
+            apart <= HALF_A_STEP,
             "{orbit:?} at tick {tick}: {apart} voxels apart"
         );
         assert!(
-            speed_apart < 1.0e-9,
+            speed_apart <= 1.2e-16,
             "{orbit:?} at tick {tick}: speeds differ by {speed_apart}"
         );
         // The negative control: a tick later the body is somewhere else, by far more than the tolerance (the test can fail).

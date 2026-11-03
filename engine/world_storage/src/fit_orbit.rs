@@ -12,8 +12,9 @@
 
 use std::f64::consts::TAU;
 
+use wide_kepler::equation_in_f64;
+
 use crate::exact_circle;
-use crate::exact_kepler::Ellipse;
 use crate::rail::{Centre, ExactOffset, Orbit, RailError, RailTime, turn_fraction, unit};
 
 /// How near to nothing the part of a state that is not along the line to the centre may be, in parts of the size of the place times the speed, before the state has no plane: the
@@ -137,7 +138,7 @@ impl Orbit {
                     libm::sqrt(2.0 - ratio) * libm::cos(half),
                 );
             // M = E - e sin E, written without the cancellation near E = 0 (the same working as the solver's first guess), for the sign of E.
-            let (value, _) = Ellipse::equation_in_f64(eccentric.abs(), ratio, 1.0 - ratio);
+            let (value, _) = equation_in_f64(eccentric.abs(), ratio, 1.0 - ratio);
             (periapsis, value.copysign(eccentric))
         };
         let period = TAU * libm::sqrt(axis * axis * axis / mu);

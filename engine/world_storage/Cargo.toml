@@ -23,14 +23,14 @@ voxel_grid.workspace = true
 voxel_space.workspace = true
 thiserror.workspace = true
 crc32fast = "1"
+wide_float.workspace = true
+wide_kepler.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
 world_storage = { workspace = true, features = ["test-support"] }
 voxel_grid = { workspace = true, features = ["test-support"] }
 voxel_space = { workspace = true, features = ["test-support"] }
-wide_float.workspace = true
-wide_kepler.workspace = true
 
 [lints]
 workspace = true
