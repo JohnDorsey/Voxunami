@@ -10,7 +10,7 @@ fn voxels(value: f64) -> WideFloat {
 }
 
 fn rest_of(value: f64) -> (i128, f64) {
-    bricks_and_rest(&voxels(value))
+    bricks_and_rest(&voxels(value)).expect("a place of a few voxels has bricks")
 }
 
 #[test]
@@ -39,7 +39,7 @@ fn a_rest_that_rounds_up_to_a_whole_brick_is_the_next_brick() {
     let tiny = WideFloat::from_i64(-1, Precision::of(128))
         .times_power_of_two(-1000)
         .unwrap();
-    assert_eq!(bricks_and_rest(&tiny), (0, 0.0));
+    assert_eq!(bricks_and_rest(&tiny), Some((0, 0.0)));
 }
 
 #[test]
@@ -48,8 +48,31 @@ fn the_largest_place_an_orbit_has_is_a_count_of_bricks_that_fits() {
     let far = WideFloat::from_i64(1, Precision::of(192))
         .times_power_of_two(121)
         .unwrap();
-    assert_eq!(bricks_and_rest(&far), (1 << 116, 0.0));
-    assert_eq!(bricks_and_rest(&-&far), (-(1 << 116), 0.0));
+    assert_eq!(bricks_and_rest(&far), Some((1 << 116, 0.0)));
+    assert_eq!(bricks_and_rest(&-&far), Some((-(1 << 116), 0.0)));
+}
+
+#[test]
+fn a_place_with_no_i128_of_bricks_to_say_it_is_none_and_never_a_panic() {
+    // A body on a hyperbola can be farther than the world is wide. An `i128` of bricks holds up to 2^127 of 32 voxels: 2^132 voxels.
+    let power = |exponent: i64, sign: i64| {
+        WideFloat::from_i64(sign, Precision::of(192))
+            .times_power_of_two(exponent)
+            .unwrap()
+    };
+    assert!(bricks_and_rest(&power(131, 1)).is_some());
+    assert!(bricks_and_rest(&power(131, -1)).is_some());
+    // (Minus 2^132 voxels is minus 2^127 bricks, which is `i128::MIN` and fits; plus 2^132 is one over `i128::MAX`.)
+    assert!(bricks_and_rest(&power(132, -1)).is_some());
+    for exponent in [132, 133, 200, 500] {
+        assert_eq!(bricks_and_rest(&power(exponent, 1)), None, "2^{exponent}");
+    }
+    for exponent in [133, 200, 500] {
+        assert_eq!(bricks_and_rest(&power(exponent, -1)), None, "-2^{exponent}");
+    }
+    let place = [power(10, 1), power(300, 1), power(10, 1)];
+    assert!(ExactOffset::of_voxels(&place).is_none());
+    assert!(ExactOffset::of_voxels(&[power(10, 1), power(11, -1), power(12, 1)]).is_some());
 }
 
 proptest! {
@@ -63,7 +86,7 @@ proptest! {
         let place = WideFloat::from_i128(steps, precision).times_power_of_two(-32).unwrap();
         let expected_bricks = steps.div_euclid(STEPS_IN_A_BRICK);
         let expected_rest = steps.rem_euclid(STEPS_IN_A_BRICK) as f64 * STEP;
-        prop_assert_eq!(bricks_and_rest(&place), (expected_bricks, expected_rest));
+        prop_assert_eq!(bricks_and_rest(&place), Some((expected_bricks, expected_rest)));
     }
 
     /// Anything between two steps is the nearer, half a step up, as an exact whole number of steps says.
@@ -77,6 +100,6 @@ proptest! {
         // (A sixteenth of a step: 8 and above rounds up.)
         let nearest = steps + i128::from(sixteenths >= 8);
         let expected = (nearest.div_euclid(STEPS_IN_A_BRICK), nearest.rem_euclid(STEPS_IN_A_BRICK) as f64 * STEP);
-        prop_assert_eq!(bricks_and_rest(&place), expected);
+        prop_assert_eq!(bricks_and_rest(&place), Some(expected));
     }
 }

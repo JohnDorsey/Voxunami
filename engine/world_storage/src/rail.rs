@@ -381,9 +381,29 @@ impl Orbit {
         )
     }
 
+    /// A hyperbola round `around` in the plane with this normal: `radius` is the size of the semi-major axis, `excess` is e - 1 (the ratio is minus it), `periapsis` is the angle in
+    /// radians of the nearest point, `period` is 2 pi over the mean motion (negative for the other way round) and `phase` is the mean anomaly at time 0 as it is, not taken
+    /// modulo a turn (below nothing before the periapsis). The numbers are doubles.
+    pub fn hyperbolic(
+        around: Centre,
+        normal: [f64; 3],
+        radius: f64,
+        excess: f64,
+        periapsis: f64,
+        period: f64,
+        phase: f64,
+    ) -> Result<Self, RailError> {
+        if !excess.is_finite() || excess <= 0.0 {
+            return Err(RailError::Invalid(
+                "a hyperbola has an eccentricity above one (a parabola is not made)",
+            ));
+        }
+        Self::elliptical(around, normal, radius, -excess, periapsis, period, phase)
+    }
+
     /// An orbit round `around` of these elements, of any width from 128 bits, kept exactly as they are. Refused: a centre that is not made of numbers, and what `wide_kepler`
-    /// refuses (a normal of nothing, a ratio outside 2^-64 to 1, a period outside 2^-20 to 2^80 seconds either way, an angle over 2^63 radians, a radius that is not above
-    /// nothing), and a radius over 2^120 voxels. The normal need not be a unit vector.
+    /// refuses (a normal of nothing, a ratio outside 2^-64 to 1 for an ellipse and outside -2^-64 to -2^64 for a hyperbola, a period outside 2^-20 to 2^80 seconds either way, an
+    /// angle over 2^63 radians and a phase over 2^120 for a hyperbola, a radius that is not above nothing), and a radius over 2^120 voxels. The normal need not be a unit vector.
     pub fn from_elements(around: Centre, elements: Elements) -> Result<Self, RailError> {
         if let Centre::Point(point) = around
             && !finite(&point)
@@ -393,13 +413,6 @@ impl Orbit {
             ));
         }
         elements.validate()?;
-        // `wide_kepler` places a body on a hyperbola, but the rest of a rail is an ellipse's (the views, the apsides, the bytes, the fit, the rules of the server): until each is
-        // made for a hyperbola this is the one place that says no, so that nothing half-knows one (`docs/orbits-and-thrust-plan.md`, E14).
-        if elements.is_a_hyperbola() {
-            return Err(RailError::Invalid(
-                "a hyperbola is not an orbit a rail holds yet: its ratio (1 - e) is from 2^-64 to 1",
-            ));
-        }
         if !at_most_a_power_of_two(&elements.radius, LARGEST_RADIUS_EXPONENT)
             || !at_most_a_power_of_two(&elements.period.abs(), LONGEST_ORBIT_PERIOD_EXPONENT)
         {
@@ -440,6 +453,28 @@ impl Orbit {
         self.elements.normal.each_ref().map(WideFloat::to_f64)
     }
 
+    /// Whether it is a hyperbola: a ratio below nothing (e above 1). A hyperbola goes round no turn, passes its periapsis once and goes out for ever.
+    pub fn is_a_hyperbola(&self) -> bool {
+        self.elements.is_a_hyperbola()
+    }
+
+    /// Whether the periapsis is still to come at `time`: always for an ellipse (it comes round), and for a hyperbola until it has been passed (its mean anomaly is below nothing, or
+    /// above it for the other way round). A hyperbola that has passed it goes away for ever, and the nearest it came is behind it.
+    pub fn periapsis_ahead(&self, time: RailTime) -> bool {
+        if !self.is_a_hyperbola() {
+            return true;
+        }
+        let mean = self
+            .elements
+            .hyperbolic_mean_anomaly(time.wide(), Precision::of(192))
+            .expect("an orbit made by this module has a mean anomaly");
+        if self.elements.period.is_negative() {
+            mean.is_positive()
+        } else {
+            mean.is_negative()
+        }
+    }
+
     /// Whether it is a circle: a ratio of exactly 1.
     pub fn is_circle(&self) -> bool {
         let one = WideFloat::from_i64(1, self.elements.ratio.precision());
@@ -452,13 +487,16 @@ impl Orbit {
         (&one - &self.elements.ratio).to_f64()
     }
 
-    /// How near to its centre the body comes, in voxels, as an `f64` (the semi-major axis times the ratio).
+    /// How near to its centre the body comes, in voxels, as an `f64` (the semi-major axis times the size of the ratio).
     pub fn nearest_distance(&self) -> f64 {
-        self.radius() * self.ratio()
+        self.radius() * self.ratio().abs()
     }
 
-    /// How far from its centre the body goes, in voxels, as an `f64` (the semi-major axis times 2 less the ratio).
+    /// How far from its centre the body goes, in voxels, as an `f64` (the semi-major axis times 2 less the ratio); **endless for a hyperbola**.
     pub fn farthest_distance(&self) -> f64 {
+        if self.is_a_hyperbola() {
+            return f64::INFINITY;
+        }
         self.radius() * (2.0 - self.ratio())
     }
 
@@ -484,6 +522,24 @@ impl Orbit {
     /// Worked out from the mean anomaly in whole numbers: the periapsis is at 0 and the apoapsis at half a turn. A circle has no ends, and passes neither. A stretch of a whole turn
     /// or more passes both.
     pub fn apsides_passed(&self, from: RailTime, to: RailTime) -> Apsides {
+        if self.is_a_hyperbola() {
+            // The periapsis is where the mean anomaly is nothing, and it is passed once: in the stretch that has it after `from` up to and including `to`. There is no apoapsis.
+            let mean = |time: RailTime| {
+                self.elements
+                    .hyperbolic_mean_anomaly(time.wide(), Precision::of(192))
+                    .expect("an orbit made by this module has a mean anomaly")
+            };
+            let (before, after) = (mean(from), mean(to));
+            let passed = if self.elements.period.is_negative() {
+                before.is_positive() && !after.is_positive()
+            } else {
+                before.is_negative() && !after.is_negative()
+            };
+            return Apsides {
+                periapsis: passed,
+                apoapsis: false,
+            };
+        }
         if self.is_circle() {
             return Apsides::default();
         }
@@ -519,26 +575,27 @@ impl Orbit {
     /// Where the body is from the centre at `time`, and how fast it moves round it. The place is worked out in wide numbers (`wide_kepler`: for a circle or an ellipse, the
     /// phase and the part of a turn gone, the mean anomaly, Kepler's equation, the periapsis and the plane) from the elements as they are, in a width that leaves the last bit of
     /// it below 2^-64 voxel (see [`answer_precision`]), and rounded once, to whole bricks and a rest in steps of 2^-32 voxel; the speed is the same working rounded to an `f64`.
-    fn at(&self, time: RailTime) -> (ExactOffset, [f64; 3]) {
+    fn at(&self, time: RailTime) -> Option<(ExactOffset, [f64; 3])> {
         Self::at_prepared(&self.prepare(), time)
     }
 
     /// What the place of this orbit needs whatever the time is, worked out once (see [`RailMemo`], which keeps it while the orbit does not change).
     fn prepare(&self) -> PreparedElements {
         self.elements
-            .prepare(answer_precision(&self.elements.radius))
+            .prepare(answer_precision(&self.elements))
             .expect("an orbit made by this module is one `wide_kepler` works out")
     }
 
     /// As [`Orbit::at`], from the orbit as [`Orbit::prepare`] made it.
-    fn at_prepared(prepared: &PreparedElements, time: RailTime) -> (ExactOffset, [f64; 3]) {
+    /// `None` for a place the world cannot say (a body on a hyperbola so far out that its bricks do not fit an `i128`).
+    fn at_prepared(prepared: &PreparedElements, time: RailTime) -> Option<(ExactOffset, [f64; 3])> {
         let place = prepared
             .place_at(time.wide())
             .expect("an orbit made by this module is one `wide_kepler` works out");
-        (
-            ExactOffset::of_voxels(&place.position),
+        Some((
+            ExactOffset::of_voxels(&place.position)?,
             place.velocity.map(|component| component.to_f64()),
-        )
+        ))
     }
 }
 
@@ -564,8 +621,14 @@ fn turns_with_128_bits(fraction: &WideFloat) -> u128 {
 }
 
 /// The width a place is worked out in: the bits above the point of a place as far out as an ellipse of this `radius` goes (twice it), 64 below it (the answer keeps 32, and
-/// the place is then the nearest step except where it is within 2^-32 of a step of a tie), to the next multiple of 64, and at least 128.
-fn answer_precision(radius: &WideFloat) -> Precision {
+/// the place is then the nearest step except where it is within 2^-32 of a step of a tie), to the next multiple of 64, and at least 128. **A hyperbola goes out for ever**, and a place
+/// is any distance the world can say: under 2^132 voxels (an `i128` of bricks). With the 64 bits below it that is 196; 192 leaves 60 below the point at the very edge of the world (and the
+/// working has 96 bits more than this), and 124 at a place of 2^68.
+fn answer_precision(elements: &Elements) -> Precision {
+    if elements.is_a_hyperbola() {
+        return Precision::of(192);
+    }
+    let radius = &elements.radius;
     let bits_of_radius = radius.floor_log2().unwrap_or(0) + 1;
     let wanted = (bits_of_radius + 1 + 64).max(0) as u64;
     Precision::new((wanted.div_ceil(64) * 64).max(Precision::MINIMUM.bits()))
@@ -584,7 +647,7 @@ impl Rail {
         centre_velocity: [f64; 3],
     ) -> RailState {
         let time = time.into();
-        let orbit = self.orbit.as_ref().map(|orbit| orbit.at(time));
+        let orbit = self.orbit.as_ref().and_then(|orbit| orbit.at(time));
         self.state_given(time, centre_position, centre_velocity, orbit)
     }
 
@@ -640,8 +703,8 @@ struct Remembered {
     orbit: Orbit,
     prepared: PreparedElements,
     time: RailTime,
-    offset: ExactOffset,
-    speed: [f64; 3],
+    /// What the orbit said: `None` if it put the body where the world has no place.
+    placed: Option<(ExactOffset, [f64; 3])>,
 }
 
 impl RailMemo {
@@ -659,27 +722,32 @@ impl RailMemo {
                 self.entries.remove(&grid);
                 None
             }
-            Some(orbit) => Some(self.orbit_at(grid, orbit, time)),
+            Some(orbit) => self.orbit_at(grid, orbit, time),
         };
         rail.state_given(time, centre_position, centre_velocity, orbit)
     }
 
-    fn orbit_at(&mut self, grid: GridId, orbit: &Orbit, time: RailTime) -> (ExactOffset, [f64; 3]) {
+    fn orbit_at(
+        &mut self,
+        grid: GridId,
+        orbit: &Orbit,
+        time: RailTime,
+    ) -> Option<(ExactOffset, [f64; 3])> {
         if let Some(kept) = self.entries.get_mut(&grid)
             && kept.orbit == *orbit
         {
             if kept.time == time {
                 self.reused += 1;
-                return (kept.offset, kept.speed);
+                return kept.placed;
             }
             // The same orbit at another time: what does not depend on the time is kept.
-            let (offset, speed) = Orbit::at_prepared(&kept.prepared, time);
+            let placed = Orbit::at_prepared(&kept.prepared, time);
             self.evaluations += 1;
-            (kept.time, kept.offset, kept.speed) = (time, offset, speed);
-            return (offset, speed);
+            (kept.time, kept.placed) = (time, placed);
+            return placed;
         }
         let prepared = orbit.prepare();
-        let (offset, speed) = Orbit::at_prepared(&prepared, time);
+        let placed = Orbit::at_prepared(&prepared, time);
         self.preparations += 1;
         self.evaluations += 1;
         self.entries.insert(
@@ -688,11 +756,10 @@ impl RailMemo {
                 orbit: orbit.clone(),
                 prepared,
                 time,
-                offset,
-                speed,
+                placed,
             },
         );
-        (offset, speed)
+        placed
     }
 
     /// Forgets the ships for which `keep` is false (those that are not on a rail any more, or not in the world).

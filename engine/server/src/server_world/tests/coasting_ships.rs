@@ -6,7 +6,7 @@ use super::*;
 use crate::server_world::NotCoasting;
 
 /// The `G` of these worlds, in voxels cubed per kilogram per second squared.
-const PULL: f64 = 6.674e-11;
+pub(super) const PULL: f64 = 6.674e-11;
 /// How many ticks a second.
 pub(super) const TICKS: u32 = 20;
 /// The ground of the planets here reaches a hundred bricks, 3,200 voxels.
@@ -56,15 +56,15 @@ fn ship_in_a_circle(world: &mut ServerWorld, distance: f64) -> GridId {
     )
 }
 
-fn refused(world: &ServerWorld, ship: GridId) -> NotCoasting {
+pub(super) fn refused(world: &ServerWorld, ship: GridId) -> NotCoasting {
     world.coasting_rail(ship, time(0)).unwrap_err()
 }
 
-fn rail_of(world: &ServerWorld, ship: GridId) -> Option<Rail> {
+pub(super) fn rail_of(world: &ServerWorld, ship: GridId) -> Option<Rail> {
     world.data().grids().get(ship).unwrap().rail.clone()
 }
 
-fn distance_between(first: WorldPosition, second: WorldPosition) -> f64 {
+pub(super) fn distance_between(first: WorldPosition, second: WorldPosition) -> f64 {
     let apart = first.displacement_to(second).in_voxels();
     libm::sqrt(apart[0] * apart[0] + apart[1] * apart[1] + apart[2] * apart[2])
 }
@@ -166,13 +166,20 @@ fn what_a_ship_cannot_coast_for_is_said() {
         .unwrap();
     assert_eq!(refused(&world, ship), NotCoasting::Turning);
     world.set_grid_velocity(ship, speed, [0.0; 3]).unwrap();
-    // At rest, and fast enough to leave: no orbit.
+    // At rest: no orbit (it falls straight down). Fast enough to leave: a hyperbola, which is a rail (see `hyperbola_ships`).
     world.set_grid_velocity(ship, [0.0; 3], [0.0; 3]).unwrap();
     assert!(matches!(refused(&world, ship), NotCoasting::NoOrbit(_)));
     world
         .set_grid_velocity(ship, speed.map(|part| part * 2.0), [0.0; 3])
         .unwrap();
-    assert!(matches!(refused(&world, ship), NotCoasting::NoOrbit(_)));
+    assert!(
+        world
+            .coasting_rail(ship, time(0))
+            .unwrap()
+            .orbit
+            .unwrap()
+            .is_a_hyperbola()
+    );
     world.set_grid_velocity(ship, speed, [0.0; 3]).unwrap();
     assert!(world.coasting_rail(ship, time(0)).is_ok());
     // A level with a ground of its own.
@@ -523,7 +530,7 @@ fn a_frozen_ship_on_a_rail_goes_on_round_and_one_that_is_not_loses_its_speed() {
 
 /// A tick as the server runs it for what is on rails: the clock passes, the rails put ships where they say, the ships that coast are put on rails or taken off, and the rails put
 /// them again (where nothing changed, nothing moves).
-fn server_tick(world: &mut ServerWorld, tick: u64) {
+pub(super) fn server_tick(world: &mut ServerWorld, tick: u64) {
     world.data.set_clock(tick);
     world.apply_rails(TICKS);
     world.update_coasting(TICKS);
@@ -544,12 +551,12 @@ fn a_ship_on_an_ellipse() -> (ServerWorld, GridId, GridId) {
     (world, ship, planet)
 }
 
-fn orbit_of(world: &ServerWorld, ship: GridId) -> Orbit {
+pub(super) fn orbit_of(world: &ServerWorld, ship: GridId) -> Orbit {
     rail_of(world, ship).unwrap().orbit.unwrap()
 }
 
 /// Runs the server's ticks after `from` until the rail of the ship is not `old`, or `last` has been run, and says the tick in which it changed.
-fn until_the_rail_changes(
+pub(super) fn until_the_rail_changes(
     world: &mut ServerWorld,
     ship: GridId,
     old: Option<Rail>,
@@ -566,7 +573,7 @@ fn until_the_rail_changes(
 }
 
 /// The ticks after `from` up to `last` in which a rail passes an end, as a ship works that out: the stretch of time that a tick stands for, half a tick either side of it.
-fn ticks_of_the_end(orbit: Orbit, from: u64, last: u64, periapsis: bool) -> Vec<u64> {
+pub(super) fn ticks_of_the_end(orbit: Orbit, from: u64, last: u64, periapsis: bool) -> Vec<u64> {
     (from + 1..=last)
         .filter(|&tick| {
             let passed = orbit.apsides_passed(
@@ -725,8 +732,10 @@ fn a_circle_has_no_ends_and_is_answered_at_once() {
 }
 
 #[test]
-fn a_decrease_that_leaves_the_ship_no_ellipse_takes_it_off_its_rail_at_the_far_end() {
-    // One that the speed at the far end is too great for (the speed of escape there falls to 5,166 voxels a second, and it goes 6,670), and a planet that pulls nothing.
+fn a_decrease_that_leaves_the_ship_no_ellipse_makes_it_a_hyperbola_or_takes_it_off_its_rail_at_the_far_end()
+ {
+    // One that the speed at the far end is too great for (the speed of escape there falls to 5,166 voxels a second, and it goes 6,670): the ship goes on a hyperbola. And a planet that
+    // pulls nothing: it goes off its rail.
     for mass in [0.2e22, 1.0e10] {
         let (mut world, ship, planet) = a_ship_on_an_ellipse();
         let old = rail_of(&world, ship);
@@ -735,7 +744,11 @@ fn a_decrease_that_leaves_the_ship_no_ellipse_takes_it_off_its_rail_at_the_far_e
         let far = ticks_of_the_end(before, 21, 400, false)[0];
         let tick = until_the_rail_changes(&mut world, ship, old, 21, 400).expect("answered");
         assert_eq!(tick, far, "mass {mass}");
-        assert_eq!(rail_of(&world, ship), None, "mass {mass}");
+        if mass > 1.0e20 {
+            assert!(orbit_of(&world, ship).is_a_hyperbola(), "mass {mass}");
+        } else {
+            assert_eq!(rail_of(&world, ship), None, "mass {mass}");
+        }
         // It goes on as it was going.
         let speed = world.data().grids().get(ship).unwrap().linear_velocity;
         assert!(speed.iter().any(|part| *part != 0.0));

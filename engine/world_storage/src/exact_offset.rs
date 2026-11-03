@@ -24,27 +24,27 @@ impl ExactOffset {
     }
 
     /// A place of voxels from the centre (numbers of the width the place was worked out in, which must hold the bits of a brick count and the step: 128 bits do for every place
-    /// an orbit has), rounded to the nearest step of 2^-32 voxel, half a step up. The bricks of a place are an `i128` for every orbit a rail can have (a radius under 2^121
-    /// voxels).
-    pub(crate) fn of_voxels(place: &[WideFloat; 3]) -> Self {
-        let parts = place.each_ref().map(bricks_and_rest);
-        Self {
-            bricks: parts.map(|(bricks, _)| bricks),
-            rest: parts.map(|(_, rest)| rest),
-        }
+    /// an ellipse has, 192 for a hyperbola), rounded to the nearest step of 2^-32 voxel, half a step up. The bricks of a place are an `i128` for every ellipse a rail can have
+    /// (a radius under 2^121 voxels). **`None` for a place that has no `i128` of bricks to say it** (a body on a hyperbola, a very long way out, where there is no world to be in).
+    pub(crate) fn of_voxels(place: &[WideFloat; 3]) -> Option<Self> {
+        let [x, y, z] = place.each_ref().map(bricks_and_rest);
+        let ((bx, rx), (by, ry), (bz, rz)) = (x?, y?, z?);
+        Some(Self {
+            bricks: [bx, by, bz],
+            rest: [rx, ry, rz],
+        })
     }
 }
 
 /// `voxels` as whole bricks (rounded down, so that the rest is never below nothing) and a rest below a brick, in steps of 2^-32 voxel.
-fn bricks_and_rest(voxels: &WideFloat) -> (i128, f64) {
+fn bricks_and_rest(voxels: &WideFloat) -> Option<(i128, f64)> {
     // (Eight bits more than the place was worked out in hold the sum below: it is below 2^38.)
     let precision = voxels.precision().widened_by(8);
     let value = voxels.rounded_to(precision);
     let bricks = value
         .times_power_of_two(-5)
         .expect("a number of voxels divided by 32 is a number")
-        .floor_to_i128()
-        .expect("a place of an orbit is under 2^117 bricks from its centre");
+        .floor_to_i128()?;
     let before = &WideFloat::from_i128(bricks, precision)
         .times_power_of_two(5)
         .expect("a number of bricks times 32 is a number");
@@ -59,9 +59,9 @@ fn bricks_and_rest(voxels: &WideFloat) -> (i128, f64) {
         .expect("a rest is below a brick, which is below 2^38 steps");
     // (A rest that rounds up to a whole brick is the next brick and nothing.)
     if steps == STEPS_IN_A_BRICK {
-        (bricks + 1, 0.0)
+        Some((bricks.checked_add(1)?, 0.0))
     } else {
-        (bricks, steps as f64 * STEP)
+        Some((bricks, steps as f64 * STEP))
     }
 }
 

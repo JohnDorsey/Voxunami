@@ -515,9 +515,11 @@ fn what_cannot_be_an_ellipse_is_refused_when_made_and_what_can_is_kept() {
             0.0,
         )
     };
+    // (A ratio below nothing is a hyperbola, and in range is no longer refused: `rail_hyperbola.rs`. Out of its range it is.)
     for ratio in [
         0.0,
-        -0.5,
+        -1.0e30,
+        -SMALLEST_RATIO / 2.0,
         just_above(1.0),
         1.5,
         f64::NAN,
@@ -688,8 +690,12 @@ fn bytes_that_are_not_an_ellipse_are_refused() {
             with(&|o| o.elements.ratio = exactly(0.0)),
         ),
         (
-            "a negative ratio",
-            with(&|o| o.elements.ratio = exactly(-0.5)),
+            "a negative ratio too large for a hyperbola",
+            with(&|o| o.elements.ratio = exactly(-1.0e30)),
+        ),
+        (
+            "a negative ratio too small for a hyperbola",
+            with(&|o| o.elements.ratio = exactly(-SMALLEST_RATIO / 2.0)),
         ),
         (
             "a ratio above one",

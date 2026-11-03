@@ -13,6 +13,7 @@ use world_storage::{GridTerrain, LevelData};
 use super::*;
 
 mod coasting_ships;
+mod hyperbola_ships;
 mod near_ships;
 
 /// A generator that counts how many bricks it is asked for.

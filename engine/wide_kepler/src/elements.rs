@@ -133,6 +133,32 @@ impl Elements {
         Ok(fraction.rounded_to(precision))
     }
 
+    /// The mean anomaly of a hyperbola at `time`, `phase + 2 pi t / period` **as it is** (below nothing before the periapsis, above it after; a hyperbola goes round no turn), of
+    /// `precision` bits, worked out with the bits its size needs (the phase and the clock term may be 120 bits and cancel). Refused for an ellipse, whose mean anomaly is a part of a turn
+    /// ([`Elements::mean_anomaly_in_turns`]).
+    pub fn hyperbolic_mean_anomaly(
+        &self,
+        time: Time,
+        precision: Precision,
+    ) -> Result<WideFloat, KeplerError> {
+        self.validate()?;
+        if !self.is_a_hyperbola() {
+            return Err(KeplerError::Invalid(
+                "the mean anomaly of an ellipse is a part of a turn",
+            ));
+        }
+        check_time(time)?;
+        let mean_width = precision.widened_by(GUARD).widened_by(MEAN_GUARD);
+        let rate = WideFloat::pi(mean_width)
+            .times_power_of_two(1)?
+            .divide(&self.period.rounded_to(mean_width))?;
+        let seconds = WideFloat::from_i128(time.units, mean_width).divide(&WideFloat::from_i64(
+            i64::from(time.units_per_second),
+            mean_width,
+        ))?;
+        Ok((&self.phase.rounded_to(mean_width) + &(&rate * &seconds)).rounded_to(precision))
+    }
+
     /// 2 pi and the mean anomaly in turns (below one), both in `turns_width` bits, for a time that has been checked.
     fn mean_anomaly_with_two_pi(
         &self,

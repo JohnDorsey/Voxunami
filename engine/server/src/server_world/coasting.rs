@@ -319,7 +319,8 @@ impl ServerWorld {
         // How low it comes, and how far out it goes.
         let lowest = orbit.nearest_distance();
         let least = self.least_to_go_round(parent, planet);
-        if lowest < least {
+        // (A hyperbola that is going away has passed its nearest point: it is behind the ship, and a rail is where the ship goes.)
+        if lowest < least && orbit.periapsis_ahead(time) {
             return Err(NotCoasting::TooLow { lowest, least });
         }
         if let Some(sphere) = self.sphere_of_influence(parent) {
@@ -581,7 +582,13 @@ impl ServerWorld {
                 RailTime::of_half_ticks((2 * now).saturating_sub(1), ticks_per_second),
                 RailTime::of_half_ticks(2 * now + 1, ticks_per_second),
             );
-            if change > 0.0 {
+            if orbit.is_a_hyperbola() {
+                // A hyperbola has no apoapsis. A decrease cannot throw it out of anything, so it is answered at once; an increase is answered at the periapsis if that is
+                // still ahead (the nearest point keeps its distance), and at once if it is behind (there is nothing to fall into that it has not passed).
+                change < 0.0
+                    || passed.periapsis
+                    || !orbit.periapsis_ahead(RailTime::of_tick(now, ticks_per_second))
+            } else if change > 0.0 {
                 passed.periapsis
             } else {
                 passed.apoapsis

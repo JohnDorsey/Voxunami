@@ -409,13 +409,16 @@ fn a_state_that_is_no_ellipse_is_refused() {
             "{what}: {result:?}"
         );
     };
-    // Fast enough to get away (the speed of escape is the root of two times the speed of a circle at that distance), or exactly that fast: a parabola.
+    // Exactly the speed of escape (the root of two times the speed of a circle at that distance): a parabola. (Faster than that is a hyperbola, and no longer refused: it is a rail
+    // in `rail_hyperbola.rs`.)
     let distance = size(place.in_voxels());
     let escape = libm::sqrt(2.0 * mu / distance);
     let along = velocity.map(|part| part / speed);
-    refused(
-        fit(place, along.map(|part| part * escape * 1.01), mu, 100),
-        "faster than escape",
+    assert!(
+        fit(place, along.map(|part| part * escape * 1.01), mu, 100)
+            .unwrap()
+            .is_a_hyperbola(),
+        "faster than escape"
     );
     refused(
         fit(place, along.map(|part| part * escape), mu, 100),
