@@ -42,11 +42,18 @@ voxel_space = { path = "engine/voxel_space" }
 voxunami_2048 = { path = "games/voxunami_2048" }
 voxunami_cave = { path = "games/voxunami_cave" }
 voxunami_eels = { path = "games/voxunami_eels" }
+wide_float = { path = "engine/wide_float" }
 world_view = { path = "engine/world_view" }
 world_storage = { path = "engine/world_storage" }
 
 # External crates
 font8x8 = { version = "0.3", default-features = false }
+# LGPL-3.0: only `engine/wide_float` names these (the number layer; `docs/orbits-and-thrust-plan.md`, E4 and E6). Every function it uses is correctly
+# rounded, so any version that passes that crate's conformance tests gives the same bits.
+malachite-base = "0.14"
+malachite-float = "0.14"
+malachite-nz = "0.14"
+malachite-q = "0.14"
 proptest = "1"
 rustc-hash = "2"
 jsonschema = { version = "0.59", default-features = false }

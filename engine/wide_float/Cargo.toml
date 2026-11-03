@@ -1,0 +1,27 @@
+[package]
+name = "wide_float"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Real numbers of a chosen number of bits, correctly rounded and the same on every machine: what orbits, flybys and their previews are computed in."
+
+[features]
+# Property-test strategies for downstream crates' tests.
+test-support = ["dep:proptest"]
+
+[dependencies]
+binary_codec.workspace = true
+malachite-base.workspace = true
+malachite-float.workspace = true
+malachite-nz.workspace = true
+proptest = { workspace = true, optional = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+malachite-q.workspace = true
+proptest.workspace = true
+wide_float = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true
