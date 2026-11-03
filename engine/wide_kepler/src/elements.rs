@@ -93,33 +93,46 @@ impl Elements {
         Ok(())
     }
 
+    /// The mean anomaly at `time` as a part of a turn, from 0 up to a whole turn, of `precision` bits: the phase (in radians, over 2 pi) and the part of a turn gone since
+    /// time 0, which is `units / (units a second x period)` taken modulo one **exactly**, so that it is right to the last bit however long the world has run. (A part a hair under a
+    /// whole turn is rounded to the width and may be the whole turn; the same anomaly.) A negative period goes the other way round.
+    pub fn mean_anomaly_in_turns(
+        &self,
+        time: Time,
+        precision: Precision,
+    ) -> Result<WideFloat, KeplerError> {
+        self.validate()?;
+        check_time(time)?;
+        let turns_width = precision.widened_by(GUARD).widened_by(TURN_GUARD);
+        let (_, fraction) = self.mean_anomaly_with_two_pi(time, turns_width)?;
+        Ok(fraction.rounded_to(precision))
+    }
+
+    /// 2 pi and the mean anomaly in turns (below one), both in `turns_width` bits, for a time that has been checked.
+    fn mean_anomaly_with_two_pi(
+        &self,
+        time: Time,
+        turns_width: Precision,
+    ) -> Result<(WideFloat, WideFloat), KeplerError> {
+        let two_pi = WideFloat::pi(turns_width).times_power_of_two(1)?;
+        let units = WideFloat::from_i128(time.units, turns_width);
+        let per_second = WideFloat::from_i64(i64::from(time.units_per_second), turns_width);
+        let turns = units.divide(&(&per_second * &self.period.rounded_to(turns_width)))?;
+        let phase_turns = self.phase.rounded_to(turns_width).divide(&two_pi)?;
+        let fraction = fraction_of(&(&fraction_of(&turns)? + &phase_turns))?;
+        Ok((two_pi, fraction))
+    }
+
     /// Where the body is at `time`, and its speed, in numbers of `precision` bits.
     pub fn place_at(&self, time: Time, precision: Precision) -> Result<Place, KeplerError> {
         self.validate()?;
-        if time.units_per_second == 0 {
-            return Err(KeplerError::Invalid("a second is some units of time"));
-        }
-        if time.units.unsigned_abs() >= MOST_UNITS {
-            return Err(KeplerError::Invalid(
-                "a time is under 2^96 units of the clock either way",
-            ));
-        }
+        check_time(time)?;
         let width = precision.widened_by(GUARD);
         let turns_width = width.widened_by(TURN_GUARD);
         let at = |number: &WideFloat| number.rounded_to(width);
 
-        // The mean anomaly: the phase and the part of a turn gone, which is `units / (units a second x period)` modulo one, worked out in a width that holds its whole
-        // part and still leaves the fraction.
-        let pi_for_turns = WideFloat::pi(turns_width);
-        let two_pi_for_turns = pi_for_turns.times_power_of_two(1)?;
-        let units = WideFloat::from_i128(time.units, turns_width);
-        let per_second = WideFloat::from_i64(i64::from(time.units_per_second), turns_width);
-        let turns = units.divide(&(&per_second * &self.period.rounded_to(turns_width)))?;
-        let phase_turns = self
-            .phase
-            .rounded_to(turns_width)
-            .divide(&two_pi_for_turns)?;
-        let fraction = fraction_of(&(&fraction_of(&turns)? + &phase_turns))?;
+        // The mean anomaly: the phase and the part of a turn gone, worked out in a width that holds its whole part and still leaves the fraction.
+        let (two_pi_for_turns, fraction) = self.mean_anomaly_with_two_pi(time, turns_width)?;
         let mean = at(&(&two_pi_for_turns * &fraction));
 
         // Kepler's equation is solved on the half turn: a mean anomaly in the second half is the mirror image of one in the first.
@@ -171,6 +184,19 @@ impl Elements {
             velocity: combine(&speed_first, &speed_second),
         })
     }
+}
+
+/// Whether a time is one the clock can hold.
+fn check_time(time: Time) -> Result<(), KeplerError> {
+    if time.units_per_second == 0 {
+        return Err(KeplerError::Invalid("a second is some units of time"));
+    }
+    if time.units.unsigned_abs() >= MOST_UNITS {
+        return Err(KeplerError::Invalid(
+            "a time is under 2^96 units of the clock either way",
+        ));
+    }
+    Ok(())
 }
 
 /// The part of a number after its whole part (from 0 up to, not including, 1; below zero it is the part after the greatest whole number below it).

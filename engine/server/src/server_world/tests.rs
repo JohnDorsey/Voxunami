@@ -721,7 +721,7 @@ fn a_ship_on_a_rail_is_put_where_the_rail_says_at_the_time_of_the_world_every_ti
             .unwrap(),
         ),
     };
-    world.set_grid_rail(planet, Some(rail)).unwrap();
+    world.set_grid_rail(planet, Some(rail.clone())).unwrap();
     let mut seen = Vec::new();
     for _ in 0..3 {
         // (A tick is a twentieth of a second at this rate.)
@@ -756,7 +756,7 @@ fn the_time_of_a_rail_is_the_clock_over_the_rate_of_the_ticks() {
         .create_grid(LevelIndex::MAIN, GridPose::identity())
         .unwrap();
     let rail = orbit_about(Centre::Point([0.0; 3]), 1000.0, 100.0);
-    world.set_grid_rail(planet, Some(rail)).unwrap();
+    world.set_grid_rail(planet, Some(rail.clone())).unwrap();
     // 30 ticks at 30 a second is one second, and at 20 a second a second and a half.
     world.data.set_clock(30);
     world.apply_rails(30);
@@ -1243,10 +1243,10 @@ fn a_planet_on_a_rail_carries_what_is_within_one_and_a_half_times_the_reach_of_i
     let (mut world, _) = world_with_a_walker();
     let rail = orbit_about(Centre::Point([0.0; 3]), 1.0e6, 1.0e5);
     // A hundred bricks either way is 3,200 voxels, and one and a half times that 4,800.
-    let planet = planet_on(&mut world, 100, 1.0e20, Some(rail));
+    let planet = planet_on(&mut world, 100, 1.0e20, Some(rail.clone()));
     assert_eq!(world.influence_radius(planet), Some(4_800.0));
     // Enormous ground is cut to what the numbers of the bodies are exact in (131 km, a little less).
-    let vast = planet_on(&mut world, 100_000, 1.0e20, Some(rail));
+    let vast = planet_on(&mut world, 100_000, 1.0e20, Some(rail.clone()));
     assert_eq!(world.influence_radius(vast), Some(120_000.0));
     // Not a planet that stands still, not a ship on a rail with no ground, not a ship.
     let still = planet_on(&mut world, 100, 1.0e20, None);
@@ -1702,7 +1702,7 @@ fn it_is_the_centre_of_mass_of_a_ship_that_is_on_the_rail_and_the_origin_is_put_
     let rail = orbit_about(Centre::Point([1000.0, 0.0, -50.0]), 100.0, 10.0);
     let centred = world.create_grid(LevelIndex::MAIN, pose).unwrap();
     let off_centre = world.create_grid(LevelIndex::MAIN, pose).unwrap();
-    world.set_grid_rail(centred, Some(rail)).unwrap();
+    world.set_grid_rail(centred, Some(rail.clone())).unwrap();
     world.set_grid_rail(off_centre, Some(rail)).unwrap();
     let middle = [3.0, -1.5, 8.0];
     world.set_grid_mass(off_centre, 1.0e3, middle).unwrap();
@@ -1764,8 +1764,11 @@ fn a_rail_can_be_given_and_taken_off_and_a_ship_that_is_not_there_has_none() {
         .create_grid(LevelIndex::MAIN, GridPose::identity())
         .unwrap();
     let rail = orbit_about(Centre::Point([0.0; 3]), 100.0, 10.0);
-    world.set_grid_rail(ship, Some(rail)).unwrap();
-    assert_eq!(world.data().grids().get(ship).unwrap().rail, Some(rail));
+    world.set_grid_rail(ship, Some(rail.clone())).unwrap();
+    assert_eq!(
+        world.data().grids().get(ship).unwrap().rail,
+        Some(rail.clone())
+    );
     world.set_grid_rail(ship, None).unwrap();
     assert_eq!(world.data().grids().get(ship).unwrap().rail, None);
     let nowhere = GridId::new(GridId::FIRST_ALLOCATED + 999);

@@ -550,11 +550,11 @@ fn what_cannot_be_an_ellipse_is_refused_when_made_and_what_can_is_kept() {
         (1.0e-18, 3.0),
     ] {
         let orbit = make(ratio, periapsis).unwrap();
-        assert_eq!((orbit.ratio, orbit.periapsis), (ratio, periapsis));
+        assert_eq!((orbit.ratio(), orbit.periapsis()), (ratio, periapsis));
     }
     // The old way to make an orbit makes a circle that starts toward the first direction.
     let circle = Orbit::new(Centre::Point(NOWHERE), [0.0, 1.0, 0.0], 1000.0, 100.0, 0.0).unwrap();
-    assert_eq!((circle.ratio, circle.periapsis), (1.0, 0.0));
+    assert_eq!((circle.ratio(), circle.periapsis()), (1.0, 0.0));
     assert_eq!(circle, make(1.0, 0.0).unwrap());
 }
 
@@ -578,9 +578,14 @@ fn an_ellipse() -> Orbit {
     .unwrap()
 }
 
-/// Where the ratio and the periapsis are in the bytes of a rail that is only an orbit about a point: the flags, the centre's kind and point, the normal, the radius, the period
-/// and the phase come first, and the two numbers after (version 2 of `engine:rail`: every orbit has them, a circle with 1.0 and nothing).
-const RATIO_AT: usize = 1 + 1 + 24 + 24 + 8 + 8 + 8;
+/// The saved form of a double as an element of an orbit: a number of 128 bits (the saved form of `wide_float`).
+fn element_bytes(value: f64) -> Vec<u8> {
+    let mut writer = binary_codec::ByteWriter::new();
+    wide_float::WideFloat::from_f64(value, wide_float::Precision::MINIMUM)
+        .unwrap()
+        .write_to(&mut writer);
+    writer.into_bytes()
+}
 
 #[test]
 fn an_orbit_is_written_with_its_ratio_and_its_periapsis_after_its_phase() {
@@ -594,23 +599,17 @@ fn an_orbit_is_written_with_its_ratio_and_its_periapsis_after_its_phase() {
     )
     .unwrap();
     let circle_bytes = encode_rail(&rail_of(circle));
-    // The flags are the same (an orbit); what comes before the ratio is the same; a circle has a ratio of 1.0 and a periapsis of nothing, an ellipse its own.
+    // The flags are the same (an orbit). A circle ends with a ratio of 1 and a periapsis of nothing, an ellipse with its own, and everything before them is the same.
     assert_eq!(circle_bytes[0], 0b010);
     assert_eq!(ellipse_bytes[0], 0b010);
-    assert_eq!(ellipse_bytes.len(), RATIO_AT + 16);
-    assert_eq!(ellipse_bytes[1..RATIO_AT], circle_bytes[1..RATIO_AT]);
+    let tail =
+        |ratio: f64, periapsis: f64| [element_bytes(ratio), element_bytes(periapsis)].concat();
+    let (circle_tail, ellipse_tail) = (tail(1.0, 0.0), tail(0.0167, 1.8));
+    assert!(circle_bytes.ends_with(&circle_tail));
+    assert!(ellipse_bytes.ends_with(&ellipse_tail));
     assert_eq!(
-        circle_bytes[RATIO_AT..RATIO_AT + 8],
-        1.0f64.to_bits().to_le_bytes()
-    );
-    assert_eq!(circle_bytes[RATIO_AT + 8..], 0.0f64.to_bits().to_le_bytes());
-    assert_eq!(
-        ellipse_bytes[RATIO_AT..RATIO_AT + 8],
-        0.0167f64.to_bits().to_le_bytes()
-    );
-    assert_eq!(
-        ellipse_bytes[RATIO_AT + 8..],
-        1.8f64.to_bits().to_le_bytes()
+        circle_bytes[..circle_bytes.len() - circle_tail.len()],
+        ellipse_bytes[..ellipse_bytes.len() - ellipse_tail.len()]
     );
     // A rail with no orbit has no such numbers.
     let spinning = Rail {
@@ -674,29 +673,35 @@ fn bytes_that_are_not_an_ellipse_are_refused() {
     let mut longer = good.clone();
     longer.push(0);
     assert!(decode_rail(&longer).is_err(), "a byte too many");
-    let write = |at: usize, value: f64| {
-        let mut bytes = good.clone();
-        bytes[at..at + 8].copy_from_slice(&value.to_bits().to_le_bytes());
-        bytes
+    // A ratio or a periapsis that makes no ellipse (the saved form has no number that is no number, so there is no NaN to write).
+    let with = |change: &dyn Fn(&mut Orbit)| {
+        let mut orbit = an_ellipse();
+        change(&mut orbit);
+        encode_rail(&rail_of(orbit))
+    };
+    let exactly = |value: f64| {
+        wide_float::WideFloat::from_f64(value, wide_float::Precision::MINIMUM).unwrap()
     };
     for (what, bytes) in [
-        ("a ratio of nothing", write(RATIO_AT, 0.0)),
-        ("a negative ratio", write(RATIO_AT, -0.5)),
-        ("a ratio above one", write(RATIO_AT, just_above(1.0))),
+        (
+            "a ratio of nothing",
+            with(&|o| o.elements.ratio = exactly(0.0)),
+        ),
+        (
+            "a negative ratio",
+            with(&|o| o.elements.ratio = exactly(-0.5)),
+        ),
+        (
+            "a ratio above one",
+            with(&|o| o.elements.ratio = exactly(just_above(1.0))),
+        ),
         (
             "a ratio below the smallest",
-            write(RATIO_AT, SMALLEST_RATIO / 2.0),
+            with(&|o| o.elements.ratio = exactly(SMALLEST_RATIO / 2.0)),
         ),
-        ("a ratio that is not a number", write(RATIO_AT, f64::NAN)),
-        ("an infinite ratio", write(RATIO_AT, f64::INFINITY)),
-        (
-            "a periapsis that is not a number",
-            write(RATIO_AT + 8, f64::NAN),
-        ),
-        ("an infinite periapsis", write(RATIO_AT + 8, f64::INFINITY)),
         (
             "a periapsis too large",
-            write(RATIO_AT + 8, just_above(LARGEST_PHASE)),
+            with(&|o| o.elements.periapsis = exactly(just_above(LARGEST_PHASE))),
         ),
     ] {
         assert!(decode_rail(&bytes).is_err(), "{what}");

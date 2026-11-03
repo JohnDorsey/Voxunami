@@ -441,8 +441,10 @@ fn check(index: usize, pin: Pin, orbit: Orbit) {
     );
 }
 
-/// The bytes of a rail (`engine:rail` in a ship file, version 2): a spin, a circle about a point, and both with a circle about a ship. A circle is written as the program
-/// before ellipses wrote it, with a ratio of 1.0 and a periapsis of nothing (`000000000000f03f0000000000000000`) after the phase.
+/// The bytes of a rail (`engine:rail` in a ship file, version 3): a spin, a circle about a point, and both with a circle about a ship. The spin and a point are `f64`s as before; the
+/// elements of the orbit are wide numbers of 128 bits in their one saved form (`8001` the precision, then zero as `00` and a number as its sign, the exponent of its odd mantissa and
+/// the mantissa), a circle with a ratio of 1 and a periapsis of nothing after the phase. **The bytes were written by a second program** (`golden_v3.py`, from the description of
+/// the form and not from the Rust), and the Rust gives the same.
 fn bytes_of(hex: &str) -> Vec<u8> {
     (0..hex.len())
         .step_by(2)
@@ -474,7 +476,7 @@ fn a_rail_with_a_circle_is_written_as_pinned_and_read_back_from_them() {
                     .unwrap(),
                 ),
             },
-            "0200000000000000f03f000000000000004000000000000008400000000000000000000000000000f03f0000000000000000000000c00b5ad641000000007e187e41000000000000f03f000000000000f03f0000000000000000",
+            "0200000000000000f03f0000000000000040000000000000084080010080010100010180010080010110032f68598001010a033f0c0f800101000101800101000101800100",
         ),
         (
             Rail {
@@ -490,7 +492,7 @@ fn a_rail_with_a_circle_is_written_as_pinned_and_read_back_from_them() {
                     .unwrap(),
                 ),
             },
-            "03333333333333e33f9a9999999999e93f0000000000000000000000000020acc000000000000000c00107333333333333e33f9a9999999999e93f000000000000000000c84e676dc19b430000008074d2cac1000000000000f0bf000000000000f03f0000000000000000",
+            "03333333333333e33f9a9999999999e93f0000000000000000000000000020acc000000000000000c001078001016907333333333333138001016707cdcccccccccc0c8001008001012206d9e9ac2d78038001021003e9a435800102000101800101000101800100",
         ),
     ];
     for (rail, hex) in rails {

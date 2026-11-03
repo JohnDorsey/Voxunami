@@ -61,14 +61,15 @@ same numbers (a test pins the generator's output for it, bit for bit, against `s
 
 ### 3.4 Rails (40d and 40e)
 
-**A rail is part of a planet** (`MovingGrid::rail: Option<Rail>`, a ship-file section `engine:rail`, version 2 since ellipses):
+**A rail is part of a planet** (`MovingGrid::rail: Option<Rail>`, a ship-file section `engine:rail`, version 3 since the elements of an orbit became wide numbers; version 2 added ellipses):
 
 - `spin`: the planet turns about an axis (in its parent's frame) once in `period` seconds, from an `angle` at tick 0.
 - `orbit`: the planet's centre goes round a `parent` (another planet of the level, or a fixed point) on a circle of `radius` in a plane (a normal), once in `period` seconds, from
   a `phase` at tick 0. **An ellipse (2026-11-02, step A3 of `docs/orbits-and-thrust-plan.md`):** `radius` is then the semi-major axis, `ratio` = 1 - e (the periapsis over the semi-major axis; 1.0 is a circle,
   and an `f64` holds a ratio of 1e-18 exactly where it holds an eccentricity of 1 - 1e-18 as 1), `periapsis` is the angle of the nearest point from where a circle starts, and `phase` is the mean anomaly at tick 0.
-  Kepler's equation is solved in whole numbers (`engine/world_storage/src/exact_kepler.rs`: an `f64` first guess, three Newton steps in 126 bits; 2.7 microseconds), right to the sine's own
-  accuracy except at the sharpest ellipses near their nearest point, where the equation magnifies it (documented in the plan, A2). A circle is the same bits as before. In a ship file the rail section is version 2: every orbit has a ratio and a periapsis (a circle 1.0 and nothing).
+  Kepler's equation is solved by `engine/wide_kepler` (since 2026-11-03, E8 of the plan: Newton's method in numbers of 128 to 192 bits from an `f64` first guess, 32 to 54 microseconds; before, in
+  126-bit fixed point, `exact_kepler.rs`, which is gone), right to the last bit of the width even at the sharpest ellipses. A circle is the circle of `ratio` 1. In a ship file the rail section is version 3 (see above): every
+  orbit has a ratio and a periapsis (a circle 1 and nothing), and its elements are wide numbers.
 - Position and orientation are **a pure function of the world clock**: `libm` sine and cosine in `f64`, the same bits on every machine; no state is integrated, so there
   is nothing to drift and nothing to save but the clock. The velocity is the analytic derivative.
 - **Exact in time and in place (after 40f, 2026-10-27).** The time of a rail is a `RailTime`, a whole number of units (the world gives the tick itself; seconds as an `f64` are for data
@@ -78,7 +79,7 @@ same numbers (a test pins the generator's output for it, bit for bit, against `s
   `WorldPosition` plus its offset from it with `WorldPosition::translated_by_bricks` (whole bricks of the offset added to the brick; the rest added to the `f32` offset and carried into the
   bricks before it is rounded to an `f32`), not at the `f64` sum of the other's `in_voxels()` and the offset: at 10^18 voxels from the origin an `f64` is a hundred voxels from the next, and the old
   sum put a moon about that far from its planet.
-- **An orbit in 128-bit fixed point (after 40f, 2026-10-27, `engine/world_storage/src/exact_circle.rs`).** The offset of an orbit from its centre is `ExactOffset`, whole bricks (`i128`) and a
+- **An orbit in 128-bit fixed point (after 40f, 2026-10-27; replaced on 2026-11-03 by `engine/wide_kepler`, see E8 in the plan: the description below is the history, and the limits and `ExactOffset` stand).** The offset of an orbit from its centre is `ExactOffset`, whole bricks (`i128`) and a
   rest in steps of 2^-32 voxel, and is worked out in whole numbers: the angle is the part of a turn gone (a fraction of 128 bits) plus the phase (radians to turns with one over two pi
   to 192 bits), the sine and cosine come from CORDIC steps in 126 bits (shifts and adds, no multiplication), the plane of the orbit is made orthonormal in 126 bits (Newton's method from an
   `f64` guess, in whole numbers), and the radius (an `f64`, a mantissa and a power of two) multiplies them in 256 bits. Measured against `mpmath` at 120 digits: sine and cosine within 22 of

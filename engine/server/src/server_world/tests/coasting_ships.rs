@@ -61,7 +61,7 @@ fn refused(world: &ServerWorld, ship: GridId) -> NotCoasting {
 }
 
 fn rail_of(world: &ServerWorld, ship: GridId) -> Option<Rail> {
-    world.data().grids().get(ship).unwrap().rail
+    world.data().grids().get(ship).unwrap().rail.clone()
 }
 
 fn distance_between(first: WorldPosition, second: WorldPosition) -> f64 {
@@ -76,12 +76,12 @@ fn a_ship_in_a_circle_is_given_the_orbit_it_is_on_and_put_there_by_it_it_is_wher
     let before = world.data().grids().get(ship).unwrap().clone();
     let rail = world.coasting_rail(ship, time(0)).unwrap();
     assert_eq!(rail.spin, None);
-    let orbit = rail.orbit.unwrap();
+    let orbit = rail.orbit.clone().unwrap();
     assert_eq!(orbit.around, Centre::Grid(planet));
-    assert!((orbit.radius / 10_000.0 - 1.0).abs() < 1e-12, "{orbit:?}");
-    assert!(orbit.ratio > 1.0 - 1e-9, "{orbit:?}");
+    assert!((orbit.radius() / 10_000.0 - 1.0).abs() < 1e-12, "{orbit:?}");
+    assert!(orbit.ratio() > 1.0 - 1e-9, "{orbit:?}");
     let period = std::f64::consts::TAU * libm::sqrt(1.0e12 / (PULL * 1.0e22));
-    assert!((orbit.period / period - 1.0).abs() < 1e-12, "{orbit:?}");
+    assert!((orbit.period() / period - 1.0).abs() < 1e-12, "{orbit:?}");
     // On the rail it is where it was, going as it went: the rail is the orbit of its state, to the working of the fit.
     world.set_grid_rail(ship, Some(rail)).unwrap();
     world.apply_rails(TICKS);
@@ -110,7 +110,7 @@ fn it_is_the_centre_of_mass_of_a_ship_that_is_on_its_orbit() {
     let ship = ship_in_a_circle(&mut world, 10_000.0);
     world.set_grid_mass(ship, 5.0e3, middle).unwrap();
     let rail = world.coasting_rail(ship, time(0)).unwrap();
-    let orbit = rail.orbit.unwrap();
+    let orbit = rail.orbit.clone().unwrap();
     let centre = world
         .data()
         .grids()
@@ -130,9 +130,9 @@ fn it_is_the_centre_of_mass_of_a_ship_that_is_on_its_orbit() {
         .in_voxels();
     let distance = libm::sqrt(from_the_planet.iter().map(|part| part * part).sum());
     assert!(
-        (orbit.radius / distance - 1.0).abs() < 1e-3,
+        (orbit.radius() / distance - 1.0).abs() < 1e-3,
         "the radius {} is not the centre of mass's distance {distance}",
-        orbit.radius
+        orbit.radius()
     );
     // Put on the rail, the origin is where it was and the centre of mass is on the orbit.
     let origin = world.data().grids().get(ship).unwrap().pose.position;
@@ -286,7 +286,7 @@ fn another_ship_that_is_near_keeps_a_ship_off_a_rail_and_a_ship_on_one_keeps_it_
     assert_eq!(refused(&world, ship), NotCoasting::SomethingNear(other));
     world.remove_grid(other);
     let rail = world.coasting_rail(ship, time(0)).unwrap();
-    world.set_grid_rail(ship, Some(rail)).unwrap();
+    world.set_grid_rail(ship, Some(rail.clone())).unwrap();
     let other = ship_at(&mut world, [10_000.0, 12_000.0, 0.0], [0.0; 3]);
     world.data.set_clock(0);
     world.update_coasting(TICKS);
@@ -372,7 +372,7 @@ fn a_ship_that_is_left_alone_for_a_second_goes_on_a_rail_and_not_before() {
     run_ticks(&mut world, 21, 21);
     let rail = rail_of(&world, ship).expect("a second of ticks after the first it is on a rail");
     assert_eq!(
-        rail.orbit.unwrap().around,
+        rail.orbit.as_ref().unwrap().around,
         Centre::Grid(GridId::new(GridId::FIRST_ALLOCATED))
     );
     // And it stays on the elements it was given: they are not made again from the place it is at.
@@ -475,10 +475,16 @@ fn rails_that_are_not_an_orbit_round_a_planet_are_left_alone_and_so_are_planets(
     let turning = world
         .create_grid(LevelIndex::MAIN, GridPose::identity())
         .unwrap();
-    world.set_grid_rail(on_a_point, Some(point)).unwrap();
-    world.set_grid_rail(turning, Some(spinning)).unwrap();
+    world
+        .set_grid_rail(on_a_point, Some(point.clone()))
+        .unwrap();
+    world
+        .set_grid_rail(turning, Some(spinning.clone()))
+        .unwrap();
     let planet_rail = orbit_about(Centre::Point([0.0; 3]), 1.0e6, 1.0e5);
-    world.set_grid_rail(planet, Some(planet_rail)).unwrap();
+    world
+        .set_grid_rail(planet, Some(planet_rail.clone()))
+        .unwrap();
     // Pushed, moved and held: none of it takes these off.
     world.apply_grid_force(on_a_point, [1.0; 3], None).unwrap();
     world
@@ -585,11 +591,11 @@ fn from_the_planet(world: &ServerWorld, ship: GridId, planet: GridId) -> f64 {
 }
 
 fn periapsis_of(orbit: Orbit) -> f64 {
-    orbit.radius * orbit.ratio
+    orbit.radius() * orbit.ratio()
 }
 
 fn apoapsis_of(orbit: Orbit) -> f64 {
-    orbit.radius * (2.0 - orbit.ratio)
+    orbit.radius() * (2.0 - orbit.ratio())
 }
 
 #[test]
@@ -597,14 +603,14 @@ fn a_planet_that_weighs_more_is_answered_at_the_nearest_point_and_the_ship_canno
     let (mut world, ship, planet) = a_ship_on_an_ellipse();
     let old = rail_of(&world, ship);
     let before = orbit_of(&world, ship);
-    assert!((periapsis_of(before) / 5_000.0 - 1.0).abs() < 1e-6);
-    assert!((apoapsis_of(before) / 10_000.0 - 1.0).abs() < 1e-6);
+    assert!((periapsis_of(before.clone()) / 5_000.0 - 1.0).abs() < 1e-6);
+    assert!((apoapsis_of(before.clone()) / 10_000.0 - 1.0).abs() < 1e-6);
     // (An increase of a fifth: the speed at the nearest point is that of a circle for 1.333 times the mass, so it is still the nearest point with a mass of up to that.)
     let mass = 1.2e22;
     world.set_grid_mass(planet, mass, [0.0; 3]).unwrap();
     // The first end that comes is the nearest, half a period on; a ship does not answer at the far end that comes after it.
-    let expected = ticks_of_the_end(before, 21, 400, true)[0];
-    assert!(expected < ticks_of_the_end(before, 21, 400, false)[0]);
+    let expected = ticks_of_the_end(before.clone(), 21, 400, true)[0];
+    assert!(expected < ticks_of_the_end(before.clone(), 21, 400, false)[0]);
     let tick = until_the_rail_changes(&mut world, ship, old, 21, 400).expect("answered");
     assert_eq!(
         tick, expected,
@@ -614,12 +620,15 @@ fn a_planet_that_weighs_more_is_answered_at_the_nearest_point_and_the_ship_canno
     assert!((after.mass_parameter() / (PULL * mass) - 1.0).abs() < 1e-12);
     // The nearest point stays where it was, to the part of a tick that the ship is from it, and the far end comes in.
     assert!(
-        (periapsis_of(after) / periapsis_of(before) - 1.0).abs() < 5e-3,
+        (periapsis_of(after.clone()) / periapsis_of(before.clone()) - 1.0).abs() < 5e-3,
         "{} against {}",
         periapsis_of(after),
         periapsis_of(before)
     );
-    assert!(apoapsis_of(after) < 0.8 * apoapsis_of(before), "{after:?}");
+    assert!(
+        apoapsis_of(after.clone()) < 0.8 * apoapsis_of(before.clone()),
+        "{after:?}"
+    );
     assert!(
         (from_the_planet(&world, ship, planet) / periapsis_of(before) - 1.0).abs() < 5e-3,
         "it was at the nearest point"
@@ -640,8 +649,8 @@ fn a_planet_that_weighs_less_is_answered_at_the_far_point_and_the_ship_cannot_be
     let mass = 0.7e22;
     world.set_grid_mass(planet, mass, [0.0; 3]).unwrap();
     // The first end that comes is the nearest; the ship lets it pass and answers at the far one.
-    let near = ticks_of_the_end(before, 21, 400, true)[0];
-    let far = ticks_of_the_end(before, 21, 400, false)[0];
+    let near = ticks_of_the_end(before.clone(), 21, 400, true)[0];
+    let far = ticks_of_the_end(before.clone(), 21, 400, false)[0];
     assert!(near < far);
     let tick = until_the_rail_changes(&mut world, ship, old, 21, 400).expect("answered");
     assert_eq!(
@@ -651,13 +660,13 @@ fn a_planet_that_weighs_less_is_answered_at_the_far_point_and_the_ship_cannot_be
     let after = orbit_of(&world, ship);
     assert!((after.mass_parameter() / (PULL * mass) - 1.0).abs() < 1e-12);
     assert!(
-        (apoapsis_of(after) / apoapsis_of(before) - 1.0).abs() < 5e-3,
+        (apoapsis_of(after.clone()) / apoapsis_of(before.clone()) - 1.0).abs() < 5e-3,
         "{} against {}",
         apoapsis_of(after),
         apoapsis_of(before)
     );
     assert!(
-        periapsis_of(after) > 1.2 * periapsis_of(before),
+        periapsis_of(after.clone()) > 1.2 * periapsis_of(before.clone()),
         "{after:?}"
     );
     assert!(
@@ -674,7 +683,7 @@ fn the_answer_is_continuous_in_the_place_and_in_the_speed() {
     assert_eq!(ship, other);
     let old = rail_of(&changed, ship);
     changed.set_grid_mass(planet, 1.5e22, [0.0; 3]).unwrap();
-    let tick = until_the_rail_changes(&mut changed, ship, old, 21, 400).expect("answered");
+    let tick = until_the_rail_changes(&mut changed, ship, old.clone(), 21, 400).expect("answered");
     for later in 22..=tick {
         server_tick(&mut unchanged, later);
     }
@@ -771,29 +780,32 @@ fn a_change_that_is_more_than_the_eccentricity_turns_the_end_it_is_answered_at_i
     let old = rail_of(&world, ship);
     let before = orbit_of(&world, ship);
     world.set_grid_mass(planet, 1.5e22, [0.0; 3]).unwrap();
-    let near = ticks_of_the_end(before, 21, 400, true)[0];
+    let near = ticks_of_the_end(before.clone(), 21, 400, true)[0];
     let tick = until_the_rail_changes(&mut world, ship, old, 21, 400).expect("answered");
     assert_eq!(tick, near);
     let after = orbit_of(&world, ship);
     assert!(
-        (apoapsis_of(after) / periapsis_of(before) - 1.0).abs() < 5e-3,
+        (apoapsis_of(after.clone()) / periapsis_of(before.clone()) - 1.0).abs() < 5e-3,
         "{after:?}"
     );
     assert!(
-        periapsis_of(after) < 0.85 * periapsis_of(before),
+        periapsis_of(after.clone()) < 0.85 * periapsis_of(before.clone()),
         "{after:?}"
     );
 
     let (mut world, ship, planet) = a_ship_on_an_ellipse();
     let old = rail_of(&world, ship);
     world.set_grid_mass(planet, 0.5e22, [0.0; 3]).unwrap();
-    let far = ticks_of_the_end(before, 21, 400, false)[0];
+    let far = ticks_of_the_end(before.clone(), 21, 400, false)[0];
     let tick = until_the_rail_changes(&mut world, ship, old, 21, 400).expect("answered");
     assert_eq!(tick, far);
     let after = orbit_of(&world, ship);
     assert!(
-        (periapsis_of(after) / apoapsis_of(before) - 1.0).abs() < 5e-3,
+        (periapsis_of(after.clone()) / apoapsis_of(before.clone()) - 1.0).abs() < 5e-3,
         "{after:?}"
     );
-    assert!(apoapsis_of(after) > 1.2 * apoapsis_of(before), "{after:?}");
+    assert!(
+        apoapsis_of(after.clone()) > 1.2 * apoapsis_of(before),
+        "{after:?}"
+    );
 }

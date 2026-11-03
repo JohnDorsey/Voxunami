@@ -65,9 +65,10 @@ pub const POSES_VERSION: u32 = 4;
 /// the plain sections, [`SUPPORTED_VERSION`], then).
 pub const TERRAIN_VERSION: u32 = 3;
 
-/// The version of a ship file's `engine:rail` that this program writes and reads: 2, in which every orbit has a ratio (1 - e) and a periapsis after its phase (1 was circles
-/// only, and is not read: there is no upgrade, so when the first release makes this the first version the numbering can start again).
-pub const RAIL_VERSION: u32 = 2;
+/// The version of a ship file's `engine:rail` that this program writes and reads: 3, in which the elements of an orbit (the normal's three numbers, the radius, the period, the
+/// phase, the ratio and the periapsis) are wide numbers of any width from 128 bits, each in the one saved form of `wide_float` (2 had them `f64`s, and 1 had circles only; neither
+/// is read: there is no upgrade, so when the first release makes this the first version the numbering can start again).
+pub const RAIL_VERSION: u32 = 3;
 
 /// The version of `engine:generators` that this program writes and reads: 3, in which a leaf's level has seven bits (levels run to 116).
 pub const GENERATORS_VERSION: u32 = 3;

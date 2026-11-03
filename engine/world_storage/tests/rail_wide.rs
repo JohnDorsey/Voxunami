@@ -25,12 +25,12 @@ fn wide(value: f64, precision: Precision) -> WideFloat {
 /// The wide elements of a rail's orbit: the same doubles, as the program keeps them.
 fn elements_of(orbit: &Orbit, precision: Precision) -> Elements {
     Elements {
-        normal: orbit.normal.map(|component| wide(component, precision)),
-        radius: wide(orbit.radius, precision),
-        ratio: wide(orbit.ratio, precision),
-        periapsis: wide(orbit.periapsis, precision),
-        period: wide(orbit.period, precision),
-        phase: wide(orbit.phase, precision),
+        normal: orbit.normal().map(|component| wide(component, precision)),
+        radius: wide(orbit.radius(), precision),
+        ratio: wide(orbit.ratio(), precision),
+        periapsis: wide(orbit.periapsis(), precision),
+        period: wide(orbit.period(), precision),
+        phase: wide(orbit.phase(), precision),
     }
 }
 
@@ -52,7 +52,7 @@ fn differences_between_ticks(orbit: Orbit, rail_tick: u64, wide_tick: u64) -> (f
     let precision = at(320);
     let rail = Rail {
         spin: None,
-        orbit: Some(orbit),
+        orbit: Some(orbit.clone()),
     };
     let state = rail.state(
         RailTime::of_tick(rail_tick, TICKS_A_SECOND),
@@ -152,7 +152,7 @@ fn the_rail_agrees_with_the_wide_evaluator_on_the_orbits_that_are_pinned_in_the_
         (orbit([0.0, 1.0, 0.0], 1.0e7, 1.0, 0.0, 600.0, 4.0), 12_000),
     ];
     for (orbit, tick) in cases {
-        let (apart, speed_apart) = differences(orbit, tick);
+        let (apart, speed_apart) = differences(orbit.clone(), tick);
         println!(
             "{apart:>12.3e} voxels apart, speeds differ by {speed_apart:.1e}: {orbit:?} at tick {tick}"
         );
@@ -165,7 +165,7 @@ fn the_rail_agrees_with_the_wide_evaluator_on_the_orbits_that_are_pinned_in_the_
             "{orbit:?} at tick {tick}: speeds differ by {speed_apart}"
         );
         // The negative control: a tick later the body is somewhere else, by far more than the tolerance (the test can fail).
-        let (later, _) = differences_between_ticks(orbit, tick, tick + 1);
+        let (later, _) = differences_between_ticks(orbit.clone(), tick, tick + 1);
         assert!(
             later > 1.0e-3,
             "{orbit:?}: the body moved {later} voxels in a tick"

@@ -3455,6 +3455,7 @@ dependencies = [
  "voxel_grid",
  "voxel_space",
  "wgpu",
+ "wide_float",
  "world_storage",
  "world_view",
 ]

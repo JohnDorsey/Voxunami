@@ -2,7 +2,9 @@
 //!
 //! A planet on rails is not integrated: its place and its turn at a time are worked out from the time alone, so they are the same bits on every machine, there is
 //! nothing to drift, and a world that is saved and loaded has its planets where the clock says without having saved them. A spin is worked out with `libm` in
-//! `f64`; an orbit, which has to be right to a fraction of a voxel however far out it goes, in wide numbers (`wide_kepler`: [`ExactOffset`] is what comes out).
+//! `f64`; an orbit, which has to be right to a fraction of a voxel however far out it goes, in wide numbers of any width from 128 bits (`wide_kepler`: [`ExactOffset`] is what
+//! comes out). The elements of an orbit are wide numbers too and are kept as they are given, to the last bit, in memory and in a file (`engine:rail`); nothing rounds them until a
+//! place is asked for. ("Lazy exact rails", the owner, 2026-11-03.)
 //! Two motions, each optional and independent:
 //!
 //! - a **spin**: the body turns steadily about an axis, once in `period` seconds (a negative period turns it the other way), from `angle` at time 0; the body's own
@@ -15,12 +17,13 @@
 //!   time 0 (`wide_kepler`; the definition is in `engine/world_storage/tools/exact_ellipse_reference.py`). The ratio and not the eccentricity is kept because an `f64` e
 //!   near 1 has no digits left to say how near it is.
 
+use std::cmp::Ordering;
 use std::f64::consts::TAU;
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use voxel_space::{GridId, Orientation};
 use wide_float::{Precision, WideFloat};
-use wide_kepler::{Elements, Time};
+use wide_kepler::{Elements, KeplerError, Time};
 
 use crate::exact_circle;
 pub use crate::exact_offset::ExactOffset;
@@ -58,22 +61,17 @@ pub struct Spin {
     pub angle: f64,
 }
 
-/// A circle or an ellipse gone round at a steady rate.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// A circle or an ellipse gone round at a steady rate. The elements (`wide_kepler::Elements`) are wide numbers, from 128 bits, kept exactly: the radius is the radius of a circle
+/// or the semi-major axis of an ellipse, in voxels; the ratio is the periapsis over the semi-major axis, which is 1 - e (1 is a circle and a small number, down to
+/// [`SMALLEST_RATIO`], a long thin ellipse); the periapsis is the angle in the plane, in radians, of the nearest point, from the direction a circle starts toward,
+/// counter-clockwise looking down the normal; the period is the seconds for one time round, negative for the other way; and the phase is how far round it is at time 0, in radians
+/// (for a circle from where it starts and the periapsis, for an ellipse the mean anomaly). The normal need not be a unit vector. Made with [`Orbit::elliptical`] (doubles) or
+/// [`Orbit::from_elements`] (any width), both of which refuse what is no orbit; the fields are public for reading, and an orbit built by hand that [`Orbit::from_elements`]
+/// would refuse is worked out wrongly, and is refused when read from a file.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Orbit {
     pub around: Centre,
-    /// A unit vector: the orbit is counter-clockwise looking down it.
-    pub normal: [f64; 3],
-    /// In voxels: the radius of a circle, the semi-major axis of an ellipse.
-    pub radius: f64,
-    /// The periapsis over the semi-major axis, which is 1 - e: 1.0 is a circle, and a small number a long thin ellipse. From [`SMALLEST_RATIO`] to 1.
-    pub ratio: f64,
-    /// The angle in the plane, in radians, of the nearest point, from the direction a circle starts toward, counter-clockwise looking down the normal.
-    pub periapsis: f64,
-    /// Seconds for one time round; negative for the other way.
-    pub period: f64,
-    /// How far round it is at time 0, in radians: for a circle from where it starts (and the periapsis), for an ellipse the mean anomaly.
-    pub phase: f64,
+    pub elements: Elements,
 }
 
 /// Which ends of an ellipse a body passed in a stretch of time (see [`Orbit::apsides_passed`]).
@@ -86,7 +84,7 @@ pub struct Apsides {
 }
 
 /// How a body moves.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Rail {
     pub spin: Option<Spin>,
     pub orbit: Option<Orbit>,
@@ -135,35 +133,23 @@ fn is_unit(vector: [f64; 3]) -> bool {
 /// at most 112 bits.
 const LONGEST_PERIOD: f64 = (1u128 << 80) as f64;
 
-/// The largest radius of an orbit, in voxels: 2^120, a million times the distance across the universe in metres, so that its offset in bricks is an `i128`.
-const LARGEST_RADIUS: f64 = (1u128 << 120) as f64;
-
-/// The largest phase of an orbit, in radians either way: 2^63 (a million times the age of the universe, if it were a number of seconds), so that it is a fraction of a
-/// turn to the last of 128 bits.
-const LARGEST_PHASE: f64 = (1u64 << 63) as f64;
-
-/// The shortest period of an orbit, in seconds: 2^-20, a little under a microsecond, so that the part of a turn gone is worked out in at most 116 whole bits (`wide_kepler`
-/// asks for no more; a spin has no such bound).
-const SHORTEST_ORBIT_PERIOD: f64 = 1.0 / (1u32 << 20) as f64;
-
-/// Whether `period` is one a rail can have: a number that is not nothing and not above [`LONGEST_PERIOD`], either way.
+/// Whether `period` is one a spin can have: a number that is not nothing and not above [`LONGEST_PERIOD`], either way.
 fn usable_period(period: f64) -> bool {
     period.is_finite() && period != 0.0 && period.abs() <= LONGEST_PERIOD
 }
 
-/// Whether `period` is one an orbit can have: one a rail can have, and not under [`SHORTEST_ORBIT_PERIOD`].
-fn usable_orbit_period(period: f64) -> bool {
-    usable_period(period) && period.abs() >= SHORTEST_ORBIT_PERIOD
-}
+/// The largest radius of an orbit, in voxels, as a power of two: 2^120, a million times the distance across the universe in metres, so that its offset in bricks is an `i128`.
+const LARGEST_RADIUS_EXPONENT: i64 = 120;
 
-/// Whether an orbit can have this radius and phase.
-fn usable_circle(radius: f64, phase: f64) -> bool {
-    radius > 0.0 && radius <= LARGEST_RADIUS && phase.abs() <= LARGEST_PHASE
-}
+/// The longest period of an orbit, in seconds, as a power of two: 2^80 (the spin's limit too: [`LONGEST_PERIOD`]).
+const LONGEST_ORBIT_PERIOD_EXPONENT: i64 = 80;
 
-/// Whether an orbit can have this ratio and periapsis: a ratio from [`SMALLEST_RATIO`] to 1, and an angle that can be a fraction of a turn to the last of 128 bits, as a phase can.
-fn usable_shape(ratio: f64, periapsis: f64) -> bool {
-    (SMALLEST_RATIO..=1.0).contains(&ratio) && periapsis.abs() <= LARGEST_PHASE
+/// Whether `value`, which is not negative, is at most 2^`exponent`.
+fn at_most_a_power_of_two(value: &WideFloat, exponent: i64) -> bool {
+    let limit = WideFloat::from_i64(1, value.precision())
+        .times_power_of_two(exponent)
+        .expect("a power of two within the range of a number");
+    value.compare(&limit) != Ordering::Greater
 }
 
 /// A time of the world, as a whole number of units (under 2^96 either way) and how many make a second, so that it is exact however long the world has run: a tick of the
@@ -343,8 +329,9 @@ impl Orbit {
         Self::elliptical(around, normal, radius, 1.0, 0.0, period, phase)
     }
 
-    /// An ellipse round `around` in the plane with this normal (any vector that is not nothing): `radius` is the semi-major axis, `ratio` is 1 - e (1.0 is a circle), and
-    /// `periapsis` is the angle in radians of the nearest point.
+    /// An ellipse round `around` in the plane with this normal (any vector that is not nothing: it is made a unit vector, in `f64`, here): `radius` is the semi-major axis,
+    /// `ratio` is 1 - e (1.0 is a circle), and `periapsis` is the angle in radians of the nearest point. The numbers are doubles, which any width holds exactly, so these are
+    /// the elements of the orbit as they are given, in 128 bits; [`Orbit::from_elements`] makes an orbit of numbers that are not doubles.
     pub fn elliptical(
         around: Centre,
         normal: [f64; 3],
@@ -354,6 +341,29 @@ impl Orbit {
         period: f64,
         phase: f64,
     ) -> Result<Self, RailError> {
+        if !finite(&[radius, ratio, periapsis, period, phase]) {
+            return Err(RailError::Invalid("the elements of an orbit are numbers"));
+        }
+        let exactly = |value: f64| {
+            WideFloat::from_f64(value, Precision::MINIMUM).expect("a finite number is a number")
+        };
+        Self::from_elements(
+            around,
+            Elements {
+                normal: unit(normal, "the normal of an orbit")?.map(exactly),
+                radius: exactly(radius),
+                ratio: exactly(ratio),
+                periapsis: exactly(periapsis),
+                period: exactly(period),
+                phase: exactly(phase),
+            },
+        )
+    }
+
+    /// An orbit round `around` of these elements, of any width from 128 bits, kept exactly as they are. Refused: a centre that is not made of numbers, and what `wide_kepler`
+    /// refuses (a normal of nothing, a ratio outside 2^-64 to 1, a period outside 2^-20 to 2^80 seconds either way, an angle over 2^63 radians, a radius that is not above
+    /// nothing), and a radius over 2^120 voxels. The normal need not be a unit vector.
+    pub fn from_elements(around: Centre, elements: Elements) -> Result<Self, RailError> {
         if let Centre::Point(point) = around
             && !finite(&point)
         {
@@ -361,69 +371,101 @@ impl Orbit {
                 "the centre of an orbit is made of numbers",
             ));
         }
-        if !(radius.is_finite() && phase.is_finite()) {
+        elements.validate().map_err(|error| match error {
+            KeplerError::Invalid(message) => RailError::Invalid(message),
+            _ => RailError::Invalid("the elements of an orbit are not those of an orbit"),
+        })?;
+        if !at_most_a_power_of_two(&elements.radius, LARGEST_RADIUS_EXPONENT)
+            || !at_most_a_power_of_two(&elements.period.abs(), LONGEST_ORBIT_PERIOD_EXPONENT)
+        {
             return Err(RailError::Invalid(
-                "the radius and the phase of an orbit are numbers",
+                "an orbit has a radius of at most 2^120 voxels and a period of at most 2^80 seconds",
             ));
         }
-        if !usable_circle(radius, phase) {
-            return Err(RailError::Invalid(
-                "an orbit has a radius above nothing and not above 2^120 voxels, and a phase not above 2^63 radians",
-            ));
-        }
-        if !usable_orbit_period(period) {
-            return Err(RailError::Invalid(
-                "an orbit has a period of at least 2^-20 seconds and not above 2^80 seconds",
-            ));
-        }
-        if !usable_shape(ratio, periapsis) {
-            return Err(RailError::Invalid(
-                "an orbit has a ratio (1 - e) from 2^-64 to 1 and a periapsis of at most 2^63 radians",
-            ));
-        }
-        Ok(Self {
-            around,
-            normal: unit(normal, "the normal of an orbit")?,
-            radius,
-            ratio,
-            periapsis,
-            period,
-            phase,
-        })
+        Ok(Self { around, elements })
+    }
+
+    /// The semi-major axis (the radius of a circle) in voxels, as the `f64` nearest to it: for sizes and comparisons, not for placing a body.
+    pub fn radius(&self) -> f64 {
+        self.elements.radius.to_f64()
+    }
+
+    /// The periapsis over the semi-major axis, 1 - e, as the nearest `f64`.
+    pub fn ratio(&self) -> f64 {
+        self.elements.ratio.to_f64()
+    }
+
+    /// The angle of the nearest point in the plane, in radians, as the nearest `f64`.
+    pub fn periapsis(&self) -> f64 {
+        self.elements.periapsis.to_f64()
+    }
+
+    /// The seconds for one time round (negative for the other way), as the nearest `f64`.
+    pub fn period(&self) -> f64 {
+        self.elements.period.to_f64()
+    }
+
+    /// The mean anomaly at time 0, in radians, as the nearest `f64`.
+    pub fn phase(&self) -> f64 {
+        self.elements.phase.to_f64()
+    }
+
+    /// The normal as the nearest `f64`s (a vector in the direction of the normal, not necessarily a unit one).
+    pub fn normal(&self) -> [f64; 3] {
+        self.elements.normal.each_ref().map(WideFloat::to_f64)
+    }
+
+    /// Whether it is a circle: a ratio of exactly 1.
+    pub fn is_circle(&self) -> bool {
+        let one = WideFloat::from_i64(1, self.elements.ratio.precision());
+        self.elements.ratio.compare(&one) == Ordering::Equal
+    }
+
+    /// How near to its centre the body comes, in voxels, as an `f64` (the semi-major axis times the ratio).
+    pub fn nearest_distance(&self) -> f64 {
+        self.radius() * self.ratio()
+    }
+
+    /// How far from its centre the body goes, in voxels, as an `f64` (the semi-major axis times 2 less the ratio).
+    pub fn farthest_distance(&self) -> f64 {
+        self.radius() * (2.0 - self.ratio())
     }
 
     /// The mass parameter, `G M` of what the orbit goes round in voxels cubed a second squared, that the period and the semi-major axis say (`mu = n^2 a^3`, Kepler's third law). An
     /// orbit made from a state (`Orbit::from_place`) has the period of the mass it was made with, so this is that mass, to the rounding of two numbers: it is how a ship that is
     /// on a rail knows the mass it was made for.
     pub fn mass_parameter(&self) -> f64 {
-        let rate = TAU / self.period;
-        rate * rate * self.radius * self.radius * self.radius
+        let rate = TAU / self.period();
+        rate * rate * self.radius() * self.radius() * self.radius()
     }
 
-    /// The mean anomaly at `time`, as a fraction of a turn of 128 bits.
+    /// The mean anomaly at `time`, as a fraction of a turn of 128 bits (rounded down, the whole turn being nothing): the exact part of a turn gone and the phase, worked out in
+    /// 192 bits.
     fn mean_anomaly(&self, time: RailTime) -> u128 {
-        let (remainder, whole_turn) = turn_fraction(time, self.period);
-        exact_circle::fraction_in_turns(remainder, whole_turn)
-            .wrapping_add(exact_circle::turns_of_radians(self.phase))
+        let fraction = self
+            .elements
+            .mean_anomaly_in_turns(time.wide(), Precision::of(192))
+            .expect("an orbit made by this module has a mean anomaly");
+        turns_with_128_bits(&fraction)
     }
 
     /// Which ends of the ellipse the body passes after `from` up to and including `to` (a stretch that starts where the one before ended passes each end once, never twice).
     /// Worked out from the mean anomaly in whole numbers: the periapsis is at 0 and the apoapsis at half a turn. A circle has no ends, and passes neither. A stretch of a whole turn
     /// or more passes both.
     pub fn apsides_passed(&self, from: RailTime, to: RailTime) -> Apsides {
-        if self.ratio == 1.0 {
+        if self.is_circle() {
             return Apsides::default();
         }
         // (The whole numbers know a part of a turn, not how many turns: a stretch as long as the period passes both ends whatever they say.)
         let seconds = |time: RailTime| time.units as f64 / f64::from(time.units_per_second);
-        if seconds(to) - seconds(from) >= self.period.abs() {
+        if seconds(to) - seconds(from) >= self.period().abs() {
             return Apsides {
                 periapsis: true,
                 apoapsis: true,
             };
         }
         let (before, after) = (self.mean_anomaly(from), self.mean_anomaly(to));
-        let forward = self.period > 0.0;
+        let forward = !self.elements.period.is_negative();
         // How far round, in the way the body goes, a mean anomaly is from where it was before.
         let gone = |anomaly: u128| {
             if forward {
@@ -443,29 +485,13 @@ impl Orbit {
         }
     }
 
-    /// The elements as `wide_kepler` has them: each an `f64`, which any width holds exactly.
-    fn elements(&self) -> Elements {
-        let wide = |value: f64| {
-            WideFloat::from_f64(value, Precision::MINIMUM)
-                .expect("an orbit is made of numbers (and nothing else is let in)")
-        };
-        Elements {
-            normal: self.normal.map(wide),
-            radius: wide(self.radius),
-            ratio: wide(self.ratio),
-            periapsis: wide(self.periapsis),
-            period: wide(self.period),
-            phase: wide(self.phase),
-        }
-    }
-
     /// Where the body is from the centre at `time`, and how fast it moves round it. The place is worked out in wide numbers (`wide_kepler`: for a circle or an ellipse, the
-    /// phase and the part of a turn gone, the mean anomaly, Kepler's equation, the periapsis and the plane), in a width that leaves the last bit of it below 2^-64 voxel (see
-    /// [`answer_precision`]), and rounded once, to whole bricks and a rest in steps of 2^-32 voxel; the speed is the same working rounded to an `f64`.
+    /// phase and the part of a turn gone, the mean anomaly, Kepler's equation, the periapsis and the plane) from the elements as they are, in a width that leaves the last bit of
+    /// it below 2^-64 voxel (see [`answer_precision`]), and rounded once, to whole bricks and a rest in steps of 2^-32 voxel; the speed is the same working rounded to an `f64`.
     fn at(&self, time: RailTime) -> (ExactOffset, [f64; 3]) {
         let place = self
-            .elements()
-            .place_at(time.wide(), answer_precision(self.radius))
+            .elements
+            .place_at(time.wide(), answer_precision(&self.elements.radius))
             .expect("an orbit made by this module is one `wide_kepler` works out");
         (
             ExactOffset::of_voxels(&place.position),
@@ -474,11 +500,31 @@ impl Orbit {
     }
 }
 
+/// A part of a turn from 0 to a whole turn as a fraction of a turn with 128 bits after the point, rounded down; a whole turn is the same place as nothing.
+fn turns_with_128_bits(fraction: &WideFloat) -> u128 {
+    let wide_part = fraction
+        .times_power_of_two(64)
+        .expect("a fraction times 2^64 is a number");
+    let high = wide_part
+        .floor_to_i128()
+        .expect("a part of a turn times 2^64 is a whole number of at most 65 bits");
+    if high >> 64 != 0 {
+        return 0;
+    }
+    // (What is left after the whole part is exact: it has fewer bits than the number had.)
+    let rest = &wide_part - &WideFloat::from_i128(high, wide_part.precision());
+    let low = rest
+        .times_power_of_two(64)
+        .expect("a rest times 2^64 is a number")
+        .floor_to_i128()
+        .expect("a rest below one times 2^64 is a whole number of at most 64 bits");
+    ((high as u128) << 64) | low as u128
+}
+
 /// The width a place is worked out in: the bits above the point of a place as far out as an ellipse of this `radius` goes (twice it), 64 below it (the answer keeps 32, and
 /// the place is then the nearest step except where it is within 2^-32 of a step of a tie), to the next multiple of 64, and at least 128.
-fn answer_precision(radius: f64) -> Precision {
-    let (mantissa, exponent) = exact_circle::split(radius);
-    let bits_of_radius = i64::from(64 - mantissa.leading_zeros()) + i64::from(exponent);
+fn answer_precision(radius: &WideFloat) -> Precision {
+    let bits_of_radius = radius.floor_log2().unwrap_or(0) + 1;
     let wanted = (bits_of_radius + 1 + 64).max(0) as u64;
     Precision::new((wanted.div_ceil(64) * 64).max(Precision::MINIMUM.bits()))
         .expect("the radius of an orbit is at most 2^120 voxels, which takes 192 bits")
@@ -567,12 +613,16 @@ pub fn encode_rail(rail: &Rail) -> Vec<u8> {
                 writer.write_varint(grid.get());
             }
         }
-        write_vector(&mut writer, orbit.normal);
-        writer.write_u64(orbit.radius.to_bits());
-        writer.write_u64(orbit.period.to_bits());
-        writer.write_u64(orbit.phase.to_bits());
-        writer.write_u64(orbit.ratio.to_bits());
-        writer.write_u64(orbit.periapsis.to_bits());
+        let elements = &orbit.elements;
+        for number in elements.normal.iter().chain([
+            &elements.radius,
+            &elements.period,
+            &elements.phase,
+            &elements.ratio,
+            &elements.periapsis,
+        ]) {
+            number.write_to(&mut writer);
+        }
     }
     writer.into_bytes()
 }
@@ -608,14 +658,14 @@ pub fn decode_rail(payload: &[u8]) -> Result<Rail, DecodeError> {
                 ));
             }
         };
-        let normal = read_vector(&mut reader)?;
-        let radius = read_number(&mut reader)?;
-        let period = read_number(&mut reader)?;
-        let phase = read_number(&mut reader)?;
-        let ratio = read_number(&mut reader)?;
-        let periapsis = read_number(&mut reader)?;
-        let orbit = Orbit {
-            around,
+        let mut number = || WideFloat::read_from(&mut reader);
+        let normal = [number()?, number()?, number()?];
+        let radius = number()?;
+        let period = number()?;
+        let phase = number()?;
+        let ratio = number()?;
+        let periapsis = number()?;
+        let elements = Elements {
             normal,
             radius,
             ratio,
@@ -623,21 +673,10 @@ pub fn decode_rail(payload: &[u8]) -> Result<Rail, DecodeError> {
             period,
             phase,
         };
-        let centre_is_good = match orbit.around {
-            Centre::Point(point) => finite(&point),
-            Centre::Grid(_) => true,
-        };
-        if !(centre_is_good
-            && is_unit(orbit.normal)
-            && orbit.radius.is_finite()
-            && orbit.phase.is_finite()
-            && usable_circle(orbit.radius, orbit.phase)
-            && usable_shape(orbit.ratio, orbit.periapsis)
-            && usable_orbit_period(orbit.period))
-        {
-            return Err(DecodeError::Invalid("an orbit that is no orbit"));
-        }
-        Some(orbit)
+        Some(
+            Orbit::from_elements(around, elements)
+                .map_err(|_| DecodeError::Invalid("an orbit that is no orbit"))?,
+        )
     } else {
         None
     };

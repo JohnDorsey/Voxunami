@@ -112,6 +112,7 @@ pub(super) fn is_a_coasting_rail(rail: &Rail) -> bool {
     rail.spin.is_none()
         && rail
             .orbit
+            .as_ref()
             .is_some_and(|orbit| matches!(orbit.around, Centre::Grid(_)))
 }
 
@@ -172,13 +173,13 @@ impl ServerWorld {
         )
         .map_err(NotCoasting::NoOrbit)?;
         // How low it comes, and how far out it goes.
-        let lowest = orbit.radius * orbit.ratio;
+        let lowest = orbit.nearest_distance();
         let least = self.least_to_go_round(parent, planet);
         if lowest < least {
             return Err(NotCoasting::TooLow { lowest, least });
         }
         if let Some(sphere) = self.sphere_of_influence(parent) {
-            let farthest = orbit.radius * (2.0 - orbit.ratio);
+            let farthest = orbit.farthest_distance();
             if farthest > sphere {
                 return Err(NotCoasting::PastTheSphere { farthest, sphere });
             }
@@ -252,7 +253,7 @@ impl ServerWorld {
     /// round the planet it goes round); `None` for a planet that goes round nothing that is a planet here, which pulls everywhere.
     fn sphere_of_influence(&self, planet: GridId) -> Option<f64> {
         let ship = self.data.grids().get(planet)?;
-        let orbit = ship.rail?.orbit?;
+        let orbit = ship.rail.as_ref()?.orbit.as_ref()?;
         let Centre::Grid(parent) = orbit.around else {
             return None;
         };
@@ -260,7 +261,7 @@ impl ServerWorld {
         if !(heavier.mass > 0.0 && ship.mass > 0.0) {
             return None;
         }
-        Some(orbit.radius * libm::pow(ship.mass / heavier.mass, 0.4))
+        Some(orbit.radius() * libm::pow(ship.mass / heavier.mass, 0.4))
     }
 
     /// Some other grid whose gap from the ship is less than `factor` times the margin and how far the ship would go in a second at the speed it closes at, a planet whose sphere of
@@ -325,7 +326,8 @@ impl ServerWorld {
         };
         let Some(Centre::Grid(parent)) = ship
             .rail
-            .and_then(|rail| rail.orbit)
+            .as_ref()
+            .and_then(|rail| rail.orbit.as_ref())
             .map(|orbit| orbit.around)
         else {
             return false;
@@ -353,7 +355,7 @@ impl ServerWorld {
         let Some(ship) = self.data.grids().get(grid) else {
             return;
         };
-        let Some(orbit) = ship.rail.and_then(|rail| rail.orbit) else {
+        let Some(orbit) = ship.rail.as_ref().and_then(|rail| rail.orbit.as_ref()) else {
             return;
         };
         let Centre::Grid(parent) = orbit.around else {
@@ -367,7 +369,7 @@ impl ServerWorld {
         if change.abs() <= MASS_CHANGE_THAT_COUNTS {
             return;
         }
-        let answers_now = orbit.ratio == 1.0 || {
+        let answers_now = orbit.is_circle() || {
             let passed = orbit.apsides_passed(
                 RailTime::of_half_ticks((2 * now).saturating_sub(1), ticks_per_second),
                 RailTime::of_half_ticks(2 * now + 1, ticks_per_second),
@@ -414,9 +416,14 @@ impl ServerWorld {
             .map(|(id, _)| id)
             .collect();
         for id in ships {
-            let rail = self.data.grids().get(id).and_then(|ship| ship.rail);
-            match rail {
-                Some(rail) if is_a_coasting_rail(&rail) => {
+            let coasting = self
+                .data
+                .grids()
+                .get(id)
+                .and_then(|ship| ship.rail.as_ref())
+                .map(is_a_coasting_rail);
+            match coasting {
+                Some(true) => {
                     if self.has_to_leave_its_rail(id) {
                         self.quiet_since.remove(&id);
                         let _ = self.set_grid_rail(id, None);
@@ -424,7 +431,7 @@ impl ServerWorld {
                         self.answer_a_change_of_mass(id, ticks_per_second);
                     }
                 }
-                Some(_) => {}
+                Some(false) => {}
                 None => match self.coasting_rail(id, time) {
                     Ok(rail) => {
                         let since = *self.quiet_since.entry(id).or_insert(now);
@@ -450,7 +457,7 @@ impl ServerWorld {
         let Some(ship) = self.data.grids_mut().get_mut(grid) else {
             return;
         };
-        if ship.terrain.is_none() && ship.rail.is_some_and(|rail| is_a_coasting_rail(&rail)) {
+        if ship.terrain.is_none() && ship.rail.as_ref().is_some_and(is_a_coasting_rail) {
             ship.rail = None;
         }
     }

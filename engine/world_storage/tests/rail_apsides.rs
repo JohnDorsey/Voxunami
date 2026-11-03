@@ -30,10 +30,10 @@ fn ellipse(ratio: f64, periapsis: f64, period: f64, phase: f64) -> Orbit {
 }
 
 /// How far from the centre the body is at a tick, in voxels.
-fn distance(orbit: Orbit, at: u64) -> f64 {
+fn distance(orbit: &Orbit, at: u64) -> f64 {
     let state = Rail {
         spin: None,
-        orbit: Some(orbit),
+        orbit: Some(orbit.clone()),
     }
     .state(tick(at), [0.0; 3], [0.0; 3]);
     let place = state.offset.unwrap().in_voxels();
@@ -83,17 +83,17 @@ fn each_end_of_an_ellipse_is_passed_once_in_a_turn_by_stretches_that_follow_each
     // The tick in which the nearest point is passed is next to the tick at which the body is nearest (a body is at the nearest point of a stretch of ticks where it is passed).
     for &at in &periapsides {
         let nearest = (at - 2..=at + 1)
-            .min_by(|&a, &b| distance(orbit, a).total_cmp(&distance(orbit, b)))
+            .min_by(|&a, &b| distance(&orbit, a).total_cmp(&distance(&orbit, b)))
             .unwrap();
         assert!(nearest == at || nearest == at - 1, "{at} {nearest}");
-        assert!(distance(orbit, at) < 3_800.0, "{}", distance(orbit, at));
+        assert!(distance(&orbit, at) < 3_800.0, "{}", distance(&orbit, at));
     }
     for &at in &apoapsides {
         let farthest = (at - 2..=at + 1)
-            .max_by(|&a, &b| distance(orbit, a).total_cmp(&distance(orbit, b)))
+            .max_by(|&a, &b| distance(&orbit, a).total_cmp(&distance(&orbit, b)))
             .unwrap();
         assert!(farthest == at || farthest == at - 1, "{at} {farthest}");
-        assert!(distance(orbit, at) > 11_000.0, "{}", distance(orbit, at));
+        assert!(distance(&orbit, at) > 11_000.0, "{}", distance(&orbit, at));
     }
     // A stretch of no time passes nothing, and one that covers a turn passes both.
     let passed = orbit.apsides_passed(tick(40), tick(40));
@@ -118,7 +118,7 @@ fn it_is_the_same_the_other_way_round_and_by_half_ticks() {
         (periapsides, apoapsides)
     };
     // 500 ticks of a period of 154: three turns and a bit, so three ends of each kind, or four.
-    for (periapsides, apoapsides) in [count(forward), count(backward)] {
+    for (periapsides, apoapsides) in [count(forward.clone()), count(backward)] {
         assert!((3..=4).contains(&periapsides) && (3..=4).contains(&apoapsides));
     }
     // Going the other way the body passes the nearest point on the same ticks it would at the mirror time: a retrograde orbit with the phase reversed.

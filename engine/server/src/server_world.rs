@@ -1073,8 +1073,8 @@ impl ServerWorld {
             .data
             .grids()
             .get(current)
-            .and_then(|ship| ship.rail)
-            .and_then(|rail| rail.orbit)
+            .and_then(|ship| ship.rail.as_ref())
+            .and_then(|rail| rail.orbit.as_ref())
             .map(|orbit| orbit.around)
         {
             // (A rail that goes round itself, or round a ship that goes round it, is not followed round again.)
@@ -1387,7 +1387,7 @@ impl ServerWorld {
     /// is not a planet or is not on a rail: it carries nothing.
     pub fn influence_radius(&self, planet: GridId) -> Option<f64> {
         let ship = self.data.grids().get(planet)?;
-        ship.rail?;
+        ship.rail.as_ref()?;
         let reach = coasting::terrain_reach(ship.terrain?.extent);
         Some((reach * INFLUENCE_PER_REACH).min(GREATEST_INFLUENCE))
     }

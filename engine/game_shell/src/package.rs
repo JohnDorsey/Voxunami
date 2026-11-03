@@ -1226,17 +1226,17 @@ mod tests {
         assert_eq!(boulder.rail, None, "a body with no rail has none");
 
         let (_, planet) = &ships[1];
-        let rail = planet.rail.expect("the planet is on a rail");
+        let rail = planet.rail.clone().expect("the planet is on a rail");
         let spin = rail.spin.unwrap();
         assert_eq!(spin.period, 3600.0);
         assert!((spin.angle - degrees(90.0)).abs() < 1e-12, "{}", spin.angle);
-        let orbit = rail.orbit.unwrap();
+        let orbit = rail.orbit.clone().unwrap();
         assert_eq!(
             orbit.around,
             world_storage::rail::Centre::Point([1000.0, 0.0, -50.0])
         );
-        assert_eq!((orbit.radius, orbit.period), (2.0e6, 40_000.0));
-        assert!((orbit.phase - degrees(90.0)).abs() < 1e-12);
+        assert_eq!((orbit.radius(), orbit.period()), (2.0e6, 40_000.0));
+        assert!((orbit.phase() - degrees(90.0)).abs() < 1e-12);
         // At the start it is where the rail puts it, and moving as the rail says, not where the file's nothing put it.
         let state = rail.state(0.0, [1000.0, 0.0, -50.0], [0.0; 3]);
         assert_eq!(
@@ -1254,7 +1254,7 @@ mod tests {
             voxel_space::WorldPosition::from_voxels([7.0, 8.0, 9.0])
         );
         assert_eq!(rock.linear_velocity, [0.0; 3]);
-        assert!(rock.rail.unwrap().orbit.is_none());
+        assert!(rock.rail.clone().unwrap().orbit.is_none());
         assert_ne!(rock.angular_velocity, [0.0; 3]);
     }
 
@@ -1297,12 +1297,12 @@ mod tests {
             .map(|(id, ship)| (id, ship.clone()))
             .collect();
         let (_, comet) = &ships[1];
-        let rail = comet.rail.expect("the comet is on a rail");
-        let orbit = rail.orbit.unwrap();
-        assert_eq!((orbit.radius, orbit.period), (1.0e9, 5.0e7));
-        assert_eq!(orbit.ratio, 1.0 - 0.25);
-        assert!((orbit.periapsis - degrees(30.0)).abs() < 1e-12);
-        assert!((orbit.phase - degrees(10.0)).abs() < 1e-12);
+        let rail = comet.rail.clone().expect("the comet is on a rail");
+        let orbit = rail.orbit.clone().unwrap();
+        assert_eq!((orbit.radius(), orbit.period()), (1.0e9, 5.0e7));
+        assert_eq!(orbit.ratio(), 1.0 - 0.25);
+        assert!((orbit.periapsis() - degrees(30.0)).abs() < 1e-12);
+        assert!((orbit.phase() - degrees(10.0)).abs() < 1e-12);
         // At the start it is where the ellipse puts it: not on the circle of the same radius.
         let state = rail.state(0.0, [0.0; 3], [0.0; 3]);
         // (The exact offset from the centre, which the world adds whole bricks first: at 10^9 voxels the sum in voxels, `state.position`, is an `f64` 1e-7 voxel apart from the next,
@@ -1322,7 +1322,7 @@ mod tests {
         );
         // The ratio alone makes the long thin one.
         let (_, thin) = &ships[2];
-        assert_eq!(thin.rail.unwrap().orbit.unwrap().ratio, 1.0e-12);
+        assert_eq!(thin.rail.clone().unwrap().orbit.unwrap().ratio(), 1.0e-12);
     }
 
     // ---- the period of an orbit and the mass of what it goes round
@@ -1367,11 +1367,11 @@ mod tests {
         // The star weighs 1e20 kilograms in the fixture, and the ship that is the star weighs exactly that.
         let expected = kepler_period(1.0e6, 1.0e20);
         assert!(
-            (orbit.period - expected).abs() <= 1.0e-12 * expected,
+            (orbit.period() - expected).abs() <= 1.0e-12 * expected,
             "{} against {expected}",
-            orbit.period
+            orbit.period()
         );
-        assert!(orbit.period > 0.0);
+        assert!(orbit.period() > 0.0);
     }
 
     #[test]
@@ -1382,7 +1382,7 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
         // g r^2 / G with the radius of the ground the family reads (50), as in the test of the weight above.
         let expected = kepler_period(5.0e5, 4.0 * 50.0 * 50.0 / pull());
-        assert!((orbit.period - expected).abs() <= 1.0e-12 * expected);
+        assert!((orbit.period() - expected).abs() <= 1.0e-12 * expected);
     }
 
     #[test]
@@ -1399,7 +1399,7 @@ mod tests {
                 format!(r#"{{ "around": "my_pack:a_star", "radius": 1e6, "period": {given:?} }}"#);
             let (warnings, made) = moon_round(&a_star(), &orbit).unwrap();
             assert!(warnings.is_empty(), "{given}: {warnings:?}");
-            assert_eq!(made.period, given);
+            assert_eq!(made.period(), given);
         }
     }
 
@@ -1416,7 +1416,7 @@ mod tests {
                 format!(r#"{{ "around": "my_pack:a_star", "radius": 1e6, "period": {given:?} }}"#);
             let (warnings, made) = moon_round(&a_star(), &orbit).unwrap();
             // The period of the file is the one used, and the pack is told that it is not the one the mass gives.
-            assert_eq!(made.period, given, "{given}");
+            assert_eq!(made.period(), given, "{given}");
             assert_eq!(warnings.len(), 1, "{given}: {warnings:?}");
             let warning = &warnings[0];
             assert!(
@@ -1442,7 +1442,7 @@ mod tests {
         )
         .unwrap();
         assert!(warnings.is_empty());
-        assert_eq!(orbit.period, 12_345.0);
+        assert_eq!(orbit.period(), 12_345.0);
     }
 
     #[test]
@@ -1476,7 +1476,7 @@ mod tests {
         let (planet_id, planet) = &ships[1];
         let (_, moon) = &ships[2];
         assert_eq!(
-            moon.rail.unwrap().orbit.unwrap().around,
+            moon.rail.clone().unwrap().orbit.unwrap().around,
             world_storage::rail::Centre::Grid(*planet_id)
         );
         // Twenty thousand voxels from the planet at the start, and with its speed and its own.
