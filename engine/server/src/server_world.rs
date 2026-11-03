@@ -11,7 +11,7 @@ use voxel_space::{
     BrickCoordinate, Displacement, EntityPose, GravitySettings, GridId, GridPose, LatticeTransform,
     LevelIndex, LocalVoxelIndex, MassPull, Orientation, VoxelCoordinate, WorldPosition, gravity_at,
 };
-use world_storage::rail::{Centre, Rail, RailTime};
+use world_storage::rail::{Centre, Rail, RailMemo, RailTime};
 use world_storage::{
     GridTerrain, MovingGrid, PilotLogout, ShipFiles, ShipFormat, ShipLoadError, ShipParkError,
     WorldData,
@@ -224,6 +224,23 @@ pub struct ServerWorld {
     carried_entities: BTreeMap<EntityId, Displacement>,
     /// The tick of the clock at which each free ship that could coast began to be left alone (see [`coasting`]).
     quiet_since: BTreeMap<GridId, u64>,
+    /// What the orbits of the rails said at the time of the last putting of ships on them, so that the second putting of a tick works out nothing twice.
+    rail_memo: RailMemo,
+    /// How many orbits were made from a state (see [`ServerWorld::rail_work`]).
+    orbit_fits: Cell<u64>,
+}
+
+/// How much work the rails have cost since the world was made, for measuring and for tests of the savings (see [`ServerWorld::rail_work`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RailWork {
+    /// Orbits worked out to put a ship on its rail (a place and a speed, 30 to 55 microseconds each).
+    pub rail_evaluations: u64,
+    /// Times the answer of the putting before it was used instead: the second putting of a tick asks what the first did.
+    pub rail_answers_reused: u64,
+    /// Orbits made from a ship's place and speed (114 to 145 microseconds each) to see whether a ship may go on a rail, or to answer a change of the mass of a planet.
+    pub orbit_fits: u64,
+    /// Ships whose last answer is kept for the second putting of a tick.
+    pub rails_remembered: usize,
 }
 
 impl ServerWorld {
@@ -254,6 +271,18 @@ impl ServerWorld {
             carried_ships: BTreeMap::new(),
             carried_entities: BTreeMap::new(),
             quiet_since: BTreeMap::new(),
+            rail_memo: RailMemo::default(),
+            orbit_fits: Cell::new(0),
+        }
+    }
+
+    /// How much work the rails have cost since this world was made: orbits worked out, answers reused, and orbits made from a state.
+    pub fn rail_work(&self) -> RailWork {
+        RailWork {
+            rail_evaluations: self.rail_memo.evaluations(),
+            rail_answers_reused: self.rail_memo.reused(),
+            orbit_fits: self.orbit_fits.get(),
+            rails_remembered: self.rail_memo.remembered(),
         }
     }
 
@@ -1278,6 +1307,7 @@ impl ServerWorld {
         {
             self.carried_by.clear();
             self.carried_ships.clear();
+            self.rail_memo.keep_only(|_| false);
             return;
         }
         // Who is carried by which planet, by where the planets are before they move.
@@ -1314,7 +1344,9 @@ impl ServerWorld {
             }
         }
         self.carried_ships = carried_ships.iter().copied().collect();
-        let _ = self.data.put_ships_on_their_rails(time);
+        let _ = self
+            .data
+            .put_ships_on_their_rails_remembering(time, &mut self.rail_memo);
         let displacement_of = |world: &Self, planet: GridId| {
             let from = carriers
                 .iter()

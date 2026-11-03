@@ -20,7 +20,7 @@ use crate::engine_sections::{
     Header, LevelRecord, LevelToWrite, RegistryTable,
 };
 use crate::moving_grids::{GridStore, MovingGrid, ParkedGrid};
-use crate::rail::{Centre, RailTime};
+use crate::rail::{Centre, RailMemo, RailTime};
 use crate::ship_file::{ShipFileError, ShipFormat};
 use crate::ship_files::{ShipFileName, ShipFiles};
 use crate::translation::{SourceTranslator, TranslationError};
@@ -340,6 +340,16 @@ impl WorldData {
     /// numbers, which at a hundred thousand times the distance of the Sun is not enough to say where a moon is. A ship that only turns stays where it is. What the rail places is the ship's **centre of mass**, so the origin of its coordinates is put at the rail's place less the centre of mass turned as the ship is turned (the same for a planet, whose centre of mass is its origin). Returns the ships whose place the world cannot hold (an orbit past the end of the
     /// coordinates), which are left where they were; and ships that go round one that is not there stay as they are.
     pub fn put_ships_on_their_rails(&mut self, time: impl Into<RailTime>) -> Vec<GridId> {
+        self.put_ships_on_their_rails_remembering(time, &mut RailMemo::default())
+    }
+
+    /// As [`WorldData::put_ships_on_their_rails`], with what the orbits say remembered in `memory`: asked again at the same time of the same rails (the server does, twice a
+    /// tick), nothing is worked out twice, and every ship is put where the rails say, as before.
+    pub fn put_ships_on_their_rails_remembering(
+        &mut self,
+        time: impl Into<RailTime>,
+        memory: &mut RailMemo,
+    ) -> Vec<GridId> {
         let time = time.into();
         let on_rails: Vec<GridId> = self
             .grids
@@ -348,6 +358,7 @@ impl WorldData {
             .map(|(id, _)| id)
             .collect();
         let mut not_placed = Vec::new();
+        let listed: std::collections::BTreeSet<GridId> = on_rails.iter().copied().collect();
         for id in on_rails {
             // (Looked at, not copied: the borrow of the rail ends with this block, before the ship is changed.)
             let (centre, state) = {
@@ -367,7 +378,10 @@ impl WorldData {
                     },
                     None => (None, [0.0; 3]),
                 };
-                (centre, rail.state(time, [0.0; 3], centre_velocity))
+                (
+                    centre,
+                    memory.state(id, rail, time, [0.0; 3], centre_velocity),
+                )
             };
             let position = match (centre, state.offset) {
                 (Some(Centre::Point(point)), Some(offset)) => Some(
@@ -420,6 +434,7 @@ impl WorldData {
             ship.linear_velocity = state.velocity;
             ship.angular_velocity = state.angular_velocity;
         }
+        memory.keep_only(|ship| listed.contains(&ship));
         not_placed
     }
 

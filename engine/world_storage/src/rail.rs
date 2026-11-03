@@ -18,6 +18,7 @@
 //!   near 1 has no digits left to say how near it is.
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::f64::consts::TAU;
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
@@ -565,6 +566,18 @@ impl Rail {
         centre_velocity: [f64; 3],
     ) -> RailState {
         let time = time.into();
+        let orbit = self.orbit.as_ref().map(|orbit| orbit.at(time));
+        self.state_given(time, centre_position, centre_velocity, orbit)
+    }
+
+    /// As [`Rail::state`], with what the orbit says at `time` already worked out (see [`RailMemo`]).
+    fn state_given(
+        &self,
+        time: RailTime,
+        centre_position: [f64; 3],
+        centre_velocity: [f64; 3],
+        orbit: Option<(ExactOffset, [f64; 3])>,
+    ) -> RailState {
         let mut state = RailState {
             position: None,
             offset: None,
@@ -572,8 +585,7 @@ impl Rail {
             orientation: None,
             angular_velocity: [0.0; 3],
         };
-        if let Some(orbit) = &self.orbit {
-            let (offset, speed) = orbit.at(time);
+        if let Some((offset, speed)) = orbit {
             let offset_in_voxels = offset.in_voxels();
             state.offset = Some(offset);
             state.position =
@@ -586,6 +598,89 @@ impl Rail {
             state.angular_velocity = angular_velocity;
         }
         state
+    }
+}
+
+/// What an orbit said of its body at a time, kept so that the same question is not worked out twice. The server puts the ships on their rails at the start of a tick and
+/// again after the logic of it (to put a ship that came into memory, or was put on a rail, where its rail says), and an orbit is a pure function of the time, so the
+/// second putting needs no working out. **The memory never changes an answer**: it keeps, for each ship, the orbit and the time it was asked at, and gives the answer back only
+/// for the very same orbit (every element, width and all) at the very same time; anything else is worked out and put in its place. A spin is a few `f64` operations and is
+/// never kept. What the orbit goes round is not a part of what it says (that is added after), so a moved centre does not spoil an answer.
+#[derive(Clone, Debug, Default)]
+pub struct RailMemo {
+    entries: HashMap<GridId, Remembered>,
+    evaluations: u64,
+    reused: u64,
+}
+
+#[derive(Clone, Debug)]
+struct Remembered {
+    time: RailTime,
+    orbit: Orbit,
+    offset: ExactOffset,
+    speed: [f64; 3],
+}
+
+impl RailMemo {
+    /// As [`Rail::state`] for the ship `grid`: the same answer to the bit, with what the orbit says remembered if it was asked the same just before.
+    pub fn state(
+        &mut self,
+        grid: GridId,
+        rail: &Rail,
+        time: RailTime,
+        centre_position: [f64; 3],
+        centre_velocity: [f64; 3],
+    ) -> RailState {
+        let orbit = match &rail.orbit {
+            None => {
+                self.entries.remove(&grid);
+                None
+            }
+            Some(orbit) => Some(self.orbit_at(grid, orbit, time)),
+        };
+        rail.state_given(time, centre_position, centre_velocity, orbit)
+    }
+
+    fn orbit_at(&mut self, grid: GridId, orbit: &Orbit, time: RailTime) -> (ExactOffset, [f64; 3]) {
+        if let Some(kept) = self.entries.get(&grid)
+            && kept.time == time
+            && kept.orbit == *orbit
+        {
+            self.reused += 1;
+            return (kept.offset, kept.speed);
+        }
+        let (offset, speed) = orbit.at(time);
+        self.evaluations += 1;
+        self.entries.insert(
+            grid,
+            Remembered {
+                time,
+                orbit: orbit.clone(),
+                offset,
+                speed,
+            },
+        );
+        (offset, speed)
+    }
+
+    /// Forgets the ships for which `keep` is false (those that are not on a rail any more, or not in the world).
+    pub fn keep_only(&mut self, mut keep: impl FnMut(GridId) -> bool) {
+        self.entries.retain(|grid, _| keep(*grid));
+    }
+
+    /// How many ships have an answer kept.
+    pub fn remembered(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// How many times an orbit was worked out (a place and a speed, 30 to 55 microseconds), since this was made.
+    pub fn evaluations(&self) -> u64 {
+        self.evaluations
+    }
+
+    /// How many times an answer that was kept was given back instead.
+    pub fn reused(&self) -> u64 {
+        self.reused
     }
 }
 

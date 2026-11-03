@@ -809,3 +809,127 @@ fn a_change_that_is_more_than_the_eccentricity_turns_the_end_it_is_answered_at_i
         "{after:?}"
     );
 }
+
+// ---- the cost of watching for ships that could coast (E10: a fit is 114 to 145 us, and every ship that is not on a rail was fitted every tick) ----
+
+#[test]
+fn a_ship_that_is_pushed_every_tick_is_never_fitted_and_never_goes_on_a_rail() {
+    let (mut world, ship) = a_circle_at_the_start_of_the_clock();
+    for tick in 1..=100 {
+        world.apply_grid_force(ship, [1.0, 0.0, 0.0], None).unwrap();
+        run_ticks(&mut world, tick, tick);
+    }
+    assert_eq!(rail_of(&world, ship), None);
+    assert_eq!(
+        world.rail_work().orbit_fits,
+        0,
+        "a ship that cannot go on a rail yet is not fitted to see whether its orbit is one it may have"
+    );
+}
+
+#[test]
+fn a_ship_that_is_left_alone_is_fitted_once_at_the_end_of_its_second_and_never_again() {
+    let (mut world, ship) = a_circle_at_the_start_of_the_clock();
+    run_ticks(&mut world, 1, 20);
+    assert_eq!(
+        world.rail_work().orbit_fits,
+        0,
+        "nothing is fitted while the second runs"
+    );
+    run_ticks(&mut world, 21, 21);
+    assert!(rail_of(&world, ship).is_some());
+    assert_eq!(world.rail_work().orbit_fits, 1);
+    run_ticks(&mut world, 22, 500);
+    assert_eq!(
+        world.rail_work().orbit_fits,
+        1,
+        "a ship on a rail is not fitted again"
+    );
+}
+
+#[test]
+fn a_ship_whose_orbit_is_not_one_it_may_have_is_fitted_when_its_second_is_up_and_not_every_tick() {
+    let (mut world, _) = space();
+    // In the margin of the ground (see `an_orbit_that_comes_lower_than_the_ground_and_a_margin_is_refused`): quiet and alone, and its orbit is too low.
+    let low = ship_in_a_circle(&mut world, 3_250.0);
+    world.data.set_clock(0);
+    run_ticks(&mut world, 1, 100);
+    assert_eq!(rail_of(&world, low), None);
+    // Its second begins at tick 1 and is up at tick 21, where it is fitted and refused and the second begins again at 22: fits at 21, 42, 63 and 84.
+    assert_eq!(world.rail_work().orbit_fits, 4);
+}
+
+#[test]
+fn a_ship_that_has_something_near_it_is_not_fitted_at_all() {
+    let (mut world, _) = space();
+    let ship = ship_in_a_circle(&mut world, 10_000.0);
+    // Another ship 30 voxels off, going the same way: nearer than the margin a ship needs to go on a rail.
+    let other = ship_at(
+        &mut world,
+        [10_030.0, 0.0, 0.0],
+        [0.0, 0.0, circular_speed(1.0e22, 10_030.0)],
+    );
+    world.data.set_clock(0);
+    run_ticks(&mut world, 1, 100);
+    assert_eq!(
+        (rail_of(&world, ship), rail_of(&world, other)),
+        (None, None)
+    );
+    assert_eq!(world.rail_work().orbit_fits, 0);
+}
+
+#[test]
+fn a_tick_works_out_each_rail_once_though_the_rails_put_the_ships_twice() {
+    let (mut world, planet) = space();
+    // Two planets on rails, the second round the first.
+    let mut around = Centre::Point([0.0; 3]);
+    let mut planets = Vec::new();
+    for number in 0..2 {
+        let on_rail = planet_on(
+            &mut world,
+            10,
+            1.0e18,
+            Some(orbit_about(around, 1.0e7 * (number + 1) as f64, 1.0e6)),
+        );
+        around = Centre::Grid(on_rail);
+        planets.push(on_rail);
+    }
+    assert!(planet < planets[0]);
+    for tick in 1..=10u64 {
+        server_tick(&mut world, tick);
+    }
+    let work = world.rail_work();
+    assert_eq!(
+        work.rail_evaluations, 20,
+        "two rails, ten ticks, one evaluation each"
+    );
+    assert_eq!(
+        work.rail_answers_reused, 20,
+        "and the second putting of each tick asked the same"
+    );
+    assert_eq!(work.rails_remembered, 2);
+    // Taken off their rails, the planets are forgotten, and nothing is worked out for them.
+    for planet in &planets {
+        world.set_grid_rail(*planet, None).unwrap();
+    }
+    server_tick(&mut world, 11);
+    assert_eq!(world.rail_work().rails_remembered, 0);
+    assert_eq!(world.rail_work().rail_evaluations, 20);
+}
+
+#[test]
+fn a_ship_put_on_a_rail_in_a_tick_is_worked_out_once_by_the_second_putting_and_is_where_the_rail_says()
+ {
+    let (mut world, ship) = a_circle_at_the_start_of_the_clock();
+    for tick in 1..=20 {
+        server_tick(&mut world, tick);
+    }
+    assert_eq!(world.rail_work().rail_evaluations, 0);
+    server_tick(&mut world, 21);
+    let rail = rail_of(&world, ship).expect("on a rail at tick 21");
+    // At tick 21 it was put on its rail by the coasting update, and the second putting worked it out (the first of the tick found no rail).
+    assert_eq!(world.rail_work().rail_evaluations, 1);
+    let state = rail.state(time(21), [0.0; 3], [0.0; 3]);
+    let found = world.data().grids().get(ship).unwrap();
+    assert_eq!(found.linear_velocity, state.velocity);
+}

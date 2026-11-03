@@ -16,6 +16,13 @@
 //! A ship has to be undisturbed for [`QUIET_SECONDS`] before it goes on a rail, so one that is pushed now and then does not go on and off. Its orbit is made from its place and its
 //! speed at the time (`Orbit::from_place`), the orbit the numbers of that state are on (to 128 bits, with nothing snapped to a circle), and is made again only when the ship was
 //! pushed, never for a ship that was left alone, which keeps the same elements however many times it is saved and brought back.
+//!
+//! **What is asked of a ship every tick, and what once.** Every tick, for every ship that is not on a rail, only the rules that need no orbit are asked (a free ship that turns nothing, in
+//! a level with no pull of its own, with a planet that pulls it and nothing near it: a few comparisons and a loop over the grids). Only when a ship has passed them for the whole
+//! [`QUIET_SECONDS`], undisturbed, is the orbit made from its state (114 to 145 microseconds) to see whether it is one the ship may have (it exists, does not come too low, does not leave
+//! the sphere of influence); if it is not, the second begins again. So a ship that is pushed every tick is never fitted, one that is left alone is fitted once, and one whose orbit is refused is
+//! fitted once a second and a tick, where every one was fitted every tick before. The cost is that the orbit-dependent rules are looked at at the end of the second and not at each tick of it:
+//! a ship that was quiet but whose orbit was refused for a while and is allowed at the end goes on a rail at the end, though it was allowed for less than a second.
 
 use voxel_space::{BrickBox, GridId, WorldPosition};
 use world_storage::MovingGrid;
@@ -64,6 +71,14 @@ pub enum NotCoasting {
     PastTheSphere { farthest: f64, sphere: f64 },
     /// Another ship or planet is near, or the ship is in what a planet on a rail carries.
     SomethingNear(GridId),
+}
+
+/// A ship that passes the rules that look at one ship, with the planet that pulls it and where it is from the planet's middle.
+struct Candidate<'a> {
+    ship: &'a MovingGrid,
+    parent: GridId,
+    planet: &'a MovingGrid,
+    place: [f64; 3],
 }
 
 /// Where the middle of a grid is (the origin of a planet, whose centre of mass is there) and how far from it its bricks reach, in voxels.
@@ -126,6 +141,35 @@ impl ServerWorld {
     /// The rail a ship is on if it coasts round the planet that pulls it most, at `time`, or why it cannot be on one. Nothing changes. It is the orbit that the ship's place (its
     /// centre of mass) and its speed are on, with the pull of that planet alone.
     pub fn coasting_rail(&self, grid: GridId, time: RailTime) -> Result<Rail, NotCoasting> {
+        let Candidate {
+            ship,
+            parent,
+            planet,
+            place,
+        } = self.coasting_candidate(grid)?;
+        let orbit = self.orbit_from_the_state(ship, parent, planet, place, time)?;
+        if let Some(near) = self.near(grid, ship, Some(parent), 2.0) {
+            return Err(NotCoasting::SomethingNear(near));
+        }
+        Ok(Rail {
+            spin: None,
+            orbit: Some(orbit),
+        })
+    }
+
+    /// Whether a ship passes the rules of [`ServerWorld::coasting_rail`] that do not need its orbit: it is a free ship that turns nothing, in a level with no pull of its own, with a
+    /// planet that pulls it, and nothing near it. These are a few comparisons and a loop over the grids. The rules that do need the orbit (it does not come too low, it does not leave the
+    /// sphere of influence, it is one at all) cost an orbit made from a state, 114 to 145 microseconds, and are asked only when the second of quiet is up.
+    fn may_be_put_on_a_rail(&self, grid: GridId) -> Result<(), NotCoasting> {
+        let candidate = self.coasting_candidate(grid)?;
+        match self.near(grid, candidate.ship, Some(candidate.parent), 2.0) {
+            Some(near) => Err(NotCoasting::SomethingNear(near)),
+            None => Ok(()),
+        }
+    }
+
+    /// The ship and the planet that pulls it, and where it is from the planet, if the rules of [`ServerWorld::may_be_put_on_a_rail`] that look at one ship are met.
+    fn coasting_candidate(&self, grid: GridId) -> Result<Candidate<'_>, NotCoasting> {
         let ship = self.data.grids().get(grid).ok_or(NotCoasting::NotAShip)?;
         if ship.terrain.is_some() {
             return Err(NotCoasting::NotAShip);
@@ -148,13 +192,11 @@ impl ServerWorld {
         let (parent, planet, place) = self
             .planet_that_pulls_most(grid, ship, middle)
             .ok_or(NotCoasting::NoPlanetPulls)?;
-        let orbit = self.orbit_from_the_state(ship, parent, planet, place, time)?;
-        if let Some(near) = self.near(grid, ship, Some(parent), 2.0) {
-            return Err(NotCoasting::SomethingNear(near));
-        }
-        Ok(Rail {
-            spin: None,
-            orbit: Some(orbit),
+        Ok(Candidate {
+            ship,
+            parent,
+            planet,
+            place,
         })
     }
 
@@ -170,6 +212,7 @@ impl ServerWorld {
     ) -> Result<Orbit, NotCoasting> {
         let relative_velocity: [f64; 3] =
             [0, 1, 2].map(|axis| ship.linear_velocity[axis] - planet.linear_velocity[axis]);
+        self.orbit_fits.set(self.orbit_fits.get() + 1);
         let orbit = Orbit::from_place(
             Centre::Grid(parent),
             place,
@@ -410,6 +453,7 @@ impl ServerWorld {
     /// Puts quiet ships on rails and takes off those that have to come off, as the last of what is done in a tick before the rails are applied: a ship that has been undisturbed
     /// for [`QUIET_SECONDS`] and can coast is put on the orbit its place and speed are on, and one on a rail of this module that is held, turns, has something near it, or goes
     /// round nothing is taken off, as it is, at the place and the speed the rail gave it.
+    /// The orbit is made from the state of a ship (the costly part) only when its second is up: see the notes at the top of this module.
     pub(crate) fn update_coasting(&mut self, ticks_per_second: u32) {
         let now = self.data.clock();
         let time = RailTime::of_tick(now, ticks_per_second);
@@ -438,12 +482,15 @@ impl ServerWorld {
                     }
                 }
                 Some(false) => {}
-                None => match self.coasting_rail(id, time) {
-                    Ok(rail) => {
+                None => match self.may_be_put_on_a_rail(id) {
+                    Ok(()) => {
                         let since = *self.quiet_since.entry(id).or_insert(now);
                         if now.saturating_sub(since) >= wait {
+                            // The second is up: only now is the orbit made from the state, to see whether it is one the ship may have. If it is not, the second begins again.
                             self.quiet_since.remove(&id);
-                            let _ = self.set_grid_rail(id, Some(rail));
+                            if let Ok(rail) = self.coasting_rail(id, time) {
+                                let _ = self.set_grid_rail(id, Some(rail));
+                            }
                         }
                     }
                     Err(_) => {
