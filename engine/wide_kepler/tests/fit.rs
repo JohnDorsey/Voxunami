@@ -4,6 +4,9 @@
 use wide_float::{Precision, WideFloat};
 use wide_kepler::{Elements, KeplerError, Place, Time};
 
+mod common;
+use common::{loss_of as loss, reduced, unit};
+
 const ROWS: &str = include_str!("reference/fit.txt");
 
 /// How many bits of the width asked for a found element may lose, in the units of its own size (relative) or of 1 (an angle, a unit vector). Measured over the rows below: the
@@ -17,87 +20,8 @@ fn at(bits: u64) -> Precision {
     Precision::new(bits).unwrap()
 }
 
-fn number(text: &str, bits: u64) -> WideFloat {
-    WideFloat::parse(text, at(bits)).unwrap_or_else(|error| panic!("{text}: {error}"))
-}
-
-struct Row {
-    bits: u64,
-    elements: Elements,
-    time: Time,
-    mu: WideFloat,
-    position: [WideFloat; 3],
-    velocity: [WideFloat; 3],
-}
-
-fn rows() -> Vec<Row> {
-    ROWS.lines()
-        .map(|line| {
-            let words: Vec<&str> = line.split(' ').collect();
-            assert_eq!(words[0], "fit");
-            let bits: u64 = words[1].parse().unwrap();
-            let element: Vec<WideFloat> =
-                words[2..10].iter().map(|word| number(word, bits)).collect();
-            let wide = bits + 256;
-            let state: Vec<WideFloat> = words[13..19]
-                .iter()
-                .map(|word| number(word, wide))
-                .collect();
-            Row {
-                bits,
-                elements: Elements {
-                    normal: [element[0].clone(), element[1].clone(), element[2].clone()],
-                    radius: element[3].clone(),
-                    ratio: element[4].clone(),
-                    periapsis: element[5].clone(),
-                    period: element[6].clone(),
-                    phase: element[7].clone(),
-                },
-                time: Time {
-                    units: words[10].parse().unwrap(),
-                    units_per_second: words[11].parse().unwrap(),
-                },
-                mu: number(words[12], wide),
-                position: [state[0].clone(), state[1].clone(), state[2].clone()],
-                velocity: [state[3].clone(), state[4].clone(), state[5].clone()],
-            }
-        })
-        .collect()
-}
-
-/// `bits + log2(|got - expected| / scale)`: how many bits of the width the difference takes, very negative for an exact answer.
-fn loss(bits: u64, got: &WideFloat, expected: &WideFloat, scale: &WideFloat) -> i64 {
-    let high = at(bits + 512);
-    let error = (&got.rounded_to(high) - &expected.rounded_to(high)).abs();
-    let scale = scale.floor_log2().unwrap_or(i64::MIN / 2);
-    error
-        .floor_log2()
-        .map_or(i64::MIN / 2, |exponent| bits as i64 + exponent - scale)
-}
-
-/// An angle taken to (−π, π]: the difference of two angles that are the same one is nothing to this.
-fn reduced(angle: &WideFloat, bits: u64) -> WideFloat {
-    let high = at(bits + 512);
-    let turn = WideFloat::pi(high).times_power_of_two(1).unwrap();
-    let angle = angle.rounded_to(high);
-    let turns = (&angle.divide(&turn).unwrap() + &WideFloat::from_f64(0.5, high).unwrap())
-        .floor_to_i128()
-        .unwrap();
-    &angle - &(&turn * &WideFloat::from_i128(turns, high))
-}
-
-fn unit(vector: &[WideFloat; 3], bits: u64) -> [WideFloat; 3] {
-    let high = at(bits + 512);
-    let size = vector
-        .iter()
-        .map(|part| part.rounded_to(high).square())
-        .reduce(|sum, square| &sum + &square)
-        .unwrap()
-        .sqrt()
-        .unwrap();
-    vector
-        .each_ref()
-        .map(|part| part.rounded_to(high).divide(&size).unwrap())
+fn rows() -> Vec<common::FitRow> {
+    common::fit_rows(ROWS)
 }
 
 #[test]
@@ -367,7 +291,7 @@ fn a_state_a_hair_under_the_speed_of_escape_is_the_huge_ellipse_the_energy_says(
 }
 
 #[test]
-fn what_is_on_no_ellipse_is_refused() {
+fn what_is_on_no_orbit_is_refused() {
     let time = Time {
         units: 0,
         units_per_second: 20,
@@ -394,15 +318,10 @@ fn what_is_on_no_ellipse_is_refused() {
             state([4.0, 0.0, 0.0], [0.25, 0.0, 0.0]),
             mu.clone(),
         ),
-        // v^2 = 2 mu / r exactly: a parabola.
+        // v^2 = 2 mu / r exactly: a parabola, which is not made. (A state that goes faster than that is on a hyperbola: `fit_hyperbola.rs`.)
         (
             "a parabola",
             state([2.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
-            mu.clone(),
-        ),
-        (
-            "a hyperbola",
-            state([2.0, 0.0, 0.0], [0.0, 1.5, 0.0]),
             mu.clone(),
         ),
         (
@@ -422,7 +341,7 @@ fn what_is_on_no_ellipse_is_refused() {
                 Elements::from_state(&position, &velocity, &mu, time, p),
                 Err(KeplerError::Invalid(_))
             ),
-            "{what} is on no ellipse"
+            "{what} is on no orbit"
         );
     }
     // A time the clock cannot hold.

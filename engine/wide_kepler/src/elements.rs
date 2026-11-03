@@ -1,26 +1,30 @@
-//! The elements of an ellipse and where they put a body.
+//! The elements of an ellipse or a hyperbola and where they put a body.
 
 use std::cmp::Ordering;
 
 use wide_float::{Precision, WideFloat};
 
 use crate::KeplerError;
-use crate::kepler::eccentric_anomaly;
+use crate::kepler::{eccentric_anomaly, hyperbolic_anomaly, sinh_and_cosh};
 
 /// The elements of an orbit: the same as `world_storage::rail::Orbit` has, as numbers of any width.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Elements {
     /// A vector that is not nothing: the orbit is counter-clockwise looking down it. It is made a unit vector when the orbit is worked out, so it need not be one.
     pub normal: [WideFloat; 3],
-    /// The semi-major axis, in voxels: above nothing and under 2^121.
+    /// The size of the semi-major axis, in voxels: above nothing and under 2^121.
     pub radius: WideFloat,
-    /// The periapsis over the semi-major axis, which is 1 - e: from 2^-64 to 1 (a circle).
+    /// The periapsis over the size of the semi-major axis, which is 1 - e: **from 2^-64 to 1 for an ellipse (1 a circle), and from -2^-64 down to -2^64 for a hyperbola** (e above 1;
+    /// the periapsis is `radius` times the size of the ratio, as it is for an ellipse). Nothing is a parabola, which is not made.
     pub ratio: WideFloat,
     /// The angle in the plane, in radians, of the nearest point, from the direction a circle starts toward, counter-clockwise looking down the normal; at most 2^63 either way.
     pub periapsis: WideFloat,
-    /// Seconds for one time round, negative for the other way: from 2^-20 to 2^80 seconds either way.
+    /// Seconds for one time round, negative for the other way: from 2^-20 to 2^80 seconds either way. For a hyperbola, which goes round no turn, it is 2 pi over the mean motion
+    /// (the mean anomaly is 2 pi over it a second).
     pub period: WideFloat,
-    /// The mean anomaly at time 0, in radians; at most 2^63 either way.
+    /// The mean anomaly at time 0, in radians: for an ellipse at most 2^63 either way, and a part of a turn as far as the orbit is concerned (a turn more is the same place); for
+    /// a hyperbola **as it is, not taken modulo anything** (the mean anomaly at a time is this and 2 pi t over the period, and it is the time of the periapsis that is minus this over the
+    /// mean motion), and at most 2^120 either way.
     pub phase: WideFloat,
 }
 
@@ -50,6 +54,9 @@ const MOST_UNITS: u128 = 1 << 96;
 /// fraction after them does not have, and the mean anomaly is magnified up to 2^64 by the equation, so 116 + 64 + the roundings are under 192.
 pub(crate) const TURN_GUARD: u32 = 192;
 
+/// Bits over the working width for the mean anomaly of a hyperbola, `phase + 2 pi t / period`: it is the sum of numbers of up to 120 whole bits that may cancel to a tiny one (a body
+/// at its periapsis a long time after time 0), which the equation then magnifies up to 2^64, so 120 + 64 and the roundings are under 192.
+pub(crate) const MEAN_GUARD: u32 = 192;
 impl Elements {
     /// Whether these are the elements of an orbit this program works out: the limits are those of `world_storage`'s rails (a ratio from 2^-64, a radius under 2^121
     /// voxels, a period to 2^80 seconds, an angle to 2^63 radians) and a period of at least 2^-20 seconds.
@@ -64,14 +71,23 @@ impl Elements {
                 "the radius of an orbit is above nothing and under 2^121 voxels",
             ));
         }
-        let smallest_ratio =
-            WideFloat::from_i64(1, self.ratio.precision()).times_power_of_two(-64)?;
         let one = WideFloat::from_i64(1, self.ratio.precision());
-        if self.ratio.compare(&smallest_ratio) == Ordering::Less
+        let smallest_ratio = one.times_power_of_two(-64)?;
+        if self.is_a_hyperbola() {
+            let largest_ratio = one.times_power_of_two(64)?;
+            let size = self.ratio.abs();
+            if size.compare(&smallest_ratio) == Ordering::Less
+                || size.compare(&largest_ratio) == Ordering::Greater
+            {
+                return Err(KeplerError::Invalid(
+                    "the ratio of a hyperbola (1 - e, below nothing) is from -2^-64 to -2^64",
+                ));
+            }
+        } else if self.ratio.compare(&smallest_ratio) == Ordering::Less
             || self.ratio.compare(&one) == Ordering::Greater
         {
             return Err(KeplerError::Invalid(
-                "the ratio of an orbit (1 - e) is from 2^-64 to 1",
+                "the ratio of an orbit (1 - e) is from 2^-64 to 1 for an ellipse and from -2^-64 to -2^64 for a hyperbola",
             ));
         }
         if self.period.is_zero()
@@ -82,15 +98,21 @@ impl Elements {
                 "the period of an orbit is from 2^-20 to 2^80 seconds",
             ));
         }
-        for angle in [&self.periapsis, &self.phase] {
-            let limit = WideFloat::from_i64(1, angle.precision()).times_power_of_two(63)?;
+        let phase_limit = if self.is_a_hyperbola() { 120 } else { 63 };
+        for (angle, most) in [(&self.periapsis, 63), (&self.phase, phase_limit)] {
+            let limit = WideFloat::from_i64(1, angle.precision()).times_power_of_two(most)?;
             if angle.abs().compare(&limit) == Ordering::Greater {
                 return Err(KeplerError::Invalid(
-                    "an angle of an orbit is at most 2^63 radians",
+                    "an angle of an orbit is at most 2^63 radians, and the phase of a hyperbola 2^120",
                 ));
             }
         }
         Ok(())
+    }
+
+    /// Whether the ratio is below nothing: the orbit is a hyperbola, which goes round no turn.
+    pub fn is_a_hyperbola(&self) -> bool {
+        self.ratio.is_negative()
     }
 
     /// The mean anomaly at `time` as a part of a turn, from 0 up to a whole turn, of `precision` bits: the phase (in radians, over 2 pi) and the part of a turn gone since
@@ -102,6 +124,9 @@ impl Elements {
         precision: Precision,
     ) -> Result<WideFloat, KeplerError> {
         self.validate()?;
+        if self.is_a_hyperbola() {
+            return Err(KeplerError::Invalid("a hyperbola goes round no turn"));
+        }
         check_time(time)?;
         let turns_width = precision.widened_by(GUARD).widened_by(TURN_GUARD);
         let (_, fraction) = self.mean_anomaly_with_two_pi(time, turns_width)?;
@@ -134,22 +159,45 @@ impl Elements {
         let ratio = at(&self.ratio);
         let one = WideFloat::from_i64(1, width);
         let two = WideFloat::from_i64(2, width);
-        let e = &one - &ratio;
-        // The part of the speed that is along the second direction of the plane has sqrt(1 - e^2) in it.
-        let minor = (&ratio * &(&two - &ratio)).sqrt()?;
         let radius = at(&self.radius);
         let rate = two_pi.divide(&at(&self.period))?;
         let speed_scale = &rate * &radius;
         // The periapsis turns the place in the plane into its two directions.
         let (sine_of_periapsis, cosine_of_periapsis) = at(&self.periapsis).sin_cos();
         let directions = plane(&self.normal.each_ref().map(at))?;
+        let (minor, motion) = if self.is_a_hyperbola() {
+            // The part of the speed that is along the second direction of the plane has sqrt(e^2 - 1) in it, which is sqrt(|ratio| (2 + |ratio|)).
+            let size = ratio.abs();
+            let minor = (&size * &(&two + &size)).sqrt()?;
+            let mean_width = width.widened_by(MEAN_GUARD);
+            let rate_for_mean = WideFloat::pi(mean_width)
+                .times_power_of_two(1)?
+                .divide(&self.period.rounded_to(mean_width))?;
+            (
+                minor,
+                Motion::Hyperbola {
+                    size,
+                    rate: rate_for_mean,
+                    phase: self.phase.rounded_to(mean_width),
+                },
+            )
+        } else {
+            // The part of the speed that is along the second direction of the plane has sqrt(1 - e^2) in it.
+            let minor = (&ratio * &(&two - &ratio)).sqrt()?;
+            (
+                minor,
+                Motion::Ellipse {
+                    turns: Turns::new(&self.period, &self.phase, width.widened_by(TURN_GUARD))?,
+                    e: &one - &ratio,
+                    pi,
+                    two_pi,
+                },
+            )
+        };
         Ok(PreparedElements {
             precision,
-            turns: Turns::new(&self.period, &self.phase, width.widened_by(TURN_GUARD))?,
-            pi,
-            two_pi,
+            width,
             ratio,
-            e,
             one,
             minor,
             radius,
@@ -157,6 +205,7 @@ impl Elements {
             sine_of_periapsis,
             cosine_of_periapsis,
             plane: directions,
+            motion,
         })
     }
 }
@@ -166,17 +215,13 @@ impl Elements {
 /// `prepare` and this), and it holds about a kilobyte of numbers.
 #[derive(Clone, Debug)]
 pub struct PreparedElements {
-    /// The width of the place that is given.
+    /// The width of the place that is given, and the width it is worked out in.
     precision: Precision,
-    turns: Turns,
-    /// pi, and 2 pi, at the working width.
-    pi: WideFloat,
-    two_pi: WideFloat,
+    width: Precision,
+    /// The ratio as it is (below nothing for a hyperbola).
     ratio: WideFloat,
-    /// 1 - the ratio: the eccentricity, as a number of its own because the ratio may be 2^-64.
-    e: WideFloat,
     one: WideFloat,
-    /// sqrt(1 - e^2), from the ratio.
+    /// sqrt(1 - e^2) for an ellipse, sqrt(e^2 - 1) for a hyperbola: from the ratio.
     minor: WideFloat,
     radius: WideFloat,
     /// The rate of the mean anomaly (2 pi over the period) times the radius: the speed is this over the distance in units of the radius.
@@ -185,25 +230,89 @@ pub struct PreparedElements {
     cosine_of_periapsis: WideFloat,
     /// The two directions in the plane, as unit vectors.
     plane: ([WideFloat; 3], [WideFloat; 3]),
+    motion: Motion,
+}
+
+/// What differs between an ellipse and a hyperbola in what is kept.
+#[derive(Clone, Debug)]
+enum Motion {
+    Ellipse {
+        turns: Turns,
+        /// pi, and 2 pi, at the working width.
+        pi: WideFloat,
+        two_pi: WideFloat,
+        /// 1 - the ratio: the eccentricity, as a number of its own because the ratio may be 2^-64.
+        e: WideFloat,
+    },
+    Hyperbola {
+        /// The size of the ratio (e - 1), which is what the formulas of a hyperbola have where an ellipse has the ratio.
+        size: WideFloat,
+        /// 2 pi over the period, and the phase, at the width the mean anomaly is worked out in (the working width and `MEAN_GUARD`).
+        rate: WideFloat,
+        phase: WideFloat,
+    },
+}
+
+/// A place in the plane of the orbit: from the focus, along the direction of the periapsis and a quarter turn on, in voxels; and the speed, the same way, in voxels a second.
+struct InPlane {
+    place: (WideFloat, WideFloat),
+    speed: (WideFloat, WideFloat),
 }
 
 impl PreparedElements {
     /// Where the body is at `time`, and its speed, in numbers of the width these were prepared for.
     pub fn place_at(&self, time: Time) -> Result<Place, KeplerError> {
         check_time(time)?;
-        let width = self.pi.precision();
+        let in_plane = match &self.motion {
+            Motion::Ellipse {
+                turns,
+                pi,
+                two_pi,
+                e,
+            } => self.on_the_ellipse(turns, pi, two_pi, e, time)?,
+            Motion::Hyperbola { size, rate, phase } => {
+                self.on_the_hyperbola(size, rate, phase, time)?
+            }
+        };
 
+        // The periapsis turns both into the two directions of the plane.
+        let turned = |a: &WideFloat, b: &WideFloat| {
+            (
+                &(a * &self.cosine_of_periapsis) - &(b * &self.sine_of_periapsis),
+                &(a * &self.sine_of_periapsis) + &(b * &self.cosine_of_periapsis),
+            )
+        };
+        let (place_first, place_second) = turned(&in_plane.place.0, &in_plane.place.1);
+        let (speed_first, speed_second) = turned(&in_plane.speed.0, &in_plane.speed.1);
+
+        let (first, second) = &self.plane;
+        let combine = |a: &WideFloat, b: &WideFloat| -> [WideFloat; 3] {
+            [0, 1, 2]
+                .map(|axis| (&(a * &first[axis]) + &(b * &second[axis])).rounded_to(self.precision))
+        };
+        Ok(Place {
+            position: combine(&place_first, &place_second),
+            velocity: combine(&speed_first, &speed_second),
+        })
+    }
+
+    /// The place and the speed in the plane of an ellipse.
+    fn on_the_ellipse(
+        &self,
+        turns: &Turns,
+        pi: &WideFloat,
+        two_pi: &WideFloat,
+        e: &WideFloat,
+        time: Time,
+    ) -> Result<InPlane, KeplerError> {
+        let width = self.width;
         // The mean anomaly: the phase and the part of a turn gone, worked out in a width that holds its whole part and still leaves the fraction.
-        let fraction = self.turns.fraction_at(time)?;
-        let mean = (&self.turns.two_pi * &fraction).rounded_to(width);
+        let fraction = turns.fraction_at(time)?;
+        let mean = (&turns.two_pi * &fraction).rounded_to(width);
 
         // Kepler's equation is solved on the half turn: a mean anomaly in the second half is the mirror image of one in the first.
-        let reflected = mean.compare(&self.pi) == Ordering::Greater;
-        let mean_on_the_half_turn = if reflected {
-            &self.two_pi - &mean
-        } else {
-            mean
-        };
+        let reflected = mean.compare(pi) == Ordering::Greater;
+        let mean_on_the_half_turn = if reflected { two_pi - &mean } else { mean };
         let eccentric = eccentric_anomaly(&self.ratio, &mean_on_the_half_turn)?;
 
         // sin E, cos E, and 1 - cos E = 2 sin^2(E / 2), from the half angle so that nothing cancels.
@@ -220,29 +329,57 @@ impl PreparedElements {
             self.one.clone()
         };
         let y = &(&self.minor * &sine) * &side;
-        let distance = &self.ratio + &(&self.e * &half_versine).times_power_of_two(1)?;
+        let distance = &self.ratio + &(e * &half_versine).times_power_of_two(1)?;
         let speed = self.speed_scale.divide(&distance)?;
         let toward = -&(&(&speed * &sine) * &side);
         let along = &(&speed * &self.minor) * &cosine;
+        Ok(InPlane {
+            place: (&x * &self.radius, &y * &self.radius),
+            speed: (toward, along),
+        })
+    }
 
-        // The periapsis turns both into the two directions of the plane.
-        let turned = |a: &WideFloat, b: &WideFloat| {
-            (
-                &(a * &self.cosine_of_periapsis) - &(b * &self.sine_of_periapsis),
-                &(a * &self.sine_of_periapsis) + &(b * &self.cosine_of_periapsis),
-            )
+    /// The place and the speed in the plane of a hyperbola, `M = e sinh H - H`: the same as an ellipse's with the hyperbolic functions in the place of the circular ones and the size
+    /// of the ratio (e - 1) in the place of the ratio. The mean anomaly is not reduced (a hyperbola goes round no turn) and is below nothing before the periapsis, where the anomaly
+    /// is the mirror image of the one after it.
+    fn on_the_hyperbola(
+        &self,
+        size: &WideFloat,
+        rate: &WideFloat,
+        phase: &WideFloat,
+        time: Time,
+    ) -> Result<InPlane, KeplerError> {
+        let width = self.width;
+        // The mean anomaly: the phase and 2 pi t over the period, the time as a division of whole numbers, in a width that holds the whole of both and leaves the width after them.
+        let mean_width = rate.precision();
+        let seconds = WideFloat::from_i128(time.units, mean_width).divide(&WideFloat::from_i64(
+            i64::from(time.units_per_second),
+            mean_width,
+        ))?;
+        let mean = (phase + &(rate * &seconds)).rounded_to(width);
+        let side = if mean.is_negative() {
+            -&self.one
+        } else {
+            self.one.clone()
         };
-        let (place_first, place_second) = turned(&(&x * &self.radius), &(&y * &self.radius));
-        let (speed_first, speed_second) = turned(&toward, &along);
+        let anomaly = hyperbolic_anomaly(size, &mean.abs())?;
 
-        let (first, second) = &self.plane;
-        let combine = |a: &WideFloat, b: &WideFloat| -> [WideFloat; 3] {
-            [0, 1, 2]
-                .map(|axis| (&(a * &first[axis]) + &(b * &second[axis])).rounded_to(self.precision))
-        };
-        Ok(Place {
-            position: combine(&place_first, &place_second),
-            velocity: combine(&speed_first, &speed_second),
+        // sinh H, cosh H, and cosh H - 1 = 2 sinh^2(H / 2), from the half angle so that nothing cancels.
+        let half = anomaly.times_power_of_two(-1)?;
+        let (sinh_half, cosh_half) = sinh_and_cosh(&half)?;
+        let sinh = (&sinh_half * &cosh_half).times_power_of_two(1)?;
+        let half_versine = &sinh_half * &sinh_half;
+        let cosh = &self.one + &half_versine.times_power_of_two(1)?;
+        // In units of the semi-major axis from the focus: toward the periapsis (e - cosh H) and a quarter turn on; the distance from the focus is the slope of the equation.
+        let x = size - &half_versine.times_power_of_two(1)?;
+        let y = &(&self.minor * &sinh) * &side;
+        let distance = &(size * &cosh) + &half_versine.times_power_of_two(1)?;
+        let speed = self.speed_scale.divide(&distance)?;
+        let toward = -&(&(&speed * &sinh) * &side);
+        let along = &(&speed * &self.minor) * &cosh;
+        Ok(InPlane {
+            place: (&x * &self.radius, &y * &self.radius),
+            speed: (toward, along),
         })
     }
 }

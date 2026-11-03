@@ -497,3 +497,22 @@ fn the_eccentricity_is_exact_however_small() {
     assert_eq!(circle.eccentricity(), 0.0);
     assert!(circle.is_circle());
 }
+
+#[test]
+fn a_hyperbola_is_not_a_rail_yet() {
+    // `wide_kepler` places a body on a hyperbola (a ratio below nothing), but the rail, its bytes, its views, the apsides and the rules of the server are those of an ellipse
+    // (E14 of `docs/orbits-and-thrust-plan.md`): the one place elements become an orbit refuses it, so that nothing half-knows one.
+    let mut hyperbola = wide_elements(192);
+    hyperbola.ratio = -&hyperbola.ratio;
+    assert!(hyperbola.is_a_hyperbola());
+    assert!(matches!(
+        Orbit::from_elements(Centre::Grid(GridId::new(3)), hyperbola.clone()),
+        Err(RailError::Invalid(_))
+    ));
+    assert!(matches!(
+        Orbit::from_elements(Centre::Point([0.0; 3]), hyperbola),
+        Err(RailError::Invalid(_))
+    ));
+    // The ellipse it was made from is one.
+    assert!(Orbit::from_elements(Centre::Grid(GridId::new(3)), wide_elements(192)).is_ok());
+}

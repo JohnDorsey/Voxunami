@@ -1,8 +1,11 @@
 //! The place and the speed of a body on an ellipse in wide numbers: against the truth worked out by other code (`reference/orbits.txt`, from `reference/generate.py`: the
 //! definition of `world_storage/tools/exact_ellipse_reference.py` in mpmath, 700 bits more than the width of each case), and against what every orbit must satisfy.
 
-use wide_float::{Precision, WideFloat};
+use wide_float::WideFloat;
 use wide_kepler::{Elements, KeplerError, Place, Time};
+
+mod common;
+use common::{at, largest, loss, rows};
 
 const ROWS: &str = include_str!("reference/orbits.txt");
 
@@ -10,87 +13,11 @@ const ROWS: &str = include_str!("reference/orbits.txt");
 /// are within the last bit of the width (the test prints the worst); the bound is that and a few bits to spare.
 const LOSS: i64 = 4;
 
-fn at(bits: u64) -> Precision {
-    Precision::new(bits).unwrap()
-}
-
-fn number(text: &str, bits: u64) -> WideFloat {
-    WideFloat::parse(text, at(bits)).unwrap_or_else(|error| panic!("{text}: {error}"))
-}
-
-struct Row {
-    bits: u64,
-    elements: Elements,
-    time: Time,
-    place: Vec<WideFloat>,
-    velocity: Vec<WideFloat>,
-}
-
-fn rows() -> Vec<Row> {
-    ROWS.lines()
-        .map(|line| {
-            let words: Vec<&str> = line.split(' ').collect();
-            assert_eq!(words[0], "orbit");
-            let bits: u64 = words[1].parse().unwrap();
-            let elements: Vec<WideFloat> =
-                words[2..10].iter().map(|word| number(word, bits)).collect();
-            let answer: Vec<WideFloat> = words[12..18]
-                .iter()
-                .map(|word| number(word, bits + 64))
-                .collect();
-            Row {
-                bits,
-                elements: Elements {
-                    normal: [
-                        elements[0].clone(),
-                        elements[1].clone(),
-                        elements[2].clone(),
-                    ],
-                    radius: elements[3].clone(),
-                    ratio: elements[4].clone(),
-                    periapsis: elements[5].clone(),
-                    period: elements[6].clone(),
-                    phase: elements[7].clone(),
-                },
-                time: Time {
-                    units: words[10].parse().unwrap(),
-                    units_per_second: words[11].parse().unwrap(),
-                },
-                place: answer[..3].to_vec(),
-                velocity: answer[3..].to_vec(),
-            }
-        })
-        .collect()
-}
-
-/// How many bits of `bits` the worst component of `got` is short of `expected`, in units of the scale: `bits + log2(error / scale)`; very negative for an exact answer.
-fn loss(bits: u64, got: &[WideFloat], expected: &[WideFloat], scale: &WideFloat) -> i64 {
-    let scale = scale.floor_log2().unwrap_or(i64::MIN / 2);
-    got.iter()
-        .zip(expected)
-        .map(|(got, expected)| {
-            let error = (got - expected).abs();
-            error
-                .floor_log2()
-                .map_or(i64::MIN / 2, |exponent| bits as i64 + exponent - scale)
-        })
-        .max()
-        .unwrap()
-}
-
-fn largest(numbers: &[WideFloat]) -> WideFloat {
-    numbers
-        .iter()
-        .map(WideFloat::abs)
-        .max_by(|a, b| a.compare(b))
-        .unwrap()
-}
-
 #[test]
 fn the_answer_loses_at_most_a_few_bits() {
     let mut worst_place = i64::MIN;
     let mut worst_velocity = i64::MIN;
-    for row in rows() {
+    for row in rows(ROWS) {
         let Place { position, velocity } = row.elements.place_at(row.time, at(row.bits)).unwrap();
         let place_loss = loss(row.bits, &position, &row.place, &row.elements.radius);
         let velocity_loss = loss(row.bits, &velocity, &row.velocity, &largest(&row.velocity));

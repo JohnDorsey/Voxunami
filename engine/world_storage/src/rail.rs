@@ -393,6 +393,13 @@ impl Orbit {
             ));
         }
         elements.validate()?;
+        // `wide_kepler` places a body on a hyperbola, but the rest of a rail is an ellipse's (the views, the apsides, the bytes, the fit, the rules of the server): until each is
+        // made for a hyperbola this is the one place that says no, so that nothing half-knows one (`docs/orbits-and-thrust-plan.md`, E14).
+        if elements.is_a_hyperbola() {
+            return Err(RailError::Invalid(
+                "a hyperbola is not an orbit a rail holds yet: its ratio (1 - e) is from 2^-64 to 1",
+            ));
+        }
         if !at_most_a_power_of_two(&elements.radius, LARGEST_RADIUS_EXPONENT)
             || !at_most_a_power_of_two(&elements.period.abs(), LONGEST_ORBIT_PERIOD_EXPONENT)
         {
