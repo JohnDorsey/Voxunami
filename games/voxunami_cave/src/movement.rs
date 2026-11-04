@@ -95,6 +95,9 @@ struct PlayerBody {
     jump_asked: bool,
     /// The player pilots a ship: their keys fly it (see [`crate::ships`]) and do not walk them.
     piloting: bool,
+    /// The ship the player is buckled to: their body does not move in it (not by their keys, by gravity or by anything they touch), so the ship carries it exactly,
+    /// however it moves and turns. Let go when they are not aboard that ship any more.
+    buckled: Option<GridId>,
 }
 
 /// What the blocks of the world mean to bodies.
@@ -231,6 +234,7 @@ impl Movement {
                 },
                 jump_asked: false,
                 piloting: false,
+                buckled: None,
             }
         });
     }
@@ -278,6 +282,33 @@ impl Movement {
         if let Some(player) = self.bodies.get_mut(&client) {
             player.piloting = piloting;
         }
+    }
+
+    /// Buckles a player to the ship they are aboard: their body stops where it is in the ship, at rest, and stays there, turned as it is, until they are let go.
+    /// Returns whether they were: they need a body, aboard `ship`.
+    pub fn buckle(&mut self, client: ClientId, ship: GridId) -> bool {
+        let Some(player) = self.bodies.get_mut(&client) else {
+            return false;
+        };
+        if player.frame != ship {
+            return false;
+        }
+        player.buckled = Some(ship);
+        // (At rest in the ship: whatever speed they had in it when they were buckled is not theirs when they are let go.)
+        let eyes = player.body.eye_position();
+        let frame_rotation = player.body.frame_rotation();
+        player.body.reframe(eyes, [0.0; 3], frame_rotation);
+        true
+    }
+
+    /// Lets a player go. Returns the ship they were buckled to, if they were.
+    pub fn unbuckle(&mut self, client: ClientId) -> Option<GridId> {
+        self.bodies.get_mut(&client)?.buckled.take()
+    }
+
+    /// The ship a player is buckled to, if they are.
+    pub fn buckled_to(&self, client: ClientId) -> Option<GridId> {
+        self.bodies.get(&client)?.buckled
     }
 
     /// What the player's keys last asked, if they have a body.
@@ -333,6 +364,16 @@ impl Movement {
                 continue;
             };
             agree_with(player, &placement, carried_by_rails(client));
+            // A buckled player stays where they are in the ship; one whose ship is gone, or who is not in it, is let go.
+            if player.buckled.is_some_and(|ship| {
+                ship != player.frame || world.data().grids().get(ship).is_none()
+            }) {
+                player.buckled = None;
+            }
+            if player.buckled.is_some() {
+                moved.push(moved_pose(client, player));
+                continue;
+            }
             match player.frame.root_level() {
                 Some(level) => {
                     step_in_a_level(player, &self.blocks, world, &changed, &ships, level)

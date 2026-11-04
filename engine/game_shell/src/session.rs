@@ -648,6 +648,12 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         self.players.get(&own).map(|state| state.pose.position)
     }
 
+    /// The turn of the room the server last said this player's angles are measured in (the ship they are aboard, turned as they are in it), if it has said.
+    pub fn own_server_frame_rotation(&self) -> Option<Orientation> {
+        let own = self.client.world().server_info().client;
+        self.players.get(&own).map(|state| state.frame_rotation)
+    }
+
     /// Where the server last said this player is and which way they look, if it has said.
     pub fn own_server_pose(&self) -> Option<PlayerPose> {
         let own = self.client.world().server_info().client;

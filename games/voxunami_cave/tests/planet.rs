@@ -1054,3 +1054,19 @@ fn a_walker_who_walks_up_onto_a_ship_that_rests_on_a_planet_is_aboard_the_ship()
     );
     assert_eq!(player_pose(&scene, 1).grid, ship_id(1));
 }
+
+#[test]
+fn a_walker_on_a_planet_cannot_buckle_to_it() {
+    let mut scene = Scene::new();
+    make_the_planet(&mut scene);
+    let mut player = scene
+        .rig
+        .join_walking([0.5, TOP_OF_THE_PLANET + 6.0, 0.5], 0.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    tick_and_follow(&mut scene, &mut player, 60);
+    assert_eq!(player_pose(&scene, 1).grid, planet());
+    assert_eq!(
+        say(&mut scene, &mut player, "/ship buckle"),
+        "ship 0 is a planet: there is nothing to be carried by"
+    );
+}

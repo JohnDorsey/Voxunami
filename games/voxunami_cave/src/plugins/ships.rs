@@ -31,7 +31,7 @@ use crate::ships::{
     LOOK_REACH, MAXIMUM_BLOCKS, NEAR, PilotKeys, TICK_SECONDS, connected_blocks, pilot_force,
 };
 
-const USAGE: &str = "usage: /ship create [all] | push X Y Z | hold on|off | pilot | sit | undock | vanish on|off | distance [SIMULATE [UNLOAD]|everywhere]";
+const USAGE: &str = "usage: /ship create [all] | push X Y Z | hold on|off | pilot | sit | buckle | unbuckle | undock | vanish on|off | distance [SIMULATE [UNLOAD]|everywhere]";
 
 /// A distance in a command: a number of voxels that is not below zero, or `everywhere` (or `nowhere`) for none.
 fn distance_word(word: &str) -> Option<f64> {
@@ -306,6 +306,8 @@ impl Ships {
             ("hold", ["off"]) => self.hold(world, client, false),
             ("pilot", []) => self.pilot(world, client),
             ("sit", []) => self.sit(world, client),
+            ("buckle", []) => self.buckle(world, client),
+            ("unbuckle", []) => self.unbuckle(client),
             ("undock", []) => self.undock(world, client),
             ("vanish", ["on"]) => self.vanish(world, client, PilotLogout::Vanish),
             ("vanish", ["off"]) => self.vanish(world, client, PilotLogout::Stay),
@@ -610,6 +612,48 @@ impl Ships {
             {
                 *ship = frame;
             }
+        }
+    }
+
+    /// `/ship buckle`: the player is held where they stand in the ship they are aboard, as they are turned, until `/ship unbuckle`; the ship carries them however it
+    /// goes, and they can still look about, sit, and pilot.
+    fn buckle(&self, world: &mut ServerWorld, client: ClientId) -> String {
+        let presence = lock(&self.presence);
+        let Some(ship) = presence
+            .frame_of(world.data(), client)
+            .filter(|frame| frame.root_level().is_none())
+        else {
+            return "stand on a ship to buckle to it".to_owned();
+        };
+        if world
+            .data()
+            .grids()
+            .get(ship)
+            .is_some_and(|ship| ship.terrain.is_some())
+        {
+            return format!(
+                "ship {} is a planet: there is nothing to be carried by",
+                number(ship)
+            );
+        }
+        let mut movement = locked(&self.movement);
+        if movement.buckled_to(client) == Some(ship) {
+            return format!("you are buckled to ship {} already", number(ship));
+        }
+        if !movement.buckle(client, ship) {
+            return "you have no body to buckle".to_owned();
+        }
+        format!(
+            "you are buckled to ship {}: it carries you however it goes and turns, and you do not move in it; /ship unbuckle lets you go",
+            number(ship)
+        )
+    }
+
+    /// `/ship unbuckle`: the player is let go and stands in the ship, with gravity, as they did.
+    fn unbuckle(&self, client: ClientId) -> String {
+        match locked(&self.movement).unbuckle(client) {
+            Some(ship) => format!("you are let go of ship {}", number(ship)),
+            None => "you are not buckled".to_owned(),
         }
     }
 

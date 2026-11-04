@@ -6,10 +6,16 @@
 //! and carries the view on that way until the next one comes, so that steady movement looks steady.
 //! When a position does not come for longer than a tick is expected to take, the player has stopped
 //! (the server only says what changed), and the view is put at the last position it was given.
+//!
+//! The same is done for everything else that is seen to move and is told a tick at a time: the way a
+//! ship faces ([`TurnFollower`]) and a whole ship ([`GridFollower`]). A thing that is carried on must
+//! be carried on in the same way as what stands on it or looks at it, or the distance between them
+//! shakes by a tick of travel: a camera carried on at a ship's speed, looking at a ship shown where it
+//! was last told, shakes by the speed times 50 ms.
 
 use std::time::{Duration, Instant};
 
-use voxel_space::WorldPosition;
+use voxel_space::{GridPose, Orientation, WorldPosition};
 
 /// How long without news of a position before the player is taken to be standing still: a little more
 /// than a tick at the game's rate.
@@ -19,13 +25,58 @@ const NO_NEWS_MEANS_STILL: Duration = Duration::from_millis(90);
 /// what the server last said.
 const LONGEST_CARRY_ON: Duration = Duration::from_millis(120);
 
+/// How much the speed of something may change between two positions told, however fast it goes, before that is taken for a jump (a teleport, a
+/// ship put somewhere) and not for travel: in voxels a second. For a turn it is [`TURN_ALLOWANCE`].
+const SPEED_ALLOWANCE: f64 = 100.0;
+
+/// How much of the faster of two speeds they may differ by besides, since the time between two positions is the time between two frames and not between two
+/// ticks: a tick that is seen a frame late makes the speed worked out a third too high, and the next a third too low.
+const SPEED_SHARE: f64 = 0.75;
+
+/// The same allowance for a turn, in radians a second.
+const TURN_ALLOWANCE: f64 = 2.0;
+
+fn length(vector: [f64; 3]) -> f64 {
+    libm::sqrt(vector.iter().map(|component| component * component).sum())
+}
+
+/// Whether a speed can follow another: no more different than the allowance and a share of the faster.
+fn continues(before: [f64; 3], after: [f64; 3], allowance: f64) -> bool {
+    let change = length([0, 1, 2].map(|axis| after[axis] - before[axis]));
+    change <= allowance + SPEED_SHARE * length(before).max(length(after))
+}
+
+/// A speed worked out from the positions told, and whether to believe it. A jump a long way in one go (a teleport) is not a speed, and a fast ship that is
+/// really going that fast is: the speed of the last two positions is believed if it is near the speed before, or near the speed worked out the time before
+/// that (two jumps of the same size in a row are travel).
+#[derive(Clone, Copy, Debug, Default)]
+struct Believed {
+    /// The speed the view is carried on at.
+    speed: [f64; 3],
+    /// The speed worked out last, believed or not.
+    worked_out: [f64; 3],
+}
+
+impl Believed {
+    fn learn(&mut self, worked_out: [f64; 3], allowance: f64) {
+        let steady = continues(self.speed, worked_out, allowance)
+            || continues(self.worked_out, worked_out, allowance);
+        self.speed = if steady { worked_out } else { [0.0; 3] };
+        self.worked_out = worked_out;
+    }
+
+    fn rest(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// How a view follows a position that is told to it now and then.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PoseFollower {
     /// The last position told, and when it was first seen.
     last: Option<(WorldPosition, Instant)>,
     /// The speed worked out from the last two positions, in voxels a second.
-    velocity: [f64; 3],
+    velocity: Believed,
 }
 
 impl PoseFollower {
@@ -40,33 +91,198 @@ impl PoseFollower {
 
     /// Where the view should be at `now`, given that the server last said the player is at `told`.
     pub fn view_position(&mut self, told: WorldPosition, now: Instant) -> WorldPosition {
+        self.view_position_seen(told, now, now)
+    }
+
+    /// The same, when the time at which a position told for the first time is taken to have been told is `seen` and not `now` (see [`TickClock`]).
+    pub fn view_position_seen(
+        &mut self,
+        told: WorldPosition,
+        seen: Instant,
+        now: Instant,
+    ) -> WorldPosition {
         match self.last {
             Some((last, _)) if last == told => {}
             Some((last, since)) => {
-                let seconds = now.duration_since(since).as_secs_f64().max(0.005);
+                let seconds = seen.duration_since(since).as_secs_f64().max(0.005);
                 let moved = told.relative_to(last);
-                // A jump a long way in one go (a teleport) is not a speed.
-                let far = moved.iter().any(|component| component.abs() > 8.0);
-                self.velocity = if far || seconds > 0.5 {
+                let worked_out = if seconds > 0.5 {
                     [0.0; 3]
                 } else {
                     moved.map(|component| component / seconds)
                 };
-                self.last = Some((told, now));
+                self.velocity.learn(worked_out, SPEED_ALLOWANCE);
+                self.last = Some((told, seen));
             }
             None => {
-                self.velocity = [0.0; 3];
-                self.last = Some((told, now));
+                self.velocity.rest();
+                self.last = Some((told, seen));
             }
         }
         let (_, since) = self.last.expect("a position was just recorded");
-        let waited = now.duration_since(since);
+        let waited = now.saturating_duration_since(since);
         if waited > NO_NEWS_MEANS_STILL {
-            self.velocity = [0.0; 3];
+            self.velocity.rest();
             return told;
         }
         let seconds = waited.min(LONGEST_CARRY_ON).as_secs_f64();
-        told.translated(self.velocity.map(|speed| speed * seconds))
+        told.translated(self.velocity.speed.map(|speed| speed * seconds))
+    }
+}
+
+/// How a view follows the way something faces, which is told to it now and then, as [`PoseFollower`] does a position: it is turned on at the rate the last two
+/// turns were told at.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TurnFollower {
+    /// The last turn told, and when it was first seen.
+    last: Option<(Orientation, Instant)>,
+    /// The rate worked out from the last two turns: the axis it turns about, scaled by radians a second.
+    rate: Believed,
+}
+
+impl TurnFollower {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Where the view should face at `now`, given that the server last said the thing faces `told`.
+    pub fn view_orientation(&mut self, told: Orientation, now: Instant) -> Orientation {
+        self.view_orientation_seen(told, now, now)
+    }
+
+    /// The same, when the time at which a turn told for the first time is taken to have been told is `seen` and not `now` (see [`TickClock`]).
+    pub fn view_orientation_seen(
+        &mut self,
+        told: Orientation,
+        seen: Instant,
+        now: Instant,
+    ) -> Orientation {
+        match self.last {
+            Some((last, _)) if last == told => {}
+            Some((last, since)) => {
+                let seconds = seen.duration_since(since).as_secs_f64().max(0.005);
+                let worked_out = if seconds > 0.5 {
+                    [0.0; 3]
+                } else {
+                    turn_between(last, told).map(|component| component / seconds)
+                };
+                self.rate.learn(worked_out, TURN_ALLOWANCE);
+                self.last = Some((told, seen));
+            }
+            None => {
+                self.rate.rest();
+                self.last = Some((told, seen));
+            }
+        }
+        let (_, since) = self.last.expect("a turn was just recorded");
+        let waited = now.saturating_duration_since(since);
+        if waited > NO_NEWS_MEANS_STILL {
+            self.rate.rest();
+            return told;
+        }
+        let seconds = waited.min(LONGEST_CARRY_ON).as_secs_f64();
+        turned_by(told, self.rate.speed.map(|rate| rate * seconds))
+    }
+}
+
+/// The turn that takes `from` to `to` (the short way), as the axis it is about scaled by the angle, in radians.
+fn turn_between(from: Orientation, to: Orientation) -> [f64; 3] {
+    let [mut x, mut y, mut z, mut w] = to.compose(from.inverse()).components();
+    if w < 0.0 {
+        [x, y, z, w] = [-x, -y, -z, -w];
+    }
+    let sine = length([x, y, z]);
+    if sine < 1e-12 {
+        return [0.0; 3];
+    }
+    let scale = 2.0 * libm::atan2(sine, w) / sine;
+    [x * scale, y * scale, z * scale]
+}
+
+/// `orientation` turned further by a turn given as an axis scaled by the angle, in the world's axes.
+fn turned_by(orientation: Orientation, turn: [f64; 3]) -> Orientation {
+    let angle = length(turn);
+    if angle < 1e-15 {
+        return orientation;
+    }
+    let half = angle / 2.0;
+    let scale = libm::sin(half) / angle;
+    Orientation::from_components([
+        turn[0] * scale,
+        turn[1] * scale,
+        turn[2] * scale,
+        libm::cos(half),
+    ])
+    .map_or(orientation, |step| step.compose(orientation))
+}
+
+/// How a view follows a ship (or a planet), whose place and facing are told to it now and then.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GridFollower {
+    position: PoseFollower,
+    turn: TurnFollower,
+}
+
+impl GridFollower {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Where the ship should be shown at `now`, given that the server last said it stands at `told`.
+    pub fn view_pose(&mut self, told: GridPose, now: Instant) -> GridPose {
+        self.view_pose_seen(told, now, now)
+    }
+
+    /// The same, when a pose told for the first time is taken to have been told at `seen` (see [`TickClock`]).
+    pub fn view_pose_seen(&mut self, told: GridPose, seen: Instant, now: Instant) -> GridPose {
+        GridPose::new(
+            self.position.view_position_seen(told.position, seen, now),
+            self.turn.view_orientation_seen(told.orientation, seen, now),
+        )
+    }
+}
+
+/// How much the earliest a tick could have come is let drift later each time it is asked, in seconds: the clock of the picture and the server's do not keep
+/// quite the same time, and the network is slower for a while now and then.
+const CLOCK_DRIFT_ALLOWED: f64 = 0.000_05;
+
+/// When the ticks of the server come, worked out from when the frames saw them. A tick is seen at the first frame after it came, which is up to a frame late and
+/// not by the same time each tick; a speed worked out from those times shakes, and the view with it. Ticks come at a steady rate, so the time of one is the time of
+/// the first plus its number times the length of a tick; the earliest any tick was seen after that is the nearest to when it came.
+#[derive(Clone, Copy, Debug)]
+pub struct TickClock {
+    start: Instant,
+    seconds_per_tick: f64,
+    /// When tick 0 would have come, in seconds after `start`, as near as the ticks seen say.
+    origin: Option<f64>,
+    /// The newest tick asked about; a lower number is another count of ticks (another world), and the clock starts again.
+    newest: u64,
+}
+
+impl TickClock {
+    pub fn new(ticks_per_second: u32, start: Instant) -> Self {
+        Self {
+            start,
+            seconds_per_tick: 1.0 / f64::from(ticks_per_second.max(1)),
+            origin: None,
+            newest: 0,
+        }
+    }
+
+    /// When tick `number`, which is the newest the frame at `now` has seen, is taken to have come: never after `now`.
+    pub fn seen(&mut self, number: u64, now: Instant) -> Instant {
+        if number < self.newest {
+            self.origin = None;
+        }
+        self.newest = number;
+        let ticks = number as f64 * self.seconds_per_tick;
+        let candidate = now.saturating_duration_since(self.start).as_secs_f64() - ticks;
+        let origin = match self.origin {
+            Some(origin) => (origin + CLOCK_DRIFT_ALLOWED).min(candidate),
+            None => candidate,
+        };
+        self.origin = Some(origin);
+        self.start + Duration::from_secs_f64((origin + ticks).max(0.0))
     }
 }
 
@@ -174,6 +390,176 @@ mod tests {
         // At most the longest carrying on, at the speed worked out.
         assert!(shown - 1.0 <= 20.0 * 0.121, "{shown}");
         assert!(shown >= 1.0);
+    }
+
+    /// Where something that goes at `speed` voxels a second along x is at `seconds`, as a position.
+    fn along(speed: f64, seconds: f64) -> WorldPosition {
+        WorldPosition::from_voxels([speed * seconds, 10.0, 5.0])
+    }
+
+    /// The frames of a 60 Hz picture and the ticks of a 20 Hz server, as they meet: a tick is seen at the first frame at or after it was sent (the
+    /// frames are not quite on the ticks: the server's clock is 0.7 milliseconds ahead). Calls `each` with the time of the frame and the time the tick it
+    /// shows was sent at.
+    fn frames_and_ticks(seconds: f64, mut each: impl FnMut(f64, f64)) {
+        let frame = 1.0 / 60.0;
+        let mut now = 0.0;
+        while now < seconds {
+            let sent = ((now - 0.0007) * 20.0).floor() / 20.0 + 0.0007;
+            each(now, sent.max(0.0));
+            now += frame;
+        }
+    }
+
+    fn instant_at(start: Instant, seconds: f64) -> Instant {
+        start + Duration::from_secs_f64(seconds)
+    }
+
+    #[test]
+    fn a_camera_and_the_ship_it_looks_at_keep_their_distance_when_both_are_carried_on_and_not_when_only_the_camera_is()
+     {
+        // A ship at 3,000 voxels a second, and a camera 5 voxels from it that goes with it (a player aboard).
+        let speed = 3000.0;
+        let start = Instant::now();
+        let mut camera = PoseFollower::new();
+        let mut ship = GridFollower::new();
+        let mut clock = TickClock::new(20, start);
+        let (mut carried_worst, mut stepped_worst) = (0.0f64, 0.0f64);
+        frames_and_ticks(2.0, |now, sent| {
+            let told_ship = GridPose::new(along(speed, sent), Orientation::IDENTITY);
+            let told_camera = along(speed, sent).translated([5.0, 0.0, 0.0]);
+            let at = instant_at(start, now);
+            let seen = clock.seen((sent * 20.0).round() as u64, at);
+            let camera_shown = x_of(camera.view_position_seen(told_camera, seen, at));
+            let ship_shown = x_of(ship.view_pose_seen(told_ship, seen, at).position);
+            let ship_stepped = x_of(told_ship.position);
+            if now > 0.5 {
+                carried_worst = carried_worst.max((camera_shown - ship_shown - 5.0).abs());
+                stepped_worst = stepped_worst.max((camera_shown - ship_stepped - 5.0).abs());
+            }
+        });
+        // (Measured with the ship shown where it was last told: the distance shook by up to a tick of travel, 150 voxels here.)
+        assert!(stepped_worst > 50.0, "{stepped_worst}");
+        assert!(carried_worst < 1e-6, "{carried_worst}");
+    }
+
+    /// The largest and smallest step between one frame and the next, as a share of the step a thing that moves steadily takes, once it is under way.
+    fn steps_of(mut shown_at: impl FnMut(f64, f64) -> f64, nominal_step: f64) -> (f64, f64) {
+        let mut before = None;
+        let (mut largest, mut smallest) = (0.0f64, f64::MAX);
+        frames_and_ticks(2.0, |now, sent| {
+            let shown = shown_at(now, sent);
+            if let Some(before) = before.filter(|_| now > 0.5) {
+                let share = (shown - before) / nominal_step;
+                largest = largest.max(share);
+                smallest = smallest.min(share);
+            }
+            before = Some(shown);
+        });
+        (largest, smallest)
+    }
+
+    #[test]
+    fn a_thing_faster_than_eight_voxels_a_tick_moves_smoothly_and_not_a_tick_at_a_time() {
+        let speed = 7000.0;
+        let nominal = speed / 60.0;
+        let start = Instant::now();
+        let mut follower = PoseFollower::new();
+        let mut clock = TickClock::new(20, start);
+        let (largest, smallest) = steps_of(
+            |now, sent| {
+                let at = instant_at(start, now);
+                let seen = clock.seen((sent * 20.0).round() as u64, at);
+                x_of(follower.view_position_seen(along(speed, sent), seen, at))
+            },
+            nominal,
+        );
+        // Carried on, no frame stands still or leaps, and it never goes back (the ticks are seen a frame early or late; the clock puts them on the beat).
+        assert!(smallest > 0.8 && largest < 1.2, "{smallest} {largest}");
+        // As told it stands still for two frames and leaps three frames at once: that is what it was before.
+        let (largest, smallest) = steps_of(|_, sent| x_of(along(speed, sent)), nominal);
+        assert!(smallest < 0.01 && largest > 2.5, "{smallest} {largest}");
+    }
+
+    #[test]
+    fn the_tick_clock_never_puts_a_tick_after_the_frame_that_saw_it_and_starts_again_when_the_numbers_do()
+     {
+        let start = Instant::now();
+        let mut clock = TickClock::new(20, start);
+        frames_and_ticks(1.0, |now, sent| {
+            let at = instant_at(start, now);
+            let seen = clock.seen((sent * 20.0).round() as u64, at);
+            assert!(seen <= at);
+            // (The beat is found once a tick has been seen a frame earlier than the first: it is never later than the frame that saw it, and not more than a frame earlier.)
+            assert!(at.duration_since(seen) < Duration::from_millis(60));
+        });
+        // Another world, whose count of ticks begins again: the clock is right at once and not after a long time.
+        let at = instant_at(start, 2.0);
+        let seen = clock.seen(3, at);
+        assert!(at.saturating_duration_since(seen) < Duration::from_micros(1));
+    }
+
+    #[test]
+    fn a_fast_thing_put_somewhere_far_is_shown_there_at_once_and_does_not_rush_ahead() {
+        let speed = 7000.0;
+        let start = Instant::now();
+        let mut follower = PoseFollower::new();
+        let mut now = 0.0;
+        for tick in 0..10 {
+            follower.view_position(along(speed, f64::from(tick) * 0.05), instant_at(start, now));
+            now += 0.05;
+        }
+        // Put 100,000 voxels away, standing still.
+        let elsewhere = along(speed, 0.45).translated([100_000.0, 0.0, 0.0]);
+        assert_eq!(
+            follower.view_position(elsewhere, instant_at(start, now)),
+            elsewhere
+        );
+        now += 0.05;
+        assert_eq!(
+            follower.view_position(elsewhere, instant_at(start, now)),
+            elsewhere
+        );
+    }
+
+    fn turned_about_y(angle: f64) -> Orientation {
+        Orientation::from_components([0.0, libm::sin(angle / 2.0), 0.0, libm::cos(angle / 2.0)])
+            .unwrap()
+    }
+
+    #[test]
+    fn a_turning_ship_is_carried_on_at_its_rate_and_one_that_stops_turning_is_shown_as_told() {
+        let rate = 1.0;
+        let start = Instant::now();
+        let mut follower = TurnFollower::new();
+        let mut clock = TickClock::new(20, start);
+        let angle_of =
+            |orientation: Orientation| length(turn_between(Orientation::IDENTITY, orientation));
+        let (largest, smallest) = steps_of(
+            |now, sent| {
+                let at = instant_at(start, now);
+                let seen = clock.seen((sent * 20.0).round() as u64, at);
+                angle_of(follower.view_orientation_seen(turned_about_y(rate * sent), seen, at))
+            },
+            rate / 60.0,
+        );
+        assert!(smallest > 0.8 && largest < 1.2, "{smallest} {largest}");
+        // Stopped: told the same turn for longer than a tick is expected to take, it is shown as told.
+        let last = turned_about_y(rate * 2.0);
+        let later = instant_at(start, 2.5);
+        assert_eq!(follower.view_orientation(last, later), last);
+    }
+
+    #[test]
+    fn a_ship_turned_half_way_round_in_one_tick_is_a_jump_and_not_a_spin() {
+        let start = Instant::now();
+        let mut follower = TurnFollower::new();
+        follower.view_orientation(turned_about_y(0.0), start);
+        follower.view_orientation(turned_about_y(0.05), start + TICK);
+        let flipped = turned_about_y(3.0);
+        assert_eq!(
+            follower.view_orientation(flipped, start + TICK * 2),
+            flipped
+        );
     }
 
     #[test]
