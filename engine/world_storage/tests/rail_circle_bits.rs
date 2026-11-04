@@ -1,10 +1,16 @@
-//! Circular orbits pinned to the bit, before ellipses were added (`docs/orbits-and-thrust-plan.md`, step A0).
+//! Circular orbits pinned to the bit, before ellipses were added (`docs/orbits-and-thrust-plan.md`, step A0), and again when the rail's evaluator became `wide_kepler` (E8).
 //!
 //! An ellipse with `ratio` 1.0 (an eccentricity of 0) is the circle of today, and must stay **the same bits**: every planet on a rail, and every ship file with a rail in
 //! it, is where these say. The pins in `rail.rs` compare with worked-out values and allow a step of 2^-31 voxel; these allow nothing. They were taken from the circle code
 //! as it was before the work began, over a spread of normals (including the two sides of the axis that the plane starts from), radii from 1e-3 voxel to 2^120,
 //! periods from 0.05 second to 2^80, either way round, phases up to 2^62 radians, ticks up to `u64::MAX` and several clock rates. If one moves, find out why before
 //! changing the number.
+//!
+//! **They moved once (2026-11-03), and why.** The fixed-point circle was replaced by `wide_kepler`, and all 26 pins were worked out again by mpmath at 300 digits from the
+//! elements as the program keeps them (the normal as an `f64` unit vector): the new bits are the truth, the position to the bit (whole bricks and a rest rounded to the
+//! nearest step of 2^-32 voxel, half a step up) and the speed the `f64` nearest to it. Of the old pins, 23 of 26 positions stood. The speeds moved in 29 of 78 components, by at most
+//! 3 ulps (the old code did its last steps in `f64`), and in pins 0 and 8 a component that is exactly nothing was 3e-33 and 7e-38 before. Three positions moved: pin 6 by one
+//! step, and pins 16 and 17 (radius 2^100 and 2^120) by 74 to 92 steps and by 0.055 voxel, which was the old fixed point running out of bits.
 
 use voxel_space::GridId;
 use world_storage::rail::{Centre, Orbit, Rail, RailTime, Spin, decode_rail, encode_rail};
@@ -32,7 +38,7 @@ const PINS: [Pin; 26] = [
         20,
         [4687500000, 0, 0],
         [0, 0, 0],
-        [4120907448745177000, 0, 13897309942950242831],
+        [0, 0, 13897309942950242831],
     ),
     (
         [0.0, 1.0, 0.0],
@@ -43,7 +49,7 @@ const PINS: [Pin; 26] = [
         20,
         [4687499964, 0, -576031],
         [4626159227235008512, 0, 4627911638744760320],
-        [13838818028941899020, 0, 13897309942888262782],
+        [13838818028941899019, 0, 13897309942888262782],
     ),
     (
         [0.0, 1.0, 0.0],
@@ -81,9 +87,9 @@ const PINS: [Pin; 26] = [
             4616159588264706048,
         ],
         [
-            4741286136591988914,
-            13962657441390365317,
-            13958799546832532287,
+            4741286136591988915,
+            13962657441390365318,
+            13958799546832532288,
         ],
     ),
     (
@@ -105,8 +111,8 @@ const PINS: [Pin; 26] = [
         ],
         [
             13909221016363472347,
-            13894047539469432373,
-            4682581952046031719,
+            13894047539469432371,
+            4682581952046031720,
         ],
     ),
     (
@@ -123,13 +129,13 @@ const PINS: [Pin; 26] = [
         ],
         [
             4622732272905224192,
-            4622222631337721856,
+            4622222631337852928,
             4624035541463072768,
         ],
         [
             4817749841269446788,
             4829286581804354646,
-            4826101322537355538,
+            4826101322537355539,
         ],
     ),
     (
@@ -152,7 +158,7 @@ const PINS: [Pin; 26] = [
         20,
         [0, 0, 0],
         [4607182418800017408, 0, 0],
-        [4050599279355531004, 0, 13827206646601674976],
+        [0, 0, 13827206646601674976],
     ),
     (
         [0.0, 1.0, 0.0],
@@ -185,7 +191,7 @@ const PINS: [Pin; 26] = [
         60,
         [0, 3, 0],
         [4627837874333876224, 4604704590519074816, 0],
-        [13879105465349953277, 4647124716510169332, 0],
+        [13879105465349953278, 4647124716510169333, 0],
     ),
     (
         [0.0, -1.0, 0.0],
@@ -196,7 +202,7 @@ const PINS: [Pin; 26] = [
         20,
         [13712, 0, 7491],
         [4619883633934336000, 0, 4605104476861235200],
-        [4625600003336759135, 0, 13853047065430780153],
+        [4625600003336759135, 0, 13853047065430780152],
     ),
     (
         [0.95, 0.1, 0.2],
@@ -213,8 +219,8 @@ const PINS: [Pin; 26] = [
         ],
         [
             13862624089034562440,
-            4665007967340832072,
-            13882377768994872092,
+            4665007967340832074,
+            13882377768994872093,
         ],
     ),
     (
@@ -250,8 +256,8 @@ const PINS: [Pin; 26] = [
             4628923281666539520,
         ],
         [
-            4649687262846112157,
-            13877774656258356243,
+            4649687262846112158,
+            13877774656258356244,
             13873935697380890734,
         ],
     ),
@@ -267,8 +273,8 @@ const PINS: [Pin; 26] = [
             0,
             -33552379476852127670496691158,
         ],
-        [4624509999140306944, 0, 4627491738326401024],
-        [14111862027229076946, 0, 14109040579603002640],
+        [4624509999130607616, 0, 4627491738320371712],
+        [14111862027229076947, 0, 14109040579603002641],
     ),
     (
         [0.6, 0.8, 0.0],
@@ -283,13 +289,13 @@ const PINS: [Pin; 26] = [
             -199122090649022248372823842594,
         ],
         [
-            4623727869774790656,
-            4628877982239293440,
-            4612424890241253376,
+            4623758983822835712,
+            4628848806872088576,
+            4612243073888944128,
         ],
         [
-            13941249046556773825,
-            4716099059833883216,
+            13941249046556773826,
+            4716099059833883217,
             14022276278128930711,
         ],
     ),
@@ -302,7 +308,7 @@ const PINS: [Pin; 26] = [
         20,
         [0, 0, -1],
         [4558560584395653120, 0, 4629700189218799616],
-        [13795882593857625942, 0, 13794034314990643149],
+        [13795882593857625942, 0, 13794034314990643148],
     ),
     (
         [0.0, 1.0, 0.0],
@@ -313,7 +319,7 @@ const PINS: [Pin; 26] = [
         20,
         [-22226734, 0, 21966675],
         [4628177971348832256, 0, 4625219501747601408],
-        [4676303027845957263, 0, 4676374891508539598],
+        [4676303027845957263, 0, 4676374891508539599],
     ),
     (
         [0.0, 1.0, 0.0],
@@ -324,7 +330,7 @@ const PINS: [Pin; 26] = [
         20,
         [-22227424, 0, -21965978],
         [4627344848126869504, 0, 4627734486690430976],
-        [13899674871738668692, 0, 4676375082206913908],
+        [13899674871738668692, 0, 4676375082206913909],
     ),
     (
         [0.0, 1.0, 0.0],
@@ -335,7 +341,7 @@ const PINS: [Pin; 26] = [
         1048576,
         [22311237, 0, -21880841],
         [4627164465940332544, 0, 4627155386950811648],
-        [13899651345218173747, 0, 13899770280131822357],
+        [13899651345218173748, 0, 13899770280131822358],
     ),
     (
         [0.0, 1.0, 0.0],
@@ -357,7 +363,7 @@ const PINS: [Pin; 26] = [
         20,
         [4317473409, 0, -1825398480],
         [4623188640349683712, 0, 4623903396547002368],
-        [13642912896900185974, 0, 13648514578861525180],
+        [13642912896900185973, 0, 13648514578861525180],
     ),
     (
         [-0.3, 0.5, -0.8],
@@ -374,8 +380,8 @@ const PINS: [Pin; 26] = [
         ],
         [
             4688733523920752615,
-            13893199828907812706,
-            13906265362383238124,
+            13893199828907812703,
+            13906265362383238125,
         ],
     ),
     (
@@ -387,7 +393,7 @@ const PINS: [Pin; 26] = [
         60,
         [1231, 211, 0],
         [4629576969351987200, 4624239336239792128, 0],
-        [4667542444069245373, 13902709043369295217, 0],
+        [4667542444069245374, 13902709043369295217, 0],
     ),
 ];
 
@@ -435,8 +441,10 @@ fn check(index: usize, pin: Pin, orbit: Orbit) {
     );
 }
 
-/// The bytes of a rail (`engine:rail` in a ship file, version 2): a spin, a circle about a point, and both with a circle about a ship. A circle is written as the program
-/// before ellipses wrote it, with a ratio of 1.0 and a periapsis of nothing (`000000000000f03f0000000000000000`) after the phase.
+/// The bytes of a rail (`engine:rail` in a ship file, version 3): a spin, a circle about a point, and both with a circle about a ship. The spin and a point are `f64`s as before; the
+/// elements of the orbit are wide numbers of 128 bits in their one saved form (`8001` the precision, then zero as `00` and a number as its sign, the exponent of its odd mantissa and
+/// the mantissa), a circle with a ratio of 1 and a periapsis of nothing after the phase. **The bytes were written by a second program** (`golden_v3.py`, from the description of
+/// the form and not from the Rust), and the Rust gives the same.
 fn bytes_of(hex: &str) -> Vec<u8> {
     (0..hex.len())
         .step_by(2)
@@ -468,7 +476,7 @@ fn a_rail_with_a_circle_is_written_as_pinned_and_read_back_from_them() {
                     .unwrap(),
                 ),
             },
-            "0200000000000000f03f000000000000004000000000000008400000000000000000000000000000f03f0000000000000000000000c00b5ad641000000007e187e41000000000000f03f000000000000f03f0000000000000000",
+            "0200000000000000f03f0000000000000040000000000000084080010080010100010180010080010110032f68598001010a033f0c0f800101000101800101000101800100",
         ),
         (
             Rail {
@@ -484,7 +492,7 @@ fn a_rail_with_a_circle_is_written_as_pinned_and_read_back_from_them() {
                     .unwrap(),
                 ),
             },
-            "03333333333333e33f9a9999999999e93f0000000000000000000000000020acc000000000000000c00107333333333333e33f9a9999999999e93f000000000000000000c84e676dc19b430000008074d2cac1000000000000f0bf000000000000f03f0000000000000000",
+            "03333333333333e33f9a9999999999e93f0000000000000000000000000020acc000000000000000c001078001016907333333333333138001016707cdcccccccccc0c8001008001012206d9e9ac2d78038001021003e9a435800102000101800101000101800100",
         ),
     ];
     for (rail, hex) in rails {

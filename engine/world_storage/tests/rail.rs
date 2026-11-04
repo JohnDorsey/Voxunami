@@ -3,9 +3,15 @@
 use std::f64::consts::{FRAC_PI_2, TAU};
 
 use voxel_space::GridId;
+use wide_float::{Precision, WideFloat};
 use world_storage::rail::{
     Centre, Orbit, Rail, RailError, RailTime, Spin, decode_rail, encode_rail,
 };
+
+/// A double as the exact element of an orbit.
+fn exactly(value: f64) -> WideFloat {
+    WideFloat::from_f64(value, Precision::MINIMUM).unwrap()
+}
 
 fn close(found: [f64; 3], expected: [f64; 3], tolerance: f64) {
     for axis in 0..3 {
@@ -308,7 +314,10 @@ fn an_orbit_and_a_spin_are_independent() {
         orbit: None,
         ..both
     };
-    let orbit_only = Rail { spin: None, ..both };
+    let orbit_only = Rail {
+        spin: None,
+        ..both.clone()
+    };
     let (all, turning, going) = (
         both.state(77.0, NOWHERE, NOWHERE),
         spin.state(77.0, NOWHERE, NOWHERE),
@@ -605,16 +614,41 @@ fn bytes_that_are_not_a_rail_are_refused_and_never_a_panic() {
     let mut infinite = about_a_point.clone();
     infinite[10..18].copy_from_slice(&f64::INFINITY.to_bits().to_le_bytes());
     assert!(decode_rail(&infinite).is_err(), "a centre at infinity");
-    // A radius or a period or a phase that is no number, or a radius that is nothing.
-    for (what, from, value) in [
-        ("a radius of nothing", 1 + 1 + 24 + 24, 0.0f64),
-        ("a radius below nothing", 1 + 1 + 24 + 24, -1.0),
-        ("a period of nothing", 1 + 1 + 24 + 24 + 8, 0.0),
-        ("a phase that is no number", 1 + 1 + 24 + 24 + 16, f64::NAN),
+    // A radius, a period or a phase that makes no orbit (an element cannot be a number that is no number: the saved form has none).
+    let orbit_with = |change: &dyn Fn(&mut Orbit)| {
+        let mut orbit = Orbit::new(
+            Centre::Point([1.0, 2.0, 3.0]),
+            [0.0, 1.0, 0.0],
+            100.0,
+            60.0,
+            0.0,
+        )
+        .unwrap();
+        change(&mut orbit);
+        encode_rail(&Rail {
+            spin: None,
+            orbit: Some(orbit),
+        })
+    };
+    for (what, bytes) in [
+        (
+            "a radius of nothing",
+            orbit_with(&|orbit| orbit.elements.radius = exactly(0.0)),
+        ),
+        (
+            "a radius below nothing",
+            orbit_with(&|orbit| orbit.elements.radius = exactly(-1.0)),
+        ),
+        (
+            "a period of nothing",
+            orbit_with(&|orbit| orbit.elements.period = exactly(0.0)),
+        ),
+        (
+            "a phase too large to be a fraction of a turn",
+            orbit_with(&|orbit| orbit.elements.phase = exactly(just_above(LARGEST_PHASE))),
+        ),
     ] {
-        let mut broken = about_a_point.clone();
-        broken[from..from + 8].copy_from_slice(&value.to_bits().to_le_bytes());
-        assert!(decode_rail(&broken).is_err(), "{what}");
+        assert!(decode_rail(&bytes).is_err(), "{what}");
     }
     let _ = nowhere_at_all;
     // An axis that is not a unit vector.
@@ -851,7 +885,7 @@ fn what_the_arithmetic_cannot_hold_is_refused_when_made_and_what_it_can_is_kept_
     assert!(Spin::new([0.0, 1.0, 0.0], -just_above(LONGEST_PERIOD), 0.0).is_err());
 
     // And the most there is of each is worked out, at the last tick of the clock and the first, without a number past what it holds: the offset of the largest radius
-    // along +x is 2^115 bricks, to a quarter of a voxel (the sine and cosine are right to 2^-121, and 2^120 of that is 2^-1).
+    // along +x is 2^115 bricks, to the step of the rest (the place is worked out in 192 bits, and the radius takes 121 of them).
     for (tick, ticks_per_second) in [(0, 1), (u64::MAX, 1), (u64::MAX, u32::MAX)] {
         let found = orbit([0.0, 1.0, 0.0], LARGEST_RADIUS, LONGEST_PERIOD, 0.0)
             .state(RailTime::of_tick(tick, ticks_per_second), NOWHERE, NOWHERE)
@@ -878,9 +912,9 @@ fn a_rail_that_is_read_with_a_number_too_large_for_the_arithmetic_is_refused_as_
         orbit: Some(
             Orbit::new(Centre::Point(NOWHERE), [0.0, 1.0, 0.0], 1.0, 1.0, 0.0)
                 .map(|mut orbit| {
-                    orbit.radius = radius;
-                    orbit.period = period;
-                    orbit.phase = phase;
+                    orbit.elements.radius = exactly(radius);
+                    orbit.elements.period = exactly(period);
+                    orbit.elements.phase = exactly(phase);
                     orbit
                 })
                 .unwrap(),
@@ -915,4 +949,68 @@ fn a_rail_that_is_read_with_a_number_too_large_for_the_arithmetic_is_refused_as_
             "{what} too large to be held"
         );
     }
+}
+
+/// The shortest period of an orbit, 2^-20 second (a spin may turn as fast as it likes).
+const SHORTEST_ORBIT_PERIOD: f64 = 1.0 / 1_048_576.0;
+
+fn below(value: f64) -> f64 {
+    f64::from_bits(value.to_bits() - 1)
+}
+
+#[test]
+fn an_orbit_has_a_period_of_at_least_a_millionth_of_a_second_either_way_and_a_spin_has_no_such_bound()
+ {
+    let make =
+        |period: f64| Orbit::new(Centre::Point(NOWHERE), [0.0, 1.0, 0.0], 100.0, period, 0.0);
+    assert!(make(SHORTEST_ORBIT_PERIOD).is_ok());
+    assert!(make(-SHORTEST_ORBIT_PERIOD).is_ok());
+    assert!(make(below(SHORTEST_ORBIT_PERIOD)).is_err());
+    assert!(make(-below(SHORTEST_ORBIT_PERIOD)).is_err());
+    assert!(make(1.0e-300).is_err());
+    assert!(Spin::new([0.0, 1.0, 0.0], 1.0e-9, 0.0).is_ok());
+
+    // A rail read from bytes is held to the same: the shortest is read, one bit below is refused.
+    let rail = |period: f64| Rail {
+        spin: None,
+        orbit: Some(
+            make(1.0)
+                .map(|mut orbit| {
+                    orbit.elements.period = exactly(period);
+                    orbit
+                })
+                .unwrap(),
+        ),
+    };
+    assert!(decode_rail(&encode_rail(&rail(SHORTEST_ORBIT_PERIOD))).is_ok());
+    assert!(decode_rail(&encode_rail(&rail(below(SHORTEST_ORBIT_PERIOD)))).is_err());
+}
+
+#[test]
+fn the_shortest_orbit_is_where_it_began_after_any_whole_number_of_its_periods() {
+    // A clock of 2^20 ticks a second and a period of 2^-20 second: every tick is a whole period, up to the last tick of the clock.
+    let rail = orbit([0.0, 1.0, 0.0], 1000.0, SHORTEST_ORBIT_PERIOD, 0.0);
+    for tick in [0, 1, 12_345, 1 << 40, u64::MAX - 1, u64::MAX] {
+        let found = rail
+            .state(RailTime::of_tick(tick, 1 << 20), NOWHERE, NOWHERE)
+            .offset
+            .unwrap();
+        // (1000 voxels along +x: 31 bricks of 32 and 8 voxels.)
+        assert_eq!(
+            (found.bricks, found.rest),
+            ([31, 0, 0], [8.0, 0.0, 0.0]),
+            "tick {tick}"
+        );
+    }
+}
+
+#[test]
+fn a_time_further_from_the_start_than_the_clock_can_hold_is_that_far_and_never_a_panic() {
+    let rail = orbit([0.0, 1.0, 0.0], 1000.0, 600.0, 0.0);
+    let at = |seconds: f64| rail.state(RailTime::from(seconds), NOWHERE, NOWHERE);
+    // 2^76 seconds is as far as the units of a time given in seconds go: anything beyond it is that far (either way), and not a number is the start of the world.
+    assert_eq!(at(1.0e300), at(2.0e200));
+    assert_eq!(at(-1.0e300), at(-2.0e200));
+    assert_eq!(at(f64::INFINITY), at(1.0e300));
+    assert_eq!(at(f64::NAN), at(0.0));
 }

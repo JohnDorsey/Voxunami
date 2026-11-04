@@ -22,6 +22,7 @@ use common::{Scene, make_ship, ship_id};
 use game_shell::GameDefinition;
 use voxel_space::{GridPose, Orientation, WorldPosition};
 use voxunami_cave::Cave;
+use wide_float::{Precision, WideFloat};
 use world_storage::rail::{ExactOffset, Rail, RailTime};
 
 /// The edge of the cube that is the ship, in voxels.
@@ -145,6 +146,7 @@ fn rail_of_the_ship(scene: &Scene, number: u64) -> Option<world_storage::rail::R
         .get(ship_id(number))
         .expect("the ship is there")
         .rail
+        .clone()
 }
 
 fn measured_at(distance: f64) -> Measured {
@@ -268,10 +270,11 @@ fn a_ship_in_a_circle_clear_of_the_ground_is_put_on_a_rail_after_a_second_and_ke
     let measured = a_tenth_of_a_lap_up_high();
     let rail = measured
         .rail_after_the_first_sample
+        .clone()
         .expect("a ship that is left alone for a second is on a rail");
     assert_eq!(rail.spin, None);
     assert_eq!(
-        rail.orbit.expect("an orbit").around,
+        rail.orbit.as_ref().expect("an orbit").around,
         world_storage::rail::Centre::Grid(ship_id(0)),
         "round the planet, which is the first ship of the world"
     );
@@ -334,6 +337,62 @@ fn a_ship_on_an_ellipse() -> (Scene, u64, Rail) {
     (scene, number, rail)
 }
 
+/// The rail of a ship on an ellipse with every element made a little wider than a double can say (a part in 2^70 to 2^90 more), as a path planned to the millimetre would have
+/// them: the numbers have 192 bits and not 53, and a double of any of them is the double it was.
+fn widened(rail: &Rail) -> Rail {
+    let orbit = rail.orbit.as_ref().expect("a rail with an orbit");
+    let precision = Precision::new(192).unwrap();
+    let more = |number: &WideFloat, exponent: i64| {
+        let number = number.rounded_to(precision);
+        &number + &number.times_power_of_two(exponent).unwrap()
+    };
+    let mut elements = orbit.elements.clone();
+    elements.radius = more(&elements.radius, -70);
+    elements.period = more(&elements.period, -80);
+    elements.ratio = more(&elements.ratio, -75);
+    elements.periapsis = more(&elements.periapsis, -85);
+    elements.phase = more(&elements.phase, -90);
+    for (name, wide, was) in [
+        ("radius", &elements.radius, &orbit.elements.radius),
+        ("period", &elements.period, &orbit.elements.period),
+        ("ratio", &elements.ratio, &orbit.elements.ratio),
+        ("periapsis", &elements.periapsis, &orbit.elements.periapsis),
+        ("phase", &elements.phase, &orbit.elements.phase),
+    ] {
+        assert_eq!(
+            wide.to_f64(),
+            was.to_f64(),
+            "{name}: a double cannot tell them apart"
+        );
+        assert_ne!(
+            wide.rounded_to(was.precision()),
+            *was,
+            "{name}: the wide number is not the double"
+        );
+    }
+    Rail {
+        spin: rail.spin,
+        orbit: Some(
+            world_storage::rail::Orbit::from_elements(orbit.around, elements)
+                .expect("a wider orbit is an orbit"),
+        ),
+    }
+}
+
+/// As [`a_ship_on_an_ellipse`], with the ship put on a rail of [`widened`] elements, which it has been on for a tick.
+fn a_ship_on_a_wide_ellipse() -> (Scene, u64, Rail) {
+    let (mut scene, number, rail) = a_ship_on_an_ellipse();
+    let wide = widened(&rail);
+    let for_the_server = wide.clone();
+    scene.run(move |world| {
+        world
+            .set_grid_rail(ship_id(number), Some(for_the_server))
+            .unwrap();
+    });
+    scene.ticks(1);
+    (scene, number, wide)
+}
+
 /// What a ship is, as far as its way goes: the rail, and where it is and how fast it goes (all compared to the bit).
 #[derive(Debug, PartialEq)]
 struct Look {
@@ -351,7 +410,7 @@ fn look_at(scene: &Scene, number: u64) -> Look {
         .get(ship_id(number))
         .expect("the ship is there");
     Look {
-        rail: ship.rail,
+        rail: ship.rail.clone(),
         pose: ship.pose,
         velocity: ship.linear_velocity,
     }
@@ -393,14 +452,23 @@ fn nothing(mut scene: Scene, _number: u64) -> Scene {
 
 /// How a fresh ship on an ellipse looks after it went through `cycle`.
 fn after(cycle: impl FnOnce(Scene, u64) -> Scene) -> Look {
-    let (scene, number, _) = a_ship_on_an_ellipse();
+    after_from(a_ship_on_an_ellipse, cycle)
+}
+
+/// How a ship that starts as `start` makes it looks after it went through `cycle`.
+fn after_from(start: fn() -> (Scene, u64, Rail), cycle: impl FnOnce(Scene, u64) -> Scene) -> Look {
+    let (scene, number, _) = start();
     let scene = cycle(scene, number);
     look_at(&scene, number)
 }
 
 /// The control for `rounds` rounds.
 fn untouched_for(rounds: usize) -> Look {
-    after(|mut scene, number| {
+    untouched_from(a_ship_on_an_ellipse, rounds)
+}
+
+fn untouched_from(start: fn() -> (Scene, u64, Rail), rounds: usize) -> Look {
+    after_from(start, |mut scene, number| {
         for _ in 0..rounds {
             scene = nothing(scene, number);
         }
@@ -447,6 +515,58 @@ fn a_ship_that_goes_through_all_three_again_and_again_is_still_where_an_untouche
         scene
     });
     is_the_same_as_the_control(&look, &untouched_for(9));
+}
+
+/// The owner's rule of 2026-11-02, for a path whose numbers no double holds (E9): a ship on a rail of wide elements loses nothing by being frozen, put in its file or saved
+/// with its world. The elements are compared whole (a width and every bit), and so are the place and the speed.
+fn a_wide_ship_after(cycle: fn(Scene, u64) -> Scene) {
+    let control = untouched_from(a_ship_on_a_wide_ellipse, 1);
+    let elements = &control
+        .rail
+        .as_ref()
+        .unwrap()
+        .orbit
+        .as_ref()
+        .unwrap()
+        .elements;
+    assert_eq!(
+        elements.radius.precision(),
+        Precision::new(192).unwrap(),
+        "the control is on wide numbers, or the comparison says nothing about them"
+    );
+    is_the_same_as_the_control(&after_from(a_ship_on_a_wide_ellipse, cycle), &control);
+}
+
+#[test]
+fn a_ship_on_a_rail_of_wide_numbers_that_is_frozen_and_let_go_is_where_an_untouched_one_is_to_the_bit()
+ {
+    a_wide_ship_after(freeze_and_thaw);
+}
+
+#[test]
+fn a_ship_on_a_rail_of_wide_numbers_that_is_put_in_its_file_and_brought_back_has_the_same_numbers_and_is_where_an_untouched_one_is()
+ {
+    a_wide_ship_after(park_and_bring_in);
+}
+
+#[test]
+fn a_ship_on_a_rail_of_wide_numbers_in_a_world_that_is_saved_and_a_server_made_from_the_save_has_the_same_numbers_and_is_where_an_untouched_one_is()
+ {
+    a_wide_ship_after(save_and_restart);
+}
+
+#[test]
+fn a_ship_on_a_rail_of_wide_numbers_that_goes_through_all_three_again_and_again_is_still_where_an_untouched_one_is()
+ {
+    let look = after_from(a_ship_on_a_wide_ellipse, |mut scene, number| {
+        for _ in 0..3 {
+            scene = freeze_and_thaw(scene, number);
+            scene = park_and_bring_in(scene, number);
+            scene = save_and_restart(scene, number);
+        }
+        scene
+    });
+    is_the_same_as_the_control(&look, &untouched_from(a_ship_on_a_wide_ellipse, 9));
 }
 
 #[test]
@@ -520,19 +640,19 @@ fn an_orbit_made_again_from_the_place_and_the_speed_of_a_ship_on_it_is_not_the_o
         refit, rail,
         "the digits of the fit are not the digits it was given"
     );
-    let (stored, fitted) = (rail.orbit.unwrap(), refit.orbit.unwrap());
+    let (stored, fitted) = (rail.orbit.clone().unwrap(), refit.orbit.clone().unwrap());
     // Every element is the same to the last few digits of an `f64`.
     for (name, was, is) in [
-        ("radius", stored.radius, fitted.radius),
-        ("ratio", stored.ratio, fitted.ratio),
-        ("period", stored.period, fitted.period),
+        ("radius", stored.radius(), fitted.radius()),
+        ("ratio", stored.ratio(), fitted.ratio()),
+        ("period", stored.period(), fitted.period()),
     ] {
         assert!(
             ((was - is) / was).abs() < 1.0e-13,
             "{name}: {was} then {is}"
         );
     }
-    let lap = (stored.period * f64::from(TICKS_A_SECOND)) as u64;
+    let lap = (stored.period() * f64::from(TICKS_A_SECOND)) as u64;
     for laps in [1, 10, 1_000] {
         let tick = now + laps * lap + 7;
         let apart = distance_between(place_at(&rail, tick), place_at(&refit, tick));

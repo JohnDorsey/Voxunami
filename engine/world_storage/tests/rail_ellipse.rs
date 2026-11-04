@@ -515,9 +515,11 @@ fn what_cannot_be_an_ellipse_is_refused_when_made_and_what_can_is_kept() {
             0.0,
         )
     };
+    // (A ratio below nothing is a hyperbola, and in range is no longer refused: `rail_hyperbola.rs`. Out of its range it is.)
     for ratio in [
         0.0,
-        -0.5,
+        -1.0e30,
+        -SMALLEST_RATIO / 2.0,
         just_above(1.0),
         1.5,
         f64::NAN,
@@ -550,11 +552,11 @@ fn what_cannot_be_an_ellipse_is_refused_when_made_and_what_can_is_kept() {
         (1.0e-18, 3.0),
     ] {
         let orbit = make(ratio, periapsis).unwrap();
-        assert_eq!((orbit.ratio, orbit.periapsis), (ratio, periapsis));
+        assert_eq!((orbit.ratio(), orbit.periapsis()), (ratio, periapsis));
     }
     // The old way to make an orbit makes a circle that starts toward the first direction.
     let circle = Orbit::new(Centre::Point(NOWHERE), [0.0, 1.0, 0.0], 1000.0, 100.0, 0.0).unwrap();
-    assert_eq!((circle.ratio, circle.periapsis), (1.0, 0.0));
+    assert_eq!((circle.ratio(), circle.periapsis()), (1.0, 0.0));
     assert_eq!(circle, make(1.0, 0.0).unwrap());
 }
 
@@ -578,9 +580,14 @@ fn an_ellipse() -> Orbit {
     .unwrap()
 }
 
-/// Where the ratio and the periapsis are in the bytes of a rail that is only an orbit about a point: the flags, the centre's kind and point, the normal, the radius, the period
-/// and the phase come first, and the two numbers after (version 2 of `engine:rail`: every orbit has them, a circle with 1.0 and nothing).
-const RATIO_AT: usize = 1 + 1 + 24 + 24 + 8 + 8 + 8;
+/// The saved form of a double as an element of an orbit: a number of 128 bits (the saved form of `wide_float`).
+fn element_bytes(value: f64) -> Vec<u8> {
+    let mut writer = binary_codec::ByteWriter::new();
+    wide_float::WideFloat::from_f64(value, wide_float::Precision::MINIMUM)
+        .unwrap()
+        .write_to(&mut writer);
+    writer.into_bytes()
+}
 
 #[test]
 fn an_orbit_is_written_with_its_ratio_and_its_periapsis_after_its_phase() {
@@ -594,23 +601,17 @@ fn an_orbit_is_written_with_its_ratio_and_its_periapsis_after_its_phase() {
     )
     .unwrap();
     let circle_bytes = encode_rail(&rail_of(circle));
-    // The flags are the same (an orbit); what comes before the ratio is the same; a circle has a ratio of 1.0 and a periapsis of nothing, an ellipse its own.
+    // The flags are the same (an orbit). A circle ends with a ratio of 1 and a periapsis of nothing, an ellipse with its own, and everything before them is the same.
     assert_eq!(circle_bytes[0], 0b010);
     assert_eq!(ellipse_bytes[0], 0b010);
-    assert_eq!(ellipse_bytes.len(), RATIO_AT + 16);
-    assert_eq!(ellipse_bytes[1..RATIO_AT], circle_bytes[1..RATIO_AT]);
+    let tail =
+        |ratio: f64, periapsis: f64| [element_bytes(ratio), element_bytes(periapsis)].concat();
+    let (circle_tail, ellipse_tail) = (tail(1.0, 0.0), tail(0.0167, 1.8));
+    assert!(circle_bytes.ends_with(&circle_tail));
+    assert!(ellipse_bytes.ends_with(&ellipse_tail));
     assert_eq!(
-        circle_bytes[RATIO_AT..RATIO_AT + 8],
-        1.0f64.to_bits().to_le_bytes()
-    );
-    assert_eq!(circle_bytes[RATIO_AT + 8..], 0.0f64.to_bits().to_le_bytes());
-    assert_eq!(
-        ellipse_bytes[RATIO_AT..RATIO_AT + 8],
-        0.0167f64.to_bits().to_le_bytes()
-    );
-    assert_eq!(
-        ellipse_bytes[RATIO_AT + 8..],
-        1.8f64.to_bits().to_le_bytes()
+        circle_bytes[..circle_bytes.len() - circle_tail.len()],
+        ellipse_bytes[..ellipse_bytes.len() - ellipse_tail.len()]
     );
     // A rail with no orbit has no such numbers.
     let spinning = Rail {
@@ -674,29 +675,39 @@ fn bytes_that_are_not_an_ellipse_are_refused() {
     let mut longer = good.clone();
     longer.push(0);
     assert!(decode_rail(&longer).is_err(), "a byte too many");
-    let write = |at: usize, value: f64| {
-        let mut bytes = good.clone();
-        bytes[at..at + 8].copy_from_slice(&value.to_bits().to_le_bytes());
-        bytes
+    // A ratio or a periapsis that makes no ellipse (the saved form has no number that is no number, so there is no NaN to write).
+    let with = |change: &dyn Fn(&mut Orbit)| {
+        let mut orbit = an_ellipse();
+        change(&mut orbit);
+        encode_rail(&rail_of(orbit))
+    };
+    let exactly = |value: f64| {
+        wide_float::WideFloat::from_f64(value, wide_float::Precision::MINIMUM).unwrap()
     };
     for (what, bytes) in [
-        ("a ratio of nothing", write(RATIO_AT, 0.0)),
-        ("a negative ratio", write(RATIO_AT, -0.5)),
-        ("a ratio above one", write(RATIO_AT, just_above(1.0))),
+        (
+            "a ratio of nothing",
+            with(&|o| o.elements.ratio = exactly(0.0)),
+        ),
+        (
+            "a negative ratio too large for a hyperbola",
+            with(&|o| o.elements.ratio = exactly(-1.0e30)),
+        ),
+        (
+            "a negative ratio too small for a hyperbola",
+            with(&|o| o.elements.ratio = exactly(-SMALLEST_RATIO / 2.0)),
+        ),
+        (
+            "a ratio above one",
+            with(&|o| o.elements.ratio = exactly(just_above(1.0))),
+        ),
         (
             "a ratio below the smallest",
-            write(RATIO_AT, SMALLEST_RATIO / 2.0),
+            with(&|o| o.elements.ratio = exactly(SMALLEST_RATIO / 2.0)),
         ),
-        ("a ratio that is not a number", write(RATIO_AT, f64::NAN)),
-        ("an infinite ratio", write(RATIO_AT, f64::INFINITY)),
-        (
-            "a periapsis that is not a number",
-            write(RATIO_AT + 8, f64::NAN),
-        ),
-        ("an infinite periapsis", write(RATIO_AT + 8, f64::INFINITY)),
         (
             "a periapsis too large",
-            write(RATIO_AT + 8, just_above(LARGEST_PHASE)),
+            with(&|o| o.elements.periapsis = exactly(just_above(LARGEST_PHASE))),
         ),
     ] {
         assert!(decode_rail(&bytes).is_err(), "{what}");
@@ -730,8 +741,8 @@ static PINS: [([i128; 3], [u64; 3], [u64; 3]); 15] = [
         ],
         [
             13909221016363472347,
-            13894047539469432373,
-            4682581952046031719,
+            13894047539469432371,
+            4682581952046031720,
         ],
     ),
     (
@@ -742,16 +753,12 @@ static PINS: [([i128; 3], [u64; 3], [u64; 3]); 15] = [
             4616159588264706048,
         ],
         [
-            4741286136591988914,
-            13962657441390365317,
-            13958799546832532287,
+            4741286136591988915,
+            13962657441390365318,
+            13958799546832532288,
         ],
     ),
-    (
-        [4687500000, 0, 0],
-        [0, 0, 0],
-        [4120907448745177000, 0, 13897309942950242831],
-    ),
+    ([4687500000, 0, 0], [0, 0, 0], [0, 0, 13897309942950242831]),
     (
         [
             -26215493239689928224895128,
@@ -760,13 +767,13 @@ static PINS: [([i128; 3], [u64; 3], [u64; 3]); 15] = [
         ],
         [
             4622732272905224192,
-            4622222631337721856,
+            4622222631337852928,
             4624035541463072768,
         ],
         [
             4817749841269446788,
             4829286581804354646,
-            4826101322537355538,
+            4826101322537355539,
         ],
     ),
     (
@@ -777,7 +784,7 @@ static PINS: [([i128; 3], [u64; 3], [u64; 3]); 15] = [
     (
         [-52030198, 0, 3376831886],
         [4625318996719108096, 0, 4628936420036640768],
-        [4664353173546721206, 0, 4675618626732881390],
+        [4664353173546721209, 0, 4675618626732881391],
     ),
     (
         [-95254994, 0, 3124385976],
@@ -787,7 +794,7 @@ static PINS: [([i128; 3], [u64; 3], [u64; 3]); 15] = [
     (
         [6228897, 9810761, 0],
         [4625181535650709504, 4628495197522886656, 0],
-        [13874186548141534276, 4648533929734375021, 0],
+        [13874186548141534277, 4648533929734375021, 0],
     ),
     (
         [24370128600, -18277596451, -36587014628],
@@ -797,9 +804,9 @@ static PINS: [([i128; 3], [u64; 3], [u64; 3]); 15] = [
             4626617067393712128,
         ],
         [
-            4662551169370693259,
-            13884334183932898767,
-            13880736547907911332,
+            4662551169370693257,
+            13884334183932898765,
+            13880736547907911331,
         ],
     ),
     (
@@ -809,25 +816,25 @@ static PINS: [([i128; 3], [u64; 3], [u64; 3]); 15] = [
             -11173673466111383193234685,
         ],
         [
-            4628770264571183104,
+            4628770264571248640,
             4626460646309756928,
             4616296432249077760,
         ],
         [
-            4827954497451753872,
-            4805435402513651856,
-            14043469250586380980,
+            4827954497451753873,
+            4805435402513651861,
+            14043469250586380981,
         ],
     ),
     (
         [274243884, 0, -149821700],
-        [4629290860780781568, 0, 4627453041456775168],
-        [13914434411742550875, 0, 13918317665956666033],
+        [4629290860780650496, 0, 4627453041456381952],
+        [13914434411742550876, 0, 13918317665956666033],
     ),
     (
         [-963750624701026, 0, 525164681772098],
         [4616404888512626688, 0, 4625627369079767040],
-        [13869401858373208454, 0, 4642194151217540537],
+        [13869401858373208454, 0, 4642194151217540538],
     ),
     (
         [2910, 158765, -93210],
@@ -839,7 +846,7 @@ static PINS: [([i128; 3], [u64; 3], [u64; 3]); 15] = [
         [
             13877574708768126414,
             4666237580169984066,
-            4657603142499802947,
+            4657603142499802948,
         ],
     ),
     (

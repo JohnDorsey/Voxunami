@@ -2,7 +2,9 @@
 //!
 //! A planet on rails is not integrated: its place and its turn at a time are worked out from the time alone, so they are the same bits on every machine, there is
 //! nothing to drift, and a world that is saved and loaded has its planets where the clock says without having saved them. A spin is worked out with `libm` in
-//! `f64`; an orbit, which has to be right to a fraction of a voxel however far out it goes, in whole numbers of 128 bits ([`ExactOffset`]).
+//! `f64`; an orbit, which has to be right to a fraction of a voxel however far out it goes, in wide numbers of any width from 128 bits (`wide_kepler`: [`ExactOffset`] is what
+//! comes out). The elements of an orbit are wide numbers too and are kept as they are given, to the last bit, in memory and in a file (`engine:rail`); nothing rounds them until a
+//! place is asked for. ("Lazy exact rails", the owner, 2026-11-03.)
 //! Two motions, each optional and independent:
 //!
 //! - a **spin**: the body turns steadily about an axis, once in `period` seconds (a negative period turns it the other way), from `angle` at time 0; the body's own
@@ -12,18 +14,25 @@
 //!   nearly along x). The centre is a point of the level, or another body, which may itself be on a rail (a moon goes round a planet that goes round a star).
 //!   An orbit may be an **ellipse**: `radius` is then its semi-major axis, `ratio` (1 - e, the periapsis over the semi-major axis, so 1.0 is a circle) says how
 //!   long and thin it is, `periapsis` is the angle in the plane of the nearest point from the direction the circle starts toward, and `phase` is the mean anomaly at
-//!   time 0 (`exact_kepler`; the definition is in `engine/world_storage/tools/exact_ellipse_reference.py`). The ratio and not the eccentricity is kept because an `f64` e
+//!   time 0 (`wide_kepler`; the definition is in `engine/world_storage/tools/exact_ellipse_reference.py`). The ratio and not the eccentricity is kept because an `f64` e
 //!   near 1 has no digits left to say how near it is.
 
+use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::f64::consts::TAU;
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use voxel_space::{GridId, Orientation};
+use wide_float::{Precision, WideFloat};
+use wide_kepler::{Elements, KeplerError, PreparedElements, Time};
 
-pub use crate::exact_circle::ExactOffset;
-use crate::exact_circle::{self, Fixed};
-use crate::exact_kepler::Ellipse;
-pub use crate::exact_kepler::SMALLEST_RATIO;
+pub use crate::hand_over::BITS_ADDED_BY_A_HAND_OVER;
+
+pub use crate::exact_offset::ExactOffset;
+
+/// The smallest ratio, 2^-64: an ellipse as thin as this is the sharpest `wide_kepler` solves (Kepler's equation has a slope as small as the ratio, which its guard bits are
+/// made for).
+pub const SMALLEST_RATIO: f64 = 1.0 / ((1u128 << 64) as f64);
 
 /// Why a spin or an orbit cannot be made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -32,6 +41,15 @@ pub enum RailError {
     NoDirection(&'static str),
     #[error("{0}")]
     Invalid(&'static str),
+}
+
+impl From<KeplerError> for RailError {
+    fn from(error: KeplerError) -> Self {
+        match error {
+            KeplerError::Invalid(message) => RailError::Invalid(message),
+            _ => RailError::Invalid("the elements of an orbit are not those of an orbit"),
+        }
+    }
 }
 
 /// What an orbit goes round.
@@ -54,22 +72,28 @@ pub struct Spin {
     pub angle: f64,
 }
 
-/// A circle or an ellipse gone round at a steady rate.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// A circle or an ellipse gone round at a steady rate. The elements (`wide_kepler::Elements`) are wide numbers, from 128 bits, kept exactly: the radius is the radius of a circle
+/// or the semi-major axis of an ellipse, in voxels; the ratio is the periapsis over the semi-major axis, which is 1 - e (1 is a circle and a small number, down to
+/// [`SMALLEST_RATIO`], a long thin ellipse); the periapsis is the angle in the plane, in radians, of the nearest point, from the direction a circle starts toward,
+/// counter-clockwise looking down the normal; the period is the seconds for one time round, negative for the other way; and the phase is how far round it is at time 0, in radians
+/// (for a circle from where it starts and the periapsis, for an ellipse the mean anomaly). The normal need not be a unit vector. Made with [`Orbit::elliptical`] (doubles) or
+/// [`Orbit::from_elements`] (any width), both of which refuse what is no orbit; the fields are public for reading, and an orbit built by hand that [`Orbit::from_elements`]
+/// would refuse is worked out wrongly, and is refused when read from a file.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Orbit {
     pub around: Centre,
-    /// A unit vector: the orbit is counter-clockwise looking down it.
-    pub normal: [f64; 3],
-    /// In voxels: the radius of a circle, the semi-major axis of an ellipse.
-    pub radius: f64,
-    /// The periapsis over the semi-major axis, which is 1 - e: 1.0 is a circle, and a small number a long thin ellipse. From [`SMALLEST_RATIO`] to 1.
-    pub ratio: f64,
-    /// The angle in the plane, in radians, of the nearest point, from the direction a circle starts toward, counter-clockwise looking down the normal.
-    pub periapsis: f64,
-    /// Seconds for one time round; negative for the other way.
-    pub period: f64,
-    /// How far round it is at time 0, in radians: for a circle from where it starts (and the periapsis), for an ellipse the mean anomaly.
-    pub phase: f64,
+    pub elements: Elements,
+    /// The time the body was put on this orbit, if it is known: an orbit made from a state (`Orbit::from_place` and its kin) starts at the time of the state, and a hand-over (see
+    /// [`Orbit::handed_over_to`]) at the instant of the crossing. The orbit says where the body is at every time, but the body is on it only from here, until it leaves the sphere of what it goes
+    /// round: so when it leaves is the first crossing **after** this time, which a ship that was parked, or a server that was off, has to be able to find. Saved with the orbit.
+    pub since: Option<RailTime>,
+    /// How many sphere-of-influence changes the body has been through since it was last put on an orbit from a state (a manoeuvre, a push, a change of the mass of what it goes round):
+    /// 0 for an orbit made from a state, and one more for each hand-over (see [`Orbit::handed_over_to`]). The whole path from that state is a function of that first orbit, so this says where on
+    /// it the body is. Saved with the orbit.
+    pub changes: u32,
+    /// How many sphere-of-influence changes after that state the player has asked a prediction of the path to show, counted from the same state (so that the prediction goes on being asked for
+    /// as the ship goes through the changes; it is advanced by the player and not by the ship's motion). A hand-over keeps it. See `server::ServerWorld::predicted_path`. Saved with the orbit.
+    pub predicted: u32,
 }
 
 /// Which ends of an ellipse a body passed in a stretch of time (see [`Orbit::apsides_passed`]).
@@ -82,7 +106,7 @@ pub struct Apsides {
 }
 
 /// How a body moves.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Rail {
     pub spin: Option<Spin>,
     pub orbit: Option<Orbit>,
@@ -111,7 +135,7 @@ fn length(vector: [f64; 3]) -> f64 {
     libm::sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2])
 }
 
-pub(crate) fn unit(vector: [f64; 3], what: &'static str) -> Result<[f64; 3], RailError> {
+fn unit(vector: [f64; 3], what: &'static str) -> Result<[f64; 3], RailError> {
     if !finite(&vector) {
         return Err(RailError::Invalid("a direction is made of numbers"));
     }
@@ -131,30 +155,27 @@ fn is_unit(vector: [f64; 3]) -> bool {
 /// at most 112 bits.
 const LONGEST_PERIOD: f64 = (1u128 << 80) as f64;
 
-/// The largest radius of an orbit, in voxels: 2^120, a million times the distance across the universe in metres, so that its offset in bricks is an `i128`.
-const LARGEST_RADIUS: f64 = (1u128 << 120) as f64;
-
-/// The largest phase of an orbit, in radians either way: 2^63 (a million times the age of the universe, if it were a number of seconds), so that it is a fraction of a
-/// turn to the last of 128 bits.
-const LARGEST_PHASE: f64 = (1u64 << 63) as f64;
-
-/// Whether `period` is one a rail can have: a number that is not nothing and not above [`LONGEST_PERIOD`], either way.
+/// Whether `period` is one a spin can have: a number that is not nothing and not above [`LONGEST_PERIOD`], either way.
 fn usable_period(period: f64) -> bool {
     period.is_finite() && period != 0.0 && period.abs() <= LONGEST_PERIOD
 }
 
-/// Whether an orbit can have this radius and phase.
-fn usable_circle(radius: f64, phase: f64) -> bool {
-    radius > 0.0 && radius <= LARGEST_RADIUS && phase.abs() <= LARGEST_PHASE
+/// The largest radius of an orbit, in voxels, as a power of two: 2^120, a million times the distance across the universe in metres, so that its offset in bricks is an `i128`.
+const LARGEST_RADIUS_EXPONENT: i64 = 120;
+
+/// The longest period of an orbit, in seconds, as a power of two: 2^80 (the spin's limit too: [`LONGEST_PERIOD`]).
+const LONGEST_ORBIT_PERIOD_EXPONENT: i64 = 80;
+
+/// Whether `value`, which is not negative, is at most 2^`exponent`.
+fn at_most_a_power_of_two(value: &WideFloat, exponent: i64) -> bool {
+    let limit = WideFloat::from_i64(1, value.precision())
+        .times_power_of_two(exponent)
+        .expect("a power of two within the range of a number");
+    value.compare(&limit) != Ordering::Greater
 }
 
-/// Whether an orbit can have this ratio and periapsis: a ratio from [`SMALLEST_RATIO`] to 1, and an angle that can be a fraction of a turn to the last of 128 bits, as a phase can.
-fn usable_shape(ratio: f64, periapsis: f64) -> bool {
-    (SMALLEST_RATIO..=1.0).contains(&ratio) && periapsis.abs() <= LARGEST_PHASE
-}
-
-/// A time of the world, as a whole number of units and how many make a second, so that it is exact however long the world has run: a tick of the clock, or a time
-/// in seconds that is rounded to a millionth of one (for data and tests; the world always gives ticks). A time before the world began is allowed.
+/// A time of the world, as a whole number of units (under 2^96 either way) and how many make a second, so that it is exact however long the world has run: a tick of the
+/// clock, or a time in seconds that is rounded to a millionth of one (for data and tests; the world always gives ticks). A time before the world began is allowed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RailTime {
     units: i128,
@@ -190,19 +211,84 @@ impl RailTime {
     }
 }
 
-/// A time in seconds (for data and tests): rounded to the nearest millionth of a second. Not a number is the start of the world.
+/// The most units of a time, either way: just under 2^96 (`wide_kepler`'s limit), which is 2^76 seconds of the units of a time given in seconds, two hundred million times the
+/// age of the universe in years.
+const MOST_UNITS: i128 = (1 << 96) - 1;
+
+/// A time in seconds (for data and tests): rounded to the nearest millionth of a second. Not a number is the start of the world, and a time further from it than
+/// 2^76 seconds (just under 2^96 units) is that far.
 impl From<f64> for RailTime {
     fn from(seconds: f64) -> Self {
         Self {
-            units: (seconds * f64::from(UNITS_IN_A_SECOND_OF_SECONDS)).round() as i128,
+            units: ((seconds * f64::from(UNITS_IN_A_SECOND_OF_SECONDS)).round() as i128)
+                .clamp(-MOST_UNITS, MOST_UNITS),
             units_per_second: UNITS_IN_A_SECOND_OF_SECONDS,
         }
     }
 }
 
+impl RailTime {
+    /// The instant of the grid of `wide_kepler` (see [`wide_kepler::INSTANTS_PER_SECOND`]) that a time is.
+    pub(crate) fn of_instant(time: Time) -> Self {
+        Self {
+            units: time.units,
+            units_per_second: time.units_per_second,
+        }
+    }
+
+    /// The whole number of units of the time (a tick, or a step of the grid of the instants bodies leave spheres at).
+    pub fn units(self) -> i128 {
+        self.units
+    }
+
+    /// How many units make a second.
+    pub fn units_per_second(self) -> u32 {
+        self.units_per_second
+    }
+
+    /// Which of two times is earlier, exactly (a time in units of one rate against one in another: the tick of a server and an instant of the grid). Not `Ord`, because two times
+    /// that are the same moment in different units are not equal as values.
+    pub fn compare(self, other: Self) -> Ordering {
+        // (The units are under 2^96 and a rate under 2^32, so a product fits a `u128`.)
+        let (own_sign, other_sign) = (self.units.signum(), other.units.signum());
+        if own_sign != other_sign {
+            return own_sign.cmp(&other_sign);
+        }
+        let own = self.units.unsigned_abs() * u128::from(other.units_per_second);
+        let theirs = other.units.unsigned_abs() * u128::from(self.units_per_second);
+        if own_sign < 0 {
+            theirs.cmp(&own)
+        } else {
+            own.cmp(&theirs)
+        }
+    }
+}
+
+impl RailTime {
+    /// As `wide_kepler` has a time.
+    pub(crate) fn wide(self) -> Time {
+        Time {
+            units: self.units,
+            units_per_second: self.units_per_second,
+        }
+    }
+}
+
+/// `value.abs()` as a whole number times a power of two, `(mantissa, exponent)`: exact for every `f64` that is a number.
+fn split(value: f64) -> (u64, i32) {
+    let bits = value.abs().to_bits();
+    let exponent_bits = ((bits >> 52) & 0x7ff) as i32;
+    let fraction_bits = bits & ((1 << 52) - 1);
+    if exponent_bits == 0 {
+        (fraction_bits, -1074)
+    } else {
+        (fraction_bits | (1 << 52), exponent_bits - 1075)
+    }
+}
+
 /// `period.abs()` as a whole number times a power of two, `(mantissa, exponent)`, with the mantissa odd. Exact for every period that is a number and not nothing.
 fn mantissa_and_exponent(period: f64) -> (u64, i32) {
-    let (mantissa, exponent) = exact_circle::split(period);
+    let (mantissa, exponent) = split(period);
     let even = mantissa.trailing_zeros();
     (mantissa >> even, exponent + even as i32)
 }
@@ -214,7 +300,7 @@ fn mantissa_and_exponent(period: f64) -> (u64, i32) {
 /// the turns are `units / (units_per_second x mantissa x 2^exponent)` and only the remainder after the whole turns is divided. (An `f64` of seconds divided by an `f64`
 /// period loses a digit for every ten turns: after twelve thousand years of a planet's years it is a metre out.) The denominator is below 2^112 for every period a rail
 /// can have.
-pub(crate) fn turn_fraction(time: RailTime, period: f64) -> (u128, u128) {
+fn turn_fraction(time: RailTime, period: f64) -> (u128, u128) {
     if !usable_period(period) {
         return (0, 1);
     }
@@ -314,8 +400,9 @@ impl Orbit {
         Self::elliptical(around, normal, radius, 1.0, 0.0, period, phase)
     }
 
-    /// An ellipse round `around` in the plane with this normal (any vector that is not nothing): `radius` is the semi-major axis, `ratio` is 1 - e (1.0 is a circle), and
-    /// `periapsis` is the angle in radians of the nearest point.
+    /// An ellipse round `around` in the plane with this normal (any vector that is not nothing: it is made a unit vector, in `f64`, here): `radius` is the semi-major axis,
+    /// `ratio` is 1 - e (1.0 is a circle), and `periapsis` is the angle in radians of the nearest point. The numbers are doubles, which any width holds exactly, so these are
+    /// the elements of the orbit as they are given, in 128 bits; [`Orbit::from_elements`] makes an orbit of numbers that are not doubles.
     pub fn elliptical(
         around: Centre,
         normal: [f64; 3],
@@ -325,6 +412,49 @@ impl Orbit {
         period: f64,
         phase: f64,
     ) -> Result<Self, RailError> {
+        if !finite(&[radius, ratio, periapsis, period, phase]) {
+            return Err(RailError::Invalid("the elements of an orbit are numbers"));
+        }
+        let exactly = |value: f64| {
+            WideFloat::from_f64(value, Precision::MINIMUM).expect("a finite number is a number")
+        };
+        Self::from_elements(
+            around,
+            Elements {
+                normal: unit(normal, "the normal of an orbit")?.map(exactly),
+                radius: exactly(radius),
+                ratio: exactly(ratio),
+                periapsis: exactly(periapsis),
+                period: exactly(period),
+                phase: exactly(phase),
+            },
+        )
+    }
+
+    /// A hyperbola round `around` in the plane with this normal: `radius` is the size of the semi-major axis, `excess` is e - 1 (the ratio is minus it), `periapsis` is the angle in
+    /// radians of the nearest point, `period` is 2 pi over the mean motion (negative for the other way round) and `phase` is the mean anomaly at time 0 as it is, not taken
+    /// modulo a turn (below nothing before the periapsis). The numbers are doubles.
+    pub fn hyperbolic(
+        around: Centre,
+        normal: [f64; 3],
+        radius: f64,
+        excess: f64,
+        periapsis: f64,
+        period: f64,
+        phase: f64,
+    ) -> Result<Self, RailError> {
+        if !excess.is_finite() || excess <= 0.0 {
+            return Err(RailError::Invalid(
+                "a hyperbola has an eccentricity above one (a parabola is not made)",
+            ));
+        }
+        Self::elliptical(around, normal, radius, -excess, periapsis, period, phase)
+    }
+
+    /// An orbit round `around` of these elements, of any width from 128 bits, kept exactly as they are. Refused: a centre that is not made of numbers, and what `wide_kepler`
+    /// refuses (a normal of nothing, a ratio outside 2^-64 to 1 for an ellipse and outside -2^-64 to -2^64 for a hyperbola, a period outside 2^-20 to 2^80 seconds either way, an
+    /// angle over 2^63 radians and a phase over 2^120 for a hyperbola, a radius that is not above nothing), and a radius over 2^120 voxels. The normal need not be a unit vector.
+    pub fn from_elements(around: Centre, elements: Elements) -> Result<Self, RailError> {
         if let Centre::Point(point) = around
             && !finite(&point)
         {
@@ -332,69 +462,160 @@ impl Orbit {
                 "the centre of an orbit is made of numbers",
             ));
         }
-        if !(radius.is_finite() && phase.is_finite()) {
+        elements.validate()?;
+        if !at_most_a_power_of_two(&elements.radius, LARGEST_RADIUS_EXPONENT)
+            || !at_most_a_power_of_two(&elements.period.abs(), LONGEST_ORBIT_PERIOD_EXPONENT)
+        {
             return Err(RailError::Invalid(
-                "the radius and the phase of an orbit are numbers",
-            ));
-        }
-        if !usable_circle(radius, phase) {
-            return Err(RailError::Invalid(
-                "an orbit has a radius above nothing and not above 2^120 voxels, and a phase not above 2^63 radians",
-            ));
-        }
-        if !usable_period(period) {
-            return Err(RailError::Invalid(
-                "an orbit has a period that is not nothing and not above 2^80 seconds",
-            ));
-        }
-        if !usable_shape(ratio, periapsis) {
-            return Err(RailError::Invalid(
-                "an orbit has a ratio (1 - e) from 2^-64 to 1 and a periapsis of at most 2^63 radians",
+                "an orbit has a radius of at most 2^120 voxels and a period of at most 2^80 seconds",
             ));
         }
         Ok(Self {
             around,
-            normal: unit(normal, "the normal of an orbit")?,
-            radius,
-            ratio,
-            periapsis,
-            period,
-            phase,
+            elements,
+            since: None,
+            changes: 0,
+            predicted: 0,
         })
+    }
+
+    /// The same orbit, the body put on it at `time` (see [`Orbit::since`]).
+    #[must_use]
+    pub fn starting_at(mut self, time: RailTime) -> Self {
+        self.since = Some(time);
+        self
+    }
+
+    /// The semi-major axis (the radius of a circle) in voxels, as the `f64` nearest to it: for sizes and comparisons, not for placing a body.
+    pub fn radius(&self) -> f64 {
+        self.elements.radius.to_f64()
+    }
+
+    /// The periapsis over the semi-major axis, 1 - e, as the nearest `f64`.
+    pub fn ratio(&self) -> f64 {
+        self.elements.ratio.to_f64()
+    }
+
+    /// The angle of the nearest point in the plane, in radians, as the nearest `f64`.
+    pub fn periapsis(&self) -> f64 {
+        self.elements.periapsis.to_f64()
+    }
+
+    /// The seconds for one time round (negative for the other way), as the nearest `f64`.
+    pub fn period(&self) -> f64 {
+        self.elements.period.to_f64()
+    }
+
+    /// The mean anomaly at time 0, in radians, as the nearest `f64`.
+    pub fn phase(&self) -> f64 {
+        self.elements.phase.to_f64()
+    }
+
+    /// The normal as the nearest `f64`s (a vector in the direction of the normal, not necessarily a unit one).
+    pub fn normal(&self) -> [f64; 3] {
+        self.elements.normal.each_ref().map(WideFloat::to_f64)
+    }
+
+    /// Whether it is a hyperbola: a ratio below nothing (e above 1). A hyperbola goes round no turn, passes its periapsis once and goes out for ever.
+    pub fn is_a_hyperbola(&self) -> bool {
+        self.elements.is_a_hyperbola()
+    }
+
+    /// Whether the periapsis is still to come at `time`: always for an ellipse (it comes round), and for a hyperbola until it has been passed (its mean anomaly is below nothing, or
+    /// above it for the other way round). A hyperbola that has passed it goes away for ever, and the nearest it came is behind it.
+    pub fn periapsis_ahead(&self, time: RailTime) -> bool {
+        if !self.is_a_hyperbola() {
+            return true;
+        }
+        let mean = self
+            .elements
+            .hyperbolic_mean_anomaly(time.wide(), Precision::of(192))
+            .expect("an orbit made by this module has a mean anomaly");
+        if self.elements.period.is_negative() {
+            mean.is_positive()
+        } else {
+            mean.is_negative()
+        }
+    }
+
+    /// Whether it is a circle: a ratio of exactly 1.
+    pub fn is_circle(&self) -> bool {
+        let one = WideFloat::from_i64(1, self.elements.ratio.precision());
+        self.elements.ratio.compare(&one) == Ordering::Equal
+    }
+
+    /// The eccentricity (1 less the ratio), as the nearest `f64`: exact however small it is, because the ratio is kept and not the eccentricity (see [`Orbit::ratio`]).
+    pub fn eccentricity(&self) -> f64 {
+        let one = WideFloat::from_i64(1, self.elements.ratio.precision());
+        (&one - &self.elements.ratio).to_f64()
+    }
+
+    /// How near to its centre the body comes, in voxels, as an `f64` (the semi-major axis times the size of the ratio).
+    pub fn nearest_distance(&self) -> f64 {
+        self.radius() * self.ratio().abs()
+    }
+
+    /// How far from its centre the body goes, in voxels, as an `f64` (the semi-major axis times 2 less the ratio); **endless for a hyperbola**.
+    pub fn farthest_distance(&self) -> f64 {
+        if self.is_a_hyperbola() {
+            return f64::INFINITY;
+        }
+        self.radius() * (2.0 - self.ratio())
     }
 
     /// The mass parameter, `G M` of what the orbit goes round in voxels cubed a second squared, that the period and the semi-major axis say (`mu = n^2 a^3`, Kepler's third law). An
     /// orbit made from a state (`Orbit::from_place`) has the period of the mass it was made with, so this is that mass, to the rounding of two numbers: it is how a ship that is
     /// on a rail knows the mass it was made for.
     pub fn mass_parameter(&self) -> f64 {
-        let rate = TAU / self.period;
-        rate * rate * self.radius * self.radius * self.radius
+        let rate = TAU / self.period();
+        rate * rate * self.radius() * self.radius() * self.radius()
     }
 
-    /// The mean anomaly at `time`, as a fraction of a turn of 128 bits.
+    /// The mean anomaly at `time`, as a fraction of a turn of 128 bits (rounded down, the whole turn being nothing): the exact part of a turn gone and the phase, worked out in
+    /// 192 bits.
     fn mean_anomaly(&self, time: RailTime) -> u128 {
-        let (remainder, whole_turn) = turn_fraction(time, self.period);
-        exact_circle::fraction_in_turns(remainder, whole_turn)
-            .wrapping_add(exact_circle::turns_of_radians(self.phase))
+        let fraction = self
+            .elements
+            .mean_anomaly_in_turns(time.wide(), Precision::of(192))
+            .expect("an orbit made by this module has a mean anomaly");
+        turns_with_128_bits(&fraction)
     }
 
     /// Which ends of the ellipse the body passes after `from` up to and including `to` (a stretch that starts where the one before ended passes each end once, never twice).
     /// Worked out from the mean anomaly in whole numbers: the periapsis is at 0 and the apoapsis at half a turn. A circle has no ends, and passes neither. A stretch of a whole turn
     /// or more passes both.
     pub fn apsides_passed(&self, from: RailTime, to: RailTime) -> Apsides {
-        if self.ratio == 1.0 {
+        if self.is_a_hyperbola() {
+            // The periapsis is where the mean anomaly is nothing, and it is passed once: in the stretch that has it after `from` up to and including `to`. There is no apoapsis.
+            let mean = |time: RailTime| {
+                self.elements
+                    .hyperbolic_mean_anomaly(time.wide(), Precision::of(192))
+                    .expect("an orbit made by this module has a mean anomaly")
+            };
+            let (before, after) = (mean(from), mean(to));
+            let passed = if self.elements.period.is_negative() {
+                before.is_positive() && !after.is_positive()
+            } else {
+                before.is_negative() && !after.is_negative()
+            };
+            return Apsides {
+                periapsis: passed,
+                apoapsis: false,
+            };
+        }
+        if self.is_circle() {
             return Apsides::default();
         }
         // (The whole numbers know a part of a turn, not how many turns: a stretch as long as the period passes both ends whatever they say.)
         let seconds = |time: RailTime| time.units as f64 / f64::from(time.units_per_second);
-        if seconds(to) - seconds(from) >= self.period.abs() {
+        if seconds(to) - seconds(from) >= self.period().abs() {
             return Apsides {
                 periapsis: true,
                 apoapsis: true,
             };
         }
         let (before, after) = (self.mean_anomaly(from), self.mean_anomaly(to));
-        let forward = self.period > 0.0;
+        let forward = !self.elements.period.is_negative();
         // How far round, in the way the body goes, a mean anomaly is from where it was before.
         let gone = |anomaly: u128| {
             if forward {
@@ -414,85 +635,67 @@ impl Orbit {
         }
     }
 
-    /// Where the body is from the centre at `time`, exact, and how fast it moves round it. The angle is the phase and the part of a turn gone, added as fractions of a turn
-    /// of 128 bits; the sine and cosine, the plane and the radius multiplied in are whole numbers too (see [`crate::exact_circle`]). For an ellipse that angle is the mean
-    /// anomaly, from which [`crate::exact_kepler`] works out the place.
-    fn at(&self, time: RailTime) -> (ExactOffset, [f64; 3]) {
-        let (remainder, whole_turn) = turn_fraction(time, self.period);
-        let gone = exact_circle::fraction_in_turns(remainder, whole_turn)
-            .wrapping_add(exact_circle::turns_of_radians(self.phase));
-        let (first, second) = exact_circle::plane(self.normal);
-        if self.ratio != 1.0 {
-            return self.on_an_ellipse(gone, first, second);
-        }
-        // A circle: the periapsis only says where it starts (not at all, for the circles of before ellipses, whose bits are pinned).
-        let turns = if self.periapsis == 0.0 {
-            gone
-        } else {
-            gone.wrapping_add(exact_circle::turns_of_radians(self.periapsis))
-        };
-        let angle = exact_circle::sine_and_cosine(turns);
-        let offset = exact_circle::circle_point(self.radius, angle, first, second);
-        // The speed is worked out from the same sine, cosine and plane, as plain numbers: it is as large as a radius a period, and a part in 10^16 of that is nothing.
-        let (sine, cosine) = (
-            exact_circle::float_of(angle.0),
-            exact_circle::float_of(angle.1),
-        );
-        let first = first.map(exact_circle::float_of);
-        let second = second.map(exact_circle::float_of);
-        let speed = self.radius * (TAU / self.period);
-        (
-            offset,
-            [0, 1, 2].map(|axis| speed * (cosine * second[axis] - sine * first[axis])),
-        )
+    /// Where the body is from the centre at `time`, and how fast it moves round it. The place is worked out in wide numbers (`wide_kepler`: for a circle or an ellipse, the
+    /// phase and the part of a turn gone, the mean anomaly, Kepler's equation, the periapsis and the plane) from the elements as they are, in a width that leaves the last bit of
+    /// it below 2^-64 voxel (see [`answer_precision`]), and rounded once, to whole bricks and a rest in steps of 2^-32 voxel; the speed is the same working rounded to an `f64`.
+    fn at(&self, time: RailTime) -> Option<(ExactOffset, [f64; 3])> {
+        Self::at_prepared(&self.prepare(), time)
     }
 
-    /// As [`Self::at`] for an ellipse, from the mean anomaly and the two directions of the plane. In the plane of the orbit the body is at x toward the periapsis and y a
-    /// quarter turn on, in units of the semi-major axis; the direction of travel is (-sin E, sqrt(1 - e^2) cos E) over the distance from the focus, which is 1 - e cos E in
-    /// the same units; and the periapsis angle turns both into the two directions of the plane.
-    fn on_an_ellipse(
-        &self,
-        mean_anomaly: u128,
-        first: [Fixed; 3],
-        second: [Fixed; 3],
-    ) -> (ExactOffset, [f64; 3]) {
-        let anomaly = Ellipse::new(self.ratio).anomaly(mean_anomaly);
-        let turned = (self.periapsis != 0.0)
-            .then(|| exact_circle::sine_and_cosine(exact_circle::turns_of_radians(self.periapsis)));
-        // (x, y) turned by the periapsis angle: x' = x cos - y sin, y' = x sin + y cos.
-        let rotate = |x: Fixed, y: Fixed| match turned {
-            None => (x, y),
-            Some((sine, cosine)) => (
-                exact_circle::multiplied(x, cosine, 126) - exact_circle::multiplied(y, sine, 126),
-                exact_circle::multiplied(x, sine, 126) + exact_circle::multiplied(y, cosine, 126),
-            ),
-        };
-        let (x, y) = rotate(anomaly.x, anomaly.y);
-        // (The point in the plane is a cosine and a sine of something that is not an angle, up to twice as long as a unit vector: `circle_point` multiplies them in as they are.)
-        let offset = exact_circle::circle_point(self.radius, (y, x), first, second);
-        // The speed is worked out from the same numbers as plain numbers, as the circle's is: n a over the distance, with n = 2 pi over the period.
-        let scale = self.radius * (TAU / self.period) / exact_circle::float_of(anomaly.distance);
-        let (toward, along) = (
-            -exact_circle::float_of(anomaly.sine) * scale,
-            exact_circle::float_of(anomaly.velocity_y) * scale,
-        );
-        let (toward, along) = match turned {
-            None => (toward, along),
-            Some((sine, cosine)) => {
-                let (sine, cosine) = (exact_circle::float_of(sine), exact_circle::float_of(cosine));
-                (
-                    toward * cosine - along * sine,
-                    toward * sine + along * cosine,
-                )
-            }
-        };
-        let first = first.map(exact_circle::float_of);
-        let second = second.map(exact_circle::float_of);
-        (
-            offset,
-            [0, 1, 2].map(|axis| toward * first[axis] + along * second[axis]),
-        )
+    /// What the place of this orbit needs whatever the time is, worked out once (see [`RailMemo`], which keeps it while the orbit does not change).
+    fn prepare(&self) -> PreparedElements {
+        self.elements
+            .prepare(answer_precision(&self.elements))
+            .expect("an orbit made by this module is one `wide_kepler` works out")
     }
+
+    /// As [`Orbit::at`], from the orbit as [`Orbit::prepare`] made it.
+    /// `None` for a place the world cannot say (a body on a hyperbola so far out that its bricks do not fit an `i128`).
+    fn at_prepared(prepared: &PreparedElements, time: RailTime) -> Option<(ExactOffset, [f64; 3])> {
+        let place = prepared
+            .place_at(time.wide())
+            .expect("an orbit made by this module is one `wide_kepler` works out");
+        Some((
+            ExactOffset::of_voxels(&place.position)?,
+            place.velocity.map(|component| component.to_f64()),
+        ))
+    }
+}
+
+/// A part of a turn from 0 to a whole turn as a fraction of a turn with 128 bits after the point, rounded down; a whole turn is the same place as nothing.
+fn turns_with_128_bits(fraction: &WideFloat) -> u128 {
+    let wide_part = fraction
+        .times_power_of_two(64)
+        .expect("a fraction times 2^64 is a number");
+    let high = wide_part
+        .floor_to_i128()
+        .expect("a part of a turn times 2^64 is a whole number of at most 65 bits");
+    if high >> 64 != 0 {
+        return 0;
+    }
+    // (What is left after the whole part is exact: it has fewer bits than the number had.)
+    let rest = &wide_part - &WideFloat::from_i128(high, wide_part.precision());
+    let low = rest
+        .times_power_of_two(64)
+        .expect("a rest times 2^64 is a number")
+        .floor_to_i128()
+        .expect("a rest below one times 2^64 is a whole number of at most 64 bits");
+    ((high as u128) << 64) | low as u128
+}
+
+/// The width a place is worked out in: the bits above the point of a place as far out as an ellipse of this `radius` goes (twice it), 64 below it (the answer keeps 32, and
+/// the place is then the nearest step except where it is within 2^-32 of a step of a tie), to the next multiple of 64, and at least 128. **A hyperbola goes out for ever**, and a place
+/// is any distance the world can say: under 2^132 voxels (an `i128` of bricks). With the 64 bits below it that is 196; 192 leaves 60 below the point at the very edge of the world (and the
+/// working has 96 bits more than this), and 124 at a place of 2^68.
+fn answer_precision(elements: &Elements) -> Precision {
+    if elements.is_a_hyperbola() {
+        return Precision::of(192);
+    }
+    let radius = &elements.radius;
+    let bits_of_radius = radius.floor_log2().unwrap_or(0) + 1;
+    let wanted = (bits_of_radius + 1 + 64).max(0) as u64;
+    Precision::new((wanted.div_ceil(64) * 64).max(Precision::MINIMUM.bits()))
+        .expect("the radius of an orbit is at most 2^120 voxels, which takes 192 bits")
 }
 
 impl Rail {
@@ -507,6 +710,18 @@ impl Rail {
         centre_velocity: [f64; 3],
     ) -> RailState {
         let time = time.into();
+        let orbit = self.orbit.as_ref().and_then(|orbit| orbit.at(time));
+        self.state_given(time, centre_position, centre_velocity, orbit)
+    }
+
+    /// As [`Rail::state`], with what the orbit says at `time` already worked out (see [`RailMemo`]).
+    fn state_given(
+        &self,
+        time: RailTime,
+        centre_position: [f64; 3],
+        centre_velocity: [f64; 3],
+        orbit: Option<(ExactOffset, [f64; 3])>,
+    ) -> RailState {
         let mut state = RailState {
             position: None,
             offset: None,
@@ -514,8 +729,7 @@ impl Rail {
             orientation: None,
             angular_velocity: [0.0; 3],
         };
-        if let Some(orbit) = &self.orbit {
-            let (offset, speed) = orbit.at(time);
+        if let Some((offset, speed)) = orbit {
             let offset_in_voxels = offset.in_voxels();
             state.offset = Some(offset);
             state.position =
@@ -531,8 +745,119 @@ impl Rail {
     }
 }
 
+/// What an orbit said of its body at a time, kept so that the same question is not worked out twice, and what an orbit needs whatever the time is, kept so that it is worked
+/// out once while the orbit does not change. The server puts the ships on their rails at the start of a tick and again after the logic of it (to put a ship that came into
+/// memory, or was put on a rail, where its rail says), and an orbit is a pure function of the time, so the second putting needs no working out; and a ship that goes round
+/// for thousands of ticks needs its plane, the sine and cosine of its periapsis and its minor axis (a quarter of the cost of a place) once, not at every tick.
+/// **The memory never changes an answer**: it keeps, for each ship, the orbit, what was prepared from it and the time and answer it was last asked, and gives the answer back
+/// only for the very same orbit (every element, width and all) at the very same time, and uses what was prepared only for the very same orbit; anything else is worked out and
+/// put in its place. A spin is a few `f64` operations and is never kept. What the orbit goes round is not a part of what it says (that is added after), so a moved centre does
+/// not spoil an answer.
+#[derive(Clone, Debug, Default)]
+pub struct RailMemo {
+    entries: HashMap<GridId, Remembered>,
+    evaluations: u64,
+    reused: u64,
+    preparations: u64,
+}
+
+#[derive(Clone, Debug)]
+struct Remembered {
+    orbit: Orbit,
+    prepared: PreparedElements,
+    time: RailTime,
+    /// What the orbit said: `None` if it put the body where the world has no place.
+    placed: Option<(ExactOffset, [f64; 3])>,
+}
+
+impl RailMemo {
+    /// As [`Rail::state`] for the ship `grid`: the same answer to the bit, with what the orbit says remembered if it was asked the same just before.
+    pub fn state(
+        &mut self,
+        grid: GridId,
+        rail: &Rail,
+        time: RailTime,
+        centre_position: [f64; 3],
+        centre_velocity: [f64; 3],
+    ) -> RailState {
+        let orbit = match &rail.orbit {
+            None => {
+                self.entries.remove(&grid);
+                None
+            }
+            Some(orbit) => self.orbit_at(grid, orbit, time),
+        };
+        rail.state_given(time, centre_position, centre_velocity, orbit)
+    }
+
+    fn orbit_at(
+        &mut self,
+        grid: GridId,
+        orbit: &Orbit,
+        time: RailTime,
+    ) -> Option<(ExactOffset, [f64; 3])> {
+        if let Some(kept) = self.entries.get_mut(&grid)
+            && kept.orbit == *orbit
+        {
+            if kept.time == time {
+                self.reused += 1;
+                return kept.placed;
+            }
+            // The same orbit at another time: what does not depend on the time is kept.
+            let placed = Orbit::at_prepared(&kept.prepared, time);
+            self.evaluations += 1;
+            (kept.time, kept.placed) = (time, placed);
+            return placed;
+        }
+        let prepared = orbit.prepare();
+        let placed = Orbit::at_prepared(&prepared, time);
+        self.preparations += 1;
+        self.evaluations += 1;
+        self.entries.insert(
+            grid,
+            Remembered {
+                orbit: orbit.clone(),
+                prepared,
+                time,
+                placed,
+            },
+        );
+        placed
+    }
+
+    /// Forgets the ships for which `keep` is false (those that are not on a rail any more, or not in the world).
+    pub fn keep_only(&mut self, mut keep: impl FnMut(GridId) -> bool) {
+        self.entries.retain(|grid, _| keep(*grid));
+    }
+
+    /// How many ships have an answer kept.
+    pub fn remembered(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// How many times an orbit was worked out for a time (a place and a speed: 8 microseconds for a circle and 20 for an ellipse at the widths of a ship, once the orbit is prepared), since this was made.
+    pub fn evaluations(&self) -> u64 {
+        self.evaluations
+    }
+
+    /// How many times an answer that was kept was given back instead.
+    pub fn reused(&self) -> u64 {
+        self.reused
+    }
+
+    /// How many times what an orbit needs whatever the time is was worked out (about 7 microseconds), which is once for an orbit that stays on a ship and not once for each
+    /// time it is asked.
+    pub fn preparations(&self) -> u64 {
+        self.preparations
+    }
+}
+
 const HAS_SPIN: u8 = 1;
 const HAS_ORBIT: u8 = 2;
+/// The orbit has a time it starts at (see [`Orbit::since`]); only with an orbit.
+const HAS_START: u8 = 4;
+/// The orbit is some changes of sphere of influence into a path, and a prediction has been asked for (see [`Orbit::changes`]); only with an orbit.
+const HAS_CHAIN: u8 = 8;
 const ABOUT_A_POINT: u8 = 0;
 const ABOUT_A_GRID: u8 = 1;
 
@@ -560,7 +885,25 @@ fn read_number(reader: &mut ByteReader<'_>) -> Result<f64, DecodeError> {
 pub fn encode_rail(rail: &Rail) -> Vec<u8> {
     let mut writer = ByteWriter::new();
     let flags = if rail.spin.is_some() { HAS_SPIN } else { 0 }
-        | if rail.orbit.is_some() { HAS_ORBIT } else { 0 };
+        | if rail.orbit.is_some() { HAS_ORBIT } else { 0 }
+        | if rail
+            .orbit
+            .as_ref()
+            .is_some_and(|orbit| orbit.since.is_some())
+        {
+            HAS_START
+        } else {
+            0
+        }
+        | if rail
+            .orbit
+            .as_ref()
+            .is_some_and(|orbit| orbit.changes != 0 || orbit.predicted != 0)
+        {
+            HAS_CHAIN
+        } else {
+            0
+        };
     writer.write_u8(flags);
     if let Some(spin) = &rail.spin {
         write_vector(&mut writer, spin.axis);
@@ -578,12 +921,24 @@ pub fn encode_rail(rail: &Rail) -> Vec<u8> {
                 writer.write_varint(grid.get());
             }
         }
-        write_vector(&mut writer, orbit.normal);
-        writer.write_u64(orbit.radius.to_bits());
-        writer.write_u64(orbit.period.to_bits());
-        writer.write_u64(orbit.phase.to_bits());
-        writer.write_u64(orbit.ratio.to_bits());
-        writer.write_u64(orbit.periapsis.to_bits());
+        let elements = &orbit.elements;
+        for number in elements.normal.iter().chain([
+            &elements.radius,
+            &elements.period,
+            &elements.phase,
+            &elements.ratio,
+            &elements.periapsis,
+        ]) {
+            number.write_to(&mut writer);
+        }
+        if let Some(since) = orbit.since {
+            writer.write_wide_signed(since.units);
+            writer.write_varint(u64::from(since.units_per_second));
+        }
+        if orbit.changes != 0 || orbit.predicted != 0 {
+            writer.write_varint(u64::from(orbit.changes));
+            writer.write_varint(u64::from(orbit.predicted));
+        }
     }
     writer.into_bytes()
 }
@@ -593,8 +948,13 @@ pub fn encode_rail(rail: &Rail) -> Vec<u8> {
 pub fn decode_rail(payload: &[u8]) -> Result<Rail, DecodeError> {
     let mut reader = ByteReader::new(payload);
     let flags = reader.read_u8()?;
-    if flags & !(HAS_SPIN | HAS_ORBIT) != 0 {
+    if flags & !(HAS_SPIN | HAS_ORBIT | HAS_START | HAS_CHAIN) != 0 {
         return Err(DecodeError::Invalid("a rail with a flag nobody knows"));
+    }
+    if flags & (HAS_START | HAS_CHAIN) != 0 && flags & HAS_ORBIT == 0 {
+        return Err(DecodeError::Invalid(
+            "a start or a place in a path of an orbit the rail does not have",
+        ));
     }
     let spin = if flags & HAS_SPIN != 0 {
         let spin = Spin {
@@ -619,14 +979,14 @@ pub fn decode_rail(payload: &[u8]) -> Result<Rail, DecodeError> {
                 ));
             }
         };
-        let normal = read_vector(&mut reader)?;
-        let radius = read_number(&mut reader)?;
-        let period = read_number(&mut reader)?;
-        let phase = read_number(&mut reader)?;
-        let ratio = read_number(&mut reader)?;
-        let periapsis = read_number(&mut reader)?;
-        let orbit = Orbit {
-            around,
+        let mut number = || WideFloat::read_from(&mut reader);
+        let normal = [number()?, number()?, number()?];
+        let radius = number()?;
+        let period = number()?;
+        let phase = number()?;
+        let ratio = number()?;
+        let periapsis = number()?;
+        let elements = Elements {
             normal,
             radius,
             ratio,
@@ -634,19 +994,30 @@ pub fn decode_rail(payload: &[u8]) -> Result<Rail, DecodeError> {
             period,
             phase,
         };
-        let centre_is_good = match orbit.around {
-            Centre::Point(point) => finite(&point),
-            Centre::Grid(_) => true,
-        };
-        if !(centre_is_good
-            && is_unit(orbit.normal)
-            && orbit.radius.is_finite()
-            && orbit.phase.is_finite()
-            && usable_circle(orbit.radius, orbit.phase)
-            && usable_shape(orbit.ratio, orbit.periapsis)
-            && usable_period(orbit.period))
-        {
-            return Err(DecodeError::Invalid("an orbit that is no orbit"));
+        let mut orbit = Orbit::from_elements(around, elements)
+            .map_err(|_| DecodeError::Invalid("an orbit that is no orbit"))?;
+        if flags & HAS_START != 0 {
+            let units = reader.read_wide_signed()?;
+            let per_second = u32::try_from(reader.read_varint()?)
+                .ok()
+                .filter(|per_second| *per_second > 0)
+                .ok_or(DecodeError::Invalid("a start with no units in a second"))?;
+            if units.unsigned_abs() > MOST_UNITS.unsigned_abs() {
+                return Err(DecodeError::Invalid("a start further than the clock goes"));
+            }
+            orbit = orbit.starting_at(RailTime {
+                units,
+                units_per_second: per_second,
+            });
+        }
+        if flags & HAS_CHAIN != 0 {
+            orbit.changes = u32::try_from(reader.read_varint()?)
+                .map_err(|_| DecodeError::Invalid("a count of changes that is too many"))?;
+            orbit.predicted = u32::try_from(reader.read_varint()?)
+                .map_err(|_| DecodeError::Invalid("a count of changes that is too many"))?;
+            if orbit.changes == 0 && orbit.predicted == 0 {
+                return Err(DecodeError::Invalid("a place in a path that is none"));
+            }
         }
         Some(orbit)
     } else {

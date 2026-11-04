@@ -1,12 +1,12 @@
 """Reference values for the elliptical orbits of `docs/orbits-and-thrust-plan.md` (section A, step A1), worked out with `mpmath` at 120 digits.
 
     python exact_ellipse_reference.py selfcheck   # checks this program against mathematics, and against the circle that is the ellipse with ratio 1.0
-    python exact_ellipse_reference.py constants   # the constant of exact_kepler.rs: one over two pi with 126 bits after the point
-    python exact_ellipse_reference.py kepler      # rows for the test of the Kepler solver: (ratio, mean anomaly, eccentric anomaly, sine, cosine, x, y, amplification)
     python exact_ellipse_reference.py orbits      # rows for the test of `Orbit`: the offset and the velocity at a tick, from the elements as the program keeps them,
                                                   # and the amplification 1 / (1 - e cos E) there, which decides how exactly the program can be asked to agree
 
-Run it with `mpmath` installed (`pip install mpmath`), from this directory. Nothing here is read by the build: the rows are pasted into the Rust tests.
+Run it with `mpmath` installed (`pip install mpmath`), from this directory. Nothing here is read by the build: the rows are pasted into the Rust tests. (Until 2026-11-03 the rails
+solved Kepler's equation in 126-bit fixed point, and this script made the rows for that solver and its constant; the rails now use `engine/wide_kepler`, whose rows come from
+`engine/wide_kepler/tests/reference/generate.py`, the same definition at more digits. What this script still makes is `orbits`, the pinned rows of `tests/rail_ellipse.rs`.)
 
 What an elliptical orbit is (the definition the Rust must reproduce; `exact_circle_reference.py` defines the circle it contains):
 
@@ -160,30 +160,6 @@ def orbit_cases():
 
 # ---- the output
 
-def constants():
-    print("/// One over two pi with 126 bits after the point, rounded to the nearest.")
-    print("const ONE_OVER_TAU: Fixed = 0x%032x;" % int(floor(ONE / TWO_PI + mpf(1) / 2)))
-
-
-def kepler():
-    turns_list = mean_anomaly_turns()
-    print("// (ratio, mean anomaly in turns x 2^128, eccentric anomaly in turns x 2^128, sin E, cos E, x / a = cos E - e, y / a = sqrt(1 - e^2) sin E: all x 2^126, and 1 / (1 - e cos E))")
-    print("const KEPLER: [(f64, u128, u128, i128, i128, i128, i128, f64); %d] = [" % (len(RATIOS) * len(turns_list)))
-    for ratio in RATIOS:
-        e = 1 - mpf(ratio)
-        for turns in turns_list:
-            mean_anomaly = TWO_PI * mpf(turns) / mpf(2) ** 128
-            eccentric = solve_eccentric_anomaly(mean_anomaly, e)
-            eccentric_turns = int(floor(eccentric / TWO_PI * mpf(2) ** 128 + mpf(1) / 2)) % (1 << 128)
-            print("    (%r, 0x%032x, 0x%032x, %d, %d, %d, %d, %r)," % (
-                ratio, turns, eccentric_turns,
-                fixed(sin(eccentric)), fixed(cos(eccentric)),
-                fixed(cos(eccentric) - e), fixed(sqrt(1 - e * e) * sin(eccentric)),
-                float(1 / (1 - e * cos(eccentric))),
-            ))
-    print("];")
-
-
 def orbits():
     cases = orbit_cases()
     print("// (normal, radius, ratio, periapsis, period, phase, tick, ticks a second, bricks, rest, velocity, amplification)")
@@ -335,10 +311,6 @@ if __name__ == "__main__":
     command = sys.argv[1:]
     if command == ["selfcheck"]:
         selfcheck()
-    elif command == ["constants"]:
-        constants()
-    elif command == ["kepler"]:
-        kepler()
     elif command == ["orbits"]:
         orbits()
     else:

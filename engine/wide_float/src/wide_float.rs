@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::ops::{Add, Mul, Neg, Sub};
 
@@ -14,6 +16,14 @@ use malachite_nz::integer::Integer;
 use malachite_nz::natural::Natural;
 
 use crate::{NumberError, Precision};
+
+/// How many widths of π a thread keeps: a rail works at two or three (the width of the place, of the turns gone, of a fit), and a flight with several legs at a few more.
+/// At most 8 numbers of up to 2 MB each in a thread that asks for the widest widths; a few hundred bytes in a thread that asks for those of a ship.
+const PI_WIDTHS_KEPT: usize = 8;
+
+thread_local! {
+    static PI_OF_RECENT_WIDTHS: RefCell<VecDeque<WideFloat>> = const { RefCell::new(VecDeque::new()) };
+}
 
 /// A real number held in a stated number of bits ([`Precision`]), never a NaN or an infinity.
 ///
@@ -78,10 +88,22 @@ impl WideFloat {
         Ok(Self::finish_exact(float, precision))
     }
 
-    /// π to `precision` bits.
+    /// π to `precision` bits (correctly rounded). The widths asked for lately are kept, by thread, because a rail asks for the same few over and over and working one out
+    /// costs 3 to 5 microseconds at the widths of a ship and milliseconds at the widths of a long flight; what is kept is the number a new asking would work out, so it
+    /// is never seen.
     pub fn pi(precision: Precision) -> WideFloat {
-        let (float, _) = Float::pi_prec(precision.bits());
-        Self::finish_exact(float, precision)
+        PI_OF_RECENT_WIDTHS.with_borrow_mut(|kept| {
+            if let Some(found) = kept.iter().find(|pi| pi.precision == precision) {
+                return found.clone();
+            }
+            let (float, _) = Float::pi_prec(precision.bits());
+            let pi = Self::finish_exact(float, precision);
+            if kept.len() == PI_WIDTHS_KEPT {
+                kept.pop_front();
+            }
+            kept.push_back(pi.clone());
+            pi
+        })
     }
 
     /// The number `± mantissa × 2^exponent`, which must fit in `precision` bits exactly (the
@@ -488,3 +510,6 @@ impl std::fmt::Debug for WideFloat {
         write!(formatter, "{self}@{}", self.precision.bits())
     }
 }
+
+#[cfg(test)]
+mod tests;

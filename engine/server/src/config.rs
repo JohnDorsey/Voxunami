@@ -1,6 +1,7 @@
 use namespaced_id::NamespacedId;
 use voxel_space::GravitySettings;
 
+use crate::rail_settings::RailSettings;
 use crate::ship_settings::ShipSettings;
 
 /// How a server is set up. Everything here is a property of the game or the host, not of the world.
@@ -32,6 +33,8 @@ pub struct ServerConfig {
     /// How ships are kept: how near a player has to be for them to move, how far off for them to be put in files, and what a pilot's
     /// logout does to them.
     pub ships: ShipSettings,
+    /// How the paths of ships on rails are kept: how wide a number a hand-over from one sphere of influence to the next may make.
+    pub rails: RailSettings,
 }
 
 impl ServerConfig {
@@ -49,6 +52,7 @@ impl ServerConfig {
             gravity: GravitySettings::default(),
             level_gravity: Vec::new(),
             ships: ShipSettings::default(),
+            rails: RailSettings::default(),
         }
     }
 

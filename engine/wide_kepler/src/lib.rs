@@ -1,4 +1,4 @@
-//! Where a body is on an ellipse at a time, worked out in numbers of any width from 128 bits (`wide_float`), for the rails of ships that fly for a long time
+//! Where a body is on an ellipse or a hyperbola at a time, worked out in numbers of any width from 128 bits (`wide_float`), for the rails of ships that fly for a long time
 //! (`docs/orbits-and-thrust-plan.md`, E4 to E7).
 //!
 //! The definition is the one the rails of `world_storage` already have (`engine/world_storage/tools/exact_ellipse_reference.py` states it): the elements are
@@ -17,10 +17,22 @@
 //! machine), in the form `ratio E + e (E - sin E) - M`, which has no cancellation that matters, from the left or the right alike because the function is convex
 //! on the half turn it is solved in; the iteration ends when a step is under 2^-(width + 8) of the answer, so how many steps it takes is a property of the numbers
 //! and not of the machine or the clock.
+//!
+//! **Hyperbolas.** A `ratio` below nothing (e above 1; `radius` is the size of the semi-major axis, `period` is 2 pi over the mean motion, `phase` is the mean anomaly at time 0 as it
+//! is, not taken modulo a turn) is a hyperbola: Kepler's equation is `M = e sinh H - H`, solved the same way, and [`Elements::from_state`] finds one from a body that is going faster
+//! than it would to escape. Reference rows made another way (`tests/reference/generate_hyperbola.py`) hold the answer to its last bit. A hyperbola goes round no turn, so there is no
+//! mean anomaly in turns for one; a parabola (a ratio of nothing) is not made.
+//!
+//! **One orbit at many times.** A rail is asked for the same orbit at one tick after another, so what a place needs of an orbit whatever the time is (the directions of
+//! its plane, the sine and cosine of the periapsis, the minor axis, the rate) is worked out once, [`Elements::prepare`], and [`PreparedElements::place_at`] is the rest
+//! (19.7 of the 27 microseconds of a place of an ellipse at 128 bits). [`Elements::place_at`] is the two in a row, so the two ways give the same bits.
 
 mod elements;
 mod error;
+mod fit;
 mod kepler;
+mod leaves;
 
-pub use elements::{Elements, Place, Time};
+pub use elements::{Elements, Place, PreparedElements, Time};
 pub use error::KeplerError;
+pub use leaves::INSTANTS_PER_SECOND;

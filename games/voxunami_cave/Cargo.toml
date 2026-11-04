@@ -45,6 +45,7 @@ client.workspace = true
 png = "0.18.1"
 terrain = { workspace = true, features = ["test-support"] }
 voxel_grid = { workspace = true, features = ["test-support"] }
+wide_float.workspace = true
 
 [lints]
 workspace = true
