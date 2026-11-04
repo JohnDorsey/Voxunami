@@ -11,6 +11,14 @@ Entities on the wire, who a player is, players as entities, ships a player can m
     docks with another's: snap within 10 degrees and 0.3 metres, any roll in quarter turns; the pull is on the centre of mass with the torque of the lever
     and **does not scale with mass**. The dev port is creative only. Face properties (`engine:marked_face`, `engine:mark_color`, `engine:docking_face`) are
     engine-reserved block properties, so the definition format did not change. Merging is `ServerWorld::merge_grids`, undocking `split_grid`.
+  - **The dev command seat and the dev rocket engine** (owner, 2026-11-04; `voxunami_cave:dev_command_seat` and `dev_rocket_engine`, creative only, like the dev docking port): the first way to fly a ship with the keys of a
+    space game. `/ship sit` or `U` sits a player in the seat they look at (within 6 voxels, aboard the ship); W S pitch, A D yaw, Q E roll, shift raises the throttle and control lowers it (half the whole a second). The seat gives
+    **a large torque, about a radian a second a second about any axis whatever the ship weighs** (so it works from an estimate of the ship's inertia), up to a turn of a radian a second; an axis with no key down is braked to a stop,
+    exactly, so that a ship can go on a rail. *Mine:* the braking and the rate cap are mine (the owner asked for torque on the keys); without them the ship tumbles on. Every engine of the ship pushes it with 200 kN at full
+    throttle, opposite its exhaust and from its own voxel (so an engine off the middle also turns the ship), with no fuel and no gimbal. The engines work only while someone sits; getting up cuts the throttle. A pilot is in the
+    record of pilots (the hover controls of `/ship pilot` and the seat keep out of each other's way). The readout of the flight (throttle, turn, distance and speed against the planet that pulls most, the orbit) is a message
+    to the seated player, drawn as lines of the HUD. Not done: a seat that moves the player into it, a dedicated key for the throttle to full and to nothing, an altitude over the ground (the server does not know a planet's
+    surface radius), any gimbal.
   - A ship is saved while in flight, as a grid in a file of its own, portable to another world. A player whose ship file cannot be found is asked: world
     spawn, midair, or the title screen.
   - **Units are metric**: a voxel is a metre; kilograms, newtons, newton metres, seconds. Until materials have densities every block that is not air weighs

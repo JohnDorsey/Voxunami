@@ -948,3 +948,50 @@ fn a_ship_put_on_a_rail_in_a_tick_is_worked_out_once_by_the_second_putting_and_i
     let found = world.data().grids().get(ship).unwrap();
     assert_eq!(found.linear_velocity, state.velocity);
 }
+
+#[test]
+fn the_flight_of_a_ship_is_asked_against_the_planet_that_pulls_it_whatever_the_ship_does_and_is_the_orbit_its_state_is_on()
+ {
+    let (mut world, planet) = space();
+    let ship = ship_in_a_circle(&mut world, 10_000.0);
+    // A ship that turns, is held or has something near it is on no rail; its flight is asked all the same.
+    world
+        .set_grid_velocity(
+            ship,
+            world.data().grids().get(ship).unwrap().linear_velocity,
+            [0.0, 0.3, 0.0],
+        )
+        .unwrap();
+    assert_eq!(refused(&world, ship), NotCoasting::Turning);
+    let flight = world
+        .flight_state(ship, time(0))
+        .expect("a planet pulls it");
+    assert_eq!(flight.planet, planet);
+    assert_eq!(flight.place, [10_000.0, 0.0, 0.0]);
+    assert_eq!(
+        flight.velocity,
+        [0.0, 0.0, circular_speed(1.0e22, 10_000.0)]
+    );
+    let orbit = flight.orbit.expect("a circle");
+    assert!((orbit.nearest_distance() / 10_000.0 - 1.0).abs() < 1e-12);
+    assert!((orbit.farthest_distance() / 10_000.0 - 1.0).abs() < 1e-12);
+    // Faster than escape: a hyperbola, and it has a nearest distance.
+    let fast = ship_at(
+        &mut world,
+        [10_000.0, 0.0, 0.0],
+        [0.0, 0.0, 2.0 * circular_speed(1.0e22, 10_000.0)],
+    );
+    let orbit = world.flight_state(fast, time(0)).unwrap().orbit.unwrap();
+    assert!(orbit.is_a_hyperbola());
+    // At rest there is no orbit (it falls straight in): the flight is there, the orbit is the reason it is not.
+    let still = ship_at(&mut world, [10_000.0, 0.0, 0.0], [0.0; 3]);
+    let flight = world.flight_state(still, time(0)).unwrap();
+    assert!(flight.orbit.is_err());
+    assert_eq!(flight.velocity, [0.0; 3]);
+    // The planet itself has no flight, and nor does a ship with no planet that pulls (one lighter than what pulls).
+    assert!(world.flight_state(planet, time(0)).is_none());
+    let (mut empty, planet) = space();
+    empty.set_grid_mass(planet, 1.0e5, [0.0; 3]).unwrap();
+    let lonely = ship_at(&mut empty, [10_000.0, 0.0, 0.0], [0.0; 3]);
+    assert!(empty.flight_state(lonely, time(0)).is_none());
+}

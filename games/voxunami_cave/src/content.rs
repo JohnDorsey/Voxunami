@@ -6,7 +6,7 @@ use base_blocks::{
     BaseBlockIds, BaseBlocks, block_channel_identifier, block_registry_kind,
     light_channel_identifier, orientation_channel_identifier, state_channel_identifier,
 };
-use block_models::BlockDefinition;
+use block_models::{BlockDefinition, Shape, ShapeBox};
 use content_registry::{IdentifierRegistry, Registry};
 use game_shell::{
     BodySupport, ContentPackage, GameContent, GameDefinition, PackErrors, PackageData, PackageSpec,
@@ -78,6 +78,58 @@ pub fn dev_docking_port() -> BlockDefinition {
         .with_front_face(FaceDirection::PositiveX)
 }
 
+/// The identifier of the dev command seat.
+pub fn dev_command_seat_id() -> NamespacedId {
+    "voxunami_cave:dev_command_seat"
+        .parse()
+        .expect("constant identifier is valid")
+}
+
+/// The identifier of the dev rocket engine.
+pub fn dev_rocket_engine_id() -> NamespacedId {
+    "voxunami_cave:dev_rocket_engine"
+        .parse()
+        .expect("constant identifier is valid")
+}
+
+/// The colour of the dev blocks of flight, gunmetal gray (that of the dev docking port).
+const GUNMETAL: [f32; 3] = [0.17, 0.21, 0.22];
+
+/// The dev command seat (a block for building and testing ships, creative only): a stair in gunmetal gray whose bottom and back, the surfaces a sitter sits against, are brown.
+/// It is made with its back to the east, so a sitter faces west; its back is its front face, so it is placed with its back to the player and whoever sits in it faces the way
+/// the player looked. Its orientation says which way the sitter faces and which way is up for them.
+pub fn dev_command_seat() -> BlockDefinition {
+    BlockDefinition::cube(GUNMETAL)
+        .with_shapes(vec![Shape::stair(FaceDirection::PositiveX)])
+        .with_marked_faces([110, 70, 35], &[Some(FaceDirection::PositiveX)])
+        .with_also_marked_faces(&[Some(FaceDirection::NegativeY)])
+        .with_front_face(FaceDirection::PositiveX)
+}
+
+/// The dev rocket engine (a block for building and testing ships, creative only): a pyramid of three tiers in gunmetal gray, wide at the exhaust end, which is a red face. It
+/// is made with the exhaust up, and is placed like a log, along the face it is put against with the exhaust end away from it, so it pushes the ship toward that surface.
+pub fn dev_rocket_engine() -> BlockDefinition {
+    // (In eighths of a voxel: the wide tier at the top, the narrowest at the bottom.)
+    let tiers = Shape::from_boxes(&[
+        ShapeBox {
+            min: [0, 5, 0],
+            max: [8, 8, 8],
+        },
+        ShapeBox {
+            min: [1, 3, 1],
+            max: [7, 5, 7],
+        },
+        ShapeBox {
+            min: [2, 0, 2],
+            max: [6, 3, 6],
+        },
+    ]);
+    BlockDefinition::cube(GUNMETAL)
+        .with_shapes(vec![tiers])
+        .with_marked_faces([200, 30, 30], &[Some(FaceDirection::PositiveY)])
+        .with_axis_face(FaceDirection::PositiveY)
+}
+
 /// The blocks of a registry, with the flags that say a player can place a block, and that a block is for creative only, set on the ones Cave says
 /// they are.
 fn mark_placeable(blocks: Registry<BlockDefinition>) -> Registry<BlockDefinition> {
@@ -130,6 +182,12 @@ impl CaveContent {
         blocks
             .register(dev_docking_port_id(), dev_docking_port())
             .expect("the name of the dev docking port is not a base block's");
+        blocks
+            .register(dev_command_seat_id(), dev_command_seat())
+            .expect("the name of the dev command seat is not another block's");
+        blocks
+            .register(dev_rocket_engine_id(), dev_rocket_engine())
+            .expect("the name of the dev rocket engine is not another block's");
         let spec = PackageSpec {
             level: overworld_id(),
             block_registry_kind: block_registry_kind(),

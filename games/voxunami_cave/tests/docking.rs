@@ -14,7 +14,9 @@ use voxel_space::{
     BrickCoordinate, FaceDirection, GravitySettings, GridId, GridPose, LevelIndex, LocalVoxelIndex,
     Orientation, VoxelCoordinate, WorldPosition,
 };
-use voxunami_cave::content::{CaveContent, dev_docking_port_id};
+use voxunami_cave::content::{
+    CaveContent, dev_command_seat_id, dev_docking_port_id, dev_rocket_engine_id,
+};
 
 fn pose(x: f64, y: f64, z: f64, orientation: Orientation) -> GridPose {
     GridPose::new(
@@ -68,7 +70,11 @@ fn the_dev_docking_port_is_gunmetal_gray_with_one_yellow_face_that_docks_and_exi
     let package = content.package_data();
     let id = dev_docking_port_id();
     assert!(placeable_blocks(&package).contains(&id));
-    assert_eq!(creative_only_blocks(&package), std::slice::from_ref(&id));
+    // (The dev command seat and the dev rocket engine are creative-only too, and come after it.)
+    assert_eq!(
+        creative_only_blocks(&package),
+        [id.clone(), dev_command_seat_id(), dev_rocket_engine_id()]
+    );
     let table = content.block_table();
     let block = port_block();
     // One state, and the yellow face is the one that docks, wherever the port is turned to: all 24 turns.

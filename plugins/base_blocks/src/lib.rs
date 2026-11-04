@@ -485,6 +485,7 @@ mod tests {
                 "base_blocks:emission",
                 "base_blocks:flammability",
                 "base_blocks:passable",
+                "engine:also_marked_face",
                 "engine:axis_face",
                 "engine:density",
                 "engine:docking_face",

@@ -76,7 +76,7 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
     assert!(!hotbar.modal);
     assert_eq!(hotbar.root.direction, Direction::Row);
     let shown = swatches(&hotbar.root);
-    // Stone, dirt, grass, lamp, wood, fire, and the dev docking port: in the colours the blocks are drawn in (the port's is gunmetal gray), the first
+    // Stone, dirt, grass, lamp, wood, fire, and the dev docking port, command seat and rocket engine: in the colours the blocks are drawn in (theirs are gunmetal gray), the first
     // chosen, no counts in creative.
     let expected_colors = [
         [0.50, 0.50, 0.53],
@@ -86,8 +86,10 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
         [0.55, 0.38, 0.20],
         [0.95, 0.5, 0.1],
         [0.17, 0.21, 0.22],
+        [0.17, 0.21, 0.22],
+        [0.17, 0.21, 0.22],
     ];
-    assert_eq!(shown.len(), 7);
+    assert_eq!(shown.len(), 9);
     for (index, ((color, count, selected), expected)) in
         shown.iter().zip(expected_colors).enumerate()
     {
@@ -103,19 +105,32 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
         .iter()
         .map(|(_, _, selected)| *selected)
         .collect();
-    assert_eq!(chosen, [false, false, false, true, false, false, false]);
-    // A key for a block there is not (the ninth) leaves the choice alone: it still points at the fourth block, never past the end.
-    player.key_pressed(KeyCode::Digit9);
-    let panels = overlays(&mut player);
-    let chosen: Vec<bool> = swatches(&panels[0].1.root)
-        .iter()
-        .map(|(_, _, selected)| *selected)
-        .collect();
     assert_eq!(
-        chosen.iter().filter(|selected| **selected).count(),
-        1,
-        "one is always chosen"
+        chosen,
+        [false, false, false, true, false, false, false, false, false]
     );
+    // The ninth key chooses the ninth block, the dev rocket engine; the right square bracket goes on round to the first, and the left one back to the last.
+    let chosen_index = |player: &mut Player| -> usize {
+        let panels = overlays(player);
+        let chosen: Vec<bool> = swatches(&panels[0].1.root)
+            .iter()
+            .map(|(_, _, selected)| *selected)
+            .collect();
+        assert_eq!(
+            chosen.iter().filter(|selected| **selected).count(),
+            1,
+            "one is always chosen"
+        );
+        chosen.iter().position(|selected| *selected).unwrap()
+    };
+    player.key_pressed(KeyCode::Digit9);
+    assert_eq!(chosen_index(&mut player), 8);
+    player.key_pressed(KeyCode::BracketRight);
+    assert_eq!(chosen_index(&mut player), 0);
+    player.key_pressed(KeyCode::BracketLeft);
+    assert_eq!(chosen_index(&mut player), 8);
+    player.key_pressed(KeyCode::BracketLeft);
+    assert_eq!(chosen_index(&mut player), 7);
 }
 
 #[test]

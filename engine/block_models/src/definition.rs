@@ -107,6 +107,16 @@ impl BlockDefinition {
         marked
     }
 
+    /// The same block with a second face of each state drawn in the mark colour too: `faces[state]` is that face in that state, if any (see
+    /// [`BlockDefinition::with_marked_faces`], which says the colour).
+    pub fn with_also_marked_faces(mut self, faces: &[Option<FaceDirection>]) -> Self {
+        for (state, face) in faces.iter().enumerate() {
+            self =
+                self.with_state_property(state as u32, &engine::ALSO_MARKED_FACE, face_code(*face));
+        }
+        self
+    }
+
     /// The same block with a docking face in each state: `faces[state]` is the face that docks in that state, if any.
     pub fn with_docking_faces(mut self, faces: &[Option<FaceDirection>]) -> Self {
         for (state, face) in faces.iter().enumerate() {

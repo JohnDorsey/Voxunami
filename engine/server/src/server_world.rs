@@ -1811,7 +1811,7 @@ impl ServerWorld {
 }
 
 mod coasting;
-pub use coasting::{NotCoasting, PredictedRail, Prediction, PredictionEnd};
+pub use coasting::{FlightState, NotCoasting, PredictedRail, Prediction, PredictionEnd};
 
 #[cfg(test)]
 pub(crate) mod tests;

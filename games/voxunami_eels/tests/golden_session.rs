@@ -207,4 +207,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// sum of the cell and the offset rounded to `f32` before it is carried into a brick (what `translated` did; in `f64` the carry comes first, and the remainder is exact) and the pull
 /// strength the `f32` it was, the stream gave the hash and the length above, 9_878_055_937_370_023_847 and 82_549, to the bit. Before the carry was put back 56 bytes of 82,549 differed, in 22 places, each by the rounding of the sum that is made before the carry (the one that was
 /// compared byte by byte), and nothing else did. The saved world moved as the sections that hold poses are version 4.
-const PINNED: (u64, usize, u64) = (9_823_076_099_395_095_878, 89_282, 9_505_268_344_403_703_823);
+/// The engine declares one more block property, `engine:also_marked_face` (2026-11-04; a second face drawn in the mark colour, for the chair of Cave): the welcome carries its declaration, 173 bytes more
+/// (its name and its documentation), and the saved world is the same to the hash. Predicted from the length of the declaration before the run, and seen: 89,282 to 89,455.
+const PINNED: (u64, usize, u64) = (
+    10_252_400_912_783_271_714,
+    89_455,
+    9_505_268_344_403_703_823,
+);

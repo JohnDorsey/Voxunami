@@ -353,8 +353,11 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// angles are 4 and 8 bytes longer, and the numbers the solver gives are not the ones they were), and the saved world is different (the sections are the new versions). Control, as for the other
 /// two games' sessions but by the end state, because the solver's numbers are in this stream: the old build and this one printed every entity at the end of the script (the player, and the stack of
 /// stone they picked up and dropped): every coordinate is the same to the 9 decimals printed. Hashes before: 18_195_685_852_877_378_881 and 7_542_728_601_885_368_666.
+/// The dev command seat and the dev rocket engine (2026-11-04): the welcome carries the declaration of one more engine property (`engine:also_marked_face`, 173 bytes, as in the other two games'
+/// sessions) and the definitions of two blocks, and the saved world names them: the stream is 7,206,561 bytes where it was 7,205,917, 644 more, and the hashes differ because the bytes do. What
+/// the script builds, breaks and walks through is what it was (the plugins listed in other orders give the same values, below).
 const PINNED: (u64, usize, u64) = (
-    13_855_926_902_016_341_522,
-    7_205_917,
-    10_204_815_550_639_449_865,
+    8_632_927_380_862_394_442,
+    7_206_561,
+    17_018_755_794_665_956_377,
 );

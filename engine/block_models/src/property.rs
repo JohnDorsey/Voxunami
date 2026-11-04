@@ -167,6 +167,13 @@ pub mod engine {
         "whether the face opposite the marked face is drawn in the mark colour too (the two ends of a log)",
     );
 
+    /// A second face of a block, in each state, drawn in [`MARK_COLOR`] too (a face code, 0 for none): a chair's back and its bottom, which are not opposite faces.
+    pub const ALSO_MARKED_FACE: PropertyKey<u8> = PropertyKey::new(
+        "engine:also_marked_face",
+        0,
+        "a second face of the block drawn in its mark colour: 0 for none, else 1 plus the face's index (west 1, east 2, down 3, up 4, north 5, south 6)",
+    );
+
     /// The front of a block that has one, in each state, as it is made (a face code, 0 for none): a block with a front is turned, when a player places
     /// it, to face the player, as a piston does.
     pub const FRONT_FACE: PropertyKey<u8> = PropertyKey::new(
@@ -263,6 +270,7 @@ impl PropertySchema {
             engine::MARK_COLOR.declaration(),
             engine::DOCKING_FACE.declaration(),
             engine::MARK_BOTH_ENDS.declaration(),
+            engine::ALSO_MARKED_FACE.declaration(),
             engine::FRONT_FACE.declaration(),
             engine::AXIS_FACE.declaration(),
         ] {

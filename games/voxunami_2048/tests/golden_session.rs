@@ -293,8 +293,10 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// by a control: with the wire put back to the `f32` form (the offsets and the angles of the presence messages written as `f32`) and the version put back to 10, nothing else changed, this
 /// script gave the stream hash and the length above, 2_608_887_802_805_617_703 and 59_088, to the bit; so the stream moved for the widths and the version and for nothing else. The stream is
 /// 20 bytes longer (one pose, 12, and one look, 8). The saved world moved as the sections that hold poses are version 4.
+/// The engine declares one more block property, `engine:also_marked_face` (2026-11-04; a second face drawn in the mark colour, for the chair of Cave): the welcome carries its declaration, 173 bytes more
+/// (its name and its documentation), and the saved world is the same to the hash. Predicted from the length of the declaration before the run, and seen: 59,108 to 59,281.
 const PINNED: (u64, usize, u64) = (
-    5_596_715_898_659_976_280,
-    59_108,
+    13_534_092_187_250_210_913,
+    59_281,
     15_563_235_043_056_448_435,
 );

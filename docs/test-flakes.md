@@ -39,6 +39,8 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
   found (`docs/history/build-log.md`, "One test of the whole suite failed once in the full Windows run"; the test's name is given there as `a_replay_draws_the_form_exactly_as_it_was_drawn_live...`).
 - **Occurrence 2: 2026-11-03** (the full gate of E10, `wide_kepler` and `world_storage` changes): the same file's replay test failed once; **8 reruns passed**; at the next gate (E11) and every gate since it did not
   fail. Not looked into further.
+- **Occurrence 3: 2026-11-04** (the full gate of the dev command seat: Cave's blocks, a message and a client plugin, nothing that draws a form): failed once at `adapter 1: 1 pixels differ, such as [(157, 68)]`
+  (`screen.rs:386`); **it passed on the rerun of the file** (3 tests, alone with two others). Adapter 1 again.
 - **Beliefs.** **Checked, for a sister test** (`an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw`, explained below): on the integrated AMD GPU the first frames of a fresh renderer sometimes leave
   pixels out, never on the NVIDIA card, and the pictures compared to the pixel are now taken once a frame repeats them (`settled`). **Believed**: the same family of cause for this test (a pixel left out in a
   first frame on one adapter); not checked for this test.

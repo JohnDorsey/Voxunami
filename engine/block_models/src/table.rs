@@ -51,6 +51,8 @@ pub enum Placement {
 pub struct FaceMark {
     pub face: FaceDirection,
     pub both_ends: bool,
+    /// A second face drawn in the mark colour (a chair's back and its bottom), if the block has one.
+    pub also: Option<FaceDirection>,
     /// The renderer's palette entry of the mark colour.
     pub material: u32,
 }
@@ -58,7 +60,9 @@ pub struct FaceMark {
 impl FaceMark {
     /// Whether this face is drawn in the mark colour.
     pub fn marks(&self, face: FaceDirection) -> bool {
-        face == self.face || (self.both_ends && face == self.face.opposite())
+        face == self.face
+            || (self.both_ends && face == self.face.opposite())
+            || self.also == Some(face)
     }
 }
 
@@ -227,6 +231,7 @@ impl BlockTable {
         let marked_face_column = position_of(&columns, engine::MARKED_FACE.id());
         let mark_color_column = position_of(&columns, engine::MARK_COLOR.id());
         let mark_both_ends_column = position_of(&columns, engine::MARK_BOTH_ENDS.id());
+        let also_marked_face_column = position_of(&columns, engine::ALSO_MARKED_FACE.id());
         let first_mark_material = (definitions.len() + state_palette.len()) as u32;
         let mut mark_colors: Vec<u32> = Vec::new();
         let mut base_marks: Vec<Option<FaceMark>> = vec![None; bases.len()];
@@ -254,6 +259,9 @@ impl BlockTable {
                     base_marks[base] = Some(FaceMark {
                         face,
                         both_ends: value_of(&columns, mark_both_ends_column, base) != 0,
+                        also: u8::try_from(value_of(&columns, also_marked_face_column, base))
+                            .ok()
+                            .and_then(face_from_code),
                         material: first_mark_material + position as u32,
                     });
                 }
@@ -290,6 +298,7 @@ impl BlockTable {
                 };
                 let mark = base_marks[base].map(|mark| FaceMark {
                     face: rotation.apply_face(mark.face),
+                    also: mark.also.map(|face| rotation.apply_face(face)),
                     ..mark
                 });
                 models.push(make_model(
@@ -941,6 +950,34 @@ mod tests {
             .filter(|face| table.material_of_face(1, 0, 0, *face) != 1)
             .collect();
         assert_eq!(piston, [FaceDirection::PositiveX]);
+    }
+
+    #[test]
+    fn a_second_marked_face_is_drawn_in_the_mark_colour_and_turns_with_the_block() {
+        // A chair: brown on the bottom and the back, which are not opposite faces, as it is made; the back is the east.
+        let chair = BlockDefinition::cube([0.3; 3])
+            .with_marked_faces([120, 80, 40], &[Some(FaceDirection::PositiveX)])
+            .with_also_marked_faces(&[Some(DOWN)]);
+        let table = BlockTable::from_definitions(&[Some(&chair), Some(&port())]);
+        for (orientation, rotation) in LatticeRotation::all().into_iter().enumerate() {
+            let marked: Vec<FaceDirection> = FaceDirection::ALL
+                .into_iter()
+                .filter(|face| table.material_of_face(0, 0, orientation as u32, *face) != 0)
+                .collect();
+            let mut wanted = vec![
+                rotation.apply_face(FaceDirection::PositiveX),
+                rotation.apply_face(DOWN),
+            ];
+            wanted.sort_by_key(|face| face.index());
+            assert_eq!(marked, wanted, "orientation {orientation}");
+        }
+        // Without a second face a block marks what it did, and a second face is the same colour as the first (the palette is the two blocks and the two mark colours).
+        assert_eq!(table.palette().len(), 4);
+        let only_one: Vec<FaceDirection> = FaceDirection::ALL
+            .into_iter()
+            .filter(|face| table.material_of_face(1, 0, 0, *face) != 1)
+            .collect();
+        assert_eq!(only_one, [FaceDirection::PositiveX]);
     }
 
     #[test]

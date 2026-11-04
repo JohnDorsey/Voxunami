@@ -226,6 +226,7 @@ impl Movement {
                         ..MoveInput::default()
                     },
                     pitch: placement.pitch,
+                    roll: 0,
                 },
                 jump_asked: false,
                 piloting: false,
