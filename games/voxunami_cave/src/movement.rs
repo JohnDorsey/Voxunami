@@ -27,7 +27,8 @@ use protocol::ClientId;
 use server::ServerWorld;
 use voxel_grid::ChannelIndex;
 use voxel_space::{
-    BrickBox, BrickCoordinate, Displacement, GridId, LevelIndex, Orientation, WorldPosition,
+    BrickBox, BrickCoordinate, Displacement, GridId, GridPose, LevelIndex, Orientation,
+    WorldPosition,
 };
 
 use crate::messages::MoveRequest;
@@ -422,6 +423,81 @@ fn in_reach(bounds: &ShipBounds, level: LevelIndex, here: BrickCoordinate) -> bo
         && (min.z() - SHIP_REACH_BRICKS..=max.z() + SHIP_REACH_BRICKS).contains(&here.z())
 }
 
+/// The bricks round a place in the ground of the planets in `near`, if the player is coming to it, are made by a worker before they are met. `world_position` is
+/// the player's middle in the world.
+fn prefetch_planet_ground(world: &mut ServerWorld, near: &[GridId], world_position: WorldPosition) {
+    for id in near {
+        let Some(planet) = world
+            .data()
+            .grids()
+            .get(*id)
+            .filter(|ship| ship.terrain.is_some())
+        else {
+            continue;
+        };
+        let Some(there) = planet.pose.world_to_local(world_position) else {
+            continue;
+        };
+        let there = there.brick();
+        let bricks: Vec<BrickCoordinate> = (-2..=2)
+            .flat_map(|x| {
+                (-2..=2).flat_map(move |y| {
+                    (-2..=2).map(move |z| {
+                        BrickCoordinate::new(there.x() + x, there.y() + y, there.z() + z)
+                    })
+                })
+            })
+            .collect();
+        world.prefetch_ship_bricks(*id, bricks);
+    }
+}
+
+/// Puts the blocks of the ships `near` where they are, as colliders in the body's frame, so that the body walks on them and is stopped by them. `frame` is where the grid
+/// the body is simulated in stands in the world (a ship it is aboard), or `None` if the frame is a level's own.
+fn meet_ships(
+    player: &mut PlayerBody,
+    blocks: &Blocks,
+    world: &ServerWorld,
+    changed: &BTreeSet<(GridId, BrickCoordinate)>,
+    near: &[GridId],
+    frame: Option<GridPose>,
+) {
+    let data = world.data();
+    let mut hulls: Vec<_> = near
+        .iter()
+        .filter_map(|id| {
+            let ship = data.grids().get(*id)?;
+            let pose = match frame {
+                None => ship.pose,
+                Some(frame) => in_the_frame_of(frame, ship.pose)?,
+            };
+            Some((*id, pose, blocks.source(world, *id, ship)))
+        })
+        .collect();
+    let mut grids: Vec<ForeignGrid<'_>> = hulls
+        .iter_mut()
+        .map(|(id, pose, hull)| ForeignGrid {
+            id: *id,
+            pose: *pose,
+            source: hull,
+        })
+        .collect();
+    for &(grid, brick) in changed {
+        if let Some(ship) = grids.iter_mut().find(|ship| ship.id == grid) {
+            player.body.foreign_brick_changed(ship, brick);
+        }
+    }
+    player.body.update_foreign(&mut grids);
+}
+
+/// Where a grid that stands at `pose` in the world is, in the coordinates of the grid that stands at `frame`.
+fn in_the_frame_of(frame: GridPose, pose: GridPose) -> Option<GridPose> {
+    Some(GridPose::new(
+        frame.world_to_local(pose.position)?,
+        frame.orientation.inverse().compose(pose.orientation),
+    ))
+}
+
 /// One tick of a body that is in a level: the terrain of the level, the ships near it as colliders, the gravity of the level's field
 /// there, and then whether it ended standing on a ship.
 fn step_in_a_level(
@@ -459,56 +535,8 @@ fn step_in_a_level(
         .filter(|(_, bounds)| in_reach(bounds, level, here))
         .map(|(id, _)| *id)
         .collect();
-    // The bricks round the player in the ground of a planet that is near, if the player is coming to it, are made by a worker before they are met.
-    for id in &near {
-        let Some(planet) = world
-            .data()
-            .grids()
-            .get(*id)
-            .filter(|ship| ship.terrain.is_some())
-        else {
-            continue;
-        };
-        let Some(there) = planet.pose.world_to_local(player.body.middle_position()) else {
-            continue;
-        };
-        let there = there.brick();
-        let bricks: Vec<BrickCoordinate> = (-2..=2)
-            .flat_map(|x| {
-                (-2..=2).flat_map(move |y| {
-                    (-2..=2).map(move |z| {
-                        BrickCoordinate::new(there.x() + x, there.y() + y, there.z() + z)
-                    })
-                })
-            })
-            .collect();
-        world.prefetch_ship_bricks(*id, bricks);
-    }
-    {
-        let shared: &ServerWorld = world;
-        let data = shared.data();
-        let mut hulls: Vec<_> = near
-            .iter()
-            .filter_map(|id| {
-                let ship = data.grids().get(*id)?;
-                Some((*id, ship.pose, blocks.source(shared, *id, ship)))
-            })
-            .collect();
-        let mut grids: Vec<ForeignGrid<'_>> = hulls
-            .iter_mut()
-            .map(|(id, pose, hull)| ForeignGrid {
-                id: *id,
-                pose: *pose,
-                source: hull,
-            })
-            .collect();
-        for &(grid, brick) in changed {
-            if let Some(ship) = grids.iter_mut().find(|ship| ship.id == grid) {
-                player.body.foreign_brick_changed(ship, brick);
-            }
-        }
-        player.body.update_foreign(&mut grids);
-    }
+    prefetch_planet_ground(world, &near, player.body.middle_position());
+    meet_ships(player, blocks, world, changed, &near, None);
     // A ship that has moved into the player this tick (fallen on them, sailed into them) puts them out of the way and not into the ground.
     player.body.keep_clear(&mut blocks.terrain(world, level));
 
@@ -588,9 +616,31 @@ fn step_aboard(
             })
         }),
     );
+    // The other ships near the player are colliders too, in the coordinates of the ship they are aboard: a planet is a ship, and a walker on one meets what stands on it.
+    let frame = world
+        .data()
+        .grids()
+        .get(id)
+        .map(|ship| (ship.level, ship.pose));
+    let Some((level, frame_pose)) = frame else {
+        // The ship is not there. The record of the player says so next tick and the body is put in the level then.
+        return;
+    };
+    let near: Vec<GridId> = frame_pose
+        .local_to_world(player.body.middle_position())
+        .map(|here| {
+            ships
+                .iter()
+                .filter(|(other, bounds)| **other != id && in_reach(bounds, level, here.brick()))
+                .map(|(other, _)| *other)
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(here) = frame_pose.local_to_world(player.body.middle_position()) {
+        prefetch_planet_ground(world, &near, here);
+    }
     {
         let Some(ship) = world.data().grids().get(id) else {
-            // The ship is not there. The record of the player says so next tick and the body is put in the level then.
             return;
         };
         let mut hull = blocks.source(world, id, ship);
@@ -600,7 +650,13 @@ fn step_aboard(
             }
         }
         player.body.update_terrain(&mut hull);
-        player.body.keep_clear(&mut hull);
+    }
+    meet_ships(player, blocks, world, changed, &near, Some(frame_pose));
+    {
+        let Some(ship) = world.data().grids().get(id) else {
+            return;
+        };
+        player.body.keep_clear(&mut blocks.source(world, id, ship));
     }
     let gravity = world.gravity_in(id, player.body.eye_position()).unwrap_or([
         0.0,
@@ -629,6 +685,27 @@ fn step_aboard(
     };
     if left {
         leave(player, world);
+        return;
+    }
+
+    // On the ground, on a block of another ship that stands on this one (a ship on a planet): aboard that one from here on, which is how a walker on a planet
+    // comes to be aboard a ship that rests on it.
+    if !player.body.is_flying() && player.body.is_grounded() {
+        let down = player.body.up().map(|axis| -axis);
+        let shared: &ServerWorld = world;
+        let standing_on = shared.data().grids().get(id).and_then(|frame| {
+            let feet = frame.pose.local_to_world(player.body.feet_position())?;
+            let down = frame.pose.direction_to_world(down);
+            near.iter().copied().find(|other| {
+                shared.data().grids().get(*other).is_some_and(|ship| {
+                    stands_on(&mut blocks.source(shared, *other, ship), ship, feet, down)
+                })
+            })
+        });
+        if let Some(other) = standing_on {
+            leave(player, world);
+            board(player, other, world);
+        }
     }
 }
 

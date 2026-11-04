@@ -133,6 +133,7 @@ Entities on the wire, who a player is, players as entities, ships a player can m
   along gravity within the ship's box, or the body's middle a voxel outside it. The two conditions cannot hold together, so nothing flaps.
   Boarding takes away the part of the speed relative to the ship that points away from it: a body that stands on something is not moving off it
   (a walker that a falling ship has lifted onto itself was thrown ten voxels up at the speed the ship had, before this was added).
+- **Every ship in reach is a collider, whichever frame the body is in** (found 2026-11-04: aboard a planet a walker walked through the ships on it): a body aboard a ship meets the other ships near it as colliders, in the coordinates of the ship it is aboard, and a walker aboard one ship who stands on another leaves the first and boards the second.
 - **A character is never left inside what it can touch**: every tick one that something has moved into is moved out the shortest way (`CharacterBody::keep_clear`: up first, steps
   of an eighth, at most 8 voxels, else it stays), for terrain by its voxels and for ships by their colliders, with a box 0.02 smaller on every side. Found by measuring in 32g: a
   ship that fell on a walker pressed them through the floor of the world.
