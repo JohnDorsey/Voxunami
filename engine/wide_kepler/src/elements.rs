@@ -45,10 +45,10 @@ pub struct Place {
 
 /// Bits over the width asked for that the working is done in: 64 because Kepler's equation is solved with a slope as small as the ratio (2^-64), and 32 for the roundings
 /// of the steps. The tests say what the answer is within.
-const GUARD: u32 = 96;
+pub(crate) const GUARD: u32 = 96;
 
 /// The clock the orbit is asked at is under this many units either way (the world's clock is a count of ticks that fits 64 bits).
-const MOST_UNITS: u128 = 1 << 96;
+pub(crate) const MOST_UNITS: u128 = 1 << 96;
 
 /// Bits over the working width for the part of a turn gone: `time / period` has up to 116 whole bits (the clock is under 2^96 units, a period over 2^-20 seconds) that the
 /// fraction after them does not have, and the mean anomaly is magnified up to 2^64 by the equation, so 116 + 64 + the roundings are under 192.

@@ -20,6 +20,7 @@ use world_storage::{
 use crate::GridView;
 use crate::generated_cache::GeneratedBrickCache;
 use crate::prefetch::Prefetcher;
+use crate::rail_settings::RailSettings;
 use crate::ship_settings::ShipSettings;
 
 /// Who receives a game message.
@@ -230,6 +231,13 @@ pub struct ServerWorld {
     orbit_fits: Cell<u64>,
     /// How many pairs of ships were asked whether one is in the way of the other (see [`ServerWorld::rail_work`]).
     ship_pairs_asked: Cell<u64>,
+    rail_settings: RailSettings,
+    /// When each ship on a rail leaves the sphere of influence of the planet it goes round, found once for an orbit and a sphere and kept until either changes (see [`coasting`]).
+    exits: BTreeMap<GridId, coasting::ExitPlan>,
+    /// How many times a ship's exit from a sphere was worked out (see [`ServerWorld::rail_work`]).
+    exit_searches: u64,
+    /// How many hand-overs ships have made.
+    hand_overs: u64,
 }
 
 /// How much work the rails have cost since the world was made, for measuring and for tests of the savings (see [`ServerWorld::rail_work`]).
@@ -247,6 +255,10 @@ pub struct RailWork {
     pub ship_pairs_asked: u64,
     /// Ships whose last answer is kept for the second putting of a tick.
     pub rails_remembered: usize,
+    /// Times the instant a ship leaves a sphere of influence was worked out (about 100 microseconds each): once for an orbit that can leave one, however long it goes on.
+    pub exit_searches: u64,
+    /// Hand-overs from one sphere of influence to the next that ships have made.
+    pub hand_overs: u64,
 }
 
 impl ServerWorld {
@@ -280,6 +292,10 @@ impl ServerWorld {
             rail_memo: RailMemo::default(),
             orbit_fits: Cell::new(0),
             ship_pairs_asked: Cell::new(0),
+            rail_settings: RailSettings::default(),
+            exits: BTreeMap::new(),
+            exit_searches: 0,
+            hand_overs: 0,
         }
     }
 
@@ -292,6 +308,8 @@ impl ServerWorld {
             orbit_fits: self.orbit_fits.get(),
             ship_pairs_asked: self.ship_pairs_asked.get(),
             rails_remembered: self.rail_memo.remembered(),
+            exit_searches: self.exit_searches,
+            hand_overs: self.hand_overs,
         }
     }
 
@@ -310,6 +328,16 @@ impl ServerWorld {
     /// How the host wants ships kept: see [`ShipSettings`].
     pub fn ship_settings(&self) -> &ShipSettings {
         &self.ship_settings
+    }
+
+    /// How the paths of ships on rails are kept.
+    pub fn rail_settings(&self) -> &RailSettings {
+        &self.rail_settings
+    }
+
+    /// Changes how the paths of ships on rails are kept, from now on: an orbit made by a hand-over after this has at most the width these say.
+    pub fn set_rail_settings(&mut self, settings: RailSettings) {
+        self.rail_settings = settings;
     }
 
     /// Changes how ships are kept, from now on (a rule of a game may offer the host a command for it).
@@ -1319,6 +1347,8 @@ impl ServerWorld {
             self.rail_memo.keep_only(|_| false);
             return;
         }
+        // (A ship that has left the sphere of influence of its planet is on the orbit round what the planet goes round before anything puts it, or looks at it.)
+        self.hand_over_what_has_left_its_sphere(time);
         // Who is carried by which planet, by where the planets are before they move.
         let carriers = self.carriers();
         let mut carried_entities: Vec<(EntityId, GridId)> = Vec::new();
@@ -1781,7 +1811,7 @@ impl ServerWorld {
 }
 
 mod coasting;
-pub use coasting::NotCoasting;
+pub use coasting::{NotCoasting, PredictedRail, Prediction, PredictionEnd};
 
 #[cfg(test)]
 pub(crate) mod tests;

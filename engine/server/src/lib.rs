@@ -17,6 +17,7 @@ mod grid_replication;
 mod grid_view;
 mod merge;
 mod prefetch;
+mod rail_settings;
 mod replication;
 mod server;
 mod server_world;
@@ -29,9 +30,11 @@ pub use config::ServerConfig;
 pub use game_logic::GameLogic;
 pub use grid_view::{GridView, ServerGrid};
 pub use merge::{MergeError, MergePlan, TurnValues};
+pub use rail_settings::{RailSettings, RailSettingsError};
 pub use server::{LeaveReason, Server, ServerError, StepReport};
 pub use server_world::{
     AccessError, Audience, ChannelChange, DetachError, GridForce, GridTorque, NotCoasting,
-    RailWork, ServerWorld, ShipStorageError, SplitError, SplitPart,
+    PredictedRail, Prediction, PredictionEnd, RailWork, ServerWorld, ShipStorageError, SplitError,
+    SplitPart,
 };
 pub use ship_settings::{LogoutPolicy, ShipSettings, ShipSettingsError};

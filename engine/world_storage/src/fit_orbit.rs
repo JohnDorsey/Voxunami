@@ -103,6 +103,6 @@ impl Orbit {
         precision: Precision,
     ) -> Result<Self, RailError> {
         let elements = Elements::from_state(place, velocity, mu, time.wide(), precision)?;
-        Self::from_elements(around, elements)
+        Ok(Self::from_elements(around, elements)?.starting_at(time))
     }
 }

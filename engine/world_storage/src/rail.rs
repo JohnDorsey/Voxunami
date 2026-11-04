@@ -26,6 +26,8 @@ use voxel_space::{GridId, Orientation};
 use wide_float::{Precision, WideFloat};
 use wide_kepler::{Elements, KeplerError, PreparedElements, Time};
 
+pub use crate::hand_over::BITS_ADDED_BY_A_HAND_OVER;
+
 pub use crate::exact_offset::ExactOffset;
 
 /// The smallest ratio, 2^-64: an ellipse as thin as this is the sharpest `wide_kepler` solves (Kepler's equation has a slope as small as the ratio, which its guard bits are
@@ -81,6 +83,17 @@ pub struct Spin {
 pub struct Orbit {
     pub around: Centre,
     pub elements: Elements,
+    /// The time the body was put on this orbit, if it is known: an orbit made from a state (`Orbit::from_place` and its kin) starts at the time of the state, and a hand-over (see
+    /// [`Orbit::handed_over_to`]) at the instant of the crossing. The orbit says where the body is at every time, but the body is on it only from here, until it leaves the sphere of what it goes
+    /// round: so when it leaves is the first crossing **after** this time, which a ship that was parked, or a server that was off, has to be able to find. Saved with the orbit.
+    pub since: Option<RailTime>,
+    /// How many sphere-of-influence changes the body has been through since it was last put on an orbit from a state (a manoeuvre, a push, a change of the mass of what it goes round):
+    /// 0 for an orbit made from a state, and one more for each hand-over (see [`Orbit::handed_over_to`]). The whole path from that state is a function of that first orbit, so this says where on
+    /// it the body is. Saved with the orbit.
+    pub changes: u32,
+    /// How many sphere-of-influence changes after that state the player has asked a prediction of the path to show, counted from the same state (so that the prediction goes on being asked for
+    /// as the ship goes through the changes; it is advanced by the player and not by the ship's motion). A hand-over keeps it. See `server::ServerWorld::predicted_path`. Saved with the orbit.
+    pub predicted: u32,
 }
 
 /// Which ends of an ellipse a body passed in a stretch of time (see [`Orbit::apsides_passed`]).
@@ -210,6 +223,43 @@ impl From<f64> for RailTime {
             units: ((seconds * f64::from(UNITS_IN_A_SECOND_OF_SECONDS)).round() as i128)
                 .clamp(-MOST_UNITS, MOST_UNITS),
             units_per_second: UNITS_IN_A_SECOND_OF_SECONDS,
+        }
+    }
+}
+
+impl RailTime {
+    /// The instant of the grid of `wide_kepler` (see [`wide_kepler::INSTANTS_PER_SECOND`]) that a time is.
+    pub(crate) fn of_instant(time: Time) -> Self {
+        Self {
+            units: time.units,
+            units_per_second: time.units_per_second,
+        }
+    }
+
+    /// The whole number of units of the time (a tick, or a step of the grid of the instants bodies leave spheres at).
+    pub fn units(self) -> i128 {
+        self.units
+    }
+
+    /// How many units make a second.
+    pub fn units_per_second(self) -> u32 {
+        self.units_per_second
+    }
+
+    /// Which of two times is earlier, exactly (a time in units of one rate against one in another: the tick of a server and an instant of the grid). Not `Ord`, because two times
+    /// that are the same moment in different units are not equal as values.
+    pub fn compare(self, other: Self) -> Ordering {
+        // (The units are under 2^96 and a rate under 2^32, so a product fits a `u128`.)
+        let (own_sign, other_sign) = (self.units.signum(), other.units.signum());
+        if own_sign != other_sign {
+            return own_sign.cmp(&other_sign);
+        }
+        let own = self.units.unsigned_abs() * u128::from(other.units_per_second);
+        let theirs = other.units.unsigned_abs() * u128::from(self.units_per_second);
+        if own_sign < 0 {
+            theirs.cmp(&own)
+        } else {
+            own.cmp(&theirs)
         }
     }
 }
@@ -420,7 +470,20 @@ impl Orbit {
                 "an orbit has a radius of at most 2^120 voxels and a period of at most 2^80 seconds",
             ));
         }
-        Ok(Self { around, elements })
+        Ok(Self {
+            around,
+            elements,
+            since: None,
+            changes: 0,
+            predicted: 0,
+        })
+    }
+
+    /// The same orbit, the body put on it at `time` (see [`Orbit::since`]).
+    #[must_use]
+    pub fn starting_at(mut self, time: RailTime) -> Self {
+        self.since = Some(time);
+        self
     }
 
     /// The semi-major axis (the radius of a circle) in voxels, as the `f64` nearest to it: for sizes and comparisons, not for placing a body.
@@ -791,6 +854,10 @@ impl RailMemo {
 
 const HAS_SPIN: u8 = 1;
 const HAS_ORBIT: u8 = 2;
+/// The orbit has a time it starts at (see [`Orbit::since`]); only with an orbit.
+const HAS_START: u8 = 4;
+/// The orbit is some changes of sphere of influence into a path, and a prediction has been asked for (see [`Orbit::changes`]); only with an orbit.
+const HAS_CHAIN: u8 = 8;
 const ABOUT_A_POINT: u8 = 0;
 const ABOUT_A_GRID: u8 = 1;
 
@@ -818,7 +885,25 @@ fn read_number(reader: &mut ByteReader<'_>) -> Result<f64, DecodeError> {
 pub fn encode_rail(rail: &Rail) -> Vec<u8> {
     let mut writer = ByteWriter::new();
     let flags = if rail.spin.is_some() { HAS_SPIN } else { 0 }
-        | if rail.orbit.is_some() { HAS_ORBIT } else { 0 };
+        | if rail.orbit.is_some() { HAS_ORBIT } else { 0 }
+        | if rail
+            .orbit
+            .as_ref()
+            .is_some_and(|orbit| orbit.since.is_some())
+        {
+            HAS_START
+        } else {
+            0
+        }
+        | if rail
+            .orbit
+            .as_ref()
+            .is_some_and(|orbit| orbit.changes != 0 || orbit.predicted != 0)
+        {
+            HAS_CHAIN
+        } else {
+            0
+        };
     writer.write_u8(flags);
     if let Some(spin) = &rail.spin {
         write_vector(&mut writer, spin.axis);
@@ -846,6 +931,14 @@ pub fn encode_rail(rail: &Rail) -> Vec<u8> {
         ]) {
             number.write_to(&mut writer);
         }
+        if let Some(since) = orbit.since {
+            writer.write_wide_signed(since.units);
+            writer.write_varint(u64::from(since.units_per_second));
+        }
+        if orbit.changes != 0 || orbit.predicted != 0 {
+            writer.write_varint(u64::from(orbit.changes));
+            writer.write_varint(u64::from(orbit.predicted));
+        }
     }
     writer.into_bytes()
 }
@@ -855,8 +948,13 @@ pub fn encode_rail(rail: &Rail) -> Vec<u8> {
 pub fn decode_rail(payload: &[u8]) -> Result<Rail, DecodeError> {
     let mut reader = ByteReader::new(payload);
     let flags = reader.read_u8()?;
-    if flags & !(HAS_SPIN | HAS_ORBIT) != 0 {
+    if flags & !(HAS_SPIN | HAS_ORBIT | HAS_START | HAS_CHAIN) != 0 {
         return Err(DecodeError::Invalid("a rail with a flag nobody knows"));
+    }
+    if flags & (HAS_START | HAS_CHAIN) != 0 && flags & HAS_ORBIT == 0 {
+        return Err(DecodeError::Invalid(
+            "a start or a place in a path of an orbit the rail does not have",
+        ));
     }
     let spin = if flags & HAS_SPIN != 0 {
         let spin = Spin {
@@ -896,10 +994,32 @@ pub fn decode_rail(payload: &[u8]) -> Result<Rail, DecodeError> {
             period,
             phase,
         };
-        Some(
-            Orbit::from_elements(around, elements)
-                .map_err(|_| DecodeError::Invalid("an orbit that is no orbit"))?,
-        )
+        let mut orbit = Orbit::from_elements(around, elements)
+            .map_err(|_| DecodeError::Invalid("an orbit that is no orbit"))?;
+        if flags & HAS_START != 0 {
+            let units = reader.read_wide_signed()?;
+            let per_second = u32::try_from(reader.read_varint()?)
+                .ok()
+                .filter(|per_second| *per_second > 0)
+                .ok_or(DecodeError::Invalid("a start with no units in a second"))?;
+            if units.unsigned_abs() > MOST_UNITS.unsigned_abs() {
+                return Err(DecodeError::Invalid("a start further than the clock goes"));
+            }
+            orbit = orbit.starting_at(RailTime {
+                units,
+                units_per_second: per_second,
+            });
+        }
+        if flags & HAS_CHAIN != 0 {
+            orbit.changes = u32::try_from(reader.read_varint()?)
+                .map_err(|_| DecodeError::Invalid("a count of changes that is too many"))?;
+            orbit.predicted = u32::try_from(reader.read_varint()?)
+                .map_err(|_| DecodeError::Invalid("a count of changes that is too many"))?;
+            if orbit.changes == 0 && orbit.predicted == 0 {
+                return Err(DecodeError::Invalid("a place in a path that is none"));
+            }
+        }
+        Some(orbit)
     } else {
         None
     };

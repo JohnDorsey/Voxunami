@@ -2913,6 +2913,7 @@ dependencies = [
  "transport",
  "voxel_grid",
  "voxel_space",
+ "wide_float",
  "world_storage",
 ]
 

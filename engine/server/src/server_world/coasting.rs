@@ -10,8 +10,13 @@
 //! - something pushes it: a force or a torque, a docking, a program that puts it somewhere, anything that is not the bodies moving it;
 //! - it is near what it could touch (another ship, or a planet that is not the one it goes round), nearer than a margin and the way it would go in a second at the speed it
 //!   closes at, so that nothing meets it while it is on a rail; or it is in the sphere that a planet on a rail carries what is near it with;
-//! - the orbit does not lie round the planet in the way the rail needs: it comes lower than the planet's ground, or goes out past the planet's sphere of influence (where
-//!   what the planet goes round pulls more).
+//! - the orbit does not lie round the planet in the way the rail needs: it comes lower than the planet's ground (a ship that is outside the planet's sphere of influence already,
+//!   where what the planet goes round pulls more, goes round that and not this).
+//!
+//! **A ship leaves the sphere of influence of its planet on its rail** (E16 phase B): an orbit that goes out of it is a rail. At the instant it crosses, found in closed form and rounded up to
+//! a grid of 2^-31 of a second (`Orbit::leaves_at`), the ship goes on the orbit round what the planet goes round that its state is on there (`Orbit::handed_over_to`), however many ticks
+//! that is behind and however many spheres it has crossed since; so a path is the same at every tick rate, and a ship that was parked is where it would have been. See
+//! [`ServerWorld::hand_over_what_has_left_its_sphere`].
 //!
 //! A ship has to be undisturbed for [`QUIET_SECONDS`] before it goes on a rail, so one that is pushed now and then does not go on and off. Its orbit is made from its place and its
 //! speed at the time (`Orbit::from_place`), the orbit the numbers of that state are on (to 128 bits, with nothing snapped to a circle), and is made again only when the ship was
@@ -24,6 +29,7 @@
 //! fitted once a second and a tick, where every one was fitted every tick before. The cost is that the orbit-dependent rules are looked at at the end of the second and not at each tick of it:
 //! a ship that was quiet but whose orbit was refused for a while and is allowed at the end goes on a rail at the end, though it was allowed for less than a second.
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use voxel_space::{BrickBox, GridId, WorldPosition};
@@ -33,7 +39,9 @@ use world_storage::rail::{Centre, Orbit, Rail, RailError, RailTime};
 use super::*;
 
 pub(super) mod neighbours;
+mod prediction;
 use neighbours::{Body, ShipsInTheWay, is_in_the_way};
+pub use prediction::{PredictedRail, Prediction, PredictionEnd};
 
 /// Seconds a ship has to be undisturbed before it goes on a rail.
 pub const QUIET_SECONDS: u64 = 1;
@@ -55,6 +63,41 @@ const MASS_CHANGE_THAT_COUNTS: f64 = 1.0e-9;
 /// ellipse they have, and an orbit that is exactly a circle has no ends at all.)
 const NEARLY_A_CIRCLE: f64 = 1.0e-14;
 
+/// How far inside a sphere of influence, as a part of its radius, a ship that is on a rail has to be to be taken for one that went into it: the ship that has just come out of the
+/// sphere, at the instant of the crossing, is at its edge to the rounding of its place (2^-32 voxel), and must not be taken for one that is in it.
+const SPHERE_SLACK: f64 = 1.0e-9;
+
+/// The most hand-overs one ship has in one asking: a ship goes up one planet at a time, so the depth of the planets of a world is all it can need. (The bound is for a world whose planets go
+/// round each other in a loop, which a rail cannot make: a planet goes round one with a lower number.)
+const MOST_HAND_OVERS_AT_ONCE: usize = 64;
+
+/// When a ship on a rail leaves the sphere of influence of the planet it goes round: worked out once for an orbit and a sphere, and kept until either changes.
+#[derive(Debug)]
+pub(super) struct ExitPlan {
+    orbit: Orbit,
+    sphere: f64,
+    at: Option<RailTime>,
+}
+
+/// The instant an orbit leaves a sphere of this radius, if it does, and whether the closed form had to be worked out for it (an orbit that stays well inside the sphere needs none: a comparison
+/// of doubles says so). The orbit is on from `orbit.since`, or from `time` if it has none.
+pub(super) fn search_for_exit(
+    orbit: &Orbit,
+    sphere: f64,
+    time: RailTime,
+) -> (Option<RailTime>, bool) {
+    let can_leave = orbit.farthest_distance() > sphere * (1.0 - SPHERE_SLACK);
+    let at = if can_leave {
+        orbit
+            .leaves_at(sphere, orbit.since.unwrap_or(time))
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+    (at, can_leave)
+}
+
 /// Why a ship is not on a rail that goes round a planet.
 #[derive(Clone, Debug, PartialEq)]
 pub enum NotCoasting {
@@ -72,7 +115,7 @@ pub enum NotCoasting {
     NoOrbit(RailError),
     /// The orbit comes nearer the planet's middle than its ground and what it carries.
     TooLow { lowest: f64, least: f64 },
-    /// The orbit goes out past the planet's sphere of influence, where what it goes round pulls more.
+    /// The ship is outside the planet's sphere of influence already (`farthest` is how far out it is), where what the planet goes round pulls more.
     PastTheSphere { farthest: f64, sphere: f64 },
     /// Another ship or planet is near, or the ship is in what a planet on a rail carries.
     SomethingNear(GridId),
@@ -316,20 +359,35 @@ impl ServerWorld {
             time,
         )
         .map_err(NotCoasting::NoOrbit)?;
-        // How low it comes, and how far out it goes.
+        self.is_not_too_low(&orbit, parent, planet, time)?;
+        // A ship that is out of the planet's sphere already goes round what the planet goes round; one that is in it and goes out of it later is handed over when it does.
+        if let Some(sphere) = self.sphere_of_influence(parent) {
+            let distance = size(place);
+            if distance >= sphere {
+                return Err(NotCoasting::PastTheSphere {
+                    farthest: orbit.farthest_distance().max(distance),
+                    sphere,
+                });
+            }
+        }
+        Ok(orbit)
+    }
+
+    /// Whether an orbit round `planet` stays above its ground and what it carries, from `time` on.
+    fn is_not_too_low(
+        &self,
+        orbit: &Orbit,
+        parent: GridId,
+        planet: &MovingGrid,
+        time: RailTime,
+    ) -> Result<(), NotCoasting> {
         let lowest = orbit.nearest_distance();
         let least = self.least_to_go_round(parent, planet);
         // (A hyperbola that is going away has passed its nearest point: it is behind the ship, and a rail is where the ship goes.)
         if lowest < least && orbit.periapsis_ahead(time) {
             return Err(NotCoasting::TooLow { lowest, least });
         }
-        if let Some(sphere) = self.sphere_of_influence(parent) {
-            let farthest = orbit.farthest_distance();
-            if farthest > sphere {
-                return Err(NotCoasting::PastTheSphere { farthest, sphere });
-            }
-        }
-        Ok(orbit)
+        Ok(())
     }
 
     /// `G M` of a planet, in voxels cubed a second squared: what it pulls with, which is nothing if it weighs less than what pulls.
@@ -407,7 +465,7 @@ impl ServerWorld {
 
     /// How far from the middle of a planet what it pulls is pulled by it more than by what it goes round, in voxels (the sphere of influence, `a (m / M)^(2/5)` of its orbit
     /// round the planet it goes round); `None` for a planet that goes round nothing that is a planet here, which pulls everywhere.
-    fn sphere_of_influence(&self, planet: GridId) -> Option<f64> {
+    pub(super) fn sphere_of_influence(&self, planet: GridId) -> Option<f64> {
         let ship = self.data.grids().get(planet)?;
         let orbit = ship.rail.as_ref()?.orbit.as_ref()?;
         let Centre::Grid(parent) = orbit.around else {
@@ -475,7 +533,13 @@ impl ServerWorld {
             if chain.contains(&sphere.id) || sphere.level != ship.level {
                 continue;
             }
-            if size(sphere.position.displacement_to(place).in_voxels()) < sphere.radius {
+            // (A ship that is on a rail may be at the edge of a sphere it has just come out of.)
+            let radius = if factor > 1.0 {
+                sphere.radius
+            } else {
+                sphere.radius * (1.0 - SPHERE_SLACK)
+            };
+            if size(sphere.position.displacement_to(place).in_voxels()) < radius {
                 return Some(sphere.id);
             }
         }
@@ -522,6 +586,143 @@ impl ServerWorld {
                 })
             })
             .collect()
+    }
+
+    /// Hands over every ship on a rail of this module that has left the sphere of influence of the planet it goes round, at an instant at or before `time`: the ship goes on the orbit
+    /// round what the planet goes round that its state is on **at the instant of the crossing**, and again for each sphere it has crossed since, so that it is where its path puts it at
+    /// `time` whatever the rate of the ticks is and however long it was not looked at. A ship whose new orbit is no orbit a rail may have (it comes lower than the ground it now goes round,
+    /// or what it now goes round pulls nothing) comes off its rail where it is.
+    ///
+    /// It is called by [`ServerWorld::apply_rails`], before the ships are put where their rails say, so that nothing looks at a ship on a rail it has left.
+    pub(super) fn hand_over_what_has_left_its_sphere(&mut self, time: RailTime) {
+        let ships: Vec<GridId> = self
+            .data
+            .grids()
+            .iter()
+            .filter(|(_, ship)| {
+                ship.terrain.is_none() && ship.rail.as_ref().is_some_and(is_a_coasting_rail)
+            })
+            .map(|(id, _)| id)
+            .collect();
+        for ship in ships {
+            self.hand_over(ship, time);
+        }
+        let grids = self.data.grids();
+        self.exits.retain(|id, _| {
+            grids
+                .get(*id)
+                .is_some_and(|ship| ship.rail.as_ref().is_some_and(is_a_coasting_rail))
+        });
+    }
+
+    /// The hand-overs of one ship (see [`ServerWorld::hand_over_what_has_left_its_sphere`]).
+    fn hand_over(&mut self, grid: GridId, time: RailTime) {
+        for _ in 0..MOST_HAND_OVERS_AT_ONCE {
+            let Some((orbit, instant)) = self.due_exit(grid, time) else {
+                return;
+            };
+            match self.handed_over(grid, &orbit, instant) {
+                Ok(()) => self.hand_overs += 1,
+                Err(_) => {
+                    self.quiet_since.remove(&grid);
+                    let _ = self.set_grid_rail(grid, None);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// The orbit of a ship and the instant it left the sphere of the planet it goes round, if that is at or before `time`. The instant is worked out when the orbit or the sphere is not
+    /// the one it was worked out for, and not otherwise (see [`ExitPlan`]).
+    fn due_exit(&mut self, grid: GridId, time: RailTime) -> Option<(Orbit, RailTime)> {
+        let orbit = self.data.grids().get(grid)?.rail.as_ref()?.orbit.as_ref()?;
+        let Centre::Grid(parent) = orbit.around else {
+            return None;
+        };
+        let Some(sphere) = self.sphere_of_influence(parent) else {
+            self.exits.remove(&grid);
+            return None;
+        };
+        let cached = self
+            .exits
+            .get(&grid)
+            .filter(|plan| plan.sphere == sphere && plan.orbit == *orbit)
+            .map(|plan| plan.at);
+        let (at, plan) = match cached {
+            Some(at) => (at, None),
+            None => {
+                let (at, can_leave) = search_for_exit(orbit, sphere, time);
+                let plan = ExitPlan {
+                    orbit: orbit.clone(),
+                    sphere,
+                    at,
+                };
+                (at, Some((plan, can_leave)))
+            }
+        };
+        let found = at
+            .filter(|instant| instant.compare(time) != Ordering::Greater)
+            .map(|instant| (orbit.clone(), instant));
+        if let Some((plan, searched)) = plan {
+            self.exits.insert(grid, plan);
+            self.exit_searches += u64::from(searched);
+        }
+        found
+    }
+
+    /// Puts a ship on the orbit round what its planet goes round that its state is on at `instant`, if that orbit is one a rail may have.
+    fn handed_over(
+        &mut self,
+        grid: GridId,
+        orbit: &Orbit,
+        instant: RailTime,
+    ) -> Result<(), NotCoasting> {
+        let handed_over = self.orbit_after(orbit, instant)?;
+        let _ = self.set_grid_rail(
+            grid,
+            Some(Rail {
+                spin: None,
+                orbit: Some(handed_over),
+            }),
+        );
+        Ok(())
+    }
+
+    /// The orbit round what the planet an orbit goes round goes round that a body on it is on at `instant` (when it leaves the planet's sphere), with the mass the planets have now and
+    /// the widest rail the host allows, if that is an orbit a rail may have. Nothing changes: this is what the hand-over of a ship and a prediction of its path both ask.
+    pub(super) fn orbit_after(
+        &self,
+        orbit: &Orbit,
+        instant: RailTime,
+    ) -> Result<Orbit, NotCoasting> {
+        let Centre::Grid(parent) = orbit.around else {
+            return Err(NotCoasting::NotAShip);
+        };
+        let centre = self
+            .data
+            .grids()
+            .get(parent)
+            .and_then(|planet| planet.rail.as_ref())
+            .and_then(|rail| rail.orbit.as_ref())
+            .ok_or(NotCoasting::NoPlanetPulls)?;
+        let Centre::Grid(grand_parent) = centre.around else {
+            return Err(NotCoasting::NoPlanetPulls);
+        };
+        let grand = self
+            .data
+            .grids()
+            .get(grand_parent)
+            .ok_or(NotCoasting::NoPlanetPulls)?;
+        let handed_over = orbit
+            .handed_over_to(
+                centre,
+                self.mass_parameter_of(grand),
+                instant,
+                self.rail_settings.widest_rail_bits,
+            )
+            .map_err(NotCoasting::NoOrbit)?;
+        self.is_not_too_low(&handed_over, grand_parent, grand, instant)?;
+        Ok(handed_over)
     }
 
     /// Whether a ship that is on a rail of this module has to come off it: it is held, turns, is in a level with a pull of its own, goes round nothing that is there, or

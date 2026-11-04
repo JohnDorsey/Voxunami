@@ -31,6 +31,8 @@ mod elements;
 mod error;
 mod fit;
 mod kepler;
+mod leaves;
 
 pub use elements::{Elements, Place, PreparedElements, Time};
 pub use error::KeplerError;
+pub use leaves::INSTANTS_PER_SECOND;

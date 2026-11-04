@@ -44,6 +44,20 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
   first frame on one adapter); not checked for this test.
 - **What would settle it.** Run it in a loop on each adapter with `VOX_REQUIRE_GPU=1` and log which adapter and which pixel differs; see whether it goes through `settled`.
 
+### `world_view/tests/ship_terrain.rs`: `beyond_the_extent_there_is_nothing_so_the_edge_of_a_planet_shows_its_side`
+
+- **The test.** A planet's mesher (3 worker threads, view radius 3) is settled once (`ShipTerrainMesher::settle`) at the origin; the test asserts that the bricks it shows are the 18 inside the extent (`assert_eq!(shown, expected)` at line 183).
+- **Occurrence 1: 2026-11-03**, working tree of E16 phase B (changes in `wide_kepler`, `world_storage` and `server`; `world_view` has `world_storage` as a dev-dependency (`cargo tree`: it test-supports the scene), and so `wide_kepler` below it, but the test builds a scene and meshes it and does not use a rail [read]), the full gate (`cargo test --workspace --no-fail-fast`, dev profile) on
+  **Windows**, run in the background. The binary reported `5 passed; 1 failed ... finished in 0.17s`. The message was not kept by the gate's filter.
+- **Occurrence 2: 2026-11-03**, the same working tree, in the reruns: **1 failure in 25** whole-binary runs (`cargo test --release -p world_view --test ship_terrain`; the 3 runs before them alone passed). **The message was kept:** `left` (what was shown) was
+  **one brick, `(0, 0, 0)`**, against the 18 expected: `settle` returned when most of the bricks had not been meshed (or loaded) yet; it did not time out and did not show a wrong brick.
+- **What it depends on [read].** `WorldMesher::settle` (`mesher.rs`) loops on `update` until `pending_jobs() == 0 && scheduled_last_update == 0`, sleeping 200 us between; the bricks of a planet come from the generator through
+  `ShipTerrainSource`. A `settle` that ends because **nothing was pending at one look** ends the test's wait, whatever the workers or the source have not delivered yet.
+- **Beliefs about the cause.** **Believed, not tested**: an `update` that found no work scheduled and none pending while the first bricks were still on their way (a worker holding a finished job that `update` had not collected counts as pending, but the
+  source handing out a brick later than the first look would not). **Not checked**: whether the source or the generator has a thread of its own; whether this fails more under load.
+- **What would settle it.** Print `scheduled_last_update`, `pending_jobs()` and the number of loaded bricks at the exit of `settle` on a failing run (loop the binary until it fails, 4 percent of runs here), and look at whether the missing bricks are in the source and not yet
+  asked, or asked and not yet returned. A `settle` that waits for a condition with a deadline (all the bricks the view wants are meshed) would be the fix for the test; if the mesher can end its work with bricks wanted and not asked, it is the mesher's.
+
 ## Explained and fixed
 
 - `an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw` (`games/voxunami_cave/tests/pictures.rs`): the first frames of a fresh renderer on the integrated AMD GPU leave pixels out;

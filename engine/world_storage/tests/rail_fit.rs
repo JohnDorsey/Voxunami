@@ -514,6 +514,12 @@ fn the_orbit_made_from_a_state_is_pinned_to_the_bit() {
     {
         let original = an_orbit(normal, radius, ratio, periapsis, period, phase);
         let found = fitted(&original, mu_of(radius, period), tick).unwrap();
+        // (The pin is of the elements; the time the orbit starts at is said once: the time of the state.)
+        assert_eq!(found.since, Some(time(tick)));
+        let found = Orbit {
+            since: None,
+            ..found
+        };
         let bytes = world_storage::rail::encode_rail(&rail_of(&found));
         assert_eq!(
             fnv(&bytes),

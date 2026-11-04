@@ -135,6 +135,7 @@ impl Server {
             }
         }
         world.set_ship_settings(config.ships);
+        world.set_rail_settings(config.rails);
         // (A server keeps the files of its ships in memory until it is told where; see `Server::with_ship_files`.)
         world.set_ship_storage(format, Box::new(MemoryShipFiles::new()));
         Ok(Self {

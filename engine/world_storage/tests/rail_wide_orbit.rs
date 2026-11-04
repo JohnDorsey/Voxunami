@@ -308,6 +308,9 @@ fn the_limits_of_an_orbit_are_kept_exactly_and_refused_a_hair_beyond() {
             orbit: Some(Orbit {
                 around: Centre::Point(NOWHERE),
                 elements,
+                since: None,
+                changes: 0,
+                predicted: 0,
             }),
         };
         assert!(decode_rail(&encode_rail(&rail)).is_ok(), "{what} is read");
@@ -325,6 +328,9 @@ fn the_limits_of_an_orbit_are_kept_exactly_and_refused_a_hair_beyond() {
             orbit: Some(Orbit {
                 around: Centre::Point(NOWHERE),
                 elements,
+                since: None,
+                changes: 0,
+                predicted: 0,
             }),
         };
         assert!(
@@ -366,6 +372,9 @@ fn what_is_no_orbit_is_refused_when_made_and_when_read() {
             orbit: Some(Orbit {
                 around: Centre::Point(NOWHERE),
                 elements,
+                since: None,
+                changes: 0,
+                predicted: 0,
             }),
         };
         assert!(

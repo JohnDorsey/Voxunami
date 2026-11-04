@@ -244,7 +244,7 @@ fn an_orbit_that_comes_lower_than_the_ground_and_a_margin_is_refused() {
 }
 
 #[test]
-fn an_orbit_that_goes_out_of_the_sphere_of_influence_of_a_planet_that_goes_round_another_is_refused()
+fn an_orbit_that_goes_out_of_the_sphere_of_influence_of_a_planet_that_goes_round_another_is_a_rail_and_a_ship_already_out_of_it_is_refused()
  {
     let (mut world, _) = space();
     // A star, and a planet of a millionth of its weight that goes round it 10^7 voxels out: its sphere is 1e7 (1e24 / 1e30)^(2/5) = 39,800 voxels.
@@ -254,7 +254,8 @@ fn an_orbit_that_goes_out_of_the_sphere_of_influence_of_a_planet_that_goes_round
     world.apply_rails(TICKS);
     let there = world.data().grids().get(planet).unwrap().pose.position;
     let mu = PULL * 1.0e24;
-    // 9,000 voxels from the planet, going fast enough to reach 60,000: well inside the sphere now and well outside it later.
+    // 9,000 voxels from the planet, going fast enough to reach 60,000: well inside the sphere now and well outside it later. That is a rail (E16 phase B: the ship is handed over to the
+    // star when it crosses the sphere; `exit_ships.rs` has the crossing).
     let start = there.translated([9_000.0, 0.0, 0.0]);
     let speed = libm::sqrt(mu * (2.0 / 9_000.0 - 1.0 / 34_500.0));
     let planet_speed = world.data().grids().get(planet).unwrap().linear_velocity;
@@ -268,13 +269,9 @@ fn an_orbit_that_goes_out_of_the_sphere_of_influence_of_a_planet_that_goes_round
     world
         .set_grid_velocity(ship, going(speed), [0.0; 3])
         .unwrap();
-    match world.coasting_rail(ship, time(0)) {
-        Err(NotCoasting::PastTheSphere { farthest, sphere }) => {
-            assert!((farthest / 60_000.0 - 1.0).abs() < 1e-3, "{farthest}");
-            assert!((sphere / 39_810.0 - 1.0).abs() < 1e-2, "{sphere}");
-        }
-        other => panic!("{other:?}"),
-    }
+    let orbit = world.coasting_rail(ship, time(0)).unwrap().orbit.unwrap();
+    assert_eq!(orbit.around, Centre::Grid(planet));
+    assert!((orbit.farthest_distance() / 60_000.0 - 1.0).abs() < 1e-3);
     // A circle at 9,000 stays inside it: the planet is what it goes round.
     world
         .set_grid_velocity(ship, going(libm::sqrt(mu / 9_000.0)), [0.0; 3])
