@@ -10,3 +10,6 @@
 
 # Worlds made by hand while testing
 /testworld*
+
+# Python bytecode (tools/virtual_atlas and VirtualAtlas.py)
+__pycache__/
