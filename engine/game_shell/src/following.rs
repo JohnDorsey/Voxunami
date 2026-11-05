@@ -17,13 +17,15 @@ use std::time::{Duration, Instant};
 
 use voxel_space::{GridPose, Orientation, WorldPosition};
 
-/// How long without news of a position before the player is taken to be standing still: a little more
-/// than a tick at the game's rate.
+/// How many ticks without news of a position, after the one that told it, before the player is taken to be standing still: a little more than a tick at the game's rate. It is
+/// measured in the time of the ticks that have come (the newest tick seen, against the one that told the position), not in the time on the wall: a server that is late has told
+/// nobody anything, and a thing that is not told of is not thereby still. (Judged by the wall, one tick that came 60 milliseconds late put a thing that went 3,000 voxels a second
+/// back 270 voxels, and then threw it forward again.)
 const NO_NEWS_MEANS_STILL: Duration = Duration::from_millis(90);
 
 /// The longest the view is carried on from the last position: whatever the speed, never far ahead of
-/// what the server last said.
-const LONGEST_CARRY_ON: Duration = Duration::from_millis(120);
+/// what the server last said. A tick that is later than this is a stop, in the picture, until it comes.
+const LONGEST_CARRY_ON: Duration = Duration::from_millis(250);
 
 /// How much the speed of something may change between two positions told, however fast it goes, before that is taken for a jump (a teleport, a
 /// ship put somewhere) and not for travel: in voxels a second. For a turn it is [`TURN_ALLOWANCE`].
@@ -120,12 +122,14 @@ impl PoseFollower {
             }
         }
         let (_, since) = self.last.expect("a position was just recorded");
-        let waited = now.saturating_duration_since(since);
-        if waited > NO_NEWS_MEANS_STILL {
+        if seen.saturating_duration_since(since) > NO_NEWS_MEANS_STILL {
             self.velocity.rest();
             return told;
         }
-        let seconds = waited.min(LONGEST_CARRY_ON).as_secs_f64();
+        let seconds = now
+            .saturating_duration_since(since)
+            .min(LONGEST_CARRY_ON)
+            .as_secs_f64();
         told.translated(self.velocity.speed.map(|speed| speed * seconds))
     }
 }
@@ -175,12 +179,14 @@ impl TurnFollower {
             }
         }
         let (_, since) = self.last.expect("a turn was just recorded");
-        let waited = now.saturating_duration_since(since);
-        if waited > NO_NEWS_MEANS_STILL {
+        if seen.saturating_duration_since(since) > NO_NEWS_MEANS_STILL {
             self.rate.rest();
             return told;
         }
-        let seconds = waited.min(LONGEST_CARRY_ON).as_secs_f64();
+        let seconds = now
+            .saturating_duration_since(since)
+            .min(LONGEST_CARRY_ON)
+            .as_secs_f64();
         turned_by(told, self.rate.speed.map(|rate| rate * seconds))
     }
 }
@@ -242,9 +248,10 @@ impl GridFollower {
     }
 }
 
-/// How much the earliest a tick could have come is let drift later each time it is asked, in seconds: the clock of the picture and the server's do not keep
-/// quite the same time, and the network is slower for a while now and then.
-const CLOCK_DRIFT_ALLOWED: f64 = 0.000_05;
+/// How much the earliest a tick could have come is let drift later in a second of the picture's time, in seconds: the clock of the picture and the server's do not keep quite the
+/// same time, and the network is slower for a while now and then. (A rate, not an amount for each time it is asked: the camera, the ships and the other players each ask in a
+/// frame, and what they are told must be one time or a ship that goes with the camera at a thousand voxels a second shows it a few centimetres off.)
+const CLOCK_DRIFT_ALLOWED: f64 = 0.005;
 
 /// When the ticks of the server come, worked out from when the frames saw them. A tick is seen at the first frame after it came, which is up to a frame late and
 /// not by the same time each tick; a speed worked out from those times shakes, and the view with it. Ticks come at a steady rate, so the time of one is the time of
@@ -257,6 +264,8 @@ pub struct TickClock {
     origin: Option<f64>,
     /// The newest tick asked about; a lower number is another count of ticks (another world), and the clock starts again.
     newest: u64,
+    /// When the clock was last asked, in seconds after `start`.
+    asked_at: f64,
 }
 
 impl TickClock {
@@ -266,6 +275,7 @@ impl TickClock {
             seconds_per_tick: 1.0 / f64::from(ticks_per_second.max(1)),
             origin: None,
             newest: 0,
+            asked_at: 0.0,
         }
     }
 
@@ -276,12 +286,16 @@ impl TickClock {
         }
         self.newest = number;
         let ticks = number as f64 * self.seconds_per_tick;
-        let candidate = now.saturating_duration_since(self.start).as_secs_f64() - ticks;
+        let elapsed = now.saturating_duration_since(self.start).as_secs_f64();
+        let candidate = elapsed - ticks;
         let origin = match self.origin {
-            Some(origin) => (origin + CLOCK_DRIFT_ALLOWED).min(candidate),
+            Some(origin) => {
+                (origin + CLOCK_DRIFT_ALLOWED * (elapsed - self.asked_at).max(0.0)).min(candidate)
+            }
             None => candidate,
         };
         self.origin = Some(origin);
+        self.asked_at = elapsed;
         self.start + Duration::from_secs_f64((origin + ticks).max(0.0))
     }
 }
@@ -496,6 +510,150 @@ mod tests {
         let at = instant_at(start, 2.0);
         let seen = clock.seen(3, at);
         assert!(at.saturating_duration_since(seen) < Duration::from_micros(1));
+    }
+
+    /// A small deterministic noise in [0, 1), so that a test of timing that is not on a beat is the same every time.
+    fn noise(state: &mut u64) -> f64 {
+        *state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (*state >> 33) as f64 / f64::from(1u32 << 31)
+    }
+
+    /// The frames of a picture at `frame_rate` (each up to a millisecond off its beat) and the ticks of a 20 Hz server (each up to `latency` seconds later than its beat, the
+    /// way a thread that sleeps and a computer that is busy deliver them), as they meet: a frame sees the newest tick that has come. Calls `each` with the time of the frame and
+    /// the number of that tick.
+    fn frames_and_late_ticks(
+        seconds: f64,
+        frame_rate: f64,
+        latency: f64,
+        seed: u64,
+        each: impl FnMut(f64, u64),
+    ) {
+        frames_and_ticks_with_a_hiccup(seconds, frame_rate, latency, seed, None, each);
+    }
+
+    /// The same, with one tick (the number and the time, in seconds, it is late by besides) that comes late, as a tick does when the server is busy or the machine is.
+    fn frames_and_ticks_with_a_hiccup(
+        seconds: f64,
+        frame_rate: f64,
+        latency: f64,
+        seed: u64,
+        hiccup: Option<(u64, f64)>,
+        mut each: impl FnMut(f64, u64),
+    ) {
+        let mut state = seed;
+        let mut arrivals: Vec<f64> = Vec::new();
+        let mut tick = 0u64;
+        let mut now = 0.0;
+        while now < seconds {
+            while {
+                let late = hiccup
+                    .filter(|(number, _)| *number == tick)
+                    .map_or(0.0, |(_, extra)| extra);
+                let arrival = tick as f64 * 0.05 + 0.0007 + latency * noise(&mut state) + late;
+                // (A tick does not come before the one before it.)
+                let arrival = arrival.max(arrivals.last().copied().unwrap_or(0.0));
+                if arrival <= now {
+                    arrivals.push(arrival);
+                    tick += 1;
+                    true
+                } else {
+                    false
+                }
+            } {}
+            if let Some(newest) = arrivals.len().checked_sub(1) {
+                each(now, newest as u64);
+            }
+            now += (1.0 + 0.001 * (noise(&mut state) - 0.5) * frame_rate) / frame_rate;
+        }
+    }
+
+    #[test]
+    fn the_tick_clock_gives_everyone_who_asks_in_the_same_frame_the_same_time() {
+        let start = Instant::now();
+        let mut clock = TickClock::new(20, start);
+        frames_and_late_ticks(2.0, 144.0, 0.003, 7, |now, tick| {
+            let at = instant_at(start, now);
+            let first = clock.seen(tick, at);
+            assert_eq!(clock.seen(tick, at), first, "at {now}, tick {tick}");
+            assert_eq!(clock.seen(tick, at), first, "at {now}, tick {tick}");
+        });
+    }
+
+    #[test]
+    fn a_camera_and_its_ship_keep_their_distance_when_the_window_asks_the_clock_for_each_of_them_in_turn()
+     {
+        // As the window does in a frame: the camera, then the ships, then the other players each ask when the tick they show was told.
+        for speed in [700.0, 3000.0, 7000.0] {
+            for (frame_rate, latency) in [(60.0, 0.0), (144.0, 0.003), (144.0, 0.012)] {
+                let start = Instant::now();
+                let mut camera = PoseFollower::new();
+                let mut ship = GridFollower::new();
+                let mut clock = TickClock::new(20, start);
+                let mut worst = 0.0f64;
+                frames_and_late_ticks(3.0, frame_rate, latency, 11, |now, tick| {
+                    let told = along(speed, tick as f64 * 0.05);
+                    let told_ship = GridPose::new(told, Orientation::IDENTITY);
+                    let told_camera = told.translated([5.0, 0.0, 0.0]);
+                    let at = instant_at(start, now);
+                    let seen = clock.seen(tick, at);
+                    let camera_shown = x_of(camera.view_position_seen(told_camera, seen, at));
+                    let seen = clock.seen(tick, at);
+                    let ship_shown = x_of(ship.view_pose_seen(told_ship, seen, at).position);
+                    let _others = clock.seen(tick, at);
+                    if now > 0.5 {
+                        worst = worst.max((camera_shown - ship_shown - 5.0).abs());
+                    }
+                });
+                // (Measured before the clock gave the same time to all who ask in a frame: up to the speed times 50 microseconds, a few centimetres at 700 and 35 at 7,000.)
+                assert!(
+                    worst < 1e-6,
+                    "at {speed} voxels a second, {frame_rate} frames a second, ticks up to {latency} s late: the camera is {worst} voxels off the distance"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_tick_that_comes_late_does_not_put_a_thing_that_goes_fast_back_where_it_was_nor_make_it_stumble()
+     {
+        // A thing at 3,000 voxels a second, shown in frames of a 144 Hz picture; the 30th tick comes 100 milliseconds late (the server was busy: the next ones are on the beat).
+        for lateness in [0.03, 0.06, 0.1] {
+            let speed = 3000.0;
+            let nominal = speed / 144.0;
+            let start = Instant::now();
+            let mut follower = PoseFollower::new();
+            let mut clock = TickClock::new(20, start);
+            let mut before = None;
+            let (mut largest, mut smallest) = (0.0f64, f64::MAX);
+            frames_and_ticks_with_a_hiccup(
+                3.0,
+                144.0,
+                0.0,
+                5,
+                Some((30, lateness)),
+                |now, tick| {
+                    let at = instant_at(start, now);
+                    let seen = clock.seen(tick, at);
+                    let shown = x_of(follower.view_position_seen(
+                        along(speed, tick as f64 * 0.05),
+                        seen,
+                        at,
+                    ));
+                    if let Some(before) = before.filter(|_| now > 0.5) {
+                        let share = (shown - before) / nominal;
+                        largest = largest.max(share);
+                        smallest = smallest.min(share);
+                    }
+                    before = Some(shown);
+                },
+            );
+            assert!(
+                smallest > 0.7 && largest < 1.3,
+                "a tick {lateness} s late: a step is from {smallest} to {largest} of the steady one"
+            );
+        }
     }
 
     #[test]

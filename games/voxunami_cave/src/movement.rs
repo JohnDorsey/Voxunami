@@ -98,6 +98,18 @@ struct PlayerBody {
     /// The ship the player is buckled to: their body does not move in it (not by their keys, by gravity or by anything they touch), so the ship carries it exactly,
     /// however it moves and turns. Let go when they are not aboard that ship any more.
     buckled: Option<GridId>,
+    /// Where the body left a ship, until it stands on something again (see [`Departure`]).
+    departure: Option<Departure>,
+}
+
+/// The place in a ship that a body stepped off. Until the body stands on something again, what its keys ask and the air does are measured from the speed of that place of the ship, as a
+/// person who steps off a train goes on at its speed and walks from there; measured from the speed of the level, a ship at 500 voxels a second left a walker behind at once, the air
+/// taking the 500 from them at 14 a second a second.
+#[derive(Clone, Copy, Debug)]
+struct Departure {
+    ship: GridId,
+    /// The place of the eyes in the ship's own coordinates, where they left it.
+    place: WorldPosition,
 }
 
 /// What the blocks of the world mean to bodies.
@@ -235,6 +247,7 @@ impl Movement {
                 jump_asked: false,
                 piloting: false,
                 buckled: None,
+                departure: None,
             }
         });
     }
@@ -264,6 +277,7 @@ impl Movement {
         let player = self.bodies.get_mut(&client)?;
         player.level = level;
         player.frame = GridId::root(level);
+        player.departure = None;
         player.body.teleport(position);
         // A body that was in a turned frame is upright in the level again.
         if player.body.frame_rotation() != [0.0, 0.0, 0.0, 1.0] {
@@ -422,6 +436,7 @@ fn agree_with(player: &mut PlayerBody, placement: &Placement, carried: Option<Di
         // Another level: its terrain is another's. The record says where they are in it (the place they were at, unless the game put them somewhere).
         player.level = placement.level;
         player.frame = placement.frame;
+        player.departure = None;
         player.body.teleport(placement.position);
         return;
     }
@@ -435,6 +450,7 @@ fn agree_with(player: &mut PlayerBody, placement: &Placement, carried: Option<Di
     );
     player.frame = placement.frame;
     player.level = placement.level;
+    player.departure = None;
 }
 
 /// The input for this tick: the keys, with a jump that was asked for between two messages.
@@ -583,8 +599,15 @@ fn step_in_a_level(
 
     let gravity = world.gravity_at(level, player.body.eye_position());
     let input = input_for(player);
+    let against = speed_of_what_they_left(player, world, level);
     for _ in 0..PHYSICS_STEPS_PER_TICK {
-        player.body.step_with_gravity(input, gravity);
+        player
+            .body
+            .step_with_gravity_against(input, gravity, against);
+    }
+    // Standing on something (or flying, which is the level's own) there is nothing to measure from but the level.
+    if player.body.is_grounded() || player.body.is_flying() {
+        player.departure = None;
     }
 
     // On the ground, on a block of a ship: aboard it from here on.
@@ -603,11 +626,37 @@ fn step_in_a_level(
     }
 }
 
+/// The speed (in the level's axes) of the place of a ship that a body in a level stepped off, which its keys and the air are measured from; nothing if there is no such place
+/// (it never left a ship, or the ship is gone or in another level, and then it is forgotten).
+fn speed_of_what_they_left(
+    player: &mut PlayerBody,
+    world: &ServerWorld,
+    level: LevelIndex,
+) -> [f64; 3] {
+    let Some(departure) = player.departure else {
+        return [0.0; 3];
+    };
+    let place = world
+        .data()
+        .grids()
+        .get(departure.ship)
+        .filter(|ship| ship.level == level)
+        .and_then(|ship| Some((ship, ship.pose.local_to_world(departure.place)?)));
+    match place {
+        Some((ship, place)) => ship.velocity_at(place),
+        None => {
+            player.departure = None;
+            [0.0; 3]
+        }
+    }
+}
+
 /// Puts a body aboard a ship: the same place and the speed it has relative to the ship, in the ship's coordinates and axes.
 fn board(player: &mut PlayerBody, id: GridId, world: &ServerWorld) {
     let Some(ship) = world.data().grids().get(id) else {
         return;
     };
+    player.departure = None;
     let eyes = player.body.eye_position();
     let Some(local) = ship.pose.world_to_local(eyes) else {
         return;
@@ -769,6 +818,10 @@ fn leave(player: &mut PlayerBody, world: &ServerWorld) {
     player
         .body
         .reframe(world_eyes, velocity, frame_rotation.components());
+    player.departure = Some(Departure {
+        ship: player.frame,
+        place: eyes,
+    });
     player.frame = GridId::root(ship.level);
     player.level = ship.level;
 }

@@ -133,6 +133,12 @@ Entities on the wire, who a player is, players as entities, ships a player can m
   along gravity within the ship's box, or the body's middle a voxel outside it. The two conditions cannot hold together, so nothing flaps.
   Boarding takes away the part of the speed relative to the ship that points away from it: a body that stands on something is not moving off it
   (a walker that a falling ship has lifted onto itself was thrown ten voxels up at the speed the ship had, before this was added).
+- **A body that has stepped off a ship is stepped against that ship until it stands on something** (owner's report 2026-11-05; supersedes "air control measured from the world"
+  in `specs/moving-grids-spec.md`, "Momentum on leaving"): the keys' walk and the air's braking are on the character's speed *against the speed of the place of the ship it left*
+  (the place is kept in the ship's coordinates, so a ship that turns gives the right speed there), and the fastest it falls is against it too. It is forgotten when the body is
+  grounded, flies, boards a ship, is put somewhere (`/tp`, another level), or the ship is gone or in another level. *Mine:* a ship that is gone is no reference (the body is
+  then braked by the air as every body was), and the reference is not forgotten by distance. Nothing changes for a body that never left a ship (the step is the same to the bit:
+  `engine/physics/tests/against.rs`).
 - **The picture carries every moving thing on between ticks the same way** (2026-11-04): the camera, ships and planets, the room the camera's angles are measured in, and the other players are carried on at the speed (and turn) of the last two
   things told, with the times of the beat of the server's ticks (`TickClock`) and not of the frames that saw them, and a change of speed that is too big to be travel is a jump and is shown at once. They must be carried on *together*: a camera carried
   on that looks at a ship shown where it was last told shakes by the speed times a tick. Entity boxes are not yet. Presentation only: nothing recorded or compared (see the hard rule on wall-clock time).
