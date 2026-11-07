@@ -211,4 +211,7 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// `engine:mark_color` and `engine:mark_both_ends` and gains, for each block, a count of coloured faces (and the three face properties are of a kind of their own, one byte). Voxunami Eels's package is
 /// 1,547 bytes before and 1,189 now (358 fewer, measured by `block_golden.rs`, which pins the package), and the stream is 358 bytes shorter, 89,282 to 88,924: the
 /// welcome is the only place the package is in it. Predicted from the package pin before the run and then seen. The saved world is the same to the hash (9_505_268_344_403_703_823): nothing is saved that was not.
-const PINNED: (u64, usize, u64) = (3_591_571_493_964_265_295, 88_924, 9_505_268_344_403_703_823);
+/// Blocks carry their pictures' base name and whether their colour follows them (block-textures step 3, 2026-11-07): two bytes more for each block in the package, a flag for the texture and a flag for the colour.
+/// Voxunami Eels has 5 blocks: its package is 1,189 bytes before and 1,199 now (measured by `block_golden.rs`, which pins the package), and the stream is 10 bytes longer, 88,924 to 88,934: the
+/// welcome is the only place the package is in it. Predicted from the number of blocks before the run and then seen. The saved world is the same to the hash (9_505_268_344_403_703_823): nothing is saved that was not.
+const PINNED: (u64, usize, u64) = (6_245_972_899_028_469_344, 88_934, 9_505_268_344_403_703_823);

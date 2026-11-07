@@ -357,8 +357,11 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// `engine:mark_color` and `engine:mark_both_ends` and gains, for each block, a count of coloured faces (and the three face properties are of a kind of their own, one byte). Voxunami Cave's package is
 /// 3,088 bytes before and 2,642 now (446 fewer, measured by `block_golden.rs`, which pins the package), and the stream is 446 bytes shorter, 7,205,917 to 7,205,471: the
 /// welcome is the only place the package is in it. Predicted from the package pin before the run and then seen. The saved world is the same to the hash (10_204_815_550_639_449_865): nothing is saved that was not.
+/// Blocks carry their pictures' base name and whether their colour follows them (block-textures step 3, 2026-11-07): two bytes more for each block in the package, a flag for the texture and a flag for the colour.
+/// Voxunami Cave has 9 blocks: its package is 2,642 bytes before and 2,660 now (measured by `block_golden.rs`, which pins the package), and the stream is 18 bytes longer, 7,205,471 to 7,205,489: the
+/// welcome is the only place the package is in it. Predicted from the number of blocks before the run and then seen. The saved world is the same to the hash (10_204_815_550_639_449_865): nothing is saved that was not.
 const PINNED: (u64, usize, u64) = (
-    877_064_149_344_468_255,
-    7_205_471,
+    7_619_998_146_622_721_495,
+    7_205_489,
     10_204_815_550_639_449_865,
 );

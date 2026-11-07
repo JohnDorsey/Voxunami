@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
 
-use crate::definition::BlockDefinition;
+use crate::definition::{BlockDefinition, Parts};
 use crate::property::{
     PropertyDeclaration, PropertyKind, PropertySchema, SetProperties, SetValues, check_value,
 };
@@ -127,7 +127,8 @@ impl PropertySchema {
 impl BlockDefinition {
     /// Writes the definition: colour, see-through, the boxes of every state's shape, the colours of
     /// states, the colours of faces (each as its face's index, then the colour, in the order of the
-    /// faces), and the properties it sets.
+    /// faces), the base name of its pictures (a flag, then the name) and whether its colour follows
+    /// them, and the properties it sets.
     pub fn encode(&self, writer: &mut ByteWriter) {
         write_color(writer, self.color);
         writer.write_u8(u8::from(self.see_through));
@@ -152,6 +153,14 @@ impl BlockDefinition {
                 write_color(writer, *color);
             }
         }
+        match self.texture() {
+            Some(texture) => {
+                writer.write_u8(1);
+                writer.write_identifier(texture);
+            }
+            None => writer.write_u8(0),
+        }
+        writer.write_u8(u8::from(self.color_from_pictures()));
         writer.write_varint(self.properties().len() as u64);
         for (key, set) in self.properties() {
             writer.write_identifier(key);
@@ -229,6 +238,25 @@ impl BlockDefinition {
             previous_face = Some(face);
             face_colors[usize::from(face)] = Some(read_color(reader)?);
         }
+        let texture = match reader.read_u8()? {
+            0 => None,
+            1 => Some(reader.read_identifier()?),
+            _ => return Err(DecodeError::Invalid("a texture's flag is neither 0 nor 1")),
+        };
+        let color_from_pictures = match reader.read_u8()? {
+            0 => false,
+            1 => true,
+            _ => {
+                return Err(DecodeError::Invalid(
+                    "the flag of a colour that follows pictures is neither 0 nor 1",
+                ));
+            }
+        };
+        if color_from_pictures && texture.is_none() {
+            return Err(DecodeError::Invalid(
+                "a colour follows pictures that the block does not have",
+            ));
+        }
         let set_count = reader.read_count(SET_PROPERTY_BYTES)?;
         let mut properties = SetProperties::new();
         let mut previous = None;
@@ -261,14 +289,16 @@ impl BlockDefinition {
                 },
             );
         }
-        Ok(Self::from_parts(
+        Ok(Self::from_parts(Parts {
             color,
             see_through,
             shapes,
             state_colors,
             face_colors,
+            texture,
+            color_from_pictures,
             properties,
-        ))
+        }))
     }
 }
 
@@ -325,6 +355,8 @@ mod tests {
                 (FaceDirection::PositiveY, [0.7, 0.8, 0.9]),
                 (FaceDirection::NegativeX, [1.0, 0.0, 0.25]),
             ])
+            .with_texture(id("base_blocks:log"))
+            .with_color_from_pictures()
             .with_property(&DENSITY, 7_000)
             .with_state_property(2, &DENSITY, 12)
             .with_state_property(1, &PLACEABLE_ON_MOVING_GRIDS, false)
@@ -411,6 +443,8 @@ mod tests {
         }
         writer.write_varint(0);
         writer.write_varint(0);
+        writer.write_u8(0);
+        writer.write_u8(0);
         let mut bytes = writer.into_bytes();
         bytes.extend_from_slice(properties);
         bytes
@@ -488,6 +522,8 @@ mod tests {
                 writer.write_u32(component.to_bits());
             }
         }
+        writer.write_u8(0);
+        writer.write_u8(0);
         writer.write_varint(0);
         writer.into_bytes()
     }
@@ -519,6 +555,66 @@ mod tests {
         assert_eq!(
             refusal(&with_faces(&[(0, [f32::NAN, 0.0, 0.0])])),
             "a colour is not a finite number"
+        );
+    }
+
+    /// A definition written by hand with these two fields: the texture's flag and name, and the flag of the colour that follows pictures.
+    fn with_pictures(texture: Option<&str>, follows: u8, texture_flag: Option<u8>) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        for component in [0.5f32; 3] {
+            writer.write_u32(component.to_bits());
+        }
+        writer.write_u8(0);
+        writer.write_varint(1);
+        writer.write_varint(1);
+        for corner in WHOLE {
+            writer.write_u8(corner);
+        }
+        writer.write_varint(0);
+        writer.write_varint(0);
+        match (texture, texture_flag) {
+            (_, Some(flag)) => writer.write_u8(flag),
+            (Some(name), None) => {
+                writer.write_u8(1);
+                writer.write_identifier(&id(name));
+            }
+            (None, None) => writer.write_u8(0),
+        }
+        writer.write_u8(follows);
+        writer.write_varint(0);
+        writer.into_bytes()
+    }
+
+    #[test]
+    fn the_pictures_of_a_block_and_whether_its_colour_follows_them_are_written_and_refused_when_they_make_no_sense()
+     {
+        let with_name = decoded(&with_pictures(Some("my_pack:oak"), 1, None)).unwrap();
+        assert_eq!(with_name.texture(), Some(&id("my_pack:oak")));
+        assert!(with_name.color_from_pictures());
+        assert_eq!(
+            encoded(
+                &BlockDefinition::cube([0.5; 3])
+                    .with_texture(id("my_pack:oak"))
+                    .with_color_from_pictures()
+            ),
+            with_pictures(Some("my_pack:oak"), 1, None)
+        );
+        assert!(
+            !decoded(&with_pictures(Some("my_pack:oak"), 0, None))
+                .unwrap()
+                .color_from_pictures()
+        );
+        assert_eq!(
+            refusal(&with_pictures(None, 1, None)),
+            "a colour follows pictures that the block does not have"
+        );
+        assert_eq!(
+            refusal(&with_pictures(None, 0, Some(2))),
+            "a texture's flag is neither 0 nor 1"
+        );
+        assert_eq!(
+            refusal(&with_pictures(Some("my_pack:oak"), 2, None)),
+            "the flag of a colour that follows pictures is neither 0 nor 1"
         );
     }
 
@@ -681,11 +777,15 @@ mod tests {
             prop::collection::vec(prop::collection::vec(arbitrary_box(), 0..4), 1..5),
             prop::collection::vec(color(), 0..4),
             prop::collection::vec((0u8..6, color()), 0..4),
+            prop::option::of((
+                prop::sample::select(vec!["a:one", "b:two_x"]),
+                any::<bool>(),
+            )),
             prop::option::of(any::<u32>()),
             prop::collection::vec((0u32..6, any::<bool>()), 0..4),
         )
             .prop_map(
-                |(color, see_through, shapes, state_colors, faces, density, by_state)| {
+                |(color, see_through, shapes, state_colors, faces, pictures, density, by_state)| {
                     let mut definition = BlockDefinition::cube(color)
                         .with_shapes(
                             shapes
@@ -702,6 +802,12 @@ mod tests {
                             FaceDirection::from_index(face).expect("a face"),
                             face_color,
                         )]);
+                    }
+                    if let Some((texture, follows)) = pictures {
+                        definition = definition.with_texture(id(texture));
+                        if follows {
+                            definition = definition.with_color_from_pictures();
+                        }
                     }
                     if let Some(density) = density {
                         definition = definition.with_property(&DENSITY, density);

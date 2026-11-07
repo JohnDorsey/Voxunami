@@ -23,7 +23,25 @@ pub struct BlockDefinition {
     state_colors: Vec<[f32; 3]>,
     /// The flat colour of each face of the block as it is made (indexed by [`FaceDirection::index`]), for the faces that differ from `color`.
     face_colors: [Option<[f32; 3]>; 6],
+    /// The base name of the block's pictures (such as `base_blocks:log`), if it has any: the files `log_top`, `log_side`, `log_bottom` or `log`
+    /// of that namespace say what each face looks like (see `docs/specs/block-textures-spec.md`).
+    texture: Option<NamespacedId>,
+    /// Whether [`BlockDefinition::color`] is the average of the pictures and not a colour the author chose, so that it follows them if they change.
+    /// Only a block with a texture can have it.
+    color_from_pictures: bool,
     properties: SetProperties,
+}
+
+/// Everything a definition is made of, for the decoder that has read it all.
+pub(crate) struct Parts {
+    pub color: [f32; 3],
+    pub see_through: bool,
+    pub shapes: Vec<Shape>,
+    pub state_colors: Vec<[f32; 3]>,
+    pub face_colors: [Option<[f32; 3]>; 6],
+    pub texture: Option<NamespacedId>,
+    pub color_from_pictures: bool,
+    pub properties: SetProperties,
 }
 
 impl BlockDefinition {
@@ -35,6 +53,8 @@ impl BlockDefinition {
             shapes: vec![Shape::full()],
             state_colors: Vec::new(),
             face_colors: [None; 6],
+            texture: None,
+            color_from_pictures: false,
             properties: SetProperties::new(),
         }
     }
@@ -47,6 +67,8 @@ impl BlockDefinition {
             shapes: vec![Shape::empty()],
             state_colors: Vec::new(),
             face_colors: [None; 6],
+            texture: None,
+            color_from_pictures: false,
             properties: SetProperties::new(),
         }
     }
@@ -109,6 +131,24 @@ impl BlockDefinition {
         self
     }
 
+    /// The same block with pictures: `texture` is their base name (such as `base_blocks:log`).
+    pub fn with_texture(mut self, texture: NamespacedId) -> Self {
+        self.texture = Some(texture);
+        self
+    }
+
+    /// The same block, whose colour is the average of its pictures and follows them if they change (see [`BlockDefinition::color_from_pictures`]).
+    ///
+    /// Panics if the block has no texture: there would be nothing to follow.
+    pub fn with_color_from_pictures(mut self) -> Self {
+        assert!(
+            self.texture.is_some(),
+            "a colour cannot follow pictures that the block does not have"
+        );
+        self.color_from_pictures = true;
+        self
+    }
+
     /// The same block with a docking face in each state: `faces[state]` is the face that docks in that state, if any.
     pub fn with_docking_faces(mut self, faces: &[Option<FaceDirection>]) -> Self {
         for (state, face) in faces.iter().enumerate() {
@@ -129,21 +169,16 @@ impl BlockDefinition {
     }
 
     /// A definition from its parts, as decoded; the caller has checked them.
-    pub(crate) fn from_parts(
-        color: [f32; 3],
-        see_through: bool,
-        shapes: Vec<Shape>,
-        state_colors: Vec<[f32; 3]>,
-        face_colors: [Option<[f32; 3]>; 6],
-        properties: SetProperties,
-    ) -> Self {
+    pub(crate) fn from_parts(parts: Parts) -> Self {
         Self {
-            color,
-            see_through,
-            shapes,
-            state_colors,
-            face_colors,
-            properties,
+            color: parts.color,
+            see_through: parts.see_through,
+            shapes: parts.shapes,
+            state_colors: parts.state_colors,
+            face_colors: parts.face_colors,
+            texture: parts.texture,
+            color_from_pictures: parts.color_from_pictures,
+            properties: parts.properties,
         }
     }
 
@@ -211,6 +246,31 @@ impl BlockDefinition {
         self.state_colors = colors;
     }
 
+    /// Gives the block pictures with this base name, or none. A block with none has a colour of its own, whatever it was.
+    pub fn set_texture(&mut self, texture: Option<NamespacedId>) {
+        if texture.is_none() {
+            self.color_from_pictures = false;
+        }
+        self.texture = texture;
+    }
+
+    /// The block's colour is this, chosen by whoever wrote the block: it no longer follows the pictures.
+    pub fn set_color(&mut self, color: [f32; 3]) {
+        self.color = color;
+        self.color_from_pictures = false;
+    }
+
+    /// The block's colour is this because it is the average of the pictures: it goes on following them. For whoever works the average out.
+    ///
+    /// Panics if the colour does not follow pictures.
+    pub fn set_color_from_pictures(&mut self, color: [f32; 3]) {
+        assert!(
+            self.color_from_pictures,
+            "the colour of this block is its own and does not follow pictures"
+        );
+        self.color = color;
+    }
+
     /// Replaces the colours of faces; all `None` means every face has the block's own colour.
     pub fn set_face_colors(&mut self, colors: [Option<[f32; 3]>; 6]) {
         self.face_colors = colors;
@@ -233,6 +293,16 @@ impl BlockDefinition {
     /// The colours that states are drawn in, repeating; empty if every state has [`color`](Self::color).
     pub fn state_colors(&self) -> &[[f32; 3]] {
         &self.state_colors
+    }
+
+    /// The base name of the block's pictures, if it has any.
+    pub fn texture(&self) -> Option<&NamespacedId> {
+        self.texture.as_ref()
+    }
+
+    /// Whether the block's colour is the average of its pictures (and follows them), and not a colour its author chose.
+    pub fn color_from_pictures(&self) -> bool {
+        self.color_from_pictures
     }
 
     /// The colour of each face as the block is made, indexed by [`FaceDirection::index`]; `None` for a face that has the block's own colour.
@@ -306,6 +376,63 @@ mod tests {
         assert_eq!(log.face_colors(), &expected);
         assert_eq!(log.color, [0.1; 3], "the block's own colour is untouched");
         assert_eq!(yellow, [1.0, 216.0 / 255.0, 0.0]);
+    }
+
+    #[test]
+    fn a_block_has_pictures_or_not_and_a_colour_that_follows_them_only_if_it_has() {
+        let plain = BlockDefinition::cube([0.1; 3]);
+        assert_eq!(
+            (plain.texture(), plain.color_from_pictures()),
+            (None, false)
+        );
+        let log: NamespacedId = "base_blocks:log".parse().unwrap();
+        let textured = plain.clone().with_texture(log.clone());
+        assert_eq!(textured.texture(), Some(&log));
+        assert!(
+            !textured.color_from_pictures(),
+            "its colour is its own until it is said to follow"
+        );
+        let following = textured.clone().with_color_from_pictures();
+        assert!(following.color_from_pictures());
+        assert_ne!(following, textured, "the two are not the same block");
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot follow pictures")]
+    fn a_colour_cannot_follow_pictures_that_are_not_there() {
+        BlockDefinition::cube([0.1; 3]).with_color_from_pictures();
+    }
+
+    #[test]
+    fn choosing_a_colour_or_taking_the_pictures_away_ends_the_following() {
+        let log: NamespacedId = "base_blocks:log".parse().unwrap();
+        let following = BlockDefinition::cube([0.1; 3])
+            .with_texture(log.clone())
+            .with_color_from_pictures();
+        let mut chosen = following.clone();
+        chosen.set_color([0.2; 3]);
+        assert_eq!(
+            (chosen.color, chosen.color_from_pictures()),
+            ([0.2; 3], false)
+        );
+        assert_eq!(chosen.texture(), Some(&log), "the pictures stay");
+        let mut bare = following.clone();
+        bare.set_texture(None);
+        assert_eq!((bare.texture(), bare.color_from_pictures()), (None, false));
+        assert_eq!(bare.color, [0.1; 3], "the colour it had stays, as its own");
+        // Worked out from the pictures, the colour changes and goes on following.
+        let mut worked_out = following;
+        worked_out.set_color_from_pictures([0.3; 3]);
+        assert_eq!(
+            (worked_out.color, worked_out.color_from_pictures()),
+            ([0.3; 3], true)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "does not follow pictures")]
+    fn a_colour_that_is_the_authors_is_not_set_as_an_average() {
+        BlockDefinition::cube([0.1; 3]).set_color_from_pictures([0.2; 3]);
     }
 
     #[test]

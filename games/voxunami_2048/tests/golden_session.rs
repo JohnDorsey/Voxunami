@@ -297,8 +297,11 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// `engine:mark_color` and `engine:mark_both_ends` and gains, for each block, a count of coloured faces (and the three face properties are of a kind of their own, one byte). Voxunami 2048's package is
 /// 3,510 bytes before and 3,151 now (359 fewer, measured by `block_golden.rs`, which pins the package), and the stream is 359 bytes shorter, 59,108 to 58,749: the
 /// welcome is the only place the package is in it. Predicted from the package pin before the run and then seen. The saved world is the same to the hash (15_563_235_043_056_448_435): nothing is saved that was not.
+/// Blocks carry their pictures' base name and whether their colour follows them (block-textures step 3, 2026-11-07): two bytes more for each block in the package, a flag for the texture and a flag for the colour.
+/// Voxunami 2048 has 4 blocks: its package is 3,151 bytes before and 3,159 now (measured by `block_golden.rs`, which pins the package), and the stream is 8 bytes longer, 58,749 to 58,757: the
+/// welcome is the only place the package is in it. Predicted from the number of blocks before the run and then seen. The saved world is the same to the hash (15_563_235_043_056_448_435): nothing is saved that was not.
 const PINNED: (u64, usize, u64) = (
-    15_370_125_512_734_510_069,
-    58_749,
+    18_122_260_346_543_647_667,
+    58_757,
     15_563_235_043_056_448_435,
 );

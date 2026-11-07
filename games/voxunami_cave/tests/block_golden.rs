@@ -61,7 +61,7 @@ fn what_the_block_table_says_of_each_cave_block_is_pinned() {
 }
 
 /// (the length, the hash) of `PackageData::encode` for Cave as it was on 2026-11-07.
-const PINNED_PACKAGE: (usize, u64) = (2642, 15_242_818_186_442_752_027);
+const PINNED_PACKAGE: (usize, u64) = (2660, 13_589_279_882_886_313_915);
 
 const PINNED_TABLE: &[&str] = &[
     " 0 base_blocks:air: colour #000000, 1 states, state 0 faces [0 0 0 0 0 0], front none, axis none, docking none, placement Fixed, behaviour a28133c087488ace",
