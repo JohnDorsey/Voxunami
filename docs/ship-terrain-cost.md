@@ -54,9 +54,25 @@ A free 3-voxel cube of stone, 2 km over Cave's planet, costs the server this muc
   test), and nested as the margin grows (the rings of the wanted bricks need it). Tests: `physics::sweep` (5, with 4 mutations caught), `bodies::tests::the_bricks_a_body_will_reach...` (hand-worked
   extents, in a turned frame too), `grid_bodies` (`wanted_rings` against the old way, for boxes and now for regions of several boxes; 2 mutations caught), `tests/fast_ships.rs` (the bricks made
   in a tick, counted: red with the cube), `engine/physics/tests/fast_character.rs`.
+  **Correction, 2026-11-07 (later the same day): the "after" times of this table did not reproduce.** Measured again in a release build, with timers inside `keep_terrain` and `BodyWorld::set_brick` (the whole tick, server and test client; the same
+  rocket and the same brick counts, about 1,900 bricks a tick at 6 km/s), the tube alone left 7.0 ms at 1 km/s, 25.8 at 3 km/s and 50.6 at 6 km/s, not 4, 5.8 and 8.7. Why the first measurement was so much lower is **not known** (a different span of the tick, or a different scene; it was
+  not kept). The brick counts and the "before" column stand. The measurement that is broken down is the later one (below).
   **What it gives up:** the bricks behind and beside a body that goes faster than that are those within 128 voxels and no more (they were a quarter of a second of its speed), so a body that is thrown back at
   more than 2,500 voxels a second by a blow in one tick may reach terrain that was let go; the bricks it has to reach going on are all made. **What is left of the cost** is a count of bricks a tick that
-  grows as the speed (about 2,000 made and 2,000 let go a tick at 6 km/s, 25 of the 50 ms with a pilot aboard): option 4 below, and the character's frame being rebuilt each tick above 3,800 voxels a second.
+  grows as the speed (about 2,000 made and 2,000 let go a tick at 6 km/s; see the correction above for the time): option 4 below, and the character's frame being rebuilt each tick above 3,800 voxels a second.
+
+- **An empty brick where a body has nothing is left alone, 2026-11-07** (`BodyWorld::set_brick`; option 4 below, in the form that was needed). Measured (release, timers, removed again): of the 50.6 ms of a tick at 6 km/s, `set_brick` took 35.1 ms for the 1,875 calls a tick, **every one of them a
+  no-op** (the brick was air, and the body had nothing there before); it went over all 32,768 places of the brick (19 us each) and called `colliders.get_mut` on the body's voxel collider, which probably marks it changed for the next step even when no voxel changes (what is measured: it changed the bits of a
+  sleeping body's next tick; that Rapier's change flag is the reason is a belief, not checked). Asking the generator whether a planet brick is empty costs 0.1 us, and Rapier is not in it. The shortcut: `Empty` hint, no filled voxels and no boxes of the body in that brick: return. Tests: `engine/physics/tests/empty_bricks.rs` (4; the bits of the simulation are
+  those of a world that never made the call; whole cubes and boxes that were there are still taken, 3 mutations caught), and the pin of `the_same_calls_give_the_same_bits...` and every golden session did not move. The cost itself is not asserted (it is time; the counts do not change).
+
+  | The same rocket, release, the whole tick | 1 km/s | 3 km/s | 6 km/s |
+  |---|---|---|---|
+  | before | 7.0 ms | 25.8 ms | 50.6 ms |
+  | after | 2.6 ms | 7.4 ms | 14.4 ms |
+
+  What is left at 6 km/s (from the timers before the shortcut, so approximately): working out the bricks to change in `bricks_to_change` about 9.8 ms (the three sets are rebuilt from scratch every tick: option 5), making the bricks of the space level 3.4 ms (3.7 us a brick), the rest small.
+  The bigger options (a largest empty cube from the generator's bounds, ships on rails above an altitude, colliders made on a worker, coarse colliders for fast flight) are in `terrain-collider-options.md`.
 
 ## Not done (options, with what each needs)
 
@@ -69,8 +85,8 @@ A free 3-voxel cube of stone, 2 km over Cave's planet, costs the server this muc
 3. **Skip the lookahead when the generator's bounds say the region is air.** A ship at altitude would need no colliders. *Needs:* a question of the world, "is there ground in this box of bricks",
    answered from the generator's bounds (`TerrainGenerator::may_show` is the near relation, for aligned cubes) and from what players have built (stored bricks, which are ground wherever they are).
    A design question, not an edit.
-4. **Do not make and drop colliders for air.** About 110 bricks a tick are set and removed with nothing in them. A hint of "empty" per brick exists (`BrickHint::Empty`); the cost is in making the
-   entry at all. *Needs:* a measurement of how much of the remaining time it is.
+4. ~~**Do not make and drop colliders for air.**~~ **Done 2026-11-07** (above): the cost was not in making the entry but in `set_brick` going over the brick to find there was nothing to do; 70 percent of a tick at 6 km/s. What is not done is not *asking* for the bricks of air at all
+   (about 1,900 a tick at 6 km/s are still asked for and left at once): options 1 and 3, and `terrain-collider-options.md`.
 5. **Fewer, steadier changes of the set.** The set of wanted bricks is rebuilt every tick from scratch; a ship that moves 39 voxels a tick changes only a slab of it. Keep the set and move its edges.
    *Needs:* the same questions as 2, since what "the set" is depends on the ship's shape.
 

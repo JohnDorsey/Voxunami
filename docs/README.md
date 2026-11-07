@@ -25,6 +25,7 @@ every such name and every `docs/...` path in the code and the documents is a rea
 - `planetary-mass-change.md`: the feature "a planet's mass changes", **held back: not in the first release** (owner, 2026-11-04); what is built, what it does to players, a flaw found, and Cave's ARGOS device.
 - `test-flakes.md`: tests that failed once and were not explained, kept together for a deep bug hunt (what failed, when, the reruns, what is believed and what was checked).
 - `ship-terrain-cost.md`: what a fast ship costs the server and the options to cut it, **held back** until ships of several grids are understood.
+- `terrain-collider-options.md`: the bigger options for what a fast ship costs the server (2026-11-07), ranked, with the measurement that shows where a tick goes. Item 1 is done; the rest is not scheduled.
 - `architecture-review.md`: the direction review of 2026-10-29: findings and proposals (milestones M0 to M4, eleven decisions).
   **Proposals, not decisions**, apart from what `design-decisions.md` records as taken.
 

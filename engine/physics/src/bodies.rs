@@ -355,6 +355,15 @@ impl BodyWorld {
         // Look first, so a brick that is out of range changes nothing (its far corner is the one that is out: bricks start on multiples of 32).
         key(EDGE - 1, EDGE - 1, EDGE - 1)?;
         let hint = source.brick_hint(brick);
+        // An empty brick where the body has nothing is nothing to do, and is left alone at once: a server asks for the colliders of some thousands of bricks of air a tick
+        // round a fast ship, and going over the 32,768 places of each took 19 microseconds (35 of the 50 milliseconds of a tick at 6 kilometres a second). It is left alone in
+        // Rapier too: a call on an empty brick changed the bits of the next step of a body with a voxel collider (a test; the likely reason is that a mutable borrow of the collider marks it changed).
+        if hint == BrickHint::Empty {
+            let body = self.by_id.get(&id).ok_or(BodyError::UnknownBody(id))?;
+            if !body.filled.contains_key(&brick) && !body.partial.contains_key(&brick) {
+                return Ok(());
+            }
+        }
         let mut wanted: Rows = Box::new([0; EDGE * EDGE]);
         let mut boxes: Vec<(Pose, SharedShape)> = Vec::new();
         if hint != BrickHint::Empty {
