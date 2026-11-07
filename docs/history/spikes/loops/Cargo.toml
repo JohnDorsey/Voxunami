@@ -1,0 +1,17 @@
+# Throwaway probes of loop closure and collision accuracy (see ../../loop-probe.md). A standalone project, not part of the
+# workspace: `cd docs/history/spikes/loops && cargo run --release --bin loops -- a` (and `--bin probes -- all`, `--bin collisions -- all`).
+[package]
+name = "loop_probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+physics = { path = "../../../../engine/physics" }
+voxel_space = { path = "../../../../engine/voxel_space" }
+rapier3d = { package = "rapier3d-f64", version = "=0.36.1", features = ["enhanced-determinism"] }
+
+[profile.release]
+debug = false
