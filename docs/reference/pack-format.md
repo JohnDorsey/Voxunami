@@ -48,7 +48,8 @@ names, so the result never depends on how the folder happens to be listed.
 }
 ```
 
-Only `color` is needed. A block is one whole cube unless `states` says more.
+Only `color` is needed. A block is one whole cube unless `states` says more. The game's own blocks are written in this format and are the best examples to copy:
+`plugins/base_blocks/data/blocks` (a log with lighter ends, a fire with a colour for each age, slabs and stairs) and `games/voxunami_cave/data/blocks` (a block with a front and a face that docks).
 
 - **`color`**: red, green, blue, each 0 to 1.
 - **`see_through`**: whether it lets you see and light through (glass). Default false.

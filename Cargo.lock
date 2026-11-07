@@ -147,6 +147,7 @@ version = "0.0.0"
 dependencies = [
  "block_models",
  "content_registry",
+ "data_packs",
  "namespaced_id",
  "voxel_grid",
  "voxel_space",

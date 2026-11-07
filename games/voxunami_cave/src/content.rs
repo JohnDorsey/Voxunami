@@ -15,7 +15,6 @@ use game_shell::{
 use namespaced_id::NamespacedId;
 use terrain::GeneratorId;
 use voxel_grid::{ChannelDefinition, ChannelIndex};
-use voxel_space::FaceDirection;
 use world_storage::{GeneratorRecipe, LoadContext, RecipeError, WorldData};
 use world_view::ViewChannels;
 
@@ -70,15 +69,24 @@ pub fn dev_docking_port_id() -> NamespacedId {
 
 /// The dev docking port (a block for building and testing ships, creative only): a gunmetal gray cube with one yellow face, the one that docks with
 /// the yellow face of another. It has one state, made with the yellow face to the east, which is also its front: it is placed turned to face the
-/// player, as a piston is, and the orientation of the voxel says which way the yellow is.
+/// player, as a piston is, and the orientation of the voxel says which way the yellow is. It is data: `data/blocks/dev_docking_port.json`.
 pub fn dev_docking_port() -> BlockDefinition {
-    BlockDefinition::cube([0.17, 0.21, 0.22])
-        .with_face_colors(&[(
-            FaceDirection::PositiveX,
-            block_models::color_from_bytes([255, 216, 0]),
-        )])
-        .with_docking_faces(&[Some(FaceDirection::PositiveX)])
-        .with_front_face(FaceDirection::PositiveX)
+    let mut properties = base_blocks::property_schema();
+    for declaration in [PLACEABLE.declaration(), CREATIVE_ONLY.declaration()] {
+        properties
+            .declare(declaration)
+            .expect("the properties of Cave are distinct from those of the base blocks");
+    }
+    let (identifier, definition) = data_packs::read_block(
+        "games/voxunami_cave/data/blocks/dev_docking_port.json",
+        "voxunami_cave",
+        "dev_docking_port",
+        include_str!("../data/blocks/dev_docking_port.json"),
+        &properties,
+    )
+    .unwrap_or_else(|errors| panic!("the file of the dev docking port is wrong: {errors}"));
+    assert_eq!(identifier, dev_docking_port_id());
+    definition
 }
 
 /// The blocks of a registry, with the flags that say a player can place a block, and that a block is for creative only, set on the ones Cave says

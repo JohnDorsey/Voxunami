@@ -1,16 +1,16 @@
 //! The first blocks (air, stone, dirt, grass, lamp, wood, fire, great river water) and the properties they carry.
 //!
+//! The blocks are data: one JSON file each in `data/blocks`, in the format of a data pack (`docs/reference/pack-format.md`), read by the reader packs use and
+//! registered in a fixed order, because their numbers are fixed. A modder can copy any of them.
+//!
 //! The solid blocks come in several shapes, chosen by the voxel's *state* (the channel
 //! `base_blocks:block_state`): a whole cube, slabs, and stairs, so shapes do not take block types
 //! of their own.
 
-use block_models::{
-    BlockDefinition, BlockTable, PropertyDeclaration, PropertyKey, PropertySchema, Shape,
-};
+use block_models::{BlockDefinition, BlockTable, PropertyDeclaration, PropertyKey, PropertySchema};
 use content_registry::{Registry, RuntimeId};
 use namespaced_id::NamespacedId;
 use voxel_grid::ChannelDefinition;
-use voxel_space::FaceDirection;
 
 fn identifier(text: &str) -> NamespacedId {
     text.parse().expect("constant identifiers are valid")
@@ -67,30 +67,6 @@ pub const PASSABLE: PropertyKey<bool> = PropertyKey::new(
     "whether bodies move through the block as if it were not there",
 );
 
-/// The properties of this plugin as builders on a definition, so that a block reads as what it is.
-pub trait BlockPropertiesExt {
-    /// The light the block gives off, 0 (none) to 255.
-    fn with_emission(self, emission: u8) -> Self;
-    /// How readily the block catches fire next to a fire, 0 (it does not) to 255.
-    fn with_flammability(self, flammability: u8) -> Self;
-    /// Whether bodies move through the block as if it were not there.
-    fn with_passable(self, passable: bool) -> Self;
-}
-
-impl BlockPropertiesExt for BlockDefinition {
-    fn with_emission(self, emission: u8) -> Self {
-        self.with_property(&EMISSION, emission)
-    }
-
-    fn with_flammability(self, flammability: u8) -> Self {
-        self.with_property(&FLAMMABILITY, flammability)
-    }
-
-    fn with_passable(self, passable: bool) -> Self {
-        self.with_property(&PASSABLE, passable)
-    }
-}
-
 /// The properties this plugin declares, for a game to add to its package.
 pub fn property_declarations() -> Vec<PropertyDeclaration> {
     vec![
@@ -111,37 +87,17 @@ pub fn property_schema() -> PropertySchema {
     schema
 }
 
-/// The colour of the water of the great rivers.
-pub const GREAT_RIVER_WATER_COLOR: [f32; 3] = [0.08, 0.28, 0.85];
-
-/// The colour of the ends of a log, as sRGB bytes.
-pub const LOG_END_COLOR: [u8; 3] = [191, 148, 92];
-
-/// How much light a lamp gives off. Light loses one level for every voxel it spreads, so this is
-/// also how many voxels away a lamp lights things.
+/// How much light a lamp gives off (`data/blocks/lamp.json` says so too, and a test keeps them equal). Light loses one level for every voxel it
+/// spreads, so this is also how many voxels away a lamp lights things.
 pub const LAMP_EMISSION: u8 = 64;
 
-/// How readily grass and wood catch fire next to a fire: out of 1024 each tick, for each fire
-/// beside them (see the fire rule in Voxunami Cave). Grass goes up fast, wood slowly.
-pub const GRASS_FLAMMABILITY: u8 = 100;
-pub const WOOD_FLAMMABILITY: u8 = 40;
-
 /// How many steps a fire burns through before it goes out: its state is its age, counting up from
-/// 0, and a fire of this age is gone. (The rule that ages it is the game's.)
+/// 0, and a fire of this age is gone. (The rule that ages it is the game's; `data/blocks/fire.json` has a colour for each age, and a test keeps the
+/// numbers equal.)
 pub const FIRE_LIFETIME: u32 = 12;
 
-/// How much light a fire gives off.
+/// How much light a fire gives off (`data/blocks/fire.json` says so too, and a test keeps them equal).
 pub const FIRE_EMISSION: u8 = 40;
-
-/// The colours of a fire as it ages, hottest first, one for each age.
-fn fire_colors() -> Vec<[f32; 3]> {
-    (0..FIRE_LIFETIME)
-        .map(|age| {
-            let heat = 1.0 - age as f32 / FIRE_LIFETIME as f32;
-            [0.95, 0.25 + 0.65 * heat, 0.05 + 0.2 * heat]
-        })
-        .collect()
-}
 
 /// What each state of a solid block of this plugin looks like, by name; the position is the state.
 pub const SHAPE_NAMES: [&str; 7] = [
@@ -154,24 +110,26 @@ pub const SHAPE_NAMES: [&str; 7] = [
     "stair rising south",
 ];
 
-/// The shape of each state of a solid block: a whole cube, the two slabs, and a stair rising toward
-/// each of the four sides (east is +x, north is -z).
-pub fn standard_shapes() -> Vec<Shape> {
-    vec![
-        Shape::full(),
-        Shape::half(FaceDirection::NegativeY),
-        Shape::half(FaceDirection::PositiveY),
-        Shape::stair(FaceDirection::PositiveX),
-        Shape::stair(FaceDirection::NegativeX),
-        Shape::stair(FaceDirection::NegativeZ),
-        Shape::stair(FaceDirection::PositiveZ),
-    ]
-}
-
 /// The name of a state of a solid block, as for [`SHAPE_NAMES`].
 pub fn shape_name(state: u32) -> &'static str {
     SHAPE_NAMES.get(state as usize).copied().unwrap_or("whole")
 }
+
+/// The blocks in the order of their numbers, each with the text of the file in `data/blocks` that defines it. The numbers are fixed (air is 0, so a
+/// world whose voxels are all zero is sky), so the order is written here and not left to the order of the files' names.
+const BLOCK_FILES: [(&str, &str); 8] = [
+    ("air", include_str!("../data/blocks/air.json")),
+    ("stone", include_str!("../data/blocks/stone.json")),
+    ("dirt", include_str!("../data/blocks/dirt.json")),
+    ("grass", include_str!("../data/blocks/grass.json")),
+    ("lamp", include_str!("../data/blocks/lamp.json")),
+    ("wood", include_str!("../data/blocks/wood.json")),
+    ("fire", include_str!("../data/blocks/fire.json")),
+    (
+        "great_river_water",
+        include_str!("../data/blocks/great_river_water.json"),
+    ),
+];
 
 /// The ids of the blocks, which are fixed: air first, so a world whose voxels are all zero is sky.
 /// Everything a game needs to use the blocks and their channels and terrain once the registry is
@@ -240,50 +198,27 @@ impl Default for BaseBlocks {
 
 impl BaseBlocks {
     pub fn new() -> Self {
+        let schema = property_schema();
         let mut blocks = Registry::new();
-        let mut register = |name: &str, definition: BlockDefinition| -> u32 {
-            blocks
-                .register(identifier(&format!("base_blocks:{name}")), definition)
-                .expect("the block names are distinct")
-                .raw()
+        let ids: Vec<u32> = BLOCK_FILES
+            .iter()
+            .map(|(name, text)| {
+                let file = format!("plugins/base_blocks/data/blocks/{name}.json");
+                let (identifier, definition) =
+                    data_packs::read_block(&file, "base_blocks", name, text, &schema)
+                        .unwrap_or_else(|errors| {
+                            panic!("a file of the base blocks is wrong: {errors}")
+                        });
+                blocks
+                    .register(identifier, definition)
+                    .expect("the block names are distinct")
+                    .raw()
+            })
+            .collect();
+        // (The order of `BLOCK_FILES`, which a test keeps equal to the order of the fields.)
+        let [air, stone, dirt, grass, lamp, wood, fire, great_river_water] = ids[..] else {
+            unreachable!("there is a file for each of the eight blocks");
         };
-        let solid = |color: [f32; 3]| BlockDefinition::cube(color).with_shapes(standard_shapes());
-        let air = register("air", BlockDefinition::air());
-        let stone = register("stone", solid([0.50, 0.50, 0.53]));
-        let dirt = register("dirt", solid([0.45, 0.30, 0.18]));
-        let grass = register(
-            "grass",
-            solid([0.30, 0.62, 0.20]).with_flammability(GRASS_FLAMMABILITY),
-        );
-        let lamp = register(
-            "lamp",
-            BlockDefinition::cube([1.0, 0.92, 0.65]).with_emission(LAMP_EMISSION),
-        );
-        // Wood is a log: it is drawn with lighter ends, and when a player places it the line between its ends runs along the face it is placed against.
-        let log_end_color = block_models::color_from_bytes(LOG_END_COLOR);
-        let wood = register(
-            "wood",
-            solid([0.55, 0.38, 0.20])
-                .with_flammability(WOOD_FLAMMABILITY)
-                .with_face_colors(&[
-                    (FaceDirection::PositiveY, log_end_color),
-                    (FaceDirection::NegativeY, log_end_color),
-                ])
-                .with_axis_face(FaceDirection::PositiveY),
-        );
-        let fire = register(
-            "fire",
-            BlockDefinition::cube([0.95, 0.5, 0.1])
-                .with_shapes(vec![Shape::half(FaceDirection::NegativeY)])
-                .with_passable(true)
-                .with_emission(FIRE_EMISSION)
-                .with_state_colors(fire_colors()),
-        );
-        // Water that does not flow: a whole cube that bodies pass through, the blue of the river it is the water of.
-        let great_river_water = register(
-            "great_river_water",
-            BlockDefinition::cube(GREAT_RIVER_WATER_COLOR).with_passable(true),
-        );
         Self {
             blocks,
             ids: BaseBlockIds {
@@ -328,10 +263,100 @@ impl BaseBlocks {
 
 #[cfg(test)]
 mod tests {
-    use block_models::MISSING_BLOCK_COLOR;
+    use block_models::{MISSING_BLOCK_COLOR, Shape};
     use content_registry::IdentifierRegistry;
+    use voxel_space::FaceDirection;
 
     use super::*;
+
+    #[test]
+    fn every_file_in_the_data_folder_is_a_block_and_every_block_is_a_file_and_the_order_is_that_of_the_ids()
+     {
+        // A file added to `data/blocks` and not to the list would be a block nobody gets; a name in the list without a file does not build.
+        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/blocks");
+        let mut on_disk: Vec<String> = std::fs::read_dir(folder)
+            .expect("the data folder is there")
+            .map(|entry| {
+                let name = entry.unwrap().file_name().into_string().unwrap();
+                name.strip_suffix(".json")
+                    .unwrap_or_else(|| panic!("{name} is not a .json file"))
+                    .to_owned()
+            })
+            .collect();
+        on_disk.sort();
+        let mut listed: Vec<String> = BLOCK_FILES
+            .iter()
+            .map(|(name, _)| (*name).to_owned())
+            .collect();
+        listed.sort();
+        assert_eq!(on_disk, listed);
+        // The list is in the order of the fields of `BaseBlockIds`, which are the numbers.
+        let blocks = BaseBlocks::new();
+        let numbers = [
+            blocks.air,
+            blocks.stone,
+            blocks.dirt,
+            blocks.grass,
+            blocks.lamp,
+            blocks.wood,
+            blocks.fire,
+            blocks.great_river_water,
+        ];
+        assert_eq!(numbers, [0, 1, 2, 3, 4, 5, 6, 7]);
+        for ((name, _), number) in BLOCK_FILES.iter().zip(numbers) {
+            let wanted = identifier(&format!("base_blocks:{name}"));
+            assert_eq!(
+                blocks.block_id(&wanted).map(|id| id.raw()),
+                Some(number),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_solid_blocks_have_the_states_that_shape_names_names_in_that_order() {
+        // `SHAPE_NAMES` names the states by position and the files list them by position; the two must say the same thing.
+        let expected = [
+            Shape::full(),
+            Shape::half(FaceDirection::NegativeY),
+            Shape::half(FaceDirection::PositiveY),
+            Shape::stair(FaceDirection::PositiveX),
+            Shape::stair(FaceDirection::NegativeX),
+            Shape::stair(FaceDirection::NegativeZ),
+            Shape::stair(FaceDirection::PositiveZ),
+        ];
+        assert_eq!(SHAPE_NAMES.len(), expected.len());
+        let blocks = BaseBlocks::new();
+        for solid in [blocks.stone, blocks.dirt, blocks.grass, blocks.wood] {
+            let (_, entry) = blocks.blocks.iter().nth(solid as usize).unwrap();
+            let definition = entry.content().unwrap();
+            assert_eq!(definition.shapes(), expected, "block {solid}");
+        }
+        for single in [
+            blocks.air,
+            blocks.lamp,
+            blocks.fire,
+            blocks.great_river_water,
+        ] {
+            let (_, entry) = blocks.blocks.iter().nth(single as usize).unwrap();
+            assert_eq!(entry.content().unwrap().state_count(), 1, "block {single}");
+        }
+    }
+
+    #[test]
+    fn the_numbers_the_games_rules_use_are_the_numbers_in_the_files() {
+        let blocks = BaseBlocks::new();
+        let table = blocks.block_table();
+        let emission = table.handle(&EMISSION).unwrap();
+        assert_eq!(table.get_of(emission, blocks.lamp, 0), LAMP_EMISSION);
+        assert_eq!(table.get_of(emission, blocks.fire, 0), FIRE_EMISSION);
+        // A fire has a colour for each age it burns through (and the state is the age, which any number can be).
+        let (_, fire) = blocks.blocks.iter().nth(blocks.fire as usize).unwrap();
+        assert_eq!(
+            fire.content().unwrap().state_colors().len(),
+            FIRE_LIFETIME as usize
+        );
+    }
 
     #[test]
     fn air_is_block_zero_and_the_blocks_have_their_names() {
@@ -456,7 +481,7 @@ mod tests {
             (0..8)
                 .map(|block| table.get_of(flammability, block, 0))
                 .collect::<Vec<_>>(),
-            [0, 0, 0, GRASS_FLAMMABILITY, 0, WOOD_FLAMMABILITY, 0, 0],
+            [0, 0, 0, 100, 0, 40, 0, 0],
             "grass and wood burn, and fire and water do not burn"
         );
         // The lamp is a whole opaque block.

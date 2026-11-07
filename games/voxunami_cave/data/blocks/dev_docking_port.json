@@ -1,0 +1,6 @@
+{
+  "color": [0.17, 0.21, 0.22],
+  "face_colors": { "positive_x": [1, 0.84705883, 0] },
+  "properties": { "engine:front_face": "east" },
+  "state_properties": { "0": { "engine:docking_face": "east" } }
+}

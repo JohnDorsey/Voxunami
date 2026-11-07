@@ -9,6 +9,7 @@ description = "The first blocks (air, stone, dirt, grass, lamp, wood, fire, rive
 [dependencies]
 block_models.workspace = true
 content_registry.workspace = true
+data_packs.workspace = true
 namespaced_id.workspace = true
 voxel_grid.workspace = true
 voxel_space.workspace = true

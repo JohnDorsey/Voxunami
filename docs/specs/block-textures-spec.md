@@ -1,6 +1,6 @@
 # Block textures, and the game's own blocks in data: specification
 
-**Status: written 2026-11-07 from an interview with the owner (the decisions marked "owner" below are theirs, from that day). Step 0 and step 1 are built (see "As built" at the end); the rest is not.** It
+**Status: written 2026-11-07 from an interview with the owner (the decisions marked "owner" below are theirs, from that day). Steps 0, 1 and 2 are built (see "As built" at the end); the rest is not.** It
 extends the data packs (`data-packs-spec.md`, `pack-format.md`) and the content package (`content-package-spec.md`), and it replaces the 2026-10-29
 advice of `architecture-review.md` section A4 ("no textures, sub-voxel models") with the owner's decision to have textures. What I checked in the code
 or on disk is marked **[code]** or **[disk]**; what I believe without having checked is marked **[belief]**.
@@ -263,3 +263,19 @@ procedural block types, which the species of trees will use through *roles* (tru
   digests in the `block_golden.rs` table lines moved only because the instrument no longer prints that token; the readable columns and the three palette digests did not move. The package bytes moved (they lose three declarations and a face kind's range, and
   gain a count of coloured faces per block): Cave 3,088 to 2,642, 2048 3,510 to 3,151, Eels 1,547 to 1,189; the stream pins of the golden sessions moved with them and their saved worlds did not.
 - Not in step 1, as the spec says: the base blocks are still written in Rust (step 2), `color` is still required, and nothing reads a texture.
+
+**Step 2 (2026-11-07).**
+- The eight base blocks are `plugins/base_blocks/data/blocks/*.json` and the dev docking port is `games/voxunami_cave/data/blocks/dev_docking_port.json`, in the format of `pack-format.md`, read with `data_packs::read_block` and the property schema of the
+  game, and embedded in the program (`include_str!`), so the program does not look for them on a disk. `BaseBlocks::new()` and `dev_docking_port()` build from them.
+- **A deviation from section 3, and why.** The files are read by the reader a pack's files are read by, but **not through the pack loader** (`load_packs`): the loader numbers a pack's blocks in the order of the files' names (air, dirt, fire, grass,
+  great_river_water, lamp, stone, wood), and the numbers of the base blocks are fixed (air is 0 so that a world of zeros is sky; the pins say the rest). The order is therefore a list in Rust, `BLOCK_FILES`, and a test keeps it equal to the files in the folder
+  (a file nobody listed, or a name without a file, fails it) and to the order of the fields of `BaseBlockIds`. If a pack should ever be able to say its own order, that is a feature of the pack format, and nothing here is in its way.
+- What stayed in Rust, and why: `LAMP_EMISSION`, `FIRE_EMISSION` and `FIRE_LIFETIME` (Cave's rules and tests use them), each kept equal to the file by a test; and `SHAPE_NAMES`/`shape_name`, the names of the seven states of a solid block, kept equal to the
+  `states` of the four solid blocks by a test. Gone: the colours and flammabilities that only repeated the data (`GREAT_RIVER_WATER_COLOR`, `LOG_END_COLOR`, `GRASS_FLAMMABILITY`, `WOOD_FLAMMABILITY`), `standard_shapes`, `fire_colors`,
+  `BlockPropertiesExt` (nothing used it) and the Rust builders of the blocks.
+- Colours that were computed (the twelve colours of a fire, the log's ends from bytes, the port's yellow) are written as the shortest decimal of the `f32` they were (`0.8458333`, `0.7490196`), which the reader turns back into the same `f32`; two decimals that name
+  the same `f32` are the same colour (`0.36078432` and `0.36078433` are one value, which a mutation experiment found by not being caught, and a one-ulp change, `0.36078435`, is caught).
+- **Checked.** Before the switch, a test read each file and compared it with the definition the Rust built (equal, all nine); after it, **the pins of step 1 passed unmodified**: the length and hash of the package of Cave, 2048 and Eels (so the package is
+  equal to the byte), the numbering, the table lines, and the stream and saved-world hashes of all the golden sessions. Ten mutations of the data and an unlisted file were caught (the one that is not an equivalent mutant is the log-end colour above).
+- A property such as `engine:docking_face` set in `state_properties` is a different set of bytes from the same property in `properties` though it means the same for a block of one state; the port keeps what it had (`front_face` in `properties`, `docking_face` in
+  state 0), and a mutation that moves it is caught by the package pin.

@@ -1723,6 +1723,14 @@ Elliptical orbits, steps A0 and A1 (`orbits-and-thrust-plan.md`; no behaviour ch
 - E3 (spike, `history/spikes/rails/park_cycles_test.rs`): keeping the elements through 1,000 park/load cycles is exact; making the orbit again from a saved pose (`f32` speed) is 5e-4 of a radius out a thousand periods after one cycle and 5e-3 to 1.2e-2 after 1,000; with an `f64` speed 2e-9 and 1e-8. The `f32` speed is the weak link, not the `f32` offset. See the plan.
 - A3b: the `period` of an orbit round a body is optional and is worked out from the body's mass (`pull_strength` x its mass as a ship); a given one that is more than a relative 1e-3 from it is used and warned about; an orbit round a point needs one. 5 tests, 8 mutations caught.
 
+Block textures, steps 0 to 2 (2026-11-07; the owner's request to define blocks in data and to add textures; `block-textures-spec.md`, "As built"):
+- Step 0: `block_golden.rs` in Cave, 2048 and Eels pins the numbering, the length and hash of the package and a readable line for each block (`block_models::snapshot`, a `test-support` feature). 3 tests each.
+- Step 1: `face_colors` in a definition replaced `engine:marked_face`, `engine:mark_color` and `engine:mark_both_ends`; `PropertyKind::Face` and words for faces in data; `face_colors` in block files and patches and in the generated schemas. The package of Cave went from
+  3,088 to 2,642 bytes, 2048's from 3,510 to 3,151 and Eels' from 1,547 to 1,189, and the golden sessions' streams moved by exactly those amounts with their saved worlds unmoved. Behaviour was compared by dumping the table's answers for 1,068 block, state and
+  orientation lines from the old and the new code: identical. Eleven mutations of the new code caught.
+- Step 2: the eight base blocks and the dev docking port are JSON. The pins of step 1 passed unmodified (the package equal to the byte).
+- Found on the way, not fixed: `binary_codec::read_varint` accepts a padded varint (`docs/test-flakes.md`).
+
 ## Measured
 Storage (Ryzen 7600X, release, one thread, best of 7, counting allocator; the single-voxel `get` figures include
 loop and bounds overhead, so bulk decode will be faster):
