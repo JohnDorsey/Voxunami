@@ -11,12 +11,13 @@ use crate::face_colors::read_face_colors;
 use crate::shape::read_shape;
 use crate::walk::{Path, Walk, nearest};
 
-const KEYS: [&str; 7] = [
+const KEYS: [&str; 8] = [
     "color",
     "see_through",
     "states",
     "state_colors",
     "face_colors",
+    "texture",
     "properties",
     "state_properties",
 ];
@@ -35,7 +36,7 @@ pub fn read_block(
     let (mut walk, value) = Walk::parse(file, text)?;
     let root = Path::root();
     let identifier = block_identifier(&mut walk, pack, name, &root);
-    let definition = read_definition(&mut walk, &value, &root, schema);
+    let definition = read_definition(&mut walk, &value, &root, pack, schema);
     match (identifier, definition) {
         (Some(identifier), Some(definition)) => walk.finish((identifier, definition)),
         _ => Err(walk
@@ -67,12 +68,25 @@ fn read_definition(
     walk: &mut Walk,
     value: &Value,
     path: &Path,
+    pack: &str,
     schema: &PropertySchema,
 ) -> Option<BlockDefinition> {
     let object = walk.object(value, path, &KEYS)?;
-    let color = walk
-        .require(object, "color", path)
-        .and_then(|color| walk.color(color, &path.key("color")));
+    let texture = match object.get("texture") {
+        Some(texture) => read_texture(walk, texture, &path.key("texture"), Some(pack)).map(Some),
+        None => Some(None),
+    };
+    // A block with a texture may leave its colour out: it is then the average of its pictures, which the loader works out once it knows them.
+    let color = match object.get("color") {
+        Some(color) => walk
+            .color(color, &path.key("color"))
+            .map(|color| (color, false)),
+        None if object.contains_key("texture") => Some(([0.0; 3], true)),
+        None => {
+            walk.fail(path, "missing \"color\"");
+            None
+        }
+    };
     let see_through = match object.get("see_through") {
         Some(value) => walk.boolean(value, &path.key("see_through")),
         None => Some(false),
@@ -104,8 +118,18 @@ fn read_definition(
         ),
         None => Some(Vec::new()),
     };
-    let (color, see_through, shapes, state_colors, face_colors, properties, state_properties) = (
+    let (
+        (color, color_from_pictures),
+        texture,
+        see_through,
+        shapes,
+        state_colors,
+        face_colors,
+        properties,
+        state_properties,
+    ) = (
         color?,
+        texture?,
         see_through?,
         shapes?,
         state_colors?,
@@ -117,6 +141,12 @@ fn read_definition(
     let mut definition = BlockDefinition::cube(color)
         .with_shapes(shapes)
         .with_see_through(see_through);
+    if let Some(texture) = texture {
+        definition = definition.with_texture(texture);
+        if color_from_pictures {
+            definition = definition.with_color_from_pictures();
+        }
+    }
     if !state_colors.is_empty() {
         definition = definition.with_state_colors(state_colors);
     }
@@ -128,6 +158,40 @@ fn read_definition(
         definition = definition.with_state_property_value(state, key, value);
     }
     Some(definition)
+}
+
+/// The base name of a block's pictures: `"oak"` is `pack:oak` (a block's file says its own pack's), and `"other_pack:stone"` is a picture of another. In a patch
+/// (`pack` is `None`) a name has its namespace, since a patch is not of one pack.
+pub(crate) fn read_texture(
+    walk: &mut Walk,
+    value: &Value,
+    path: &Path,
+    pack: Option<&str>,
+) -> Option<NamespacedId> {
+    let text = walk.string(value, path)?;
+    let parsed = match (pack, text.contains(':')) {
+        (Some(pack), false) => NamespacedId::new(pack, text),
+        (None, false) => {
+            walk.fail(
+                path,
+                format!(
+                    "a texture in a patch is written with its namespace, such as \"my_pack:oak\", and \"{text}\" has none"
+                ),
+            );
+            return None;
+        }
+        (_, true) => text.parse(),
+    };
+    match parsed {
+        Ok(texture) => Some(texture),
+        Err(error) => {
+            walk.fail(
+                path,
+                format!("\"{text}\" is not the name of a picture: {error}"),
+            );
+            None
+        }
+    }
 }
 
 fn read_states(walk: &mut Walk, value: &Value, path: &Path) -> Option<Vec<Shape>> {

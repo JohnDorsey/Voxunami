@@ -7,13 +7,20 @@ use block_models::Shape;
 use namespaced_id::NamespacedId;
 use serde_json::{Map, Value};
 
+use crate::block::read_texture;
 use crate::error::PackErrors;
 use crate::face_colors::{FaceColors, read_face_colors};
 use crate::shape::read_shape;
 use crate::walk::{Path, Walk, nearest, quoted};
 
 const OPERATIONS: [&str; 4] = ["test", "set", "remove", "add"];
-const FIELDS: [&str; 4] = ["color", "see_through", "state_colors", "face_colors"];
+const FIELDS: [&str; 5] = [
+    "color",
+    "see_through",
+    "state_colors",
+    "face_colors",
+    "texture",
+];
 
 /// A property's value as the file wrote it; the property's declaration says whether it is the right kind.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,6 +43,7 @@ pub enum Place {
     SeeThrough,
     StateColors,
     FaceColors,
+    Texture,
 }
 
 /// What an operation puts or expects.
@@ -47,6 +55,8 @@ pub enum PatchValue {
     Colors(Vec<[f32; 3]>),
     /// The colour of each face as the block is made (indexed by `FaceDirection::index`); `None` for a face that has the block's own.
     FaceColors([Option<[f32; 3]>; 6]),
+    /// The base name of a block's pictures, with its namespace.
+    Texture(NamespacedId),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -245,6 +255,7 @@ fn read_place(walk: &mut Walk, object: &Map<String, Value>, path: &Path) -> Opti
                 "see_through" => Some(Place::SeeThrough),
                 "state_colors" => Some(Place::StateColors),
                 "face_colors" => Some(Place::FaceColors),
+                "texture" => Some(Place::Texture),
                 other => {
                     let hint = nearest(other, &FIELDS)
                         .map(|near| format!(" (did you mean \"{near}\"?)"))
@@ -288,6 +299,7 @@ fn read_value(walk: &mut Walk, value: &Value, path: &Path, place: &Place) -> Opt
             let colors: Option<FaceColors> = read_face_colors(walk, value, path);
             colors.map(PatchValue::FaceColors)
         }
+        Place::Texture => read_texture(walk, value, path, None).map(PatchValue::Texture),
         Place::StateColors => {
             let list = walk.array(value, path)?;
             if list.is_empty() {

@@ -142,6 +142,7 @@ impl CaveContent {
             .register(dev_docking_port_id(), dev_docking_port())
             .expect("the name of the dev docking port is not a base block's");
         let spec = PackageSpec {
+            textures: Vec::new(),
             level: overworld_id(),
             block_registry_kind: block_registry_kind(),
             // The channels of every brick: the block of each voxel, its state (which shape it

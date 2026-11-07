@@ -8,7 +8,9 @@ description = "Packs of JSON that add blocks and patch others: the reader, the l
 
 [dependencies]
 block_models.workspace = true
+libm = "0.2"
 namespaced_id.workspace = true
+png = "0.18.1"
 serde_json.workspace = true
 voxel_space.workspace = true
 

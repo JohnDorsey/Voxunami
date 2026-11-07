@@ -189,12 +189,17 @@ fn block(schema: &PropertySchema) -> Value {
         "title": "A Voxunami block",
         "description": "one block of a pack; its name is the file's name",
         "type": "object",
-        "required": ["color"],
+        "anyOf": [{ "required": ["color"] }, { "required": ["texture"] }],
         "additionalProperties": false,
         "$defs": { "color": color(), "shape": shape(), "face_colors": face_colors() },
         "properties": {
             "$schema": { "type": "string" },
             "color": { "$ref": "#/$defs/color" },
+            "texture": {
+                "type": "string",
+                "pattern": format!("^({PART}:)?{PART}$"),
+                "description": "the base name of the block's pictures: `oak` is a picture of this pack, `other_pack:stone` of another; `oak_top`, `oak_side`, `oak_bottom` or `oak` in the `textures` folder say what each face looks like. `color` may be left out: it is then the average of the pictures"
+            },
             "see_through": { "type": "boolean", "default": false },
             "states": {
                 "type": "array",
@@ -423,6 +428,15 @@ fn patch() -> Value {
                         "path": { "const": "face_colors" },
                         "value": { "$ref": "#/$defs/face_colors" }
                     }), &["op", "path", "value"]),
+                    operation(json!({
+                        "op": { "enum": ["test", "set"] },
+                        "path": { "const": "texture" },
+                        "value": identifier
+                    }), &["op", "path", "value"]),
+                    operation(json!({
+                        "op": { "const": "remove" },
+                        "path": { "const": "texture" }
+                    }), &["op", "path"]),
                     operation(json!({
                         "op": { "const": "remove" },
                         "path": { "const": "face_colors" }

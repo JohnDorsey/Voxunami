@@ -29,8 +29,8 @@ use world_view::ViewChannels;
 use crate::definition::GameContent;
 use crate::package_data::{PackageData, check_materials};
 use data_packs::{
-    Around, Body, BodyRail, BodySupport, OrbitData, PackErrors, RawPack, Weight, load_packs,
-    read_body, read_family_parameters,
+    Around, Body, BodyRail, BodySupport, GameTexture, OrbitData, PackErrors, RawPack, Weight,
+    load_packs, read_body, read_family_parameters,
 };
 
 /// Makes a game's terrain generators for a world seed. The layout is the world's, for finding the
@@ -71,6 +71,8 @@ pub struct PackageSpec {
     pub body_support: BodySupport,
     /// The bodies a new world has before any pack adds its own: the name of each and the text of its file (as a pack's `bodies/` folder holds them).
     pub builtin_bodies: Vec<(NamespacedId, &'static str)>,
+    /// The pictures of the game's own blocks (the files of their plugins), which packs may replace by file name.
+    pub textures: Vec<GameTexture>,
     /// How hard gravity pulls between bodies (the game's gravity constant, `GravitySettings::pull_strength`): what a body that is told how hard it pulls at its
     /// surface weighs is worked out with it.
     pub pull_strength: f64,
@@ -433,6 +435,7 @@ impl ContentPackage {
         let loaded = load_packs(
             packs,
             &base,
+            &self.spec.textures,
             &package.properties,
             &self.spec.body_support.context(),
         )?;
@@ -650,6 +653,7 @@ mod tests {
         ContentPackage::new(
             blocks,
             PackageSpec {
+                textures: Vec::new(),
                 level: id("test_game:main"),
                 block_registry_kind: id("test_game:block"),
                 channels: vec![
@@ -992,6 +996,7 @@ mod tests {
         let mut content = package();
         content
             .apply_packs(&[RawPack {
+                textures: Vec::new(),
                 folder: "my_pack".to_owned(),
                 manifest: r#"{ "id": "my_pack" }"#.to_owned(),
                 blocks: Vec::new(),
@@ -1030,6 +1035,7 @@ mod tests {
         let mut content = package();
         let error = content
             .apply_packs(&[RawPack {
+                textures: Vec::new(),
                 folder: "my_pack".to_owned(),
                 manifest: r#"{ "id": "my_pack" }"#.to_owned(),
                 blocks: vec![RawFile {
@@ -1096,6 +1102,7 @@ mod tests {
         let mut content = package();
         content
             .apply_packs(&[RawPack {
+                textures: Vec::new(),
                 folder: "my_pack".to_owned(),
                 manifest: r#"{ "id": "my_pack" }"#.to_owned(),
                 blocks: Vec::new(),
@@ -1134,6 +1141,7 @@ mod tests {
         let mut content = package();
         let error = content
             .apply_packs(&[RawPack {
+                textures: Vec::new(),
                 folder: "my_pack".to_owned(),
                 manifest: r#"{ "id": "my_pack" }"#.to_owned(),
                 blocks: Vec::new(),
@@ -1164,6 +1172,7 @@ mod tests {
     /// A pack of bodies, each with the text of its file.
     fn pack_of_bodies(bodies: &[(&str, &str)]) -> RawPack {
         RawPack {
+            textures: Vec::new(),
             folder: "my_pack".to_owned(),
             manifest: r#"{ "id": "my_pack" }"#.to_owned(),
             blocks: Vec::new(),
@@ -1573,6 +1582,7 @@ mod tests {
         // (A pack of the game's own namespace, which nothing forbids.)
         let error = content
             .apply_packs(&[RawPack {
+                textures: Vec::new(),
                 folder: "test_game".to_owned(),
                 manifest: r#"{ "id": "test_game" }"#.to_owned(),
                 blocks: Vec::new(),
@@ -1639,6 +1649,7 @@ mod tests {
                 .collect()
         };
         RawPack {
+            textures: Vec::new(),
             folder: folder.to_owned(),
             manifest: format!(r#"{{ "id": "{folder}", "depends_on": [{depends_on}] }}"#),
             blocks: files(blocks),

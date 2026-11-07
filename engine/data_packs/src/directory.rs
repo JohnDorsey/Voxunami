@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::error::{PackError, PackErrors};
-use crate::load::{RawFile, RawPack};
+use crate::load::{RawFile, RawPack, RawTexture};
 use crate::walk::nearest;
 
 fn problem(file: String, message: impl Into<String>) -> PackError {
@@ -18,6 +18,16 @@ fn problem(file: String, message: impl Into<String>) -> PackError {
 /// The names of what is in a directory, sorted: only folders if `folders`, only `.json` files (without the
 /// extension) otherwise. Names that start with a dot are left alone.
 fn names_in(directory: &Path, label: &str, folders: bool) -> Result<Vec<String>, PackError> {
+    names_with(directory, label, if folders { None } else { Some(".json") })
+}
+
+/// The names of the folders in a directory if `extension` is `None`, else of the files that end in it (without it), sorted. Names that start with a dot are left
+/// alone.
+fn names_with(
+    directory: &Path,
+    label: &str,
+    extension: Option<&str>,
+) -> Result<Vec<String>, PackError> {
     let entries = fs::read_dir(directory).map_err(|error| {
         problem(
             label.to_owned(),
@@ -39,12 +49,14 @@ fn names_in(directory: &Path, label: &str, folders: bool) -> Result<Vec<String>,
             continue;
         }
         let is_folder = entry.path().is_dir();
-        if folders {
-            if is_folder {
-                names.push(name);
+        match extension {
+            None if is_folder => names.push(name),
+            Some(extension) if !is_folder => {
+                if let Some(stem) = name.strip_suffix(extension) {
+                    names.push(stem.to_owned());
+                }
             }
-        } else if !is_folder && let Some(stem) = name.strip_suffix(".json") {
-            names.push(stem.to_owned());
+            _ => {}
         }
     }
     names.sort();
@@ -89,9 +101,74 @@ fn files_in(
         .collect()
 }
 
+/// The pictures of a pack: its `.png` files, named by the file's name, and the `.png` files in the folders of `textures` (named `namespace/name`), which put
+/// pictures into the namespace of the folder. A folder inside those is an error, as an unread folder anywhere is.
+fn textures_in(pack: &Path, folder_name: &str, errors: &mut Vec<PackError>) -> Vec<RawTexture> {
+    let directory = pack.join("textures");
+    if !directory.is_dir() {
+        return Vec::new();
+    }
+    let label = format!("{folder_name}/textures");
+    let mut textures = Vec::new();
+    let mut read = |relative: &str, file: &str, errors: &mut Vec<PackError>| match fs::read(
+        directory.join(file),
+    ) {
+        Ok(bytes) => textures.push(RawTexture {
+            name: relative.to_owned(),
+            bytes,
+        }),
+        Err(error) => errors.push(problem(
+            format!("{label}/{file}"),
+            format!("cannot read this file: {error}"),
+        )),
+    };
+    match names_with(&directory, &label, Some(".png")) {
+        Ok(names) => {
+            for name in names {
+                read(&name, &format!("{name}.png"), errors);
+            }
+        }
+        Err(error) => errors.push(error),
+    }
+    match names_with(&directory, &label, None) {
+        Ok(namespaces) => {
+            for namespace in namespaces {
+                let inner = directory.join(&namespace);
+                let inner_label = format!("{label}/{namespace}");
+                match names_with(&inner, &inner_label, Some(".png")) {
+                    Ok(names) => {
+                        for name in names {
+                            read(
+                                &format!("{namespace}/{name}"),
+                                &format!("{namespace}/{name}.png"),
+                                errors,
+                            );
+                        }
+                    }
+                    Err(error) => errors.push(error),
+                }
+                match names_with(&inner, &inner_label, None) {
+                    Ok(deeper) => {
+                        for name in deeper {
+                            errors.push(problem(
+                                format!("{inner_label}/{name}"),
+                                "nothing reads this folder; pictures are in `textures` or in a folder of it named for a namespace",
+                            ));
+                        }
+                    }
+                    Err(error) => errors.push(error),
+                }
+            }
+        }
+        Err(error) => errors.push(error),
+    }
+    textures.sort_by(|first, second| first.name.cmp(&second.name));
+    textures
+}
+
 /// The folders of a pack that are read. Anything else is an error: a pack with a `recipes` folder that nothing reads
 /// would be reported as fine and then do nothing, which is the worst thing a checker can say.
-const READ_FOLDERS: [&str; 3] = ["blocks", "patches", "bodies"];
+const READ_FOLDERS: [&str; 4] = ["blocks", "patches", "bodies", "textures"];
 
 fn check_for_unread_folders(pack: &Path, folder_name: &str, errors: &mut Vec<PackError>) {
     let label = folder_name.to_owned();
@@ -112,7 +189,7 @@ fn check_for_unread_folders(pack: &Path, folder_name: &str, errors: &mut Vec<Pac
         errors.push(problem(
             format!("{folder_name}/{name}"),
             format!(
-                "nothing reads this folder{hint}; a pack's folders are \"blocks\", \"patches\" and \"bodies\""
+                "nothing reads this folder{hint}; a pack's folders are \"blocks\", \"patches\", \"bodies\" and \"textures\""
             ),
         ));
     }
@@ -147,7 +224,9 @@ pub fn read_directory(root: &Path) -> Result<Vec<RawPack>, PackErrors> {
         let blocks = files_in(&pack, &folder, "blocks", &mut errors);
         let patches = files_in(&pack, &folder, "patches", &mut errors);
         let bodies = files_in(&pack, &folder, "bodies", &mut errors);
+        let textures = textures_in(&pack, &folder, &mut errors);
         packs.push(RawPack {
+            textures,
             folder,
             manifest,
             blocks,

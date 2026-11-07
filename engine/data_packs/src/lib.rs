@@ -12,8 +12,10 @@ mod family;
 mod load;
 mod manifest;
 mod patch;
+mod pictures;
 mod schema;
 mod shape;
+mod tile;
 mod walk;
 
 pub use block::read_block;
@@ -25,8 +27,15 @@ pub use body::{
 pub use directory::read_directory;
 pub use error::{PackError, PackErrors};
 pub use family::{FamilyData, FamilyParameters, FamilyProblem};
-pub use load::{Loaded, RawFile, RawPack, load_packs};
+pub use load::{Loaded, RawFile, RawPack, RawTexture, load_packs};
 pub use manifest::{PackManifest, read_manifest};
 pub use patch::{Operation, Patch, PatchValue, Place, PropertyValue, read_patch};
+pub use pictures::{
+    GameTexture, MOST_TILE_SIZES, MOST_TILES_OF_A_SIZE, Pictures, Textures, resolve_pictures,
+    settle_game_pictures,
+};
 pub use schema::{PackSchemas, pack_schemas};
 pub use shape::{FACE_NAMES, SHAPE_NAMES};
+pub use tile::{
+    GREATEST_FILE_BYTES, GREATEST_TILE, SMALLEST_TILE, Tile, average_color, is_tile_size,
+};

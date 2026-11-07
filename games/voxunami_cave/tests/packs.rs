@@ -38,6 +38,7 @@ const MARBLE: [f32; 3] = [0.9, 0.9, 0.95];
 /// A pack that adds a plain block and a glowing one, and makes lamps brighter.
 fn the_pack() -> Vec<RawPack> {
     vec![RawPack {
+        textures: Vec::new(),
         folder: "my_pack".to_owned(),
         manifest: r#"{ "id": "my_pack", "depends_on": ["base_blocks"] }"#.to_owned(),
         blocks: vec![
@@ -254,6 +255,7 @@ fn a_world_saved_with_a_packs_block_loads_without_the_pack_and_saves_back_the_sa
 /// A pack whose block says it can be placed, which gives it an item and a place among the number keys.
 fn the_placeable_pack() -> Vec<RawPack> {
     vec![RawPack {
+        textures: Vec::new(),
         folder: "my_pack".to_owned(),
         manifest: r#"{ "id": "my_pack", "depends_on": ["base_blocks"] }"#.to_owned(),
         blocks: vec![

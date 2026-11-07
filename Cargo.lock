@@ -644,7 +644,9 @@ version = "0.0.0"
 dependencies = [
  "block_models",
  "jsonschema",
+ "libm",
  "namespaced_id",
+ "png",
  "proptest",
  "serde_json",
  "voxel_space",

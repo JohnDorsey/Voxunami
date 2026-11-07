@@ -342,6 +342,54 @@ fn a_face_that_is_wrong_says_what_a_face_is() {
 }
 
 #[test]
+fn a_texture_is_a_base_name_in_the_packs_own_namespace_or_a_name_with_the_namespace_of_another_pack()
+ {
+    let (_, own) = block(r#"{ "color": [0.1, 0.2, 0.3], "texture": "oak" }"#).unwrap();
+    assert_eq!(own.texture(), Some(&id("my_pack:oak")));
+    assert!(
+        !own.color_from_pictures(),
+        "a colour that is written is the author's own"
+    );
+    assert_eq!(own.color, [0.1, 0.2, 0.3]);
+    let (_, other) = block(r#"{ "color": [0, 0, 0], "texture": "base_blocks:stone" }"#).unwrap();
+    assert_eq!(other.texture(), Some(&id("base_blocks:stone")));
+    let (_, none) = block(r#"{ "color": [0, 0, 0] }"#).unwrap();
+    assert_eq!(none.texture(), None);
+}
+
+#[test]
+fn the_colour_may_be_left_out_of_a_block_with_a_texture_and_then_it_follows_the_pictures() {
+    let (_, definition) = block(r#"{ "texture": "oak" }"#).unwrap();
+    assert_eq!(definition.texture(), Some(&id("my_pack:oak")));
+    assert!(definition.color_from_pictures());
+    // It is the loader that works the colour out, once it knows the pictures; until then it is black.
+    assert_eq!(definition.color, [0.0; 3]);
+    // Without a texture there is nothing to follow, and the colour is still required.
+    assert_eq!(
+        block_errors(r#"{ "see_through": true }"#),
+        [format!("{FILE}: missing \"color\"")]
+    );
+}
+
+#[test]
+fn a_texture_that_is_wrong_says_what_a_texture_is() {
+    assert_eq!(
+        block_errors(r#"{ "color": [0,0,0], "texture": 5 }"#),
+        [format!("{FILE}: /texture: expected text, found a number")]
+    );
+    for wrong in ["Oak Stone", "a:b:c", "", "oak top", ":oak"] {
+        let errors = block_errors(&format!(r#"{{ "color": [0,0,0], "texture": "{wrong}" }}"#));
+        assert_eq!(errors.len(), 1, "{wrong}: {errors:?}");
+        assert!(
+            errors[0].starts_with(&format!(
+                "{FILE}: /texture: \"{wrong}\" is not the name of a picture: "
+            )),
+            "{errors:?}"
+        );
+    }
+}
+
+#[test]
 fn faces_get_their_colours_by_group_and_by_name_and_a_name_beats_its_group_wherever_it_is_written()
 {
     let faces = |text: &str| {
@@ -430,7 +478,7 @@ fn face_colours_that_are_wrong_say_what_and_where() {
 
 #[test]
 fn an_unknown_key_is_refused_and_a_near_miss_is_corrected() {
-    let keys = "\"color\", \"see_through\", \"states\", \"state_colors\", \"face_colors\", \"properties\", \"state_properties\"";
+    let keys = "\"color\", \"see_through\", \"states\", \"state_colors\", \"face_colors\", \"texture\", \"properties\", \"state_properties\"";
     assert_eq!(
         block_errors(r#"{ "colour": [0, 0, 0] }"#),
         [
@@ -641,6 +689,9 @@ fn a_patch_is_a_target_and_operations_that_say_what_they_change() {
             { "op": "set",  "path": "face_colors", "value": { "side": [0, 1, 0], "top": [1, 0, 0] } },
             { "op": "test", "path": "face_colors", "value": { "negative_z": [0, 0, 1] } },
             { "op": "remove", "path": "face_colors" },
+            { "op": "set",  "path": "texture", "value": "my_pack:oak" },
+            { "op": "test", "path": "texture", "value": "base_blocks:stone" },
+            { "op": "remove", "path": "texture" },
             { "op": "add", "shape": "half:positive_y" } ] }"#,
     )
     .unwrap();
@@ -712,6 +763,17 @@ fn a_patch_is_a_target_and_operations_that_say_what_they_change() {
             Operation::Remove {
                 place: Place::FaceColors
             },
+            Operation::Set {
+                place: Place::Texture,
+                value: PatchValue::Texture(id("my_pack:oak"))
+            },
+            Operation::Test {
+                place: Place::Texture,
+                value: PatchValue::Texture(id("base_blocks:stone"))
+            },
+            Operation::Remove {
+                place: Place::Texture
+            },
             Operation::AddState {
                 shape: Box::new(Shape::half(FaceDirection::PositiveY))
             },
@@ -725,6 +787,35 @@ fn a_patch_is_a_target_and_operations_that_say_what_they_change() {
     assert!(
         !plain.optional,
         "a patch is required unless it says otherwise"
+    );
+}
+
+#[test]
+fn a_texture_in_a_patch_is_written_with_its_namespace() {
+    let f = PATCH_FILE;
+    let wrap = |operation: &str| format!(r#"{{ "target": "a:b", "operations": [{operation}] }}"#);
+    assert_eq!(
+        patch_errors(&wrap(
+            r#"{ "op": "set", "path": "texture", "value": "oak" }"#
+        )),
+        [format!(
+            "{f}: /operations/0/value: a texture in a patch is written with its namespace, such as \"my_pack:oak\", and \"oak\" has none"
+        )]
+    );
+    assert_eq!(
+        patch_errors(&wrap(r#"{ "op": "set", "path": "texture", "value": 5 }"#)),
+        [format!(
+            "{f}: /operations/0/value: expected text, found a number"
+        )]
+    );
+    let errors = patch_errors(&wrap(
+        r#"{ "op": "set", "path": "texture", "value": "Oak:Stone" }"#,
+    ));
+    assert!(
+        errors[0].starts_with(&format!(
+            "{f}: /operations/0/value: \"Oak:Stone\" is not the name of a picture: "
+        )),
+        "{errors:?}"
     );
 }
 
@@ -761,7 +852,7 @@ fn a_patch_that_is_wrong_says_what_and_where() {
             r#"{ "op": "set", "path": "colour", "value": [0,0,0] }"#
         )),
         [format!(
-            "{f}: /operations/0/path: \"colour\" is not a field of a block (did you mean \"color\"?); the fields are \"color\", \"see_through\", \"state_colors\", \"face_colors\""
+            "{f}: /operations/0/path: \"colour\" is not a field of a block (did you mean \"color\"?); the fields are \"color\", \"see_through\", \"state_colors\", \"face_colors\", \"texture\""
         )]
     );
     assert_eq!(

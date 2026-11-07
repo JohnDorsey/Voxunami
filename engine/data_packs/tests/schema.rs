@@ -288,6 +288,29 @@ fn corpus() -> Vec<Case> {
             "a plain number given a word",
             r#"{ "color": [0,0,0], "properties": { "test:glow": "up" } }"#,
         ),
+        ok(Block, "a texture and no colour", r#"{ "texture": "oak" }"#),
+        ok(
+            Block,
+            "a texture of another pack and a colour",
+            r#"{ "texture": "base_blocks:stone", "color": [0.5, 0.5, 0.5] }"#,
+        ),
+        bad(
+            Block,
+            "neither a colour nor a texture",
+            r#"{ "see_through": true }"#,
+        ),
+        bad(Block, "a texture that is a number", r#"{ "texture": 5 }"#),
+        bad(
+            Block,
+            "a texture that is not a name",
+            r#"{ "texture": "Oak Stone" }"#,
+        ),
+        bad(
+            Block,
+            "a texture with two colons",
+            r#"{ "texture": "a:b:c" }"#,
+        ),
+        bad(Block, "an empty texture", r#"{ "texture": "" }"#),
         ok(
             Block,
             "one face coloured by name",
@@ -489,6 +512,29 @@ fn corpus() -> Vec<Case> {
             { "op": "test", "path": "face_colors", "value": { "side": [0,1,0] } },
             { "op": "remove", "path": "face_colors" },
             { "op": "add", "shape": { "boxes": [[0,0,0,8,8,8]] } } ] }"#,
+        ),
+        ok(
+            Patch,
+            "the texture set, tested and removed",
+            r#"{ "target": "a:b", "operations": [
+            { "op": "set", "path": "texture", "value": "my_pack:oak" },
+            { "op": "test", "path": "texture", "value": "base_blocks:stone" },
+            { "op": "remove", "path": "texture" } ] }"#,
+        ),
+        bad(
+            Patch,
+            "a texture without a namespace",
+            r#"{ "target": "a:b", "operations": [{ "op": "set", "path": "texture", "value": "oak" }] }"#,
+        ),
+        bad(
+            Patch,
+            "a texture given a number",
+            r#"{ "target": "a:b", "operations": [{ "op": "set", "path": "texture", "value": 5 }] }"#,
+        ),
+        bad(
+            Patch,
+            "a remove of the texture with a value",
+            r#"{ "target": "a:b", "operations": [{ "op": "remove", "path": "texture", "value": "a:b" }] }"#,
         ),
         bad(
             Patch,
