@@ -9,6 +9,7 @@
 
 use block_models::{BlockDefinition, BlockTable, PropertyDeclaration, PropertyKey, PropertySchema};
 use content_registry::{Registry, RuntimeId};
+use data_packs::{GameTexture, Textures};
 use namespaced_id::NamespacedId;
 use voxel_grid::ChannelDefinition;
 
@@ -131,6 +132,42 @@ const BLOCK_FILES: [(&str, &str); 8] = [
     ),
 ];
 
+/// The pictures of the blocks, each with the name its file has in `textures` (`log_top.png` is `base_blocks:log_top`). The folder holds more pictures than
+/// these, which no block uses yet; a test keeps this list equal to the pictures the blocks name.
+const TEXTURE_FILES: [(&str, &[u8]); 9] = [
+    ("grass", include_bytes!("../textures/grass.png")),
+    ("dirt", include_bytes!("../textures/dirt.png")),
+    ("stone", include_bytes!("../textures/stone.png")),
+    ("still_water", include_bytes!("../textures/still_water.png")),
+    ("log_top", include_bytes!("../textures/log_top.png")),
+    ("log_side", include_bytes!("../textures/log_side.png")),
+    (
+        "dev_docking_port_top",
+        include_bytes!("../textures/dev_docking_port_top.png"),
+    ),
+    (
+        "dev_docking_port_side",
+        include_bytes!("../textures/dev_docking_port_side.png"),
+    ),
+    (
+        "dev_docking_port_bottom",
+        include_bytes!("../textures/dev_docking_port_bottom.png"),
+    ),
+];
+
+/// The pictures this plugin has, for a game to give its packs (which may replace them by file name) and to settle the colours of the blocks that follow them.
+/// They belong to the blocks of this plugin and to the dev docking port of Cave, which names `base_blocks:dev_docking_port`.
+pub fn textures() -> Vec<GameTexture> {
+    TEXTURE_FILES
+        .iter()
+        .map(|(name, bytes)| GameTexture {
+            id: identifier(&format!("base_blocks:{name}")),
+            file: format!("plugins/base_blocks/textures/{name}.png"),
+            bytes: bytes.to_vec(),
+        })
+        .collect()
+}
+
 /// The ids of the blocks, which are fixed: air first, so a world whose voxels are all zero is sky.
 /// Everything a game needs to use the blocks and their channels and terrain once the registry is
 /// the game's.
@@ -180,6 +217,7 @@ impl BaseBlockIds {
 pub struct BaseBlocks {
     pub blocks: Registry<BlockDefinition>,
     ids: BaseBlockIds,
+    pictures: Textures,
 }
 
 impl std::ops::Deref for BaseBlocks {
@@ -199,16 +237,21 @@ impl Default for BaseBlocks {
 impl BaseBlocks {
     pub fn new() -> Self {
         let schema = property_schema();
-        let mut blocks = Registry::new();
-        let ids: Vec<u32> = BLOCK_FILES
+        let mut definitions: Vec<(NamespacedId, BlockDefinition)> = BLOCK_FILES
             .iter()
             .map(|(name, text)| {
                 let file = format!("plugins/base_blocks/data/blocks/{name}.json");
-                let (identifier, definition) =
-                    data_packs::read_block(&file, "base_blocks", name, text, &schema)
-                        .unwrap_or_else(|errors| {
-                            panic!("a file of the base blocks is wrong: {errors}")
-                        });
+                data_packs::read_block(&file, "base_blocks", name, text, &schema)
+                    .unwrap_or_else(|errors| panic!("a file of the base blocks is wrong: {errors}"))
+            })
+            .collect();
+        // The colours that follow the pictures are worked out from the pictures of the plugin.
+        let pictures = data_packs::settle_game_pictures(&mut definitions, &textures())
+            .unwrap_or_else(|errors| panic!("the pictures of the base blocks are wrong: {errors}"));
+        let mut blocks = Registry::new();
+        let ids: Vec<u32> = definitions
+            .into_iter()
+            .map(|(identifier, definition)| {
                 blocks
                     .register(identifier, definition)
                     .expect("the block names are distinct")
@@ -231,7 +274,13 @@ impl BaseBlocks {
                 fire,
                 great_river_water,
             },
+            pictures,
         }
+    }
+
+    /// The pictures of the blocks: each block's, and the tiles they are.
+    pub fn pictures(&self) -> &Textures {
+        &self.pictures
     }
 
     /// The ids of the blocks, to keep when the registry goes to a game.
@@ -340,6 +389,79 @@ mod tests {
         ] {
             let (_, entry) = blocks.blocks.iter().nth(single as usize).unwrap();
             assert_eq!(entry.content().unwrap().state_count(), 1, "block {single}");
+        }
+    }
+
+    #[test]
+    fn the_blocks_with_pictures_are_the_colour_of_their_pictures_and_the_pictures_are_the_ones_the_plugin_has()
+     {
+        let blocks = BaseBlocks::new();
+        let textured = [
+            ("stone", blocks.stone),
+            ("dirt", blocks.dirt),
+            ("grass", blocks.grass),
+            ("wood", blocks.wood),
+            ("great_river_water", blocks.great_river_water),
+        ];
+        let tiles = &blocks.pictures().tiles;
+        for (name, number) in textured {
+            let (_, entry) = blocks.blocks.iter().nth(number as usize).unwrap();
+            let definition = entry.content().unwrap();
+            assert!(definition.color_from_pictures(), "{name}");
+            let pictures = &blocks.pictures().pictures[entry.identifier()];
+            let average = data_packs::average_color(&[
+                (&tiles[&pictures.top], 1),
+                (&tiles[&pictures.side], 4),
+            ])
+            .expect("the pictures are not clear");
+            assert_eq!(definition.color, average, "{name}");
+        }
+        // The air, the lamp and the fire have none.
+        for number in [blocks.air, blocks.lamp, blocks.fire] {
+            let (_, entry) = blocks.blocks.iter().nth(number as usize).unwrap();
+            assert_eq!(entry.content().unwrap().texture(), None);
+            assert!(!blocks.pictures().pictures.contains_key(entry.identifier()));
+        }
+        // The pictures the plugin embeds are the ones its blocks and Cave's port use, no more and no fewer: the log's two, the port's three, and one each for the rest.
+        let mut used: Vec<String> = blocks
+            .pictures()
+            .tiles
+            .keys()
+            .map(ToString::to_string)
+            .collect();
+        let port =
+            data_packs::resolve_pictures(&identifier("base_blocks:dev_docking_port"), |id| {
+                textures().iter().any(|texture| texture.id == *id)
+            })
+            .expect("the port has pictures");
+        used.extend(
+            [port.top, port.side, port.bottom]
+                .iter()
+                .map(ToString::to_string),
+        );
+        used.sort();
+        used.dedup();
+        let mut embedded: Vec<String> = textures()
+            .iter()
+            .map(|texture| texture.id.to_string())
+            .collect();
+        embedded.sort();
+        assert_eq!(used, embedded);
+    }
+
+    #[test]
+    fn each_embedded_picture_is_the_file_of_its_name() {
+        // `TEXTURE_FILES` pairs a name with `include_bytes!` of a path written next to it; the two must say the same file.
+        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("textures");
+        for texture in textures() {
+            let name = texture.id.name();
+            let on_disk = std::fs::read(folder.join(format!("{name}.png")))
+                .unwrap_or_else(|error| panic!("{name}.png: {error}"));
+            assert_eq!(texture.bytes, on_disk, "{name}");
+            assert_eq!(
+                texture.file,
+                format!("plugins/base_blocks/textures/{name}.png")
+            );
         }
     }
 
@@ -465,7 +587,11 @@ mod tests {
         let table = blocks.block_table();
         // The blocks, then the colours a fire is drawn in as it ages, then the colour of the ends of a log.
         assert_eq!(table.palette().len(), 8 + FIRE_LIFETIME as usize + 1);
-        assert_eq!(table.color(3), [0.30, 0.62, 0.20]);
+        assert_eq!(
+            table.color(blocks.lamp),
+            [1.0, 0.92, 0.65],
+            "a block without pictures is the colour its file says"
+        );
         // Only the lamp and the fire give off light, only grass and wood burn, and bodies pass through flames and
         // river water and nothing else of the blocks.
         let emission = table.handle(&EMISSION).unwrap();

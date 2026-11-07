@@ -1730,6 +1730,9 @@ Block textures, steps 0 to 2 (2026-11-07; the owner's request to define blocks i
   orientation lines from the old and the new code: identical. Eleven mutations of the new code caught.
 - Step 2: the eight base blocks and the dev docking port are JSON. The pins of step 1 passed unmodified (the package equal to the byte).
 - Found on the way, not fixed: `binary_codec::read_varint` accepts a padded varint (`docs/test-flakes.md`).
+- Step 3: a definition carries its pictures' base name and whether its colour follows them (2 bytes a block in the package, predicted and seen); `data_packs` reads a pack's `textures` folder, resolves the picture of each face, lets a later pack replace pictures by
+  file name, limits sizes and counts, settles the colours that follow the pictures, and patches may set the texture; the six blocks that have pictures (and Cave's port) use them, so their far colours changed (stone `#808087` to `#606060`). The pins of the table
+  and of the sessions moved by predicted amounts, the saved worlds did not. Nineteen mutations caught (one gap closed). Nothing draws a picture yet.
 
 ## Measured
 Storage (Ryzen 7600X, release, one thread, best of 7, counting allocator; the single-voxel `get` figures include

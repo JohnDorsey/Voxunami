@@ -1,4 +1,4 @@
 {
-  "color": [0.08, 0.28, 0.85],
+  "texture": "still_water",
   "properties": { "base_blocks:passable": true }
 }

@@ -67,9 +67,10 @@ pub fn dev_docking_port_id() -> NamespacedId {
         .expect("constant identifier is valid")
 }
 
-/// The dev docking port (a block for building and testing ships, creative only): a gunmetal gray cube with one yellow face, the one that docks with
+/// The dev docking port (a block for building and testing ships, creative only): a cube with one yellow face, the one that docks with
 /// the yellow face of another. It has one state, made with the yellow face to the east, which is also its front: it is placed turned to face the
-/// player, as a piston is, and the orientation of the voxel says which way the yellow is. It is data: `data/blocks/dev_docking_port.json`.
+/// player, as a piston is, and the orientation of the voxel says which way the yellow is. It is data: `data/blocks/dev_docking_port.json`, and its
+/// colour is the average of its pictures, which are in the pictures of `base_blocks`.
 pub fn dev_docking_port() -> BlockDefinition {
     let mut properties = base_blocks::property_schema();
     for declaration in [PLACEABLE.declaration(), CREATIVE_ONLY.declaration()] {
@@ -86,6 +87,11 @@ pub fn dev_docking_port() -> BlockDefinition {
     )
     .unwrap_or_else(|errors| panic!("the file of the dev docking port is wrong: {errors}"));
     assert_eq!(identifier, dev_docking_port_id());
+    let mut port = [(identifier, definition)];
+    data_packs::settle_game_pictures(&mut port, &base_blocks::textures()).unwrap_or_else(
+        |errors| panic!("the pictures of the dev docking port are wrong: {errors}"),
+    );
+    let [(_, definition)] = port;
     definition
 }
 
@@ -142,7 +148,7 @@ impl CaveContent {
             .register(dev_docking_port_id(), dev_docking_port())
             .expect("the name of the dev docking port is not a base block's");
         let spec = PackageSpec {
-            textures: Vec::new(),
+            textures: base_blocks::textures(),
             level: overworld_id(),
             block_registry_kind: block_registry_kind(),
             // The channels of every brick: the block of each voxel, its state (which shape it

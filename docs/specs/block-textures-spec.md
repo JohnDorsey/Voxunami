@@ -1,6 +1,6 @@
 # Block textures, and the game's own blocks in data: specification
 
-**Status: written 2026-11-07 from an interview with the owner (the decisions marked "owner" below are theirs, from that day). Steps 0, 1 and 2 are built (see "As built" at the end); the rest is not.** It
+**Status: written 2026-11-07 from an interview with the owner (the decisions marked "owner" below are theirs, from that day). Steps 0 to 3 are built (see "As built" at the end); the rest is not.** It
 extends the data packs (`data-packs-spec.md`, `pack-format.md`) and the content package (`content-package-spec.md`), and it replaces the 2026-10-29
 advice of `architecture-review.md` section A4 ("no textures, sub-voxel models") with the owner's decision to have textures. What I checked in the code
 or on disk is marked **[code]** or **[disk]**; what I believe without having checked is marked **[belief]**.
@@ -279,3 +279,25 @@ procedural block types, which the species of trees will use through *roles* (tru
   equal to the byte), the numbering, the table lines, and the stream and saved-world hashes of all the golden sessions. Ten mutations of the data and an unlisted file were caught (the one that is not an equivalent mutant is the log-end colour above).
 - A property such as `engine:docking_face` set in `state_properties` is a different set of bytes from the same property in `properties` though it means the same for a block of one state; the port keeps what it had (`front_face` in `properties`, `docking_face` in
   state 0), and a mutation that moves it is caught by the package pin.
+
+**Step 3 (2026-11-07), in three pieces.**
+- **a. The definition.** `BlockDefinition` has `texture` (the base name, a namespaced id) and `color_from_pictures` (the colour is the average of the pictures and follows them if they change; only a block with a texture has it; choosing a colour or taking the
+  texture away ends it). Both are in the byte form: two bytes more for each block in the package (Cave 2,642 to 2,660, 2048 3,151 to 3,159, Eels 1,189 to 1,199, predicted from the number of blocks before the run), and the sessions' streams longer by the same.
+  The package carries the base name and the flag because a client's texture pack (D9) finds pictures by it and may work the colour out from its own pictures.
+- **b. Pictures in packs** (`engine/data_packs`: `tile.rs`, `pictures.rs`). `Tile::from_png` reads a square 8-bit RGB or RGBA PNG of 8 to 256 pixels (power of two) after looking at the header, and refuses the rest with the reason; the average is alpha-weighted
+  and in linear light (`libm::pow`, for the same reason as the rest of the project). `resolve_pictures` is the table of 4.1 (the 16 combinations of files are a test written apart from the code). A pack's `textures/` folder is read by the directory reader:
+  `name.png` is `pack:name`, and `namespace/name.png` puts a picture in that namespace (replacing one that is there, said in a warning; only for a namespace the pack depends on). The loader (`load_packs`, which now takes the game's pictures too) puts the packs'
+  pictures in load order, then settles every block with a texture: finds its pictures (an error naming the block and what was looked for), works out the colours that follow, checks the limits (at most 4 sizes and 256 pictures of a size among the pictures in use;
+  the files of the fifth size are named) and returns `Loaded.textures` (each block's pictures, and the tiles in use) for step 4. Patches `set`, `test` and `remove` the path `texture` (a patch writes the namespace). The schemas describe the key (and `color` is not
+  required when `texture` is there) and the operations.
+- **c. The game's blocks.** `texture` replaced `color` in the files of stone, dirt, grass, wood (`log`), great river water (`still_water`) and the dev docking port (`base_blocks:dev_docking_port`: its pictures stay in `base_blocks/textures`, where the owner made
+  them, and Cave's block names them by namespace); `base_blocks` embeds the nine PNG files (`textures()`) and `BaseBlocks::new()` and `dev_docking_port()` settle the colours against them; Cave gives the pictures to its packs. A test keeps the embedded list equal to the
+  files of those names and to the pictures the blocks use. Lamp, fire and air have no texture and their colours are what their files say.
+- **What the colours became** (measured, in linear light; before is the colour in Rust): stone `#808087` to `#606060`, dirt `#734d2e` to `#81703b`, grass `#4d9e33` to `#278d2b`, wood `#8c6133` to `#877333`, great river water `#1447d9` to `#283de8`, the port `#2b3638` to
+  `#797658`. (The table of 5.3 was an estimate from byte means; these are the numbers.) Stone is about a quarter darker, as said; the port is no longer gunmetal gray, it is the colour of its pictures, and the test that said so now checks that the colour is the average of
+  its pictures.
+- **Checked.** The numbering and the face-material and behaviour columns of every block's line are unchanged; only the colour column of the six blocks and the palette digest moved. Cave's package went from 2,660 to 2,782 bytes (the names of the pictures) and its session
+  stream by the same 122 (7,205,489 to 7,205,611), predicted from the package and then seen, with the saved world unmoved. 2048 and Eels did not move. A pack that repaints `base_blocks:stone` makes the game's stone and a pack block that uses the picture white, through Cave's
+  real `apply_packs`. Nineteen mutations of the picture code (the weights of the average, the order of the chain, linear light, who may replace what, both limits, the wiring of the loader, the patch rules, the directory reader, Cave's hand-over of the pictures, the
+  embedded list) are all caught; one gap was found and closed (a name paired with the wrong embedded file).
+- **Not in step 3:** nothing draws a picture or sends one to a client (step 4); the `warnings` of the loader are shown by `check-pack` and the server as the other warnings are; `check-pack`'s unused-picture warning does not cover the game's own pictures.

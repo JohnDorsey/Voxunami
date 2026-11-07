@@ -360,8 +360,12 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// Blocks carry their pictures' base name and whether their colour follows them (block-textures step 3, 2026-11-07): two bytes more for each block in the package, a flag for the texture and a flag for the colour.
 /// Voxunami Cave has 9 blocks: its package is 2,642 bytes before and 2,660 now (measured by `block_golden.rs`, which pins the package), and the stream is 18 bytes longer, 7,205,471 to 7,205,489: the
 /// welcome is the only place the package is in it. Predicted from the number of blocks before the run and then seen. The saved world is the same to the hash (10_204_815_550_639_449_865): nothing is saved that was not.
+/// Textures on the base blocks and the dev docking port (block-textures step 3, 2026-11-07): their `color` is gone from their files and follows their pictures, and each names its pictures (`base_blocks:stone`,
+/// `base_blocks:log`, ...), which the package carries. Cave's package is 2,660 bytes before and 2,782 now (measured by `block_golden.rs`, which pins the package), and the stream is 122 bytes longer, 7,205,489 to 7,205,611:
+/// the welcome is the only place the package is in it, and the colours are the same width as the colours they replace. Predicted from the package pin before the run and then seen. The saved world is the same to the hash
+/// (10_204_815_550_639_449_865): nothing is saved that was not.
 const PINNED: (u64, usize, u64) = (
-    7_619_998_146_622_721_495,
-    7_205_489,
+    10_364_827_603_014_213_611,
+    7_205_611,
     10_204_815_550_639_449_865,
 );

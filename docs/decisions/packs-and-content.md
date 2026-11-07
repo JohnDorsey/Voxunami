@@ -44,6 +44,11 @@ How a game's content reaches a server (data packs) and a client (the package in 
 - **Built 2026-11-07 (step 2 of `block-textures-spec.md`):** the game's own blocks (the eight of `base_blocks`, and Cave's dev docking port) are JSON files in the pack format, embedded in the program and read by the pack reader. They are registered in
   a list in Rust, not numbered by the loader, because the loader orders a pack's files by name and these numbers are fixed. The package, the numbering, the block table and the golden sessions are unchanged to the byte, with no pin touched.
 
+- **Built 2026-11-07 (step 3 of `block-textures-spec.md`):** a block names its pictures with `texture`, and the picture of each face is the first file that exists (`_top`; `_side` then the plain name; `_bottom` then the top's), so a file added
+  changes a block with no change to its JSON. A pack's `textures` folder holds PNGs (square, 8-bit RGB or RGBA, 8 to 256 pixels, a power of two) and folders named for namespaces, whose files replace or add pictures of that namespace. `color` may be left out of a block with a
+  texture and is then the average of the pictures (top once, each side once, bottom not at all, in linear light) and follows them if another pack replaces one. At most 4 sizes and 256 pictures of a size are in use. The six blocks that have pictures in `base_blocks/textures`
+  (grass, dirt, stone, great river water, wood, and Cave's dev docking port) use them; their far colours changed with it. Nothing draws a picture yet.
+
 ## Decided (the content package at the handshake; built in Phase 28)
 
 - **The server says what the world looks like.** `Welcome` carries the game's *package data* (`game_shell::PackageData`): the property schema, every
