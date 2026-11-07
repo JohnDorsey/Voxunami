@@ -299,10 +299,15 @@ impl BodyWorld {
             .ok_or(BodyError::UnknownBody(id))?
             .handle;
         let tensor = matrix(&mass.inertia);
-        self.bodies[handle].set_additional_mass_properties(
+        let body = &mut self.bodies[handle];
+        body.set_additional_mass_properties(
             MassProperties::with_inertia_matrix(vector(mass.centre_of_mass), mass.mass, tensor),
             true,
         );
+        // Rapier works out the centre of mass in the world from this at the start of the next step (with this very call), and a force at a point is turned about the centre it
+        // has until then: the one before the mass was set, which for a body just made is its origin, or the origin of the frame. A ship that was taken to another frame and pushed
+        // by its engines in the tick it was made turned at 0.6 radians a second for that tick, and a body with no collider yet at hundreds. So it is worked out now.
+        body.recompute_mass_properties_from_colliders(&self.colliders);
         Ok(())
     }
 
@@ -1915,6 +1920,9 @@ mod tests {
         // 0.7 and -0.4, and the mass, centre of mass and inertia of a hull (worked out in `f64` and rounded to `f32` before). Control: with those three put back to what the `f32` gave
         // (the time step as `f64::from(1.0f32 / 20.0)`, the angles as `f64::from(0.7f32)` and `f64::from(-0.4f32)`, the three mass quantities rounded to `f32` and widened) and nothing
         // else changed, the old value came back bit for bit; so the three roundings are the only thing that moved it.)
-        assert_eq!(first.state_hash(), 5_759_799_545_177_561_133);
+        // (Moved on purpose, 2026-11-07: 5_759_799_545_177_561_133 before. `set_mass` brings the centre of mass in the world up to date at once, and a force at a point is turned about it; the
+        // scene pushes a ship at a point in the tick its mass is set, which Rapier then turned about the ship's origin. Control: the same scene with the first force one tick later, so that no
+        // force is in the tick the mass is set, hashes to 1_492_678_265_670_795_158 with and without the change.)
+        assert_eq!(first.state_hash(), 4_420_298_351_144_519_277);
     }
 }
