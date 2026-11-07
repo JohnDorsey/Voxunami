@@ -19,7 +19,10 @@ mod shape;
 pub mod snapshot;
 mod table;
 
-pub use definition::{BlockDefinition, color_from_bytes};
+pub use definition::{
+    BlockDefinition, FacePictures, MOST_TILE_BYTES, MOST_TILE_SIZES, MOST_TILES_OF_A_SIZE, TileRef,
+    color_from_bytes,
+};
 pub use property::{
     PropertyDeclaration, PropertyError, PropertyHandle, PropertyKey, PropertyKind, PropertySchema,
     PropertyType, engine,

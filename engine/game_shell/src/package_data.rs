@@ -8,8 +8,12 @@
 use std::collections::{HashMap, HashSet};
 
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
-use block_models::{BlockDefinition, BlockTable, PropertyError, PropertySchema};
+use block_models::{
+    BlockDefinition, BlockTable, MOST_TILE_BYTES, MOST_TILE_SIZES, MOST_TILES_OF_A_SIZE,
+    PropertyError, PropertySchema,
+};
 use content_registry::IdentifierRegistry;
+use data_packs::{Tile, is_tile_size};
 use namespaced_id::NamespacedId;
 use voxel_grid::GridLayout;
 use world_view::ViewChannels;
@@ -62,6 +66,9 @@ pub struct PackageData {
     pub light_channel: Option<NamespacedId>,
     /// How bright a face is that no light reaches, 0 to 255.
     pub ambient_light: u8,
+    /// The pictures of the blocks, by size, smallest first: each size's pictures in the order of their places (the pictures of a block name them by size number and
+    /// place), the sizes all different, each picture as big as its size says. Raw pixels: a client never decodes an image it was sent.
+    pub tile_classes: Vec<Vec<Tile>>,
 }
 
 impl PackageData {
@@ -78,6 +85,7 @@ impl PackageData {
             orientation_channel: None,
             light_channel: None,
             ambient_light: 0,
+            tile_classes: Vec::new(),
         }
     }
 
@@ -177,6 +185,19 @@ impl PackageData {
             }
         }
         writer.write_u8(self.ambient_light);
+        writer.write_varint(self.tile_classes.len() as u64);
+        for class in &self.tile_classes {
+            let first = class.first().expect("a size of pictures has a picture");
+            assert!(
+                class.iter().all(|tile| tile.size() == first.size()),
+                "the pictures of a size are all of that size"
+            );
+            writer.write_varint(u64::from(first.size()));
+            writer.write_varint(class.len() as u64);
+            for tile in class {
+                writer.write_raw(tile.rgba());
+            }
+        }
         writer.into_bytes()
     }
 
@@ -211,7 +232,64 @@ impl PackageData {
         let light_channel = optional_channel(&mut reader)?;
         let orientation_channel = optional_channel(&mut reader)?;
         let ambient_light = reader.read_u8()?;
+        let class_count = reader.read_count(2)?;
+        if class_count > MOST_TILE_SIZES {
+            return Err(DecodeError::Invalid(
+                "there are more sizes of picture than a world has",
+            ));
+        }
+        let mut tile_classes: Vec<Vec<Tile>> = Vec::with_capacity(class_count);
+        let mut bytes_in_all = 0usize;
+        for _ in 0..class_count {
+            let size = u32::try_from(reader.read_varint()?).unwrap_or(0);
+            if !is_tile_size(size) {
+                return Err(DecodeError::Invalid(
+                    "a size of picture is not one a picture has",
+                ));
+            }
+            if tile_classes
+                .last()
+                .is_some_and(|before| before[0].size() >= size)
+            {
+                return Err(DecodeError::Invalid(
+                    "the sizes of picture are repeated or not smallest first",
+                ));
+            }
+            let tile_bytes = size as usize * size as usize * 4;
+            let count = reader.read_count(tile_bytes)?;
+            if count == 0 || count > MOST_TILES_OF_A_SIZE {
+                return Err(DecodeError::Invalid(
+                    "a size of picture has no pictures or more than a world has",
+                ));
+            }
+            bytes_in_all += count * tile_bytes;
+            if bytes_in_all > MOST_TILE_BYTES {
+                return Err(DecodeError::Invalid(
+                    "the pictures take more bytes than a client is sent",
+                ));
+            }
+            let mut tiles = Vec::with_capacity(count);
+            for _ in 0..count {
+                tiles.push(Tile::from_rgba(size, reader.read_raw(tile_bytes)?.to_vec()));
+            }
+            tile_classes.push(tiles);
+        }
         reader.finish()?;
+        for (_, definition) in &blocks {
+            let Some(pictures) = definition.as_ref().and_then(BlockDefinition::pictures) else {
+                continue;
+            };
+            for place in [pictures.top, pictures.side, pictures.bottom] {
+                if tile_classes
+                    .get(place.class())
+                    .is_none_or(|class| place.layer() >= class.len())
+                {
+                    return Err(DecodeError::Invalid(
+                        "a block has a picture that the package does not hold",
+                    ));
+                }
+            }
+        }
         Ok(Self {
             properties,
             block_registry,
@@ -221,6 +299,7 @@ impl PackageData {
             orientation_channel,
             light_channel,
             ambient_light,
+            tile_classes,
         })
     }
 }
@@ -260,7 +339,168 @@ mod tests {
             orientation_channel: None,
             light_channel: Some(id("test_game:light")),
             ambient_light: 90,
+            tile_classes: Vec::new(),
         }
+    }
+
+    fn tile(size: u32, first_pixel: u8) -> Tile {
+        let mut rgba = vec![0u8; (size * size * 4) as usize];
+        rgba[0] = first_pixel;
+        Tile::from_rgba(size, rgba)
+    }
+
+    /// The sample with two sizes of picture, and a block that has pictures among them.
+    fn pictured() -> PackageData {
+        use block_models::{FacePictures, TileRef};
+        let mut package = sample();
+        package.tile_classes = vec![vec![tile(8, 1), tile(8, 2)], vec![tile(16, 3)]];
+        let place = |class, layer| TileRef::new(class, layer).unwrap();
+        package.blocks[1].1 = Some(
+            BlockDefinition::cube([0.5; 3])
+                .with_texture(id("test_game:rock"))
+                .with_pictures(FacePictures {
+                    top: place(0, 1),
+                    side: place(1, 0),
+                    bottom: place(0, 0),
+                }),
+        );
+        package
+    }
+
+    /// The bytes of the sample up to its pictures (`tile_classes` empty), with these bytes for the pictures instead of the empty list.
+    fn with_picture_section(section: &[u8]) -> Vec<u8> {
+        let mut bytes = sample().encode();
+        assert_eq!(
+            bytes.pop(),
+            Some(0),
+            "the control: the empty list of sizes is one byte"
+        );
+        bytes.extend_from_slice(section);
+        bytes
+    }
+
+    #[test]
+    fn pictures_survive_the_trip_exactly_smallest_size_first_and_are_the_raw_pixels() {
+        let package = pictured();
+        let bytes = package.encode();
+        assert_eq!(PackageData::decode(&bytes), Ok(package.clone()));
+        // The section is the count of sizes, then for each the size, the count and the pixels, after the ambient light.
+        let tail = bytes.len() - (1 + (1 + 1 + 2 * 8 * 8 * 4) + (1 + 1 + 16 * 16 * 4));
+        assert_eq!(bytes[tail], 2);
+        assert_eq!(&bytes[tail + 1..tail + 3], [8, 2]);
+        assert_eq!(
+            bytes[tail + 3],
+            1,
+            "the first pixel of the first picture of 8"
+        );
+    }
+
+    #[test]
+    fn a_package_with_no_pictures_ends_with_one_byte_that_says_so() {
+        let bytes = sample().encode();
+        assert_eq!(bytes.last(), Some(&0));
+        assert_eq!(
+            PackageData::decode(&bytes).unwrap().tile_classes,
+            Vec::<Vec<Tile>>::new()
+        );
+    }
+
+    #[test]
+    fn sizes_that_are_not_sizes_or_not_in_order_or_empty_or_too_many_are_refused_with_the_reason() {
+        let section = |classes: &[(u64, u64)]| {
+            let mut writer = ByteWriter::new();
+            writer.write_varint(classes.len() as u64);
+            for (size, count) in classes {
+                writer.write_varint(*size);
+                writer.write_varint(*count);
+                writer.write_raw(&vec![0; (*size * *size * 4 * *count) as usize]);
+            }
+            writer.into_bytes()
+        };
+        let refused = |classes: &[(u64, u64)]| {
+            PackageData::decode(&with_picture_section(&section(classes))).unwrap_err()
+        };
+        assert!(PackageData::decode(&with_picture_section(&section(&[(8, 1), (16, 1)]))).is_ok());
+        let not_a_size = DecodeError::Invalid("a size of picture is not one a picture has");
+        for size in [0, 4, 12, 512, 1 << 33] {
+            // (A size of 4 billion could not be made room for: it is refused before the pixels are asked for.)
+            let mut writer = ByteWriter::new();
+            writer.write_varint(1);
+            writer.write_varint(size);
+            writer.write_varint(1);
+            assert_eq!(
+                PackageData::decode(&with_picture_section(&writer.into_bytes())),
+                Err(not_a_size.clone()),
+                "{size}"
+            );
+        }
+        let unordered =
+            DecodeError::Invalid("the sizes of picture are repeated or not smallest first");
+        assert_eq!(refused(&[(16, 1), (8, 1)]), unordered);
+        assert_eq!(refused(&[(8, 1), (8, 1)]), unordered);
+        assert_eq!(
+            refused(&[(8, 1), (16, 1), (32, 1), (64, 1), (128, 1)]),
+            DecodeError::Invalid("there are more sizes of picture than a world has")
+        );
+        let count =
+            DecodeError::Invalid("a size of picture has no pictures or more than a world has");
+        let mut none = ByteWriter::new();
+        none.write_varint(1);
+        none.write_varint(8);
+        none.write_varint(0);
+        assert_eq!(
+            PackageData::decode(&with_picture_section(&none.into_bytes())),
+            Err(count.clone())
+        );
+        assert_eq!(refused(&[(8, 257)]), count);
+        assert!(PackageData::decode(&with_picture_section(&section(&[(8, 256)]))).is_ok());
+    }
+
+    #[test]
+    fn pictures_that_take_more_than_8_mib_are_refused_and_exactly_8_mib_is_not() {
+        let section = |count: u64| {
+            let mut writer = ByteWriter::new();
+            writer.write_varint(1);
+            writer.write_varint(256);
+            writer.write_varint(count);
+            writer.write_raw(&vec![0; (256 * 256 * 4 * count) as usize]);
+            writer.into_bytes()
+        };
+        assert!(PackageData::decode(&with_picture_section(&section(32))).is_ok());
+        assert_eq!(
+            PackageData::decode(&with_picture_section(&section(33))),
+            Err(DecodeError::Invalid(
+                "the pictures take more bytes than a client is sent"
+            ))
+        );
+    }
+
+    #[test]
+    fn pictures_that_are_cut_short_are_an_error_everywhere_and_a_block_cannot_point_at_a_picture_that_is_not_there()
+     {
+        let bytes = pictured().encode();
+        for length in (0..bytes.len()).step_by(7) {
+            assert!(
+                PackageData::decode(&bytes[..length]).is_err(),
+                "cut at {length}"
+            );
+        }
+        let mut lacking = pictured();
+        lacking.tile_classes[0].pop();
+        assert_eq!(
+            PackageData::decode(&lacking.encode()),
+            Err(DecodeError::Invalid(
+                "a block has a picture that the package does not hold"
+            ))
+        );
+        let mut fewer_sizes = pictured();
+        fewer_sizes.tile_classes.pop();
+        assert_eq!(
+            PackageData::decode(&fewer_sizes.encode()),
+            Err(DecodeError::Invalid(
+                "a block has a picture that the package does not hold"
+            ))
+        );
     }
 
     #[test]

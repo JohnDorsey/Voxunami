@@ -214,4 +214,7 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// Blocks carry their pictures' base name and whether their colour follows them (block-textures step 3, 2026-11-07): two bytes more for each block in the package, a flag for the texture and a flag for the colour.
 /// Voxunami Eels has 5 blocks: its package is 1,189 bytes before and 1,199 now (measured by `block_golden.rs`, which pins the package), and the stream is 10 bytes longer, 88,924 to 88,934: the
 /// welcome is the only place the package is in it. Predicted from the number of blocks before the run and then seen. The saved world is the same to the hash (9_505_268_344_403_703_823): nothing is saved that was not.
-const PINNED: (u64, usize, u64) = (6_245_972_899_028_469_344, 88_934, 9_505_268_344_403_703_823);
+/// The package carries the pictures of the blocks (block-textures step 4, 2026-11-07): the tiles as raw pixels, smallest size first, after the ambient light, and a block that has pictures says where its
+/// three are. A block with no pictures costs one byte (a flag) and the list of sizes one byte: 5 blocks and the list, 6 bytes. Voxunami Eels's package is 1,199 bytes before and 1,205 now (measured by `block_golden.rs`, which pins the package), and the stream is 6 bytes longer, 88,934 to 88,940: the
+/// welcome is the only place the package is in it. Predicted by counting the bytes before the run and then seen. The saved world is the same to the hash (9_505_268_344_403_703_823): nothing is saved that was not.
+const PINNED: (u64, usize, u64) = (3_596_607_403_018_400_316, 88_940, 9_505_268_344_403_703_823);

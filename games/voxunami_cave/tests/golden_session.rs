@@ -364,8 +364,11 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// `base_blocks:log`, ...), which the package carries. Cave's package is 2,660 bytes before and 2,782 now (measured by `block_golden.rs`, which pins the package), and the stream is 122 bytes longer, 7,205,489 to 7,205,611:
 /// the welcome is the only place the package is in it, and the colours are the same width as the colours they replace. Predicted from the package pin before the run and then seen. The saved world is the same to the hash
 /// (10_204_815_550_639_449_865): nothing is saved that was not.
+/// The package carries the pictures of the blocks (block-textures step 4, 2026-11-07): the tiles as raw pixels, smallest size first, after the ambient light, and a block that has pictures says where its
+/// three are. Nine blocks cost a flag each, the six that have pictures say where their three are (6 bytes each), and the nine tiles of 16 by 16 are 9 x 1,024 bytes with 3 bytes for the list: 9 + 36 + 9,219 = 9,264 bytes. Voxunami Cave's package is 2,782 bytes before and 12,046 now (measured by `block_golden.rs`, which pins the package), and the stream is 9264 bytes longer, 7,205,611 to 7,214,875: the
+/// welcome is the only place the package is in it. Predicted by counting the bytes before the run and then seen. The saved world is the same to the hash (10_204_815_550_639_449_865): nothing is saved that was not.
 const PINNED: (u64, usize, u64) = (
-    10_364_827_603_014_213_611,
-    7_205_611,
+    9_998_117_866_097_348_160,
+    7_214_875,
     10_204_815_550_639_449_865,
 );

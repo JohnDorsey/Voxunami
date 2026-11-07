@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
 
-use crate::definition::{BlockDefinition, Parts};
+use crate::definition::{BlockDefinition, FacePictures, Parts, TileRef};
 use crate::property::{
     PropertyDeclaration, PropertyKind, PropertySchema, SetProperties, SetValues, check_value,
 };
@@ -161,6 +161,16 @@ impl BlockDefinition {
             None => writer.write_u8(0),
         }
         writer.write_u8(u8::from(self.color_from_pictures()));
+        match self.pictures() {
+            Some(pictures) => {
+                writer.write_u8(1);
+                for tile in [pictures.top, pictures.side, pictures.bottom] {
+                    writer.write_u8(tile.class() as u8);
+                    writer.write_varint(tile.layer() as u64);
+                }
+            }
+            None => writer.write_u8(0),
+        }
         writer.write_varint(self.properties().len() as u64);
         for (key, set) in self.properties() {
             writer.write_identifier(key);
@@ -257,6 +267,31 @@ impl BlockDefinition {
                 "a colour follows pictures that the block does not have",
             ));
         }
+        let pictures = match reader.read_u8()? {
+            0 => None,
+            1 => {
+                let mut tiles = [None; 3];
+                for tile in &mut tiles {
+                    let class = usize::from(reader.read_u8()?);
+                    let layer = usize::try_from(reader.read_varint()?).unwrap_or(usize::MAX);
+                    *tile = Some(TileRef::new(class, layer).ok_or(DecodeError::Invalid(
+                        "a picture is in a place that a world does not have",
+                    ))?);
+                }
+                let [Some(top), Some(side), Some(bottom)] = tiles else {
+                    unreachable!("the three were read");
+                };
+                Some(FacePictures { top, side, bottom })
+            }
+            _ => {
+                return Err(DecodeError::Invalid(
+                    "the flag of the pictures of a block is neither 0 nor 1",
+                ));
+            }
+        };
+        if pictures.is_some() && texture.is_none() {
+            return Err(DecodeError::Invalid("a block has pictures but no texture"));
+        }
         let set_count = reader.read_count(SET_PROPERTY_BYTES)?;
         let mut properties = SetProperties::new();
         let mut previous = None;
@@ -297,6 +332,7 @@ impl BlockDefinition {
             face_colors,
             texture,
             color_from_pictures,
+            pictures,
             properties,
         }))
     }
@@ -357,6 +393,11 @@ mod tests {
             ])
             .with_texture(id("base_blocks:log"))
             .with_color_from_pictures()
+            .with_pictures(FacePictures {
+                top: TileRef::new(0, 3).unwrap(),
+                side: TileRef::new(1, 0).unwrap(),
+                bottom: TileRef::new(3, 255).unwrap(),
+            })
             .with_property(&DENSITY, 7_000)
             .with_state_property(2, &DENSITY, 12)
             .with_state_property(1, &PLACEABLE_ON_MOVING_GRIDS, false)
@@ -445,6 +486,7 @@ mod tests {
         writer.write_varint(0);
         writer.write_u8(0);
         writer.write_u8(0);
+        writer.write_u8(0);
         let mut bytes = writer.into_bytes();
         bytes.extend_from_slice(properties);
         bytes
@@ -524,6 +566,7 @@ mod tests {
         }
         writer.write_u8(0);
         writer.write_u8(0);
+        writer.write_u8(0);
         writer.write_varint(0);
         writer.into_bytes()
     }
@@ -581,6 +624,7 @@ mod tests {
             (None, None) => writer.write_u8(0),
         }
         writer.write_u8(follows);
+        writer.write_u8(0);
         writer.write_varint(0);
         writer.into_bytes()
     }
@@ -615,6 +659,78 @@ mod tests {
         assert_eq!(
             refusal(&with_pictures(Some("my_pack:oak"), 2, None)),
             "the flag of a colour that follows pictures is neither 0 nor 1"
+        );
+    }
+
+    /// A definition with a texture, and these bytes for its pictures (after the flag of the colour that follows them).
+    fn with_picture_bytes(texture: bool, picture_bytes: &[u8]) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        for component in [0.5f32; 3] {
+            writer.write_u32(component.to_bits());
+        }
+        writer.write_u8(0);
+        writer.write_varint(1);
+        writer.write_varint(1);
+        for corner in WHOLE {
+            writer.write_u8(corner);
+        }
+        writer.write_varint(0);
+        writer.write_varint(0);
+        if texture {
+            writer.write_u8(1);
+            writer.write_identifier(&id("my_pack:oak"));
+        } else {
+            writer.write_u8(0);
+        }
+        writer.write_u8(0);
+        writer.write_raw(picture_bytes);
+        writer.write_varint(0);
+        writer.into_bytes()
+    }
+
+    #[test]
+    fn the_pictures_of_a_block_are_a_flag_and_three_places_and_a_place_the_world_does_not_have_is_refused()
+     {
+        // top (0, 3), side (1, 0), bottom (3, 255): the class in a byte, the layer as a varint.
+        let good = decoded(&with_picture_bytes(true, &[1, 0, 3, 1, 0, 3, 0xFF, 0x01])).unwrap();
+        assert_eq!(
+            good.pictures(),
+            Some(&FacePictures {
+                top: TileRef::new(0, 3).unwrap(),
+                side: TileRef::new(1, 0).unwrap(),
+                bottom: TileRef::new(3, 255).unwrap(),
+            })
+        );
+        assert_eq!(
+            encoded(&good),
+            with_picture_bytes(true, &[1, 0, 3, 1, 0, 3, 0xFF, 0x01])
+        );
+        let place = "a picture is in a place that a world does not have";
+        // A fifth size, a 257th picture, and a layer too big for anything.
+        assert_eq!(
+            refusal(&with_picture_bytes(true, &[1, 4, 0, 0, 0, 0, 0, 0])),
+            place
+        );
+        assert_eq!(
+            refusal(&with_picture_bytes(true, &[1, 0, 0x80, 0x02, 0, 0, 0, 0])),
+            place
+        );
+        assert_eq!(
+            refusal(&with_picture_bytes(
+                true,
+                &[
+                    1, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0, 0, 0, 0
+                ]
+            )),
+            place
+        );
+        assert_eq!(
+            refusal(&with_picture_bytes(false, &[1, 0, 0, 0, 0, 0, 0])),
+            "a block has pictures but no texture"
+        );
+        assert_eq!(
+            refusal(&with_picture_bytes(true, &[2])),
+            "the flag of the pictures of a block is neither 0 nor 1"
         );
     }
 

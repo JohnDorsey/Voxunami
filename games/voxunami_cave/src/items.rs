@@ -240,6 +240,7 @@ mod tests {
             orientation_channel: None,
             light_channel: None,
             ambient_light: 0,
+            tile_classes: Vec::new(),
         }
     }
 

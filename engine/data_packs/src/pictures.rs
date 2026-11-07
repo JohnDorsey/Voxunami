@@ -3,17 +3,13 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use block_models::{BlockDefinition, engine};
+use block_models::{BlockDefinition, FacePictures, TileRef, engine};
+pub use block_models::{MOST_TILE_BYTES, MOST_TILE_SIZES, MOST_TILES_OF_A_SIZE};
 use namespaced_id::NamespacedId;
 
 use crate::error::{PackError, PackErrors};
 use crate::load::RawPack;
 use crate::tile::{Tile, average_color};
-
-/// The most different sizes of picture a world uses at once (each size is an atlas of its own).
-pub const MOST_TILE_SIZES: usize = 4;
-/// The most pictures of one size a world uses.
-pub const MOST_TILES_OF_A_SIZE: usize = 256;
 
 /// How far, as a distance between sRGB colours (each from 0 to 1), a colour a block chose may be from the average of its pictures before the loader says so.
 const FAR_FROM_THE_AVERAGE: f32 = 0.35;
@@ -34,11 +30,35 @@ pub struct Pictures {
     pub bottom: NamespacedId,
 }
 
-/// The pictures blocks use, once everything is settled: each block's pictures, and the tiles they are (only those some block uses).
+/// The pictures blocks use, once everything is settled: each block's pictures, the tiles they are (only those some block uses), and where each tile is among the tiles
+/// of a world: the sizes in use smallest first, and within a size by name.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Textures {
     pub tiles: BTreeMap<NamespacedId, Tile>,
     pub pictures: BTreeMap<NamespacedId, Pictures>,
+    pub places: BTreeMap<NamespacedId, TileRef>,
+}
+
+impl Textures {
+    /// The tiles by size, smallest first, each size's tiles in the order of their places: what a client puts on the GPU.
+    pub fn classes(&self) -> Vec<(u32, Vec<&Tile>)> {
+        let mut classes: Vec<(u32, Vec<(TileRef, &Tile)>)> = Vec::new();
+        for (id, tile) in &self.tiles {
+            let place = self.places[id];
+            while classes.len() <= place.class() {
+                classes.push((0, Vec::new()));
+            }
+            classes[place.class()].0 = tile.size();
+            classes[place.class()].1.push((place, tile));
+        }
+        classes
+            .into_iter()
+            .map(|(size, mut tiles)| {
+                tiles.sort_by_key(|(place, _)| *place);
+                (size, tiles.into_iter().map(|(_, tile)| tile).collect())
+            })
+            .collect()
+    }
 }
 
 fn problem(file: impl Into<String>, path: &str, message: impl Into<String>) -> PackError {
@@ -285,13 +305,46 @@ pub(crate) fn settle(
         }
         settled.pictures.insert(identifier.clone(), pictures);
     }
+    let before = errors.len();
     check_limits(&used, available, errors);
+    if errors.len() == before {
+        settled.places = places_of(&settled.tiles);
+        for (identifier, definition) in blocks.iter_mut() {
+            if let Some(pictures) = settled.pictures.get(identifier) {
+                let place = |id: &NamespacedId| settled.places[id];
+                definition.set_pictures(Some(FacePictures {
+                    top: place(&pictures.top),
+                    side: place(&pictures.side),
+                    bottom: place(&pictures.bottom),
+                }));
+            }
+        }
+    }
     for (id, entry) in &available.tiles {
         if entry.from_a_pack && !used.contains(id) {
             warnings.push(format!("{}: no block uses this picture", entry.file));
         }
     }
     settled
+}
+
+/// Where each of the tiles is: its size's number (the sizes in use, smallest first), and its number among the tiles of that size (by name). The limits are kept.
+fn places_of(tiles: &BTreeMap<NamespacedId, Tile>) -> BTreeMap<NamespacedId, TileRef> {
+    let sizes: BTreeSet<u32> = tiles.values().map(Tile::size).collect();
+    let mut next: BTreeMap<u32, usize> = BTreeMap::new();
+    tiles
+        .iter()
+        .map(|(id, tile)| {
+            let class = sizes
+                .iter()
+                .position(|size| *size == tile.size())
+                .expect("the size is among the sizes");
+            let layer = next.entry(tile.size()).or_insert(0);
+            let place = TileRef::new(class, *layer).expect("the limits were kept");
+            *layer += 1;
+            (id.clone(), place)
+        })
+        .collect()
 }
 
 /// At most [`MOST_TILE_SIZES`] sizes among the pictures that are used, and [`MOST_TILES_OF_A_SIZE`] pictures of a size.
@@ -318,6 +371,23 @@ fn check_limits(used: &BTreeSet<NamespacedId>, available: &Available, errors: &m
                 ));
             }
         }
+    }
+    let bytes: usize = used
+        .iter()
+        .map(|id| available.tiles[id].tile.rgba().len())
+        .sum();
+    if bytes > MOST_TILE_BYTES {
+        let biggest = used
+            .iter()
+            .max_by_key(|id| available.tiles[*id].tile.size())
+            .expect("there are pictures if they take bytes");
+        errors.push(problem(
+            &available.tiles[biggest].file,
+            "",
+            format!(
+                "the pictures that blocks use take {bytes} bytes as pixels and a client is sent at most {MOST_TILE_BYTES}; this is the largest"
+            ),
+        ));
     }
     for (size, ids) in &by_size {
         if ids.len() > MOST_TILES_OF_A_SIZE {
@@ -749,6 +819,81 @@ mod tests {
     }
 
     #[test]
+    fn pictures_are_numbered_by_size_smallest_first_and_within_a_size_by_name_and_every_block_is_told_its_places()
+     {
+        let game = [
+            game_texture("g:zebra", 16, [10, 10, 10, 255]),
+            game_texture("g:apple", 16, [20, 20, 20, 255]),
+            game_texture("g:big", 64, [30, 30, 30, 255]),
+            game_texture("g:tiny", 8, [40, 40, 40, 255]),
+        ];
+        let mut blocks = vec![
+            (id("g:one"), block([0.0; 3], Some("g:zebra"), true)),
+            (id("g:two"), block([0.0; 3], Some("g:apple"), true)),
+            (id("g:three"), block([0.0; 3], Some("g:big"), false)),
+            (id("g:four"), block([0.0; 3], Some("g:tiny"), true)),
+            (id("g:none"), block([0.0; 3], None, false)),
+        ];
+        let textures = settle_game_pictures(&mut blocks, &game).unwrap();
+        let place = |text: &str| textures.places[&id(text)];
+        // 8, 16, 64: three sizes; the two of 16 by name.
+        assert_eq!((place("g:tiny").class(), place("g:tiny").layer()), (0, 0));
+        assert_eq!((place("g:apple").class(), place("g:apple").layer()), (1, 0));
+        assert_eq!((place("g:zebra").class(), place("g:zebra").layer()), (1, 1));
+        assert_eq!((place("g:big").class(), place("g:big").layer()), (2, 0));
+        let sizes: Vec<(u32, usize)> = textures
+            .classes()
+            .iter()
+            .map(|(size, tiles)| (*size, tiles.len()))
+            .collect();
+        assert_eq!(sizes, [(8, 1), (16, 2), (64, 1)]);
+        assert_eq!(
+            textures.classes()[1].1[1].rgba()[0],
+            10,
+            "the zebra is second among the 16s"
+        );
+        // Each block is told the places of its own pictures; a block with no texture has none.
+        let told = |name: &str| {
+            blocks
+                .iter()
+                .find(|(identifier, _)| *identifier == id(name))
+                .unwrap()
+                .1
+                .pictures()
+                .copied()
+        };
+        let one = told("g:one").expect("told");
+        assert_eq!(
+            (one.top, one.side, one.bottom),
+            (place("g:zebra"), place("g:zebra"), place("g:zebra"))
+        );
+        assert_eq!(told("g:three").unwrap().top, place("g:big"));
+        assert_eq!(told("g:none"), None);
+    }
+
+    #[test]
+    fn a_block_told_its_places_keeps_the_top_side_and_bottom_apart() {
+        let game = [
+            game_texture("g:log_top", 16, [255, 255, 255, 255]),
+            game_texture("g:log_side", 16, [0, 0, 0, 255]),
+            game_texture("g:log_bottom", 16, [128, 128, 128, 255]),
+        ];
+        let mut blocks = vec![(id("g:log"), block([0.0; 3], Some("g:log"), true))];
+        let textures = settle_game_pictures(&mut blocks, &game).unwrap();
+        let pictures = blocks[0].1.pictures().copied().unwrap();
+        let tiles = textures.classes();
+        let pixel = |place: TileRef| tiles[place.class()].1[place.layer()].rgba()[0];
+        assert_eq!(
+            (
+                pixel(pictures.top),
+                pixel(pictures.side),
+                pixel(pictures.bottom)
+            ),
+            (255, 0, 128)
+        );
+    }
+
+    #[test]
     fn the_pictures_that_are_used_are_the_tiles_and_a_picture_two_blocks_use_is_one_tile() {
         let game = [
             game_texture("g:a", 16, [10, 10, 10, 255]),
@@ -818,6 +963,36 @@ mod tests {
             })
             .collect();
         assert!(settled(blocks, &four, &[], &[]).errors.is_empty());
+    }
+
+    #[test]
+    fn the_pixels_of_all_the_pictures_in_use_may_take_at_most_8_mib() {
+        // 129 pictures of 256 pixels are 33 MiB... too many for one size's 256? No: 129 is under 256 of the size, but over the bytes: 129 * 256 KiB.
+        let count = 33;
+        let game: Vec<GameTexture> = (0..count)
+            .map(|index| game_texture(&format!("g:p{index:03}"), 256, [1, 2, 3, 255]))
+            .collect();
+        let blocks: Vec<(NamespacedId, BlockDefinition)> = (0..count)
+            .map(|index| {
+                (
+                    id(&format!("g:b{index:03}")),
+                    block([0.0; 3], Some(&format!("g:p{index:03}")), true),
+                )
+            })
+            .collect();
+        let result = settled(blocks.clone(), &game, &[], &[]);
+        assert_eq!(result.errors.len(), 1, "{:?}", result.errors);
+        assert!(
+            result.errors[0].contains("take 8650752 bytes as pixels and a client is sent at most 8388608; this is the largest"),
+            "{:?}",
+            result.errors
+        );
+        // 32 of them are exactly 8 MiB, which is allowed.
+        assert!(
+            settled(blocks[..32].to_vec(), &game, &[], &[])
+                .errors
+                .is_empty()
+        );
     }
 
     #[test]

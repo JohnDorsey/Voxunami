@@ -173,8 +173,10 @@ pub fn average_color(tiles: &[(&Tile, u32)]) -> Option<[f32; 3]> {
     let mut colour = [0.0; 3];
     let mut opacity = 0.0;
     for (tile, weight) in tiles {
+        // Per pixel of the tile, so that a face counts as a face whatever the size of its picture.
+        let pixels = f64::from(tile.size()) * f64::from(tile.size());
         let (sums, covered) = tile.sums();
-        let weight = f64::from(*weight);
+        let weight = f64::from(*weight) / pixels;
         for (total, sum) in colour.iter_mut().zip(sums) {
             *total += sum * weight;
         }
@@ -424,6 +426,24 @@ mod tests {
         // The same tiles counted the other way round are not the same colour.
         let other = average_color(&[(&white, 4), (&black, 1)]).unwrap();
         assert!(other[0] > 0.9, "{other:?}");
+    }
+
+    #[test]
+    fn a_face_counts_as_a_face_whatever_size_its_picture_is() {
+        // A top of 16 by 16 pixels, white, and a side of 8 by 8, black, counted four times: a fifth of the light, as if both were the same size (not 256 pixels
+        // against 4 x 64, which would be half).
+        let white = plain_tile(16, [255, 255, 255, 255]);
+        let black = plain_tile(8, [0, 0, 0, 255]);
+        close(
+            average_color(&[(&white, 1), (&black, 4)]).unwrap(),
+            [0.484_5; 3],
+            1e-3,
+        );
+        let same_size = plain_tile(16, [0, 0, 0, 255]);
+        assert_eq!(
+            average_color(&[(&white, 1), (&black, 4)]),
+            average_color(&[(&white, 1), (&same_size, 4)])
+        );
     }
 
     #[test]

@@ -29,7 +29,52 @@ pub struct BlockDefinition {
     /// Whether [`BlockDefinition::color`] is the average of the pictures and not a colour the author chose, so that it follows them if they change.
     /// Only a block with a texture can have it.
     color_from_pictures: bool,
+    /// Which pictures those are, once the pictures of the world are known (`None` until then, and for a block with no texture).
+    pictures: Option<FacePictures>,
     properties: SetProperties,
+}
+
+/// The most different sizes of picture a world uses at once (each size is an atlas of its own on the GPU).
+pub const MOST_TILE_SIZES: usize = 4;
+/// The most pictures of one size a world uses.
+pub const MOST_TILES_OF_A_SIZE: usize = 256;
+/// The most bytes of pixels (8-bit RGBA) all the pictures of a world take in the package a client is sent.
+pub const MOST_TILE_BYTES: usize = 8 << 20;
+
+/// Where a picture is among the pictures a world uses: the number of its size (the sizes in use, smallest first) and its place among the pictures of that size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TileRef {
+    class: u8,
+    layer: u16,
+}
+
+impl TileRef {
+    /// The picture at `layer` among those of size number `class`; `None` if a world has no such place for one
+    /// ([`MOST_TILE_SIZES`], [`MOST_TILES_OF_A_SIZE`]).
+    pub fn new(class: usize, layer: usize) -> Option<Self> {
+        (class < MOST_TILE_SIZES && layer < MOST_TILES_OF_A_SIZE).then_some(Self {
+            class: class as u8,
+            layer: layer as u16,
+        })
+    }
+
+    /// Which of the sizes in use, smallest first.
+    pub fn class(self) -> usize {
+        usize::from(self.class)
+    }
+
+    /// Which of the pictures of that size.
+    pub fn layer(self) -> usize {
+        usize::from(self.layer)
+    }
+}
+
+/// The picture of each face of a block as it is made: the top (+y), the four sides, and the bottom (-y).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FacePictures {
+    pub top: TileRef,
+    pub side: TileRef,
+    pub bottom: TileRef,
 }
 
 /// Everything a definition is made of, for the decoder that has read it all.
@@ -41,6 +86,7 @@ pub(crate) struct Parts {
     pub face_colors: [Option<[f32; 3]>; 6],
     pub texture: Option<NamespacedId>,
     pub color_from_pictures: bool,
+    pub pictures: Option<FacePictures>,
     pub properties: SetProperties,
 }
 
@@ -55,6 +101,7 @@ impl BlockDefinition {
             face_colors: [None; 6],
             texture: None,
             color_from_pictures: false,
+            pictures: None,
             properties: SetProperties::new(),
         }
     }
@@ -69,6 +116,7 @@ impl BlockDefinition {
             face_colors: [None; 6],
             texture: None,
             color_from_pictures: false,
+            pictures: None,
             properties: SetProperties::new(),
         }
     }
@@ -178,6 +226,7 @@ impl BlockDefinition {
             face_colors: parts.face_colors,
             texture: parts.texture,
             color_from_pictures: parts.color_from_pictures,
+            pictures: parts.pictures,
             properties: parts.properties,
         }
     }
@@ -250,8 +299,28 @@ impl BlockDefinition {
     pub fn set_texture(&mut self, texture: Option<NamespacedId>) {
         if texture.is_none() {
             self.color_from_pictures = false;
+            self.pictures = None;
         }
         self.texture = texture;
+    }
+
+    /// Says which pictures the block's texture is (or, with `None`, that it is not known). A block with no texture has none.
+    ///
+    /// Panics if the block has no texture.
+    pub fn set_pictures(&mut self, pictures: Option<FacePictures>) {
+        assert!(
+            pictures.is_none() || self.texture.is_some(),
+            "a block with no texture has no pictures"
+        );
+        self.pictures = pictures;
+    }
+
+    /// The same block with these pictures for its texture.
+    ///
+    /// Panics if the block has no texture.
+    pub fn with_pictures(mut self, pictures: FacePictures) -> Self {
+        self.set_pictures(Some(pictures));
+        self
     }
 
     /// The block's colour is this, chosen by whoever wrote the block: it no longer follows the pictures.
@@ -298,6 +367,11 @@ impl BlockDefinition {
     /// The base name of the block's pictures, if it has any.
     pub fn texture(&self) -> Option<&NamespacedId> {
         self.texture.as_ref()
+    }
+
+    /// The pictures of the block's texture, once the pictures of the world are settled.
+    pub fn pictures(&self) -> Option<&FacePictures> {
+        self.pictures.as_ref()
     }
 
     /// Whether the block's colour is the average of its pictures (and follows them), and not a colour its author chose.
@@ -395,6 +469,53 @@ mod tests {
         let following = textured.clone().with_color_from_pictures();
         assert!(following.color_from_pictures());
         assert_ne!(following, textured, "the two are not the same block");
+    }
+
+    fn tile(class: usize, layer: usize) -> TileRef {
+        TileRef::new(class, layer).expect("a place for a picture")
+    }
+
+    fn pictures() -> FacePictures {
+        FacePictures {
+            top: tile(0, 3),
+            side: tile(1, 0),
+            bottom: tile(3, 255),
+        }
+    }
+
+    #[test]
+    fn a_picture_has_a_place_among_four_sizes_and_256_of_each_and_no_other() {
+        assert_eq!((tile(0, 0).class(), tile(0, 0).layer()), (0, 0));
+        assert_eq!((tile(3, 255).class(), tile(3, 255).layer()), (3, 255));
+        assert_eq!(TileRef::new(4, 0), None);
+        assert_eq!(TileRef::new(0, 256), None);
+        assert_eq!(TileRef::new(usize::MAX, 0), None);
+        assert!(tile(0, 1) < tile(0, 2) && tile(0, 255) < tile(1, 0));
+    }
+
+    #[test]
+    fn a_block_with_a_texture_can_be_told_which_pictures_it_has_and_losing_the_texture_loses_them()
+    {
+        let log: NamespacedId = "base_blocks:log".parse().unwrap();
+        let block = BlockDefinition::cube([0.1; 3]).with_texture(log);
+        assert_eq!(
+            block.pictures(),
+            None,
+            "not known until the pictures are settled"
+        );
+        let settled = block.clone().with_pictures(pictures());
+        assert_eq!(settled.pictures(), Some(&pictures()));
+        let mut bare = settled;
+        bare.set_texture(None);
+        assert_eq!(bare.pictures(), None);
+        // Telling it that it does not know is allowed with no texture too.
+        bare.set_pictures(None);
+    }
+
+    #[test]
+    #[should_panic(expected = "no texture has no pictures")]
+    fn a_block_with_no_texture_has_no_pictures() {
+        BlockDefinition::cube([0.1; 3]).with_pictures(pictures());
     }
 
     #[test]

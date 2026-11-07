@@ -57,7 +57,7 @@ const PINNED_NAMES: &[&str] = &[
 ];
 
 /// (the length, the hash) of `PackageData::encode` as it was on 2026-11-07.
-const PINNED_PACKAGE: (usize, u64) = (1199, 3_832_134_029_952_323_369);
+const PINNED_PACKAGE: (usize, u64) = (1205, 14_056_661_403_236_959_343);
 
 const PINNED_TABLE: &[&str] = &[
     " 0 voxunami_eels:air: colour #000000, 1 states, state 0 faces [0 0 0 0 0 0], front none, axis none, docking none, placement Fixed, behaviour a28133c087488ace",

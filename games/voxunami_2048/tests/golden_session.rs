@@ -300,8 +300,11 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// Blocks carry their pictures' base name and whether their colour follows them (block-textures step 3, 2026-11-07): two bytes more for each block in the package, a flag for the texture and a flag for the colour.
 /// Voxunami 2048 has 4 blocks: its package is 3,151 bytes before and 3,159 now (measured by `block_golden.rs`, which pins the package), and the stream is 8 bytes longer, 58,749 to 58,757: the
 /// welcome is the only place the package is in it. Predicted from the number of blocks before the run and then seen. The saved world is the same to the hash (15_563_235_043_056_448_435): nothing is saved that was not.
+/// The package carries the pictures of the blocks (block-textures step 4, 2026-11-07): the tiles as raw pixels, smallest size first, after the ambient light, and a block that has pictures says where its
+/// three are. A block with no pictures costs one byte (a flag) and the list of sizes one byte: 4 blocks and the list, 5 bytes. Voxunami 2048's package is 3,159 bytes before and 3,164 now (measured by `block_golden.rs`, which pins the package), and the stream is 5 bytes longer, 58,757 to 58,762: the
+/// welcome is the only place the package is in it. Predicted by counting the bytes before the run and then seen. The saved world is the same to the hash (15_563_235_043_056_448_435): nothing is saved that was not.
 const PINNED: (u64, usize, u64) = (
-    18_122_260_346_543_647_667,
-    58_757,
+    17_644_770_380_274_204_862,
+    58_762,
     15_563_235_043_056_448_435,
 );
