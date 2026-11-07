@@ -101,11 +101,22 @@ pub fn describe_blocks(table: &BlockTable, names: &[String]) -> String {
                 .flat_map(|channel| channel.to_bits().to_le_bytes())
         })
         .collect();
+    let picture_bytes: Vec<u8> = table
+        .palette_pictures()
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .collect();
     writeln!(
         text,
-        "palette: {} colours, digest {:016x}",
+        "palette: {} colours, digest {:016x}, pictures {} on it, digest {:016x}",
         palette.len(),
-        fnv_hash(&palette_bytes)
+        fnv_hash(&palette_bytes),
+        table
+            .palette_pictures()
+            .iter()
+            .filter(|word| **word != 0)
+            .count(),
+        fnv_hash(&picture_bytes)
     )
     .expect("writing to a string");
     text

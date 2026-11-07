@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 
 use voxel_space::{FaceDirection, LatticeRotation};
 
-use crate::definition::BlockDefinition;
+use crate::definition::{BlockDefinition, FacePictures, TileRef};
 use crate::property::engine::{self, face_from_code};
 use crate::property::{
     Column, PropertyError, PropertyHandle, PropertyKey, PropertySchema, PropertyType, check_value,
@@ -44,6 +44,53 @@ pub enum Placement {
     FrontToPlayer(FaceDirection),
     /// A block with a line of radial symmetry, like a log (`engine:axis_face`): the line runs along the face it is placed against.
     AlongPlacedFace(FaceDirection),
+}
+
+/// A picture on one face of a voxel: which tile, and how the image runs across the face. `across` is the direction along the face in which the picture's
+/// left-to-right goes, and `up` the direction its bottom-to-top goes; they are directions of the grid the voxel is in, and `across x up` is the outward normal of
+/// the face, so a picture is never mirrored. The picture of a face is turned with the voxel (a log on its side has the bark running along it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FacePicture {
+    pub tile: TileRef,
+    pub across: FaceDirection,
+    pub up: FaceDirection,
+}
+
+impl FacePicture {
+    /// The picture as one number of 17 bits that a palette entry holds for the GPU: bit 0 is set (a palette entry with none has 0), bits 1 and 2 the number of the
+    /// tile's size, 3 to 10 its place among those of that size, 11 to 13 the index of `across` and 14 to 16 the index of `up` (see [`FaceDirection::index`]).
+    pub fn word(self) -> u32 {
+        1 | (self.tile.class() as u32) << 1
+            | (self.tile.layer() as u32) << 3
+            | u32::from(self.across.index()) << 11
+            | u32::from(self.up.index()) << 14
+    }
+
+    /// The picture a word names; `None` for 0 (no picture) and for a number that is not a word of this kind.
+    pub fn from_word(word: u32) -> Option<Self> {
+        if word & 1 == 0 || word >> 17 != 0 {
+            return None;
+        }
+        Some(Self {
+            tile: TileRef::new((word >> 1 & 3) as usize, (word >> 3 & 255) as usize)?,
+            across: FaceDirection::from_index((word >> 11 & 7) as u8)?,
+            up: FaceDirection::from_index((word >> 14 & 7) as u8)?,
+        })
+    }
+}
+
+/// How the picture of a face of a block as it is made runs across it: `(across, up)`. The sides have the picture upright (up is +y) and the left-to-right of someone
+/// looking at the face from outside; the top has north (-z) at the top of the picture, and the bottom the same, seen from below.
+fn made_image_axes(face: FaceDirection) -> (FaceDirection, FaceDirection) {
+    use FaceDirection::{NegativeX, NegativeY, NegativeZ, PositiveX, PositiveY, PositiveZ};
+    match face {
+        PositiveX => (NegativeZ, PositiveY),
+        NegativeX => (PositiveZ, PositiveY),
+        PositiveZ => (PositiveX, PositiveY),
+        NegativeZ => (NegativeX, PositiveY),
+        PositiveY => (PositiveX, NegativeZ),
+        NegativeY => (NegativeX, NegativeZ),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -96,6 +143,8 @@ pub struct BlockTable {
     unknown: ModelId,
     /// The colours after the blocks' own: every block's state colours, in block order, and then the colours of faces.
     state_palette: Vec<[f32; 3]>,
+    /// The entries after those: a colour with a picture on it (a [`FacePicture`] word), one for each colour and picture a face of some model has.
+    picture_palette: Vec<([f32; 3], u32)>,
     /// The properties, a column for each, with a value for every block-and-state (not for every orientation).
     columns: Vec<Column>,
     /// The columns of the face properties of the engine, if the schema declares them.
@@ -245,6 +294,21 @@ impl BlockTable {
             }));
         }
         state_palette.extend(face_palette);
+        // The pictures: a face with a picture is a palette entry of its own, the colour it would have flat and the picture, and the same colour and picture are one entry.
+        let block_pictures: Vec<Option<FacePictures>> = definitions
+            .iter()
+            .map(|definition| definition.and_then(|definition| definition.pictures().copied()))
+            .collect();
+        let first_picture_material = (definitions.len() + state_palette.len()) as u32;
+        let mut picture_palette: Vec<([f32; 3], u32)> = Vec::new();
+        let mut picture_materials: HashMap<([u32; 3], u32), u32> = HashMap::new();
+        let colour_of_material = |material: u32| -> [f32; 3] {
+            let material = material as usize;
+            entries.get(material).map_or_else(
+                || state_palette[material - definitions.len()],
+                |entry| entry.color,
+            )
+        };
         // The models: each base in each orientation. Shapes that come out the same are one shape of the pool (a whole cube is one however it is turned).
         let rotations = LatticeRotation::all();
         let mut shapes: Vec<Shape> = Vec::new();
@@ -271,21 +335,52 @@ impl BlockTable {
                     turned_shapes.insert((own, orientation), found);
                     found
                 };
-                // The faces as the block is made: its own coloured ones, and for the rest the material of the voxel; each goes where the turn takes it.
-                let face_materials = block_face_materials
+                // The faces as the block is made: its own coloured ones, and for the rest the material of the voxel, and with its picture if it has one; each goes
+                // where the turn takes it, and so does the way its picture runs.
+                let coloured = block_face_materials
                     .get(details.block as usize)
                     .copied()
-                    .flatten()
-                    .map(|made| {
-                        let voxel = entries[details.block as usize]
-                            .material_of(details.block, details.state);
-                        let mut turned = [voxel; 6];
-                        for face in FaceDirection::ALL {
-                            turned[usize::from(rotation.apply_face(face).index())] =
-                                made[usize::from(face.index())].unwrap_or(voxel);
-                        }
-                        turned
-                    });
+                    .flatten();
+                let pictures = block_pictures
+                    .get(details.block as usize)
+                    .copied()
+                    .flatten();
+                let face_materials = (coloured.is_some() || pictures.is_some()).then(|| {
+                    let voxel =
+                        entries[details.block as usize].material_of(details.block, details.state);
+                    let mut turned = [voxel; 6];
+                    for face in FaceDirection::ALL {
+                        let flat = coloured
+                            .and_then(|made| made[usize::from(face.index())])
+                            .unwrap_or(voxel);
+                        let material = match pictures {
+                            None => flat,
+                            Some(pictures) => {
+                                let tile = match face {
+                                    FaceDirection::PositiveY => pictures.top,
+                                    FaceDirection::NegativeY => pictures.bottom,
+                                    _ => pictures.side,
+                                };
+                                let (across, up) = made_image_axes(face);
+                                let word = FacePicture {
+                                    tile,
+                                    across: rotation.apply_face(across),
+                                    up: rotation.apply_face(up),
+                                }
+                                .word();
+                                let colour = colour_of_material(flat);
+                                *picture_materials
+                                    .entry((colour.map(f32::to_bits), word))
+                                    .or_insert_with(|| {
+                                        picture_palette.push((colour, word));
+                                        first_picture_material + picture_palette.len() as u32 - 1
+                                    })
+                            }
+                        };
+                        turned[usize::from(rotation.apply_face(face).index())] = material;
+                    }
+                    turned
+                });
                 models.push(make_model(
                     &shapes[shape as usize],
                     shape,
@@ -307,6 +402,7 @@ impl BlockTable {
             models,
             unknown: ModelId((unknown_base * ORIENTATION_COUNT) as u32),
             state_palette,
+            picture_palette,
             columns,
             docking_face_column,
             front_face_column,
@@ -535,6 +631,16 @@ impl BlockTable {
             .iter()
             .map(|entry| entry.color)
             .chain(self.state_palette.iter().copied())
+            .chain(self.picture_palette.iter().map(|(color, _)| *color))
+            .collect()
+    }
+
+    /// For each entry of [`BlockTable::palette`], the [`FacePicture`] word of the picture on it, or 0 for a flat colour: the entries of blocks and of states and of the
+    /// colours of faces have none; those after them are a colour and a picture.
+    pub fn palette_pictures(&self) -> Vec<u32> {
+        let flat = self.entries.len() + self.state_palette.len();
+        std::iter::repeat_n(0, flat)
+            .chain(self.picture_palette.iter().map(|(_, word)| *word))
             .collect()
     }
 }
@@ -1035,6 +1141,209 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    // ----- Pictures -----
+
+    fn place(class: usize, layer: usize) -> TileRef {
+        TileRef::new(class, layer).expect("a place for a picture")
+    }
+
+    /// A block with pictures: the top is tile (0, 1), the sides (1, 0) and the bottom (0, 0).
+    fn pictured() -> BlockDefinition {
+        BlockDefinition::cube([0.5; 3])
+            .with_texture("test:stone".parse().unwrap())
+            .with_pictures(FacePictures {
+                top: place(0, 1),
+                side: place(1, 0),
+                bottom: place(0, 0),
+            })
+    }
+
+    fn picture_on(
+        table: &BlockTable,
+        block: u32,
+        orientation: u32,
+        face: FaceDirection,
+    ) -> FacePicture {
+        let material = table.material_of_face(block, 0, orientation, face);
+        FacePicture::from_word(table.palette_pictures()[material as usize])
+            .unwrap_or_else(|| panic!("no picture on {face:?}"))
+    }
+
+    #[test]
+    fn a_face_word_has_its_documented_bits_and_only_a_word_of_that_kind_is_a_picture() {
+        let picture = FacePicture {
+            tile: place(2, 200),
+            across: FaceDirection::NegativeZ,
+            up: FaceDirection::PositiveY,
+        };
+        // 1 | class 2 << 1 | layer 200 << 3 | across 4 << 11 | up 3 << 14.
+        assert_eq!(picture.word(), 1 + 4 + 1_600 + 8_192 + 49_152);
+        assert_eq!(FacePicture::from_word(picture.word()), Some(picture));
+        for word in [0, 2, 1 << 17 | 1, 7 << 11 | 1, 6 << 14 | 1] {
+            assert_eq!(FacePicture::from_word(word), None, "{word:#x}");
+        }
+        // Every place and every pair of directions comes back.
+        for class in 0..4 {
+            for layer in [0, 1, 128, 255] {
+                for across in FaceDirection::ALL {
+                    let picture = FacePicture {
+                        tile: place(class, layer),
+                        across,
+                        up: FaceDirection::PositiveY,
+                    };
+                    assert_eq!(FacePicture::from_word(picture.word()), Some(picture));
+                    assert!(picture.word() < 1 << 17);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_block_with_pictures_shows_its_top_its_sides_and_its_bottom_the_way_up_as_made() {
+        use FaceDirection::{NegativeX, NegativeY, NegativeZ, PositiveX, PositiveY, PositiveZ};
+        let table = BlockTable::from_definitions(&[Some(&pictured())]);
+        // (face, tile, across, up): the table of the spec, written out.
+        let wanted = [
+            (PositiveX, place(1, 0), NegativeZ, PositiveY),
+            (NegativeX, place(1, 0), PositiveZ, PositiveY),
+            (PositiveY, place(0, 1), PositiveX, NegativeZ),
+            (NegativeY, place(0, 0), NegativeX, NegativeZ),
+            (PositiveZ, place(1, 0), PositiveX, PositiveY),
+            (NegativeZ, place(1, 0), NegativeX, PositiveY),
+        ];
+        for (face, tile, across, up) in wanted {
+            assert_eq!(
+                picture_on(&table, 0, 0, face),
+                FacePicture { tile, across, up },
+                "{face:?}"
+            );
+        }
+    }
+
+    /// The direction that is `first` crossed with `second`, for two axes that are not the same.
+    fn cross(first: FaceDirection, second: FaceDirection) -> FaceDirection {
+        let vector = |face: FaceDirection| {
+            let mut vector = [0i32; 3];
+            vector[face.axis()] = if face.is_positive() { 1 } else { -1 };
+            vector
+        };
+        let (a, b) = (vector(first), vector(second));
+        let crossed = [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ];
+        FaceDirection::ALL
+            .into_iter()
+            .find(|face| vector(*face) == crossed)
+            .expect("two axes cross to an axis")
+    }
+
+    #[test]
+    fn however_a_block_is_turned_its_pictures_are_not_mirrored_the_top_is_where_up_went_and_the_sides_stand_on_it()
+     {
+        let table = BlockTable::from_definitions(&[Some(&pictured())]);
+        for (orientation, rotation) in LatticeRotation::all().into_iter().enumerate() {
+            let orientation = orientation as u32;
+            let top_went_to = rotation.apply_face(FaceDirection::PositiveY);
+            for face in FaceDirection::ALL {
+                let picture = picture_on(&table, 0, orientation, face);
+                // Right-handed: across, then up, then out: the picture is seen as it is drawn, never mirrored.
+                assert_eq!(
+                    cross(picture.across, picture.up),
+                    face,
+                    "orientation {orientation}, {face:?}"
+                );
+                // The picture of the top is on the face the top went to, the bottom's on the opposite, the sides' on the other four.
+                let wanted = if face == top_went_to {
+                    place(0, 1)
+                } else if face == top_went_to.opposite() {
+                    place(0, 0)
+                } else {
+                    place(1, 0)
+                };
+                assert_eq!(picture.tile, wanted, "orientation {orientation}, {face:?}");
+                // A side's picture stands on the block's own bottom: its up is where the block's up went (so a log on its side has its grain along it).
+                if face != top_went_to && face != top_went_to.opposite() {
+                    assert_eq!(
+                        picture.up, top_went_to,
+                        "orientation {orientation}, {face:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_cube_of_one_picture_has_one_palette_entry_for_each_of_the_24_ways_a_picture_sits_on_a_face()
+     {
+        let one = BlockDefinition::cube([0.5; 3])
+            .with_texture("test:stone".parse().unwrap())
+            .with_pictures(FacePictures {
+                top: place(0, 0),
+                side: place(0, 0),
+                bottom: place(0, 0),
+            });
+        let table = BlockTable::from_definitions(&[Some(&one)]);
+        let pictures = table.palette_pictures();
+        let with_picture = pictures.iter().filter(|word| **word != 0).count();
+        assert_eq!(with_picture, 24, "6 directions across, 4 up from each");
+        // A palette entry is a colour and a picture, and the two lists are the same length; the first entries (the block) have no picture.
+        assert_eq!(table.palette().len(), pictures.len());
+        assert_eq!(pictures[0], 0);
+        // Every orientation of every face is one of the 24, and the same colour all through.
+        for orientation in 0..24 {
+            for face in FaceDirection::ALL {
+                let material = table.material_of_face(0, 0, orientation, face);
+                assert!(pictures[material as usize] != 0);
+                assert_eq!(table.palette()[material as usize], [0.5; 3]);
+            }
+        }
+    }
+
+    #[test]
+    fn a_face_with_a_picture_has_the_colour_it_would_have_flat_and_the_same_colour_and_picture_are_one_entry()
+     {
+        let top_gold = [1.0, 0.8, 0.0];
+        let gilded = pictured().with_face_colors(&[(FaceDirection::PositiveY, top_gold)]);
+        let tinted = pictured()
+            .with_state_colors(vec![[0.1; 3], [0.2; 3]])
+            .with_shapes(vec![Shape::full(), Shape::full()]);
+        let table =
+            BlockTable::from_definitions(&[Some(&gilded), Some(&tinted), Some(&pictured())]);
+        let palette = table.palette();
+        let colour =
+            |block, state, face| palette[table.material_of_face(block, state, 0, face) as usize];
+        // The top is gold and the sides the block's own colour; each has its picture.
+        assert_eq!(colour(0, 0, FaceDirection::PositiveY), top_gold);
+        assert_eq!(colour(0, 0, FaceDirection::PositiveX), [0.5; 3]);
+        // A block with state colours shows the colour of the state under its pictures.
+        assert_eq!(colour(1, 0, FaceDirection::PositiveX), [0.1; 3]);
+        assert_eq!(colour(1, 1, FaceDirection::PositiveX), [0.2; 3]);
+        // The same colour with the same picture is one entry, from block to block.
+        assert_eq!(
+            table.material_of_face(0, 0, 0, FaceDirection::PositiveX),
+            table.material_of_face(2, 0, 0, FaceDirection::PositiveX)
+        );
+        assert_ne!(
+            table.material_of_face(0, 0, 0, FaceDirection::PositiveY),
+            table.material_of_face(2, 0, 0, FaceDirection::PositiveY),
+            "gold is not the block's colour"
+        );
+    }
+
+    #[test]
+    fn blocks_without_pictures_have_no_picture_entries_and_are_drawn_as_before() {
+        let plain = BlockDefinition::cube([0.5; 3]);
+        let table = BlockTable::from_definitions(&[Some(&plain)]);
+        assert!(table.palette_pictures().iter().all(|word| *word == 0));
+        assert_eq!(table.palette().len(), table.palette_pictures().len());
+        assert_eq!(table.face_materials(0, 0, 3), None);
+        for face in FaceDirection::ALL {
+            assert_eq!(table.material_of_face(0, 0, 5, face), 0);
+        }
     }
 
     #[test]

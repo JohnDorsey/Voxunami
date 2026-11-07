@@ -82,7 +82,9 @@ fn the_dev_docking_port_has_pictures_and_one_yellow_face_that_docks_and_exists_o
             .into_iter()
             .filter(|other| *other != face)
         {
-            assert_eq!(table.material_of_face(block, 0, orientation, other), block);
+            // (Every face has its picture, so it is the colour the face is under it that is the block's own.)
+            let material = table.material_of_face(block, 0, orientation, other);
+            assert_eq!(palette[material as usize], table.color(block));
         }
     }
     // Its colour is the average of its pictures (they are not gunmetal gray any more: the port is as its pictures are), and it names them.

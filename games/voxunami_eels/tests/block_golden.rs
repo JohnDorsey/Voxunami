@@ -65,5 +65,5 @@ const PINNED_TABLE: &[&str] = &[
     " 2 voxunami_eels:wall_line: colour #40bff2, 1 states, state 0 faces [2 2 2 2 2 2], front none, axis none, docking none, placement Fixed, behaviour a9f1d93133ad6db6",
     " 3 voxunami_eels:trail: colour #e63333, 1 states, state 0 faces [5 5 5 5 5 5], front none, axis none, docking none, placement Fixed, behaviour 34ef6b226aa9b8e1",
     " 4 voxunami_eels:head: colour #f4a3a3, 1 states, state 0 faces [13 13 13 13 13 13], front none, axis none, docking none, placement Fixed, behaviour a1e826fc3fb71fd6",
-    "palette: 21 colours, digest dfb345c9ae2453ee",
+    "palette: 21 colours, digest dfb345c9ae2453ee, pictures 0 on it, digest 6975f1271857fe35",
 ];

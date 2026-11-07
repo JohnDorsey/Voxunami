@@ -569,7 +569,10 @@ mod tests {
         // Coloured at the top and at the bottom as it is made (the ends of the trunk), and the other faces are the bark.
         let ends: Vec<FaceDirection> = FaceDirection::ALL
             .into_iter()
-            .filter(|face| table.material_of_face(wood, 0, 0, *face) != table.material_of(wood, 0))
+            .filter(|face| {
+                table.palette()[table.material_of_face(wood, 0, 0, *face) as usize]
+                    != table.color(wood)
+            })
             .collect();
         assert_eq!(ends, [FaceDirection::NegativeY, FaceDirection::PositiveY]);
         for block in [0, 1, 2, 3, 4, 6] {
@@ -585,8 +588,18 @@ mod tests {
     fn the_table_has_the_blocks_colours_air_is_see_through_and_missing_blocks_are_magenta_cubes() {
         let mut blocks = BaseBlocks::new();
         let table = blocks.block_table();
-        // The blocks, then the colours a fire is drawn in as it ages, then the colour of the ends of a log.
-        assert_eq!(table.palette().len(), 8 + FIRE_LIFETIME as usize + 1);
+        // The flat colours are the blocks, then the colours a fire is drawn in as it ages, then the colour of the ends of a log; after them come the colours with a
+        // picture on them, which are not flat.
+        let with_pictures = table
+            .palette_pictures()
+            .iter()
+            .filter(|word| **word != 0)
+            .count();
+        assert_eq!(
+            table.palette().len() - with_pictures,
+            8 + FIRE_LIFETIME as usize + 1
+        );
+        assert!(with_pictures > 0);
         assert_eq!(
             table.color(blocks.lamp),
             [1.0, 0.92, 0.65],
