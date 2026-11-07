@@ -28,6 +28,15 @@ How a game's content reaches a server (data packs) and a client (the package in 
   family `planet_v1`); `base_blocks` is only blocks and properties. The engine keeps the machinery and **`SurfaceLayers { air, surface, subsurface, deep }`**, so it names no block; its own tests use
   fixtures under `terrain`'s `test-support` feature. Checked: with the old ids written back Cave's golden session gave its old pins to the digit, so only the names changed.
 
+## Decided (block textures and the game's own blocks in data; owner, 2026-11-07; not built; `block-textures-spec.md`)
+
+- **The game's own blocks become JSON** read by the pack loader; Rust looks ids up by name. A block names its pictures by one **base name**
+  (`"texture": "log"`); which faces differ follows from the files that exist (`_top`, `_side`, `_bottom`), never from the JSON. `top` is the face away from the face
+  clicked to place the block. `color` is optional on a textured block (default: the top once and each side once, bottom ignored). **Per-face colours are in the JSON** (`face_colors`).
+- **Pictures** travel inline in the welcome, one atlas per size (powers of two, 8 to 256, at most four sizes); a pack replaces pictures by file name or by patch; the client's texture
+  distance is a setting, the texture fades to the flat colour beyond it, and levels of detail are never textured. Per-state pictures and the client's ordered texture packs come later.
+- Terrain: the generator writes the orientation of blocks that have an axis, so grass tops point away from a planet. This replaces `architecture-review.md` A4's advice against textures.
+
 ## Decided (the content package at the handshake; built in Phase 28)
 
 - **The server says what the world looks like.** `Welcome` carries the game's *package data* (`game_shell::PackageData`): the property schema, every

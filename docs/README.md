@@ -37,7 +37,7 @@ every such name and every `docs/...` path in the code and the documents is a rea
 ## Specs (one per part or phase; the part's code cites them)
 
 Plugins and content: `plugin-api-spec.md`, `property-bags-spec.md`, `messages-and-commands-spec.md`, `client-interface-spec.md`,
-`entities-spec.md`, `content-package-spec.md`, `data-packs-spec.md`, `ui-spec.md`. The game Voxunami 2048: `2048-spec.md`.
+`entities-spec.md`, `content-package-spec.md`, `data-packs-spec.md`, `block-textures-spec.md` (textures, and the game's own blocks as JSON; **not built**), `ui-spec.md`. The game Voxunami 2048: `2048-spec.md`.
 The world and the sky: `lod-spec.md` (levels of detail), `planet-spec.md`, `rails-and-recipes-spec.md` (orbits, planets from data),
 `great-rivers-spec.md`, `places-spec.md` (`/tp`), `sun-spec.md`, `shadow-spec.md`. Ships: `moving-grids-spec.md`.
 
