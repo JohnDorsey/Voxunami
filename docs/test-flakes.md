@@ -23,6 +23,10 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
   possibilities (the first accepted held `[2]`; an error; a different frame) is **not known**: the message was not kept.
 - **Reruns.** 10 times alone (`cargo test --release -p transport --test tcp a_listener_has_nobody`) and 25 times as the whole binary (`cargo test -p transport --test tcp`, dev profile, all 16 tests
   in parallel as the gate does): **0 failures in 35**.
+- **Occurrence 2: 2026-11-07**, the full gate of the terrain lookahead (`physics`, `grid_bodies`; `transport` depends on none of it), `cargo test --workspace --no-fail-fast`, dev profile, Windows. **The message was kept:**
+  `left: Ok(Some([2]))`, `right: Ok(Some([1]))` (`tcp.rs:260`): **the first connection the listener handed out held the second client's frame**, no error, no deadline (2.01 s, the other tests'). That settles the first of
+  the three possibilities of occurrence 1. **Reruns: it failed again on the third of 5 whole-binary runs** (`cargo test --release -p transport --test tcp`, with nothing else of the session running), with the same `left` and `right`;
+  3 runs alone passed. So it is about 1 in 5 to 1 in 10 here, not the 0 in 35 of occurrence 1.
 - **What it depends on [read].** The order in which the listener hands out connections (`TcpServerListener::accept`) against the order in which the clients connected. `TcpConnection::connect` returns when the
   client side is connected, but whether the **server side** of the first connection is queued in the listener before the second's is up to the operating system's accept queue and to how the
   listener collects connections (if it has a thread of its own, up to its scheduling). The test asserts an order that nothing in its setup forces between the two accepts.
@@ -41,10 +45,15 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
   fail. Not looked into further.
 - **Occurrence 3: 2026-11-04** (the full gate of the dev command seat: Cave's blocks, a message and a client plugin, nothing that draws a form): failed once at `adapter 1: 1 pixels differ, such as [(157, 68)]`
   (`screen.rs:386`); **it passed on the rerun of the file** (3 tests, alone with two others). Adapter 1 again.
+- **Occurrence 4: 2026-11-07** (the full gate of the terrain lookahead of ships and walkers: `physics`, `grid_bodies`, the shared test helpers; nothing that draws a form): failed once at
+  `adapter 1: 1 pixels differ, such as [(157, 68)]` (`screen.rs:386`), the **same pixel as occurrence 3**; **it passed on three reruns alone and on the rerun of the whole binary** (5 tests). Adapter 1 again.
+  The gate stopped at it (no `--no-fail-fast`), so it was run again with that flag for the suites after it.
 - **Beliefs.** **Checked, for a sister test** (`an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw`, explained below): on the integrated AMD GPU the first frames of a fresh renderer sometimes leave
   pixels out, never on the NVIDIA card, and the pictures compared to the pixel are now taken once a frame repeats them (`settled`). **Believed**: the same family of cause for this test (a pixel left out in a
-  first frame on one adapter); not checked for this test.
-- **What would settle it.** Run it in a loop on each adapter with `VOX_REQUIRE_GPU=1` and log which adapter and which pixel differs; see whether it goes through `settled`.
+  first frame on one adapter); not checked for this test. **A new fact against "any pixel the first frame left out":** occurrences 3 and 4 are the same pixel, (157, 68), on the same adapter: a first
+  frame that leaves out whatever it likes would not repeat the place; something at that place (an edge of the dimmed picture or of a button, rounded one way live and the other in the replay) might.
+  Not looked into.
+- **What would settle it.** Run it in a loop on each adapter with `VOX_REQUIRE_GPU=1` and log which adapter and which pixel differs; see whether it goes through `settled`, and what is drawn at (157, 68).
 
 ### `world_view/tests/ship_terrain.rs`: `beyond_the_extent_there_is_nothing_so_the_edge_of_a_planet_shows_its_side`
 

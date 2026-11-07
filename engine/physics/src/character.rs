@@ -8,6 +8,7 @@ use voxel_space::{
 };
 
 use crate::real::{array, vector, world_position};
+use crate::sweep::{TERRAIN_EVERY_WAY_VOXELS, swept_bricks};
 use crate::terrain::{Collision, CollisionSource, build_brick};
 
 /// How far, in bricks, from its frame's origin a character may get before the frame is rebuilt
@@ -659,48 +660,32 @@ impl CharacterBody {
             self.origin = here;
             self.center -= shift;
         }
-        // The bricks within the lookahead of the character (and, farther out, those that are kept): a box of bricks around the middle of the body.
+        // The bricks within the lookahead of the character (and, farther out, those that are kept): a box of bricks around the middle of the body, and past a cap of it, along the way it goes
+        // (see `SweptBricks`: at 6,000 voxels a second the box of the whole margin was 830,000 bricks in each tick).
         let lookahead =
             TERRAIN_LOOKAHEAD_VOXELS + TERRAIN_LOOKAHEAD_SECONDS * self.velocity.length();
         let bricks_within = |distance: Real| {
-            let brick = |value: Real, origin: i128| {
-                origin.saturating_add((value / BRICK_EDGE_LENGTH as Real).floor() as i128)
-            };
-            let (low, high) = (
-                self.center - Vector::splat(distance),
-                self.center + Vector::splat(distance),
-            );
-            (
-                BrickCoordinate::new(
-                    brick(low.x, self.origin.x()),
-                    brick(low.y, self.origin.y()),
-                    brick(low.z, self.origin.z()),
-                ),
-                BrickCoordinate::new(
-                    brick(high.x, self.origin.x()),
-                    brick(high.y, self.origin.y()),
-                    brick(high.z, self.origin.z()),
-                ),
+            swept_bricks(
+                self.center,
+                self.center,
+                distance,
+                TERRAIN_EVERY_WAY_VOXELS,
+                self.velocity,
+                self.origin,
             )
         };
-        let (near_low, near_high) = bricks_within(lookahead);
-        let (kept_low, kept_high) = bricks_within(lookahead + TERRAIN_KEEP_EXTRA_VOXELS);
-        let wanted: Vec<BrickCoordinate> = (near_low.z()..=near_high.z())
-            .flat_map(|z| {
-                (near_low.y()..=near_high.y()).flat_map(move |y| {
-                    (near_low.x()..=near_high.x()).map(move |x| BrickCoordinate::new(x, y, z))
-                })
-            })
-            .collect();
+        let (Some(near), Some(kept)) = (
+            bricks_within(lookahead),
+            bricks_within(lookahead + TERRAIN_KEEP_EXTRA_VOXELS),
+        ) else {
+            return;
+        };
+        let wanted: Vec<BrickCoordinate> = near.bricks().collect();
         let far: Vec<BrickCoordinate> = self
             .loaded
             .keys()
             .copied()
-            .filter(|brick| {
-                !(kept_low.x()..=kept_high.x()).contains(&brick.x())
-                    || !(kept_low.y()..=kept_high.y()).contains(&brick.y())
-                    || !(kept_low.z()..=kept_high.z()).contains(&brick.z())
-            })
+            .filter(|brick| !kept.contains(*brick))
             .collect();
         for brick in far {
             self.unload(brick);

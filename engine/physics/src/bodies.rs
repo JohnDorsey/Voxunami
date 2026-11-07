@@ -7,6 +7,7 @@ use voxel_space::{
 
 use crate::mass::BodyMass;
 use crate::real::{array, matrix, vector, world_position};
+use crate::sweep::{SweptBricks, swept_bricks};
 use crate::terrain::{BrickHint, Collision, CollisionSource, build_brick};
 
 const EDGE: usize = BRICK_EDGE_LENGTH;
@@ -510,6 +511,48 @@ impl BodyWorld {
         margin: f64,
         frame: BodyId,
     ) -> Option<voxel_space::BrickBox> {
+        let (low, high, _) = self.bounds_seen_from(id, frame)?;
+        Self::bricks_between(low, high, margin, BrickCoordinate::ORIGIN)
+    }
+
+    /// The bricks that a body will reach, in the world: those within `margin` voxels of it, as [`BodyWorld::bricks_near`] has them, while the margin is no more than `cap`, and past
+    /// it the cube of `cap` carried along `direction` (a way, in the frame's axes, of any length) as far as the margin is past the cap. See [`SweptBricks`]. `None` for a body with no
+    /// blocks yet or one that is not there.
+    pub fn bricks_ahead(
+        &self,
+        id: BodyId,
+        margin: f64,
+        cap: f64,
+        direction: [f64; 3],
+    ) -> Option<SweptBricks> {
+        let (low, high) = self.bounds_of(id)?;
+        swept_bricks(low, high, margin, cap, vector(direction), self.origin)
+    }
+
+    /// The same bricks, but of another body's own coordinates, as [`BodyWorld::bricks_near_in`] has them. `direction` is in the frame's axes, as for [`BodyWorld::bricks_ahead`], and is
+    /// turned into the other body's.
+    pub fn bricks_ahead_in(
+        &self,
+        id: BodyId,
+        margin: f64,
+        cap: f64,
+        direction: [f64; 3],
+        frame: BodyId,
+    ) -> Option<SweptBricks> {
+        let (low, high, turn) = self.bounds_seen_from(id, frame)?;
+        swept_bricks(
+            low,
+            high,
+            margin,
+            cap,
+            turn * vector(direction),
+            BrickCoordinate::ORIGIN,
+        )
+    }
+
+    /// The box around the turned bounds of a body, seen from the coordinates of another, in voxels, and the turn that takes a way in the frame to a way in those coordinates; `None` if
+    /// either body is not there or `id` has no blocks yet. It takes in a little more than the body needs if the two are turned against each other.
+    fn bounds_seen_from(&self, id: BodyId, frame: BodyId) -> Option<(Vector, Vector, Rotation)> {
         let (low, high) = self.bounds_of(id)?;
         let frame = self.bodies.get(self.by_id.get(&frame)?.handle)?;
         let (translation, turn) = (frame.translation(), frame.rotation().inverse());
@@ -525,7 +568,7 @@ impl BodyWorld {
             seen_low = seen_low.min(seen);
             seen_high = seen_high.max(seen);
         }
-        Self::bricks_between(seen_low, seen_high, margin, BrickCoordinate::ORIGIN)
+        Some((seen_low, seen_high, turn))
     }
 
     /// The box around the bounds of all the colliders of a body, in the frame, or `None` for a body that is not there or has none.
@@ -1142,6 +1185,90 @@ mod tests {
         assert_eq!(
             world.bricks_near(BodyId(1), 0.0),
             bricks([0, 0, -2], [0, 0, -2])
+        );
+    }
+
+    /// The corners of all the boxes of some bricks: the lowest brick and the highest of any of them.
+    fn extent_of(bricks: &SweptBricks) -> ([i128; 3], [i128; 3]) {
+        let (mut low, mut high) = ([i128::MAX; 3], [i128::MIN; 3]);
+        for each in bricks.boxes() {
+            let (min, max) = (each.min(), each.max());
+            for (axis, (lowest, highest)) in
+                [(min.x(), max.x()), (min.y(), max.y()), (min.z(), max.z())]
+                    .into_iter()
+                    .enumerate()
+            {
+                low[axis] = low[axis].min(lowest);
+                high[axis] = high[axis].max(highest);
+            }
+        }
+        (low, high)
+    }
+
+    #[test]
+    fn the_bricks_a_body_will_reach_are_ahead_of_it_in_the_world_and_in_the_coordinates_of_a_body_it_is_turned_against()
+     {
+        // A cube of a voxel at (10, 10, 10), going along +x, with a margin of 1,000 voxels past a cap of 128: the bricks within 128 of it every way (-118 to 139: bricks -4 to 4), and
+        // along +x for the 872 more (to 1,011: brick 31), and no farther any other way.
+        let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, BodySettings::default());
+        world
+            .add_body(
+                BodyId(1),
+                resting_at(at(10.0, 10.0, 10.0)),
+                BodyKind::Dynamic,
+            )
+            .unwrap();
+        world
+            .set_brick(BodyId(1), BrickCoordinate::ORIGIN, &mut &Hull::cube(1))
+            .unwrap();
+        let ahead = world
+            .bricks_ahead(BodyId(1), 1000.0, 128.0, [1.0, 0.0, 0.0])
+            .unwrap();
+        assert_eq!(extent_of(&ahead), ([-4, -4, -4], [31, 4, 4]));
+        // Going along -z (a way of any length) it is that way: -118 - 872 = -990, brick -31. A margin within the cap is the cube whatever the way.
+        let behind = world
+            .bricks_ahead(BodyId(1), 1000.0, 128.0, [0.0, 0.0, -2.0])
+            .unwrap();
+        assert_eq!(extent_of(&behind), ([-4, -4, -31], [4, 4, 4]));
+        let cube = world.bricks_near(BodyId(1), 100.0).unwrap();
+        let near = world
+            .bricks_ahead(BodyId(1), 100.0, 128.0, [1.0, 0.0, 0.0])
+            .unwrap();
+        assert_eq!(near.boxes(), &[cube]);
+        // Nothing for a body that is not there, or has no blocks yet.
+        assert_eq!(world.bricks_ahead(BodyId(7), 1000.0, 128.0, [1.0; 3]), None);
+
+        // Seen from a body at the origin turned a quarter about the vertical axis (its +x is the world's -z, its +z the world's +x), the same cube at (10, 10, -50) is at (49 to
+        // 50, 10 to 11, 10 to 11): bricks -3 to 5 for the 128 every way in x, and -4 to 4 in the others. Going along the world's -z it goes along that body's +x, for 872 more
+        // (to 1,050: brick 32).
+        let mut world = BodyWorld::new(BrickCoordinate::ORIGIN, BodySettings::default());
+        world
+            .add_body(
+                BodyId(1),
+                resting_at(at(10.0, 10.0, -50.0)),
+                BodyKind::Dynamic,
+            )
+            .unwrap();
+        world
+            .set_brick(BodyId(1), BrickCoordinate::ORIGIN, &mut &Hull::cube(1))
+            .unwrap();
+        world
+            .add_body(
+                BodyId(2),
+                BodyState {
+                    orientation: Orientation::from_yaw_pitch(std::f64::consts::FRAC_PI_2, 0.0),
+                    ..resting_at(at(0.0, 0.0, 0.0))
+                },
+                BodyKind::Fixed,
+            )
+            .unwrap();
+        let turned = world
+            .bricks_ahead_in(BodyId(1), 1000.0, 128.0, [0.0, 0.0, -1.0], BodyId(2))
+            .unwrap();
+        assert_eq!(extent_of(&turned), ([-3, -4, -4], [32, 4, 4]));
+        assert_eq!(
+            world.bricks_ahead_in(BodyId(1), 1000.0, 128.0, [0.0, 0.0, -1.0], BodyId(7)),
+            None
         );
     }
 

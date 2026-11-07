@@ -4,6 +4,7 @@
 
 pub mod docking;
 pub mod parity;
+pub mod rocket;
 
 use std::collections::VecDeque;
 use std::io;

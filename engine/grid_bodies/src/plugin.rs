@@ -1181,9 +1181,19 @@ impl Bodies {
                 &planet.bricks
             }
         };
-        let bricks_near = |body: BodyId, margin: f64| match ground {
-            Ground::Level => level.bodies.bricks_near(body, margin),
-            Ground::Planet(id) => level.bodies.bricks_near_in(body, margin, BodyId(id.get())),
+        let bricks_near = |body: BodyId, margin: f64, way: [f64; 3]| match ground {
+            Ground::Level => {
+                level
+                    .bodies
+                    .bricks_ahead(body, margin, physics::TERRAIN_EVERY_WAY_VOXELS, way)
+            }
+            Ground::Planet(id) => level.bodies.bricks_ahead_in(
+                body,
+                margin,
+                physics::TERRAIN_EVERY_WAY_VOXELS,
+                way,
+                BodyId(id.get()),
+            ),
         };
         // The bricks that are needed now, those that are wanted (with how many rings from a ship), and those that are kept. A planet is fixed, so the ships
         // that would be held against it need nothing of it.
@@ -1202,20 +1212,26 @@ impl Bodies {
             let speed = (vx * vx + vy * vy + vz * vz).sqrt();
             let lookahead = TERRAIN_LOOKAHEAD_VOXELS + TERRAIN_LOOKAHEAD_SECONDS * speed;
             let needed_margin = TERRAIN_NEEDED_VOXELS + TERRAIN_NEEDED_SECONDS * speed;
-            if let Some(bricks) = bricks_near(body, needed_margin) {
+            // (The way it goes, in the axes of the frame. A ship that stands has none: its margins are the cube.)
+            let way = if speed > 0.0 {
+                [vx / speed, vy / speed, vz / speed]
+            } else {
+                [0.0; 3]
+            };
+            if let Some(bricks) = bricks_near(body, needed_margin, way) {
                 needed.extend(bricks.bricks());
             }
             let mut rings = Vec::new();
             let mut margin = needed_margin;
             while margin < lookahead {
                 margin = (margin + TERRAIN_RING_VOXELS).min(lookahead);
-                rings.extend(bricks_near(body, margin));
+                rings.extend(bricks_near(body, margin, way));
             }
             for (brick, ring) in wanted_rings(&rings) {
                 let nearest = wanted.entry(brick).or_insert(ring);
                 *nearest = (*nearest).min(ring);
             }
-            if let Some(bricks) = bricks_near(body, lookahead + TERRAIN_KEEP_EXTRA_VOXELS) {
+            if let Some(bricks) = bricks_near(body, lookahead + TERRAIN_KEEP_EXTRA_VOXELS, way) {
                 kept.extend(bricks.bricks());
             }
         }
@@ -1889,46 +1905,20 @@ fn has_blocks(ship: &MovingGrid, block_channel: ChannelIndex, air: u32) -> bool 
         })
 }
 
-/// For each brick of the outermost of `boxes`, the number of the first box that holds it, counting from 1. The boxes are the bricks a ship's bounds come within a margin of,
-/// for margins that grow, so each holds the one before it, and a brick is held by a box when each of its three coordinates is: its ring is the greatest of the rings
-/// of its coordinates. That makes the work the number of bricks of the outermost box (a cube round a fast ship that is a few thousand) and not that number for every box.
-fn wanted_rings(boxes: &[voxel_space::BrickBox]) -> BTreeMap<BrickCoordinate, usize> {
-    let Some(outer) = boxes.last() else {
+/// For each brick of the outermost of `regions`, the number of the first region that holds it, counting from 1. The regions are the bricks a ship's bounds come within a margin of,
+/// for margins that grow, so each holds the one before (a cube, or a cube carried along: `physics::SweptBricks`), and a brick is in the regions from some ring on, which is found by
+/// halving. That makes the work the bricks of the outermost region (a tube round a fast ship that is a few thousand) times a few steps, and not that number for every region.
+fn wanted_rings(regions: &[physics::SweptBricks]) -> BTreeMap<BrickCoordinate, usize> {
+    let Some(outer) = regions.last() else {
         return BTreeMap::new();
     };
-    let (low, high) = (outer.min(), outer.max());
-    let (low, high) = ([low.x(), low.y(), low.z()], [high.x(), high.y(), high.z()]);
-    let corners = |bricks: &voxel_space::BrickBox| {
-        let (min, max) = (bricks.min(), bricks.max());
-        ([min.x(), min.y(), min.z()], [max.x(), max.y(), max.z()])
-    };
-    // For each axis, the ring of each coordinate along it, counted from the low edge of the outermost box.
-    let along: [Vec<usize>; 3] = std::array::from_fn(|axis| {
-        (low[axis]..=high[axis])
-            .map(|coordinate| {
-                boxes
-                    .iter()
-                    .position(|bricks| {
-                        let (min, max) = corners(bricks);
-                        min[axis] <= coordinate && coordinate <= max[axis]
-                    })
-                    .map_or(boxes.len(), |first| first + 1)
-            })
-            .collect()
-    });
-    let mut rings = BTreeMap::new();
-    for brick in outer.bricks() {
-        let ring = (0..3)
-            .map(|axis| along[axis][(brick_component(brick, axis) - low[axis]) as usize])
-            .max()
-            .expect("three axes");
-        rings.insert(brick, ring);
-    }
-    rings
-}
-
-fn brick_component(brick: BrickCoordinate, axis: usize) -> i128 {
-    [brick.x(), brick.y(), brick.z()][axis]
+    outer
+        .bricks()
+        .map(|brick| {
+            let first = regions.partition_point(|region| !region.contains(brick));
+            (brick, first + 1)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -2208,17 +2198,26 @@ mod tests {
         assert!(planet_state(None, false, last, [0.0; 3], [0.0; 3], 0.05).is_some());
     }
 
-    /// The rings as the first version of `bricks_to_change` made them, which went over every brick of every box: the meaning `wanted_rings` must keep.
-    fn rings_by_going_over_every_box(boxes: &[BrickBox]) -> BTreeMap<BrickCoordinate, usize> {
+    /// The rings as the first version of `bricks_to_change` made them, which went over every brick of every region: the meaning `wanted_rings` must keep.
+    fn rings_by_going_over_every_region(
+        regions: &[physics::SweptBricks],
+    ) -> BTreeMap<BrickCoordinate, usize> {
         let mut wanted: BTreeMap<BrickCoordinate, usize> = BTreeMap::new();
-        for (index, bricks) in boxes.iter().enumerate() {
+        for (index, region) in regions.iter().enumerate() {
             let ring = index + 1;
-            for brick in bricks.bricks() {
+            for brick in region.bricks() {
                 let nearest = wanted.entry(brick).or_insert(ring);
                 *nearest = (*nearest).min(ring);
             }
         }
         wanted
+    }
+
+    fn regions_of_boxes(boxes: &[BrickBox]) -> Vec<physics::SweptBricks> {
+        boxes
+            .iter()
+            .map(|bricks| physics::SweptBricks::of_box(*bricks))
+            .collect()
     }
 
     /// Boxes that each hold the one before, as margins that grow make them: a first box anywhere, and each of its six faces moved out by 0 to 3 bricks a ring.
@@ -2253,10 +2252,69 @@ mod tests {
         })
     }
 
+    /// Regions that each hold the one before and are made of several boxes, as a margin that grows makes the bricks of a tube (`physics::SweptBricks`): some boxes anywhere that grow by 0
+    /// to 2 bricks every face a ring, and now and then another.
+    fn nested_regions() -> impl Strategy<Value = Vec<physics::SweptBricks>> {
+        let one = (
+            proptest::array::uniform3(-5i128..5),
+            proptest::array::uniform3(0i128..4),
+        );
+        let ring = (
+            proptest::collection::vec(proptest::array::uniform6(0i128..3), 3),
+            proptest::option::of(one.clone()),
+        );
+        (
+            proptest::collection::vec(one, 1..4),
+            proptest::collection::vec(ring, 0..7),
+        )
+            .prop_map(|(base, rings)| {
+                let mut boxes: Vec<([i128; 3], [i128; 3])> = base
+                    .into_iter()
+                    .map(|(low, size)| (low, [0, 1, 2].map(|axis| low[axis] + size[axis])))
+                    .collect();
+                let region_of = |boxes: &[([i128; 3], [i128; 3])]| {
+                    physics::SweptBricks::of_boxes(
+                        boxes
+                            .iter()
+                            .map(|(low, high)| {
+                                BrickBox::new(
+                                    BrickCoordinate::new(low[0], low[1], low[2]),
+                                    BrickCoordinate::new(high[0], high[1], high[2]),
+                                )
+                                .expect("a box that only grows is a box")
+                            })
+                            .collect(),
+                    )
+                };
+                let mut regions = vec![region_of(&boxes)];
+                for (growth, extra) in rings {
+                    for (index, (low, high)) in boxes.iter_mut().enumerate() {
+                        let step = growth[index % growth.len()];
+                        for axis in 0..3 {
+                            low[axis] -= step[axis];
+                            high[axis] += step[axis + 3];
+                        }
+                    }
+                    if let Some((low, size)) = extra {
+                        boxes.push((low, [0, 1, 2].map(|axis| low[axis] + size[axis])));
+                    }
+                    regions.push(region_of(&boxes));
+                }
+                regions
+            })
+    }
+
     proptest! {
         #[test]
         fn a_brick_is_in_the_first_ring_whose_box_holds_it(boxes in nested_boxes()) {
-            prop_assert_eq!(wanted_rings(&boxes), rings_by_going_over_every_box(&boxes));
+            let regions = regions_of_boxes(&boxes);
+            prop_assert_eq!(wanted_rings(&regions), rings_by_going_over_every_region(&regions));
+        }
+
+        /// The same for regions of several boxes that overlap, which is what a tube is.
+        #[test]
+        fn a_brick_is_in_the_first_ring_whose_region_holds_it(regions in nested_regions()) {
+            prop_assert_eq!(wanted_rings(&regions), rings_by_going_over_every_region(&regions));
         }
     }
 
@@ -2268,7 +2326,7 @@ mod tests {
             BrickBox::new(at(-1, -1, -1), at(1, 1, 1)).unwrap(),
             BrickBox::new(at(-2, -1, -1), at(3, 1, 1)).unwrap(),
         ];
-        let rings = wanted_rings(&boxes);
+        let rings = wanted_rings(&regions_of_boxes(&boxes));
         assert_eq!(rings[&at(0, 0, 0)], 1);
         assert_eq!(rings[&at(1, 1, 1)], 2);
         assert_eq!(rings[&at(-2, 0, 0)], 3);
