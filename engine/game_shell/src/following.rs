@@ -253,6 +253,17 @@ impl GridFollower {
 /// frame, and what they are told must be one time or a ship that goes with the camera at a thousand voxels a second shows it a few centimetres off.)
 const CLOCK_DRIFT_ALLOWED: f64 = 0.005;
 
+/// How many ticks make a stretch of the count. The clock remembers how early the ticks of the last stretch and of the one before it could have come, so of the last 10 to 20 ticks: a
+/// half to a whole second at 20 a second.
+const STRETCH_TICKS: u64 = 10;
+
+/// How many ticks later than the clock has it every one of the last 10 to 20 ticks must have come for the beat to have moved, and not for the picture and the network to have been slow
+/// for a while. A beat does move: the host's loop does not race to catch up after a tick that took more than a second but skips ahead, so that the ticks after it come later for good (a
+/// `/tp` onto a planet whose ground is made took 0.6 to 0.75 s on the machine it was measured on, and more where the picture and the workers share the cores), and a connection can get
+/// slower for good. The clock lets go of the old beat at once then, and not at [`CLOCK_DRIFT_ALLOWED`] a second, which took minutes to let go of a second: every tick was put a second or
+/// so before the frame that saw it, the view was carried on for a quarter of a second, the longest it is, past where the server said the player is, and when they stopped went back.
+const BEAT_MOVED_BY_TICKS: f64 = 1.0;
+
 /// When the ticks of the server come, worked out from when the frames saw them. A tick is seen at the first frame after it came, which is up to a frame late and
 /// not by the same time each tick; a speed worked out from those times shakes, and the view with it. Ticks come at a steady rate, so the time of one is the time of
 /// the first plus its number times the length of a tick; the earliest any tick was seen after that is the nearest to when it came.
@@ -266,6 +277,12 @@ pub struct TickClock {
     newest: u64,
     /// When the clock was last asked, in seconds after `start`.
     asked_at: f64,
+    /// The number of the tick that began the stretch that is going on (see [`STRETCH_TICKS`]).
+    stretch_began: u64,
+    /// The earliest tick 0 could have come by any tick seen in this stretch, in seconds after `start`: the time of the frame less the time the ticks take to number so many.
+    this_stretch: f64,
+    /// The same for the stretch before.
+    last_stretch: f64,
 }
 
 impl TickClock {
@@ -276,6 +293,9 @@ impl TickClock {
             origin: None,
             newest: 0,
             asked_at: 0.0,
+            stretch_began: 0,
+            this_stretch: f64::INFINITY,
+            last_stretch: f64::INFINITY,
         }
     }
 
@@ -283,20 +303,51 @@ impl TickClock {
     pub fn seen(&mut self, number: u64, now: Instant) -> Instant {
         if number < self.newest {
             self.origin = None;
+            self.stretch_began = number;
+            self.this_stretch = f64::INFINITY;
+            self.last_stretch = f64::INFINITY;
         }
-        self.newest = number;
         let ticks = number as f64 * self.seconds_per_tick;
         let elapsed = now.saturating_duration_since(self.start).as_secs_f64();
         let candidate = elapsed - ticks;
+        // Only a tick that has come tells when the beat is. The same tick asked about again (by another thing in the frame, or in a frame before the next tick has come) was seen at the
+        // first frame that saw it.
+        if self.origin.is_none() || number != self.newest {
+            self.note(number, candidate);
+        }
+        self.newest = number;
         let origin = match self.origin {
             Some(origin) => {
-                (origin + CLOCK_DRIFT_ALLOWED * (elapsed - self.asked_at).max(0.0)).min(candidate)
+                let of_the_last_ticks = self.this_stretch.min(self.last_stretch);
+                if of_the_last_ticks - origin > BEAT_MOVED_BY_TICKS * self.seconds_per_tick {
+                    // The beat has moved: all of the ticks of the last second or so came later than this.
+                    of_the_last_ticks.min(candidate)
+                } else {
+                    (origin + CLOCK_DRIFT_ALLOWED * (elapsed - self.asked_at).max(0.0))
+                        .min(candidate)
+                }
             }
             None => candidate,
         };
         self.origin = Some(origin);
         self.asked_at = elapsed;
         self.start + Duration::from_secs_f64((origin + ticks).max(0.0))
+    }
+
+    /// Takes in that tick `number` was seen when the beat was `candidate` seconds after `start`, if it had come at once.
+    fn note(&mut self, number: u64, candidate: f64) {
+        let since_began = number.saturating_sub(self.stretch_began);
+        if since_began >= STRETCH_TICKS {
+            // A new stretch. If the count has jumped on by more than a stretch, what was seen before was seen too long ago to be the beat now.
+            self.last_stretch = if since_began >= 2 * STRETCH_TICKS {
+                f64::INFINITY
+            } else {
+                self.this_stretch
+            };
+            self.this_stretch = f64::INFINITY;
+            self.stretch_began = number;
+        }
+        self.this_stretch = self.this_stretch.min(candidate);
     }
 }
 
@@ -652,6 +703,95 @@ mod tests {
             assert!(
                 smallest > 0.7 && largest < 1.3,
                 "a tick {lateness} s late: a step is from {smallest} to {largest} of the steady one"
+            );
+        }
+    }
+
+    /// The frames of a 60 Hz picture and the ticks of a 20 Hz server whose beat moves `by` seconds later from tick `at_tick` on, and stays there: the host's loop does that when a tick takes
+    /// more than a second (it skips ahead and does not race to catch up; a `/tp` onto a planet whose ground is made then took 0.6 to 0.75 s on the machine it was measured on, and more where
+    /// the picture and the workers share the cores). Calls `each` with the time of the frame and the number of the newest tick that has come.
+    fn frames_and_ticks_on_a_beat_that_moves(
+        seconds: f64,
+        at_tick: u64,
+        by: f64,
+        mut each: impl FnMut(f64, u64),
+    ) {
+        let arrival =
+            |tick: u64| 0.05 * tick as f64 + 0.0007 + if tick >= at_tick { by } else { 0.0 };
+        let (mut now, mut newest) = (0.0, 0u64);
+        while now < seconds {
+            while arrival(newest + 1) <= now {
+                newest += 1;
+            }
+            each(now, newest);
+            now += 1.0 / 60.0;
+        }
+    }
+
+    #[test]
+    fn the_tick_clock_finds_a_beat_that_moved_later_in_a_second_or_two_and_does_not_keep_the_old_one_for_minutes()
+     {
+        let start = Instant::now();
+        // The 40th tick comes 1.5 s late, and so does each one after it: the beat is 1.5 s later from then on (it moved at 2.0 s).
+        for by in [0.3, 1.5, 4.0] {
+            let mut clock = TickClock::new(20, start);
+            let mut worst_after_two_seconds = Duration::ZERO;
+            frames_and_ticks_on_a_beat_that_moves(30.0, 40, by, |now, tick| {
+                let at = instant_at(start, now);
+                let seen = clock.seen(tick, at);
+                assert!(seen <= at);
+                if now > 2.0 + by + 2.0 {
+                    worst_after_two_seconds = worst_after_two_seconds.max(at.duration_since(seen));
+                }
+            });
+            // (A tick is seen at the first frame after it came: up to 17 ms late. Held to the old beat the tick was put `by` seconds before the frame, less 5 ms for each second since.)
+            assert!(
+                worst_after_two_seconds < Duration::from_millis(40),
+                "a beat that moved {by} s later: ticks are put {worst_after_two_seconds:?} before the frame that saw them, two seconds after it came to be"
+            );
+        }
+    }
+
+    /// How far past the last position told the view of a walker is shown at most, and how far it goes back from one frame to the next at most, once the walker has walked for a second
+    /// at 5 voxels a second (ticks 100 to 160, with the beat moved by `by` seconds at tick 10: five seconds before they begin) and has stopped (the server only says what changed, so the
+    /// last position is told on).
+    fn walker_past_the_position_told(by: f64) -> (f64, f64) {
+        let start = Instant::now();
+        let mut clock = TickClock::new(20, start);
+        let mut follower = PoseFollower::new();
+        let (mut past, mut back) = (0.0f64, 0.0f64);
+        let mut before = None;
+        frames_and_ticks_on_a_beat_that_moves(14.0 + by, 10, by, |now, tick| {
+            let told = 5.0 * ((tick.saturating_sub(100)) as f64 * 0.05).min(3.0);
+            let frame = instant_at(start, now);
+            let seen = clock.seen(tick, frame);
+            let shown = x_of(follower.view_position_seen(at(told), seen, frame));
+            if tick >= 110 {
+                past = past.max(shown - told);
+                if let Some(before) = before {
+                    back = back.max(before - shown);
+                }
+            }
+            before = Some(shown);
+        });
+        (past, back)
+    }
+
+    #[test]
+    fn a_walker_who_stops_is_not_shown_further_past_where_they_stopped_because_the_beat_of_the_server_moved()
+     {
+        let (steady_past, steady_back) = walker_past_the_position_told(0.0);
+        // Carried on by the 50 to 100 ms that the frames and the ticks are apart, and no more: about half a voxel at 5 voxels a second.
+        assert!(
+            (0.2..0.5).contains(&steady_past) && steady_back < 0.5,
+            "{steady_past} {steady_back}"
+        );
+        // (Held to the old beat, the view was the longest it is carried on, a quarter of a second, ahead of what was told for the next 100 s or more: 1.25 voxels past, then back.)
+        for by in [0.3, 1.5] {
+            let (past, back) = walker_past_the_position_told(by);
+            assert!(
+                past < steady_past + 0.05 && back < steady_back + 0.05,
+                "a beat moved {by} s later: {past} voxels past what was told and {back} back, against {steady_past} and {steady_back}"
             );
         }
     }
