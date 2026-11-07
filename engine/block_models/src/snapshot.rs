@@ -25,8 +25,8 @@ fn face_name(face: Option<FaceDirection>) -> String {
     face.map_or_else(|| "none".to_string(), |face| format!("{face:?}"))
 }
 
-/// Everything the table answers for one block, in every state and orientation, as bytes to hash.
-fn behaviour_bytes(table: &BlockTable, block: u32) -> Vec<u8> {
+/// Everything the table answers for one block, in every state and orientation, as text (one line each), for finding what moved when a digest does.
+pub fn explain_block(table: &BlockTable, block: u32) -> String {
     let mut text = String::new();
     for state in 0..table.state_count(block) {
         writeln!(
@@ -41,7 +41,7 @@ fn behaviour_bytes(table: &BlockTable, block: u32) -> Vec<u8> {
             let shape = table.shape(model);
             write!(
                 text,
-                "o{orientation} solid {} opaque {} see_through {} boxes {} front {} axis {} docking {} mark {:?}",
+                "o{orientation} solid {} opaque {} see_through {} boxes {} front {} axis {} docking {}",
                 table.is_solid(model),
                 table.is_opaque_cube(model),
                 table.is_see_through(model),
@@ -49,7 +49,6 @@ fn behaviour_bytes(table: &BlockTable, block: u32) -> Vec<u8> {
                 face_name(table.front_face(block, state, orientation)),
                 face_name(table.axis_face(block, state, orientation)),
                 face_name(table.docking_face(block, state, orientation)),
-                table.face_mark(block, state, orientation),
             )
             .expect("writing to a string");
             for face in FaceDirection::ALL {
@@ -65,7 +64,7 @@ fn behaviour_bytes(table: &BlockTable, block: u32) -> Vec<u8> {
             text.push('\n');
         }
     }
-    text.into_bytes()
+    text
 }
 
 /// One line for each block of `table`, named by `names` in the order of the blocks, and a last line for the palette.
@@ -89,7 +88,7 @@ pub fn describe_blocks(table: &BlockTable, names: &[String]) -> String {
             face_name(table.axis_face(block, 0, 0)),
             face_name(table.docking_face(block, 0, 0)),
             table.placement(block, 0),
-            fnv_hash(&behaviour_bytes(table, block)),
+            fnv_hash(explain_block(table, block).as_bytes()),
         )
         .expect("writing to a string");
     }

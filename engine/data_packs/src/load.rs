@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use block_models::{BlockDefinition, PropertyDeclaration, PropertyKind, PropertySchema};
+use block_models::{BlockDefinition, PropertyDeclaration, PropertyKind, PropertySchema, engine};
 use namespaced_id::NamespacedId;
 
 use crate::block::read_block;
@@ -435,6 +435,18 @@ fn apply_operation(
                 )),
                 _ => unreachable!("the reader gives a flag for a flag"),
             },
+            Place::FaceColors => match value {
+                PatchValue::FaceColors(wanted) if block.face_colors() == wanted => Ok(()),
+                PatchValue::FaceColors(wanted) => Err(other(
+                    path,
+                    "",
+                    format!(
+                        "the test failed: the face colours are {:?}, not {wanted:?}",
+                        block.face_colors()
+                    ),
+                )),
+                _ => unreachable!("the reader gives face colours for face colours"),
+            },
             Place::StateColors => match value {
                 PatchValue::Colors(wanted) if block.state_colors() == wanted.as_slice() => Ok(()),
                 PatchValue::Colors(wanted) => Err(other(
@@ -472,6 +484,12 @@ fn apply_operation(
                 }
                 Ok(())
             }
+            Place::FaceColors => {
+                if let PatchValue::FaceColors(colors) = value {
+                    block.set_face_colors(*colors);
+                }
+                Ok(())
+            }
         },
         Operation::Remove { place } => match place {
             Place::Property { key, state } => {
@@ -498,6 +516,17 @@ fn apply_operation(
                     ));
                 }
                 block.set_state_colors(Vec::new());
+                Ok(())
+            }
+            Place::FaceColors => {
+                if block.face_colors().iter().all(Option::is_none) {
+                    return Err(other(
+                        path,
+                        "",
+                        "this block has no face colours, so there is nothing to remove",
+                    ));
+                }
+                block.set_face_colors([None; 6]);
                 Ok(())
             }
             Place::Color | Place::SeeThrough => {
@@ -534,11 +563,25 @@ fn property_target<'a>(
                 "expected true or false, found a number",
             ));
         }
+        (PropertyKind::Bool, PropertyValue::Word(_)) => {
+            return Err(other(
+                path,
+                value_path,
+                "expected true or false, found text",
+            ));
+        }
         (PropertyKind::Integer { .. }, PropertyValue::Bool(_)) => {
             return Err(other(
                 path,
                 value_path,
                 "expected a whole number, found true or false",
+            ));
+        }
+        (PropertyKind::Integer { .. }, PropertyValue::Word(_)) => {
+            return Err(other(
+                path,
+                value_path,
+                "expected a whole number, found text",
             ));
         }
         (PropertyKind::Integer { minimum, maximum }, PropertyValue::Integer(number)) => {
@@ -550,6 +593,29 @@ fn property_target<'a>(
                 ));
             }
             *number
+        }
+        (PropertyKind::Face, PropertyValue::Integer(number)) => {
+            if !(0..=6).contains(number) {
+                return Err(other(
+                    path,
+                    value_path,
+                    format!("{number} is outside 0 to 6"),
+                ));
+            }
+            *number
+        }
+        (PropertyKind::Face, PropertyValue::Word(word)) => {
+            match engine::face_code_from_word(word) {
+                Some(code) => i64::from(code),
+                None => return Err(other(path, value_path, crate::block::no_such_face(word))),
+            }
+        }
+        (PropertyKind::Face, PropertyValue::Bool(_)) => {
+            return Err(other(
+                path,
+                value_path,
+                format!("{}, found true or false", crate::block::expected_face()),
+            ));
         }
     };
     Ok((declaration, number))
@@ -575,5 +641,9 @@ fn show(declaration: &PropertyDeclaration, value: i64) -> String {
     match declaration.kind {
         PropertyKind::Bool => (value != 0).to_string(),
         PropertyKind::Integer { .. } => value.to_string(),
+        PropertyKind::Face => usize::try_from(value)
+            .ok()
+            .and_then(|code| engine::FACE_WORDS.get(code))
+            .map_or_else(|| value.to_string(), |word| (*word).to_owned()),
     }
 }

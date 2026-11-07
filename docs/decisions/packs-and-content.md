@@ -37,6 +37,10 @@ How a game's content reaches a server (data packs) and a client (the package in 
   distance is a setting, the texture fades to the flat colour beyond it, and levels of detail are never textured. Per-state pictures and the client's ordered texture packs come later.
 - Terrain: the generator writes the orientation of blocks that have an axis, so grass tops point away from a planet. This replaces `architecture-review.md` A4's advice against textures.
 
+- **Built 2026-11-07 (step 1 of `block-textures-spec.md`):** `face_colors` (a definition's six optional face colours, written in a block file by group or by face, set/tested/removed by
+  patches) replaced the three mark properties, and face-valued properties take a word. The block table's answers are unchanged, to the orientation, for every block of Cave, 2048 and Eels (checked by dumping
+  them from the old and the new code); the package got shorter by the three declarations.
+
 ## Decided (the content package at the handshake; built in Phase 28)
 
 - **The server says what the world looks like.** `Welcome` carries the game's *package data* (`game_shell::PackageData`): the property schema, every

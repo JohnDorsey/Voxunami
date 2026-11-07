@@ -19,11 +19,13 @@ use crate::shape::{SUBDIVISIONS, Shape, ShapeBox};
 
 const KIND_BOOL: u8 = 0;
 const KIND_INTEGER: u8 = 1;
+const KIND_FACE: u8 = 2;
 
-/// The least bytes a declaration, a box, a colour and a set property take, for `read_count`.
+/// The least bytes a declaration, a box, a colour, a coloured face and a set property take, for `read_count`.
 const DECLARATION_BYTES: usize = 5;
 const BOX_BYTES: usize = 6;
 const COLOR_BYTES: usize = 12;
+const FACE_COLOR_BYTES: usize = 13;
 const SET_PROPERTY_BYTES: usize = 4;
 
 fn write_color(writer: &mut ByteWriter, color: [f32; 3]) {
@@ -74,6 +76,7 @@ impl PropertySchema {
                     writer.write_signed_varint(minimum);
                     writer.write_signed_varint(maximum);
                 }
+                PropertyKind::Face => writer.write_u8(KIND_FACE),
             }
             writer.write_signed_varint(declaration.default);
             writer.write_string(&declaration.doc);
@@ -98,6 +101,7 @@ impl PropertySchema {
                     }
                     PropertyKind::Integer { minimum, maximum }
                 }
+                KIND_FACE => PropertyKind::Face,
                 _ => {
                     return Err(DecodeError::Invalid(
                         "a property has a kind that is not known",
@@ -122,7 +126,8 @@ impl PropertySchema {
 
 impl BlockDefinition {
     /// Writes the definition: colour, see-through, the boxes of every state's shape, the colours of
-    /// states, and the properties it sets.
+    /// states, the colours of faces (each as its face's index, then the colour, in the order of the
+    /// faces), and the properties it sets.
     pub fn encode(&self, writer: &mut ByteWriter) {
         write_color(writer, self.color);
         writer.write_u8(u8::from(self.see_through));
@@ -138,6 +143,14 @@ impl BlockDefinition {
         writer.write_varint(self.state_colors().len() as u64);
         for color in self.state_colors() {
             write_color(writer, *color);
+        }
+        let coloured_faces = self.face_colors().iter().flatten().count();
+        writer.write_varint(coloured_faces as u64);
+        for (face, color) in self.face_colors().iter().enumerate() {
+            if let Some(color) = color {
+                writer.write_u8(face as u8);
+                write_color(writer, *color);
+            }
         }
         writer.write_varint(self.properties().len() as u64);
         for (key, set) in self.properties() {
@@ -198,6 +211,24 @@ impl BlockDefinition {
         for _ in 0..color_count {
             state_colors.push(read_color(reader)?);
         }
+        let face_color_count = reader.read_count(FACE_COLOR_BYTES)?;
+        let mut face_colors = [None; 6];
+        let mut previous_face = None;
+        for _ in 0..face_color_count {
+            let face = reader.read_u8()?;
+            if face >= 6 {
+                return Err(DecodeError::Invalid(
+                    "a coloured face is not one of the six",
+                ));
+            }
+            if previous_face.is_some_and(|before| before >= face) {
+                return Err(DecodeError::Invalid(
+                    "coloured faces are repeated or out of order",
+                ));
+            }
+            previous_face = Some(face);
+            face_colors[usize::from(face)] = Some(read_color(reader)?);
+        }
         let set_count = reader.read_count(SET_PROPERTY_BYTES)?;
         let mut properties = SetProperties::new();
         let mut previous = None;
@@ -235,6 +266,7 @@ impl BlockDefinition {
             see_through,
             shapes,
             state_colors,
+            face_colors,
             properties,
         ))
     }
@@ -289,6 +321,10 @@ mod tests {
             ])
             .with_see_through(true)
             .with_state_colors(vec![[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])
+            .with_face_colors(&[
+                (FaceDirection::PositiveY, [0.7, 0.8, 0.9]),
+                (FaceDirection::NegativeX, [1.0, 0.0, 0.25]),
+            ])
             .with_property(&DENSITY, 7_000)
             .with_state_property(2, &DENSITY, 12)
             .with_state_property(1, &PLACEABLE_ON_MOVING_GRIDS, false)
@@ -374,6 +410,7 @@ mod tests {
             }
         }
         writer.write_varint(0);
+        writer.write_varint(0);
         let mut bytes = writer.into_bytes();
         bytes.extend_from_slice(properties);
         bytes
@@ -431,6 +468,60 @@ mod tests {
         }
     }
 
+    /// A definition written by hand with these coloured faces, as the bytes after the colours of states.
+    fn with_faces(faces: &[(u8, [f32; 3])]) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        for component in [0.5f32; 3] {
+            writer.write_u32(component.to_bits());
+        }
+        writer.write_u8(0);
+        writer.write_varint(1);
+        writer.write_varint(1);
+        for corner in WHOLE {
+            writer.write_u8(corner);
+        }
+        writer.write_varint(0);
+        writer.write_varint(faces.len() as u64);
+        for (face, color) in faces {
+            writer.write_u8(*face);
+            for component in color {
+                writer.write_u32(component.to_bits());
+            }
+        }
+        writer.write_varint(0);
+        writer.into_bytes()
+    }
+
+    #[test]
+    fn coloured_faces_are_written_in_the_order_of_the_faces_and_once_each() {
+        let red = [1.0, 0.0, 0.0];
+        let fine = decoded(&with_faces(&[(1, red), (3, red), (5, red)])).unwrap();
+        assert_eq!(
+            fine.face_colors(),
+            &[None, Some(red), None, Some(red), None, Some(red)]
+        );
+        let same = BlockDefinition::cube([0.5; 3]).with_face_colors(&[
+            (FaceDirection::PositiveZ, red),
+            (FaceDirection::PositiveX, red),
+            (FaceDirection::PositiveY, red),
+        ]);
+        assert_eq!(encoded(&same), with_faces(&[(1, red), (3, red), (5, red)]));
+        for faces in [vec![(3, red), (1, red)], vec![(2, red), (2, red)]] {
+            assert_eq!(
+                refusal(&with_faces(&faces)),
+                "coloured faces are repeated or out of order"
+            );
+        }
+        assert_eq!(
+            refusal(&with_faces(&[(6, red)])),
+            "a coloured face is not one of the six"
+        );
+        assert_eq!(
+            refusal(&with_faces(&[(0, [f32::NAN, 0.0, 0.0])])),
+            "a colour is not a finite number"
+        );
+    }
+
     #[test]
     fn a_block_with_no_states_is_refused() {
         let mut writer = ByteWriter::new();
@@ -438,6 +529,7 @@ mod tests {
             writer.write_u32(0f32.to_bits());
         }
         writer.write_u8(0);
+        writer.write_varint(0);
         writer.write_varint(0);
         writer.write_varint(0);
         writer.write_varint(0);
@@ -533,6 +625,8 @@ mod tests {
             (declaration_bytes(&integer_kind(0, 10), 11), default),
             (declaration_bytes(&integer_kind(0, 10), -1), default),
             (declaration_bytes(&[KIND_BOOL], 2), default),
+            (declaration_bytes(&[KIND_FACE], 7), default),
+            (declaration_bytes(&[KIND_FACE], -1), default),
         ];
         for (bytes, reason) in cases {
             assert_eq!(schema_decoded(&bytes).unwrap_err().to_string(), reason);
@@ -540,6 +634,7 @@ mod tests {
         // The controls: the same bytes with the default inside the range are accepted.
         assert!(schema_decoded(&declaration_bytes(&integer_kind(0, 10), 10)).is_ok());
         assert!(schema_decoded(&declaration_bytes(&[KIND_BOOL], 1)).is_ok());
+        assert!(schema_decoded(&declaration_bytes(&[KIND_FACE], 6)).is_ok());
     }
 
     #[test]
@@ -585,11 +680,12 @@ mod tests {
             any::<bool>(),
             prop::collection::vec(prop::collection::vec(arbitrary_box(), 0..4), 1..5),
             prop::collection::vec(color(), 0..4),
+            prop::collection::vec((0u8..6, color()), 0..4),
             prop::option::of(any::<u32>()),
             prop::collection::vec((0u32..6, any::<bool>()), 0..4),
         )
             .prop_map(
-                |(color, see_through, shapes, state_colors, density, by_state)| {
+                |(color, see_through, shapes, state_colors, faces, density, by_state)| {
                     let mut definition = BlockDefinition::cube(color)
                         .with_shapes(
                             shapes
@@ -600,6 +696,12 @@ mod tests {
                         .with_see_through(see_through);
                     if !state_colors.is_empty() {
                         definition = definition.with_state_colors(state_colors);
+                    }
+                    for (face, face_color) in faces {
+                        definition = definition.with_face_colors(&[(
+                            FaceDirection::from_index(face).expect("a face"),
+                            face_color,
+                        )]);
                     }
                     if let Some(density) = density {
                         definition = definition.with_property(&DENSITY, density);

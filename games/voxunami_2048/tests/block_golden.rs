@@ -56,12 +56,12 @@ const PINNED_NAMES: &[&str] = &[
 ];
 
 /// (the length, the hash) of `PackageData::encode` as it was on 2026-11-07.
-const PINNED_PACKAGE: (usize, u64) = (3510, 18_180_317_838_360_501_055);
+const PINNED_PACKAGE: (usize, u64) = (3151, 14_724_079_786_531_735_639);
 
 const PINNED_TABLE: &[&str] = &[
-    " 0 voxunami_2048:air: colour #000000, 1 states, state 0 faces [0 0 0 0 0 0], front none, axis none, docking none, placement Fixed, behaviour 10e1fcf0fdf150ec",
-    " 1 voxunami_2048:stone: colour #b3b3b3, 1 states, state 0 faces [4 4 4 4 4 4], front none, axis none, docking none, placement Fixed, behaviour 29a658216fc19cf2",
-    " 2 voxunami_2048:ice: colour #c6d2d9, 1 states, state 0 faces [65 65 65 65 65 65], front none, axis none, docking none, placement Fixed, behaviour adc4c009d7ca0cd3",
-    " 3 voxunami_2048:spring_ice: colour #d9cfac, 1 states, state 0 faces [126 126 126 126 126 126], front none, axis none, docking none, placement Fixed, behaviour 5a7932f3cd24b13b",
+    " 0 voxunami_2048:air: colour #000000, 1 states, state 0 faces [0 0 0 0 0 0], front none, axis none, docking none, placement Fixed, behaviour a28133c087488ace",
+    " 1 voxunami_2048:stone: colour #b3b3b3, 1 states, state 0 faces [4 4 4 4 4 4], front none, axis none, docking none, placement Fixed, behaviour 95be8fd8fb01184c",
+    " 2 voxunami_2048:ice: colour #c6d2d9, 1 states, state 0 faces [65 65 65 65 65 65], front none, axis none, docking none, placement Fixed, behaviour fdd6a803171af385",
+    " 3 voxunami_2048:spring_ice: colour #d9cfac, 1 states, state 0 faces [126 126 126 126 126 126], front none, axis none, docking none, placement Fixed, behaviour fa9e3c96a8d6c6d5",
     "palette: 187 colours, digest 42a4a72f5966cadc",
 ];

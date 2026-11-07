@@ -293,8 +293,12 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// by a control: with the wire put back to the `f32` form (the offsets and the angles of the presence messages written as `f32`) and the version put back to 10, nothing else changed, this
 /// script gave the stream hash and the length above, 2_608_887_802_805_617_703 and 59_088, to the bit; so the stream moved for the widths and the version and for nothing else. The stream is
 /// 20 bytes longer (one pose, 12, and one look, 8). The saved world moved as the sections that hold poses are version 4.
+/// Faces in colours of their own are a field of a definition and not three properties (block-textures step 1, 2026-11-07): the package loses the declarations of `engine:marked_face`,
+/// `engine:mark_color` and `engine:mark_both_ends` and gains, for each block, a count of coloured faces (and the three face properties are of a kind of their own, one byte). Voxunami 2048's package is
+/// 3,510 bytes before and 3,151 now (359 fewer, measured by `block_golden.rs`, which pins the package), and the stream is 359 bytes shorter, 59,108 to 58,749: the
+/// welcome is the only place the package is in it. Predicted from the package pin before the run and then seen. The saved world is the same to the hash (15_563_235_043_056_448_435): nothing is saved that was not.
 const PINNED: (u64, usize, u64) = (
-    5_596_715_898_659_976_280,
-    59_108,
+    15_370_125_512_734_510_069,
+    58_749,
     15_563_235_043_056_448_435,
 );

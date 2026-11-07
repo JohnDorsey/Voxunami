@@ -9,8 +9,8 @@ Entities on the wire, who a player is, players as entities, ships a player can m
   - **Docking merges**: two ships that dock become one rigid body and one grid, and anything passes the join (crew, items, fire, light, the rules of any blocks
     that touch). Blocks flush with the ports are welded and the ships cannot undock until the player breaks them. The yellow face of a dev docking port
     docks with another's: snap within 10 degrees and 0.3 metres, any roll in quarter turns; the pull is on the centre of mass with the torque of the lever
-    and **does not scale with mass**. The dev port is creative only. Face properties (`engine:marked_face`, `engine:mark_color`, `engine:docking_face`) are
-    engine-reserved block properties, so the definition format did not change. Merging is `ServerWorld::merge_grids`, undocking `split_grid`.
+    and **does not scale with mass**. The dev port is creative only. Face properties (`engine:docking_face`, `engine:front_face`, `engine:axis_face`) are
+    engine-reserved block properties of the kind `face` (written as a word or a code); the colour of a face is not a property but the definition's `face_colors` (2026-11-07). Merging is `ServerWorld::merge_grids`, undocking `split_grid`.
   - A ship is saved while in flight, as a grid in a file of its own, portable to another world. A player whose ship file cannot be found is asked: world
     spawn, midair, or the title screen.
   - **Units are metric**: a voxel is a metre; kilograms, newtons, newton metres, seconds. Until materials have densities every block that is not air weighs

@@ -8,17 +8,20 @@ use namespaced_id::NamespacedId;
 use serde_json::{Map, Value};
 
 use crate::error::PackErrors;
+use crate::face_colors::{FaceColors, read_face_colors};
 use crate::shape::read_shape;
 use crate::walk::{Path, Walk, nearest, quoted};
 
 const OPERATIONS: [&str; 4] = ["test", "set", "remove", "add"];
-const FIELDS: [&str; 3] = ["color", "see_through", "state_colors"];
+const FIELDS: [&str; 4] = ["color", "see_through", "state_colors", "face_colors"];
 
 /// A property's value as the file wrote it; the property's declaration says whether it is the right kind.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PropertyValue {
     Bool(bool),
     Integer(i64),
+    /// Text: the word for a face, if the property is one.
+    Word(String),
 }
 
 /// What an operation looks at.
@@ -32,6 +35,7 @@ pub enum Place {
     Color,
     SeeThrough,
     StateColors,
+    FaceColors,
 }
 
 /// What an operation puts or expects.
@@ -41,6 +45,8 @@ pub enum PatchValue {
     Color([f32; 3]),
     Flag(bool),
     Colors(Vec<[f32; 3]>),
+    /// The colour of each face as the block is made (indexed by `FaceDirection::index`); `None` for a face that has the block's own.
+    FaceColors([Option<[f32; 3]>; 6]),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -54,7 +60,7 @@ pub enum Operation {
         place: Place,
         value: PatchValue,
     },
-    /// A property is back to the default, or the state colours are gone.
+    /// A property is back to the default, or the state colours or the face colours are gone.
     Remove {
         place: Place,
     },
@@ -238,6 +244,7 @@ fn read_place(walk: &mut Walk, object: &Map<String, Value>, path: &Path) -> Opti
                 "color" => Some(Place::Color),
                 "see_through" => Some(Place::SeeThrough),
                 "state_colors" => Some(Place::StateColors),
+                "face_colors" => Some(Place::FaceColors),
                 other => {
                     let hint = nearest(other, &FIELDS)
                         .map(|near| format!(" (did you mean \"{near}\"?)"))
@@ -260,6 +267,7 @@ fn read_value(walk: &mut Walk, value: &Value, path: &Path, place: &Place) -> Opt
     match place {
         Place::Property { .. } => match value {
             Value::Bool(flag) => Some(PatchValue::Property(PropertyValue::Bool(*flag))),
+            Value::String(word) => Some(PatchValue::Property(PropertyValue::Word(word.clone()))),
             Value::Number(_) => walk
                 .integer(value, path, i64::MIN, i64::MAX)
                 .map(|number| PatchValue::Property(PropertyValue::Integer(number))),
@@ -267,7 +275,7 @@ fn read_value(walk: &mut Walk, value: &Value, path: &Path, place: &Place) -> Opt
                 walk.fail(
                     path,
                     format!(
-                        "a property is true or false or a whole number, found {}",
+                        "a property is true or false, a whole number or a face's word, found {}",
                         crate::walk::kind_of(other)
                     ),
                 );
@@ -276,6 +284,10 @@ fn read_value(walk: &mut Walk, value: &Value, path: &Path, place: &Place) -> Opt
         },
         Place::Color => walk.color(value, path).map(PatchValue::Color),
         Place::SeeThrough => walk.boolean(value, path).map(PatchValue::Flag),
+        Place::FaceColors => {
+            let colors: Option<FaceColors> = read_face_colors(walk, value, path);
+            colors.map(PatchValue::FaceColors)
+        }
         Place::StateColors => {
             let list = walk.array(value, path)?;
             if list.is_empty() {

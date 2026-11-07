@@ -42,7 +42,8 @@ names, so the result never depends on how the folder happens to be listed.
   "see_through": false,
   "states": ["full", "half:negative_y", "stair:positive_x", { "boxes": [[0,0,0, 8,4,8], [2,4,2, 6,8,6]] }],
   "state_colors": [[0.9, 0.9, 0.95], [0.8, 0.8, 0.9]],
-  "properties": { "base_blocks:emission": 3, "base_blocks:passable": false },
+  "face_colors": { "top": [0.75, 0.58, 0.36], "bottom": [0.75, 0.58, 0.36], "positive_x": [1, 0.85, 0] },
+  "properties": { "base_blocks:emission": 3, "base_blocks:passable": false, "engine:axis_face": "up" },
   "state_properties": { "1": { "base_blocks:emission": 0 } }
 }
 ```
@@ -56,8 +57,14 @@ Only `color` is needed. A block is one whole cube unless `states` says more.
   whole numbers from 0 to 8 (eighths of a voxel): min x, y, z, then max x, y, z, each min below its max.
 - **`state_colors`**: a colour for each state, repeating if there are fewer than states. Each colour takes one of the
   1,048,576 colours the renderer has (a block takes one too).
+- **`face_colors`**: faces that are drawn in a colour of their own, the others being `color` (or the state's). The keys are the groups `top`
+  (+y), `side` (the other four) and `bottom` (-y), or one exact face, `negative_x`, `positive_x`, `negative_y`, `positive_y`, `negative_z`,
+  `positive_z` (the words of the shapes); an exact face beats its group, wherever it is written. The faces are those of the block as it is made, and turn with
+  the voxel (a log placed on its side has its ends on its sides). Each colour is three numbers like `color`.
 - **`properties`**: what the game's rules read about the block. The names, kinds and ranges are the game's: `voxunami pack-schema`
-  lists them with their documentation. Booleans are `true`/`false` and numbers are whole numbers inside the declared range.
+  lists them with their documentation. Booleans are `true`/`false` and numbers are whole numbers inside the declared range. A property that names a face
+  (`engine:front_face`, `engine:axis_face`, `engine:docking_face`) takes a word, `"none"`, `"west"`, `"east"`, `"down"`, `"up"`, `"north"` or `"south"`, or its number 0 to 6
+  (east is along +x, up along +y, north along -z).
 - **`state_properties`**: values that differ in one state, by the state's number.
 
 ## A patch
@@ -75,6 +82,8 @@ Only `color` is needed. A block is one whole cube unless `states` says more.
     { "op": "set",    "path": "see_through", "value": false },
     { "op": "set",    "path": "state_colors", "value": [[0,0,0], [1,1,1]] },
     { "op": "remove", "path": "state_colors" },
+    { "op": "set",    "path": "face_colors", "value": { "side": [0.4, 0.4, 0.4], "top": [1, 0.8, 0.5] } },
+    { "op": "set",    "property": "engine:axis_face", "value": "up" },
     { "op": "add",    "shape": "half:positive_y" }
   ]
 }
@@ -83,8 +92,9 @@ Only `color` is needed. A block is one whole cube unless `states` says more.
 - **`test`** says "I was written against this": the whole patch is refused unless the value is as stated. Use it before
   `set` when you depend on what the block was. A failed `test` is an error even in an optional patch.
 - **`set`** changes a property (in every state, or in one with `"state": N`; setting for every state leaves a state's own
-  value alone) or one of the fields `color`, `see_through`, `state_colors`.
-- **`remove`** takes a property back to the game's default (for every state, or one state), or removes the state colours. It is an
+  value alone) or one of the fields `color`, `see_through`, `state_colors`, `face_colors` (which replaces all the face colours, as the state colours are
+  replaced as a whole).
+- **`remove`** takes a property back to the game's default (for every state, or one state), or removes the state colours or the face colours. It is an
   error to remove what is not set (a lamp has no flammability, so removing it fails; the example removes `state_colors` after setting them). `color` and `see_through` cannot be removed (set them).
 - **`add`** appends a state with this shape. Later operations in the same patch may use it.
 - A patch is applied as a whole or not at all: if one operation fails, none of it happened.
@@ -220,6 +230,6 @@ the blocks come back when the pack is loaded again.
 
 ## Limits
 
-- At most 1,048,576 colours in all: every block takes one, and so does each state colour.
+- At most 1,048,576 colours in all: every block takes one, and so does each state colour and each distinct colour that a block gives a face.
 - A pack changes what blocks look like and the properties the game's rules read, so a block's *behaviour* is as rich as the
   properties the game gives (light, burning, walking through). New kinds of behaviour need code, which is later.

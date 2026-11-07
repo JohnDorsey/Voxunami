@@ -46,22 +46,6 @@ pub enum Placement {
     AlongPlacedFace(FaceDirection),
 }
 
-/// The face of a voxel that is drawn in the mark colour, in the orientation the voxel has, and (for a log) the face opposite it too.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FaceMark {
-    pub face: FaceDirection,
-    pub both_ends: bool,
-    /// The renderer's palette entry of the mark colour.
-    pub material: u32,
-}
-
-impl FaceMark {
-    /// Whether this face is drawn in the mark colour.
-    pub fn marks(&self, face: FaceDirection) -> bool {
-        face == self.face || (self.both_ends && face == self.face.opposite())
-    }
-}
-
 #[derive(Clone, Debug)]
 struct Entry {
     color: [f32; 3],
@@ -74,6 +58,17 @@ struct Entry {
     state_color_count: u32,
 }
 
+impl Entry {
+    /// What a voxel of this block in `state` is drawn as (see [`BlockTable::material_of`]).
+    fn material_of(&self, block: u32, state: u32) -> u32 {
+        if self.state_color_count > 0 {
+            self.first_state_material + state % self.state_color_count
+        } else {
+            block
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Model {
     /// The shape, in the pool of the table.
@@ -84,7 +79,8 @@ struct Model {
     /// block is see-through.
     hides: [u64; 6],
     opaque_cube: bool,
-    mark: Option<FaceMark>,
+    /// What each face of the voxel is drawn as (indexed by [`FaceDirection::index`]), for a block that colours faces; `None` if every face is the voxel's.
+    face_materials: Option<[u32; 6]>,
 }
 
 /// Every block's definition, turned into what the mesher, the renderer, lighting and physics ask
@@ -98,7 +94,7 @@ pub struct BlockTable {
     /// A model for each block and state and each orientation of it: base `b` standing in orientation `o` is `b * ORIENTATION_COUNT + o`.
     models: Vec<Model>,
     unknown: ModelId,
-    /// The colours after the blocks' own: every block's state colours, in block order, and then the mark colours.
+    /// The colours after the blocks' own: every block's state colours, in block order, and then the colours of faces.
     state_palette: Vec<[f32; 3]>,
     /// The properties, a column for each, with a value for every block-and-state (not for every orientation).
     columns: Vec<Column>,
@@ -129,6 +125,7 @@ impl BlockTable {
         struct Base<'a> {
             shape: &'a Shape,
             block: u32,
+            state: u32,
             see_through: bool,
         }
         let unknown_shape = Shape::full();
@@ -147,10 +144,11 @@ impl BlockTable {
                 continue;
             };
             let first_base = bases.len() as u32;
-            for shape in definition.shapes() {
+            for (state, shape) in definition.shapes().iter().enumerate() {
                 bases.push(Base {
                     shape,
                     block: block as u32,
+                    state: state as u32,
                     see_through: definition.see_through,
                 });
             }
@@ -168,6 +166,7 @@ impl BlockTable {
         bases.push(Base {
             shape: &unknown_shape,
             block: u32::MAX,
+            state: 0,
             see_through: false,
         });
         for entry in &mut entries {
@@ -220,48 +219,32 @@ impl BlockTable {
                 }
             }
         }
-        // The marked faces: each colour a block marks a face in takes one palette entry after all the state colours.
-        let value_of = |columns: &[Column], column: Option<usize>, base: usize| {
-            column.map_or(0, |column| columns[column].values[base])
-        };
-        let marked_face_column = position_of(&columns, engine::MARKED_FACE.id());
-        let mark_color_column = position_of(&columns, engine::MARK_COLOR.id());
-        let mark_both_ends_column = position_of(&columns, engine::MARK_BOTH_ENDS.id());
-        let first_mark_material = (definitions.len() + state_palette.len()) as u32;
-        let mut mark_colors: Vec<u32> = Vec::new();
-        let mut base_marks: Vec<Option<FaceMark>> = vec![None; bases.len()];
-        if marked_face_column.is_some() && mark_color_column.is_some() {
-            for entry in entries
-                .iter()
-                .filter(|entry| entry.first_base != unknown_base as u32)
-            {
-                for state in 0..entry.state_count {
-                    let base = (entry.first_base + state) as usize;
-                    let Some(face) = u8::try_from(value_of(&columns, marked_face_column, base))
-                        .ok()
-                        .and_then(face_from_code)
-                    else {
-                        continue;
-                    };
-                    let color = value_of(&columns, mark_color_column, base) as u32;
-                    let position = mark_colors
-                        .iter()
-                        .position(|known| *known == color)
-                        .unwrap_or_else(|| {
-                            mark_colors.push(color);
-                            mark_colors.len() - 1
-                        });
-                    base_marks[base] = Some(FaceMark {
-                        face,
-                        both_ends: value_of(&columns, mark_both_ends_column, base) != 0,
-                        material: first_mark_material + position as u32,
-                    });
-                }
+        // The coloured faces: each distinct colour a block gives a face takes one palette entry after all the state colours, in the order of the
+        // blocks and then of the faces.
+        let first_face_material = (definitions.len() + state_palette.len()) as u32;
+        let mut face_palette: Vec<[f32; 3]> = Vec::new();
+        let mut block_face_materials: Vec<Option<[Option<u32>; 6]>> = vec![None; definitions.len()];
+        for (block, definition) in definitions.iter().enumerate() {
+            let Some(definition) = definition else {
+                continue;
+            };
+            if definition.face_colors().iter().all(Option::is_none) {
+                continue;
             }
+            block_face_materials[block] = Some(definition.face_colors().map(|color| {
+                let color = color?;
+                let bits = color.map(f32::to_bits);
+                let position = face_palette
+                    .iter()
+                    .position(|known| known.map(f32::to_bits) == bits)
+                    .unwrap_or_else(|| {
+                        face_palette.push(color);
+                        face_palette.len() - 1
+                    });
+                Some(first_face_material + position as u32)
+            }));
         }
-        state_palette.extend(mark_colors.into_iter().map(|packed| {
-            [16, 8, 0].map(|shift| f32::from((packed >> shift & 0xFF) as u8) / 255.0)
-        }));
+        state_palette.extend(face_palette);
         // The models: each base in each orientation. Shapes that come out the same are one shape of the pool (a whole cube is one however it is turned).
         let rotations = LatticeRotation::all();
         let mut shapes: Vec<Shape> = Vec::new();
@@ -275,7 +258,7 @@ impl BlockTable {
             })
         };
         let mut models = Vec::with_capacity(bases.len() * ORIENTATION_COUNT);
-        for (base, details) in bases.iter().enumerate() {
+        for details in &bases {
             let own = pooled(details.shape, &mut shapes);
             for (orientation, rotation) in rotations.iter().enumerate() {
                 let shape = if orientation == 0 {
@@ -288,16 +271,27 @@ impl BlockTable {
                     turned_shapes.insert((own, orientation), found);
                     found
                 };
-                let mark = base_marks[base].map(|mark| FaceMark {
-                    face: rotation.apply_face(mark.face),
-                    ..mark
-                });
+                // The faces as the block is made: its own coloured ones, and for the rest the material of the voxel; each goes where the turn takes it.
+                let face_materials = block_face_materials
+                    .get(details.block as usize)
+                    .copied()
+                    .flatten()
+                    .map(|made| {
+                        let voxel = entries[details.block as usize]
+                            .material_of(details.block, details.state);
+                        let mut turned = [voxel; 6];
+                        for face in FaceDirection::ALL {
+                            turned[usize::from(rotation.apply_face(face).index())] =
+                                made[usize::from(face.index())].unwrap_or(voxel);
+                        }
+                        turned
+                    });
                 models.push(make_model(
                     &shapes[shape as usize],
                     shape,
                     details.see_through,
                     details.block,
-                    mark,
+                    face_materials,
                 ));
             }
         }
@@ -334,11 +328,11 @@ impl BlockTable {
             .enumerate()
             .find(|(_, column)| column.id == id)
             .ok_or_else(|| PropertyError::Undeclared(id.clone()))?;
-        if column.kind != T::KIND {
+        if column.kind != key.kind() {
             return Err(PropertyError::WrongKind {
                 key: id,
                 declared: column.kind,
-                asked: T::KIND,
+                asked: key.kind(),
             });
         }
         Ok(PropertyHandle {
@@ -403,16 +397,12 @@ impl BlockTable {
     /// block has colours for its states, and then one of the palette entries after the blocks'.
     /// Voxels are drawn in the same colour exactly when their materials are equal.
     pub fn material_of(&self, block: u32, state: u32) -> u32 {
-        match self.entries.get(block as usize) {
-            Some(entry) if entry.state_color_count > 0 => {
-                entry.first_state_material + state % entry.state_color_count
-            }
-            _ => block,
-        }
+        self.entries
+            .get(block as usize)
+            .map_or(block, |entry| entry.material_of(block, state))
     }
 
-    /// What a face of a voxel is drawn as: the material of the voxel (see [`BlockTable::material_of`]), unless the face is one the block marks, which
-    /// is drawn in the mark colour.
+    /// What a face of a voxel is drawn as: the material of the voxel (see [`BlockTable::material_of`]), unless the block gives the face a colour of its own.
     pub fn material_of_face(
         &self,
         block: u32,
@@ -420,15 +410,16 @@ impl BlockTable {
         orientation: u32,
         face: FaceDirection,
     ) -> u32 {
-        match self.face_mark(block, state, orientation) {
-            Some(mark) if mark.marks(face) => mark.material,
-            _ => self.material_of(block, state),
+        match self.face_materials(block, state, orientation) {
+            Some(materials) => materials[usize::from(face.index())],
+            None => self.material_of(block, state),
         }
     }
 
-    /// The face a block marks in a state, standing in an orientation, if the block marks one.
-    pub fn face_mark(&self, block: u32, state: u32, orientation: u32) -> Option<FaceMark> {
-        self.models[self.model_of(block, state, orientation).0 as usize].mark
+    /// What each face of a voxel is drawn as, indexed by [`FaceDirection::index`], for a block that gives faces colours of their own (turned with the
+    /// voxel's orientation); `None` for a block whose faces are all the voxel's material.
+    pub fn face_materials(&self, block: u32, state: u32, orientation: u32) -> Option<[u32; 6]> {
+        self.models[self.model_of(block, state, orientation).0 as usize].face_materials
     }
 
     /// A face that a property of the engine names (it is in the orientation of the block as it is made, and is turned with the voxel).
@@ -559,7 +550,7 @@ fn make_model(
     index: u32,
     see_through: bool,
     block: u32,
-    mark: Option<FaceMark>,
+    face_materials: Option<[u32; 6]>,
 ) -> Model {
     let hides = std::array::from_fn(|face| {
         if see_through {
@@ -574,13 +565,15 @@ fn make_model(
         see_through,
         hides,
         opaque_cube: shape.is_full() && !see_through,
-        mark,
+        face_materials,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::definition::color_from_bytes;
+    use crate::property::PropertyKind;
 
     const DOWN: FaceDirection = FaceDirection::NegativeY;
     const UP: FaceDirection = FaceDirection::PositiveY;
@@ -799,7 +792,9 @@ mod tests {
         assert_eq!(table.block_count(), 3);
     }
 
-    const YELLOW: [u8; 3] = [255, 216, 0];
+    fn yellow() -> [f32; 3] {
+        color_from_bytes([255, 216, 0])
+    }
 
     /// The number of the turn that carries the face `from` to the face `to` (the first, if there are several).
     fn orientation_carrying(from: FaceDirection, to: FaceDirection) -> u32 {
@@ -814,7 +809,7 @@ mod tests {
     /// A block of one state: a whole cube whose front, docking face and marked face are the east, as it is made.
     fn port() -> BlockDefinition {
         BlockDefinition::cube([0.3, 0.3, 0.32])
-            .with_marked_faces([255, 216, 0], &[Some(FaceDirection::PositiveX)])
+            .with_face_colors(&[(FaceDirection::PositiveX, yellow())])
             .with_docking_faces(&[Some(FaceDirection::PositiveX)])
             .with_front_face(FaceDirection::PositiveX)
     }
@@ -869,11 +864,19 @@ mod tests {
             );
         }
         for (orientation, rotation) in LatticeRotation::all().into_iter().enumerate() {
-            let turned = Some(rotation.apply_face(FaceDirection::PositiveX));
+            let turned_face = rotation.apply_face(FaceDirection::PositiveX);
+            let turned = Some(turned_face);
             let o = orientation as u32;
             assert_eq!(table.docking_face(0, 0, o), turned, "{orientation}");
             assert_eq!(table.front_face(0, 0, o), turned);
-            assert_eq!(table.face_mark(0, 0, o).map(|mark| mark.face), turned);
+            let materials = table
+                .face_materials(0, 0, o)
+                .expect("the port colours a face");
+            let yellow_faces: Vec<FaceDirection> = FaceDirection::ALL
+                .into_iter()
+                .filter(|face| materials[usize::from(face.index())] != 0)
+                .collect();
+            assert_eq!(yellow_faces, [turned_face], "{orientation}");
         }
         // Every face a port can face is an orientation, and only the roll about it differs between the four that share it.
         for face in FaceDirection::ALL {
@@ -888,7 +891,7 @@ mod tests {
     }
 
     #[test]
-    fn a_marked_face_is_drawn_in_its_own_colour_and_the_other_faces_in_the_blocks_wherever_the_voxel_faces()
+    fn a_coloured_face_is_drawn_in_its_own_colour_and_the_other_faces_in_the_blocks_wherever_the_voxel_faces()
      {
         let stone = BlockDefinition::cube([0.5; 3]);
         let tinted = BlockDefinition::cube([0.6; 3]).with_state_colors(vec![[0.9; 3], [0.8; 3]]);
@@ -897,7 +900,7 @@ mod tests {
         // The palette is the three blocks, the two state colours of the tinted one, and the yellow once.
         let palette = table.palette();
         assert_eq!(palette.len(), 6);
-        assert_eq!(palette[5], [1.0, 216.0 / 255.0, 0.0]);
+        assert_eq!(palette[5], yellow());
         for face in FaceDirection::ALL {
             let o = orientation_carrying(FaceDirection::PositiveX, face);
             for other in FaceDirection::ALL {
@@ -918,16 +921,18 @@ mod tests {
             );
             assert_eq!(table.material_of_face(9999, 0, 7, face), 9999);
         }
-        assert_eq!(table.face_mark(0, 0, 0), None);
+        assert_eq!(table.face_materials(0, 0, 0), None);
         assert_eq!(table.color(2), [0.3, 0.3, 0.32]);
-        let _ = YELLOW;
     }
 
     #[test]
-    fn a_log_marks_both_its_ends_and_a_piston_only_its_front() {
+    fn a_log_colours_both_its_ends_and_a_piston_only_its_front() {
+        let ends = color_from_bytes([200, 180, 120]);
         let log = BlockDefinition::cube([0.4; 3])
-            .with_marked_faces([200, 180, 120], &[Some(FaceDirection::PositiveY)])
-            .with_both_ends_marked()
+            .with_face_colors(&[
+                (FaceDirection::PositiveY, ends),
+                (FaceDirection::NegativeY, ends),
+            ])
             .with_axis_face(FaceDirection::PositiveY);
         let table = BlockTable::from_definitions(&[Some(&log), Some(&port())]);
         let sideways = orientation_carrying(FaceDirection::PositiveY, FaceDirection::PositiveX);
@@ -941,6 +946,95 @@ mod tests {
             .filter(|face| table.material_of_face(1, 0, 0, *face) != 1)
             .collect();
         assert_eq!(piston, [FaceDirection::PositiveX]);
+    }
+
+    #[test]
+    fn faces_of_a_block_with_state_colours_that_are_not_coloured_are_the_colour_of_the_state() {
+        // A block that has both: its own coloured face is a palette entry after the state colours, and its other faces follow the state.
+        let block = BlockDefinition::cube([0.5; 3])
+            .with_state_colors(vec![[0.1; 3], [0.2; 3]])
+            .with_shapes(vec![Shape::full(), Shape::full(), Shape::full()])
+            .with_face_colors(&[(FaceDirection::PositiveY, yellow())]);
+        let table = BlockTable::from_definitions(&[Some(&block)]);
+        // The palette is the block, the two state colours, then the yellow.
+        assert_eq!(table.palette(), [[0.5; 3], [0.1; 3], [0.2; 3], yellow()]);
+        for (state, voxel) in [(0, 1), (1, 2), (2, 1)] {
+            for face in FaceDirection::ALL {
+                let wanted = if face == FaceDirection::PositiveY {
+                    3
+                } else {
+                    voxel
+                };
+                assert_eq!(table.material_of_face(0, state, 0, face), wanted);
+            }
+        }
+    }
+
+    #[test]
+    fn a_colour_given_to_several_faces_or_blocks_is_one_palette_entry_in_the_order_of_blocks_then_faces()
+     {
+        let red = [1.0, 0.0, 0.0];
+        let blue = [0.0, 0.0, 1.0];
+        let first = BlockDefinition::cube([0.5; 3]).with_face_colors(&[
+            (FaceDirection::PositiveZ, blue),
+            (FaceDirection::NegativeX, red),
+            (FaceDirection::PositiveX, blue),
+        ]);
+        let second =
+            BlockDefinition::cube([0.6; 3]).with_face_colors(&[(FaceDirection::NegativeY, red)]);
+        let table = BlockTable::from_definitions(&[Some(&first), Some(&second)]);
+        // Two blocks, then red (the first block's lowest face), then blue.
+        assert_eq!(table.palette(), [[0.5; 3], [0.6; 3], red, blue]);
+        assert_eq!(table.face_materials(0, 0, 0), Some([2, 3, 0, 0, 0, 3]));
+        assert_eq!(table.face_materials(1, 0, 0), Some([1, 1, 2, 1, 1, 1]));
+    }
+
+    #[test]
+    fn coloured_faces_turn_with_the_voxel_for_every_orientation() {
+        let colours = [
+            [0.1, 0.0, 0.0],
+            [0.2, 0.0, 0.0],
+            [0.3, 0.0, 0.0],
+            [0.4, 0.0, 0.0],
+            [0.5, 0.0, 0.0],
+            [0.6, 0.0, 0.0],
+        ];
+        let all: Vec<(FaceDirection, [f32; 3])> =
+            FaceDirection::ALL.into_iter().zip(colours).collect();
+        let block = BlockDefinition::cube([0.9; 3]).with_face_colors(&all);
+        let table = BlockTable::from_definitions(&[Some(&block)]);
+        for (orientation, rotation) in LatticeRotation::all().into_iter().enumerate() {
+            for (made, colour) in all.iter().copied() {
+                let turned = rotation.apply_face(made);
+                let material = table.material_of_face(0, 0, orientation as u32, turned);
+                assert_eq!(
+                    table.palette()[material as usize],
+                    colour,
+                    "orientation {orientation}, made {made:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_face_property_is_read_through_a_handle_as_a_number_and_asking_for_it_as_another_kind_is_refused()
+     {
+        let table = BlockTable::from_definitions(&[Some(&port())]);
+        let handle = table.handle(&engine::FRONT_FACE).unwrap();
+        assert_eq!(
+            table.get_of(handle, 0, 0),
+            2,
+            "the east, as the code of a face"
+        );
+        let as_a_plain_number: PropertyKey<u8> =
+            PropertyKey::new("engine:front_face", 0, "asked for as a plain number");
+        assert!(matches!(
+            table.handle(&as_a_plain_number),
+            Err(PropertyError::WrongKind {
+                declared: PropertyKind::Face,
+                ..
+            })
+        ));
     }
 
     #[test]

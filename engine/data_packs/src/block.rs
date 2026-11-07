@@ -1,18 +1,22 @@
 //! A block file: one block of a pack, named by the file.
 
-use block_models::{BlockDefinition, PropertyDeclaration, PropertyKind, PropertySchema, Shape};
+use block_models::{
+    BlockDefinition, PropertyDeclaration, PropertyKind, PropertySchema, Shape, engine,
+};
 use namespaced_id::NamespacedId;
 use serde_json::Value;
 
 use crate::error::PackErrors;
+use crate::face_colors::read_face_colors;
 use crate::shape::read_shape;
 use crate::walk::{Path, Walk, nearest};
 
-const KEYS: [&str; 6] = [
+const KEYS: [&str; 7] = [
     "color",
     "see_through",
     "states",
     "state_colors",
+    "face_colors",
     "properties",
     "state_properties",
 ];
@@ -81,6 +85,10 @@ fn read_definition(
         Some(colors) => read_state_colors(walk, colors, &path.key("state_colors")),
         None => Some(Vec::new()),
     };
+    let face_colors = match object.get("face_colors") {
+        Some(colors) => read_face_colors(walk, colors, &path.key("face_colors")),
+        None => Some([None; 6]),
+    };
     let properties = match object.get("properties") {
         Some(properties) => read_properties(walk, properties, &path.key("properties"), schema),
         None => Some(Vec::new()),
@@ -96,11 +104,12 @@ fn read_definition(
         ),
         None => Some(Vec::new()),
     };
-    let (color, see_through, shapes, state_colors, properties, state_properties) = (
+    let (color, see_through, shapes, state_colors, face_colors, properties, state_properties) = (
         color?,
         see_through?,
         shapes?,
         state_colors?,
+        face_colors?,
         properties?,
         state_properties?,
     );
@@ -111,6 +120,7 @@ fn read_definition(
     if !state_colors.is_empty() {
         definition = definition.with_state_colors(state_colors);
     }
+    definition.set_face_colors(face_colors);
     for (key, value) in properties {
         definition = definition.with_property_value(key, value);
     }
@@ -161,7 +171,43 @@ pub(crate) fn read_property_value(
     match declaration.kind {
         PropertyKind::Bool => walk.boolean(value, path).map(i64::from),
         PropertyKind::Integer { minimum, maximum } => walk.integer(value, path, minimum, maximum),
+        PropertyKind::Face => match value {
+            Value::String(word) => face_code(walk, word, path),
+            Value::Number(_) => walk.integer(value, path, 0, 6),
+            other => {
+                walk.fail(
+                    path,
+                    format!("{}, found {}", expected_face(), crate::walk::kind_of(other)),
+                );
+                None
+            }
+        },
     }
+}
+
+/// What a face is, for a complaint.
+pub(crate) fn expected_face() -> String {
+    format!(
+        "expected a face ({}) or a number from 0 to 6",
+        crate::walk::quoted(&engine::FACE_WORDS)
+    )
+}
+
+/// The code of a face written as a word, or a complaint that says what a face is.
+pub(crate) fn face_code(walk: &mut Walk, word: &str, path: &Path) -> Option<i64> {
+    let code = engine::face_code_from_word(word).map(i64::from);
+    if code.is_none() {
+        walk.fail(path, no_such_face(word));
+    }
+    code
+}
+
+/// The complaint for a word that is no face.
+pub(crate) fn no_such_face(word: &str) -> String {
+    let hint = nearest(word, &engine::FACE_WORDS)
+        .map(|near| format!(" (did you mean \"{near}\"?)"))
+        .unwrap_or_default();
+    format!("{}, found \"{word}\"{hint}", expected_face())
 }
 
 /// The declaration of a property named by text, or a complaint that says what exists.

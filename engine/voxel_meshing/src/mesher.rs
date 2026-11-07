@@ -1,4 +1,4 @@
-use block_models::{BlockTable, FaceMark, ModelId, SUBDIVISIONS};
+use block_models::{BlockTable, ModelId, SUBDIVISIONS};
 use voxel_grid::ChannelStorage;
 use voxel_space::{BRICK_EDGE_LENGTH, FaceDirection, LocalVoxelIndex};
 
@@ -150,8 +150,8 @@ struct MeshedBrick<'a> {
     /// What each voxel is drawn as: its block, or for a block with colours for its states, the
     /// colour of its state (see [`BlockTable::material_of`]).
     materials: Vec<u32>,
-    /// For a voxel whose block marks a face in its state, the face and the material it is drawn in.
-    marks: Vec<Option<FaceMark>>,
+    /// For a voxel whose block gives faces colours of their own, what each face is drawn as (see [`BlockTable::face_materials`]).
+    face_materials: Vec<Option<[u32; 6]>>,
     models: Vec<ModelId>,
     light: Vec<u8>,
     /// Indexed by [`FaceDirection::index`].
@@ -182,10 +182,12 @@ impl<'a> MeshedBrick<'a> {
             .enumerate()
             .map(|(index, &block)| table.material_of(block, state_of(index)))
             .collect();
-        let marks = blocks
+        let face_materials = blocks
             .iter()
             .enumerate()
-            .map(|(index, &block)| table.face_mark(block, state_of(index), orientation_of(index)))
+            .map(|(index, &block)| {
+                table.face_materials(block, state_of(index), orientation_of(index))
+            })
             .collect();
         let light = match input.center.light {
             Some(light) => light.iter().map(|value| value.min(255) as u8).collect(),
@@ -194,7 +196,7 @@ impl<'a> MeshedBrick<'a> {
         Self {
             table,
             materials,
-            marks,
+            face_materials,
             models,
             light,
             layers: std::array::from_fn(|index| {
@@ -204,11 +206,11 @@ impl<'a> MeshedBrick<'a> {
         }
     }
 
-    /// What the `face` of the voxel at this index is drawn as: the marked face in the mark colour, the others in the voxel's.
+    /// What the `face` of the voxel at this index is drawn as: the face's own colour if the block gives it one, else the voxel's.
     fn material_of_face(&self, index: usize, face: FaceDirection) -> u32 {
-        match self.marks[index] {
-            Some(mark) if mark.marks(face) => mark.material,
-            _ => self.materials[index],
+        match self.face_materials[index] {
+            Some(materials) => materials[usize::from(face.index())],
+            None => self.materials[index],
         }
     }
 
@@ -685,34 +687,43 @@ mod tests {
         assert_eq!(tops, [quad([0, 0, 0], 32, 32, FaceDirection::PositiveY, 7)]);
     }
 
-    // ----- Marked faces -----
+    // ----- Coloured faces -----
 
     const PORT: u32 = 2;
     const SLAB_PORT: u32 = 3;
-    /// The first material after the blocks': the yellow of the marked faces.
+    /// The first material after the blocks': the yellow of the coloured faces.
     const YELLOW: u32 = 4;
 
-    /// Blocks 0 air, 1 gunmetal cube, 2 a cube with six states that mark a different face each, and 3 a slab (bottom half) that marks its top.
+    /// The number of the turn that carries the face `from` to the face `to` (the first, if there are several).
+    fn orientation_carrying(from: FaceDirection, to: FaceDirection) -> u32 {
+        voxel_space::LatticeRotation::all()
+            .into_iter()
+            .find(|rotation| rotation.apply_face(from) == to)
+            .expect("every face can be carried to every face")
+            .index()
+            .into()
+    }
+
+    /// Blocks 0 air, 1 gunmetal cube, 2 a cube that colours its east face as it is made, and 3 a slab (bottom half) that colours its top.
     fn marked_table() -> BlockTable {
-        let faces = FaceDirection::ALL.map(Some);
-        let port = BlockDefinition::cube([0.3; 3])
-            .with_shapes(vec![Shape::full(); 6])
-            .with_marked_faces([255, 216, 0], &faces);
+        let yellow = block_models::color_from_bytes([255, 216, 0]);
+        let port =
+            BlockDefinition::cube([0.3; 3]).with_face_colors(&[(FaceDirection::PositiveX, yellow)]);
         let slab = BlockDefinition::cube([0.35; 3])
             .with_shapes(vec![Shape::half(FaceDirection::NegativeY)])
-            .with_marked_faces([255, 216, 0], &[Some(FaceDirection::PositiveY)]);
+            .with_face_colors(&[(FaceDirection::PositiveY, yellow)]);
         let air = BlockDefinition::air();
         let gunmetal = BlockDefinition::cube([0.3; 3]);
         BlockTable::from_definitions(&[Some(&air), Some(&gunmetal), Some(&port), Some(&slab)])
     }
 
-    fn mesh_marked(blocks: &ChannelStorage, states: &ChannelStorage) -> BrickMesh {
+    fn mesh_marked(blocks: &ChannelStorage, orientations: &ChannelStorage) -> BrickMesh {
         mesh_brick(
             &BrickNeighbourhood {
                 center: BrickChannels {
                     blocks,
-                    states: Some(states),
-                    orientations: None,
+                    states: None,
+                    orientations: Some(orientations),
                     light: None,
                 },
                 neighbours: [None; 6],
@@ -722,18 +733,13 @@ mod tests {
     }
 
     #[test]
-    fn only_the_marked_face_of_a_cube_is_drawn_in_the_mark_colour() {
+    fn only_the_coloured_face_of_a_cube_is_drawn_in_its_colour_wherever_the_voxel_faces() {
         let at = (5, 6, 7);
         let blocks = brick_from(|x, y, z| if (x, y, z) == at { PORT } else { AIR });
         for marked in FaceDirection::ALL {
-            let states = brick_from(|x, y, z| {
-                if (x, y, z) == at {
-                    u32::from(marked.index())
-                } else {
-                    0
-                }
-            });
-            let mesh = mesh_marked(&blocks, &states);
+            let turn = orientation_carrying(FaceDirection::PositiveX, marked);
+            let orientations = brick_from(|x, y, z| if (x, y, z) == at { turn } else { 0 });
+            let mesh = mesh_marked(&blocks, &orientations);
             assert!(mesh.detailed.is_empty());
             assert_eq!(mesh.quads.len(), 6);
             for face in FaceDirection::ALL {
@@ -747,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn faces_merge_only_with_faces_of_the_same_material_so_marks_that_meet_merge_and_a_mark_beside_plain_does_not()
+    fn faces_merge_only_with_faces_of_the_same_material_so_coloured_faces_that_meet_merge_and_a_colour_beside_plain_does_not()
      {
         // Two ports side by side along z, both marked on +x: their +x faces are one yellow quad. A third beside them marked on +z has a plain +x face.
         let blocks = brick_from(|x, y, z| {
@@ -757,14 +763,15 @@ mod tests {
                 AIR
             }
         });
-        let states = brick_from(|x, y, z| {
-            if (x, y) == (5, 6) && (7..10).contains(&z) {
-                if z == 9 { 5 } else { 1 }
+        let to_the_south = orientation_carrying(FaceDirection::PositiveX, FaceDirection::PositiveZ);
+        let orientations = brick_from(|x, y, z| {
+            if (x, y) == (5, 6) && (7..10).contains(&z) && z == 9 {
+                to_the_south
             } else {
                 0
             }
         });
-        let mesh = mesh_marked(&blocks, &states);
+        let mesh = mesh_marked(&blocks, &orientations);
         let positive_x: Vec<Quad> = mesh
             .quads
             .iter()
@@ -778,7 +785,7 @@ mod tests {
     }
 
     #[test]
-    fn the_marked_face_of_a_block_that_is_not_a_cube_is_drawn_in_the_mark_colour_too() {
+    fn the_coloured_face_of_a_block_that_is_not_a_cube_is_drawn_in_its_colour_too() {
         let blocks = brick_from(|x, y, z| {
             if (x, y, z) == (5, 6, 7) {
                 SLAB_PORT
@@ -786,8 +793,8 @@ mod tests {
                 AIR
             }
         });
-        let states = brick_from(|_, _, _| 0);
-        let mesh = mesh_marked(&blocks, &states);
+        let orientations = brick_from(|_, _, _| 0);
+        let mesh = mesh_marked(&blocks, &orientations);
         assert!(mesh.quads.is_empty());
         assert_eq!(mesh.detailed.len(), 6);
         for quad in &mesh.detailed {

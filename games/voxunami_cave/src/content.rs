@@ -73,7 +73,10 @@ pub fn dev_docking_port_id() -> NamespacedId {
 /// player, as a piston is, and the orientation of the voxel says which way the yellow is.
 pub fn dev_docking_port() -> BlockDefinition {
     BlockDefinition::cube([0.17, 0.21, 0.22])
-        .with_marked_faces([255, 216, 0], &[Some(FaceDirection::PositiveX)])
+        .with_face_colors(&[(
+            FaceDirection::PositiveX,
+            block_models::color_from_bytes([255, 216, 0]),
+        )])
         .with_docking_faces(&[Some(FaceDirection::PositiveX)])
         .with_front_face(FaceDirection::PositiveX)
 }

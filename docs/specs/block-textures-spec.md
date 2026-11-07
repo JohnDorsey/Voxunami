@@ -1,6 +1,6 @@
 # Block textures, and the game's own blocks in data: specification
 
-**Status: written 2026-11-07 from an interview with the owner (the decisions marked "owner" below are theirs, from that day). Nothing is built.** It
+**Status: written 2026-11-07 from an interview with the owner (the decisions marked "owner" below are theirs, from that day). Step 0 and step 1 are built (see "As built" at the end); the rest is not.** It
 extends the data packs (`data-packs-spec.md`, `pack-format.md`) and the content package (`content-package-spec.md`), and it replaces the 2026-10-29
 advice of `architecture-review.md` section A4 ("no textures, sub-voxel models") with the owner's decision to have textures. What I checked in the code
 or on disk is marked **[code]** or **[disk]**; what I believe without having checked is marked **[belief]**.
@@ -246,3 +246,20 @@ than a set distance from the average of the pictures (only to remind the modder,
 Per-state pictures (D13); animated pictures (flowing water); translucent and cut-out pictures (plants); tints by climate; the other textures on disk;
 procedural block types, which the species of trees will use through *roles* (trunk, bark, leaf), not block ids; pictures on blocks larger than a metre
 (`future-goals.md`); texture packs before step 6. Sub-voxel models, which `architecture-review.md` preferred, are not ruled out for things that are not cubes.
+
+## As built
+
+**Step 0 (2026-11-07).** `block_golden.rs` in each of Cave, 2048 and Eels pins the numbering, the length and hash of the package, and a line per block from `block_models::snapshot` (a `test-support` feature).
+
+**Step 1 (2026-11-07).**
+- `BlockDefinition::face_colors` (six `Option<[f32; 3]>`, indexed by `FaceDirection::index`, for the block as it is made) with `with_face_colors`, `set_face_colors` and `color_from_bytes`; one count and then `(face, colour)` in the order of the faces in the byte form
+  (decoding refuses a face above 5, a repeat, or an order that is not ascending). The table gives each distinct colour one palette entry after the state colours, in the order of the blocks and then of the faces, and answers `face_materials` /
+  `material_of_face` turned by the voxel's orientation; `FaceMark` and `face_mark` are gone, and so are `engine:marked_face`, `engine:mark_color`, `engine:mark_both_ends` and the builders `with_marked_faces` and `with_both_ends_marked`.
+- `PropertyKind::Face` (values 0 to 6, byte kind 2 in the schema); the engine's `front_face`, `axis_face` and `docking_face` are of it (`PropertyKey::face`, `engine::FACE_WORDS`, `engine::face_code_from_word`), and a pack writes `"up"` or `4`.
+  `BlockTable::handle` now compares the declared kind with the key's own, so a face key asked for as a plain number is refused.
+- Packs: `face_colors` in a block file, and `set`, `test` and `remove` of the path `face_colors` in a patch; the schema describes both, and the differential test of the schema against the loader covers them. A patch's text value is read (it is a face's word if the property is
+  a face) and refused when applied to any other property, so the schema accepts text there.
+- **Checked:** the block table's answers for every block of the three games, in every state and all 24 orientations (1,068 lines), are identical between the code of step 0 and this code, once the removed `mark` token is dropped from the lines of the old code. The
+  digests in the `block_golden.rs` table lines moved only because the instrument no longer prints that token; the readable columns and the three palette digests did not move. The package bytes moved (they lose three declarations and a face kind's range, and
+  gain a count of coloured faces per block): Cave 3,088 to 2,642, 2048 3,510 to 3,151, Eels 1,547 to 1,189; the stream pins of the golden sessions moved with them and their saved worlds did not.
+- Not in step 1, as the spec says: the base blocks are still written in Rust (step 2), `color` is still required, and nothing reads a texture.

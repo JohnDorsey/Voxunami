@@ -353,8 +353,12 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// angles are 4 and 8 bytes longer, and the numbers the solver gives are not the ones they were), and the saved world is different (the sections are the new versions). Control, as for the other
 /// two games' sessions but by the end state, because the solver's numbers are in this stream: the old build and this one printed every entity at the end of the script (the player, and the stack of
 /// stone they picked up and dropped): every coordinate is the same to the 9 decimals printed. Hashes before: 18_195_685_852_877_378_881 and 7_542_728_601_885_368_666.
+/// Faces in colours of their own are a field of a definition and not three properties (block-textures step 1, 2026-11-07): the package loses the declarations of `engine:marked_face`,
+/// `engine:mark_color` and `engine:mark_both_ends` and gains, for each block, a count of coloured faces (and the three face properties are of a kind of their own, one byte). Voxunami Cave's package is
+/// 3,088 bytes before and 2,642 now (446 fewer, measured by `block_golden.rs`, which pins the package), and the stream is 446 bytes shorter, 7,205,917 to 7,205,471: the
+/// welcome is the only place the package is in it. Predicted from the package pin before the run and then seen. The saved world is the same to the hash (10_204_815_550_639_449_865): nothing is saved that was not.
 const PINNED: (u64, usize, u64) = (
-    13_855_926_902_016_341_522,
-    7_205_917,
+    877_064_149_344_468_255,
+    7_205_471,
     10_204_815_550_639_449_865,
 );

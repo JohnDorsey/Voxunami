@@ -254,7 +254,69 @@ fn corpus() -> Vec<Case> {
             r#"{ "color": [1,1,1], "see_through": true,
             "states": ["full", "empty", "half:positive_z", "stair:negative_x", { "boxes": [[0,0,0,8,4,8]] }],
             "state_colors": [[0,0,0]], "properties": { "test:glow": 255, "test:sticky": false },
+            "face_colors": { "top": [1,0,0], "side": [0,1,0], "bottom": [0,0,1], "positive_x": [1,1,1] },
             "state_properties": { "0": { "test:glow": 0 }, "4": { "test:sticky": true } } }"#,
+        ),
+        ok(
+            Block,
+            "a face by its word and another by its code",
+            r#"{ "color": [0,0,0], "properties": { "engine:axis_face": "up", "engine:front_face": 2 },
+            "state_properties": { "0": { "engine:docking_face": "none" } } }"#,
+        ),
+        bad(
+            Block,
+            "a face that is not a word",
+            r#"{ "color": [0,0,0], "properties": { "engine:axis_face": "top" } }"#,
+        ),
+        bad(
+            Block,
+            "a face code above 6",
+            r#"{ "color": [0,0,0], "properties": { "engine:axis_face": 7 } }"#,
+        ),
+        bad(
+            Block,
+            "a face code below 0",
+            r#"{ "color": [0,0,0], "properties": { "engine:axis_face": -1 } }"#,
+        ),
+        bad(
+            Block,
+            "a face given a flag",
+            r#"{ "color": [0,0,0], "properties": { "engine:axis_face": true } }"#,
+        ),
+        bad(
+            Block,
+            "a plain number given a word",
+            r#"{ "color": [0,0,0], "properties": { "test:glow": "up" } }"#,
+        ),
+        ok(
+            Block,
+            "one face coloured by name",
+            r#"{ "color": [0,0,0], "face_colors": { "negative_z": [0.5, 0.5, 0.5] } }"#,
+        ),
+        bad(
+            Block,
+            "no face colours",
+            r#"{ "color": [0,0,0], "face_colors": {} }"#,
+        ),
+        bad(
+            Block,
+            "face colours as a list",
+            r#"{ "color": [0,0,0], "face_colors": [[1,0,0]] }"#,
+        ),
+        bad(
+            Block,
+            "a face that is not one",
+            r#"{ "color": [0,0,0], "face_colors": { "up": [1,0,0] } }"#,
+        ),
+        bad(
+            Block,
+            "a face colour out of range",
+            r#"{ "color": [0,0,0], "face_colors": { "top": [1,0,2] } }"#,
+        ),
+        bad(
+            Block,
+            "a face colour of two numbers",
+            r#"{ "color": [0,0,0], "face_colors": { "side": [1,0] } }"#,
         ),
         ok(
             Block,
@@ -423,7 +485,30 @@ fn corpus() -> Vec<Case> {
             { "op": "test", "path": "see_through", "value": false },
             { "op": "set", "path": "state_colors", "value": [[0,0,0]] },
             { "op": "remove", "path": "state_colors" },
+            { "op": "set", "path": "face_colors", "value": { "top": [1,0,0], "negative_x": [0,0,1] } },
+            { "op": "test", "path": "face_colors", "value": { "side": [0,1,0] } },
+            { "op": "remove", "path": "face_colors" },
             { "op": "add", "shape": { "boxes": [[0,0,0,8,8,8]] } } ] }"#,
+        ),
+        bad(
+            Patch,
+            "face colours given none",
+            r#"{ "target": "a:b", "operations": [{ "op": "set", "path": "face_colors", "value": {} }] }"#,
+        ),
+        bad(
+            Patch,
+            "face colours given as a list",
+            r#"{ "target": "a:b", "operations": [{ "op": "set", "path": "face_colors", "value": [[1,0,0]] }] }"#,
+        ),
+        bad(
+            Patch,
+            "a face that is not one in a patch",
+            r#"{ "target": "a:b", "operations": [{ "op": "set", "path": "face_colors", "value": { "front": [1,0,0] } }] }"#,
+        ),
+        bad(
+            Patch,
+            "a remove of face colours with a value",
+            r#"{ "target": "a:b", "operations": [{ "op": "remove", "path": "face_colors", "value": {} }] }"#,
         ),
         bad(
             Patch,
@@ -491,9 +576,9 @@ fn corpus() -> Vec<Case> {
             "see-through given a number",
             r#"{ "target": "a:b", "operations": [{ "op": "set", "path": "see_through", "value": 1 }] }"#,
         ),
-        bad(
+        ok(
             Patch,
-            "a property value of text",
+            "a property value of text (a face's word, if the property is a face; applying the patch refuses it for any other)",
             r#"{ "target": "a:b", "operations": [{ "op": "set", "property": "x:y", "value": "high" }] }"#,
         ),
         bad(
@@ -854,6 +939,7 @@ fn a_game_with_another_property_gets_a_schema_with_that_property() {
 const GOOD_BLOCK: &str = r#"{ "color": [0.5, 0.5, 0.5], "see_through": false,
     "states": ["full", "half:negative_y", "stair:positive_x", { "boxes": [[0,0,0,8,8,8], [0,0,0,4,4,4]] }],
     "state_colors": [[0,0,0], [1,1,1]], "properties": { "test:glow": 3, "test:sticky": true },
+    "face_colors": { "top": [1, 0, 0], "positive_x": [0, 1, 0] },
     "state_properties": { "1": { "test:glow": 0 }, "3": { "test:sticky": false } } }"#;
 const GOOD_BODY: &str = r#"{ "level": "test_game:ground", "position": [1, 2, 3],
     "terrain": { "family": "test_game:ball_v1", "parameters": { "radius": 300, "seed": 99 } },
@@ -869,6 +955,7 @@ const GOOD_PATCH: &str = r#"{ "target": "base_blocks:lamp", "optional": true, "o
     { "op": "set", "property": "test:glow", "state": 0, "value": 9 },
     { "op": "set", "path": "color", "value": [1, 0.5, 0.25] },
     { "op": "remove", "path": "state_colors" },
+    { "op": "set", "path": "face_colors", "value": { "side": [0, 1, 0], "top": [1, 0, 0] } },
     { "op": "add", "shape": "half:positive_y" },
     { "op": "test", "path": "see_through", "value": false } ] }"#;
 

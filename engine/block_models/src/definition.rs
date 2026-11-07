@@ -21,6 +21,8 @@ pub struct BlockDefinition {
     pub see_through: bool,
     shapes: Vec<Shape>,
     state_colors: Vec<[f32; 3]>,
+    /// The flat colour of each face of the block as it is made (indexed by [`FaceDirection::index`]), for the faces that differ from `color`.
+    face_colors: [Option<[f32; 3]>; 6],
     properties: SetProperties,
 }
 
@@ -32,6 +34,7 @@ impl BlockDefinition {
             see_through: false,
             shapes: vec![Shape::full()],
             state_colors: Vec::new(),
+            face_colors: [None; 6],
             properties: SetProperties::new(),
         }
     }
@@ -43,6 +46,7 @@ impl BlockDefinition {
             see_through: true,
             shapes: vec![Shape::empty()],
             state_colors: Vec::new(),
+            face_colors: [None; 6],
             properties: SetProperties::new(),
         }
     }
@@ -95,16 +99,14 @@ impl BlockDefinition {
         self
     }
 
-    /// The same block with a face of each state drawn in `color` (sRGB bytes): `faces[state]` is the face marked in that state, if any.
-    /// Every other face is the block's own colour. (The marked face takes a place in the renderer's palette, like a colour of a state.)
-    pub fn with_marked_faces(self, color: [u8; 3], faces: &[Option<FaceDirection>]) -> Self {
-        let packed = u32::from(color[0]) << 16 | u32::from(color[1]) << 8 | u32::from(color[2]);
-        let mut marked = self.with_property(&engine::MARK_COLOR, packed);
-        for (state, face) in faces.iter().enumerate() {
-            marked =
-                marked.with_state_property(state as u32, &engine::MARKED_FACE, face_code(*face));
+    /// The same block with these faces drawn in their own colours, whatever the state, and every other face in the block's own (or its state's).
+    /// The faces are those of the block as it is made, and turn with the voxel. A face given twice has the last colour.
+    /// (Each distinct colour takes a place in the renderer's palette, like a colour of a state.)
+    pub fn with_face_colors(mut self, colors: &[(FaceDirection, [f32; 3])]) -> Self {
+        for (face, color) in colors {
+            self.face_colors[usize::from(face.index())] = Some(*color);
         }
-        marked
+        self
     }
 
     /// The same block with a docking face in each state: `faces[state]` is the face that docks in that state, if any.
@@ -126,17 +128,13 @@ impl BlockDefinition {
         self.with_property(&engine::AXIS_FACE, face_code(Some(face)))
     }
 
-    /// The same block with the face opposite its marked face marked too, in every state: the two ends of a log.
-    pub fn with_both_ends_marked(self) -> Self {
-        self.with_property(&engine::MARK_BOTH_ENDS, true)
-    }
-
     /// A definition from its parts, as decoded; the caller has checked them.
     pub(crate) fn from_parts(
         color: [f32; 3],
         see_through: bool,
         shapes: Vec<Shape>,
         state_colors: Vec<[f32; 3]>,
+        face_colors: [Option<[f32; 3]>; 6],
         properties: SetProperties,
     ) -> Self {
         Self {
@@ -144,6 +142,7 @@ impl BlockDefinition {
             see_through,
             shapes,
             state_colors,
+            face_colors,
             properties,
         }
     }
@@ -212,6 +211,11 @@ impl BlockDefinition {
         self.state_colors = colors;
     }
 
+    /// Replaces the colours of faces; all `None` means every face has the block's own colour.
+    pub fn set_face_colors(&mut self, colors: [Option<[f32; 3]>; 6]) {
+        self.face_colors = colors;
+    }
+
     pub(crate) fn properties(&self) -> &SetProperties {
         &self.properties
     }
@@ -231,9 +235,19 @@ impl BlockDefinition {
         &self.state_colors
     }
 
+    /// The colour of each face as the block is made, indexed by [`FaceDirection::index`]; `None` for a face that has the block's own colour.
+    pub fn face_colors(&self) -> &[Option<[f32; 3]>; 6] {
+        &self.face_colors
+    }
+
     pub fn state_count(&self) -> usize {
         self.shapes.len()
     }
+}
+
+/// A colour given in sRGB bytes, as the colours of a definition are (a byte over 255).
+pub fn color_from_bytes(bytes: [u8; 3]) -> [f32; 3] {
+    bytes.map(|byte| f32::from(byte) / 255.0)
 }
 
 #[cfg(test)]
@@ -274,6 +288,32 @@ mod tests {
         let coloured = plain.with_state_colors(vec![[0.2; 3], [0.3; 3]]);
         assert_eq!(coloured.state_colors(), [[0.2; 3], [0.3; 3]]);
         assert_eq!(coloured.state_count(), 1, "colours are not shapes");
+    }
+
+    #[test]
+    fn faces_have_the_blocks_colour_unless_given_their_own_and_the_last_colour_for_a_face_wins() {
+        let plain = BlockDefinition::cube([0.1; 3]);
+        assert_eq!(plain.face_colors(), &[None; 6]);
+        let yellow = color_from_bytes([255, 216, 0]);
+        let log = plain.with_face_colors(&[
+            (FaceDirection::PositiveY, [0.5; 3]),
+            (FaceDirection::NegativeY, yellow),
+            (FaceDirection::PositiveY, [0.7; 3]),
+        ]);
+        let mut expected = [None; 6];
+        expected[usize::from(FaceDirection::PositiveY.index())] = Some([0.7; 3]);
+        expected[usize::from(FaceDirection::NegativeY.index())] = Some(yellow);
+        assert_eq!(log.face_colors(), &expected);
+        assert_eq!(log.color, [0.1; 3], "the block's own colour is untouched");
+        assert_eq!(yellow, [1.0, 216.0 / 255.0, 0.0]);
+    }
+
+    #[test]
+    fn face_colours_can_be_replaced_and_cleared() {
+        let mut block = BlockDefinition::cube([0.5; 3])
+            .with_face_colors(&[(FaceDirection::PositiveX, [0.2; 3])]);
+        block.set_face_colors([None; 6]);
+        assert_eq!(block.face_colors(), &[None; 6]);
     }
 
     #[test]

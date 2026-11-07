@@ -7,6 +7,7 @@ mod block;
 mod body;
 mod directory;
 mod error;
+mod face_colors;
 mod family;
 mod load;
 mod manifest;

@@ -19,10 +19,10 @@ mod shape;
 pub mod snapshot;
 mod table;
 
-pub use definition::BlockDefinition;
+pub use definition::{BlockDefinition, color_from_bytes};
 pub use property::{
     PropertyDeclaration, PropertyError, PropertyHandle, PropertyKey, PropertyKind, PropertySchema,
     PropertyType, engine,
 };
 pub use shape::{FaceConnections, SUBDIVISIONS, Shape, ShapeBox, SubRect, face_axes};
-pub use table::{BlockTable, FaceMark, MISSING_BLOCK_COLOR, ModelId, ORIENTATION_COUNT, Placement};
+pub use table::{BlockTable, MISSING_BLOCK_COLOR, ModelId, ORIENTATION_COUNT, Placement};

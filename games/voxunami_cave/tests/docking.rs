@@ -77,9 +77,8 @@ fn the_dev_docking_port_is_gunmetal_gray_with_one_yellow_face_that_docks_and_exi
     for face in FaceDirection::ALL {
         let orientation = facing(face).orientation;
         assert_eq!(table.docking_face(block, 0, orientation), Some(face));
-        let mark = table.face_mark(block, 0, orientation).unwrap();
-        assert_eq!(mark.face, face);
-        assert_eq!(palette[mark.material as usize], [1.0, 216.0 / 255.0, 0.0]);
+        let yellow = table.material_of_face(block, 0, orientation, face);
+        assert_eq!(palette[yellow as usize], [1.0, 216.0 / 255.0, 0.0]);
         for other in FaceDirection::ALL
             .into_iter()
             .filter(|other| *other != face)

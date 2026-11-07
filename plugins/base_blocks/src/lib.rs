@@ -260,12 +260,15 @@ impl BaseBlocks {
             BlockDefinition::cube([1.0, 0.92, 0.65]).with_emission(LAMP_EMISSION),
         );
         // Wood is a log: it is drawn with lighter ends, and when a player places it the line between its ends runs along the face it is placed against.
+        let log_end_color = block_models::color_from_bytes(LOG_END_COLOR);
         let wood = register(
             "wood",
             solid([0.55, 0.38, 0.20])
                 .with_flammability(WOOD_FLAMMABILITY)
-                .with_marked_faces(LOG_END_COLOR, &[Some(FaceDirection::PositiveY); 7])
-                .with_both_ends_marked()
+                .with_face_colors(&[
+                    (FaceDirection::PositiveY, log_end_color),
+                    (FaceDirection::NegativeY, log_end_color),
+                ])
                 .with_axis_face(FaceDirection::PositiveY),
         );
         let fire = register(
@@ -408,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn wood_is_a_log_with_its_line_up_and_down_and_both_ends_marked_and_nothing_else_is_turned_by_the_player()
+    fn wood_is_a_log_with_its_line_up_and_down_and_both_ends_coloured_and_nothing_else_is_turned_by_the_player()
      {
         let table = BaseBlocks::new().block_table();
         let wood = BaseBlocks::new().wood;
@@ -416,7 +419,7 @@ mod tests {
             table.placement(wood, 0),
             block_models::Placement::AlongPlacedFace(FaceDirection::PositiveY)
         );
-        // Marked at the top and at the bottom as it is made (the ends of the trunk), and the other faces are the bark.
+        // Coloured at the top and at the bottom as it is made (the ends of the trunk), and the other faces are the bark.
         let ends: Vec<FaceDirection> = FaceDirection::ALL
             .into_iter()
             .filter(|face| table.material_of_face(wood, 0, 0, *face) != table.material_of(wood, 0))
@@ -489,9 +492,6 @@ mod tests {
                 "engine:density",
                 "engine:docking_face",
                 "engine:front_face",
-                "engine:mark_both_ends",
-                "engine:mark_color",
-                "engine:marked_face",
                 "engine:placeable_on_moving_grids"
             ]
         );

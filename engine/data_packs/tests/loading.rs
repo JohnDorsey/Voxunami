@@ -307,6 +307,110 @@ fn patches_change_properties_fields_and_states_and_nothing_else() {
 }
 
 #[test]
+fn a_patch_may_name_a_face_by_its_word_and_a_failed_test_says_the_words() {
+    let set = r#"{ "op": "set", "property": "engine:axis_face", "value": "up" },
+                 { "op": "set", "property": "engine:front_face", "value": 2 },
+                 { "op": "test", "property": "engine:axis_face", "value": 4 },
+                 { "op": "test", "property": "engine:front_face", "value": "east" }"#;
+    let loaded = load(&one_patch(&["base"], &patch_of("base:lamp", false, set))).unwrap();
+    let lamp = definition(&loaded, "base:lamp");
+    assert_eq!(lamp.property_value(&id("engine:axis_face"), None, 0), 4);
+    assert_eq!(lamp.property_value(&id("engine:front_face"), None, 0), 2);
+    let f = "my_pack/patches/change.json";
+    let one = |operation: &str| {
+        refusal(&one_patch(
+            &["base"],
+            &patch_of("base:lamp", false, operation),
+        ))
+    };
+    assert_eq!(
+        one(r#"{ "op": "test", "property": "engine:axis_face", "value": "down" }"#),
+        [format!(
+            "{f}: /operations/0: the test failed: engine:axis_face is none, not down"
+        )]
+    );
+    assert_eq!(
+        one(r#"{ "op": "set", "property": "engine:axis_face", "value": "top" }"#),
+        [format!(
+            "{f}: /operations/0/value: expected a face (\"none\", \"west\", \"east\", \"down\", \"up\", \"north\", \"south\") or a number from 0 to 6, found \"top\""
+        )]
+    );
+    assert_eq!(
+        one(r#"{ "op": "set", "property": "engine:axis_face", "value": 9 }"#),
+        [format!("{f}: /operations/0/value: 9 is outside 0 to 6")]
+    );
+    assert_eq!(
+        one(r#"{ "op": "set", "property": "test:glow", "value": "up" }"#),
+        [format!(
+            "{f}: /operations/0/value: expected a whole number, found text"
+        )]
+    );
+    assert_eq!(
+        one(r#"{ "op": "set", "property": "test:sticky", "value": "up" }"#),
+        [format!(
+            "{f}: /operations/0/value: expected true or false, found text"
+        )]
+    );
+}
+
+#[test]
+fn a_patch_sets_tests_and_removes_the_colours_of_faces() {
+    let set = r#"{ "op": "set", "path": "face_colors", "value": { "top": [1, 0, 0], "positive_x": [0, 0, 1] } }"#;
+    let loaded = load(&one_patch(&["base"], &patch_of("base:lamp", false, set))).unwrap();
+    assert_eq!(
+        definition(&loaded, "base:lamp"),
+        &base()[1].1.clone().with_face_colors(&[
+            (FaceDirection::PositiveY, [1.0, 0.0, 0.0]),
+            (FaceDirection::PositiveX, [0.0, 0.0, 1.0]),
+        ])
+    );
+    // Setting replaces all of them, as for the state colours; testing reads them back; removing takes them all away.
+    let loaded = load(&[pack(
+        "my_pack",
+        &["base"],
+        &[("log", r#"{ "color": [0,0,0], "face_colors": { "top": [1,0,0], "bottom": [1,0,0] } }"#)],
+        &[(
+            "change",
+            &patch_of(
+                "my_pack:log",
+                false,
+                r#"{ "op": "test", "path": "face_colors", "value": { "top": [1,0,0], "bottom": [1,0,0] } },
+                   { "op": "set", "path": "face_colors", "value": { "side": [0,1,0] } },
+                   { "op": "test", "path": "face_colors", "value": { "side": [0,1,0] } },
+                   { "op": "remove", "path": "face_colors" }"#,
+            ),
+        )],
+    )])
+    .unwrap();
+    assert_eq!(
+        definition(&loaded, "my_pack:log"),
+        &BlockDefinition::cube([0.0; 3])
+    );
+}
+
+#[test]
+fn a_test_of_face_colours_that_fails_and_a_remove_with_none_to_remove_are_refused() {
+    let f = "my_pack/patches/change.json";
+    let one = |operation: &str| {
+        refusal(&one_patch(
+            &["base"],
+            &patch_of("base:lamp", false, operation),
+        ))
+    };
+    let errors = one(r#"{ "op": "test", "path": "face_colors", "value": { "top": [1, 0, 0] } }"#);
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert!(errors[0].starts_with(&format!(
+        "{f}: /operations/0: the test failed: the face colours are [None, None, None, None, None, None], not "
+    )));
+    assert_eq!(
+        one(r#"{ "op": "remove", "path": "face_colors" }"#),
+        [format!(
+            "{f}: /operations/0: this block has no face colours, so there is nothing to remove"
+        )]
+    );
+}
+
+#[test]
 fn removing_takes_a_property_or_the_state_colours_away() {
     let loaded = load(&[pack(
         "my_pack",
@@ -402,7 +506,7 @@ fn a_patch_to_a_block_that_does_not_exist_is_refused_unless_it_is_optional() {
 #[test]
 fn a_property_nobody_declared_is_refused_with_a_hint_unless_the_patch_is_optional() {
     let operations = r#"{ "op": "set", "property": "test:glo", "value": 1 }"#;
-    let declared = "\"engine:axis_face\", \"engine:density\", \"engine:docking_face\", \"engine:front_face\", \"engine:mark_both_ends\", \"engine:mark_color\", \"engine:marked_face\", \"engine:placeable_on_moving_grids\", \"test:glow\", \"test:sticky\"";
+    let declared = "\"engine:axis_face\", \"engine:density\", \"engine:docking_face\", \"engine:front_face\", \"engine:placeable_on_moving_grids\", \"test:glow\", \"test:sticky\"";
     assert_eq!(
         refusal(&one_patch(
             &["base"],

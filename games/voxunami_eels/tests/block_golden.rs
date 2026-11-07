@@ -57,13 +57,13 @@ const PINNED_NAMES: &[&str] = &[
 ];
 
 /// (the length, the hash) of `PackageData::encode` as it was on 2026-11-07.
-const PINNED_PACKAGE: (usize, u64) = (1547, 5_435_666_396_290_776_257);
+const PINNED_PACKAGE: (usize, u64) = (1189, 16_173_776_103_500_028_361);
 
 const PINNED_TABLE: &[&str] = &[
-    " 0 voxunami_eels:air: colour #000000, 1 states, state 0 faces [0 0 0 0 0 0], front none, axis none, docking none, placement Fixed, behaviour 10e1fcf0fdf150ec",
-    " 1 voxunami_eels:wall: colour #1a1f38, 1 states, state 0 faces [1 1 1 1 1 1], front none, axis none, docking none, placement Fixed, behaviour 7577bab564a3737b",
-    " 2 voxunami_eels:wall_line: colour #40bff2, 1 states, state 0 faces [2 2 2 2 2 2], front none, axis none, docking none, placement Fixed, behaviour 2cb789552d9f75a4",
-    " 3 voxunami_eels:trail: colour #e63333, 1 states, state 0 faces [5 5 5 5 5 5], front none, axis none, docking none, placement Fixed, behaviour 8a2cc1a5157a509f",
-    " 4 voxunami_eels:head: colour #f4a3a3, 1 states, state 0 faces [13 13 13 13 13 13], front none, axis none, docking none, placement Fixed, behaviour bad52736c2fc5abc",
+    " 0 voxunami_eels:air: colour #000000, 1 states, state 0 faces [0 0 0 0 0 0], front none, axis none, docking none, placement Fixed, behaviour a28133c087488ace",
+    " 1 voxunami_eels:wall: colour #1a1f38, 1 states, state 0 faces [1 1 1 1 1 1], front none, axis none, docking none, placement Fixed, behaviour e91641d7bf20e52d",
+    " 2 voxunami_eels:wall_line: colour #40bff2, 1 states, state 0 faces [2 2 2 2 2 2], front none, axis none, docking none, placement Fixed, behaviour a9f1d93133ad6db6",
+    " 3 voxunami_eels:trail: colour #e63333, 1 states, state 0 faces [5 5 5 5 5 5], front none, axis none, docking none, placement Fixed, behaviour 34ef6b226aa9b8e1",
+    " 4 voxunami_eels:head: colour #f4a3a3, 1 states, state 0 faces [13 13 13 13 13 13], front none, axis none, docking none, placement Fixed, behaviour a1e826fc3fb71fd6",
     "palette: 21 colours, digest dfb345c9ae2453ee",
 ];

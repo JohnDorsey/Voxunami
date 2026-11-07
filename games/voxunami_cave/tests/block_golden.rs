@@ -61,17 +61,17 @@ fn what_the_block_table_says_of_each_cave_block_is_pinned() {
 }
 
 /// (the length, the hash) of `PackageData::encode` for Cave as it was on 2026-11-07.
-const PINNED_PACKAGE: (usize, u64) = (3088, 9_365_039_542_407_574_718);
+const PINNED_PACKAGE: (usize, u64) = (2642, 15_242_818_186_442_752_027);
 
 const PINNED_TABLE: &[&str] = &[
-    " 0 base_blocks:air: colour #000000, 1 states, state 0 faces [0 0 0 0 0 0], front none, axis none, docking none, placement Fixed, behaviour 10e1fcf0fdf150ec",
-    " 1 base_blocks:stone: colour #808087, 7 states, state 0 faces [1 1 1 1 1 1], front none, axis none, docking none, placement Fixed, behaviour fa566482241665e0",
-    " 2 base_blocks:dirt: colour #734d2e, 7 states, state 0 faces [2 2 2 2 2 2], front none, axis none, docking none, placement Fixed, behaviour 76ef6fcd6ab3c195",
-    " 3 base_blocks:grass: colour #4d9e33, 7 states, state 0 faces [3 3 3 3 3 3], front none, axis none, docking none, placement Fixed, behaviour e6280ca6456bb6da",
-    " 4 base_blocks:lamp: colour #ffeba6, 1 states, state 0 faces [4 4 4 4 4 4], front none, axis none, docking none, placement Fixed, behaviour 29a658216fc19cf2",
-    " 5 base_blocks:wood: colour #8c6133, 7 states, state 0 faces [5 5 21 21 5 5], front none, axis PositiveY, docking none, placement AlongPlacedFace(PositiveY), behaviour e14f37ae8fdd16e2",
-    " 6 base_blocks:fire: colour #f2801a, 1 states, state 0 faces [9 9 9 9 9 9], front none, axis none, docking none, placement Fixed, behaviour 9f1593674525a51f",
-    " 7 base_blocks:great_river_water: colour #1447d9, 1 states, state 0 faces [7 7 7 7 7 7], front none, axis none, docking none, placement Fixed, behaviour 57ac60228431ee45",
-    " 8 voxunami_cave:dev_docking_port: colour #2b3638, 1 states, state 0 faces [8 22 8 8 8 8], front PositiveX, axis none, docking PositiveX, placement FrontToPlayer(PositiveX), behaviour 0d98df2d76b13b2d",
+    " 0 base_blocks:air: colour #000000, 1 states, state 0 faces [0 0 0 0 0 0], front none, axis none, docking none, placement Fixed, behaviour a28133c087488ace",
+    " 1 base_blocks:stone: colour #808087, 7 states, state 0 faces [1 1 1 1 1 1], front none, axis none, docking none, placement Fixed, behaviour 39220bfbc6178ff6",
+    " 2 base_blocks:dirt: colour #734d2e, 7 states, state 0 faces [2 2 2 2 2 2], front none, axis none, docking none, placement Fixed, behaviour dc51607bdc4d28c7",
+    " 3 base_blocks:grass: colour #4d9e33, 7 states, state 0 faces [3 3 3 3 3 3], front none, axis none, docking none, placement Fixed, behaviour 3a271a760995eddc",
+    " 4 base_blocks:lamp: colour #ffeba6, 1 states, state 0 faces [4 4 4 4 4 4], front none, axis none, docking none, placement Fixed, behaviour 95be8fd8fb01184c",
+    " 5 base_blocks:wood: colour #8c6133, 7 states, state 0 faces [5 5 21 21 5 5], front none, axis PositiveY, docking none, placement AlongPlacedFace(PositiveY), behaviour 74115bc94a7705d4",
+    " 6 base_blocks:fire: colour #f2801a, 1 states, state 0 faces [9 9 9 9 9 9], front none, axis none, docking none, placement Fixed, behaviour fa5f4357000a02e1",
+    " 7 base_blocks:great_river_water: colour #1447d9, 1 states, state 0 faces [7 7 7 7 7 7], front none, axis none, docking none, placement Fixed, behaviour b6f4e359f8b9c92f",
+    " 8 voxunami_cave:dev_docking_port: colour #2b3638, 1 states, state 0 faces [8 22 8 8 8 8], front PositiveX, axis none, docking PositiveX, placement FrontToPlayer(PositiveX), behaviour fd685fdd30a8549f",
     "palette: 23 colours, digest 30fe57426e454c88",
 ];
