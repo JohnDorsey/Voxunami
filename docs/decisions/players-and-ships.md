@@ -89,6 +89,10 @@ Entities on the wire, who a player is, players as entities, ships a player can m
 - **`engine:hidden`** is an engine component: replication skips a hidden entity (and despawns it for those who knew it); the world keeps it.
 - **Clients know the players they can see**, by the entity replication, not everyone: players in another level, or beyond the watched region,
   are not known. `PoseBook` and the `Players` broadcast are gone (the message itself was deleted in Phase 28).
+- **A client is always told of the ship its own body is aboard** (2026-11-08), wherever its watched region is and before the budget of ship bricks: a client places its own
+  body, and so its camera, by the ship, and the box it watches follows its camera, so a client that lost the ship it rides could never get it back (the owner's hour at full
+  throttle: the box is asked for when the camera's brick changes and answered a tick later, and at 6 bricks a tick the ship was out of it). The game names each client's body
+  with `ServerWorld::set_client_focus` (`player_presence` does, for players); the engine reads the ship from that entity's pose.
 - The look angles are kept as reported (a component) beside the orientation quaternion, so that nothing recovers angles from a quaternion.
   The calls that read or move players take the world (`Presence`), a game holds it as it held the book.
 

@@ -2832,6 +2832,7 @@ fn a_planet_is_told_of_with_its_generator_and_extent_and_sent_only_the_bricks_th
         &views,
         &mut known,
         Some((LevelIndex::MAIN, region)),
+        None,
         1000,
         &[],
     );
@@ -2880,8 +2881,15 @@ fn a_planet_is_told_of_to_a_client_watching_anywhere_in_its_level_and_an_ordinar
     let views = crate::grid_replication::ship_views(&world);
     let told = |watched: Option<(LevelIndex, BrickBox)>| {
         let mut known = crate::grid_replication::KnownGrids::default();
-        let messages =
-            crate::grid_replication::grid_messages(&world, &views, &mut known, watched, 1000, &[]);
+        let messages = crate::grid_replication::grid_messages(
+            &world,
+            &views,
+            &mut known,
+            watched,
+            None,
+            1000,
+            &[],
+        );
         let ships: Vec<GridId> = match messages.first() {
             Some(ServerMessage::GridsSpawned(states)) => {
                 states.iter().map(|state| state.id).collect()

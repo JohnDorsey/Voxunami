@@ -667,6 +667,7 @@ impl Server {
             );
         }
         // Ships come after the terrain, entities after the voxels they stand in, and both before the messages of the game.
+        let aboard = self.world.ship_of_client(id);
         let Phase::Joined {
             known_entities,
             known_grids,
@@ -684,6 +685,7 @@ impl Server {
             ships,
             known_grids,
             current,
+            aboard,
             self.config.maximum_ship_bricks,
             edited,
         ));

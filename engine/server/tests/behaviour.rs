@@ -3127,3 +3127,133 @@ fn a_game_can_send_a_client_away_with_a_reason_and_the_client_is_told_and_gone_f
             .contains(&LogicEvent::Left(ClientId::new(1)))
     );
 }
+
+#[test]
+fn a_client_is_sent_the_ship_its_own_body_is_aboard_wherever_it_watches_and_for_as_long_as_it_is_aboard()
+ {
+    // Two ships far from the origin, where both clients watch; the cow of the first client is aboard the first of them from tick 3, and steps off it at tick 8.
+    let game = Game::new(&ALL_PLUGINS);
+    let logic = ScriptedLogic::new()
+        .with_entity_catalog(cow_catalog())
+        .on_tick(move |tick, world| match tick.get() {
+            3 => {
+                let aboard = world.create_grid(LevelIndex::MAIN, ship_pose(40)).unwrap();
+                build(world, aboard, &[([1, 1, 1], 4)]);
+                let other = world.create_grid(LevelIndex::MAIN, ship_pose(41)).unwrap();
+                build(world, other, &[([1, 1, 1], 4)]);
+                let on_it = EntityPose::new(
+                    aboard,
+                    WorldPosition::new(BrickCoordinate::ORIGIN, [3.0, 2.0, 3.0]),
+                    Orientation::IDENTITY,
+                );
+                let cow = world
+                    .spawn_entity(&id("test:cow"), on_it, ComponentBag::new())
+                    .unwrap();
+                world.set_client_focus(ClientId::new(1), Some(cow));
+                // (Nobody is connected as this one: it has no effect.)
+                world.set_client_focus(ClientId::new(9), Some(cow));
+                assert_eq!(world.client_focus(ClientId::new(1)), Some(cow));
+                assert_eq!(world.client_focus(ClientId::new(9)), None);
+            }
+            8 => {
+                let cow = EntityId::new(1);
+                world.set_entity_pose(cow, pose_in(0, 3.0)).unwrap();
+            }
+            _ => {}
+        });
+    let mut harness =
+        Harness::with_logic(&game, game.new_world(), ServerConfig::new(game_id()), logic);
+    let (mut focused, mut other) = (harness.connect(), harness.connect());
+    harness.log_in(&mut [&mut focused, &mut other]);
+    focused.received();
+    other.received();
+    focused.watch(BrickCoordinate::ORIGIN, 2);
+    other.watch(BrickCoordinate::ORIGIN, 2);
+    let (mut focused_told, mut other_told) = (Vec::new(), Vec::new());
+    for _ in 0..12 {
+        harness.server.step();
+        focused_told.extend(focused.received());
+        other_told.extend(other.received());
+    }
+    let spawned = |messages: &[ServerMessage]| -> Vec<Vec<GridId>> {
+        messages
+            .iter()
+            .filter_map(|message| match message {
+                ServerMessage::GridsSpawned(states) => {
+                    Some(states.iter().map(|state| state.id).collect())
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    let despawned = |messages: &[ServerMessage]| -> Vec<Vec<GridId>> {
+        messages
+            .iter()
+            .filter_map(|message| match message {
+                ServerMessage::GridsDespawned(ids) => Some(ids.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    // The one whose body is aboard is told of that ship (once, and not of the other), and told to forget it when the body is off it; the other is told of neither.
+    assert_eq!(spawned(&focused_told), [vec![a_ship_id(0)]]);
+    assert_eq!(despawned(&focused_told), [vec![a_ship_id(0)]]);
+    assert!(
+        ship_messages(&other_told).is_empty(),
+        "{:?}",
+        ship_messages(&other_told)
+    );
+    // And it was sent with its bricks: the ship was whole in the client's picture.
+    assert!(focused_told.iter().any(|message| matches!(
+        message,
+        ServerMessage::BrickContents { grid, .. } if *grid == a_ship_id(0)
+    )));
+}
+
+#[test]
+fn the_ship_a_clients_body_is_aboard_takes_the_budget_of_bricks_before_a_ship_with_a_lower_id() {
+    let game = Game::new(&ALL_PLUGINS);
+    let logic = ScriptedLogic::new()
+        .with_entity_catalog(cow_catalog())
+        .on_tick(move |tick, world| {
+            if tick.get() == 3 {
+                // A ship in the region the client watches (the lower id), and one far away that it rides: a brick each, and room for one.
+                let near = world.create_grid(LevelIndex::MAIN, ship_pose(0)).unwrap();
+                build(world, near, &[([1, 1, 1], 4)]);
+                let ridden = world.create_grid(LevelIndex::MAIN, ship_pose(40)).unwrap();
+                build(world, ridden, &[([1, 1, 1], 4)]);
+                let on_it = EntityPose::new(
+                    ridden,
+                    WorldPosition::new(BrickCoordinate::ORIGIN, [3.0, 2.0, 3.0]),
+                    Orientation::IDENTITY,
+                );
+                let cow = world
+                    .spawn_entity(&id("test:cow"), on_it, ComponentBag::new())
+                    .unwrap();
+                world.set_client_focus(ClientId::new(1), Some(cow));
+            }
+        });
+    let config = ServerConfig {
+        maximum_ship_bricks: 1,
+        ..ServerConfig::new(game_id())
+    };
+    let mut harness = Harness::with_logic(&game, game.new_world(), config, logic);
+    let mut client = harness.connect();
+    harness.log_in(&mut [&mut client]);
+    client.received();
+    client.watch(BrickCoordinate::ORIGIN, 2);
+    let mut told = Vec::new();
+    for _ in 0..8 {
+        harness.server.step();
+        told.extend(client.received());
+    }
+    let spawned: Vec<GridId> = told
+        .iter()
+        .filter_map(|message| match message {
+            ServerMessage::GridsSpawned(states) => Some(states.iter().map(|state| state.id)),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert_eq!(spawned, [a_ship_id(1)]);
+}

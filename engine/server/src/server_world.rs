@@ -187,6 +187,8 @@ pub struct ServerWorld {
     catalog: Arc<EntityCatalog>,
     tick: Tick,
     clients: BTreeMap<ClientId, PlayerKey>,
+    /// The entity that is each client's own body, if the game says which it is: the ships it is aboard are in the client's picture wherever the client's view is.
+    focus: BTreeMap<ClientId, EntityId>,
     /// (Behind a cell so that reading a ship that has terrain needs only a shared borrow of the world: a body meets several grids at once, and the others are
     /// borrowed from the world as well.)
     generated: RefCell<GeneratedBrickCache>,
@@ -268,6 +270,7 @@ impl ServerWorld {
             catalog,
             tick: Tick::ZERO,
             clients: BTreeMap::new(),
+            focus: BTreeMap::new(),
             generated: RefCell::new(GeneratedBrickCache::default()),
             generations: Cell::new(0),
             prefetcher: RefCell::new(Prefetcher::default()),
@@ -547,6 +550,33 @@ impl ServerWorld {
 
     pub(crate) fn remove_client(&mut self, client: ClientId) {
         self.clients.remove(&client);
+        self.focus.remove(&client);
+    }
+
+    /// Says which entity is a client's own body (`None`: none is). The client is told of the ship that entity is aboard, whatever else it watches: a client places
+    /// its own body, and so its camera, by the ship, and a camera that is nowhere does not move the box of bricks the client asks to watch, so a client that had
+    /// lost the ship it rides could never get it back. Games that move players call this when a client's player is made, and `None` when they let go of it.
+    pub fn set_client_focus(&mut self, client: ClientId, entity: Option<EntityId>) {
+        match entity {
+            Some(entity) if self.clients.contains_key(&client) => {
+                self.focus.insert(client, entity);
+            }
+            _ => {
+                self.focus.remove(&client);
+            }
+        }
+    }
+
+    /// The entity that is a client's own body, if the game has said which it is.
+    pub fn client_focus(&self, client: ClientId) -> Option<EntityId> {
+        self.focus.get(&client).copied()
+    }
+
+    /// The ship a client's own body is aboard, if it has a body and the body is aboard a ship.
+    pub(crate) fn ship_of_client(&self, client: ClientId) -> Option<GridId> {
+        let entity = self.entities().get(*self.focus.get(&client)?)?;
+        let grid = entity.pose.grid;
+        grid.root_level().is_none().then_some(grid)
     }
 
     /// The identity of a connected client: the public key it proved it holds the private key of.

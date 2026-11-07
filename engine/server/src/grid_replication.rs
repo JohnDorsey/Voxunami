@@ -63,19 +63,33 @@ pub(crate) type KnownGrids = BTreeMap<GridId, GridPose>;
 /// The messages that bring a client's picture of the ships up to date with the world, for a client watching `watched`: those that left,
 /// then those that came in (each followed by all its bricks), then those that moved, then the edits made this tick to those the client
 /// already had. `known` becomes what the client now knows. At most `budget` bricks of ships are in a client's picture: a ship that
-/// would take it past that, in order of id, is left out, and so is every later one that does not fit.
+/// would take it past that, in order of id, is left out, and so is every later one that does not fit. The exception is `aboard`, the ship the client's own body is aboard (if
+/// it is in the level the client watches): it is in the picture wherever the region is, and takes its bricks of the budget first, because a client that does not know it cannot place its own body.
 pub(crate) fn grid_messages(
     world: &ServerWorld,
     views: &[ShipView],
     known: &mut KnownGrids,
     watched: Option<(LevelIndex, BrickBox)>,
+    aboard: Option<GridId>,
     budget: u64,
     edited: &[EditedBrick],
 ) -> Vec<ServerMessage> {
     let mut wanted: Vec<&ShipView> = Vec::new();
     if let Some((level, region)) = watched {
-        let mut used = 0u64;
+        // (The ship the client's body is aboard takes its bricks of the budget first, and is where its id puts it among the others.)
+        let forced = views
+            .iter()
+            .find(|view| Some(view.id) == aboard && view.level == level)
+            .map(|view| view.id);
+        let mut used = views
+            .iter()
+            .find(|view| Some(view.id) == forced)
+            .map_or(0, |view| view.brick_count);
         for view in views {
+            if Some(view.id) == forced {
+                wanted.push(view);
+                continue;
+            }
             // (A planet is known from anywhere in its level: it is drawn from as far as there is anything to see of it, and a client has to know it to draw it.)
             if view.level == level
                 && (view.terrain.is_some() || view.bounds.intersection(region).is_some())
