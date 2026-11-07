@@ -37,6 +37,7 @@ entities.workspace = true
 world_view.workspace = true
 
 [dev-dependencies]
+block_models = { workspace = true, features = ["test-support"] }
 jsonschema.workspace = true
 proptest.workspace = true
 wgpu = "30.0.1"

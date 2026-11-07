@@ -12,6 +12,10 @@ namespaced_id.workspace = true
 thiserror.workspace = true
 voxel_space.workspace = true
 
+[features]
+# A readable description of a block table, for the golden tests of the games.
+test-support = []
+
 [dev-dependencies]
 proptest.workspace = true
 

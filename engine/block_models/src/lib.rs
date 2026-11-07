@@ -15,6 +15,8 @@ mod codec;
 mod definition;
 mod property;
 mod shape;
+#[cfg(feature = "test-support")]
+pub mod snapshot;
 mod table;
 
 pub use definition::BlockDefinition;
