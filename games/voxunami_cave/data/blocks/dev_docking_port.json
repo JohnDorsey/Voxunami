@@ -1,0 +1,6 @@
+{
+  "texture": "base_blocks:dev_docking_port",
+  "face_colors": { "positive_x": [1, 0.84705883, 0] },
+  "properties": { "engine:front_face": "east", "engine:axis_face": "up" },
+  "state_properties": { "0": { "engine:docking_face": "east" } }
+}

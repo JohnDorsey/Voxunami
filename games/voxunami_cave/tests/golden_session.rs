@@ -353,11 +353,30 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// angles are 4 and 8 bytes longer, and the numbers the solver gives are not the ones they were), and the saved world is different (the sections are the new versions). Control, as for the other
 /// two games' sessions but by the end state, because the solver's numbers are in this stream: the old build and this one printed every entity at the end of the script (the player, and the stack of
 /// stone they picked up and dropped): every coordinate is the same to the 9 decimals printed. Hashes before: 18_195_685_852_877_378_881 and 7_542_728_601_885_368_666.
-/// The dev command seat and the dev rocket engine (2026-11-04): the welcome carries the declaration of one more engine property (`engine:also_marked_face`, 173 bytes, as in the other two games'
-/// sessions) and the definitions of two blocks, and the saved world names them: the stream is 7,206,561 bytes where it was 7,205,917, 644 more, and the hashes differ because the bytes do. What
-/// the script builds, breaks and walks through is what it was (the plugins listed in other orders give the same values, below).
+/// Faces in colours of their own are a field of a definition and not three properties (block-textures step 1, 2026-11-07): the package loses the declarations of `engine:marked_face`,
+/// `engine:mark_color` and `engine:mark_both_ends` and gains, for each block, a count of coloured faces (and the three face properties are of a kind of their own, one byte). Voxunami Cave's package is
+/// 3,088 bytes before and 2,642 now (446 fewer, measured by `block_golden.rs`, which pins the package), and the stream is 446 bytes shorter, 7,205,917 to 7,205,471: the
+/// welcome is the only place the package is in it. Predicted from the package pin before the run and then seen. The saved world is the same to the hash (10_204_815_550_639_449_865): nothing is saved that was not.
+/// Blocks carry their pictures' base name and whether their colour follows them (block-textures step 3, 2026-11-07): two bytes more for each block in the package, a flag for the texture and a flag for the colour.
+/// Voxunami Cave has 9 blocks: its package is 2,642 bytes before and 2,660 now (measured by `block_golden.rs`, which pins the package), and the stream is 18 bytes longer, 7,205,471 to 7,205,489: the
+/// welcome is the only place the package is in it. Predicted from the number of blocks before the run and then seen. The saved world is the same to the hash (10_204_815_550_639_449_865): nothing is saved that was not.
+/// Textures on the base blocks and the dev docking port (block-textures step 3, 2026-11-07): their `color` is gone from their files and follows their pictures, and each names its pictures (`base_blocks:stone`,
+/// `base_blocks:log`, ...), which the package carries. Cave's package is 2,660 bytes before and 2,782 now (measured by `block_golden.rs`, which pins the package), and the stream is 122 bytes longer, 7,205,489 to 7,205,611:
+/// the welcome is the only place the package is in it, and the colours are the same width as the colours they replace. Predicted from the package pin before the run and then seen. The saved world is the same to the hash
+/// (10_204_815_550_639_449_865): nothing is saved that was not.
+/// The package carries the pictures of the blocks (block-textures step 4, 2026-11-07): the tiles as raw pixels, smallest size first, after the ambient light, and a block that has pictures says where its
+/// three are. Nine blocks cost a flag each, the six that have pictures say where their three are (6 bytes each), and the nine tiles of 16 by 16 are 9 x 1,024 bytes with 3 bytes for the list: 9 + 36 + 9,219 = 9,264 bytes. Voxunami Cave's package is 2,782 bytes before and 12,046 now (measured by `block_golden.rs`, which pins the package), and the stream is 9264 bytes longer, 7,205,611 to 7,214,875: the
+/// welcome is the only place the package is in it. Predicted by counting the bytes before the run and then seen. The saved world is the same to the hash (10_204_815_550_639_449_865): nothing is saved that was not.
+/// The docking port has a line, its top, as well as a front (2026-11-08, so that its top goes away from the surface it is put against, as a log's does): one more property, which is its name (17 bytes: the lengths of the namespace and of the
+/// name and their 15 letters), a flag that it is for every state, its value (a face) and a count of the states it is set for, 17 + 1 + 1 + 1 = 20 bytes. I predicted 2, forgetting that a property is written by its name, and counted after the run. Voxunami Cave's package is
+/// 12,046 bytes before and 12,066 now (measured by `block_golden.rs`), and the stream is 20 bytes longer, 7,214,875 to 7,214,895: the welcome is the only place the package is in it. The saved world is the same to the hash (10_204_815_550_639_449_865).
+/// The dev command seat and the dev rocket engine, merged from the branch that made them (2026-11-08; there they were two blocks and a message, and their colours the old mark properties, here they are the
+/// `face_colors` of their definitions): the package is 12,066 bytes before and 12,399 now (+333, measured by `block_golden.rs`, which also pins the table, where the seat's back and bottom are one palette entry and the engine's
+/// exhaust another), and the stream is 396 bytes longer, 7,214,895 to 7,215,291. **The saved world's hash, 17_018_755_794_665_956_377, is the one the branch that made the seat and the engine pinned for the same script**: the saved world
+/// names the blocks and not their colours, so the two ways of colouring them give the same world. These numbers were measured, not predicted. *Believed, not checked:* the 63 bytes of the stream that are not the package are the
+/// declaration of the flight readout's message that branch added to the welcome.
 const PINNED: (u64, usize, u64) = (
-    8_632_927_380_862_394_442,
-    7_206_561,
+    3_560_450_734_653_215_519,
+    7_215_291,
     17_018_755_794_665_956_377,
 );

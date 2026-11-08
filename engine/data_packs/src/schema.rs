@@ -6,12 +6,13 @@
 //! number is one the block has, that a block's name is free, that a dependency exists and is not a cycle, and that a
 //! `test` holds are for the loader (`check-pack` says them all).
 
-use block_models::{PropertyKind, PropertySchema};
+use block_models::{PropertyKind, PropertySchema, engine};
 use serde_json::{Value, json};
 
 use crate::body::{
     BodyContext, GREATEST_EXTENT_BRICKS, GREATEST_MASS, POSITION_LIMIT, SMALLEST_ORBIT_RATIO,
 };
+use crate::face_colors::{FACE_GROUPS, face_color_keys};
 use crate::shape::{FACE_NAMES, SHAPE_NAMES};
 
 /// The schemas of the four kinds of file a pack has.
@@ -46,6 +47,35 @@ fn color() -> Value {
         "maxItems": 3,
         "items": { "type": "number", "minimum": 0, "maximum": 1 },
         "description": "red, green, blue, each from 0 to 1"
+    })
+}
+
+fn face_colors() -> Value {
+    let mut properties = serde_json::Map::new();
+    for key in face_color_keys() {
+        let description = if FACE_GROUPS.contains(&key) {
+            format!(
+                "the colour of {}, as the block is made",
+                match key {
+                    "top" => "the top (+y)",
+                    "bottom" => "the bottom (-y)",
+                    _ => "the four sides",
+                }
+            )
+        } else {
+            format!("the colour of the {key} face, as the block is made; beats its group")
+        };
+        properties.insert(
+            key.to_owned(),
+            json!({ "$ref": "#/$defs/color", "description": description }),
+        );
+    }
+    json!({
+        "type": "object",
+        "minProperties": 1,
+        "additionalProperties": false,
+        "properties": properties,
+        "description": "faces that are drawn in a colour of their own, by group (top, side, bottom) or by one face; an exact face beats its group"
     })
 }
 
@@ -89,10 +119,23 @@ fn property_value(declaration: &block_models::PropertyDeclaration) -> Value {
         PropertyKind::Integer { minimum, maximum } => {
             json!({ "type": "integer", "minimum": minimum, "maximum": maximum })
         }
+        PropertyKind::Face => json!({
+            "oneOf": [
+                { "type": "integer", "minimum": 0, "maximum": 6 },
+                { "enum": engine::FACE_WORDS }
+            ]
+        }),
     };
     let default = match declaration.kind {
         PropertyKind::Bool => (declaration.default != 0).to_string(),
         PropertyKind::Integer { .. } => declaration.default.to_string(),
+        PropertyKind::Face => usize::try_from(declaration.default)
+            .ok()
+            .and_then(|code| engine::FACE_WORDS.get(code))
+            .map_or_else(
+                || declaration.default.to_string(),
+                |word| (*word).to_owned(),
+            ),
     };
     value["description"] = json!(format!("{} (default {default})", declaration.doc));
     value
@@ -146,12 +189,17 @@ fn block(schema: &PropertySchema) -> Value {
         "title": "A Voxunami block",
         "description": "one block of a pack; its name is the file's name",
         "type": "object",
-        "required": ["color"],
+        "anyOf": [{ "required": ["color"] }, { "required": ["texture"] }],
         "additionalProperties": false,
-        "$defs": { "color": color(), "shape": shape() },
+        "$defs": { "color": color(), "shape": shape(), "face_colors": face_colors() },
         "properties": {
             "$schema": { "type": "string" },
             "color": { "$ref": "#/$defs/color" },
+            "texture": {
+                "type": "string",
+                "pattern": format!("^({PART}:)?{PART}$"),
+                "description": "the base name of the block's pictures: `oak` is a picture of this pack, `other_pack:stone` of another; `oak_top`, `oak_side`, `oak_bottom` or `oak` in the `textures` folder say what each face looks like. `color` may be left out: it is then the average of the pictures"
+            },
             "see_through": { "type": "boolean", "default": false },
             "states": {
                 "type": "array",
@@ -165,6 +213,7 @@ fn block(schema: &PropertySchema) -> Value {
                 "items": { "$ref": "#/$defs/color" },
                 "description": "the colour each state is drawn in, repeating; every state has `color` if left out"
             },
+            "face_colors": { "$ref": "#/$defs/face_colors" },
             "properties": properties_object(schema),
             "state_properties": {
                 "type": "object",
@@ -310,7 +359,7 @@ fn body(context: &BodyContext<'_>) -> Value {
 
 fn patch() -> Value {
     let identifier = json!({ "type": "string", "pattern": identifier_pattern() });
-    let property_value = json!({ "type": ["boolean", "integer"] });
+    let property_value = json!({ "type": ["boolean", "integer", "string"] });
     let state = json!({ "type": "integer", "minimum": 0 });
     let operation = |properties: Value, required: &[&str]| {
         json!({
@@ -327,7 +376,7 @@ fn patch() -> Value {
         "type": "object",
         "required": ["target", "operations"],
         "additionalProperties": false,
-        "$defs": { "color": color(), "shape": shape() },
+        "$defs": { "color": color(), "shape": shape(), "face_colors": face_colors() },
         "properties": {
             "$schema": { "type": "string" },
             "target": {
@@ -373,6 +422,24 @@ fn patch() -> Value {
                     operation(json!({
                         "op": { "const": "remove" },
                         "path": { "const": "state_colors" }
+                    }), &["op", "path"]),
+                    operation(json!({
+                        "op": { "enum": ["test", "set"] },
+                        "path": { "const": "face_colors" },
+                        "value": { "$ref": "#/$defs/face_colors" }
+                    }), &["op", "path", "value"]),
+                    operation(json!({
+                        "op": { "enum": ["test", "set"] },
+                        "path": { "const": "texture" },
+                        "value": identifier
+                    }), &["op", "path", "value"]),
+                    operation(json!({
+                        "op": { "const": "remove" },
+                        "path": { "const": "texture" }
+                    }), &["op", "path"]),
+                    operation(json!({
+                        "op": { "const": "remove" },
+                        "path": { "const": "face_colors" }
                     }), &["op", "path"]),
                     operation(json!({
                         "op": { "const": "add" },

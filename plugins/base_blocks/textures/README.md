@@ -4,7 +4,10 @@ Texture images for the blocks of the `base_blocks` plugin. Each tile is its own 
 
 Blocks that exist today (ids are `base_blocks:<name>`): stone, dirt, grass, lamp, wood, fire, great_river_water.
 
-The file naming, size, face layout and how the engine loads these are not decided yet; this folder only holds the assets.
+How the game uses them is decided in `docs/specs/block-textures-spec.md`: the files are `name_top.png`, `name_side.png`, `name_bottom.png` or `name.png`
+(a block names `name` in its file, and which faces differ follows from the files that exist), 16 by 16 here but any power of two from 8 to 256. Grass, dirt, stone,
+still water, the log (`log_top`, `log_side`), and the dev docking port (`_top`, `_side`, `_bottom`) are used by blocks and embedded in the program; the others are not yet.
+The editor below is for making them: the game reads the loose PNG files and ignores `atlas.json`.
 
 ## VirtualAtlas.py
 

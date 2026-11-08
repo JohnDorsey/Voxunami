@@ -1,0 +1,5 @@
+{
+  "texture": "grass",
+  "states": ["full", "half:negative_y", "half:positive_y", "stair:positive_x", "stair:negative_x", "stair:negative_z", "stair:positive_z"],
+  "properties": { "base_blocks:flammability": 100 }
+}

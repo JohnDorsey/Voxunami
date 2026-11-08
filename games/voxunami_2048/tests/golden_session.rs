@@ -293,10 +293,18 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// by a control: with the wire put back to the `f32` form (the offsets and the angles of the presence messages written as `f32`) and the version put back to 10, nothing else changed, this
 /// script gave the stream hash and the length above, 2_608_887_802_805_617_703 and 59_088, to the bit; so the stream moved for the widths and the version and for nothing else. The stream is
 /// 20 bytes longer (one pose, 12, and one look, 8). The saved world moved as the sections that hold poses are version 4.
-/// The engine declares one more block property, `engine:also_marked_face` (2026-11-04; a second face drawn in the mark colour, for the chair of Cave): the welcome carries its declaration, 173 bytes more
-/// (its name and its documentation), and the saved world is the same to the hash. Predicted from the length of the declaration before the run, and seen: 59,108 to 59,281.
+/// Faces in colours of their own are a field of a definition and not three properties (block-textures step 1, 2026-11-07): the package loses the declarations of `engine:marked_face`,
+/// `engine:mark_color` and `engine:mark_both_ends` and gains, for each block, a count of coloured faces (and the three face properties are of a kind of their own, one byte). Voxunami 2048's package is
+/// 3,510 bytes before and 3,151 now (359 fewer, measured by `block_golden.rs`, which pins the package), and the stream is 359 bytes shorter, 59,108 to 58,749: the
+/// welcome is the only place the package is in it. Predicted from the package pin before the run and then seen. The saved world is the same to the hash (15_563_235_043_056_448_435): nothing is saved that was not.
+/// Blocks carry their pictures' base name and whether their colour follows them (block-textures step 3, 2026-11-07): two bytes more for each block in the package, a flag for the texture and a flag for the colour.
+/// Voxunami 2048 has 4 blocks: its package is 3,151 bytes before and 3,159 now (measured by `block_golden.rs`, which pins the package), and the stream is 8 bytes longer, 58,749 to 58,757: the
+/// welcome is the only place the package is in it. Predicted from the number of blocks before the run and then seen. The saved world is the same to the hash (15_563_235_043_056_448_435): nothing is saved that was not.
+/// The package carries the pictures of the blocks (block-textures step 4, 2026-11-07): the tiles as raw pixels, smallest size first, after the ambient light, and a block that has pictures says where its
+/// three are. A block with no pictures costs one byte (a flag) and the list of sizes one byte: 4 blocks and the list, 5 bytes. Voxunami 2048's package is 3,159 bytes before and 3,164 now (measured by `block_golden.rs`, which pins the package), and the stream is 5 bytes longer, 58,757 to 58,762: the
+/// welcome is the only place the package is in it. Predicted by counting the bytes before the run and then seen. The saved world is the same to the hash (15_563_235_043_056_448_435): nothing is saved that was not.
 const PINNED: (u64, usize, u64) = (
-    13_534_092_187_250_210_913,
-    59_281,
+    17_644_770_380_274_204_862,
+    58_762,
     15_563_235_043_056_448_435,
 );

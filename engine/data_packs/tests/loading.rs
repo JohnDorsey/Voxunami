@@ -1,7 +1,9 @@
 //! Loading packs on top of a game's blocks: order, adding, patching, and what is refused.
 
 use block_models::{BlockDefinition, PropertyDeclaration, PropertyKind, PropertySchema, Shape};
-use data_packs::{BodyContext, Loaded, RawFile, RawPack, load_packs};
+mod common;
+
+use data_packs::{BodyContext, GameTexture, Loaded, RawFile, RawPack, RawTexture, load_packs};
 use namespaced_id::NamespacedId;
 use proptest::prelude::*;
 use voxel_space::FaceDirection;
@@ -65,6 +67,7 @@ fn pack(
             .collect()
     };
     RawPack {
+        textures: Vec::new(),
         folder: folder.to_owned(),
         manifest: format!(r#"{{ "id": "{folder}", "depends_on": [{dependencies}] }}"#),
         blocks: files(blocks),
@@ -74,7 +77,7 @@ fn pack(
 }
 
 fn load(packs: &[RawPack]) -> Result<Loaded, Vec<String>> {
-    load_packs(packs, &base(), &schema(), &BodyContext::NONE)
+    load_packs(packs, &base(), &[], &schema(), &BodyContext::NONE)
         .map_err(|errors| errors.0.iter().map(ToString::to_string).collect())
 }
 
@@ -276,6 +279,322 @@ fn the_folder_must_be_called_what_the_pack_says() {
     );
 }
 
+// ---- pictures ----
+
+fn picture(name: &str, size: u32, rgba: [u8; 4]) -> RawTexture {
+    RawTexture {
+        name: name.to_owned(),
+        bytes: common::png_bytes(size, rgba),
+    }
+}
+
+fn with_pictures(mut pack: RawPack, pictures: Vec<RawTexture>) -> RawPack {
+    pack.textures = pictures;
+    pack
+}
+
+fn load_with_game_pictures(packs: &[RawPack], game: &[GameTexture]) -> Result<Loaded, Vec<String>> {
+    load_packs(packs, &base(), game, &schema(), &BodyContext::NONE)
+        .map_err(|errors| errors.0.iter().map(ToString::to_string).collect())
+}
+
+fn close(found: [f32; 3], wanted: [f32; 3]) {
+    for (found, wanted) in found.into_iter().zip(wanted) {
+        assert!((found - wanted).abs() < 1e-4, "{found:?} is not {wanted:?}");
+    }
+}
+
+#[test]
+fn a_block_whose_colour_follows_its_pictures_gets_the_average_of_the_top_once_and_the_sides_four_times()
+ {
+    let pack = with_pictures(
+        pack(
+            "my_pack",
+            &["base"],
+            &[("oak", r#"{ "texture": "oak" }"#)],
+            &[],
+        ),
+        vec![
+            picture("oak_top", 16, [255, 255, 255, 255]),
+            picture("oak_side", 16, [0, 0, 0, 255]),
+        ],
+    );
+    let loaded = load(&[pack]).unwrap();
+    let oak = definition(&loaded, "my_pack:oak");
+    close(oak.color, [0.4845; 3]);
+    assert!(oak.color_from_pictures());
+    let pictures = &loaded.textures.pictures[&id("my_pack:oak")];
+    assert_eq!(pictures.top, id("my_pack:oak_top"));
+    assert_eq!(
+        pictures.bottom,
+        id("my_pack:oak_top"),
+        "no bottom picture: the top's"
+    );
+    assert_eq!(loaded.textures.tiles.len(), 2);
+    // (A white top and black sides on a block that nothing turns: the spec says to say so.)
+    assert_eq!(
+        loaded.warnings,
+        [
+            "my_pack/blocks/oak.json: its top picture differs from its other faces, but nothing turns the block (no engine:axis_face or engine:front_face), so its top is always up"
+        ]
+    );
+}
+
+#[test]
+fn a_later_pack_replaces_a_picture_by_file_name_and_the_colour_that_follows_it_follows_the_new_picture()
+ {
+    let first = with_pictures(
+        pack(
+            "first",
+            &["base"],
+            &[("oak", r#"{ "texture": "oak" }"#)],
+            &[],
+        ),
+        vec![picture("oak", 16, [255, 255, 255, 255])],
+    );
+    let retexture = with_pictures(
+        pack("retexture", &["first"], &[], &[]),
+        vec![picture("first/oak", 16, [0, 0, 0, 255])],
+    );
+    let loaded = load(&[retexture.clone(), first.clone()]).unwrap();
+    close(definition(&loaded, "first:oak").color, [0.0; 3]);
+    assert_eq!(
+        loaded.warnings,
+        ["retexture/textures/first/oak.png: replaces first:oak from first/textures/oak.png"]
+    );
+    // Without the retexture the block is white; the order the packs are listed in does not matter.
+    close(
+        definition(&load(&[first]).unwrap(), "first:oak").color,
+        [1.0; 3],
+    );
+    let other_order = load(&[first_clone_for_order(), retexture]).unwrap();
+    assert_eq!(other_order.blocks, loaded.blocks);
+}
+
+fn first_clone_for_order() -> RawPack {
+    with_pictures(
+        pack(
+            "first",
+            &["base"],
+            &[("oak", r#"{ "texture": "oak" }"#)],
+            &[],
+        ),
+        vec![picture("oak", 16, [255, 255, 255, 255])],
+    )
+}
+
+#[test]
+fn a_pack_that_does_not_depend_on_another_may_neither_use_nor_replace_its_pictures() {
+    let first = with_pictures(
+        pack("first", &["base"], &[], &[]),
+        vec![picture("oak", 16, [255, 255, 255, 255])],
+    );
+    let user = pack(
+        "user",
+        &["base"],
+        &[("slab", r#"{ "texture": "first:oak" }"#)],
+        &[],
+    );
+    let thief = with_pictures(
+        pack("thief", &["base"], &[], &[]),
+        vec![picture("first/oak", 16, [0, 0, 0, 255])],
+    );
+    assert_eq!(
+        refusal(&[first.clone(), user]),
+        [
+            "user/blocks/slab.json: /texture: \"first:oak\" is a picture of \"first\", which this pack does not depend on (add it to \"depends_on\" in pack.json)"
+        ]
+    );
+    assert_eq!(
+        refusal(&[first, thief]),
+        [
+            "thief/textures/first/oak.png: pictures of \"first\" can be put in by a pack that depends on it (add it to \"depends_on\" in pack.json)"
+        ]
+    );
+}
+
+#[test]
+fn a_block_whose_texture_has_no_picture_and_a_picture_that_is_not_one_are_refused_with_the_file() {
+    let broken = with_pictures(
+        pack(
+            "my_pack",
+            &["base"],
+            &[("oak", r#"{ "texture": "oak" }"#)],
+            &[],
+        ),
+        vec![RawTexture {
+            name: "stone".to_owned(),
+            bytes: b"not a picture".to_vec(),
+        }],
+    );
+    let errors = refusal(&[broken]);
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert!(errors[0].starts_with("my_pack/textures/stone.png: this is not a PNG picture: "));
+    assert_eq!(
+        errors[1],
+        "my_pack/blocks/oak.json: /texture: \"my_pack:oak\" names no picture: there is no my_pack:oak_top and no my_pack:oak"
+    );
+}
+
+#[test]
+fn the_games_own_pictures_are_there_for_a_pack_to_use_and_to_replace_when_it_depends_on_them() {
+    let game = [GameTexture {
+        id: id("base:stone"),
+        file: "plugins/base/textures/stone.png".to_owned(),
+        bytes: common::png_bytes(16, [100, 100, 100, 255]),
+    }];
+    let uses = pack(
+        "uses",
+        &["base"],
+        &[("slab", r#"{ "texture": "base:stone" }"#)],
+        &[],
+    );
+    let loaded = load_with_game_pictures(std::slice::from_ref(&uses), &game).unwrap();
+    close(definition(&loaded, "uses:slab").color, [100.0 / 255.0; 3]);
+    let repaint = with_pictures(
+        pack("repaint", &["base"], &[], &[]),
+        vec![picture("base/stone", 16, [200, 200, 200, 255])],
+    );
+    let loaded = load_with_game_pictures(&[uses, repaint], &game).unwrap();
+    close(definition(&loaded, "uses:slab").color, [200.0 / 255.0; 3]);
+    assert_eq!(
+        loaded.warnings,
+        [
+            "repaint/textures/base/stone.png: replaces base:stone from plugins/base/textures/stone.png"
+        ]
+    );
+}
+
+#[test]
+fn patches_give_a_block_other_pictures_and_the_colour_follows_unless_it_was_chosen() {
+    let pack = with_pictures(
+        pack(
+            "my_pack",
+            &["base"],
+            &[
+                ("followed", r#"{ "texture": "white" }"#),
+                (
+                    "chosen",
+                    r#"{ "texture": "white", "color": [0.5, 0.5, 0.5] }"#,
+                ),
+            ],
+            &[
+                (
+                    "change",
+                    &patch_of(
+                        "my_pack:followed",
+                        false,
+                        r#"{ "op": "test", "path": "texture", "value": "my_pack:white" },
+                       { "op": "set", "path": "texture", "value": "my_pack:black" }"#,
+                    ),
+                ),
+                (
+                    "change_chosen",
+                    &patch_of(
+                        "my_pack:chosen",
+                        false,
+                        r#"{ "op": "set", "path": "texture", "value": "my_pack:black" }"#,
+                    ),
+                ),
+            ],
+        ),
+        vec![
+            picture("white", 16, [255, 255, 255, 255]),
+            picture("black", 16, [0, 0, 0, 255]),
+        ],
+    );
+    let loaded = load(&[pack]).unwrap();
+    close(definition(&loaded, "my_pack:followed").color, [0.0; 3]);
+    close(definition(&loaded, "my_pack:chosen").color, [0.5; 3]);
+    assert_eq!(
+        loaded.textures.pictures[&id("my_pack:chosen")].top,
+        id("my_pack:black")
+    );
+}
+
+#[test]
+fn choosing_a_colour_ends_the_following_and_a_texture_cannot_be_taken_from_a_colour_that_follows_it()
+ {
+    let make = |operations: &str| {
+        with_pictures(
+            pack(
+                "my_pack",
+                &["base"],
+                &[("oak", r#"{ "texture": "white" }"#)],
+                &[("change", &patch_of("my_pack:oak", false, operations))],
+            ),
+            vec![
+                picture("white", 16, [255, 255, 255, 255]),
+                picture("black", 16, [0, 0, 0, 255]),
+            ],
+        )
+    };
+    // The colour is chosen, so a later change of the pictures leaves it alone; the texture can then go.
+    let loaded = load(&[make(
+        r#"{ "op": "set", "path": "color", "value": [0.25, 0.25, 0.25] },
+           { "op": "set", "path": "texture", "value": "my_pack:black" },
+           { "op": "remove", "path": "texture" }"#,
+    )])
+    .unwrap();
+    let oak = definition(&loaded, "my_pack:oak");
+    assert_eq!(
+        (oak.color, oak.color_from_pictures(), oak.texture()),
+        ([0.25; 3], false, None)
+    );
+    assert!(!loaded.textures.pictures.contains_key(&id("my_pack:oak")));
+    // Taking the texture from a block whose colour is its pictures' leaves it with no colour.
+    assert_eq!(
+        refusal(&[make(r#"{ "op": "remove", "path": "texture" }"#)]),
+        [
+            "my_pack/patches/change.json: /operations/0: the colour of this block is the average of its pictures, so give it a color (set \"color\") before taking its texture away"
+        ]
+    );
+    // A block that has none has none to take.
+    assert_eq!(
+        refusal(&one_patch(
+            &["base"],
+            &patch_of(
+                "base:lamp",
+                false,
+                r#"{ "op": "remove", "path": "texture" }"#
+            )
+        )),
+        [
+            "my_pack/patches/change.json: /operations/0: this block has no texture, so there is nothing to remove"
+        ]
+    );
+}
+
+#[test]
+fn a_test_of_a_texture_says_what_the_texture_is() {
+    let errors = refusal(&one_patch(
+        &["base"],
+        &patch_of(
+            "base:lamp",
+            false,
+            r#"{ "op": "test", "path": "texture", "value": "base:stone" }"#,
+        ),
+    ));
+    assert_eq!(
+        errors,
+        [
+            "my_pack/patches/change.json: /operations/0: the test failed: the texture is none, not base:stone"
+        ]
+    );
+}
+
+#[test]
+fn pictures_that_nothing_uses_are_said_for_a_pack() {
+    let pack = with_pictures(
+        pack("my_pack", &["base"], &[], &[]),
+        vec![picture("spare", 16, [1, 2, 3, 255])],
+    );
+    assert_eq!(
+        load(&[pack]).unwrap().warnings,
+        ["my_pack/textures/spare.png: no block uses this picture"]
+    );
+}
+
 // ---- patching ----
 
 #[test]
@@ -304,6 +623,110 @@ fn patches_change_properties_fields_and_states_and_nothing_else() {
     assert_eq!(definition(&loaded, "base:lamp"), &expected);
     assert_eq!(definition(&loaded, "base:stone"), &base()[0].1);
     assert!(loaded.warnings.is_empty());
+}
+
+#[test]
+fn a_patch_may_name_a_face_by_its_word_and_a_failed_test_says_the_words() {
+    let set = r#"{ "op": "set", "property": "engine:axis_face", "value": "up" },
+                 { "op": "set", "property": "engine:front_face", "value": 2 },
+                 { "op": "test", "property": "engine:axis_face", "value": 4 },
+                 { "op": "test", "property": "engine:front_face", "value": "east" }"#;
+    let loaded = load(&one_patch(&["base"], &patch_of("base:lamp", false, set))).unwrap();
+    let lamp = definition(&loaded, "base:lamp");
+    assert_eq!(lamp.property_value(&id("engine:axis_face"), None, 0), 4);
+    assert_eq!(lamp.property_value(&id("engine:front_face"), None, 0), 2);
+    let f = "my_pack/patches/change.json";
+    let one = |operation: &str| {
+        refusal(&one_patch(
+            &["base"],
+            &patch_of("base:lamp", false, operation),
+        ))
+    };
+    assert_eq!(
+        one(r#"{ "op": "test", "property": "engine:axis_face", "value": "down" }"#),
+        [format!(
+            "{f}: /operations/0: the test failed: engine:axis_face is none, not down"
+        )]
+    );
+    assert_eq!(
+        one(r#"{ "op": "set", "property": "engine:axis_face", "value": "top" }"#),
+        [format!(
+            "{f}: /operations/0/value: expected a face (\"none\", \"west\", \"east\", \"down\", \"up\", \"north\", \"south\") or a number from 0 to 6, found \"top\""
+        )]
+    );
+    assert_eq!(
+        one(r#"{ "op": "set", "property": "engine:axis_face", "value": 9 }"#),
+        [format!("{f}: /operations/0/value: 9 is outside 0 to 6")]
+    );
+    assert_eq!(
+        one(r#"{ "op": "set", "property": "test:glow", "value": "up" }"#),
+        [format!(
+            "{f}: /operations/0/value: expected a whole number, found text"
+        )]
+    );
+    assert_eq!(
+        one(r#"{ "op": "set", "property": "test:sticky", "value": "up" }"#),
+        [format!(
+            "{f}: /operations/0/value: expected true or false, found text"
+        )]
+    );
+}
+
+#[test]
+fn a_patch_sets_tests_and_removes_the_colours_of_faces() {
+    let set = r#"{ "op": "set", "path": "face_colors", "value": { "top": [1, 0, 0], "positive_x": [0, 0, 1] } }"#;
+    let loaded = load(&one_patch(&["base"], &patch_of("base:lamp", false, set))).unwrap();
+    assert_eq!(
+        definition(&loaded, "base:lamp"),
+        &base()[1].1.clone().with_face_colors(&[
+            (FaceDirection::PositiveY, [1.0, 0.0, 0.0]),
+            (FaceDirection::PositiveX, [0.0, 0.0, 1.0]),
+        ])
+    );
+    // Setting replaces all of them, as for the state colours; testing reads them back; removing takes them all away.
+    let loaded = load(&[pack(
+        "my_pack",
+        &["base"],
+        &[("log", r#"{ "color": [0,0,0], "face_colors": { "top": [1,0,0], "bottom": [1,0,0] } }"#)],
+        &[(
+            "change",
+            &patch_of(
+                "my_pack:log",
+                false,
+                r#"{ "op": "test", "path": "face_colors", "value": { "top": [1,0,0], "bottom": [1,0,0] } },
+                   { "op": "set", "path": "face_colors", "value": { "side": [0,1,0] } },
+                   { "op": "test", "path": "face_colors", "value": { "side": [0,1,0] } },
+                   { "op": "remove", "path": "face_colors" }"#,
+            ),
+        )],
+    )])
+    .unwrap();
+    assert_eq!(
+        definition(&loaded, "my_pack:log"),
+        &BlockDefinition::cube([0.0; 3])
+    );
+}
+
+#[test]
+fn a_test_of_face_colours_that_fails_and_a_remove_with_none_to_remove_are_refused() {
+    let f = "my_pack/patches/change.json";
+    let one = |operation: &str| {
+        refusal(&one_patch(
+            &["base"],
+            &patch_of("base:lamp", false, operation),
+        ))
+    };
+    let errors = one(r#"{ "op": "test", "path": "face_colors", "value": { "top": [1, 0, 0] } }"#);
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert!(errors[0].starts_with(&format!(
+        "{f}: /operations/0: the test failed: the face colours are [None, None, None, None, None, None], not "
+    )));
+    assert_eq!(
+        one(r#"{ "op": "remove", "path": "face_colors" }"#),
+        [format!(
+            "{f}: /operations/0: this block has no face colours, so there is nothing to remove"
+        )]
+    );
 }
 
 #[test]
@@ -402,7 +825,7 @@ fn a_patch_to_a_block_that_does_not_exist_is_refused_unless_it_is_optional() {
 #[test]
 fn a_property_nobody_declared_is_refused_with_a_hint_unless_the_patch_is_optional() {
     let operations = r#"{ "op": "set", "property": "test:glo", "value": 1 }"#;
-    let declared = "\"engine:also_marked_face\", \"engine:axis_face\", \"engine:density\", \"engine:docking_face\", \"engine:front_face\", \"engine:mark_both_ends\", \"engine:mark_color\", \"engine:marked_face\", \"engine:placeable_on_moving_grids\", \"test:glow\", \"test:sticky\"";
+    let declared = "\"engine:axis_face\", \"engine:density\", \"engine:docking_face\", \"engine:front_face\", \"engine:placeable_on_moving_grids\", \"test:glow\", \"test:sticky\"";
     assert_eq!(
         refusal(&one_patch(
             &["base"],

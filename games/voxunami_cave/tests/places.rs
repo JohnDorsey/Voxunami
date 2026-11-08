@@ -93,6 +93,7 @@ fn same_world_with_a_moon() -> (Scene, common::Player) {
 /// A pack with a moon of 10,000 voxels 400 kilometres along x from the planet (the same as the tests of the bodies have).
 fn moons() -> Vec<RawPack> {
     vec![RawPack {
+        textures: Vec::new(),
         folder: "moons".to_owned(),
         manifest: r#"{ "id": "moons" }"#.to_owned(),
         blocks: Vec::new(),

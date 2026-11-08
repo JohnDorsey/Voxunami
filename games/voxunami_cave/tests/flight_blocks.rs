@@ -78,16 +78,11 @@ fn the_engine_is_a_pyramid_of_three_tiers_with_a_red_face_at_its_wide_exhaust_en
     let palette = table.palette();
     for exhaust in FaceDirection::ALL {
         let orientation = orientation_carrying(FaceDirection::PositiveY, exhaust);
-        let mark = table.face_mark(block, 0, orientation).unwrap();
-        assert_eq!(mark.face, exhaust);
-        assert_eq!(palette[mark.material as usize], RED);
+        let red = table.material_of_face(block, 0, orientation, exhaust);
+        assert_eq!(palette[red as usize], RED);
         assert_eq!(table.axis_face(block, 0, orientation), Some(exhaust));
         for other in FaceDirection::ALL {
-            let wanted = if other == exhaust {
-                mark.material
-            } else {
-                block
-            };
+            let wanted = if other == exhaust { red } else { block };
             assert_eq!(
                 table.material_of_face(block, 0, orientation, other),
                 wanted,
@@ -125,8 +120,14 @@ fn the_engine_is_placed_like_a_log_with_the_exhaust_away_from_the_surface_that_w
             &view,
         );
         assert_eq!(
-            table.face_mark(block, 0, orientation).unwrap().face,
-            clicked,
+            table.axis_face(block, 0, orientation),
+            Some(clicked),
+            "clicked {clicked:?}"
+        );
+        // And the red end is that face.
+        assert_eq!(
+            table.palette()[table.material_of_face(block, 0, orientation, clicked) as usize],
+            RED,
             "clicked {clicked:?}"
         );
     }
@@ -149,11 +150,12 @@ fn the_seat_is_a_stair_in_gunmetal_gray_whose_bottom_and_back_are_brown() {
     for (orientation, rotation) in LatticeRotation::all().into_iter().enumerate() {
         let back = rotation.apply_face(FaceDirection::PositiveX);
         let bottom = rotation.apply_face(FaceDirection::NegativeY);
-        let mark = table.face_mark(block, 0, orientation as u32).unwrap();
-        assert_eq!(palette[mark.material as usize], BROWN);
+        // The back and the bottom are one colour, so one entry of the palette.
+        let brown = table.material_of_face(block, 0, orientation as u32, back);
+        assert_eq!(palette[brown as usize], BROWN);
         for face in FaceDirection::ALL {
             let wanted = if face == back || face == bottom {
-                mark.material
+                brown
             } else {
                 block
             };

@@ -15,12 +15,19 @@ mod codec;
 mod definition;
 mod property;
 mod shape;
+#[cfg(feature = "test-support")]
+pub mod snapshot;
 mod table;
 
-pub use definition::BlockDefinition;
+pub use definition::{
+    BlockDefinition, FacePictures, MOST_TILE_BYTES, MOST_TILE_SIZES, MOST_TILES_OF_A_SIZE, TileRef,
+    color_from_bytes,
+};
 pub use property::{
     PropertyDeclaration, PropertyError, PropertyHandle, PropertyKey, PropertyKind, PropertySchema,
     PropertyType, engine,
 };
 pub use shape::{FaceConnections, SUBDIVISIONS, Shape, ShapeBox, SubRect, face_axes};
-pub use table::{BlockTable, FaceMark, MISSING_BLOCK_COLOR, ModelId, ORIENTATION_COUNT, Placement};
+pub use table::{
+    BlockTable, FacePicture, MISSING_BLOCK_COLOR, ModelId, ORIENTATION_COUNT, Placement,
+};

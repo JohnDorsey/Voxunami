@@ -85,3 +85,17 @@ pub fn families() -> Vec<(NamespacedId, Arc<dyn FamilyData>)> {
 pub fn levels() -> Vec<NamespacedId> {
     vec![id("test_game:space"), id("test_game:ground")]
 }
+
+/// The bytes of a PNG picture of one colour, `size` pixels on a side.
+#[allow(dead_code)]
+pub fn png_bytes(size: u32, rgba: [u8; 4]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut encoder = png::Encoder::new(&mut bytes, size, size);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let data: Vec<u8> = (0..size * size).flat_map(|_| rgba).collect();
+    let mut writer = encoder.write_header().expect("a header");
+    writer.write_image_data(&data).expect("the pixels");
+    writer.finish().expect("the end");
+    bytes
+}

@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use binary_codec::{ByteReader, ByteWriter, DecodeError};
 use namespaced_id::NamespacedId;
 
-use crate::definition::BlockDefinition;
+use crate::definition::{BlockDefinition, FacePictures, Parts, TileRef};
 use crate::property::{
     PropertyDeclaration, PropertyKind, PropertySchema, SetProperties, SetValues, check_value,
 };
@@ -19,11 +19,13 @@ use crate::shape::{SUBDIVISIONS, Shape, ShapeBox};
 
 const KIND_BOOL: u8 = 0;
 const KIND_INTEGER: u8 = 1;
+const KIND_FACE: u8 = 2;
 
-/// The least bytes a declaration, a box, a colour and a set property take, for `read_count`.
+/// The least bytes a declaration, a box, a colour, a coloured face and a set property take, for `read_count`.
 const DECLARATION_BYTES: usize = 5;
 const BOX_BYTES: usize = 6;
 const COLOR_BYTES: usize = 12;
+const FACE_COLOR_BYTES: usize = 13;
 const SET_PROPERTY_BYTES: usize = 4;
 
 fn write_color(writer: &mut ByteWriter, color: [f32; 3]) {
@@ -74,6 +76,7 @@ impl PropertySchema {
                     writer.write_signed_varint(minimum);
                     writer.write_signed_varint(maximum);
                 }
+                PropertyKind::Face => writer.write_u8(KIND_FACE),
             }
             writer.write_signed_varint(declaration.default);
             writer.write_string(&declaration.doc);
@@ -98,6 +101,7 @@ impl PropertySchema {
                     }
                     PropertyKind::Integer { minimum, maximum }
                 }
+                KIND_FACE => PropertyKind::Face,
                 _ => {
                     return Err(DecodeError::Invalid(
                         "a property has a kind that is not known",
@@ -122,7 +126,9 @@ impl PropertySchema {
 
 impl BlockDefinition {
     /// Writes the definition: colour, see-through, the boxes of every state's shape, the colours of
-    /// states, and the properties it sets.
+    /// states, the colours of faces (each as its face's index, then the colour, in the order of the
+    /// faces), the base name of its pictures (a flag, then the name) and whether its colour follows
+    /// them, and the properties it sets.
     pub fn encode(&self, writer: &mut ByteWriter) {
         write_color(writer, self.color);
         writer.write_u8(u8::from(self.see_through));
@@ -138,6 +144,32 @@ impl BlockDefinition {
         writer.write_varint(self.state_colors().len() as u64);
         for color in self.state_colors() {
             write_color(writer, *color);
+        }
+        let coloured_faces = self.face_colors().iter().flatten().count();
+        writer.write_varint(coloured_faces as u64);
+        for (face, color) in self.face_colors().iter().enumerate() {
+            if let Some(color) = color {
+                writer.write_u8(face as u8);
+                write_color(writer, *color);
+            }
+        }
+        match self.texture() {
+            Some(texture) => {
+                writer.write_u8(1);
+                writer.write_identifier(texture);
+            }
+            None => writer.write_u8(0),
+        }
+        writer.write_u8(u8::from(self.color_from_pictures()));
+        match self.pictures() {
+            Some(pictures) => {
+                writer.write_u8(1);
+                for tile in [pictures.top, pictures.side, pictures.bottom] {
+                    writer.write_u8(tile.class() as u8);
+                    writer.write_varint(tile.layer() as u64);
+                }
+            }
+            None => writer.write_u8(0),
         }
         writer.write_varint(self.properties().len() as u64);
         for (key, set) in self.properties() {
@@ -198,6 +230,68 @@ impl BlockDefinition {
         for _ in 0..color_count {
             state_colors.push(read_color(reader)?);
         }
+        let face_color_count = reader.read_count(FACE_COLOR_BYTES)?;
+        let mut face_colors = [None; 6];
+        let mut previous_face = None;
+        for _ in 0..face_color_count {
+            let face = reader.read_u8()?;
+            if face >= 6 {
+                return Err(DecodeError::Invalid(
+                    "a coloured face is not one of the six",
+                ));
+            }
+            if previous_face.is_some_and(|before| before >= face) {
+                return Err(DecodeError::Invalid(
+                    "coloured faces are repeated or out of order",
+                ));
+            }
+            previous_face = Some(face);
+            face_colors[usize::from(face)] = Some(read_color(reader)?);
+        }
+        let texture = match reader.read_u8()? {
+            0 => None,
+            1 => Some(reader.read_identifier()?),
+            _ => return Err(DecodeError::Invalid("a texture's flag is neither 0 nor 1")),
+        };
+        let color_from_pictures = match reader.read_u8()? {
+            0 => false,
+            1 => true,
+            _ => {
+                return Err(DecodeError::Invalid(
+                    "the flag of a colour that follows pictures is neither 0 nor 1",
+                ));
+            }
+        };
+        if color_from_pictures && texture.is_none() {
+            return Err(DecodeError::Invalid(
+                "a colour follows pictures that the block does not have",
+            ));
+        }
+        let pictures = match reader.read_u8()? {
+            0 => None,
+            1 => {
+                let mut tiles = [None; 3];
+                for tile in &mut tiles {
+                    let class = usize::from(reader.read_u8()?);
+                    let layer = usize::try_from(reader.read_varint()?).unwrap_or(usize::MAX);
+                    *tile = Some(TileRef::new(class, layer).ok_or(DecodeError::Invalid(
+                        "a picture is in a place that a world does not have",
+                    ))?);
+                }
+                let [Some(top), Some(side), Some(bottom)] = tiles else {
+                    unreachable!("the three were read");
+                };
+                Some(FacePictures { top, side, bottom })
+            }
+            _ => {
+                return Err(DecodeError::Invalid(
+                    "the flag of the pictures of a block is neither 0 nor 1",
+                ));
+            }
+        };
+        if pictures.is_some() && texture.is_none() {
+            return Err(DecodeError::Invalid("a block has pictures but no texture"));
+        }
         let set_count = reader.read_count(SET_PROPERTY_BYTES)?;
         let mut properties = SetProperties::new();
         let mut previous = None;
@@ -230,13 +324,17 @@ impl BlockDefinition {
                 },
             );
         }
-        Ok(Self::from_parts(
+        Ok(Self::from_parts(Parts {
             color,
             see_through,
             shapes,
             state_colors,
+            face_colors,
+            texture,
+            color_from_pictures,
+            pictures,
             properties,
-        ))
+        }))
     }
 }
 
@@ -289,6 +387,17 @@ mod tests {
             ])
             .with_see_through(true)
             .with_state_colors(vec![[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])
+            .with_face_colors(&[
+                (FaceDirection::PositiveY, [0.7, 0.8, 0.9]),
+                (FaceDirection::NegativeX, [1.0, 0.0, 0.25]),
+            ])
+            .with_texture(id("base_blocks:log"))
+            .with_color_from_pictures()
+            .with_pictures(FacePictures {
+                top: TileRef::new(0, 3).unwrap(),
+                side: TileRef::new(1, 0).unwrap(),
+                bottom: TileRef::new(3, 255).unwrap(),
+            })
             .with_property(&DENSITY, 7_000)
             .with_state_property(2, &DENSITY, 12)
             .with_state_property(1, &PLACEABLE_ON_MOVING_GRIDS, false)
@@ -374,6 +483,10 @@ mod tests {
             }
         }
         writer.write_varint(0);
+        writer.write_varint(0);
+        writer.write_u8(0);
+        writer.write_u8(0);
+        writer.write_u8(0);
         let mut bytes = writer.into_bytes();
         bytes.extend_from_slice(properties);
         bytes
@@ -431,6 +544,196 @@ mod tests {
         }
     }
 
+    /// A definition written by hand with these coloured faces, as the bytes after the colours of states.
+    fn with_faces(faces: &[(u8, [f32; 3])]) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        for component in [0.5f32; 3] {
+            writer.write_u32(component.to_bits());
+        }
+        writer.write_u8(0);
+        writer.write_varint(1);
+        writer.write_varint(1);
+        for corner in WHOLE {
+            writer.write_u8(corner);
+        }
+        writer.write_varint(0);
+        writer.write_varint(faces.len() as u64);
+        for (face, color) in faces {
+            writer.write_u8(*face);
+            for component in color {
+                writer.write_u32(component.to_bits());
+            }
+        }
+        writer.write_u8(0);
+        writer.write_u8(0);
+        writer.write_u8(0);
+        writer.write_varint(0);
+        writer.into_bytes()
+    }
+
+    #[test]
+    fn coloured_faces_are_written_in_the_order_of_the_faces_and_once_each() {
+        let red = [1.0, 0.0, 0.0];
+        let fine = decoded(&with_faces(&[(1, red), (3, red), (5, red)])).unwrap();
+        assert_eq!(
+            fine.face_colors(),
+            &[None, Some(red), None, Some(red), None, Some(red)]
+        );
+        let same = BlockDefinition::cube([0.5; 3]).with_face_colors(&[
+            (FaceDirection::PositiveZ, red),
+            (FaceDirection::PositiveX, red),
+            (FaceDirection::PositiveY, red),
+        ]);
+        assert_eq!(encoded(&same), with_faces(&[(1, red), (3, red), (5, red)]));
+        for faces in [vec![(3, red), (1, red)], vec![(2, red), (2, red)]] {
+            assert_eq!(
+                refusal(&with_faces(&faces)),
+                "coloured faces are repeated or out of order"
+            );
+        }
+        assert_eq!(
+            refusal(&with_faces(&[(6, red)])),
+            "a coloured face is not one of the six"
+        );
+        assert_eq!(
+            refusal(&with_faces(&[(0, [f32::NAN, 0.0, 0.0])])),
+            "a colour is not a finite number"
+        );
+    }
+
+    /// A definition written by hand with these two fields: the texture's flag and name, and the flag of the colour that follows pictures.
+    fn with_pictures(texture: Option<&str>, follows: u8, texture_flag: Option<u8>) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        for component in [0.5f32; 3] {
+            writer.write_u32(component.to_bits());
+        }
+        writer.write_u8(0);
+        writer.write_varint(1);
+        writer.write_varint(1);
+        for corner in WHOLE {
+            writer.write_u8(corner);
+        }
+        writer.write_varint(0);
+        writer.write_varint(0);
+        match (texture, texture_flag) {
+            (_, Some(flag)) => writer.write_u8(flag),
+            (Some(name), None) => {
+                writer.write_u8(1);
+                writer.write_identifier(&id(name));
+            }
+            (None, None) => writer.write_u8(0),
+        }
+        writer.write_u8(follows);
+        writer.write_u8(0);
+        writer.write_varint(0);
+        writer.into_bytes()
+    }
+
+    #[test]
+    fn the_pictures_of_a_block_and_whether_its_colour_follows_them_are_written_and_refused_when_they_make_no_sense()
+     {
+        let with_name = decoded(&with_pictures(Some("my_pack:oak"), 1, None)).unwrap();
+        assert_eq!(with_name.texture(), Some(&id("my_pack:oak")));
+        assert!(with_name.color_from_pictures());
+        assert_eq!(
+            encoded(
+                &BlockDefinition::cube([0.5; 3])
+                    .with_texture(id("my_pack:oak"))
+                    .with_color_from_pictures()
+            ),
+            with_pictures(Some("my_pack:oak"), 1, None)
+        );
+        assert!(
+            !decoded(&with_pictures(Some("my_pack:oak"), 0, None))
+                .unwrap()
+                .color_from_pictures()
+        );
+        assert_eq!(
+            refusal(&with_pictures(None, 1, None)),
+            "a colour follows pictures that the block does not have"
+        );
+        assert_eq!(
+            refusal(&with_pictures(None, 0, Some(2))),
+            "a texture's flag is neither 0 nor 1"
+        );
+        assert_eq!(
+            refusal(&with_pictures(Some("my_pack:oak"), 2, None)),
+            "the flag of a colour that follows pictures is neither 0 nor 1"
+        );
+    }
+
+    /// A definition with a texture, and these bytes for its pictures (after the flag of the colour that follows them).
+    fn with_picture_bytes(texture: bool, picture_bytes: &[u8]) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        for component in [0.5f32; 3] {
+            writer.write_u32(component.to_bits());
+        }
+        writer.write_u8(0);
+        writer.write_varint(1);
+        writer.write_varint(1);
+        for corner in WHOLE {
+            writer.write_u8(corner);
+        }
+        writer.write_varint(0);
+        writer.write_varint(0);
+        if texture {
+            writer.write_u8(1);
+            writer.write_identifier(&id("my_pack:oak"));
+        } else {
+            writer.write_u8(0);
+        }
+        writer.write_u8(0);
+        writer.write_raw(picture_bytes);
+        writer.write_varint(0);
+        writer.into_bytes()
+    }
+
+    #[test]
+    fn the_pictures_of_a_block_are_a_flag_and_three_places_and_a_place_the_world_does_not_have_is_refused()
+     {
+        // top (0, 3), side (1, 0), bottom (3, 255): the class in a byte, the layer as a varint.
+        let good = decoded(&with_picture_bytes(true, &[1, 0, 3, 1, 0, 3, 0xFF, 0x01])).unwrap();
+        assert_eq!(
+            good.pictures(),
+            Some(&FacePictures {
+                top: TileRef::new(0, 3).unwrap(),
+                side: TileRef::new(1, 0).unwrap(),
+                bottom: TileRef::new(3, 255).unwrap(),
+            })
+        );
+        assert_eq!(
+            encoded(&good),
+            with_picture_bytes(true, &[1, 0, 3, 1, 0, 3, 0xFF, 0x01])
+        );
+        let place = "a picture is in a place that a world does not have";
+        // A fifth size, a 257th picture, and a layer too big for anything.
+        assert_eq!(
+            refusal(&with_picture_bytes(true, &[1, 4, 0, 0, 0, 0, 0, 0])),
+            place
+        );
+        assert_eq!(
+            refusal(&with_picture_bytes(true, &[1, 0, 0x80, 0x02, 0, 0, 0, 0])),
+            place
+        );
+        assert_eq!(
+            refusal(&with_picture_bytes(
+                true,
+                &[
+                    1, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0, 0, 0, 0
+                ]
+            )),
+            place
+        );
+        assert_eq!(
+            refusal(&with_picture_bytes(false, &[1, 0, 0, 0, 0, 0, 0])),
+            "a block has pictures but no texture"
+        );
+        assert_eq!(
+            refusal(&with_picture_bytes(true, &[2])),
+            "the flag of the pictures of a block is neither 0 nor 1"
+        );
+    }
+
     #[test]
     fn a_block_with_no_states_is_refused() {
         let mut writer = ByteWriter::new();
@@ -438,6 +741,7 @@ mod tests {
             writer.write_u32(0f32.to_bits());
         }
         writer.write_u8(0);
+        writer.write_varint(0);
         writer.write_varint(0);
         writer.write_varint(0);
         writer.write_varint(0);
@@ -533,6 +837,8 @@ mod tests {
             (declaration_bytes(&integer_kind(0, 10), 11), default),
             (declaration_bytes(&integer_kind(0, 10), -1), default),
             (declaration_bytes(&[KIND_BOOL], 2), default),
+            (declaration_bytes(&[KIND_FACE], 7), default),
+            (declaration_bytes(&[KIND_FACE], -1), default),
         ];
         for (bytes, reason) in cases {
             assert_eq!(schema_decoded(&bytes).unwrap_err().to_string(), reason);
@@ -540,6 +846,7 @@ mod tests {
         // The controls: the same bytes with the default inside the range are accepted.
         assert!(schema_decoded(&declaration_bytes(&integer_kind(0, 10), 10)).is_ok());
         assert!(schema_decoded(&declaration_bytes(&[KIND_BOOL], 1)).is_ok());
+        assert!(schema_decoded(&declaration_bytes(&[KIND_FACE], 6)).is_ok());
     }
 
     #[test]
@@ -585,11 +892,16 @@ mod tests {
             any::<bool>(),
             prop::collection::vec(prop::collection::vec(arbitrary_box(), 0..4), 1..5),
             prop::collection::vec(color(), 0..4),
+            prop::collection::vec((0u8..6, color()), 0..4),
+            prop::option::of((
+                prop::sample::select(vec!["a:one", "b:two_x"]),
+                any::<bool>(),
+            )),
             prop::option::of(any::<u32>()),
             prop::collection::vec((0u32..6, any::<bool>()), 0..4),
         )
             .prop_map(
-                |(color, see_through, shapes, state_colors, density, by_state)| {
+                |(color, see_through, shapes, state_colors, faces, pictures, density, by_state)| {
                     let mut definition = BlockDefinition::cube(color)
                         .with_shapes(
                             shapes
@@ -600,6 +912,18 @@ mod tests {
                         .with_see_through(see_through);
                     if !state_colors.is_empty() {
                         definition = definition.with_state_colors(state_colors);
+                    }
+                    for (face, face_color) in faces {
+                        definition = definition.with_face_colors(&[(
+                            FaceDirection::from_index(face).expect("a face"),
+                            face_color,
+                        )]);
+                    }
+                    if let Some((texture, follows)) = pictures {
+                        definition = definition.with_texture(id(texture));
+                        if follows {
+                            definition = definition.with_color_from_pictures();
+                        }
                     }
                     if let Some(density) = density {
                         definition = definition.with_property(&DENSITY, density);

@@ -105,6 +105,7 @@ fn the_planet_of_a_new_world_is_a_body_of_the_games_own_data_and_makes_the_small
 /// weighs at least 10^19 kilograms).
 fn moons() -> Vec<RawPack> {
     vec![RawPack {
+        textures: Vec::new(),
         folder: "moons".to_owned(),
         manifest: r#"{ "id": "moons" }"#.to_owned(),
         blocks: Vec::new(),
@@ -194,6 +195,7 @@ fn a_walker_dropped_over_the_moon_of_a_pack_lands_on_it_and_stands_on_its_ground
 /// own coordinates, a brick every tick or two, and a view that is made of bricks round the camera is never quiet).
 fn wanderers() -> Vec<RawPack> {
     vec![RawPack {
+        textures: Vec::new(),
         folder: "sky".to_owned(),
         manifest: r#"{ "id": "sky" }"#.to_owned(),
         blocks: Vec::new(),

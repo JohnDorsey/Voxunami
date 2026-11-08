@@ -135,6 +135,7 @@ impl Content2048 {
             assert_eq!(registered.raw(), material.block_id());
         }
         let spec = PackageSpec {
+            textures: Vec::new(),
             level: landscape_id(),
             block_registry_kind: block_registry_kind(),
             channels: Self::channels(),

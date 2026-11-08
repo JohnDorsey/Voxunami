@@ -29,8 +29,8 @@ use world_view::ViewChannels;
 use crate::definition::GameContent;
 use crate::package_data::{PackageData, check_materials};
 use data_packs::{
-    Around, Body, BodyRail, BodySupport, OrbitData, PackErrors, RawPack, Weight, load_packs,
-    read_body, read_family_parameters,
+    Around, Body, BodyRail, BodySupport, GameTexture, OrbitData, PackErrors, RawPack, Textures,
+    Weight, load_packs, read_body, read_family_parameters, settle_game_pictures,
 };
 
 /// Makes a game's terrain generators for a world seed. The layout is the world's, for finding the
@@ -71,6 +71,8 @@ pub struct PackageSpec {
     pub body_support: BodySupport,
     /// The bodies a new world has before any pack adds its own: the name of each and the text of its file (as a pack's `bodies/` folder holds them).
     pub builtin_bodies: Vec<(NamespacedId, &'static str)>,
+    /// The pictures of the game's own blocks (the files of their plugins), which packs may replace by file name.
+    pub textures: Vec<GameTexture>,
     /// How hard gravity pulls between bodies (the game's gravity constant, `GravitySettings::pull_strength`): what a body that is told how hard it pulls at its
     /// surface weighs is worked out with it.
     pub pull_strength: f64,
@@ -101,11 +103,45 @@ pub struct ContentPackage {
     spec: PackageSpec,
     /// The bodies a new world has: the game's own, then the packs', in the order they are made.
     bodies: Vec<(NamespacedId, Body)>,
+    /// The pictures the blocks use, settled: which tiles there are and where, with the blocks told their places.
+    textures: Textures,
+}
+
+/// The blocks of a registry with their pictures settled against the game's own pictures: the colours that follow pictures worked out, and each block with a texture
+/// told the places of its pictures among the tiles of the world. Panics if the game's own pictures are wrong, which is a mistake in the game's declaration.
+fn settle_pictures(
+    blocks: Registry<BlockDefinition>,
+    game_textures: &[GameTexture],
+) -> (Registry<BlockDefinition>, Textures) {
+    let mut definitions: Vec<(NamespacedId, BlockDefinition)> = blocks
+        .iter()
+        .filter_map(|(_, entry)| Some((entry.identifier().clone(), entry.content()?.clone())))
+        .collect();
+    let textures = settle_game_pictures(&mut definitions, game_textures)
+        .unwrap_or_else(|errors| panic!("the game's own pictures are wrong:\n{errors}"));
+    let mut settled: std::collections::HashMap<NamespacedId, BlockDefinition> =
+        definitions.into_iter().collect();
+    let mut registry = Registry::new();
+    for (_, entry) in blocks.iter() {
+        let identifier = entry.identifier().clone();
+        match settled.remove(&identifier) {
+            Some(definition) => {
+                registry
+                    .register(identifier, definition)
+                    .expect("the blocks of a registry are distinct");
+            }
+            None => {
+                registry.register_missing(identifier);
+            }
+        }
+    }
+    (registry, textures)
 }
 
 impl ContentPackage {
     /// Panics if one of the game's own bodies is not a good body file, which is a mistake in the game's declaration.
     pub fn new(blocks: Registry<BlockDefinition>, spec: PackageSpec) -> Self {
+        let (blocks, textures) = settle_pictures(blocks, &spec.textures);
         let bodies = spec
             .builtin_bodies
             .iter()
@@ -132,6 +168,7 @@ impl ContentPackage {
             blocks,
             spec,
             bodies,
+            textures,
         }
     }
 
@@ -433,6 +470,7 @@ impl ContentPackage {
         let loaded = load_packs(
             packs,
             &base,
+            &self.spec.textures,
             &package.properties,
             &self.spec.body_support.context(),
         )?;
@@ -477,6 +515,7 @@ impl ContentPackage {
                 .cloned()
                 .chain(loaded.bodies.iter().cloned())
                 .collect(),
+            textures: loaded.textures,
         };
         // The renderer cannot draw more colours than it has: say so now, not when a window opens.
         let table = candidate
@@ -578,6 +617,12 @@ impl GameContent for ContentPackage {
             orientation_channel: self.spec.orientation_channel.clone(),
             light_channel: self.spec.light_channel.clone(),
             ambient_light: self.spec.ambient_light,
+            tile_classes: self
+                .textures
+                .classes()
+                .into_iter()
+                .map(|(_, tiles)| tiles.into_iter().cloned().collect())
+                .collect(),
         }
     }
 
@@ -640,6 +685,14 @@ mod tests {
     }
 
     fn package() -> ContentPackage {
+        package_with(None, Vec::new())
+    }
+
+    /// The test game, with one more block if `extra` has it, and these pictures of its own.
+    fn package_with(
+        extra: Option<(&str, BlockDefinition)>,
+        textures: Vec<GameTexture>,
+    ) -> ContentPackage {
         let mut blocks = Registry::new();
         blocks
             .register(id("test_game:air"), BlockDefinition::air())
@@ -647,9 +700,13 @@ mod tests {
         blocks
             .register(id("test_game:rock"), BlockDefinition::cube([0.5; 3]))
             .unwrap();
+        if let Some((name, definition)) = extra {
+            blocks.register(id(name), definition).unwrap();
+        }
         ContentPackage::new(
             blocks,
             PackageSpec {
+                textures,
                 level: id("test_game:main"),
                 block_registry_kind: id("test_game:block"),
                 channels: vec![
@@ -774,6 +831,131 @@ mod tests {
         let number = generators.runtime_id(&id("test_game:the_moon")).unwrap();
         assert!(!generators.entry(number).unwrap().is_missing());
         assert_eq!(loaded.save(&later.registries()).unwrap(), bytes);
+    }
+
+    /// The bytes of a PNG of one colour, `size` pixels on a side.
+    fn picture_bytes(size: u32, rgba: [u8; 4]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut encoder = png::Encoder::new(&mut bytes, size, size);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let data: Vec<u8> = (0..size * size).flat_map(|_| rgba).collect();
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&data).unwrap();
+        writer.finish().unwrap();
+        bytes
+    }
+
+    fn game_picture(name: &str, size: u32, rgba: [u8; 4]) -> GameTexture {
+        GameTexture {
+            id: id(name),
+            file: format!("test_game/textures/{name}.png"),
+            bytes: picture_bytes(size, rgba),
+        }
+    }
+
+    #[test]
+    fn a_game_with_no_pictures_has_no_tiles_in_its_package() {
+        assert!(package().package_data().tile_classes.is_empty());
+    }
+
+    #[test]
+    fn a_game_with_pictures_settles_its_blocks_and_its_package_carries_the_tiles_and_tells_each_block_where_its_pictures_are()
+     {
+        let wood = BlockDefinition::cube([0.0; 3])
+            .with_texture(id("test_game:wood"))
+            .with_color_from_pictures();
+        let content = package_with(
+            Some(("test_game:wood", wood)),
+            vec![
+                game_picture("test_game:wood_top", 16, [255, 255, 255, 255]),
+                game_picture("test_game:wood_side", 8, [0, 0, 0, 255]),
+                game_picture("test_game:unused", 32, [9, 9, 9, 255]),
+            ],
+        );
+        let package = content.package_data();
+        // Two sizes are in use (the 32 is not used by a block), smallest first.
+        let sizes: Vec<(u32, usize)> = package
+            .tile_classes
+            .iter()
+            .map(|class| (class[0].size(), class.len()))
+            .collect();
+        assert_eq!(sizes, [(8, 1), (16, 1)]);
+        let (_, wood) = package
+            .blocks
+            .iter()
+            .find(|(identifier, _)| *identifier == id("test_game:wood"))
+            .unwrap();
+        let wood = wood.as_ref().unwrap();
+        let pictures = wood.pictures().copied().expect("the block was told");
+        assert_eq!((pictures.top.class(), pictures.top.layer()), (1, 0));
+        assert_eq!((pictures.side.class(), pictures.side.layer()), (0, 0));
+        assert_eq!(
+            pictures.bottom, pictures.top,
+            "no bottom picture: the top's"
+        );
+        // The colour is the average, which is a fifth of the light: the top white once, the side black four times.
+        for component in wood.color {
+            assert!((component - 0.4845).abs() < 1e-3, "{:?}", wood.color);
+        }
+        assert_eq!(PackageData::decode(&package.encode()), Ok(package));
+    }
+
+    #[test]
+    fn packs_that_bring_pictures_change_the_tiles_and_the_places_the_blocks_are_told() {
+        let mut content = package_with(
+            None,
+            vec![game_picture("test_game:gravel", 16, [100, 100, 100, 255])],
+        );
+        assert!(
+            content.package_data().tile_classes.is_empty(),
+            "no block uses it"
+        );
+        let pack = RawPack {
+            textures: vec![data_packs::RawTexture {
+                name: "path".to_owned(),
+                bytes: picture_bytes(32, [200, 100, 50, 255]),
+            }],
+            folder: "my_pack".to_owned(),
+            manifest: r#"{ "id": "my_pack", "depends_on": ["test_game"] }"#.to_owned(),
+            blocks: vec![
+                data_packs::RawFile {
+                    name: "path".to_owned(),
+                    text: r#"{ "texture": "path" }"#.to_owned(),
+                },
+                data_packs::RawFile {
+                    name: "gravel".to_owned(),
+                    text: r#"{ "texture": "test_game:gravel" }"#.to_owned(),
+                },
+            ],
+            patches: Vec::new(),
+            bodies: Vec::new(),
+        };
+        content.apply_packs(&[pack]).unwrap();
+        let package = content.package_data();
+        let sizes: Vec<u32> = package
+            .tile_classes
+            .iter()
+            .map(|class| class[0].size())
+            .collect();
+        assert_eq!(sizes, [16, 32]);
+        let place = |name: &str| {
+            let (_, definition) = package
+                .blocks
+                .iter()
+                .find(|(identifier, _)| *identifier == id(name))
+                .unwrap();
+            definition
+                .as_ref()
+                .unwrap()
+                .pictures()
+                .copied()
+                .unwrap()
+                .top
+        };
+        assert_eq!(place("my_pack:gravel").class(), 0);
+        assert_eq!(place("my_pack:path").class(), 1);
+        assert_eq!(PackageData::decode(&package.encode()), Ok(package));
     }
 
     #[test]
@@ -992,6 +1174,7 @@ mod tests {
         let mut content = package();
         content
             .apply_packs(&[RawPack {
+                textures: Vec::new(),
                 folder: "my_pack".to_owned(),
                 manifest: r#"{ "id": "my_pack" }"#.to_owned(),
                 blocks: Vec::new(),
@@ -1030,6 +1213,7 @@ mod tests {
         let mut content = package();
         let error = content
             .apply_packs(&[RawPack {
+                textures: Vec::new(),
                 folder: "my_pack".to_owned(),
                 manifest: r#"{ "id": "my_pack" }"#.to_owned(),
                 blocks: vec![RawFile {
@@ -1096,6 +1280,7 @@ mod tests {
         let mut content = package();
         content
             .apply_packs(&[RawPack {
+                textures: Vec::new(),
                 folder: "my_pack".to_owned(),
                 manifest: r#"{ "id": "my_pack" }"#.to_owned(),
                 blocks: Vec::new(),
@@ -1134,6 +1319,7 @@ mod tests {
         let mut content = package();
         let error = content
             .apply_packs(&[RawPack {
+                textures: Vec::new(),
                 folder: "my_pack".to_owned(),
                 manifest: r#"{ "id": "my_pack" }"#.to_owned(),
                 blocks: Vec::new(),
@@ -1164,6 +1350,7 @@ mod tests {
     /// A pack of bodies, each with the text of its file.
     fn pack_of_bodies(bodies: &[(&str, &str)]) -> RawPack {
         RawPack {
+            textures: Vec::new(),
             folder: "my_pack".to_owned(),
             manifest: r#"{ "id": "my_pack" }"#.to_owned(),
             blocks: Vec::new(),
@@ -1573,6 +1760,7 @@ mod tests {
         // (A pack of the game's own namespace, which nothing forbids.)
         let error = content
             .apply_packs(&[RawPack {
+                textures: Vec::new(),
                 folder: "test_game".to_owned(),
                 manifest: r#"{ "id": "test_game" }"#.to_owned(),
                 blocks: Vec::new(),
@@ -1639,6 +1827,7 @@ mod tests {
                 .collect()
         };
         RawPack {
+            textures: Vec::new(),
             folder: folder.to_owned(),
             manifest: format!(r#"{{ "id": "{folder}", "depends_on": [{depends_on}] }}"#),
             blocks: files(blocks),

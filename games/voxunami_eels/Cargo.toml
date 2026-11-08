@@ -24,6 +24,7 @@ world_storage.workspace = true
 world_view.workspace = true
 
 [dev-dependencies]
+block_models = { workspace = true, features = ["test-support"] }
 client.workspace = true
 proptest.workspace = true
 renderer.workspace = true

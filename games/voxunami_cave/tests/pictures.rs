@@ -59,7 +59,7 @@ fn renderer_for(
     configure_renderer(
         &mut renderer,
         session.block_table(),
-        session.package().ambient_light,
+        session.package(),
         VIEW_RADIUS,
     );
     daylight(&mut renderer);
@@ -143,7 +143,7 @@ fn an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw() 
             configure_renderer(
                 &mut renderer,
                 replay.block_table(),
-                replay.package().ambient_light,
+                replay.package(),
                 VIEW_RADIUS,
             );
             daylight(&mut renderer);
@@ -344,7 +344,7 @@ fn a_replay_draws_exactly_what_a_walker_carried_by_a_ship_that_turns_saw() {
             configure_renderer(
                 &mut renderer,
                 replay.block_table(),
-                replay.package().ambient_light,
+                replay.package(),
                 VIEW_RADIUS,
             );
             daylight(&mut renderer);
@@ -565,7 +565,7 @@ fn a_replay_draws_exactly_what_a_player_saw_who_made_a_ship_flew_it_turned_it_an
             configure_renderer(
                 &mut renderer,
                 replay.block_table(),
-                replay.package().ambient_light,
+                replay.package(),
                 VIEW_RADIUS,
             );
             daylight(&mut renderer);

@@ -132,6 +132,7 @@ impl ContentEels {
             blocks::HEAD,
         );
         let spec = PackageSpec {
+            textures: Vec::new(),
             level: arena_level_id(),
             block_registry_kind: block_registry_kind(),
             channels: vec![

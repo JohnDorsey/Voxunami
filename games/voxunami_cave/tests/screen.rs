@@ -163,7 +163,7 @@ fn picture<C: Connection>(
     configure_renderer(
         &mut renderer,
         session.block_table(),
-        session.package().ambient_light,
+        session.package(),
         VIEW_RADIUS,
     );
     let laid = show_screen(&mut renderer, &screen_of(session), (WIDTH, HEIGHT), None);
@@ -445,7 +445,7 @@ fn a_screen_with_everything_on_it_is_drawn_where_the_layout_says_and_can_be_look
         configure_renderer(
             &mut renderer,
             player.block_table(),
-            player.package().ambient_light,
+            player.package(),
             VIEW_RADIUS,
         );
         let laid = show_screen(&mut renderer, &screen, (BIG_WIDTH, BIG_HEIGHT), None);

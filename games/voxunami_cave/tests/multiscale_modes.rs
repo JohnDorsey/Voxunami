@@ -377,7 +377,7 @@ fn pictures() {
         configure_renderer(
             &mut renderer,
             player.block_table(),
-            player.package().ambient_light,
+            player.package(),
             VIEW_RADIUS,
         );
         // No fog: it would hide the terrain, which is black where no light reaches.

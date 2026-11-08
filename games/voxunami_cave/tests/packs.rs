@@ -11,7 +11,7 @@ use game_shell::client_plugin::MouseButton;
 use game_shell::files::{open_recording, record_connection};
 use game_shell::session::{Mode, Session};
 use game_shell::view::camera_at;
-use game_shell::{GameContent, Identity, KeyCode, RawFile, RawPack};
+use game_shell::{GameContent, Identity, KeyCode, RawFile, RawPack, RawTexture};
 use namespaced_id::NamespacedId;
 use player_presence::player_kind;
 use transport::Connection;
@@ -38,6 +38,7 @@ const MARBLE: [f32; 3] = [0.9, 0.9, 0.95];
 /// A pack that adds a plain block and a glowing one, and makes lamps brighter.
 fn the_pack() -> Vec<RawPack> {
     vec![RawPack {
+        textures: Vec::new(),
         folder: "my_pack".to_owned(),
         manifest: r#"{ "id": "my_pack", "depends_on": ["base_blocks"] }"#.to_owned(),
         blocks: vec![
@@ -55,6 +56,63 @@ fn the_pack() -> Vec<RawPack> {
         )],
         bodies: Vec::new(),
     }]
+}
+
+/// The bytes of a PNG picture of one colour, 16 pixels on a side.
+fn picture_of(rgba: [u8; 4]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut encoder = png::Encoder::new(&mut bytes, 16, 16);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let data: Vec<u8> = (0..16 * 16).flat_map(|_| rgba).collect();
+    let mut writer = encoder.write_header().unwrap();
+    writer.write_image_data(&data).unwrap();
+    writer.finish().unwrap();
+    bytes
+}
+
+#[test]
+fn a_pack_may_repaint_a_picture_of_the_game_and_the_colours_that_follow_it_follow_and_a_block_of_its_own_may_use_the_picture()
+ {
+    let mut content = CaveContent::new();
+    let colour_of = |content: &CaveContent, block: &str| {
+        let package = content.package_data();
+        let (_, definition) = package
+            .blocks
+            .iter()
+            .find(|(identifier, _)| *identifier == id(block))
+            .unwrap_or_else(|| panic!("no block {block}"));
+        definition.as_ref().unwrap().color
+    };
+    let before = colour_of(&content, "base_blocks:stone");
+    let pack = RawPack {
+        folder: "repaint".to_owned(),
+        manifest: r#"{ "id": "repaint", "depends_on": ["base_blocks"] }"#.to_owned(),
+        blocks: vec![file("slab", r#"{ "texture": "base_blocks:stone" }"#)],
+        patches: Vec::new(),
+        bodies: Vec::new(),
+        textures: vec![RawTexture {
+            name: "base_blocks/stone".to_owned(),
+            bytes: picture_of([255, 255, 255, 255]),
+        }],
+    };
+    let warnings = content.apply_packs(&[pack]).unwrap();
+    // The game's stone follows its picture, which the pack replaced: it is white now, as is the pack's own block, which uses the same picture.
+    assert_ne!(before, [1.0; 3]);
+    for block in ["base_blocks:stone", "repaint:slab"] {
+        let colour = colour_of(&content, block);
+        for component in colour {
+            assert!((component - 1.0).abs() < 1e-5, "{block}: {colour:?}");
+        }
+    }
+    // A block whose colour was its own is left alone, and the replacement is said.
+    assert_eq!(colour_of(&content, "base_blocks:lamp"), [1.0, 0.92, 0.65]);
+    assert_eq!(
+        warnings,
+        [
+            "repaint/textures/base_blocks/stone.png: replaces base_blocks:stone from plugins/base_blocks/textures/stone.png"
+        ]
+    );
 }
 
 fn content_with_the_pack() -> CaveContent {
@@ -254,6 +312,7 @@ fn a_world_saved_with_a_packs_block_loads_without_the_pack_and_saves_back_the_sa
 /// A pack whose block says it can be placed, which gives it an item and a place among the number keys.
 fn the_placeable_pack() -> Vec<RawPack> {
     vec![RawPack {
+        textures: Vec::new(),
         folder: "my_pack".to_owned(),
         manifest: r#"{ "id": "my_pack", "depends_on": ["base_blocks"] }"#.to_owned(),
         blocks: vec![

@@ -27,6 +27,9 @@ pub enum PropertyKind {
         minimum: i64,
         maximum: i64,
     },
+    /// A face of the block, or none: 0 for none, else 1 plus the face's index (see [`engine::face_code`]). Data may write the word for it
+    /// (`"up"`, see [`engine::FACE_WORDS`]) as well as the number.
+    Face,
 }
 
 impl PropertyKind {
@@ -34,6 +37,7 @@ impl PropertyKind {
         match self {
             Self::Bool => value == 0 || value == 1,
             Self::Integer { minimum, maximum } => (minimum..=maximum).contains(&value),
+            Self::Face => (0..=6).contains(&value),
         }
     }
 }
@@ -82,13 +86,36 @@ pub struct PropertyKey<T: PropertyType> {
     id: &'static str,
     default: T,
     doc: &'static str,
+    kind: PropertyKind,
+}
+
+impl PropertyKey<u8> {
+    /// A key called `id` whose value is a face of the block or none (see [`PropertyKind::Face`]); it is read as the face's code.
+    pub const fn face(id: &'static str, doc: &'static str) -> Self {
+        Self {
+            id,
+            default: 0,
+            doc,
+            kind: PropertyKind::Face,
+        }
+    }
 }
 
 impl<T: PropertyType> PropertyKey<T> {
     /// A key called `id` (such as `base_blocks:emission`) whose value is `default` where a block does
     /// not say.
     pub const fn new(id: &'static str, default: T, doc: &'static str) -> Self {
-        Self { id, default, doc }
+        Self {
+            id,
+            default,
+            doc,
+            kind: T::KIND,
+        }
+    }
+
+    /// What values the key takes.
+    pub fn kind(&self) -> PropertyKind {
+        self.kind
     }
 
     pub fn id(&self) -> &'static str {
@@ -107,7 +134,7 @@ impl<T: PropertyType> PropertyKey<T> {
                 .id
                 .parse()
                 .unwrap_or_else(|error| panic!("{:?} is not a property name: {error}", self.id)),
-            kind: T::KIND,
+            kind: self.kind,
             default: self.default.to_value(),
             doc: self.doc.to_owned(),
         }
@@ -145,57 +172,36 @@ pub mod engine {
         ["west", "east", "down", "up", "north", "south"][usize::from(face.index())]
     }
 
-    /// Which face of a block, in each state, is drawn in [`MARK_COLOR`] instead of the block's own colour (a face code, 0 for none), so a block
-    /// can show which way it faces.
-    pub const MARKED_FACE: PropertyKey<u8> = PropertyKey::new(
-        "engine:marked_face",
-        0,
-        "the face of the block drawn in its mark colour: 0 for none, else 1 plus the face's index (west 1, east 2, down 3, up 4, north 5, south 6)",
-    );
+    /// The words data may write for a face property, in the order of the codes: `"none"` is 0 and each face's word is its code.
+    pub const FACE_WORDS: [&str; 7] = ["none", "west", "east", "down", "up", "north", "south"];
 
-    /// The colour of the marked face, as 0xRRGGBB.
-    pub const MARK_COLOR: PropertyKey<u32> = PropertyKey::new(
-        "engine:mark_color",
-        0,
-        "the colour of the marked face, as 0xRRGGBB",
-    );
-
-    /// Whether the face opposite the marked face is drawn in the mark colour too: a log, with its two ends.
-    pub const MARK_BOTH_ENDS: PropertyKey<bool> = PropertyKey::new(
-        "engine:mark_both_ends",
-        false,
-        "whether the face opposite the marked face is drawn in the mark colour too (the two ends of a log)",
-    );
-
-    /// A second face of a block, in each state, drawn in [`MARK_COLOR`] too (a face code, 0 for none): a chair's back and its bottom, which are not opposite faces.
-    pub const ALSO_MARKED_FACE: PropertyKey<u8> = PropertyKey::new(
-        "engine:also_marked_face",
-        0,
-        "a second face of the block drawn in its mark colour: 0 for none, else 1 plus the face's index (west 1, east 2, down 3, up 4, north 5, south 6)",
-    );
+    /// The code a word stands for, if it is one of [`FACE_WORDS`].
+    pub fn face_code_from_word(word: &str) -> Option<u8> {
+        FACE_WORDS
+            .iter()
+            .position(|candidate| *candidate == word)
+            .map(|position| position as u8)
+    }
 
     /// The front of a block that has one, in each state, as it is made (a face code, 0 for none): a block with a front is turned, when a player places
     /// it, to face the player, as a piston does.
-    pub const FRONT_FACE: PropertyKey<u8> = PropertyKey::new(
+    pub const FRONT_FACE: PropertyKey<u8> = PropertyKey::face(
         "engine:front_face",
-        0,
         "the front of the block as it is made, 0 for a block with none, else 1 plus the face's index (west 1, east 2, down 3, up 4, north 5, south 6)",
     );
 
     /// One end of the line a block is symmetrical about, in each state, as it is made (a face code, 0 for none): a block with such a line is turned, when a
     /// player places it, so that the line runs along the face it is placed against, as a log is.
-    pub const AXIS_FACE: PropertyKey<u8> = PropertyKey::new(
+    pub const AXIS_FACE: PropertyKey<u8> = PropertyKey::face(
         "engine:axis_face",
-        0,
         "one end of the line the block is symmetrical about as it is made, 0 for none, else 1 plus the face's index (west 1, east 2, down 3, up 4, north 5, south 6)",
     );
 
     /// Which face of a block, in each state, is its docking face: the face a ship docks by (a face code, 0 for a block that is not a docking
     /// port). A face that looks one way in a state looks the way the grid is turned to when the block's grid is, so a docking port is turned
     /// with its ship (see `BlockTable`, which turns a state with its ship).
-    pub const DOCKING_FACE: PropertyKey<u8> = PropertyKey::new(
+    pub const DOCKING_FACE: PropertyKey<u8> = PropertyKey::face(
         "engine:docking_face",
-        0,
         "the face of the block that docks with another ship's: 0 for a block that is not a docking port, else 1 plus the face's index (west 1, east 2, down 3, up 4, north 5, south 6)",
     );
 
@@ -266,11 +272,7 @@ impl PropertySchema {
         for declaration in [
             engine::DENSITY.declaration(),
             engine::PLACEABLE_ON_MOVING_GRIDS.declaration(),
-            engine::MARKED_FACE.declaration(),
-            engine::MARK_COLOR.declaration(),
             engine::DOCKING_FACE.declaration(),
-            engine::MARK_BOTH_ENDS.declaration(),
-            engine::ALSO_MARKED_FACE.declaration(),
             engine::FRONT_FACE.declaration(),
             engine::AXIS_FACE.declaration(),
         ] {
@@ -358,6 +360,7 @@ pub(crate) fn check_value(
     let (minimum, maximum) = match declaration.kind {
         PropertyKind::Bool => (0, 1),
         PropertyKind::Integer { minimum, maximum } => (minimum, maximum),
+        PropertyKind::Face => (0, 6),
     };
     Err(PropertyError::OutOfRange {
         key: declaration.id.clone(),
@@ -370,6 +373,59 @@ pub(crate) fn check_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_face_takes_0_for_none_and_1_to_6_for_the_faces_and_has_a_word_for_each() {
+        let face = engine::AXIS_FACE.declaration();
+        assert_eq!(face.kind, PropertyKind::Face);
+        for good in 0..=6 {
+            assert_eq!(check_value(&face, good), Ok(()));
+        }
+        for bad in [-1, 7, 255] {
+            assert_eq!(
+                check_value(&face, bad),
+                Err(PropertyError::OutOfRange {
+                    key: face.id.clone(),
+                    value: bad,
+                    minimum: 0,
+                    maximum: 6
+                })
+            );
+        }
+        // The words are in the order of the codes, and a code is the word's place.
+        assert_eq!(
+            engine::FACE_WORDS,
+            ["none", "west", "east", "down", "up", "north", "south"]
+        );
+        for (code, word) in engine::FACE_WORDS.into_iter().enumerate() {
+            assert_eq!(engine::face_code_from_word(word), Some(code as u8));
+        }
+        assert_eq!(engine::face_code_from_word("top"), None);
+        assert_eq!(engine::face_code_from_word("Up"), None);
+        // The words are the ones `face_name` gives the faces.
+        for face in voxel_space::FaceDirection::ALL {
+            assert_eq!(
+                engine::FACE_WORDS[usize::from(engine::face_code(Some(face)))],
+                engine::face_name(face)
+            );
+        }
+    }
+
+    #[test]
+    fn the_engines_face_properties_are_faces_and_its_other_properties_are_not() {
+        let schema = PropertySchema::new();
+        for key in [
+            engine::FRONT_FACE.id(),
+            engine::AXIS_FACE.id(),
+            engine::DOCKING_FACE.id(),
+        ] {
+            let declaration = schema.get(&key_id(key)).expect("declared");
+            assert_eq!(declaration.kind, PropertyKind::Face, "{key}");
+            assert_eq!(declaration.default, 0);
+        }
+        let density = schema.get(&key_id(engine::DENSITY.id())).unwrap();
+        assert!(matches!(density.kind, PropertyKind::Integer { .. }));
+    }
 
     #[test]
     fn a_bool_takes_only_0_and_1_and_an_integer_only_its_range_for_values_that_do_not_come_from_rust_types()

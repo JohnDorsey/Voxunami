@@ -1,23 +1,43 @@
 //! Glue between a session and the renderer.
 
 use block_models::BlockTable;
-use renderer::{Atmosphere, Avatar, Camera, OverlayRect, VoxelRenderer};
+use data_packs::Tile;
+use renderer::{Atmosphere, Avatar, Camera, OverlayRect, PictureSize, VoxelRenderer};
 use transport::Connection;
 use voxel_space::WorldPosition;
 use world_view::MeshUpdate;
 
 use crate::definition::GameDefinition;
+use crate::package_data::PackageData;
 use crate::session::Session;
 
-/// Palette and fog suited to the view distance: the world fades into the sky just before it ends.
+/// Palette (with the pictures of the blocks that have them) and fog suited to the view distance: the world fades into the sky just before it ends.
 pub fn configure_renderer(
     renderer: &mut VoxelRenderer,
     block_table: &BlockTable,
-    ambient_light: u8,
+    package: &PackageData,
     view_radius_bricks: i128,
 ) {
-    renderer.set_palette(&block_table.palette());
-    renderer.set_atmosphere(atmosphere(view_radius_bricks, ambient_light));
+    renderer.set_palette_with_pictures(
+        &block_table.palette(),
+        &block_table.palette_pictures(),
+        &picture_sizes(&package.tile_classes),
+    );
+    renderer.set_atmosphere(atmosphere(view_radius_bricks, package.ambient_light));
+}
+
+/// The pictures of a game's blocks as the renderer takes them: a size at a time, smallest first, which is the order the table's picture words count the sizes in.
+pub fn picture_sizes(tile_classes: &[Vec<Tile>]) -> Vec<PictureSize<'_>> {
+    tile_classes
+        .iter()
+        .map(|tiles| PictureSize {
+            size: tiles
+                .first()
+                .expect("a size of picture has pictures (a package is read with at least one)")
+                .size(),
+            tiles: tiles.iter().map(Tile::rgba).collect(),
+        })
+        .collect()
 }
 
 /// The sky and fog for a view of this radius, with faces no light reaches drawn at `ambient_light`.
@@ -40,6 +60,7 @@ pub fn light_the_scene<C: Connection, G: GameDefinition>(
     let (lit, occluders) = lit_atmosphere(session);
     renderer.set_sun_occluders(&occluders);
     renderer.set_atmosphere(lit);
+    renderer.set_picture_distance(session.settings().texture_distance as f32);
 }
 
 /// What [`light_the_scene`] gives the renderer: the atmosphere, and what can be in the sun's way.
@@ -184,6 +205,29 @@ mod tests {
     use voxel_space::BrickCoordinate;
 
     use super::*;
+
+    #[test]
+    fn the_pictures_of_a_package_go_to_the_renderer_a_size_at_a_time_smallest_first_unchanged() {
+        let tile = |size: u32, byte: u8| {
+            Tile::from_rgba(size, vec![byte; size as usize * size as usize * 4])
+        };
+        let classes = vec![
+            vec![tile(8, 1), tile(8, 2)],
+            vec![tile(16, 3)],
+            vec![tile(64, 4)],
+        ];
+        let sizes = picture_sizes(&classes);
+        assert_eq!(
+            sizes
+                .iter()
+                .map(|size| (size.size, size.tiles.len()))
+                .collect::<Vec<_>>(),
+            [(8, 2), (16, 1), (64, 1)]
+        );
+        assert_eq!(sizes[0].tiles[1], classes[0][1].rgba());
+        assert_eq!(sizes[2].tiles[0], classes[2][0].rgba());
+        assert!(picture_sizes(&[]).is_empty());
+    }
 
     #[test]
     fn the_camera_lands_in_the_right_brick_and_offset() {

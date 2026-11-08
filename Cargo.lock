@@ -147,6 +147,7 @@ version = "0.0.0"
 dependencies = [
  "block_models",
  "content_registry",
+ "data_packs",
  "namespaced_id",
  "voxel_grid",
  "voxel_space",
@@ -643,7 +644,9 @@ version = "0.0.0"
 dependencies = [
  "block_models",
  "jsonschema",
+ "libm",
  "namespaced_id",
+ "png",
  "proptest",
  "serde_json",
  "voxel_space",
@@ -2694,6 +2697,7 @@ dependencies = [
  "coarse_cells",
  "glam 0.34.1",
  "libm",
+ "namespaced_id",
  "png",
  "pollster",
  "region_octree",

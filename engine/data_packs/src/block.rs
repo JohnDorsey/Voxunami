@@ -1,18 +1,23 @@
 //! A block file: one block of a pack, named by the file.
 
-use block_models::{BlockDefinition, PropertyDeclaration, PropertyKind, PropertySchema, Shape};
+use block_models::{
+    BlockDefinition, PropertyDeclaration, PropertyKind, PropertySchema, Shape, engine,
+};
 use namespaced_id::NamespacedId;
 use serde_json::Value;
 
 use crate::error::PackErrors;
+use crate::face_colors::read_face_colors;
 use crate::shape::read_shape;
 use crate::walk::{Path, Walk, nearest};
 
-const KEYS: [&str; 6] = [
+const KEYS: [&str; 8] = [
     "color",
     "see_through",
     "states",
     "state_colors",
+    "face_colors",
+    "texture",
     "properties",
     "state_properties",
 ];
@@ -31,7 +36,7 @@ pub fn read_block(
     let (mut walk, value) = Walk::parse(file, text)?;
     let root = Path::root();
     let identifier = block_identifier(&mut walk, pack, name, &root);
-    let definition = read_definition(&mut walk, &value, &root, schema);
+    let definition = read_definition(&mut walk, &value, &root, pack, schema);
     match (identifier, definition) {
         (Some(identifier), Some(definition)) => walk.finish((identifier, definition)),
         _ => Err(walk
@@ -63,12 +68,25 @@ fn read_definition(
     walk: &mut Walk,
     value: &Value,
     path: &Path,
+    pack: &str,
     schema: &PropertySchema,
 ) -> Option<BlockDefinition> {
     let object = walk.object(value, path, &KEYS)?;
-    let color = walk
-        .require(object, "color", path)
-        .and_then(|color| walk.color(color, &path.key("color")));
+    let texture = match object.get("texture") {
+        Some(texture) => read_texture(walk, texture, &path.key("texture"), Some(pack)).map(Some),
+        None => Some(None),
+    };
+    // A block with a texture may leave its colour out: it is then the average of its pictures, which the loader works out once it knows them.
+    let color = match object.get("color") {
+        Some(color) => walk
+            .color(color, &path.key("color"))
+            .map(|color| (color, false)),
+        None if object.contains_key("texture") => Some(([0.0; 3], true)),
+        None => {
+            walk.fail(path, "missing \"color\"");
+            None
+        }
+    };
     let see_through = match object.get("see_through") {
         Some(value) => walk.boolean(value, &path.key("see_through")),
         None => Some(false),
@@ -80,6 +98,10 @@ fn read_definition(
     let state_colors = match object.get("state_colors") {
         Some(colors) => read_state_colors(walk, colors, &path.key("state_colors")),
         None => Some(Vec::new()),
+    };
+    let face_colors = match object.get("face_colors") {
+        Some(colors) => read_face_colors(walk, colors, &path.key("face_colors")),
+        None => Some([None; 6]),
     };
     let properties = match object.get("properties") {
         Some(properties) => read_properties(walk, properties, &path.key("properties"), schema),
@@ -96,11 +118,22 @@ fn read_definition(
         ),
         None => Some(Vec::new()),
     };
-    let (color, see_through, shapes, state_colors, properties, state_properties) = (
+    let (
+        (color, color_from_pictures),
+        texture,
+        see_through,
+        shapes,
+        state_colors,
+        face_colors,
+        properties,
+        state_properties,
+    ) = (
         color?,
+        texture?,
         see_through?,
         shapes?,
         state_colors?,
+        face_colors?,
         properties?,
         state_properties?,
     );
@@ -108,9 +141,16 @@ fn read_definition(
     let mut definition = BlockDefinition::cube(color)
         .with_shapes(shapes)
         .with_see_through(see_through);
+    if let Some(texture) = texture {
+        definition = definition.with_texture(texture);
+        if color_from_pictures {
+            definition = definition.with_color_from_pictures();
+        }
+    }
     if !state_colors.is_empty() {
         definition = definition.with_state_colors(state_colors);
     }
+    definition.set_face_colors(face_colors);
     for (key, value) in properties {
         definition = definition.with_property_value(key, value);
     }
@@ -118,6 +158,40 @@ fn read_definition(
         definition = definition.with_state_property_value(state, key, value);
     }
     Some(definition)
+}
+
+/// The base name of a block's pictures: `"oak"` is `pack:oak` (a block's file says its own pack's), and `"other_pack:stone"` is a picture of another. In a patch
+/// (`pack` is `None`) a name has its namespace, since a patch is not of one pack.
+pub(crate) fn read_texture(
+    walk: &mut Walk,
+    value: &Value,
+    path: &Path,
+    pack: Option<&str>,
+) -> Option<NamespacedId> {
+    let text = walk.string(value, path)?;
+    let parsed = match (pack, text.contains(':')) {
+        (Some(pack), false) => NamespacedId::new(pack, text),
+        (None, false) => {
+            walk.fail(
+                path,
+                format!(
+                    "a texture in a patch is written with its namespace, such as \"my_pack:oak\", and \"{text}\" has none"
+                ),
+            );
+            return None;
+        }
+        (_, true) => text.parse(),
+    };
+    match parsed {
+        Ok(texture) => Some(texture),
+        Err(error) => {
+            walk.fail(
+                path,
+                format!("\"{text}\" is not the name of a picture: {error}"),
+            );
+            None
+        }
+    }
 }
 
 fn read_states(walk: &mut Walk, value: &Value, path: &Path) -> Option<Vec<Shape>> {
@@ -161,7 +235,43 @@ pub(crate) fn read_property_value(
     match declaration.kind {
         PropertyKind::Bool => walk.boolean(value, path).map(i64::from),
         PropertyKind::Integer { minimum, maximum } => walk.integer(value, path, minimum, maximum),
+        PropertyKind::Face => match value {
+            Value::String(word) => face_code(walk, word, path),
+            Value::Number(_) => walk.integer(value, path, 0, 6),
+            other => {
+                walk.fail(
+                    path,
+                    format!("{}, found {}", expected_face(), crate::walk::kind_of(other)),
+                );
+                None
+            }
+        },
     }
+}
+
+/// What a face is, for a complaint.
+pub(crate) fn expected_face() -> String {
+    format!(
+        "expected a face ({}) or a number from 0 to 6",
+        crate::walk::quoted(&engine::FACE_WORDS)
+    )
+}
+
+/// The code of a face written as a word, or a complaint that says what a face is.
+pub(crate) fn face_code(walk: &mut Walk, word: &str, path: &Path) -> Option<i64> {
+    let code = engine::face_code_from_word(word).map(i64::from);
+    if code.is_none() {
+        walk.fail(path, no_such_face(word));
+    }
+    code
+}
+
+/// The complaint for a word that is no face.
+pub(crate) fn no_such_face(word: &str) -> String {
+    let hint = nearest(word, &engine::FACE_WORDS)
+        .map(|near| format!(" (did you mean \"{near}\"?)"))
+        .unwrap_or_default();
+    format!("{}, found \"{word}\"{hint}", expected_face())
 }
 
 /// The declaration of a property named by text, or a complaint that says what exists.

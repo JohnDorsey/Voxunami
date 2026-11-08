@@ -35,7 +35,7 @@ mod test_support;
 pub mod view;
 mod windowed;
 
-pub use data_packs::{BodySupport, PackErrors, RawFile, RawPack};
+pub use data_packs::{BodySupport, GameTexture, PackErrors, RawFile, RawPack, RawTexture};
 pub use definition::{
     CameraStart, CoarseDetail, GameContent, GameDefinition, unpaired_client_plugins,
 };

@@ -3,9 +3,9 @@
 mod common;
 
 use common::{Player, PlayerExt, Rig, above_ground, ground_height};
-use game_shell::KeyCode;
 use game_shell::client_plugin::MouseButton;
 use game_shell::screen::{ScreenText, Source};
+use game_shell::{GameContent, KeyCode};
 use ui::{Anchor, Color, Direction, Node, Panel, Ui};
 use voxel_space::VoxelCoordinate;
 
@@ -76,19 +76,39 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
     assert!(!hotbar.modal);
     assert_eq!(hotbar.root.direction, Direction::Row);
     let shown = swatches(&hotbar.root);
-    // Stone, dirt, grass, lamp, wood, fire, and the dev docking port, command seat and rocket engine: in the colours the blocks are drawn in (theirs are gunmetal gray), the first
-    // chosen, no counts in creative.
+    // Stone, dirt, grass, lamp, wood, fire, and the dev docking port, command seat and rocket engine: in the colours the blocks are drawn in (the table of the game says
+    // which: for a block with pictures it is their average), the first chosen, no counts in creative.
+    let content = voxunami_cave::content::CaveContent::new();
+    let table = content.block_table();
+    let ids = content.blocks;
+    let package = content.package_data();
+    let position_of = |wanted: namespaced_id::NamespacedId| {
+        package
+            .blocks
+            .iter()
+            .position(|(identifier, _)| *identifier == wanted)
+            .expect("the package has the dev block") as u32
+    };
+    let port = position_of(voxunami_cave::content::dev_docking_port_id());
+    let seat = position_of(voxunami_cave::content::dev_command_seat_id());
+    let engine = position_of(voxunami_cave::content::dev_rocket_engine_id());
     let expected_colors = [
-        [0.50, 0.50, 0.53],
-        [0.45, 0.30, 0.18],
-        [0.30, 0.62, 0.20],
-        [1.0, 0.92, 0.65],
-        [0.55, 0.38, 0.20],
-        [0.95, 0.5, 0.1],
-        [0.17, 0.21, 0.22],
-        [0.17, 0.21, 0.22],
-        [0.17, 0.21, 0.22],
+        table.color(ids.stone),
+        table.color(ids.dirt),
+        table.color(ids.grass),
+        table.color(ids.lamp),
+        table.color(ids.wood),
+        table.color(ids.fire),
+        table.color(port),
+        table.color(seat),
+        table.color(engine),
     ];
+    // (The two that have no pictures are what their files say.)
+    assert_eq!(expected_colors[3], [1.0, 0.92, 0.65]);
+    assert_eq!(expected_colors[5], [0.95, 0.5, 0.1]);
+    // (The seat and the engine are gunmetal gray, and their brown and red faces are not their colour.)
+    assert_eq!(expected_colors[7], [0.17, 0.21, 0.22]);
+    assert_eq!(expected_colors[8], [0.17, 0.21, 0.22]);
     assert_eq!(shown.len(), 9);
     for (index, ((color, count, selected), expected)) in
         shown.iter().zip(expected_colors).enumerate()

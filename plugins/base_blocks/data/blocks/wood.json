@@ -1,0 +1,6 @@
+{
+  "texture": "log",
+  "states": ["full", "half:negative_y", "half:positive_y", "stair:positive_x", "stair:negative_x", "stair:negative_z", "stair:positive_z"],
+  "face_colors": { "top": [0.7490196, 0.5803922, 0.36078432], "bottom": [0.7490196, 0.5803922, 0.36078432] },
+  "properties": { "base_blocks:flammability": 40, "engine:axis_face": "up" }
+}

@@ -63,8 +63,7 @@ fn velocity_of(scene: &Scene, id: GridId) -> [f64; 3] {
 }
 
 #[test]
-fn the_dev_docking_port_is_gunmetal_gray_with_one_yellow_face_that_docks_and_exists_only_in_creative()
- {
+fn the_dev_docking_port_has_pictures_and_one_yellow_face_that_docks_and_exists_only_in_creative() {
     use voxunami_cave::items::{creative_only_blocks, placeable_blocks};
     let content = CaveContent::new();
     let package = content.package_data();
@@ -83,19 +82,30 @@ fn the_dev_docking_port_is_gunmetal_gray_with_one_yellow_face_that_docks_and_exi
     for face in FaceDirection::ALL {
         let orientation = facing(face).orientation;
         assert_eq!(table.docking_face(block, 0, orientation), Some(face));
-        let mark = table.face_mark(block, 0, orientation).unwrap();
-        assert_eq!(mark.face, face);
-        assert_eq!(palette[mark.material as usize], [1.0, 216.0 / 255.0, 0.0]);
+        let yellow = table.material_of_face(block, 0, orientation, face);
+        assert_eq!(palette[yellow as usize], [1.0, 216.0 / 255.0, 0.0]);
         for other in FaceDirection::ALL
             .into_iter()
             .filter(|other| *other != face)
         {
-            assert_eq!(table.material_of_face(block, 0, orientation, other), block);
+            // (Every face has its picture, so it is the colour the face is under it that is the block's own.)
+            let material = table.material_of_face(block, 0, orientation, other);
+            assert_eq!(palette[material as usize], table.color(block));
         }
     }
-    // Gunmetal gray: dark, a little blue, and not yellow.
-    let [red, green, blue] = table.color(block);
-    assert!(red < 0.3 && green < 0.3 && blue < 0.3 && blue >= red);
+    // Its colour is the average of its pictures (they are not gunmetal gray any more: the port is as its pictures are), and it names them.
+    let definition = package
+        .blocks
+        .iter()
+        .find(|(identifier, _)| *identifier == id)
+        .and_then(|(_, definition)| definition.as_ref())
+        .expect("the package has the port");
+    assert_eq!(
+        definition.texture().map(ToString::to_string).as_deref(),
+        Some("base_blocks:dev_docking_port")
+    );
+    assert!(definition.color_from_pictures());
+    assert_eq!(table.color(block), definition.color);
     assert!(table.shape(table.model_of(block, 0, 0)).is_full());
 }
 

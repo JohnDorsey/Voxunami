@@ -48,9 +48,11 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
 - **Occurrence 4: 2026-11-07** (the full gate of the terrain lookahead of ships and walkers: `physics`, `grid_bodies`, the shared test helpers; nothing that draws a form): failed once at
   `adapter 1: 1 pixels differ, such as [(157, 68)]` (`screen.rs:386`), the **same pixel as occurrence 3**; **it passed on three reruns alone and on the rerun of the whole binary** (5 tests). Adapter 1 again.
   The gate stopped at it (no `--no-fail-fast`), so it was run again with that flag for the suites after it.
+- **Occurrence 5: 2026-11-07**, the full gate of block-textures step 1 (changes in `block_models`, `data_packs`, `voxel_meshing`, `base_blocks`; none draws a form), `cargo test --workspace --no-fail-fast` on **Windows**: `adapter 1: 1 pixels differ, such as [(157, 68)]`
+  (screen.rs:386). **Reruns: 3 alone and 1 as the whole binary, 0 failures in 4.** Adapter 1 is the second adapter of the run (which one that is on this machine was not printed).
 - **Beliefs.** **Checked, for a sister test** (`an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw`, explained below): on the integrated AMD GPU the first frames of a fresh renderer sometimes leave
   pixels out, never on the NVIDIA card, and the pictures compared to the pixel are now taken once a frame repeats them (`settled`). **Believed**: the same family of cause for this test (a pixel left out in a
-  first frame on one adapter); not checked for this test. **A new fact against "any pixel the first frame left out":** occurrences 3 and 4 are the same pixel, (157, 68), on the same adapter: a first
+  first frame on one adapter); not checked for this test. **A new fact against "any pixel the first frame left out":** occurrences 3, 4 and 5 are the same pixel, (157, 68), on the same adapter: a first
   frame that leaves out whatever it likes would not repeat the place; something at that place (an edge of the dimmed picture or of a button, rounded one way live and the other in the replay) might.
   Not looked into.
 - **What would settle it.** Run it in a loop on each adapter with `VOX_REQUIRE_GPU=1` and log which adapter and which pixel differs; see whether it goes through `settled`, and what is drawn at (157, 68).
@@ -69,7 +71,29 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
 - **What would settle it.** Print `scheduled_last_update`, `pending_jobs()` and the number of loaded bricks at the exit of `settle` on a failing run (loop the binary until it fails, 4 percent of runs here), and look at whether the missing bricks are in the source and not yet
   asked, or asked and not yet returned. A `settle` that waits for a condition with a deadline (all the bricks the view wants are meshed) would be the fix for the test; if the mesher can end its work with bricks wanted and not asked, it is the mesher's.
 
+### `wide_float/tests/codec.rs`: `a_number_has_one_encoding` (a real fault found by the test, reproducible; not a flake)
+
+- **The test.** It encodes a random `WideFloat`, flips bits of one random byte, and asserts that if the changed bytes still decode, they encode back to exactly the changed bytes ("nothing is accepted that would not be written").
+- **Occurrence 1: 2026-11-07**, the full gate of block-textures step 1 (`wide_float` and everything it depends on untouched by that change: `cargo tree -p wide_float` names none of `block_models`, `data_packs`, `game_shell`), on **Windows**. Proptest shrank it to
+  `number = 0x8000000000000000000000000000000000000000000000000000000000000000001p-129@268, position = Index(1871694973728413922), flip = 2`, with `left` (what the decoded number writes) `[140, 2, 1, 1, 34, 1, 0 ... 8]` and `right` (the changed
+  bytes) `[140, 2, 1, 129, 0, 34, 1, 0 ... 8]`: **the reader accepted `129, 0` where the writer writes `1`**, a padded varint. Saved by proptest as `cc d4df15ccde8d77a737900a4221bad59894c63c105779ae513bda1f9538264b13` in
+  `engine/wide_float/tests/codec.proptest-regressions`; **that file was not kept in the tree** (it makes the test fail for everyone until the fault is fixed), so to replay the case put the line above in a file of that name.
+- **Reruns.** With the seed in place it **failed every time (reproducible)**. With `PROPTEST_DISABLE_FAILURE_PERSISTENCE=1` (the seed ignored) it passed 2 alone and in the whole binary: random cases only meet a padded varint by luck.
+- **What it depends on [read].** `ByteReader::read_varint` in `engine/binary_codec/src/lib.rs` rejects a tenth byte over 1 but **accepts a last byte of zero after a continuation** (`0x81 0x00` is read as 1). `read_count`, `read_signed_varint` and everything built on them
+  inherit this, so it is not only `wide_float`'s: the **package and block-definition decoders claim "decoding refuses anything the encoder would not write"** (`block_models/src/codec.rs`) and rely on the same reader; their random-bytes property
+  tests (`bytes_that_are_not_a_definition_are_an_error...`) could meet it too, by luck. `read_wide_signed` in the same file does refuse its padded form.
+- **Beliefs about the cause.** **Read, not tested by a fix**: the missing check is "a varint of more than one byte whose last byte has no payload" (`position > 0 && payload == 0`). **Not checked**: whether any saved world or replay on disk contains a padded varint (the writer never writes one, so
+  believed not).
+- **What would settle it.** Add that check in `read_varint` with a test of `[0x81, 0x00]`, `[0x80, 0x80, 0x00]` and the ten-byte forms, and run the whole gate (saves and replays are the risk). The owner's to decide, since it changes what a shared decoder accepts.
+
 ## Explained and fixed
+
+- `beyond_the_reach_of_the_cascades_the_picture_is_the_one_without_shadows_and_nothing_is_not_a_number` and `a_block_and_a_roof_shade_the_floor_where_the_sun_puts_the_shadow_...` (the two shadow tests of `engine/renderer/tests/gpu_rendering.rs`), 2026-11-07, while block pictures were built: **they failed in 3 to 4 of 10 to 12 runs on the integrated AMD GPU
+  (never on the NVIDIA card) when the voxel fragment shader used the texture and sampler bindings, though no test drew a picture.** Measured: the committed renderer 0 of 10 filtered and 0 of 3 whole-binary runs; the shader with the picture code removed 0 of 12; with only
+  the two derivatives 0 of 12; with a branch and one sampling call 4 of 12; the full shader 3 of 10 (and 6 of 6, 2 of 5 and 1 of 3 in three earlier variants of the textures' upload). It is the known family of the integrated GPU leaving pixels out of a fresh renderer's first
+  frames (`an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw` above), which this made far more likely. Not found: why the use of the bindings does it. Fixed by avoiding it: the reading of pictures is a second shader, built and chosen only when a
+  palette has pictures and a distance is set (`pictures_off.wgsl` / `pictures_on.wgsl`); after that the two tests failed 0 of 12 (twice) and the five picture tests 0 of 18, and the whole binary passed three times. **Believed, not tested:** a game that draws pictures on that
+  GPU may still leave pixels out in its first frames, as any scene may; the tests that compare pictures to the pixel take them once two frames agree.
 
 - `an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw` (`games/voxunami_cave/tests/pictures.rs`): the first frames of a fresh renderer on the integrated AMD GPU leave pixels out;
   pictures are taken once a frame repeats them (2026-10-21, Phase 30). `docs/plan.md` (the section on flaky tests) and `docs/specs/ui-spec.md`.

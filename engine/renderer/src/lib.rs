@@ -9,6 +9,7 @@
 //! Placement is camera-relative. Each brick's offset from the camera is computed from exact
 //! integer brick coordinates, so images are identical wherever in the world the scene is.
 
+mod block_textures;
 mod camera;
 mod crosshair;
 mod graphics_context;
@@ -19,6 +20,7 @@ mod sky;
 mod sun;
 mod voxel_renderer;
 
+pub use block_textures::{MOST_PICTURE_SIZES, MOST_PICTURES_OF_A_SIZE, PictureSize};
 pub use camera::{Camera, Frustum};
 pub use graphics_context::{
     AdapterPreference, GraphicsContext, GraphicsError, describe, new_instance,
@@ -40,6 +42,6 @@ pub use sun::{
     sun_visibility, sunlight, zenith,
 };
 pub use voxel_renderer::{
-    AVATAR_COLOR_COUNT, Atmosphere, Avatar, EntityBox, MAXIMUM_GAME_MATERIALS, RenderStatistics,
-    VoxelRenderer,
+    AVATAR_COLOR_COUNT, Atmosphere, Avatar, DEFAULT_PICTURE_DISTANCE, EntityBox,
+    MAXIMUM_GAME_MATERIALS, RenderStatistics, VoxelRenderer,
 };

@@ -10,8 +10,8 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use block_models::{BlockDefinition, BlockTable, Shape, ShapeBox};
 use glam::Vec3;
 use renderer::{
-    Atmosphere, Avatar, Camera, EntityBox, GraphicsContext, OverlayRect, RenderStatistics,
-    SunOccluder, VoxelRenderer,
+    Atmosphere, Avatar, Camera, EntityBox, GraphicsContext, OverlayRect, PictureSize,
+    RenderStatistics, SunOccluder, VoxelRenderer,
 };
 use voxel_grid::ChannelStorage;
 use voxel_meshing::{BrickChannels, BrickNeighbourhood, FULL_LIGHT, mesh_brick};
@@ -1091,6 +1091,17 @@ fn place_blocks(
     blocks: &[([u8; 3], u32, u32)],
     light: Option<u32>,
 ) {
+    place_blocks_in(renderer, &shaped_table(), brick, blocks, light);
+}
+
+/// As `place_blocks`, against any table.
+fn place_blocks_in(
+    renderer: &mut VoxelRenderer,
+    table: &BlockTable,
+    brick: BrickCoordinate,
+    blocks: &[([u8; 3], u32, u32)],
+    light: Option<u32>,
+) {
     let mut block_values = vec![0u32; BRICK_VOXEL_COUNT];
     let mut state_values = vec![0u32; BRICK_VOXEL_COUNT];
     for &([x, y, z], block, state) in blocks {
@@ -1113,7 +1124,7 @@ fn place_blocks(
             },
             neighbours: [None; 6],
         },
-        &shaped_table(),
+        table,
     );
     renderer.upload_brick(brick, &mesh.pack());
 }
@@ -4735,6 +4746,367 @@ fn the_night_light_needs_neither_the_suns_light_nor_the_skys_to_light_a_face_and
         assert!(
             uncounted > lit * 0.9,
             "{name}: uncounted {uncounted} against {lit}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Pictures on the faces of blocks (docs/specs/block-textures-spec.md, step 4).
+
+/// The four colours of the corners of the test picture: top left red, top right green, bottom left blue, bottom right yellow.
+const PICTURE_COLORS: [[u8; 3]; 4] = [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0]];
+
+/// A picture 8 pixels across with a different colour in each quarter (`PICTURE_COLORS`, in reading order), as 8-bit sRGB RGBA.
+fn quartered_picture() -> Vec<u8> {
+    let mut pixels = Vec::new();
+    for y in 0..8 {
+        for x in 0..8 {
+            let [red, green, blue] = PICTURE_COLORS[(y / 4) * 2 + x / 4];
+            pixels.extend_from_slice(&[red, green, blue, 255]);
+        }
+    }
+    pixels
+}
+
+fn solid_picture(size: usize, color: [u8; 3]) -> Vec<u8> {
+    (0..size * size)
+        .flat_map(|_| [color[0], color[1], color[2], 255])
+        .collect()
+}
+
+fn is_yellow(pixel: [u8; 4]) -> bool {
+    pixel[0] > pixel[2].saturating_add(60) && pixel[1] > pixel[2].saturating_add(60)
+}
+
+/// Which of the corner colours a pixel is: 0 red, 1 green, 2 blue, 3 yellow; `None` for a grey or anything else.
+fn corner_of(pixel: [u8; 4]) -> Option<usize> {
+    [is_red, is_green, is_blue, is_yellow]
+        .iter()
+        .position(|test| test(pixel))
+}
+
+/// Blocks 1 to 3 have a picture each, on every face, and a flat grey for the distance: 1 is the quartered one (a size 8, the first); 2 is a size-8 picture of one
+/// green, the second of the size; 3 is a size-16 picture of one blue. 1 can also be a bottom or a top slab.
+fn textured_table() -> BlockTable {
+    let grey = [0.5, 0.5, 0.5];
+    let textured = |class, layer| {
+        let tile = block_models::TileRef::new(class, layer).expect("a place for the picture");
+        BlockDefinition::cube(grey)
+            .with_texture(namespaced_id::NamespacedId::new("test", "picture").unwrap())
+            .with_pictures(block_models::FacePictures {
+                top: tile,
+                side: tile,
+                bottom: tile,
+            })
+    };
+    let air = BlockDefinition::air();
+    let quartered = textured(0, 0).with_shapes(vec![
+        Shape::full(),
+        Shape::half(FaceDirection::NegativeY),
+        Shape::half(FaceDirection::PositiveY),
+    ]);
+    let green = textured(0, 1);
+    let blue = textured(1, 0);
+    BlockTable::from_definitions(&[Some(&air), Some(&quartered), Some(&green), Some(&blue)])
+}
+
+/// A renderer that draws `textured_table`'s blocks with their pictures.
+fn renderer_with_pictures(context: &GraphicsContext, table: &BlockTable) -> VoxelRenderer {
+    let mut renderer = new_renderer(context);
+    let (quartered, green, blue) = (
+        quartered_picture(),
+        solid_picture(8, [0, 255, 0]),
+        solid_picture(16, [0, 0, 255]),
+    );
+    renderer.set_palette_with_pictures(
+        &table.palette(),
+        &table.palette_pictures(),
+        &[
+            PictureSize {
+                size: 8,
+                tiles: vec![&quartered, &green],
+            },
+            PictureSize {
+                size: 16,
+                tiles: vec![&blue],
+            },
+        ],
+    );
+    renderer.set_picture_distance(100.0);
+    renderer
+}
+
+/// The pixels drawn as something other than sky: `(left, top, right, bottom)`, the last two one past.
+fn drawn_bounds(image: &[u8]) -> (u32, u32, u32, u32) {
+    let (mut left, mut top, mut right, mut bottom) = (SIZE, SIZE, 0, 0);
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            if !is_sky(pixel(image, x, y)) {
+                left = left.min(x);
+                top = top.min(y);
+                right = right.max(x + 1);
+                bottom = bottom.max(y + 1);
+            }
+        }
+    }
+    assert!(left < right, "nothing is drawn");
+    (left, top, right, bottom)
+}
+
+/// The pixel a quarter of the way in from the left or the right (`column` 0 or 1) and from the top or the bottom (`row` 0 or 1) of what is drawn.
+fn quarter_of_the_drawn(image: &[u8], column: u32, row: u32) -> [u8; 4] {
+    let (left, top, right, bottom) = drawn_bounds(image);
+    let x = left + (right - left) * (1 + 2 * column) / 4;
+    let y = top + (bottom - top) * (1 + 2 * row) / 4;
+    pixel(image, x, y)
+}
+
+fn corners_of_the_drawn(image: &[u8]) -> [Option<usize>; 4] {
+    [(0, 0), (1, 0), (0, 1), (1, 1)]
+        .map(|(column, row)| corner_of(quarter_of_the_drawn(image, column, row)))
+}
+
+#[test]
+fn a_face_with_a_picture_shows_it_upright_and_the_right_way_round_from_outside_on_a_side_and_on_top()
+ {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let table = textured_table();
+        let mut renderer = renderer_with_pictures(&context, &table);
+        place_blocks_in(
+            &mut renderer,
+            &table,
+            ORIGIN_BRICK,
+            &[([16, 16, 16], 1, 0)],
+            None,
+        );
+        let upright = [Some(0), Some(1), Some(2), Some(3)];
+
+        // The face towards +z, seen from in front of it: the picture reads as it is.
+        let front = settled(&mut renderer, &camera_at(ORIGIN_BRICK, [16.5, 16.5, 17.8]));
+        save_image("picture_front", &name, &front);
+        assert_eq!(corners_of_the_drawn(&front), upright, "{name}: +z");
+
+        // The face towards -z, seen from behind the block: it reads as it is to whoever stands there.
+        let mut behind = camera_at(ORIGIN_BRICK, [16.5, 16.5, 15.2]);
+        behind.yaw = std::f64::consts::PI;
+        let behind = settled(&mut renderer, &behind);
+        assert_eq!(corners_of_the_drawn(&behind), upright, "{name}: -z");
+
+        // The face towards +x, seen from the east: the picture's left is south (+z).
+        let mut east = camera_at(ORIGIN_BRICK, [17.8, 16.5, 16.5]);
+        east.yaw = -std::f64::consts::FRAC_PI_2;
+        let east = settled(&mut renderer, &east);
+        // (Which way yaw turns is the camera's business; one of the two quarter turns looks along -x, and the face seen is the same either way.)
+        let mut east_other_way = camera_at(ORIGIN_BRICK, [17.8, 16.5, 16.5]);
+        east_other_way.yaw = std::f64::consts::FRAC_PI_2;
+        let east_other_way = settled(&mut renderer, &east_other_way);
+        let seen_from_east = if is_sky(pixel(&east, SIZE / 2, SIZE / 2)) {
+            east_other_way
+        } else {
+            east
+        };
+        assert_eq!(corners_of_the_drawn(&seen_from_east), upright, "{name}: +x");
+
+        // The top, seen from above with north (-z) up the picture: its top is north and its left is west.
+        let mut above = camera_at(ORIGIN_BRICK, [16.5, 17.8, 16.5]);
+        above.look_by(0.0, -std::f64::consts::FRAC_PI_2);
+        let above = settled(&mut renderer, &above);
+        save_image("picture_top", &name, &above);
+        assert_eq!(corners_of_the_drawn(&above), upright, "{name}: +y");
+    }
+}
+
+#[test]
+fn a_picture_fades_into_the_flat_colour_of_its_face_over_a_band_and_is_gone_beyond_it() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let table = textured_table();
+        let mut renderer = renderer_with_pictures(&context, &table);
+        place_blocks_in(
+            &mut renderer,
+            &table,
+            ORIGIN_BRICK,
+            &[([16, 16, 16], 1, 0)],
+            None,
+        );
+        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 17.8]);
+        // The corners of the face are about 0.87 voxels from the camera (0.8 to the face, a quarter of a voxel across and up).
+        let top_left_of =
+            |renderer: &mut VoxelRenderer| quarter_of_the_drawn(&settled(renderer, &camera), 0, 0);
+
+        let near = top_left_of(&mut renderer);
+        assert!(is_red(near), "{name}: {near:?}");
+
+        // The picture begins to fade at 0.75 voxels and is gone at 0.9375; at 0.87 it is partly there.
+        renderer.set_picture_distance(0.75);
+        let fading = top_left_of(&mut renderer);
+        // Beyond the band the face is its flat colour: a grey.
+        renderer.set_picture_distance(0.5);
+        let gone = top_left_of(&mut renderer);
+        assert_eq!(corner_of(gone), None, "{name}: {gone:?}");
+        assert!(
+            gone[0].abs_diff(gone[1]) <= 2 && gone[1].abs_diff(gone[2]) <= 2,
+            "{name}: {gone:?}"
+        );
+        assert!(
+            gone[0] < fading[0] && fading[0] < near[0],
+            "{name}: flat {gone:?}, fading {fading:?}, picture {near:?}: the red goes from the flat colour's to the picture's"
+        );
+
+        // A distance of 0 draws no pictures at all.
+        renderer.set_picture_distance(0.0);
+        assert_eq!(top_left_of(&mut renderer), gone, "{name}");
+        // Back to far away, the picture is back.
+        renderer.set_picture_distance(100.0);
+        assert_eq!(top_left_of(&mut renderer), near, "{name}");
+        // A palette with no pictures in it draws every face flat, even of a block that has them.
+        renderer.set_palette(&table.palette());
+        assert_eq!(top_left_of(&mut renderer), gone, "{name}");
+    }
+}
+
+#[test]
+fn pictures_of_the_other_sizes_and_places_are_found_by_their_words() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let table = textured_table();
+        let mut renderer = renderer_with_pictures(&context, &table);
+        place_blocks_in(
+            &mut renderer,
+            &table,
+            ORIGIN_BRICK,
+            &[([16, 16, 16], 2, 0), ([20, 16, 16], 3, 0)],
+            None,
+        );
+        let green = settled(&mut renderer, &camera_at(ORIGIN_BRICK, [16.5, 16.5, 17.8]));
+        assert!(
+            is_green(quarter_of_the_drawn(&green, 0, 0))
+                && is_green(quarter_of_the_drawn(&green, 1, 1)),
+            "{name}: the second picture of the first size"
+        );
+        let blue = settled(&mut renderer, &camera_at(ORIGIN_BRICK, [20.5, 16.5, 17.8]));
+        assert!(
+            is_blue(quarter_of_the_drawn(&blue, 0, 0))
+                && is_blue(quarter_of_the_drawn(&blue, 1, 1)),
+            "{name}: the first picture of the second size"
+        );
+    }
+}
+
+#[test]
+fn half_a_block_shows_the_half_of_the_picture_that_is_where_it_stands() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let table = textured_table();
+        let mut renderer = renderer_with_pictures(&context, &table);
+        // A bottom slab: its front is the lower half of the block's picture, blue on the left and yellow on the right.
+        place_blocks_in(
+            &mut renderer,
+            &table,
+            ORIGIN_BRICK,
+            &[([16, 16, 16], 1, 1)],
+            None,
+        );
+        let bottom = settled(&mut renderer, &camera_at(ORIGIN_BRICK, [16.5, 16.25, 17.8]));
+        save_image("picture_bottom_slab", &name, &bottom);
+        for row in 0..2 {
+            assert_eq!(
+                [0, 1].map(|column| corner_of(quarter_of_the_drawn(&bottom, column, row))),
+                [Some(2), Some(3)],
+                "{name}: bottom slab, row {row}"
+            );
+        }
+        // A top slab: the upper half, red on the left and green on the right.
+        place_blocks_in(
+            &mut renderer,
+            &table,
+            ORIGIN_BRICK,
+            &[([16, 16, 16], 1, 2)],
+            None,
+        );
+        let top = settled(&mut renderer, &camera_at(ORIGIN_BRICK, [16.5, 16.75, 17.8]));
+        for row in 0..2 {
+            assert_eq!(
+                [0, 1].map(|column| corner_of(quarter_of_the_drawn(&top, column, row))),
+                [Some(0), Some(1)],
+                "{name}: top slab, row {row}"
+            );
+        }
+    }
+}
+
+#[test]
+fn coarse_cells_of_a_block_with_pictures_are_its_flat_colour() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let table = textured_table();
+        let mut renderer = renderer_with_pictures(&context, &table);
+        // Cells of two voxels, the block 1 of them; close enough that a picture would be plain to see.
+        renderer.upload_coarse_node(
+            cube_of_bricks([0, 0, 0], 1),
+            &coarse_mesh(|x, y, z| ((16, 8, 8) == (x, y, z)).then_some(1)),
+        );
+        let image = settled(&mut renderer, &camera_in_voxels([33, 17, 22]));
+        save_image("picture_coarse", &name, &image);
+        let drawn = pixels_where(&image, |pixel| !is_sky(pixel));
+        assert!(drawn > 100, "{name}: {drawn} pixels");
+        assert_eq!(
+            pixels_where(&image, |pixel| !is_sky(pixel) && corner_of(pixel).is_some()),
+            0,
+            "{name}: a coarse cell has no picture"
+        );
+    }
+}
+
+#[test]
+fn a_picture_on_a_block_of_a_turned_ship_reads_the_same_from_outside_as_on_the_ground() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let table = textured_table();
+        let mut renderer = renderer_with_pictures(&context, &table);
+        // A ship a quarter turn about the vertical axis, with the block at (16, 16, 16) of its first brick: its face towards the grid's +z looks along a horizontal axis of the world.
+        let half = std::f64::consts::FRAC_1_SQRT_2;
+        let quarter_turn = Orientation::from_components([0.0, half, 0.0, half]).unwrap();
+        renderer.set_grid_pose(a_ship(), pose([0, 0, 0], [0.0; 3], quarter_turn));
+        let mut block = vec![0u32; BRICK_VOXEL_COUNT];
+        block[LocalVoxelIndex::new(16, 16, 16).index()] = 1;
+        let storage = ChannelStorage::from_values(&block);
+        let mesh = mesh_brick(
+            &BrickNeighbourhood {
+                center: BrickChannels::blocks_only(&storage),
+                neighbours: [None; 6],
+            },
+            &table,
+        );
+        renderer.upload_grid_brick(a_ship(), ORIGIN_BRICK, &mesh.pack());
+        // The turn takes (x, y, z) to (z, y, -x) or to (-z, y, x), whichever way a positive turn goes: the block is at x = 16 to 17, z = -17 to -16, or at
+        // x = -17 to -16, z = 16 to 17. Look at it from the side of the +x or the -x axis it is on, from 0.8 voxels off its face.
+        // (Which way yaw turns is the camera's business: each place is looked at with both quarter turns, and only one of the four looks at the block.)
+        let mut pictures = Vec::new();
+        for camera in [
+            camera_at(BrickCoordinate::new(0, 0, -1), [17.8, 16.5, 15.5]),
+            camera_at(BrickCoordinate::new(-1, 0, 0), [14.2, 16.5, 16.5]),
+        ] {
+            for yaw in [-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2] {
+                let mut looking = camera;
+                looking.yaw = yaw;
+                let image = settled(&mut renderer, &looking);
+                if !is_sky(pixel(&image, SIZE / 2, SIZE / 2)) {
+                    pictures.push(image);
+                }
+            }
+        }
+        assert_eq!(
+            pictures.len(),
+            1,
+            "{name}: the block is seen from one place and one way"
+        );
+        save_image("picture_turned_ship", &name, &pictures[0]);
+        assert_eq!(
+            corners_of_the_drawn(&pictures[0]),
+            [Some(0), Some(1), Some(2), Some(3)],
+            "{name}"
         );
     }
 }

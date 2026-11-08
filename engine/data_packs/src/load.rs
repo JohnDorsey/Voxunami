@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use block_models::{BlockDefinition, PropertyDeclaration, PropertyKind, PropertySchema};
+use block_models::{BlockDefinition, PropertyDeclaration, PropertyKind, PropertySchema, engine};
 use namespaced_id::NamespacedId;
 
 use crate::block::read_block;
@@ -11,6 +11,7 @@ use crate::body::{Body, BodyContext, read_body};
 use crate::error::{PackError, PackErrors};
 use crate::manifest::{PackManifest, read_manifest};
 use crate::patch::{Operation, Patch, PatchValue, Place, PropertyValue, read_patch};
+use crate::pictures::{Available, GameTexture, Textures, settle};
 use crate::walk::{nearest, quoted};
 
 /// A file of a pack, read but not yet understood: its name (without `.json`) and its text.
@@ -18,6 +19,14 @@ use crate::walk::{nearest, quoted};
 pub struct RawFile {
     pub name: String,
     pub text: String,
+}
+
+/// A picture file of a pack, read but not yet understood: its name in the `textures` folder without `.png` (`oak_top`, or `base_blocks/log_top` for a file in
+/// a folder named for a namespace) and its bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawTexture {
+    pub name: String,
+    pub bytes: Vec<u8>,
 }
 
 /// A pack's files, as found in its folder.
@@ -33,6 +42,8 @@ pub struct RawPack {
     pub patches: Vec<RawFile>,
     /// The files of `bodies/`.
     pub bodies: Vec<RawFile>,
+    /// The picture files of `textures/`.
+    pub textures: Vec<RawTexture>,
 }
 
 /// Every block there is after the packs are in, and what was left undone on purpose.
@@ -43,8 +54,10 @@ pub struct Loaded {
     pub blocks: Vec<(NamespacedId, BlockDefinition)>,
     /// The bodies the packs added (the game's own are not here), in the order the packs were applied and by file name in each.
     pub bodies: Vec<(NamespacedId, Body)>,
-    /// What was skipped because a patch said it was optional, one line each. Show them to whoever runs the
-    /// server.
+    /// The pictures the blocks use (the game's blocks and the packs'), once every pack has put in and replaced pictures.
+    pub textures: Textures,
+    /// What was skipped because a patch said it was optional, and what is worth knowing about the packs (a picture that replaces another, one that no
+    /// block uses), one line each. Show them to whoever runs the server.
     pub warnings: Vec<String>,
 }
 
@@ -57,14 +70,15 @@ struct ReadPack {
     bodies: Vec<(String, NamespacedId, Body)>,
 }
 
-/// Loads `packs` on top of `base`, the blocks the game has. `schema` says which properties exist, and `bodies` what the packs' bodies may name (the families
-/// of generators the game has and the levels of its worlds).
+/// Loads `packs` on top of `base`, the blocks the game has, and `game_textures`, the pictures it has. `schema` says which properties exist, and `bodies`
+/// what the packs' bodies may name (the families of generators the game has and the levels of its worlds).
 ///
 /// The files of a pack are applied in order of their names and the packs in dependency order, ties by the pack's
 /// id, so the result does not depend on the order `packs` is given in.
 pub fn load_packs(
     packs: &[RawPack],
     base: &[(NamespacedId, BlockDefinition)],
+    game_textures: &[GameTexture],
     schema: &PropertySchema,
     bodies: &BodyContext<'_>,
 ) -> Result<Loaded, PackErrors> {
@@ -88,6 +102,8 @@ pub fn load_packs(
         .map(|(position, (identifier, _))| (identifier.clone(), position))
         .collect();
     let mut warnings = Vec::new();
+    let mut available = Available::of_the_game(game_textures, &mut errors);
+    let mut labels: HashMap<NamespacedId, String> = HashMap::new();
     let mut loaded_bodies = Vec::new();
     // For each pack, the namespaces whose blocks it may patch: its own, and the ones it names as needs, and
     // what those packs name in turn.
@@ -103,6 +119,9 @@ pub fn load_packs(
             }
         }
         named.insert(id, allowed.clone());
+        if let Some(raw) = packs.iter().find(|raw| raw.folder == pack.manifest.id) {
+            available.add_pack(raw, &allowed, &mut warnings, &mut errors);
+        }
 
         let mut blocks: Vec<&(String, NamespacedId, BlockDefinition)> =
             pack.blocks.iter().collect();
@@ -116,6 +135,19 @@ pub fn load_packs(
                 });
                 continue;
             }
+            if let Some(texture) = definition.texture()
+                && !allowed.contains(texture.namespace())
+            {
+                errors.push(PackError {
+                    file: file.clone(),
+                    path: "/texture".to_owned(),
+                    message: format!(
+                        "\"{texture}\" is a picture of \"{}\", which this pack does not depend on (add it to \"depends_on\" in pack.json)",
+                        texture.namespace()
+                    ),
+                });
+            }
+            labels.insert(identifier.clone(), file.clone());
             index.insert(identifier.clone(), working.len());
             working.push((identifier.clone(), definition.clone()));
         }
@@ -136,12 +168,20 @@ pub fn load_packs(
             }
         }
     }
+    let textures = settle(
+        &mut working,
+        &available,
+        &labels,
+        &mut warnings,
+        &mut errors,
+    );
     if !errors.is_empty() {
         return Err(PackErrors(errors));
     }
     Ok(Loaded {
         blocks: working,
         bodies: loaded_bodies,
+        textures,
         warnings,
     })
 }
@@ -333,6 +373,22 @@ fn apply_patch(
     let mut errors = Vec::new();
     for (number, operation) in patch.operations.iter().enumerate() {
         let path = format!("/operations/{number}");
+        if let Operation::Set {
+            place: Place::Texture,
+            value: PatchValue::Texture(texture),
+        } = operation
+            && !allowed.contains(texture.namespace())
+        {
+            errors.push(error(
+                file,
+                format!("{path}/value"),
+                format!(
+                    "\"{texture}\" is a picture of \"{}\", which this pack does not depend on (add it to \"depends_on\" in pack.json)",
+                    texture.namespace()
+                ),
+            ));
+            continue;
+        }
         match apply_operation(&mut edited, operation, schema, &path) {
             Ok(()) => {}
             Err(Failure::Undeclared(name)) if patch.optional => {
@@ -435,6 +491,32 @@ fn apply_operation(
                 )),
                 _ => unreachable!("the reader gives a flag for a flag"),
             },
+            Place::Texture => match value {
+                PatchValue::Texture(wanted) if block.texture() == Some(wanted) => Ok(()),
+                PatchValue::Texture(wanted) => Err(other(
+                    path,
+                    "",
+                    format!(
+                        "the test failed: the texture is {}, not {wanted}",
+                        block
+                            .texture()
+                            .map_or_else(|| "none".to_owned(), ToString::to_string)
+                    ),
+                )),
+                _ => unreachable!("the reader gives a texture for a texture"),
+            },
+            Place::FaceColors => match value {
+                PatchValue::FaceColors(wanted) if block.face_colors() == wanted => Ok(()),
+                PatchValue::FaceColors(wanted) => Err(other(
+                    path,
+                    "",
+                    format!(
+                        "the test failed: the face colours are {:?}, not {wanted:?}",
+                        block.face_colors()
+                    ),
+                )),
+                _ => unreachable!("the reader gives face colours for face colours"),
+            },
             Place::StateColors => match value {
                 PatchValue::Colors(wanted) if block.state_colors() == wanted.as_slice() => Ok(()),
                 PatchValue::Colors(wanted) => Err(other(
@@ -456,7 +538,13 @@ fn apply_operation(
             }
             Place::Color => {
                 if let PatchValue::Color(color) = value {
-                    block.color = *color;
+                    block.set_color(*color);
+                }
+                Ok(())
+            }
+            Place::Texture => {
+                if let PatchValue::Texture(texture) = value {
+                    block.set_texture(Some(texture.clone()));
                 }
                 Ok(())
             }
@@ -469,6 +557,12 @@ fn apply_operation(
             Place::StateColors => {
                 if let PatchValue::Colors(colors) = value {
                     block.set_state_colors(colors.clone());
+                }
+                Ok(())
+            }
+            Place::FaceColors => {
+                if let PatchValue::FaceColors(colors) = value {
+                    block.set_face_colors(*colors);
                 }
                 Ok(())
             }
@@ -498,6 +592,35 @@ fn apply_operation(
                     ));
                 }
                 block.set_state_colors(Vec::new());
+                Ok(())
+            }
+            Place::Texture => {
+                if block.texture().is_none() {
+                    return Err(other(
+                        path,
+                        "",
+                        "this block has no texture, so there is nothing to remove",
+                    ));
+                }
+                if block.color_from_pictures() {
+                    return Err(other(
+                        path,
+                        "",
+                        "the colour of this block is the average of its pictures, so give it a color (set \"color\") before taking its texture away",
+                    ));
+                }
+                block.set_texture(None);
+                Ok(())
+            }
+            Place::FaceColors => {
+                if block.face_colors().iter().all(Option::is_none) {
+                    return Err(other(
+                        path,
+                        "",
+                        "this block has no face colours, so there is nothing to remove",
+                    ));
+                }
+                block.set_face_colors([None; 6]);
                 Ok(())
             }
             Place::Color | Place::SeeThrough => {
@@ -534,11 +657,25 @@ fn property_target<'a>(
                 "expected true or false, found a number",
             ));
         }
+        (PropertyKind::Bool, PropertyValue::Word(_)) => {
+            return Err(other(
+                path,
+                value_path,
+                "expected true or false, found text",
+            ));
+        }
         (PropertyKind::Integer { .. }, PropertyValue::Bool(_)) => {
             return Err(other(
                 path,
                 value_path,
                 "expected a whole number, found true or false",
+            ));
+        }
+        (PropertyKind::Integer { .. }, PropertyValue::Word(_)) => {
+            return Err(other(
+                path,
+                value_path,
+                "expected a whole number, found text",
             ));
         }
         (PropertyKind::Integer { minimum, maximum }, PropertyValue::Integer(number)) => {
@@ -550,6 +687,29 @@ fn property_target<'a>(
                 ));
             }
             *number
+        }
+        (PropertyKind::Face, PropertyValue::Integer(number)) => {
+            if !(0..=6).contains(number) {
+                return Err(other(
+                    path,
+                    value_path,
+                    format!("{number} is outside 0 to 6"),
+                ));
+            }
+            *number
+        }
+        (PropertyKind::Face, PropertyValue::Word(word)) => {
+            match engine::face_code_from_word(word) {
+                Some(code) => i64::from(code),
+                None => return Err(other(path, value_path, crate::block::no_such_face(word))),
+            }
+        }
+        (PropertyKind::Face, PropertyValue::Bool(_)) => {
+            return Err(other(
+                path,
+                value_path,
+                format!("{}, found true or false", crate::block::expected_face()),
+            ));
         }
     };
     Ok((declaration, number))
@@ -575,5 +735,9 @@ fn show(declaration: &PropertyDeclaration, value: i64) -> String {
     match declaration.kind {
         PropertyKind::Bool => (value != 0).to_string(),
         PropertyKind::Integer { .. } => value.to_string(),
+        PropertyKind::Face => usize::try_from(value)
+            .ok()
+            .and_then(|code| engine::FACE_WORDS.get(code))
+            .map_or_else(|| value.to_string(), |word| (*word).to_owned()),
     }
 }

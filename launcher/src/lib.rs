@@ -268,6 +268,14 @@ mod tests {
     }
 
     /// A folder of the tests' own, made fresh and removed afterwards.
+    /// A PNG picture, 8 pixels on a side, of one colour: enough for a pack's pictures to be read.
+    const PICTURE: [u8; 76] = [
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 8, 0, 0, 0, 8, 8, 6,
+        0, 0, 0, 196, 15, 190, 139, 0, 0, 0, 19, 73, 68, 65, 84, 120, 218, 99, 216, 178, 101, 223,
+        127, 124, 152, 97, 100, 40, 0, 0, 174, 177, 201, 65, 89, 50, 116, 217, 0, 0, 0, 0, 73, 69,
+        78, 68, 174, 66, 96, 130,
+    ];
+
     struct Scratch(std::path::PathBuf);
 
     impl Scratch {
@@ -282,6 +290,12 @@ mod tests {
             let path = self.0.join(relative);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, text).unwrap();
+        }
+
+        fn write_bytes(&self, relative: &str, bytes: &[u8]) {
+            let path = self.0.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
         }
 
         fn argument(&self) -> String {
@@ -383,6 +397,13 @@ mod tests {
             "my_pack/patches/dim_lamps.json",
             &json_block_after(&guide, "## A patch"),
         );
+        packs.write(
+            "my_pack/blocks/marble_slab.json",
+            &json_block_after(&guide, "## Pictures"),
+        );
+        // The pictures that block names: a top and a side (the bottom is the top's).
+        packs.write_bytes("my_pack/textures/marble_top.png", &PICTURE);
+        packs.write_bytes("my_pack/textures/marble_side.png", &PICTURE);
         packs.write(
             "my_pack/bodies/moon.json",
             &json_block_after(&guide, "## A body"),

@@ -28,6 +28,32 @@ How a game's content reaches a server (data packs) and a client (the package in 
   family `planet_v1`); `base_blocks` is only blocks and properties. The engine keeps the machinery and **`SurfaceLayers { air, surface, subsurface, deep }`**, so it names no block; its own tests use
   fixtures under `terrain`'s `test-support` feature. Checked: with the old ids written back Cave's golden session gave its old pins to the digit, so only the names changed.
 
+## Decided (block textures and the game's own blocks in data; owner, 2026-11-07; not built; `block-textures-spec.md`)
+
+- **The game's own blocks become JSON** read by the pack loader; Rust looks ids up by name. A block names its pictures by one **base name**
+  (`"texture": "log"`); which faces differ follows from the files that exist (`_top`, `_side`, `_bottom`), never from the JSON. `top` is the face away from the face
+  clicked to place the block. `color` is optional on a textured block (default: the top once and each side once, bottom ignored). **Per-face colours are in the JSON** (`face_colors`).
+- **Pictures** travel inline in the welcome, one atlas per size (powers of two, 8 to 256, at most four sizes); a pack replaces pictures by file name or by patch; the client's texture
+  distance is a setting, the texture fades to the flat colour beyond it, and levels of detail are never textured. Per-state pictures and the client's ordered texture packs come later.
+- Terrain: the generator writes the orientation of blocks that have an axis, so grass tops point away from a planet. This replaces `architecture-review.md` A4's advice against textures.
+
+- **Built 2026-11-07 (step 1 of `block-textures-spec.md`):** `face_colors` (a definition's six optional face colours, written in a block file by group or by face, set/tested/removed by
+  patches) replaced the three mark properties, and face-valued properties take a word. The block table's answers are unchanged, to the orientation, for every block of Cave, 2048 and Eels (checked by dumping
+  them from the old and the new code); the package got shorter by the three declarations.
+
+- **Built 2026-11-07 (step 2 of `block-textures-spec.md`):** the game's own blocks (the eight of `base_blocks`, and Cave's dev docking port) are JSON files in the pack format, embedded in the program and read by the pack reader. They are registered in
+  a list in Rust, not numbered by the loader, because the loader orders a pack's files by name and these numbers are fixed. The package, the numbering, the block table and the golden sessions are unchanged to the byte, with no pin touched.
+
+- **Built 2026-11-07 (step 3 of `block-textures-spec.md`):** a block names its pictures with `texture`, and the picture of each face is the first file that exists (`_top`; `_side` then the plain name; `_bottom` then the top's), so a file added
+  changes a block with no change to its JSON. A pack's `textures` folder holds PNGs (square, 8-bit RGB or RGBA, 8 to 256 pixels, a power of two) and folders named for namespaces, whose files replace or add pictures of that namespace. `color` may be left out of a block with a
+  texture and is then the average of the pictures (top once, each side once, bottom not at all, in linear light) and follows them if another pack replaces one. At most 4 sizes and 256 pictures of a size are in use. The six blocks that have pictures in `base_blocks/textures`
+  (grass, dirt, stone, great river water, wood, and Cave's dev docking port) use them; their far colours changed with it.
+- **Built 2026-11-07 (step 4 of `block-textures-spec.md`):** pictures are drawn. The package carries them as raw RGBA by size (a client never decodes an image it is sent); the table gives a face with a picture a palette entry of its own (so a coarse cell, which uses the block's
+  own entry, is untextured with no extra code); the renderer keeps a texture array for each size and reads the picture by position in the brick (a slab shows its slice), fading into the flat colour over a band of a quarter of the texture distance. The client's
+  `.textures [VOXELS|off|default]` sets that distance (default 64). **The shader that reads pictures is separate from the one that does not**, because merely using the bindings made shadow tests fail on the integrated AMD GPU; a palette with no pictures, or a distance of 0, draws with
+  the plain one. The picture shader costs about 10 percent (0.84 ms of 8.1 at 1280 by 720) on that GPU and nothing measurable on the discrete one. A version that works the picture's coordinates out in the fragment shader costs 0.63 and was built and **not kept** (the shader is going to be reworked for shadows, global illumination, MSAA and waving vegetation, which moves vertices and so would make a picture swim); it is in `block-textures-spec.md`, step 4, "Where the cost goes", for an optimisation pass.
+- **Built 2026-11-08 (step 5 of `block-textures-spec.md`, the docking port only; owner):** a block with both `engine:front_face` and `engine:axis_face` has its axis go away from the face that was clicked, as a log's does, and its front turned to the player's side across it. The dev docking port has both. The rest of step 5 (grass with an axis, the generator writing orientations) is **skipped until something can show it** (a grass top picture, trees).
+
 ## Decided (the content package at the handshake; built in Phase 28)
 
 - **The server says what the world looks like.** `Welcome` carries the game's *package data* (`game_shell::PackageData`): the property schema, every

@@ -12,6 +12,7 @@ pub const WANDERER: u64 = 1;
 /// pulls at the surface. It is a planet of 10,000 voxels.
 pub fn wanderer_pack(motion: &str, extent_bricks: u32, surface_gravity: f64) -> Vec<RawPack> {
     vec![RawPack {
+        textures: Vec::new(),
         folder: "sky".to_owned(),
         manifest: r#"{ "id": "sky" }"#.to_owned(),
         blocks: Vec::new(),

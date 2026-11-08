@@ -30,6 +30,7 @@ fn pack(
         text: text.to_owned(),
     };
     RawPack {
+        textures: Vec::new(),
         folder: folder.to_owned(),
         manifest: format!(r#"{{ "id": "{folder}", "depends_on": [{dependencies}] }}"#),
         blocks: blocks.iter().map(|(name, text)| file(name, text)).collect(),
@@ -45,6 +46,7 @@ fn load(packs: &[RawPack]) -> Result<Loaded, Vec<String>> {
         packs,
         &[(id("base:stone"), BlockDefinition::cube([0.5; 3]))]
             as &[(NamespacedId, BlockDefinition)],
+        &[],
         &PropertySchema::new(),
         &BodyContext {
             families: &families,

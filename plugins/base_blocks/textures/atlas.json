@@ -8,15 +8,11 @@
         "(4, 0)": "flowing_water.png",
         "(5, 0)": "sand.png",
         "(6, 0)": "gravel.png",
-        "(7, 0)": "tile_00_07.png",
         "(0, 1)": "log_top.png",
         "(1, 1)": "log_side.png",
         "(2, 1)": "dev_docking_port_top.png",
         "(3, 1)": "dev_docking_port_side.png",
         "(4, 1)": "dev_docking_port_bottom.png",
-        "(5, 1)": "tile_01_05.png",
-        "(6, 1)": "tile_01_06.png",
-        "(7, 1)": "tile_01_07.png",
         "(0, 2)": "tile_02_00.png",
         "(1, 2)": "tile_02_01.png",
         "(2, 2)": "tile_02_02.png",
@@ -24,7 +20,11 @@
         "(4, 2)": "dead_sapling.png",
         "(5, 2)": "sapling.png",
         "(6, 2)": "marram_grass.png",
-        "(7, 2)": "short_grass_plant.png"
+        "(7, 2)": "short_grass_plant.png",
+        "(4, 3)": "tile_00_07.png",
+        "(2, 4)": "tile_01_05.png",
+        "(3, 4)": "tile_01_06.png",
+        "(4, 4)": "tile_01_07.png"
     },
     "coordinates_to_data": {
         "(0, 2)": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA////////////////////////////////AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD///////////////////////////////////////////////8AAAAAAAAAAAAAAAAAAAAAAAAAAP//////////6Ojw/+jo8P/Nzdz/zc3c/83N3P/Nzdz/AAAAAAAAAAD//////////wAAAAAAAAAAAAAAAAAAAAD//////////+jo8P/Nzdz/urvM/7q7zP+6u8z/urvM/wAAAAAAAAAAAAAAAP////8AAAAAAAAAAAAAAAD/////6Ojw/+jo8P/Nzdz/urvM/+jo8P/o6PD/6Ojw/83N3P8AAAAAAAAAAAAAAAAAAAAA6Ojw/wAAAAAAAAAA/////+jo8P/Nzdz/zc3c/+jo8P///////////+jo8P/o6PD/zc3c/wAAAAAAAAAAAAAAAOjo8P8AAAAA///////////Nzdz/urvM/////////////////////////////////+jo8P+6u8z/AAAAAAAAAAAAAAAAAAAAAP//////////zc3c/+jo8P///////////+jo8P/o6PD/6Ojw///////o6PD/urvM/wAAAAAAAAAAAAAAAAAAAAD//////////83N3P/o6PD//////+jo8P+6u8z/urvM/+jo8P/o6PD/6Ojw/7q7zP8AAAAAAAAAAAAAAAAAAAAA///////////Nzdz/zc3c///////o6PD/urvM/7q7zP/o6PD/6Ojw/7q7zP+6u8z/AAAAAAAAAAAAAAAAAAAAAP/////////////////////o6PD/6Ojw/+jo8P/o6PD/zc3c/83N3P+6u8z/urvM/wAAAAAAAAAAAAAAAAAAAAAAAAAAzc3c////////////6Ojw/+jo8P/o6PD/6Ojw/83N3P/Nzdz/urvM/wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM3N3P/Nzdz/zc3c/83N3P/o6PD/6Ojw/7q7zP+6u8z/urvM/7q7zP8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM3N3P/Nzdz/zc3c/7q7zP+6u8z/urvM/wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
