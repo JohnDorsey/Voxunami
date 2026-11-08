@@ -71,6 +71,43 @@ impl Placement {
     }
 }
 
+/// What the world carried a player by in a tick: a planet on a rail carries what is in the level inside its sphere of influence (`ServerWorld::apply_rails`).
+///
+/// **The speed of a body in a level is against the planet that carries it** (the world's speed if none does), because the carry moves the body by the planet's displacement
+/// and the body's own speed moves it from there. A ship's speed (`MovingGrid::linear_velocity`) is the world's: so a speed that passes between a body and a ship (boarding it,
+/// leaving it, being stepped against it) is made against the carrier or the world's by the speed of the planet, or the body has the planet's speed twice, once from the carry
+/// and once from itself, and goes 125 metres a second faster than the ship it left, past a planet that goes round at that speed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Carried {
+    /// The planet whose sphere the player is in.
+    pub by: GridId,
+    /// How far it moved them this tick, nothing if it did not move.
+    pub displacement: Displacement,
+}
+
+/// A speed in the world from a speed against a planet that goes at `carrier` (the same speed if no planet does).
+fn in_the_world(against: [f64; 3], carrier: [f64; 3]) -> [f64; 3] {
+    if carrier == [0.0; 3] {
+        return against;
+    }
+    [0, 1, 2].map(|axis| against[axis] + carrier[axis])
+}
+
+/// A speed against a planet that goes at `carrier`, from a speed in the world (the same speed if no planet does).
+fn against_the_planet(in_the_world: [f64; 3], carrier: [f64; 3]) -> [f64; 3] {
+    if carrier == [0.0; 3] {
+        return in_the_world;
+    }
+    [0, 1, 2].map(|axis| in_the_world[axis] - carrier[axis])
+}
+
+/// How fast a planet on a rail goes in the world: nothing for none, or for one that is gone.
+fn planet_speed(world: &ServerWorld, planet: Option<GridId>) -> [f64; 3] {
+    planet
+        .and_then(|planet| world.data().grids().get(planet))
+        .map_or([0.0; 3], |planet| planet.linear_velocity)
+}
+
 /// Where a player is after a tick, in the frame their body was simulated in.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Moved {
@@ -100,6 +137,8 @@ struct PlayerBody {
     buckled: Option<GridId>,
     /// Where the body left a ship, until it stands on something again (see [`Departure`]).
     departure: Option<Departure>,
+    /// The planet whose speed the body's is against, while the body is in a level: the one that carried the player in the last tick (see [`Carried`]), or none.
+    carrier: Option<GridId>,
 }
 
 /// The place in a ship that a body stepped off. Until the body stands on something again, what its keys ask and the air does are measured from the speed of that place of the ship, as a
@@ -248,6 +287,7 @@ impl Movement {
                 piloting: false,
                 buckled: None,
                 departure: None,
+                carrier: None,
             }
         });
     }
@@ -364,7 +404,7 @@ impl Movement {
         &mut self,
         world: &mut ServerWorld,
         placement_of: impl Fn(ClientId) -> Option<Placement>,
-        carried_by_rails: impl Fn(ClientId) -> Option<Displacement>,
+        carried_by_rails: impl Fn(ClientId) -> Option<Carried>,
     ) -> Vec<Moved> {
         let changed = std::mem::take(&mut self.changed);
         let ships = if self.bodies.is_empty() {
@@ -377,7 +417,13 @@ impl Movement {
             let Some(placement) = placement_of(client) else {
                 continue;
             };
-            agree_with(player, &placement, carried_by_rails(client));
+            let carried = carried_by_rails(client);
+            agree_with(
+                player,
+                &placement,
+                carried.map(|carried| carried.displacement),
+            );
+            player.carrier = carried.map(|carried| carried.by);
             // A buckled player stays where they are in the ship; one whose ship is gone, or who is not in it, is let go.
             if player.buckled.is_some_and(|ship| {
                 ship != player.frame || world.data().grids().get(ship).is_none()
@@ -425,7 +471,7 @@ fn ship_bounds(world: &ServerWorld) -> BTreeMap<GridId, ShipBounds> {
 fn agree_with(player: &mut PlayerBody, placement: &Placement, carried: Option<Displacement>) {
     if placement.frame == player.frame && placement.level == player.level {
         // In a level, the world may have carried the record of the player this tick: a planet that goes round carries what is in the air near it (`apply_rails`, and
-        // `ServerWorld::carried_by_rails` says by how much). The body is carried by the same, and keeps its velocity (which is against whatever carried it). (A record
+        // `ServerWorld::carried_by_rails` says by how much). The body is carried by the same, and keeps its velocity (which is against whatever carried it: see [`Carried`]). (A record
         // that is not the body's is not always the newer: a player who has just come in is where the body was put, and the record catches up when the body has stepped.)
         if let Some(carried) = carried {
             player.body.displace(carried.in_voxels().map(|part| part));
@@ -643,7 +689,10 @@ fn speed_of_what_they_left(
         .filter(|ship| ship.level == level)
         .and_then(|ship| Some((ship, ship.pose.local_to_world(departure.place)?)));
     match place {
-        Some((ship, place)) => ship.velocity_at(place),
+        // (The speed of the place is the world's, and the body's is against the planet that carries it, if one does: see [`Carried`].)
+        Some((ship, place)) => {
+            against_the_planet(ship.velocity_at(place), planet_speed(world, player.carrier))
+        }
         None => {
             player.departure = None;
             [0.0; 3]
@@ -661,9 +710,10 @@ fn board(player: &mut PlayerBody, id: GridId, world: &ServerWorld) {
     let Some(local) = ship.pose.world_to_local(eyes) else {
         return;
     };
+    // (The ship's speed is the world's, and the body's is against the planet that carries it, if one does: see [`Carried`].)
     let carried = ship.velocity_at(eyes);
-    let speed = player.body.velocity();
-    let mut relative = [0, 1, 2].map(|axis| speed[axis] - carried[axis]);
+    let speed = in_the_world(player.body.velocity(), planet_speed(world, player.carrier));
+    let mut relative = against_the_planet(speed, carried);
     // They stand on it, so they are not moving away from it: a walker that a ship has fallen away from, or has lifted onto itself, is not
     // thrown up at the speed it had. (Moving toward it is the controller's to stop, as it always did.)
     let up = player.body.up();
@@ -682,6 +732,8 @@ fn board(player: &mut PlayerBody, id: GridId, world: &ServerWorld) {
         frame_rotation.components(),
     );
     player.frame = id;
+    // (Aboard, nothing carries the body but the ship.)
+    player.carrier = None;
 }
 
 /// One tick of a body that is aboard a ship: the ship's blocks are its terrain, gravity is the world's in the ship's axes, and then
@@ -800,7 +852,7 @@ fn step_aboard(
 }
 
 /// Puts a body that is aboard a ship in the level the ship is in: the same place in the world, with the speed it has in the world,
-/// which is what it has in the ship, turned, and the speed the ship gives that place.
+/// which is what it has in the ship, turned, and the speed the ship gives that place; made against the planet that will carry the body in the level, if one does (see [`Carried`]).
 fn leave(player: &mut PlayerBody, world: &ServerWorld) {
     let Some(ship) = world.data().grids().get(player.frame) else {
         return;
@@ -811,7 +863,10 @@ fn leave(player: &mut PlayerBody, world: &ServerWorld) {
     };
     let in_the_ship = ship.pose.direction_to_world(player.body.velocity());
     let carried = ship.velocity_at(world_eyes);
-    let velocity = [0, 1, 2].map(|axis| in_the_ship[axis] + carried[axis]);
+    let in_the_world = [0, 1, 2].map(|axis| in_the_ship[axis] + carried[axis]);
+    // The planet that carries a place is found as the world finds it for the player's record in the next tick, which was not carried while aboard.
+    let carrier = world.planet_carrying(ship.level, world_eyes, None);
+    let velocity = against_the_planet(in_the_world, planet_speed(world, carrier));
     let turn =
         Orientation::from_components(player.body.frame_rotation()).unwrap_or(Orientation::IDENTITY);
     let frame_rotation = ship.pose.orientation.compose(turn);
@@ -824,6 +879,7 @@ fn leave(player: &mut PlayerBody, world: &ServerWorld) {
     });
     player.frame = GridId::root(ship.level);
     player.level = ship.level;
+    player.carrier = carrier;
 }
 
 /// Where the player is, in the frame their body is in.

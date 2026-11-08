@@ -143,6 +143,17 @@ Entities on the wire, who a player is, players as entities, ships a player can m
   grounded, flies, boards a ship, is put somewhere (`/tp`, another level), or the ship is gone or in another level. *Mine:* a ship that is gone is no reference (the body is
   then braked by the air as every body was), and the reference is not forgotten by distance. Nothing changes for a body that never left a ship (the step is the same to the bit:
   `engine/physics/tests/against.rs`).
+- **The speed of a body in a level is against the planet that carries it; a ship's is the world's** (found by reading 2026-11-05, measured and fixed 2026-11-07): inside the sphere of a
+  planet on a rail (`ServerWorld::influence_radius`) the world moves the player's record, and the body with it (`agree_with`), by the planet's displacement every tick, and the body goes
+  on from there at its own speed, so that speed is *against the planet*; where no planet carries the body it is the world's. A ship's `linear_velocity` is always the world's (the plugin
+  writes the planet's speed added to what the ship has in the planet's frame). So a speed that passes between a body and a ship is made against the carrier, or the world's, by the speed
+  of the planet that carries the place (`ServerWorld::carrier_of_entity` says which carried the player; Cave keeps it in the body): **boarding** takes the body's speed plus the carrier's
+  less the ship's, **leaving** takes the planet that will carry the place (found as the next tick's `apply_rails` will, `planet_carrying(.., None)`: the body was not carried while aboard)
+  off the world's speed, and the speed a body is **stepped against** is that of the place of the ship less the carrier's. Without it a body had the planet's speed twice and went at the
+  planet's speed past the ship it had left (6.28 voxels a tick beside a planet at 125.7 metres a second; a walker who landed on a held deck was off it in five ticks). Where no planet is on a
+  rail nothing is changed. *Mine, not done (measured, `build-log.md`):* a body in free flight that goes out of the sphere, or into one, keeps the speed it had against the old carrier (a
+  6.26-voxel kink in its path at the edge, the planet's step); it needs the world to say when an entity's carrier changed other than by being put somewhere. And a walker in a level is
+  pulled by every body, where what is carried falls with the planet (`gravity_in`, which leaves out what the planet goes round).
 - **The picture carries every moving thing on between ticks the same way** (2026-11-04): the camera, ships and planets, the room the camera's angles are measured in, and the other players are carried on at the speed (and turn) of the last two
   things told, with the times of the beat of the server's ticks (`TickClock`) and not of the frames that saw them, and a change of speed that is too big to be travel is a jump and is shown at once. They must be carried on *together*: a camera carried
   on that looks at a ship shown where it was last told shakes by the speed times a tick. The clock creeps toward a later beat at 5 ms a second (so that speeds stay steady) but takes the beat of the last 10 to 20 ticks at once when all of them came more

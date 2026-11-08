@@ -1361,8 +1361,10 @@ impl ServerWorld {
     /// What is in a level near a planet on a rail goes with the planet: a player or an item (in the level's own coordinates) and a ship, whether it is free or
     /// held, are moved by the planet's displacement, so that each stays where it is from the planet, and a player there falls to it and stands on it however
     /// fast the planet goes. (A ship's body is the plugin's: it simulates the ships a planet carries in a frame that goes with the planet, and puts them where
-    /// they are against it. What this does for them is that they are with the planet in every tick before the bodies move, and not a tick behind it.) A ship's
-    /// velocity and an entity's are left as they are; they are against the planet. See [`ServerWorld::planet_carrying`].
+    /// they are against it. What this does for them is that they are with the planet in every tick before the bodies move, and not a tick behind it.) **Speeds are not
+    /// the same for the two kinds**: a ship's `linear_velocity` is left as it is and is the world's (the plugin writes the planet's speed and the ship's own against it),
+    /// while the speed of whatever keeps a state for an entity (the body of a player) is against the planet that carries it, so that it is carried by the displacement and
+    /// not twice (see [`ServerWorld::carrier_of_entity`]). See [`ServerWorld::planet_carrying`].
     pub(crate) fn apply_rails(&mut self, ticks_per_second: u32) {
         let time = RailTime::of_tick(self.data.clock(), ticks_per_second);
         self.carried_entities.clear();
@@ -1465,6 +1467,14 @@ impl ServerWorld {
     /// forgotten when the entity is put somewhere ([`ServerWorld::set_entity_pose`]): a pose put on it after is not carried.
     pub fn carried_by_rails(&self, entity: EntityId) -> Option<Displacement> {
         self.carried_entities.get(&entity).copied()
+    }
+
+    /// The planet on a rail that carried an entity in the level in the last tick, if one did: the one whose sphere of influence the entity was in (see
+    /// [`ServerWorld::planet_carrying`]), and so the one whose speed ([`world_storage::MovingGrid::linear_velocity`], which is the world's) the speed of whatever keeps a
+    /// state of its own for the entity is **against**. It is told for as long as the entity is in the sphere, also in a call that moved it by nothing (see
+    /// [`ServerWorld::carried_by_rails`]).
+    pub fn carrier_of_entity(&self, entity: EntityId) -> Option<GridId> {
+        self.carried_by.get(&entity).copied()
     }
 
     /// The planets on a rail, with where each is and how far it carries.
