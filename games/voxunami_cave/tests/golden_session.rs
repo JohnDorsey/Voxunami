@@ -367,8 +367,11 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// The package carries the pictures of the blocks (block-textures step 4, 2026-11-07): the tiles as raw pixels, smallest size first, after the ambient light, and a block that has pictures says where its
 /// three are. Nine blocks cost a flag each, the six that have pictures say where their three are (6 bytes each), and the nine tiles of 16 by 16 are 9 x 1,024 bytes with 3 bytes for the list: 9 + 36 + 9,219 = 9,264 bytes. Voxunami Cave's package is 2,782 bytes before and 12,046 now (measured by `block_golden.rs`, which pins the package), and the stream is 9264 bytes longer, 7,205,611 to 7,214,875: the
 /// welcome is the only place the package is in it. Predicted by counting the bytes before the run and then seen. The saved world is the same to the hash (10_204_815_550_639_449_865): nothing is saved that was not.
+/// The docking port has a line, its top, as well as a front (2026-11-08, so that its top goes away from the surface it is put against, as a log's does): one more property, which is its name (17 bytes: the lengths of the namespace and of the
+/// name and their 15 letters), a flag that it is for every state, its value (a face) and a count of the states it is set for, 17 + 1 + 1 + 1 = 20 bytes. I predicted 2, forgetting that a property is written by its name, and counted after the run. Voxunami Cave's package is
+/// 12,046 bytes before and 12,066 now (measured by `block_golden.rs`), and the stream is 20 bytes longer, 7,214,875 to 7,214,895: the welcome is the only place the package is in it. The saved world is the same to the hash (10_204_815_550_639_449_865).
 const PINNED: (u64, usize, u64) = (
-    9_998_117_866_097_348_160,
-    7_214_875,
+    4_199_503_406_536_773_508,
+    7_214_895,
     10_204_815_550_639_449_865,
 );

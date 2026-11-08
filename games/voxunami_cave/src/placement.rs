@@ -1,12 +1,16 @@
 //! How a block is turned when a player places it, from where the player is and what they place it against.
 //!
-//! This is the rule of Minecraft, for the two kinds of block a block's definition can say it is (see `block_models::Placement`):
+//! This is the rule of Minecraft, for the two kinds of block a block's definition can say it is, and a third that has both (see `block_models::Placement`):
 //!
 //! - A block with *one front face*, like a piston, a dispenser or an observer: the front faces the player. It faces the player's side of the block, the
 //!   opposite of the way they look along the ground; but a block placed close beside the player (within two voxels, along both horizontal axes) and
 //!   more than two voxels under their eyes faces up, and one placed at the height of their eyes or above them faces down.
 //! - A block with *a line of radial symmetry*, like a log: the line runs along the face the block is placed against, whichever way the player
 //!   looks.
+//! - A block with *both*, like the docking port: its line runs along the face it is placed against (its top goes away from the surface that was clicked, as a
+//!   log's does), and its front is turned to the side of the block the player is on, as far as that allows: of the four sides of the line, the one that is most
+//!   the opposite of the way they look. A player who looks along the line (straight down at the floor) has no such side, and the front is
+//!   the first that the turns give, in their pinned order.
 //!
 //! The answer is a turn of the lattice, as its number in `LatticeRotation::all`: the number every voxel keeps in its orientation channel, whatever
 //! its block (see `base_blocks::orientation_channel_identifier`).
@@ -97,6 +101,32 @@ pub fn turn_carrying(from: FaceDirection, to: FaceDirection) -> LatticeRotation 
         .expect("a turn carries any face to any face")
 }
 
+/// Of the turns that carry the line `axis` to the face `top`, the one that carries `front` to the side of the line that is most the way the player is on (the opposite of
+/// the way they look: the sides of the line are all across it, so what they look along the line adds nothing to any of them); the first of them in the pinned order if
+/// none is more than another, as when they look along the line.
+fn turn_with_front_toward_player(
+    axis: FaceDirection,
+    front: FaceDirection,
+    top: FaceDirection,
+    view: &PlacerView,
+) -> LatticeRotation {
+    let mut best: Option<(LatticeRotation, f64)> = None;
+    for turn in LatticeRotation::all() {
+        if turn.apply_face(axis) != top {
+            continue;
+        }
+        let side = turn.apply_face(front).offset();
+        let agreement: f64 = (0..3)
+            .map(|part| -(side[part] as f64) * view.forward[part])
+            .sum();
+        // (Strictly better: a tie keeps the first.)
+        if best.is_none_or(|(_, so_far)| agreement > so_far) {
+            best = Some((turn, agreement));
+        }
+    }
+    best.expect("a turn carries any face to any face").0
+}
+
 /// The orientation (the number of a turn) a block of this placement is given when it is put at `at`, against the face `against` of the block next to it
 /// that was clicked (`None` if the request did not say), by a player who is where `view` says.
 pub fn orientation_of_placement(
@@ -112,6 +142,11 @@ pub fn orientation_of_placement(
             Some(face) => turn_carrying(axis, face),
             None => LatticeRotation::IDENTITY,
         },
+        Placement::AlongPlacedFaceFacingPlayer { axis, front } => {
+            // (Not told what it was put against, the top is up.)
+            let top = against.unwrap_or(FaceDirection::PositiveY);
+            turn_with_front_toward_player(axis, front, top, view)
+        }
     };
     u32::from(turn.index())
 }
@@ -131,12 +166,30 @@ mod tests {
         PlacerView { eyes, forward }
     }
 
-    /// The table of a piston (its front to the east as it is made), a log (its line up and down) and a plain block.
+    /// The table of a piston (its front to the east as it is made), a log (its line up and down), a plain block and a port (its front to the east and its top up, as
+    /// it is made).
     fn table() -> BlockTable {
         let piston = BlockDefinition::cube([0.5; 3]).with_front_face(FaceDirection::PositiveX);
         let log = BlockDefinition::cube([0.5; 3]).with_axis_face(FaceDirection::PositiveY);
         let plain = BlockDefinition::cube([0.5; 3]);
-        BlockTable::from_definitions(&[Some(&piston), Some(&log), Some(&plain)])
+        let port = BlockDefinition::cube([0.5; 3])
+            .with_front_face(FaceDirection::PositiveX)
+            .with_axis_face(FaceDirection::PositiveY);
+        BlockTable::from_definitions(&[Some(&piston), Some(&log), Some(&plain), Some(&port)])
+    }
+
+    /// Where the top and the front of the port (block 3) are after it is put against `against` by a player who looks this way.
+    fn port_after_placing(
+        forward: [f64; 3],
+        against: Option<FaceDirection>,
+    ) -> (FaceDirection, FaceDirection) {
+        let table = table();
+        let view = looking([6.0, 5.5, 10.5], forward);
+        let orientation = orientation_of_placement(table.placement(3, 0), at(), against, &view);
+        (
+            table.axis_face(3, 0, orientation).unwrap(),
+            table.front_face(3, 0, orientation).unwrap(),
+        )
     }
 
     fn front_after_placing(
@@ -251,6 +304,103 @@ mod tests {
             orientation_of_placement(table.placement(1, 0), at(), None, &any_view),
             0
         );
+    }
+
+    #[test]
+    fn a_block_with_a_front_and_a_line_has_its_top_away_from_the_face_it_is_put_against_whichever_way_the_player_looks()
+     {
+        for face in FaceDirection::ALL {
+            for forward in [
+                [1.0, 0.0, 0.0],
+                [-1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.0, -1.0, 0.0],
+                [0.3, -0.5, -0.8],
+            ] {
+                let (top, front) = port_after_placing(forward, Some(face));
+                assert_eq!(top, face, "against {face:?}, looking {forward:?}");
+                // The front is one of the four sides of the top: never the top or the bottom.
+                assert_ne!(
+                    front.axis(),
+                    face.axis(),
+                    "against {face:?}, looking {forward:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_front_of_such_a_block_is_the_side_the_player_is_on_as_far_as_its_top_allows() {
+        // On the ground (the top up), looking along the ground: the side they are on, as for a piston.
+        for (forward, wanted) in [
+            ([1.0, 0.0, 0.0], FaceDirection::NegativeX),
+            ([-1.0, 0.0, 0.0], FaceDirection::PositiveX),
+            ([0.0, 0.0, 1.0], FaceDirection::NegativeZ),
+            ([0.0, 0.0, -1.0], FaceDirection::PositiveZ),
+            // Looking a little down or off the line makes no difference.
+            ([0.9, -0.4, 0.3], FaceDirection::NegativeX),
+            ([0.3, -0.4, -0.9], FaceDirection::PositiveZ),
+        ] {
+            let (top, front) = port_after_placing(forward, Some(FaceDirection::PositiveY));
+            assert_eq!(top, FaceDirection::PositiveY);
+            assert_eq!(front, wanted, "looking {forward:?}");
+        }
+        // Against a wall that faces west, looking east and a little down: the top is west, and of the four sides of it the one the player is on is up (their look, taken
+        // away from the wall, goes down).
+        let (top, front) = port_after_placing([1.0, -1.0, 0.0], Some(FaceDirection::NegativeX));
+        assert_eq!(
+            (top, front),
+            (FaceDirection::NegativeX, FaceDirection::PositiveY)
+        );
+        // Looking up at it: down.
+        let (_, front) = port_after_placing([1.0, 1.0, 0.0], Some(FaceDirection::NegativeX));
+        assert_eq!(front, FaceDirection::NegativeY);
+        // Against a wall that faces south, looking north and a little to the east: the front is west, the side they are on of the two along the wall.
+        let (top, front) = port_after_placing([0.5, 0.0, -1.0], Some(FaceDirection::PositiveZ));
+        assert_eq!(
+            (top, front),
+            (FaceDirection::PositiveZ, FaceDirection::NegativeX)
+        );
+    }
+
+    #[test]
+    fn a_block_with_a_front_and_a_line_not_told_what_it_was_put_against_has_its_top_up() {
+        let (top, front) = port_after_placing([0.0, 0.0, 1.0], None);
+        assert_eq!(
+            (top, front),
+            (FaceDirection::PositiveY, FaceDirection::NegativeZ)
+        );
+    }
+
+    #[test]
+    fn when_the_player_looks_along_the_top_the_front_is_the_first_the_turns_give_and_the_same_every_time()
+     {
+        // Looking straight down at the floor there is no side they are on: the first of the turns that carry the top to the face (in the pinned order of the turns).
+        let table = table();
+        let orientation = orientation_of_placement(
+            table.placement(3, 0),
+            at(),
+            Some(FaceDirection::PositiveY),
+            &looking([6.0, 5.5, 10.5], [0.0, -1.0, 0.0]),
+        );
+        let first = LatticeRotation::all()
+            .into_iter()
+            .find(|rotation| {
+                rotation.apply_face(FaceDirection::PositiveY) == FaceDirection::PositiveY
+            })
+            .unwrap();
+        assert_eq!(orientation, u32::from(first.index()));
+        for _ in 0..3 {
+            assert_eq!(
+                orientation_of_placement(
+                    table.placement(3, 0),
+                    at(),
+                    Some(FaceDirection::PositiveY),
+                    &looking([6.0, 5.5, 10.5], [0.0, -1.0, 0.0]),
+                ),
+                orientation
+            );
+        }
     }
 
     #[test]

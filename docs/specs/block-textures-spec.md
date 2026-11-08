@@ -1,6 +1,6 @@
 # Block textures, and the game's own blocks in data: specification
 
-**Status: written 2026-11-07 from an interview with the owner (the decisions marked "owner" below are theirs, from that day). Steps 0 to 4 are built (see "As built" at the end); the rest is not.** It
+**Status: written 2026-11-07 from an interview with the owner (the decisions marked "owner" below are theirs, from that day). Steps 0 to 4 are built, and step 5 only for the docking port (see "As built" at the end); the rest is not.** It
 extends the data packs (`data-packs-spec.md`, `pack-format.md`) and the content package (`content-package-spec.md`), and it replaces the 2026-10-29
 advice of `architecture-review.md` section A4 ("no textures, sub-voxel models") with the owner's decision to have textures. What I checked in the code
 or on disk is marked **[code]** or **[disk]**; what I believe without having checked is marked **[belief]**.
@@ -186,10 +186,12 @@ Textures need a top; a block has one only if it is turned. `engine:axis_face` sa
   placement from which files exist, because then adding a retexture would change how a block is placed and a saved world would look wrong; instead
   `check-pack` **warns** about the combination. *Mine; section 10.*
 - **Placed blocks** follow `SetBlock.against` as now. Grass will get `"engine:axis_face": "up"` when it gets a distinct top picture; stone, dirt and
-  water have one picture and need none. The port keeps `front_face`, and its top is whatever way "up" went when the block was turned to face the player,
-  a rule that needs the roll to be chosen: **the roll is the first of the 24 rotations (in the pinned order of `LatticeRotation::all()`) that gives the
-  front the wanted face and, among those, the one keeping the block's own +Y as near to the player's up as it can**. *Mine, **[belief]**; the code that
-  turns a front today decides the roll somehow and must be read before this is written.*
+  water have one picture and need none. **The port has both `front_face` and `axis_face` (decided by the owner, 2026-11-08, replacing my roll rule):
+  its top goes away from the surface that was clicked, as a log's does, and its front (the yellow, docking face) is turned to the side of the block the
+  player is on as far as that allows, which is one of the four sides of the top.** Mine, to confirm: *the side the player is on* is the one most the opposite
+  of the way they look; against a wall that is the face that is up if they look down at it; a player who looks along the top (straight down at the floor) has
+  no side, and the front is the first that the pinned order of `LatticeRotation::all()` gives. (Before, the front faced the player by itself and the roll
+  was whatever the pinned order gave first: a port put to face west had its top at the bottom, and one put to face north or south had its top on a side.)
 - **Terrain (D4).** The planet generator writes, for every block it generates that has an `axis_face`, the orientation that puts +Y on the axis nearest the
   voxel's direction from the planet's centre (the cube face the voxel is in), choosing among the rotations that do it by the pinned order above. The
   overworld's generator writes nothing (orientation 0 is up). A generator that places logs (the trees to come) writes the orientation of the trunk's or the
@@ -217,7 +219,7 @@ Each step ends with `cargo test --workspace`, clippy and rustfmt passing, and is
    probe on a slanted floor covers only one to three voxels) for a textured face, a half block, the fade and a level of detail; a benchmark with the camera
    and the sun moving (a still one hides cached work), run on the integrated GPU too. The cost
    of the texture binding is **measured** here, and the four-size cap is kept or changed by the measurement.
-5. **Orientation.** Grass and any other `axis_face` block placed along the clicked face, the generator writing orientations, a new generator version.
+5. **Orientation.** Grass and any other `axis_face` block placed along the clicked face, the generator writing orientations, a new generator version. *(Built only for the port, 2026-11-08; the owner chose to skip the rest until a grass top picture or trees give it something to show.)*
 6. **Texture packs on the client** (D9), with the player's ordering saved.
 
 ## 9. Everything `check-pack` and the loader say
@@ -340,3 +342,14 @@ procedural block types, which the species of trees will use through *roles* (tru
   **[belief]** the four-size cap is not what costs: the arrays are bound whether one size or four is in use. Not measured: a world with four sizes in use, a camera that stays near much stone at the edge of the distance, the sun moving (the picture shader changes nothing the shadows draw).
 - **Not in step 4:** a `--textures` option for the headless run (the distance is the client's setting in the window; the headless picture takes the default); a settings file (the client has none, `.ambient` and `.shadows` are not kept either); the mip chains are made on the
   client when the pictures are sent to the GPU (the time that takes is not measured, for nine tiles or for 256 pictures of 256 pixels).
+
+**Step 5 (2026-11-08), only the port.** The owner chose, when asked what to build of step 5, to **skip the rest for now** (no terrain block has an axis and grass has one picture, so the generator writing orientations would show nothing yet; grass does not get `axis_face`,
+and no generator version was added) and to **change how the dev docking port is placed**: its top goes away from the clicked surface, as a log's does.
+- `Placement` has a fourth value, `AlongPlacedFaceFacingPlayer { axis, front }`, for a block that has both properties (the front rule won before, silently, for a block that had both); `orientation_of_placement` takes the turns that carry the axis to the clicked face (the top is up when the request did
+  not say what was clicked) and, of those, the one that carries the front to the side of the block the player is on, the first of them when none is more than another. The port's file has `"engine:axis_face": "up"`.
+- **Pins moved by an amount I predicted wrongly:** I counted 2 bytes for the property; a property is written by its name (17 bytes) and a flag for every state, its value and a count of states set, **20 bytes**. Cave's package is 12,046 to 12,066 bytes and the golden session's stream 7,214,875 to 7,214,895; the saved world did not move; the table line of the port
+  says `axis PositiveY` and its placement; 2048 and Eels did not move.
+- Tests first (all failed before the change): the top is the clicked face for all six faces and five ways of looking; the front is the side the player is on on the ground, against a wall (looking down at it, up; looking up, down), and along a wall; not told what was clicked, the top is up; looking along the top gives the first turn, every time;
+  the table says which placement a block has (both). The test that places the port in the real game now says its top is up (the front is one of the four sides). **Eight mutations** (the player on the other side, a tie kept by the last, the top down when not told, any turn and not only those that carry the line, the side
+  that least agrees, the front rule winning, the line rule winning, the wrong face as the front) **are all caught**; a ninth, working out the player's side without the part of their look along the line, changed nothing and is an equivalent mutant (every side of the line is across it), so the code does not do it.
+- **A consequence the owner may not have meant:** a port can no longer be put with its yellow face up or down against the floor or ceiling (the front is always across the top), so two ports cannot be stacked yellow to yellow by putting them on the floor; put against a wall the yellow face can be up or down, by looking down or up at the wall.

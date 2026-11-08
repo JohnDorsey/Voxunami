@@ -44,6 +44,12 @@ pub enum Placement {
     FrontToPlayer(FaceDirection),
     /// A block with a line of radial symmetry, like a log (`engine:axis_face`): the line runs along the face it is placed against.
     AlongPlacedFace(FaceDirection),
+    /// A block with both, like the docking port: its `axis` (its top) goes along the face it is placed against, away from it, and its `front` is turned to the side
+    /// the player is on, as far as the axis allows (the front is one of the four sides of the axis).
+    AlongPlacedFaceFacingPlayer {
+        axis: FaceDirection,
+        front: FaceDirection,
+    },
 }
 
 /// A picture on one face of a voxel: which tile, and how the image runs across the face. `across` is the direction along the face in which the picture's
@@ -547,14 +553,16 @@ impl BlockTable {
         self.turned_face(self.axis_face_column, block, state, orientation)
     }
 
-    /// How a block is turned when a player places it: by its front, by its axis, or not at all.
+    /// How a block is turned when a player places it: by its front, by its axis, by both, or not at all.
     pub fn placement(&self, block: u32, state: u32) -> Placement {
-        if let Some(front) = self.front_face(block, state, 0) {
-            Placement::FrontToPlayer(front)
-        } else if let Some(axis) = self.axis_face(block, state, 0) {
-            Placement::AlongPlacedFace(axis)
-        } else {
-            Placement::Fixed
+        match (
+            self.front_face(block, state, 0),
+            self.axis_face(block, state, 0),
+        ) {
+            (Some(front), Some(axis)) => Placement::AlongPlacedFaceFacingPlayer { axis, front },
+            (Some(front), None) => Placement::FrontToPlayer(front),
+            (None, Some(axis)) => Placement::AlongPlacedFace(axis),
+            (None, None) => Placement::Fixed,
         }
     }
 
@@ -1361,6 +1369,18 @@ mod tests {
             Placement::FrontToPlayer(FaceDirection::PositiveX)
         );
         assert_eq!(table.placement(9, 0), Placement::Fixed, "an unknown block");
+        // A block with both has its line along the face it is put against and its front to the player's side.
+        let both = BlockDefinition::cube([0.5; 3])
+            .with_front_face(FaceDirection::PositiveX)
+            .with_axis_face(FaceDirection::PositiveY);
+        let table = BlockTable::from_definitions(&[Some(&both)]);
+        assert_eq!(
+            table.placement(0, 0),
+            Placement::AlongPlacedFaceFacingPlayer {
+                axis: FaceDirection::PositiveY,
+                front: FaceDirection::PositiveX
+            }
+        );
     }
 
     #[test]

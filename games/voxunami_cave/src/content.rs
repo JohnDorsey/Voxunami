@@ -68,8 +68,8 @@ pub fn dev_docking_port_id() -> NamespacedId {
 }
 
 /// The dev docking port (a block for building and testing ships, creative only): a cube with one yellow face, the one that docks with
-/// the yellow face of another. It has one state, made with the yellow face to the east, which is also its front: it is placed turned to face the
-/// player, as a piston is, and the orientation of the voxel says which way the yellow is. It is data: `data/blocks/dev_docking_port.json`, and its
+/// the yellow face of another. It has one state, made with the yellow face to the east, which is also its front, and its top up: it is placed with its top away from the face that was clicked, as a log is, and
+/// its front turned to the player's side as far as that allows (see `placement.rs`); the orientation of the voxel says which way the yellow is. It is data: `data/blocks/dev_docking_port.json`, and its
 /// colour is the average of its pictures, which are in the pictures of `base_blocks`.
 pub fn dev_docking_port() -> BlockDefinition {
     let mut properties = base_blocks::property_schema();

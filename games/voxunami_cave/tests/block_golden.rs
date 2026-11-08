@@ -61,7 +61,7 @@ fn what_the_block_table_says_of_each_cave_block_is_pinned() {
 }
 
 /// (the length, the hash) of `PackageData::encode` for Cave as it was on 2026-11-07.
-const PINNED_PACKAGE: (usize, u64) = (12046, 7_140_119_527_808_595_042);
+const PINNED_PACKAGE: (usize, u64) = (12066, 11_065_068_392_312_003_131);
 
 const PINNED_TABLE: &[&str] = &[
     " 0 base_blocks:air: colour #000000, 1 states, state 0 faces [0 0 0 0 0 0], front none, axis none, docking none, placement Fixed, behaviour a28133c087488ace",
@@ -72,6 +72,6 @@ const PINNED_TABLE: &[&str] = &[
     " 5 base_blocks:wood: colour #877333, 7 states, state 0 faces [95 96 97 98 99 100], front none, axis PositiveY, docking none, placement AlongPlacedFace(PositiveY), behaviour ba79a2d2ddbebb84",
     " 6 base_blocks:fire: colour #f2801a, 1 states, state 0 faces [9 9 9 9 9 9], front none, axis none, docking none, placement Fixed, behaviour fa5f4357000a02e1",
     " 7 base_blocks:great_river_water: colour #283de8, 1 states, state 0 faces [143 144 145 146 147 148], front none, axis none, docking none, placement Fixed, behaviour 5002183497c3b133",
-    " 8 voxunami_cave:dev_docking_port: colour #797658, 1 states, state 0 faces [167 168 169 170 171 172], front PositiveX, axis none, docking PositiveX, placement FrontToPlayer(PositiveX), behaviour 2ba97fe3b28accc2",
+    " 8 voxunami_cave:dev_docking_port: colour #797658, 1 states, state 0 faces [167 168 169 170 171 172], front PositiveX, axis PositiveY, docking PositiveX, placement AlongPlacedFaceFacingPlayer { axis: PositiveY, front: PositiveX }, behaviour d020a84db4c235e2",
     "palette: 263 colours, digest 2bddb6bcb2eb43eb, pictures 240 on it, digest ae07d2660e244545",
 ];

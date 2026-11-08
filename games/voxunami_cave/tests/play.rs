@@ -776,14 +776,15 @@ fn the_shape_key_cycles_through_every_shape_and_placing_uses_the_one_chosen() {
 }
 
 #[test]
-fn the_dev_docking_port_is_chosen_with_its_number_has_one_state_and_is_placed_facing_the_player() {
+fn the_dev_docking_port_is_chosen_with_its_number_has_one_state_and_is_placed_with_its_top_away_from_the_face_clicked()
+ {
     let mut rig = Rig::new();
     let mut player = player_above_ground(&mut rig);
     let hit = player.target().unwrap();
     // The seventh block there is to place.
     player.key_pressed(KeyCode::Digit7);
     assert_eq!(player.hud_text(), "placing dev_docking_port (whole)");
-    // It has one state: the shape key leaves it as it is (how it faces is the orientation, which comes from where the player is).
+    // It has one state: the shape key leaves it as it is (how it is turned is the orientation, which comes from the face the player clicked and where they are).
     player.key_pressed(KeyCode::KeyR);
     assert_eq!(player.hud_text(), "placing dev_docking_port (whole)");
     player.mouse_pressed(MouseButton::Secondary);
@@ -801,11 +802,15 @@ fn the_dev_docking_port_is_chosen_with_its_number_has_one_state_and_is_placed_fa
         .main()
         .overrides
         .get(rig.content.orientation_channel(), hit.previous);
-    // The player looks straight down from three voxels over the place, close beside it: the front of the port faces up.
+    // The player clicked the top of the ground, so the top of the port is up, away from it, as a log's would be; its front (the yellow face that docks) is one of the four
+    // sides of that, the one on the player's side (a unit test of `placement.rs` has the rule).
+    let table = rig.content.block_table();
     assert_eq!(
-        rig.content.block_table().front_face(port, 0, orientation),
+        table.axis_face(port, 0, orientation),
         Some(FaceDirection::PositiveY)
     );
+    let front = table.front_face(port, 0, orientation).unwrap();
+    assert_ne!(front.axis(), FaceDirection::PositiveY.axis());
     // Choosing a block with more states keeps the number in range for the one chosen: stone has seven.
     player.key_pressed(KeyCode::Digit1);
     assert_eq!(player.hud_text(), "placing stone (whole)");

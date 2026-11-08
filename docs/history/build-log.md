@@ -1739,6 +1739,7 @@ Block textures, steps 0 to 2 (2026-11-07; the owner's request to define blocks i
   comes back in whole milliseconds): the picture's coordinates passed from the vertex shader were +0.35 of +0.87 ms; a version that worked them out in the fragment shader (+0.63 ms) was built and reverted as premature (the shader is to be reworked for shadows, GI, MSAA and waving vegetation); sampler filtering costs nothing.
   `--benchmark` now waits for ten frames at a time (1.98 ms on the discrete GPU with or without pictures, 8.08 and 8.92 on the integrated one); the benchmark figures in `shadow-spec.md` and `sun-spec.md` are from the single-frame wait, whose
   whole-millisecond steps were seen on the integrated GPU, so a figure there of under a millisecond on that GPU is not to be trusted (not re-measured).
+- Step 5, the dev docking port only (the owner skipped the rest): a block with both `engine:front_face` and `engine:axis_face` is a `Placement::AlongPlacedFaceFacingPlayer`; the port has both, so its top goes away from the clicked surface and its yellow front to the player's side across it (before, its top could be upside down or on a side). Package 12,046 to 12,066 bytes (I predicted 2: a property is written by name, 20 bytes), eight mutations caught.
 
 ## Measured
 Storage (Ryzen 7600X, release, one thread, best of 7, counting allocator; the single-voxel `get` figures include
