@@ -242,3 +242,23 @@ fn a_walker_who_steps_off_a_ship_in_orbit_round_a_planet_that_goes_round_stays_b
         );
     }
 }
+
+/// What falls with the planet falls as the planet does: a walker beside a deck in orbit round it is pulled by the planet and not by what the planet goes round, as the deck is
+/// (`ServerWorld::gravity_in_the_free_fall_of`). Asked for the pull of every body the walker was pulled by the home planet as well, 0.127 metres a second a second at 400,000
+/// voxels, and the deck, which goes round the wanderer as the wanderer goes round the home planet, was not: measured 2026-11-07, they were 6 voxels apart after twelve seconds and
+/// 79 after thirty-six, in both worlds. Beside each other, with a walk of 4 voxels, they are 5 apart after thirty-six.
+#[test]
+fn a_walker_beside_a_deck_in_orbit_round_a_planet_that_goes_round_is_pulled_as_the_deck_is_for_half_a_minute()
+ {
+    for (name, mut scene) in the_two_worlds() {
+        let (mut player, deck) = a_walker_on_a_deck_in_orbit(&mut scene);
+        walk_off(&mut scene, &mut player);
+        tick_and_follow(&mut scene, &mut player, 720);
+        let apart = minus(eyes_in_the_world(&scene, 1), ship_middle(&scene, deck));
+        let distance = common::length(apart);
+        assert!(
+            distance < 10.0,
+            "{name}: {distance} voxels ({apart:?}) from the deck, thirty-six seconds after they walked off it"
+        );
+    }
+}

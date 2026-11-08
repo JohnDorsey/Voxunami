@@ -152,8 +152,10 @@ Entities on the wire, who a player is, players as entities, ships a player can m
   off the world's speed, and the speed a body is **stepped against** is that of the place of the ship less the carrier's. Without it a body had the planet's speed twice and went at the
   planet's speed past the ship it had left (6.28 voxels a tick beside a planet at 125.7 metres a second; a walker who landed on a held deck was off it in five ticks). Where no planet is on a
   rail nothing is changed. *Mine, not done (measured, `build-log.md`):* a body in free flight that goes out of the sphere, or into one, keeps the speed it had against the old carrier (a
-  6.26-voxel kink in its path at the edge, the planet's step); it needs the world to say when an entity's carrier changed other than by being put somewhere. And a walker in a level is
-  pulled by every body, where what is carried falls with the planet (`gravity_in`, which leaves out what the planet goes round).
+  6.26-voxel kink in its path at the edge, the planet's step); it needs the world to say when an entity's carrier changed other than by being put somewhere.
+- **What a planet on a rail carries falls with it** (2026-11-07): a body in a level that the world carries is pulled by everything but what the planet goes round
+  (`ServerWorld::gravity_in_the_free_fall_of` its carrier), as the ships in the planet's frame are and as a body aboard the planet is; pulled by every body it drifted from a deck in orbit
+  by the home planet's 0.127 metres a second a second (79 voxels in 36 seconds, 5 now). With no carrier nothing changes.
 - **The picture carries every moving thing on between ticks the same way** (2026-11-04): the camera, ships and planets, the room the camera's angles are measured in, and the other players are carried on at the speed (and turn) of the last two
   things told, with the times of the beat of the server's ticks (`TickClock`) and not of the frames that saw them, and a change of speed that is too big to be travel is a jump and is shown at once. They must be carried on *together*: a camera carried
   on that looks at a ship shown where it was last told shakes by the speed times a tick. The clock creeps toward a later beat at 5 ms a second (so that speeds stay steady) but takes the beat of the last 10 to 20 ticks at once when all of them came more

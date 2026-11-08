@@ -643,7 +643,11 @@ fn step_in_a_level(
     // A ship that has moved into the player this tick (fallen on them, sailed into them) puts them out of the way and not into the ground.
     player.body.keep_clear(&mut blocks.terrain(world, level));
 
-    let gravity = world.gravity_at(level, player.body.eye_position());
+    // (What a planet on a rail carries falls with it: pulled by everything but what the planet goes round, as the ships in its frame are.)
+    let gravity = match player.carrier {
+        Some(planet) => world.gravity_in_the_free_fall_of(planet, player.body.eye_position()),
+        None => world.gravity_at(level, player.body.eye_position()),
+    };
     let input = input_for(player);
     let against = speed_of_what_they_left(player, world, level);
     for _ in 0..PHYSICS_STEPS_PER_TICK {
