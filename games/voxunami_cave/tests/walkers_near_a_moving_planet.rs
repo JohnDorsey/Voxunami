@@ -404,3 +404,62 @@ fn a_walker_whose_ship_is_taken_away_near_a_planet_that_goes_round_is_at_rest_ag
         );
     }
 }
+
+/// A walker who flies sends their own speed with the keys (they ease to the speed the keys ask for, and hover when none is held), measured from what carries them. So the
+/// planet that takes them in at the edge of its sphere does not change it: they hover against the planet from then on, and go with it. (A conversion like the one for a body
+/// in free fall, `pass_to_next_carrier`, would leave them the planet's 125.7 metres a second in the world and against it the opposite, which the keys then take off in a second
+/// and a half, a hundred voxels or so along the way: an unwanted slide.) Asked only of the way in; the way out goes through the same condition.
+///
+/// The walker hovers where the planet will come to them, ahead of it on its way, since a walker at 21.6 metres a second cannot overtake a planet at 125.7; where the planet stands
+/// still, it is the walker who goes to the planet, down over its pole.
+#[test]
+fn a_walker_who_flies_into_the_sphere_of_a_planet_that_goes_round_hovers_against_it_from_then_on() {
+    for (name, mut scene) in the_two_worlds() {
+        scene.ticks(1);
+        let mut player = a_walker_over_the_wanderer(&mut scene, DISTANCE + 40.0);
+        let first = ship_voxels(&scene, WANDERER);
+        tick_and_follow(&mut scene, &mut player, 1);
+        let planet = ship_voxels(&scene, WANDERER);
+        let step = minus(planet, first);
+        let (ahead, keys): ([f64; 3], &[KeyCode]) = if length(step) > 1.0 {
+            (step.map(|part| part / length(step)), &[])
+        } else {
+            ([0.0, 1.0, 0.0], &[KeyCode::ShiftLeft, KeyCode::ControlLeft])
+        };
+        // Outside what the planet keeps (400 voxels, to be outside it still after the twenty ticks that it takes to settle), where nothing carries them, hovering. (Not just outside its sphere: a body it carried keeps being carried to 20,400.)
+        let place = [0, 1, 2].map(|axis| planet[axis] + ahead[axis] * (SPHERE_KEPT + 400.0));
+        say(
+            &mut scene,
+            &mut player,
+            &format!("/tp {} {} {}", place[0], place[1], place[2]),
+        );
+        say(&mut scene, &mut player, "/fly");
+        tick_and_follow(&mut scene, &mut player, 20);
+        assert!(
+            length(eyes_from_the_wanderer(&scene)) > SPHERE_KEPT + 40.0,
+            "{name}: they are outside what the planet keeps"
+        );
+        // Until they are in the sphere (the planet comes to them, or they go to it at the speed of flying with the sprint key, 21.6 metres a second), and the keys are let go.
+        player.hold(keys);
+        for _ in 0..6_000 {
+            tick_and_follow(&mut scene, &mut player, 1);
+            if length(eyes_from_the_wanderer(&scene)) < SPHERE - 1.0 {
+                break;
+            }
+        }
+        player.hold(&[]);
+        assert!(
+            length(eyes_from_the_wanderer(&scene)) < SPHERE - 1.0,
+            "{name}: they went in"
+        );
+        // Half a second to come to rest, then a second and a half more (the planet's speed, if they had kept it, takes that long to go): they have not moved against the planet.
+        tick_and_follow(&mut scene, &mut player, 10);
+        let rest = eyes_from_the_wanderer(&scene);
+        tick_and_follow(&mut scene, &mut player, 30);
+        let slid = length(minus(eyes_from_the_wanderer(&scene), rest));
+        assert!(
+            slid < 2.0,
+            "{name}: {slid} voxels from where they hovered against the planet, a second and a half after they went in"
+        );
+    }
+}
