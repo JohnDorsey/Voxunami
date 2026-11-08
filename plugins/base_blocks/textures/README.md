@@ -32,6 +32,13 @@ phases; what works so far:
   arrangement (empty places are hatched and cannot be drawn on), and a stroke can cross from tile to tile.
   Mouse wheel zooms, middle-drag pans, a grid shows when zoomed in. The left button draws with the primary color,
   the right button with the secondary color.
+- A thin sidebar of buttons is right of the canvas. Its checkbox button "W" turns wrap-assist on (the whole button is
+  blue) or off (empty). Wrap-assist shows the canvas as a repeating grid of itself, with nothing drawn at the edges, and
+  drawing is as if on every copy at once: the brush guide appears once per copy, and a stroke that leaves one side of
+  the tile comes back in on the other (every stroke tool, the fill bucket, which fills around the edges, and the eye
+  dropper, which picks from any copy). With several tiles shown, the whole canvas is what repeats. The select tool and a
+  pasted picture work on the real canvas, counted from the copy you press in. Turning it on or off zooms to fit; it is
+  not saved with the atlas.
 - Tools (icons in one row; rest the pointer on one to see its name): pencil, eraser, line, horizontal line, vertical line, horizontal and vertical parallelogram, noise
   brush, air brush, select, eye dropper, fill bucket (exact color match, side by side pixels only). `[` and `]`
   resize: both axes together, Shift for the width, Alt for the height; the lines and parallelograms have one

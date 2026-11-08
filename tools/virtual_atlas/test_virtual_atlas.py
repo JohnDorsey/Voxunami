@@ -2659,7 +2659,7 @@ class EditorLayoutTests(unittest.TestCase):
         for size in [(640, 780), (450, 600), (900, 900)]:
             rect = va.pygame.Rect(10, 10, *size)
             areas = va.compute_editor_areas(rect, list(va.TOOL_LABELS))
-            parts = {"header": areas.header, "canvas": areas.canvas, "options": areas.options, "controls": areas.controls, "square": areas.square,
+            parts = {"header": areas.header, "canvas": areas.canvas, "sidebar": areas.sidebar, "options": areas.options, "controls": areas.controls, "square": areas.square,
                      "hue": areas.hue_bar, "alpha": areas.alpha_bar, "primary": areas.primary_swatch,
                      "secondary": areas.secondary_swatch, "hex": areas.hex_field}
             parts.update({f"tool {tool}": rectangle for tool, rectangle in areas.tool_buttons.items()})
@@ -2671,6 +2671,17 @@ class EditorLayoutTests(unittest.TestCase):
                 for second in names[index + 1:]:
                     self.assertFalse(parts[first].colliderect(parts[second]), f"{first} overlaps {second} at {size}")
             self.assertGreater(areas.canvas.height, 100, size)
+
+    def test_the_sidebar_is_a_thin_strip_right_of_the_canvas_and_holds_its_buttons(self):
+        for size in [(640, 780), (450, 600), (900, 900)]:
+            areas = va.compute_editor_areas(va.pygame.Rect(10, 10, *size), list(va.TOOL_LABELS))
+            self.assertGreaterEqual(areas.sidebar.left, areas.canvas.right, size)
+            self.assertEqual((areas.sidebar.top, areas.sidebar.bottom), (areas.canvas.top, areas.canvas.bottom))
+            self.assertLess(areas.sidebar.width, areas.canvas.width // 4, "thin")
+            self.assertEqual(list(areas.sidebar_buttons), ["wrap"])
+            for name, rectangle in areas.sidebar_buttons.items():
+                self.assertTrue(areas.sidebar.contains(rectangle), name)
+                self.assertGreaterEqual(min(rectangle.size), va.scaled(24), "big enough to click")
 
     def test_all_sixteen_recent_colors_have_room_when_the_editor_is_wide_enough(self):
         areas = va.compute_editor_areas(va.pygame.Rect(0, 0, 640, 780), list(va.TOOL_LABELS))
@@ -5201,6 +5212,252 @@ class PurgeWindowTests(ProjectFixture):
     def test_the_program_with_a_menu_open_closes_on_quit_like_before(self):
         self.open_menu()
         self.assertFalse(self.application.handle_event(va.pygame.event.Event(va.pygame.QUIT)))
+
+
+class WrapAssistEditorTests(EditorDriver):
+    """The W button in the sidebar and what wrap-assist does to the canvas: a tile shown as a repeating grid."""
+
+    def paint(self, coordinate, column, row, color):
+        record = self.project.tiles[coordinate]
+        layout = va.compose_canvas({coordinate: record.pixels}, 8)
+        canvas = layout.pixels.copy()
+        canvas[row, column] = color
+        self.project.apply_canvas_edit(layout, canvas)
+
+    def wrap_button(self):
+        return self.editor.areas.sidebar_buttons["wrap"]
+
+    def click_wrap_button(self):
+        self.send("down", self.wrap_button().center)
+        self.send("up", self.wrap_button().center)
+
+    def color_at(self, position):
+        return tuple(self.application.surface.get_at(position))[:3]
+
+    def copies_in_view(self, column, row, size=8):
+        """The positions of a canvas pixel in every copy of the canvas whose center is in the canvas area."""
+        found = []
+        for copy_column in range(-6, 9):
+            for copy_row in range(-6, 9):
+                center = self.editor.view.pixel_rectangle(column + copy_column * size, row + copy_row * size).center
+                if self.editor.areas.canvas.collidepoint(center):
+                    found.append(((copy_column, copy_row), center))
+        return found
+
+    def test_wrap_assist_starts_off_and_the_button_toggles_it(self):
+        self.select((0, 0))
+        self.assertFalse(self.editor.wrap_assist)
+        self.click_wrap_button()
+        self.assertTrue(self.editor.wrap_assist)
+        self.click_wrap_button()
+        self.assertFalse(self.editor.wrap_assist)
+
+    def test_clicking_the_button_does_not_draw_or_change_the_selection(self):
+        self.select((0, 0))
+        self.click_wrap_button()
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified)
+        self.assertEqual(self.project.selection, {(0, 0)})
+
+    def test_the_button_says_w_and_is_empty_when_unchecked_and_all_blue_when_checked(self):
+        self.select((0, 0))
+        self.application.draw()
+        corner = (self.wrap_button().x + 4, self.wrap_button().y + 4)
+        self.assertEqual(self.color_at(corner), va.Theme.PANEL, "empty: it shows the panel behind it")
+        self.click_wrap_button()
+        self.application.draw()
+        self.assertEqual(self.color_at(corner), va.Theme.ACCENT)
+        self.assertEqual(self.color_at((self.wrap_button().right - 5, self.wrap_button().bottom - 5)), va.Theme.ACCENT)
+        self.click_wrap_button()
+        self.application.draw()
+        self.assertEqual(self.color_at(corner), va.Theme.PANEL)
+
+    def test_the_button_has_a_name_when_the_pointer_rests_on_it(self):
+        self.application.pointer = self.wrap_button().center
+        self.assertIn("Wrap", self.application.hover_text())
+
+    def test_the_tile_is_shown_as_a_repeating_grid_only_while_wrap_assist_is_on(self):
+        self.select((0, 0))
+        self.paint((0, 0), 2, 3, RED)
+        self.editor.view.zoom = 4  # small enough that there is room beside the tile
+        self.application.draw()
+        beyond = self.editor.view.pixel_rectangle(2 + 8, 3).center
+        self.assertTrue(self.editor.areas.canvas.collidepoint(beyond))
+        self.assertNotEqual(self.color_at(beyond), RED[:3], "one tile, and nothing beside it")
+        self.click_wrap_button()
+        self.park_the_pointer()
+        self.application.draw()
+        copies = self.copies_in_view(2, 3)
+        self.assertGreaterEqual(len(copies), 9)
+        beside = 0
+        for copy, center in copies:
+            self.assertEqual(self.color_at(center), RED[:3], copy)
+            neighbour = (center[0] + self.editor.view.zoom, center[1])
+            if self.editor.areas.canvas.collidepoint(neighbour):
+                self.assertEqual(self.color_at(neighbour), BLUE[:3], copy)
+                beside += 1
+        self.assertGreaterEqual(beside, 6)
+
+    def test_the_whole_canvas_repeats_when_several_tiles_are_shown(self):
+        self.select((0, 0), (1, 0))
+        self.paint((1, 0), 7, 0, RED)
+        self.click_wrap_button()
+        self.park_the_pointer()
+        self.application.draw()
+        for copy, center in self.copies_in_view(15, 0, size=16):
+            self.assertEqual(self.color_at(center), RED[:3], copy)
+
+    def park_the_pointer(self):
+        """Away from the canvas and the button, so that no tooltip or brush guide is drawn over what is sampled."""
+        self.application.pointer = self.editor.pointer = (5, 5)
+
+    def test_no_line_marks_where_a_copy_of_the_tile_ends_and_the_next_begins(self):
+        self.select((0, 0))
+        self.park_the_pointer()
+        self.application.draw()
+        left_edge = self.editor.view.pixel_rectangle(0, 0).x
+        row = self.editor.view.pixel_rectangle(0, 3).centery
+        self.assertNotEqual(self.color_at((left_edge, row)), BLUE[:3], "without wrap-assist the tile's edge is outlined")
+        self.click_wrap_button()
+        self.park_the_pointer()
+        self.editor.view.zoom = 2
+        self.application.draw()
+        area = self.editor.areas.canvas
+        for x in range(area.x + 2, area.right - 2):
+            self.assertEqual(self.color_at((x, area.centery)), BLUE[:3], x)
+        for y in range(area.y + 2, area.bottom - 2):
+            self.assertEqual(self.color_at((area.centerx, y)), BLUE[:3], y)
+
+    def test_the_brush_guide_is_drawn_once_for_each_copy_of_the_tile(self):
+        self.select((0, 0))
+        self.click_wrap_button()
+        self.move(self.position(3, 2))
+        self.application.draw()
+        copies = self.copies_in_view(3, 2)
+        self.assertGreaterEqual(len(copies), 9)
+        for copy, _ in copies:
+            rectangle = self.editor.view.pixel_rectangle(3 + copy[0] * 8, 2 + copy[1] * 8)
+            self.assertEqual(self.color_at(rectangle.topleft), (255, 255, 255), copy)
+        stray = self.editor.view.pixel_rectangle(4, 2)
+        self.assertNotEqual(self.color_at(stray.topleft), (255, 255, 255), "no guide on a pixel that is not under the brush")
+
+    def test_without_wrap_assist_there_is_one_brush_guide(self):
+        self.select((0, 0))
+        self.move(self.position(3, 2))
+        self.application.draw()
+        rectangle = self.editor.view.pixel_rectangle(3, 2)
+        self.assertEqual(self.color_at(rectangle.topleft), (255, 255, 255))
+        self.assertEqual(len([1 for _, center in self.copies_in_view(3, 2) if self.color_at(center) == (255, 255, 255)]), 0)
+
+    def test_a_bigger_brush_has_a_bigger_guide_in_every_copy(self):
+        self.select((0, 0))
+        self.click_wrap_button()
+        self.editor.settings.brush_sizes["pencil"] = (3, 2)
+        self.move(self.position(7, 7))
+        self.application.draw()
+        for copy_column, copy_row in [(0, 0), (1, 0), (0, 1), (1, 1), (-1, -1)]:
+            rectangle = self.editor.view.pixel_rectangle(6 + copy_column * 8, 6 + copy_row * 8, 3, 2)
+            if self.editor.areas.canvas.contains(rectangle):
+                self.assertEqual(self.color_at(rectangle.topleft), (255, 255, 255), (copy_column, copy_row))
+                self.assertEqual(self.color_at((rectangle.right - 1, rectangle.bottom - 1)), (255, 255, 255))
+
+    def test_drawing_wraps_around_the_tile_and_is_one_undo_step(self):
+        self.select((0, 0))
+        self.click_wrap_button()
+        self.editor.colors.set_color(RED, "primary")
+        self.drag(self.position(6, 1), self.position(10, 1))
+        for column in (6, 7, 0, 1, 2):
+            self.assertEqual(self.pixel((0, 0), column, 1), RED, column)
+        for column in (3, 4, 5):
+            self.assertEqual(self.pixel((0, 0), column, 1), BLUE, column)
+        self.key(va.pygame.K_z, va.pygame.KMOD_CTRL)
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified, "the whole stroke went in one step")
+
+    def test_drawing_in_any_copy_changes_the_tile(self):
+        self.select((0, 0))
+        self.click_wrap_button()
+        self.editor.colors.set_color(RED, "primary")
+        self.drag(self.position(8 + 4, 16 + 5), self.position(8 + 4, 16 + 5))
+        self.assertEqual(self.pixel((0, 0), 4, 5), RED)
+
+    def test_without_wrap_assist_the_same_stroke_stops_at_the_edge(self):
+        self.select((0, 0))
+        self.editor.colors.set_color(RED, "primary")
+        self.drag(self.position(6, 1), self.position(10, 1))
+        self.assertEqual(self.pixel((0, 0), 7, 1), RED)
+        self.assertEqual(self.pixel((0, 0), 0, 1), BLUE)
+
+    def test_with_several_tiles_shown_a_stroke_wraps_around_all_of_them(self):
+        self.select((0, 0), (1, 0))
+        self.click_wrap_button()
+        self.editor.colors.set_color(RED, "primary")
+        self.drag(self.position(14, 2), self.position(18, 2))
+        self.assertEqual([self.pixel((1, 0), column, 2) for column in (5, 6, 7)], [GREEN, RED, RED])
+        self.assertEqual([self.pixel((0, 0), column, 2) for column in (0, 1, 2, 3)], [RED, RED, RED, BLUE])
+
+    def test_the_eye_dropper_picks_from_any_copy(self):
+        self.select((0, 0))
+        self.paint((0, 0), 2, 3, GREEN)
+        self.click_wrap_button()
+        self.click_tool("eyedropper")
+        self.send("down", self.position(2 + 8, 3 + 16))
+        self.send("up", self.position(2 + 8, 3 + 16))
+        self.assertEqual(self.editor.colors.get("primary"), GREEN)
+
+    def test_the_fill_bucket_works_from_any_copy(self):
+        self.select((0, 0))
+        self.paint((0, 0), 2, 3, GREEN)
+        self.click_wrap_button()
+        self.click_tool("fill")
+        self.editor.colors.set_color(RED, "primary")
+        self.send("down", self.position(5 + 8, 5 + 8))
+        self.send("up", self.position(5 + 8, 5 + 8))
+        self.assertEqual(self.pixel((0, 0), 2, 3), GREEN, "the green pixel is a different color and stays")
+        self.assertEqual(self.pixel((0, 0), 0, 0), RED)
+        self.assertEqual(self.pixel((0, 0), 7, 7), RED)
+
+    def test_the_select_tool_works_on_the_tile_whichever_copy_it_is_used_in(self):
+        self.select((0, 0))
+        self.click_wrap_button()
+        self.click_tool("select")
+        self.drag(self.position(8 + 1, 8 + 1), self.position(8 + 3, 8 + 3))
+        self.assertEqual(self.editor.selection_rectangle, (1, 1, 4, 4))
+
+    def test_a_pasted_picture_starts_at_the_tile_even_when_the_view_has_moved_away(self):
+        self.select((0, 0))
+        self.click_wrap_button()
+        self.editor.internal_image = solid_tile(RED, 2)
+        self.editor.internal_is_newer = True
+        self.editor.view.pan_by(120, 90)
+        self.editor.paste()
+        self.assertEqual((self.editor.floating.column, self.editor.floating.row), (0, 0))
+
+    def test_turning_it_on_shows_several_copies_and_turning_it_off_shows_the_one_tile_as_big_as_before(self):
+        self.select((0, 0))
+        before = self.editor.view.zoom
+        self.click_wrap_button()
+        self.assertLess(self.editor.view.zoom, before)
+        self.assertGreaterEqual(self.editor.view.zoom * 8 * 3, 1)
+        area = self.editor.areas.canvas
+        self.assertLessEqual(self.editor.view.zoom * 8 * 3, min(area.size))
+        self.click_wrap_button()
+        self.assertEqual(self.editor.view.zoom, before)
+
+    def test_wrap_assist_stays_on_when_another_tile_is_selected(self):
+        self.select((0, 0))
+        self.click_wrap_button()
+        self.select((1, 0))
+        self.assertTrue(self.editor.wrap_assist)
+        self.application.draw()
+
+    def test_it_can_be_turned_on_with_nothing_shown_and_the_window_draws_in_a_small_window(self):
+        self.click_wrap_button()
+        self.application.draw()
+        small = va.Application(self.project, va.pygame.Surface((700, 520)))
+        small.editor.wrap_assist = True
+        self.project.selection = {(0, 0)}
+        small.editor.sync()
+        small.handle_event(va.pygame.event.Event(va.pygame.MOUSEMOTION, pos=small.editor.areas.canvas.center, rel=(0, 0), buttons=(0, 0, 0)))
+        small.draw()
 
 
 if __name__ == "__main__":

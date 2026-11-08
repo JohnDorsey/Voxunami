@@ -2238,13 +2238,19 @@ class CanvasView:
         self.origin_x += delta_x
         self.origin_y += delta_y
 
-    def visible_pixels(self, width: int, height: int) -> tuple[int, int, int, int]:
-        """(first column, first row, past-last column, past-last row) of the canvas pixels in the area."""
-        first_column = max(0, (self.rect.x - self.origin_x) // self.zoom)
-        first_row = max(0, (self.rect.y - self.origin_y) // self.zoom)
-        last_column = min(width, -(-(self.rect.right - self.origin_x) // self.zoom))
-        last_row = min(height, -(-(self.rect.bottom - self.origin_y) // self.zoom))
-        return (first_column, first_row, last_column, last_row)
+    def visible_pixels(self, width: int, height: int, wrap: bool = False) -> tuple[int, int, int, int]:
+        """(first column, first row, past-last column, past-last row) of the canvas pixels in the area.
+
+        With `wrap` the canvas repeats without end, so these are the positions in the repeating canvas that the area
+        shows, which can be negative or past the canvas size.
+        """
+        first_column = (self.rect.x - self.origin_x) // self.zoom
+        first_row = (self.rect.y - self.origin_y) // self.zoom
+        last_column = -(-(self.rect.right - self.origin_x) // self.zoom)
+        last_row = -(-(self.rect.bottom - self.origin_y) // self.zoom)
+        if wrap:
+            return (first_column, first_row, last_column, last_row)
+        return (max(0, first_column), max(0, first_row), min(width, last_column), min(height, last_row))
 
 
 # ----------------------------------------------------------------------------------------------------------
@@ -3060,10 +3066,19 @@ class AtlasInteraction:
 # ----------------------------------------------------------------------------------------------------------
 
 
+# The checkbox buttons in the thin sidebar right of the canvas: their names and what they show on the button.
+SIDEBAR_BUTTONS = {"wrap": "W"}
+SIDEBAR_BUTTON_HINTS = {"wrap": "Wrap assist: show the tile as a repeating grid, and let strokes wrap around its edges"}
+# With wrap-assist on, the canvas is zoomed to fit this many copies of itself across and down.
+WRAP_PREVIEW_COPIES = 3
+
+
 @dataclasses.dataclass
 class EditorAreas:
     header: pygame.Rect
     canvas: pygame.Rect
+    sidebar: pygame.Rect
+    sidebar_buttons: dict[str, pygame.Rect]
     tool_buttons: dict[str, pygame.Rect]
     options: pygame.Rect
     controls: pygame.Rect
@@ -3095,7 +3110,16 @@ def compute_editor_areas(rect: pygame.Rect, tools: list[str]) -> EditorAreas:
         for index, tool in enumerate(tools)
     }
     canvas_top = header.bottom + gap
-    canvas = pygame.Rect(rect.x + margin, canvas_top, width, max(scaled(60), tools_top - scaled(8) - canvas_top))
+    canvas_height = max(scaled(60), tools_top - scaled(8) - canvas_top)
+    # The thin sidebar of buttons is right of the canvas, as tall as it.
+    sidebar_width, button_inset = scaled(40), scaled(3)
+    sidebar = pygame.Rect(rect.right - margin - sidebar_width, canvas_top, sidebar_width, canvas_height)
+    canvas = pygame.Rect(rect.x + margin, canvas_top, sidebar.x - gap - (rect.x + margin), canvas_height)
+    button_size = sidebar_width - 2 * button_inset
+    sidebar_buttons = {
+        name: pygame.Rect(sidebar.x + button_inset, sidebar.y + button_inset + index * (button_size + button_inset), button_size, button_size)
+        for index, name in enumerate(SIDEBAR_BUTTONS)
+    }
     left = rect.x + margin
     square = pygame.Rect(left, color_top, square_size, square_size)
     hue_bar = pygame.Rect(square.right + gap, color_top, scaled(16), square_size)
@@ -3114,7 +3138,7 @@ def compute_editor_areas(rect: pygame.Rect, tools: list[str]) -> EditorAreas:
         if (row + 1) * (history_swatch + 4) > square_size:
             break
         history.append(pygame.Rect(history_left + column * (history_swatch + 4), color_top + row * (history_swatch + 4), history_swatch, history_swatch))
-    return EditorAreas(header, canvas, tool_buttons, options, controls, square, hue_bar, alpha_bar, primary_swatch, secondary_swatch, hex_field, history)
+    return EditorAreas(header, canvas, sidebar, sidebar_buttons, tool_buttons, options, controls, square, hue_bar, alpha_bar, primary_swatch, secondary_swatch, hex_field, history)
 
 
 def saturation_value_square(hue: float, size: int) -> pygame.Surface:
@@ -3176,6 +3200,11 @@ class EditorPanel:
         self.floating_drag: Optional[tuple[Coordinate, int, int]] = None
         self.shape_dropdown_open = False
         self.slider_drag: Optional[str] = None
+        # Wrap-assist: the canvas is shown as a grid of copies of itself, and strokes wrap around its edges.
+        self.wrap_assist = False
+        # While the select tool is used with wrap-assist, positions are counted from the copy of the canvas where the
+        # press was, so that a rectangle can be dragged inside any copy.
+        self._copy_offset = (0, 0)
         self.rect = pygame.Rect(0, 0, 100, 100)
         self.areas = compute_editor_areas(self.rect, list(TOOL_LABELS))
         self.hex_field = TextField("", lambda character: character in "#0123456789abcdefABCDEF", 9)
@@ -3208,8 +3237,27 @@ class EditorPanel:
         self.areas = compute_editor_areas(rect, list(TOOL_LABELS))
         self.view.rect = self.areas.canvas
         self._checker = None
-        if self.layout is not None:
-            self.view.fit(self.layout.pixels.shape[1], self.layout.pixels.shape[0])
+        self._fit_view()
+
+    def _fit_view(self) -> None:
+        """Zoom and center the canvas to fit its area; with wrap-assist, to fit a few copies of it."""
+        if self.layout is None:
+            return
+        copies = WRAP_PREVIEW_COPIES if self.wrap_assist else 1
+        self.view.fit(self.layout.pixels.shape[1] * copies, self.layout.pixels.shape[0] * copies)
+
+    def toggle_wrap_assist(self) -> None:
+        self.wrap_assist = not self.wrap_assist
+        self._fit_view()
+
+    def sidebar_button_at(self, position: tuple[int, int]) -> Optional[str]:
+        for name, rectangle in self.areas.sidebar_buttons.items():
+            if rectangle.collidepoint(position):
+                return name
+        return None
+
+    def sidebar_button_checked(self, name: str) -> bool:
+        return name == "wrap" and self.wrap_assist
 
     def sync(self) -> None:
         """Rebuild the canvas when the selection or the pixels of the selected tiles have changed."""
@@ -3235,7 +3283,7 @@ class EditorPanel:
             self._coordinate_signature = coordinate_signature
             self._forget_selection()
             self.view.rect = self.areas.canvas
-            self.view.fit(self.layout.pixels.shape[1], self.layout.pixels.shape[0])
+            self._fit_view()
 
     def contains(self, position: tuple[int, int]) -> bool:
         return self.rect.collidepoint(position)
@@ -3388,6 +3436,9 @@ class EditorPanel:
             if areas.hex_field.collidepoint(position):
                 self.hex_focused = True
                 return
+            if self.sidebar_button_at(position) == "wrap":
+                self.toggle_wrap_assist()
+                return
             for tool, rectangle in areas.tool_buttons.items():
                 if rectangle.collidepoint(position):
                     self.choose_tool(tool)
@@ -3431,18 +3482,31 @@ class EditorPanel:
         slot = "primary" if button == 1 else "secondary"
         pixel = self.view.pixel_at(position)
         if self.tool == "eyedropper":
-            color = pick_color(self.layout, pixel)
+            color = pick_color(self.layout, pixel, self.wrap_assist)
             if color is not None:
                 self.colors.set_color(color, slot)
             self.color_drag = f"dropper_{slot}"
             return
         if self.tool == "select":
             if button == 1:
-                self._press_select(pixel)
+                self._copy_offset = self._offset_of_copy(pixel)
+                self._press_select(self._selection_pixel(position))
             return
         self.session = CanvasSession(
-            self.layout, self.tool, self.settings, self.colors.get(slot), pixel, self.random_source
+            self.layout, self.tool, self.settings, self.colors.get(slot), pixel, self.random_source, self.wrap_assist
         )
+
+    def _offset_of_copy(self, pixel: Coordinate) -> tuple[int, int]:
+        """How far the copy of the canvas that holds `pixel` is from the canvas itself (0, 0 without wrap-assist)."""
+        if not self.wrap_assist or self.layout is None:
+            return (0, 0)
+        wrapped = wrap_pixel(pixel, self.canvas_shape())
+        return (pixel[0] - wrapped[0], pixel[1] - wrapped[1])
+
+    def _selection_pixel(self, position: tuple[int, int]) -> Coordinate:
+        """The pixel of the canvas for the select tool: with wrap-assist, counted from the copy that was pressed."""
+        pixel = self.view.pixel_at(position)
+        return (pixel[0] - self._copy_offset[0], pixel[1] - self._copy_offset[1])
 
     def _press_select(self, pixel: Coordinate) -> None:
         if self.floating is not None:
@@ -3463,7 +3527,7 @@ class EditorPanel:
         self.pointer = position
         if self.color_drag is not None:
             if self.color_drag.startswith("dropper_") and self.layout is not None:
-                color = pick_color(self.layout, self.view.pixel_at(position))
+                color = pick_color(self.layout, self.view.pixel_at(position), self.wrap_assist)
                 if color is not None:
                     self.colors.set_color(color, self.color_drag.removeprefix("dropper_"))
             else:
@@ -3477,11 +3541,11 @@ class EditorPanel:
             self.panning_from = position
         elif self.floating_drag is not None and self.floating is not None:
             pressed, column, row = self.floating_drag
-            pixel = self.view.pixel_at(position)
+            pixel = self._selection_pixel(position)
             self.floating.column = column + pixel[0] - pressed[0]
             self.floating.row = row + pixel[1] - pressed[1]
         elif self.selecting_from is not None:
-            pixel = self.view.pixel_at(position)
+            pixel = self._selection_pixel(position)
             self.selection_moved = self.selection_moved or pixel != self.selecting_from
             self._set_selection(self.selecting_from, pixel)
         elif self.session is not None:
@@ -3497,7 +3561,7 @@ class EditorPanel:
             self.slider_drag = None
             self.floating_drag = None
             if self.selecting_from is not None:
-                pixel = self.view.pixel_at(position)
+                pixel = self._selection_pixel(position)
                 self.selection_moved = self.selection_moved or pixel != self.selecting_from
                 self._set_selection(self.selecting_from, pixel)
                 if not self.selection_moved:
@@ -3614,6 +3678,8 @@ class EditorPanel:
         self.choose_tool("select")
         if self.selection_rectangle is not None:
             column, row = self.selection_rectangle[:2]
+        elif self.wrap_assist:
+            column, row = 0, 0  # every part of the repeating canvas is visible; the tile's corner is as good as any
         else:
             height, width = self.layout.pixels.shape[:2]
             column, row = self.view.visible_pixels(width, height)[:2]
@@ -3742,6 +3808,7 @@ class EditorPanel:
                 pygame.draw.rect(surface, Theme.PANEL_BORDER, self.areas.header, width=1, border_radius=3)
             draw_text(surface, self.fonts.large, header, Theme.TEXT, self.areas.header.move(scaled(6), 0).midleft, "midleft")
         self.draw_canvas(surface)
+        self.draw_sidebar(surface)
         self.draw_tools(surface)
         self.draw_colors(surface, caret_visible)
         self.draw_shape_menu(surface)
@@ -3769,27 +3836,39 @@ class EditorPanel:
             pixels = paste_pixels(pixels, paste.pixels, paste.column, paste.row, layout.editable_mask)
         height, width = pixels.shape[:2]
         surface.set_clip(area)
-        image_rectangle = view.pixel_rectangle(0, 0, width, height)
+        # With wrap-assist the canvas fills the whole area, as copies of itself.
+        image_rectangle = area if self.wrap_assist else view.pixel_rectangle(0, 0, width, height)
         visible = image_rectangle.clip(area)
         if self._checker is None or self._checker.get_width() < area.width or self._checker.get_height() < area.height:
             self._checker = checkerboard(max(area.width, area.height) + 16)
         surface.blit(self._checker, visible, pygame.Rect(0, 0, visible.width, visible.height))
-        first_column, first_row, last_column, last_row = view.visible_pixels(width, height)
+        first_column, first_row, last_column, last_row = visible_pixels = view.visible_pixels(width, height, self.wrap_assist)
         if last_column > first_column and last_row > first_row:
-            crop = numpy.ascontiguousarray(pixels[first_row:last_row, first_column:last_column])
+            if self.wrap_assist:
+                rows = numpy.arange(first_row, last_row) % height
+                columns = numpy.arange(first_column, last_column) % width
+                crop = numpy.ascontiguousarray(pixels[rows[:, None], columns[None, :]])
+            else:
+                crop = numpy.ascontiguousarray(pixels[first_row:last_row, first_column:last_column])
             picture = pygame.image.frombuffer(crop.tobytes(), (crop.shape[1], crop.shape[0]), "RGBA")
             picture = pygame.transform.scale(picture, (crop.shape[1] * view.zoom, crop.shape[0] * view.zoom))
             surface.blit(picture, view.pixel_rectangle(first_column, first_row).topleft)
-        self.draw_empty_places(surface, layout)
-        self.draw_overlay(surface, layout, width, height, (first_column, first_row, last_column, last_row))
+        self.draw_empty_places(surface, layout, visible_pixels)
+        self.draw_overlay(surface, layout, width, height, visible_pixels)
         surface.set_clip(None)
 
-    def draw_empty_places(self, surface: pygame.Surface, layout: CanvasLayout) -> None:
+    def draw_empty_places(self, surface: pygame.Surface, layout: CanvasLayout, visible: tuple[int, int, int, int]) -> None:
         size = layout.tile_size
         cell_columns, cell_rows = layout.pixels.shape[1] // size, layout.pixels.shape[0] // size
-        for cell_row in range(cell_rows):
-            for cell_column in range(cell_columns):
-                if (layout.first_column + cell_column, layout.first_row + cell_row) in layout.tile_coordinates:
+        if self.wrap_assist:
+            first_column, first_row, last_column, last_row = visible
+            columns = range(first_column // size, -(-last_column // size))
+            rows = range(first_row // size, -(-last_row // size))
+        else:
+            columns, rows = range(cell_columns), range(cell_rows)
+        for cell_row in rows:
+            for cell_column in columns:
+                if (layout.first_column + cell_column % cell_columns, layout.first_row + cell_row % cell_rows) in layout.tile_coordinates:
                     continue
                 rectangle = self.view.pixel_rectangle(cell_column * size, cell_row * size, size, size)
                 if rectangle.colliderect(self.areas.canvas):
@@ -3801,7 +3880,7 @@ class EditorPanel:
     def draw_overlay(self, surface: pygame.Surface, layout: CanvasLayout, width: int, height: int, visible: tuple[int, int, int, int]) -> None:
         view, area = self.view, self.areas.canvas
         overlay = pygame.Surface(area.size, pygame.SRCALPHA)
-        image = view.pixel_rectangle(0, 0, width, height).move(-area.x, -area.y)
+        image = pygame.Rect(0, 0, *area.size) if self.wrap_assist else view.pixel_rectangle(0, 0, width, height).move(-area.x, -area.y)
         first_column, first_row, last_column, last_row = visible
 
         def vertical_line(column: int, color: tuple[int, int, int, int]) -> None:
@@ -3817,18 +3896,33 @@ class EditorPanel:
                 vertical_line(column, (150, 156, 168, 46))
             for row in range(first_row, last_row + 1):
                 horizontal_line(row, (150, 156, 168, 46))
-        size = layout.tile_size
-        for column in range(0, width + 1, size):
-            vertical_line(column, (90, 170, 255, 150))
-        for row in range(0, height + 1, size):
-            horizontal_line(row, (90, 170, 255, 150))
+        if not self.wrap_assist:
+            # With wrap-assist nothing marks where the tile ends: the copies run into each other.
+            size = layout.tile_size
+            for column in range(0, width + 1, size):
+                vertical_line(column, (90, 170, 255, 150))
+            for row in range(0, height + 1, size):
+                horizontal_line(row, (90, 170, 255, 150))
         surface.blit(overlay, area.topleft)
         marked = self.floating.rectangle if self.floating is not None else self.selection_rectangle
         if marked is not None:
             left, top, right, bottom = marked
-            draw_dashed_outline(surface, view.pixel_rectangle(left, top, right - left, bottom - top))
+            for offset_column, offset_row in self.copy_offsets(marked):
+                draw_dashed_outline(surface, view.pixel_rectangle(left + offset_column, top + offset_row, right - left, bottom - top))
         if self.tool_uses_outline() and area.collidepoint(self.pointer) and self.session is None:
             self.draw_footprint_outline(surface)
+
+    def copy_offsets(self, rectangle: tuple[int, int, int, int]) -> list[tuple[int, int]]:
+        """How far to move `rectangle` (left, top, right, bottom, in canvas pixels) to find it in each copy of the
+        canvas that shows it. Without wrap-assist there is one canvas: (0, 0)."""
+        if not self.wrap_assist or self.layout is None:
+            return [(0, 0)]
+        height, width = self.canvas_shape()
+        first_column, first_row, last_column, last_row = self.view.visible_pixels(width, height, True)
+        left, top, right, bottom = rectangle
+        columns = range((first_column - right) // width + 1, -(-(last_column - left) // width))
+        rows = range((first_row - bottom) // height + 1, -(-(last_row - top) // height))
+        return [(column * width, row * height) for row in rows for column in columns]
 
     def tool_uses_outline(self) -> bool:
         return (
@@ -3842,11 +3936,25 @@ class EditorPanel:
     def draw_footprint_outline(self, surface: pygame.Surface) -> None:
         column, row = self.view.pixel_at(self.pointer)
         width, height = self.settings.footprint_size(self.tool)
-        rectangle = self.view.pixel_rectangle(column - width // 2, row - height // 2, width, height)
+        left, top = column - width // 2, row - height // 2
         is_round = self.tool == "airbrush" or (self.tool == "noise_brush" and self.settings.noise_shape == "circle")
         draw_outline = pygame.draw.ellipse if is_round and width > 2 else pygame.draw.rect
-        draw_outline(surface, (0, 0, 0), rectangle.inflate(2, 2), width=1)
-        draw_outline(surface, (255, 255, 255), rectangle, width=1)
+        # With wrap-assist the brush is in every copy of the canvas at once, so it has a guide in each.
+        for offset_column, offset_row in self.copy_offsets((left, top, left + width, top + height)):
+            rectangle = self.view.pixel_rectangle(left + offset_column, top + offset_row, width, height)
+            draw_outline(surface, (0, 0, 0), rectangle.inflate(2, 2), width=1)
+            draw_outline(surface, (255, 255, 255), rectangle, width=1)
+
+    def draw_sidebar(self, surface: pygame.Surface) -> None:
+        pygame.draw.rect(surface, Theme.PANEL_BORDER, self.areas.sidebar, width=1, border_radius=4)
+        for name, rectangle in self.areas.sidebar_buttons.items():
+            # Checked: the whole button is blue. Unchecked: it is empty, with only its outline (lit while the pointer is on it).
+            checked = self.sidebar_button_checked(name)
+            if checked:
+                pygame.draw.rect(surface, Theme.ACCENT, rectangle, border_radius=4)
+            outline = Theme.ACCENT if checked else Theme.TEXT_DIMMED if rectangle.collidepoint(self.pointer) else Theme.PANEL_BORDER
+            pygame.draw.rect(surface, outline, rectangle, width=1, border_radius=4)
+            draw_text(surface, self.fonts.large, SIDEBAR_BUTTONS[name], Theme.BACKGROUND if checked else Theme.TEXT, rectangle.center, "center")
 
     def options_text(self) -> str:
         if self.tool in DIAMETER_TOOLS:
@@ -4738,6 +4846,9 @@ class Application:
             tool = self.editor.tool_at(self.pointer)
             if tool is not None:
                 return TOOL_LABELS[tool]
+            button = self.editor.sidebar_button_at(self.pointer)
+            if button is not None:
+                return SIDEBAR_BUTTON_HINTS[button]
         return None
 
     def draw_tooltip(self) -> None:
