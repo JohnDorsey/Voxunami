@@ -32,14 +32,9 @@ fn sample_picture(picture: u32, coordinates: vec2<f32>, ddx: vec2<f32>, ddy: vec
 
 // The colour of the face at this pixel: a picture, fading into the face's own colour with the distance.
 fn picture_albedo(in: VertexOutput) -> vec3<f32> {
-    // Where the pixel is on the face's picture, in voxels: the position in the brick (the placement undone) along the way the picture runs across the face and up it
-    // (the image's own rows go downward). It is worked out here and not passed from the vertex shader, because a pair more to interpolate costs a tenth of a frame
-    // on the integrated GPU. The picture's own bits say the ways, which are of no use for a face with none: that is not read.
-    let in_brick = transpose(placement.rotation) * (in.relative - placement.offset.xyz) / placement.offset.w;
-    let uv = vec2<f32>(along(in_brick, (in.picture >> 11u) & 7u), -along(in_brick, (in.picture >> 14u) & 7u));
     // (How the coordinates of the picture change across a pixel is taken here, before anything branches: sampling with them is allowed anywhere, taking them is not.)
-    let picture_dx = dpdx(uv);
-    let picture_dy = dpdy(uv);
+    let picture_dx = dpdx(in.uv);
+    let picture_dy = dpdy(in.uv);
     var albedo = in.albedo;
     if (in.picture != 0u && frame.pictures.y > 0.0) {
         let largest_part = max(abs(in.relative.x), max(abs(in.relative.y), abs(in.relative.z)));
@@ -47,7 +42,7 @@ fn picture_albedo(in: VertexOutput) -> vec3<f32> {
         // The picture is all there is up to the distance, fades into the flat colour of the face over the band that follows, and is not read beyond it.
         let share = 1.0 - smoothstep(frame.pictures.x, frame.pictures.y, picture_distance);
         if (share > 0.0) {
-            albedo = mix(albedo, sample_picture(in.picture, uv, picture_dx, picture_dy), share);
+            albedo = mix(albedo, sample_picture(in.picture, in.uv, picture_dx, picture_dy), share);
         }
     }
     return albedo;

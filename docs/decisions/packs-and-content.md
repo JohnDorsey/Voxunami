@@ -51,7 +51,7 @@ How a game's content reaches a server (data packs) and a client (the package in 
 - **Built 2026-11-07 (step 4 of `block-textures-spec.md`):** pictures are drawn. The package carries them as raw RGBA by size (a client never decodes an image it is sent); the table gives a face with a picture a palette entry of its own (so a coarse cell, which uses the block's
   own entry, is untextured with no extra code); the renderer keeps a texture array for each size and reads the picture by position in the brick (a slab shows its slice), fading into the flat colour over a band of a quarter of the texture distance. The client's
   `.textures [VOXELS|off|default]` sets that distance (default 64). **The shader that reads pictures is separate from the one that does not**, because merely using the bindings made shadow tests fail on the integrated AMD GPU; a palette with no pictures, or a distance of 0, draws with
-  the plain one. The picture shader costs about 7 percent (0.6 ms of 8.1 at 1280 by 720) on that GPU and nothing measurable on the discrete one; the picture's coordinates are worked out in the fragment shader because passing them cost 0.35 ms of what was 0.9.
+  the plain one. The picture shader costs about 10 percent (0.84 ms of 8.1 at 1280 by 720) on that GPU and nothing measurable on the discrete one. A version that works the picture's coordinates out in the fragment shader costs 0.63 and was built and **not kept** (the shader is going to be reworked for shadows, global illumination, MSAA and waving vegetation, which moves vertices and so would make a picture swim); it is in `block-textures-spec.md`, step 4, "Where the cost goes", for an optimisation pass.
 
 ## Decided (the content package at the handshake; built in Phase 28)
 
