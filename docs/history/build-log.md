@@ -1736,7 +1736,8 @@ Block textures, steps 0 to 2 (2026-11-07; the owner's request to define blocks i
 - Step 4: pictures are sent (raw RGBA; Cave's package 2,782 to 12,046 bytes, predicted), turned with the voxel into palette entries of their own, and drawn (texture arrays by size, position in the brick, a fade over a band, coarse cells untextured), with the client's `.textures`.
   A fragment shader that merely used the texture bindings made two shadow tests fail on the integrated AMD GPU in 3 to 4 of 10 runs with no picture drawn; the reading of pictures is now a second shader (0 of 12, as before). Ten mutations of it caught.
   Measured with the camera turning: the discrete GPU 2.77 to 2.78 ms, the integrated 10.5 to 11.4 ms whatever the distance, and 10.5 with `.textures off`. The integrated GPU's cost was then taken apart (ten frames to a wait, because the benchmark's single-frame wait
-  comes back in whole milliseconds): the picture's coordinates passed from the vertex shader were +0.35 of +0.87 ms, so the fragment shader works them out now (+0.63 ms, 7 percent); sampler filtering costs nothing.
+  comes back in whole milliseconds): the picture's coordinates passed from the vertex shader were +0.35 of +0.87 ms, so the fragment shader works them out now (+0.63 ms, 7 percent); sampler filtering costs nothing. `--benchmark` now waits for ten frames at a time (1.97 ms on the discrete GPU with or without pictures, 8.07 and 8.68 on the integrated one); the benchmark figures in `shadow-spec.md` and `sun-spec.md` are from the single-frame wait, whose
+  whole-millisecond steps were seen on the integrated GPU, so a figure there of under a millisecond on that GPU is not to be trusted (not re-measured).
 
 ## Measured
 Storage (Ryzen 7600X, release, one thread, best of 7, counting allocator; the single-voxel `get` figures include

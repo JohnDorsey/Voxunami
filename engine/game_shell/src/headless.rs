@@ -218,34 +218,28 @@ fn render_outputs<C: Connection, G: GameDefinition>(
         );
     }
     if benchmark {
-        const WARM_UP_FRAMES: usize = 20;
-        const MEASURED_FRAMES: usize = 200;
-        let mut frame_times = Vec::with_capacity(MEASURED_FRAMES);
+        // Each wait is for a batch of frames, and a frame's time is its batch's over their number: a wait for one frame comes back in whole milliseconds on the
+        // development machine (the medians of different pictures all fell on 11, 12 and 13 ms in turn), which hides a difference of a fraction of one.
+        const WARM_UP_BATCHES: usize = 3;
+        const MEASURED_BATCHES: usize = 30;
+        let mut frame_times = Vec::with_capacity(MEASURED_BATCHES);
         let mut last_statistics = None;
-        for frame in 0..WARM_UP_FRAMES + MEASURED_FRAMES {
-            camera.look_by(0.01, 0.0); // turn slowly so culling and overdraw vary
-            let frame_started = Instant::now();
-            last_statistics = Some(renderer.render_offscreen(&camera, view.width, view.height));
+        for batch in 0..WARM_UP_BATCHES + MEASURED_BATCHES {
+            let batch_started = Instant::now();
+            for _ in 0..FRAMES_PER_WAIT {
+                camera.look_by(0.01, 0.0); // turn slowly so culling and overdraw vary
+                last_statistics = Some(renderer.render_offscreen(&camera, view.width, view.height));
+            }
             renderer.wait_for_gpu();
-            if frame >= WARM_UP_FRAMES {
-                frame_times.push(frame_started.elapsed().as_secs_f64() * 1000.0);
+            if batch >= WARM_UP_BATCHES {
+                frame_times
+                    .push(batch_started.elapsed().as_secs_f64() * 1000.0 / FRAMES_PER_WAIT as f64);
             }
         }
-        frame_times.sort_by(f64::total_cmp);
-        let average = frame_times.iter().sum::<f64>() / frame_times.len() as f64;
-        let percentile =
-            |fraction: f64| frame_times[((frame_times.len() - 1) as f64 * fraction) as usize];
         let statistics = last_statistics.expect("at least one frame was rendered");
         println!(
-            "{}x{} frame time over {} frames: average {:.2} ms ({:.0} fps), median {:.2} ms, 95th percentile {:.2} ms, worst {:.2} ms",
-            view.width,
-            view.height,
-            frame_times.len(),
-            average,
-            1000.0 / average,
-            percentile(0.5),
-            percentile(0.95),
-            frame_times.last().expect("frames were measured"),
+            "{}",
+            frame_time_report(view.width, view.height, &mut frame_times)
         );
         println!(
             "last frame drew {} of {} bricks and {} quads",
@@ -255,6 +249,26 @@ fn render_outputs<C: Connection, G: GameDefinition>(
         );
     }
     Ok(())
+}
+
+/// How many frames the benchmark gives the GPU between one wait and the next.
+const FRAMES_PER_WAIT: usize = 10;
+
+/// The line the benchmark prints: the average, median, 95th percentile and worst of the times of a frame, each time that of a batch of [`FRAMES_PER_WAIT`] frames divided by
+/// their number (so a spike of one frame is spread over its batch).
+fn frame_time_report(width: u32, height: u32, frame_times: &mut [f64]) -> String {
+    frame_times.sort_by(f64::total_cmp);
+    let average = frame_times.iter().sum::<f64>() / frame_times.len() as f64;
+    let percentile =
+        |fraction: f64| frame_times[((frame_times.len() - 1) as f64 * fraction) as usize];
+    format!(
+        "{width}x{height} frame time over {} batches of {FRAMES_PER_WAIT} frames: average {average:.2} ms ({:.0} fps), median {:.2} ms, 95th percentile {:.2} ms, worst batch {:.2} ms",
+        frame_times.len(),
+        1000.0 / average,
+        percentile(0.5),
+        percentile(0.95),
+        frame_times.last().expect("batches were measured"),
+    )
 }
 
 pub fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
@@ -267,4 +281,30 @@ pub fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<()
         .write_header()
         .and_then(|mut writer| writer.write_image_data(rgba))
         .map_err(|error| format!("{}: {error}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_report_gives_the_average_the_median_the_95th_percentile_and_the_worst_batch_whatever_the_order()
+     {
+        // 1 to 20 ms in a shuffled order: the average is 10.5, the median is the tenth (10.0), the 95th percentile the 19th index of 20 sorted (19.0 at 0.95 * 19 = 18), the worst 20.
+        let mut times: Vec<f64> = (1..=20).map(f64::from).collect();
+        times.reverse();
+        times.swap(3, 11);
+        assert_eq!(
+            frame_time_report(1280, 720, &mut times),
+            "1280x720 frame time over 20 batches of 10 frames: average 10.50 ms (95 fps), median 10.00 ms, 95th percentile 19.00 ms, worst batch 20.00 ms"
+        );
+    }
+
+    #[test]
+    fn a_single_batch_is_every_statistic() {
+        assert_eq!(
+            frame_time_report(64, 64, &mut [4.0]),
+            "64x64 frame time over 1 batches of 10 frames: average 4.00 ms (250 fps), median 4.00 ms, 95th percentile 4.00 ms, worst batch 4.00 ms"
+        );
+    }
 }
