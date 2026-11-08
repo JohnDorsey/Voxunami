@@ -2028,8 +2028,8 @@ class CanvasSessionTests(unittest.TestCase):
         tiles = tiles or {(0, 0): solid_tile(BLUE, size)}
         return va.compose_canvas(tiles, size)
 
-    def start(self, layout, tool, pixel, color=RED, settings=None):
-        return va.CanvasSession(layout, tool, settings or va.ToolSettings(), color, pixel)
+    def start(self, layout, tool, pixel, color=RED, settings=None, **keywords):
+        return va.CanvasSession(layout, tool, settings or va.ToolSettings(), color, pixel, **keywords)
 
     def painted(self, session):
         return {(int(c), int(r)) for r, c in numpy.argwhere(numpy.any(session.pixels != session.base, axis=2))}
@@ -2152,6 +2152,208 @@ class CanvasSessionTests(unittest.TestCase):
         self.assertIsNone(va.pick_color(layout, (-1, 0)))
         self.assertIsNone(va.pick_color(layout, (0, 99)))
         self.assertEqual(va.pick_color(layout, (9, 0)), tuple(int(v) for v in layout.pixels[0, 9]))
+
+    # Wrap-assist: the canvas repeats in every direction and a stroke wraps around it. --------------------
+
+    def wrapped(self, layout, tool, pixel, **keywords):
+        return self.start(layout, tool, pixel, wrap=True, **keywords)
+
+    def stroke_on_a_much_bigger_canvas(self, tool, points, settings):
+        """Where a stroke lands on a canvas eight times as big as the 4 x 4 one, away from its edges, folded back
+        by plain modulo: an independent way to find what a wrapped stroke should paint."""
+        shift = 12
+        big = va.compose_canvas({(0, 0): solid_tile(BLUE, 32)}, 32)
+        session = self.start(big, tool, (points[0][0] + shift, points[0][1] + shift), settings=settings)
+        for column, row in points[1:]:
+            session.move((column + shift, row + shift))
+        return {((column - shift) % 4, (row - shift) % 4) for column, row in self.painted(session)}
+
+    def test_without_wrap_a_pixel_outside_the_canvas_paints_nothing(self):
+        session = self.start(self.layout(4), "pencil", (5, 6))
+        self.assertEqual(self.painted(session), set())
+
+    def test_with_wrap_a_pixel_in_any_copy_of_the_canvas_paints_the_same_pixel_of_it(self):
+        for pixel in [(1, 2), (5, 6), (-3, -2), (9, 14), (-7, 10)]:
+            self.assertEqual(self.painted(self.wrapped(self.layout(4), "pencil", pixel)), {(1, 2)}, pixel)
+
+    def test_a_stroke_leaving_one_side_comes_back_in_on_the_other(self):
+        session = self.wrapped(self.layout(4), "pencil", (3, 1))
+        session.move((5, 1))
+        self.assertEqual(self.painted(session), {(3, 1), (0, 1), (1, 1)})
+        session = self.wrapped(self.layout(4), "pencil", (1, 2))
+        session.move((1, -1))
+        self.assertEqual(self.painted(session), {(1, 2), (1, 1), (1, 0), (1, 3)})
+
+    def test_a_diagonal_stroke_through_a_corner_has_no_gaps(self):
+        session = self.wrapped(self.layout(4), "pencil", (2, 2))
+        session.move((6, 6))
+        self.assertEqual(self.painted(session), {(2, 2), (3, 3), (0, 0), (1, 1)})
+
+    def test_a_brush_on_a_corner_paints_all_four_corners(self):
+        settings = va.ToolSettings()
+        settings.brush_sizes["pencil"] = (2, 2)
+        session = self.wrapped(self.layout(4), "pencil", (0, 0), settings=settings)
+        self.assertEqual(self.painted(session), {(3, 3), (0, 3), (3, 0), (0, 0)})
+
+    def test_a_brush_wider_than_the_canvas_covers_the_whole_row(self):
+        settings = va.ToolSettings()
+        settings.brush_sizes["pencil"] = (6, 1)
+        session = self.wrapped(self.layout(4), "pencil", (1, 1), settings=settings)
+        self.assertEqual(self.painted(session), {(column, 1) for column in range(4)})
+
+    def test_the_eraser_wraps_too(self):
+        session = self.wrapped(self.layout(4), "eraser", (3, 0))
+        session.move((4, 0))
+        self.assertEqual(tuple(session.pixels[0, 0]), va.TRANSPARENT)
+        self.assertEqual(tuple(session.pixels[0, 3]), va.TRANSPARENT)
+        self.assertEqual(self.painted(session), {(3, 0), (0, 0)})
+
+    def test_a_line_leaving_the_canvas_wraps(self):
+        session = self.wrapped(self.layout(4), "line", (2, 1))
+        session.move((6, 1))
+        self.assertEqual(self.painted(session), {(column, 1) for column in range(4)})
+        session = self.wrapped(self.layout(4), "line", (3, 3))
+        session.move((5, 5))
+        self.assertEqual(self.painted(session), {(3, 3), (0, 0), (1, 1)})
+
+    def test_every_stroke_tool_paints_what_the_same_stroke_paints_on_a_much_bigger_canvas_folded_back(self):
+        strokes = [
+            [(1, 1), (6, 2)],
+            [(-5, -3), (9, 6)],
+            [(3, 3), (3, -9)],
+            [(0, 0), (-1, 0), (2, 5), (9, -4)],
+            [(7, 2), (-6, 2)],
+        ]
+        for tool in va.BRUSH_TOOLS + va.LINE_TOOLS:
+            for width in (1, 2, 3):
+                settings = va.ToolSettings()
+                settings.line_width = width
+                settings.brush_sizes["pencil"] = settings.brush_sizes["eraser"] = (width, 4 - width)
+                for points in strokes:
+                    session = self.wrapped(self.layout(4), tool, points[0], settings=settings)
+                    for point in points[1:]:
+                        session.move(point)
+                    expected = self.stroke_on_a_much_bigger_canvas(tool, points, settings)
+                    self.assertEqual(self.painted(session), expected, f"{tool} width {width} {points}")
+
+    def test_moving_a_whole_stroke_by_whole_canvases_changes_nothing_for_any_tool(self):
+        for tool in ("pencil", "line", "horizontal_parallelogram", "noise_brush", "airbrush"):
+            results = []
+            for shift_column, shift_row in [(0, 0), (4, 0), (-8, 12), (20, -4)]:
+                session = self.wrapped(
+                    self.layout(4), tool, (1 + shift_column, 2 + shift_row), random_source=random.Random(5)
+                )
+                session.move((6 + shift_column, 4 + shift_row))
+                session.move((-2 + shift_column, 1 + shift_row))
+                results.append(session.pixels.copy())
+            for other in results[1:]:
+                self.assertTrue(numpy.array_equal(results[0], other), tool)
+
+    def test_pixels_of_empty_places_are_never_painted_in_any_copy(self):
+        layout = self.layout(4, {(0, 0): solid_tile(BLUE), (2, 0): solid_tile(BLUE)})
+        session = self.wrapped(layout, "pencil", (3, 1))
+        session.move((4, 1))
+        self.assertEqual(self.painted(session), {(3, 1)}, "column 4 is an empty place")
+        session = self.wrapped(layout, "pencil", (11, 1))
+        session.move((13, 1))
+        self.assertEqual(self.painted(session), {(11, 1), (0, 1), (1, 1)}, "12 is column 0 of the next copy")
+        session = self.wrapped(layout, "pencil", (17, 1))
+        self.assertFalse(session.changed, "column 17 is column 5 of the canvas, an empty place")
+
+    def test_the_fill_bucket_fills_around_the_edges(self):
+        pixels = solid_tile(TRANSPARENT, 4)
+        pixels[:, 0] = RED
+        pixels[:, 3] = RED
+        layout = va.compose_canvas({(0, 0): pixels}, 4)
+        plain = self.start(layout, "fill", (0, 0), color=GREEN)
+        self.assertEqual(self.painted(plain), {(0, row) for row in range(4)})
+        around = self.wrapped(layout, "fill", (0, 0), color=GREEN)
+        self.assertEqual(self.painted(around), {(column, row) for column in (0, 3) for row in range(4)})
+        elsewhere = self.wrapped(layout, "fill", (16, -4), color=GREEN)
+        self.assertTrue(numpy.array_equal(elsewhere.pixels, around.pixels), "a press in any copy fills the same region")
+        from_the_other_side = self.wrapped(layout, "fill", (3, 3), color=GREEN)
+        self.assertTrue(numpy.array_equal(from_the_other_side.pixels, around.pixels))
+
+    def test_the_noise_brush_wraps(self):
+        settings = va.ToolSettings()
+        settings.diameters["noise_brush"] = 3
+        settings.fractions["noise_density"] = 1.0
+        session = self.wrapped(self.layout(5), "noise_brush", (0, 0), settings=settings)
+        self.assertEqual(self.painted(session), {(0, 0), (1, 0), (4, 0), (0, 1), (0, 4)})
+
+    def test_the_air_brush_wraps(self):
+        settings = va.ToolSettings()
+        settings.diameters["airbrush"] = 3
+        settings.fractions["airbrush_hardness"] = 1.0
+        settings.fractions["airbrush_opacity"] = 1.0
+        session = self.wrapped(self.layout(4), "airbrush", (0, 0), settings=settings)
+        self.assertEqual(self.painted(session), {(0, 0), (1, 0), (3, 0), (0, 1), (0, 3)})
+
+    def test_pick_color_with_wrap_reads_the_pixel_in_any_copy(self):
+        layout = self.layout(4, {(0, 0): random_tile(1), (2, 0): random_tile(2)})
+        self.assertEqual(va.pick_color(layout, (1 + 12, 2 - 4), wrap=True), va.pick_color(layout, (1, 2)))
+        self.assertEqual(va.pick_color(layout, (-3, 9), wrap=True), va.pick_color(layout, (9, 1)))
+        self.assertIsNone(va.pick_color(layout, (5 + 12, 1), wrap=True), "an empty place in another copy")
+        self.assertIsNone(va.pick_color(layout, (13, 1)), "without wrap the other copies do not exist")
+
+
+class WrapLogicTests(unittest.TestCase):
+    def test_wrap_pixel_puts_any_pixel_into_the_canvas(self):
+        self.assertEqual(va.wrap_pixel((-1, -1), (4, 6)), (5, 3))
+        self.assertEqual(va.wrap_pixel((6, 4), (4, 6)), (0, 0))
+        self.assertEqual(va.wrap_pixel((13, 9), (4, 6)), (1, 1))
+        self.assertEqual(va.wrap_pixel((2, 3), (4, 6)), (2, 3))
+
+    def test_fold_mask_moves_a_window_into_the_canvas_by_whole_canvases(self):
+        window = numpy.zeros((3, 3), dtype=bool)
+        window[0, 0] = True
+        for left, top, expected in [(3, 3, (3, 3)), (4, 4, (0, 0)), (-1, -1, (3, 3)), (-3, -3, (1, 1)), (10, 2, (2, 2))]:
+            folded = va.fold_mask(window, left, top, (4, 4))
+            self.assertEqual({(int(c), int(r)) for r, c in numpy.argwhere(folded)}, {expected}, (left, top))
+
+    def test_fold_mask_joins_the_parts_of_a_window_that_cross_an_edge(self):
+        folded = va.fold_mask(numpy.ones((3, 3), dtype=bool), 3, 0, (4, 4))
+        self.assertEqual(mask_to_text(folded), ["##.#", "##.#", "##.#", "...."])
+
+    def test_fold_mask_of_a_window_bigger_than_the_canvas_overlaps_itself(self):
+        window = numpy.zeros((2, 9), dtype=bool)
+        window[0, 1] = window[1, 8] = True
+        self.assertEqual(mask_to_text(va.fold_mask(window, 0, 0, (3, 4))), [".#..", "#...", "...."])
+
+    def test_flood_fill_with_wrap_connects_the_opposite_edges_only_when_asked(self):
+        pixels = solid_tile(TRANSPARENT, 4)
+        pixels[1, :] = RED
+        self.assertEqual(mask_to_text(va.flood_fill_mask(pixels, 0, 0)), ["####", "....", "....", "...."])
+        self.assertEqual(mask_to_text(va.flood_fill_mask(pixels, 0, 0, wrap=True)), ["####", "....", "####", "####"])
+
+    def test_flood_fill_with_wrap_crosses_the_far_edges_too_not_only_the_near_ones(self):
+        rows = solid_tile(TRANSPARENT, 4)
+        rows[1, :] = RED
+        self.assertEqual(mask_to_text(va.flood_fill_mask(rows, 0, 2, wrap=True)), ["####", "....", "####", "####"])
+        self.assertEqual(mask_to_text(va.flood_fill_mask(rows, 3, 3, wrap=True)), ["####", "....", "####", "####"])
+        columns = solid_tile(TRANSPARENT, 4)
+        columns[:, 1] = RED
+        self.assertEqual(mask_to_text(va.flood_fill_mask(columns, 2, 0, wrap=True)), ["#.##"] * 4)
+        self.assertEqual(mask_to_text(va.flood_fill_mask(columns, 3, 3, wrap=True)), ["#.##"] * 4)
+
+    def test_flood_fill_does_not_leak_diagonally(self):
+        pixels = solid_tile(TRANSPARENT, 3)
+        pixels[0, 1] = pixels[1, 0] = pixels[1, 2] = pixels[2, 1] = RED
+        around = va.flood_fill_mask(pixels, 0, 0, wrap=True)
+        self.assertEqual(mask_to_text(around), ["#.#", "...", "#.#"], "the middle only touches the corners at their corners")
+
+    def test_the_noise_stamp_with_wrap_reaches_the_other_side(self):
+        pixels = solid_tile(TRANSPARENT, 5)
+        va.noise_stamp(pixels, 0, 0, RED, 3, "circle", 1.0, 1.0, random.Random(1), wrap=True)
+        painted = {(int(c), int(r)) for r, c in numpy.argwhere(pixels[..., 3] > 0)}
+        self.assertEqual(painted, {(0, 0), (1, 0), (4, 0), (0, 1), (0, 4)})
+
+    def test_the_air_brush_with_wrap_covers_the_other_side_as_strongly_as_this_one(self):
+        stroke = va.AirbrushStroke(solid_tile(TRANSPARENT, 4), RED, 3, 0.5, 1.0, wrap=True)
+        stroke.stamp(0, 0)
+        self.assertGreater(stroke.coverage[0, 3], 0.0)
+        self.assertEqual(stroke.coverage[0, 3], stroke.coverage[0, 1])
+        self.assertEqual(stroke.coverage[3, 0], stroke.coverage[1, 0])
 
 
 class HexColorTests(unittest.TestCase):
@@ -3623,8 +3825,8 @@ class ImportWindowTests(ProjectFixture):
         self.assertNotIn("not built", self.application.hover_text())
 
 
-class EditorTests(ProjectFixture):
-    """Drives the editor with mouse and key events the way a user would, and checks the tiles."""
+class EditorDriver(ProjectFixture):
+    """Drives the editor with mouse and key events the way a user would; the tests are in the classes below."""
 
     @classmethod
     def setUpClass(cls):
@@ -3668,6 +3870,10 @@ class EditorTests(ProjectFixture):
 
     def pixel(self, coordinate, column, row):
         return tuple(int(v) for v in self.project.tiles[coordinate].pixels[row, column])
+
+
+class EditorTests(EditorDriver):
+    """Checks the editor through mouse and key events."""
 
     def test_the_canvas_shows_the_selected_tiles_and_the_name_above_it(self):
         self.select((0, 0))

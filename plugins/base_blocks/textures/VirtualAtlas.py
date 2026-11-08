@@ -819,12 +819,43 @@ def vertical_parallelogram_mask(
     ).T
 
 
+# Wrap-assist: the canvas repeats in every direction, so a position can be in any copy of it. Strokes are made
+# of positions in that endless canvas and every copy of the canvas is changed alike.
+
+
+def wrap_pixel(pixel: Coordinate, canvas_shape: tuple[int, int]) -> Coordinate:
+    """The pixel of the canvas that the position `pixel` of the repeating canvas is a copy of."""
+    height, width = canvas_shape
+    return (pixel[0] % width, pixel[1] % height)
+
+
+def fold_mask(mask: numpy.ndarray, left: int, top: int, canvas_shape: tuple[int, int]) -> numpy.ndarray:
+    """Fold a mask made over a window of the repeating canvas into one canvas-shaped mask.
+
+    The window's top left pixel is at (left, top) of the repeating canvas. A pixel of the result is set when any
+    pixel of the window that is a copy of it is set.
+    """
+    height, width = canvas_shape
+    offset_row, offset_column = top % height, left % width
+    rows = -(-(offset_row + mask.shape[0]) // height) * height
+    columns = -(-(offset_column + mask.shape[1]) // width) * width
+    padded = numpy.zeros((rows, columns), dtype=bool)
+    padded[offset_row : offset_row + mask.shape[0], offset_column : offset_column + mask.shape[1]] = mask
+    return padded.reshape(rows // height, height, columns // width, width).any(axis=(0, 2))
+
+
 def flood_fill_mask(
-    pixels: numpy.ndarray, column: int, row: int, editable_mask: Optional[numpy.ndarray] = None
+    pixels: numpy.ndarray, column: int, row: int, editable_mask: Optional[numpy.ndarray] = None, wrap: bool = False
 ) -> numpy.ndarray:
-    """The pixels reachable from (column, row) through side-by-side pixels that are exactly the same RGBA."""
+    """The pixels reachable from (column, row) through side-by-side pixels that are exactly the same RGBA.
+
+    With `wrap` the canvas repeats: the left edge is beside the right edge and the top beside the bottom, and the
+    starting position may be in any copy of the canvas.
+    """
     height, width = pixels.shape[:2]
     result = numpy.zeros((height, width), dtype=bool)
+    if wrap:
+        column, row = wrap_pixel((column, row), (height, width))
     if not (0 <= column < width and 0 <= row < height):
         return result
     if editable_mask is not None and not editable_mask[row, column]:
@@ -842,12 +873,11 @@ def flood_fill_mask(
             (current_column, current_row - 1),
             (current_column, current_row + 1),
         ):
-            if (
-                0 <= next_column < width
-                and 0 <= next_row < height
-                and matching[next_row, next_column]
-                and not result[next_row, next_column]
-            ):
+            if wrap:
+                next_column, next_row = next_column % width, next_row % height
+            elif not (0 <= next_column < width and 0 <= next_row < height):
+                continue
+            if matching[next_row, next_column] and not result[next_row, next_column]:
                 result[next_row, next_column] = True
                 pending.append((next_column, next_row))
     return result
@@ -997,18 +1027,22 @@ def noise_stamp(
     opacity: float,
     random_source: "RandomSource",
     editable_mask: Optional[numpy.ndarray] = None,
+    wrap: bool = False,
 ) -> None:
     """One stamp of the noise brush, applied in place.
 
     Each pixel of the brush area becomes `color` with probability `density`, rolled separately for every stamp,
     so pixels rolled true by several stamps of one stroke build up. At opacity 1 the color is written exactly;
-    below it, the color is composited over the pixel with its alpha times `opacity`.
+    below it, the color is composited over the pixel with its alpha times `opacity`. With `wrap` a pixel of the
+    brush area past one edge of the canvas is a pixel at the opposite edge (the rolls are the same either way).
     """
     height, width = pixels.shape[:2]
     hit = numpy.zeros((height, width), dtype=bool)
     for footprint_pixel in brush_footprint(diameter, shape):
         rolled_true = random_source.random() < density
         target_column, target_row = column + footprint_pixel.column_offset, row + footprint_pixel.row_offset
+        if wrap:
+            target_column, target_row = wrap_pixel((target_column, target_row), (height, width))
         if rolled_true and 0 <= target_column < width and 0 <= target_row < height:
             hit[target_row, target_column] = True
     if editable_mask is not None:
@@ -1036,12 +1070,14 @@ class AirbrushStroke:
         hardness: float,
         opacity: float,
         editable_mask: Optional[numpy.ndarray] = None,
+        wrap: bool = False,
     ):
         self.pixels_before_stroke = pixels_before_stroke.copy()
         self.color = color
         self.hardness = hardness
         self.opacity = opacity
         self.editable_mask = editable_mask
+        self.wrap = wrap
         self.footprint = brush_footprint(diameter, "circle")
         self.coverage = numpy.zeros(pixels_before_stroke.shape[:2], dtype=numpy.float64)
 
@@ -1055,6 +1091,8 @@ class AirbrushStroke:
         height, width = self.coverage.shape
         for footprint_pixel in self.footprint:
             target_column, target_row = column + footprint_pixel.column_offset, row + footprint_pixel.row_offset
+            if self.wrap:
+                target_column, target_row = wrap_pixel((target_column, target_row), (height, width))
             if not (0 <= target_column < width and 0 <= target_row < height):
                 continue
             if self.editable_mask is not None and not self.editable_mask[target_row, target_column]:
@@ -1915,6 +1953,10 @@ class CanvasSession:
 
     `pixels` is what the canvas should look like now; the layout's own pixels are not touched, so the stroke
     can be shown as a preview and thrown away.
+
+    With `wrap` (wrap-assist) the canvas repeats in every direction: the positions given are positions in that
+    endless canvas, and a stroke changes the same pixels of every copy, so it can leave the canvas on one side and
+    come back in on the other.
     """
 
     def __init__(
@@ -1925,9 +1967,11 @@ class CanvasSession:
         color: Color,
         start: Coordinate,
         random_source: Optional[RandomSource] = None,
+        wrap: bool = False,
     ):
         if tool not in STROKE_TOOLS:
             raise ValueError(f"{tool!r} does not draw")
+        self.wrap = wrap
         self.layout = layout
         self.tool = tool
         self.color = TRANSPARENT if tool == "eraser" else color
@@ -1942,7 +1986,7 @@ class CanvasSession:
         self.random_source = random_source if random_source is not None else random.Random()
         self.airbrush: Optional[AirbrushStroke] = None
         if tool in BRUSH_TOOLS:
-            self._paint(swept_rectangle_brush_mask(self.shape, start, start, self.brush_width, self.brush_height))
+            self._paint(self._brush_mask(start, start))
         elif tool == "noise_brush":
             self._stamp_noise(start)
         elif tool == "airbrush":
@@ -1953,15 +1997,45 @@ class CanvasSession:
                 settings.fractions["airbrush_hardness"],
                 settings.fractions["airbrush_opacity"],
                 layout.editable_mask,
+                wrap,
             )
             self._stamp_air_path(start, start)
         elif tool == "fill":
-            self._paint(flood_fill_mask(self.base, start[0], start[1], layout.editable_mask))
+            self._paint(flood_fill_mask(self.base, start[0], start[1], layout.editable_mask, wrap))
         else:
             self._preview_shape(start)
 
     def _paint(self, mask: numpy.ndarray) -> None:
         apply_color_to_mask(self.pixels, mask & self.layout.editable_mask, self.color)
+
+    def _mask_between(
+        self,
+        start: Coordinate,
+        end: Coordinate,
+        build: Callable[[tuple[int, int], Coordinate, Coordinate], numpy.ndarray],
+    ) -> numpy.ndarray:
+        """The canvas-shaped mask that `build(shape, start, end)` makes for a stroke from start to end.
+
+        With wrap-assist the stroke is made over a window of the repeating canvas that holds both ends and the
+        reach of the brush, and the window is then folded into the canvas.
+        """
+        if not self.wrap:
+            return build(self.shape, start, end)
+        reach = max(self.brush_width, self.brush_height, self.line_width) + 1
+        left = min(start[0], end[0]) - reach
+        top = min(start[1], end[1]) - reach
+        window = (max(start[1], end[1]) + reach + 1 - top, max(start[0], end[0]) + reach + 1 - left)
+        mask = build(window, (start[0] - left, start[1] - top), (end[0] - left, end[1] - top))
+        return fold_mask(mask, left, top, self.shape)
+
+    def _brush_mask(self, start: Coordinate, end: Coordinate) -> numpy.ndarray:
+        return self._mask_between(
+            start,
+            end,
+            lambda shape, from_pixel, to_pixel: swept_rectangle_brush_mask(
+                shape, from_pixel, to_pixel, self.brush_width, self.brush_height
+            ),
+        )
 
     def _stamp_noise(self, pixel: Coordinate) -> None:
         settings = self.settings
@@ -1976,6 +2050,7 @@ class CanvasSession:
             settings.fractions["noise_opacity"],
             self.random_source,
             self.layout.editable_mask,
+            self.wrap,
         )
 
     def _stamp_air_path(self, start: Coordinate, end: Coordinate) -> None:
@@ -1984,15 +2059,18 @@ class CanvasSession:
         self.pixels = self.airbrush.result()
 
     def _shape_mask(self, pixel: Coordinate) -> numpy.ndarray:
-        if self.tool == "line":
-            return thick_line_mask(self.shape, self.start, pixel, self.line_width)
-        if self.tool == "horizontal_line":
-            return thick_line_mask(self.shape, self.start, (pixel[0], self.start[1]), self.line_width)
-        if self.tool == "vertical_line":
-            return thick_line_mask(self.shape, self.start, (self.start[0], pixel[1]), self.line_width)
-        if self.tool == "horizontal_parallelogram":
-            return horizontal_parallelogram_mask(self.shape, self.start, pixel, self.line_width)
-        return vertical_parallelogram_mask(self.shape, self.start, pixel, self.line_width)
+        def build(shape: tuple[int, int], start: Coordinate, end: Coordinate) -> numpy.ndarray:
+            if self.tool == "line":
+                return thick_line_mask(shape, start, end, self.line_width)
+            if self.tool == "horizontal_line":
+                return thick_line_mask(shape, start, (end[0], start[1]), self.line_width)
+            if self.tool == "vertical_line":
+                return thick_line_mask(shape, start, (start[0], end[1]), self.line_width)
+            if self.tool == "horizontal_parallelogram":
+                return horizontal_parallelogram_mask(shape, start, end, self.line_width)
+            return vertical_parallelogram_mask(shape, start, end, self.line_width)
+
+        return self._mask_between(self.start, pixel, build)
 
     def _preview_shape(self, pixel: Coordinate) -> None:
         self.pixels = self.base.copy()
@@ -2002,7 +2080,7 @@ class CanvasSession:
         if pixel == self.last:
             return
         if self.tool in BRUSH_TOOLS:
-            self._paint(swept_rectangle_brush_mask(self.shape, self.last, pixel, self.brush_width, self.brush_height))
+            self._paint(self._brush_mask(self.last, pixel))
         elif self.tool == "noise_brush":
             # One stamp for each pixel the pointer moved over; the pixel it started on was stamped already.
             for stamp_pixel in line_pixels(self.last, pixel)[1:]:
@@ -2018,10 +2096,11 @@ class CanvasSession:
         return not numpy.array_equal(self.pixels, self.base)
 
 
-def pick_color(layout: CanvasLayout, pixel: Coordinate) -> Optional[Color]:
-    """The color of a canvas pixel, or None outside the canvas or over an empty place."""
-    column, row = pixel
+def pick_color(layout: CanvasLayout, pixel: Coordinate, wrap: bool = False) -> Optional[Color]:
+    """The color of a canvas pixel, or None outside the canvas or over an empty place. With `wrap` the canvas
+    repeats, so `pixel` may be in any copy of it."""
     height, width = layout.pixels.shape[:2]
+    column, row = wrap_pixel(pixel, (height, width)) if wrap else pixel
     if not (0 <= column < width and 0 <= row < height) or not layout.editable_mask[row, column]:
         return None
     red, green, blue, alpha = (int(value) for value in layout.pixels[row, column])
