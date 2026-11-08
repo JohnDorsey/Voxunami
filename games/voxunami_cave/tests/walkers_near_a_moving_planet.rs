@@ -11,8 +11,9 @@ mod common;
 
 use common::moving_planet::{WANDERER, a_barely_moving_scene, a_scene};
 use common::{
-    Player, PlayerExt, Scene, circular_speed, eyes_in_the_world, eyes_in_their_frame, minus,
-    player_pose, ship_id, ship_over, ship_voxels, tick_and_follow,
+    Player, PlayerExt, Scene, circular_speed, eyes_in_the_world, eyes_in_their_frame,
+    greatest_kink, length, minus, player_pose, say, ship_id, ship_over, ship_voxels,
+    tick_and_follow,
 };
 use game_shell::KeyCode;
 use player_presence::player_kind;
@@ -259,6 +260,147 @@ fn a_walker_beside_a_deck_in_orbit_round_a_planet_that_goes_round_is_pulled_as_t
         assert!(
             distance < 10.0,
             "{name}: {distance} voxels ({apart:?}) from the deck, thirty-six seconds after they walked off it"
+        );
+    }
+}
+
+/// How far from the middle of the wanderer a planet that goes round lets go of what it carries: a quarter farther than its sphere (16,320), which it takes things into.
+const SPHERE: f64 = 16_320.0;
+const SPHERE_KEPT: f64 = 20_400.0;
+
+/// A walker aboard a raft that is thrown `against` the planet from `from` over its pole, who walks off it in the air and goes on for `ticks` ticks: where their eyes are in the
+/// world at every tick after they are in the level, and how far each is from the middle of the wanderer.
+fn fly_off_a_thrown_raft(
+    scene: &mut Scene,
+    from: f64,
+    against: [f64; 3],
+    ticks: usize,
+) -> (Vec<[f64; 3]>, Vec<f64>) {
+    scene.ticks(1);
+    let mut player = a_walker_over_the_wanderer(scene, from + 40.0);
+    let raft = ship_over(
+        scene,
+        WANDERER,
+        [-3.0, from, -3.0],
+        false,
+        against,
+        [6, 1, 6],
+    );
+    put_aboard(scene, raft, [3.0, 3.5, 3.0]);
+    walk_off(scene, &mut player);
+    let (mut path, mut distances) = (Vec::new(), Vec::new());
+    for _ in 0..ticks {
+        tick_and_follow(scene, &mut player, 1);
+        path.push(eyes_in_the_world(scene, 1));
+        distances.push(length(eyes_from_the_wanderer(scene)));
+    }
+    assert!(
+        player_pose(scene, 1).grid.root_level().is_some(),
+        "they are in the level still"
+    );
+    (path, distances)
+}
+
+/// A walker in the air goes on at the speed they have in the world when the planet that carried them lets go: the path of their eyes has no kink where they go out of the
+/// sphere (measured 2026-11-07, before this was done: one of 6.26 voxels, the planet's own step, at 20,410 from its middle), as a ship's has none (`frames_that_follow.rs`).
+#[test]
+fn a_walker_who_flies_out_of_the_sphere_of_a_planet_that_goes_round_goes_on_at_the_speed_they_had_in_the_world()
+ {
+    for (name, mut scene) in the_two_worlds() {
+        let (path, distances) = fly_off_a_thrown_raft(&mut scene, DISTANCE, [0.0, 400.0, 0.0], 700);
+        assert!(
+            distances[0] < SPHERE && distances[699] > SPHERE_KEPT + 1_000.0,
+            "{name}: they start in the sphere and end well out of it: {} then {}",
+            distances[0],
+            distances[699]
+        );
+        let kink = greatest_kink(&path);
+        assert!(
+            kink < 0.5,
+            "{name}: the path of the walker has a kink of {kink} voxels"
+        );
+    }
+}
+
+/// And as they go in: from outside the sphere, where nothing carries them, to the planet.
+#[test]
+fn a_walker_who_flies_into_the_sphere_of_a_planet_that_goes_round_is_taken_in_without_a_jump() {
+    for (name, mut scene) in the_two_worlds() {
+        let (path, distances) =
+            fly_off_a_thrown_raft(&mut scene, 20_000.0, [0.0, -400.0, 0.0], 300);
+        assert!(
+            distances[0] > SPHERE_KEPT - 1_000.0 && distances[299] < SPHERE,
+            "{name}: they start outside the sphere and end in it: {} then {}",
+            distances[0],
+            distances[299]
+        );
+        let kink = greatest_kink(&path);
+        assert!(
+            kink < 0.5,
+            "{name}: the path of the walker has a kink of {kink} voxels"
+        );
+    }
+}
+
+/// A walker who is put somewhere (sent with `/tp`, or left by a ship that is taken away) is at rest against whatever carries the place: standing in the world where nothing
+/// does, and going with the planet where one does. What the world said carried them was for where they were before, and is not a change of carrier that they keep their speed
+/// across (that would give them the planet's speed, or take it from them, in the tick they are put).
+#[test]
+fn a_walker_who_is_sent_out_of_the_sphere_of_a_planet_that_goes_round_stands_in_the_world_and_one_sent_into_it_goes_with_the_planet()
+ {
+    for (name, mut scene) in the_two_worlds() {
+        scene.ticks(1);
+        let mut player = a_walker_over_the_wanderer(&mut scene, DISTANCE + 40.0);
+        tick_and_follow(&mut scene, &mut player, 20);
+        // Out of the sphere, far from every planet: at rest in the world, so two seconds later they have fallen a voxel or two to the home planet's pull and not gone with the
+        // wanderer (250 voxels).
+        say(&mut scene, &mut player, "/tp 200000 200000 0");
+        let sent = eyes_in_the_world(&scene, 1);
+        assert!(
+            length(minus(sent, [200_000.0, 200_000.0, 0.0])) < 20.0,
+            "{name}: sent to {sent:?}"
+        );
+        tick_and_follow(&mut scene, &mut player, 40);
+        let after = length(minus(eyes_in_the_world(&scene, 1), sent));
+        assert!(
+            after < 5.0,
+            "{name}: {after} voxels from where they were sent in two seconds"
+        );
+        // Into the sphere, 12,000 over the pole of the planet: at rest against it, so that two seconds later they are over the same place of it (they have fallen, and the planet
+        // has gone 250 voxels along its orbit).
+        let planet = ship_voxels(&scene, WANDERER);
+        say(
+            &mut scene,
+            &mut player,
+            &format!("/tp {} {} {}", planet[0], planet[1] + DISTANCE, planet[2]),
+        );
+        let sent = eyes_from_the_wanderer(&scene);
+        tick_and_follow(&mut scene, &mut player, 40);
+        let after = level_distance(eyes_from_the_wanderer(&scene), sent);
+        assert!(
+            after < 5.0,
+            "{name}: {after} voxels along from the place of the planet they were sent to, two seconds later"
+        );
+    }
+}
+
+#[test]
+fn a_walker_whose_ship_is_taken_away_near_a_planet_that_goes_round_is_at_rest_against_the_planet() {
+    for (name, mut scene) in the_two_worlds() {
+        let (mut player, deck) = a_walker_on_a_held_deck(&mut scene);
+        let aboard = eyes_from_the_wanderer(&scene);
+        scene.run(move |world| {
+            world.remove_grid(ship_id(deck)).unwrap();
+        });
+        tick_and_follow(&mut scene, &mut player, 40);
+        assert!(
+            player_pose(&scene, 1).grid.root_level().is_some(),
+            "{name}: they are in the level"
+        );
+        let after = level_distance(eyes_from_the_wanderer(&scene), aboard);
+        assert!(
+            after < 5.0,
+            "{name}: {after} voxels along from where the ship was, two seconds after it was taken away"
         );
     }
 }

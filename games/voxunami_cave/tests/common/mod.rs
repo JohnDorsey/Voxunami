@@ -708,6 +708,14 @@ pub fn ship_over(
     number
 }
 
+/// The greatest change from one tick to the next of the step something takes between them, in voxels. Something that goes on straight has none; the pull of a planet bends
+/// its path by a few hundredths of a voxel a tick; something whose speed was taken wrong when it came into or went out of a frame has the planet's own, 6.3.
+pub fn greatest_kink(path: &[[f64; 3]]) -> f64 {
+    path.windows(3)
+        .map(|three| length(minus(minus(three[2], three[1]), minus(three[1], three[0]))))
+        .fold(0.0, f64::max)
+}
+
 /// The speed of a circle round ship `planet` (a body with terrain) at this distance from its middle, as the world's pull has it.
 pub fn circular_speed(scene: &Scene, planet: u64, distance: f64) -> f64 {
     let settings = Cave::gravity();

@@ -7,7 +7,9 @@ use common::docking::{a_pair, make};
 use common::moving_planet::{
     WANDERER, a_scene, orbit_of_the_home_planet, scene_with, wanderer_pack,
 };
-use common::{SEED, Scene, length, minus, player_pose, ship_id, ship_pose, tick_and_follow};
+use common::{
+    SEED, Scene, greatest_kink, length, minus, player_pose, ship_id, ship_pose, tick_and_follow,
+};
 use game_shell::GameContent;
 use server::GridView;
 use voxel_space::{GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate, WorldPosition};
@@ -187,14 +189,6 @@ fn a_walker_dropped_over_a_planet_on_a_fast_orbit_lands_on_it_and_goes_with_it()
     let after = voxels(&scene, WANDERER);
     assert!(length(minus(after, before)) > 500.0, "the planet goes on");
     assert_eq!(player_pose(&scene, 1).position, standing.position);
-}
-
-/// The greatest change from one tick to the next of the step a ship takes between them, in voxels. A ship that goes on straight has none; the pull of a planet bends
-/// its path by a few hundredths of a voxel a tick; a ship whose speed was taken wrong when it came into or went out of a frame has the planet's own, 6.3.
-fn greatest_kink(path: &[[f64; 3]]) -> f64 {
-    path.windows(3)
-        .map(|three| length(minus(minus(three[2], three[1]), minus(three[1], three[0]))))
-        .fold(0.0, f64::max)
 }
 
 #[test]

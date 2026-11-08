@@ -139,6 +139,9 @@ struct PlayerBody {
     departure: Option<Departure>,
     /// The planet whose speed the body's is against, while the body is in a level: the one that carried the player in the last tick (see [`Carried`]), or none.
     carrier: Option<GridId>,
+    /// The body was put where it is since its last step (it came in, was sent somewhere with `/tp`, or was made to agree with a record in another frame): it is at rest against
+    /// whatever carries it, and what the world says carries it is not a change of carrier (see [`pass_to_next_carrier`]).
+    put: bool,
 }
 
 /// The place in a ship that a body stepped off. Until the body stands on something again, what its keys ask and the air does are measured from the speed of that place of the ship, as a
@@ -288,6 +291,7 @@ impl Movement {
                 buckled: None,
                 departure: None,
                 carrier: None,
+                put: true,
             }
         });
     }
@@ -318,6 +322,7 @@ impl Movement {
         player.level = level;
         player.frame = GridId::root(level);
         player.departure = None;
+        player.put = true;
         player.body.teleport(position);
         // A body that was in a turned frame is upright in the level again.
         if player.body.frame_rotation() != [0.0, 0.0, 0.0, 1.0] {
@@ -431,6 +436,7 @@ impl Movement {
                 player.buckled = None;
             }
             if player.buckled.is_some() {
+                player.put = false;
                 moved.push(moved_pose(client, player));
                 continue;
             }
@@ -440,6 +446,7 @@ impl Movement {
                 }
                 None => step_aboard(player, &self.blocks, world, &changed, &ships),
             }
+            player.put = false;
             moved.push(moved_pose(client, player));
         }
         moved
@@ -483,6 +490,7 @@ fn agree_with(player: &mut PlayerBody, placement: &Placement, carried: Option<Di
         player.level = placement.level;
         player.frame = placement.frame;
         player.departure = None;
+        player.put = true;
         player.body.teleport(placement.position);
         return;
     }
@@ -497,6 +505,7 @@ fn agree_with(player: &mut PlayerBody, placement: &Placement, carried: Option<Di
     player.frame = placement.frame;
     player.level = placement.level;
     player.departure = None;
+    player.put = true;
 }
 
 /// The input for this tick: the keys, with a jump that was asked for between two messages.
@@ -674,6 +683,32 @@ fn step_in_a_level(
             board(player, id, world);
         }
     }
+    if player.frame == GridId::root(level) {
+        pass_to_next_carrier(player, world, level);
+    }
+}
+
+/// A body that goes out of the sphere of the planet that carries it, into the sphere of one, or from one into another's, goes on at the speed it had in the world: its speed is
+/// against its carrier (see [`Carried`]), so it is changed by the speed of the old carrier less the new one's, or it would lose (or gain) the planet's speed in a tick, as a kink of
+/// the planet's own step in its path (measured 2026-11-07: 6.26 voxels, at the edge of a planet that goes at 125.7 metres a second).
+///
+/// The planet that will carry the body in the next tick is found here, from where the body ends this tick, **as the world finds it**: with the planet that carried the body this
+/// tick keeping it a quarter farther out (`ServerWorld::planet_carrying`). So the next tick's `carried_by_rails` agrees. A body that was put this tick has no speed to keep (it is at
+/// rest against whatever carries it, and what the world said carried it was for where it was before), and one that stands on something or flies has the speed that the ground and its
+/// keys ask for, which is not carried.
+fn pass_to_next_carrier(player: &mut PlayerBody, world: &ServerWorld, level: LevelIndex) {
+    let next = world.planet_carrying(level, player.body.eye_position(), player.carrier);
+    if next == player.carrier {
+        return;
+    }
+    if !player.put && !player.body.is_grounded() && !player.body.is_flying() {
+        let before = planet_speed(world, player.carrier);
+        let after = planet_speed(world, next);
+        player
+            .body
+            .change_velocity([0, 1, 2].map(|axis| before[axis] - after[axis]));
+    }
+    player.carrier = next;
 }
 
 /// The speed (in the level's axes) of the place of a ship that a body in a level stepped off, which its keys and the air are measured from; nothing if there is no such place

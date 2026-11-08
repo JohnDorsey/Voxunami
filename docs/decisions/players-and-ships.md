@@ -151,8 +151,12 @@ Entities on the wire, who a player is, players as entities, ships a player can m
   less the ship's, **leaving** takes the planet that will carry the place (found as the next tick's `apply_rails` will, `planet_carrying(.., None)`: the body was not carried while aboard)
   off the world's speed, and the speed a body is **stepped against** is that of the place of the ship less the carrier's. Without it a body had the planet's speed twice and went at the
   planet's speed past the ship it had left (6.28 voxels a tick beside a planet at 125.7 metres a second; a walker who landed on a held deck was off it in five ticks). Where no planet is on a
-  rail nothing is changed. *Mine, not done (measured, `build-log.md`):* a body in free flight that goes out of the sphere, or into one, keeps the speed it had against the old carrier (a
-  6.26-voxel kink in its path at the edge, the planet's step); it needs the world to say when an entity's carrier changed other than by being put somewhere.
+  rail nothing is changed. **A body that goes out of a sphere, into one, or from one into another's keeps the speed it had in the world** (2026-11-07; before, a kink of the planet's
+  own step, 6.26 voxels, in its path at the edge): at the end of its step in a level the body asks the world which planet will carry it in the next tick (`planet_carrying`, with
+  the planet that carries it now keeping it a quarter farther out, which is how `apply_rails` will find it, so the next tick agrees) and its speed is changed by the old carrier's less
+  the new one's (`CharacterBody::change_velocity`). *Mine:* a body that stands on something or flies is not changed (the ground and the keys ask for its speed), and one that was
+  *put* since its last step (it came in, `/tp`, a ship taken from under it, another level: `PlayerBody::put`) is not either, because it is at rest against whatever carries the place and
+  what the world said carried it was for where it was before. Not tested: the flier's and the grounded body's gates, and a record that puts a body in another level.
 - **What a planet on a rail carries falls with it** (2026-11-07): a body in a level that the world carries is pulled by everything but what the planet goes round
   (`ServerWorld::gravity_in_the_free_fall_of` its carrier), as the ships in the planet's frame are and as a body aboard the planet is; pulled by every body it drifted from a deck in orbit
   by the home planet's 0.127 metres a second a second (79 voxels in 36 seconds, 5 now). With no carrier nothing changes.
