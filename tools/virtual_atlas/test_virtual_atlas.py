@@ -1602,10 +1602,83 @@ class InteractionTests(ProjectFixture):
         self.assertEqual(self.names()[(1, 3)], "b.png")
         self.assertEqual(self.project.selection, {(0, 3), (1, 3)})
 
-    def test_control_dragging_an_unselected_tile_adds_it_to_the_group(self):
+    def test_control_dragging_copies_the_selected_tiles_instead_of_moving_them(self):
+        self.project.selection = {(0, 0), (1, 0)}
+        self.drag(self.center((0, 0)), self.center((0, 3)), control=True)
+        self.assertEqual(self.names(), {
+            (0, 0): "a.png", (1, 0): "b.png", (2, 0): "c.png", (0, 1): "d.png",
+            (0, 3): "a (copy).png", (1, 3): "b (copy).png",
+        })
+        self.assertEqual(self.project.selection, {(0, 3), (1, 3)}, "the copies are selected")
+        self.assertTrue((self.folder / "a (copy).png").exists() and (self.folder / "b (copy).png").exists(), "files at once")
+        self.assertEqual(self.saved().coordinates_to_names[(1, 3)], "b (copy).png")
+        self.assertIn("Copied 2 tiles", self.interaction.notice)
+
+    def test_control_dragging_an_unselected_tile_adds_it_to_the_group_that_is_copied(self):
         self.project.selection = {(0, 0)}
         self.drag(self.center((1, 0)), self.center((1, 3)), control=True)
         self.assertEqual(self.project.selection, {(0, 3), (1, 3)})
+        self.assertEqual(self.names()[(0, 0)], "a.png")
+        self.assertEqual(self.names()[(1, 0)], "b.png")
+
+    def test_a_single_copy_says_where_the_tile_went_in_its_name(self):
+        self.drag(self.center((2, 0)), self.center((4, 2)), control=True)
+        self.assertEqual(self.names()[(4, 2)], "c (copy).png")
+        self.assertIn("c (copy).png", self.interaction.notice)
+
+    def test_a_control_drag_onto_a_tile_or_onto_the_unplaced_section_is_flagged_invalid_and_copies_nothing(self):
+        before = (self.folder / "atlas.json").read_bytes()
+        start = self.center((0, 0))
+        self.interaction.mouse_down(start, True)
+        self.interaction.mouse_move(self.center((1, 0)))
+        self.assertTrue(self.interaction.dragging)
+        self.assertFalse(self.interaction.drag.drop_is_valid, "a tile is there")
+        self.interaction.mouse_move(self.unplaced.tile_screen_rect((0, 0)).center)
+        self.assertFalse(self.interaction.drag.drop_is_valid, "copies are not put in the unplaced section")
+        self.interaction.mouse_up(self.unplaced.tile_screen_rect((0, 0)).center)
+        self.interaction.mouse_down(start, True)
+        self.interaction.mouse_move(self.center((1, 0)))
+        self.interaction.mouse_up(self.center((1, 0)))
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertEqual(len(self.project.tiles), 4)
+        self.assertEqual(len(self.project.unplaced), 1)
+
+    def test_a_control_drag_reports_a_good_drop_as_valid(self):
+        start = self.center((0, 0))
+        self.interaction.mouse_down(start, True)
+        self.interaction.mouse_move((start[0] + 150, start[1] + 150))
+        self.assertTrue(self.interaction.drag.drop_is_valid)
+
+    def test_a_group_with_an_error_tile_cannot_be_copied(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("gone.png", None)})
+        atlas, unplaced, interaction = self.make_interaction(project)
+        project.selection = {(0, 0), (1, 0)}
+        start = atlas.tile_screen_rect((0, 0)).center
+        interaction.mouse_down(start, True)
+        interaction.mouse_move(atlas.tile_screen_rect((0, 3)).center)
+        self.assertFalse(interaction.drag.drop_is_valid)
+        interaction.mouse_up(atlas.tile_screen_rect((0, 3)).center)
+        self.assertEqual(len(project.tiles), 2)
+
+    def test_a_copy_whose_name_would_be_too_long_is_reported_and_changes_nothing(self):
+        long_name = "a" * 250 + ".png"
+        project = self.make_project({(0, 0): (long_name, None)}, data={(0, 0): va.encode_tile_data(solid_tile(RED))})
+        atlas, unplaced, interaction = self.make_interaction(project)
+        interaction.mouse_down(atlas.tile_screen_rect((0, 0)).center, True)
+        interaction.mouse_move(atlas.tile_screen_rect((2, 2)).center)
+        interaction.mouse_up(atlas.tile_screen_rect((2, 2)).center)
+        self.assertIn("Could not copy", interaction.notice)
+        self.assertEqual(list(project.tiles), [(0, 0)])
+
+    def test_dragging_without_control_still_moves_the_tiles(self):
+        self.drag(self.center((2, 0)), self.center((4, 2)))
+        self.assertEqual(self.names()[(4, 2)], "c.png")
+        self.assertNotIn((2, 0), self.names())
+
+    def test_a_control_click_without_dragging_still_toggles_the_selection(self):
+        self.click(self.center((0, 0)), control=True)
+        self.assertEqual(self.project.selection, {(0, 0)})
+        self.assertEqual(len(self.project.tiles), 4)
 
     def test_dropping_where_it_started_changes_nothing(self):
         before = (self.folder / "atlas.json").read_bytes()
@@ -3286,10 +3359,305 @@ class ProjectPurgeTests(ProjectFixture):
         self.assertEqual(project.unplaced, [], "the leftover is not a tile image, so the folder scan ignores it")
 
 
+class ProjectPurgeManyTests(ProjectFixture):
+    def make_four(self):
+        return self.make_project(
+            {
+                (0, 0): ("a.png", solid_tile(RED)),
+                (1, 0): ("b.png", solid_tile(GREEN)),
+                (2, 0): ("n.png", None),
+                (3, 0): ("gone.png", None),
+                (4, 0): ("keep.png", solid_tile(BLUE)),
+            },
+            data={(2, 0): va.encode_tile_data(solid_tile(RED))},
+        )
+
+    def test_purging_several_tiles_deletes_their_files_and_entries_with_one_write_of_atlas_json(self):
+        project = self.make_four()
+        project.selection = {(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)}
+        with mock.patch.object(va, "write_atlas_file", wraps=va.write_atlas_file) as write:
+            project.purge_tiles([(1, 0), (0, 0), (2, 0), (3, 0)])
+        self.assertEqual(write.call_count, 1)
+        self.assertEqual([(self.folder / name).exists() for name in ("a.png", "b.png", "keep.png")], [False, False, True])
+        saved = self.saved()
+        self.assertEqual((saved.coordinates_to_names, saved.coordinates_to_data), ({(4, 0): "keep.png"}, {}))
+        self.assertEqual(list(project.tiles), [(4, 0)])
+        self.assertEqual(project.selection, {(4, 0)})
+        self.assertEqual([entry.name for entry in self.folder.iterdir() if entry.name.startswith(va.TEMPORARY_FILE_PREFIX)], [])
+
+    def test_a_coordinate_given_twice_is_purged_once_and_no_coordinates_do_nothing(self):
+        project = self.make_four()
+        project.purge_tiles([(0, 0), (0, 0)])
+        self.assertNotIn((0, 0), project.tiles)
+        before = (self.folder / "atlas.json").read_bytes()
+        with mock.patch.object(va, "write_atlas_file") as write:
+            project.purge_tiles([])
+        write.assert_not_called()
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+
+    def test_one_place_without_a_tile_refuses_the_whole_purge(self):
+        project = self.make_four()
+        before = (self.folder / "atlas.json").read_bytes()
+        with self.assertRaises(KeyError):
+            project.purge_tiles([(0, 0), (9, 9)])
+        self.assertTrue((self.folder / "a.png").exists())
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertIn((0, 0), project.tiles)
+
+    def test_when_atlas_json_cannot_be_written_every_file_comes_back(self):
+        project = self.make_four()
+        before = (self.folder / "atlas.json").read_bytes()
+        files_before = {name: (self.folder / name).read_bytes() for name in ("a.png", "b.png")}
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                project.purge_tiles([(0, 0), (1, 0), (2, 0)])
+        self.assertEqual({name: (self.folder / name).read_bytes() for name in ("a.png", "b.png")}, files_before)
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertEqual(len(project.tiles), 5)
+        self.assertEqual([entry.name for entry in self.folder.iterdir() if entry.name.startswith(va.TEMPORARY_FILE_PREFIX)], [])
+
+    def test_when_the_second_file_cannot_be_moved_the_first_comes_back_and_nothing_changes(self):
+        project = self.make_four()
+        before = (self.folder / "atlas.json").read_bytes()
+        real_rename, calls = os.rename, []
+
+        def second_one_fails(source, destination):
+            calls.append(source)
+            if len(calls) == 2:
+                raise PermissionError("in use")
+            real_rename(source, destination)
+
+        with mock.patch.object(va.os, "rename", side_effect=second_one_fails):
+            with self.assertRaises(OSError):
+                project.purge_tiles([(0, 0), (1, 0)])
+        self.assertTrue((self.folder / "a.png").exists() and (self.folder / "b.png").exists())
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertEqual(len(project.tiles), 5)
+        self.assertEqual([entry.name for entry in self.folder.iterdir() if entry.name.startswith(va.TEMPORARY_FILE_PREFIX)], [])
+
+
+class ProjectNewTileTests(ProjectFixture):
+    def test_a_new_tile_is_transparent_has_no_file_and_keeps_its_pixels_in_atlas_json(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
+        name = project.create_tile((2, 1))
+        self.assertEqual(name, "new_tile.png")
+        record = project.tiles[(2, 1)]
+        self.assertEqual((record.name, record.is_new, record.error), ("new_tile.png", True, None))
+        self.assertTrue(numpy.array_equal(record.pixels, numpy.zeros((4, 4, 4), dtype=numpy.uint8)))
+        self.assertFalse((self.folder / "new_tile.png").exists())
+        saved = self.saved()
+        self.assertEqual(saved.coordinates_to_names[(2, 1)], "new_tile.png")
+        self.assertEqual(va.decode_tile_data(saved.coordinates_to_data[(2, 1)], 4).sum(), 0)
+        self.assertEqual(project.unsaved_tiles(), [(2, 1)])
+
+    def test_the_new_tile_is_the_selected_one(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
+        project.select_only((0, 0))
+        project.create_tile((1, 0))
+        self.assertEqual(project.selection, {(1, 0)})
+
+    def test_it_can_be_saved_as_a_file_afterwards(self):
+        project = self.make_project({})
+        project.create_tile((0, 0))
+        project.save_tile((0, 0))
+        self.assertEqual(va.read_image_size(self.folder / "new_tile.png"), (4, 4))
+        self.assertEqual(self.saved().coordinates_to_data, {})
+
+    def test_the_name_is_not_one_any_file_or_tile_has(self):
+        project = self.make_project(
+            {(0, 0): ("NEW_TILE_2.png", solid_tile(RED))}, unplaced=[("new_tile.png", solid_tile(BLUE))]
+        )
+        self.assertEqual(project.create_tile((1, 0)), "new_tile_3.png")
+        self.assertEqual(project.create_tile((2, 0)), "new_tile_4.png", "the first one has no file yet, but its name is taken")
+
+    def test_a_place_with_a_tile_or_a_negative_place_is_refused_and_nothing_changes(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
+        before = (self.folder / "atlas.json").read_bytes()
+        for place in [(0, 0), (-1, 0), (0, -3)]:
+            with self.assertRaises(ValueError):
+                project.create_tile(place)
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertEqual(list(project.tiles), [(0, 0)])
+
+    def test_when_atlas_json_cannot_be_written_there_is_no_new_tile(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
+        project.select_only((0, 0))
+        before = (self.folder / "atlas.json").read_bytes()
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                project.create_tile((1, 0))
+        self.assertEqual(list(project.tiles), [(0, 0)])
+        self.assertEqual(project.selection, {(0, 0)})
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+
+    def test_in_a_folder_without_atlas_json_it_creates_the_file_with_the_provisional_tile_size(self):
+        project = self.make_project({}, write_atlas=False)
+        self.assertFalse((self.folder / "atlas.json").exists())
+        project.create_tile((0, 0))
+        self.assertEqual(self.saved().tile_size, project.tile_size)
+        self.assertTrue(project.tile_size_is_saved)
+
+
+class CopyPlanTests(unittest.TestCase):
+    def test_copy_name_adds_copy_before_the_extension(self):
+        self.assertEqual(va.copy_name("grass.png", []), "grass (copy).png")
+        self.assertEqual(va.copy_name("grass (copy).png", []), "grass (copy) (copy).png")
+        self.assertEqual(va.copy_name("Sand.PNG", []), "Sand (copy).PNG", "the extension keeps its letter case")
+
+    def test_copy_name_numbers_the_copies_when_the_name_is_taken_ignoring_letter_case(self):
+        self.assertEqual(va.copy_name("grass.png", ["GRASS (COPY).png"]), "grass (copy 2).png")
+        self.assertEqual(va.copy_name("grass.png", ["grass (copy).png", "grass (copy 2).png"]), "grass (copy 3).png")
+
+    def test_copy_name_refuses_a_name_that_would_be_too_long(self):
+        with self.assertRaises(ValueError):
+            va.copy_name("a" * 250 + ".png", [])
+
+    def test_plan_copy_moves_every_selected_tile_by_the_same_offset(self):
+        occupied = {(0, 0), (1, 0), (5, 5)}
+        self.assertEqual(va.plan_copy(occupied, {(0, 0)}, (0, 0), (2, 1)), {(0, 0): (2, 1)})
+        self.assertEqual(va.plan_copy(occupied, {(0, 0), (1, 0)}, (1, 0), (1, 3)), {(0, 0): (0, 3), (1, 0): (1, 3)})
+
+    def test_plan_copy_refuses_a_place_that_has_a_tile_even_a_selected_one_or_the_same_place_or_a_negative_one(self):
+        occupied = {(0, 0), (1, 0), (5, 5)}
+        self.assertIsNone(va.plan_copy(occupied, {(0, 0)}, (0, 0), (5, 5)), "an unselected tile is there")
+        self.assertIsNone(va.plan_copy(occupied, {(0, 0), (1, 0)}, (0, 0), (1, 0)), "a selected tile is there")
+        self.assertIsNone(va.plan_copy(occupied, {(0, 0)}, (0, 0), (0, 0)), "on itself")
+        self.assertIsNone(va.plan_copy(occupied, {(1, 0)}, (1, 0), (-1, 0)), "a negative place")
+
+    def test_plan_copy_checks_its_arguments(self):
+        with self.assertRaises(ValueError):
+            va.plan_copy({(0, 0), (1, 0)}, {(0, 0)}, (1, 0), (2, 0))
+        with self.assertRaises(ValueError):
+            va.plan_copy({(0, 0)}, {(0, 0), (3, 3)}, (0, 0), (1, 0))
+
+
+class ProjectDuplicateTests(ProjectFixture):
+    def paint(self, project, coordinate, column, row, color):
+        record = project.tiles[coordinate]
+        layout = va.compose_canvas({coordinate: record.pixels}, self.tile_size)
+        canvas = layout.pixels.copy()
+        canvas[row, column] = color
+        project.apply_canvas_edit(layout, canvas)
+
+    def test_a_copy_is_a_tile_with_a_file_right_away_and_the_original_is_untouched(self):
+        project = self.make_project({(0, 0): ("grass.png", random_tile(1))})
+        original_file = (self.folder / "grass.png").read_bytes()
+        project.select_only((0, 0))
+        self.assertTrue(project.duplicate_selection((0, 0), (2, 1)))
+        copy = project.tiles[(2, 1)]
+        self.assertEqual((copy.name, copy.is_new, copy.is_modified, copy.error), ("grass (copy).png", False, False, None))
+        self.assertTrue(numpy.array_equal(va.read_image_pixels(self.folder / "grass (copy).png"), random_tile(1)))
+        self.assertEqual((self.folder / "grass.png").read_bytes(), original_file)
+        saved = self.saved()
+        self.assertEqual(saved.coordinates_to_names, {(0, 0): "grass.png", (2, 1): "grass (copy).png"})
+        self.assertEqual(saved.coordinates_to_data, {})
+        self.assertIn("grass (copy).png", project.existing_names)
+        self.assertEqual(project.selection, {(2, 1)}, "the copies are the selected tiles afterwards")
+        self.assertFalse(project.history.can_undo([copy]))
+
+    def test_the_copy_has_what_the_tile_shows_unsaved_edits_included_and_the_original_stays_unsaved(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE))})
+        self.paint(project, (0, 0), 1, 1, RED)
+        project.select_only((0, 0))
+        project.duplicate_selection((0, 0), (1, 0))
+        self.assertEqual(tuple(va.read_image_pixels(self.folder / "a (copy).png")[1, 1]), RED)
+        self.assertEqual(tuple(va.read_image_pixels(self.folder / "a.png")[1, 1]), BLUE)
+        self.assertTrue(project.tiles[(0, 0)].is_modified)
+        self.assertFalse(project.tiles[(1, 0)].is_modified)
+
+    def test_a_tile_that_has_no_file_yet_is_copied_into_a_file_and_stays_unsaved_itself(self):
+        project = self.make_project({(0, 0): ("n.png", None)}, data={(0, 0): va.encode_tile_data(random_tile(2))})
+        project.select_only((0, 0))
+        project.duplicate_selection((0, 0), (1, 0))
+        self.assertTrue(numpy.array_equal(va.read_image_pixels(self.folder / "n (copy).png"), random_tile(2)))
+        self.assertFalse((self.folder / "n.png").exists())
+        self.assertTrue(project.tiles[(0, 0)].is_new)
+        saved = self.saved()
+        self.assertEqual(list(saved.coordinates_to_data), [(0, 0)], "only the original keeps pixels in atlas.json")
+
+    def test_several_selected_tiles_are_copied_by_the_same_offset_each_with_its_own_name(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN))})
+        project.selection = {(0, 0), (1, 0)}
+        self.assertTrue(project.duplicate_selection((1, 0), (1, 2)))
+        self.assertEqual((project.tiles[(0, 2)].name, project.tiles[(1, 2)].name), ("a (copy).png", "b (copy).png"))
+        self.assertEqual(tuple(va.read_image_pixels(self.folder / "a (copy).png")[0, 0]), RED)
+        self.assertEqual(tuple(va.read_image_pixels(self.folder / "b (copy).png")[0, 0]), GREEN)
+        self.assertEqual(project.selection, {(0, 2), (1, 2)})
+        self.assertEqual(len(project.tiles), 4)
+
+    def test_a_second_copy_of_the_same_tile_gets_a_number(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))}, unplaced=[("b (copy).png", solid_tile(BLUE))])
+        project.select_only((0, 0))
+        project.duplicate_selection((0, 0), (1, 0))
+        project.select_only((0, 0))
+        project.duplicate_selection((0, 0), (2, 0))
+        self.assertEqual((project.tiles[(1, 0)].name, project.tiles[(2, 0)].name), ("a (copy).png", "a (copy 2).png"))
+        project.select_only((1, 0))
+        project.duplicate_selection((1, 0), (3, 0))
+        self.assertEqual(project.tiles[(3, 0)].name, "a (copy) (copy).png")
+
+    def test_a_place_with_a_tile_or_an_error_tile_in_the_group_refuses_the_copy_and_changes_nothing(self):
+        project = self.make_project(
+            {(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN)), (3, 0): ("gone.png", None)}
+        )
+        before = (self.folder / "atlas.json").read_bytes()
+        files_before = sorted(entry.name for entry in self.folder.iterdir())
+        project.select_only((0, 0))
+        self.assertFalse(project.duplicate_selection((0, 0), (1, 0)), "a tile is there")
+        project.selection = {(0, 0), (3, 0)}
+        self.assertFalse(project.duplicate_selection((0, 0), (0, 5)), "one of the tiles has an error")
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertEqual(sorted(entry.name for entry in self.folder.iterdir()), files_before)
+        self.assertEqual(len(project.tiles), 3)
+
+    def test_when_atlas_json_cannot_be_written_the_new_files_are_removed_and_there_are_no_new_tiles(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN))})
+        project.selection = {(0, 0), (1, 0)}
+        before = (self.folder / "atlas.json").read_bytes()
+        files_before = sorted(entry.name for entry in self.folder.iterdir())
+        with mock.patch.object(va, "write_atlas_file", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                project.duplicate_selection((1, 0), (1, 3))
+        self.assertEqual(sorted(entry.name for entry in self.folder.iterdir()), files_before)
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertEqual(len(project.tiles), 2)
+        self.assertEqual(project.selection, {(0, 0), (1, 0)})
+        self.assertNotIn("a (copy).png", project.existing_names)
+
+    def test_when_the_second_file_cannot_be_written_the_first_is_removed_again(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN))})
+        project.selection = {(0, 0), (1, 0)}
+        before = (self.folder / "atlas.json").read_bytes()
+        real_write, calls = va.write_png_atomically, []
+
+        def second_one_fails(path, pixels):
+            calls.append(path)
+            if len(calls) == 2:
+                raise OSError("disk full")
+            real_write(path, pixels)
+
+        with mock.patch.object(va, "write_png_atomically", side_effect=second_one_fails):
+            with self.assertRaises(OSError):
+                project.duplicate_selection((1, 0), (1, 3))
+        self.assertEqual(sorted(entry.name for entry in self.folder.iterdir()), ["a.png", "atlas.json", "b.png"])
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertEqual(len(project.tiles), 2)
+
+    def test_a_file_that_appeared_since_loading_is_never_overwritten_and_the_batch_leaves_nothing_behind(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN))})
+        va.write_png_atomically(self.folder / "b (copy).png", solid_tile(BLUE, 8))
+        project.selection = {(0, 0), (1, 0)}
+        with self.assertRaises(FileExistsError):
+            project.duplicate_selection((1, 0), (1, 3))
+        self.assertEqual(va.read_image_size(self.folder / "b (copy).png"), (8, 8))
+        self.assertFalse((self.folder / "a (copy).png").exists())
+        self.assertEqual(len(project.tiles), 2)
+
+
 class PurgeDialogTests(ProjectFixture):
     def test_the_warning_is_short_and_says_the_file_and_the_entries_go_and_that_it_cannot_be_undone(self):
         project = self.make_project({(0, 0): ("stone.png", solid_tile(RED))})
-        dialog = va.PurgeDialog(project, (0, 0))
+        dialog = va.PurgeDialog(project, [(0, 0)])
         self.assertEqual(dialog.title, "Purge stone.png?")
         self.assertIn("file", dialog.message)
         self.assertIn("atlas.json", dialog.message)
@@ -3304,28 +3672,65 @@ class PurgeDialogTests(ProjectFixture):
         canvas = layout.pixels.copy()
         canvas[0, 0] = RED
         project.apply_canvas_edit(layout, canvas)
-        self.assertIn("unsaved", va.PurgeDialog(project, (0, 0)).message)
-        message = va.PurgeDialog(project, (1, 0)).message
+        self.assertIn("unsaved", va.PurgeDialog(project, [(0, 0)]).message)
+        message = va.PurgeDialog(project, [(1, 0)]).message
         self.assertIn("unsaved", message)
         self.assertNotIn("the file", message, "a tile with no file has none to delete")
 
+    def test_the_warning_for_several_tiles_counts_them_and_stays_short(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN)), (2, 0): ("c.png", solid_tile(BLUE))})
+        dialog = va.PurgeDialog(project, [(2, 0), (0, 0), (1, 0)])
+        self.assertEqual(dialog.title, "Purge 3 tiles?")
+        self.assertEqual(dialog.coordinates, [(0, 0), (1, 0), (2, 0)], "in reading order")
+        self.assertIn("files", dialog.message)
+        self.assertIn("atlas.json", dialog.message)
+        self.assertIn("cannot be undone", dialog.message)
+        self.assertNotIn("unsaved", dialog.message)
+        self.assertLess(len(dialog.message), 120)
+        self.assertEqual(dialog.done_message, "Purged 3 tiles.")
+
+    def test_the_warning_for_several_tiles_mentions_unsaved_changes_and_missing_files_when_they_apply(self):
+        project = self.make_project(
+            {(0, 0): ("n.png", None), (1, 0): ("m.png", None)},
+            data={(0, 0): va.encode_tile_data(solid_tile(RED)), (1, 0): va.encode_tile_data(solid_tile(RED))},
+        )
+        message = va.PurgeDialog(project, [(0, 0), (1, 0)]).message
+        self.assertIn("unsaved", message)
+        self.assertNotIn("files", message, "no tile has a file to delete")
+
+    def test_one_tile_keeps_its_own_title_and_done_message(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
+        dialog = va.PurgeDialog(project, [(0, 0)])
+        self.assertEqual((dialog.title, dialog.done_message), ("Purge a.png?", "Purged a.png."))
+
+    def test_confirming_purges_every_tile_at_once_and_a_disk_error_deletes_none(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN))})
+        dialog = va.PurgeDialog(project, [(0, 0), (1, 0)])
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            self.assertEqual(dialog.confirm(), "ask")
+        self.assertIn("disk full", dialog.error)
+        self.assertTrue((self.folder / "a.png").exists() and (self.folder / "b.png").exists())
+        self.assertEqual(dialog.confirm(), "done")
+        self.assertTrue(project.is_empty)
+        self.assertFalse((self.folder / "a.png").exists() or (self.folder / "b.png").exists())
+
     def test_confirming_purges_and_reports_done(self):
         project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
-        dialog = va.PurgeDialog(project, (0, 0))
+        dialog = va.PurgeDialog(project, [(0, 0)])
         self.assertEqual(dialog.confirm(), "done")
         self.assertTrue(project.is_empty)
         self.assertFalse((self.folder / "a.png").exists())
 
     def test_cancelling_changes_nothing(self):
         project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
-        dialog = va.PurgeDialog(project, (0, 0))
+        dialog = va.PurgeDialog(project, [(0, 0)])
         self.assertEqual(dialog.cancel(), "cancel")
         self.assertTrue((self.folder / "a.png").exists())
         self.assertIn((0, 0), project.tiles)
 
     def test_a_disk_error_keeps_the_dialog_open_with_the_reason(self):
         project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
-        dialog = va.PurgeDialog(project, (0, 0))
+        dialog = va.PurgeDialog(project, [(0, 0)])
         with mock.patch.object(va.os, "rename", side_effect=PermissionError("in use")):
             self.assertEqual(dialog.confirm(), "ask")
         self.assertIn("a.png", dialog.error)
@@ -5104,11 +5509,104 @@ class PurgeWindowTests(ProjectFixture):
         self.assertIsNone(self.application.purge_dialog)
         self.application.draw()
 
-    def test_right_clicking_an_empty_place_or_an_unplaced_tile_opens_no_menu(self):
-        self.open_menu((5, 3))
-        self.assertIsNone(self.application.context_menu)
+    def test_right_clicking_an_unplaced_tile_opens_no_menu(self):
         self.click(self.application.unplaced_panel.tile_screen_rect((0, 0)).center, button=3)
         self.assertIsNone(self.application.context_menu)
+
+    def test_the_menu_of_a_tile_offers_to_purge_it_and_names_how_many(self):
+        self.open_menu((0, 0))
+        self.assertEqual(self.application.context_menu.purges, ((0, 0),))
+        self.assertEqual(self.application.context_menu.label, "Purge tile...")
+        self.application.context_menu = None
+        self.project.selection = {(0, 0), (1, 0)}
+        self.open_menu((1, 0))
+        self.assertEqual(self.application.context_menu.purges, ((0, 0), (1, 0)), "all the selected tiles, in reading order")
+        self.assertEqual(self.application.context_menu.label, "Purge 2 tiles...")
+
+    def test_right_clicking_a_tile_that_is_not_selected_purges_only_that_tile_even_when_others_are_selected(self):
+        self.project.selection = {(0, 0)}
+        self.open_menu((1, 0))
+        self.assertEqual(self.application.context_menu.purges, ((1, 0),))
+
+    def test_right_clicking_an_empty_place_offers_a_new_tile_there(self):
+        self.open_menu((5, 3))
+        menu = self.application.context_menu
+        self.assertEqual((menu.coordinate, menu.purges, menu.label), ((5, 3), (), "New tile"))
+        self.application.draw()
+        rectangle = self.application.atlas_panel.tile_screen_rect((5, 3)).inflate(6, 6)
+        self.assertEqual(tuple(self.application.surface.get_at(rectangle.topleft))[:3], (255, 255, 255), "the place is outlined")
+
+    def test_right_clicking_where_a_tile_cannot_be_made_opens_no_menu(self):
+        rectangle = self.application.atlas_panel.rect
+        self.click((rectangle.x + 1, rectangle.y + 1), button=3)
+        self.assertIsNone(self.application.context_menu, "that is left of the first column and above the first row")
+        tile = self.application.atlas_panel.tile_screen_rect((0, 0))
+        self.click((tile.right + 1, tile.centery), button=3)
+        self.assertIsNone(self.application.context_menu, "the gap beside a tile belongs to that tile's place")
+
+    def test_choosing_new_tile_makes_it_at_once_selects_it_and_says_it_is_not_a_file_yet(self):
+        self.open_menu((5, 3))
+        self.click(self.application.context_menu_area().center)
+        self.assertIsNone(self.application.context_menu)
+        self.assertIsNone(self.application.purge_dialog)
+        record = self.project.tiles[(5, 3)]
+        self.assertEqual((record.name, record.is_new), ("new_tile.png", True))
+        self.assertFalse((self.folder / "new_tile.png").exists())
+        self.assertEqual(self.saved().coordinates_to_names[(5, 3)], "new_tile.png")
+        self.assertEqual(self.project.selection, {(5, 3)})
+        self.assertIn("Created new_tile.png", self.application.message)
+        self.application.draw()
+        self.assertIsNotNone(self.application.editor.layout, "the editor shows the new tile")
+
+    def test_escape_or_a_click_elsewhere_makes_no_tile(self):
+        self.open_menu((5, 3))
+        self.key(va.pygame.K_ESCAPE)
+        self.open_menu((5, 3))
+        self.click((5, 5))
+        self.assertNotIn((5, 3), self.project.tiles)
+
+    def test_when_atlas_json_cannot_be_written_no_tile_is_made_and_the_status_says_so(self):
+        self.open_menu((5, 3))
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            self.click(self.application.context_menu_area().center)
+        self.assertNotIn((5, 3), self.project.tiles)
+        self.assertIn("Could not save", self.application.message)
+        self.assertIn("disk full", self.application.message)
+        self.assertIsNone(self.application.context_menu)
+
+    def test_in_an_empty_atlas_a_new_tile_can_be_made_too(self):
+        for entry in self.folder.iterdir():
+            entry.unlink()
+        project = self.make_project({}, write_atlas=False)
+        self.assertTrue(project.is_empty)
+        application = va.Application(project, va.pygame.Surface((1280, 800)))
+        place = application.atlas_panel.tile_screen_rect((0, 0)).center
+        application.handle_event(va.pygame.event.Event(va.pygame.MOUSEBUTTONDOWN, pos=place, button=3))
+        application.handle_event(va.pygame.event.Event(va.pygame.MOUSEBUTTONUP, pos=place, button=3))
+        self.assertEqual(application.context_menu.coordinate, (0, 0))
+        application.handle_event(va.pygame.event.Event(va.pygame.MOUSEBUTTONDOWN, pos=application.context_menu_area().center, button=1))
+        self.assertEqual(list(project.tiles), [(0, 0)])
+        self.assertTrue((self.folder / "atlas.json").exists())
+        application.draw()
+
+    def test_purging_with_several_tiles_selected_asks_once_and_deletes_them_all(self):
+        self.project.selection = {(0, 0), (1, 0)}
+        self.open_menu((1, 0))
+        self.application.draw()
+        for coordinate in [(0, 0), (1, 0)]:
+            rectangle = self.application.atlas_panel.tile_screen_rect(coordinate)
+            self.assertEqual(tuple(self.application.surface.get_at((rectangle.centerx, rectangle.y - 3)))[:3], va.Theme.INVALID, "both are outlined")
+        self.click(self.application.context_menu_area().center)
+        self.assertEqual(self.application.purge_dialog.title, "Purge 2 tiles?")
+        self.application.draw()
+        self.assertTrue((self.folder / "a.png").exists())
+        self.press_dialog("purge")
+        self.assertIsNone(self.application.purge_dialog)
+        self.assertEqual([(self.folder / name).exists() for name in ("a.png", "b.png", "loose.png")], [False, False, True])
+        self.assertEqual(self.saved().coordinates_to_names, {})
+        self.assertEqual(self.project.selection, set())
+        self.assertIn("Purged 2 tiles", self.application.message)
+        self.application.draw()
 
     def test_the_menu_stays_inside_the_window_when_opened_near_the_edge(self):
         self.application.context_menu = va.ContextMenu((0, 0), (1279, 799))
@@ -5190,10 +5688,12 @@ class PurgeWindowTests(ProjectFixture):
 
     def test_the_menu_and_dialog_draw_in_a_small_window(self):
         application = va.Application(self.project, va.pygame.Surface((600, 420)))
-        application.context_menu = va.ContextMenu((0, 0), (590, 410))
+        application.context_menu = va.ContextMenu((0, 0), (590, 410), ((0, 0), (1, 0)))
+        application.draw()
+        application.context_menu = va.ContextMenu((5, 5), (590, 410))
         application.draw()
         application.context_menu = None
-        application.purge_dialog = va.PurgeDialog(self.project, (0, 0))
+        application.purge_dialog = va.PurgeDialog(self.project, [(0, 0)])
         application.draw()
 
     def test_the_tile_the_menu_is_for_is_outlined_so_it_is_clear_which_one_is_meant(self):
@@ -5212,6 +5712,80 @@ class PurgeWindowTests(ProjectFixture):
     def test_the_program_with_a_menu_open_closes_on_quit_like_before(self):
         self.open_menu()
         self.assertFalse(self.application.handle_event(va.pygame.event.Event(va.pygame.QUIT)))
+
+
+class CopyWindowTests(ProjectFixture):
+    """Ctrl+dragging tiles in the atlas copies them, through the window's mouse events."""
+
+    @classmethod
+    def setUpClass(cls):
+        va.pygame.init()
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.make_project({(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN))})
+        self.application = va.Application(self.project, va.pygame.Surface((1280, 800)))
+
+    def center(self, coordinate):
+        return self.application.atlas_panel.tile_screen_rect(coordinate).center
+
+    def send(self, kind, position):
+        event_type = {"down": va.pygame.MOUSEBUTTONDOWN, "up": va.pygame.MOUSEBUTTONUP}[kind]
+        self.application.handle_event(va.pygame.event.Event(event_type, pos=position, button=1))
+
+    def drag(self, start, end, control=True):
+        modifiers = va.pygame.KMOD_CTRL if control else 0
+        with mock.patch.object(va.pygame.key, "get_mods", return_value=modifiers):
+            self.send("down", start)
+            self.application.handle_event(va.pygame.event.Event(va.pygame.MOUSEMOTION, pos=end, rel=(0, 0), buttons=(1, 0, 0)))
+            self.application.draw()
+            self.send("up", end)
+
+    def test_control_dragging_a_tile_copies_it_and_the_status_line_says_so(self):
+        self.drag(self.center((0, 0)), self.center((3, 2)))
+        self.assertEqual(self.project.tiles[(3, 2)].name, "a (copy).png")
+        self.assertTrue((self.folder / "a (copy).png").exists())
+        self.assertEqual(self.project.tiles[(0, 0)].name, "a.png", "the original stays")
+        self.assertEqual(self.application.message, "Copied to a (copy).png.")
+        self.application.draw()
+        self.assertIsNotNone(self.application.editor.layout, "the copy is selected, so the editor shows it")
+
+    def test_the_copy_feedback_shows_valid_and_invalid_drops(self):
+        start = self.center((0, 0))
+        with mock.patch.object(va.pygame.key, "get_mods", return_value=va.pygame.KMOD_CTRL):
+            self.send("down", start)
+            self.application.handle_event(va.pygame.event.Event(va.pygame.MOUSEMOTION, pos=self.center((4, 3)), rel=(0, 0), buttons=(1, 0, 0)))
+            self.application.draw()
+            rectangle = self.application.atlas_panel.tile_screen_rect((4, 3)).inflate(6, 6)
+            self.assertEqual(tuple(self.application.surface.get_at((rectangle.centerx, rectangle.y)))[:3], va.Theme.VALID)
+            self.application.handle_event(va.pygame.event.Event(va.pygame.MOUSEMOTION, pos=self.center((1, 0)), rel=(0, 0), buttons=(1, 0, 0)))
+            self.application.draw()
+            rectangle = self.application.atlas_panel.tile_screen_rect((1, 0)).inflate(6, 6)
+            self.assertEqual(tuple(self.application.surface.get_at((rectangle.centerx, rectangle.y)))[:3], va.Theme.INVALID)
+            self.send("up", self.center((1, 0)))
+        self.assertEqual(len(self.project.tiles), 2)
+        self.assertEqual(self.application.message, "")
+
+    def test_when_a_file_cannot_be_written_nothing_is_copied_and_the_status_says_so(self):
+        with mock.patch.object(va, "write_atlas_file", side_effect=OSError("disk full")):
+            self.drag(self.center((0, 0)), self.center((3, 2)))
+        self.assertEqual(len(self.project.tiles), 2)
+        self.assertFalse((self.folder / "a (copy).png").exists())
+        self.assertIn("Could not save", self.application.message)
+        self.assertIn("disk full", self.application.message)
+
+    def test_dragging_without_control_moves_the_tile_and_makes_no_file(self):
+        self.drag(self.center((0, 0)), self.center((3, 2)), control=False)
+        self.assertEqual(self.project.tiles[(3, 2)].name, "a.png")
+        self.assertNotIn((0, 0), self.project.tiles)
+        self.assertFalse((self.folder / "a (copy).png").exists())
+
+    def test_a_copy_that_cannot_be_named_is_reported_in_the_status_line(self):
+        project = self.make_project({(0, 0): ("a" * 250 + ".png", None)}, data={(0, 0): va.encode_tile_data(solid_tile(RED))})
+        self.application = va.Application(project, va.pygame.Surface((1280, 800)))
+        self.drag(self.center((0, 0)), self.center((3, 2)))
+        self.assertIn("Could not copy", self.application.message)
+        self.assertEqual(list(project.tiles), [(0, 0)])
 
 
 class WrapAssistEditorTests(EditorDriver):

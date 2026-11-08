@@ -66,11 +66,20 @@ phases; what works so far:
   `atlas.json`); Esc gives up; clicking elsewhere applies a name that is allowed and drops one that is not (the
   status line says why). A name is refused if it is not a valid file name or if any PNG file in the folder already
   has it, even one the program ignores; a file is never replaced. Renaming is not part of Ctrl+Z.
-- Purging: right-click a tile in the atlas and choose "Purge tile..." (the tile is outlined in red). After a short
-  warning, Purge deletes the tile's PNG file and its entries in `atlas.json` (its place, its name and any pixels
-  stored there), including unsaved changes; it cannot be undone and is not part of Ctrl+Z. It works on error tiles
-  too (a missing file is fine), and the tile does not become an unplaced one. Enter does not confirm; Esc or
-  Cancel gives up. If `atlas.json` cannot be written the file comes back and nothing changes.
+- New tile: right-click an empty place in the atlas and choose "New tile" (the place is outlined). It makes a fully
+  transparent tile there named `new_tile.png` (numbered if that name is taken), selects it, and keeps its pixels in
+  `atlas.json`: it has no PNG file until you save it (Ctrl+S).
+- Copying: Ctrl+drag a tile, or the selected tiles, to an empty place. Each copy is named `<name> (copy).png`
+  (`(copy 2)`, `(copy 3)` if that is taken), is saved as a PNG file at once with the pixels its tile shows now, and is
+  selected afterwards; the originals stay. A copy cannot land on a tile (the places the dragged tiles are on count), at
+  a negative place or in the unplaced section, and a group with an error tile cannot be copied. A tile you Ctrl+press
+  that was not selected joins the group, as with Ctrl+click.
+- Purging: right-click a tile in the atlas and choose "Purge tile..." - or "Purge N tiles..." when the tile is one of
+  the selected ones, which purges all of them (the tiles are outlined in red). After a short warning, Purge deletes the
+  PNG files and the entries in `atlas.json` (places, names and any pixels stored there), including unsaved changes;
+  it cannot be undone and is not part of Ctrl+Z. It works on error tiles too (a missing file is fine), and the tiles
+  do not become unplaced ones. Enter does not confirm; Esc or Cancel gives up. If a file cannot be moved or
+  `atlas.json` cannot be written, every file comes back and nothing changes.
 - Closing the window with unsaved tiles (including tiles that have no file yet) asks about each one: Save, Don't
   save or Cancel (Esc), with the current picture next to the one on disk. The box "Do this for all" gives the
   same answer to the tiles still to come. Enter saves. A tile with no file that is not saved stays in `atlas.json`.

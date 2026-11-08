@@ -58,6 +58,8 @@ MAXIMUM_TILE_SIZE = 1024
 TILE_FILE_EXTENSION = ".png"
 TEMPORARY_FILE_PREFIX = ".virtualatlas-"
 TEMPORARY_FILE_SUFFIX = ".tmp"
+# The name given to a tile made with the atlas's right-click menu (made different from every other name).
+NEW_TILE_NAME = "new_tile.png"
 HISTORY_DEPTH = 100
 # A picture that would be cut into more tiles than this is refused: a tile size of 1 would make millions.
 MAXIMUM_IMPORT_TILES = 2048
@@ -139,6 +141,22 @@ def make_unique_name(name: str, taken_names: Iterable[str]) -> str:
     stem, extension = name[: -len(TILE_FILE_EXTENSION)], name[-len(TILE_FILE_EXTENSION):]
     for suffix_number in itertools.count(2):
         candidate = f"{stem}_{suffix_number}{extension}"
+        if candidate.casefold() not in taken:
+            return candidate
+    raise AssertionError("unreachable")
+
+
+def copy_name(name: str, taken_names: Iterable[str]) -> str:
+    """`name` with " (copy)" before the extension: "grass.png" becomes "grass (copy).png". If that is in
+    `taken_names` (compared ignoring case) the copy is numbered: "grass (copy 2).png", "grass (copy 3).png", ...
+    Raises ValueError if the copy's name would not be allowed, for example because it is too long."""
+    taken = {taken_name.casefold() for taken_name in taken_names}
+    stem, extension = name[: -len(TILE_FILE_EXTENSION)], name[-len(TILE_FILE_EXTENSION):]
+    for number in itertools.count(1):
+        candidate = f"{stem} (copy){extension}" if number == 1 else f"{stem} (copy {number}){extension}"
+        problem = validate_tile_name(candidate)
+        if problem is not None:
+            raise ValueError(f"{name} cannot be copied: {problem}")
         if candidate.casefold() not in taken:
             return candidate
     raise AssertionError("unreachable")
@@ -552,6 +570,31 @@ def plan_group_move(
 def move_keys(dictionary: dict[Coordinate, object], moves: dict[Coordinate, Coordinate]) -> dict[Coordinate, object]:
     """A copy of `dictionary` with each key listed in `moves` replaced by its new coordinate."""
     return {moves.get(coordinate, coordinate): value for coordinate, value in dictionary.items()}
+
+
+def plan_copy(
+    occupied: Iterable[Coordinate],
+    selected: Iterable[Coordinate],
+    grabbed: Coordinate,
+    drop: Coordinate,
+) -> Optional[dict[Coordinate, Coordinate]]:
+    """Where the copies go when the selected tiles are copied by dragging them by `grabbed` and letting go over `drop`.
+
+    Every selected tile is copied by the same offset (drop - grabbed). Returns {original: place of its copy}, or
+    None when a copy would have a negative coordinate or land on a place that has a tile: a copy never replaces
+    or moves a tile, so the places of the selected tiles themselves (and the place dragged from) are refused too.
+    """
+    occupied_set = set(occupied)
+    selected_set = set(selected)
+    if grabbed not in selected_set:
+        raise ValueError("the grabbed tile must be selected")
+    if not selected_set <= occupied_set:
+        raise ValueError("every selected coordinate must hold a tile")
+    offset_column, offset_row = drop[0] - grabbed[0], drop[1] - grabbed[1]
+    copies = {(column, row): (column + offset_column, row + offset_row) for column, row in selected_set}
+    if any(column < 0 or row < 0 or (column, row) in occupied_set for column, row in copies.values()):
+        return None
+    return copies
 
 
 def can_place_unplaced_tile(occupied: Iterable[Coordinate], target: Coordinate) -> bool:
@@ -1535,42 +1578,128 @@ class AtlasProject:
         return None
 
     def purge_tile(self, coordinate: Coordinate) -> None:
-        """Delete a tile for good: its PNG file, if it has one, and every entry about it in atlas.json (its place,
-        its name and any pixels stored there). Unsaved changes and the tile's edit history go with it, and the
-        tile does not become an unplaced one. Works for an error tile too.
+        self.purge_tiles([coordinate])
 
-        Raises KeyError if no tile is at `coordinate`, and OSError if the disk refuses; then nothing has changed.
-        The file is first moved aside under a temporary name, so that it can come back if atlas.json cannot be
-        written, and is deleted only once atlas.json no longer lists it.
+    def purge_tiles(self, coordinates: Iterable[Coordinate]) -> None:
+        """Delete tiles for good: their PNG files, those that have one, and every entry about them in atlas.json
+        (their places, names and any pixels stored there), written at once. Unsaved changes and the tiles' edit
+        histories go with them, and the tiles do not become unplaced ones. Works for error tiles too.
+
+        All or none: raises KeyError if a place has no tile, and OSError if the disk refuses; then nothing has
+        changed. The files are first moved aside under temporary names, so that they can come back if one cannot
+        be moved or atlas.json cannot be written, and are deleted only once atlas.json no longer lists them.
         """
-        record = self.tiles[coordinate]
-        path = self._find_tile_file(record.name)
-        held_aside: Optional[Path] = None
-        if path is not None:
-            held_aside = path.with_name(f"{TEMPORARY_FILE_PREFIX}{os.urandom(6).hex()}{TEMPORARY_FILE_SUFFIX}")
-            os.rename(path, held_aside)
+        coordinates = list(dict.fromkeys(coordinates))
+        records = [self.tiles[coordinate] for coordinate in coordinates]
+        if not records:
+            return
+        held_aside: list[tuple[Path, Path]] = []
 
         def change() -> None:
-            del self.tiles[coordinate]
-            self.selection.discard(coordinate)
+            for coordinate in coordinates:
+                del self.tiles[coordinate]
+                self.selection.discard(coordinate)
 
         try:
+            for record in records:
+                path = self._find_tile_file(record.name)
+                if path is not None:
+                    held = path.with_name(f"{TEMPORARY_FILE_PREFIX}{os.urandom(6).hex()}{TEMPORARY_FILE_SUFFIX}")
+                    os.rename(path, held)
+                    held_aside.append((path, held))
             self._commit(change)
         except BaseException:
-            if path is not None:
+            for path, held in reversed(held_aside):
                 try:
-                    os.rename(held_aside, path)
+                    os.rename(held, path)
                 except OSError:
-                    logger.warning("could not give %s back its name %s", held_aside.name, path.name)
+                    logger.warning("could not give %s back its name %s", held.name, path.name)
             raise
-        self.history.forget(record)
-        self.existing_names.discard(record.name.casefold())
-        if held_aside is not None:
+        for record in records:
+            self.history.forget(record)
+            self.existing_names.discard(record.name.casefold())
+        for path, held in held_aside:
             try:
-                os.unlink(held_aside)
+                os.unlink(held)
             except OSError as error:
                 # atlas.json no longer lists the tile, and the leftover is not a tile image, so nothing depends on it.
-                logger.warning("%s was purged but its leftover %s could not be deleted: %s", record.name, held_aside.name, error)
+                logger.warning("%s was purged but its leftover %s could not be deleted: %s", path.name, held.name, error)
+
+    def _taken_names(self) -> set[str]:
+        """Lower-cased names a new tile cannot have: every PNG file in the folder and the name of every tile."""
+        return set(self.existing_names) | {record.name.casefold() for record in self.tiles.values()}
+
+    def create_tile(self, coordinate: Coordinate) -> str:
+        """Add an empty (fully transparent) tile at an empty place and select it. It has no file yet: its pixels are
+        kept in atlas.json until it is saved. Returns its name (NEW_TILE_NAME, numbered if that is taken).
+
+        Raises ValueError for a negative place or one that has a tile, and OSError (nothing changes) if atlas.json
+        cannot be written.
+        """
+        if coordinate[0] < 0 or coordinate[1] < 0:
+            raise ValueError("a tile cannot be at a negative place")
+        if coordinate in self.tiles:
+            raise ValueError(f"there is a tile at {format_coordinate(coordinate)} already")
+        name = make_unique_name(NEW_TILE_NAME, self._taken_names())
+
+        def change() -> None:
+            self.tiles[coordinate] = TileRecord(name, numpy.zeros((self.tile_size, self.tile_size, 4), dtype=numpy.uint8), None)
+            self.selection = {coordinate}
+
+        self._commit(change)
+        return name
+
+    def plan_duplicate(self, grabbed: Coordinate, drop: Coordinate) -> Optional[dict[Coordinate, Coordinate]]:
+        """Where the copies of the selected tiles would go (see plan_copy), or None if they cannot be made there:
+        a copy would land on a tile or at a negative place, or a selected tile is an error tile and has no pixels."""
+        places = plan_copy(self.tiles, self.selection, grabbed, drop)
+        if places is None or any(self.tiles[original].error is not None for original in places):
+            return None
+        return places
+
+    def duplicate_selection(self, grabbed: Coordinate, drop: Coordinate) -> bool:
+        """Copy the selected tiles by dragging them by `grabbed` and letting go over `drop` (see plan_copy). False if
+        that is refused: a copy would land on a tile or at a negative place, or a selected tile is an error tile.
+
+        Each copy is named "<name> (copy).png" (see copy_name), is saved as a file at once with the pixels its tile
+        shows now (unsaved edits included), and is selected afterwards; the originals are left as they were.
+        Raises ValueError if a copy's name would not be allowed, FileExistsError if a file with a copy's name
+        appeared in the folder since it was read, and OSError if a file or atlas.json cannot be written; then
+        nothing has changed (the files already written are deleted again).
+        """
+        places = self.plan_duplicate(grabbed, drop)
+        if places is None:
+            return False
+        taken = self._taken_names()
+        copies: dict[Coordinate, TileRecord] = {}
+        for original in sorted(places, key=reading_order_key):
+            source = self.tiles[original]
+            name = copy_name(source.name, taken)
+            taken.add(name.casefold())
+            copies[places[original]] = TileRecord(name, source.pixels.copy(), source.pixels.copy())
+
+        def change() -> None:
+            self.tiles.update(copies)
+            self.selection = set(copies)
+
+        written: list[Path] = []
+        try:
+            for record in copies.values():
+                path = self.folder / record.name
+                if path.exists():
+                    raise FileExistsError(f"{record.name} already exists in the folder")
+                write_png_atomically(path, record.pixels)
+                written.append(path)
+            self._commit(change)
+        except BaseException:
+            for path in written:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    logger.warning("could not delete %s, which was written for a copy that failed", path.name)
+            raise
+        self.existing_names |= {record.name.casefold() for record in copies.values()}
+        return True
 
 
 class QuitDialog:
@@ -1634,16 +1763,26 @@ class QuitDialog:
 
 @dataclasses.dataclass(frozen=True)
 class ContextMenu:
-    """The menu opened by right-clicking the tile at `coordinate`; it has one item, "Purge tile...". `position` is
-    where the pointer was."""
+    """The menu opened by right-clicking the atlas at `position`; it has one item.
+
+    Over a tile the item purges `purges` (the selected tiles when the tile is one of them, else just that tile).
+    Over an empty place (`coordinate`, with nothing in `purges`) it makes a new tile there.
+    """
 
     coordinate: Coordinate
     position: tuple[int, int]
+    purges: tuple[Coordinate, ...] = ()
+
+    @property
+    def label(self) -> str:
+        if not self.purges:
+            return "New tile"
+        return "Purge tile..." if len(self.purges) == 1 else f"Purge {len(self.purges)} tiles..."
 
 
 def context_menu_area(menu: ContextMenu, window_size: tuple[int, int]) -> pygame.Rect:
     """Where the menu's item is: at the pointer, moved back inside the window if it would stick out."""
-    area = pygame.Rect(menu.position, (scaled(130), scaled(30)))
+    area = pygame.Rect(menu.position, (scaled(150), scaled(30)))
     area.right = min(area.right, window_size[0])
     area.bottom = min(area.bottom, window_size[1])
     area.x, area.y = max(area.x, 0), max(area.y, 0)
@@ -1651,30 +1790,41 @@ def context_menu_area(menu: ContextMenu, window_size: tuple[int, int]) -> pygame
 
 
 class PurgeDialog:
-    """The warning before a tile is purged (see AtlasProject.purge_tile). confirm() and cancel() return "done",
+    """The warning before tiles are purged (see AtlasProject.purge_tiles). confirm() and cancel() return "done",
     "ask" (the disk refused: the dialog stays, showing `error`) or "cancel"."""
 
-    def __init__(self, project: AtlasProject, coordinate: Coordinate):
+    def __init__(self, project: AtlasProject, coordinates: Iterable[Coordinate]):
         self.project = project
-        self.coordinate = coordinate
-        self.record = project.tiles[coordinate]
+        self.coordinates = sorted(coordinates, key=reading_order_key)
+        self.records = [project.tiles[coordinate] for coordinate in self.coordinates]
         self.error = ""
 
     @property
-    def name(self) -> str:
-        return self.record.name
+    def subject(self) -> str:
+        """The tile's name, or how many tiles there are."""
+        return self.records[0].name if len(self.records) == 1 else f"{len(self.records)} tiles"
 
     @property
     def title(self) -> str:
-        return f"Purge {self.name}?"
+        return f"Purge {self.subject}?"
+
+    @property
+    def done_message(self) -> str:
+        return f"Purged {self.subject}."
 
     @property
     def message(self) -> str:
-        if self.record.is_new:
+        if len(self.records) > 1:
+            has_files = any(not record.is_new for record in self.records)
+            deleted = "Deletes their files and their entries in atlas.json" if has_files else "Deletes their entries in atlas.json"
+            deleted += ", and the unsaved changes." if any(record.is_modified for record in self.records) else "."
+            return f"{deleted} This cannot be undone."
+        record = self.records[0]
+        if record.is_new:
             deleted = "Deletes its entries in atlas.json, with its unsaved pixels."
-        elif self.record.error is not None:
+        elif record.error is not None:
             deleted = "Deletes the file, if there is one, and its entries in atlas.json."
-        elif self.record.is_modified:
+        elif record.is_modified:
             deleted = "Deletes the file and its entries in atlas.json, and the unsaved changes."
         else:
             deleted = "Deletes the file and its entries in atlas.json."
@@ -1682,9 +1832,9 @@ class PurgeDialog:
 
     def confirm(self) -> str:
         try:
-            self.project.purge_tile(self.coordinate)
+            self.project.purge_tiles(self.coordinates)
         except OSError as error:
-            self.error = f"Could not purge {self.name}: {error}"
+            self.error = f"Could not purge {self.subject}: {error}"
             return "ask"
         return "done"
 
@@ -2962,12 +3112,16 @@ class Drag:
     drop_coordinate: Optional[Coordinate] = None
     drops_on_unplaced: bool = False
     drop_is_valid: bool = False
+    # Dragged with Ctrl held down: the selected tiles are copied to the drop place instead of moved.
+    duplicates: bool = False
 
 
 class AtlasInteraction:
-    """Mouse handling for the atlas and the unplaced section: selecting, and dragging tiles to rearrange them.
+    """Mouse handling for the atlas and the unplaced section: selecting, and dragging tiles to rearrange them
+    (or, with Ctrl held down, to copy them).
 
     It knows nothing about drawing; the window passes in mouse positions and reads `drag` to draw feedback.
+    `notice` is what the last copy did or why it could not be made, for the status line; the window clears it.
     """
 
     def __init__(self, project: AtlasProject, atlas_panel: AtlasPanel, unplaced_panel: UnplacedPanel):
@@ -2975,6 +3129,7 @@ class AtlasInteraction:
         self.atlas_panel = atlas_panel
         self.unplaced_panel = unplaced_panel
         self.drag: Optional[Drag] = None
+        self.notice = ""
 
     @property
     def dragging(self) -> bool:
@@ -2997,7 +3152,7 @@ class AtlasInteraction:
                 click_action = "select_only"
             else:
                 self.project.select_only(coordinate)
-            self.drag = Drag("atlas", position, grabbed_coordinate=coordinate, click_action=click_action)
+            self.drag = Drag("atlas", position, grabbed_coordinate=coordinate, click_action=click_action, duplicates=control_held)
         elif self.unplaced_panel.rect.collidepoint(position):
             index = self.unplaced_panel.tile_at(position)
             if index is not None:
@@ -3020,13 +3175,16 @@ class AtlasInteraction:
         if drag.source == "atlas":
             if self.unplaced_panel.rect.collidepoint(position):
                 drag.drops_on_unplaced = True
-                drag.drop_is_valid = self.project.can_return_to_unplaced(self.project.selection)
+                drag.drop_is_valid = not drag.duplicates and self.project.can_return_to_unplaced(self.project.selection)
             elif self.atlas_panel.rect.collidepoint(position):
                 drag.drop_coordinate = self.atlas_panel.drop_coordinate(position)
-                moves = plan_group_move(
-                    self.project.tiles, self.project.selection, drag.grabbed_coordinate, drag.drop_coordinate
-                )
-                drag.drop_is_valid = moves is not None
+                if drag.duplicates:
+                    drag.drop_is_valid = self.project.plan_duplicate(drag.grabbed_coordinate, drag.drop_coordinate) is not None
+                else:
+                    moves = plan_group_move(
+                        self.project.tiles, self.project.selection, drag.grabbed_coordinate, drag.drop_coordinate
+                    )
+                    drag.drop_is_valid = moves is not None
         elif self.atlas_panel.rect.collidepoint(position):
             drag.drop_coordinate = self.atlas_panel.drop_coordinate(position)
             drag.drop_is_valid = can_place_unplaced_tile(self.project.tiles, drag.drop_coordinate)
@@ -3045,6 +3203,8 @@ class AtlasInteraction:
             if drag.source == "atlas":
                 if drag.drops_on_unplaced:
                     self.project.return_to_unplaced(self.project.selection)
+                elif drag.duplicates:
+                    self._duplicate(drag)
                 else:
                     self.project.move_selection(drag.grabbed_coordinate, drag.drop_coordinate)
             else:
@@ -3056,6 +3216,18 @@ class AtlasInteraction:
             self.project.toggle_selection(drag.grabbed_coordinate)
         elif drag.click_action == "clear":
             self.project.clear_selection()
+
+    def _duplicate(self, drag: Drag) -> None:
+        """Copy the selected tiles to the drop place. Raises OSError if a file or atlas.json could not be written
+        (nothing has changed)."""
+        try:
+            copied = self.project.duplicate_selection(drag.grabbed_coordinate, drag.drop_coordinate)
+        except ValueError as error:
+            self.notice = f"Could not copy: {error}"
+            return
+        if copied:
+            names = [self.project.tiles[coordinate].name for coordinate in self.project.selection]
+            self.notice = f"Copied to {names[0]}." if len(names) == 1 else f"Copied {len(names)} tiles."
 
     def cancel(self) -> None:
         self.drag = None
@@ -4236,19 +4408,27 @@ class Application:
         return context_menu_area(self.context_menu, self.surface.get_size())
 
     def _open_context_menu(self, position: tuple[int, int]) -> None:
-        """Right-click: offer to purge the atlas tile under the pointer (nothing happens over anything else)."""
+        """Right-click in the atlas. Over a tile the menu offers to purge it, or all the selected tiles when it is one
+        of them. Over an empty place it offers a new tile there. Nothing else opens a menu."""
         if not self.atlas_panel.rect.collidepoint(position):
             return
         coordinate = self.atlas_panel.tile_at(position)
-        if coordinate is None:
-            return
+        purges: tuple[Coordinate, ...] = ()
+        if coordinate is not None:
+            selection = self.project.selection
+            purges = tuple(sorted(selection, key=reading_order_key)) if coordinate in selection else (coordinate,)
+        else:
+            # A place owns half of the gap around it, so the gap beside a tile is not an empty place.
+            coordinate = self.atlas_panel.drop_coordinate(position)
+            if coordinate[0] < 0 or coordinate[1] < 0 or coordinate in self.project.tiles:
+                return
         self.message = ""
         self.editor.lose_focus()
         self._leave_tile_size_field()
         # As for a left click: a pasted picture is placed while its tiles are still the ones shown.
         self.editor.finish_selection()
         self.interaction.cancel()
-        self.context_menu = ContextMenu(coordinate, position)
+        self.context_menu = ContextMenu(coordinate, position, purges)
 
     def _handle_menu_event(self, event: pygame.event.Event) -> None:
         """While the menu is open it gets every event; any click but one on its item, or Esc, closes it."""
@@ -4262,9 +4442,13 @@ class Application:
             self.pointer = event.pos
         elif event.type == pygame.MOUSEBUTTONDOWN:
             self.pointer = event.pos
-            if event.button == 1 and self.context_menu_area().collidepoint(event.pos):
-                self.purge_dialog = PurgeDialog(self.project, menu.coordinate)
+            chosen = event.button == 1 and self.context_menu_area().collidepoint(event.pos)
             self.context_menu = None
+            if chosen and menu.purges:
+                self.purge_dialog = PurgeDialog(self.project, menu.purges)
+            elif chosen:
+                name = self.project.create_tile(menu.coordinate)
+                self.message = f"Created {name}. It is not saved as a file yet (Ctrl+S)."
         elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             self.context_menu = None
 
@@ -4289,7 +4473,7 @@ class Application:
         elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             outcome = dialog.cancel()
         if outcome == "done":
-            self.message = f"Purged {dialog.name}."
+            self.message = dialog.done_message
         if outcome != "ask":
             self.purge_dialog = None
 
@@ -4414,6 +4598,8 @@ class Application:
             self.editor.mouse_up(event.button, event.pos)
             if event.button == 1:
                 self.interaction.mouse_up(event.pos)
+                if self.interaction.notice:
+                    self.message, self.interaction.notice = self.interaction.notice, ""
         elif event.type == pygame.MOUSEWHEEL:
             if self.editor.contains(self.pointer):
                 self.editor.wheel(event.y, self.pointer)
@@ -4557,7 +4743,7 @@ class Application:
         hovered = area.collidepoint(self.pointer)
         pygame.draw.rect(self.surface, Theme.BUTTON_HOVERED if hovered else Theme.TOOLTIP_BACKGROUND, area, border_radius=3)
         pygame.draw.rect(self.surface, Theme.PANEL_BORDER, area, width=1, border_radius=3)
-        draw_text(self.surface, self.fonts.normal, "Purge tile...", Theme.TEXT, (area.x + scaled(10), area.centery), "midleft")
+        draw_text(self.surface, self.fonts.normal, self.context_menu.label, Theme.TEXT, (area.x + scaled(10), area.centery), "midleft")
 
     def draw_purge_dialog(self, dialog: PurgeDialog) -> None:
         surface = self.surface
@@ -4729,11 +4915,11 @@ class Application:
 
     def draw_atlas(self) -> None:
         panel = self.atlas_panel
-        # The tile a menu or a purge warning is about.
-        purge_target = (
-            self.context_menu.coordinate if self.context_menu is not None
-            else self.purge_dialog.coordinate if self.purge_dialog is not None
-            else None
+        # The tiles a menu or a purge warning is about.
+        purge_targets = (
+            self.context_menu.purges if self.context_menu is not None
+            else tuple(self.purge_dialog.coordinates) if self.purge_dialog is not None
+            else ()
         )
         self.draw_panel_frame(panel.rect)
         self.surface.set_clip(panel.rect)
@@ -4745,8 +4931,11 @@ class Application:
             self.draw_tile(rectangle, record, record.pixels, (id(record), record.revision))
             if coordinate in self.project.selection:
                 pygame.draw.rect(self.surface, Theme.ACCENT, rectangle.inflate(6, 6), width=2)
-            if coordinate == purge_target:
+            if coordinate in purge_targets:
                 pygame.draw.rect(self.surface, Theme.INVALID, rectangle.inflate(6, 6), width=2)
+        if self.context_menu is not None and not self.context_menu.purges:
+            # The empty place where the menu's new tile would be made.
+            draw_dashed_outline(self.surface, panel.tile_screen_rect(self.context_menu.coordinate).inflate(6, 6))
         if self.project.is_empty:
             self.draw_empty_state()
         self.surface.set_clip(None)
