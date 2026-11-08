@@ -826,6 +826,18 @@ def thick_line_mask(canvas_shape: tuple[int, int], start: Coordinate, end: Coord
     return mask
 
 
+def one_pixel_line_mask(canvas_shape: tuple[int, int], pixel: Coordinate, width: int, horizontal: bool) -> numpy.ndarray:
+    """A horizontal or vertical line that is one pixel long: one pixel of its length, `width` pixels thick.
+
+    A horizontal line is one column wide and `width` rows tall, a vertical line one row tall and `width` columns
+    wide, which is what the first pixel of a longer line of that width looks like (thick_line_mask can only make a
+    square of `width` pixels for a line with no length, because it cannot tell which way the line goes).
+    """
+    mask = numpy.zeros(canvas_shape, dtype=bool)
+    stamp_rectangle(mask, pixel[0], pixel[1], 1 if horizontal else width, width if horizontal else 1)
+    return mask
+
+
 def horizontal_parallelogram_mask(
     canvas_shape: tuple[int, int], start: Coordinate, end: Coordinate, width: int
 ) -> numpy.ndarray:
@@ -2021,12 +2033,15 @@ TOOL_LABELS = {
     "select": "Select",
     "eyedropper": "Eye dropper",
     "fill": "Fill bucket",
+    "rotate": "Rotate row/column",
 }
 BRUSH_TOOLS = ("pencil", "eraser")
 LINE_TOOLS = ("line", "horizontal_line", "vertical_line", "horizontal_parallelogram", "vertical_parallelogram")
 # The noise brush and the air brush have one diameter each, changed with the bracket keys.
 DIAMETER_TOOLS = ("noise_brush", "airbrush")
-STROKE_TOOLS = BRUSH_TOOLS + LINE_TOOLS + DIAMETER_TOOLS + ("fill",)
+# The tools whose press, drag and release is a CanvasSession. The eraser and the rotate tool do not paint a color.
+STROKE_TOOLS = BRUSH_TOOLS + LINE_TOOLS + DIAMETER_TOOLS + ("fill", "rotate")
+COLORLESS_TOOLS = ("eraser", "rotate")
 BRUSH_SHAPES = ("circle", "square")
 # The sliders each brush shows: (name of the setting in ToolSettings.fractions, label).
 SLIDERS = {
@@ -2124,6 +2139,7 @@ class CanvasSession:
         self.wrap = wrap
         self.layout = layout
         self.tool = tool
+        self.uses_color = tool not in COLORLESS_TOOLS
         self.color = TRANSPARENT if tool == "eraser" else color
         self.base = layout.pixels
         self.pixels = layout.pixels.copy()
@@ -2152,8 +2168,40 @@ class CanvasSession:
             self._stamp_air_path(start, start)
         elif tool == "fill":
             self._paint(flood_fill_mask(self.base, start[0], start[1], layout.editable_mask, wrap))
+        elif tool == "rotate":
+            self._find_rotation_line()
+            self._preview_rotation(start)
         else:
             self._preview_shape(start)
+
+    def _find_rotation_line(self) -> None:
+        """Find the tile of the pressed pixel: the row and the column that can rotate lie inside it, whichever other
+        tiles are shown. `_rotated_pixel` is the pressed pixel in the canvas and `_tile_left_top` the tile's corner;
+        both are None when the press is outside the canvas (without wrap-assist) or over an empty place."""
+        height, width = self.shape
+        column, row = wrap_pixel(self.start, self.shape) if self.wrap else self.start
+        self._rotated_pixel: Optional[Coordinate] = None
+        self._tile_left_top = (0, 0)
+        if 0 <= column < width and 0 <= row < height and self.layout.editable_mask[row, column]:
+            size = self.layout.tile_size
+            self._rotated_pixel = (column, row)
+            self._tile_left_top = (column // size * size, row // size * size)
+
+    def _preview_rotation(self, pixel: Coordinate) -> None:
+        """Rotate the row of the pressed pixel if the pointer is further from it sideways than up or down (also
+        when equally far), else its column, by as many pixels as the pointer is away. Always worked out from the
+        pixels as they were, so moving back undoes it."""
+        self.pixels = self.base.copy()
+        if self._rotated_pixel is None:
+            return
+        column, row = self._rotated_pixel
+        left, top = self._tile_left_top
+        size = self.layout.tile_size
+        delta_column, delta_row = pixel[0] - self.start[0], pixel[1] - self.start[1]
+        if abs(delta_column) >= abs(delta_row):
+            self.pixels[row, left : left + size] = numpy.roll(self.base[row, left : left + size], delta_column, axis=0)
+        else:
+            self.pixels[top : top + size, column] = numpy.roll(self.base[top : top + size, column], delta_row, axis=0)
 
     def _paint(self, mask: numpy.ndarray) -> None:
         apply_color_to_mask(self.pixels, mask & self.layout.editable_mask, self.color)
@@ -2213,8 +2261,12 @@ class CanvasSession:
             if self.tool == "line":
                 return thick_line_mask(shape, start, end, self.line_width)
             if self.tool == "horizontal_line":
+                if end[0] == start[0]:
+                    return one_pixel_line_mask(shape, start, self.line_width, horizontal=True)
                 return thick_line_mask(shape, start, (end[0], start[1]), self.line_width)
             if self.tool == "vertical_line":
+                if end[1] == start[1]:
+                    return one_pixel_line_mask(shape, start, self.line_width, horizontal=False)
                 return thick_line_mask(shape, start, (start[0], end[1]), self.line_width)
             if self.tool == "horizontal_parallelogram":
                 return horizontal_parallelogram_mask(shape, start, end, self.line_width)
@@ -2239,6 +2291,8 @@ class CanvasSession:
             self._stamp_air_path(self.last, pixel)
         elif self.tool in LINE_TOOLS:
             self._preview_shape(pixel)
+        elif self.tool == "rotate":
+            self._preview_rotation(pixel)
         self.last = pixel
 
     @property
@@ -2905,6 +2959,14 @@ def draw_tool_icon(surface: pygame.Surface, tool: str, rectangle: pygame.Rect, c
         polygon([(3, 12), (10, 19), (11, 20), (6, 15)])
         polygon([(21, 13), (23, 17), (19, 17)])
         dot(21, 18, 2)
+    elif tool == "rotate":
+        # Arrows to the four sides: a row or a column can be dragged.
+        line((5, 12), (19, 12))
+        line((12, 5), (12, 19))
+        polygon([(2, 12), (7, 8), (7, 16)])
+        polygon([(22, 12), (17, 8), (17, 16)])
+        polygon([(12, 2), (8, 7), (16, 7)])
+        polygon([(12, 22), (8, 17), (16, 17)])
 
 
 def draw_slider(surface: pygame.Surface, rectangle: pygame.Rect, label: str, fraction: float, font: pygame.font.Font) -> None:
@@ -3239,8 +3301,14 @@ class AtlasInteraction:
 
 
 # The checkbox buttons in the thin sidebar right of the canvas: their names and what they show on the button.
-SIDEBAR_BUTTONS = {"wrap": "W"}
-SIDEBAR_BUTTON_HINTS = {"wrap": "Wrap assist: show the tile as a repeating grid, and let strokes wrap around its edges"}
+SIDEBAR_BUTTONS = {"wrap": "W", "pixel_grid": "Pg", "tile_grid": "Tg"}
+SIDEBAR_BUTTON_HINTS = {
+    "wrap": "Wrap assist: show the tile as a repeating grid, and let strokes wrap around its edges",
+    "pixel_grid": "Pixel grid: lines between the pixels (shown when zoomed in far enough)",
+    "tile_grid": "Tile grid: lines around the tiles (not drawn while wrap assist is on)",
+}
+# The pixel grid is drawn when the canvas is zoomed in at least this far (screen pixels per canvas pixel).
+PIXEL_GRID_MINIMUM_ZOOM = 6
 # With wrap-assist on, the canvas is zoomed to fit this many copies of itself across and down.
 WRAP_PREVIEW_COPIES = 3
 
@@ -3374,6 +3442,9 @@ class EditorPanel:
         self.slider_drag: Optional[str] = None
         # Wrap-assist: the canvas is shown as a grid of copies of itself, and strokes wrap around its edges.
         self.wrap_assist = False
+        # The lines between pixels and the lines around tiles, each on or off.
+        self.pixel_grid = True
+        self.tile_grid = True
         # While the select tool is used with wrap-assist, positions are counted from the copy of the canvas where the
         # press was, so that a rectangle can be dragged inside any copy.
         self._copy_offset = (0, 0)
@@ -3428,8 +3499,21 @@ class EditorPanel:
                 return name
         return None
 
+    def toggle_sidebar_button(self, name: str) -> None:
+        if name == "wrap":
+            self.toggle_wrap_assist()
+        elif name == "pixel_grid":
+            self.pixel_grid = not self.pixel_grid
+        elif name == "tile_grid":
+            self.tile_grid = not self.tile_grid
+
     def sidebar_button_checked(self, name: str) -> bool:
-        return name == "wrap" and self.wrap_assist
+        return {"wrap": self.wrap_assist, "pixel_grid": self.pixel_grid, "tile_grid": self.tile_grid}[name]
+
+    def sidebar_button_enabled(self, name: str) -> bool:
+        """False for a checkbox whose setting has no effect now: wrap-assist draws no tile lines. It can still be
+        clicked, and the setting is kept for when it has an effect again."""
+        return not (name == "tile_grid" and self.wrap_assist)
 
     def sync(self) -> None:
         """Rebuild the canvas when the selection or the pixels of the selected tiles have changed."""
@@ -3608,8 +3692,9 @@ class EditorPanel:
             if areas.hex_field.collidepoint(position):
                 self.hex_focused = True
                 return
-            if self.sidebar_button_at(position) == "wrap":
-                self.toggle_wrap_assist()
+            sidebar_button = self.sidebar_button_at(position)
+            if sidebar_button is not None:
+                self.toggle_sidebar_button(sidebar_button)
                 return
             for tool, rectangle in areas.tool_buttons.items():
                 if rectangle.collidepoint(position):
@@ -3752,7 +3837,7 @@ class EditorPanel:
         except OSError as error:
             self.message = f"Could not save {ATLAS_FILE_NAME}: {error}"
             return
-        if session.tool != "eraser":
+        if session.uses_color:
             self.colors.remember(session.color)
         self.sync()
 
@@ -4063,12 +4148,12 @@ class EditorPanel:
             y = view.pixel_rectangle(0, row).y - area.y
             pygame.draw.line(overlay, color, (image.left, y), (image.right, y))
 
-        if view.zoom >= 6:
+        if self.pixel_grid and view.zoom >= PIXEL_GRID_MINIMUM_ZOOM:
             for column in range(first_column, last_column + 1):
                 vertical_line(column, (150, 156, 168, 46))
             for row in range(first_row, last_row + 1):
                 horizontal_line(row, (150, 156, 168, 46))
-        if not self.wrap_assist:
+        if self.tile_grid and not self.wrap_assist:
             # With wrap-assist nothing marks where the tile ends: the copies run into each other.
             size = layout.tile_size
             for column in range(0, width + 1, size):
@@ -4121,12 +4206,17 @@ class EditorPanel:
         pygame.draw.rect(surface, Theme.PANEL_BORDER, self.areas.sidebar, width=1, border_radius=4)
         for name, rectangle in self.areas.sidebar_buttons.items():
             # Checked: the whole button is blue. Unchecked: it is empty, with only its outline (lit while the pointer is on it).
-            checked = self.sidebar_button_checked(name)
+            # A button whose setting has no effect now is dimmed.
+            checked, enabled = self.sidebar_button_checked(name), self.sidebar_button_enabled(name)
             if checked:
-                pygame.draw.rect(surface, Theme.ACCENT, rectangle, border_radius=4)
-            outline = Theme.ACCENT if checked else Theme.TEXT_DIMMED if rectangle.collidepoint(self.pointer) else Theme.PANEL_BORDER
+                pygame.draw.rect(surface, Theme.ACCENT if enabled else Theme.SLIDER_FILL, rectangle, border_radius=4)
+            outline = Theme.ACCENT if checked and enabled else Theme.TEXT_DIMMED if rectangle.collidepoint(self.pointer) else Theme.PANEL_BORDER
             pygame.draw.rect(surface, outline, rectangle, width=1, border_radius=4)
-            draw_text(surface, self.fonts.large, SIDEBAR_BUTTONS[name], Theme.BACKGROUND if checked else Theme.TEXT, rectangle.center, "center")
+            if not enabled:
+                text_color = Theme.DISABLED_TEXT
+            else:
+                text_color = Theme.BACKGROUND if checked else Theme.TEXT
+            draw_text(surface, self.fonts.large, SIDEBAR_BUTTONS[name], text_color, rectangle.center, "center")
 
     def options_text(self) -> str:
         if self.tool in DIAMETER_TOOLS:
@@ -4140,6 +4230,8 @@ class EditorPanel:
             return f"Size {width} x {height}     [ ] both    Shift+[ ] width    Alt+[ ] height"
         if self.tool in LINE_TOOLS:
             return f"Width {self.settings.line_width}     [ ] change"
+        if self.tool == "rotate":
+            return "Drag a pixel sideways to rotate its row, up or down to rotate its column"
         return ""
 
     def tool_at(self, position: tuple[int, int]) -> Optional[str]:

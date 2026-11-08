@@ -2369,6 +2369,147 @@ class CanvasSessionTests(unittest.TestCase):
         self.assertIsNone(va.pick_color(layout, (5 + 12, 1), wrap=True), "an empty place in another copy")
         self.assertIsNone(va.pick_color(layout, (13, 1)), "without wrap the other copies do not exist")
 
+    # One-pixel lines ------------------------------------------------------------------------------------
+
+    def line_settings(self, width):
+        settings = va.ToolSettings()
+        settings.line_width = width
+        return settings
+
+    def test_a_horizontal_line_one_pixel_long_is_one_column_as_tall_as_the_width(self):
+        for width, rows in [(1, [4]), (2, [3, 4]), (3, [3, 4, 5]), (4, [2, 3, 4, 5])]:
+            session = self.start(self.layout(), "horizontal_line", (4, 4), settings=self.line_settings(width))
+            self.assertEqual(self.painted(session), {(4, row) for row in rows}, width)
+
+    def test_a_vertical_line_one_pixel_long_is_one_row_as_wide_as_the_width(self):
+        for width, columns in [(1, [4]), (2, [3, 4]), (3, [3, 4, 5]), (4, [2, 3, 4, 5])]:
+            session = self.start(self.layout(), "vertical_line", (4, 4), settings=self.line_settings(width))
+            self.assertEqual(self.painted(session), {(column, 4) for column in columns}, width)
+
+    def test_the_one_pixel_line_is_the_first_pixel_of_a_longer_line_of_the_same_width(self):
+        for width in (1, 2, 3):
+            settings = self.line_settings(width)
+            one = self.painted(self.start(self.layout(), "horizontal_line", (4, 4), settings=settings))
+            two_session = self.start(self.layout(), "horizontal_line", (4, 4), settings=settings)
+            two_session.move((5, 4))
+            self.assertEqual(self.painted(two_session), one | {(column + 1, row) for column, row in one}, width)
+            one = self.painted(self.start(self.layout(), "vertical_line", (4, 4), settings=settings))
+            two_session = self.start(self.layout(), "vertical_line", (4, 4), settings=settings)
+            two_session.move((4, 5))
+            self.assertEqual(self.painted(two_session), one | {(column, row + 1) for column, row in one}, width)
+
+    def test_dragging_a_line_away_and_back_to_where_it_started_leaves_the_one_pixel_line(self):
+        settings = self.line_settings(3)
+        session = self.start(self.layout(), "horizontal_line", (4, 4), settings=settings)
+        session.move((7, 6))
+        session.move((4, 6))
+        self.assertEqual(self.painted(session), {(4, 3), (4, 4), (4, 5)})
+
+    def test_the_free_line_tool_still_makes_a_square_dot_when_it_is_no_longer_than_a_pixel(self):
+        session = self.start(self.layout(), "line", (4, 4), settings=self.line_settings(3))
+        self.assertEqual(self.painted(session), {(column, row) for column in (3, 4, 5) for row in (3, 4, 5)})
+
+    def test_a_one_pixel_long_line_wraps_like_any_other(self):
+        settings = self.line_settings(3)
+        session = self.wrapped(self.layout(4), "horizontal_line", (3, 3), settings=settings)
+        self.assertEqual(self.painted(session), {(3, 2), (3, 3), (3, 0)})
+        session = self.wrapped(self.layout(4), "vertical_line", (0, 0), settings=settings)
+        self.assertEqual(self.painted(session), {(3, 0), (0, 0), (1, 0)})
+
+    # The rotate tool: drag a pixel to rotate its row or its column --------------------------------------
+
+    def rotating_layout(self):
+        return va.compose_canvas({(0, 0): random_tile(3, 8)}, 8)
+
+    def rotated(self, layout, pixel, *moves, **keywords):
+        session = self.start(layout, "rotate", pixel, **keywords)
+        for move in moves:
+            session.move(move)
+        return session
+
+    def test_pressing_without_dragging_changes_nothing(self):
+        session = self.rotated(self.rotating_layout(), (2, 3))
+        self.assertFalse(session.changed)
+
+    def test_dragging_sideways_rotates_the_pixel_row_of_the_tile_and_nothing_else(self):
+        layout = self.rotating_layout()
+        for shift in (3, -2, 8, 10, -11):
+            session = self.rotated(layout, (2, 3), (2 + shift, 3))
+            expected = layout.pixels.copy()
+            expected[3] = numpy.roll(layout.pixels[3], shift, axis=0)
+            self.assertTrue(numpy.array_equal(session.pixels, expected), shift)
+
+    def test_dragging_up_or_down_rotates_the_pixel_column_of_the_tile_and_nothing_else(self):
+        layout = self.rotating_layout()
+        for shift in (3, -2, 8, 10, -11):
+            session = self.rotated(layout, (5, 2), (5, 2 + shift))
+            expected = layout.pixels.copy()
+            expected[:, 5] = numpy.roll(layout.pixels[:, 5], shift, axis=0)
+            self.assertTrue(numpy.array_equal(session.pixels, expected), shift)
+
+    def test_the_pixel_that_was_pressed_follows_the_pointer(self):
+        layout = self.rotating_layout()
+        session = self.rotated(layout, (2, 3), (6, 3))
+        self.assertTrue(numpy.array_equal(session.pixels[3, 6], layout.pixels[3, 2]))
+        session = self.rotated(layout, (5, 6), (5, 1))
+        self.assertTrue(numpy.array_equal(session.pixels[1, 5], layout.pixels[6, 5]))
+
+    def test_the_axis_is_the_one_the_pointer_moved_further_along_and_a_tie_rotates_the_row(self):
+        layout = self.rotating_layout()
+        row = self.rotated(layout, (2, 3), (5, 4))
+        self.assertTrue(numpy.array_equal(row.pixels[3], numpy.roll(layout.pixels[3], 3, axis=0)))
+        self.assertTrue(numpy.array_equal(row.pixels[:, 2][[0, 1, 2, 4, 5]], layout.pixels[:, 2][[0, 1, 2, 4, 5]]))
+        column = self.rotated(layout, (2, 3), (3, 0))
+        self.assertTrue(numpy.array_equal(column.pixels[:, 2], numpy.roll(layout.pixels[:, 2], -3, axis=0)))
+        tie = self.rotated(layout, (2, 3), (4, 5))
+        self.assertTrue(numpy.array_equal(tie.pixels[3], numpy.roll(layout.pixels[3], 2, axis=0)))
+
+    def test_the_preview_follows_the_pointer_and_dragging_back_undoes_it(self):
+        layout = self.rotating_layout()
+        session = self.rotated(layout, (2, 3), (5, 3), (3, 8), (2, 3))
+        self.assertFalse(session.changed)
+        session = self.rotated(layout, (2, 3), (5, 3), (3, 8))
+        self.assertTrue(numpy.array_equal(session.pixels[:, 2], numpy.roll(layout.pixels[:, 2], 5, axis=0)))
+        others = [0, 1, 3, 4, 5, 6, 7]
+        self.assertTrue(numpy.array_equal(session.pixels[3][others], layout.pixels[3][others]), "the row is no longer rotated")
+
+    def test_colors_are_kept_exactly_alpha_included(self):
+        pixels = solid_tile(TRANSPARENT, 8)
+        pixels[0, 0] = (10, 20, 30, 77)
+        session = self.rotated(va.compose_canvas({(0, 0): pixels}, 8), (0, 0), (3, 0))
+        self.assertEqual(tuple(session.pixels[0, 3]), (10, 20, 30, 77))
+        self.assertEqual(tuple(session.pixels[0, 0]), TRANSPARENT)
+
+    def test_with_several_tiles_shown_only_the_tile_that_was_pressed_rotates(self):
+        layout = va.compose_canvas({(0, 0): random_tile(3, 8), (1, 0): random_tile(4, 8)}, 8)
+        session = self.rotated(layout, (10, 2), (13, 2))
+        expected = layout.pixels.copy()
+        expected[2, 8:] = numpy.roll(layout.pixels[2, 8:], 3, axis=0)
+        self.assertTrue(numpy.array_equal(session.pixels, expected), "the row of the second tile, not of the whole canvas")
+        session = self.rotated(layout, (10, 2), (10, 4))
+        expected = layout.pixels.copy()
+        expected[:, 10] = numpy.roll(layout.pixels[:, 10], 2, axis=0)
+        self.assertTrue(numpy.array_equal(session.pixels, expected))
+
+    def test_over_an_empty_place_or_outside_the_canvas_nothing_rotates(self):
+        layout = va.compose_canvas({(0, 0): random_tile(3, 8), (2, 0): random_tile(4, 8)}, 8)
+        self.assertFalse(self.rotated(layout, (10, 2), (13, 2)).changed, "the empty place between the tiles")
+        self.assertFalse(self.rotated(layout, (-1, 2), (3, 2)).changed, "left of the canvas")
+        self.assertFalse(self.rotated(layout, (30, 2), (33, 2)).changed, "right of the canvas")
+
+    def test_with_wrap_assist_a_press_in_any_copy_rotates_the_tile(self):
+        layout = self.rotating_layout()
+        session = self.rotated(layout, (8 + 2, 16 + 3), (8 + 5, 16 + 3), wrap=True)
+        expected = layout.pixels.copy()
+        expected[3] = numpy.roll(layout.pixels[3], 3, axis=0)
+        self.assertTrue(numpy.array_equal(session.pixels, expected))
+        self.assertFalse(self.rotated(layout, (8 + 2, 3), (8 + 5, 3)).changed, "without wrap-assist the other copies are not there")
+
+    def test_the_rotate_tool_has_no_color_of_its_own(self):
+        self.assertFalse(self.start(self.rotating_layout(), "rotate", (0, 0)).uses_color)
+        self.assertFalse(self.start(self.rotating_layout(), "eraser", (0, 0)).uses_color)
+        self.assertTrue(self.start(self.rotating_layout(), "pencil", (0, 0)).uses_color)
+
 
 class WrapLogicTests(unittest.TestCase):
     def test_wrap_pixel_puts_any_pixel_into_the_canvas(self):
@@ -2751,10 +2892,14 @@ class EditorLayoutTests(unittest.TestCase):
             self.assertGreaterEqual(areas.sidebar.left, areas.canvas.right, size)
             self.assertEqual((areas.sidebar.top, areas.sidebar.bottom), (areas.canvas.top, areas.canvas.bottom))
             self.assertLess(areas.sidebar.width, areas.canvas.width // 4, "thin")
-            self.assertEqual(list(areas.sidebar_buttons), ["wrap"])
-            for name, rectangle in areas.sidebar_buttons.items():
+            self.assertEqual(list(areas.sidebar_buttons), ["wrap", "pixel_grid", "tile_grid"])
+            buttons = list(areas.sidebar_buttons.items())
+            for name, rectangle in buttons:
                 self.assertTrue(areas.sidebar.contains(rectangle), name)
                 self.assertGreaterEqual(min(rectangle.size), va.scaled(24), "big enough to click")
+            for index, (first, first_rectangle) in enumerate(buttons):
+                for second, second_rectangle in buttons[index + 1:]:
+                    self.assertFalse(first_rectangle.colliderect(second_rectangle), f"{first} overlaps {second}")
 
     def test_all_sixteen_recent_colors_have_room_when_the_editor_is_wide_enough(self):
         areas = va.compute_editor_areas(va.pygame.Rect(0, 0, 640, 780), list(va.TOOL_LABELS))
@@ -5786,6 +5931,207 @@ class CopyWindowTests(ProjectFixture):
         self.drag(self.center((0, 0)), self.center((3, 2)))
         self.assertIn("Could not copy", self.application.message)
         self.assertEqual(list(project.tiles), [(0, 0)])
+
+
+class RotateToolEditorTests(EditorDriver):
+    """The rotate tool, used through mouse events: drag a pixel to rotate its row or its column."""
+
+    def setUp(self):
+        super().setUp()
+        self.select((0, 0))
+        record = self.project.tiles[(0, 0)]
+        self.project.apply_canvas_edit(va.compose_canvas({(0, 0): record.pixels}, 8), random_tile(5, 8))
+        self.before = record.pixels.copy()
+        self.click_tool("rotate")
+
+    def test_the_tool_has_a_button_and_a_name_and_a_hint(self):
+        self.assertIn("rotate", va.TOOL_LABELS)
+        self.assertIn("rotate", self.editor.areas.tool_buttons)
+        self.assertEqual(self.editor.tool, "rotate")
+        self.assertEqual(self.editor.tool_at(self.editor.areas.tool_buttons["rotate"].center), "rotate")
+        self.assertIn("row", self.editor.options_text())
+        self.assertIn("column", self.editor.options_text())
+        self.application.draw()
+
+    def test_dragging_a_pixel_sideways_rotates_its_row_in_the_tile_and_marks_it_unsaved(self):
+        self.drag(self.position(2, 3), self.position(5, 3))
+        expected = self.before.copy()
+        expected[3] = numpy.roll(self.before[3], 3, axis=0)
+        self.assertTrue(numpy.array_equal(self.project.tiles[(0, 0)].pixels, expected))
+        self.assertTrue(self.project.tiles[(0, 0)].is_modified)
+
+    def test_dragging_a_pixel_up_or_down_rotates_its_column(self):
+        self.drag(self.position(6, 5), self.position(6, 1))
+        expected = self.before.copy()
+        expected[:, 6] = numpy.roll(self.before[:, 6], -4, axis=0)
+        self.assertTrue(numpy.array_equal(self.project.tiles[(0, 0)].pixels, expected))
+
+    def test_the_canvas_shows_the_row_moving_while_the_button_is_down(self):
+        self.send("down", self.position(2, 3))
+        self.move(self.position(4, 3))
+        self.application.draw()
+        self.assertEqual(self.editor.session.pixels[3, 4].tolist(), self.before[3, 2].tolist(), "the canvas shows the preview")
+        self.assertTrue(numpy.array_equal(self.project.tiles[(0, 0)].pixels, self.before), "nothing is changed until the button is released")
+        self.send("up", self.position(4, 3))
+        self.assertEqual(self.project.tiles[(0, 0)].pixels[3, 4].tolist(), self.before[3, 2].tolist())
+
+    def test_one_drag_is_one_undo_step_and_the_color_history_is_left_alone(self):
+        self.drag(self.position(2, 3), self.position(5, 3))
+        self.assertEqual(self.editor.colors.history, [], "the tool paints with no color")
+        self.key(va.pygame.K_z, va.pygame.KMOD_CTRL)
+        self.assertTrue(numpy.array_equal(self.project.tiles[(0, 0)].pixels, self.before))
+        self.key(va.pygame.K_y, va.pygame.KMOD_CTRL)
+        self.assertEqual(self.project.tiles[(0, 0)].pixels[3, 5].tolist(), self.before[3, 2].tolist())
+
+    def test_a_click_without_dragging_changes_nothing_and_adds_no_history(self):
+        self.drag(self.position(2, 3), self.position(2, 3))
+        self.assertTrue(numpy.array_equal(self.project.tiles[(0, 0)].pixels, self.before))
+        self.key(va.pygame.K_z, va.pygame.KMOD_CTRL)
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified, "that undid the random painting made in the set up, not a rotation")
+
+    def test_with_wrap_assist_it_can_be_used_in_any_copy(self):
+        self.send("down", self.editor.areas.sidebar_buttons["wrap"].center)
+        self.send("up", self.editor.areas.sidebar_buttons["wrap"].center)
+        self.drag(self.position(8 + 2, 8 + 3), self.position(8 + 5, 8 + 3))
+        self.assertEqual(self.project.tiles[(0, 0)].pixels[3, 5].tolist(), self.before[3, 2].tolist())
+
+
+class GridButtonTests(EditorDriver):
+    """The sidebar's checkbox buttons Pg (pixel grid lines) and Tg (tile grid lines)."""
+
+    def pixel_grid_sample(self):
+        """A pixel on the line between pixel columns 3 and 4, on a row of pixels (the tile is solid blue)."""
+        view = self.editor.view
+        return (view.pixel_rectangle(3, 0).right, view.pixel_rectangle(0, 3).centery)
+
+    def tile_edge_sample(self):
+        view = self.editor.view
+        return (view.pixel_rectangle(0, 0).x, view.pixel_rectangle(0, 3).centery)
+
+    def color_at(self, position):
+        return tuple(self.application.surface.get_at(position))[:3]
+
+    def button(self, name):
+        return self.editor.areas.sidebar_buttons[name]
+
+    def click_button(self, name):
+        self.send("down", self.button(name).center)
+        self.send("up", self.button(name).center)
+
+    def draw_with_the_pointer_away(self):
+        self.application.pointer = self.editor.pointer = (5, 5)
+        self.application.draw()
+
+    def corner(self, name):
+        return (self.button(name).x + 4, self.button(name).y + 4)
+
+    def test_the_sidebar_has_a_button_each_for_wrap_assist_the_pixel_grid_and_the_tile_grid(self):
+        self.assertEqual(va.SIDEBAR_BUTTONS, {"wrap": "W", "pixel_grid": "Pg", "tile_grid": "Tg"})
+        self.assertEqual(list(self.editor.areas.sidebar_buttons), ["wrap", "pixel_grid", "tile_grid"])
+        for name in ("pixel_grid", "tile_grid"):
+            self.assertIn("grid", va.SIDEBAR_BUTTON_HINTS[name].lower())
+            self.application.pointer = self.button(name).center
+            self.assertEqual(self.application.hover_text(), va.SIDEBAR_BUTTON_HINTS[name])
+
+    def test_both_grids_start_on_as_the_canvas_has_always_shown_them(self):
+        self.select((0, 0))
+        self.assertTrue(self.editor.pixel_grid)
+        self.assertTrue(self.editor.tile_grid)
+        self.draw_with_the_pointer_away()
+        self.assertEqual(self.color_at(self.corner("pixel_grid")), va.Theme.ACCENT)
+        self.assertEqual(self.color_at(self.corner("tile_grid")), va.Theme.ACCENT)
+        self.assertNotEqual(self.color_at(self.pixel_grid_sample()), BLUE[:3])
+        self.assertNotEqual(self.color_at(self.tile_edge_sample()), BLUE[:3])
+
+    def test_the_pixel_grid_button_turns_the_lines_between_pixels_off_and_on(self):
+        self.select((0, 0))
+        self.click_button("pixel_grid")
+        self.assertFalse(self.editor.pixel_grid)
+        self.draw_with_the_pointer_away()
+        self.assertEqual(self.color_at(self.pixel_grid_sample()), BLUE[:3], "no line between pixels")
+        self.assertEqual(self.color_at(self.corner("pixel_grid")), va.Theme.PANEL, "the button is empty")
+        self.assertNotEqual(self.color_at(self.tile_edge_sample()), BLUE[:3], "the tile grid is a separate setting")
+        self.click_button("pixel_grid")
+        self.draw_with_the_pointer_away()
+        self.assertNotEqual(self.color_at(self.pixel_grid_sample()), BLUE[:3])
+        self.assertEqual(self.color_at(self.corner("pixel_grid")), va.Theme.ACCENT)
+
+    def test_the_tile_grid_button_turns_the_lines_around_tiles_off_and_on(self):
+        self.select((0, 0))
+        self.click_button("pixel_grid")  # off, so that only the tile's own outline can be at its edge
+        self.click_button("tile_grid")
+        self.assertFalse(self.editor.tile_grid)
+        self.draw_with_the_pointer_away()
+        self.assertEqual(self.color_at(self.tile_edge_sample()), BLUE[:3], "no outline around the tile")
+        self.assertEqual(self.color_at(self.corner("tile_grid")), va.Theme.PANEL)
+        self.click_button("tile_grid")
+        self.draw_with_the_pointer_away()
+        self.assertNotEqual(self.color_at(self.tile_edge_sample()), BLUE[:3])
+        self.assertEqual(self.color_at(self.corner("tile_grid")), va.Theme.ACCENT)
+
+    def test_the_tile_grid_also_marks_the_boundaries_between_shown_tiles(self):
+        self.select((0, 0), (1, 0))
+        self.click_button("pixel_grid")
+        view = self.editor.view
+        between = (view.pixel_rectangle(8, 0).x, view.pixel_rectangle(0, 3).centery)
+        self.draw_with_the_pointer_away()
+        self.assertNotEqual(self.color_at(between), GREEN[:3])
+        self.assertNotEqual(self.color_at(between), BLUE[:3])
+        self.click_button("tile_grid")
+        self.draw_with_the_pointer_away()
+        self.assertEqual(self.color_at(between), GREEN[:3], "the first pixel of the second tile, with nothing drawn over it")
+
+    def test_wrap_assist_draws_no_tile_lines_so_the_tile_grid_button_is_dimmed_while_it_is_on(self):
+        self.select((0, 0))
+        self.assertTrue(self.editor.sidebar_button_enabled("tile_grid"))
+        self.click_button("wrap")
+        self.assertFalse(self.editor.sidebar_button_enabled("tile_grid"))
+        self.assertTrue(self.editor.sidebar_button_enabled("pixel_grid"))
+        self.assertTrue(self.editor.tile_grid, "still on: wrap-assist turns it off only while it is on itself")
+        self.draw_with_the_pointer_away()
+        self.assertEqual(self.color_at(self.corner("tile_grid")), va.Theme.SLIDER_FILL, "checked, but dim")
+        self.assertEqual(self.color_at(self.corner("pixel_grid")), va.Theme.ACCENT)
+        self.click_button("wrap")
+        self.draw_with_the_pointer_away()
+        self.assertEqual(self.color_at(self.corner("tile_grid")), va.Theme.ACCENT)
+
+    def test_the_tile_grid_can_be_changed_while_wrap_assist_is_on_and_is_remembered(self):
+        self.select((0, 0))
+        self.click_button("wrap")
+        self.click_button("tile_grid")
+        self.assertFalse(self.editor.tile_grid)
+        self.click_button("wrap")
+        self.click_button("pixel_grid")
+        self.draw_with_the_pointer_away()
+        self.assertEqual(self.color_at(self.tile_edge_sample()), BLUE[:3], "the tile grid was turned off")
+
+    def test_the_pixel_grid_button_works_with_wrap_assist_too(self):
+        self.select((0, 0))
+        self.click_button("wrap")
+        self.draw_with_the_pointer_away()
+        view = self.editor.view
+        sample = (view.pixel_rectangle(3, 0).right, view.pixel_rectangle(0, 3).centery)
+        self.assertGreaterEqual(view.zoom, 6)
+        self.assertNotEqual(self.color_at(sample), BLUE[:3])
+        self.click_button("pixel_grid")
+        self.draw_with_the_pointer_away()
+        self.assertEqual(self.color_at(sample), BLUE[:3])
+
+    def test_clicking_the_buttons_does_not_draw_or_change_the_selection_or_the_zoom(self):
+        self.select((0, 0))
+        zoom = self.editor.view.zoom
+        self.click_button("pixel_grid")
+        self.click_button("tile_grid")
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified)
+        self.assertEqual(self.project.selection, {(0, 0)})
+        self.assertEqual(self.editor.view.zoom, zoom)
+
+    def test_the_buttons_have_no_hover_fill_so_a_button_that_was_just_unchecked_is_empty(self):
+        self.select((0, 0))
+        self.click_button("pixel_grid")
+        self.application.draw()
+        self.assertEqual(self.application.pointer, self.button("pixel_grid").center)
+        self.assertEqual(self.color_at(self.corner("pixel_grid")), va.Theme.PANEL)
 
 
 class WrapAssistEditorTests(EditorDriver):

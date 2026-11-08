@@ -38,11 +38,18 @@ phases; what works so far:
   the tile comes back in on the other (every stroke tool, the fill bucket, which fills around the edges, and the eye
   dropper, which picks from any copy). With several tiles shown, the whole canvas is what repeats. The select tool and a
   pasted picture work on the real canvas, counted from the copy you press in. Turning it on or off zooms to fit; it is
-  not saved with the atlas.
+  not saved with the atlas. The buttons "Pg" and "Tg" below it are checkboxes too: Pg turns the lines between pixels
+  on or off (they are drawn when the canvas is zoomed in at least 6 times), Tg the blue lines around the tiles. Both
+  start on. Wrap-assist draws no tile lines, so Tg is dimmed while it is on (its setting is kept).
 - Tools (icons in one row; rest the pointer on one to see its name): pencil, eraser, line, horizontal line, vertical line, horizontal and vertical parallelogram, noise
-  brush, air brush, select, eye dropper, fill bucket (exact color match, side by side pixels only). `[` and `]`
-  resize: both axes together, Shift for the width, Alt for the height; the lines and parallelograms have one
-  width, and the noise brush and air brush have one diameter.
+  brush, air brush, select, eye dropper, fill bucket (exact color match, side by side pixels only), rotate row/column.
+  `[` and `]` resize: both axes together, Shift for the width, Alt for the height; the lines and parallelograms have
+  one width, and the noise brush and air brush have one diameter. A horizontal or vertical line can be one pixel long
+  (click without dragging): one pixel of its length, as thick as its width.
+- Rotate row/column: press a pixel and drag it. Dragging further sideways than up or down (or equally far) rotates
+  the pixel's row, else its column, by as many pixels as the pointer moved; the pressed pixel follows the pointer
+  and what leaves one edge of the tile comes back at the other. Only the tile that was pressed rotates, even with
+  several tiles shown, and nothing happens over an empty place. Dragging back undoes it, and it is one Ctrl+Z step.
 - Noise brush: every pixel of the round or square brush area becomes the color with the chance set by the Density
   slider, rolled again for every pixel the pointer moves over; Opacity below 100% blends each hit over what is
   there, so pixels hit several times in one stroke build up. Air brush: a soft round brush; Hardness is how far
