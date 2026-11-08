@@ -1,6 +1,6 @@
 # Block textures, and the game's own blocks in data: specification
 
-**Status: written 2026-11-07 from an interview with the owner (the decisions marked "owner" below are theirs, from that day). Steps 0 to 3 are built (see "As built" at the end); the rest is not.** It
+**Status: written 2026-11-07 from an interview with the owner (the decisions marked "owner" below are theirs, from that day). Steps 0 to 4 are built (see "As built" at the end); the rest is not.** It
 extends the data packs (`data-packs-spec.md`, `pack-format.md`) and the content package (`content-package-spec.md`), and it replaces the 2026-10-29
 advice of `architecture-review.md` section A4 ("no textures, sub-voxel models") with the owner's decision to have textures. What I checked in the code
 or on disk is marked **[code]** or **[disk]**; what I believe without having checked is marked **[belief]**.
@@ -240,6 +240,9 @@ than a set distance from the average of the pictures (only to remind the modder,
 5. **Linear-light average** for the default colour (section 5.3), and the visible change of far colours.
 6. **Face words** in property values (section 3).
 7. The **default texture distance (64 voxels) and the fade band (a quarter of it)**, which I would tune by looking.
+8. **The picture shader costs 0.9 ms (9 percent) on the integrated GPU at 1280 by 720 whatever the distance** (nothing on the discrete one), and `.textures off` takes it away. Whether that is acceptable, or worth an hour looking for where it goes (the number of
+   inputs between the shaders, the derivatives), is yours to say.
+9. The window command is `.textures`, not a name you chose.
 
 ## 11. Not in this version
 
@@ -301,3 +304,30 @@ procedural block types, which the species of trees will use through *roles* (tru
   real `apply_packs`. Nineteen mutations of the picture code (the weights of the average, the order of the chain, linear light, who may replace what, both limits, the wiring of the loader, the patch rules, the directory reader, Cave's hand-over of the pictures, the
   embedded list) are all caught; one gap was found and closed (a name paired with the wrong embedded file).
 - **Not in step 3:** nothing draws a picture or sends one to a client (step 4); the `warnings` of the loader are shown by `check-pack` and the server as the other warnings are; `check-pack`'s unused-picture warning does not cover the game's own pictures.
+
+**Step 4 (2026-11-07), in four pieces.**
+- **a. The package carries the pictures.** `PackageData::tile_classes` holds the tiles in use as raw 8-bit RGBA, by size (smallest first), after the ambient light; each block's definition carries `pictures` (top, side and bottom as a size number and a place,
+  `TileRef`). Decoding refuses a size that is not a power of two from 8 to 256, sizes repeated or out of order, an empty size or more than 256 pictures of one, more than four sizes, more than 8 MiB of pixels in all, and a block whose pictures are not among the
+  tiles. The settling numbers the tiles in use by size and then by name. Cave's package went from 2,782 to 12,046 bytes (predicted: 9 flags, 6 blocks of 6 bytes of places, 9 tiles of 1,024 bytes and framing); 2048 and Eels by 5 and 6 bytes. A test written for the
+  package found that `average_color` weighted a picture by its pixels (a 16 by 16 top and an 8 by 8 side were not one face and four faces); it counts a face as a face now.
+- **b. The table.** A palette entry can be a colour with a picture (a `FacePicture` word of 17 bits: the size's number, the place, which way the image runs across the face and which way up). For a block with pictures the table gives every face of every model in
+  every orientation such an entry (its flat colour and the picture of the made face the turn brings there, with `across` and `up` turned too). **Levels of detail need no code to stay untextured**: a coarse cell is drawn in the block's own entry, which has none.
+  `BlockTable::palette_pictures()` is parallel to `palette()`. Tested by geometry: in all 24 orientations the image is never mirrored, the top's picture is on the face the top went to, a log on its side has its grain along it. Cave's palette is 263 entries, 240 of
+  them with a picture.
+- **c. The renderer** (`engine/renderer`: `block_textures.rs`, `pictures_on.wgsl`, `pictures_off.wgsl`). One 2D texture array for each size, one layer for each picture, a chain of smaller pictures under each averaged in linear light (a test: black beside white
+  becomes the sRGB byte 188, not 128); nearest when magnified, mixed when minified, no tile bleeding into another. The picture's word travels in the bits of the fourth channel of the palette entry (`1.0`'s bits when there is none). The place on the face is the position
+  in the brick (`fract` of it), so a slab shows its slice. The share of the picture is `1 - smoothstep(distance, 1.25 distance, d)`; **the gradient is taken before anything branches** (taking it in a branch is not allowed), and a face past the band does not read the
+  texture. **The reading of pictures is a second fragment shader.** A shader that merely *used* the texture bindings made the two shadow tests fail on the integrated AMD GPU (3 to 4 of 10 runs; none with the committed renderer, none with the same shader with no
+  picture code or with only the derivatives; a version with one sampling call failed 4 of 12), with no picture drawn. So the voxel shader has a hook, `picture_albedo`, and is built with `pictures_off.wgsl` (the face's own colour, no texture at all) or `pictures_on.wgsl`;
+  the pipelines of the second are made when a palette first has a picture and chosen only when a distance is set, so a palette with no picture draws as it did and **`.textures off` is a real switch** (measured: equal to before, below). Then the two shadow tests failed
+  0 of 12 times, and the picture tests 0 of 18 on the integrated GPU (a stand-in wait for the textures to reach the GPU was tried and is not needed).
+  GPU tests on every adapter (`gpu_rendering.rs`): the four corners of a picture on a side towards +z, towards -z and +x and on top (upright, not mirrored), the fade (a partial share in the band, gone beyond it, none at distance 0 or when a palette has no
+  pictures, back when the distance is), sizes and places found by their words, a bottom slab and a top slab (the lower and the upper half of the picture) and a coarse cell that stays flat. **Ten mutations of the shader and renderer are all caught** (coordinates read
+  swapped, across and up swapped, up not turned, size ignored, place ignored, no fade, fade reversed, pictures never in use, distance ignored, bits not masked).
+- **d. The client.** `ClientSettings::texture_distance` (default 64) and the window command `.textures [VOXELS|off|default]` (tested); `configure_renderer` hands the renderer the palette's words and the package's tiles (`picture_sizes`, tested), and the distance is set every
+  frame with the light. **A screenshot of the real game** (headless, noon) shows the grass and dirt in their pictures near and the flat colour beyond.
+- **Measured** (`--benchmark`, 1280 by 720, view radius 8, noon, the camera turning, three runs each, dev profile (optimised); before is the commit of piece b): the discrete GPU (RTX 3090) **2.77 ms before and 2.78 with pictures**; the integrated GPU (AMD) **10.5 ms before and
+  11.4 with pictures (+0.9 ms, 9 percent)**, which does not change with the distance (0, 16, 64 or 128 voxels: 11.3, 11.5, 11.4, 11.5), so it is the cost of the picture shader's inputs and instructions, not of the reading; with `.textures off` it is 10.5, as before. **[belief]** the
+  four-size cap is not what costs: the arrays are bound whether one size or four is in use. Not measured: a world with four sizes in use, a camera that stays near much stone at the edge of the distance, the sun moving (the picture shader changes nothing the shadows draw).
+- **Not in step 4:** a `--textures` option for the headless run (the distance is the client's setting in the window; the headless picture takes the default); a settings file (the client has none, `.ambient` and `.shadows` are not kept either); the mip chains are made on the
+  client when the pictures are sent to the GPU (the time that takes is not measured, for nine tiles or for 256 pictures of 256 pixels).

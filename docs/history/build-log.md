@@ -1733,6 +1733,9 @@ Block textures, steps 0 to 2 (2026-11-07; the owner's request to define blocks i
 - Step 3: a definition carries its pictures' base name and whether its colour follows them (2 bytes a block in the package, predicted and seen); `data_packs` reads a pack's `textures` folder, resolves the picture of each face, lets a later pack replace pictures by
   file name, limits sizes and counts, settles the colours that follow the pictures, and patches may set the texture; the six blocks that have pictures (and Cave's port) use them, so their far colours changed (stone `#808087` to `#606060`). The pins of the table
   and of the sessions moved by predicted amounts, the saved worlds did not. Nineteen mutations caught (one gap closed). Nothing draws a picture yet.
+- Step 4: pictures are sent (raw RGBA; Cave's package 2,782 to 12,046 bytes, predicted), turned with the voxel into palette entries of their own, and drawn (texture arrays by size, position in the brick, a fade over a band, coarse cells untextured), with the client's `.textures`.
+  A fragment shader that merely used the texture bindings made two shadow tests fail on the integrated AMD GPU in 3 to 4 of 10 runs with no picture drawn; the reading of pictures is now a second shader (0 of 12, as before). Ten mutations of it caught.
+  Measured with the camera turning: the discrete GPU 2.77 to 2.78 ms, the integrated 10.5 to 11.4 ms whatever the distance, and 10.5 with `.textures off`.
 
 ## Measured
 Storage (Ryzen 7600X, release, one thread, best of 7, counting allocator; the single-voxel `get` figures include

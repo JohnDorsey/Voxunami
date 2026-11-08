@@ -2047,8 +2047,11 @@ impl VoxelRenderer {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
+            // (With no distance, or no picture on any block, the pipelines that read no picture: they are cheaper, by about a tenth of a frame on an integrated GPU.)
             let (whole_pipeline, detailed_pipeline) = match &self.picture_pipelines {
-                Some((whole, detailed)) if self.pictures_in_use => (whole, detailed),
+                Some((whole, detailed)) if self.pictures_in_use && self.picture_distance > 0.0 => {
+                    (whole, detailed)
+                }
                 _ => (&self.pipeline, &self.detailed_pipeline),
             };
             pass.set_pipeline(whole_pipeline);

@@ -77,6 +77,13 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
 
 ## Explained and fixed
 
+- `beyond_the_reach_of_the_cascades_the_picture_is_the_one_without_shadows_and_nothing_is_not_a_number` and `a_block_and_a_roof_shade_the_floor_where_the_sun_puts_the_shadow_...` (the two shadow tests of `engine/renderer/tests/gpu_rendering.rs`), 2026-11-07, while block pictures were built: **they failed in 3 to 4 of 10 to 12 runs on the integrated AMD GPU
+  (never on the NVIDIA card) when the voxel fragment shader used the texture and sampler bindings, though no test drew a picture.** Measured: the committed renderer 0 of 10 filtered and 0 of 3 whole-binary runs; the shader with the picture code removed 0 of 12; with only
+  the two derivatives 0 of 12; with a branch and one sampling call 4 of 12; the full shader 3 of 10 (and 6 of 6, 2 of 5 and 1 of 3 in three earlier variants of the textures' upload). It is the known family of the integrated GPU leaving pixels out of a fresh renderer's first
+  frames (`an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw` above), which this made far more likely. Not found: why the use of the bindings does it. Fixed by avoiding it: the reading of pictures is a second shader, built and chosen only when a
+  palette has pictures and a distance is set (`pictures_off.wgsl` / `pictures_on.wgsl`); after that the two tests failed 0 of 12 (twice) and the five picture tests 0 of 18, and the whole binary passed three times. **Believed, not tested:** a game that draws pictures on that
+  GPU may still leave pixels out in its first frames, as any scene may; the tests that compare pictures to the pixel take them once two frames agree.
+
 - `an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw` (`games/voxunami_cave/tests/pictures.rs`): the first frames of a fresh renderer on the integrated AMD GPU leave pixels out;
   pictures are taken once a frame repeats them (2026-10-21, Phase 30). `docs/plan.md` (the section on flaky tests) and `docs/specs/ui-spec.md`.
 - `a_walker_standing_in_flames_falls_when_the_fire_burns_the_ground_away` and `walkers_pass_through_flames_and_the_cellar_has_the_same_ground`: the test raced a chance fire keyed by the tick a player's first message

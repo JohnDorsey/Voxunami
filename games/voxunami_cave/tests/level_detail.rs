@@ -176,7 +176,7 @@ fn the_widest_part_of_the_river_is_drawn_from_outside_on_every_graphics_adapter(
         configure_renderer(
             &mut renderer,
             player.block_table(),
-            player.package().ambient_light,
+            player.package(),
             player.fog_radius_bricks(),
         );
         // A dark sky, so that the water is told from it, and a lit day, as the pictures of terrain have (the game's own ambient light is none).

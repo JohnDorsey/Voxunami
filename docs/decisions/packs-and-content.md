@@ -47,7 +47,11 @@ How a game's content reaches a server (data packs) and a client (the package in 
 - **Built 2026-11-07 (step 3 of `block-textures-spec.md`):** a block names its pictures with `texture`, and the picture of each face is the first file that exists (`_top`; `_side` then the plain name; `_bottom` then the top's), so a file added
   changes a block with no change to its JSON. A pack's `textures` folder holds PNGs (square, 8-bit RGB or RGBA, 8 to 256 pixels, a power of two) and folders named for namespaces, whose files replace or add pictures of that namespace. `color` may be left out of a block with a
   texture and is then the average of the pictures (top once, each side once, bottom not at all, in linear light) and follows them if another pack replaces one. At most 4 sizes and 256 pictures of a size are in use. The six blocks that have pictures in `base_blocks/textures`
-  (grass, dirt, stone, great river water, wood, and Cave's dev docking port) use them; their far colours changed with it. Nothing draws a picture yet.
+  (grass, dirt, stone, great river water, wood, and Cave's dev docking port) use them; their far colours changed with it.
+- **Built 2026-11-07 (step 4 of `block-textures-spec.md`):** pictures are drawn. The package carries them as raw RGBA by size (a client never decodes an image it is sent); the table gives a face with a picture a palette entry of its own (so a coarse cell, which uses the block's
+  own entry, is untextured with no extra code); the renderer keeps a texture array for each size and reads the picture by position in the brick (a slab shows its slice), fading into the flat colour over a band of a quarter of the texture distance. The client's
+  `.textures [VOXELS|off|default]` sets that distance (default 64). **The shader that reads pictures is separate from the one that does not**, because merely using the bindings made shadow tests fail on the integrated AMD GPU; a palette with no pictures, or a distance of 0, draws with
+  the plain one. The picture shader costs about 9 percent on that GPU and nothing measurable on the discrete one.
 
 ## Decided (the content package at the handshake; built in Phase 28)
 

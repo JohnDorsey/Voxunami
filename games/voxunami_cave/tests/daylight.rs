@@ -249,7 +249,7 @@ fn pictures_at(
         configure_renderer(
             &mut renderer,
             player.block_table(),
-            player.package().ambient_light,
+            player.package(),
             player.fog_radius_bricks(),
         );
         apply_updates(&mut renderer, updates.to_vec());

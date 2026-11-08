@@ -20,6 +20,8 @@ pub struct ClientSettings {
     pub time_of_day: Option<u16>,
     /// Whether the terrain casts shadows in the pictures (`.shadows`). On by default; it costs a second drawing of what is near the sun's way, so a slow GPU may want it off.
     pub shadows: bool,
+    /// How far from the camera, in voxels, a block's picture is drawn on it (`.textures`); beyond a quarter more the block is its flat colour. 0 draws no pictures.
+    pub texture_distance: u32,
 }
 
 impl ClientSettings {
@@ -31,6 +33,7 @@ impl ClientSettings {
             pinned_time: None,
             time_of_day: None,
             shadows: true,
+            texture_distance: renderer::DEFAULT_PICTURE_DISTANCE as u32,
         }
     }
 }
@@ -181,6 +184,39 @@ pub(crate) fn register(registrar: &mut ClientRegistrar<'_>) {
                     "shadows are now off".to_owned()
                 }
                 _ => "usage: .shadows [on|off]".to_owned(),
+            }
+        },
+    );
+    registrar.command(
+        CommandSpec::new(
+            "textures",
+            "sets how far away, in voxels, you see the pictures on blocks (the blocks of a farther place are their flat colour, with a fade between); .textures off draws no pictures, .textures default goes back to 64, and .textures alone says what it is",
+        )
+        .with_prefix('.')
+        .argument(Argument::word("distance").optional()),
+        |context, arguments| {
+            let settings = context.settings_mut();
+            if !arguments.present(0) {
+                return match settings.texture_distance {
+                    0 => "pictures on blocks are off".to_owned(),
+                    distance => format!("pictures on blocks are drawn up to {distance} voxels away"),
+                };
+            }
+            let distance = match arguments.word(0) {
+                "off" => Some(0),
+                "default" => Some(renderer::DEFAULT_PICTURE_DISTANCE as u32),
+                value => value.parse::<u32>().ok(),
+            };
+            match distance {
+                Some(0) => {
+                    settings.texture_distance = 0;
+                    "pictures on blocks are now off".to_owned()
+                }
+                Some(distance) => {
+                    settings.texture_distance = distance;
+                    format!("pictures on blocks are now drawn up to {distance} voxels away")
+                }
+                None => "usage: .textures [VOXELS|off|default]".to_owned(),
             }
         },
     );
@@ -349,6 +385,61 @@ mod tests {
     }
 
     #[test]
+    fn textures_say_set_turn_off_and_reset_how_far_the_pictures_on_blocks_are_drawn() {
+        let mut settings = ClientSettings::new(0);
+        assert_eq!(settings.texture_distance, 64);
+        assert_eq!(
+            run(".textures", &mut settings),
+            "pictures on blocks are drawn up to 64 voxels away"
+        );
+        assert_eq!(
+            run(".textures 20", &mut settings),
+            "pictures on blocks are now drawn up to 20 voxels away"
+        );
+        assert_eq!(settings.texture_distance, 20);
+        assert_eq!(
+            run(".textures", &mut settings),
+            "pictures on blocks are drawn up to 20 voxels away"
+        );
+        assert_eq!(
+            run(".textures off", &mut settings),
+            "pictures on blocks are now off"
+        );
+        assert_eq!(settings.texture_distance, 0);
+        assert_eq!(
+            run(".textures", &mut settings),
+            "pictures on blocks are off"
+        );
+        run(".textures 300", &mut settings);
+        assert_eq!(settings.texture_distance, 300);
+        // 0 is the same as off.
+        assert_eq!(
+            run(".textures 0", &mut settings),
+            "pictures on blocks are now off"
+        );
+        assert_eq!(settings.texture_distance, 0);
+        assert_eq!(
+            run(".textures default", &mut settings),
+            "pictures on blocks are now drawn up to 64 voxels away"
+        );
+        assert_eq!(settings.texture_distance, 64);
+        // What is not a distance changes nothing.
+        for bad in [
+            ".textures -1",
+            ".textures far",
+            ".textures 1.5",
+            ".textures 99999999999",
+        ] {
+            assert_eq!(
+                run(bad, &mut settings),
+                "usage: .textures [VOXELS|off|default]",
+                "{bad}"
+            );
+            assert_eq!(settings.texture_distance, 64, "{bad}");
+        }
+    }
+
+    #[test]
     fn ambient_shows_sets_and_resets_how_bright_unlit_faces_are() {
         let mut settings = ClientSettings::new(0);
         assert_eq!(
@@ -420,18 +511,18 @@ mod tests {
         assert!(run(".help", &mut settings).starts_with("client commands: .ambient"));
         assert_eq!(
             run(".dance", &mut settings),
-            "unknown client command .dance; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .shadows [ON|OFF], .time [TIME]"
+            "unknown client command .dance; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
         );
         assert_eq!(
             run(".", &mut settings),
-            "client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .shadows [ON|OFF], .time [TIME]"
+            "client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
         );
         assert!(
             run(".help ambient", &mut settings).starts_with(".ambient [LEVEL]: sets how bright")
         );
         assert_eq!(
             run(".help nothing", &mut settings),
-            "there is no client command .nothing; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .shadows [ON|OFF], .time [TIME]"
+            "there is no client command .nothing; client commands: .ambient [LEVEL], .choose OPTION, .help [COMMAND], .keys, .shadows [ON|OFF], .textures [DISTANCE], .time [TIME]"
         );
         // Spaces round the words do not matter.
         assert_eq!(

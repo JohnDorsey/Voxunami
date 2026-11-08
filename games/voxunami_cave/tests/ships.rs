@@ -345,7 +345,7 @@ fn a_ship_is_drawn_where_it_is_follows_it_when_it_moves_and_is_gone_when_it_is()
         configure_renderer(
             &mut renderer,
             player.block_table(),
-            player.package().ambient_light,
+            player.package(),
             VIEW_RADIUS,
         );
         renderer.set_atmosphere(atmosphere(VIEW_RADIUS, 160));

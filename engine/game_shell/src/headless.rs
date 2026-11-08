@@ -81,7 +81,7 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
     configure_renderer(
         &mut renderer,
         session.block_table(),
-        session.package().ambient_light,
+        session.package(),
         session.fog_radius_bricks(),
     );
 
@@ -175,7 +175,7 @@ pub fn replay<G: GameDefinition>(options: &ReplayOptions) -> Result<(), String> 
     configure_renderer(
         &mut renderer,
         session.block_table(),
-        session.package().ambient_light,
+        session.package(),
         session.fog_radius_bricks(),
     );
     session.set_viewport_height(view.height);

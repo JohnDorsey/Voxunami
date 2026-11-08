@@ -264,7 +264,7 @@ impl<G: GameDefinition> Viewer<G> {
         configure_renderer(
             &mut renderer,
             session.block_table(),
-            session.package().ambient_light,
+            session.package(),
             session.fog_radius_bricks(),
         );
         renderer.set_crosshair(session.mode() == Mode::Playing && G::shows_crosshair());
