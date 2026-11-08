@@ -14,6 +14,7 @@ use voxel_space::{
 };
 use wgpu::util::DeviceExt;
 
+use crate::block_textures::{BlockTextures, PictureSize};
 use crate::camera::{Camera, Frustum};
 use crate::crosshair::Crosshair;
 use crate::graphics_context::GraphicsContext;
@@ -152,13 +153,31 @@ fn box_mesh(material: u32, size: [u8; 3]) -> PackedBrickMesh {
     )
 }
 
-/// A palette as the shader reads it: linear RGB (sRGB in), and one magenta entry if there are none, since a buffer is not empty.
-fn linear_palette(colors: &[[f32; 3]]) -> Vec<[f32; 4]> {
+/// What a binding of the pictures of one size is: an array of filterable colour textures.
+fn picture_array_type() -> wgpu::BindingType {
+    wgpu::BindingType::Texture {
+        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+        view_dimension: wgpu::TextureViewDimension::D2Array,
+        multisampled: false,
+    }
+}
+
+/// A palette as the shader reads it: linear RGB (sRGB in), and one magenta entry if there are none, since a buffer is not empty. The fourth number of an entry is
+/// 1.0, or if the entry has a picture (`words` is parallel to the colours, 0 for none) the number whose bits are those of 1.0 with the picture's word under them: a
+/// number between 1 and 2, which nothing in a GPU's path changes, and which the shader reads back as bits.
+fn linear_palette(colors: &[[f32; 3]], words: &[u32]) -> Vec<[f32; 4]> {
+    assert!(
+        words.is_empty() || words.len() == colors.len(),
+        "a picture word for each colour, or none at all"
+    );
     let mut linear: Vec<[f32; 4]> = colors
         .iter()
-        .map(|color| {
+        .enumerate()
+        .map(|(index, color)| {
             let [red, green, blue] = srgb_to_linear_color(*color);
-            [red, green, blue, 1.0]
+            let word = words.get(index).copied().unwrap_or(0);
+            assert!(word < 1 << 23, "a picture word is under 2^23");
+            [red, green, blue, f32::from_bits(ONE_BITS | word)]
         })
         .collect();
     if linear.is_empty() {
@@ -166,6 +185,15 @@ fn linear_palette(colors: &[[f32; 3]]) -> Vec<[f32; 4]> {
     }
     linear
 }
+
+/// The bits of 1.0: the fourth number of a palette entry is these with the word of its picture in the bits below.
+const ONE_BITS: u32 = 0x3F80_0000;
+
+/// How far from the camera, in voxels, a picture on a face begins to fade into the face's flat colour, until the player says otherwise.
+pub const DEFAULT_PICTURE_DISTANCE: f32 = 64.0;
+
+/// The fade of a picture lasts this share of the distance it begins at.
+const PICTURE_FADE_SHARE: f32 = 0.25;
 
 /// The same mesh with every quad given this material value, whatever it had. (A mesh is made with a small block number, not with
 /// a table that has a block for each of the million values there can be.)
@@ -324,6 +352,8 @@ struct FrameUniform {
     heavens: [f32; 4],
     /// Linear RGB of each avatar colour.
     avatars: [[f32; 4]; AVATAR_COLOR_COUNT],
+    /// x: how far from the camera a picture on a face begins to fade into the face's flat colour, y: how far it is gone (0: pictures are not drawn).
+    pictures: [f32; 4],
 }
 
 /// A cascade of the shadow map as the shader has it: the matrix from a place relative to the camera to the map, how far from the camera the cascade is looked in,
@@ -677,6 +707,11 @@ pub struct VoxelRenderer {
     color_format: wgpu::TextureFormat,
     pipeline: wgpu::RenderPipeline,
     detailed_pipeline: wgpu::RenderPipeline,
+    /// The same two pipelines made with the shader that draws pictures, once some block has any (until then no pipeline reads a texture, and a renderer draws as it did
+    /// before blocks had pictures). The pipeline layout is kept to make them with.
+    picture_pipelines: Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>,
+    pictures_in_use: bool,
+    pipeline_layout: wgpu::PipelineLayout,
     /// Draws the sky (the stars and the sun) over the whole picture, before the terrain.
     sky_pipeline: wgpu::RenderPipeline,
     frame_layout: wgpu::BindGroupLayout,
@@ -685,6 +720,9 @@ pub struct VoxelRenderer {
     frame_stride: u64,
     /// Linear RGB of every game material, which the shader reads by material value.
     palette_buffer: wgpu::Buffer,
+    /// The pictures of blocks on the GPU, and how far from the camera they are drawn.
+    block_textures: BlockTextures,
+    picture_distance: f32,
     frame_bind_group: wgpu::BindGroup,
     /// The shadow maps: drawn into when there are shadows, looked up in by the pictures.
     shadow_target: ShadowTarget,
@@ -797,6 +835,37 @@ impl VoxelRenderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                     count: None,
                 },
+                // The pictures of blocks, an array for each size, and the sampler that reads them.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: picture_array_type(),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: picture_array_type(),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: picture_array_type(),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: picture_array_type(),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
         let placement_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -818,67 +887,9 @@ impl VoxelRenderer {
             immediate_size: 0,
         });
 
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("voxel shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("voxel.wgsl").into()),
-        });
-        let make_pipeline =
-            |label: &str, entry_point: &str, vertex_buffer: wgpu::VertexBufferLayout<'_>| {
-                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some(label),
-                    layout: Some(&pipeline_layout),
-                    vertex: wgpu::VertexState {
-                        module: &shader,
-                        entry_point: Some(entry_point),
-                        compilation_options: Default::default(),
-                        buffers: &[Some(vertex_buffer)],
-                    },
-                    fragment: Some(wgpu::FragmentState {
-                        module: &shader,
-                        entry_point: Some("fragment_main"),
-                        compilation_options: Default::default(),
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format: color_format,
-                            blend: None,
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                    }),
-                    primitive: wgpu::PrimitiveState {
-                        topology: wgpu::PrimitiveTopology::TriangleList,
-                        front_face: wgpu::FrontFace::Ccw,
-                        cull_mode: Some(wgpu::Face::Back),
-                        ..Default::default()
-                    },
-                    depth_stencil: Some(wgpu::DepthStencilState {
-                        format: DEPTH_FORMAT,
-                        depth_write_enabled: Some(true),
-                        depth_compare: Some(wgpu::CompareFunction::Greater),
-                        stencil: wgpu::StencilState::default(),
-                        bias: wgpu::DepthBiasState::default(),
-                    }),
-                    multisample: wgpu::MultisampleState::default(),
-                    multiview_mask: None,
-                    cache: None,
-                })
-            };
-        let pipeline = make_pipeline(
-            "voxel pipeline",
-            "vertex_main",
-            wgpu::VertexBufferLayout {
-                array_stride: size_of::<PackedQuad>() as u64,
-                step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &wgpu::vertex_attr_array![0 => Uint32, 1 => Uint32],
-            },
-        );
-        let detailed_pipeline = make_pipeline(
-            "detailed voxel pipeline",
-            "vertex_detailed",
-            wgpu::VertexBufferLayout {
-                array_stride: size_of::<PackedDetailedQuad>() as u64,
-                step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &wgpu::vertex_attr_array![0 => Uint32, 1 => Uint32, 2 => Uint32, 3 => Uint32],
-            },
-        );
+        let shader = voxel_shader(&device, false);
+        let (pipeline, detailed_pipeline) =
+            voxel_pipelines(&device, &pipeline_layout, &shader, color_format);
 
         let sky_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("sky pipeline layout"),
@@ -927,9 +938,10 @@ impl VoxelRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let palette_buffer = Self::palette_buffer(&device, &[]);
+        let palette_buffer = Self::palette_buffer(&device, &[], &[]);
         let shadow_target = ShadowTarget::new(&device, false);
         let shadow_sampler = comparison_sampler(&device);
+        let block_textures = BlockTextures::new(&device, &queue, &[]);
         let frame_bind_group = Self::frame_bind_group(
             &device,
             &frame_layout,
@@ -937,6 +949,7 @@ impl VoxelRenderer {
             &palette_buffer,
             &shadow_target,
             &shadow_sampler,
+            &block_textures,
         );
         let shadow_frame_layout = shadow_frame_layout(&device, size_of::<FrameUniform>() as u64);
         let shadow_frame_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -978,11 +991,16 @@ impl VoxelRenderer {
             color_format,
             pipeline,
             detailed_pipeline,
+            picture_pipelines: None,
+            pictures_in_use: false,
+            pipeline_layout,
             sky_pipeline,
             frame_layout,
             frame_buffer,
             frame_stride,
             palette_buffer,
+            block_textures,
+            picture_distance: DEFAULT_PICTURE_DISTANCE,
             frame_bind_group,
             shadow_target,
             shadow_sampler,
@@ -1021,8 +1039,8 @@ impl VoxelRenderer {
 
     /// The GPU's copy of a palette: linear RGB for each colour (sRGB in), and one magenta entry if there are none, since a buffer is
     /// not empty.
-    fn palette_buffer(device: &wgpu::Device, colors: &[[f32; 3]]) -> wgpu::Buffer {
-        let linear = linear_palette(colors);
+    fn palette_buffer(device: &wgpu::Device, colors: &[[f32; 3]], words: &[u32]) -> wgpu::Buffer {
+        let linear = linear_palette(colors, words);
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("palette"),
             contents: bytemuck::cast_slice(&linear),
@@ -1037,6 +1055,7 @@ impl VoxelRenderer {
         palette_buffer: &wgpu::Buffer,
         shadow_target: &ShadowTarget,
         shadow_sampler: &wgpu::Sampler,
+        block_textures: &BlockTextures,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("frame bind group"),
@@ -1061,6 +1080,26 @@ impl VoxelRenderer {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: wgpu::BindingResource::Sampler(shadow_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&block_textures.views[0]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&block_textures.views[1]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(&block_textures.views[2]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(&block_textures.views[3]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::Sampler(&block_textures.sampler),
                 },
             ],
         })
@@ -1154,12 +1193,46 @@ impl VoxelRenderer {
     /// Sets the colour of material values `0..colors.len()` (sRGB). Larger values draw magenta, which is also how content from a
     /// missing plugin shows up. At most [`MAXIMUM_GAME_MATERIALS`] can be drawn.
     pub fn set_palette(&mut self, colors: &[[f32; 3]]) {
+        self.set_palette_with_pictures(colors, &[], &[]);
+    }
+
+    /// As [`VoxelRenderer::set_palette`], and some of the entries have pictures on them: `words` is parallel to `colors` (a `FacePicture::word`, or 0 for a flat colour;
+    /// or empty for none at all), and `sizes` are the pictures the words name, by size, smallest first: a word's size is its number in this list and its place is the
+    /// place among the pictures of that size. A face of such an entry is drawn in its picture up to the distance of [`VoxelRenderer::set_picture_distance`], fading
+    /// into the flat colour beyond it. At most [`crate::MOST_PICTURE_SIZES`] sizes and [`crate::MOST_PICTURES_OF_A_SIZE`] pictures of a size.
+    pub fn set_palette_with_pictures(
+        &mut self,
+        colors: &[[f32; 3]],
+        words: &[u32],
+        sizes: &[PictureSize<'_>],
+    ) {
         assert!(
             colors.len() <= MAXIMUM_GAME_MATERIALS,
             "at most {MAXIMUM_GAME_MATERIALS} materials can be drawn"
         );
-        self.palette_buffer = Self::palette_buffer(&self.device, colors);
+        self.palette_buffer = Self::palette_buffer(&self.device, colors, words);
+        self.block_textures = BlockTextures::new(&self.device, &self.queue, sizes);
+        self.pictures_in_use = words.iter().any(|&word| word != 0);
+        if self.pictures_in_use && self.picture_pipelines.is_none() {
+            let shader = voxel_shader(&self.device, true);
+            self.picture_pipelines = Some(voxel_pipelines(
+                &self.device,
+                &self.pipeline_layout,
+                &shader,
+                self.color_format,
+            ));
+        }
         self.remake_frame_bind_group();
+    }
+
+    /// How far from the camera, in voxels, a picture on a face begins to fade into the face's flat colour (it is gone a quarter of that distance farther). 0 draws no
+    /// pictures at all. The default is [`DEFAULT_PICTURE_DISTANCE`]. Coarse levels of detail never have pictures.
+    pub fn set_picture_distance(&mut self, voxels: f32) {
+        self.picture_distance = if voxels.is_finite() {
+            voxels.max(0.0)
+        } else {
+            0.0
+        };
     }
 
     fn remake_frame_bind_group(&mut self) {
@@ -1170,6 +1243,7 @@ impl VoxelRenderer {
             &self.palette_buffer,
             &self.shadow_target,
             &self.shadow_sampler,
+            &self.block_textures,
         );
     }
 
@@ -1973,7 +2047,11 @@ impl VoxelRenderer {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
-            pass.set_pipeline(&self.pipeline);
+            let (whole_pipeline, detailed_pipeline) = match &self.picture_pipelines {
+                Some((whole, detailed)) if self.pictures_in_use => (whole, detailed),
+                _ => (&self.pipeline, &self.detailed_pipeline),
+            };
+            pass.set_pipeline(whole_pipeline);
             for &index in &visible {
                 let brick = self.mesh(drawables[index].mesh);
                 let Some(quads) = &brick.quads else {
@@ -1984,7 +2062,7 @@ impl VoxelRenderer {
                 pass.draw(0..6, 0..brick.quad_count);
             }
             // The bricks that have blocks that do not fill their cells, with the other pipeline.
-            pass.set_pipeline(&self.detailed_pipeline);
+            pass.set_pipeline(detailed_pipeline);
             for &index in &visible {
                 let brick = self.mesh(drawables[index].mesh);
                 let Some(detailed) = &brick.detailed else {
@@ -1994,7 +2072,7 @@ impl VoxelRenderer {
                 pass.set_vertex_buffer(0, detailed.slice(..));
                 pass.draw(0..6, 0..brick.detailed_count);
             }
-            pass.set_pipeline(&self.pipeline);
+            pass.set_pipeline(whole_pipeline);
             for &index in &visible_avatars {
                 let mesh = self.mesh(drawables[index].mesh);
                 let Some(quads) = &mesh.quads else {
@@ -2015,7 +2093,7 @@ impl VoxelRenderer {
                 pass.set_vertex_buffer(0, quads.slice(..));
                 pass.draw(0..6, 0..mesh.quad_count);
             }
-            pass.set_pipeline(&self.detailed_pipeline);
+            pass.set_pipeline(detailed_pipeline);
             for &index in &visible_boxes {
                 let mesh = self.mesh(drawables[index].mesh);
                 let Some(detailed) = &mesh.detailed else {
@@ -2326,6 +2404,16 @@ impl VoxelRenderer {
                 let [red, green, blue] = srgb_to_linear_color(color);
                 [red, green, blue, 1.0]
             }),
+            pictures: if self.picture_distance > 0.0 {
+                [
+                    self.picture_distance,
+                    self.picture_distance * (1.0 + PICTURE_FADE_SHARE),
+                    0.0,
+                    0.0,
+                ]
+            } else {
+                [0.0; 4]
+            },
         };
         self.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -2357,6 +2445,98 @@ impl VoxelRenderer {
             }
         }
     }
+}
+
+/// The voxel shader: `voxel.wgsl` and, for what a face looks like where it may have a picture, either `pictures_on.wgsl` (the pictures are read from their textures) or
+/// `pictures_off.wgsl` (they are not, and the shader uses no texture at all).
+fn voxel_shader(device: &wgpu::Device, with_pictures: bool) -> wgpu::ShaderModule {
+    let hook = if with_pictures {
+        include_str!("pictures_on.wgsl")
+    } else {
+        include_str!("pictures_off.wgsl")
+    };
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(if with_pictures {
+            "voxel shader with pictures"
+        } else {
+            "voxel shader"
+        }),
+        source: wgpu::ShaderSource::Wgsl(
+            format!(
+                "{}
+{hook}",
+                include_str!("voxel.wgsl")
+            )
+            .into(),
+        ),
+    })
+}
+
+/// The pipeline for the bricks' whole-cell quads and the one for their detailed ones, made with `shader`.
+fn voxel_pipelines(
+    device: &wgpu::Device,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    color_format: wgpu::TextureFormat,
+) -> (wgpu::RenderPipeline, wgpu::RenderPipeline) {
+    let make_pipeline =
+        |label: &str, entry_point: &str, vertex_buffer: wgpu::VertexBufferLayout<'_>| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some(entry_point),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(vertex_buffer)],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: shader,
+                    entry_point: Some("fragment_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: color_format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: Some(wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Greater),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+    let whole = make_pipeline(
+        "voxel pipeline",
+        "vertex_main",
+        wgpu::VertexBufferLayout {
+            array_stride: size_of::<PackedQuad>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &wgpu::vertex_attr_array![0 => Uint32, 1 => Uint32],
+        },
+    );
+    let detailed = make_pipeline(
+        "detailed voxel pipeline",
+        "vertex_detailed",
+        wgpu::VertexBufferLayout {
+            array_stride: size_of::<PackedDetailedQuad>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &wgpu::vertex_attr_array![0 => Uint32, 1 => Uint32, 2 => Uint32, 3 => Uint32],
+        },
+    );
+    (whole, detailed)
 }
 
 #[cfg(test)]
@@ -2596,8 +2776,9 @@ mod tests {
 
     #[test]
     fn the_palette_the_shader_reads_is_linear_and_never_empty() {
-        assert_eq!(linear_palette(&[]), [[1.0, 0.0, 1.0, 1.0]]);
-        let [black, middle, white] = linear_palette(&[[0.0; 3], [0.5; 3], [1.0; 3]])[..] else {
+        assert_eq!(linear_palette(&[], &[]), [[1.0, 0.0, 1.0, 1.0]]);
+        let [black, middle, white] = linear_palette(&[[0.0; 3], [0.5; 3], [1.0; 3]], &[])[..]
+        else {
             panic!("three colours");
         };
         assert_eq!(black, [0.0, 0.0, 0.0, 1.0]);

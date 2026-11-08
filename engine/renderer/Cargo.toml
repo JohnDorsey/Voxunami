@@ -21,6 +21,7 @@ wgpu = "30.0.1"
 
 [dev-dependencies]
 coarse_cells.workspace = true
+namespaced_id.workspace = true
 png = "0.18.1"
 
 [lints]

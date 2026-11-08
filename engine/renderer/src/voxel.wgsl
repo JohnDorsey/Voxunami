@@ -49,6 +49,8 @@ struct Frame {
     heavens: vec4<f32>,
     // Linear RGB of each avatar colour.
     avatars: array<vec4<f32>, 16>,
+    // x: how far from the camera, in voxels, a picture on a face begins to fade into the face's flat colour, y: how far it is gone (0: pictures are not drawn).
+    pictures: vec4<f32>,
 }
 
 // The material value of the first avatar colour: the last 16 values a quad can carry (see AVATAR_MATERIAL_BASE in the renderer).
@@ -98,6 +100,10 @@ struct VertexOutput {
     @location(3) relative: vec3<f32>,
     // x: the light of the lamps and the ambient light (0 to 1), y: how bright the side of the face makes it (0.4 to 1).
     @location(4) @interpolate(flat) lamp_and_side: vec2<f32>,
+    // Where the point is on the face's picture, in voxels: across, and (downward in the picture) up. Only meant for a face with a picture.
+    @location(5) uv: vec2<f32>,
+    // The picture on the face (bits of `FacePicture::word`), 0 for none.
+    @location(6) @interpolate(flat) picture: u32,
 }
 
 // How wide, in radians, the soft edge of a shadow is: the sun's disc, and the twilight of the air for a place at the ground of a ball. The same numbers as `sun.rs`.
@@ -214,7 +220,12 @@ fn corner_position(vertex_index: u32, face: u32, origin: vec3<f32>, width: f32, 
     return origin + axis_unit((axis + 1u) % 3u) * u_extent + axis_unit((axis + 2u) % 3u) * v_extent;
 }
 
-fn finish(relative: vec3<f32>, face: u32, material: u32, light: u32) -> VertexOutput {
+// The coordinate of a point of a brick along the direction `face_index` names (a face index: 2 * axis, plus 1 for the positive way): how far it is along that way.
+fn along(local: vec3<f32>, face_index: u32) -> f32 {
+    return select(-1.0, 1.0, (face_index & 1u) == 1u) * dot(local, axis_unit(face_index / 2u));
+}
+
+fn finish(relative: vec3<f32>, local: vec3<f32>, face: u32, material: u32, light: u32) -> VertexOutput {
     // The face's normal in the grid's own axes, turned to the world's, where the sun is.
     let normal = placement.rotation * (axis_unit(face / 2u) * select(-1.0, 1.0, (face & 1u) == 1u));
     // The light of the face and the ambient light combine like a screen blend: each is the share of
@@ -224,13 +235,23 @@ fn finish(relative: vec3<f32>, face: u32, material: u32, light: u32) -> VertexOu
     let side = 0.4 + 0.6 * max(dot(normal, frame.side_direction.xyz), 0.0);
 
     var base = vec3<f32>(1.0, 0.0, 1.0);
+    var picture = 0u;
     if (material >= AVATAR_BASE) {
         base = frame.avatars[material - AVATAR_BASE].rgb;
     } else if (material < arrayLength(&palette)) {
-        base = palette[material].rgb;
+        let entry = palette[material];
+        base = entry.rgb;
+        // (The picture is in the bits of `w`, which are those of 1.0 when there is none.)
+        picture = bitcast<u32>(entry.w) & 0x7FFFFFu;
     }
 
     var out: VertexOutput;
+    out.picture = picture;
+    out.uv = vec2<f32>(0.0);
+    if (picture != 0u) {
+        // The picture runs across the face along `across` and up it along `up`; the image's own rows go downward.
+        out.uv = vec2<f32>(along(local, (picture >> 11u) & 7u), -along(local, (picture >> 14u) & 7u));
+    }
     out.position = frame.view_projection * vec4<f32>(relative, 1.0);
     out.albedo = base;
     out.normal = normal;
@@ -246,6 +267,8 @@ fn finish(relative: vec3<f32>, face: u32, material: u32, light: u32) -> VertexOu
 struct Corner {
     // Where the corner is relative to the camera, in voxels.
     relative: vec3<f32>,
+    // Where it is in the brick, in the brick's own axes (in voxels, for the bricks that have pictures).
+    local: vec3<f32>,
     face: u32,
 }
 
@@ -261,7 +284,7 @@ fn whole_corner(vertex_index: u32, instance: Instance) -> Corner {
     // The voxel owns its face; a positive face is on the voxel's far side.
     let plane = origin + axis_unit(face / 2u) * select(0.0, 1.0, (face & 1u) == 1u);
     let local = corner_position(vertex_index, face, plane, width, height);
-    return Corner(placement.rotation * (local * placement.offset.w) + placement.offset.xyz, face);
+    return Corner(placement.rotation * (local * placement.offset.w) + placement.offset.xyz, local, face);
 }
 
 fn detailed_corner(vertex_index: u32, instance: DetailedInstance) -> Corner {
@@ -274,19 +297,19 @@ fn detailed_corner(vertex_index: u32, instance: DetailedInstance) -> Corner {
     let height = f32(instance.third & 0xFFFFu) / 8.0;
     let face = (instance.third >> 16u) & 7u;
     let local = corner_position(vertex_index, face, origin, width, height);
-    return Corner(placement.rotation * (local * placement.offset.w) + placement.offset.xyz, face);
+    return Corner(placement.rotation * (local * placement.offset.w) + placement.offset.xyz, local, face);
 }
 
 @vertex
 fn vertex_main(@builtin(vertex_index) vertex_index: u32, instance: Instance) -> VertexOutput {
     let corner = whole_corner(vertex_index, instance);
-    return finish(corner.relative, corner.face, instance.material & 0xFFFFFFu, instance.material >> 24u);
+    return finish(corner.relative, corner.local, corner.face, instance.material & 0xFFFFFFu, instance.material >> 24u);
 }
 
 @vertex
 fn vertex_detailed(@builtin(vertex_index) vertex_index: u32, instance: DetailedInstance) -> VertexOutput {
     let corner = detailed_corner(vertex_index, instance);
-    return finish(corner.relative, corner.face, instance.material & 0xFFFFFFu, instance.third >> 24u);
+    return finish(corner.relative, corner.local, corner.face, instance.material & 0xFFFFFFu, instance.third >> 24u);
 }
 
 // The same quads for the shadow map: where they are in the cascade (the frame's matrix is the cascade's) and nothing else.
@@ -399,6 +422,9 @@ fn sky_openness(position: vec3<f32>, normal: vec3<f32>, distance: f32) -> f32 {
 
 @fragment
 fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    // The colour of the face: its own, or where it has a picture the picture's (`picture_albedo` is in `pictures_off.wgsl` or `pictures_on.wgsl`, whichever the
+    // renderer's pipeline is made with).
+    let albedo = picture_albedo(in);
     let lamp = in.lamp_and_side.x;
     let side = in.lamp_and_side.y;
     var shaded = side * lamp;
@@ -435,7 +461,7 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
         shaded = side * (lamp + sky * (1.0 - lamp));
         sun = frame.sun_light.x * max(dot(light.normal, frame.sun_direction.xyz), 0.0) * sun_visible;
     }
-    let color = in.albedo * (shaded + sun * (1.0 - shaded));
+    let color = albedo * (shaded + sun * (1.0 - shaded));
     let fog = smoothstep(frame.fog_range.x, frame.fog_range.y, in.distance);
     return vec4<f32>(mix(color, frame.fog_color.rgb, fog), 1.0);
 }
