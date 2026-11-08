@@ -1486,6 +1486,54 @@ class AtlasProject:
             self.history.forget(record)
         return True
 
+    def _find_tile_file(self, name: str) -> Optional[Path]:
+        """The PNG file a tile's name stands for: the exact name, or the one file that differs only in letter case."""
+        path = self.folder / name
+        if path.is_file():
+            return path
+        for entry in os.scandir(self.folder):
+            if entry.is_file() and entry.name.casefold() == name.casefold():
+                return Path(entry.path)
+        return None
+
+    def purge_tile(self, coordinate: Coordinate) -> None:
+        """Delete a tile for good: its PNG file, if it has one, and every entry about it in atlas.json (its place,
+        its name and any pixels stored there). Unsaved changes and the tile's edit history go with it, and the
+        tile does not become an unplaced one. Works for an error tile too.
+
+        Raises KeyError if no tile is at `coordinate`, and OSError if the disk refuses; then nothing has changed.
+        The file is first moved aside under a temporary name, so that it can come back if atlas.json cannot be
+        written, and is deleted only once atlas.json no longer lists it.
+        """
+        record = self.tiles[coordinate]
+        path = self._find_tile_file(record.name)
+        held_aside: Optional[Path] = None
+        if path is not None:
+            held_aside = path.with_name(f"{TEMPORARY_FILE_PREFIX}{os.urandom(6).hex()}{TEMPORARY_FILE_SUFFIX}")
+            os.rename(path, held_aside)
+
+        def change() -> None:
+            del self.tiles[coordinate]
+            self.selection.discard(coordinate)
+
+        try:
+            self._commit(change)
+        except BaseException:
+            if path is not None:
+                try:
+                    os.rename(held_aside, path)
+                except OSError:
+                    logger.warning("could not give %s back its name %s", held_aside.name, path.name)
+            raise
+        self.history.forget(record)
+        self.existing_names.discard(record.name.casefold())
+        if held_aside is not None:
+            try:
+                os.unlink(held_aside)
+            except OSError as error:
+                # atlas.json no longer lists the tile, and the leftover is not a tile image, so nothing depends on it.
+                logger.warning("%s was purged but its leftover %s could not be deleted: %s", record.name, held_aside.name, error)
+
 
 class QuitDialog:
     """What to do with each tile that has unsaved changes when the window is closed, one tile at a time.
@@ -1544,6 +1592,84 @@ class QuitDialog:
 
     def cancel(self) -> str:
         return "cancel"
+
+
+@dataclasses.dataclass(frozen=True)
+class ContextMenu:
+    """The menu opened by right-clicking the tile at `coordinate`; it has one item, "Purge tile...". `position` is
+    where the pointer was."""
+
+    coordinate: Coordinate
+    position: tuple[int, int]
+
+
+def context_menu_area(menu: ContextMenu, window_size: tuple[int, int]) -> pygame.Rect:
+    """Where the menu's item is: at the pointer, moved back inside the window if it would stick out."""
+    area = pygame.Rect(menu.position, (scaled(130), scaled(30)))
+    area.right = min(area.right, window_size[0])
+    area.bottom = min(area.bottom, window_size[1])
+    area.x, area.y = max(area.x, 0), max(area.y, 0)
+    return area
+
+
+class PurgeDialog:
+    """The warning before a tile is purged (see AtlasProject.purge_tile). confirm() and cancel() return "done",
+    "ask" (the disk refused: the dialog stays, showing `error`) or "cancel"."""
+
+    def __init__(self, project: AtlasProject, coordinate: Coordinate):
+        self.project = project
+        self.coordinate = coordinate
+        self.record = project.tiles[coordinate]
+        self.error = ""
+
+    @property
+    def name(self) -> str:
+        return self.record.name
+
+    @property
+    def title(self) -> str:
+        return f"Purge {self.name}?"
+
+    @property
+    def message(self) -> str:
+        if self.record.is_new:
+            deleted = "Deletes its entries in atlas.json, with its unsaved pixels."
+        elif self.record.error is not None:
+            deleted = "Deletes the file, if there is one, and its entries in atlas.json."
+        elif self.record.is_modified:
+            deleted = "Deletes the file and its entries in atlas.json, and the unsaved changes."
+        else:
+            deleted = "Deletes the file and its entries in atlas.json."
+        return f"{deleted} This cannot be undone."
+
+    def confirm(self) -> str:
+        try:
+            self.project.purge_tile(self.coordinate)
+        except OSError as error:
+            self.error = f"Could not purge {self.name}: {error}"
+            return "ask"
+        return "done"
+
+    def cancel(self) -> str:
+        return "cancel"
+
+
+def purge_dialog_areas(window_size: tuple[int, int]) -> dict[str, pygame.Rect]:
+    """Where the parts of the purge dialog are: the panel, the lines of text, the row for an error and the buttons."""
+    width = min(scaled(480), window_size[0] - scaled(40))
+    height = min(scaled(190), window_size[1] - scaled(40))
+    panel = pygame.Rect(0, 0, width, height)
+    panel.center = (window_size[0] // 2, window_size[1] // 2)
+    margin, gap = scaled(20), scaled(12)
+    button_height, button_width = scaled(34), scaled(120)
+    buttons_top = panel.bottom - margin - button_height
+    return {
+        "panel": panel,
+        "message": pygame.Rect(panel.x + margin, panel.y + scaled(54), panel.width - 2 * margin, scaled(48)),
+        "error": pygame.Rect(panel.x + margin, buttons_top - gap - scaled(20), panel.width - 2 * margin, scaled(20)),
+        "purge": pygame.Rect(panel.right - margin - 2 * button_width - gap, buttons_top, button_width, button_height),
+        "cancel": pygame.Rect(panel.right - margin - button_width, buttons_top, button_width, button_height),
+    }
 
 
 class ImportDialog:
@@ -3837,6 +3963,8 @@ class Application:
         self._last_caret_visible = True
         self.quit_dialog: Optional[QuitDialog] = None
         self.import_dialog: Optional[ImportDialog] = None
+        self.context_menu: Optional[ContextMenu] = None
+        self.purge_dialog: Optional[PurgeDialog] = None
         self.file_picker = SystemFilePicker()
         self.closing = False
         self.layout = compute_layout(surface.get_size())
@@ -3875,7 +4003,8 @@ class Application:
     def handle_event(self, event: pygame.event.Event) -> bool:
         """Deal with one event. Returns False when the program should close."""
         if event.type == pygame.QUIT:
-            self.import_dialog = None  # closing the window gives up an import that has not started
+            # Closing the window gives up an import that has not started, and a purge that has not been confirmed.
+            self.import_dialog = self.context_menu = self.purge_dialog = None
             if self.quit_dialog is None:
                 if not self.project.unsaved_tiles():
                     return False
@@ -3885,8 +4014,12 @@ class Application:
         try:
             if self.quit_dialog is not None:
                 self._handle_dialog_event(event)
+            elif self.purge_dialog is not None:
+                self._handle_purge_event(event)
             elif self.import_dialog is not None:
                 self._handle_import_event(event)
+            elif self.context_menu is not None:
+                self._handle_menu_event(event)
             else:
                 self._handle_event(event)
         except OSError as error:
@@ -3907,6 +4040,71 @@ class Application:
 
     def import_dialog_areas(self) -> dict[str, pygame.Rect]:
         return import_dialog_areas(self.surface.get_size())
+
+    def purge_dialog_areas(self) -> dict[str, pygame.Rect]:
+        return purge_dialog_areas(self.surface.get_size())
+
+    def context_menu_area(self) -> pygame.Rect:
+        assert self.context_menu is not None
+        return context_menu_area(self.context_menu, self.surface.get_size())
+
+    def _open_context_menu(self, position: tuple[int, int]) -> None:
+        """Right-click: offer to purge the atlas tile under the pointer (nothing happens over anything else)."""
+        if not self.atlas_panel.rect.collidepoint(position):
+            return
+        coordinate = self.atlas_panel.tile_at(position)
+        if coordinate is None:
+            return
+        self.message = ""
+        self.editor.lose_focus()
+        self._leave_tile_size_field()
+        # As for a left click: a pasted picture is placed while its tiles are still the ones shown.
+        self.editor.finish_selection()
+        self.interaction.cancel()
+        self.context_menu = ContextMenu(coordinate, position)
+
+    def _handle_menu_event(self, event: pygame.event.Event) -> None:
+        """While the menu is open it gets every event; any click but one on its item, or Esc, closes it."""
+        menu = self.context_menu
+        assert menu is not None
+        if event.type in (pygame.VIDEORESIZE, pygame.WINDOWSIZECHANGED):
+            self.surface = pygame.display.get_surface() or self.surface
+            self.update_layout()
+            self.context_menu = None
+        elif event.type == pygame.MOUSEMOTION:
+            self.pointer = event.pos
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            self.pointer = event.pos
+            if event.button == 1 and self.context_menu_area().collidepoint(event.pos):
+                self.purge_dialog = PurgeDialog(self.project, menu.coordinate)
+            self.context_menu = None
+        elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            self.context_menu = None
+
+    def _handle_purge_event(self, event: pygame.event.Event) -> None:
+        """While the purge dialog is open it gets every event; the window behind it does nothing. Enter does not
+        confirm: a deletion needs a click on the button."""
+        dialog = self.purge_dialog
+        assert dialog is not None
+        outcome = "ask"
+        if event.type in (pygame.VIDEORESIZE, pygame.WINDOWSIZECHANGED):
+            self.surface = pygame.display.get_surface() or self.surface
+            self.update_layout()
+        elif event.type == pygame.MOUSEMOTION:
+            self.pointer = event.pos
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            self.pointer = event.pos
+            areas = self.purge_dialog_areas()
+            if areas["purge"].collidepoint(event.pos):
+                outcome = dialog.confirm()
+            elif areas["cancel"].collidepoint(event.pos):
+                outcome = dialog.cancel()
+        elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            outcome = dialog.cancel()
+        if outcome == "done":
+            self.message = f"Purged {dialog.name}."
+        if outcome != "ask":
+            self.purge_dialog = None
 
     def start_import(self) -> None:
         """Ask for a picture and, if it can be read, show what will be made of it."""
@@ -4022,6 +4220,8 @@ class Application:
             elif event.button == 1:
                 self.editor.lose_focus()
                 self._handle_press(event.pos)
+            elif event.button == 3:
+                self._open_context_menu(event.pos)
         elif event.type == pygame.MOUSEBUTTONUP and event.button in (1, 2, 3):
             self.pointer = event.pos
             self.editor.mouse_up(event.button, event.pos)
@@ -4155,11 +4355,40 @@ class Application:
         self.draw_status()
         if self.quit_dialog is not None:
             self.draw_quit_dialog(self.quit_dialog)
+        elif self.purge_dialog is not None:
+            self.draw_purge_dialog(self.purge_dialog)
         elif self.import_dialog is not None:
             self.draw_import_dialog(self.import_dialog)
+        elif self.context_menu is not None:
+            self.draw_context_menu()
         else:
             self.draw_tooltip()
         self.needs_redraw = False
+
+    def draw_context_menu(self) -> None:
+        area = self.context_menu_area()
+        hovered = area.collidepoint(self.pointer)
+        pygame.draw.rect(self.surface, Theme.BUTTON_HOVERED if hovered else Theme.TOOLTIP_BACKGROUND, area, border_radius=3)
+        pygame.draw.rect(self.surface, Theme.PANEL_BORDER, area, width=1, border_radius=3)
+        draw_text(self.surface, self.fonts.normal, "Purge tile...", Theme.TEXT, (area.x + scaled(10), area.centery), "midleft")
+
+    def draw_purge_dialog(self, dialog: PurgeDialog) -> None:
+        surface = self.surface
+        dimming = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        dimming.fill((0, 0, 0, 170))
+        surface.blit(dimming, (0, 0))
+        areas = self.purge_dialog_areas()
+        panel = areas["panel"]
+        pygame.draw.rect(surface, Theme.PANEL, panel, border_radius=6)
+        pygame.draw.rect(surface, Theme.INVALID, panel, width=1, border_radius=6)
+        draw_text(surface, self.fonts.large, dialog.title, Theme.TEXT, (panel.x + scaled(20), panel.y + scaled(16)))
+        line_height = self.fonts.normal.get_linesize()
+        for number, line in enumerate(wrap_text(self.fonts.normal, dialog.message, areas["message"].width)):
+            draw_text(surface, self.fonts.normal, line, Theme.TEXT_DIMMED, (areas["message"].x, areas["message"].y + number * line_height))
+        if dialog.error:
+            draw_text(surface, self.fonts.small, dialog.error, Theme.ERROR, areas["error"].midleft, "midleft")
+        for name, label in (("purge", "Purge"), ("cancel", "Cancel")):
+            draw_button(surface, areas[name], label, self.fonts.normal, areas[name].collidepoint(self.pointer))
 
     def draw_import_preview(self, box: pygame.Rect, dialog: ImportDialog) -> None:
         """The picture with the tile grid on it, as it will be cut."""
@@ -4313,6 +4542,12 @@ class Application:
 
     def draw_atlas(self) -> None:
         panel = self.atlas_panel
+        # The tile a menu or a purge warning is about.
+        purge_target = (
+            self.context_menu.coordinate if self.context_menu is not None
+            else self.purge_dialog.coordinate if self.purge_dialog is not None
+            else None
+        )
         self.draw_panel_frame(panel.rect)
         self.surface.set_clip(panel.rect)
         for coordinate in panel.visible_coordinates():
@@ -4323,6 +4558,8 @@ class Application:
             self.draw_tile(rectangle, record, record.pixels, (id(record), record.revision))
             if coordinate in self.project.selection:
                 pygame.draw.rect(self.surface, Theme.ACCENT, rectangle.inflate(6, 6), width=2)
+            if coordinate == purge_target:
+                pygame.draw.rect(self.surface, Theme.INVALID, rectangle.inflate(6, 6), width=2)
         if self.project.is_empty:
             self.draw_empty_state()
         self.surface.set_clip(None)

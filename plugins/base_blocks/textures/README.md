@@ -59,6 +59,11 @@ phases; what works so far:
   `atlas.json`); Esc gives up; clicking elsewhere applies a name that is allowed and drops one that is not (the
   status line says why). A name is refused if it is not a valid file name or if any PNG file in the folder already
   has it, even one the program ignores; a file is never replaced. Renaming is not part of Ctrl+Z.
+- Purging: right-click a tile in the atlas and choose "Purge tile..." (the tile is outlined in red). After a short
+  warning, Purge deletes the tile's PNG file and its entries in `atlas.json` (its place, its name and any pixels
+  stored there), including unsaved changes; it cannot be undone and is not part of Ctrl+Z. It works on error tiles
+  too (a missing file is fine), and the tile does not become an unplaced one. Enter does not confirm; Esc or
+  Cancel gives up. If `atlas.json` cannot be written the file comes back and nothing changes.
 - Closing the window with unsaved tiles (including tiles that have no file yet) asks about each one: Save, Don't
   save or Cancel (Esc), with the current picture next to the one on disk. The box "Do this for all" gives the
   same answer to the tiles still to come. Enter saves. A tile with no file that is not saved stays in `atlas.json`.

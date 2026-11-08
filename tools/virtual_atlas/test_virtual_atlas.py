@@ -2929,6 +2929,198 @@ class ProjectRenameTests(ProjectFixture):
         self.assertEqual(self.saved().coordinates_to_names, {(0, 0): "n.png"})
 
 
+class ProjectPurgeTests(ProjectFixture):
+    def leftover_temporary_files(self):
+        return [entry.name for entry in self.folder.iterdir() if entry.name.startswith(va.TEMPORARY_FILE_PREFIX)]
+
+    def test_purging_a_tile_deletes_its_file_and_its_entry_in_atlas_json_and_nothing_else(self):
+        project = self.make_project(
+            {(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN))},
+            unplaced=[("loose.png", solid_tile(BLUE))],
+            other_settings={"note": [1, 2]},
+        )
+        project.select_only((0, 0))
+        project.purge_tile((0, 0))
+        self.assertFalse((self.folder / "a.png").exists())
+        self.assertTrue((self.folder / "b.png").exists())
+        self.assertTrue((self.folder / "loose.png").exists())
+        saved = self.saved()
+        self.assertEqual(saved.coordinates_to_names, {(1, 0): "b.png"})
+        self.assertEqual(saved.coordinates_to_data, {})
+        self.assertEqual((saved.tile_size, saved.other_settings), (4, {"note": [1, 2]}))
+        self.assertEqual(list(project.tiles), [(1, 0)])
+        self.assertEqual(project.selection, set())
+        self.assertEqual([tile.name for tile in project.unplaced], ["loose.png"], "a purged tile does not become unplaced")
+        self.assertNotIn("a.png", project.existing_names)
+        self.assertEqual(self.leftover_temporary_files(), [])
+
+    def test_purging_keeps_the_selection_of_the_other_tiles(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN))})
+        project.selection = {(0, 0), (1, 0)}
+        project.purge_tile((0, 0))
+        self.assertEqual(project.selection, {(1, 0)})
+
+    def test_purging_a_tile_that_has_no_file_yet_deletes_its_stored_pixels_too(self):
+        project = self.make_project(
+            {(0, 0): ("n.png", None), (1, 0): ("b.png", solid_tile(GREEN))},
+            data={(0, 0): va.encode_tile_data(solid_tile(RED))},
+        )
+        project.purge_tile((0, 0))
+        saved = self.saved()
+        self.assertEqual(saved.coordinates_to_names, {(1, 0): "b.png"})
+        self.assertEqual(saved.coordinates_to_data, {})
+        self.assertNotIn("n.png", (self.folder / "atlas.json").read_text())
+
+    def test_purging_a_tile_with_a_file_and_stored_pixels_deletes_both_entries(self):
+        project = self.make_project(
+            {(0, 0): ("a.png", solid_tile(RED))}, data={(0, 0): va.encode_tile_data(solid_tile(GREEN))}
+        )
+        self.assertTrue(project.tiles[(0, 0)].is_modified)
+        project.purge_tile((0, 0))
+        self.assertFalse((self.folder / "a.png").exists())
+        saved = self.saved()
+        self.assertEqual((saved.coordinates_to_names, saved.coordinates_to_data), ({}, {}))
+
+    def test_purging_a_tile_with_unsaved_edits_deletes_the_file_as_it_is_on_disk(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE))})
+        record = project.tiles[(0, 0)]
+        layout = va.compose_canvas({(0, 0): record.pixels}, self.tile_size)
+        canvas = layout.pixels.copy()
+        canvas[0, 0] = RED
+        project.apply_canvas_edit(layout, canvas)
+        self.assertTrue(project.history.can_undo([record]))
+        project.purge_tile((0, 0))
+        self.assertFalse((self.folder / "a.png").exists())
+        self.assertFalse(project.history.can_undo([record]), "the history of a purged tile is forgotten")
+
+    def test_an_error_tile_can_be_purged_whether_or_not_its_file_exists(self):
+        va.write_png_atomically(self.folder / "wrong_size.png", solid_tile(RED, 8))
+        project = self.make_project(
+            {(0, 0): ("gone.png", None), (1, 0): ("wrong_size.png", None), (2, 0): ("bad_data.png", None)},
+            data={(2, 0): "this is not base64!"},
+        )
+        self.assertTrue(all(record.error is not None for record in project.tiles.values()))
+        for coordinate in [(0, 0), (1, 0), (2, 0)]:
+            project.purge_tile(coordinate)
+        self.assertFalse((self.folder / "wrong_size.png").exists())
+        saved = self.saved()
+        self.assertEqual((saved.coordinates_to_names, saved.coordinates_to_data), ({}, {}))
+
+    def test_the_file_is_found_when_its_letter_case_differs_from_the_name_in_atlas_json(self):
+        va.write_png_atomically(self.folder / "A.png", solid_tile(RED))
+        project = self.make_project({(0, 0): ("a.png", None)})
+        self.assertIsNone(project.tiles[(0, 0)].error, "the scan matches names ignoring case")
+        project.purge_tile((0, 0))
+        self.assertEqual([entry.name for entry in self.folder.iterdir() if entry.suffix == ".png"], [])
+
+    def test_a_purged_name_can_be_used_again(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN))})
+        project.purge_tile((0, 0))
+        self.assertIsNone(project.rename_problem((1, 0), "a.png"))
+
+    def test_an_empty_place_is_refused_and_changes_nothing(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
+        before = (self.folder / "atlas.json").read_bytes()
+        with self.assertRaises(KeyError):
+            project.purge_tile((5, 5))
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertTrue((self.folder / "a.png").exists())
+
+    def test_when_atlas_json_cannot_be_written_the_file_and_the_tile_come_back(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN))})
+        project.select_only((0, 0))
+        before = (self.folder / "atlas.json").read_bytes()
+        file_before = (self.folder / "a.png").read_bytes()
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                project.purge_tile((0, 0))
+        self.assertEqual((self.folder / "a.png").read_bytes(), file_before)
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertEqual(sorted(project.tiles), [(0, 0), (1, 0)])
+        self.assertEqual(project.selection, {(0, 0)})
+        self.assertIn("a.png", project.existing_names)
+        self.assertEqual(self.leftover_temporary_files(), [])
+        project.purge_tile((0, 0))
+        self.assertFalse((self.folder / "a.png").exists(), "the tile can be purged once the disk works again")
+
+    def test_when_the_file_cannot_be_moved_away_nothing_changes(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
+        before = (self.folder / "atlas.json").read_bytes()
+        with mock.patch.object(va.os, "rename", side_effect=PermissionError("in use")):
+            with self.assertRaises(OSError):
+                project.purge_tile((0, 0))
+        self.assertTrue((self.folder / "a.png").exists())
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertIn((0, 0), project.tiles)
+
+    def test_a_tile_whose_atlas_json_write_fails_and_that_has_no_file_stays(self):
+        project = self.make_project({(0, 0): ("n.png", None)}, data={(0, 0): va.encode_tile_data(solid_tile(GREEN))})
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                project.purge_tile((0, 0))
+        self.assertIn((0, 0), project.tiles)
+        self.assertEqual(list(self.saved().coordinates_to_data), [(0, 0)])
+
+    def test_a_leftover_that_cannot_be_deleted_does_not_undo_the_purge_but_is_reported(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
+        with mock.patch.object(va.os, "unlink", side_effect=PermissionError("in use")):
+            with self.assertLogs(va.logger, level="WARNING"):
+                project.purge_tile((0, 0))
+        self.assertEqual(self.saved().coordinates_to_names, {})
+        self.assertFalse((self.folder / "a.png").exists())
+        self.assertTrue(project.is_empty)
+        self.assertEqual(len(self.leftover_temporary_files()), 1)
+        self.assertEqual(project.unplaced, [], "the leftover is not a tile image, so the folder scan ignores it")
+
+
+class PurgeDialogTests(ProjectFixture):
+    def test_the_warning_is_short_and_says_the_file_and_the_entries_go_and_that_it_cannot_be_undone(self):
+        project = self.make_project({(0, 0): ("stone.png", solid_tile(RED))})
+        dialog = va.PurgeDialog(project, (0, 0))
+        self.assertEqual(dialog.title, "Purge stone.png?")
+        self.assertIn("file", dialog.message)
+        self.assertIn("atlas.json", dialog.message)
+        self.assertIn("cannot be undone", dialog.message)
+        self.assertNotIn("unsaved", dialog.message)
+        self.assertLess(len(dialog.message), 120, "concise")
+
+    def test_the_warning_mentions_unsaved_changes_only_for_a_tile_that_has_them(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE)), (1, 0): ("n.png", None)}, data={(1, 0): va.encode_tile_data(solid_tile(RED))})
+        record = project.tiles[(0, 0)]
+        layout = va.compose_canvas({(0, 0): record.pixels}, self.tile_size)
+        canvas = layout.pixels.copy()
+        canvas[0, 0] = RED
+        project.apply_canvas_edit(layout, canvas)
+        self.assertIn("unsaved", va.PurgeDialog(project, (0, 0)).message)
+        message = va.PurgeDialog(project, (1, 0)).message
+        self.assertIn("unsaved", message)
+        self.assertNotIn("the file", message, "a tile with no file has none to delete")
+
+    def test_confirming_purges_and_reports_done(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
+        dialog = va.PurgeDialog(project, (0, 0))
+        self.assertEqual(dialog.confirm(), "done")
+        self.assertTrue(project.is_empty)
+        self.assertFalse((self.folder / "a.png").exists())
+
+    def test_cancelling_changes_nothing(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
+        dialog = va.PurgeDialog(project, (0, 0))
+        self.assertEqual(dialog.cancel(), "cancel")
+        self.assertTrue((self.folder / "a.png").exists())
+        self.assertIn((0, 0), project.tiles)
+
+    def test_a_disk_error_keeps_the_dialog_open_with_the_reason(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
+        dialog = va.PurgeDialog(project, (0, 0))
+        with mock.patch.object(va.os, "rename", side_effect=PermissionError("in use")):
+            self.assertEqual(dialog.confirm(), "ask")
+        self.assertIn("a.png", dialog.error)
+        self.assertIn("in use", dialog.error)
+        self.assertTrue((self.folder / "a.png").exists())
+        self.assertEqual(dialog.confirm(), "done", "it can be tried again")
+
+
 class UnsavedTilesTests(ProjectFixture):
     def test_the_unsaved_tiles_are_the_modified_ones_including_new_tiles_in_reading_order(self):
         project = self.make_project(
@@ -4646,6 +4838,163 @@ class EditorTests(ProjectFixture):
         application = va.Application(project, va.pygame.Surface((700, 520)))
         application.handle_event(va.pygame.event.Event(va.pygame.QUIT))
         application.draw()
+
+
+class PurgeWindowTests(ProjectFixture):
+    """Right-clicking a tile in the atlas offers to purge it, after a warning."""
+
+    @classmethod
+    def setUpClass(cls):
+        va.pygame.init()
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.make_project(
+            {(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN))},
+            unplaced=[("loose.png", solid_tile(BLUE))],
+        )
+        self.application = va.Application(self.project, va.pygame.Surface((1280, 800)))
+
+    def send(self, kind, position, button=1):
+        event_type = {"down": va.pygame.MOUSEBUTTONDOWN, "up": va.pygame.MOUSEBUTTONUP}[kind]
+        return self.application.handle_event(va.pygame.event.Event(event_type, pos=position, button=button))
+
+    def click(self, position, button=1):
+        self.send("down", position, button)
+        self.send("up", position, button)
+
+    def key(self, key):
+        return self.application.handle_event(va.pygame.event.Event(va.pygame.KEYDOWN, key=key, mod=0, unicode="", scancode=0))
+
+    def tile_position(self, coordinate):
+        return self.application.atlas_panel.tile_screen_rect(coordinate).center
+
+    def open_menu(self, coordinate=(0, 0)):
+        self.click(self.tile_position(coordinate), button=3)
+
+    def open_dialog(self, coordinate=(0, 0)):
+        self.open_menu(coordinate)
+        self.click(self.application.context_menu_area().center)
+
+    def press_dialog(self, name):
+        self.click(self.application.purge_dialog_areas()[name].center)
+
+    def test_right_clicking_a_tile_opens_a_menu_for_it_without_changing_the_selection(self):
+        self.project.select_only((1, 0))
+        self.open_menu((0, 0))
+        self.assertEqual(self.application.context_menu.coordinate, (0, 0))
+        self.assertEqual(self.project.selection, {(1, 0)})
+        self.assertIsNone(self.application.purge_dialog)
+        self.application.draw()
+
+    def test_right_clicking_an_empty_place_or_an_unplaced_tile_opens_no_menu(self):
+        self.open_menu((5, 3))
+        self.assertIsNone(self.application.context_menu)
+        self.click(self.application.unplaced_panel.tile_screen_rect((0, 0)).center, button=3)
+        self.assertIsNone(self.application.context_menu)
+
+    def test_the_menu_stays_inside_the_window_when_opened_near_the_edge(self):
+        self.application.context_menu = va.ContextMenu((0, 0), (1279, 799))
+        area = self.application.context_menu_area()
+        self.assertTrue(self.application.surface.get_rect().contains(area))
+
+    def test_choosing_the_menu_item_asks_first_and_deletes_nothing_yet(self):
+        self.open_dialog()
+        self.assertIsNone(self.application.context_menu)
+        self.assertEqual(self.application.purge_dialog.title, "Purge a.png?")
+        self.assertTrue((self.folder / "a.png").exists())
+        self.assertIn((0, 0), self.saved().coordinates_to_names)
+        self.application.draw()
+
+    def test_confirming_deletes_the_file_and_the_entries_and_says_so(self):
+        self.project.select_only((0, 0))
+        self.application.draw()
+        self.open_dialog()
+        self.press_dialog("purge")
+        self.assertIsNone(self.application.purge_dialog)
+        self.assertFalse((self.folder / "a.png").exists())
+        self.assertEqual(self.saved().coordinates_to_names, {(1, 0): "b.png"})
+        self.assertEqual(self.project.selection, set())
+        self.assertIn("Purged a.png", self.application.message)
+        self.application.draw()
+        self.assertIsNone(self.application.editor.layout, "the editor no longer shows the purged tile")
+
+    def test_cancel_and_escape_and_the_menu_closing_delete_nothing(self):
+        self.open_dialog()
+        self.press_dialog("cancel")
+        self.assertIsNone(self.application.purge_dialog)
+        self.open_dialog()
+        self.key(va.pygame.K_ESCAPE)
+        self.assertIsNone(self.application.purge_dialog)
+        self.open_menu()
+        self.click((5, 5))
+        self.assertIsNone(self.application.context_menu)
+        self.open_menu()
+        self.key(va.pygame.K_ESCAPE)
+        self.assertIsNone(self.application.context_menu)
+        self.assertIsNone(self.application.purge_dialog)
+        self.assertTrue((self.folder / "a.png").exists())
+        self.assertEqual(sorted(self.saved().coordinates_to_names), [(0, 0), (1, 0)])
+
+    def test_enter_does_not_confirm_a_deletion(self):
+        self.open_dialog()
+        self.key(va.pygame.K_RETURN)
+        self.assertIsNotNone(self.application.purge_dialog)
+        self.assertTrue((self.folder / "a.png").exists())
+
+    def test_clicking_outside_the_dialog_does_nothing_and_the_window_behind_it_is_idle(self):
+        self.open_dialog()
+        self.click(self.tile_position((1, 0)))
+        self.assertEqual(self.project.selection, set())
+        self.assertIsNotNone(self.application.purge_dialog)
+
+    def test_a_click_outside_the_menu_closes_it_and_does_not_select_what_is_under_it(self):
+        self.open_menu()
+        self.click(self.tile_position((1, 0)))
+        self.assertIsNone(self.application.context_menu)
+        self.assertEqual(self.project.selection, set())
+
+    def test_releasing_the_right_button_over_the_menu_does_not_choose_the_item(self):
+        self.open_menu()
+        self.send("up", self.application.context_menu_area().center, button=3)
+        self.assertIsNotNone(self.application.context_menu)
+        self.assertIsNone(self.application.purge_dialog)
+
+    def test_a_disk_error_keeps_the_dialog_open_and_shows_why(self):
+        self.open_dialog()
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            self.press_dialog("purge")
+        self.assertIsNotNone(self.application.purge_dialog)
+        self.assertIn("disk full", self.application.purge_dialog.error)
+        self.assertTrue((self.folder / "a.png").exists())
+        self.application.draw()
+        self.press_dialog("purge")
+        self.assertFalse((self.folder / "a.png").exists())
+
+    def test_the_menu_and_dialog_draw_in_a_small_window(self):
+        application = va.Application(self.project, va.pygame.Surface((600, 420)))
+        application.context_menu = va.ContextMenu((0, 0), (590, 410))
+        application.draw()
+        application.context_menu = None
+        application.purge_dialog = va.PurgeDialog(self.project, (0, 0))
+        application.draw()
+
+    def test_the_tile_the_menu_is_for_is_outlined_so_it_is_clear_which_one_is_meant(self):
+        self.open_menu((1, 0))
+        self.application.draw()
+        rectangle = self.application.atlas_panel.tile_screen_rect((1, 0))
+        outline = tuple(self.application.surface.get_at((rectangle.centerx, rectangle.y - 2)))[:3]
+        self.assertEqual(outline, va.Theme.INVALID)
+
+    def test_right_clicks_in_the_editor_still_go_to_the_editor(self):
+        self.project.select_only((0, 0))
+        self.application.draw()
+        self.click(self.application.editor.areas.canvas.center, button=3)
+        self.assertIsNone(self.application.context_menu)
+
+    def test_the_program_with_a_menu_open_closes_on_quit_like_before(self):
+        self.open_menu()
+        self.assertFalse(self.application.handle_event(va.pygame.event.Event(va.pygame.QUIT)))
 
 
 if __name__ == "__main__":
