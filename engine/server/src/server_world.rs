@@ -187,6 +187,8 @@ pub struct ServerWorld {
     catalog: Arc<EntityCatalog>,
     tick: Tick,
     clients: BTreeMap<ClientId, PlayerKey>,
+    /// The entity that is each client's own body, if the game says which it is: the ships it is aboard are in the client's picture wherever the client's view is.
+    focus: BTreeMap<ClientId, EntityId>,
     /// (Behind a cell so that reading a ship that has terrain needs only a shared borrow of the world: a body meets several grids at once, and the others are
     /// borrowed from the world as well.)
     generated: RefCell<GeneratedBrickCache>,
@@ -268,6 +270,7 @@ impl ServerWorld {
             catalog,
             tick: Tick::ZERO,
             clients: BTreeMap::new(),
+            focus: BTreeMap::new(),
             generated: RefCell::new(GeneratedBrickCache::default()),
             generations: Cell::new(0),
             prefetcher: RefCell::new(Prefetcher::default()),
@@ -547,6 +550,33 @@ impl ServerWorld {
 
     pub(crate) fn remove_client(&mut self, client: ClientId) {
         self.clients.remove(&client);
+        self.focus.remove(&client);
+    }
+
+    /// Says which entity is a client's own body (`None`: none is). The client is told of the ship that entity is aboard, whatever else it watches: a client places
+    /// its own body, and so its camera, by the ship, and a camera that is nowhere does not move the box of bricks the client asks to watch, so a client that had
+    /// lost the ship it rides could never get it back. Games that move players call this when a client's player is made, and `None` when they let go of it.
+    pub fn set_client_focus(&mut self, client: ClientId, entity: Option<EntityId>) {
+        match entity {
+            Some(entity) if self.clients.contains_key(&client) => {
+                self.focus.insert(client, entity);
+            }
+            _ => {
+                self.focus.remove(&client);
+            }
+        }
+    }
+
+    /// The entity that is a client's own body, if the game has said which it is.
+    pub fn client_focus(&self, client: ClientId) -> Option<EntityId> {
+        self.focus.get(&client).copied()
+    }
+
+    /// The ship a client's own body is aboard, if it has a body and the body is aboard a ship.
+    pub(crate) fn ship_of_client(&self, client: ClientId) -> Option<GridId> {
+        let entity = self.entities().get(*self.focus.get(&client)?)?;
+        let grid = entity.pose.grid;
+        grid.root_level().is_none().then_some(grid)
     }
 
     /// The identity of a connected client: the public key it proved it holds the private key of.
@@ -1331,8 +1361,10 @@ impl ServerWorld {
     /// What is in a level near a planet on a rail goes with the planet: a player or an item (in the level's own coordinates) and a ship, whether it is free or
     /// held, are moved by the planet's displacement, so that each stays where it is from the planet, and a player there falls to it and stands on it however
     /// fast the planet goes. (A ship's body is the plugin's: it simulates the ships a planet carries in a frame that goes with the planet, and puts them where
-    /// they are against it. What this does for them is that they are with the planet in every tick before the bodies move, and not a tick behind it.) A ship's
-    /// velocity and an entity's are left as they are; they are against the planet. See [`ServerWorld::planet_carrying`].
+    /// they are against it. What this does for them is that they are with the planet in every tick before the bodies move, and not a tick behind it.) **Speeds are not
+    /// the same for the two kinds**: a ship's `linear_velocity` is left as it is and is the world's (the plugin writes the planet's speed and the ship's own against it),
+    /// while the speed of whatever keeps a state for an entity (the body of a player) is against the planet that carries it, so that it is carried by the displacement and
+    /// not twice (see [`ServerWorld::carrier_of_entity`]). See [`ServerWorld::planet_carrying`].
     pub(crate) fn apply_rails(&mut self, ticks_per_second: u32) {
         let time = RailTime::of_tick(self.data.clock(), ticks_per_second);
         self.carried_entities.clear();
@@ -1435,6 +1467,14 @@ impl ServerWorld {
     /// forgotten when the entity is put somewhere ([`ServerWorld::set_entity_pose`]): a pose put on it after is not carried.
     pub fn carried_by_rails(&self, entity: EntityId) -> Option<Displacement> {
         self.carried_entities.get(&entity).copied()
+    }
+
+    /// The planet on a rail that carried an entity in the level in the last tick, if one did: the one whose sphere of influence the entity was in (see
+    /// [`ServerWorld::planet_carrying`]), and so the one whose speed ([`world_storage::MovingGrid::linear_velocity`], which is the world's) the speed of whatever keeps a
+    /// state of its own for the entity is **against**. It is told for as long as the entity is in the sphere, also in a call that moved it by nothing (see
+    /// [`ServerWorld::carried_by_rails`]).
+    pub fn carrier_of_entity(&self, entity: EntityId) -> Option<GridId> {
+        self.carried_by.get(&entity).copied()
     }
 
     /// The planets on a rail, with where each is and how far it carries.
@@ -1811,7 +1851,7 @@ impl ServerWorld {
 }
 
 mod coasting;
-pub use coasting::{NotCoasting, PredictedRail, Prediction, PredictionEnd};
+pub use coasting::{FlightState, NotCoasting, PredictedRail, Prediction, PredictionEnd};
 
 #[cfg(test)]
 pub(crate) mod tests;

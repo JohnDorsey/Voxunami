@@ -98,6 +98,20 @@ pub(super) fn search_for_exit(
     (at, can_leave)
 }
 
+/// How a ship is flying against the planet that pulls it most: where it is and how it goes against the planet, and the orbit that state is on with the planet's pull now (the one a rail
+/// would hold if the ship were on one), or why there is none.
+#[derive(Clone, Debug)]
+pub struct FlightState {
+    /// The planet that pulls the ship most.
+    pub planet: GridId,
+    /// Where the centre of mass of the ship is from the middle of the planet, in voxels.
+    pub place: [f64; 3],
+    /// How fast the ship goes against the planet, in voxels a second.
+    pub velocity: [f64; 3],
+    /// The orbit that state is on, round the planet.
+    pub orbit: Result<Orbit, RailError>,
+}
+
 /// Why a ship is not on a rail that goes round a planet.
 #[derive(Clone, Debug, PartialEq)]
 pub enum NotCoasting {
@@ -262,6 +276,32 @@ impl ServerWorld {
     /// centre of mass) and its speed are on, with the pull of that planet alone.
     pub fn coasting_rail(&self, grid: GridId, time: RailTime) -> Result<Rail, NotCoasting> {
         self.coasting_rail_with(None, grid, time)
+    }
+
+    /// How a ship flies against the planet that pulls it most at `time`, whatever it is doing (pushed, held or turning: it need not be a ship that can go on a rail), or `None` for a grid that is
+    /// a planet or that no planet pulls. The orbit is made as a rail's is, from the place and the speed, with the pull of the planet now. Nothing changes.
+    pub fn flight_state(&self, grid: GridId, time: RailTime) -> Option<FlightState> {
+        let ship = self.data.grids().get(grid)?;
+        if ship.terrain.is_some() {
+            return None;
+        }
+        let middle = self.middle_of(ship)?;
+        let (parent, planet, place) = self.planet_that_pulls_most(None, grid, ship, middle)?;
+        let velocity: [f64; 3] =
+            [0, 1, 2].map(|axis| ship.linear_velocity[axis] - planet.linear_velocity[axis]);
+        let orbit = Orbit::from_place(
+            Centre::Grid(parent),
+            place,
+            velocity,
+            self.mass_parameter_of(planet),
+            time,
+        );
+        Some(FlightState {
+            planet: parent,
+            place,
+            velocity,
+            orbit,
+        })
     }
 
     /// As [`ServerWorld::coasting_rail`], with what is in the way of each ship already found for this tick (`known`), or looking at every grid.

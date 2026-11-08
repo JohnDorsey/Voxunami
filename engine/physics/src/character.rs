@@ -8,6 +8,7 @@ use voxel_space::{
 };
 
 use crate::real::{array, vector, world_position};
+use crate::sweep::{TERRAIN_EVERY_WAY_VOXELS, swept_bricks};
 use crate::terrain::{Collision, CollisionSource, build_brick};
 
 /// How far, in bricks, from its frame's origin a character may get before the frame is rebuilt
@@ -422,6 +423,13 @@ impl CharacterBody {
         self.center += vector(delta);
     }
 
+    /// Changes the speed by `delta`, in the axes of the frame, and nothing else: the character is where it was and stands or flies as it did. It is for a character whose speed
+    /// is measured from something that has changed under it (a planet that carried it has let it go, and the speed it had against the planet is its speed in the world less
+    /// the planet's): it goes on at the speed it had in the world.
+    pub fn change_velocity(&mut self, delta: [f64; 3]) {
+        self.velocity += vector(delta);
+    }
+
     /// Puts the character with its eyes at a position, at rest and in the air. If that is inside the
     /// terrain, the next [`CharacterBody::update_terrain`] lifts it straight up onto the surface above.
     pub fn teleport(&mut self, eye: WorldPosition) {
@@ -659,48 +667,32 @@ impl CharacterBody {
             self.origin = here;
             self.center -= shift;
         }
-        // The bricks within the lookahead of the character (and, farther out, those that are kept): a box of bricks around the middle of the body.
+        // The bricks within the lookahead of the character (and, farther out, those that are kept): a box of bricks around the middle of the body, and past a cap of it, along the way it goes
+        // (see `SweptBricks`: at 6,000 voxels a second the box of the whole margin was 830,000 bricks in each tick).
         let lookahead =
             TERRAIN_LOOKAHEAD_VOXELS + TERRAIN_LOOKAHEAD_SECONDS * self.velocity.length();
         let bricks_within = |distance: Real| {
-            let brick = |value: Real, origin: i128| {
-                origin.saturating_add((value / BRICK_EDGE_LENGTH as Real).floor() as i128)
-            };
-            let (low, high) = (
-                self.center - Vector::splat(distance),
-                self.center + Vector::splat(distance),
-            );
-            (
-                BrickCoordinate::new(
-                    brick(low.x, self.origin.x()),
-                    brick(low.y, self.origin.y()),
-                    brick(low.z, self.origin.z()),
-                ),
-                BrickCoordinate::new(
-                    brick(high.x, self.origin.x()),
-                    brick(high.y, self.origin.y()),
-                    brick(high.z, self.origin.z()),
-                ),
+            swept_bricks(
+                self.center,
+                self.center,
+                distance,
+                TERRAIN_EVERY_WAY_VOXELS,
+                self.velocity,
+                self.origin,
             )
         };
-        let (near_low, near_high) = bricks_within(lookahead);
-        let (kept_low, kept_high) = bricks_within(lookahead + TERRAIN_KEEP_EXTRA_VOXELS);
-        let wanted: Vec<BrickCoordinate> = (near_low.z()..=near_high.z())
-            .flat_map(|z| {
-                (near_low.y()..=near_high.y()).flat_map(move |y| {
-                    (near_low.x()..=near_high.x()).map(move |x| BrickCoordinate::new(x, y, z))
-                })
-            })
-            .collect();
+        let (Some(near), Some(kept)) = (
+            bricks_within(lookahead),
+            bricks_within(lookahead + TERRAIN_KEEP_EXTRA_VOXELS),
+        ) else {
+            return;
+        };
+        let wanted: Vec<BrickCoordinate> = near.bricks().collect();
         let far: Vec<BrickCoordinate> = self
             .loaded
             .keys()
             .copied()
-            .filter(|brick| {
-                !(kept_low.x()..=kept_high.x()).contains(&brick.x())
-                    || !(kept_low.y()..=kept_high.y()).contains(&brick.y())
-                    || !(kept_low.z()..=kept_high.z()).contains(&brick.z())
-            })
+            .filter(|brick| !kept.contains(*brick))
             .collect();
         for brick in far {
             self.unload(brick);
@@ -910,18 +902,36 @@ impl CharacterBody {
     /// One step of [`CharacterSettings::time_step`] in a world whose gravity is the character's own, straight down: the character
     /// follows what the player asks, and gravity, and is stopped by the terrain.
     pub fn step(&mut self, input: MoveInput) {
-        self.step_pulled(input, Vector::new(0.0, -self.settings.gravity, 0.0));
+        self.step_pulled(
+            input,
+            Vector::new(0.0, -self.settings.gravity, 0.0),
+            Vector::ZERO,
+        );
     }
 
     /// One step, pulled by `gravity`: an acceleration in the axes of the character's frame, whatever the world's field is where it is
     /// (a ship that is turned over has the level's gravity pointing up in its own axes). Up is against it, so a character walks on
     /// whatever floor that makes, and the way it faces is carried along as the pull turns. A pull of nothing leaves the character
-    /// weightless: it keeps its frame and drifts on at the speed it had.
+    /// weightless: it keeps its frame and its speed along the way up it had (its speed across is the keys' to ask for, as in the air anywhere: see
+    /// [`CharacterBody::step_with_gravity_against`] for a character that is to keep the speed of what it left).
     pub fn step_with_gravity(&mut self, input: MoveInput, gravity: [f64; 3]) {
-        self.step_pulled(input, vector(gravity));
+        self.step_pulled(input, vector(gravity), Vector::ZERO);
     }
 
-    fn step_pulled(&mut self, input: MoveInput, gravity: Vector) {
+    /// As [`CharacterBody::step_with_gravity`] for a character that has stepped off something that goes at `against` (in the axes of the frame, as the character's
+    /// speed is) and is in the air: what the keys ask is a walk from that, and the fastest it falls is a fall from that, so it keeps the speed it left with and is not
+    /// braked to a standstill by the air of a world that the thing it left goes through at hundreds of voxels a second. A character that is on something, or flies, is
+    /// stepped against the frame it is in: the caller gives nothing (`[0.0; 3]`, which is [`CharacterBody::step_with_gravity`] to the bit).
+    pub fn step_with_gravity_against(
+        &mut self,
+        input: MoveInput,
+        gravity: [f64; 3],
+        against: [f64; 3],
+    ) {
+        self.step_pulled(input, vector(gravity), vector(against));
+    }
+
+    fn step_pulled(&mut self, input: MoveInput, gravity: Vector, against: Vector) {
         let settings = self.settings;
         let dt = settings.time_step;
         let pull = if gravity.x == 0.0 && gravity.z == 0.0 {
@@ -975,7 +985,13 @@ impl CharacterBody {
             } else {
                 settings.air_acceleration
             };
-            let (across, mut along) = self.split(self.velocity);
+            // The keys and the air act on the speed against what the character left, if it left something (the speed itself, to the bit, if not).
+            let relative = if against == Vector::ZERO {
+                self.velocity
+            } else {
+                self.velocity - against
+            };
+            let (across, mut along) = self.split(relative);
             let across = approach_vector(across, target, acceleration * dt);
             // (A character that is going up has jumped: just after take-off the ground is still near enough to count, and a jump again then
             // would be a second jump in the air, a tick later and as high.)
@@ -983,7 +999,11 @@ impl CharacterBody {
                 along = settings.jump_speed;
             }
             along = (along - pull * dt).max(-settings.terminal_speed);
-            self.velocity = self.join(across, along);
+            self.velocity = if against == Vector::ZERO {
+                self.join(across, along)
+            } else {
+                self.join(across, along) + against
+            };
         }
 
         // Sideways first and then up or down, as two moves: a move that is both slides along the floor

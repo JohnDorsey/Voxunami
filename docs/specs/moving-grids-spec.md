@@ -198,9 +198,12 @@ cliff that touches the hull); players do not push ships or each other, and nothi
 yet); items, light and fire do not ride ships; ships' speeds are not sent to clients; a ship beyond the per-client
 budget of bricks is not in the picture, nor are those aboard it; one frame per level for bodies (32e).
 
-- **Momentum on leaving** (as decided: "as a person leaving a train would"): the character keeps the ship's speed, and its air control (14 voxels a second a second,
-  `CharacterSettings::air_acceleration`) then pulls its horizontal speed toward what the keys ask: a ship at 6 voxels a second gives about a metre of carry. If the owner wants
-  the momentum kept in the air, the air control is what changes.
+- **Momentum on leaving** (as decided: "as a person leaving a train would"; changed 2026-11-05, below): the character keeps the ship's speed. Its air control (14 voxels a second a
+  second, `CharacterSettings::air_acceleration`) used to pull its horizontal speed toward what the keys ask, **measured from the world**: a ship at 6 voxels a second gave about
+  a metre of carry, and a ship in orbit at 500 to 700 left a walker behind at once (measured: 1,001 voxels apart 12 seconds after a step off the side; the owner: "the ship and I
+  flew away from each other very quickly"). Now the keys and the air act on the speed **against the place of the ship that was left** (`CharacterBody::step_with_gravity_against`;
+  `movement.rs`, `Departure`), until the body stands on something or flies: it goes on at the ship's speed in the air, walks from there, and the ground takes the speed from it when
+  it lands. (The fastest a falling character goes, 78, is a speed against the ship too.) A ship that is gone or in another level is no longer a place to measure from.
 - **No fictitious forces by default** (a server option to feel them is a goal, `future-goals.md`, "Ship goals" 6; the design leaves room: it would add the
   ship's acceleration, and the centrifugal and Euler terms, to the gravity a character feels): a ship that accelerates or spins does not push a person aboard sideways; only the direction of gravity changes
   relative to them. A person standing in a ship that accelerates hard feels nothing, and a person in a ship that rolls slides toward the

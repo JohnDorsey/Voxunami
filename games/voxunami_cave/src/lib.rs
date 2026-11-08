@@ -15,6 +15,7 @@ mod block_properties;
 pub mod client;
 pub mod content;
 pub mod fire;
+pub mod flight;
 pub mod game;
 pub mod generators;
 pub mod items;

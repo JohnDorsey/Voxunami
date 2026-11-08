@@ -5,7 +5,7 @@ use physics::MoveInput;
 use player_presence::PlayerPose;
 use protocol::Message;
 use voxel_space::{BrickCoordinate, FaceDirection, GridId, VoxelCoordinate, WorldPosition};
-use voxunami_cave::messages::{LightSchemeChanged, MoveRequest, SetBlock, Spawn};
+use voxunami_cave::messages::{FlightReadoutIs, LightSchemeChanged, MoveRequest, SetBlock, Spawn};
 use voxunami_cave::multiscale_light::LightScheme;
 
 #[test]
@@ -25,7 +25,9 @@ fn cave_messages_have_their_pinned_bytes() {
             yaw: -2.5,
         },
         pitch: 0.75,
+        roll: 0,
     };
+    let rolling = MoveRequest { roll: 1, ..request };
     let block: NamespacedId = "base_blocks:lamp".parse().unwrap();
     let set_block = SetBlock {
         grid: GridId::MAIN,
@@ -41,7 +43,7 @@ fn cave_messages_have_their_pinned_bytes() {
         state: 0,
         against: None,
     };
-    let pins: [(&str, Vec<u8>, &str); 6] = [
+    let pins: [(&str, Vec<u8>, &str); 8] = [
         (
             "a spawn",
             Spawn(pose).encode(),
@@ -54,6 +56,18 @@ fn cave_messages_have_their_pinned_bytes() {
             request.encode(),
             // (Protocol 11: the two angles are `f64`: -2.5 was the `f32` 000020c0 and is now 00000000000004c0, and 0.75 was 0000403f and is now 000000000000e83f.)
             "01ff000100000000000004c0000000000000e83f",
+        ),
+        (
+            "a movement request that rolls to the right",
+            rolling.encode(),
+            // (The same, with the bit for E in the flags: 01 jump, 08 roll right; Q is 04.)
+            "01ff000900000000000004c0000000000000e83f",
+        ),
+        (
+            "a readout of two lines",
+            FlightReadoutIs(vec!["ab".to_owned(), String::new()]).encode(),
+            // (Two lines: the count, then each as its length and its bytes: "ab" is 02 61 62, and nothing is 00.)
+            "0202616200",
         ),
         (
             "a block to set",

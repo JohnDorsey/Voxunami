@@ -11,6 +11,14 @@ Entities on the wire, who a player is, players as entities, ships a player can m
     docks with another's: snap within 10 degrees and 0.3 metres, any roll in quarter turns; the pull is on the centre of mass with the torque of the lever
     and **does not scale with mass**. The dev port is creative only. Face properties (`engine:docking_face`, `engine:front_face`, `engine:axis_face`) are
     engine-reserved block properties of the kind `face` (written as a word or a code); the colour of a face is not a property but the definition's `face_colors` (2026-11-07). Merging is `ServerWorld::merge_grids`, undocking `split_grid`.
+  - **The dev command seat and the dev rocket engine** (owner, 2026-11-04; `voxunami_cave:dev_command_seat` and `dev_rocket_engine`, creative only, like the dev docking port): the first way to fly a ship with the keys of a
+    space game. `/ship sit` or `U` sits a player in the seat they look at (within 6 voxels, aboard the ship); W S pitch, A D yaw, Q E roll, shift raises the throttle and control lowers it (half the whole a second). The seat gives
+    **a large torque, about a radian a second a second about any axis whatever the ship weighs** (so it works from an estimate of the ship's inertia), up to a turn of a radian a second; an axis with no key down is braked to a stop,
+    exactly, so that a ship can go on a rail. *Mine:* the braking and the rate cap are mine (the owner asked for torque on the keys); without them the ship tumbles on. Every engine of the ship pushes it with 200 kN at full
+    throttle, opposite its exhaust and from its own voxel (so an engine off the middle also turns the ship), with no fuel and no gimbal. The engines work only while someone sits; getting up cuts the throttle. A pilot is in the
+    record of pilots (the hover controls of `/ship pilot` and the seat keep out of each other's way). The readout of the flight (throttle, turn, distance and speed against the planet that pulls most, the orbit) is a message
+    to the seated player, drawn as lines of the HUD. Not done: a seat that moves the player into it, a dedicated key for the throttle to full and to nothing, an altitude over the ground (the server does not know a planet's
+    surface radius), any gimbal.
   - A ship is saved while in flight, as a grid in a file of its own, portable to another world. A player whose ship file cannot be found is asked: world
     spawn, midair, or the title screen.
   - **Units are metric**: a voxel is a metre; kilograms, newtons, newton metres, seconds. Until materials have densities every block that is not air weighs
@@ -81,6 +89,10 @@ Entities on the wire, who a player is, players as entities, ships a player can m
 - **`engine:hidden`** is an engine component: replication skips a hidden entity (and despawns it for those who knew it); the world keeps it.
 - **Clients know the players they can see**, by the entity replication, not everyone: players in another level, or beyond the watched region,
   are not known. `PoseBook` and the `Players` broadcast are gone (the message itself was deleted in Phase 28).
+- **A client is always told of the ship its own body is aboard** (2026-11-08), wherever its watched region is and before the budget of ship bricks: a client places its own
+  body, and so its camera, by the ship, and the box it watches follows its camera, so a client that lost the ship it rides could never get it back (the owner's hour at full
+  throttle: the box is asked for when the camera's brick changes and answered a tick later, and at 6 bricks a tick the ship was out of it). The game names each client's body
+  with `ServerWorld::set_client_focus` (`player_presence` does, for players); the engine reads the ship from that entity's pose.
 - The look angles are kept as reported (a component) beside the orientation quaternion, so that nothing recovers angles from a quaternion.
   The calls that read or move players take the world (`Presence`), a game holds it as it held the book.
 
@@ -125,6 +137,35 @@ Entities on the wire, who a player is, players as entities, ships a player can m
   along gravity within the ship's box, or the body's middle a voxel outside it. The two conditions cannot hold together, so nothing flaps.
   Boarding takes away the part of the speed relative to the ship that points away from it: a body that stands on something is not moving off it
   (a walker that a falling ship has lifted onto itself was thrown ten voxels up at the speed the ship had, before this was added).
+- **A body that has stepped off a ship is stepped against that ship until it stands on something** (owner's report 2026-11-05; supersedes "air control measured from the world"
+  in `specs/moving-grids-spec.md`, "Momentum on leaving"): the keys' walk and the air's braking are on the character's speed *against the speed of the place of the ship it left*
+  (the place is kept in the ship's coordinates, so a ship that turns gives the right speed there), and the fastest it falls is against it too. It is forgotten when the body is
+  grounded, flies, boards a ship, is put somewhere (`/tp`, another level), or the ship is gone or in another level. *Mine:* a ship that is gone is no reference (the body is
+  then braked by the air as every body was), and the reference is not forgotten by distance. Nothing changes for a body that never left a ship (the step is the same to the bit:
+  `engine/physics/tests/against.rs`).
+- **The speed of a body in a level is against the planet that carries it; a ship's is the world's** (found by reading 2026-11-05, measured and fixed 2026-11-07): inside the sphere of a
+  planet on a rail (`ServerWorld::influence_radius`) the world moves the player's record, and the body with it (`agree_with`), by the planet's displacement every tick, and the body goes
+  on from there at its own speed, so that speed is *against the planet*; where no planet carries the body it is the world's. A ship's `linear_velocity` is always the world's (the plugin
+  writes the planet's speed added to what the ship has in the planet's frame). So a speed that passes between a body and a ship is made against the carrier, or the world's, by the speed
+  of the planet that carries the place (`ServerWorld::carrier_of_entity` says which carried the player; Cave keeps it in the body): **boarding** takes the body's speed plus the carrier's
+  less the ship's, **leaving** takes the planet that will carry the place (found as the next tick's `apply_rails` will, `planet_carrying(.., None)`: the body was not carried while aboard)
+  off the world's speed, and the speed a body is **stepped against** is that of the place of the ship less the carrier's. Without it a body had the planet's speed twice and went at the
+  planet's speed past the ship it had left (6.28 voxels a tick beside a planet at 125.7 metres a second; a walker who landed on a held deck was off it in five ticks). Where no planet is on a
+  rail nothing is changed. **A body that goes out of a sphere, into one, or from one into another's keeps the speed it had in the world** (2026-11-07; before, a kink of the planet's
+  own step, 6.26 voxels, in its path at the edge): at the end of its step in a level the body asks the world which planet will carry it in the next tick (`planet_carrying`, with
+  the planet that carries it now keeping it a quarter farther out, which is how `apply_rails` will find it, so the next tick agrees) and its speed is changed by the old carrier's less
+  the new one's (`CharacterBody::change_velocity`). *Mine:* a body that stands on something or flies is not changed (the ground and the keys ask for its speed), and one that was
+  *put* since its last step (it came in, `/tp`, a ship taken from under it, another level: `PlayerBody::put`) is not either, because it is at rest against whatever carries the place and
+  what the world said carried it was for where it was before. Not tested: the flier's and the grounded body's gates, and a record that puts a body in another level.
+- **What a planet on a rail carries falls with it** (2026-11-07): a body in a level that the world carries is pulled by everything but what the planet goes round
+  (`ServerWorld::gravity_in_the_free_fall_of` its carrier), as the ships in the planet's frame are and as a body aboard the planet is; pulled by every body it drifted from a deck in orbit
+  by the home planet's 0.127 metres a second a second (79 voxels in 36 seconds, 5 now). With no carrier nothing changes.
+- **The picture carries every moving thing on between ticks the same way** (2026-11-04): the camera, ships and planets, the room the camera's angles are measured in, and the other players are carried on at the speed (and turn) of the last two
+  things told, with the times of the beat of the server's ticks (`TickClock`) and not of the frames that saw them, and a change of speed that is too big to be travel is a jump and is shown at once. They must be carried on *together*: a camera carried
+  on that looks at a ship shown where it was last told shakes by the speed times a tick. The clock creeps toward a later beat at 5 ms a second (so that speeds stay steady) but takes the beat of the last 10 to 20 ticks at once when all of them came more
+  than a tick later than it has the beat (2026-11-07; the host's loop skips ahead after a tick more than a second late, and the old clock then carried the view 0.25 s ahead for minutes: a walker was shown 1.24 voxels past where they stopped, not 0.42). Entity boxes are not yet. Presentation only: nothing recorded or compared (see the hard rule on wall-clock time).
+- **`/ship buckle` and `/ship unbuckle`** (owner, 2026-11-04): hold a player where they stand in the ship they are aboard, turned as they are, so that they cannot fall off a ship they test. *Mine:* the body is not stepped at all while buckled (exact, and gravity, keys and touch do nothing); the look angles stay free; a planet cannot be buckled to; buckling is let go if the ship goes or the player is not in it any more; sitting, piloting and the rest still work buckled. It does not put the player in the seat.
+- **Every ship in reach is a collider, whichever frame the body is in** (found 2026-11-04: aboard a planet a walker walked through the ships on it): a body aboard a ship meets the other ships near it as colliders, in the coordinates of the ship it is aboard, and a walker aboard one ship who stands on another leaves the first and boards the second.
 - **A character is never left inside what it can touch**: every tick one that something has moved into is moved out the shortest way (`CharacterBody::keep_clear`: up first, steps
   of an eighth, at most 8 voxels, else it stays), for terrain by its voxels and for ships by their colliders, with a box 0.02 smaller on every side. Found by measuring in 32g: a
   ship that fell on a walker pressed them through the floor of the world.

@@ -19,7 +19,7 @@ use world_view::{BulkLight, RayHit};
 
 use crate::content::CaveContent;
 use crate::items::{GameMode, PLACEABLE, dropped_item_kind, state_for, state_name};
-use crate::messages::{GameModeIs, LightSchemeChanged, SetBlock};
+use crate::messages::{FlightReadoutIs, GameModeIs, LightSchemeChanged, SetBlock};
 use crate::multiscale_light::{LEVEL_FORMAT, LightScheme, MAXIMUM_SCALES, full_brightness};
 use crate::placement::face_between;
 use crate::scaled_light::{MultiScaleView, ScaledLight};
@@ -140,6 +140,66 @@ pub struct ClientBlockEditing {
     mode: Arc<Mutex<GameMode>>,
     /// Whether the inventory panel is showing (the `E` key toggles it).
     inventory_open: Arc<Mutex<bool>>,
+    /// Whether the player is flying from a command seat, where `E` rolls the ship.
+    flight: FlightReadout,
+}
+
+/// The lines of the readout of the flight the player is piloting from a command seat, as the server last said them: none when they are not seated.
+#[derive(Clone, Debug, Default)]
+pub struct FlightReadout {
+    lines: Arc<Mutex<Vec<String>>>,
+}
+
+impl FlightReadout {
+    /// Whether the player sits in a command seat (the server is sending the readout).
+    pub fn is_seated(&self) -> bool {
+        !locked(&self.lines).is_empty()
+    }
+
+    /// The line of the readout at this place, if there is one.
+    fn line(&self, index: usize) -> Option<String> {
+        locked(&self.lines).get(index).cloned()
+    }
+}
+
+/// The most lines the readout is drawn in.
+const READOUT_LINES: usize = 8;
+
+/// The client half of `voxunami_cave:ships`: the readout of a flight from a command seat on the screen, and the key that sits in the seat you look at or gets up.
+#[derive(Clone, Debug, Default)]
+pub struct ClientFlight {
+    readout: FlightReadout,
+}
+
+impl ClientFlight {
+    pub fn new(readout: FlightReadout) -> Self {
+        Self { readout }
+    }
+}
+
+impl ClientPlugin for ClientFlight {
+    fn id(&self) -> NamespacedId {
+        identifier("voxunami_cave:ships")
+    }
+
+    fn register(&self, registrar: &mut ClientRegistrar<'_>) {
+        let lines = Arc::clone(&self.readout.lines);
+        registrar.on_message::<FlightReadoutIs>(move |FlightReadoutIs(latest)| {
+            *locked(&lines) = latest;
+        });
+        for index in 0..READOUT_LINES {
+            let readout = self.readout.clone();
+            registrar.hud_line(move |_| readout.line(index));
+        }
+        registrar.key(
+            KeyCode::KeyU,
+            ActionSpec::new(
+                "voxunami_cave:sit",
+                "sits in the command seat you look at (on a ship you are aboard), or gets up from it",
+            ),
+            |context| context.send_command("/ship sit"),
+        );
+    }
 }
 
 /// The inventory of this player, from the player entity the client has been told of, if it has.
@@ -172,10 +232,15 @@ fn count_shown(count: u64) -> u32 {
     u32::try_from(count).unwrap_or(u32::MAX)
 }
 
-/// The most blocks the hotbar shows: one for each number key.
-const HOTBAR_SLOTS: usize = SELECT_KEYS.len();
-
 impl ClientBlockEditing {
+    /// The same, knowing when the player is flying from a command seat, where `E` rolls the ship and is not the inventory.
+    pub fn with_flight(flight: FlightReadout) -> Self {
+        Self {
+            flight,
+            ..Self::default()
+        }
+    }
+
     /// The place in the list of blocks a player can place (in the order of the blocks) of the selected block: the
     /// number key that chose it, less one.
     pub fn selected_block(&self) -> usize {
@@ -245,6 +310,32 @@ impl ClientPlugin for ClientBlockEditing {
             );
         }
 
+        // Past the ninth block (the number keys stop there) the square brackets choose: the one before, the one after, round the list.
+        for (key, step, name, description) in [
+            (
+                KeyCode::BracketLeft,
+                -1_i64,
+                "voxunami_cave:select_previous_block",
+                "selects the block before the selected one in the list of blocks you can place, the last after the first",
+            ),
+            (
+                KeyCode::BracketRight,
+                1,
+                "voxunami_cave:select_next_block",
+                "selects the block after the selected one in the list of blocks you can place, the first after the last",
+            ),
+        ] {
+            let selection = Arc::clone(&self.selection);
+            registrar.key(key, ActionSpec::new(name, description), move |context| {
+                let count = context.blocks_with(&PLACEABLE).len() as i64;
+                if count > 0 {
+                    let mut selection = locked(&selection);
+                    let current = (selection.block as i64).min(count - 1);
+                    selection.block = (current + step).rem_euclid(count) as usize;
+                }
+            });
+        }
+
         let selection = Arc::clone(&self.selection);
         registrar.key(
             KeyCode::KeyR,
@@ -309,7 +400,6 @@ impl ClientPlugin for ClientBlockEditing {
                     direction: Direction::Row,
                     children: placeable
                         .iter()
-                        .take(HOTBAR_SLOTS)
                         .map(|block| Node::Swatch {
                             color: swatch_color(context, block),
                             count: survival.then(|| count_shown(held(context, block).unwrap_or(0))),
@@ -322,6 +412,7 @@ impl ClientPlugin for ClientBlockEditing {
 
         // The inventory, on `E`: what the player holds, a swatch and a name for each kind of item.
         let open = Arc::clone(&self.inventory_open);
+        let flight = self.flight.clone();
         registrar.key(
             KeyCode::KeyE,
             ActionSpec::new(
@@ -329,6 +420,10 @@ impl ClientPlugin for ClientBlockEditing {
                 "shows or hides what you are carrying",
             ),
             move |_| {
+                // (Seated in a command seat, E rolls the ship.)
+                if flight.is_seated() {
+                    return;
+                }
                 let mut open = locked(&open);
                 *open = !*open;
             },

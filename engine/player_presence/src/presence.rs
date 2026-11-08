@@ -106,6 +106,7 @@ impl Presence {
             return;
         };
         self.entities.insert(client, id);
+        world.set_client_focus(client, Some(id));
         update(world, id, |world, id| {
             world.set_entity_component(id, &PlayerClient(client))?;
             world.set_entity_component(id, &Hidden(false))
@@ -144,6 +145,7 @@ impl Presence {
     pub fn client_left(&mut self, client: ClientId, world: &mut ServerWorld) {
         self.pending_levels.remove(&client);
         if let Some(id) = self.entities.remove(&client) {
+            world.set_client_focus(client, None);
             update(world, id, |world, id| {
                 world.set_entity_component(id, &Hidden(true))
             });
@@ -251,6 +253,7 @@ impl Presence {
                     Ok(id) => {
                         self.pending_levels.remove(&client);
                         self.entities.insert(client, id);
+                        world.set_client_focus(client, Some(id));
                     }
                     Err(EntityError::NoSuchGrid(grid)) => {
                         return Err(EntityError::NoSuchGrid(grid));

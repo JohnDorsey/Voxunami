@@ -370,8 +370,13 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// The docking port has a line, its top, as well as a front (2026-11-08, so that its top goes away from the surface it is put against, as a log's does): one more property, which is its name (17 bytes: the lengths of the namespace and of the
 /// name and their 15 letters), a flag that it is for every state, its value (a face) and a count of the states it is set for, 17 + 1 + 1 + 1 = 20 bytes. I predicted 2, forgetting that a property is written by its name, and counted after the run. Voxunami Cave's package is
 /// 12,046 bytes before and 12,066 now (measured by `block_golden.rs`), and the stream is 20 bytes longer, 7,214,875 to 7,214,895: the welcome is the only place the package is in it. The saved world is the same to the hash (10_204_815_550_639_449_865).
+/// The dev command seat and the dev rocket engine, merged from the branch that made them (2026-11-08; there they were two blocks and a message, and their colours the old mark properties, here they are the
+/// `face_colors` of their definitions): the package is 12,066 bytes before and 12,399 now (+333, measured by `block_golden.rs`, which also pins the table, where the seat's back and bottom are one palette entry and the engine's
+/// exhaust another), and the stream is 396 bytes longer, 7,214,895 to 7,215,291. **The saved world's hash, 17_018_755_794_665_956_377, is the one the branch that made the seat and the engine pinned for the same script**: the saved world
+/// names the blocks and not their colours, so the two ways of colouring them give the same world. These numbers were measured, not predicted. *Believed, not checked:* the 63 bytes of the stream that are not the package are the
+/// declaration of the flight readout's message that branch added to the welcome.
 const PINNED: (u64, usize, u64) = (
-    4_199_503_406_536_773_508,
-    7_214_895,
-    10_204_815_550_639_449_865,
+    3_560_450_734_653_215_519,
+    7_215_291,
+    17_018_755_794_665_956_377,
 );

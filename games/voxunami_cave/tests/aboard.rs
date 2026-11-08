@@ -687,7 +687,11 @@ fn a_scripted_run_aboard_ends_in_the_same_bits_every_time_and_on_every_machine()
     // (Moved on purpose again, 2026-11-02: 10_856_507_688_139_911_524 before. Positions, speeds and angles are `f64` everywhere that is physics (owner, 2026-11-02); the hash is of the bits of the
     // player's pose, which has an `f64` offset now. Control: the old build and this one printed the pose of the player and of the ship in voxels at each of the 260 ticks, with the angles the script
     // sets made the `f32` they were: the largest difference in any coordinate is 1.1e-5 voxel for the player and 9.5e-7 for the ship, which is what the old `f32` offsets rounded.)
-    assert_eq!(first, 7_437_150_576_752_084_304);
+    // (Moved on purpose, 2026-11-05: 7_437_150_576_752_084_304 before. A walker who steps off a ship keeps the speed of the place they left in the air, and does not have it taken from them by
+    // the air at 14 voxels a second a second (`leaving_a_ship.rs`). In this script the deck goes at 1 voxel a second and turns at 0.2 radians a second, and the walker is in the air for
+    // about 1.4 seconds after the side: they end 0.95 voxel further along x and 1.68 along z, 1.9 voxels in all. Control: with the speed of the place left made nothing and nothing else
+    // changed, the old value came back, so this is the only thing that moved it.)
+    assert_eq!(first, 8_736_183_284_958_261_895);
 }
 
 #[test]

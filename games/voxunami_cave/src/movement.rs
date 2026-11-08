@@ -27,7 +27,8 @@ use protocol::ClientId;
 use server::ServerWorld;
 use voxel_grid::ChannelIndex;
 use voxel_space::{
-    BrickBox, BrickCoordinate, Displacement, GridId, LevelIndex, Orientation, WorldPosition,
+    BrickBox, BrickCoordinate, Displacement, GridId, GridPose, LevelIndex, Orientation,
+    WorldPosition,
 };
 
 use crate::messages::MoveRequest;
@@ -70,6 +71,43 @@ impl Placement {
     }
 }
 
+/// What the world carried a player by in a tick: a planet on a rail carries what is in the level inside its sphere of influence (`ServerWorld::apply_rails`).
+///
+/// **The speed of a body in a level is against the planet that carries it** (the world's speed if none does), because the carry moves the body by the planet's displacement
+/// and the body's own speed moves it from there. A ship's speed (`MovingGrid::linear_velocity`) is the world's: so a speed that passes between a body and a ship (boarding it,
+/// leaving it, being stepped against it) is made against the carrier or the world's by the speed of the planet, or the body has the planet's speed twice, once from the carry
+/// and once from itself, and goes 125 metres a second faster than the ship it left, past a planet that goes round at that speed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Carried {
+    /// The planet whose sphere the player is in.
+    pub by: GridId,
+    /// How far it moved them this tick, nothing if it did not move.
+    pub displacement: Displacement,
+}
+
+/// A speed in the world from a speed against a planet that goes at `carrier` (the same speed if no planet does).
+fn in_the_world(against: [f64; 3], carrier: [f64; 3]) -> [f64; 3] {
+    if carrier == [0.0; 3] {
+        return against;
+    }
+    [0, 1, 2].map(|axis| against[axis] + carrier[axis])
+}
+
+/// A speed against a planet that goes at `carrier`, from a speed in the world (the same speed if no planet does).
+fn against_the_planet(in_the_world: [f64; 3], carrier: [f64; 3]) -> [f64; 3] {
+    if carrier == [0.0; 3] {
+        return in_the_world;
+    }
+    [0, 1, 2].map(|axis| in_the_world[axis] - carrier[axis])
+}
+
+/// How fast a planet on a rail goes in the world: nothing for none, or for one that is gone.
+fn planet_speed(world: &ServerWorld, planet: Option<GridId>) -> [f64; 3] {
+    planet
+        .and_then(|planet| world.data().grids().get(planet))
+        .map_or([0.0; 3], |planet| planet.linear_velocity)
+}
+
 /// Where a player is after a tick, in the frame their body was simulated in.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Moved {
@@ -94,6 +132,26 @@ struct PlayerBody {
     jump_asked: bool,
     /// The player pilots a ship: their keys fly it (see [`crate::ships`]) and do not walk them.
     piloting: bool,
+    /// The ship the player is buckled to: their body does not move in it (not by their keys, by gravity or by anything they touch), so the ship carries it exactly,
+    /// however it moves and turns. Let go when they are not aboard that ship any more.
+    buckled: Option<GridId>,
+    /// Where the body left a ship, until it stands on something again (see [`Departure`]).
+    departure: Option<Departure>,
+    /// The planet whose speed the body's is against, while the body is in a level: the one that carried the player in the last tick (see [`Carried`]), or none.
+    carrier: Option<GridId>,
+    /// The body was put where it is since its last step (it came in, was sent somewhere with `/tp`, or was made to agree with a record in another frame): it is at rest against
+    /// whatever carries it, and what the world says carries it is not a change of carrier (see [`pass_to_next_carrier`]).
+    put: bool,
+}
+
+/// The place in a ship that a body stepped off. Until the body stands on something again, what its keys ask and the air does are measured from the speed of that place of the ship, as a
+/// person who steps off a train goes on at its speed and walks from there; measured from the speed of the level, a ship at 500 voxels a second left a walker behind at once, the air
+/// taking the 500 from them at 14 a second a second.
+#[derive(Clone, Copy, Debug)]
+struct Departure {
+    ship: GridId,
+    /// The place of the eyes in the ship's own coordinates, where they left it.
+    place: WorldPosition,
 }
 
 /// What the blocks of the world mean to bodies.
@@ -226,9 +284,14 @@ impl Movement {
                         ..MoveInput::default()
                     },
                     pitch: placement.pitch,
+                    roll: 0,
                 },
                 jump_asked: false,
                 piloting: false,
+                buckled: None,
+                departure: None,
+                carrier: None,
+                put: true,
             }
         });
     }
@@ -258,6 +321,8 @@ impl Movement {
         let player = self.bodies.get_mut(&client)?;
         player.level = level;
         player.frame = GridId::root(level);
+        player.departure = None;
+        player.put = true;
         player.body.teleport(position);
         // A body that was in a turned frame is upright in the level again.
         if player.body.frame_rotation() != [0.0, 0.0, 0.0, 1.0] {
@@ -276,6 +341,33 @@ impl Movement {
         if let Some(player) = self.bodies.get_mut(&client) {
             player.piloting = piloting;
         }
+    }
+
+    /// Buckles a player to the ship they are aboard: their body stops where it is in the ship, at rest, and stays there, turned as it is, until they are let go.
+    /// Returns whether they were: they need a body, aboard `ship`.
+    pub fn buckle(&mut self, client: ClientId, ship: GridId) -> bool {
+        let Some(player) = self.bodies.get_mut(&client) else {
+            return false;
+        };
+        if player.frame != ship {
+            return false;
+        }
+        player.buckled = Some(ship);
+        // (At rest in the ship: whatever speed they had in it when they were buckled is not theirs when they are let go.)
+        let eyes = player.body.eye_position();
+        let frame_rotation = player.body.frame_rotation();
+        player.body.reframe(eyes, [0.0; 3], frame_rotation);
+        true
+    }
+
+    /// Lets a player go. Returns the ship they were buckled to, if they were.
+    pub fn unbuckle(&mut self, client: ClientId) -> Option<GridId> {
+        self.bodies.get_mut(&client)?.buckled.take()
+    }
+
+    /// The ship a player is buckled to, if they are.
+    pub fn buckled_to(&self, client: ClientId) -> Option<GridId> {
+        self.bodies.get(&client)?.buckled
     }
 
     /// What the player's keys last asked, if they have a body.
@@ -317,7 +409,7 @@ impl Movement {
         &mut self,
         world: &mut ServerWorld,
         placement_of: impl Fn(ClientId) -> Option<Placement>,
-        carried_by_rails: impl Fn(ClientId) -> Option<Displacement>,
+        carried_by_rails: impl Fn(ClientId) -> Option<Carried>,
     ) -> Vec<Moved> {
         let changed = std::mem::take(&mut self.changed);
         let ships = if self.bodies.is_empty() {
@@ -330,13 +422,31 @@ impl Movement {
             let Some(placement) = placement_of(client) else {
                 continue;
             };
-            agree_with(player, &placement, carried_by_rails(client));
+            let carried = carried_by_rails(client);
+            agree_with(
+                player,
+                &placement,
+                carried.map(|carried| carried.displacement),
+            );
+            player.carrier = carried.map(|carried| carried.by);
+            // A buckled player stays where they are in the ship; one whose ship is gone, or who is not in it, is let go.
+            if player.buckled.is_some_and(|ship| {
+                ship != player.frame || world.data().grids().get(ship).is_none()
+            }) {
+                player.buckled = None;
+            }
+            if player.buckled.is_some() {
+                player.put = false;
+                moved.push(moved_pose(client, player));
+                continue;
+            }
             match player.frame.root_level() {
                 Some(level) => {
                     step_in_a_level(player, &self.blocks, world, &changed, &ships, level)
                 }
                 None => step_aboard(player, &self.blocks, world, &changed, &ships),
             }
+            player.put = false;
             moved.push(moved_pose(client, player));
         }
         moved
@@ -368,7 +478,7 @@ fn ship_bounds(world: &ServerWorld) -> BTreeMap<GridId, ShipBounds> {
 fn agree_with(player: &mut PlayerBody, placement: &Placement, carried: Option<Displacement>) {
     if placement.frame == player.frame && placement.level == player.level {
         // In a level, the world may have carried the record of the player this tick: a planet that goes round carries what is in the air near it (`apply_rails`, and
-        // `ServerWorld::carried_by_rails` says by how much). The body is carried by the same, and keeps its velocity (which is against whatever carried it). (A record
+        // `ServerWorld::carried_by_rails` says by how much). The body is carried by the same, and keeps its velocity (which is against whatever carried it: see [`Carried`]). (A record
         // that is not the body's is not always the newer: a player who has just come in is where the body was put, and the record catches up when the body has stepped.)
         if let Some(carried) = carried {
             player.body.displace(carried.in_voxels().map(|part| part));
@@ -379,6 +489,8 @@ fn agree_with(player: &mut PlayerBody, placement: &Placement, carried: Option<Di
         // Another level: its terrain is another's. The record says where they are in it (the place they were at, unless the game put them somewhere).
         player.level = placement.level;
         player.frame = placement.frame;
+        player.departure = None;
+        player.put = true;
         player.body.teleport(placement.position);
         return;
     }
@@ -392,6 +504,8 @@ fn agree_with(player: &mut PlayerBody, placement: &Placement, carried: Option<Di
     );
     player.frame = placement.frame;
     player.level = placement.level;
+    player.departure = None;
+    player.put = true;
 }
 
 /// The input for this tick: the keys, with a jump that was asked for between two messages.
@@ -419,6 +533,81 @@ fn in_reach(bounds: &ShipBounds, level: LevelIndex, here: BrickCoordinate) -> bo
         && (min.x() - SHIP_REACH_BRICKS..=max.x() + SHIP_REACH_BRICKS).contains(&here.x())
         && (min.y() - SHIP_REACH_BRICKS..=max.y() + SHIP_REACH_BRICKS).contains(&here.y())
         && (min.z() - SHIP_REACH_BRICKS..=max.z() + SHIP_REACH_BRICKS).contains(&here.z())
+}
+
+/// The bricks round a place in the ground of the planets in `near`, if the player is coming to it, are made by a worker before they are met. `world_position` is
+/// the player's middle in the world.
+fn prefetch_planet_ground(world: &mut ServerWorld, near: &[GridId], world_position: WorldPosition) {
+    for id in near {
+        let Some(planet) = world
+            .data()
+            .grids()
+            .get(*id)
+            .filter(|ship| ship.terrain.is_some())
+        else {
+            continue;
+        };
+        let Some(there) = planet.pose.world_to_local(world_position) else {
+            continue;
+        };
+        let there = there.brick();
+        let bricks: Vec<BrickCoordinate> = (-2..=2)
+            .flat_map(|x| {
+                (-2..=2).flat_map(move |y| {
+                    (-2..=2).map(move |z| {
+                        BrickCoordinate::new(there.x() + x, there.y() + y, there.z() + z)
+                    })
+                })
+            })
+            .collect();
+        world.prefetch_ship_bricks(*id, bricks);
+    }
+}
+
+/// Puts the blocks of the ships `near` where they are, as colliders in the body's frame, so that the body walks on them and is stopped by them. `frame` is where the grid
+/// the body is simulated in stands in the world (a ship it is aboard), or `None` if the frame is a level's own.
+fn meet_ships(
+    player: &mut PlayerBody,
+    blocks: &Blocks,
+    world: &ServerWorld,
+    changed: &BTreeSet<(GridId, BrickCoordinate)>,
+    near: &[GridId],
+    frame: Option<GridPose>,
+) {
+    let data = world.data();
+    let mut hulls: Vec<_> = near
+        .iter()
+        .filter_map(|id| {
+            let ship = data.grids().get(*id)?;
+            let pose = match frame {
+                None => ship.pose,
+                Some(frame) => in_the_frame_of(frame, ship.pose)?,
+            };
+            Some((*id, pose, blocks.source(world, *id, ship)))
+        })
+        .collect();
+    let mut grids: Vec<ForeignGrid<'_>> = hulls
+        .iter_mut()
+        .map(|(id, pose, hull)| ForeignGrid {
+            id: *id,
+            pose: *pose,
+            source: hull,
+        })
+        .collect();
+    for &(grid, brick) in changed {
+        if let Some(ship) = grids.iter_mut().find(|ship| ship.id == grid) {
+            player.body.foreign_brick_changed(ship, brick);
+        }
+    }
+    player.body.update_foreign(&mut grids);
+}
+
+/// Where a grid that stands at `pose` in the world is, in the coordinates of the grid that stands at `frame`.
+fn in_the_frame_of(frame: GridPose, pose: GridPose) -> Option<GridPose> {
+    Some(GridPose::new(
+        frame.world_to_local(pose.position)?,
+        frame.orientation.inverse().compose(pose.orientation),
+    ))
 }
 
 /// One tick of a body that is in a level: the terrain of the level, the ships near it as colliders, the gravity of the level's field
@@ -458,63 +647,26 @@ fn step_in_a_level(
         .filter(|(_, bounds)| in_reach(bounds, level, here))
         .map(|(id, _)| *id)
         .collect();
-    // The bricks round the player in the ground of a planet that is near, if the player is coming to it, are made by a worker before they are met.
-    for id in &near {
-        let Some(planet) = world
-            .data()
-            .grids()
-            .get(*id)
-            .filter(|ship| ship.terrain.is_some())
-        else {
-            continue;
-        };
-        let Some(there) = planet.pose.world_to_local(player.body.middle_position()) else {
-            continue;
-        };
-        let there = there.brick();
-        let bricks: Vec<BrickCoordinate> = (-2..=2)
-            .flat_map(|x| {
-                (-2..=2).flat_map(move |y| {
-                    (-2..=2).map(move |z| {
-                        BrickCoordinate::new(there.x() + x, there.y() + y, there.z() + z)
-                    })
-                })
-            })
-            .collect();
-        world.prefetch_ship_bricks(*id, bricks);
-    }
-    {
-        let shared: &ServerWorld = world;
-        let data = shared.data();
-        let mut hulls: Vec<_> = near
-            .iter()
-            .filter_map(|id| {
-                let ship = data.grids().get(*id)?;
-                Some((*id, ship.pose, blocks.source(shared, *id, ship)))
-            })
-            .collect();
-        let mut grids: Vec<ForeignGrid<'_>> = hulls
-            .iter_mut()
-            .map(|(id, pose, hull)| ForeignGrid {
-                id: *id,
-                pose: *pose,
-                source: hull,
-            })
-            .collect();
-        for &(grid, brick) in changed {
-            if let Some(ship) = grids.iter_mut().find(|ship| ship.id == grid) {
-                player.body.foreign_brick_changed(ship, brick);
-            }
-        }
-        player.body.update_foreign(&mut grids);
-    }
+    prefetch_planet_ground(world, &near, player.body.middle_position());
+    meet_ships(player, blocks, world, changed, &near, None);
     // A ship that has moved into the player this tick (fallen on them, sailed into them) puts them out of the way and not into the ground.
     player.body.keep_clear(&mut blocks.terrain(world, level));
 
-    let gravity = world.gravity_at(level, player.body.eye_position());
+    // (What a planet on a rail carries falls with it: pulled by everything but what the planet goes round, as the ships in its frame are.)
+    let gravity = match player.carrier {
+        Some(planet) => world.gravity_in_the_free_fall_of(planet, player.body.eye_position()),
+        None => world.gravity_at(level, player.body.eye_position()),
+    };
     let input = input_for(player);
+    let against = speed_of_what_they_left(player, world, level);
     for _ in 0..PHYSICS_STEPS_PER_TICK {
-        player.body.step_with_gravity(input, gravity);
+        player
+            .body
+            .step_with_gravity_against(input, gravity, against);
+    }
+    // Standing on something (or flying, which is the level's own) there is nothing to measure from but the level.
+    if player.body.is_grounded() || player.body.is_flying() {
+        player.departure = None;
     }
 
     // On the ground, on a block of a ship: aboard it from here on.
@@ -531,6 +683,60 @@ fn step_in_a_level(
             board(player, id, world);
         }
     }
+    if player.frame == GridId::root(level) {
+        pass_to_next_carrier(player, world, level);
+    }
+}
+
+/// A body that goes out of the sphere of the planet that carries it, into the sphere of one, or from one into another's, goes on at the speed it had in the world: its speed is
+/// against its carrier (see [`Carried`]), so it is changed by the speed of the old carrier less the new one's, or it would lose (or gain) the planet's speed in a tick, as a kink of
+/// the planet's own step in its path (measured 2026-11-07: 6.26 voxels, at the edge of a planet that goes at 125.7 metres a second).
+///
+/// The planet that will carry the body in the next tick is found here, from where the body ends this tick, **as the world finds it**: with the planet that carried the body this
+/// tick keeping it a quarter farther out (`ServerWorld::planet_carrying`). So the next tick's `carried_by_rails` agrees. A body that was put this tick has no speed to keep (it is at
+/// rest against whatever carries it, and what the world said carried it was for where it was before), and one that stands on something or flies has the speed that the ground and its
+/// keys ask for, which is not carried.
+fn pass_to_next_carrier(player: &mut PlayerBody, world: &ServerWorld, level: LevelIndex) {
+    let next = world.planet_carrying(level, player.body.eye_position(), player.carrier);
+    if next == player.carrier {
+        return;
+    }
+    if !player.put && !player.body.is_grounded() && !player.body.is_flying() {
+        let before = planet_speed(world, player.carrier);
+        let after = planet_speed(world, next);
+        player
+            .body
+            .change_velocity([0, 1, 2].map(|axis| before[axis] - after[axis]));
+    }
+    player.carrier = next;
+}
+
+/// The speed (in the level's axes) of the place of a ship that a body in a level stepped off, which its keys and the air are measured from; nothing if there is no such place
+/// (it never left a ship, or the ship is gone or in another level, and then it is forgotten).
+fn speed_of_what_they_left(
+    player: &mut PlayerBody,
+    world: &ServerWorld,
+    level: LevelIndex,
+) -> [f64; 3] {
+    let Some(departure) = player.departure else {
+        return [0.0; 3];
+    };
+    let place = world
+        .data()
+        .grids()
+        .get(departure.ship)
+        .filter(|ship| ship.level == level)
+        .and_then(|ship| Some((ship, ship.pose.local_to_world(departure.place)?)));
+    match place {
+        // (The speed of the place is the world's, and the body's is against the planet that carries it, if one does: see [`Carried`].)
+        Some((ship, place)) => {
+            against_the_planet(ship.velocity_at(place), planet_speed(world, player.carrier))
+        }
+        None => {
+            player.departure = None;
+            [0.0; 3]
+        }
+    }
 }
 
 /// Puts a body aboard a ship: the same place and the speed it has relative to the ship, in the ship's coordinates and axes.
@@ -538,13 +744,15 @@ fn board(player: &mut PlayerBody, id: GridId, world: &ServerWorld) {
     let Some(ship) = world.data().grids().get(id) else {
         return;
     };
+    player.departure = None;
     let eyes = player.body.eye_position();
     let Some(local) = ship.pose.world_to_local(eyes) else {
         return;
     };
+    // (The ship's speed is the world's, and the body's is against the planet that carries it, if one does: see [`Carried`].)
     let carried = ship.velocity_at(eyes);
-    let speed = player.body.velocity();
-    let mut relative = [0, 1, 2].map(|axis| speed[axis] - carried[axis]);
+    let speed = in_the_world(player.body.velocity(), planet_speed(world, player.carrier));
+    let mut relative = against_the_planet(speed, carried);
     // They stand on it, so they are not moving away from it: a walker that a ship has fallen away from, or has lifted onto itself, is not
     // thrown up at the speed it had. (Moving toward it is the controller's to stop, as it always did.)
     let up = player.body.up();
@@ -563,6 +771,8 @@ fn board(player: &mut PlayerBody, id: GridId, world: &ServerWorld) {
         frame_rotation.components(),
     );
     player.frame = id;
+    // (Aboard, nothing carries the body but the ship.)
+    player.carrier = None;
 }
 
 /// One tick of a body that is aboard a ship: the ship's blocks are its terrain, gravity is the world's in the ship's axes, and then
@@ -587,9 +797,31 @@ fn step_aboard(
             })
         }),
     );
+    // The other ships near the player are colliders too, in the coordinates of the ship they are aboard: a planet is a ship, and a walker on one meets what stands on it.
+    let frame = world
+        .data()
+        .grids()
+        .get(id)
+        .map(|ship| (ship.level, ship.pose));
+    let Some((level, frame_pose)) = frame else {
+        // The ship is not there. The record of the player says so next tick and the body is put in the level then.
+        return;
+    };
+    let near: Vec<GridId> = frame_pose
+        .local_to_world(player.body.middle_position())
+        .map(|here| {
+            ships
+                .iter()
+                .filter(|(other, bounds)| **other != id && in_reach(bounds, level, here.brick()))
+                .map(|(other, _)| *other)
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(here) = frame_pose.local_to_world(player.body.middle_position()) {
+        prefetch_planet_ground(world, &near, here);
+    }
     {
         let Some(ship) = world.data().grids().get(id) else {
-            // The ship is not there. The record of the player says so next tick and the body is put in the level then.
             return;
         };
         let mut hull = blocks.source(world, id, ship);
@@ -599,7 +831,13 @@ fn step_aboard(
             }
         }
         player.body.update_terrain(&mut hull);
-        player.body.keep_clear(&mut hull);
+    }
+    meet_ships(player, blocks, world, changed, &near, Some(frame_pose));
+    {
+        let Some(ship) = world.data().grids().get(id) else {
+            return;
+        };
+        player.body.keep_clear(&mut blocks.source(world, id, ship));
     }
     let gravity = world.gravity_in(id, player.body.eye_position()).unwrap_or([
         0.0,
@@ -628,11 +866,32 @@ fn step_aboard(
     };
     if left {
         leave(player, world);
+        return;
+    }
+
+    // On the ground, on a block of another ship that stands on this one (a ship on a planet): aboard that one from here on, which is how a walker on a planet
+    // comes to be aboard a ship that rests on it.
+    if !player.body.is_flying() && player.body.is_grounded() {
+        let down = player.body.up().map(|axis| -axis);
+        let shared: &ServerWorld = world;
+        let standing_on = shared.data().grids().get(id).and_then(|frame| {
+            let feet = frame.pose.local_to_world(player.body.feet_position())?;
+            let down = frame.pose.direction_to_world(down);
+            near.iter().copied().find(|other| {
+                shared.data().grids().get(*other).is_some_and(|ship| {
+                    stands_on(&mut blocks.source(shared, *other, ship), ship, feet, down)
+                })
+            })
+        });
+        if let Some(other) = standing_on {
+            leave(player, world);
+            board(player, other, world);
+        }
     }
 }
 
 /// Puts a body that is aboard a ship in the level the ship is in: the same place in the world, with the speed it has in the world,
-/// which is what it has in the ship, turned, and the speed the ship gives that place.
+/// which is what it has in the ship, turned, and the speed the ship gives that place; made against the planet that will carry the body in the level, if one does (see [`Carried`]).
 fn leave(player: &mut PlayerBody, world: &ServerWorld) {
     let Some(ship) = world.data().grids().get(player.frame) else {
         return;
@@ -643,15 +902,23 @@ fn leave(player: &mut PlayerBody, world: &ServerWorld) {
     };
     let in_the_ship = ship.pose.direction_to_world(player.body.velocity());
     let carried = ship.velocity_at(world_eyes);
-    let velocity = [0, 1, 2].map(|axis| in_the_ship[axis] + carried[axis]);
+    let in_the_world = [0, 1, 2].map(|axis| in_the_ship[axis] + carried[axis]);
+    // The planet that carries a place is found as the world finds it for the player's record in the next tick, which was not carried while aboard.
+    let carrier = world.planet_carrying(ship.level, world_eyes, None);
+    let velocity = against_the_planet(in_the_world, planet_speed(world, carrier));
     let turn =
         Orientation::from_components(player.body.frame_rotation()).unwrap_or(Orientation::IDENTITY);
     let frame_rotation = ship.pose.orientation.compose(turn);
     player
         .body
         .reframe(world_eyes, velocity, frame_rotation.components());
+    player.departure = Some(Departure {
+        ship: player.frame,
+        place: eyes,
+    });
     player.frame = GridId::root(ship.level);
     player.level = ship.level;
+    player.carrier = carrier;
 }
 
 /// Where the player is, in the frame their body is in.

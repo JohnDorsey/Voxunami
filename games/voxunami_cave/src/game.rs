@@ -12,8 +12,8 @@ use transport::Connection;
 use voxel_space::{GravitySettings, WorldPosition};
 
 use crate::client::{
-    ClientBlockEditing, ClientItems, ClientLight, ClientMovement, place_block_request,
-    set_block_request,
+    ClientBlockEditing, ClientFlight, ClientItems, ClientLight, ClientMovement, FlightReadout,
+    place_block_request, set_block_request,
 };
 use crate::content::{CaveContent, game_id, mini_cosmos_id, overworld_id};
 use crate::logic::REACH;
@@ -184,6 +184,7 @@ impl GameDefinition for Cave {
     fn controls() -> &'static str {
         "Left click breaks the block you look at; right click places the selected block;\n1 to 6 select stone, dirt, grass, lamp, wood, fire (which burns grass and wood); R cycles whole block, slabs and stairs.
 W A S D walk, Space jumps, Ctrl runs; F flies or walks (then Space and Shift go up and down).
+Blocks past the ninth: [ and ] choose the one before and the one after. In a ship with a dev command seat: U sits in the seat you look at, or gets up; then W S pitch, A D yaw, Q E roll, Shift raises the throttle and Ctrl lowers it, and the dev rocket engines push.
 Commands: /level shows which level you are in, /level list lists them, /level go NAME moves you; /fly toggles flying; /tp lists the places, /tp PLACE goes to one (a planet, or the great river), /tp X Y Z teleports; /light classic or /light multiscale chooses the light.
 Window commands (start with a period): .ambient 0-255 sets how bright a face is that no light reaches (0, the default, is black; 20 to 40 is dim like a cave), .help lists them."
     }
@@ -234,6 +235,7 @@ Window commands (start with a period): .ambient 0-255 sets how bright a face is 
                 yaw: camera.yaw,
             },
             pitch: camera.pitch,
+            roll: held(KeyCode::KeyE) - held(KeyCode::KeyQ),
         };
         Some((MoveRequest::kind(), request.encode()))
     }
@@ -247,8 +249,10 @@ Window commands (start with a period): .ambient 0-255 sets how bright a face is 
     }
 
     fn client_plugins(content: &CaveContent) -> Vec<Box<dyn ClientPlugin>> {
+        let readout = FlightReadout::default();
         vec![
-            Box::new(ClientBlockEditing::default()),
+            Box::new(ClientBlockEditing::with_flight(readout.clone())),
+            Box::new(ClientFlight::new(readout)),
             Box::new(ClientItems::new(content)),
             Box::new(ClientLight::new(content)),
             Box::new(ClientMovement),

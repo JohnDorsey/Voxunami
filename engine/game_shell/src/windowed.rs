@@ -1,15 +1,17 @@
 //! The interactive game: a window, a fly camera, and whatever the game's inputs do; or the same
 //! window playing a recording back in real time.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use client::ClientError;
 use glam::DVec3;
 use namespaced_id::NamespacedId;
-use renderer::{GraphicsContext, RenderStatistics, VoxelRenderer, describe, new_instance};
+use protocol::ClientId;
+use renderer::{Avatar, GraphicsContext, RenderStatistics, VoxelRenderer, describe, new_instance};
 use transport::Connection;
+use voxel_space::GridId;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
@@ -22,14 +24,14 @@ use crate::client_plugin::MouseButton as GameButton;
 use crate::command_entry::{CommandEntry, opens_a_command};
 use crate::definition::GameDefinition;
 use crate::files::{open_recording, open_world, record_connection, recorded_game, save_world};
-use crate::following::{PoseFollower, turned_toward};
+use crate::following::{GridFollower, PoseFollower, TickClock, TurnFollower, turned_toward};
 use crate::host::{Autosave, HostSettings, ServerThread, connect_to, listen_on};
 use crate::options::{PlayOptions, ReplayOptions, ViewOptions};
 use crate::screen::{Screen, ScreenKey, ScreenText, Source};
 use crate::session::{Mode, Session};
 use crate::view::{
     apply_updates, camera_at, configure_renderer, hexadecimal_voxel_coordinates, light_the_scene,
-    show_entity_boxes, show_other_players, show_screen,
+    show_entity_boxes, show_screen,
 };
 
 const MOVEMENT_SPEED: f64 = 24.0; // voxels per second
@@ -203,6 +205,15 @@ struct Viewer<G: GameDefinition> {
     last_movement_sent: Instant,
     /// Shows the camera smoothly where the server says the player is.
     follower: PoseFollower,
+    /// Shows the room the camera's angles are measured in smoothly, the way the server says it is turned.
+    room_follower: TurnFollower,
+    /// Shows each ship (and planet) smoothly where the server says it is, as the camera is, so that the two keep their distance: a camera carried on between ticks
+    /// that looks at a ship shown where it was last told shakes by a tick of the ship's travel.
+    grid_followers: BTreeMap<GridId, GridFollower>,
+    /// The same for the other players.
+    player_followers: BTreeMap<ClientId, PoseFollower>,
+    /// When the ticks of the server come, which the followers are told so that they work out speeds from the beat of the ticks and not from which frame saw them.
+    tick_clock: TickClock,
     frames_since_title_update: u32,
     last_title_update: Instant,
     frames_total: u64,
@@ -269,6 +280,7 @@ impl<G: GameDefinition> Viewer<G> {
         );
         renderer.set_crosshair(session.mode() == Mode::Playing && G::shows_crosshair());
         let now = Instant::now();
+        let ticks_per_second = session.client().world().server_info().ticks_per_second;
         Ok(Self {
             window,
             surface,
@@ -290,6 +302,10 @@ impl<G: GameDefinition> Viewer<G> {
             last_movement: None,
             last_movement_sent: now,
             follower: PoseFollower::new(),
+            room_follower: TurnFollower::new(),
+            grid_followers: BTreeMap::new(),
+            player_followers: BTreeMap::new(),
+            tick_clock: TickClock::new(ticks_per_second, now),
             frames_since_title_update: 0,
             last_title_update: now,
             frames_total: 0,
@@ -462,10 +478,17 @@ impl<G: GameDefinition> Viewer<G> {
             Mode::Playing if G::server_moves_players() => {
                 self.send_movement(now);
                 self.session.advance()?;
+                let seen = self.tick_seen(now);
                 // The server says where the player is a few times a second; the picture is carried on
                 // between those.
                 if let Some(pose) = self.session.own_server_pose() {
-                    self.session.camera.position = self.follower.view_position(pose.position, now);
+                    self.session.camera.position =
+                        self.follower.view_position_seen(pose.position, seen, now);
+                    if let Some(told) = self.session.own_server_frame_rotation() {
+                        let turned = self.room_follower.view_orientation_seen(told, seen, now);
+                        self.session.camera.frame_rotation =
+                            glam::Quat::from_array(turned.components_single());
+                    }
                     if G::server_sets_view() {
                         let camera = &mut self.session.camera;
                         camera.yaw = turned_toward(camera.yaw, pose.yaw, seconds);
@@ -502,6 +525,53 @@ impl<G: GameDefinition> Viewer<G> {
         Ok(())
     }
 
+    /// When the newest tick the picture has seen is taken to have come (see [`TickClock`]).
+    fn tick_seen(&mut self, now: Instant) -> Instant {
+        let tick = self.session.client().world().world_clock();
+        self.tick_clock.seen(tick, now)
+    }
+
+    /// Puts each ship where the server says it is and carries it on between ticks as the camera is (see `grid_followers`), over where the updates of the view put
+    /// it, which is where it was last told.
+    fn carry_ships_on(&mut self, now: Instant) {
+        let seen = self.tick_seen(now);
+        let world = self.session.client().world();
+        let grids = world.grids();
+        self.grid_followers.retain(|id, _| grids.get(*id).is_some());
+        for (id, ship) in grids.iter() {
+            let pose = self
+                .grid_followers
+                .entry(id)
+                .or_default()
+                .view_pose_seen(ship.pose, seen, now);
+            self.renderer.set_grid_pose(id, pose);
+        }
+    }
+
+    /// Draws the other players where the server says they are, carried on between ticks as the camera is.
+    fn show_other_players_carried_on(&mut self, now: Instant) {
+        let seen = self.tick_seen(now);
+        let mut avatars = Vec::new();
+        let mut present = Vec::new();
+        if G::shows_other_players() {
+            for (client, pose) in self.session.other_players() {
+                let position = self
+                    .player_followers
+                    .entry(client)
+                    .or_default()
+                    .view_position_seen(pose.position, seen, now);
+                present.push(client);
+                avatars.push(Avatar {
+                    position,
+                    color: client.get(),
+                });
+            }
+        }
+        self.player_followers
+            .retain(|client, _| present.contains(client));
+        self.renderer.set_avatars(&avatars);
+    }
+
     /// Draws one frame. Returns false when the game should close.
     fn frame(&mut self) -> Result<bool, String> {
         let now = Instant::now();
@@ -522,10 +592,11 @@ impl<G: GameDefinition> Viewer<G> {
         }
         let updates = self.session.update_view();
         apply_updates(&mut self.renderer, updates);
+        self.carry_ships_on(now);
         // The light of the picture: the terrain of the level the player is in may be drawn farther than the last one (the level of space is drawn out past the universe), so
         // the fog moves; the sun moves with the clock of the world, and the sky is a colour for where the camera is.
         light_the_scene(&mut self.renderer, &self.session);
-        show_other_players(&mut self.renderer, &self.session);
+        self.show_other_players_carried_on(now);
         show_entity_boxes(&mut self.renderer, &self.session);
 
         let screen = self.screen();

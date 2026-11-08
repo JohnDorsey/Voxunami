@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 
 use block_models::Shape;
 use common::{
-    PlayerExt, Scene, bricks_prefetched, make_ship, player_pose, pose_at, say, ship_id, ship_pose,
-    tick_and_follow, tick_until, tick_until_quiet, top_of_the_column,
+    PlayerExt, Scene, bricks_prefetched, eyes_in_the_world, make_ship, player_pose, pose_at, say,
+    ship_id, ship_pose, tick_and_follow, tick_until, tick_until_quiet, top_of_the_column,
 };
 use game_shell::{GameContent, GameDefinition, KeyCode};
 use server::GridView;
@@ -969,5 +969,104 @@ fn the_bricks_under_a_player_who_falls_toward_a_planet_are_made_by_a_worker_as_t
         "the bricks under a player who falls",
         |scene| tick_and_follow(scene, &mut player, 1),
         |scene| bricks_prefetched(scene) - before >= 40,
+    );
+}
+
+#[test]
+fn a_walker_on_a_planet_is_stopped_by_a_ship_that_rests_on_it() {
+    let mut scene = Scene::new();
+    let centre = make_the_planet(&mut scene);
+    let ground = ground_under_the_cube() as f64 + centre;
+    drop_a_cube_over_the_ground(&mut scene, ground, 0.0);
+    scene.ticks(60);
+    // On the planet, in the open, six voxels from the face of the cube (at z = 5.5), facing it (yaw 180 is toward +z), and then walking at it.
+    let mut player = scene
+        .rig
+        .join_walking([2.5, ground + 4.0, PLACE[1] - 6.0], 180.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    tick_and_follow(&mut scene, &mut player, 60);
+    assert_eq!(player_pose(&scene, 1).grid, planet(), "aboard the planet");
+    player.hold(&[KeyCode::KeyW]);
+    tick_and_follow(&mut scene, &mut player, 100);
+    // Against the face of the cube and not in it: the walker is a third of a voxel either side of their middle.
+    let [_, _, z] = eyes_in_the_world(&scene, 1);
+    assert!(
+        z < PLACE[1] && z > PLACE[1] - 1.0,
+        "the walker is stopped at the face of the cube, z = {z}"
+    );
+}
+
+#[test]
+fn a_walker_dropped_on_a_ship_that_rests_on_a_planet_stands_on_it_and_is_aboard_it() {
+    let mut scene = Scene::new();
+    let centre = make_the_planet(&mut scene);
+    let ground = ground_under_the_cube() as f64 + centre;
+    drop_a_cube_over_the_ground(&mut scene, ground, 0.0);
+    scene.ticks(60);
+    let mut player = scene.rig.join_walking(
+        [PLACE[0] + 2.0, ground + CUBE as f64 + 6.0, PLACE[1] + 2.0],
+        0.0,
+        0.0,
+    );
+    scene.rig.settle(&mut [&mut player]);
+    tick_and_follow(&mut scene, &mut player, 120);
+    assert_eq!(player_pose(&scene, 1).grid, ship_id(1));
+}
+
+#[test]
+fn a_walker_who_walks_up_onto_a_ship_that_rests_on_a_planet_is_aboard_the_ship() {
+    let mut scene = Scene::new();
+    let centre = make_the_planet(&mut scene);
+    let ground = ground_under_the_cube() as f64 + centre;
+    // A low ship, two voxels high, that a walker can step... jump onto.
+    make_ship(
+        &mut scene,
+        pose_at(PLACE[0], ground, PLACE[1]),
+        false,
+        [CUBE, 1, CUBE],
+        |_| true,
+    );
+    scene.ticks(60);
+    let mut player = scene
+        .rig
+        .join_walking([2.5, ground + 4.0, PLACE[1] - 4.0], 180.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    tick_and_follow(&mut scene, &mut player, 60);
+    assert_eq!(player_pose(&scene, 1).grid, planet(), "aboard the planet");
+    // They walk until they are over the middle of the deck (the step is a voxel, which a walker climbs), and stop.
+    player.hold(&[KeyCode::KeyW]);
+    for _ in 0..200 {
+        tick_and_follow(&mut scene, &mut player, 1);
+        if eyes_in_the_world(&scene, 1)[2] > PLACE[1] + 1.5 {
+            break;
+        }
+    }
+    player.hold(&[]);
+    tick_and_follow(&mut scene, &mut player, 20);
+    let [_, height, z] = eyes_in_the_world(&scene, 1);
+    assert!(
+        z > PLACE[1] + 1.0 && z < PLACE[1] + 3.5,
+        "they are over the deck, z = {z}"
+    );
+    assert!(
+        height > ground + 1.0,
+        "they stand on the deck, height = {height}"
+    );
+    assert_eq!(player_pose(&scene, 1).grid, ship_id(1));
+}
+
+#[test]
+fn a_walker_on_a_planet_cannot_buckle_to_it() {
+    let mut scene = Scene::new();
+    make_the_planet(&mut scene);
+    let mut player = scene
+        .rig
+        .join_walking([0.5, TOP_OF_THE_PLANET + 6.0, 0.5], 0.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    tick_and_follow(&mut scene, &mut player, 60);
+    assert_eq!(player_pose(&scene, 1).grid, planet());
+    assert_eq!(
+        say(&mut scene, &mut player, "/ship buckle"),
+        "ship 0 is a planet: there is nothing to be carried by"
     );
 }

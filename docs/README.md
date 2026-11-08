@@ -25,6 +25,7 @@ every such name and every `docs/...` path in the code and the documents is a rea
 - `planetary-mass-change.md`: the feature "a planet's mass changes", **held back: not in the first release** (owner, 2026-11-04); what is built, what it does to players, a flaw found, and Cave's ARGOS device.
 - `test-flakes.md`: tests that failed once and were not explained, kept together for a deep bug hunt (what failed, when, the reruns, what is believed and what was checked).
 - `ship-terrain-cost.md`: what a fast ship costs the server and the options to cut it, **held back** until ships of several grids are understood.
+- `terrain-collider-options.md`: the bigger options for what a fast ship costs the server (2026-11-07), ranked, with the measurement that shows where a tick goes. Item 1 is done; the rest is not scheduled.
 - `architecture-review.md`: the direction review of 2026-10-29: findings and proposals (milestones M0 to M4, eleven decisions).
   **Proposals, not decisions**, apart from what `design-decisions.md` records as taken.
 
@@ -47,6 +48,7 @@ The world and the sky: `lod-spec.md` (levels of detail), `planet-spec.md`, `rail
 - `build-log.md`: what each phase built and measured (about 290 KB). `grep -n "^Phase" docs/history/build-log.md` lists the phases.
 - `plugin-architecture-review.md`: the 2026-10-17 reasoning behind the plugin shape.
 - `joint-probe.md` (2026-11-01: do Rapier joints hold when over-constrained, with its program in `spikes/joints/`).
+- `loop-probe.md` (2026-11-06: loops of cars on multibody or impulse joints, phantom momentum and free energy, cost against the number of cars, overlapping colliders, spin, and the accuracy of `BodyWorld` collisions; programs in `spikes/loops/`).
 - `light-spike.md`, `lod-spike.md`, `physics-spike.md`, with their programs in `spikes/` and pictures in `multiscale-modes/`.
   The programs were written against the code of their day and are **not kept compiling**; to run one, check out the commit it names.
 

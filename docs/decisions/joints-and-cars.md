@@ -48,3 +48,15 @@ This file records the talk that came before any code; the measurements behind th
 - For choosing which bricks need colliders, a ship's bounds are the sum of its cars' longest dimensions used as a diameter, per car (a to-do is to improve this, `future-goals.md`).
 - A coupled group **freezes and is parked together**, by the nearest of its cars, so that a joint never anchors an active car to a frozen one.
 - Later, a joint between a planet and a car: lock and unlock to a planet reuse `dock_into_planet` and `undock_from_planet`; the open problems are in `future-goals.md`.
+
+## Under review (2026-11-06; **nothing here is decided**): what measuring the plan above found
+`loop-probe.md` ran the plan in Rapier 0.36.1 (f64) and `BodyWorld`. The owner wants to keep both ways of closing a loop open and to **choose per ship**, with the solver's dials (Rapier has them per body:
+`additional_solver_iterations`, `additional_pgs_iterations`) as ship data. Numbers are in that document; in short:
+- Rapier's multibody costs about the cube of the cars: 24 cars 8.4 ms of a 50 ms tick, 56 cars 71 ms; impulse joints grow about linearly (86 and 175 us).
+- A multibody does not conserve linear momentum, with or without a loop (first order in the step: a spinning rig of 16 cars strays 2.7 m in 40 s at a 1 ms step); impulse joints conserve it to rounding. The loop method
+  (Rapier's own impulse closing joint between two links, which it supports; or a direct 3 x 3 solve beside Rapier) changes the loop's gap (9e-6 m or 1e-14) and little else. So the choice that matters is multibody against
+  impulse joints, not the loop method; a multibody for small articulated assemblies and impulse joints with the dials for everything else is what the numbers favour (opinion).
+- Overlapping colliders joined by a joint make energy (1.2 MJ from a 0.5 m overlap) and, with a multibody joint, momentum, unless the joint turns contacts off between its bodies (then exactly nothing).
+  **A rule to add whichever solver is chosen:** a joint disables contacts between its two cars, and so does every pair of cars of one rigid group.
+- A multibody puts a child where its joint coordinates say, so its joint frames must be chosen from the poses the cars have when it is built (a ring built without them was straightened and exploded).
+

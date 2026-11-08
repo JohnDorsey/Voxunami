@@ -161,9 +161,9 @@ fn a_server_with_a_pack_has_its_blocks_after_the_games_own_and_its_patches_appli
         6,
         "the games blocks keep their numbers"
     );
-    // In the order of the file names: glow_stone before marble, after the games own blocks (the base blocks, and then the dev docking port).
-    assert_eq!(raw_in(&content, "my_pack:glow_stone"), 9);
-    assert_eq!(raw_in(&content, "my_pack:marble"), 10);
+    // In the order of the file names: glow_stone before marble, after the games own blocks (the base blocks, and then the dev docking port, command seat and rocket engine).
+    assert_eq!(raw_in(&content, "my_pack:glow_stone"), 11);
+    assert_eq!(raw_in(&content, "my_pack:marble"), 12);
     let table = content.block_table();
     let emission = table.handle(&EMISSION).unwrap();
     assert_eq!(
@@ -172,11 +172,11 @@ fn a_server_with_a_pack_has_its_blocks_after_the_games_own_and_its_patches_appli
         "patched"
     );
     assert_eq!(
-        table.get_of(emission, 9, 0),
+        table.get_of(emission, 11, 0),
         10,
         "a block of the pack that glows"
     );
-    assert_eq!(table.get_of(emission, 10, 0), 0);
+    assert_eq!(table.get_of(emission, 12, 0), 0);
 }
 
 #[test]
@@ -373,22 +373,23 @@ fn a_block_of_a_pack_that_can_be_placed_has_a_number_key_an_item_and_is_used_up_
     ticks(&mut rig, &mut player, 2);
     let ruby = raw_in(&rig.content, "my_pack:ruby");
 
-    // The first key is stone, as it was; the seventh is the dev docking port and the eighth the pack's block; a key past the end of the list is
-    // the first block again, never nothing or a crash.
+    // The first key is stone, as it was; the seventh is the dev docking port, the eighth the command seat, the ninth the rocket engine and the tenth,
+    // which has no number key, the pack's block: the right square bracket reaches it from the ninth, and goes on round to the first block.
     assert!(
         player.hud_text().contains("placing stone (whole)"),
         "{}",
         player.hud_text()
     );
-    player.key_pressed(KeyCode::Digit8);
+    player.key_pressed(KeyCode::Digit9);
+    player.key_pressed(KeyCode::BracketRight);
     assert!(
         player.hud_text().contains("placing ruby (whole)"),
         "{}",
         player.hud_text()
     );
-    player.key_pressed(KeyCode::Digit9);
+    player.key_pressed(KeyCode::BracketRight);
     assert!(player.hud_text().contains("placing stone (whole)"));
-    player.key_pressed(KeyCode::Digit8);
+    player.key_pressed(KeyCode::BracketLeft);
 
     // Creative: the mouse button places it.
     player.mouse_pressed(MouseButton::Secondary);
@@ -474,11 +475,11 @@ fn the_hotbar_of_a_player_who_has_never_heard_of_a_pack_has_a_swatch_for_its_pla
         .collect();
     assert_eq!(
         swatches.len(),
-        8,
-        "the seven of the game (the dev docking port is the seventh) and the pack's ruby"
+        10,
+        "the nine of the game (the dev docking port, command seat and rocket engine are the last three) and the pack's ruby"
     );
     assert_eq!(
-        swatches[7],
+        swatches[9],
         ui::Color([204, 26, 51]),
         "ruby is [0.8, 0.1, 0.2]"
     );

@@ -51,10 +51,14 @@ pub struct MoveRequest {
     pub input: MoveInput,
     /// Radians; positive looks up.
     pub pitch: f64,
+    /// 1 while the key that rolls to the right (E) is held, -1 for the one that rolls to the left (Q); only a pilot seated in a command seat uses it.
+    pub roll: i8,
 }
 
 const JUMP_FLAG: u8 = 1;
 const SPRINT_FLAG: u8 = 2;
+const ROLL_LEFT_FLAG: u8 = 4;
+const ROLL_RIGHT_FLAG: u8 = 8;
 
 impl Message for MoveRequest {
     fn kind() -> NamespacedId {
@@ -68,7 +72,13 @@ impl Message for MoveRequest {
             writer.write_u8(direction as u8);
         }
         writer.write_u8(
-            if input.jump { JUMP_FLAG } else { 0 } | if input.sprint { SPRINT_FLAG } else { 0 },
+            if input.jump { JUMP_FLAG } else { 0 }
+                | if input.sprint { SPRINT_FLAG } else { 0 }
+                | match self.roll {
+                    ..=-1 => ROLL_LEFT_FLAG,
+                    0 => 0,
+                    1.. => ROLL_RIGHT_FLAG,
+                },
         );
         writer.write_u64(input.yaw.to_bits());
         writer.write_u64(self.pitch.to_bits());
@@ -85,8 +95,11 @@ impl Message for MoveRequest {
             }
         }
         let flags = reader.read_u8()?;
-        if flags & !(JUMP_FLAG | SPRINT_FLAG) != 0 {
+        if flags & !(JUMP_FLAG | SPRINT_FLAG | ROLL_LEFT_FLAG | ROLL_RIGHT_FLAG) != 0 {
             return Err(DecodeError::Invalid("unknown movement flags"));
+        }
+        if flags & (ROLL_LEFT_FLAG | ROLL_RIGHT_FLAG) == ROLL_LEFT_FLAG | ROLL_RIGHT_FLAG {
+            return Err(DecodeError::Invalid("both roll keys are held"));
         }
         let yaw = f64::from_bits(reader.read_u64()?);
         let pitch = f64::from_bits(reader.read_u64()?);
@@ -104,6 +117,7 @@ impl Message for MoveRequest {
                 yaw,
             },
             pitch,
+            roll: i8::from(flags & ROLL_RIGHT_FLAG != 0) - i8::from(flags & ROLL_LEFT_FLAG != 0),
         })
     }
 
@@ -121,10 +135,65 @@ impl Message for MoveRequest {
                         yaw: -2.5,
                     },
                     pitch: 0.75,
+                    roll: direction,
                 });
             }
         }
         samples
+    }
+}
+
+/// Server to client: the lines of the readout of a pilot seated in a command seat (the throttle, the turn, the distance and speed against the planet that pulls, the orbit), each time they
+/// change; no lines when the player is not seated (they have just got up).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FlightReadoutIs(pub Vec<String>);
+
+/// The most lines a readout has, and the most bytes in one (a message that says more is refused).
+pub const MOST_READOUT_LINES: usize = 16;
+pub const MOST_READOUT_LINE_BYTES: usize = 200;
+
+impl Message for FlightReadoutIs {
+    fn kind() -> NamespacedId {
+        kind("voxunami_cave:flight_readout")
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        writer.write_u8(self.0.len() as u8);
+        for line in &self.0 {
+            writer.write_string(line);
+        }
+        writer.into_bytes()
+    }
+
+    fn decode(payload: &[u8]) -> Result<Self, DecodeError> {
+        let mut reader = ByteReader::new(payload);
+        let count = usize::from(reader.read_u8()?);
+        if count > MOST_READOUT_LINES {
+            return Err(DecodeError::Invalid("a readout has too many lines"));
+        }
+        let mut lines = Vec::with_capacity(count);
+        for _ in 0..count {
+            let line = reader.read_string()?;
+            if line.len() > MOST_READOUT_LINE_BYTES {
+                return Err(DecodeError::Invalid("a line of a readout is too long"));
+            }
+            lines.push(line.to_owned());
+        }
+        reader.finish()?;
+        Ok(Self(lines))
+    }
+
+    fn samples() -> Vec<Self> {
+        vec![
+            Self(Vec::new()),
+            Self(vec!["throttle 45 %, 3 engines, 38.2 m/s2".to_owned()]),
+            Self(vec![
+                "turning 0.12 rad/s".to_owned(),
+                "orbit: escape, periapsis 1,234,568 m".to_owned(),
+                String::new(),
+            ]),
+        ]
     }
 }
 
@@ -320,6 +389,7 @@ mod tests {
                         yaw: -2.5,
                     },
                     pitch: 0.75,
+                    roll: forward,
                 };
                 assert_eq!(MoveRequest::decode(&request.encode()), Ok(request));
             }
@@ -327,6 +397,7 @@ mod tests {
         let good = (MoveRequest {
             input: MoveInput::default(),
             pitch: 0.0,
+            roll: 0,
         })
         .encode();
         for length in 0..good.len() {
@@ -339,8 +410,12 @@ mod tests {
         bad_direction[1] = 2;
         assert!(MoveRequest::decode(&bad_direction).is_err());
         let mut bad_flags = good.clone();
-        bad_flags[3] = 4;
+        bad_flags[3] = 16;
         assert!(MoveRequest::decode(&bad_flags).is_err());
+        // Both roll keys at once are no input a client writes.
+        let mut both_rolls = good.clone();
+        both_rolls[3] = 4 | 8;
+        assert!(MoveRequest::decode(&both_rolls).is_err());
         for angle_at in [4, 12] {
             let mut not_a_number = good.clone();
             not_a_number[angle_at..angle_at + 8].copy_from_slice(&f64::NAN.to_bits().to_le_bytes());
@@ -356,6 +431,7 @@ mod tests {
     fn the_declared_messages_pass_the_generated_check() {
         assert_eq!(protocol::check_message::<Spawn>(), Ok(()));
         assert_eq!(protocol::check_message::<MoveRequest>(), Ok(()));
+        assert_eq!(protocol::check_message::<FlightReadoutIs>(), Ok(()));
         assert_eq!(protocol::check_message::<SetBlock>(), Ok(()));
         assert_eq!(protocol::check_message::<LightSchemeChanged>(), Ok(()));
         assert_eq!(protocol::check_message::<GameModeIs>(), Ok(()));

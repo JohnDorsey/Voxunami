@@ -1413,6 +1413,7 @@ fn how_far_the_world_carried_an_entity_this_tick_is_told_to_whoever_keeps_a_stat
         .unwrap();
     // Nothing has been carried yet: the planet has not moved since it was put on its rail.
     assert_eq!(world.carried_by_rails(near_walker), None);
+    assert_eq!(world.carrier_of_entity(near_walker), None);
     let before = place_of(&world, planet);
     world.data.set_clock(20);
     world.apply_rails(20);
@@ -1422,6 +1423,10 @@ fn how_far_the_world_carried_an_entity_this_tick_is_told_to_whoever_keeps_a_stat
     assert_eq!(world.carried_by_rails(near_walker), Some(moved));
     assert_eq!(world.carried_by_rails(far_walker), None);
     assert_eq!(world.carried_by_rails(aboard_walker), None);
+    // And by which planet: the one whose speed the entity's own is against.
+    assert_eq!(world.carrier_of_entity(near_walker), Some(planet));
+    assert_eq!(world.carrier_of_entity(far_walker), None);
+    assert_eq!(world.carrier_of_entity(aboard_walker), None);
     // A pose put on it afterwards (a teleport, a landing) is not carried: the carry is forgotten, so that no one moves what was put somewhere by it.
     world
         .set_entity_pose(
@@ -1437,6 +1442,8 @@ fn how_far_the_world_carried_an_entity_this_tick_is_told_to_whoever_keeps_a_stat
     assert!(world.carried_by_rails(other).is_some());
     world.apply_rails(20);
     assert_eq!(world.carried_by_rails(other), None);
+    // (It is still carried by the planet, though it was not moved in that call: it is in the planet's sphere.)
+    assert_eq!(world.carrier_of_entity(other), Some(planet));
 }
 
 #[test]
@@ -2832,6 +2839,7 @@ fn a_planet_is_told_of_with_its_generator_and_extent_and_sent_only_the_bricks_th
         &views,
         &mut known,
         Some((LevelIndex::MAIN, region)),
+        None,
         1000,
         &[],
     );
@@ -2880,8 +2888,15 @@ fn a_planet_is_told_of_to_a_client_watching_anywhere_in_its_level_and_an_ordinar
     let views = crate::grid_replication::ship_views(&world);
     let told = |watched: Option<(LevelIndex, BrickBox)>| {
         let mut known = crate::grid_replication::KnownGrids::default();
-        let messages =
-            crate::grid_replication::grid_messages(&world, &views, &mut known, watched, 1000, &[]);
+        let messages = crate::grid_replication::grid_messages(
+            &world,
+            &views,
+            &mut known,
+            watched,
+            None,
+            1000,
+            &[],
+        );
         let ships: Vec<GridId> = match messages.first() {
             Some(ServerMessage::GridsSpawned(states)) => {
                 states.iter().map(|state| state.id).collect()

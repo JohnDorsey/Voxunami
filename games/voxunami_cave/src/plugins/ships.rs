@@ -1,6 +1,6 @@
 //! `/ship`: a player makes a ship of what they built, and pushes it, holds it still, and pilots it. (Ships are made by the engine from
-//! voxels of the terrain; which voxels, and what a pilot's keys do, are Cave's. Until there is a command chair these commands are how a
-//! ship comes to be and to fly. See `docs/specs/moving-grids-spec.md`, 2.7.)
+//! voxels of the terrain; which voxels, and what a pilot's keys do, are Cave's. `/ship pilot` is the hover controls and `/ship sit` flies from a
+//! dev command seat (`seat.rs`). See `docs/specs/moving-grids-spec.md`, 2.7.)
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -22,6 +22,8 @@ use voxel_space::{BrickCoordinate, GridId, GridPose, Orientation, VoxelCoordinat
 use world_storage::PilotLogout;
 use world_view::cast_ray;
 
+mod seat;
+
 use super::movement::{SharedMovement, locked};
 use crate::aboard::{Extent, in_voxels};
 use crate::content::CaveContent;
@@ -29,7 +31,7 @@ use crate::ships::{
     LOOK_REACH, MAXIMUM_BLOCKS, NEAR, PilotKeys, TICK_SECONDS, connected_blocks, pilot_force,
 };
 
-const USAGE: &str = "usage: /ship create [all] | push X Y Z | hold on|off | pilot | undock | vanish on|off | distance [SIMULATE [UNLOAD]|everywhere]";
+const USAGE: &str = "usage: /ship create [all] | push X Y Z | hold on|off | pilot | sit | buckle | unbuckle | undock | vanish on|off | distance [SIMULATE [UNLOAD]|everywhere]";
 
 /// A distance in a command: a number of voxels that is not below zero, or `everywhere` (or `nowhere`) for none.
 fn distance_word(word: &str) -> Option<f64> {
@@ -97,6 +99,12 @@ struct Ships {
     movement: SharedMovement,
     /// Who pilots which ship.
     pilots: Mutex<BTreeMap<ClientId, GridId>>,
+    /// Who of them sits in a command seat (they are in `pilots` too, and fly by the rules of the seat and not by the hover controls).
+    seats: Mutex<BTreeMap<ClientId, seat::Seated>>,
+    /// The numbers of the blocks the seat and the engines are, and of air.
+    seat_block: u32,
+    engine_block: u32,
+    air: u32,
     block_channel: ChannelIndex,
     state_channel: ChannelIndex,
     orientation_channel: ChannelIndex,
@@ -118,6 +126,16 @@ impl ShipCommandsPlugin {
                 movement,
                 docking,
                 pilots: Mutex::new(BTreeMap::new()),
+                seats: Mutex::new(BTreeMap::new()),
+                seat_block: content.registries()[0]
+                    .1
+                    .raw_id_of(&crate::content::dev_command_seat_id())
+                    .expect("Cave has a command seat"),
+                engine_block: content.registries()[0]
+                    .1
+                    .raw_id_of(&crate::content::dev_rocket_engine_id())
+                    .expect("Cave has a rocket engine"),
+                air: content.blocks.air,
                 block_channel: content.block_channel(),
                 state_channel: content.state_channel(),
                 orientation_channel: content.orientation_channel(),
@@ -130,6 +148,58 @@ impl ShipCommandsPlugin {
 /// What a ship is called to a player: its number in the order ships were made.
 fn number(ship: GridId) -> u64 {
     ship.get() - GridId::FIRST_ALLOCATED
+}
+
+/// The first block that is something bodies cannot pass through along the look of a player, within `reach` voxels, in the terrain of their level or in any ship of it (a planet too): the ray
+/// is cast in each grid's own coordinates. `channels` are the block, state and orientation channels. What to tell the player if there is none.
+pub(super) fn block_looked_at(
+    world: &mut ServerWorld,
+    presence: &Presence,
+    client: ClientId,
+    table: &BlockTable,
+    channels: [ChannelIndex; 3],
+    reach: f64,
+) -> Result<world_view::RayHit, &'static str> {
+    let [block_channel, state_channel, orientation_channel] = channels;
+    let Some((eyes, view)) = presence.view_in_the_world(world.data(), client) else {
+        return Err("you have not joined yet");
+    };
+    let level = presence.level_of(world.data(), client);
+    let nowhere = WorldPosition::new(BrickCoordinate::ORIGIN, [0.0; 3]);
+    let direction = GridPose::new(nowhere, view).direction_to_world([0.0, 0.0, -1.0]);
+    let collisions = BlockCollisions::new(
+        table.clone(),
+        Some(crate::block_properties::passable(table)),
+    );
+    let solid = |world: &mut ServerWorld, grid: GridId, voxel: VoxelCoordinate| -> Option<bool> {
+        let mut terrain = world.grid(grid).ok()?;
+        let block = terrain.get(block_channel, voxel).ok()?;
+        let state = terrain.get(state_channel, voxel).ok()?;
+        let orientation = terrain.get(orientation_channel, voxel).ok()?;
+        Some(collisions.of(block, state, orientation) != Collision::Empty)
+    };
+    let mut grids: Vec<(GridId, WorldPosition, [f64; 3])> =
+        vec![(GridId::root(level), eyes, direction)];
+    for (id, ship) in world.data().grids().iter() {
+        if ship.level != level {
+            continue;
+        }
+        if let Some(here) = ship.pose.world_to_local(eyes) {
+            grids.push((id, here, ship.pose.direction_to_local(direction)));
+        }
+    }
+    let mut nearest: Option<world_view::RayHit> = None;
+    for (grid, start, direction) in grids {
+        let hit = cast_ray(grid, start, direction, reach, |voxel| {
+            solid(world, grid, voxel)
+        });
+        if let Some(hit) = hit
+            && nearest.is_none_or(|best| hit.distance < best.distance)
+        {
+            nearest = Some(hit);
+        }
+    }
+    nearest.ok_or("you are not looking at a block")
 }
 
 impl Plugin for ShipCommandsPlugin {
@@ -169,16 +239,22 @@ impl Plugin for ShipCommandsPlugin {
         registrar.system(
             SystemSpec::new("voxunami_cave:pilots_fly_ships", Phase::Physics)
                 .before("engine:grid_bodies_move"),
-            move |context| ships.fly(context.world()),
+            move |context| {
+                let world = context.world();
+                ships.fly(world);
+                ships.fly_seated(world);
+            },
         );
 
         // A pilot who leaves stops piloting, and their ship may go with them. (After the players' own handler has taken the pilot out of the record
         // of who is where, so that the ship finds only the others who are aboard.)
         let ships = Arc::clone(&self.ships);
+        registrar.declares_message::<crate::messages::FlightReadoutIs>();
         registrar.on::<PlayerLeft>(
             HandlerSpec::new("voxunami_cave:a_player_who_leaves_stops_piloting")
                 .after("player_presence:hide_players_who_leave"),
             move |event, context| {
+                ships.seats().remove(&event.client);
                 let piloted = ships.pilots().remove(&event.client);
                 if let Some(ship) = piloted {
                     ships.pilot_left(context.world(), ship);
@@ -229,6 +305,9 @@ impl Ships {
             ("hold", ["on"]) => self.hold(world, client, true),
             ("hold", ["off"]) => self.hold(world, client, false),
             ("pilot", []) => self.pilot(world, client),
+            ("sit", []) => self.sit(world, client),
+            ("buckle", []) => self.buckle(world, client),
+            ("unbuckle", []) => self.unbuckle(client),
             ("undock", []) => self.undock(world, client),
             ("vanish", ["on"]) => self.vanish(world, client, PilotLogout::Vanish),
             ("vanish", ["off"]) => self.vanish(world, client, PilotLogout::Stay),
@@ -269,45 +348,30 @@ impl Ships {
     /// `/ship create`: the blocks joined to the one the player looks at, in the terrain of the level or in a ship (a planet too), that they built (or any, with
     /// `all`), become a ship where they are.
     fn create(&self, world: &mut ServerWorld, client: ClientId, everything: bool) -> String {
-        let (eyes, view, level) = {
+        let hit = {
             let presence = lock(&self.presence);
-            let Some((eyes, view)) = presence.view_in_the_world(world.data(), client) else {
-                return "you have not joined yet".to_owned();
-            };
-            (eyes, view, presence.level_of(world.data(), client))
+            block_looked_at(
+                world,
+                &presence,
+                client,
+                &self.table,
+                [
+                    self.block_channel,
+                    self.state_channel,
+                    self.orientation_channel,
+                ],
+                LOOK_REACH,
+            )
         };
-        let nowhere = WorldPosition::new(BrickCoordinate::ORIGIN, [0.0; 3]);
-        let direction = GridPose::new(nowhere, view).direction_to_world([0.0, 0.0, -1.0]);
+        let hit = match hit {
+            Ok(hit) => hit,
+            Err(problem) => return problem.to_owned(),
+        };
+        let grid = hit.grid;
         let collisions = BlockCollisions::new(
             self.table.clone(),
             Some(crate::block_properties::passable(&self.table)),
         );
-        // The first block along the look in the terrain of the level or in any ship of it (the ray is cast in each grid's own coordinates).
-        let mut grids: Vec<(GridId, WorldPosition, [f64; 3])> =
-            vec![(GridId::root(level), eyes, direction)];
-        for (id, ship) in world.data().grids().iter() {
-            if ship.level != level {
-                continue;
-            }
-            if let Some(here) = ship.pose.world_to_local(eyes) {
-                grids.push((id, here, ship.pose.direction_to_local(direction)));
-            }
-        }
-        let mut nearest: Option<world_view::RayHit> = None;
-        for (grid, start, direction) in grids {
-            let hit = cast_ray(grid, start, direction, LOOK_REACH, |voxel| {
-                self.solid(world, grid, &collisions, voxel)
-            });
-            if let Some(hit) = hit
-                && nearest.is_none_or(|best| hit.distance < best.distance)
-            {
-                nearest = Some(hit);
-            }
-        }
-        let Some(hit) = nearest else {
-            return "you are not looking at a block".to_owned();
-        };
-        let grid = hit.grid;
         let blocks = connected_blocks(hit.voxel, MAXIMUM_BLOCKS, |voxel| {
             self.solid(world, grid, &collisions, voxel) == Some(true)
                 && (everything || self.built(world, grid, voxel))
@@ -551,11 +615,57 @@ impl Ships {
         }
     }
 
+    /// `/ship buckle`: the player is held where they stand in the ship they are aboard, as they are turned, until `/ship unbuckle`; the ship carries them however it
+    /// goes, and they can still look about, sit, and pilot.
+    fn buckle(&self, world: &mut ServerWorld, client: ClientId) -> String {
+        let presence = lock(&self.presence);
+        let Some(ship) = presence
+            .frame_of(world.data(), client)
+            .filter(|frame| frame.root_level().is_none())
+        else {
+            return "stand on a ship to buckle to it".to_owned();
+        };
+        if world
+            .data()
+            .grids()
+            .get(ship)
+            .is_some_and(|ship| ship.terrain.is_some())
+        {
+            return format!(
+                "ship {} is a planet: there is nothing to be carried by",
+                number(ship)
+            );
+        }
+        let mut movement = locked(&self.movement);
+        if movement.buckled_to(client) == Some(ship) {
+            return format!("you are buckled to ship {} already", number(ship));
+        }
+        if !movement.buckle(client, ship) {
+            return "you have no body to buckle".to_owned();
+        }
+        format!(
+            "you are buckled to ship {}: it carries you however it goes and turns, and you do not move in it; /ship unbuckle lets you go",
+            number(ship)
+        )
+    }
+
+    /// `/ship unbuckle`: the player is let go and stands in the ship, with gravity, as they did.
+    fn unbuckle(&self, client: ClientId) -> String {
+        match locked(&self.movement).unbuckle(client) {
+            Some(ship) => format!("you are let go of ship {}", number(ship)),
+            None => "you are not buckled".to_owned(),
+        }
+    }
+
     /// `/ship pilot`: the player's keys fly the ship they are aboard, until they say so again, leave it, or leave.
     fn pilot(&self, world: &mut ServerWorld, client: ClientId) -> String {
         let presence = lock(&self.presence);
         let mut pilots = self.pilots();
         Self::follow_ships_that_were_replaced(world, &presence, &mut pilots);
+        if self.seats().contains_key(&client) {
+            return "you are sitting in a command seat, not on the hover controls: /ship sit gets you up"
+                .to_owned();
+        }
         if let Some(ship) = pilots.remove(&client) {
             locked(&self.movement).set_piloting(client, false);
             return format!("you let go of the controls of ship {}", number(ship));
@@ -584,10 +694,15 @@ impl Ships {
         if pilots.is_empty() {
             return;
         }
+        let seats = self.seats();
         let mut movement = locked(&self.movement);
         Self::follow_ships_that_were_replaced(world, &presence, &mut pilots);
         let mut finished = Vec::new();
         for (&client, &ship) in pilots.iter() {
+            // (A pilot in a command seat flies by the seat: `fly_seated`.)
+            if seats.contains_key(&client) {
+                continue;
+            }
             let aboard = presence.frame_of(world.data(), client) == Some(ship);
             let (Some(moving), true) = (world.data().grids().get(ship), aboard) else {
                 finished.push(client);

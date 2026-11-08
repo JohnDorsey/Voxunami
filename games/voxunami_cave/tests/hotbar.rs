@@ -76,17 +76,22 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
     assert!(!hotbar.modal);
     assert_eq!(hotbar.root.direction, Direction::Row);
     let shown = swatches(&hotbar.root);
-    // Stone, dirt, grass, lamp, wood, fire, and the dev docking port: in the colours the blocks are drawn in (the table of the game says which: for a block
-    // with pictures it is their average), the first chosen, no counts in creative.
+    // Stone, dirt, grass, lamp, wood, fire, and the dev docking port, command seat and rocket engine: in the colours the blocks are drawn in (the table of the game says
+    // which: for a block with pictures it is their average), the first chosen, no counts in creative.
     let content = voxunami_cave::content::CaveContent::new();
     let table = content.block_table();
     let ids = content.blocks;
-    let port = content
-        .package_data()
-        .blocks
-        .iter()
-        .position(|(identifier, _)| *identifier == voxunami_cave::content::dev_docking_port_id())
-        .expect("the package has the dev docking port") as u32;
+    let package = content.package_data();
+    let position_of = |wanted: namespaced_id::NamespacedId| {
+        package
+            .blocks
+            .iter()
+            .position(|(identifier, _)| *identifier == wanted)
+            .expect("the package has the dev block") as u32
+    };
+    let port = position_of(voxunami_cave::content::dev_docking_port_id());
+    let seat = position_of(voxunami_cave::content::dev_command_seat_id());
+    let engine = position_of(voxunami_cave::content::dev_rocket_engine_id());
     let expected_colors = [
         table.color(ids.stone),
         table.color(ids.dirt),
@@ -95,11 +100,16 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
         table.color(ids.wood),
         table.color(ids.fire),
         table.color(port),
+        table.color(seat),
+        table.color(engine),
     ];
     // (The two that have no pictures are what their files say.)
     assert_eq!(expected_colors[3], [1.0, 0.92, 0.65]);
     assert_eq!(expected_colors[5], [0.95, 0.5, 0.1]);
-    assert_eq!(shown.len(), 7);
+    // (The seat and the engine are gunmetal gray, and their brown and red faces are not their colour.)
+    assert_eq!(expected_colors[7], [0.17, 0.21, 0.22]);
+    assert_eq!(expected_colors[8], [0.17, 0.21, 0.22]);
+    assert_eq!(shown.len(), 9);
     for (index, ((color, count, selected), expected)) in
         shown.iter().zip(expected_colors).enumerate()
     {
@@ -115,19 +125,32 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
         .iter()
         .map(|(_, _, selected)| *selected)
         .collect();
-    assert_eq!(chosen, [false, false, false, true, false, false, false]);
-    // A key for a block there is not (the ninth) leaves the choice alone: it still points at the fourth block, never past the end.
-    player.key_pressed(KeyCode::Digit9);
-    let panels = overlays(&mut player);
-    let chosen: Vec<bool> = swatches(&panels[0].1.root)
-        .iter()
-        .map(|(_, _, selected)| *selected)
-        .collect();
     assert_eq!(
-        chosen.iter().filter(|selected| **selected).count(),
-        1,
-        "one is always chosen"
+        chosen,
+        [false, false, false, true, false, false, false, false, false]
     );
+    // The ninth key chooses the ninth block, the dev rocket engine; the right square bracket goes on round to the first, and the left one back to the last.
+    let chosen_index = |player: &mut Player| -> usize {
+        let panels = overlays(player);
+        let chosen: Vec<bool> = swatches(&panels[0].1.root)
+            .iter()
+            .map(|(_, _, selected)| *selected)
+            .collect();
+        assert_eq!(
+            chosen.iter().filter(|selected| **selected).count(),
+            1,
+            "one is always chosen"
+        );
+        chosen.iter().position(|selected| *selected).unwrap()
+    };
+    player.key_pressed(KeyCode::Digit9);
+    assert_eq!(chosen_index(&mut player), 8);
+    player.key_pressed(KeyCode::BracketRight);
+    assert_eq!(chosen_index(&mut player), 0);
+    player.key_pressed(KeyCode::BracketLeft);
+    assert_eq!(chosen_index(&mut player), 8);
+    player.key_pressed(KeyCode::BracketLeft);
+    assert_eq!(chosen_index(&mut player), 7);
 }
 
 #[test]

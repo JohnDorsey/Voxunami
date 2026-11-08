@@ -17,7 +17,7 @@ use voxel_space::{Displacement, GridId, LevelIndex, Orientation, VoxelCoordinate
 
 use crate::content::CaveContent;
 use crate::messages::{MoveRequest, Spawn};
-use crate::movement::{Movement, Placement};
+use crate::movement::{Carried, Movement, Placement};
 use crate::places::{self, BodyArrival, PlaceKind};
 use crate::rivers;
 
@@ -505,12 +505,21 @@ impl Plugin for MovementPlugin {
                         ))
                     })
                     .collect();
-                // What the world carried each player by this tick (a planet that goes round), for their bodies to go with.
-                let carried: BTreeMap<ClientId, Displacement> = placements
+                // What the world carried each player by this tick (a planet that goes round), for their bodies to go with, and whose speed theirs is against.
+                let carried: BTreeMap<ClientId, Carried> = placements
                     .keys()
                     .filter_map(|&client| {
                         let entity = presence.entity_of(client)?;
-                        Some((client, context.world().carried_by_rails(entity)?))
+                        let world = context.world();
+                        Some((
+                            client,
+                            Carried {
+                                by: world.carrier_of_entity(entity)?,
+                                displacement: world
+                                    .carried_by_rails(entity)
+                                    .unwrap_or(Displacement::NONE),
+                            },
+                        ))
                     })
                     .collect();
                 let moved = locked(&bodies).step(
