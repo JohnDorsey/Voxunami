@@ -100,10 +100,8 @@ struct VertexOutput {
     @location(3) relative: vec3<f32>,
     // x: the light of the lamps and the ambient light (0 to 1), y: how bright the side of the face makes it (0.4 to 1).
     @location(4) @interpolate(flat) lamp_and_side: vec2<f32>,
-    // Where the point is on the face's picture, in voxels: across, and (downward in the picture) up. Only meant for a face with a picture.
-    @location(5) uv: vec2<f32>,
     // The picture on the face (bits of `FacePicture::word`), 0 for none.
-    @location(6) @interpolate(flat) picture: u32,
+    @location(5) @interpolate(flat) picture: u32,
 }
 
 // How wide, in radians, the soft edge of a shadow is: the sun's disc, and the twilight of the air for a place at the ground of a ball. The same numbers as `sun.rs`.
@@ -225,7 +223,7 @@ fn along(local: vec3<f32>, face_index: u32) -> f32 {
     return select(-1.0, 1.0, (face_index & 1u) == 1u) * dot(local, axis_unit(face_index / 2u));
 }
 
-fn finish(relative: vec3<f32>, local: vec3<f32>, face: u32, material: u32, light: u32) -> VertexOutput {
+fn finish(relative: vec3<f32>, face: u32, material: u32, light: u32) -> VertexOutput {
     // The face's normal in the grid's own axes, turned to the world's, where the sun is.
     let normal = placement.rotation * (axis_unit(face / 2u) * select(-1.0, 1.0, (face & 1u) == 1u));
     // The light of the face and the ambient light combine like a screen blend: each is the share of
@@ -247,11 +245,6 @@ fn finish(relative: vec3<f32>, local: vec3<f32>, face: u32, material: u32, light
 
     var out: VertexOutput;
     out.picture = picture;
-    out.uv = vec2<f32>(0.0);
-    if (picture != 0u) {
-        // The picture runs across the face along `across` and up it along `up`; the image's own rows go downward.
-        out.uv = vec2<f32>(along(local, (picture >> 11u) & 7u), -along(local, (picture >> 14u) & 7u));
-    }
     out.position = frame.view_projection * vec4<f32>(relative, 1.0);
     out.albedo = base;
     out.normal = normal;
@@ -267,8 +260,6 @@ fn finish(relative: vec3<f32>, local: vec3<f32>, face: u32, material: u32, light
 struct Corner {
     // Where the corner is relative to the camera, in voxels.
     relative: vec3<f32>,
-    // Where it is in the brick, in the brick's own axes (in voxels, for the bricks that have pictures).
-    local: vec3<f32>,
     face: u32,
 }
 
@@ -284,7 +275,7 @@ fn whole_corner(vertex_index: u32, instance: Instance) -> Corner {
     // The voxel owns its face; a positive face is on the voxel's far side.
     let plane = origin + axis_unit(face / 2u) * select(0.0, 1.0, (face & 1u) == 1u);
     let local = corner_position(vertex_index, face, plane, width, height);
-    return Corner(placement.rotation * (local * placement.offset.w) + placement.offset.xyz, local, face);
+    return Corner(placement.rotation * (local * placement.offset.w) + placement.offset.xyz, face);
 }
 
 fn detailed_corner(vertex_index: u32, instance: DetailedInstance) -> Corner {
@@ -297,19 +288,19 @@ fn detailed_corner(vertex_index: u32, instance: DetailedInstance) -> Corner {
     let height = f32(instance.third & 0xFFFFu) / 8.0;
     let face = (instance.third >> 16u) & 7u;
     let local = corner_position(vertex_index, face, origin, width, height);
-    return Corner(placement.rotation * (local * placement.offset.w) + placement.offset.xyz, local, face);
+    return Corner(placement.rotation * (local * placement.offset.w) + placement.offset.xyz, face);
 }
 
 @vertex
 fn vertex_main(@builtin(vertex_index) vertex_index: u32, instance: Instance) -> VertexOutput {
     let corner = whole_corner(vertex_index, instance);
-    return finish(corner.relative, corner.local, corner.face, instance.material & 0xFFFFFFu, instance.material >> 24u);
+    return finish(corner.relative, corner.face, instance.material & 0xFFFFFFu, instance.material >> 24u);
 }
 
 @vertex
 fn vertex_detailed(@builtin(vertex_index) vertex_index: u32, instance: DetailedInstance) -> VertexOutput {
     let corner = detailed_corner(vertex_index, instance);
-    return finish(corner.relative, corner.local, corner.face, instance.material & 0xFFFFFFu, instance.third >> 24u);
+    return finish(corner.relative, corner.face, instance.material & 0xFFFFFFu, instance.third >> 24u);
 }
 
 // The same quads for the shadow map: where they are in the cascade (the frame's matrix is the cascade's) and nothing else.

@@ -5058,3 +5058,55 @@ fn coarse_cells_of_a_block_with_pictures_are_its_flat_colour() {
         );
     }
 }
+
+#[test]
+fn a_picture_on_a_block_of_a_turned_ship_reads_the_same_from_outside_as_on_the_ground() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let table = textured_table();
+        let mut renderer = renderer_with_pictures(&context, &table);
+        // A ship a quarter turn about the vertical axis, with the block at (16, 16, 16) of its first brick: its face towards the grid's +z looks along a horizontal axis of the world.
+        let half = std::f64::consts::FRAC_1_SQRT_2;
+        let quarter_turn = Orientation::from_components([0.0, half, 0.0, half]).unwrap();
+        renderer.set_grid_pose(a_ship(), pose([0, 0, 0], [0.0; 3], quarter_turn));
+        let mut block = vec![0u32; BRICK_VOXEL_COUNT];
+        block[LocalVoxelIndex::new(16, 16, 16).index()] = 1;
+        let storage = ChannelStorage::from_values(&block);
+        let mesh = mesh_brick(
+            &BrickNeighbourhood {
+                center: BrickChannels::blocks_only(&storage),
+                neighbours: [None; 6],
+            },
+            &table,
+        );
+        renderer.upload_grid_brick(a_ship(), ORIGIN_BRICK, &mesh.pack());
+        // The turn takes (x, y, z) to (z, y, -x) or to (-z, y, x), whichever way a positive turn goes: the block is at x = 16 to 17, z = -17 to -16, or at
+        // x = -17 to -16, z = 16 to 17. Look at it from the side of the +x or the -x axis it is on, from 0.8 voxels off its face.
+        // (Which way yaw turns is the camera's business: each place is looked at with both quarter turns, and only one of the four looks at the block.)
+        let mut pictures = Vec::new();
+        for camera in [
+            camera_at(BrickCoordinate::new(0, 0, -1), [17.8, 16.5, 15.5]),
+            camera_at(BrickCoordinate::new(-1, 0, 0), [14.2, 16.5, 16.5]),
+        ] {
+            for yaw in [-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2] {
+                let mut looking = camera;
+                looking.yaw = yaw;
+                let image = settled(&mut renderer, &looking);
+                if !is_sky(pixel(&image, SIZE / 2, SIZE / 2)) {
+                    pictures.push(image);
+                }
+            }
+        }
+        assert_eq!(
+            pictures.len(),
+            1,
+            "{name}: the block is seen from one place and one way"
+        );
+        save_image("picture_turned_ship", &name, &pictures[0]);
+        assert_eq!(
+            corners_of_the_drawn(&pictures[0]),
+            [Some(0), Some(1), Some(2), Some(3)],
+            "{name}"
+        );
+    }
+}
