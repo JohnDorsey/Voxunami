@@ -3,6 +3,7 @@
 //! A server ticked by the test, and players connected to it.
 
 pub mod docking;
+pub mod moving_planet;
 pub mod parity;
 pub mod rocket;
 
@@ -657,6 +658,18 @@ pub fn raft_over(
     held: bool,
     against: [f64; 3],
 ) -> u64 {
+    ship_over(scene, planet, offset, held, against, [6, 1, 6])
+}
+
+/// As [`raft_over`], for a ship of stone of any size (from its origin, which is the place `offset` says).
+pub fn ship_over(
+    scene: &mut Scene,
+    planet: u64,
+    offset: [f64; 3],
+    held: bool,
+    against: [f64; 3],
+    size: [i128; 3],
+) -> u64 {
     let number = scene.rig.server.world().grids().iter().count() as u64;
     let middle = ship_voxels(scene, planet);
     make_ship(
@@ -666,7 +679,7 @@ pub fn raft_over(
             Orientation::IDENTITY,
         ),
         held,
-        [6, 1, 6],
+        size,
         |_| true,
     );
     scene.run(move |world| {
@@ -693,6 +706,31 @@ pub fn raft_over(
             .unwrap();
     });
     number
+}
+
+/// The greatest change from one tick to the next of the step something takes between them, in voxels. Something that goes on straight has none; the pull of a planet bends
+/// its path by a few hundredths of a voxel a tick; something whose speed was taken wrong when it came into or went out of a frame has the planet's own, 6.3.
+pub fn greatest_kink(path: &[[f64; 3]]) -> f64 {
+    path.windows(3)
+        .map(|three| length(minus(minus(three[2], three[1]), minus(three[1], three[0]))))
+        .fold(0.0, f64::max)
+}
+
+/// The speed of a circle round ship `planet` (a body with terrain) at this distance from its middle, as the world's pull has it.
+pub fn circular_speed(scene: &Scene, planet: u64, distance: f64) -> f64 {
+    let settings = Cave::gravity();
+    let planet = scene
+        .rig
+        .server
+        .world()
+        .grids()
+        .get(ship_id(planet))
+        .expect("the planet is there");
+    let mass = planet.terrain.expect("it has terrain").mass;
+    let gravitational_parameter = settings.pull_strength * mass;
+    (gravitational_parameter * distance
+        / (distance * distance + settings.softening * settings.softening))
+        .sqrt()
 }
 
 /// The planet most of the ship tests were written for: it pulls at 32 metres a second a second, six times as hard as Cave's (5, the owner's

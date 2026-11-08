@@ -423,6 +423,13 @@ impl CharacterBody {
         self.center += vector(delta);
     }
 
+    /// Changes the speed by `delta`, in the axes of the frame, and nothing else: the character is where it was and stands or flies as it did. It is for a character whose speed
+    /// is measured from something that has changed under it (a planet that carried it has let it go, and the speed it had against the planet is its speed in the world less
+    /// the planet's): it goes on at the speed it had in the world.
+    pub fn change_velocity(&mut self, delta: [f64; 3]) {
+        self.velocity += vector(delta);
+    }
+
     /// Puts the character with its eyes at a position, at rest and in the air. If that is inside the
     /// terrain, the next [`CharacterBody::update_terrain`] lifts it straight up onto the surface above.
     pub fn teleport(&mut self, eye: WorldPosition) {

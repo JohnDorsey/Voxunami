@@ -143,6 +143,23 @@ Entities on the wire, who a player is, players as entities, ships a player can m
   grounded, flies, boards a ship, is put somewhere (`/tp`, another level), or the ship is gone or in another level. *Mine:* a ship that is gone is no reference (the body is
   then braked by the air as every body was), and the reference is not forgotten by distance. Nothing changes for a body that never left a ship (the step is the same to the bit:
   `engine/physics/tests/against.rs`).
+- **The speed of a body in a level is against the planet that carries it; a ship's is the world's** (found by reading 2026-11-05, measured and fixed 2026-11-07): inside the sphere of a
+  planet on a rail (`ServerWorld::influence_radius`) the world moves the player's record, and the body with it (`agree_with`), by the planet's displacement every tick, and the body goes
+  on from there at its own speed, so that speed is *against the planet*; where no planet carries the body it is the world's. A ship's `linear_velocity` is always the world's (the plugin
+  writes the planet's speed added to what the ship has in the planet's frame). So a speed that passes between a body and a ship is made against the carrier, or the world's, by the speed
+  of the planet that carries the place (`ServerWorld::carrier_of_entity` says which carried the player; Cave keeps it in the body): **boarding** takes the body's speed plus the carrier's
+  less the ship's, **leaving** takes the planet that will carry the place (found as the next tick's `apply_rails` will, `planet_carrying(.., None)`: the body was not carried while aboard)
+  off the world's speed, and the speed a body is **stepped against** is that of the place of the ship less the carrier's. Without it a body had the planet's speed twice and went at the
+  planet's speed past the ship it had left (6.28 voxels a tick beside a planet at 125.7 metres a second; a walker who landed on a held deck was off it in five ticks). Where no planet is on a
+  rail nothing is changed. **A body that goes out of a sphere, into one, or from one into another's keeps the speed it had in the world** (2026-11-07; before, a kink of the planet's
+  own step, 6.26 voxels, in its path at the edge): at the end of its step in a level the body asks the world which planet will carry it in the next tick (`planet_carrying`, with
+  the planet that carries it now keeping it a quarter farther out, which is how `apply_rails` will find it, so the next tick agrees) and its speed is changed by the old carrier's less
+  the new one's (`CharacterBody::change_velocity`). *Mine:* a body that stands on something or flies is not changed (the ground and the keys ask for its speed), and one that was
+  *put* since its last step (it came in, `/tp`, a ship taken from under it, another level: `PlayerBody::put`) is not either, because it is at rest against whatever carries the place and
+  what the world said carried it was for where it was before. Not tested: the flier's and the grounded body's gates, and a record that puts a body in another level.
+- **What a planet on a rail carries falls with it** (2026-11-07): a body in a level that the world carries is pulled by everything but what the planet goes round
+  (`ServerWorld::gravity_in_the_free_fall_of` its carrier), as the ships in the planet's frame are and as a body aboard the planet is; pulled by every body it drifted from a deck in orbit
+  by the home planet's 0.127 metres a second a second (79 voxels in 36 seconds, 5 now). With no carrier nothing changes.
 - **The picture carries every moving thing on between ticks the same way** (2026-11-04): the camera, ships and planets, the room the camera's angles are measured in, and the other players are carried on at the speed (and turn) of the last two
   things told, with the times of the beat of the server's ticks (`TickClock`) and not of the frames that saw them, and a change of speed that is too big to be travel is a jump and is shown at once. They must be carried on *together*: a camera carried
   on that looks at a ship shown where it was last told shakes by the speed times a tick. The clock creeps toward a later beat at 5 ms a second (so that speeds stay steady) but takes the beat of the last 10 to 20 ticks at once when all of them came more

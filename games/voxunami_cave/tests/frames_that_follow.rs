@@ -4,64 +4,19 @@
 mod common;
 
 use common::docking::{a_pair, make};
-use common::{SEED, Scene, length, minus, player_pose, ship_id, ship_pose, tick_and_follow};
-use game_shell::{GameContent, RawFile, RawPack};
+use common::moving_planet::{
+    WANDERER, a_scene, orbit_of_the_home_planet, scene_with, wanderer_pack,
+};
+use common::{
+    SEED, Scene, greatest_kink, length, minus, player_pose, ship_id, ship_pose, tick_and_follow,
+};
+use game_shell::GameContent;
 use server::GridView;
 use voxel_space::{GridId, GridPose, LevelIndex, Orientation, VoxelCoordinate, WorldPosition};
 use voxunami_cave::aboard::in_voxels;
 use voxunami_cave::content::CaveContent;
 
-/// What the pack of a test says of the planet it adds: where it is and how it moves (lines of the body file), how far its ground reaches in bricks and how hard it
-/// pulls at the surface. It is a planet of 10,000 voxels.
-fn wanderer_pack(motion: &str, extent_bricks: u32, surface_gravity: f64) -> Vec<RawPack> {
-    vec![RawPack {
-        folder: "sky".to_owned(),
-        manifest: r#"{ "id": "sky" }"#.to_owned(),
-        blocks: Vec::new(),
-        patches: Vec::new(),
-        bodies: vec![RawFile {
-            name: "wanderer".to_owned(),
-            text: format!(
-                r#"{{
-                "level": "voxunami_cave:mini_cosmos",
-                "terrain": {{
-                    "family": "voxunami_cave:planet_v1",
-                    "parameters": {{ "seed": 99, "radius": 10000, "hill_height": 20,
-                        "largest_hill_wavelength_log2": 7, "hill_octave_count": 4 }}
-                }},
-                "extent_bricks": {extent_bricks},
-                "surface_gravity": {surface_gravity},
-                {motion}
-            }}"#
-            ),
-        }],
-    }]
-}
-
-/// The motion of the usual wanderer: it goes round the home planet at 400,000 voxels once in 20,000 seconds (125.7 metres a second, 6.3 voxels a tick), and turns
-/// once in `spin` seconds if it is given one (about its own y axis).
-fn orbit_of_the_home_planet(spin: Option<f64>) -> String {
-    let spin = spin.map_or(String::new(), |period| {
-        format!(r#""spin": {{ "axis": [0, 1, 0], "period": {period} }},"#)
-    });
-    format!(
-        r#""rail": {{ {spin} "orbit": {{ "around": "voxunami_cave:planet", "radius": 400000, "period": 20000 }} }}"#
-    )
-}
-
-fn scene_with(pack: &[RawPack]) -> Scene {
-    let mut content = CaveContent::new();
-    content.apply_packs(pack).unwrap();
-    let world = content.new_world(SEED);
-    Scene::in_this_world(content, world)
-}
-
-fn a_scene(spin: Option<f64>) -> Scene {
-    scene_with(&wanderer_pack(&orbit_of_the_home_planet(spin), 340, 8.0))
-}
-
-/// The wanderer is the second ship, and what a test makes after it the third.
-const WANDERER: u64 = 1;
+/// What a test makes after the wanderer (the second ship) is the third.
 const THE_RAFT: u64 = 2;
 
 /// How far the sphere of the wanderer reaches: one and a half times the reach of its ground, which is 340 bricks (a brick is 32 voxels).
@@ -234,14 +189,6 @@ fn a_walker_dropped_over_a_planet_on_a_fast_orbit_lands_on_it_and_goes_with_it()
     let after = voxels(&scene, WANDERER);
     assert!(length(minus(after, before)) > 500.0, "the planet goes on");
     assert_eq!(player_pose(&scene, 1).position, standing.position);
-}
-
-/// The greatest change from one tick to the next of the step a ship takes between them, in voxels. A ship that goes on straight has none; the pull of a planet bends
-/// its path by a few hundredths of a voxel a tick; a ship whose speed was taken wrong when it came into or went out of a frame has the planet's own, 6.3.
-fn greatest_kink(path: &[[f64; 3]]) -> f64 {
-    path.windows(3)
-        .map(|three| length(minus(minus(three[2], three[1]), minus(three[1], three[0]))))
-        .fold(0.0, f64::max)
 }
 
 #[test]

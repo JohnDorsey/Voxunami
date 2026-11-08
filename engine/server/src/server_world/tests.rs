@@ -1413,6 +1413,7 @@ fn how_far_the_world_carried_an_entity_this_tick_is_told_to_whoever_keeps_a_stat
         .unwrap();
     // Nothing has been carried yet: the planet has not moved since it was put on its rail.
     assert_eq!(world.carried_by_rails(near_walker), None);
+    assert_eq!(world.carrier_of_entity(near_walker), None);
     let before = place_of(&world, planet);
     world.data.set_clock(20);
     world.apply_rails(20);
@@ -1422,6 +1423,10 @@ fn how_far_the_world_carried_an_entity_this_tick_is_told_to_whoever_keeps_a_stat
     assert_eq!(world.carried_by_rails(near_walker), Some(moved));
     assert_eq!(world.carried_by_rails(far_walker), None);
     assert_eq!(world.carried_by_rails(aboard_walker), None);
+    // And by which planet: the one whose speed the entity's own is against.
+    assert_eq!(world.carrier_of_entity(near_walker), Some(planet));
+    assert_eq!(world.carrier_of_entity(far_walker), None);
+    assert_eq!(world.carrier_of_entity(aboard_walker), None);
     // A pose put on it afterwards (a teleport, a landing) is not carried: the carry is forgotten, so that no one moves what was put somewhere by it.
     world
         .set_entity_pose(
@@ -1437,6 +1442,8 @@ fn how_far_the_world_carried_an_entity_this_tick_is_told_to_whoever_keeps_a_stat
     assert!(world.carried_by_rails(other).is_some());
     world.apply_rails(20);
     assert_eq!(world.carried_by_rails(other), None);
+    // (It is still carried by the planet, though it was not moved in that call: it is in the planet's sphere.)
+    assert_eq!(world.carrier_of_entity(other), Some(planet));
 }
 
 #[test]

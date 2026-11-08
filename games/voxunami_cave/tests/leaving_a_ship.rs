@@ -8,26 +8,13 @@ use common::{
     PlayerExt, Scene, eyes_in_the_world, make_ship, player_pose, scene_with_a_deck, ship_id,
     tick_and_follow, walker_on_the_deck,
 };
-use game_shell::{GameDefinition, KeyCode};
+use game_shell::KeyCode;
 use voxel_space::{GridPose, Orientation, WorldPosition};
-use voxunami_cave::Cave;
 use voxunami_cave::aboard::in_voxels;
 
-/// The speed of a circle round the planet at this distance from its middle, as the world's pull has it.
+/// The speed of a circle round the planet (the first ship of a new world) at this distance from its middle, as the world's pull has it.
 fn circular_speed(scene: &Scene, distance: f64) -> f64 {
-    let settings = Cave::gravity();
-    let planet = scene
-        .rig
-        .server
-        .world()
-        .grids()
-        .get(ship_id(0))
-        .expect("the planet is the first ship of a new world");
-    let mass = planet.terrain.expect("it has terrain").mass;
-    let gravitational_parameter = settings.pull_strength * mass;
-    (gravitational_parameter * distance
-        / (distance * distance + settings.softening * settings.softening))
-        .sqrt()
+    common::circular_speed(scene, 0, distance)
 }
 
 /// Where the middle of ship `number` is, in voxels.
