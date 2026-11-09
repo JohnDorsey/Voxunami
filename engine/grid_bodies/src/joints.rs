@@ -33,6 +33,13 @@ pub struct JointSettings {
     /// radians a second (owner, 2026-11-09: 0.2): a joint made with more begins with a collision, which loses energy and leaves a gap.
     pub max_relative_speed: f64,
     pub max_relative_spin: f64,
+    /// Ends this near, in metres, are coupled whatever the spin of the cars against each other (owner, 2026-11-09: a centimetre). A coupling is derived from the blocks and
+    /// places and never saved, so a swinging group that is loaded has to be coupled again, and a ball turns however it is: only the speed of the pivots matters then.
+    pub spin_waived_within: f64,
+    /// The most torque, in newton metres, that slows the cars' spin against each other as they are pulled (the same as docking's twist torque). The pull is at the ends,
+    /// as docking's is (owner, 2026-11-09), which swings cars whose ends are away from their centres; this takes away the spin that leaves, which a coupling would not allow.
+    /// It never turns the cars toward line, it only slows their turning against each other.
+    pub damping_torque_limit: f64,
     /// The extra substeps of the solver for a car that is coupled (owner, 2026-11-09: yes; four is my number, `loop-probe.md`, section 14).
     pub extra_substeps: usize,
 }
@@ -48,6 +55,8 @@ impl Default for JointSettings {
             couple_degrees: 45.0,
             max_relative_speed: 1.0,
             max_relative_spin: 0.2,
+            spin_waived_within: 0.01,
+            damping_torque_limit: 10_000.0,
             extra_substeps: 4,
         }
     }
@@ -83,7 +92,8 @@ impl JointSettings {
         approach.distance <= self.couple_distance
             && dot(first.normal, second.normal) <= -libm::cos(self.couple_degrees * DEGREES)
             && length(relative_velocity) <= self.max_relative_speed
-            && length(relative_spin) <= self.max_relative_spin
+            && (length(relative_spin) <= self.max_relative_spin
+                || approach.distance <= self.spin_waived_within)
     }
 
     /// The force on the second end of a pair that pull on each other (the first has the opposite one): toward the first end, at most `pull_force`, and such that the pair
@@ -120,6 +130,28 @@ impl JointSettings {
             force.map(|component| component * self.pull_force / size)
         } else {
             force
+        }
+    }
+}
+
+impl JointSettings {
+    /// The torque on the second car that slows its spin against the first (the first has the opposite): the inertia of the pair (see [`effective_mass`], which works for
+    /// inertias too) times the spin over the response, against it, cut to `damping_torque_limit`. None for an inertia that is nothing or not a number.
+    pub fn spin_damping_on_second(
+        &self,
+        relative_spin: [f64; 3],
+        effective_inertia: f64,
+    ) -> [f64; 3] {
+        if !(effective_inertia.is_finite() && effective_inertia > 0.0) {
+            return [0.0; 3];
+        }
+        let torque =
+            relative_spin.map(|component| -effective_inertia * component / self.response_seconds);
+        let size = length(torque);
+        if size > self.damping_torque_limit {
+            torque.map(|component| component * self.damping_torque_limit / size)
+        } else {
+            torque
         }
     }
 }

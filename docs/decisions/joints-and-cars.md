@@ -44,22 +44,25 @@ This file records the talk that came before any code; the measurements behind th
     measured: a pair of 500 kg cars from 6 m arrives at 15 m/s). The pull is **at most 10 kN on each of the two cars** (the owner's number, equal and opposite, so the lighter car moves more), and it asks the pair for the greatest speed it can be
     stopped from in the distance left (a deceleration of 2 m/s/s, or half of what 10 kN does to the pair if that is less), taking up the difference over 0.1 s. A longer response (0.5 s) let light ends overshoot each other and
     jam with their tips in contact; the lag of the speed behind the one asked is the deceleration times the response, 0.2 m/s. From 3 to 6 metres, at rest, cars of 1.2 to 30 tonnes were coupled after 1.5 to 4.6 seconds.
-  - *The pull is on each car's centre of mass, not at its end* (docking's is at the port). A pull at an end away from the centre swings the car; two ends side by side swing the two cars in opposite ways, 0.6 rad/s each (1.2 rad/s of one against the other, measured),
-    which nothing takes away and which is six times the 0.2 rad/s a coupling allows, so such a pair never coupled. Positional only, as this file said. The cost: nothing turns the ends toward each other, so the 45 degrees is for the players to aim.
+  - *The pull is at the end, as docking's is at the port (owner, 2026-11-09: "don't differ from docking").* I had put it on the centre of mass first, because a pull at an end away from the centre swings the car, and two ends side by side
+    swung the two cars in opposite ways, 0.6 rad/s each (1.2 rad/s of one against the other, measured), which nothing took away and which is six times the 0.2 rad/s a coupling allows, so such a pair never coupled. With the pull at the
+    end, **a torque slows the cars' spin against each other** (equal and opposite, at most 10 kN m, docking's twist torque; the inertia is a third of the trace of each car's tensor, an approximation): the two-ends pair then couples, and
+    without the torque it does not (checked by taking it out). It only slows their turning against each other: nothing turns the ends toward each other, so the 45 degrees is for the players to aim. **This is a torque, which the first words of this
+    section said coupling would not apply; it is not toward alignment.**
   - *What is pulled is a group.* Cars joined by couplings are one mass under a pull, and **a group is pulled by one other group at a time, the nearest**. A chain of three cars (the middle one pulled from both sides) overshot by
     half a metre and jammed with the tips of the bars in contact; with this rule it couples. Two cars of one group are not pulled or coupled to each other (a loop is for later).
   - *When the joint is made:* in the first tick the ends are within 0.3 m, the faces within 45 degrees of exactly opposite, the pivots going past each other at 1 m/s or less and the cars turning against each other at 0.2 rad/s or less.
     That is how I read "until the pivots are within 0.05 m, then the joint": the pull does not go on to 0.05 m, the solver closes what is left. Measured: the pivots were 0.12 to 0.28 m apart and closing at 0.5 to 1.0 m/s, and the gap
     was closed in the tick (by the solver's position correction, which adds no speed): the two cars stop against each other at the pivot, an inelastic joining that loses at most half the reduced mass times the speed squared
-    (worked out, not measured: 750 J for two 3.2 tonne cars at 0.97 m/s; both cars' speeds were 0.000 in the tick after, and the gap 0), and nothing is gained. **To confirm with the owner: the snap of up to 0.3 m, and whether 0.05 m is wanted.**
+    (worked out, not measured: 750 J for two 3.2 tonne cars at 0.97 m/s; both cars' speeds were 0.000 in the tick after, and the gap 0), and nothing is gained. **The owner agreed (2026-11-09) to keep the snap of up to 0.3 m.**
   - *The pivot is the middle of the end's face* (a quarter of a metre beyond the bar's tip), so two coupled ends have their tips half a metre apart, as this file says the ball is drawn.
   - *Coupled cars keep 4 extra substeps and may not sleep* (set when coupled, undone when the car is in no coupling): a coupled pair given 5 cm/s kept going for ten seconds; without the switch it went to sleep after half a second
     and stopped dead, 2 cm in ten seconds.
   - *One ball for two cars, in one frame:* the closest pair of ends of two cars makes the coupling and the other ends of the same two cars are left (the integer rule is for later); a coupling is let go when either car or end is gone, and
     otherwise not (a joint never breaks).
   - *Not done, and a problem seen:* a group reaching the edge of its frame loses a joint when a car moves to another frame (step 4). **A coupling is derived and never saved**, as decided; but the rule asks for relative spin of
-    0.2 rad/s or less, so a swinging group that is saved and loaded would not be coupled again until it turned slowly. The joint only cares about the speed of the pivots (a ball turns however it is), so the spin limit could be waived for ends
-    that are already within a few millimetres. **To raise with the owner in step 4.**
+    0.2 rad/s or less, so a swinging group that is saved and loaded would not be coupled again until it turned slowly. The joint only cares about the speed of the pivots (a ball turns however it is), so **the spin limit is waived for ends that are
+    already within a centimetre (owner, 2026-11-09: yes, a centimetre; `spin_waived_within`)**; the speed limit is not.
 
 ## Physics (decided for the prototype; the reasoning is in `joint-probe.md`)
 - **Rapier works in f64** (done 2026-11-01, before any joint was built): the joint error floor was f32 rounding of the distance from the frame's origin (about 1 mm at the frame's edge), and it is now rounding of an `f64`.

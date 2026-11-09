@@ -13,7 +13,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use physics::{BodyId, BodyKind, BodyState, CouplingId, CouplingOptions, PivotPair, SolverDials};
+use physics::{
+    BodyId, BodyKind, BodyState, CouplingId, CouplingOptions, MassMoments, PivotPair, SolverDials,
+};
 use server::ServerWorld;
 use voxel_space::GridId;
 use world_storage::MovingGrid;
@@ -42,6 +44,9 @@ struct JointPair {
     first_view: BlockFaceView,
     second_view: BlockFaceView,
     how: Approach,
+    /// Where each end is from the ship's centre of mass, in the world's axes.
+    first_arm: [f64; 3],
+    second_arm: [f64; 3],
     /// How fast the second end goes against the first, and how fast the second ship turns against the first.
     relative_velocity: [f64; 3],
     relative_spin: [f64; 3],
@@ -344,6 +349,8 @@ impl Bodies {
                     first_view,
                     second_view,
                     how,
+                    first_arm,
+                    second_arm,
                     relative_velocity: [0, 1, 2]
                         .map(|axis| second_velocity[axis] - first_velocity[axis]),
                     relative_spin: [0, 1, 2].map(|axis| {
@@ -403,10 +410,11 @@ impl Bodies {
         true
     }
 
-    /// Pulls two ends toward each other: each of the two ships whose group can move gets the same force, the other way, whatever it weighs; the group that weighs less moves
-    /// more. The force is put on the ship's centre of mass and not at its end, and nothing turns the ships into line: a pull at an end that is away from the centre swings
-    /// the ship, two ends side by side swing the two ships against each other, and the spin it leaves (more than the 0.2 radians a second a coupling allows) is for no
-    /// torque to take away (found by the test of two pairs of ends between two cars, `tests/joint_coupling.rs`). A ball turns however it is.
+    /// Pulls two ends toward each other: each of the two ships whose group can move gets the same force, the other way, at its end (as docking's is, owner, 2026-11-09), whatever
+    /// it weighs; the group that weighs less moves more. A pull at an end that is away from the centre of mass swings the ship, and two ends side by side swing the two ships
+    /// against each other, so the spin of the ships against each other is slowed by a torque against it (equal and opposite, `damping_torque_limit` at most): without it
+    /// that spin stays (more than the 0.2 radians a second a coupling allows) and the pair is never coupled (found by the test of two pairs of ends between two cars,
+    /// `tests/joint_coupling.rs`). Nothing turns the ships into line. A ball turns however it is.
     fn pull(
         &mut self,
         settings: &JointSettings,
@@ -416,15 +424,34 @@ impl Bodies {
         groups: &Groups,
     ) {
         let on_second = settings.pull_on_second(pair.how.gap, pair.relative_velocity, mass);
+        // The inertia that the spin is slowed against: each ship's own, about its centre of mass, as a number (a third of the trace of the tensor).
+        let inertia_of = |id: GridId| -> Option<f64> {
+            groups.mass_moved_by_a_pull_on(id)?;
+            let record = self.frames.get(&frame_key)?.ships.get(&id)?;
+            let properties = MassMoments::sum(record.moments.values().copied()).properties()?;
+            let tensor = properties.inertia;
+            Some((tensor[0][0] + tensor[1][1] + tensor[2][2]) / 3.0)
+        };
+        let damping = effective_mass(inertia_of(pair.first), inertia_of(pair.second))
+            .map_or([0.0; 3], |inertia| {
+                settings.spin_damping_on_second(pair.relative_spin, inertia)
+            });
         let Some(frame) = self.frames.get_mut(&frame_key) else {
             return;
         };
-        for (id, sign) in [(pair.first, -1.0), (pair.second, 1.0)] {
+        for (id, arm, sign) in [
+            (pair.first, pair.first_arm, -1.0),
+            (pair.second, pair.second_arm, 1.0),
+        ] {
             if groups.mass_moved_by_a_pull_on(id).is_none() {
                 continue;
             }
             let force = on_second.map(|component| component * sign);
-            let _ = frame.bodies.apply_force(BodyId(id.get()), force, None);
+            let lever = cross(arm, force);
+            let torque = [0, 1, 2].map(|axis| lever[axis] + damping[axis] * sign);
+            let body = BodyId(id.get());
+            let _ = frame.bodies.apply_force(body, force, None);
+            let _ = frame.bodies.apply_torque(body, torque);
         }
     }
 }

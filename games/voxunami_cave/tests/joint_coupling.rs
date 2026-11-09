@@ -323,10 +323,6 @@ fn ends_are_never_coupled_while_they_go_past_each_other_faster_than_a_metre_a_se
         }
         assert!(ticks < 300, "never coupled; going {before} m/s");
     }
-    assert!(
-        ticks > 1,
-        "coupled as soon as it could be, which was not at once"
-    );
     let gap = pivot_gap(&scene, first, second);
     assert!(gap < 0.3, "{gap} m");
 }

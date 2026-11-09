@@ -112,6 +112,15 @@ fn ends_are_coupled_only_within_the_distance_the_angle_and_the_speeds() {
         !coupled(0.1, 0.0, 0.0, 0.21),
         "turning against each other too fast"
     );
+    // Ends that are already together to a centimetre (a group that was saved and loaded, swinging) are coupled whatever the cars' spin against each other: a ball turns
+    // however it is, and only the speed of the pivots matters. The speed is still limited.
+    assert!(coupled(0.005, 0.0, 0.0, 3.0), "together, turning fast");
+    assert!(!coupled(0.02, 0.0, 0.0, 3.0), "not together, turning fast");
+    assert!(
+        !coupled(0.005, 0.0, 1.5, 0.0),
+        "together, but the pivots are fast"
+    );
+    assert_eq!(settings.spin_waived_within, 0.01);
     // The direction of the relative velocity does not matter, only its size.
     let (first, second) = facing_pair(0.1, 0.0);
     let how = between(&first, &second);
@@ -264,6 +273,61 @@ fn a_ship_that_cannot_move_is_come_to_and_one_that_comes_fast_is_slowed_before_i
         assert!(closing <= 1.0, "{second}: {closing}");
         assert!(least > -0.05, "{second}: {least}");
     }
+}
+
+#[test]
+fn the_spin_of_the_cars_against_each_other_is_slowed_by_a_torque_against_it_that_is_never_more_than_ten_kilonewton_metres()
+ {
+    let settings = JointSettings::default();
+    assert_eq!(settings.damping_torque_limit, 10_000.0);
+    // Against the spin of the second car against the first, and nothing where there is none.
+    let torque = settings.spin_damping_on_second([0.0, 0.5, 0.0], 1_000.0);
+    assert!(
+        torque[1] < 0.0 && torque[0] == 0.0 && torque[2] == 0.0,
+        "{torque:?}"
+    );
+    assert_eq!(settings.spin_damping_on_second([0.0; 3], 1_000.0), [0.0; 3]);
+    assert_eq!(
+        settings.spin_damping_on_second([0.0, 0.5, 0.0], 0.0),
+        [0.0; 3]
+    );
+    assert_eq!(
+        settings.spin_damping_on_second([0.0, 0.5, 0.0], f64::NAN),
+        [0.0; 3]
+    );
+    // In proportion to the inertia and the spin, by the response: 1,000 kg m m times 0.5 rad/s over 0.1 s.
+    assert!((torque[1] + 1_000.0 * 0.5 / settings.response_seconds).abs() < 1e-9);
+    // Cut to the limit, for any inertia and spin.
+    for inertia in [1e-3, 1.0, 1e4, 1e9] {
+        for spin in [0.0, 0.3, 5.0, 1e3] {
+            let torque = settings.spin_damping_on_second([spin, -spin, spin / 2.0], inertia);
+            assert!(
+                length(torque) <= settings.damping_torque_limit * (1.0 + 1e-12),
+                "{inertia} {spin}"
+            );
+            assert!(torque.iter().all(|part| part.is_finite()));
+        }
+    }
+}
+
+#[test]
+fn a_torque_against_the_spin_takes_it_off_in_the_end_without_turning_the_other_way() {
+    // Two cars turning against each other, slowed by the torque the rule gives, equal and opposite, with the tick of the server.
+    let settings = JointSettings::default();
+    let (first_inertia, second_inertia) = (3_000.0, 9_000.0);
+    let inertia = effective_mass(Some(first_inertia), Some(second_inertia)).unwrap();
+    let (mut first_spin, mut second_spin) = (-0.6_f64, 0.6_f64);
+    for _ in 0..100 {
+        let on_second =
+            settings.spin_damping_on_second([0.0, second_spin - first_spin, 0.0], inertia);
+        first_spin -= on_second[1] / first_inertia * 0.05;
+        second_spin += on_second[1] / second_inertia * 0.05;
+        assert!(second_spin - first_spin >= -1e-9, "turned the other way");
+    }
+    assert!((second_spin - first_spin).abs() < 1e-3);
+    // Angular momentum is as it was: -0.6 x 3,000 + 0.6 x 9,000.
+    let momentum = first_inertia * first_spin + second_inertia * second_spin;
+    assert!((momentum - 3_600.0).abs() < 1e-6, "{momentum}");
 }
 
 #[test]
