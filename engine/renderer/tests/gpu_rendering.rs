@@ -5841,3 +5841,79 @@ fn spike_closed_room_leaks() {
         }
     }
 }
+
+// ---- SPIKE part 6: the edge row of the block, where a wrong first step sideways leaves the block ----
+
+/// As `strip_holes`, but along the row of floor at `z` (a place in the block scene's z, which runs 14 to 18 along the block), the camera 20 voxels over the foot.
+fn strip_holes_at_z(renderer: &mut VoxelRenderer, elevation: f64, z: f64) -> (usize, usize) {
+    let height = 20i128;
+    let sun = sun_at(elevation);
+    let mut camera = camera_at(BrickCoordinate::ORIGIN, [14.0, (1 + height) as f64, z]);
+    camera.yaw = 0.0;
+    camera.pitch = -Camera::MAXIMUM_PITCH;
+    camera.vertical_field_of_view = (0.17 * 20.0 / height as f64) as f32;
+    renderer.set_atmosphere(shadow_atmosphere(0, sun, false));
+    let off = renderer.render_to_rgba(&camera, BIG, BIG).0;
+    renderer.set_atmosphere(shadow_atmosphere(0, sun, true));
+    let on = renderer.render_to_rgba(&camera, BIG, BIG).0;
+    let at = |image: &[u8], x: u32, y: u32| {
+        let start = ((y * BIG + x) * 4) as usize;
+        linear_brightness([
+            image[start],
+            image[start + 1],
+            image[start + 2],
+            image[start + 3],
+        ])
+    };
+    let true_end = 4.0 / elevation_tangent(elevation);
+    let (mut holes, mut counted) = (0, 0);
+    let mut last = None;
+    for step in 1..=400 {
+        let distance = f64::from(step) * 0.004;
+        if distance > true_end - 0.05 || distance > 1.5 {
+            break;
+        }
+        let Some((x, y)) = pixel_of_big(&camera, [-distance, -height as f64, 0.0]) else {
+            continue;
+        };
+        if last == Some((x, y)) {
+            continue;
+        }
+        last = Some((x, y));
+        counted += 1;
+        if at(&on, x, y) / at(&off, x, y) >= 0.5 {
+            holes += 1;
+        }
+    }
+    (holes, counted)
+}
+
+#[test]
+#[ignore]
+fn spike_strip_holes_on_the_edge_row() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        upload_shadow_scene(&mut renderer, ShadowScene::Block, 0);
+        renderer.set_occupancy(
+            BrickCoordinate::ORIGIN,
+            [32, 32, 32],
+            &block_scene_occupancy(),
+            0,
+        );
+        for z in [14.5, 14.1, 16.5] {
+            for elevation in [10.0, 30.0, 60.0] {
+                let mut row = Vec::new();
+                for steps in [0u32, 6, 16] {
+                    renderer.set_occupancy_steps(steps);
+                    let (holes, counted) = strip_holes_at_z(&mut renderer, elevation, z);
+                    row.push(format!("{steps}:{holes}/{counted}"));
+                }
+                println!(
+                    "EDGE {name} | row z {z} | sun {elevation} deg | lit pixels that should be dark, by cells searched {}",
+                    row.join("  ")
+                );
+            }
+        }
+    }
+}

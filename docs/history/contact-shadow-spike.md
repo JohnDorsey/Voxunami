@@ -2,6 +2,10 @@
 
 **A spike, not a feature.** Branch `worktree-shaders`; the code is in `engine/renderer` (the `occupancy` binding, `contact_light` in `voxel.wgsl`, `VoxelRenderer::set_occupancy`) and in the `#[ignore]`d tests named `spike_*` at the end of `gpu_rendering.rs`. It is not meant to be merged as it is: the volume is a hand-filled box, and only whole opaque cubes are in it. Owner's wish that started it: shaders the player can swap, with a default that is robust, fast and has **no** gaps at the base of shadows, whatever the redesign costs; 60 fps on the integrated GPU.
 
+## Correction (2026-11-09, later the same day): the first spike shader had a bug
+
+Writing the CPU reference tracer (`world_view::sun_blocked`, phase 1 of `contact-trace-spec.md`) showed that the spike's shader stepped **one cell sideways first** whenever a component of the sun's direction was exactly zero: the boundary of such an axis came out as a huge *negative* number, which the walk took as the nearest. Every sun of the spike had z = 0, and every scene of it was the same along z (a block and a room of rock that run along z), so the walk went along a row beside the true one, found the same wall, and the tables below looked right. It did not on the **edge rows** of the block, where the row beside it is outside the block: there the trace fixed nothing at all (7 to 10 lit pixels at every `K`; test `spike_strip_holes_on_the_edge_row`, which fails on the old shader). The shader is fixed (an axis the ray does not move along has no boundary) and every table below was measured again with the fixed shader; the numbers that changed are marked. The conclusions stand, and fewer cells are needed than the first run said (the buggy walk spent a step on the wrong cell).
+
 ## What the owner saw
 
 A thin lit strip along the inner edge where any block meets the ground, at almost any time of day (screenshots of 2026-11-09), and the same strip in caves, where no sun can reach.
@@ -23,24 +27,25 @@ It fits `T * (cos(elevation) + 1.5 * sin(elevation))` within 20 percent everywhe
 
 A one-bit-per-voxel volume (a storage buffer, 36 KB for the benchmark, 4 KB for a brick) and, in the fragment shader, a walk of the sun's ray through it (a 3D DDA) for up to `K` cells, starting **in the cell in front of the face**, so nothing is eased toward or away from anything. The result multiplies the shadow map's answer: `light = trace_clear ? map : 0`. Off by default (no volume, `K` 0); the existing 15 shadow tests pass unchanged, with it off.
 
-| Test | Today | `K` = 2 | `K` = 6 |
-|---|---|---|---|
-| strip at the foot, first lit pixel (all suns, both cascades) | 0.07 to 0.57 voxel | 0.004 (none) | none |
-| lit pixels that should be dark, along the whole strip to 0.05 short of the true end | up to 44 of 77 | 0 up to 60 degrees; at 75 to 88 degrees up to 24 (coarse) | **0 everywhere tested** (to 88 degrees) |
-| closed room, lit pixels at the wall's foot | 6 to 9 of 85 | 0 (3 at 85 degrees) | 0 |
+| Test | Today | `K` = 1 | `K` = 2 | `K` = 6 |
+|---|---|---|---|---|
+| strip at the foot, first lit pixel (all suns, both cascades) | 0.07 to 0.57 voxel | none | none | none |
+| lit pixels that should be dark, along the whole strip to 0.05 short of the true end | up to 44 of 77 | 0 up to 60 degrees at both cascades (up to 80 at the fine one); at 75 to 88 degrees up to 24 (coarse), 4 at most (fine) | 0 up to 60; up to 10 at 75 to 85 (coarse); 2 at 88 | **0 everywhere tested** (to 88 degrees; 4 cells are enough but for one case, 75 degrees at the coarse cascade, which has 1 left) |
+| closed room, lit pixels at the wall's foot | 6 to 9 of 85 | (not run) | 0 | 0 |
+| edge rows of the block (z = 14.1, 14.5), lit pixels that should be dark | 7 to 10 of 113 | (not run) | (not run) | **0** (it was 7 to 10 with the first shader) |
 
-The cells needed grow with how steep the sun is and how coarse the cascade (a steep ray climbs layers before it reaches the wall); they are also bounded by the wall's height. In these scenes 6 were always enough. The truth used is analytic (the wall is 4 high, so a point at distance `d` from the foot is dark if `d * tan(elevation) < 4`), not a CPU tracer: the real build needs the CPU reference described below.
+(First run, with the bug: `K` = 2 left up to 24 holes at 75 to 88 degrees and 3 in the room at 85 degrees; the table above is the fixed shader's.) The cells needed grow with how steep the sun is and how coarse the cascade (a steep ray climbs layers before it reaches the wall); they are also bounded by the wall's height. In these scenes 6 were always enough. The truth used is analytic (the wall is 4 high, so a point at distance `d` from the foot is dark if `d * tan(elevation) < 4`), not a CPU tracer: the real build needs the CPU reference described below.
 
 **Cost** (1280 by 720, a floor with about one column in eight standing 1 to 5 voxels high, camera and sun moving, 30 batches of 10 frames, `wait_for_gpu`): mean frame, ms:
 
 | Cells searched | RTX 3090 (Vulkan) | AMD integrated (Vulkan) | AMD integrated (DX12) |
 |---|---|---|---|
 | 0 | 0.06 | 0.8 to 0.95 | 0.77 |
-| 4 | 0.07 | 1.27 | 1.27 |
-| 8 | 0.09 | 1.60 | 1.60 |
-| 16 | 0.13 | 2.17 | 2.22 |
+| 4 | 0.07 to 0.09 | 1.27 | 1.30 |
+| 8 | 0.09 to 0.10 | 1.60 | 1.64 |
+| 16 | 0.13 to 0.15 | 2.17 | 2.32 |
 
-About **0.08 ms per cell** on the integrated GPU: six cells are about 0.5 ms of a 16.7 ms frame. Caveats: the base scene is light (0.8 ms), so only the *added* cost carries over; the volume (36 KB) fits in cache and a real one will not (so this is a best case, which I believe and did not measure); the benchmark is at 720p.
+(Measured again with the fixed shader: the fix costs about 3 to 5 percent more than the first run's numbers, which are the first of each pair.) About **0.08 to 0.09 ms per cell** on the integrated GPU: six cells are about 0.5 ms of a 16.7 ms frame. Caveats: the base scene is light (0.8 ms), so only the *added* cost carries over; the volume (36 KB) fits in cache and a real one will not (so this is a best case, which I believe and did not measure); the benchmark is at 720p.
 
 ## What the spike does not show
 

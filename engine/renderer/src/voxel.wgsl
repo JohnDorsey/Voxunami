@@ -448,9 +448,15 @@ fn contact_light(relative: vec3<f32>, normal: vec3<f32>, toward_sun: vec3<f32>) 
     let positive = toward_sun > vec3<f32>(0.0);
     let direction = vec3<i32>(select(vec3<i32>(-1), vec3<i32>(1), positive));
     let huge = 1.0e30;
-    let inverse = select(vec3<f32>(huge), 1.0 / toward_sun, abs(toward_sun) > vec3<f32>(1.0e-20));
+    // An axis the ray does not move along has no boundary ahead of it (not the one behind it, which a zero turned into a huge number would put first).
+    let along = abs(toward_sun) > vec3<f32>(1.0e-20);
+    let inverse = select(vec3<f32>(huge), 1.0 / toward_sun, along);
     // How far along the ray the next boundary of a cell is, on each axis.
-    var boundary = (vec3<f32>(cell) + select(vec3<f32>(0.0), vec3<f32>(1.0), positive) - place) * inverse;
+    var boundary = select(
+        vec3<f32>(huge),
+        (vec3<f32>(cell) + select(vec3<f32>(0.0), vec3<f32>(1.0), positive) - place) * inverse,
+        along,
+    );
     let next = abs(inverse);
     for (var step = 0u; step < steps; step = step + 1u) {
         if (boundary.x <= boundary.y && boundary.x <= boundary.z) {
