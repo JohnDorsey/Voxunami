@@ -73,6 +73,11 @@ pub(crate) fn length_and_direction(vector: Vec3) -> (f32, Vec3) {
 pub const TURNED_UP_TO: f32 = 0.01;
 pub const TURNED_NO_MORE_FROM: f32 = 0.03;
 
+/// How far from the camera, in voxels, a face is still lit by its own normal whatever the planet under it does (see [`sunlight`]), and how far it is turned as far as the
+/// planet turns it. Between the two the turn comes in smoothly.
+pub const NEAR_UNTURNED_TO: f32 = 256.0;
+pub const FAR_TURNED_FROM: f32 = 1024.0;
+
 /// What the sun does at a place: how much of it reaches the place, and the normal of a face there that its light is worked out by.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sunlight {
@@ -83,6 +88,10 @@ pub struct Sunlight {
     /// the planet, seen from far, is patches of three kinds of light. A face at the ground (over it by a hundredth of the radius of the ball, or less, and anywhere inside)
     /// is lit as if it looked half-way between its own way and the way out of the ball; the turn is gone by three hundredths of the radius over it, so a ship in the air over
     /// a planet is not turned. It is one more step towards a lit globe, and the planet's own shadows (a hill's) are for shadow maps.
+    ///
+    /// **Only what is far from the camera is turned** ([`NEAR_UNTURNED_TO`], [`FAR_TURNED_FROM`]): the patches are a sight of the planet from far, and a face within a few
+    /// hundred voxels of the camera is a block, lit as a block is, by its own normal. (Turned, the side of a block that looks away from the sun, or along it, was lit by the
+    /// sun for most of the day, and walls were never in shade.)
     pub normal: Vec3,
 }
 
@@ -137,7 +146,10 @@ pub fn sunlight(
     }
     let normal = match nearest {
         Some((over, way_out)) => {
-            let turn = 1.0 - smoothstep(TURNED_UP_TO, TURNED_NO_MORE_FROM, over);
+            // (Only what is far from the camera is turned.)
+            let distance = length_and_direction(position).0;
+            let turn = (1.0 - smoothstep(TURNED_UP_TO, TURNED_NO_MORE_FROM, over))
+                * smoothstep(NEAR_UNTURNED_TO, FAR_TURNED_FROM, distance);
             // (A face that looks exactly against the way out would be turned to nothing: it keeps its own.)
             let turned = normal + way_out * turn;
             if turned.length() > 1e-3 {
@@ -224,11 +236,15 @@ mod tests {
         )
     }
 
-    /// The effective normal of a face of a planet: a place `height` over the surface of a ball of radius 1,000 centred below the origin, on the ball's axis (so that the way
-    /// out is +y), for a face that looks along `normal`.
+    /// Where the places of the tests of the turn are from the camera: far from it, so that the turn is whole (it is gone for a face near the camera: `FAR_TURNED_FROM`).
+    /// The balls move with the places, which changes nothing between a place and a ball.
+    const AWAY: Vec3 = Vec3::new(5000.0, 0.0, 0.0);
+
+    /// The effective normal of a face of a planet: a place `height` over the surface of a ball of radius 1,000 centred below it, on the ball's axis (so that the way out is
+    /// +y), for a face that looks along `normal`, a long way from the camera.
     fn effective_normal(height: f32, normal: Vec3) -> Vec3 {
-        let ball = ball([0.0, -1000.0, 0.0], 1000.0);
-        let place = Vec3::new(0.0, height, 0.0);
+        let ball = ball((Vec3::new(0.0, -1000.0, 0.0) + AWAY).to_array(), 1000.0);
+        let place = Vec3::new(0.0, height, 0.0) + AWAY;
         sunlight(place, normal, Vec3::Y, &[ball], false).normal
     }
 
@@ -266,6 +282,51 @@ mod tests {
         }
     }
 
+    /// The lit normal of a face looking along +x, a metre over the ground of a planet whose way out is +y, `distance` voxels from the camera.
+    fn lit_normal_at_distance(distance: f32) -> Vec3 {
+        let place = Vec3::new(distance, 1.0, 0.0);
+        let ball = ball([distance, -1000.0, 0.0], 1000.0);
+        sunlight(place, Vec3::X, Vec3::Y, &[ball], false).normal
+    }
+
+    #[test]
+    fn a_face_near_the_camera_is_lit_by_its_own_normal_at_the_ground_of_a_planet_too() {
+        // The faces of the tests above a metre over the ground, with the camera beside them: a block, and lit as one. Not one is turned, whichever way it looks.
+        let ball = ball([0.0, -1000.0, 0.0], 1000.0);
+        for normal in [Vec3::X, -Vec3::X, Vec3::Z, -Vec3::Z, Vec3::Y, -Vec3::Y] {
+            let light = sunlight(Vec3::new(0.0, 1.0, 0.0), normal, Vec3::Y, &[ball], false);
+            assert_eq!(light.normal, normal, "{normal}");
+        }
+        // A face that looks away from the sun is not lit by it, wherever the sun is over the horizon: the lit normal and the sun are never less than a right angle apart.
+        for sun in [
+            Vec3::new(0.9, 0.3, 0.0).normalize(),
+            Vec3::new(0.6, 0.8, 0.0),
+            Vec3::new(0.3, 0.95, 0.0).normalize(),
+        ] {
+            let light = sunlight(Vec3::new(0.0, 1.0, 0.0), -Vec3::X, sun, &[ball], false);
+            assert!(light.normal.dot(sun) <= 0.0, "{sun}");
+        }
+    }
+
+    #[test]
+    fn the_turn_comes_in_with_the_distance_from_the_camera_from_none_to_whole() {
+        // None to the near limit, the whole turn (a face looking along +x is 45 degrees up, so its y is the square root of a half) from the far one, and never less on the
+        // way than at the place before.
+        assert_eq!(lit_normal_at_distance(0.0).y, 0.0);
+        assert_eq!(lit_normal_at_distance(NEAR_UNTURNED_TO - 1.0).y, 0.0);
+        let whole = std::f32::consts::FRAC_1_SQRT_2;
+        assert!((lit_normal_at_distance(FAR_TURNED_FROM).y - whole).abs() < 1e-5);
+        assert!((lit_normal_at_distance(1.0e6).y - whole).abs() < 1e-5);
+        let middle = lit_normal_at_distance((NEAR_UNTURNED_TO + FAR_TURNED_FROM) / 2.0).y;
+        assert!(middle > 0.1 && middle < whole - 0.1, "{middle}");
+        let mut last = -1.0;
+        for step in 0..=80 {
+            let along = lit_normal_at_distance(step as f32 * 25.0).y;
+            assert!(along >= last, "{step}");
+            last = along;
+        }
+    }
+
     #[test]
     fn the_nearest_ball_turns_a_face_and_the_ground_and_a_sun_with_nothing_in_the_way_do_not() {
         // Two planets: a face on the second is turned by the second.
@@ -287,9 +348,13 @@ mod tests {
 
     #[test]
     fn a_face_looking_at_the_sun_across_a_planets_surface_is_lit_by_the_turned_normal() {
-        // The sun is on the horizon of a place on a planet (along +x), and a face looks along +x: by its own normal it is lit fully, by the turned one at 45 degrees.
-        let balls = [ball([0.0, -1000.001, 0.0], 1000.0)];
-        let light = sunlight(Vec3::ZERO, Vec3::X, Vec3::X, &balls, false);
+        // The sun is on the horizon of a place on a planet (along +x), and a face looks along +x: by its own normal it is lit fully, by the turned one at 45 degrees. (Far from
+        // the camera.)
+        let balls = [ball(
+            (Vec3::new(0.0, -1000.001, 0.0) + AWAY).to_array(),
+            1000.0,
+        )];
+        let light = sunlight(AWAY, Vec3::X, Vec3::X, &balls, false);
         let lambert = light.normal.dot(Vec3::X);
         assert!(
             (lambert - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-3,

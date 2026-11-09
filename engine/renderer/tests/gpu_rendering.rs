@@ -2123,8 +2123,9 @@ fn a_brick_far_along_a_tumbled_ship_is_drawn_where_the_turn_of_its_place_puts_it
 fn sunny(sun_direction: [f32; 3], sun_light: u8, sky_light: u8) -> Atmosphere {
     Atmosphere {
         sky_color: SKY,
-        fog_start: 1000.0,
-        fog_end: 2000.0,
+        // (No fog in reach: some of the sun tests look at the cube from far away.)
+        fog_start: 1.0e7,
+        fog_end: 2.0e7,
         sun_direction,
         sun_light,
         sky_light,
@@ -2134,9 +2135,22 @@ fn sunny(sun_direction: [f32; 3], sun_light: u8, sky_light: u8) -> Atmosphere {
 
 /// The brightness of the pixel at the middle of the green cube of the sun tests, seen from the front, with `light` of its own (None is the full light of a game with none).
 fn lit_face(renderer: &mut VoxelRenderer, light: Option<u32>) -> f64 {
-    place_blocks(renderer, ORIGIN_BRICK, &[([16, 16, 16], 2, 0)], light);
     let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
-    linear_brightness(pixel(&render(renderer, &camera), SIZE / 2, SIZE / 2))
+    lit_face_from(renderer, light, &camera)
+}
+
+/// As `lit_face`, seen from this camera.
+fn lit_face_from(renderer: &mut VoxelRenderer, light: Option<u32>, camera: &Camera) -> f64 {
+    place_blocks(renderer, ORIGIN_BRICK, &[([16, 16, 16], 2, 0)], light);
+    linear_brightness(pixel(&render(renderer, camera), SIZE / 2, SIZE / 2))
+}
+
+/// A camera `distance` voxels from the front of the cube of the sun tests (straight in front of its middle), looking at it, with a field of view narrow enough that a pixel is
+/// the same part of a voxel at any distance: the cube is some pixels wide, and the one at the middle of the picture is on its face.
+fn camera_far_from_the_cube(distance: f64) -> Camera {
+    let mut camera = camera_aimed_at([16.5, 16.5, 17.0 + distance], [16.5, 16.5, 17.0]);
+    camera.vertical_field_of_view = (0.17 * 5.0 / distance) as f32;
+    camera
 }
 
 /// The brightness of a face that is fully lit and faces the sun squarely: the reference the other pictures are shares of.
@@ -2295,15 +2309,11 @@ fn a_face_at_the_ground_of_a_planet_is_lit_by_a_normal_turned_to_the_way_out_and
     for context in contexts() {
         let name = adapter_name(&context);
         let full = fully_lit_face(&context);
-        let camera = camera_at(ORIGIN_BRICK, [16.5, 16.5, 22.0]);
-        let middle = Vec3::from_array(
-            WorldPosition::new(ORIGIN_BRICK, [16.5, 16.5, 17.0])
-                .relative_to(camera.position)
-                .map(|component| component as f32),
-        );
         // The face looks along +z. A planet with its way out along +x from the face (the face is on its flank) turns the normal to 45 degrees; a planet whose way out is
         // along +z (the face is squarely on top of it) does not. A sun along +x lights the first by the cosine of 45 degrees and the second not at all. (The face is 5
         // voxels over the ground of both: right at the ground the light changes with the square root of the height, and a pixel is not at the middle of the face.)
+        // **But only what is far from the camera is turned**: the face is looked at from 5 voxels (not turned: lit by its own normal), from 640 (turned half of the way) and
+        // from 1,500 (turned as far as the planet turns it).
         let flank = {
             // The middle of the ball is 1,005 voxels from the face along -x.
             let x: f64 = 16.5 - 1005.0;
@@ -2329,39 +2339,122 @@ fn a_face_at_the_ground_of_a_planet_is_lit_by_a_normal_turned_to_the_way_out_and
                 radius: 1000.0,
             }
         };
-        for (what, planet) in [
-            ("on the flank", flank),
-            ("on top", on_top),
-            ("high over", high_over),
-        ] {
-            let mut renderer = new_renderer(&context);
-            renderer.set_sun_occluders(&[planet]);
-            let (balls, ground) = renderer::balls_and_ground(&[planet], camera.position);
-            for sun in [Vec3::X, Vec3::new(1.0, 0.0, 1.0).normalize(), Vec3::Z] {
-                renderer.set_atmosphere(sunny(sun.to_array(), 255, 0));
-                let seen = lit_face(&mut renderer, Some(0)) / full;
-                let light = renderer::sunlight(middle, Vec3::Z, sun, &balls, ground);
-                let expected = f64::from(light.visible * light.normal.dot(sun).max(0.0));
+        for distance in [5.0f64, 640.0, 1500.0] {
+            let camera = camera_far_from_the_cube(distance);
+            let middle = Vec3::from_array(
+                WorldPosition::new(ORIGIN_BRICK, [16.5, 16.5, 17.0])
+                    .relative_to(camera.position)
+                    .map(|component| component as f32),
+            );
+            for (what, planet) in [
+                ("on the flank", flank),
+                ("on top", on_top),
+                ("high over", high_over),
+            ] {
+                let mut renderer = new_renderer(&context);
+                renderer.set_sun_occluders(&[planet]);
+                let (balls, ground) = renderer::balls_and_ground(&[planet], camera.position);
+                for sun in [Vec3::X, Vec3::new(1.0, 0.0, 1.0).normalize(), Vec3::Z] {
+                    renderer.set_atmosphere(sunny(sun.to_array(), 255, 0));
+                    let seen = lit_face_from(&mut renderer, Some(0), &camera) / full;
+                    let light = renderer::sunlight(middle, Vec3::Z, sun, &balls, ground);
+                    let expected = f64::from(light.visible * light.normal.dot(sun).max(0.0));
+                    assert!(
+                        (seen - expected).abs() < 0.03,
+                        "{name}: {what}, {distance} voxels from the camera, the sun along {sun}: the shader says {seen}, the rule {expected}"
+                    );
+                }
+            }
+            // And the cases differ as they should: the flank is lit by the sun along +x (a face looking along +z, turned toward +x) by as much as it is turned, which is
+            // nothing near the camera, some at 640 voxels and the whole 45 degrees from 1,024; the face on top is not (its normal is not turned and is at right angles to the
+            // sun), and nor is one high over a planet.
+            let seen_with = |planet: SunOccluder| {
+                let mut renderer = new_renderer(&context);
+                renderer.set_sun_occluders(&[planet]);
+                renderer.set_atmosphere(sunny([1.0, 0.0, 0.0], 255, 0));
+                lit_face_from(&mut renderer, Some(0), &camera) / full
+            };
+            let on_the_flank = seen_with(flank);
+            if distance < 100.0 {
+                assert_eq!(
+                    on_the_flank, 0.0,
+                    "{name}: a face near the camera is not turned"
+                );
+            } else if distance < 1000.0 {
                 assert!(
-                    (seen - expected).abs() < 0.03,
-                    "{name}: {what}, the sun along {sun}: the shader says {seen}, the rule {expected}"
+                    (0.2..0.6).contains(&on_the_flank),
+                    "{name}: {distance} voxels away the turn is half there: {on_the_flank}"
+                );
+            } else {
+                assert!(
+                    on_the_flank > 0.5,
+                    "{name}: {distance} voxels away: {on_the_flank}"
                 );
             }
+            assert_eq!(seen_with(on_top), 0.0, "{name}: {distance}");
+            assert_eq!(
+                seen_with(high_over),
+                0.0,
+                "{name}: a face high over a planet is not turned"
+            );
         }
-        // And the cases differ as they should: the flank is lit by the sun along +x (a face looking along +z, turned half way to +x) and the face on top is not (its normal
-        // is not turned and is at right angles to the sun).
-        let seen_with = |planet: SunOccluder| {
-            let mut renderer = new_renderer(&context);
-            renderer.set_sun_occluders(&[planet]);
-            renderer.set_atmosphere(sunny([1.0, 0.0, 0.0], 255, 0));
-            lit_face(&mut renderer, Some(0)) / full
-        };
-        assert!(seen_with(flank) > 0.5, "{name}: {}", seen_with(flank));
-        assert_eq!(seen_with(on_top), 0.0, "{name}");
-        assert_eq!(
-            seen_with(high_over),
-            0.0,
-            "{name}: a face high over a planet is not turned"
+    }
+}
+
+/// A sun this many degrees over the horizon and this many degrees round from the +x direction toward +z.
+#[allow(clippy::disallowed_methods)] // a test of cosmetics, not simulation
+fn sun_toward(elevation: f64, azimuth: f64) -> [f32; 3] {
+    let (elevation, azimuth) = (elevation.to_radians(), azimuth.to_radians());
+    [
+        (elevation.cos() * azimuth.cos()) as f32,
+        elevation.sin() as f32,
+        (elevation.cos() * azimuth.sin()) as f32,
+    ]
+}
+
+/// The brightness the pixel at the middle of the picture of each side of the block of the shadow tests has, for suns at heights and round the compass, on a flat level and on a
+/// planet (its surface the floor's top, its way out +y), seen from 4 to 6 voxels.
+#[test]
+fn near_the_camera_a_planet_changes_nothing_about_how_the_sides_of_a_block_are_lit() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let faces: [(&str, [f64; 3], [f64; 3]); 5] = [
+            ("west", [10.0, 3.0, 16.0], [14.0, 3.0, 16.0]),
+            ("east", [22.0, 3.0, 16.0], [18.0, 3.0, 16.0]),
+            ("north", [16.0, 3.0, 10.0], [16.0, 3.0, 14.0]),
+            ("south", [16.0, 3.0, 22.0], [16.0, 3.0, 18.0]),
+            ("top", [16.0, 9.0, 18.0], [16.0, 5.0, 16.0]),
+        ];
+        let mut flat = new_renderer(&context);
+        upload_shadow_scene(&mut flat, ShadowScene::Block, 0);
+        let mut planet = new_renderer(&context);
+        upload_shadow_scene(&mut planet, ShadowScene::Block, 0);
+        planet.set_sun_occluders(&[SunOccluder::Ball {
+            centre: place_in_voxels([16.0, -999.0, 16.0]),
+            radius: 1000.0,
+        }]);
+        // (How many sides look away from the sun or along it and are in shade: the test has to be about those.)
+        let mut in_shade = 0;
+        for elevation in [15.0, 30.0, 45.0, 60.0, 75.0] {
+            for azimuth in [0.0, 30.0, 100.0, 200.0] {
+                let sun = sun_toward(elevation, azimuth);
+                flat.set_atmosphere(shadow_atmosphere(0, sun, true));
+                planet.set_atmosphere(shadow_atmosphere(0, sun, true));
+                for (face, eye, target) in faces {
+                    let camera = camera_aimed_at(eye, target);
+                    let on_flat = pixel(&settled(&mut flat, &camera), SIZE / 2, SIZE / 2);
+                    let on_planet = pixel(&settled(&mut planet, &camera), SIZE / 2, SIZE / 2);
+                    assert!(
+                        (0..3).all(|channel| on_flat[channel].abs_diff(on_planet[channel]) <= 2),
+                        "{name}: the {face} side, the sun {elevation} degrees up and {azimuth} round: {on_flat:?} on a flat level, {on_planet:?} on a planet"
+                    );
+                    in_shade += usize::from(face != "top" && linear_brightness(on_flat) < 0.08);
+                }
+            }
+        }
+        assert!(
+            in_shade >= 30,
+            "{name}: only {in_shade} sides were in shade, the test could not see the planet light them"
         );
     }
 }
@@ -3383,6 +3476,19 @@ fn side_face_light(
     sky_light: u8,
     ball: Option<SunOccluder>,
 ) -> f64 {
+    side_face_light_from(context, sun, sun_light, sky_light, ball, 6.0)
+}
+
+/// As `side_face_light`, seen from `distance` voxels. (From farther than the 6 of the others there is no fog in reach, and the field of view keeps a pixel the same part of a
+/// voxel: a planet turns only what is far from the camera.)
+fn side_face_light_from(
+    context: &GraphicsContext,
+    sun: [f32; 3],
+    sun_light: u8,
+    sky_light: u8,
+    ball: Option<SunOccluder>,
+    distance: f64,
+) -> f64 {
     let mut renderer = new_renderer(context);
     place_blocks(
         &mut renderer,
@@ -3393,11 +3499,17 @@ fn side_face_light(
     if let Some(ball) = ball {
         renderer.set_sun_occluders(&[ball]);
     }
-    let mut camera = camera_at(ORIGIN_BRICK, [10.0, 16.5, 16.5]);
+    let mut camera = Camera::new(place_in_voxels([16.0 - distance, 16.5, 16.5]));
     camera.yaw = -std::f64::consts::FRAC_PI_2;
+    let far = distance > 6.0;
+    if far {
+        camera.vertical_field_of_view = (0.17 * 6.0 / distance) as f32;
+    }
     let atmosphere = |shadows| Atmosphere {
         sun_light,
         sky_light,
+        fog_start: if far { 1.0e7 } else { 100.0 },
+        fog_end: if far { 2.0e7 } else { 200.0 },
         ..shadow_atmosphere(0, sun, shadows)
     };
     renderer.set_atmosphere(atmosphere(false));
@@ -3449,7 +3561,8 @@ fn a_face_of_a_planets_ground_that_looks_away_from_the_sun_but_is_lit_by_the_tur
     // The cube's -x face is a face of the ground of a planet whose way out there is (-0.5, 0, 0.866) (a ball of radius 1,000 under the face, a cube-sphere's patch that is not
     // level): the sun is nearly along +z, a little toward +x (0.3), so the face looks away from it by its own normal (the cosine is -0.29), and by the turned one (which points
     // half way to the way out, up and to -x) it is lit by 0.23. The shadow map holds the back of the cube, which is this face, at the depth of the face: only a place moved
-    // off the face and eased toward the sun is lit by it. With the shadows on the face is as bright as with them off.
+    // off the face and eased toward the sun is lit by it. With the shadows on the face is as bright as with them off. (Seen from 1,500 voxels: the turn is for what is far from
+    // the camera, and near it the face looks away from the sun and is in the shade of its own body.)
     let face = [16.0, 16.5, 16.5];
     let way_out = [-0.5, 0.0, 0.866_025_403_784_438_6];
     let radius = 1000.0;
@@ -3460,7 +3573,7 @@ fn a_face_of_a_planets_ground_that_looks_away_from_the_sun_but_is_lit_by_the_tur
     };
     for context in contexts() {
         let name = adapter_name(&context);
-        let light = side_face_light(&context, [0.3, 0.0, 1.0], 255, 0, Some(ball));
+        let light = side_face_light_from(&context, [0.3, 0.0, 1.0], 255, 0, Some(ball), 1500.0);
         // (Not exactly all of it: a face this slanted to the light (73 degrees) has a few texels of the filter deeper than the bias, a few in a hundred of the light. A face
         // in its own shadow has none.)
         assert!(

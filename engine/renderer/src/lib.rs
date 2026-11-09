@@ -40,9 +40,9 @@ pub use sky::{
     star_cell_of, star_hash, star_in_cell,
 };
 pub use sun::{
-    MAXIMUM_SUN_BALLS, MOST_OF_A_BALL, SUN_DISC_SOFTNESS, SunBall, SunOccluder, Sunlight,
-    TURNED_NO_MORE_FROM, TURNED_UP_TO, TWILIGHT_SOFTNESS, balls_and_ground, daylight_at,
-    sun_visibility, sunlight, zenith,
+    FAR_TURNED_FROM, MAXIMUM_SUN_BALLS, MOST_OF_A_BALL, NEAR_UNTURNED_TO, SUN_DISC_SOFTNESS,
+    SunBall, SunOccluder, Sunlight, TURNED_NO_MORE_FROM, TURNED_UP_TO, TWILIGHT_SOFTNESS,
+    balls_and_ground, daylight_at, sun_visibility, sunlight, zenith,
 };
 pub use voxel_renderer::{
     AVATAR_COLOR_COUNT, Atmosphere, Avatar, ContactDebug, DEFAULT_PICTURE_DISTANCE, EntityBox,

@@ -3227,6 +3227,14 @@ mod tests {
                 "const TURNED_NO_MORE_FROM: f32 = {:?};",
                 crate::sun::TURNED_NO_MORE_FROM
             ),
+            format!(
+                "const NEAR_UNTURNED_TO: f32 = {:?};",
+                crate::sun::NEAR_UNTURNED_TO
+            ),
+            format!(
+                "const FAR_TURNED_FROM: f32 = {:?};",
+                crate::sun::FAR_TURNED_FROM
+            ),
             format!("sun_balls: array<vec4<f32>, {MAXIMUM_SUN_BALLS}>,"),
             format!("const BLEND_FROM: f32 = {:?};", crate::shadow::BLEND_FROM),
             format!(
@@ -3263,6 +3271,33 @@ mod tests {
         ] {
             assert!(shader.contains(&declaration), "{declaration}");
         }
+    }
+
+    #[test]
+    fn the_walk_of_the_suns_ray_and_the_books_of_the_volume_agree_on_sizes_and_on_what_an_entry_says()
+     {
+        use crate::occupancy_volume::{ENTRY_EMPTY, ENTRY_FULL, ENTRY_UNKNOWN, FIRST_SLOT_ENTRY};
+        let walk = include_str!("contact_on.wgsl");
+        for declaration in [
+            format!("const WINDOW_BRICKS: u32 = {WINDOW_BRICKS}u;"),
+            format!("const ENTRY_UNKNOWN: u32 = {ENTRY_UNKNOWN}u;"),
+            format!("const ENTRY_EMPTY: u32 = {ENTRY_EMPTY}u;"),
+            format!("const ENTRY_FULL: u32 = {ENTRY_FULL}u;"),
+            format!("const FIRST_SLOT_ENTRY: u32 = {FIRST_SLOT_ENTRY}u;"),
+            format!(
+                "const SLOT_WORDS: u32 = {}u;",
+                voxel_meshing::OCCUPANCY_WORDS
+            ),
+            format!("windows: array<Window, {MAXIMUM_WINDOWS}>,"),
+            format!(
+                "const CASTER_SLOPE_BIAS: f32 = {:?};",
+                crate::shadow::CASTER_SLOPE_BIAS
+            ),
+        ] {
+            assert!(walk.contains(&declaration), "{declaration}");
+        }
+        // And the pool's slots are the words the shader reads, four bytes each.
+        assert_eq!(SLOT_BYTES, voxel_meshing::OCCUPANCY_WORDS * 4);
     }
 
     #[test]

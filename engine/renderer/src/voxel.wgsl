@@ -120,6 +120,10 @@ const MOST_OF_A_BALL: f32 = 0.999999;
 // `sun.rs`).
 const TURNED_UP_TO: f32 = 0.01;
 const TURNED_NO_MORE_FROM: f32 = 0.03;
+// How far from the camera, in voxels, a face is still lit by its own normal whatever a planet under it does, and how far it is turned as far as the planet turns it (see
+// `Sunlight` in `sun.rs`): a block near the camera is lit as a block is.
+const NEAR_UNTURNED_TO: f32 = 256.0;
+const FAR_TURNED_FROM: f32 = 1024.0;
 
 // How the shadow of the terrain is looked up. The same numbers as `shadow.rs`.
 const BLEND_FROM: f32 = 0.85;
@@ -140,8 +144,8 @@ struct Sunlight {
     normal: vec3<f32>,
 }
 
-// What the sun does at a place (relative to the camera) for a face that looks along `normal`. The same arithmetic as `sunlight` in `sun.rs`.
-fn sunlight(position: vec3<f32>, normal: vec3<f32>) -> Sunlight {
+// What the sun does at a place (relative to the camera, `distance` from it) for a face that looks along `normal`. The same arithmetic as `sunlight` in `sun.rs`.
+fn sunlight(position: vec3<f32>, normal: vec3<f32>, distance: f32) -> Sunlight {
     let sun = frame.sun_direction.xyz;
     var visible = 1.0;
     var nearest_over = 1.0e30;
@@ -181,7 +185,8 @@ fn sunlight(position: vec3<f32>, normal: vec3<f32>) -> Sunlight {
     }
     var lit_normal = normal;
     if (nearest_over < 1.0e29) {
-        let turn = 1.0 - smoothstep(TURNED_UP_TO, TURNED_NO_MORE_FROM, nearest_over);
+        // (Only what is far from the camera is turned: the patches the turn mends are a sight of the planet from far.)
+        let turn = (1.0 - smoothstep(TURNED_UP_TO, TURNED_NO_MORE_FROM, nearest_over)) * smoothstep(NEAR_UNTURNED_TO, FAR_TURNED_FROM, distance);
         let turned = normal + way_out * turn;
         let turned_length = length(turned);
         if (turned_length > 1.0e-3) {
@@ -448,14 +453,14 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (frame.sun_light.x > 0.0 || frame.sun_light.y > 0.0 || frame.heavens.w > 0.0) {
         // The sky lights every face the sun can reach, as much as its side allows, like another lamp; the sun lights the faces that look at it, by the cosine of the
         // angle; and the sun's light and what there was combine like a screen blend too.
-        let light = sunlight(in.relative, in.normal);
+        // (The distance of this pixel, not the one the vertices interpolate: that is wrong across the big quads of coarse nodes, where it chooses a cascade too coarse.)
+        let largest = max(abs(in.relative.x), max(abs(in.relative.y), abs(in.relative.z)));
+        let distance = largest * length(in.relative / max(largest, 1.0e-30));
+        let light = sunlight(in.relative, in.normal, distance);
         var sun_visible = light.visible;
         var sky_visible = light.visible;
         // The share of the sky's light that reaches the place past what is over it (all of it where that is not counted).
         var uncovered = 1.0;
-        // (The distance of this pixel, not the one the vertices interpolate: that is wrong across the big quads of coarse nodes, where it chooses a cascade too coarse.)
-        let largest = max(abs(in.relative.x), max(abs(in.relative.y), abs(in.relative.z)));
-        let distance = largest * length(in.relative / max(largest, 1.0e-30));
         if (frame.shadow.x > 0.5) {
             // The terrain's shadow: on the sun's light as it is; on the sky's light only in part (a place in a shadow has the sky's light still, and the more the less of the sky
             // is hidden, which this does not know), and a face turned from the sun is in the shade of its own body, which fades in as the sun crosses its plane.

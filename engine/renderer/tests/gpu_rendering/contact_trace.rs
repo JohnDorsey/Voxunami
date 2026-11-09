@@ -1014,44 +1014,42 @@ fn the_floor_is_dark_from_the_foot_of_a_wall_of_a_ship_turned_half_way_round_too
 }
 
 #[test]
-fn a_face_that_looks_away_from_the_sun_is_left_to_the_map_even_where_a_planet_turns_it_toward_the_light()
- {
+fn the_walk_does_not_start_from_a_face_that_looks_away_from_the_sun() {
     for context in contexts() {
         let name = adapter_name(&context);
         let mut renderer = new_renderer(&context);
-        place_blocks(
-            &mut renderer,
-            ORIGIN_BRICK,
-            &[([16, 16, 16], 1, 0)],
-            Some(0),
-        );
-        // A planet that has the cube on its surface (up is +z): the faces within a hundredth of its radius of the surface are lit as if they were turned toward up, the
-        // cube's west face (which looks away from a sun in the east) among them. The walk from it would start in front of it and enter the cube at once.
-        renderer.set_sun_occluders(&[planet_under_the_face(1000.0)]);
-        let sun = [0.6, 0.0, 0.8];
-        let camera = camera_aimed_at([12.0, 16.5, 16.5], [16.0, 16.5, 16.5]);
-        renderer.set_atmosphere(shadow_atmosphere(0, sun, false));
-        let unshadowed = brightness_of_the_middle(&settled(&mut renderer, &camera));
-        renderer.set_atmosphere(shadow_atmosphere(0, sun, true));
-        let without_the_volume = brightness_of_the_middle(&settled(&mut renderer, &camera));
+        // Two cubes: the second is up and to the east of the first, in the way of a ray from the first's top.
+        let cubes = [([16, 16, 16], 1, 0), ([17, 17, 16], 1, 0)];
+        place_blocks(&mut renderer, ORIGIN_BRICK, &cubes, Some(0));
         renderer.set_occupancy(
             ORIGIN_BRICK,
-            &occupancy_where(|x, y, z| (x, y, z) == (16, 16, 16)),
+            &occupancy_where(|x, y, z| (x, y, z) == (16, 16, 16) || (x, y, z) == (17, 17, 16)),
         );
-        let with_the_volume = brightness_of_the_middle(&settled(&mut renderer, &camera));
-        assert!(
-            without_the_volume > 0.8 * unshadowed && without_the_volume > 0.0,
-            "{name}: the map alone leaves the west face at {without_the_volume} of {unshadowed}: the test could not see it darkened"
+        // The sun is up and to the east.
+        set_sun_for_the_walk(&mut renderer, [0.6, 0.8, 0.0]);
+        renderer.set_contact_debug(ContactDebug::Answer { cells: 4 });
+        let answer = |renderer: &mut VoxelRenderer, eye: [f64; 3], target: [f64; 3]| {
+            let camera = camera_aimed_at(eye, target);
+            pixel(&settled_at(renderer, &camera, SIZE), SIZE / 2, SIZE / 2)
+        };
+        // The top of the first cube looks at the sun and the second cube is in the way of its ray: black. (The control: this is a face the walk is made for.)
+        let top = answer(&mut renderer, [16.5, 22.0, 16.7], [16.5, 17.0, 16.5]);
+        assert_eq!(top[..3], [0, 0, 0], "{name}: the top of the cube");
+        // Its west face looks away from the sun, and a ray from it would enter the cube at once: it is not walked, which is white.
+        let west = answer(&mut renderer, [12.0, 16.5, 16.5], [16.0, 16.5, 16.5]);
+        assert_eq!(
+            west[..3],
+            [255, 255, 255],
+            "{name}: the west face of the cube"
         );
-        assert!(
-            (with_the_volume - without_the_volume).abs() <= 0.02 * unshadowed,
-            "{name}: the west face is {with_the_volume} with the volume, {without_the_volume} without"
+        // Nor is its underside.
+        let underneath = answer(&mut renderer, [16.5, 11.0, 16.7], [16.5, 16.0, 16.5]);
+        assert_eq!(
+            underneath[..3],
+            [255, 255, 255],
+            "{name}: the underside of the cube"
         );
     }
-}
-
-fn brightness_of_the_middle(image: &[u8]) -> f64 {
-    linear_brightness(pixel(image, SIZE / 2, SIZE / 2))
 }
 
 // ---- the cost ----
