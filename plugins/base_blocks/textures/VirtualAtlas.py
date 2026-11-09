@@ -3305,7 +3305,7 @@ SIDEBAR_BUTTONS = {"wrap": "W", "pixel_grid": "Pg", "tile_grid": "Tg"}
 SIDEBAR_BUTTON_HINTS = {
     "wrap": "Wrap assist: show the tile as a repeating grid, and let strokes wrap around its edges",
     "pixel_grid": "Pixel grid: lines between the pixels (shown when zoomed in far enough)",
-    "tile_grid": "Tile grid: lines around the tiles (not drawn while wrap assist is on)",
+    "tile_grid": "Tile grid: lines around the tiles (wrap assist keeps its own setting, off at first)",
 }
 # The pixel grid is drawn when the canvas is zoomed in at least this far (screen pixels per canvas pixel).
 PIXEL_GRID_MINIMUM_ZOOM = 6
@@ -3442,9 +3442,11 @@ class EditorPanel:
         self.slider_drag: Optional[str] = None
         # Wrap-assist: the canvas is shown as a grid of copies of itself, and strokes wrap around its edges.
         self.wrap_assist = False
-        # The lines between pixels and the lines around tiles, each on or off.
+        # The lines between pixels and the lines around tiles, each on or off. The tile lines are set separately
+        # for wrap-assist (where nothing marks the tiles until asked) and for the normal view.
         self.pixel_grid = True
         self.tile_grid = True
+        self.wrap_tile_grid = False
         # While the select tool is used with wrap-assist, positions are counted from the copy of the canvas where the
         # press was, so that a rectangle can be dragged inside any copy.
         self._copy_offset = (0, 0)
@@ -3505,15 +3507,14 @@ class EditorPanel:
         elif name == "pixel_grid":
             self.pixel_grid = not self.pixel_grid
         elif name == "tile_grid":
-            self.tile_grid = not self.tile_grid
+            if self.wrap_assist:
+                self.wrap_tile_grid = not self.wrap_tile_grid
+            else:
+                self.tile_grid = not self.tile_grid
 
     def sidebar_button_checked(self, name: str) -> bool:
-        return {"wrap": self.wrap_assist, "pixel_grid": self.pixel_grid, "tile_grid": self.tile_grid}[name]
-
-    def sidebar_button_enabled(self, name: str) -> bool:
-        """False for a checkbox whose setting has no effect now: wrap-assist draws no tile lines. It can still be
-        clicked, and the setting is kept for when it has an effect again."""
-        return not (name == "tile_grid" and self.wrap_assist)
+        tile_grid = self.wrap_tile_grid if self.wrap_assist else self.tile_grid
+        return {"wrap": self.wrap_assist, "pixel_grid": self.pixel_grid, "tile_grid": tile_grid}[name]
 
     def sync(self) -> None:
         """Rebuild the canvas when the selection or the pixels of the selected tiles have changed."""
@@ -4153,12 +4154,17 @@ class EditorPanel:
                 vertical_line(column, (150, 156, 168, 46))
             for row in range(first_row, last_row + 1):
                 horizontal_line(row, (150, 156, 168, 46))
-        if self.tile_grid and not self.wrap_assist:
-            # With wrap-assist nothing marks where the tile ends: the copies run into each other.
+        if self.sidebar_button_checked("tile_grid"):
             size = layout.tile_size
-            for column in range(0, width + 1, size):
+            if self.wrap_assist:
+                # The lines of every copy of the canvas that is shown.
+                columns = range(-(-first_column // size) * size, last_column + 1, size)
+                rows = range(-(-first_row // size) * size, last_row + 1, size)
+            else:
+                columns, rows = range(0, width + 1, size), range(0, height + 1, size)
+            for column in columns:
                 vertical_line(column, (90, 170, 255, 150))
-            for row in range(0, height + 1, size):
+            for row in rows:
                 horizontal_line(row, (90, 170, 255, 150))
         surface.blit(overlay, area.topleft)
         marked = self.floating.rectangle if self.floating is not None else self.selection_rectangle
@@ -4206,17 +4212,12 @@ class EditorPanel:
         pygame.draw.rect(surface, Theme.PANEL_BORDER, self.areas.sidebar, width=1, border_radius=4)
         for name, rectangle in self.areas.sidebar_buttons.items():
             # Checked: the whole button is blue. Unchecked: it is empty, with only its outline (lit while the pointer is on it).
-            # A button whose setting has no effect now is dimmed.
-            checked, enabled = self.sidebar_button_checked(name), self.sidebar_button_enabled(name)
+            checked = self.sidebar_button_checked(name)
             if checked:
-                pygame.draw.rect(surface, Theme.ACCENT if enabled else Theme.SLIDER_FILL, rectangle, border_radius=4)
-            outline = Theme.ACCENT if checked and enabled else Theme.TEXT_DIMMED if rectangle.collidepoint(self.pointer) else Theme.PANEL_BORDER
+                pygame.draw.rect(surface, Theme.ACCENT, rectangle, border_radius=4)
+            outline = Theme.ACCENT if checked else Theme.TEXT_DIMMED if rectangle.collidepoint(self.pointer) else Theme.PANEL_BORDER
             pygame.draw.rect(surface, outline, rectangle, width=1, border_radius=4)
-            if not enabled:
-                text_color = Theme.DISABLED_TEXT
-            else:
-                text_color = Theme.BACKGROUND if checked else Theme.TEXT
-            draw_text(surface, self.fonts.large, SIDEBAR_BUTTONS[name], text_color, rectangle.center, "center")
+            draw_text(surface, self.fonts.large, SIDEBAR_BUTTONS[name], Theme.BACKGROUND if checked else Theme.TEXT, rectangle.center, "center")
 
     def options_text(self) -> str:
         if self.tool in DIAMETER_TOOLS:

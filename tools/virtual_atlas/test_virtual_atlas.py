@@ -6081,29 +6081,71 @@ class GridButtonTests(EditorDriver):
         self.draw_with_the_pointer_away()
         self.assertEqual(self.color_at(between), GREEN[:3], "the first pixel of the second tile, with nothing drawn over it")
 
-    def test_wrap_assist_draws_no_tile_lines_so_the_tile_grid_button_is_dimmed_while_it_is_on(self):
-        self.select((0, 0))
-        self.assertTrue(self.editor.sidebar_button_enabled("tile_grid"))
-        self.click_button("wrap")
-        self.assertFalse(self.editor.sidebar_button_enabled("tile_grid"))
-        self.assertTrue(self.editor.sidebar_button_enabled("pixel_grid"))
-        self.assertTrue(self.editor.tile_grid, "still on: wrap-assist turns it off only while it is on itself")
-        self.draw_with_the_pointer_away()
-        self.assertEqual(self.color_at(self.corner("tile_grid")), va.Theme.SLIDER_FILL, "checked, but dim")
-        self.assertEqual(self.color_at(self.corner("pixel_grid")), va.Theme.ACCENT)
-        self.click_button("wrap")
-        self.draw_with_the_pointer_away()
-        self.assertEqual(self.color_at(self.corner("tile_grid")), va.Theme.ACCENT)
+    def wrap_edge_samples(self, columns):
+        """Pixels on the left edge of the given pixel columns of the wrapped canvas, on a row of pixels."""
+        view, area = self.editor.view, self.editor.areas.canvas
+        samples = [(view.pixel_rectangle(column, 0).x, view.pixel_rectangle(0, 3).centery) for column in columns]
+        for sample in samples:
+            self.assertTrue(area.collidepoint(sample), f"{sample} is outside the canvas area {area}")
+        return samples
 
-    def test_the_tile_grid_can_be_changed_while_wrap_assist_is_on_and_is_remembered(self):
+    def test_wrap_assist_starts_without_tile_lines_and_the_tile_grid_button_shows_that(self):
         self.select((0, 0))
+        self.click_button("pixel_grid")  # off, so that only tile lines could be at a tile's edge
+        self.click_button("wrap")
+        self.draw_with_the_pointer_away()
+        self.assertFalse(self.editor.sidebar_button_checked("tile_grid"))
+        self.assertEqual(self.color_at(self.corner("tile_grid")), va.Theme.PANEL, "the button is empty")
+        for sample in self.wrap_edge_samples([0, 8, 16]):
+            self.assertEqual(self.color_at(sample), BLUE[:3], "the copies run into each other")
+
+    def test_the_tile_grid_button_turns_tile_lines_on_in_wrap_assist_at_every_tile_edge_of_every_copy(self):
+        self.select((0, 0))
+        self.click_button("pixel_grid")
         self.click_button("wrap")
         self.click_button("tile_grid")
-        self.assertFalse(self.editor.tile_grid)
-        self.click_button("wrap")
-        self.click_button("pixel_grid")
         self.draw_with_the_pointer_away()
-        self.assertEqual(self.color_at(self.tile_edge_sample()), BLUE[:3], "the tile grid was turned off")
+        self.assertTrue(self.editor.sidebar_button_checked("tile_grid"))
+        self.assertEqual(self.color_at(self.corner("tile_grid")), va.Theme.ACCENT, "solid blue, never dimmed")
+        for sample in self.wrap_edge_samples([0, 8, 16]):
+            self.assertNotEqual(self.color_at(sample), BLUE[:3])
+        self.assertEqual(self.color_at(self.wrap_edge_samples([4])[0]), BLUE[:3], "inside the tile there is no line")
+        self.click_button("tile_grid")
+        self.draw_with_the_pointer_away()
+        for sample in self.wrap_edge_samples([0, 8, 16]):
+            self.assertEqual(self.color_at(sample), BLUE[:3])
+
+    def test_with_several_tiles_the_lines_mark_every_tile_not_only_the_repeat_of_the_whole_canvas(self):
+        self.select((0, 0), (1, 0))
+        self.click_button("pixel_grid")
+        self.click_button("wrap")
+        self.click_button("tile_grid")
+        self.draw_with_the_pointer_away()
+        for sample in self.wrap_edge_samples([8, 16, 24]):
+            self.assertNotEqual(self.color_at(sample), BLUE[:3])
+            self.assertNotEqual(self.color_at(sample), GREEN[:3])
+        self.assertIn(self.color_at(self.wrap_edge_samples([12])[0]), (BLUE[:3], GREEN[:3]), "inside a tile there is no line")
+
+    def test_wrap_assist_and_normal_view_each_remember_their_own_tile_grid_setting(self):
+        self.select((0, 0))
+        self.click_button("pixel_grid")
+        self.assertTrue(self.editor.tile_grid)
+        self.click_button("wrap")
+        self.click_button("tile_grid")
+        self.assertTrue(self.editor.sidebar_button_checked("tile_grid"))
+        self.click_button("wrap")
+        self.draw_with_the_pointer_away()
+        self.assertTrue(self.editor.sidebar_button_checked("tile_grid"), "the normal view's own setting: still on")
+        self.assertNotEqual(self.color_at(self.tile_edge_sample()), BLUE[:3])
+        self.click_button("tile_grid")
+        self.click_button("wrap")
+        self.assertTrue(self.editor.sidebar_button_checked("tile_grid"), "the setting made inside wrap-assist is kept")
+        self.draw_with_the_pointer_away()
+        self.assertNotEqual(self.color_at(self.wrap_edge_samples([8])[0]), BLUE[:3])
+        self.click_button("wrap")
+        self.draw_with_the_pointer_away()
+        self.assertFalse(self.editor.sidebar_button_checked("tile_grid"), "turned off in the normal view")
+        self.assertEqual(self.color_at(self.tile_edge_sample()), BLUE[:3])
 
     def test_the_pixel_grid_button_works_with_wrap_assist_too(self):
         self.select((0, 0))

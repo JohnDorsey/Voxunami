@@ -39,8 +39,10 @@ phases; what works so far:
   dropper, which picks from any copy). With several tiles shown, the whole canvas is what repeats. The select tool and a
   pasted picture work on the real canvas, counted from the copy you press in. Turning it on or off zooms to fit; it is
   not saved with the atlas. The buttons "Pg" and "Tg" below it are checkboxes too: Pg turns the lines between pixels
-  on or off (they are drawn when the canvas is zoomed in at least 6 times), Tg the blue lines around the tiles. Both
-  start on. Wrap-assist draws no tile lines, so Tg is dimmed while it is on (its setting is kept).
+  on or off (they are drawn when the canvas is zoomed in at least 6 times), Tg the blue lines around the tiles (in
+  wrap-assist, around every tile of every copy). Both start on, except that wrap-assist keeps its own Tg setting, off
+  at first because nothing marks the tile edges there until you ask: Tg shows the setting of the view you are in, and
+  turning wrap-assist on or off does not change the other view's setting.
 - Tools (icons in one row; rest the pointer on one to see its name): pencil, eraser, line, horizontal line, vertical line, horizontal and vertical parallelogram, noise
   brush, air brush, select, eye dropper, fill bucket (exact color match, side by side pixels only), rotate row/column.
   `[` and `]` resize: both axes together, Shift for the width, Alt for the height; the lines and parallelograms have
