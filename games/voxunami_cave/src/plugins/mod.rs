@@ -126,6 +126,7 @@ fn ships(content: &CaveContent, docking: Docking) -> GridBodiesPlugin {
             .handle(&block_models::engine::DENSITY)
             .expect("the engine declares engine:density in every game"),
         docking: Some(docking),
+        joints: Some(grid_bodies::JointSettings::default()),
         settings: BodySettings::default(),
         table,
     })

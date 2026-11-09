@@ -180,8 +180,8 @@ Entities on the wire, who a player is, players as entities, ships a player can m
 - **A ship that goes away with its pilot comes back where it was, or the player decides (32i):** it is stopped and put in a file; when a player who was aboard joins it is looked at
   against the terrain and the other ships, and if it fits it is there. If not the player is asked (move it, break the terrain, break its blocks, put it there anyway, or go to the spawn);
   the engine does not guess. A ship with another player aboard does not go. The questions are not saved.
-- **Ships are kept by the distance of the nearest player in their level (32i, `engine/grid_lifecycle`):** moving within the simulation distance (256 voxels by default), frozen beyond
-  it, in a file beyond the unload distance (1024), with a tenth more to leave a state than to enter it. A server with no player in a level keeps no ship of it awake. The host chooses
+- **Ships are kept by the distance of the nearest player in their level (32i, `engine/grid_lifecycle`):** moving within the simulation distance (1,024 voxels by default: it was 256 until the owner's answer of 2026-11-09, made so for every ship, jointed or not), frozen beyond
+  it, in a file beyond the unload distance (1024, the same, so a ship is put away as soon as it stops moving and the frozen state between lasts about a tick), with a tenth more to leave a state than to enter it. A server with no player in a level keeps no ship of it awake. The host chooses
   the distances and what a pilot's logout does (`ShipSettings`).
 - **A ship is saved as a file of its own, named by the ship and a write counter saved with the world, and a world is saved as a set (32i):** the ship files first, the world file that names
   them last, then the ship files nobody names are removed. Whatever stops a save, the world file that is there is whole and every ship file it names is there. A passenger is saved in the

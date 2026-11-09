@@ -30,7 +30,7 @@ This file records the talk that came before any code; the measurements behind th
 ## Coupling, lock, unlock
 - Couple when the pivots are within 0.3 m and the faces within 45 degrees; until then pull with 10 kN each (as for docking, independent of mass) until the pivots are within 0.05 m, then the joint.
   Coupling applies positional forces only, no torque toward 180 degrees. **Agreed 2026-11-09:** as for docking, the two cars must also be close in velocity when the joint is made (a limit on their relative
-  speed; the number is not chosen), because a joint made with a relative velocity begins with a collision that loses energy and leaves a gap (found building the first tests, `build-log.md`).
+  speed, **1 m/s of linear speed and 0.2 rad/s of angular speed between the two cars at the pivots, agreed 2026-11-09**), because a joint made with a relative velocity begins with a collision that loses energy and leaves a gap (found building the first tests, `build-log.md`).
 - **Lock** is the only thing that turns the cars toward alignment (180 degrees, or the nearest turn that lines the grids up cube for cube). Within the docking snap (0.3 m, 10 degrees) it snaps
   and merges the grids. A lock request lasts until it succeeds or the joint is mobilized; on an immobilized joint it is refused with "mobilize first".
 - **Unlock** splits the grids and lands in *coupled (mobile)*. Lock and unlock act on the **pair of cars**: unlock cuts every joint between them at once (the flood fill in `undock` returns
@@ -39,6 +39,27 @@ This file records the talk that came before any code; the measurements behind th
 - **The dev ball joint lets one car pitch, yaw or roll against the other (owner, 2026-11-09):** the ball turns freely about all three axes (what a spherical joint is). No angle limit has been chosen; the
   hulls stop a bend where they meet (the cars are 2 m apart at the pivot's ends at rest).
 - **A joint never breaks, for starters (owner, 2026-11-09).**
+- **Built 2026-11-09 (step 3, `engine/grid_bodies/src/joints.rs` and `plugin/couplings.rs`), and what the tests found, which is where it differs from the words above:**
+  - *The pull is a controller, mine, and not a constant force.* A constant 10 kN toward the other end arrives at its greatest speed exactly where the coupling is made, so no pair could meet the speed limit (worked out, not
+    measured: a pair of 500 kg cars from 6 m arrives at 15 m/s). The pull is **at most 10 kN on each of the two cars** (the owner's number, equal and opposite, so the lighter car moves more), and it asks the pair for the greatest speed it can be
+    stopped from in the distance left (a deceleration of 2 m/s/s, or half of what 10 kN does to the pair if that is less), taking up the difference over 0.1 s. A longer response (0.5 s) let light ends overshoot each other and
+    jam with their tips in contact; the lag of the speed behind the one asked is the deceleration times the response, 0.2 m/s. From 3 to 6 metres, at rest, cars of 1.2 to 30 tonnes were coupled after 1.5 to 4.6 seconds.
+  - *The pull is on each car's centre of mass, not at its end* (docking's is at the port). A pull at an end away from the centre swings the car; two ends side by side swing the two cars in opposite ways, 0.6 rad/s each (1.2 rad/s of one against the other, measured),
+    which nothing takes away and which is six times the 0.2 rad/s a coupling allows, so such a pair never coupled. Positional only, as this file said. The cost: nothing turns the ends toward each other, so the 45 degrees is for the players to aim.
+  - *What is pulled is a group.* Cars joined by couplings are one mass under a pull, and **a group is pulled by one other group at a time, the nearest**. A chain of three cars (the middle one pulled from both sides) overshot by
+    half a metre and jammed with the tips of the bars in contact; with this rule it couples. Two cars of one group are not pulled or coupled to each other (a loop is for later).
+  - *When the joint is made:* in the first tick the ends are within 0.3 m, the faces within 45 degrees of exactly opposite, the pivots going past each other at 1 m/s or less and the cars turning against each other at 0.2 rad/s or less.
+    That is how I read "until the pivots are within 0.05 m, then the joint": the pull does not go on to 0.05 m, the solver closes what is left. Measured: the pivots were 0.12 to 0.28 m apart and closing at 0.5 to 1.0 m/s, and the gap
+    was closed in the tick (by the solver's position correction, which adds no speed): the two cars stop against each other at the pivot, an inelastic joining that loses at most half the reduced mass times the speed squared
+    (worked out, not measured: 750 J for two 3.2 tonne cars at 0.97 m/s; both cars' speeds were 0.000 in the tick after, and the gap 0), and nothing is gained. **To confirm with the owner: the snap of up to 0.3 m, and whether 0.05 m is wanted.**
+  - *The pivot is the middle of the end's face* (a quarter of a metre beyond the bar's tip), so two coupled ends have their tips half a metre apart, as this file says the ball is drawn.
+  - *Coupled cars keep 4 extra substeps and may not sleep* (set when coupled, undone when the car is in no coupling): a coupled pair given 5 cm/s kept going for ten seconds; without the switch it went to sleep after half a second
+    and stopped dead, 2 cm in ten seconds.
+  - *One ball for two cars, in one frame:* the closest pair of ends of two cars makes the coupling and the other ends of the same two cars are left (the integer rule is for later); a coupling is let go when either car or end is gone, and
+    otherwise not (a joint never breaks).
+  - *Not done, and a problem seen:* a group reaching the edge of its frame loses a joint when a car moves to another frame (step 4). **A coupling is derived and never saved**, as decided; but the rule asks for relative spin of
+    0.2 rad/s or less, so a swinging group that is saved and loaded would not be coupled again until it turned slowly. The joint only cares about the speed of the pivots (a ball turns however it is), so the spin limit could be waived for ends
+    that are already within a few millimetres. **To raise with the owner in step 4.**
 
 ## Physics (decided for the prototype; the reasoning is in `joint-probe.md`)
 - **Rapier works in f64** (done 2026-11-01, before any joint was built): the joint error floor was f32 rounding of the distance from the frame's origin (about 1 mm at the frame's edge), and it is now rounding of an `f64`.
@@ -61,9 +82,9 @@ This file records the talk that came before any code; the measurements behind th
 
 ## Bounds and lifecycle
 - For choosing which bricks need colliders, a ship's bounds are the sum of its cars' longest dimensions used as a diameter, per car (a to-do is to improve this, `future-goals.md`).
-- A coupled group **freezes and is parked together**, by the nearest of its cars, so that a joint never anchors an active car to a frozen one. **A mechanism moves only while a player is within 1 km
-  of the group (owner, 2026-11-09: "let's start with 1 km")**; a group with no player that near is frozen, and parked when none is near enough to unload it, and its rail goes on all the same
-  (see "Promises"). Open: whether the 1 km replaces the ships' 256 voxels (`ShipSettings::DEFAULT_SIMULATION_DISTANCE`) for every ship, or is the distance of groups alone.
+- A coupled group **freezes and is parked together**, by the nearest of its cars, so that a joint never anchors an active car to a frozen one. **A mechanism moves only while a player is within 1,024 voxels
+  of the group (owner, 2026-11-09: "let's start with 1 km", then "1024 voxels for both of them for now")**; a group with no player that near is frozen, and parked when none is near enough to unload it, and its rail goes on all the same
+  (see "Promises"). **The 1,024 is the simulation distance of every ship, jointed or not** (`ShipSettings::DEFAULT_SIMULATION_DISTANCE`, was 256, changed 2026-11-09); the unload distance was 1,024 already, so a ship is put away as soon as it stops moving.
 - **A coupled group is at most 8 km across (owner, 2026-11-09, "for now")**, so that it fits in one physics frame (a frame is 16 km from its origin to its edge).
 - Later, a joint between a planet and a car: lock and unlock to a planet reuse `dock_into_planet` and `undock_from_planet`; the open problems are in `future-goals.md`.
 
@@ -108,8 +129,8 @@ The owner's words, condensed:
 7. **Inside** is the ship's *mostly enclosed* space, and any space that has life support air. Players, cargo and loose items there never move the rail by moving or by colliding with the ship. A player
    on EVA **does** move it (nudging an out-of-fuel ship with suit thrusters is wanted). A **deflector shield block**, a **tractor beam block** or some similar advanced block can give a ship the
    property that EVA and collisions with other ships do not change its rail: a forcefield round the ship inside which they have no effect on the rail and which nothing outside can enter (a player or
-   ship is deflected), paid for with a stored resource (energy, mana) of the ship that projects it, and with **no reaction force on that ship**. Both blocks are in `future-goals.md`. Open: "mostly enclosed" needs a
-   definition (how large a hole, what an open airlock is).
+   ship is deflected), paid for with a stored resource (energy, mana) of the ship that projects it, and with **no reaction force on that ship**. Both blocks are in `future-goals.md`. **"Mostly enclosed" (owner, 2026-11-09, for now): more than 95 percent enclosed, measured by casting rays from the place to find the sky.** Later, perhaps: a flood of
+   starlight through the cells, measured by how bright it is where the player stands.
 8. **A mechanism moves only while a player is within 1 km** (see "Bounds and lifecycle").
 9. **Time warp:** for starters mechanisms pause while the rail goes on. **Later** (`future-goals.md`): what is aboard goes on at normal speed while the outside universe and the ship's place on its
    rail go on at a high speed, so that an hour aboard is an hour of ordinary play (crops grow, fire spreads) in a year of travel.
@@ -117,11 +138,14 @@ The owner's words, condensed:
     rail is a function of the world's clock (`coasting.rs`, header), so "observed or not, a ship on a rail is where the clock says, and one saved on a rail and brought back is where the clock says
     too". A parked ship that is *not* on a rail is where it was left, not moving; that is what today's rule that a turning ship is not put on a rail would have meant for a group with a motor, and what
     answer 3 removes.
+11. **A thrusting group flies free until burns on rails exist (owner, 2026-11-09: "yes").** Engines on a rail are step C of `orbits-and-thrust-plan.md`, not built: today any thrust takes a ship off
+    its rail. Until step C, a jointed group that is thrusting is an ordinary body of the contact pass, its frame following its own body, with no promise about the precision of its path; only a
+    coasting group rides a rail. Its mechanisms behave the same either way (promise (a)): the frame is centred on the group in both. "Engines affect the rail" (promise (b)) waits for step C.
 
 **What the code does today that these would forbid (read in the source, 2026-11-09, not run):**
 1. `BodyWorld::steps_for_this_tick` cuts a tick into 3 to 24 steps by the speed of the **fastest dynamic body in the frame**, so a mechanism's solver steps depend on its own speed and on every other ship in its frame.
 2. A frame is one `BodyWorld` for all the ships of a place; its origin is the brick of the first ship that made it, and a ship moves to another frame (its joints would die) at 32 km from the origin.
 3. A rail is per grid, holds a place and not a turn (`coasting_candidate`: a ship that turns is not put on one), and any force or torque takes the ship off it; a joint motor turns cars.
 4. Bodies can sleep: a body alone in space slower than about 0.09 m/s slept after 0.5 s and stopped dead in the probe (`loop-probe.md`, not measured again through `BodyWorld`), which would stop a slow mechanism.
-5. A ship far from every player is frozen (`ServerWorld::set_grid_frozen`, `ShipSettings::simulation_distance`, 256 voxels), so a mechanism stops when no player is near.
+5. A ship far from every player is frozen (`ServerWorld::set_grid_frozen`, `ShipSettings::simulation_distance`, 256 voxels then, 1,024 since 2026-11-09), so a mechanism stops when no player is near.
 6. Positions in a frame are `f64` from the frame's origin, so a mechanism's numbers differ in the last bits with where in the frame it is (the rounding floor of an `f64` is about 5e-13 m at 4 km, as worked out in `loop-probe.md`; a joint's actual gap is millions of times that).

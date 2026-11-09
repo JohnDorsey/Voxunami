@@ -66,7 +66,7 @@ Usage: voxunami serve {command} [options]
   --packs DIRECTORY               load the data packs in this folder
   --autosave SECONDS              save the world this often (default 60 with --world)
   --view-radius BRICKS            the view radius players are expected to use (default 12)
-  --ship-simulation-distance N    ships move while a player is within N voxels of them (default 256)
+  --ship-simulation-distance N    ships move while a player is within N voxels of them (default 1024)
   --ship-unload-distance N        ships farther than N voxels from every player are put in files (default 1024;
                                   not less than the simulation distance)
   --ship-logout-policy POLICY     chair, always-stay or always-vanish: what a pilot's logout does to their ship

@@ -175,6 +175,27 @@ impl BodyWorld {
         )
     }
 
+    /// Whether a body may go to sleep when it is still. A body that may not is awake for good (one that is asleep is woken): the cars of a mechanism must not stop because they fell
+    /// asleep, mid-swing or at rest, and Rapier would put them to sleep together as soon as they were slow enough.
+    pub fn set_can_sleep(&mut self, id: BodyId, can_sleep: bool) -> Result<(), BodyError> {
+        let handle = self
+            .by_id
+            .get(&id)
+            .ok_or(BodyError::UnknownBody(id))?
+            .handle;
+        let body = &mut self.bodies[handle];
+        if can_sleep {
+            // (Only a body that was kept awake gets the ordinary thresholds back; one that sleeps already is left as it is.)
+            if body.activation().normalized_linear_threshold < 0.0 {
+                *body.activation_mut() = RigidBodyActivation::active();
+            }
+        } else {
+            *body.activation_mut() = RigidBodyActivation::cannot_sleep();
+            body.wake_up(true);
+        }
+        Ok(())
+    }
+
     /// How hard the solver works on a body, and so on every coupling it is in (see [`SolverDials`]).
     pub fn set_solver_dials(&mut self, id: BodyId, dials: SolverDials) -> Result<(), BodyError> {
         let handle = self

@@ -767,6 +767,51 @@ fn extra_solver_dials_on_the_bodies_of_a_coupling_make_its_gap_smaller() {
 }
 
 #[test]
+fn a_car_that_may_not_sleep_stays_awake_at_rest_and_one_that_may_goes_to_sleep() {
+    // A mechanism that stops because its cars fell asleep, mid-swing or at rest, works differently from one that does not, and a promise of the owner's is that no
+    // mechanism does (`docs/decisions/joints-and-cars.md`, "Promises", answer 10).
+    let asleep_after = |can_sleep: bool, ticks: usize| {
+        let mut world = free_space();
+        two_cars_on_a_ball(&mut world, 4, [0.0; 3], [0.0; 3], [0.0; 3]);
+        for id in [FIRST, SECOND] {
+            world.set_can_sleep(id, can_sleep).unwrap();
+        }
+        for _ in 0..ticks {
+            world.step();
+        }
+        (world.is_asleep(FIRST), world.is_asleep(SECOND))
+    };
+    assert_eq!(
+        asleep_after(true, 100),
+        (true, true),
+        "the default is sleep"
+    );
+    assert_eq!(asleep_after(false, 100), (false, false));
+    // Allowed again, it sleeps once more; and a body made to stay awake that was asleep is woken.
+    let mut world = free_space();
+    two_cars_on_a_ball(&mut world, 4, [0.0; 3], [0.0; 3], [0.0; 3]);
+    for _ in 0..100 {
+        world.step();
+    }
+    assert!(world.is_asleep(FIRST));
+    world.set_can_sleep(FIRST, false).unwrap();
+    assert!(!world.is_asleep(FIRST), "it is woken");
+    for _ in 0..100 {
+        world.step();
+    }
+    assert!(!world.is_asleep(FIRST));
+    world.set_can_sleep(FIRST, true).unwrap();
+    for _ in 0..100 {
+        world.step();
+    }
+    assert!(world.is_asleep(FIRST));
+    assert_eq!(
+        world.set_can_sleep(BodyId(99), false),
+        Err(BodyError::UnknownBody(BodyId(99)))
+    );
+}
+
+#[test]
 fn the_state_of_a_run_with_a_coupling_is_the_same_to_the_bit_on_every_machine() {
     let mut world = world_with_gravity([0.0, -5.0, 0.0]);
     two_cars_on_a_ball(

@@ -271,7 +271,7 @@ pub fn docked_pose(
     ))
 }
 
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+pub(crate) fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
         a[2] * b[0] - a[0] * b[2],
@@ -279,15 +279,15 @@ fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     ]
 }
 
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+pub(crate) fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-fn length(a: [f64; 3]) -> f64 {
+pub(crate) fn length(a: [f64; 3]) -> f64 {
     dot(a, a).sqrt()
 }
 
-fn turn(matrix: [[f64; 3]; 3], vector: [f64; 3]) -> [f64; 3] {
+pub(crate) fn turn(matrix: [[f64; 3]; 3], vector: [f64; 3]) -> [f64; 3] {
     matrix.map(|row| dot(row, vector))
 }
 

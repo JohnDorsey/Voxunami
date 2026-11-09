@@ -56,7 +56,7 @@ pub struct ShipSettings {
 }
 
 impl ShipSettings {
-    pub const DEFAULT_SIMULATION_DISTANCE: f64 = 256.0;
+    pub const DEFAULT_SIMULATION_DISTANCE: f64 = 1024.0;
     pub const DEFAULT_UNLOAD_DISTANCE: f64 = 1024.0;
 
     /// A ship that is within a tenth more than the simulation distance of a player that left it keeps moving, and one that is within a
@@ -115,10 +115,12 @@ mod tests {
     #[test]
     fn the_defaults_are_the_ones_the_owner_chose() {
         let defaults = ShipSettings::default();
-        assert_eq!(defaults.simulation_distance, 256.0);
+        // (The simulation distance was 256 until the owner's answer of 2026-11-09, for ships and for jointed groups alike: 1,024 voxels, as far as the unload distance, so a ship
+        // is put away as soon as it stops moving and there is hardly a frozen state in between.)
+        assert_eq!(defaults.simulation_distance, 1024.0);
         assert_eq!(defaults.unload_distance, 1024.0);
         assert_eq!(defaults.logout_policy, LogoutPolicy::Chair);
-        assert_eq!(ShipSettings::new(256.0, 1024.0), Ok(defaults));
+        assert_eq!(ShipSettings::new(1024.0, 1024.0), Ok(defaults));
     }
 
     #[test]

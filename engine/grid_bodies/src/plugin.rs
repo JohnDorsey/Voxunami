@@ -16,6 +16,11 @@ use world_storage::MovingGrid;
 use crate::collision::{BlockCollisions, GeneratedHull, ShipHull, WorldTerrain};
 use crate::connectivity::{Connectivity, Outcome};
 use crate::docking::{BlockFace, BlockFaceView, Docking, approach, docked_pose, torque_of_force};
+use crate::joints::JointSettings;
+
+mod couplings;
+
+use couplings::{Coupled, CouplingKey};
 
 /// How far, in bricks, from the origin of a frame a ship may be. (Chosen when Rapier worked in `f32`, which is exact to a hundredth of a voxel at 500 bricks; it works in `f64` now, which is exact
 /// to 1e-10 of one there, and the limit is kept: raising it is open.) A ship that is not within this of the origin of any
@@ -77,6 +82,8 @@ pub struct GridBodiesConfig {
     pub density: PropertyHandle<u32>,
     /// How ships with docking ports are drawn together and joined, if the game has any (see [`Docking`]).
     pub docking: Option<Docking>,
+    /// How ships with joint ends are drawn together and coupled, if the game has any (see [`JointSettings`]).
+    pub joints: Option<JointSettings>,
     /// How a tick is cut into steps. The gravity of these settings is not used: gravity is the world's field, which the plugin applies as a
     /// force on each ship (see [`ServerWorld::gravity_at`]).
     pub settings: BodySettings,
@@ -103,6 +110,9 @@ pub struct BodiesReport {
     /// Ships made one by docking, and times two ships that were near enough and in line could not be (blocks of the two would be in one place).
     pub dockings_made: u64,
     pub dockings_refused: u64,
+    /// Pairs of ships that are coupled by their joint ends now, and couplings made in all.
+    pub couplings: u64,
+    pub couplings_made: u64,
     /// How many frames there are now: places in levels that have ships in them, each simulated in a frame of its own.
     pub frames: u64,
 }
@@ -187,6 +197,8 @@ struct Ship {
     moments: BTreeMap<BrickCoordinate, MassMoments>,
     /// The docking ports in each brick that has any.
     ports: BTreeMap<BrickCoordinate, Vec<BlockFace>>,
+    /// The ends of joints in each brick that has any.
+    joint_ends: BTreeMap<BrickCoordinate, Vec<BlockFace>>,
     kind: BodyKind,
     /// How much the ship weighs and where its centre of mass is in its coordinates, as last worked out.
     mass: f64,
@@ -393,6 +405,10 @@ struct Bodies {
     /// Pairs of ships (the lower id first) that could not be docked, and the tick before which they are not tried again nor pulled together: the
     /// attempt works out the whole of the smaller ship, and a pair whose blocks meet and are pushed about by the bodies would be tried every tick.
     refused: BTreeMap<(GridId, GridId), u64>,
+    /// The pairs of ships that are coupled by their joint ends, by frame and the two ships (see `couplings.rs`).
+    couplings: BTreeMap<CouplingKey, Coupled>,
+    /// The number the next coupling is given.
+    next_coupling: u64,
     /// Which tick this is, counting the steps of the bodies.
     tick: u64,
     report: Arc<Mutex<BodiesReport>>,
@@ -439,6 +455,8 @@ impl Bodies {
             changed_terrain_bricks: BTreeSet::new(),
             weighed: BTreeMap::new(),
             refused: BTreeMap::new(),
+            couplings: BTreeMap::new(),
+            next_coupling: 0,
             tick: 0,
             report,
         }
@@ -476,12 +494,16 @@ impl Bodies {
         brick: BrickCoordinate,
         ship: &MovingGrid,
     ) {
-        // (The ends of joints it finds are left for the coupling logic, which does not exist yet.)
-        let BrickScan { moments, ports, .. } = self.weigher().scan_brick(
-            ship,
-            brick,
-            self.config.docking.as_ref().map(Docking::table),
-        );
+        // (The table the faces are read by: the game's docking has one, and a game with joints and no docking uses the game's own.)
+        let faces_by = match &self.config.docking {
+            Some(docking) => Some(docking.table()),
+            None => self.config.joints.is_some().then_some(&self.config.table),
+        };
+        let BrickScan {
+            moments,
+            ports,
+            joint_ends,
+        } = self.weigher().scan_brick(ship, brick, faces_by);
         let Some(bodies) = self.frames.get_mut(&frame) else {
             return;
         };
@@ -494,10 +516,10 @@ impl Bodies {
         };
         // A brick too far from the ship's origin for a collider has none (and no mass either).
         let made = bodies.bodies.set_brick(BodyId(id.get()), brick, &mut hull);
-        let (moments, ports) = if made.is_ok() {
-            (moments, ports)
+        let (moments, ports, joint_ends) = if made.is_ok() {
+            (moments, ports, joint_ends)
         } else {
-            (MassMoments::NOTHING, Vec::new())
+            (MassMoments::NOTHING, Vec::new(), Vec::new())
         };
         if let Some(record) = bodies.ships.get_mut(&id) {
             if moments.mass() > 0.0 {
@@ -509,6 +531,11 @@ impl Bodies {
                 record.ports.remove(&brick);
             } else {
                 record.ports.insert(brick, ports);
+            }
+            if joint_ends.is_empty() {
+                record.joint_ends.remove(&brick);
+            } else {
+                record.joint_ends.insert(brick, joint_ends);
             }
         }
     }
@@ -686,6 +713,7 @@ impl Bodies {
             let _ = world.set_grid_mass(id, mass, centre);
         }
         self.apply_gravity(world);
+        self.couple_joints(world);
         self.attract(world);
         for force in world.take_grid_forces() {
             let Some(frame) = self
@@ -806,6 +834,7 @@ impl Bodies {
                 Ship {
                     moments: BTreeMap::new(),
                     ports: BTreeMap::new(),
+                    joint_ends: BTreeMap::new(),
                     mass: 0.0,
                     centre_of_mass: [0.0; 3],
                     gravity: [0.0; 3],
