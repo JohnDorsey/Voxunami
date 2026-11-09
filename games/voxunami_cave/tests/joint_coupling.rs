@@ -420,6 +420,95 @@ fn a_coupled_pair_drifting_slowly_does_not_fall_asleep_and_stop() {
     );
 }
 
+/// Moves cars by `by` voxels along x in one tick, as a command does (they are put there; nothing moves them there).
+fn move_cars(scene: &mut Scene, ids: [GridId; 2], by: f64) {
+    scene.run(move |world| {
+        for id in ids {
+            let mut moved = world.data().grids().get(id).unwrap().pose;
+            moved.position = moved.position.translated([by, 0.0, 0.0]);
+            world.set_grid_pose(id, moved).unwrap();
+        }
+    });
+}
+
+#[test]
+fn a_coupled_pair_that_the_edge_of_a_frame_runs_between_goes_to_another_frame_whole_and_is_coupled_still()
+ {
+    // A frame is a place: a ship twice as far from its origin as a ship may be (32 kilometres) is taken out of it and put in another. A coupled car cannot be left behind by that,
+    // or the joint dies with its body: the cars of a group are always in one frame, so the whole group goes.
+    let (mut scene, report) = Scene::reporting();
+    weightless(&mut scene);
+    // A ship that is held and stays: the frame of the place the pair starts in is its frame, and the origin of it.
+    make(&mut scene, pose(20.0, 1000.0, 20.0), true, stones(0, 1));
+    make(&mut scene, pose(100.0, 1000.0, 20.0), false, east_car(3));
+    make(&mut scene, pose(107.0, 1000.0, 20.0), false, west_car(3));
+    until_coupled(&mut scene, &report, 400);
+    scene.ticks(20);
+    assert_eq!(report().couplings, 1);
+    assert_eq!(report().frames, 1);
+    assert_eq!(report().couplings_moved, 0, "nothing has moved a group yet");
+    // Put the pair so that the edge of the frame is between its two cars: the east one (the lower in x) just inside, the west one, four metres on, just outside. (A brick is 32
+    // voxels, and a ship whose brick is more than 1,000 bricks from the origin of its frame is out of it.)
+    let first = (ship_id(1), [4.0, 0.5, 0.5]);
+    let second = (ship_id(2), [0.0, 0.5, 0.5]);
+    let east_now = world_of(&scene, first.0, [0.0; 3])[0];
+    let by = 32_029.0 - east_now;
+    move_cars(&mut scene, [first.0, second.0], by);
+    scene.ticks(3);
+    assert_eq!(report().couplings, 1, "still coupled");
+    assert_eq!(
+        report().couplings_made,
+        1,
+        "the joint was made again, not the coupling"
+    );
+    assert_eq!(report().couplings_moved, 1);
+    assert_eq!(report().frames, 2, "the held ship's, and one for the pair");
+    scene.ticks(60);
+    assert_eq!(report().couplings, 1);
+    let gap = pivot_gap(&scene, first, second);
+    assert!(gap < 0.005, "{gap} m");
+    // And it is a working joint in its new frame: pushed, the pair swings and keeps its ends together.
+    scene.run(|world| {
+        world
+            .set_grid_velocity(ship_id(2), [0.0, 2.0, 0.0], [0.0; 3])
+            .unwrap();
+    });
+    let mut worst: f64 = 0.0;
+    for _ in 0..100 {
+        scene.ticks(1);
+        worst = worst.max(pivot_gap(&scene, first, second));
+    }
+    assert!(worst < 0.02, "{worst} m");
+    assert_eq!(report().couplings, 1);
+}
+
+#[test]
+fn a_group_goes_to_the_frame_its_cars_are_both_put_in_even_when_one_of_them_is_near_another_frame_and_the_other_is_not()
+ {
+    // As above, with a second held ship 16 kilometres on, which has a frame of its own: the west car of the pair, put in the frame of the place it is in, would be near that
+    // frame (500 bricks from its origin) and the east car, a brick short of it, would not. The two are put in one frame all the same, or the joint would be lost.
+    let (mut scene, report) = Scene::reporting();
+    weightless(&mut scene);
+    make(&mut scene, pose(20.0, 1000.0, 20.0), true, stones(0, 1));
+    make(&mut scene, pose(48_060.0, 1000.0, 20.0), true, stones(0, 1));
+    make(&mut scene, pose(100.0, 1000.0, 20.0), false, east_car(3));
+    make(&mut scene, pose(107.0, 1000.0, 20.0), false, west_car(3));
+    until_coupled(&mut scene, &report, 400);
+    scene.ticks(20);
+    assert_eq!((report().couplings, report().frames), (1, 2));
+    let first = (ship_id(2), [4.0, 0.5, 0.5]);
+    let second = (ship_id(3), [0.0, 0.5, 0.5]);
+    let by = 32_029.0 - world_of(&scene, first.0, [0.0; 3])[0];
+    move_cars(&mut scene, [first.0, second.0], by);
+    scene.ticks(3);
+    assert_eq!(report().couplings, 1, "still coupled");
+    assert_eq!(report().couplings_made, 1);
+    assert_eq!(report().couplings_moved, 1);
+    assert_eq!(report().frames, 3, "each held ship's, and one for the pair");
+    scene.ticks(40);
+    assert!(pivot_gap(&scene, first, second) < 0.005);
+}
+
 #[test]
 fn taking_away_an_end_lets_the_pair_go_and_they_go_on_at_the_speeds_they_had() {
     let (mut scene, report, first, second) = two_cars(3.0, 3, 3);

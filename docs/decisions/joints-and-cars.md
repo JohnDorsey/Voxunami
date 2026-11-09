@@ -60,7 +60,11 @@ This file records the talk that came before any code; the measurements behind th
     and stopped dead, 2 cm in ten seconds.
   - *One ball for two cars, in one frame:* the closest pair of ends of two cars makes the coupling and the other ends of the same two cars are left (the integer rule is for later); a coupling is let go when either car or end is gone, and
     otherwise not (a joint never breaks).
-  - *Not done, and a problem seen:* a group reaching the edge of its frame loses a joint when a car moves to another frame (step 4). **A coupling is derived and never saved**, as decided; but the rule asks for relative spin of
+  - *A group is always in one frame (step 4a, built the same day).* A car leaves its frame at 32 km from the frame's origin and its joint died with its body; one car of a pair crosses first (by my arithmetic, not measured: about one crossing in a hundred for a pair four metres
+    long at 6 km/s, a tick being 300 m of flight; more for a long train). Now the cars coupled to one that leaves leave with it and are put in a frame together (a car goes to its coupled partner's frame if it is near enough), and the joint is made again in the
+    new frame as it was (`couplings_moved`, not `couplings_made`). Tested with the edge of a frame run between two coupled cars, and with one car just inside another frame's radius and its partner just outside (each test fails when its
+    half of the fix is taken out). **The 8 km size of a group is what lets a whole group be near one frame's origin, and nothing enforces it yet**; a train longer than a frame would lose its joints again.
+  - *Not done, and a problem seen:* **A coupling is derived and never saved**, as decided; but the rule asks for relative spin of
     0.2 rad/s or less, so a swinging group that is saved and loaded would not be coupled again until it turned slowly. The joint only cares about the speed of the pivots (a ball turns however it is), so **the spin limit is waived for ends that are
     already within a centimetre (owner, 2026-11-09: yes, a centimetre; `spin_waived_within`)**; the speed limit is not.
 

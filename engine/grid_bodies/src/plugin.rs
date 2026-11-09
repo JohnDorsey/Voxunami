@@ -113,6 +113,8 @@ pub struct BodiesReport {
     /// Pairs of ships that are coupled by their joint ends now, and couplings made in all.
     pub couplings: u64,
     pub couplings_made: u64,
+    /// Couplings that were made again in another frame, because the group they are in was moved there whole (a coupling that is made again is not one made).
+    pub couplings_moved: u64,
     /// How many frames there are now: places in levels that have ships in them, each simulated in a frame of its own.
     pub frames: u64,
 }
@@ -678,21 +680,37 @@ impl Bodies {
         // Ships that are gone, or that are carried by another planet than the one their frame goes with (or by none, or by one when it goes with none), or that have
         // gone twice as far from the origin of their frame as a ship may be in one, leave their bodies (the last two kinds are made bodies again below, in the frame of
         // the place they are in); a frame with no ships is no more.
-        for frame in self.frames.values_mut() {
+        let mut leaving: BTreeSet<GridId> = BTreeSet::new();
+        for frame in self.frames.values() {
             let origin = frame.bodies.origin();
             let follow = frame.follow;
+            leaving.extend(frame.ships.keys().filter(|id| {
+                !present.iter().any(|(held, _)| held == *id)
+                    || world.carrier_of(**id) != follow.map(|follow| follow.planet)
+                    || world.data().grids().get(**id).is_none_or(|ship| {
+                        local_in(follow, ship.pose.position).is_none_or(|place| {
+                            farther_than(2 * FRAME_RADIUS_BRICKS, place.brick(), origin)
+                        })
+                    })
+            }));
+        }
+        // A group of ships coupled by their joint ends is always in one frame, so the ships coupled to one that leaves leave with it, and are put in a frame together below
+        // (a joint dies with the body that has it: a car left behind would lose it). A ship that is gone altogether takes nobody with it.
+        let going: BTreeSet<GridId> = leaving
+            .iter()
+            .copied()
+            .filter(|id| present.iter().any(|(held, _)| held == id))
+            .collect();
+        leaving.extend(
+            self.coupled_with(&going)
+                .into_iter()
+                .filter(|id| present.iter().any(|(held, _)| held == id)),
+        );
+        for frame in self.frames.values_mut() {
             let gone: Vec<GridId> = frame
                 .ships
                 .keys()
-                .filter(|id| {
-                    !present.iter().any(|(held, _)| held == *id)
-                        || world.carrier_of(**id) != follow.map(|follow| follow.planet)
-                        || world.data().grids().get(**id).is_none_or(|ship| {
-                            local_in(follow, ship.pose.position).is_none_or(|place| {
-                                farther_than(2 * FRAME_RADIUS_BRICKS, place.brick(), origin)
-                            })
-                        })
-                })
+                .filter(|id| leaving.contains(id))
                 .copied()
                 .collect();
             for id in gone {
@@ -764,17 +782,23 @@ impl Bodies {
             // A ship is put in the first frame of its level that goes with the planet that carries it (or with none, if none does) and that it is near the origin of,
             // and makes a frame of its own where it is if there is none.
             let brick = ship.pose.position.brick();
-            let key = self
-                .frames
-                .iter()
-                .find(|(key, frame)| {
-                    key.0 == level_index
-                        && frame.follow.map(|follow| follow.planet) == carrier
-                        && local_in(frame.follow, ship.pose.position).is_some_and(|place| {
-                            !farther_than(FRAME_RADIUS_BRICKS, place.brick(), frame.bodies.origin())
-                        })
-                })
-                .map(|(key, _)| *key);
+            let near = |key: &FrameKey, frame: &Frame| {
+                key.0 == level_index
+                    && frame.follow.map(|follow| follow.planet) == carrier
+                    && local_in(frame.follow, ship.pose.position).is_some_and(|place| {
+                        !farther_than(FRAME_RADIUS_BRICKS, place.brick(), frame.bodies.origin())
+                    })
+            };
+            // (The frame of a ship it is coupled to, if it is near enough to be in it: a group moved from one frame to another goes whole.)
+            let partners = self
+                .frame_of_a_coupled_partner(id)
+                .filter(|key| self.frames.get(key).is_some_and(|frame| near(key, frame)));
+            let key = partners.or_else(|| {
+                self.frames
+                    .iter()
+                    .find(|(key, frame)| near(key, frame))
+                    .map(|(key, _)| *key)
+            });
             let key = match key {
                 Some(key) => key,
                 None => {

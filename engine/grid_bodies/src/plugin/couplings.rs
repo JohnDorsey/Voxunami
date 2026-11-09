@@ -7,9 +7,14 @@
 //! at a time, the nearest (two pulls at once, or a pull on a ship that is held by its coupling to a third, were found by the tests of a chain to make the ends overshoot each
 //! other and jam, with their tips in contact).
 //!
-//! For now (`docs/decisions/joints-and-cars.md`): ships are coupled only in the same frame; one pair of ends of two ships makes a coupling and the other ends of the same two
-//! ships are left (the integer rule for a second ball between the same two cars is for later); two ships of one group are not coupled again (a loop is for later); a coupling
-//! is let go when either ship or either end is gone, and not otherwise.
+//! **A group is always in one frame.** A frame is a place, and a ship that is twice as far from its origin as a ship may be is taken out of it and put in another; a joint
+//! lives in the body world of one frame, and dies with the body that has it. So the ships coupled to one that leaves leave with it (`Bodies::step`), a ship that has to be put
+//! in a frame goes to its coupled partner's if it is near enough (`sync_ship`), and the joint is made again in the frame the two ships are in, as it was (`keep_couplings`).
+//! This holds while the group is small enough to be near the origin of a frame (the decision file's 8 km; nothing checks it yet).
+//!
+//! For now (`docs/decisions/joints-and-cars.md`): one pair of ends of two ships makes a coupling and the other ends of the same two ships are left (the integer rule for a
+//! second ball between the same two cars is for later); two ships of one group are not coupled again (a loop is for later); a coupling is let go when either ship or either
+//! end is gone, or the two ships are in frames of their own, and not otherwise.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,15 +29,27 @@ use super::{Bodies, Frame, FrameKey, Ship};
 use crate::docking::{Approach, BlockFace, BlockFaceView, approach, cross, turn};
 use crate::joints::{JointSettings, effective_mass};
 
-/// A pair of ships that are coupled: the frame they are in, and the lower identifier first.
-pub(super) type CouplingKey = (FrameKey, GridId, GridId);
+/// A pair of ships that are coupled, the lower identifier first. (Not the frame they are in: a group is moved from frame to frame whole, and its couplings go with it.)
+pub(super) type CouplingKey = (GridId, GridId);
 
 /// A coupling the plugin made, and the ends of the two ships that it is made at.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Coupled {
     id: CouplingId,
+    /// The frame whose body world has the joint.
+    frame: FrameKey,
     first_end: BlockFace,
     second_end: BlockFace,
+}
+
+/// What became of a coupling since the last tick.
+enum CouplingState {
+    /// The joint is where it was, and the ends are there.
+    Holds,
+    /// Both ships are in one frame, which is not the one the joint is in (or the joint is not there): it is made again in that frame.
+    Moved(FrameKey),
+    /// A ship or an end is gone, or the two are in frames of their own.
+    Gone,
 }
 
 /// Two ships with ends that pull on each other: the closest such pair of ends, and what the rules need to know of how the ships go.
@@ -76,7 +93,10 @@ impl Groups {
                 .map(|(id, record)| (*id, record.kind != BodyKind::Fixed))
                 .collect(),
         };
-        for (_, first, second) in couplings.keys().filter(|key| key.0 == frame_key) {
+        for ((first, second), _) in couplings
+            .iter()
+            .filter(|(_, coupled)| coupled.frame == frame_key)
+        {
             groups.join(*first, *second);
         }
         groups
@@ -136,7 +156,7 @@ impl Bodies {
         let Some(settings) = self.config.joints else {
             return;
         };
-        self.keep_couplings(world);
+        self.keep_couplings(world, &settings);
         let frame_keys: Vec<FrameKey> = self.frames.keys().copied().collect();
         for frame_key in frame_keys {
             self.couple_and_pull_in(world, &settings, frame_key);
@@ -206,16 +226,28 @@ impl Bodies {
         }
     }
 
-    /// Whether a coupling still holds: both ships are in its frame, the body world has it, and both ends are still there.
-    fn coupling_holds(&self, world: &ServerWorld, key: CouplingKey, coupled: Coupled) -> bool {
-        let (frame_key, first, second) = key;
+    /// What became of a coupling: both ships are there and in one frame, both ends are still there, and the joint is in that frame's body world or is not.
+    fn coupling_state(
+        &self,
+        world: &ServerWorld,
+        key: CouplingKey,
+        coupled: Coupled,
+    ) -> CouplingState {
+        let (first, second) = key;
+        if world.data().grids().get(first).is_none() || world.data().grids().get(second).is_none() {
+            return CouplingState::Gone;
+        }
+        let (Some(frame_key), Some(second_frame)) = (self.frame_of(first), self.frame_of(second))
+        else {
+            return CouplingState::Gone;
+        };
         let Some(frame) = self.frames.get(&frame_key) else {
-            return false;
+            return CouplingState::Gone;
         };
         let (Some(first_record), Some(second_record)) =
             (frame.ships.get(&first), frame.ships.get(&second))
         else {
-            return false;
+            return CouplingState::Gone;
         };
         let has = |record: &Ship, end: BlockFace| {
             record
@@ -223,26 +255,62 @@ impl Bodies {
                 .get(&end.voxel.split().0)
                 .is_some_and(|ends| ends.contains(&end))
         };
-        world.data().grids().get(first).is_some()
-            && world.data().grids().get(second).is_some()
+        if frame_key != second_frame
+            || !has(first_record, coupled.first_end)
+            || !has(second_record, coupled.second_end)
+        {
+            return CouplingState::Gone;
+        }
+        let in_place = frame_key == coupled.frame
             && frame
                 .bodies
                 .couplings_of(BodyId(first.get()))
-                .contains(&coupled.id)
-            && has(first_record, coupled.first_end)
-            && has(second_record, coupled.second_end)
+                .contains(&coupled.id);
+        if in_place {
+            CouplingState::Holds
+        } else {
+            CouplingState::Moved(frame_key)
+        }
     }
 
-    fn keep_couplings(&mut self, world: &ServerWorld) {
-        let gone: Vec<CouplingKey> = self
+    /// Lets go the couplings whose ships or ends are gone, and makes the joints again of those whose ships are in another frame than the joint (a group is moved whole).
+    fn keep_couplings(&mut self, world: &ServerWorld, settings: &JointSettings) {
+        let states: Vec<(CouplingKey, CouplingState)> = self
             .couplings
             .iter()
-            .filter(|(key, coupled)| !self.coupling_holds(world, **key, **coupled))
-            .map(|(key, _)| *key)
+            .map(|(key, coupled)| (*key, self.coupling_state(world, *key, *coupled)))
             .collect();
-        for key in gone {
-            self.let_go(key);
+        for (key, state) in states {
+            match state {
+                CouplingState::Holds => {}
+                CouplingState::Moved(frame_key) => {
+                    if !self.remake_joint(settings, key, frame_key) {
+                        self.let_go(key);
+                    }
+                }
+                CouplingState::Gone => self.let_go(key),
+            }
         }
+    }
+
+    /// Makes the joint of a coupling again in the frame its ships have gone to, as it was: the same ends, the same pivots. It is not a coupling made.
+    fn remake_joint(
+        &mut self,
+        settings: &JointSettings,
+        key: CouplingKey,
+        frame_key: FrameKey,
+    ) -> bool {
+        let Some(coupled) = self.couplings.get(&key).copied() else {
+            return false;
+        };
+        if !self.join_bodies(settings, frame_key, key, &coupled) {
+            return false;
+        }
+        if let Some(record) = self.couplings.get_mut(&key) {
+            record.frame = frame_key;
+        }
+        self.count(|report| report.couplings_moved += 1);
+        true
     }
 
     /// Takes a coupling away: the joint if the body world still has it, and the dials and the sleep of a ship that is in no other.
@@ -251,17 +319,53 @@ impl Bodies {
             return;
         };
         // (A frame that is gone took its bodies with it.)
-        let Some(frame) = self.frames.get_mut(&key.0) else {
-            return;
-        };
-        let _ = frame.bodies.decouple(coupled.id);
-        for id in [key.1, key.2] {
+        if let Some(frame) = self.frames.get_mut(&coupled.frame) {
+            let _ = frame.bodies.decouple(coupled.id);
+        }
+        for id in [key.0, key.1] {
+            let Some(frame) = self
+                .frame_of(id)
+                .and_then(|frame_key| self.frames.get_mut(&frame_key))
+            else {
+                continue;
+            };
             let body = BodyId(id.get());
             if frame.bodies.couplings_of(body).is_empty() {
                 let _ = frame.bodies.set_solver_dials(body, SolverDials::default());
                 let _ = frame.bodies.set_can_sleep(body, true);
             }
         }
+    }
+
+    /// The frame that a ship's coupled partner is in, if it has one that is in a frame: a ship that has to be put in a frame goes to its partner's, if it is near enough.
+    pub(super) fn frame_of_a_coupled_partner(&self, id: GridId) -> Option<FrameKey> {
+        self.couplings
+            .keys()
+            .filter_map(|&(first, second)| match (first == id, second == id) {
+                (true, _) => Some(second),
+                (_, true) => Some(first),
+                _ => None,
+            })
+            .find_map(|partner| self.frame_of(partner))
+    }
+
+    /// These ships and every ship coupled to them, directly or through others.
+    pub(super) fn coupled_with(&self, ships: &BTreeSet<GridId>) -> BTreeSet<GridId> {
+        let mut found = ships.clone();
+        let mut queue: Vec<GridId> = ships.iter().copied().collect();
+        while let Some(id) = queue.pop() {
+            for &(first, second) in self.couplings.keys() {
+                let other = match (first == id, second == id) {
+                    (true, _) => second,
+                    (_, true) => first,
+                    _ => continue,
+                };
+                if found.insert(other) {
+                    queue.push(other);
+                }
+            }
+        }
+        found
     }
 
     /// For every two ships of a frame that have ends that pull on each other, and are not coupled, the closest pair of ends, in order of ship. Ships that are frozen and pairs of
@@ -287,9 +391,7 @@ impl Bodies {
         for (index, &(first_id, first, first_ship)) in bearers.iter().enumerate() {
             for &(second_id, second, second_ship) in &bearers[index + 1..] {
                 if (first.kind == BodyKind::Fixed && second.kind == BodyKind::Fixed)
-                    || self
-                        .couplings
-                        .contains_key(&(frame_key, first_id, second_id))
+                    || self.couplings.contains_key(&(first_id, second_id))
                 {
                     continue;
                 }
@@ -370,19 +472,48 @@ impl Bodies {
         frame_key: FrameKey,
         pair: &JointPair,
     ) -> bool {
-        let id = CouplingId(self.next_coupling);
+        let coupled = Coupled {
+            id: CouplingId(self.next_coupling),
+            frame: frame_key,
+            first_end: pair.first_end,
+            second_end: pair.second_end,
+        };
+        let key = (pair.first, pair.second);
+        if !self.join_bodies(settings, frame_key, key, &coupled) {
+            return false;
+        }
+        self.next_coupling += 1;
+        self.couplings.insert(key, coupled);
+        self.count(|report| report.couplings_made += 1);
+        true
+    }
+
+    /// Makes the joint of a coupling in the body world of a frame: a ball at the middle of the two faces, and for both ships the extra substeps of the settings and no sleep.
+    fn join_bodies(
+        &mut self,
+        settings: &JointSettings,
+        frame_key: FrameKey,
+        key: CouplingKey,
+        coupled: &Coupled,
+    ) -> bool {
         let Some(frame) = self.frames.get_mut(&frame_key) else {
             return false;
         };
-        let (first, second) = (BodyId(pair.first.get()), BodyId(pair.second.get()));
+        let (first, second) = (BodyId(key.0.get()), BodyId(key.1.get()));
         let pivots = [PivotPair {
-            first: pair.first_end.local_centre(),
-            second: pair.second_end.local_centre(),
+            first: coupled.first_end.local_centre(),
+            second: coupled.second_end.local_centre(),
         }];
         // (Contacts between the two ships stay on: the owner, 2026-11-09.)
         if frame
             .bodies
-            .couple(id, first, second, &pivots, CouplingOptions::default())
+            .couple(
+                coupled.id,
+                first,
+                second,
+                &pivots,
+                CouplingOptions::default(),
+            )
             .is_err()
         {
             return false;
@@ -397,16 +528,6 @@ impl Bodies {
             );
             let _ = frame.bodies.set_can_sleep(body, false);
         }
-        self.next_coupling += 1;
-        self.couplings.insert(
-            (frame_key, pair.first, pair.second),
-            Coupled {
-                id,
-                first_end: pair.first_end,
-                second_end: pair.second_end,
-            },
-        );
-        self.count(|report| report.couplings_made += 1);
         true
     }
 
