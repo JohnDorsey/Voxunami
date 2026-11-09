@@ -58,15 +58,17 @@ impl Default for DockingSettings {
     }
 }
 
-/// A docking port of a ship: the voxel its block is in and the face of the block that docks, in the ship's own axes.
+/// A face of a block of a ship that fits the face of another ship's block: the voxel the block is in and the face of it, in the ship's own axes. A docking port is one (the face
+/// `engine:docking_face` names), and so is the end of a joint (`engine:joint_face`); what the two share is where the face is and how it looks, and that is all this and
+/// [`BlockFaceView`] know, so that nothing here takes a joint for a port or a port for a joint (each has its own finder).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Port {
+pub struct BlockFace {
     pub voxel: VoxelCoordinate,
     pub face: FaceDirection,
 }
 
-impl Port {
-    /// The middle of the port's face, in voxels, in the ship's own axes.
+impl BlockFace {
+    /// The middle of the face, in voxels, in the ship's own axes.
     pub fn local_centre(&self) -> [f64; 3] {
         let step = self.face.offset();
         [0, 1, 2].map(|axis| {
@@ -77,11 +79,11 @@ impl Port {
     }
 }
 
-/// A port seen from the world: all of it in the world's axes, measured from a point that is the same for every port compared.
+/// A block face seen from the world: all of it in the world's axes, measured from a point that is the same for every face compared.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PortView {
-    pub port: Port,
-    /// The middle of the port's face.
+pub struct BlockFaceView {
+    pub block_face: BlockFace,
+    /// The middle of the face.
     pub centre: [f64; 3],
     /// The way the face looks.
     pub normal: [f64; 3],
@@ -89,15 +91,15 @@ pub struct PortView {
     pub rotation: [[f64; 3]; 3],
 }
 
-impl PortView {
-    /// The port of a ship with this pose, measured from `from`. `None` if the pose is not where `from` can measure to.
-    pub fn of(port: Port, pose: &GridPose, from: WorldPosition) -> Self {
+impl BlockFaceView {
+    /// The face of a ship with this pose, measured from `from`.
+    pub fn of(block_face: BlockFace, pose: &GridPose, from: WorldPosition) -> Self {
         let rotation = pose.rotation_matrix();
         let origin = pose.origin_relative_to(from);
-        let at = turn(rotation, port.local_centre());
-        let step = port.face.offset();
+        let at = turn(rotation, block_face.local_centre());
+        let step = block_face.face.offset();
         Self {
-            port,
+            block_face,
             centre: [0, 1, 2].map(|axis| origin[axis] + at[axis]),
             normal: turn(rotation, step.map(|component| component as f64)),
             rotation,
@@ -137,14 +139,14 @@ impl Approach {
 }
 
 /// How two ports are placed to each other: the gap between their faces, and what the second ship has to turn by to dock with the first.
-pub fn approach(first: &PortView, second: &PortView) -> Approach {
+pub fn approach(first: &BlockFaceView, second: &BlockFaceView) -> Approach {
     let gap = [0, 1, 2].map(|axis| second.centre[axis] - first.centre[axis]);
     // The second ship's axes in the first's.
     let relative = multiply(transpose(first.rotation), second.rotation);
-    let wanted = first.port.face.opposite();
+    let wanted = first.block_face.face.opposite();
     let mut best: Option<(LatticeRotation, f64)> = None;
     for candidate in LatticeRotation::all() {
-        if candidate.apply_face(second.port.face) != wanted {
+        if candidate.apply_face(second.block_face.face) != wanted {
             continue;
         }
         let matrix = candidate.matrix().map(|row| row.map(|entry| entry as f64));
@@ -184,7 +186,12 @@ pub fn approach(first: &PortView, second: &PortView) -> Approach {
 impl DockingSettings {
     /// Whether two ports can pull on each other: their faces are near enough, each looks toward the other (a little behind it is allowed, by the
     /// snap distance, so that ports that have come together still do), and they look against each other.
-    pub fn pulls(&self, first: &PortView, second: &PortView, approach: &Approach) -> bool {
+    pub fn pulls(
+        &self,
+        first: &BlockFaceView,
+        second: &BlockFaceView,
+        approach: &Approach,
+    ) -> bool {
         approach.distance <= self.range
             && dot(first.normal, approach.gap) >= -self.snap_distance
             && dot(second.normal, approach.gap) <= self.snap_distance
@@ -234,8 +241,8 @@ pub fn torque_of_force(rotation: [[f64; 3]; 3], arm: [f64; 3], force: [f64; 3]) 
 /// port, on the side its face looks. `None` if that is outside the world.
 pub fn docked_pose(
     first_pose: &GridPose,
-    first: Port,
-    second: Port,
+    first: BlockFace,
+    second: BlockFace,
     turn: LatticeRotation,
 ) -> Option<(GridPose, LatticeTransform)> {
     let step = first.face.offset();
@@ -295,8 +302,8 @@ fn multiply(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
 /// Two ports that are docked: the first's face looks at the second's block, and the second's looks back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DockedPair {
-    pub first: Port,
-    pub second: Port,
+    pub first: BlockFace,
+    pub second: BlockFace,
 }
 
 /// Why two docked ships could not be undocked.
@@ -400,7 +407,7 @@ impl Docking {
     pub(crate) fn forget_those_that_have_come_apart(
         &self,
         world: &ServerWorld,
-        ports: &BTreeMap<GridId, Vec<Port>>,
+        ports: &BTreeMap<GridId, Vec<BlockFace>>,
     ) {
         let mut released = self.released_set();
         released.retain(|(first, second)| {
@@ -417,9 +424,9 @@ impl Docking {
             };
             let from = one.pose.position;
             first_ports.iter().any(|first_port| {
-                let first_view = PortView::of(*first_port, &one.pose, from);
+                let first_view = BlockFaceView::of(*first_port, &one.pose, from);
                 second_ports.iter().any(|second_port| {
-                    let second_view = PortView::of(*second_port, &other.pose, from);
+                    let second_view = BlockFaceView::of(*second_port, &other.pose, from);
                     approach(&first_view, &second_view).distance <= self.settings.range
                 })
             })
@@ -427,7 +434,7 @@ impl Docking {
     }
 
     /// Whether a ship has a docking port there, as it says.
-    pub(crate) fn has_port(&self, ship: &MovingGrid, port: Port) -> bool {
+    pub(crate) fn has_port(&self, ship: &MovingGrid, port: BlockFace) -> bool {
         let orientation = self
             .orientation_channel
             .map_or(0, |channel| ship.voxels.get(channel, port.voxel));
@@ -442,12 +449,26 @@ impl Docking {
     }
 
     /// The docking ports of a ship, in order of brick and voxel.
-    pub fn ports_of(&self, ship: &MovingGrid) -> Vec<Port> {
+    pub fn ports_of(&self, ship: &MovingGrid) -> Vec<BlockFace> {
         let weigher = self.weigher();
         ship.voxels
             .sorted_brick_coordinates()
             .into_iter()
-            .flat_map(|brick| weigher.scan_brick(ship, brick, Some(&self.table)).1)
+            .flat_map(|brick| weigher.scan_brick(ship, brick, Some(&self.table)).ports)
+            .collect()
+    }
+
+    /// The faces of a ship that are the ends of joints (`engine:joint_face`), in order of brick and voxel. Never a docking port: `ports_of` does not have them and this does not have those.
+    pub fn joint_ends_of(&self, ship: &MovingGrid) -> Vec<BlockFace> {
+        let weigher = self.weigher();
+        ship.voxels
+            .sorted_brick_coordinates()
+            .into_iter()
+            .flat_map(|brick| {
+                weigher
+                    .scan_brick(ship, brick, Some(&self.table))
+                    .joint_ends
+            })
             .collect()
     }
 
@@ -460,7 +481,7 @@ impl Docking {
             let Some(next) = first.voxel.checked_offset(step[0], step[1], step[2]) else {
                 continue;
             };
-            let second = Port {
+            let second = BlockFace {
                 voxel: next,
                 face: first.face.opposite(),
             };
@@ -690,8 +711,8 @@ mod tests {
     const EAST: FaceDirection = FaceDirection::PositiveX;
     const WEST: FaceDirection = FaceDirection::NegativeX;
 
-    fn port(x: i128, y: i128, z: i128, face: FaceDirection) -> Port {
-        Port {
+    fn port(x: i128, y: i128, z: i128, face: FaceDirection) -> BlockFace {
+        BlockFace {
             voxel: VoxelCoordinate::new(x, y, z),
             face,
         }
@@ -705,11 +726,14 @@ mod tests {
     }
 
     /// The pair of views of two ports on two ships, measured from the first ship's origin.
-    fn views(first: (Port, GridPose), second: (Port, GridPose)) -> (PortView, PortView) {
+    fn views(
+        first: (BlockFace, GridPose),
+        second: (BlockFace, GridPose),
+    ) -> (BlockFaceView, BlockFaceView) {
         let from = first.1.position;
         (
-            PortView::of(first.0, &first.1, from),
-            PortView::of(second.0, &second.1, from),
+            BlockFaceView::of(first.0, &first.1, from),
+            BlockFaceView::of(second.0, &second.1, from),
         )
     }
 
@@ -732,7 +756,7 @@ mod tests {
     }
 
     /// Two ports, the first east-facing at the origin of an unturned ship, the second west-facing, and the pose the second ship has when docked.
-    fn a_docked_pair() -> (Port, Port, GridPose, GridPose) {
+    fn a_docked_pair() -> (BlockFace, BlockFace, GridPose, GridPose) {
         let first_pose = pose(0.0, 0.0, 0.0, Orientation::IDENTITY);
         let (first, second) = (port(0, 0, 0, EAST), port(0, 0, 0, WEST));
         let (docked, _) =
@@ -743,7 +767,7 @@ mod tests {
     #[test]
     fn a_port_is_the_middle_of_a_face_looking_where_the_face_looks_in_the_worlds_axes() {
         let ship = pose(10.0, 20.0, 30.0, Orientation::IDENTITY);
-        let view = PortView::of(
+        let view = BlockFaceView::of(
             port(2, 3, 4, FaceDirection::NegativeY),
             &ship,
             ship.position,
@@ -758,7 +782,7 @@ mod tests {
             })
             .unwrap();
         let turned = pose(0.0, 0.0, 0.0, quarter.orientation());
-        let view = PortView::of(port(1, 0, 0, EAST), &turned, turned.position);
+        let view = BlockFaceView::of(port(1, 0, 0, EAST), &turned, turned.position);
         assert!(close(view.normal, [0.0, 0.0, -1.0]), "{:?}", view.normal);
         assert!(close(view.centre, [0.5, 0.5, -2.0]), "{:?}", view.centre);
     }
@@ -889,7 +913,7 @@ mod tests {
                 "{on_first:?}"
             );
         }
-        let pulls = |second_port: Port, second_pose: GridPose| {
+        let pulls = |second_port: BlockFace, second_pose: GridPose| {
             let (one, two) = views((first, first_pose), (second_port, second_pose));
             settings.pulls(&one, &two, &approach(&one, &two))
         };
@@ -913,9 +937,9 @@ mod tests {
         first_normal: [f64; 3],
         second_normal: [f64; 3],
         gap: [f64; 3],
-    ) -> (PortView, PortView, Approach) {
-        let view = |normal: [f64; 3], centre: [f64; 3]| PortView {
-            port: port(0, 0, 0, EAST),
+    ) -> (BlockFaceView, BlockFaceView, Approach) {
+        let view = |normal: [f64; 3], centre: [f64; 3]| BlockFaceView {
+            block_face: port(0, 0, 0, EAST),
             centre,
             normal,
             rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],

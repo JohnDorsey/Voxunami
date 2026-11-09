@@ -205,6 +205,14 @@ pub mod engine {
         "the face of the block that docks with another ship's: 0 for a block that is not a docking port, else 1 plus the face's index (west 1, east 2, down 3, up 4, north 5, south 6)",
     );
 
+    /// Which face of a block, in each state, is the end of a joint: the face another ship's joint end couples to (a face code, 0 for a block that is not a joint). It is a
+    /// property of its own and not the docking face, so that a joint is never taken for a docking port and a port never for a joint (a block may have both). Turned with its ship, like the
+    /// docking face.
+    pub const JOINT_FACE: PropertyKey<u8> = PropertyKey::face(
+        "engine:joint_face",
+        "the face of the block that couples to another ship's joint end: 0 for a block that is not a joint, else 1 plus the face's index (west 1, east 2, down 3, up 4, north 5, south 6)",
+    );
+
     /// A block's mass for a body made of it, in kilograms a voxel. (Nothing reads it yet: bodies made of
     /// blocks are Phase 32.)
     pub const DENSITY: PropertyKey<u32> = PropertyKey::new(
@@ -273,6 +281,7 @@ impl PropertySchema {
             engine::DENSITY.declaration(),
             engine::PLACEABLE_ON_MOVING_GRIDS.declaration(),
             engine::DOCKING_FACE.declaration(),
+            engine::JOINT_FACE.declaration(),
             engine::FRONT_FACE.declaration(),
             engine::AXIS_FACE.declaration(),
         ] {
@@ -418,6 +427,7 @@ mod tests {
             engine::FRONT_FACE.id(),
             engine::AXIS_FACE.id(),
             engine::DOCKING_FACE.id(),
+            engine::JOINT_FACE.id(),
         ] {
             let declaration = schema.get(&key_id(key)).expect("declared");
             assert_eq!(declaration.kind, PropertyKind::Face, "{key}");

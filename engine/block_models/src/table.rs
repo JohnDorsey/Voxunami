@@ -163,6 +163,7 @@ pub struct BlockTable {
     columns: Vec<Column>,
     /// The columns of the face properties of the engine, if the schema declares them.
     docking_face_column: Option<usize>,
+    joint_face_column: Option<usize>,
     front_face_column: Option<usize>,
     axis_face_column: Option<usize>,
     rotations: [LatticeRotation; ORIENTATION_COUNT],
@@ -413,8 +414,9 @@ impl BlockTable {
             }
         }
         let find = |key: &'static str| position_of(&columns, key);
-        let (docking_face_column, front_face_column, axis_face_column) = (
+        let (docking_face_column, joint_face_column, front_face_column, axis_face_column) = (
             find(engine::DOCKING_FACE.id()),
+            find(engine::JOINT_FACE.id()),
             find(engine::FRONT_FACE.id()),
             find(engine::AXIS_FACE.id()),
         );
@@ -427,6 +429,7 @@ impl BlockTable {
             picture_palette,
             columns,
             docking_face_column,
+            joint_face_column,
             front_face_column,
             axis_face_column,
             rotations,
@@ -557,6 +560,12 @@ impl BlockTable {
     /// The face of a block that docks, in a state and an orientation (`engine:docking_face`): `None` for a block that is no docking port.
     pub fn docking_face(&self, block: u32, state: u32, orientation: u32) -> Option<FaceDirection> {
         self.turned_face(self.docking_face_column, block, state, orientation)
+    }
+
+    /// The face of a block that is the end of a joint, in a state and an orientation (`engine:joint_face`): `None` for a block that is no joint. Not the docking face: a joint is not a
+    /// docking port.
+    pub fn joint_face(&self, block: u32, state: u32, orientation: u32) -> Option<FaceDirection> {
+        self.turned_face(self.joint_face_column, block, state, orientation)
     }
 
     /// The front of a block that has one (`engine:front_face`), in a state and an orientation.
@@ -1158,6 +1167,41 @@ mod tests {
         let table = BlockTable::from_definitions(&[Some(&stone)]);
         assert_eq!(table.docking_face(0, 0, 3), None);
         assert_eq!(table.docking_face(5, 0, 3), None);
+    }
+
+    #[test]
+    fn the_joint_face_turns_with_the_voxel_and_is_not_the_docking_face_nor_the_axis() {
+        // A block with a joint face and nothing else: a block that is a joint is not a docking port, and the other way about.
+        let joint = BlockDefinition::cube([0.3; 3]).with_joint_face(FaceDirection::PositiveY);
+        let table = BlockTable::from_definitions(&[Some(&joint), Some(&port())]);
+        for (orientation, rotation) in LatticeRotation::all().into_iter().enumerate() {
+            let o = orientation as u32;
+            assert_eq!(
+                table.joint_face(0, 0, o),
+                Some(rotation.apply_face(FaceDirection::PositiveY)),
+                "{orientation}"
+            );
+            assert_eq!(table.docking_face(0, 0, o), None);
+            assert_eq!(table.axis_face(0, 0, o), None);
+            assert_eq!(table.joint_face(1, 0, o), None);
+        }
+        // A joint end is placed like a log when it also has an axis, which is how the dev ball joint is made: both are set, and they do not disturb each other.
+        let ball = BlockDefinition::cube([0.3; 3])
+            .with_joint_face(FaceDirection::PositiveY)
+            .with_axis_face(FaceDirection::PositiveY);
+        let table = BlockTable::from_definitions(&[Some(&ball)]);
+        assert_eq!(table.joint_face(0, 0, 0), Some(FaceDirection::PositiveY));
+        assert_eq!(table.axis_face(0, 0, 0), Some(FaceDirection::PositiveY));
+        assert_eq!(table.docking_face(0, 0, 0), None);
+        assert_eq!(
+            table.placement(0, 0),
+            Placement::AlongPlacedFace(FaceDirection::PositiveY)
+        );
+        // A block with no joint face, and an unknown block, say none.
+        let stone = BlockDefinition::cube([0.5; 3]);
+        let table = BlockTable::from_definitions(&[Some(&stone)]);
+        assert_eq!(table.joint_face(0, 0, 3), None);
+        assert_eq!(table.joint_face(5, 0, 3), None);
     }
 
     #[test]

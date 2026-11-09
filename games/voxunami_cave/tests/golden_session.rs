@@ -379,8 +379,12 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// pixels) in the package, which is 12,399 bytes before and 14,669 now (+2,270, measured by `block_golden.rs`, which also pins the table), and the stream is 2,307 bytes longer, 7,215,291 to 7,217,598. *Believed, not checked:* the 37 bytes of the stream that are not the package are the two
 /// items. **The saved world's hash moved** (17_018_755_794_665_956_377 to 14_691_099_892_887_363_969), because the world names the blocks it knows and the registry has two more; the script does not place a leaf or a pane. (The stream hash
 /// had also moved before this, with the pictures edited since 2026-11-07: a baseline run at the commit before leaves and glass failed `block_golden.rs` too, so the stream was most likely stale, and was not run separately.)
+/// The dev ball joint (2026-11-09, `decisions/joints-and-cars.md`, step 2): the engine declares `engine:joint_face` and Cave has one block more, which is a placeable item. The package is 14,669 bytes before and 15,038 now (+369:
+/// the declaration 198 and the block with its entry 171, `block_golden.rs`), and the stream is 398 bytes longer, 7,217,598 to 7,217,996: the 29 more are the item (its 28 characters and a length), as with the dev
+/// docking port's. Predicted before the run (369 + 29 = 398) and then seen. **The saved world's hash moved** (14_691_099_892_887_363_969 to 15_594_210_036_057_493_535), as predicted, because the world names the blocks
+/// it knows and the registry has one more; the script does not place the joint. Taken on Windows; Linux (WSL) gives the same stream hash, length and saved world hash, and the same package and block table.
 const PINNED: (u64, usize, u64) = (
-    14_888_054_962_778_108_205,
-    7_217_598,
-    14_691_099_892_887_363_969,
+    11_344_595_572_390_828_556,
+    7_217_996,
+    15_594_210_036_057_493_535,
 );

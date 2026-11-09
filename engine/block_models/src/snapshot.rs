@@ -1,7 +1,7 @@
 //! A readable description of a [`BlockTable`], for golden tests that must show *what* moved when a pin does.
 //!
 //! A hash of the package's bytes says that something changed; this says which block and which behaviour. Each block is one line: its number
-//! and name, its colour, how many states it has, and for state 0 standing in no turn the material of each face, the front, axis and docking
+//! and name, its colour, how many states it has, and for state 0 standing in no turn the material of each face, the front, axis, docking and joint
 //! faces and how it is placed. Then a digest of everything the table answers for the block, over every state and every one of the 24
 //! orientations, so a change the plain fields do not show still moves the line.
 
@@ -41,7 +41,7 @@ pub fn explain_block(table: &BlockTable, block: u32) -> String {
             let shape = table.shape(model);
             write!(
                 text,
-                "o{orientation} solid {} opaque {} sight_through {} light_through {} transparency {} boxes {} front {} axis {} docking {}",
+                "o{orientation} solid {} opaque {} sight_through {} light_through {} transparency {} boxes {} front {} axis {} docking {} joint {}",
                 table.is_solid(model),
                 table.is_opaque_cube(model),
                 table.is_sight_through(model),
@@ -51,6 +51,7 @@ pub fn explain_block(table: &BlockTable, block: u32) -> String {
                 face_name(table.front_face(block, state, orientation)),
                 face_name(table.axis_face(block, state, orientation)),
                 face_name(table.docking_face(block, state, orientation)),
+                face_name(table.joint_face(block, state, orientation)),
             )
             .expect("writing to a string");
             for face in FaceDirection::ALL {
@@ -83,12 +84,13 @@ pub fn describe_blocks(table: &BlockTable, names: &[String]) -> String {
             .collect();
         writeln!(
             text,
-            "{number:>2} {name}: colour #{red:02x}{green:02x}{blue:02x}, {} states, state 0 faces [{}], front {}, axis {}, docking {}, placement {:?}, behaviour {:016x}",
+            "{number:>2} {name}: colour #{red:02x}{green:02x}{blue:02x}, {} states, state 0 faces [{}], front {}, axis {}, docking {}, joint {}, placement {:?}, behaviour {:016x}",
             table.state_count(block),
             faces.join(" "),
             face_name(table.front_face(block, 0, 0)),
             face_name(table.axis_face(block, 0, 0)),
             face_name(table.docking_face(block, 0, 0)),
+            face_name(table.joint_face(block, 0, 0)),
             table.placement(block, 0),
             fnv_hash(explain_block(table, block).as_bytes()),
         )

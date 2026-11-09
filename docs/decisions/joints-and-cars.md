@@ -18,6 +18,11 @@ This file records the talk that came before any code; the measurements behind th
   end flush with the face and centred, the other end 0.25 m short of the next cell. It has **its own face property, `engine:joint_face`**, and its own finder, so that `ports_of`,
   `docked_pairs` and `dock` never see a joint as a docking port. The geometry the two share (`Port`, `PortView`, `approach`) gets a neutral name. A block may later have both properties
   (a joint that is also a docking port).
+- **Built 2026-11-09 (step 2):** the block is a data file, `games/voxunami_cave/data/blocks/dev_ball_joint.json`, the last block of Cave (number 13, so no number moved). As made it is the box
+  `[2,0,2]-[6,6,6]` in eighths of a voxel (a voxel is a metre: 0.5 by 0.75 by 0.5), gunmetal gray, with its ball end up and that face a flat blue; `engine:axis_face` is up, so it is placed like a
+  log, with the ball end away from the face that was clicked; `engine:joint_face` is up too. It has no pictures yet. The finder is `Docking::joint_ends_of` (the same scan of a brick that finds
+  ports and mass, `BrickScan`); it never returns a port, and `ports_of` never returns a joint end. The shared geometry is `BlockFace`, `BlockFaceView` and `approach` (`Port` and `PortView` were
+  renamed; the docking code and its tests are as they were). The code does not keep the ends of joints yet: that is the coupling logic (step 3).
 - Two such blocks facing across a cell boundary, 0.5 m apart at the tips, are **coupled**; a ball of 0.5 m diameter is drawn in the gap, and only then. The ball is two hemispheres, one in
   each cell: bent, the join shows; that is accepted for the prototype.
 - States of a pair: apart, coupled (mobile), coupled and immobilized, locked. A joint is **derived from block states and positions and never saved**.
@@ -56,8 +61,9 @@ This file records the talk that came before any code; the measurements behind th
 
 ## Bounds and lifecycle
 - For choosing which bricks need colliders, a ship's bounds are the sum of its cars' longest dimensions used as a diameter, per car (a to-do is to improve this, `future-goals.md`).
-- A coupled group **freezes and is parked together**, by the nearest of its cars, so that a joint never anchors an active car to a frozen one. (Under question 2026-11-09: whether a mechanism may stop
-  because no player is near; see "Promises".)
+- A coupled group **freezes and is parked together**, by the nearest of its cars, so that a joint never anchors an active car to a frozen one. **A mechanism moves only while a player is within 1 km
+  of the group (owner, 2026-11-09: "let's start with 1 km")**; a group with no player that near is frozen, and parked when none is near enough to unload it, and its rail goes on all the same
+  (see "Promises"). Open: whether the 1 km replaces the ships' 256 voxels (`ShipSettings::DEFAULT_SIMULATION_DISTANCE`) for every ship, or is the distance of groups alone.
 - **A coupled group is at most 8 km across (owner, 2026-11-09, "for now")**, so that it fits in one physics frame (a frame is 16 km from its origin to its edge).
 - Later, a joint between a planet and a car: lock and unlock to a planet reuse `dock_into_planet` and `undock_from_planet`; the open problems are in `future-goals.md`.
 
@@ -73,7 +79,7 @@ This file records the talk that came before any code; the measurements behind th
 - A multibody puts a child where its joint coordinates say, so its joint frames must be chosen from the poses the cars have when it is built (a ring built without them was straightened and exploded).
 
 
-## Promises (owner, 2026-11-09; **being refined: they say what must hold, not yet how**)
+## Promises (owner, 2026-11-09; the rules below are the owner's answers to the first round of questions, the way to build them is still to be designed)
 The owner's words, condensed:
 - **(a) A mechanism works the same everywhere.** Joint physics work the same at all speeds, in an atmosphere or out of it. A player never meets a mechanism that works in one situation and fails in
   another for a reason that is not obvious, or for a bug. It is fine for a custom landing gear or a Star Trek turbolift to stop working because air rushes through the interior (a hole), because of extreme-G
@@ -84,6 +90,33 @@ The owner's words, condensed:
   off its rail is a collision with another ship or with a player on the outside of the ship. A player on the inside (in the pressurized area) changes the ship's course by nothing, bumping into it or using
   suit thrusters.
 - **The goal:** players can make and keep extremely precise trajectories to extremely distant places and still have fun inside the ship and use motorized parts.
+
+**The owner's answers (2026-11-09, second round):**
+1. **"The same" is bit-identical**, wherever the ship is and however fast it goes. (Means, **[mine]**: the group's frame is centred on the group's centre of mass, so the numbers a mechanism works
+   with are the same whatever the place; tests that the same ship gives the same bits at the origin, a long way off and at speed, alone and among a thousand ships.)
+2. A ship's frame is **in free fall**: no tidal pull on a ship inside its frame (accepted).
+3. **Every turning ship, jointed or not, rides a rail**, and its turning is worked out in the frame. (This reverses what `coasting.rs` does today: a rail holds a ship's place and not its turn.)
+4. **A ship is on a rail whenever it is not in an atmosphere.** For a ship landed on a body that has no atmosphere the owner left the choice to me: "whatever keeps complexity low and is most likely to be
+   bug-free". **[mine, not built]** It is off its rail while anything is near it, as today (`NEAR_MARGIN`), an ordinary body of the contact pass; it goes on a rail again when it has lifted off and been quiet for
+   `QUIET_SECONDS`. No new landing rail. (No atmosphere exists in the game yet; today a ship is off its rail near anything, in a level with a pull of its own, and when it turns.)
+5. **A collision with the outside of a ship gives its rail a kick and also changes its spin**, and the rest of the blow goes into the cars' motion against each other: the owner expects this to need
+   careful design. **[mine, to design before the lifecycle phase]** The kick on the rail must be the exact impulse, and so must the change of angular momentum; how the impulse is shared between the
+   ship's motion, its spin and its joints is for the joint solver to say (an impulse put on the struck car in the frame, at the point of contact), but the *size* of the impulse comes from a contact pass
+   that sees one body (`loop-probe.md`, section 14, which found the whole ship as one contact body works and a car by car one does not), and a ship hit through a loose joint has a smaller effective mass
+   at the point of impact than the whole ship. Which of the two sizes to use is the open part.
+6. **Two railed ships that pass close both stay on their rails**; their collision is worked out in a temporary shared frame in which the rails are the authority, and only a real hit changes either.
+7. **Inside** is the ship's *mostly enclosed* space, and any space that has life support air. Players, cargo and loose items there never move the rail by moving or by colliding with the ship. A player
+   on EVA **does** move it (nudging an out-of-fuel ship with suit thrusters is wanted). A **deflector shield block**, a **tractor beam block** or some similar advanced block can give a ship the
+   property that EVA and collisions with other ships do not change its rail: a forcefield round the ship inside which they have no effect on the rail and which nothing outside can enter (a player or
+   ship is deflected), paid for with a stored resource (energy, mana) of the ship that projects it, and with **no reaction force on that ship**. Both blocks are in `future-goals.md`. Open: "mostly enclosed" needs a
+   definition (how large a hole, what an open airlock is).
+8. **A mechanism moves only while a player is within 1 km** (see "Bounds and lifecycle").
+9. **Time warp:** for starters mechanisms pause while the rail goes on. **Later** (`future-goals.md`): what is aboard goes on at normal speed while the outside universe and the ship's place on its
+   rail go on at a high speed, so that an hour aboard is an hour of ordinary play (crops grow, fire spreads) in a year of travel.
+10. **No sleeping state between active and parked.** A group nobody is near is parked and its rail goes on, even with nobody within light years. **Read in the source, 2026-11-09, not run now:** a
+    rail is a function of the world's clock (`coasting.rs`, header), so "observed or not, a ship on a rail is where the clock says, and one saved on a rail and brought back is where the clock says
+    too". A parked ship that is *not* on a rail is where it was left, not moving; that is what today's rule that a turning ship is not put on a rail would have meant for a group with a motor, and what
+    answer 3 removes.
 
 **What the code does today that these would forbid (read in the source, 2026-11-09, not run):**
 1. `BodyWorld::steps_for_this_tick` cuts a tick into 3 to 24 steps by the speed of the **fastest dynamic body in the frame**, so a mechanism's solver steps depend on its own speed and on every other ship in its frame.

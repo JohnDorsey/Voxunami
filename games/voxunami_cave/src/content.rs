@@ -68,31 +68,57 @@ pub fn dev_docking_port_id() -> NamespacedId {
         .expect("constant identifier is valid")
 }
 
-/// The dev docking port (a block for building and testing ships, creative only): a cube with one yellow face, the one that docks with
-/// the yellow face of another. It has one state, made with the yellow face to the east, which is also its front, and its top up: it is placed with its top away from the face that was clicked, as a log is, and
-/// its front turned to the player's side as far as that allows (see `placement.rs`); the orientation of the voxel says which way the yellow is. It is data: `data/blocks/dev_docking_port.json`, and its
-/// colour is the average of its pictures, which are in the pictures of `base_blocks`.
-pub fn dev_docking_port() -> BlockDefinition {
+/// A block of Cave that is a data file (in `data/blocks/`), read against the properties of the base blocks and of Cave. `path` is the file's, to name it in an error; `name` is the
+/// block's, after `voxunami_cave:`.
+fn block_from_data(path: &str, name: &str, text: &str) -> (NamespacedId, BlockDefinition) {
     let mut properties = base_blocks::property_schema();
     for declaration in [PLACEABLE.declaration(), CREATIVE_ONLY.declaration()] {
         properties
             .declare(declaration)
             .expect("the properties of Cave are distinct from those of the base blocks");
     }
-    let (identifier, definition) = data_packs::read_block(
+    data_packs::read_block(path, "voxunami_cave", name, text, &properties)
+        .unwrap_or_else(|errors| panic!("the file of {name} is wrong: {errors}"))
+}
+
+/// The dev docking port (a block for building and testing ships, creative only): a cube with one yellow face, the one that docks with
+/// the yellow face of another. It has one state, made with the yellow face to the east, which is also its front, and its top up: it is placed with its top away from the face that was clicked, as a log is, and
+/// its front turned to the player's side as far as that allows (see `placement.rs`); the orientation of the voxel says which way the yellow is. It is data: `data/blocks/dev_docking_port.json`, and its
+/// colour is the average of its pictures, which are in the pictures of `base_blocks`.
+pub fn dev_docking_port() -> BlockDefinition {
+    let (identifier, definition) = block_from_data(
         "games/voxunami_cave/data/blocks/dev_docking_port.json",
-        "voxunami_cave",
         "dev_docking_port",
         include_str!("../data/blocks/dev_docking_port.json"),
-        &properties,
-    )
-    .unwrap_or_else(|errors| panic!("the file of the dev docking port is wrong: {errors}"));
+    );
     assert_eq!(identifier, dev_docking_port_id());
     let mut port = [(identifier, definition)];
     data_packs::settle_game_pictures(&mut port, &base_blocks::textures()).unwrap_or_else(
         |errors| panic!("the pictures of the dev docking port are wrong: {errors}"),
     );
     let [(_, definition)] = port;
+    definition
+}
+
+/// The identifier of the dev ball joint.
+pub fn dev_ball_joint_id() -> NamespacedId {
+    "voxunami_cave:dev_ball_joint"
+        .parse()
+        .expect("constant identifier is valid")
+}
+
+/// The dev ball joint (a block for building and testing ships with parts that move against each other, creative only): a gunmetal gray bar of 0.75 by 0.5 by 0.5 metres whose end is a
+/// blue face, the end of the joint (`engine:joint_face`); two of them whose blue ends look at each other across a cell boundary, half a metre apart, hold a ball between them that
+/// the two cars turn on (`docs/decisions/joints-and-cars.md`). It has one state, made with the blue end up, its flat end flush with the bottom of the cell and the blue end a quarter of a metre
+/// short of the top, centred across. It is placed like a log, with the blue end away from the face that was clicked (the bar is the same all round, so it has no front). It is data:
+/// `data/blocks/dev_ball_joint.json`, in flat colours: it has no pictures yet.
+pub fn dev_ball_joint() -> BlockDefinition {
+    let (identifier, definition) = block_from_data(
+        "games/voxunami_cave/data/blocks/dev_ball_joint.json",
+        "dev_ball_joint",
+        include_str!("../data/blocks/dev_ball_joint.json"),
+    );
+    assert_eq!(identifier, dev_ball_joint_id());
     definition
 }
 
@@ -212,6 +238,9 @@ impl CaveContent {
         blocks
             .register(dev_rocket_engine_id(), dev_rocket_engine())
             .expect("the name of the dev rocket engine is not another block's");
+        blocks
+            .register(dev_ball_joint_id(), dev_ball_joint())
+            .expect("the name of the dev ball joint is not another block's");
         let spec = PackageSpec {
             textures: base_blocks::textures(),
             level: overworld_id(),

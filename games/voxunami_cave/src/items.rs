@@ -52,7 +52,7 @@ pub const CREATIVE_ONLY: PropertyKey<bool> = PropertyKey::new(
 );
 
 /// The blocks Cave itself says a player can place: it sets [`PLACEABLE`] on these when it makes its content.
-pub const PLACEABLE_BY_DEFAULT: [&str; 11] = [
+pub const PLACEABLE_BY_DEFAULT: [&str; 12] = [
     "base_blocks:stone",
     "base_blocks:dirt",
     "base_blocks:grass",
@@ -64,13 +64,15 @@ pub const PLACEABLE_BY_DEFAULT: [&str; 11] = [
     "voxunami_cave:dev_docking_port",
     "voxunami_cave:dev_command_seat",
     "voxunami_cave:dev_rocket_engine",
+    "voxunami_cave:dev_ball_joint",
 ];
 
 /// The blocks Cave itself says exist only in creative: it sets [`CREATIVE_ONLY`] on these when it makes its content.
-pub const CREATIVE_ONLY_BY_DEFAULT: [&str; 3] = [
+pub const CREATIVE_ONLY_BY_DEFAULT: [&str; 4] = [
     "voxunami_cave:dev_docking_port",
     "voxunami_cave:dev_command_seat",
     "voxunami_cave:dev_rocket_engine",
+    "voxunami_cave:dev_ball_joint",
 ];
 
 /// The blocks a player can place, in the order of the blocks, which is the order the number keys choose them in. Read

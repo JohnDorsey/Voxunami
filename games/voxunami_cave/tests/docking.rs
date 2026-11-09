@@ -15,7 +15,7 @@ use voxel_space::{
     Orientation, VoxelCoordinate, WorldPosition,
 };
 use voxunami_cave::content::{
-    CaveContent, dev_command_seat_id, dev_docking_port_id, dev_rocket_engine_id,
+    CaveContent, dev_ball_joint_id, dev_command_seat_id, dev_docking_port_id, dev_rocket_engine_id,
 };
 
 fn pose(x: f64, y: f64, z: f64, orientation: Orientation) -> GridPose {
@@ -69,10 +69,15 @@ fn the_dev_docking_port_has_pictures_and_one_yellow_face_that_docks_and_exists_o
     let package = content.package_data();
     let id = dev_docking_port_id();
     assert!(placeable_blocks(&package).contains(&id));
-    // (The dev command seat and the dev rocket engine are creative-only too, and come after it.)
+    // (The dev command seat, the dev rocket engine and the dev ball joint are creative-only too, and come after it.)
     assert_eq!(
         creative_only_blocks(&package),
-        [id.clone(), dev_command_seat_id(), dev_rocket_engine_id()]
+        [
+            id.clone(),
+            dev_command_seat_id(),
+            dev_rocket_engine_id(),
+            dev_ball_joint_id()
+        ]
     );
     let table = content.block_table();
     let block = port_block();

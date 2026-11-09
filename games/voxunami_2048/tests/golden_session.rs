@@ -304,8 +304,11 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// three are. A block with no pictures costs one byte (a flag) and the list of sizes one byte: 4 blocks and the list, 5 bytes. Voxunami 2048's package is 3,159 bytes before and 3,164 now (measured by `block_golden.rs`, which pins the package), and the stream is 5 bytes longer, 58,757 to 58,762: the
 /// welcome is the only place the package is in it. Predicted by counting the bytes before the run and then seen. The saved world is the same to the hash (15_563_235_043_056_448_435): nothing is saved that was not.
 /// Leaves and glass (2026-11-08): a definition carries two more bytes (whether light passes, and the transparency mode), so Voxunami 2048's package of 4 blocks is 3,164 bytes before and 3,172 now (+8, measured by `block_golden.rs`), and the stream is 8 bytes longer, 58,762 to 58,770. The saved world is the same to the hash.
+/// The engine declares one more block property, `engine:joint_face` (the dev ball joint, 2026-11-09): every game's package carries the declaration, 198 bytes (measured in Cave's package, then predicted for this one
+/// and seen: 3,172 to 3,370 in `block_golden.rs`), and the stream is 198 bytes longer, 58,770 to 58,968, the welcome being the only place the package is in it. The saved world is the same to the hash (15_563_235_043_056_448_435),
+/// as predicted: nothing is saved that was not.
 const PINNED: (u64, usize, u64) = (
-    9_839_593_565_717_984_986,
-    58_770,
+    3_770_636_189_421_880_079,
+    58_968,
     15_563_235_043_056_448_435,
 );

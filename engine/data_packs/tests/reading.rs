@@ -543,7 +543,7 @@ fn an_unknown_key_is_refused_and_a_near_miss_is_corrected() {
 
 #[test]
 fn properties_must_be_declared_and_their_values_must_fit() {
-    let declared = "\"engine:axis_face\", \"engine:density\", \"engine:docking_face\", \"engine:front_face\", \"engine:placeable_on_moving_grids\", \"test:glow\", \"test:sticky\"";
+    let declared = "\"engine:axis_face\", \"engine:density\", \"engine:docking_face\", \"engine:front_face\", \"engine:joint_face\", \"engine:placeable_on_moving_grids\", \"test:glow\", \"test:sticky\"";
     assert_eq!(
         block_errors(r#"{ "color": [0,0,0], "properties": { "test:glo": 3 } }"#),
         [format!(

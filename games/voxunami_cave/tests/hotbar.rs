@@ -76,7 +76,7 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
     assert!(!hotbar.modal);
     assert_eq!(hotbar.root.direction, Direction::Row);
     let shown = swatches(&hotbar.root);
-    // Stone, dirt, grass, lamp, wood, fire, and the dev docking port, command seat and rocket engine: in the colours the blocks are drawn in (the table of the game says
+    // Stone, dirt, grass, lamp, wood, fire, and the dev docking port, command seat, rocket engine and ball joint: in the colours the blocks are drawn in (the table of the game says
     // which: for a block with pictures it is their average), the first chosen, no counts in creative.
     let content = voxunami_cave::content::CaveContent::new();
     let table = content.block_table();
@@ -92,6 +92,7 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
     let port = position_of(voxunami_cave::content::dev_docking_port_id());
     let seat = position_of(voxunami_cave::content::dev_command_seat_id());
     let engine = position_of(voxunami_cave::content::dev_rocket_engine_id());
+    let joint = position_of(voxunami_cave::content::dev_ball_joint_id());
     let expected_colors = [
         table.color(ids.stone),
         table.color(ids.dirt),
@@ -104,14 +105,16 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
         table.color(port),
         table.color(seat),
         table.color(engine),
+        table.color(joint),
     ];
     // (The two that have no pictures are what their files say.)
     assert_eq!(expected_colors[3], [1.0, 0.92, 0.65]);
     assert_eq!(expected_colors[5], [0.95, 0.5, 0.1]);
-    // (The seat and the engine are gunmetal gray, and their brown and red faces are not their colour.)
+    // (The seat, the engine and the joint are gunmetal gray, and their brown, red and blue faces are not their colour.)
     assert_eq!(expected_colors[9], [0.17, 0.21, 0.22]);
     assert_eq!(expected_colors[10], [0.17, 0.21, 0.22]);
-    assert_eq!(shown.len(), 11);
+    assert_eq!(expected_colors[11], [0.17, 0.21, 0.22]);
+    assert_eq!(shown.len(), 12);
     for (index, ((color, count, selected), expected)) in
         shown.iter().zip(expected_colors).enumerate()
     {
@@ -130,10 +133,10 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
     assert_eq!(
         chosen,
         [
-            false, false, false, true, false, false, false, false, false, false, false
+            false, false, false, true, false, false, false, false, false, false, false, false
         ]
     );
-    // The ninth key chooses the ninth block, the dev docking port; the right square bracket goes on to the seat and the engine and then round to the first, and the left
+    // The ninth key chooses the ninth block, the dev docking port; the right square bracket goes on to the seat, the engine and the joint and then round to the first, and the left
     // one back to the last.
     let chosen_index = |player: &mut Player| -> usize {
         let panels = overlays(player);
@@ -155,11 +158,13 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
     player.key_pressed(KeyCode::BracketRight);
     assert_eq!(chosen_index(&mut player), 10);
     player.key_pressed(KeyCode::BracketRight);
+    assert_eq!(chosen_index(&mut player), 11);
+    player.key_pressed(KeyCode::BracketRight);
     assert_eq!(chosen_index(&mut player), 0);
     player.key_pressed(KeyCode::BracketLeft);
-    assert_eq!(chosen_index(&mut player), 10);
+    assert_eq!(chosen_index(&mut player), 11);
     player.key_pressed(KeyCode::BracketLeft);
-    assert_eq!(chosen_index(&mut player), 9);
+    assert_eq!(chosen_index(&mut player), 10);
 }
 
 #[test]

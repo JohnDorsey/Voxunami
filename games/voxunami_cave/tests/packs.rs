@@ -161,9 +161,9 @@ fn a_server_with_a_pack_has_its_blocks_after_the_games_own_and_its_patches_appli
         6,
         "the games blocks keep their numbers"
     );
-    // In the order of the file names: glow_stone before marble, after the games own blocks (the base blocks, and then the dev docking port, command seat and rocket engine).
-    assert_eq!(raw_in(&content, "my_pack:glow_stone"), 13);
-    assert_eq!(raw_in(&content, "my_pack:marble"), 14);
+    // In the order of the file names: glow_stone before marble, after the games own blocks (the base blocks, and then the dev docking port, command seat, rocket engine and ball joint).
+    assert_eq!(raw_in(&content, "my_pack:glow_stone"), 14);
+    assert_eq!(raw_in(&content, "my_pack:marble"), 15);
     let table = content.block_table();
     let emission = table.handle(&EMISSION).unwrap();
     assert_eq!(
@@ -172,11 +172,11 @@ fn a_server_with_a_pack_has_its_blocks_after_the_games_own_and_its_patches_appli
         "patched"
     );
     assert_eq!(
-        table.get_of(emission, 13, 0),
+        table.get_of(emission, 14, 0),
         10,
         "a block of the pack that glows"
     );
-    assert_eq!(table.get_of(emission, 14, 0), 0);
+    assert_eq!(table.get_of(emission, 15, 0), 0);
 }
 
 #[test]
@@ -373,8 +373,8 @@ fn a_block_of_a_pack_that_can_be_placed_has_a_number_key_an_item_and_is_used_up_
     ticks(&mut rig, &mut player, 2);
     let ruby = raw_in(&rig.content, "my_pack:ruby");
 
-    // The first key is stone, as it was; the seventh is leaves, the eighth glass, the ninth the dev docking port, then come the command seat and the rocket engine
-    // and, last, the pack's block, which has no number key: the right square bracket reaches it from the ninth (by the seat and the engine), and goes on round to the
+    // The first key is stone, as it was; the seventh is leaves, the eighth glass, the ninth the dev docking port, then come the command seat, the rocket engine and the ball joint
+    // and, last, the pack's block, which has no number key: the right square bracket reaches it from the ninth (by the seat, the engine and the joint), and goes on round to the
     // first block.
     assert!(
         player.hud_text().contains("placing stone (whole)"),
@@ -382,7 +382,7 @@ fn a_block_of_a_pack_that_can_be_placed_has_a_number_key_an_item_and_is_used_up_
         player.hud_text()
     );
     player.key_pressed(KeyCode::Digit9);
-    for _ in 0..3 {
+    for _ in 0..4 {
         player.key_pressed(KeyCode::BracketRight);
     }
     assert!(
@@ -478,11 +478,11 @@ fn the_hotbar_of_a_player_who_has_never_heard_of_a_pack_has_a_swatch_for_its_pla
         .collect();
     assert_eq!(
         swatches.len(),
-        12,
-        "the eleven of the game (the dev docking port, command seat and rocket engine are the last three) and the pack's ruby"
+        13,
+        "the twelve of the game (the dev docking port, command seat, rocket engine and ball joint are the last four) and the pack's ruby"
     );
     assert_eq!(
-        swatches[11],
+        swatches[12],
         ui::Color([204, 26, 51]),
         "ruby is [0.8, 0.1, 0.2]"
     );

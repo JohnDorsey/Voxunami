@@ -3,6 +3,7 @@
 //! A server ticked by the test, and players connected to it.
 
 pub mod docking;
+pub mod joints;
 pub mod moving_planet;
 pub mod parity;
 pub mod rocket;

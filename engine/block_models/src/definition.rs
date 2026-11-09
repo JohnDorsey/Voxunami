@@ -214,6 +214,11 @@ impl BlockDefinition {
         self
     }
 
+    /// The same block with the end of a joint on `face`, as it is made, in every state (`engine:joint_face`).
+    pub fn with_joint_face(self, face: FaceDirection) -> Self {
+        self.with_property(&engine::JOINT_FACE, face_code(Some(face)))
+    }
+
     /// The same block with a front, as it is made, in every state: a piston-like block, turned to face the player when it is placed (`engine:front_face`).
     pub fn with_front_face(self, face: FaceDirection) -> Self {
         self.with_property(&engine::FRONT_FACE, face_code(Some(face)))

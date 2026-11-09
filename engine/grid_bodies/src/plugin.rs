@@ -15,7 +15,7 @@ use world_storage::MovingGrid;
 
 use crate::collision::{BlockCollisions, GeneratedHull, ShipHull, WorldTerrain};
 use crate::connectivity::{Connectivity, Outcome};
-use crate::docking::{Docking, Port, PortView, approach, docked_pose, torque_of_force};
+use crate::docking::{BlockFace, BlockFaceView, Docking, approach, docked_pose, torque_of_force};
 
 /// How far, in bricks, from the origin of a frame a ship may be. (Chosen when Rapier worked in `f32`, which is exact to a hundredth of a voxel at 500 bricks; it works in `f64` now, which is exact
 /// to 1e-10 of one there, and the limit is kept: raising it is open.) A ship that is not within this of the origin of any
@@ -186,7 +186,7 @@ struct Ship {
     /// The mass of each brick that has any, summed in order of brick for the body's mass.
     moments: BTreeMap<BrickCoordinate, MassMoments>,
     /// The docking ports in each brick that has any.
-    ports: BTreeMap<BrickCoordinate, Vec<Port>>,
+    ports: BTreeMap<BrickCoordinate, Vec<BlockFace>>,
     kind: BodyKind,
     /// How much the ship weighs and where its centre of mass is in its coordinates, as last worked out.
     mass: f64,
@@ -206,7 +206,7 @@ struct Planet {
     /// Fixed for a planet that stands still in a frame that does; kinematic for one on a rail, and for every planet in a frame that goes with a planet.
     kind: BodyKind,
     /// The docking ports in each brick of the planet that has any: only blocks that were built there are ports, so only its stored bricks are looked at.
-    ports: BTreeMap<BrickCoordinate, Vec<Port>>,
+    ports: BTreeMap<BrickCoordinate, Vec<BlockFace>>,
     /// Whether the stored bricks have been looked at for ports (after that, the bricks that change).
     scanned: bool,
 }
@@ -476,7 +476,8 @@ impl Bodies {
         brick: BrickCoordinate,
         ship: &MovingGrid,
     ) {
-        let (moments, ports) = self.weigher().scan_brick(
+        // (The ends of joints it finds are left for the coupling logic, which does not exist yet.)
+        let BrickScan { moments, ports, .. } = self.weigher().scan_brick(
             ship,
             brick,
             self.config.docking.as_ref().map(Docking::table),
@@ -1036,7 +1037,7 @@ impl Bodies {
                 };
                 planet.scanned = true;
                 for brick in bricks {
-                    let (_, ports) = weigher.scan_brick(grid, brick, Some(docking.table()));
+                    let ports = weigher.scan_brick(grid, brick, Some(docking.table())).ports;
                     if ports.is_empty() {
                         planet.ports.remove(&brick);
                     } else {
@@ -1373,7 +1374,7 @@ struct Bearer<'a> {
     id: GridId,
     /// Whether it can move: a ship that is free does, a ship that is held and a planet do not.
     moves: bool,
-    ports: &'a BTreeMap<BrickCoordinate, Vec<Port>>,
+    ports: &'a BTreeMap<BrickCoordinate, Vec<BlockFace>>,
     ship: &'a MovingGrid,
 }
 
@@ -1382,8 +1383,8 @@ struct PortPair {
     frame: FrameKey,
     first: GridId,
     second: GridId,
-    first_port: Port,
-    second_port: Port,
+    first_port: BlockFace,
+    second_port: BlockFace,
     approach: crate::docking::Approach,
 }
 
@@ -1436,9 +1437,10 @@ impl Bodies {
                     let from = first_ship.pose.position;
                     let mut best: Option<PortPair> = None;
                     for first_port in first.ports.values().flatten() {
-                        let first_view = PortView::of(*first_port, &first_ship.pose, from);
+                        let first_view = BlockFaceView::of(*first_port, &first_ship.pose, from);
                         for second_port in second.ports.values().flatten() {
-                            let second_view = PortView::of(*second_port, &second_ship.pose, from);
+                            let second_view =
+                                BlockFaceView::of(*second_port, &second_ship.pose, from);
                             let how = approach(&first_view, &second_view);
                             if settings.pulls(&first_view, &second_view, &how)
                                 && best
@@ -1487,7 +1489,7 @@ impl Bodies {
     }
 
     /// The ports of every ship that has any, for the docking that looks at what is near.
-    fn levels_ports(&self) -> BTreeMap<GridId, Vec<Port>> {
+    fn levels_ports(&self) -> BTreeMap<GridId, Vec<BlockFace>> {
         self.frames
             .values()
             .flat_map(|frame| {
@@ -1609,8 +1611,8 @@ impl Bodies {
             _ => ([0.0; 3], [0.0; 3]),
         };
         // Where the lighter ship is when it has docked exactly.
-        let still_view = PortView::of(still_port, &still_pose, from);
-        let moving_view = PortView::of(moving_port, &moving_pose, from);
+        let still_view = BlockFaceView::of(still_port, &still_pose, from);
+        let moving_view = BlockFaceView::of(moving_port, &moving_pose, from);
         let turn = approach(&still_view, &moving_view).turn;
         let Some((docked, _)) = docked_pose(&still_pose, still_port, moving_port, turn) else {
             return false;
@@ -1652,8 +1654,8 @@ impl Bodies {
         world: &mut ServerWorld,
         docking: &Docking,
         pair: &PortPair,
-        (planet, planet_port): (GridId, Port),
-        (ship, ship_port): (GridId, Port),
+        (planet, planet_port): (GridId, BlockFace),
+        (ship, ship_port): (GridId, BlockFace),
     ) -> bool {
         let (Some(planet_grid), Some(ship_grid)) = (
             world.data().grids().get(planet),
@@ -1667,8 +1669,8 @@ impl Bodies {
         }
         let (still_pose, moving_pose) = (planet_grid.pose, ship_grid.pose);
         let from = still_pose.position;
-        let still_view = PortView::of(planet_port, &still_pose, from);
-        let moving_view = PortView::of(ship_port, &moving_pose, from);
+        let still_view = BlockFaceView::of(planet_port, &still_pose, from);
+        let moving_view = BlockFaceView::of(ship_port, &moving_pose, from);
         let turn = approach(&still_view, &moving_view).turn;
         let Some((docked, _)) = docked_pose(&still_pose, planet_port, ship_port, turn) else {
             return false;
@@ -1746,6 +1748,16 @@ impl Bodies {
     }
 }
 
+/// What one look at a brick of a ship finds (see [`Weigher::scan_brick`]).
+pub(crate) struct BrickScan {
+    /// The mass in the brick.
+    pub moments: MassMoments,
+    /// The faces of its docking ports (`engine:docking_face`), in the order its voxels are scanned.
+    pub ports: Vec<BlockFace>,
+    /// The faces that are the ends of its joints (`engine:joint_face`), in the same order. A joint end is never in `ports` and a port never here.
+    pub joint_ends: Vec<BlockFace>,
+}
+
 /// What it takes to know the mass of the voxels of a ship: the table, the density property and the channels.
 pub(crate) struct Weigher<'a> {
     pub table: &'a BlockTable,
@@ -1789,19 +1801,24 @@ impl Weigher<'_> {
         Some(MassMoments::of_voxel(voxel, mass))
     }
 
-    /// The mass in the voxels of a brick of a ship, and (if a table to read them by is given) the docking ports in it.
+    /// The mass in the voxels of a brick of a ship, and (if a table to read them by is given) the docking ports and the ends of joints in it.
     pub fn scan_brick(
         &self,
         ship: &MovingGrid,
         brick: BrickCoordinate,
-        ports_by: Option<&BlockTable>,
-    ) -> (MassMoments, Vec<Port>) {
+        faces_by: Option<&BlockTable>,
+    ) -> BrickScan {
         let Some(contents) = ship.voxels.brick(brick) else {
-            return (MassMoments::NOTHING, Vec::new());
+            return BrickScan {
+                moments: MassMoments::NOTHING,
+                ports: Vec::new(),
+                joint_ends: Vec::new(),
+            };
         };
         let first = brick.origin();
         let mut parts = Vec::new();
         let mut ports = Vec::new();
+        let mut joint_ends = Vec::new();
         for z in 0..BRICK_EDGE_LENGTH {
             for y in 0..BRICK_EDGE_LENGTH {
                 for x in 0..BRICK_EDGE_LENGTH {
@@ -1817,19 +1834,25 @@ impl Weigher<'_> {
                         first.z() + z as i128,
                     ];
                     parts.extend(self.voxel_moments(voxel, block, state, orientation));
-                    if let Some(table) = ports_by
+                    if let Some(table) = faces_by
                         && block != self.air
-                        && let Some(face) = table.docking_face(block, state, orientation)
                     {
-                        ports.push(Port {
-                            voxel: VoxelCoordinate::new(voxel[0], voxel[1], voxel[2]),
-                            face,
-                        });
+                        let at = VoxelCoordinate::new(voxel[0], voxel[1], voxel[2]);
+                        if let Some(face) = table.docking_face(block, state, orientation) {
+                            ports.push(BlockFace { voxel: at, face });
+                        }
+                        if let Some(face) = table.joint_face(block, state, orientation) {
+                            joint_ends.push(BlockFace { voxel: at, face });
+                        }
                     }
                 }
             }
         }
-        (MassMoments::sum(parts), ports)
+        BrickScan {
+            moments: MassMoments::sum(parts),
+            ports,
+            joint_ends,
+        }
     }
 
     /// The parts a ship is cut into, given the pieces that were found cut off: those, and all the rest of its blocks as one more if there are

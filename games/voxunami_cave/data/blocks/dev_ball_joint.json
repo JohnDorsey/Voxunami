@@ -1,0 +1,6 @@
+{
+  "color": [0.17, 0.21, 0.22],
+  "states": [{ "boxes": [[2, 0, 2, 6, 6, 6]] }],
+  "face_colors": { "positive_y": [0.2, 0.6, 1.0] },
+  "properties": { "engine:axis_face": "up", "engine:joint_face": "up" }
+}
