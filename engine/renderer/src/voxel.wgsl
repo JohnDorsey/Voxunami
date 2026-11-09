@@ -51,6 +51,10 @@ struct Frame {
     avatars: array<vec4<f32>, 16>,
     // x: how far from the camera, in voxels, a picture on a face begins to fade into the face's flat colour, y: how far it is gone (0: pictures are not drawn).
     pictures: vec4<f32>,
+    // SPIKE: where the lowest corner of the occupancy volume is, relative to the camera, in voxels.
+    occupancy_origin: vec4<f32>,
+    // SPIKE: its size in voxels (xyz) and how many cells of the sun's ray are searched (w; 0: none).
+    occupancy_size: vec4<u32>,
 }
 
 // The material value of the first avatar colour: the last 16 values a quad can carry (see AVATAR_MATERIAL_BASE in the renderer).
@@ -71,6 +75,8 @@ struct Placement {
 // The cascades of the shadow map, a layer each, and the sampler that compares a depth with what a layer holds.
 @group(0) @binding(2) var shadow_maps: texture_depth_2d_array;
 @group(0) @binding(3) var shadow_sampler: sampler_comparison;
+// SPIKE: one bit per voxel of a box round the camera, along x in words of 32.
+@group(0) @binding(9) var<storage, read> occupancy: array<u32>;
 @group(1) @binding(0) var<uniform> placement: Placement;
 
 struct Instance {
@@ -420,6 +426,50 @@ fn sky_openness(position: vec3<f32>, normal: vec3<f32>, distance: f32) -> f32 {
     return open;
 }
 
+// SPIKE: whether the voxel at `cell` (voxels from the volume's corner) is solid; outside the volume nothing is.
+fn solid_at(cell: vec3<i32>) -> bool {
+    let size = frame.occupancy_size.xyz;
+    if (any(cell < vec3<i32>(0)) || any(vec3<u32>(cell) >= size)) {
+        return false;
+    }
+    let index = (u32(cell.z) * size.y + u32(cell.y)) * (size.x / 32u) + u32(cell.x) / 32u;
+    return ((occupancy[index] >> (u32(cell.x) & 31u)) & 1u) != 0u;
+}
+
+// SPIKE: 0 if something solid is in the way of the sun within the first few cells of the ray from a place on a face, 1 if not (which says nothing of what is farther: that is the
+// shadow map's business). The ray starts in the cell in front of the face, so nothing is eased toward or away from anything: a wall beside the place is in the way or it is not.
+fn contact_light(relative: vec3<f32>, normal: vec3<f32>, toward_sun: vec3<f32>) -> f32 {
+    let steps = frame.occupancy_size.w;
+    if (steps == 0u) {
+        return 1.0;
+    }
+    let place = relative - frame.occupancy_origin.xyz;
+    var cell = vec3<i32>(floor(place + normal * 0.5));
+    let positive = toward_sun > vec3<f32>(0.0);
+    let direction = vec3<i32>(select(vec3<i32>(-1), vec3<i32>(1), positive));
+    let huge = 1.0e30;
+    let inverse = select(vec3<f32>(huge), 1.0 / toward_sun, abs(toward_sun) > vec3<f32>(1.0e-20));
+    // How far along the ray the next boundary of a cell is, on each axis.
+    var boundary = (vec3<f32>(cell) + select(vec3<f32>(0.0), vec3<f32>(1.0), positive) - place) * inverse;
+    let next = abs(inverse);
+    for (var step = 0u; step < steps; step = step + 1u) {
+        if (boundary.x <= boundary.y && boundary.x <= boundary.z) {
+            cell.x = cell.x + direction.x;
+            boundary.x = boundary.x + next.x;
+        } else if (boundary.y <= boundary.z) {
+            cell.y = cell.y + direction.y;
+            boundary.y = boundary.y + next.y;
+        } else {
+            cell.z = cell.z + direction.z;
+            boundary.z = boundary.z + next.z;
+        }
+        if (solid_at(cell)) {
+            return 0.0;
+        }
+    }
+    return 1.0;
+}
+
 @fragment
 fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // The colour of the face: its own, or where it has a picture the picture's (`picture_albedo` is in `pictures_off.wgsl` or `pictures_on.wgsl`, whichever the
@@ -453,6 +503,7 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
             var terrain = 0.0;
             if (cosine > 0.0) {
                 terrain = terrain_light(in.relative, distance);
+                terrain = terrain * contact_light(in.relative, in.normal, frame.sun_direction.xyz);
             }
             sun_visible = sun_visible * terrain;
             sky_visible = sky_visible * mix(frame.shadow.y, 1.0, terrain * smoothstep(0.0, FACING_FULL_FROM, cosine));
