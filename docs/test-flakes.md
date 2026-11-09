@@ -50,9 +50,11 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
   The gate stopped at it (no `--no-fail-fast`), so it was run again with that flag for the suites after it.
 - **Occurrence 5: 2026-11-07**, the full gate of block-textures step 1 (changes in `block_models`, `data_packs`, `voxel_meshing`, `base_blocks`; none draws a form), `cargo test --workspace --no-fail-fast` on **Windows**: `adapter 1: 1 pixels differ, such as [(157, 68)]`
   (screen.rs:386). **Reruns: 3 alone and 1 as the whole binary, 0 failures in 4.** Adapter 1 is the second adapter of the run (which one that is on this machine was not printed).
+- **Occurrence 6: 2026-11-09**, the full gate of phase 1 of the sun's exact short ray (`voxel_meshing`, `world_view`, `Session` methods that nothing here calls; **the renderer was byte-identical to the commit before the branch began**, checked with `git diff`; `cargo test --workspace --no-fail-fast`, Windows):
+  `adapter 1: 1 pixels differ, such as [(157, 68)]` (screen.rs:386), the same pixel as 3, 4 and 5. **Reruns: 5 alone and 5 as the whole binary, 0 failures in 10.** Nothing the branch changed is on this test's path, which is why it is recorded here as this entry's and not as the branch's.
 - **Beliefs.** **Checked, for a sister test** (`an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw`, explained below): on the integrated AMD GPU the first frames of a fresh renderer sometimes leave
   pixels out, never on the NVIDIA card, and the pictures compared to the pixel are now taken once a frame repeats them (`settled`). **Believed**: the same family of cause for this test (a pixel left out in a
-  first frame on one adapter); not checked for this test. **A new fact against "any pixel the first frame left out":** occurrences 3, 4 and 5 are the same pixel, (157, 68), on the same adapter: a first
+  first frame on one adapter); not checked for this test. **A new fact against "any pixel the first frame left out":** occurrences 3, 4, 5 and 6 are the same pixel, (157, 68), on the same adapter: a first
   frame that leaves out whatever it likes would not repeat the place; something at that place (an edge of the dimmed picture or of a button, rounded one way live and the other in the replay) might.
   Not looked into.
 - **What would settle it.** Run it in a loop on each adapter with `VOX_REQUIRE_GPU=1` and log which adapter and which pixel differs; see whether it goes through `settled`, and what is drawn at (157, 68).
@@ -94,6 +96,9 @@ A test that waits must wait for a condition with a deadline, never for a fixed t
   frames (`an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw` above), which this made far more likely. Not found: why the use of the bindings does it. Fixed by avoiding it: the reading of pictures is a second shader, built and chosen only when a
   palette has pictures and a distance is set (`pictures_off.wgsl` / `pictures_on.wgsl`); after that the two tests failed 0 of 12 (twice) and the five picture tests 0 of 18, and the whole binary passed three times. **Believed, not tested:** a game that draws pictures on that
   GPU may still leave pixels out in its first frames, as any scene may; the tests that compare pictures to the pixel take them once two frames agree.
+  **It came back on 2026-11-09 with the same cause** (branch `worktree-shaders`): a spike gave the default fragment shader a storage buffer binding (the voxels that block the sun, for a walk of the sun's ray); the gate failed once on `a_block_and_a_roof_shade_the_floor_...`
+  (the integrated AMD GPU on DX12, roof level 9, a lit probe at 21.173 times its light). Measured, 12 runs alone each: before the spike 0, the spike **2**, the spike with the call to the trace taken out of the fragment shader 0; the whole binary 1 of 4. Fisher over all runs (3 of 16 against 0 of 24):
+  about 0.06. The spike was taken out of the default shader (`contact-shadow-spike.md`, "Why it is not in the tree"). **The rule to keep: a binding that the default fragment shader uses can bring this back on that GPU; give anything new its own shader variant, chosen only when it is needed.**
 
 - `an_edit_changes_the_picture_and_a_replay_draws_exactly_what_the_player_saw` (`games/voxunami_cave/tests/pictures.rs`): the first frames of a fresh renderer on the integrated AMD GPU leave pixels out;
   pictures are taken once a frame repeats them (2026-10-21, Phase 30). `docs/plan.md` (the section on flaky tests) and `docs/specs/ui-spec.md`.

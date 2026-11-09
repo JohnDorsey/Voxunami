@@ -400,17 +400,6 @@ struct FrameUniform {
     avatars: [[f32; 4]; AVATAR_COLOR_COUNT],
     /// x: how far from the camera a picture on a face begins to fade into the face's flat colour, y: how far it is gone (0: pictures are not drawn).
     pictures: [f32; 4],
-    /// SPIKE: where the lowest corner of the occupancy volume is, relative to the camera, in voxels (xyz).
-    occupancy_origin: [f32; 4],
-    /// SPIKE: the occupancy volume's size in voxels (xyz), and how many cells of the sun's ray are searched for something solid (w; 0: none).
-    occupancy_size: [u32; 4],
-}
-
-/// SPIKE: a box of voxels the shader can ask "is this one solid?" of: one bit each, along x in words of 32.
-struct OccupancyVolume {
-    origin: BrickCoordinate,
-    size: [u32; 3],
-    steps: u32,
 }
 
 /// A cascade of the shadow map as the shader has it: the matrix from a place relative to the camera to the map, how far from the camera the cascade is looked in,
@@ -780,9 +769,6 @@ pub struct VoxelRenderer {
     /// The pictures of blocks on the GPU, and how far from the camera they are drawn.
     block_textures: BlockTextures,
     picture_distance: f32,
-    /// SPIKE: the bits of the occupancy volume, and what it is.
-    occupancy_buffer: wgpu::Buffer,
-    occupancy: Option<OccupancyVolume>,
     frame_bind_group: wgpu::BindGroup,
     /// The shadow maps: drawn into when there are shadows, looked up in by the pictures.
     shadow_target: ShadowTarget,
@@ -933,17 +919,6 @@ impl VoxelRenderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
-                // SPIKE: the occupancy volume.
-                wgpu::BindGroupLayoutEntry {
-                    binding: 9,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: NonZeroU64::new(16),
-                    },
-                    count: None,
-                },
             ],
         });
         let placement_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1020,7 +995,6 @@ impl VoxelRenderer {
         let shadow_target = ShadowTarget::new(&device, false);
         let shadow_sampler = comparison_sampler(&device);
         let block_textures = BlockTextures::new(&device, &queue, &[]);
-        let occupancy_buffer = Self::occupancy_words(&device, &[0; 4]);
         let frame_bind_group = Self::frame_bind_group(
             &device,
             &frame_layout,
@@ -1029,7 +1003,6 @@ impl VoxelRenderer {
             &shadow_target,
             &shadow_sampler,
             &block_textures,
-            &occupancy_buffer,
         );
         let shadow_frame_layout = shadow_frame_layout(&device, size_of::<FrameUniform>() as u64);
         let shadow_frame_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1093,8 +1066,6 @@ impl VoxelRenderer {
             palette_buffer,
             block_textures,
             picture_distance: DEFAULT_PICTURE_DISTANCE,
-            occupancy_buffer,
-            occupancy: None,
             frame_bind_group,
             shadow_target,
             shadow_sampler,
@@ -1147,7 +1118,6 @@ impl VoxelRenderer {
         })
     }
 
-    #[allow(clippy::too_many_arguments)] // SPIKE: the occupancy buffer is the eighth; a real version groups the frame's resources
     fn frame_bind_group(
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
@@ -1156,7 +1126,6 @@ impl VoxelRenderer {
         shadow_target: &ShadowTarget,
         shadow_sampler: &wgpu::Sampler,
         block_textures: &BlockTextures,
-        occupancy_buffer: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("frame bind group"),
@@ -1202,48 +1171,8 @@ impl VoxelRenderer {
                     binding: 8,
                     resource: wgpu::BindingResource::Sampler(&block_textures.sampler),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 9,
-                    resource: occupancy_buffer.as_entire_binding(),
-                },
             ],
         })
-    }
-
-    /// SPIKE: a storage buffer of these words.
-    fn occupancy_words(device: &wgpu::Device, words: &[u32]) -> wgpu::Buffer {
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("occupancy"),
-            contents: bytemuck::cast_slice(words),
-            usage: wgpu::BufferUsages::STORAGE,
-        })
-    }
-
-    /// SPIKE: gives the shader a box of voxels to ask about: `size` voxels (x a multiple of 32) from the lowest corner of the brick `origin`, one bit each, along x in words
-    /// of 32, then y, then z. With `steps` above 0, a place the sun lights is also searched along the sun's ray for that many cells, and is in shadow if one is solid.
-    pub fn set_occupancy(
-        &mut self,
-        origin: BrickCoordinate,
-        size: [u32; 3],
-        words: &[u32],
-        steps: u32,
-    ) {
-        assert_eq!(size[0] % 32, 0);
-        assert_eq!(words.len(), (size[0] / 32 * size[1] * size[2]) as usize);
-        self.occupancy_buffer = Self::occupancy_words(&self.device, words);
-        self.occupancy = Some(OccupancyVolume {
-            origin,
-            size,
-            steps,
-        });
-        self.remake_frame_bind_group();
-    }
-
-    /// SPIKE: changes how many cells of the sun's ray are searched, as `set_occupancy` says.
-    pub fn set_occupancy_steps(&mut self, steps: u32) {
-        if let Some(volume) = &mut self.occupancy {
-            volume.steps = steps;
-        }
     }
 
     fn gpu_brick(&self, mesh: &PackedBrickMesh) -> GpuBrick {
@@ -1412,7 +1341,6 @@ impl VoxelRenderer {
             &self.shadow_target,
             &self.shadow_sampler,
             &self.block_textures,
-            &self.occupancy_buffer,
         );
         self.shadow_picture_group = Self::shadow_picture_group(
             &self.device,
@@ -2659,15 +2587,6 @@ impl VoxelRenderer {
             } else {
                 [0.0; 4]
             },
-            occupancy_origin: self.occupancy.as_ref().map_or([0.0; 4], |volume| {
-                let corner = crate::camera::gpu_vector(
-                    WorldPosition::new(volume.origin, [0.0; 3]).relative_to(camera),
-                );
-                [corner.x, corner.y, corner.z, 0.0]
-            }),
-            occupancy_size: self.occupancy.as_ref().map_or([0; 4], |volume| {
-                [volume.size[0], volume.size[1], volume.size[2], volume.steps]
-            }),
         };
         self.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));

@@ -1,6 +1,6 @@
 # Spike: the lit strip at the foot of a wall, and an exact trace of the sun's ray (2026-11-09)
 
-**A spike, not a feature.** Branch `worktree-shaders`; the code is in `engine/renderer` (the `occupancy` binding, `contact_light` in `voxel.wgsl`, `VoxelRenderer::set_occupancy`) and in the `#[ignore]`d tests named `spike_*` at the end of `gpu_rendering.rs`. It is not meant to be merged as it is: the volume is a hand-filled box, and only whole opaque cubes are in it. Owner's wish that started it: shaders the player can swap, with a default that is robust, fast and has **no** gaps at the base of shadows, whatever the redesign costs; 60 fps on the integrated GPU.
+**A spike, not a feature.** Branch `worktree-shaders`. The code was in `engine/renderer` (the `occupancy` binding, `contact_light` in `voxel.wgsl`, `VoxelRenderer::set_occupancy`) and in the `#[ignore]`d tests named `spike_*` at the end of `gpu_rendering.rs`; **it was taken out of the tree again** (see "Why it is not in the tree", below) and is in the commits **`3f6ffb1`** (the spike) and **`e166faf`** (its fix; the `spike_*` tests there are the ones that give the numbers of this document: `git show e166faf:engine/renderer/tests/gpu_rendering.rs`). The volume was a hand-filled box, and only whole opaque cubes were in it. Owner's wish that started it: shaders the player can swap, with a default that is robust, fast and has **no** gaps at the base of shadows, whatever the redesign costs; 60 fps on the integrated GPU.
 
 ## Correction (2026-11-09, later the same day): the first spike shader had a bug
 
@@ -62,3 +62,15 @@ A one-bit-per-voxel volume (a storage buffer, 36 KB for the benchmark, 4 KB for 
 ## What a real build needs (not decided)
 
 A clipmap volume round the camera kept from the bricks; a CPU reference tracer and a test that compares the shader's lit/shadow with it on random scenes and suns on every adapter (that is what makes "no gaps" a checked rule); the slab and leaf cases; a decision for the far cascades; and, for swappable shaders, the engine owning this visibility and handing a pack `sun_visibility(place, face)` so that a pack cannot bring the strip back.
+
+## Why it is not in the tree
+
+The full gate of phase 1 failed once: `a_block_and_a_roof_shade_the_floor_where_the_sun_puts_the_shadow_from_a_brick_to_a_mountain_range`, on the integrated AMD GPU (DX12), roof level 9, a lit probe at 21.173 times the light it should have (the picture with shadows off had a dark pixel: the integrated GPU leaving pixels out of a fresh renderer's first frames, the family of `test-flakes.md`). It was **measured, not assumed**: the test alone, 12 runs each, `VOX_REQUIRE_GPU=1`:
+
+| The renderer | failures in 12 runs alone |
+|---|---|
+| before the spike (`2476dcd`) | 0 |
+| the spike (the fragment shader reads the `occupancy` storage buffer) | **2** (and 1 of 4 runs of the whole binary: the gate's, then three more that passed) |
+| the spike with the one call to the trace taken out of the fragment shader (the binding is no longer used by it) | 0 |
+
+The same message, the same pixel, every time. Fisher's exact test over all runs (3 of 16 against 0 of 24) gives about 0.06 (one-sided: 560 of the 9,880 ways to put 3 failures among 40 runs put all 3 in the 16): **believed** the cause, not proved. It is the finding of 2026-11-07 again (an extra binding used by the default fragment shader made two shadow tests fail 3 of 10 on this GPU; the cure was a second shader for pictures, chosen only when needed). So the spike's code was taken out of the default shader and renderer, which are as they were before it, rather than leave a gate that fails one run in six. **For phase 2: the walk's binding goes in a shader variant that is built and chosen only while a volume is in use**, as the pictures are (`pictures_on.wgsl` / `pictures_off.wgsl`), and the tests of the walk take a picture once two frames agree.
