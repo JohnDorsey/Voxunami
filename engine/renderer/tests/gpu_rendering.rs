@@ -5280,3 +5280,140 @@ fn through_a_hole_in_the_near_face_the_far_face_of_leaves_and_of_glass_is_seen()
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The shadows of blocks that cut holes: a roof of leaves shades the floor only where its picture is not clear.
+
+/// Block 1 has the picture `layer` (0: a picture that is wholly clear, 1: one that is wholly opaque) on every face, in mode `mode`; block 2 is a plain green cube (the floor).
+fn roof_table(mode: Transparency, layer: usize) -> BlockTable {
+    let tile = block_models::TileRef::new(0, layer).expect("a place for the picture");
+    let roof = BlockDefinition::cube([0.5, 0.5, 0.5])
+        .with_texture(namespaced_id::NamespacedId::new("test", "picture").unwrap())
+        .with_pictures(block_models::FacePictures {
+            top: tile,
+            side: tile,
+            bottom: tile,
+        })
+        .with_sight_through(mode != Transparency::Opaque)
+        .with_light_through(mode != Transparency::Opaque)
+        .with_transparency(mode);
+    let air = BlockDefinition::air();
+    let floor = BlockDefinition::cube([0.0, 1.0, 0.0]);
+    BlockTable::from_definitions(&[Some(&air), Some(&roof), Some(&floor)])
+}
+
+/// The floor and a roof like the shadow tests' `Roof` (eight cells up, over the first ten along x), drawn with the pictures at `distance`, and what is wrong with the floor
+/// under it when the places of `ShadowScene::Roof` that are in its shadow are `shadowed` (and the others are lit, as they are in any case).
+fn roof_failures(
+    context: &GraphicsContext,
+    mode: Transparency,
+    layer: usize,
+    distance: f32,
+    shadowed: bool,
+) -> Vec<String> {
+    let table = roof_table(mode, layer);
+    let mut renderer = new_renderer(context);
+    let (clear, opaque) = (solid_alpha_picture(0), solid_alpha_picture(255));
+    renderer.set_palette_with_pictures(
+        &table.palette(),
+        &table.palette_pictures(),
+        &[PictureSize {
+            size: 8,
+            tiles: vec![&clear, &opaque],
+        }],
+    );
+    renderer.set_picture_distance(distance);
+    let mut blocks = Vec::new();
+    for z in 0..32u8 {
+        for x in 0..32u8 {
+            blocks.push(([x, 0, z], 2, 0));
+            if x < 10 {
+                blocks.push(([x, 7, z], 1, 0));
+            }
+        }
+    }
+    place_blocks_in(&mut renderer, &table, ORIGIN_BRICK, &blocks, Some(0));
+    let (camera, cells, probes) = shadow_scene_setup(ShadowScene::Roof, 0);
+    let probes: Vec<Probe> = probes
+        .into_iter()
+        .map(|(place, in_shadow)| (place, in_shadow && shadowed))
+        .collect();
+    let (failures, seen) = shadow_failures(
+        &mut renderer,
+        0,
+        SUN_OVER_THE_EAST,
+        &camera,
+        cells.map(|cell| cell as f64),
+        &probes,
+    );
+    assert_eq!(seen, probes.len(), "a probe is out of the picture");
+    failures
+}
+
+/// A picture 8 pixels across, white, with this alpha everywhere.
+fn solid_alpha_picture(alpha: u8) -> Vec<u8> {
+    (0..64).flat_map(|_| [255, 255, 255, alpha]).collect()
+}
+
+#[test]
+fn a_roof_whose_picture_is_clear_casts_no_shadow_and_one_whose_picture_is_there_does_and_only_the_modes_that_cut_holes_look_at_the_picture()
+ {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        // (mode, picture layer, picture distance, whether the floor under it is in shadow, why)
+        let cases = [
+            (
+                Transparency::Leaves,
+                0,
+                100.0,
+                false,
+                "leaves with a clear picture",
+            ),
+            (
+                Transparency::Glass,
+                0,
+                100.0,
+                false,
+                "glass with a clear picture",
+            ),
+            (
+                Transparency::Leaves,
+                1,
+                100.0,
+                true,
+                "leaves with an opaque picture",
+            ),
+            (
+                Transparency::Glass,
+                1,
+                100.0,
+                true,
+                "glass with an opaque picture",
+            ),
+            // An opaque block ignores the alpha of its picture, in its shadow as in its picture.
+            (
+                Transparency::Opaque,
+                0,
+                100.0,
+                true,
+                "an opaque block with a clear picture",
+            ),
+            // With no pictures drawn the roof is a flat, whole block, and its shadow is whole.
+            (
+                Transparency::Leaves,
+                0,
+                0.0,
+                true,
+                "leaves with pictures off",
+            ),
+        ];
+        for (mode, layer, distance, shadowed, why) in cases {
+            let failures = roof_failures(&context, mode, layer, distance, shadowed);
+            assert!(
+                failures.is_empty(),
+                "{name} {why}:\n{}",
+                failures.join("\n")
+            );
+        }
+    }
+}

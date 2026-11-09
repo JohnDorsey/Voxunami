@@ -154,6 +154,52 @@ fn box_mesh(material: u32, size: [u8; 3]) -> PackedBrickMesh {
 }
 
 /// What a binding of the pictures of one size is: an array of filterable colour textures.
+/// The layout of what the shadow passes bind when they read pictures: the frame's uniform with an offset for each cascade's copy, the palette (to find a face's picture), and the
+/// pictures and their sampler (to find where it is clear). The same bindings, by number, as the picture's own frame layout.
+fn shadow_picture_layout(device: &wgpu::Device, frame_size: u64) -> wgpu::BindGroupLayout {
+    let picture = |binding| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: picture_array_type(),
+        count: None,
+    };
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("shadow picture layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: NonZeroU64::new(frame_size),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: NonZeroU64::new(16),
+                },
+                count: None,
+            },
+            picture(4),
+            picture(5),
+            picture(6),
+            picture(7),
+            wgpu::BindGroupLayoutEntry {
+                binding: 8,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    })
+}
+
 fn picture_array_type() -> wgpu::BindingType {
     wgpu::BindingType::Texture {
         sample_type: wgpu::TextureSampleType::Float { filterable: true },
@@ -730,6 +776,13 @@ pub struct VoxelRenderer {
     shadow_pipelines: ShadowPipelines,
     sky_pipelines: ShadowPipelines,
     shadow_frame_group: wgpu::BindGroup,
+    /// What the shadow passes bind when blocks that cut holes are in use: the frame's copies, the palette and the pictures; with the pipelines that read them. (Made when the
+    /// first picture of such a block is set, so that a renderer without them draws its maps exactly as it did.)
+    shadow_picture_layout: wgpu::BindGroupLayout,
+    shadow_picture_group: wgpu::BindGroup,
+    picture_shader: Option<wgpu::ShaderModule>,
+    cutouts_in_use: bool,
+    cutout_shadow_pipelines: Option<(ShadowPipelines, ShadowPipelines)>,
     placement_layout: wgpu::BindGroupLayout,
     placements: PlacementBuffer,
     placement_stride: u64,
@@ -965,6 +1018,16 @@ impl VoxelRenderer {
             }],
         });
 
+        let shadow_picture_layout =
+            shadow_picture_layout(&device, size_of::<FrameUniform>() as u64);
+        let shadow_picture_group = Self::shadow_picture_group(
+            &device,
+            &shadow_picture_layout,
+            &frame_buffer,
+            &palette_buffer,
+            &block_textures,
+        );
+
         let placement_stride = PLACEMENT_SIZE.next_multiple_of(alignment);
         let placements =
             Self::create_placement_buffer(&device, &placement_layout, placement_stride, 64);
@@ -975,6 +1038,7 @@ impl VoxelRenderer {
             &shadow_frame_layout,
             &placement_layout,
             wgpu::Face::Front,
+            false,
         );
         let sky_pipelines = ShadowPipelines::new(
             &device,
@@ -982,6 +1046,7 @@ impl VoxelRenderer {
             &shadow_frame_layout,
             &placement_layout,
             wgpu::Face::Back,
+            false,
         );
         let crosshair = Crosshair::new(&device, color_format);
         let device_for_overlay = device.clone();
@@ -1007,6 +1072,11 @@ impl VoxelRenderer {
             shadow_pipelines,
             sky_pipelines,
             shadow_frame_group,
+            shadow_picture_layout,
+            shadow_picture_group,
+            picture_shader: None,
+            cutouts_in_use: false,
+            cutout_shadow_pipelines: None,
             placement_layout,
             placements,
             placement_stride,
@@ -1213,26 +1283,53 @@ impl VoxelRenderer {
         self.palette_buffer = Self::palette_buffer(&self.device, colors, words);
         self.block_textures = BlockTextures::new(&self.device, &self.queue, sizes);
         self.pictures_in_use = words.iter().any(|&word| word != 0);
-        if self.pictures_in_use && self.picture_pipelines.is_none() {
-            let shader = voxel_shader(&self.device, true);
-            self.picture_pipelines = Some(voxel_pipelines(
-                &self.device,
-                &self.pipeline_layout,
-                &shader,
-                self.color_format,
-            ));
+        // (Bit 17 of a picture's word says the block cuts holes: see `FacePicture::word`.)
+        self.cutouts_in_use = words.iter().any(|&word| word & (1 << 17) != 0);
+        if self.pictures_in_use && self.picture_shader.is_none() {
+            self.picture_shader = Some(voxel_shader(&self.device, true));
+        }
+        if let Some(shader) = &self.picture_shader {
+            if self.pictures_in_use && self.picture_pipelines.is_none() {
+                self.picture_pipelines = Some(voxel_pipelines(
+                    &self.device,
+                    &self.pipeline_layout,
+                    shader,
+                    self.color_format,
+                ));
+            }
+            if self.cutouts_in_use && self.cutout_shadow_pipelines.is_none() {
+                let make = |culled| {
+                    ShadowPipelines::new(
+                        &self.device,
+                        shader,
+                        &self.shadow_picture_layout,
+                        &self.placement_layout,
+                        culled,
+                        true,
+                    )
+                };
+                self.cutout_shadow_pipelines =
+                    Some((make(wgpu::Face::Front), make(wgpu::Face::Back)));
+            }
         }
         self.remake_frame_bind_group();
+        // The maps that were drawn were drawn with other pictures, and are drawn again.
+        self.terrain_version += 1;
     }
 
     /// How far from the camera, in voxels, a picture on a face begins to fade into the face's flat colour (it is gone a quarter of that distance farther). 0 draws no
     /// pictures at all. The default is [`DEFAULT_PICTURE_DISTANCE`]. Coarse levels of detail never have pictures.
     pub fn set_picture_distance(&mut self, voxels: f32) {
-        self.picture_distance = if voxels.is_finite() {
+        let distance = if voxels.is_finite() {
             voxels.max(0.0)
         } else {
             0.0
         };
+        if distance != self.picture_distance {
+            // (The shadows of blocks that cut holes follow the distance: the maps that were drawn are drawn again.)
+            self.terrain_version += 1;
+        }
+        self.picture_distance = distance;
     }
 
     fn remake_frame_bind_group(&mut self) {
@@ -1245,6 +1342,61 @@ impl VoxelRenderer {
             &self.shadow_sampler,
             &self.block_textures,
         );
+        self.shadow_picture_group = Self::shadow_picture_group(
+            &self.device,
+            &self.shadow_picture_layout,
+            &self.frame_buffer,
+            &self.palette_buffer,
+            &self.block_textures,
+        );
+    }
+
+    /// What a shadow pass that reads pictures binds: the frame's copies (an offset for each cascade), the palette, and the pictures with their sampler.
+    fn shadow_picture_group(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        frame_buffer: &wgpu::Buffer,
+        palette_buffer: &wgpu::Buffer,
+        block_textures: &BlockTextures,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("shadow picture bind group"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: frame_buffer,
+                        offset: 0,
+                        size: NonZeroU64::new(size_of::<FrameUniform>() as u64),
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: palette_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&block_textures.views[0]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&block_textures.views[1]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(&block_textures.views[2]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(&block_textures.views[3]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::Sampler(&block_textures.sampler),
+                },
+            ],
+        })
     }
 
     /// Sets which avatars are drawn from now on, replacing the previous ones.
@@ -1963,12 +2115,30 @@ impl VoxelRenderer {
                     multiview_mask: None,
                 });
                 let frame_offset = ((layer as u64 + 1) * self.frame_stride) as u32;
-                pass.set_bind_group(0, &self.shadow_frame_group, &[frame_offset]);
+                // (Blocks that cut holes cast shadows with holes: their pipelines read the pictures, and are used only while such blocks are in the palette and pictures are
+                // drawn at all; otherwise the maps are drawn as they always were.)
+                let cutout_pipelines = match &self.cutout_shadow_pipelines {
+                    Some(pipelines) if self.cutouts_in_use && self.picture_distance > 0.0 => {
+                        Some(pipelines)
+                    }
+                    _ => None,
+                };
+                pass.set_bind_group(
+                    0,
+                    if cutout_pipelines.is_some() {
+                        &self.shadow_picture_group
+                    } else {
+                        &self.shadow_frame_group
+                    },
+                    &[frame_offset],
+                );
                 // (Only the faces the map keeps, the backs of things for the sun and the fronts for the sky: the others are not kept, and are not worth the vertices.)
                 let toward_light = planned.basis.toward_sun;
-                let pipelines = match kind {
-                    MapKind::Sun => &self.shadow_pipelines,
-                    MapKind::Sky => &self.sky_pipelines,
+                let pipelines = match (kind, cutout_pipelines) {
+                    (MapKind::Sun, None) => &self.shadow_pipelines,
+                    (MapKind::Sky, None) => &self.sky_pipelines,
+                    (MapKind::Sun, Some((sun, _))) => sun,
+                    (MapKind::Sky, Some((_, sky))) => sky,
                 };
                 pass.set_pipeline(&pipelines.quads);
                 for &caster in &planned.casters {

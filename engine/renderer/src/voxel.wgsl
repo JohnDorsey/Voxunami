@@ -426,7 +426,7 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // renderer's pipeline is made with).
     let picture = picture_albedo(in);
     // A pixel where the picture of a block that cuts holes is clear (a hole in leaves, in a pane of glass) is not drawn: what is behind it shows. (The shadow maps
-    // do not know yet, see `docs/specs/block-textures-spec.md`.)
+    // leave the same pixels out: `shadow_cutout_fragment` in `pictures_on.wgsl`.)
     if (picture.a < 0.5) {
         discard;
     }

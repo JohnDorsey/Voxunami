@@ -57,7 +57,7 @@ How a game's content reaches a server (data packs) and a client (the package in 
 - **Leaves and glass (2026-11-08; owner):** the first blocks with clear pixels, in `base_blocks` as numbers 8 and 9 (the dev blocks moved to 10 to 12). **Transparency is a named mode in block data** (`"transparency": "opaque" | "leaves" | "glass"`), the owner's
   choice over two loose switches (first built as `engine:inner_faces` and `engine:back_faces`, then replaced): a mode is a fixed answer to "are the clear pixels of its pictures holes, are the faces between its voxels drawn, are its faces drawn from behind", leaves
   yes, yes, yes and glass yes, no, yes, and an opaque block ignores the alpha of its pictures. **`see_through` is split into `sight_through` and `light_through`** (the owner's names): seeing through a block and light passing through it are separate, and a mode needs `sight_through`. Clear pixels are
-  holes by a shader `discard` at alpha under a half, with no blending. Sun shadows from them: see `block-textures-spec.md`, "Leaves and glass".
+  holes by a shader `discard` at alpha under a half, with no blending, in the picture and in the shadow maps (cut-out shadows, built the same day as a second phase, at the owner's choice; `block-textures-spec.md`, "Leaves and glass").
 
 ## Decided (the content package at the handshake; built in Phase 28)
 

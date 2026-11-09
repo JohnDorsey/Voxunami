@@ -94,7 +94,8 @@ pub(crate) fn shadow_frame_layout(device: &wgpu::Device, frame_size: u64) -> wgp
 }
 
 /// The pipelines that draw casters into a map: one for whole-voxel quads and one for detailed ones. The sun's maps keep the backs of things and the sky's keep the fronts;
-/// `culled` is the side that is not drawn.
+/// `culled` is the side that is not drawn. With `cutout` the pipelines also read the pictures, and do not keep a pixel where the picture of a block that cuts holes is clear
+/// (their `frame_layout` is then the one that has the palette and the pictures in it, and their shader the one that has the pictures).
 pub(crate) struct ShadowPipelines {
     pub(crate) quads: wgpu::RenderPipeline,
     pub(crate) detailed: wgpu::RenderPipeline,
@@ -107,7 +108,13 @@ impl ShadowPipelines {
         frame_layout: &wgpu::BindGroupLayout,
         placement_layout: &wgpu::BindGroupLayout,
         culled: wgpu::Face,
+        cutout: bool,
     ) -> Self {
+        let (quads_entry, detailed_entry) = if cutout {
+            ("shadow_cutout_vertex_main", "shadow_cutout_vertex_detailed")
+        } else {
+            ("shadow_vertex_main", "shadow_vertex_detailed")
+        };
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("shadow pipeline layout"),
             bind_group_layouts: &[Some(frame_layout), Some(placement_layout)],
@@ -123,7 +130,13 @@ impl ShadowPipelines {
                     compilation_options: Default::default(),
                     buffers: &[Some(vertex_buffer)],
                 },
-                fragment: None,
+                // (A fragment stage with no colour to write: it only says which pixels are not there.)
+                fragment: cutout.then_some(wgpu::FragmentState {
+                    module: shader,
+                    entry_point: Some("shadow_cutout_fragment"),
+                    compilation_options: Default::default(),
+                    targets: &[],
+                }),
                 primitive: wgpu::PrimitiveState {
                     topology: wgpu::PrimitiveTopology::TriangleList,
                     front_face: wgpu::FrontFace::Ccw,
@@ -154,7 +167,7 @@ impl ShadowPipelines {
         Self {
             quads: make(
                 "shadow pipeline",
-                "shadow_vertex_main",
+                quads_entry,
                 wgpu::VertexBufferLayout {
                     array_stride: size_of::<PackedQuad>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
@@ -163,7 +176,7 @@ impl ShadowPipelines {
             ),
             detailed: make(
                 "detailed shadow pipeline",
-                "shadow_vertex_detailed",
+                detailed_entry,
                 wgpu::VertexBufferLayout {
                     array_stride: size_of::<PackedDetailedQuad>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
