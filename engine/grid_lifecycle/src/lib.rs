@@ -12,9 +12,12 @@
 //! [`arrival`] module: its hull, the terrain and the other ships) and, if something is there, asks the player what to do. A ship whose file
 //! cannot be found asks them too. A game that wants the look gives the plugin what its blocks are to a body ([`ArrivalConfig`]); every game
 //! gives it the place a player goes who chooses the world's spawn.
+//!
+//! Ships that are coupled by their joint ends (the pairs `ServerWorld::coupled_ships` holds) are kept as one group, by the distance of the nearest ship of it (the `groups` module).
 
 pub mod arrival;
 mod distance;
+mod groups;
 mod plugin;
 
 pub use distance::{squared_distance, squared_distance_to_bricks};

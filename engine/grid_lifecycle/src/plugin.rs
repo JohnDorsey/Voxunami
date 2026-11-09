@@ -12,10 +12,11 @@ use protocol::ClientId;
 use server::{ServerWorld, ShipSettings};
 use voxel_grid::ChannelIndex;
 use voxel_space::{BrickBox, GridId, LevelIndex, Orientation, WorldPosition};
-use world_storage::MovingGrid;
+use world_storage::{MovingGrid, ParkedGrid};
 
 use crate::arrival::{self, Hull, MOVE_RADIUS, Obstacles};
 use crate::distance::{squared_distance, squared_distance_to_bricks};
+use crate::groups::{Groups, Member};
 
 /// How many ticks a ship that could not be put away or brought in waits before it is tried again (the file may have been mended, or the
 /// disk freed), so that a disk that fails is not asked every tick.
@@ -564,16 +565,61 @@ fn update(world: &mut ServerWorld, presence: &SharedPresence, state: &Mutex<Stat
     let stop = squared(settings.simulation_distance * ShipSettings::HYSTERESIS);
     let keep = squared(settings.unload_distance * ShipSettings::HYSTERESIS);
 
+    // What each ship, in memory or in a file, is from the players.
+    let in_memory: Vec<(GridId, f64, &MovingGrid)> = world
+        .data()
+        .grids()
+        .iter()
+        .map(|(id, ship)| {
+            let bounds: Option<BrickBox> = ship.world_brick_bounds();
+            let away = squared_distance_to_players(&players, ship.level, |player| match bounds {
+                Some(bounds) => squared_distance_to_bricks(player, bounds),
+                None => squared_distance(player, ship.pose.position),
+            });
+            (id, away, ship)
+        })
+        .collect();
+    let in_files: Vec<(GridId, f64, &ParkedGrid)> = world
+        .data()
+        .grids()
+        .parked()
+        .map(|(id, parked)| {
+            let away =
+                squared_distance_to_players(&players, parked.level, |player| match parked.bounds {
+                    Some(bounds) => squared_distance_to_bricks(player, bounds),
+                    None => squared_distance(player, parked.pose.position),
+                });
+            (id, away, parked)
+        })
+        .collect();
+    // Ships that are coupled are kept as one, by the nearest of them (a ship in a file counts, one that waits for its pilot too).
+    let groups = Groups::of(
+        world.coupled_ships(),
+        in_memory
+            .iter()
+            .map(|(id, away, ship)| Member {
+                id: *id,
+                squared_away: *away,
+                awake: !ship.frozen,
+            })
+            .chain(in_files.iter().map(|(id, away, _)| Member {
+                id: *id,
+                squared_away: *away,
+                awake: false,
+            })),
+    );
+
     let mut actions: Vec<(GridId, Action)> = Vec::new();
-    for (id, ship) in world.data().grids().iter() {
-        let bounds: Option<BrickBox> = ship.world_brick_bounds();
-        let away = squared_distance_to_players(&players, ship.level, |player| match bounds {
-            Some(bounds) => squared_distance_to_bricks(player, bounds),
-            None => squared_distance(player, ship.pose.position),
-        });
+    for &(id, own_away, ship) in &in_memory {
+        let away = groups.squared_away(id, own_away);
         if !ship.frozen {
             if away > stop {
                 actions.push((id, Action::Freeze));
+            }
+        } else if groups.awake(id, false) {
+            // A frozen ship coupled to one that is awake would hold it fixed: it is let go with it, as long as the group is near enough for the awake one to go on.
+            if away <= stop {
+                actions.push((id, Action::Thaw));
             }
         } else if away <= simulate {
             actions.push((id, Action::Thaw));
@@ -582,18 +628,13 @@ fn update(world: &mut ServerWorld, presence: &SharedPresence, state: &Mutex<Stat
             actions.push((id, Action::Park));
         }
     }
-    for (id, parked) in world.data().grids().parked() {
+    for &(id, own_away, parked) in &in_files {
         // A ship that went away with someone waits for them.
         if parked.waits_for_those_aboard {
             continue;
         }
-        let away =
-            squared_distance_to_players(&players, parked.level, |player| match parked.bounds {
-                Some(bounds) => squared_distance_to_bricks(player, bounds),
-                None => squared_distance(player, parked.pose.position),
-            });
         // (A planet is brought back whatever the distance: a client draws it from as far as there is anything to see of it.)
-        if away <= simulate || parked.has_terrain {
+        if groups.squared_away(id, own_away) <= simulate || parked.has_terrain {
             actions.push((id, Action::BringIn));
         }
     }

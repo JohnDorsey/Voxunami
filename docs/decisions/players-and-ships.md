@@ -182,7 +182,7 @@ Entities on the wire, who a player is, players as entities, ships a player can m
   the engine does not guess. A ship with another player aboard does not go. The questions are not saved.
 - **Ships are kept by the distance of the nearest player in their level (32i, `engine/grid_lifecycle`):** moving within the simulation distance (1,024 voxels by default: it was 256 until the owner's answer of 2026-11-09, made so for every ship, jointed or not), frozen beyond
   it, in a file beyond the unload distance (1024, the same, so a ship is put away as soon as it stops moving and the frozen state between lasts about a tick), with a tenth more to leave a state than to enter it. A server with no player in a level keeps no ship of it awake. The host chooses
-  the distances and what a pilot's logout does (`ShipSettings`).
+  the distances and what a pilot's logout does (`ShipSettings`). **Ships coupled by their joint ends (`ServerWorld::coupled_ships`) are kept as one group, by the distance of the nearest ship of it** (`joints-and-cars.md`, step 4b).
 - **A ship is saved as a file of its own, named by the ship and a write counter saved with the world, and a world is saved as a set (32i):** the ship files first, the world file that names
   them last, then the ship files nobody names are removed. Whatever stops a save, the world file that is there is whole and every ship file it names is there. A passenger is saved in the
   frame of its ship with its place in the world.

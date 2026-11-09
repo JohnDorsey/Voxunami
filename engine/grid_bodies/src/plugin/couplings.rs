@@ -152,7 +152,7 @@ fn velocity_at(state: &BodyState, arm: [f64; 3]) -> [f64; 3] {
 
 impl Bodies {
     /// Lets go the couplings whose ships or ends are gone, couples the ships whose ends have come together slowly and in line, and pulls the others together.
-    pub(super) fn couple_joints(&mut self, world: &ServerWorld) {
+    pub(super) fn couple_joints(&mut self, world: &mut ServerWorld) {
         let Some(settings) = self.config.joints else {
             return;
         };
@@ -161,8 +161,31 @@ impl Bodies {
         for frame_key in frame_keys {
             self.couple_and_pull_in(world, &settings, frame_key);
         }
+        self.record_couplings(world);
         let now = self.couplings.len() as u64;
         self.count(|report| report.couplings = now);
+    }
+
+    /// Tells the world which ships are coupled, for whoever keeps ships by how near the players are (`ServerWorld::coupled_ships`): every coupling there is. One that is gone
+    /// is forgotten too, unless a ship of it is in a file: its joint went with the ship's body, but the pair is the same, and the group is kept together while it waits (the
+    /// joint is made again when both are in memory, the ends being together).
+    fn record_couplings(&self, world: &mut ServerWorld) {
+        let forgotten: Vec<CouplingKey> = world
+            .coupled_ships()
+            .iter()
+            .filter(|key| !self.couplings.contains_key(key))
+            .filter(|(first, second)| {
+                let in_a_file = |id: &GridId| world.data().grids().get_parked(*id).is_some();
+                !in_a_file(first) && !in_a_file(second)
+            })
+            .copied()
+            .collect();
+        for (first, second) in forgotten {
+            world.set_ships_coupled(first, second, false);
+        }
+        for &(first, second) in self.couplings.keys() {
+            world.set_ships_coupled(first, second, true);
+        }
     }
 
     /// One frame: the ends that can be coupled are, and then each group is pulled by the nearest group that has ends that pull on its own.

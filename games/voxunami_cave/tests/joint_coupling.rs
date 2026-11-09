@@ -1,12 +1,15 @@
 //! Coupling in Cave (step 3 of `docs/decisions/joints-and-cars.md`): ships with dev ball joints are drawn together by their joint ends, coupled when the ends are together, in
-//! line and slow, held together by a ball joint, and let go when an end is gone. What is not here: the group moving between frames, rails and freezing, saving (step 4).
+//! line and slow, held together by a ball joint, and let go when an end is gone. The group moving between frames (4a) and being kept by the lifecycle as one (4b: frozen, put in files and brought in together) is here too. What is not: rails,
+//! docks and splits under joints, saving (steps 4c and 4d).
 
 mod common;
 
 use common::docking::{PLAIN, Placed, make, stones};
 use common::joints::{ball_end_toward, joint_block};
-use common::{Scene, ship_id};
-use server::GridView;
+use std::sync::{Arc, Mutex};
+
+use common::{Scene, ship_id, tick_and_follow};
+use server::{GridView, ShipSettings};
 use voxel_space::{
     BrickCoordinate, FaceDirection, GravitySettings, GridId, GridPose, LevelIndex, Orientation,
     VoxelCoordinate, WorldPosition,
@@ -628,4 +631,177 @@ fn two_cars_with_two_pairs_of_ends_between_them_are_coupled_at_one_pair() {
     scene.ticks(100);
     assert_eq!(report().couplings, 1);
     assert_eq!(report().couplings_made, 1);
+}
+
+#[test]
+fn the_server_world_records_which_ships_are_coupled_and_forgets_it_when_the_pair_is_let_go() {
+    let (mut scene, report, ..) = two_cars(3.0, 3, 3);
+    assert!(recorded_couplings(&mut scene).is_empty());
+    until_coupled(&mut scene, &report, 400);
+    assert_eq!(report().couplings, 1);
+    assert_eq!(
+        recorded_couplings(&mut scene),
+        vec![(ship_id(0), ship_id(1))]
+    );
+    // An end is broken: the pair is let go, and the world does not remember it.
+    let content = CaveContent::new();
+    scene.run(move |world| {
+        let mut view = world.grid(ship_id(1)).unwrap();
+        view.set(
+            content.block_channel(),
+            VoxelCoordinate::new(0, 0, 0),
+            content.blocks.air,
+        )
+        .unwrap();
+    });
+    scene.ticks(2);
+    assert_eq!(report().couplings, 0);
+    assert!(recorded_couplings(&mut scene).is_empty());
+}
+
+/// The pairs of ships that the server world says are coupled. (They are asked inside a tick, which this runs.)
+fn recorded_couplings(scene: &mut Scene) -> Vec<(GridId, GridId)> {
+    let found: Arc<Mutex<Vec<(GridId, GridId)>>> = Arc::default();
+    let asked = Arc::clone(&found);
+    scene.run(move |world| {
+        *asked.lock().unwrap() = world.coupled_ships().iter().copied().collect();
+    });
+    let pairs = found.lock().unwrap();
+    pairs.clone()
+}
+
+/// What the lifecycle asks of ships in a world with players: they stop moving 110 voxels from the nearest player and are put in files beyond 330.
+fn kept_by_distance() -> ShipSettings {
+    ShipSettings::new(100.0, 300.0).unwrap()
+}
+
+#[test]
+fn a_coupled_pair_nobody_is_near_is_frozen_and_put_in_files_together_and_comes_back_coupled() {
+    let (mut scene, report, first, second) = two_cars(3.0, 3, 3);
+    until_coupled(&mut scene, &report, 400);
+    assert_eq!(report().couplings, 1);
+    // (The player joins first, with ships kept wherever they are: while they have no place yet every ship is far from them.)
+    let mut player = scene.rig.join([20.0, 240.0, 20.0], 0.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    scene.rig.server.set_ship_settings(kept_by_distance());
+    tick_and_follow(&mut scene, &mut player, 5);
+    assert_eq!(report().couplings, 1, "nobody has gone");
+
+    // The player goes a long way off: the pair is frozen, and then in files, both at once. The world remembers that they are coupled, and the bodies have no joint.
+    player.send_command("/tp 2000 240 20");
+    tick_and_follow(&mut scene, &mut player, 3);
+    for id in [first.0, second.0] {
+        assert!(
+            scene.rig.server.world().grids().get(id).is_none(),
+            "{id} is in a file"
+        );
+        assert!(scene.rig.server.world().grids().get_parked(id).is_some());
+    }
+    assert_eq!(report().couplings, 0);
+    assert_eq!(
+        recorded_couplings(&mut scene),
+        vec![(first.0, second.0)],
+        "the pair is remembered while its ships are in files"
+    );
+
+    // The player comes back: both come in, and are coupled again (the joint is made again, as for a world that was loaded).
+    player.send_command("/tp 20 240 20");
+    tick_and_follow(&mut scene, &mut player, 6);
+    for id in [first.0, second.0] {
+        let ship = scene.rig.server.world().grids().get(id).unwrap();
+        assert!(!ship.frozen);
+    }
+    assert_eq!(report().couplings, 1);
+    assert_eq!(report().couplings_made, 2, "made again, not kept");
+    assert_eq!(recorded_couplings(&mut scene), vec![(first.0, second.0)]);
+    let gap = pivot_gap(&scene, first, second);
+    assert!(gap < 0.005, "{gap} m");
+    // It is a working joint: pushed, the pair swings and keeps its ends together.
+    scene.run(|world| {
+        world
+            .set_grid_velocity(ship_id(1), [0.0, 2.0, 0.0], [0.0; 3])
+            .unwrap();
+    });
+    let mut worst: f64 = 0.0;
+    for _ in 0..60 {
+        tick_and_follow(&mut scene, &mut player, 1);
+        worst = worst.max(pivot_gap(&scene, first, second));
+    }
+    assert!(worst < 0.02, "{worst} m");
+}
+
+#[test]
+fn a_coupled_pair_that_stays_frozen_in_memory_keeps_its_joint_and_swings_when_let_go() {
+    let (mut scene, report, first, second) = two_cars(3.0, 3, 3);
+    until_coupled(&mut scene, &report, 400);
+    assert_eq!(report().couplings, 1);
+    let mut player = scene.rig.join([20.0, 240.0, 20.0], 0.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    scene.rig.server.set_ship_settings(kept_by_distance());
+    tick_and_follow(&mut scene, &mut player, 5);
+    let made = report().couplings_made;
+
+    // 320 voxels from the pair: beyond the 110 a ship stops at and short of the 330 it is put in a file at, so the two cars stay in memory as fixed bodies with a joint between.
+    player.send_command("/tp -300 240 20");
+    tick_and_follow(&mut scene, &mut player, 60);
+    for id in [first.0, second.0] {
+        let ship = scene.rig.server.world().grids().get(id).expect("in memory");
+        assert!(ship.frozen, "{id}");
+    }
+    assert_eq!(report().couplings, 1);
+    assert!(pivot_gap(&scene, first, second) < 0.005);
+
+    // The player comes back: both are let go, with the joint they had (not made again), and it swings.
+    player.send_command("/tp 20 240 20");
+    tick_and_follow(&mut scene, &mut player, 3);
+    for id in [first.0, second.0] {
+        assert!(!scene.rig.server.world().grids().get(id).unwrap().frozen);
+    }
+    scene.run(|world| {
+        world
+            .set_grid_velocity(ship_id(1), [0.0, 2.0, 0.0], [0.0; 3])
+            .unwrap();
+    });
+    let mut worst: f64 = 0.0;
+    for _ in 0..60 {
+        tick_and_follow(&mut scene, &mut player, 1);
+        worst = worst.max(pivot_gap(&scene, first, second));
+    }
+    assert!(worst < 0.02, "{worst} m");
+    assert_eq!(report().couplings, 1);
+    assert_eq!(report().couplings_made, made, "the joint was kept");
+}
+
+#[test]
+fn a_car_that_is_far_from_the_player_is_not_frozen_while_the_car_it_is_coupled_to_is_near() {
+    // Two long cars, 61 voxels each, coupled end to end: a player 60 voxels before the east car is 124 from the west car, which would be frozen as a ship alone (beyond the
+    // 110 a moving ship stops at), and would hold the east car by the joint, as a fixed body does.
+    let (mut scene, report, first, second) = two_cars(3.0, 60, 60);
+    until_coupled(&mut scene, &report, 600);
+    assert_eq!(report().couplings, 1);
+    let mut player = scene.rig.join([-60.0, 230.5, 20.5], 0.0, 0.0);
+    scene.rig.settle(&mut [&mut player]);
+    scene.rig.server.set_ship_settings(kept_by_distance());
+    tick_and_follow(&mut scene, &mut player, 10);
+    for id in [first.0, second.0] {
+        let ship = scene.rig.server.world().grids().get(id).unwrap();
+        assert!(!ship.frozen, "{id} is part of a group that is near");
+    }
+    assert_eq!(report().couplings, 1);
+    // Pushed, the west car moves with the east: it is not held.
+    scene.run(|world| {
+        world
+            .set_grid_velocity(ship_id(0), [0.0, 2.0, 0.0], [0.0; 3])
+            .unwrap();
+    });
+    tick_and_follow(&mut scene, &mut player, 5);
+    let speed = scene
+        .rig
+        .server
+        .world()
+        .grids()
+        .get(second.0)
+        .unwrap()
+        .linear_velocity[1];
+    assert!(speed > 0.2, "{speed} m/s");
 }
