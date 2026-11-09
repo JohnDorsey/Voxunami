@@ -340,6 +340,7 @@ then what it needs and what I found in the code.
 
 ## Unscheduled (owner, 2026-10-27)
 
+- **Cheaper leaves and glass** (2026-11-09). Leaves cost 2.6 ms over an opaque block on the integrated GPU in a dense test stand (nothing on a discrete GPU), because they are unmerged 16-byte quads. Options (merging them into the greedy path, drawing fewer inner sheets, doing nothing), a cheap experiment to run first, and a correction of my earlier claim that merging would fix the cost: `leaf-cost-options.md`.
 - **Dither far leaves and glass** (owner, 2026-11-08). Past the texture distance (and in the coarse levels) a face is one flat colour, so far leaves and glass are solid cubes of the alpha-weighted average of their picture
   (accepted for now). The idea: beyond the fade band drop each pixel at random with the chance of one minus the picture's average alpha, so far foliage stays see-through. *Needs:* a screen-door or hash pattern in the shader that is
   steady from frame to frame (no wall-clock; the game tick and the face's place), a per-block opacity next to the colour, and a decision for the coarse nodes, which carry no picture and would still be solid.
