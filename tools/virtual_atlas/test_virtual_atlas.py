@@ -1602,10 +1602,83 @@ class InteractionTests(ProjectFixture):
         self.assertEqual(self.names()[(1, 3)], "b.png")
         self.assertEqual(self.project.selection, {(0, 3), (1, 3)})
 
-    def test_control_dragging_an_unselected_tile_adds_it_to_the_group(self):
+    def test_control_dragging_copies_the_selected_tiles_instead_of_moving_them(self):
+        self.project.selection = {(0, 0), (1, 0)}
+        self.drag(self.center((0, 0)), self.center((0, 3)), control=True)
+        self.assertEqual(self.names(), {
+            (0, 0): "a.png", (1, 0): "b.png", (2, 0): "c.png", (0, 1): "d.png",
+            (0, 3): "a (copy).png", (1, 3): "b (copy).png",
+        })
+        self.assertEqual(self.project.selection, {(0, 3), (1, 3)}, "the copies are selected")
+        self.assertTrue((self.folder / "a (copy).png").exists() and (self.folder / "b (copy).png").exists(), "files at once")
+        self.assertEqual(self.saved().coordinates_to_names[(1, 3)], "b (copy).png")
+        self.assertIn("Copied 2 tiles", self.interaction.notice)
+
+    def test_control_dragging_an_unselected_tile_adds_it_to_the_group_that_is_copied(self):
         self.project.selection = {(0, 0)}
         self.drag(self.center((1, 0)), self.center((1, 3)), control=True)
         self.assertEqual(self.project.selection, {(0, 3), (1, 3)})
+        self.assertEqual(self.names()[(0, 0)], "a.png")
+        self.assertEqual(self.names()[(1, 0)], "b.png")
+
+    def test_a_single_copy_says_where_the_tile_went_in_its_name(self):
+        self.drag(self.center((2, 0)), self.center((4, 2)), control=True)
+        self.assertEqual(self.names()[(4, 2)], "c (copy).png")
+        self.assertIn("c (copy).png", self.interaction.notice)
+
+    def test_a_control_drag_onto_a_tile_or_onto_the_unplaced_section_is_flagged_invalid_and_copies_nothing(self):
+        before = (self.folder / "atlas.json").read_bytes()
+        start = self.center((0, 0))
+        self.interaction.mouse_down(start, True)
+        self.interaction.mouse_move(self.center((1, 0)))
+        self.assertTrue(self.interaction.dragging)
+        self.assertFalse(self.interaction.drag.drop_is_valid, "a tile is there")
+        self.interaction.mouse_move(self.unplaced.tile_screen_rect((0, 0)).center)
+        self.assertFalse(self.interaction.drag.drop_is_valid, "copies are not put in the unplaced section")
+        self.interaction.mouse_up(self.unplaced.tile_screen_rect((0, 0)).center)
+        self.interaction.mouse_down(start, True)
+        self.interaction.mouse_move(self.center((1, 0)))
+        self.interaction.mouse_up(self.center((1, 0)))
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertEqual(len(self.project.tiles), 4)
+        self.assertEqual(len(self.project.unplaced), 1)
+
+    def test_a_control_drag_reports_a_good_drop_as_valid(self):
+        start = self.center((0, 0))
+        self.interaction.mouse_down(start, True)
+        self.interaction.mouse_move((start[0] + 150, start[1] + 150))
+        self.assertTrue(self.interaction.drag.drop_is_valid)
+
+    def test_a_group_with_an_error_tile_cannot_be_copied(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("gone.png", None)})
+        atlas, unplaced, interaction = self.make_interaction(project)
+        project.selection = {(0, 0), (1, 0)}
+        start = atlas.tile_screen_rect((0, 0)).center
+        interaction.mouse_down(start, True)
+        interaction.mouse_move(atlas.tile_screen_rect((0, 3)).center)
+        self.assertFalse(interaction.drag.drop_is_valid)
+        interaction.mouse_up(atlas.tile_screen_rect((0, 3)).center)
+        self.assertEqual(len(project.tiles), 2)
+
+    def test_a_copy_whose_name_would_be_too_long_is_reported_and_changes_nothing(self):
+        long_name = "a" * 250 + ".png"
+        project = self.make_project({(0, 0): (long_name, None)}, data={(0, 0): va.encode_tile_data(solid_tile(RED))})
+        atlas, unplaced, interaction = self.make_interaction(project)
+        interaction.mouse_down(atlas.tile_screen_rect((0, 0)).center, True)
+        interaction.mouse_move(atlas.tile_screen_rect((2, 2)).center)
+        interaction.mouse_up(atlas.tile_screen_rect((2, 2)).center)
+        self.assertIn("Could not copy", interaction.notice)
+        self.assertEqual(list(project.tiles), [(0, 0)])
+
+    def test_dragging_without_control_still_moves_the_tiles(self):
+        self.drag(self.center((2, 0)), self.center((4, 2)))
+        self.assertEqual(self.names()[(4, 2)], "c.png")
+        self.assertNotIn((2, 0), self.names())
+
+    def test_a_control_click_without_dragging_still_toggles_the_selection(self):
+        self.click(self.center((0, 0)), control=True)
+        self.assertEqual(self.project.selection, {(0, 0)})
+        self.assertEqual(len(self.project.tiles), 4)
 
     def test_dropping_where_it_started_changes_nothing(self):
         before = (self.folder / "atlas.json").read_bytes()
@@ -2028,8 +2101,8 @@ class CanvasSessionTests(unittest.TestCase):
         tiles = tiles or {(0, 0): solid_tile(BLUE, size)}
         return va.compose_canvas(tiles, size)
 
-    def start(self, layout, tool, pixel, color=RED, settings=None):
-        return va.CanvasSession(layout, tool, settings or va.ToolSettings(), color, pixel)
+    def start(self, layout, tool, pixel, color=RED, settings=None, **keywords):
+        return va.CanvasSession(layout, tool, settings or va.ToolSettings(), color, pixel, **keywords)
 
     def painted(self, session):
         return {(int(c), int(r)) for r, c in numpy.argwhere(numpy.any(session.pixels != session.base, axis=2))}
@@ -2152,6 +2225,349 @@ class CanvasSessionTests(unittest.TestCase):
         self.assertIsNone(va.pick_color(layout, (-1, 0)))
         self.assertIsNone(va.pick_color(layout, (0, 99)))
         self.assertEqual(va.pick_color(layout, (9, 0)), tuple(int(v) for v in layout.pixels[0, 9]))
+
+    # Wrap-assist: the canvas repeats in every direction and a stroke wraps around it. --------------------
+
+    def wrapped(self, layout, tool, pixel, **keywords):
+        return self.start(layout, tool, pixel, wrap=True, **keywords)
+
+    def stroke_on_a_much_bigger_canvas(self, tool, points, settings):
+        """Where a stroke lands on a canvas eight times as big as the 4 x 4 one, away from its edges, folded back
+        by plain modulo: an independent way to find what a wrapped stroke should paint."""
+        shift = 12
+        big = va.compose_canvas({(0, 0): solid_tile(BLUE, 32)}, 32)
+        session = self.start(big, tool, (points[0][0] + shift, points[0][1] + shift), settings=settings)
+        for column, row in points[1:]:
+            session.move((column + shift, row + shift))
+        return {((column - shift) % 4, (row - shift) % 4) for column, row in self.painted(session)}
+
+    def test_without_wrap_a_pixel_outside_the_canvas_paints_nothing(self):
+        session = self.start(self.layout(4), "pencil", (5, 6))
+        self.assertEqual(self.painted(session), set())
+
+    def test_with_wrap_a_pixel_in_any_copy_of_the_canvas_paints_the_same_pixel_of_it(self):
+        for pixel in [(1, 2), (5, 6), (-3, -2), (9, 14), (-7, 10)]:
+            self.assertEqual(self.painted(self.wrapped(self.layout(4), "pencil", pixel)), {(1, 2)}, pixel)
+
+    def test_a_stroke_leaving_one_side_comes_back_in_on_the_other(self):
+        session = self.wrapped(self.layout(4), "pencil", (3, 1))
+        session.move((5, 1))
+        self.assertEqual(self.painted(session), {(3, 1), (0, 1), (1, 1)})
+        session = self.wrapped(self.layout(4), "pencil", (1, 2))
+        session.move((1, -1))
+        self.assertEqual(self.painted(session), {(1, 2), (1, 1), (1, 0), (1, 3)})
+
+    def test_a_diagonal_stroke_through_a_corner_has_no_gaps(self):
+        session = self.wrapped(self.layout(4), "pencil", (2, 2))
+        session.move((6, 6))
+        self.assertEqual(self.painted(session), {(2, 2), (3, 3), (0, 0), (1, 1)})
+
+    def test_a_brush_on_a_corner_paints_all_four_corners(self):
+        settings = va.ToolSettings()
+        settings.brush_sizes["pencil"] = (2, 2)
+        session = self.wrapped(self.layout(4), "pencil", (0, 0), settings=settings)
+        self.assertEqual(self.painted(session), {(3, 3), (0, 3), (3, 0), (0, 0)})
+
+    def test_a_brush_wider_than_the_canvas_covers_the_whole_row(self):
+        settings = va.ToolSettings()
+        settings.brush_sizes["pencil"] = (6, 1)
+        session = self.wrapped(self.layout(4), "pencil", (1, 1), settings=settings)
+        self.assertEqual(self.painted(session), {(column, 1) for column in range(4)})
+
+    def test_the_eraser_wraps_too(self):
+        session = self.wrapped(self.layout(4), "eraser", (3, 0))
+        session.move((4, 0))
+        self.assertEqual(tuple(session.pixels[0, 0]), va.TRANSPARENT)
+        self.assertEqual(tuple(session.pixels[0, 3]), va.TRANSPARENT)
+        self.assertEqual(self.painted(session), {(3, 0), (0, 0)})
+
+    def test_a_line_leaving_the_canvas_wraps(self):
+        session = self.wrapped(self.layout(4), "line", (2, 1))
+        session.move((6, 1))
+        self.assertEqual(self.painted(session), {(column, 1) for column in range(4)})
+        session = self.wrapped(self.layout(4), "line", (3, 3))
+        session.move((5, 5))
+        self.assertEqual(self.painted(session), {(3, 3), (0, 0), (1, 1)})
+
+    def test_every_stroke_tool_paints_what_the_same_stroke_paints_on_a_much_bigger_canvas_folded_back(self):
+        strokes = [
+            [(1, 1), (6, 2)],
+            [(-5, -3), (9, 6)],
+            [(3, 3), (3, -9)],
+            [(0, 0), (-1, 0), (2, 5), (9, -4)],
+            [(7, 2), (-6, 2)],
+        ]
+        for tool in va.BRUSH_TOOLS + va.LINE_TOOLS:
+            for width in (1, 2, 3):
+                settings = va.ToolSettings()
+                settings.line_width = width
+                settings.brush_sizes["pencil"] = settings.brush_sizes["eraser"] = (width, 4 - width)
+                for points in strokes:
+                    session = self.wrapped(self.layout(4), tool, points[0], settings=settings)
+                    for point in points[1:]:
+                        session.move(point)
+                    expected = self.stroke_on_a_much_bigger_canvas(tool, points, settings)
+                    self.assertEqual(self.painted(session), expected, f"{tool} width {width} {points}")
+
+    def test_moving_a_whole_stroke_by_whole_canvases_changes_nothing_for_any_tool(self):
+        for tool in ("pencil", "line", "horizontal_parallelogram", "noise_brush", "airbrush"):
+            results = []
+            for shift_column, shift_row in [(0, 0), (4, 0), (-8, 12), (20, -4)]:
+                session = self.wrapped(
+                    self.layout(4), tool, (1 + shift_column, 2 + shift_row), random_source=random.Random(5)
+                )
+                session.move((6 + shift_column, 4 + shift_row))
+                session.move((-2 + shift_column, 1 + shift_row))
+                results.append(session.pixels.copy())
+            for other in results[1:]:
+                self.assertTrue(numpy.array_equal(results[0], other), tool)
+
+    def test_pixels_of_empty_places_are_never_painted_in_any_copy(self):
+        layout = self.layout(4, {(0, 0): solid_tile(BLUE), (2, 0): solid_tile(BLUE)})
+        session = self.wrapped(layout, "pencil", (3, 1))
+        session.move((4, 1))
+        self.assertEqual(self.painted(session), {(3, 1)}, "column 4 is an empty place")
+        session = self.wrapped(layout, "pencil", (11, 1))
+        session.move((13, 1))
+        self.assertEqual(self.painted(session), {(11, 1), (0, 1), (1, 1)}, "12 is column 0 of the next copy")
+        session = self.wrapped(layout, "pencil", (17, 1))
+        self.assertFalse(session.changed, "column 17 is column 5 of the canvas, an empty place")
+
+    def test_the_fill_bucket_fills_around_the_edges(self):
+        pixels = solid_tile(TRANSPARENT, 4)
+        pixels[:, 0] = RED
+        pixels[:, 3] = RED
+        layout = va.compose_canvas({(0, 0): pixels}, 4)
+        plain = self.start(layout, "fill", (0, 0), color=GREEN)
+        self.assertEqual(self.painted(plain), {(0, row) for row in range(4)})
+        around = self.wrapped(layout, "fill", (0, 0), color=GREEN)
+        self.assertEqual(self.painted(around), {(column, row) for column in (0, 3) for row in range(4)})
+        elsewhere = self.wrapped(layout, "fill", (16, -4), color=GREEN)
+        self.assertTrue(numpy.array_equal(elsewhere.pixels, around.pixels), "a press in any copy fills the same region")
+        from_the_other_side = self.wrapped(layout, "fill", (3, 3), color=GREEN)
+        self.assertTrue(numpy.array_equal(from_the_other_side.pixels, around.pixels))
+
+    def test_the_noise_brush_wraps(self):
+        settings = va.ToolSettings()
+        settings.diameters["noise_brush"] = 3
+        settings.fractions["noise_density"] = 1.0
+        session = self.wrapped(self.layout(5), "noise_brush", (0, 0), settings=settings)
+        self.assertEqual(self.painted(session), {(0, 0), (1, 0), (4, 0), (0, 1), (0, 4)})
+
+    def test_the_air_brush_wraps(self):
+        settings = va.ToolSettings()
+        settings.diameters["airbrush"] = 3
+        settings.fractions["airbrush_hardness"] = 1.0
+        settings.fractions["airbrush_opacity"] = 1.0
+        session = self.wrapped(self.layout(4), "airbrush", (0, 0), settings=settings)
+        self.assertEqual(self.painted(session), {(0, 0), (1, 0), (3, 0), (0, 1), (0, 3)})
+
+    def test_pick_color_with_wrap_reads_the_pixel_in_any_copy(self):
+        layout = self.layout(4, {(0, 0): random_tile(1), (2, 0): random_tile(2)})
+        self.assertEqual(va.pick_color(layout, (1 + 12, 2 - 4), wrap=True), va.pick_color(layout, (1, 2)))
+        self.assertEqual(va.pick_color(layout, (-3, 9), wrap=True), va.pick_color(layout, (9, 1)))
+        self.assertIsNone(va.pick_color(layout, (5 + 12, 1), wrap=True), "an empty place in another copy")
+        self.assertIsNone(va.pick_color(layout, (13, 1)), "without wrap the other copies do not exist")
+
+    # One-pixel lines ------------------------------------------------------------------------------------
+
+    def line_settings(self, width):
+        settings = va.ToolSettings()
+        settings.line_width = width
+        return settings
+
+    def test_a_horizontal_line_one_pixel_long_is_one_column_as_tall_as_the_width(self):
+        for width, rows in [(1, [4]), (2, [3, 4]), (3, [3, 4, 5]), (4, [2, 3, 4, 5])]:
+            session = self.start(self.layout(), "horizontal_line", (4, 4), settings=self.line_settings(width))
+            self.assertEqual(self.painted(session), {(4, row) for row in rows}, width)
+
+    def test_a_vertical_line_one_pixel_long_is_one_row_as_wide_as_the_width(self):
+        for width, columns in [(1, [4]), (2, [3, 4]), (3, [3, 4, 5]), (4, [2, 3, 4, 5])]:
+            session = self.start(self.layout(), "vertical_line", (4, 4), settings=self.line_settings(width))
+            self.assertEqual(self.painted(session), {(column, 4) for column in columns}, width)
+
+    def test_the_one_pixel_line_is_the_first_pixel_of_a_longer_line_of_the_same_width(self):
+        for width in (1, 2, 3):
+            settings = self.line_settings(width)
+            one = self.painted(self.start(self.layout(), "horizontal_line", (4, 4), settings=settings))
+            two_session = self.start(self.layout(), "horizontal_line", (4, 4), settings=settings)
+            two_session.move((5, 4))
+            self.assertEqual(self.painted(two_session), one | {(column + 1, row) for column, row in one}, width)
+            one = self.painted(self.start(self.layout(), "vertical_line", (4, 4), settings=settings))
+            two_session = self.start(self.layout(), "vertical_line", (4, 4), settings=settings)
+            two_session.move((4, 5))
+            self.assertEqual(self.painted(two_session), one | {(column, row + 1) for column, row in one}, width)
+
+    def test_dragging_a_line_away_and_back_to_where_it_started_leaves_the_one_pixel_line(self):
+        settings = self.line_settings(3)
+        session = self.start(self.layout(), "horizontal_line", (4, 4), settings=settings)
+        session.move((7, 6))
+        session.move((4, 6))
+        self.assertEqual(self.painted(session), {(4, 3), (4, 4), (4, 5)})
+
+    def test_the_free_line_tool_still_makes_a_square_dot_when_it_is_no_longer_than_a_pixel(self):
+        session = self.start(self.layout(), "line", (4, 4), settings=self.line_settings(3))
+        self.assertEqual(self.painted(session), {(column, row) for column in (3, 4, 5) for row in (3, 4, 5)})
+
+    def test_a_one_pixel_long_line_wraps_like_any_other(self):
+        settings = self.line_settings(3)
+        session = self.wrapped(self.layout(4), "horizontal_line", (3, 3), settings=settings)
+        self.assertEqual(self.painted(session), {(3, 2), (3, 3), (3, 0)})
+        session = self.wrapped(self.layout(4), "vertical_line", (0, 0), settings=settings)
+        self.assertEqual(self.painted(session), {(3, 0), (0, 0), (1, 0)})
+
+    # The rotate tool: drag a pixel to rotate its row or its column --------------------------------------
+
+    def rotating_layout(self):
+        return va.compose_canvas({(0, 0): random_tile(3, 8)}, 8)
+
+    def rotated(self, layout, pixel, *moves, **keywords):
+        session = self.start(layout, "rotate", pixel, **keywords)
+        for move in moves:
+            session.move(move)
+        return session
+
+    def test_pressing_without_dragging_changes_nothing(self):
+        session = self.rotated(self.rotating_layout(), (2, 3))
+        self.assertFalse(session.changed)
+
+    def test_dragging_sideways_rotates_the_pixel_row_of_the_tile_and_nothing_else(self):
+        layout = self.rotating_layout()
+        for shift in (3, -2, 8, 10, -11):
+            session = self.rotated(layout, (2, 3), (2 + shift, 3))
+            expected = layout.pixels.copy()
+            expected[3] = numpy.roll(layout.pixels[3], shift, axis=0)
+            self.assertTrue(numpy.array_equal(session.pixels, expected), shift)
+
+    def test_dragging_up_or_down_rotates_the_pixel_column_of_the_tile_and_nothing_else(self):
+        layout = self.rotating_layout()
+        for shift in (3, -2, 8, 10, -11):
+            session = self.rotated(layout, (5, 2), (5, 2 + shift))
+            expected = layout.pixels.copy()
+            expected[:, 5] = numpy.roll(layout.pixels[:, 5], shift, axis=0)
+            self.assertTrue(numpy.array_equal(session.pixels, expected), shift)
+
+    def test_the_pixel_that_was_pressed_follows_the_pointer(self):
+        layout = self.rotating_layout()
+        session = self.rotated(layout, (2, 3), (6, 3))
+        self.assertTrue(numpy.array_equal(session.pixels[3, 6], layout.pixels[3, 2]))
+        session = self.rotated(layout, (5, 6), (5, 1))
+        self.assertTrue(numpy.array_equal(session.pixels[1, 5], layout.pixels[6, 5]))
+
+    def test_the_axis_is_the_one_the_pointer_moved_further_along_and_a_tie_rotates_the_row(self):
+        layout = self.rotating_layout()
+        row = self.rotated(layout, (2, 3), (5, 4))
+        self.assertTrue(numpy.array_equal(row.pixels[3], numpy.roll(layout.pixels[3], 3, axis=0)))
+        self.assertTrue(numpy.array_equal(row.pixels[:, 2][[0, 1, 2, 4, 5]], layout.pixels[:, 2][[0, 1, 2, 4, 5]]))
+        column = self.rotated(layout, (2, 3), (3, 0))
+        self.assertTrue(numpy.array_equal(column.pixels[:, 2], numpy.roll(layout.pixels[:, 2], -3, axis=0)))
+        tie = self.rotated(layout, (2, 3), (4, 5))
+        self.assertTrue(numpy.array_equal(tie.pixels[3], numpy.roll(layout.pixels[3], 2, axis=0)))
+
+    def test_the_preview_follows_the_pointer_and_dragging_back_undoes_it(self):
+        layout = self.rotating_layout()
+        session = self.rotated(layout, (2, 3), (5, 3), (3, 8), (2, 3))
+        self.assertFalse(session.changed)
+        session = self.rotated(layout, (2, 3), (5, 3), (3, 8))
+        self.assertTrue(numpy.array_equal(session.pixels[:, 2], numpy.roll(layout.pixels[:, 2], 5, axis=0)))
+        others = [0, 1, 3, 4, 5, 6, 7]
+        self.assertTrue(numpy.array_equal(session.pixels[3][others], layout.pixels[3][others]), "the row is no longer rotated")
+
+    def test_colors_are_kept_exactly_alpha_included(self):
+        pixels = solid_tile(TRANSPARENT, 8)
+        pixels[0, 0] = (10, 20, 30, 77)
+        session = self.rotated(va.compose_canvas({(0, 0): pixels}, 8), (0, 0), (3, 0))
+        self.assertEqual(tuple(session.pixels[0, 3]), (10, 20, 30, 77))
+        self.assertEqual(tuple(session.pixels[0, 0]), TRANSPARENT)
+
+    def test_with_several_tiles_shown_only_the_tile_that_was_pressed_rotates(self):
+        layout = va.compose_canvas({(0, 0): random_tile(3, 8), (1, 0): random_tile(4, 8)}, 8)
+        session = self.rotated(layout, (10, 2), (13, 2))
+        expected = layout.pixels.copy()
+        expected[2, 8:] = numpy.roll(layout.pixels[2, 8:], 3, axis=0)
+        self.assertTrue(numpy.array_equal(session.pixels, expected), "the row of the second tile, not of the whole canvas")
+        session = self.rotated(layout, (10, 2), (10, 4))
+        expected = layout.pixels.copy()
+        expected[:, 10] = numpy.roll(layout.pixels[:, 10], 2, axis=0)
+        self.assertTrue(numpy.array_equal(session.pixels, expected))
+
+    def test_over_an_empty_place_or_outside_the_canvas_nothing_rotates(self):
+        layout = va.compose_canvas({(0, 0): random_tile(3, 8), (2, 0): random_tile(4, 8)}, 8)
+        self.assertFalse(self.rotated(layout, (10, 2), (13, 2)).changed, "the empty place between the tiles")
+        self.assertFalse(self.rotated(layout, (-1, 2), (3, 2)).changed, "left of the canvas")
+        self.assertFalse(self.rotated(layout, (30, 2), (33, 2)).changed, "right of the canvas")
+
+    def test_with_wrap_assist_a_press_in_any_copy_rotates_the_tile(self):
+        layout = self.rotating_layout()
+        session = self.rotated(layout, (8 + 2, 16 + 3), (8 + 5, 16 + 3), wrap=True)
+        expected = layout.pixels.copy()
+        expected[3] = numpy.roll(layout.pixels[3], 3, axis=0)
+        self.assertTrue(numpy.array_equal(session.pixels, expected))
+        self.assertFalse(self.rotated(layout, (8 + 2, 3), (8 + 5, 3)).changed, "without wrap-assist the other copies are not there")
+
+    def test_the_rotate_tool_has_no_color_of_its_own(self):
+        self.assertFalse(self.start(self.rotating_layout(), "rotate", (0, 0)).uses_color)
+        self.assertFalse(self.start(self.rotating_layout(), "eraser", (0, 0)).uses_color)
+        self.assertTrue(self.start(self.rotating_layout(), "pencil", (0, 0)).uses_color)
+
+
+class WrapLogicTests(unittest.TestCase):
+    def test_wrap_pixel_puts_any_pixel_into_the_canvas(self):
+        self.assertEqual(va.wrap_pixel((-1, -1), (4, 6)), (5, 3))
+        self.assertEqual(va.wrap_pixel((6, 4), (4, 6)), (0, 0))
+        self.assertEqual(va.wrap_pixel((13, 9), (4, 6)), (1, 1))
+        self.assertEqual(va.wrap_pixel((2, 3), (4, 6)), (2, 3))
+
+    def test_fold_mask_moves_a_window_into_the_canvas_by_whole_canvases(self):
+        window = numpy.zeros((3, 3), dtype=bool)
+        window[0, 0] = True
+        for left, top, expected in [(3, 3, (3, 3)), (4, 4, (0, 0)), (-1, -1, (3, 3)), (-3, -3, (1, 1)), (10, 2, (2, 2))]:
+            folded = va.fold_mask(window, left, top, (4, 4))
+            self.assertEqual({(int(c), int(r)) for r, c in numpy.argwhere(folded)}, {expected}, (left, top))
+
+    def test_fold_mask_joins_the_parts_of_a_window_that_cross_an_edge(self):
+        folded = va.fold_mask(numpy.ones((3, 3), dtype=bool), 3, 0, (4, 4))
+        self.assertEqual(mask_to_text(folded), ["##.#", "##.#", "##.#", "...."])
+
+    def test_fold_mask_of_a_window_bigger_than_the_canvas_overlaps_itself(self):
+        window = numpy.zeros((2, 9), dtype=bool)
+        window[0, 1] = window[1, 8] = True
+        self.assertEqual(mask_to_text(va.fold_mask(window, 0, 0, (3, 4))), [".#..", "#...", "...."])
+
+    def test_flood_fill_with_wrap_connects_the_opposite_edges_only_when_asked(self):
+        pixels = solid_tile(TRANSPARENT, 4)
+        pixels[1, :] = RED
+        self.assertEqual(mask_to_text(va.flood_fill_mask(pixels, 0, 0)), ["####", "....", "....", "...."])
+        self.assertEqual(mask_to_text(va.flood_fill_mask(pixels, 0, 0, wrap=True)), ["####", "....", "####", "####"])
+
+    def test_flood_fill_with_wrap_crosses_the_far_edges_too_not_only_the_near_ones(self):
+        rows = solid_tile(TRANSPARENT, 4)
+        rows[1, :] = RED
+        self.assertEqual(mask_to_text(va.flood_fill_mask(rows, 0, 2, wrap=True)), ["####", "....", "####", "####"])
+        self.assertEqual(mask_to_text(va.flood_fill_mask(rows, 3, 3, wrap=True)), ["####", "....", "####", "####"])
+        columns = solid_tile(TRANSPARENT, 4)
+        columns[:, 1] = RED
+        self.assertEqual(mask_to_text(va.flood_fill_mask(columns, 2, 0, wrap=True)), ["#.##"] * 4)
+        self.assertEqual(mask_to_text(va.flood_fill_mask(columns, 3, 3, wrap=True)), ["#.##"] * 4)
+
+    def test_flood_fill_does_not_leak_diagonally(self):
+        pixels = solid_tile(TRANSPARENT, 3)
+        pixels[0, 1] = pixels[1, 0] = pixels[1, 2] = pixels[2, 1] = RED
+        around = va.flood_fill_mask(pixels, 0, 0, wrap=True)
+        self.assertEqual(mask_to_text(around), ["#.#", "...", "#.#"], "the middle only touches the corners at their corners")
+
+    def test_the_noise_stamp_with_wrap_reaches_the_other_side(self):
+        pixels = solid_tile(TRANSPARENT, 5)
+        va.noise_stamp(pixels, 0, 0, RED, 3, "circle", 1.0, 1.0, random.Random(1), wrap=True)
+        painted = {(int(c), int(r)) for r, c in numpy.argwhere(pixels[..., 3] > 0)}
+        self.assertEqual(painted, {(0, 0), (1, 0), (4, 0), (0, 1), (0, 4)})
+
+    def test_the_air_brush_with_wrap_covers_the_other_side_as_strongly_as_this_one(self):
+        stroke = va.AirbrushStroke(solid_tile(TRANSPARENT, 4), RED, 3, 0.5, 1.0, wrap=True)
+        stroke.stamp(0, 0)
+        self.assertGreater(stroke.coverage[0, 3], 0.0)
+        self.assertEqual(stroke.coverage[0, 3], stroke.coverage[0, 1])
+        self.assertEqual(stroke.coverage[3, 0], stroke.coverage[1, 0])
 
 
 class HexColorTests(unittest.TestCase):
@@ -2457,7 +2873,7 @@ class EditorLayoutTests(unittest.TestCase):
         for size in [(640, 780), (450, 600), (900, 900)]:
             rect = va.pygame.Rect(10, 10, *size)
             areas = va.compute_editor_areas(rect, list(va.TOOL_LABELS))
-            parts = {"header": areas.header, "canvas": areas.canvas, "options": areas.options, "controls": areas.controls, "square": areas.square,
+            parts = {"header": areas.header, "canvas": areas.canvas, "sidebar": areas.sidebar, "options": areas.options, "controls": areas.controls, "square": areas.square,
                      "hue": areas.hue_bar, "alpha": areas.alpha_bar, "primary": areas.primary_swatch,
                      "secondary": areas.secondary_swatch, "hex": areas.hex_field}
             parts.update({f"tool {tool}": rectangle for tool, rectangle in areas.tool_buttons.items()})
@@ -2469,6 +2885,21 @@ class EditorLayoutTests(unittest.TestCase):
                 for second in names[index + 1:]:
                     self.assertFalse(parts[first].colliderect(parts[second]), f"{first} overlaps {second} at {size}")
             self.assertGreater(areas.canvas.height, 100, size)
+
+    def test_the_sidebar_is_a_thin_strip_right_of_the_canvas_and_holds_its_buttons(self):
+        for size in [(640, 780), (450, 600), (900, 900)]:
+            areas = va.compute_editor_areas(va.pygame.Rect(10, 10, *size), list(va.TOOL_LABELS))
+            self.assertGreaterEqual(areas.sidebar.left, areas.canvas.right, size)
+            self.assertEqual((areas.sidebar.top, areas.sidebar.bottom), (areas.canvas.top, areas.canvas.bottom))
+            self.assertLess(areas.sidebar.width, areas.canvas.width // 4, "thin")
+            self.assertEqual(list(areas.sidebar_buttons), ["wrap", "pixel_grid", "tile_grid"])
+            buttons = list(areas.sidebar_buttons.items())
+            for name, rectangle in buttons:
+                self.assertTrue(areas.sidebar.contains(rectangle), name)
+                self.assertGreaterEqual(min(rectangle.size), va.scaled(24), "big enough to click")
+            for index, (first, first_rectangle) in enumerate(buttons):
+                for second, second_rectangle in buttons[index + 1:]:
+                    self.assertFalse(first_rectangle.colliderect(second_rectangle), f"{first} overlaps {second}")
 
     def test_all_sixteen_recent_colors_have_room_when_the_editor_is_wide_enough(self):
         areas = va.compute_editor_areas(va.pygame.Rect(0, 0, 640, 780), list(va.TOOL_LABELS))
@@ -2927,6 +3358,530 @@ class ProjectRenameTests(ProjectFixture):
                 project.rename_tile((0, 0), "m.png")
         self.assertEqual(project.tiles[(0, 0)].name, "n.png")
         self.assertEqual(self.saved().coordinates_to_names, {(0, 0): "n.png"})
+
+
+class ProjectPurgeTests(ProjectFixture):
+    def leftover_temporary_files(self):
+        return [entry.name for entry in self.folder.iterdir() if entry.name.startswith(va.TEMPORARY_FILE_PREFIX)]
+
+    def test_purging_a_tile_deletes_its_file_and_its_entry_in_atlas_json_and_nothing_else(self):
+        project = self.make_project(
+            {(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN))},
+            unplaced=[("loose.png", solid_tile(BLUE))],
+            other_settings={"note": [1, 2]},
+        )
+        project.select_only((0, 0))
+        project.purge_tile((0, 0))
+        self.assertFalse((self.folder / "a.png").exists())
+        self.assertTrue((self.folder / "b.png").exists())
+        self.assertTrue((self.folder / "loose.png").exists())
+        saved = self.saved()
+        self.assertEqual(saved.coordinates_to_names, {(1, 0): "b.png"})
+        self.assertEqual(saved.coordinates_to_data, {})
+        self.assertEqual((saved.tile_size, saved.other_settings), (4, {"note": [1, 2]}))
+        self.assertEqual(list(project.tiles), [(1, 0)])
+        self.assertEqual(project.selection, set())
+        self.assertEqual([tile.name for tile in project.unplaced], ["loose.png"], "a purged tile does not become unplaced")
+        self.assertNotIn("a.png", project.existing_names)
+        self.assertEqual(self.leftover_temporary_files(), [])
+
+    def test_purging_keeps_the_selection_of_the_other_tiles(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN))})
+        project.selection = {(0, 0), (1, 0)}
+        project.purge_tile((0, 0))
+        self.assertEqual(project.selection, {(1, 0)})
+
+    def test_purging_a_tile_that_has_no_file_yet_deletes_its_stored_pixels_too(self):
+        project = self.make_project(
+            {(0, 0): ("n.png", None), (1, 0): ("b.png", solid_tile(GREEN))},
+            data={(0, 0): va.encode_tile_data(solid_tile(RED))},
+        )
+        project.purge_tile((0, 0))
+        saved = self.saved()
+        self.assertEqual(saved.coordinates_to_names, {(1, 0): "b.png"})
+        self.assertEqual(saved.coordinates_to_data, {})
+        self.assertNotIn("n.png", (self.folder / "atlas.json").read_text())
+
+    def test_purging_a_tile_with_a_file_and_stored_pixels_deletes_both_entries(self):
+        project = self.make_project(
+            {(0, 0): ("a.png", solid_tile(RED))}, data={(0, 0): va.encode_tile_data(solid_tile(GREEN))}
+        )
+        self.assertTrue(project.tiles[(0, 0)].is_modified)
+        project.purge_tile((0, 0))
+        self.assertFalse((self.folder / "a.png").exists())
+        saved = self.saved()
+        self.assertEqual((saved.coordinates_to_names, saved.coordinates_to_data), ({}, {}))
+
+    def test_purging_a_tile_with_unsaved_edits_deletes_the_file_as_it_is_on_disk(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE))})
+        record = project.tiles[(0, 0)]
+        layout = va.compose_canvas({(0, 0): record.pixels}, self.tile_size)
+        canvas = layout.pixels.copy()
+        canvas[0, 0] = RED
+        project.apply_canvas_edit(layout, canvas)
+        self.assertTrue(project.history.can_undo([record]))
+        project.purge_tile((0, 0))
+        self.assertFalse((self.folder / "a.png").exists())
+        self.assertFalse(project.history.can_undo([record]), "the history of a purged tile is forgotten")
+
+    def test_an_error_tile_can_be_purged_whether_or_not_its_file_exists(self):
+        va.write_png_atomically(self.folder / "wrong_size.png", solid_tile(RED, 8))
+        project = self.make_project(
+            {(0, 0): ("gone.png", None), (1, 0): ("wrong_size.png", None), (2, 0): ("bad_data.png", None)},
+            data={(2, 0): "this is not base64!"},
+        )
+        self.assertTrue(all(record.error is not None for record in project.tiles.values()))
+        for coordinate in [(0, 0), (1, 0), (2, 0)]:
+            project.purge_tile(coordinate)
+        self.assertFalse((self.folder / "wrong_size.png").exists())
+        saved = self.saved()
+        self.assertEqual((saved.coordinates_to_names, saved.coordinates_to_data), ({}, {}))
+
+    def test_the_file_is_found_when_its_letter_case_differs_from_the_name_in_atlas_json(self):
+        va.write_png_atomically(self.folder / "A.png", solid_tile(RED))
+        project = self.make_project({(0, 0): ("a.png", None)})
+        self.assertIsNone(project.tiles[(0, 0)].error, "the scan matches names ignoring case")
+        project.purge_tile((0, 0))
+        self.assertEqual([entry.name for entry in self.folder.iterdir() if entry.suffix == ".png"], [])
+
+    def test_a_purged_name_can_be_used_again(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN))})
+        project.purge_tile((0, 0))
+        self.assertIsNone(project.rename_problem((1, 0), "a.png"))
+
+    def test_an_empty_place_is_refused_and_changes_nothing(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
+        before = (self.folder / "atlas.json").read_bytes()
+        with self.assertRaises(KeyError):
+            project.purge_tile((5, 5))
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertTrue((self.folder / "a.png").exists())
+
+    def test_when_atlas_json_cannot_be_written_the_file_and_the_tile_come_back(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN))})
+        project.select_only((0, 0))
+        before = (self.folder / "atlas.json").read_bytes()
+        file_before = (self.folder / "a.png").read_bytes()
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                project.purge_tile((0, 0))
+        self.assertEqual((self.folder / "a.png").read_bytes(), file_before)
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertEqual(sorted(project.tiles), [(0, 0), (1, 0)])
+        self.assertEqual(project.selection, {(0, 0)})
+        self.assertIn("a.png", project.existing_names)
+        self.assertEqual(self.leftover_temporary_files(), [])
+        project.purge_tile((0, 0))
+        self.assertFalse((self.folder / "a.png").exists(), "the tile can be purged once the disk works again")
+
+    def test_when_the_file_cannot_be_moved_away_nothing_changes(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
+        before = (self.folder / "atlas.json").read_bytes()
+        with mock.patch.object(va.os, "rename", side_effect=PermissionError("in use")):
+            with self.assertRaises(OSError):
+                project.purge_tile((0, 0))
+        self.assertTrue((self.folder / "a.png").exists())
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertIn((0, 0), project.tiles)
+
+    def test_a_tile_whose_atlas_json_write_fails_and_that_has_no_file_stays(self):
+        project = self.make_project({(0, 0): ("n.png", None)}, data={(0, 0): va.encode_tile_data(solid_tile(GREEN))})
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                project.purge_tile((0, 0))
+        self.assertIn((0, 0), project.tiles)
+        self.assertEqual(list(self.saved().coordinates_to_data), [(0, 0)])
+
+    def test_a_leftover_that_cannot_be_deleted_does_not_undo_the_purge_but_is_reported(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
+        with mock.patch.object(va.os, "unlink", side_effect=PermissionError("in use")):
+            with self.assertLogs(va.logger, level="WARNING"):
+                project.purge_tile((0, 0))
+        self.assertEqual(self.saved().coordinates_to_names, {})
+        self.assertFalse((self.folder / "a.png").exists())
+        self.assertTrue(project.is_empty)
+        self.assertEqual(len(self.leftover_temporary_files()), 1)
+        self.assertEqual(project.unplaced, [], "the leftover is not a tile image, so the folder scan ignores it")
+
+
+class ProjectPurgeManyTests(ProjectFixture):
+    def make_four(self):
+        return self.make_project(
+            {
+                (0, 0): ("a.png", solid_tile(RED)),
+                (1, 0): ("b.png", solid_tile(GREEN)),
+                (2, 0): ("n.png", None),
+                (3, 0): ("gone.png", None),
+                (4, 0): ("keep.png", solid_tile(BLUE)),
+            },
+            data={(2, 0): va.encode_tile_data(solid_tile(RED))},
+        )
+
+    def test_purging_several_tiles_deletes_their_files_and_entries_with_one_write_of_atlas_json(self):
+        project = self.make_four()
+        project.selection = {(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)}
+        with mock.patch.object(va, "write_atlas_file", wraps=va.write_atlas_file) as write:
+            project.purge_tiles([(1, 0), (0, 0), (2, 0), (3, 0)])
+        self.assertEqual(write.call_count, 1)
+        self.assertEqual([(self.folder / name).exists() for name in ("a.png", "b.png", "keep.png")], [False, False, True])
+        saved = self.saved()
+        self.assertEqual((saved.coordinates_to_names, saved.coordinates_to_data), ({(4, 0): "keep.png"}, {}))
+        self.assertEqual(list(project.tiles), [(4, 0)])
+        self.assertEqual(project.selection, {(4, 0)})
+        self.assertEqual([entry.name for entry in self.folder.iterdir() if entry.name.startswith(va.TEMPORARY_FILE_PREFIX)], [])
+
+    def test_a_coordinate_given_twice_is_purged_once_and_no_coordinates_do_nothing(self):
+        project = self.make_four()
+        project.purge_tiles([(0, 0), (0, 0)])
+        self.assertNotIn((0, 0), project.tiles)
+        before = (self.folder / "atlas.json").read_bytes()
+        with mock.patch.object(va, "write_atlas_file") as write:
+            project.purge_tiles([])
+        write.assert_not_called()
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+
+    def test_one_place_without_a_tile_refuses_the_whole_purge(self):
+        project = self.make_four()
+        before = (self.folder / "atlas.json").read_bytes()
+        with self.assertRaises(KeyError):
+            project.purge_tiles([(0, 0), (9, 9)])
+        self.assertTrue((self.folder / "a.png").exists())
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertIn((0, 0), project.tiles)
+
+    def test_when_atlas_json_cannot_be_written_every_file_comes_back(self):
+        project = self.make_four()
+        before = (self.folder / "atlas.json").read_bytes()
+        files_before = {name: (self.folder / name).read_bytes() for name in ("a.png", "b.png")}
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                project.purge_tiles([(0, 0), (1, 0), (2, 0)])
+        self.assertEqual({name: (self.folder / name).read_bytes() for name in ("a.png", "b.png")}, files_before)
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertEqual(len(project.tiles), 5)
+        self.assertEqual([entry.name for entry in self.folder.iterdir() if entry.name.startswith(va.TEMPORARY_FILE_PREFIX)], [])
+
+    def test_when_the_second_file_cannot_be_moved_the_first_comes_back_and_nothing_changes(self):
+        project = self.make_four()
+        before = (self.folder / "atlas.json").read_bytes()
+        real_rename, calls = os.rename, []
+
+        def second_one_fails(source, destination):
+            calls.append(source)
+            if len(calls) == 2:
+                raise PermissionError("in use")
+            real_rename(source, destination)
+
+        with mock.patch.object(va.os, "rename", side_effect=second_one_fails):
+            with self.assertRaises(OSError):
+                project.purge_tiles([(0, 0), (1, 0)])
+        self.assertTrue((self.folder / "a.png").exists() and (self.folder / "b.png").exists())
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertEqual(len(project.tiles), 5)
+        self.assertEqual([entry.name for entry in self.folder.iterdir() if entry.name.startswith(va.TEMPORARY_FILE_PREFIX)], [])
+
+
+class ProjectNewTileTests(ProjectFixture):
+    def test_a_new_tile_is_transparent_has_no_file_and_keeps_its_pixels_in_atlas_json(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
+        name = project.create_tile((2, 1))
+        self.assertEqual(name, "new_tile.png")
+        record = project.tiles[(2, 1)]
+        self.assertEqual((record.name, record.is_new, record.error), ("new_tile.png", True, None))
+        self.assertTrue(numpy.array_equal(record.pixels, numpy.zeros((4, 4, 4), dtype=numpy.uint8)))
+        self.assertFalse((self.folder / "new_tile.png").exists())
+        saved = self.saved()
+        self.assertEqual(saved.coordinates_to_names[(2, 1)], "new_tile.png")
+        self.assertEqual(va.decode_tile_data(saved.coordinates_to_data[(2, 1)], 4).sum(), 0)
+        self.assertEqual(project.unsaved_tiles(), [(2, 1)])
+
+    def test_the_new_tile_is_the_selected_one(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
+        project.select_only((0, 0))
+        project.create_tile((1, 0))
+        self.assertEqual(project.selection, {(1, 0)})
+
+    def test_it_can_be_saved_as_a_file_afterwards(self):
+        project = self.make_project({})
+        project.create_tile((0, 0))
+        project.save_tile((0, 0))
+        self.assertEqual(va.read_image_size(self.folder / "new_tile.png"), (4, 4))
+        self.assertEqual(self.saved().coordinates_to_data, {})
+
+    def test_the_name_is_not_one_any_file_or_tile_has(self):
+        project = self.make_project(
+            {(0, 0): ("NEW_TILE_2.png", solid_tile(RED))}, unplaced=[("new_tile.png", solid_tile(BLUE))]
+        )
+        self.assertEqual(project.create_tile((1, 0)), "new_tile_3.png")
+        self.assertEqual(project.create_tile((2, 0)), "new_tile_4.png", "the first one has no file yet, but its name is taken")
+
+    def test_a_place_with_a_tile_or_a_negative_place_is_refused_and_nothing_changes(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
+        before = (self.folder / "atlas.json").read_bytes()
+        for place in [(0, 0), (-1, 0), (0, -3)]:
+            with self.assertRaises(ValueError):
+                project.create_tile(place)
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertEqual(list(project.tiles), [(0, 0)])
+
+    def test_when_atlas_json_cannot_be_written_there_is_no_new_tile(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
+        project.select_only((0, 0))
+        before = (self.folder / "atlas.json").read_bytes()
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                project.create_tile((1, 0))
+        self.assertEqual(list(project.tiles), [(0, 0)])
+        self.assertEqual(project.selection, {(0, 0)})
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+
+    def test_in_a_folder_without_atlas_json_it_creates_the_file_with_the_provisional_tile_size(self):
+        project = self.make_project({}, write_atlas=False)
+        self.assertFalse((self.folder / "atlas.json").exists())
+        project.create_tile((0, 0))
+        self.assertEqual(self.saved().tile_size, project.tile_size)
+        self.assertTrue(project.tile_size_is_saved)
+
+
+class CopyPlanTests(unittest.TestCase):
+    def test_copy_name_adds_copy_before_the_extension(self):
+        self.assertEqual(va.copy_name("grass.png", []), "grass (copy).png")
+        self.assertEqual(va.copy_name("grass (copy).png", []), "grass (copy) (copy).png")
+        self.assertEqual(va.copy_name("Sand.PNG", []), "Sand (copy).PNG", "the extension keeps its letter case")
+
+    def test_copy_name_numbers_the_copies_when_the_name_is_taken_ignoring_letter_case(self):
+        self.assertEqual(va.copy_name("grass.png", ["GRASS (COPY).png"]), "grass (copy 2).png")
+        self.assertEqual(va.copy_name("grass.png", ["grass (copy).png", "grass (copy 2).png"]), "grass (copy 3).png")
+
+    def test_copy_name_refuses_a_name_that_would_be_too_long(self):
+        with self.assertRaises(ValueError):
+            va.copy_name("a" * 250 + ".png", [])
+
+    def test_plan_copy_moves_every_selected_tile_by_the_same_offset(self):
+        occupied = {(0, 0), (1, 0), (5, 5)}
+        self.assertEqual(va.plan_copy(occupied, {(0, 0)}, (0, 0), (2, 1)), {(0, 0): (2, 1)})
+        self.assertEqual(va.plan_copy(occupied, {(0, 0), (1, 0)}, (1, 0), (1, 3)), {(0, 0): (0, 3), (1, 0): (1, 3)})
+
+    def test_plan_copy_refuses_a_place_that_has_a_tile_even_a_selected_one_or_the_same_place_or_a_negative_one(self):
+        occupied = {(0, 0), (1, 0), (5, 5)}
+        self.assertIsNone(va.plan_copy(occupied, {(0, 0)}, (0, 0), (5, 5)), "an unselected tile is there")
+        self.assertIsNone(va.plan_copy(occupied, {(0, 0), (1, 0)}, (0, 0), (1, 0)), "a selected tile is there")
+        self.assertIsNone(va.plan_copy(occupied, {(0, 0)}, (0, 0), (0, 0)), "on itself")
+        self.assertIsNone(va.plan_copy(occupied, {(1, 0)}, (1, 0), (-1, 0)), "a negative place")
+
+    def test_plan_copy_checks_its_arguments(self):
+        with self.assertRaises(ValueError):
+            va.plan_copy({(0, 0), (1, 0)}, {(0, 0)}, (1, 0), (2, 0))
+        with self.assertRaises(ValueError):
+            va.plan_copy({(0, 0)}, {(0, 0), (3, 3)}, (0, 0), (1, 0))
+
+
+class ProjectDuplicateTests(ProjectFixture):
+    def paint(self, project, coordinate, column, row, color):
+        record = project.tiles[coordinate]
+        layout = va.compose_canvas({coordinate: record.pixels}, self.tile_size)
+        canvas = layout.pixels.copy()
+        canvas[row, column] = color
+        project.apply_canvas_edit(layout, canvas)
+
+    def test_a_copy_is_a_tile_with_a_file_right_away_and_the_original_is_untouched(self):
+        project = self.make_project({(0, 0): ("grass.png", random_tile(1))})
+        original_file = (self.folder / "grass.png").read_bytes()
+        project.select_only((0, 0))
+        self.assertTrue(project.duplicate_selection((0, 0), (2, 1)))
+        copy = project.tiles[(2, 1)]
+        self.assertEqual((copy.name, copy.is_new, copy.is_modified, copy.error), ("grass (copy).png", False, False, None))
+        self.assertTrue(numpy.array_equal(va.read_image_pixels(self.folder / "grass (copy).png"), random_tile(1)))
+        self.assertEqual((self.folder / "grass.png").read_bytes(), original_file)
+        saved = self.saved()
+        self.assertEqual(saved.coordinates_to_names, {(0, 0): "grass.png", (2, 1): "grass (copy).png"})
+        self.assertEqual(saved.coordinates_to_data, {})
+        self.assertIn("grass (copy).png", project.existing_names)
+        self.assertEqual(project.selection, {(2, 1)}, "the copies are the selected tiles afterwards")
+        self.assertFalse(project.history.can_undo([copy]))
+
+    def test_the_copy_has_what_the_tile_shows_unsaved_edits_included_and_the_original_stays_unsaved(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE))})
+        self.paint(project, (0, 0), 1, 1, RED)
+        project.select_only((0, 0))
+        project.duplicate_selection((0, 0), (1, 0))
+        self.assertEqual(tuple(va.read_image_pixels(self.folder / "a (copy).png")[1, 1]), RED)
+        self.assertEqual(tuple(va.read_image_pixels(self.folder / "a.png")[1, 1]), BLUE)
+        self.assertTrue(project.tiles[(0, 0)].is_modified)
+        self.assertFalse(project.tiles[(1, 0)].is_modified)
+
+    def test_a_tile_that_has_no_file_yet_is_copied_into_a_file_and_stays_unsaved_itself(self):
+        project = self.make_project({(0, 0): ("n.png", None)}, data={(0, 0): va.encode_tile_data(random_tile(2))})
+        project.select_only((0, 0))
+        project.duplicate_selection((0, 0), (1, 0))
+        self.assertTrue(numpy.array_equal(va.read_image_pixels(self.folder / "n (copy).png"), random_tile(2)))
+        self.assertFalse((self.folder / "n.png").exists())
+        self.assertTrue(project.tiles[(0, 0)].is_new)
+        saved = self.saved()
+        self.assertEqual(list(saved.coordinates_to_data), [(0, 0)], "only the original keeps pixels in atlas.json")
+
+    def test_several_selected_tiles_are_copied_by_the_same_offset_each_with_its_own_name(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN))})
+        project.selection = {(0, 0), (1, 0)}
+        self.assertTrue(project.duplicate_selection((1, 0), (1, 2)))
+        self.assertEqual((project.tiles[(0, 2)].name, project.tiles[(1, 2)].name), ("a (copy).png", "b (copy).png"))
+        self.assertEqual(tuple(va.read_image_pixels(self.folder / "a (copy).png")[0, 0]), RED)
+        self.assertEqual(tuple(va.read_image_pixels(self.folder / "b (copy).png")[0, 0]), GREEN)
+        self.assertEqual(project.selection, {(0, 2), (1, 2)})
+        self.assertEqual(len(project.tiles), 4)
+
+    def test_a_second_copy_of_the_same_tile_gets_a_number(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))}, unplaced=[("b (copy).png", solid_tile(BLUE))])
+        project.select_only((0, 0))
+        project.duplicate_selection((0, 0), (1, 0))
+        project.select_only((0, 0))
+        project.duplicate_selection((0, 0), (2, 0))
+        self.assertEqual((project.tiles[(1, 0)].name, project.tiles[(2, 0)].name), ("a (copy).png", "a (copy 2).png"))
+        project.select_only((1, 0))
+        project.duplicate_selection((1, 0), (3, 0))
+        self.assertEqual(project.tiles[(3, 0)].name, "a (copy) (copy).png")
+
+    def test_a_place_with_a_tile_or_an_error_tile_in_the_group_refuses_the_copy_and_changes_nothing(self):
+        project = self.make_project(
+            {(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN)), (3, 0): ("gone.png", None)}
+        )
+        before = (self.folder / "atlas.json").read_bytes()
+        files_before = sorted(entry.name for entry in self.folder.iterdir())
+        project.select_only((0, 0))
+        self.assertFalse(project.duplicate_selection((0, 0), (1, 0)), "a tile is there")
+        project.selection = {(0, 0), (3, 0)}
+        self.assertFalse(project.duplicate_selection((0, 0), (0, 5)), "one of the tiles has an error")
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertEqual(sorted(entry.name for entry in self.folder.iterdir()), files_before)
+        self.assertEqual(len(project.tiles), 3)
+
+    def test_when_atlas_json_cannot_be_written_the_new_files_are_removed_and_there_are_no_new_tiles(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN))})
+        project.selection = {(0, 0), (1, 0)}
+        before = (self.folder / "atlas.json").read_bytes()
+        files_before = sorted(entry.name for entry in self.folder.iterdir())
+        with mock.patch.object(va, "write_atlas_file", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                project.duplicate_selection((1, 0), (1, 3))
+        self.assertEqual(sorted(entry.name for entry in self.folder.iterdir()), files_before)
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertEqual(len(project.tiles), 2)
+        self.assertEqual(project.selection, {(0, 0), (1, 0)})
+        self.assertNotIn("a (copy).png", project.existing_names)
+
+    def test_when_the_second_file_cannot_be_written_the_first_is_removed_again(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN))})
+        project.selection = {(0, 0), (1, 0)}
+        before = (self.folder / "atlas.json").read_bytes()
+        real_write, calls = va.write_png_atomically, []
+
+        def second_one_fails(path, pixels):
+            calls.append(path)
+            if len(calls) == 2:
+                raise OSError("disk full")
+            real_write(path, pixels)
+
+        with mock.patch.object(va, "write_png_atomically", side_effect=second_one_fails):
+            with self.assertRaises(OSError):
+                project.duplicate_selection((1, 0), (1, 3))
+        self.assertEqual(sorted(entry.name for entry in self.folder.iterdir()), ["a.png", "atlas.json", "b.png"])
+        self.assertEqual((self.folder / "atlas.json").read_bytes(), before)
+        self.assertEqual(len(project.tiles), 2)
+
+    def test_a_file_that_appeared_since_loading_is_never_overwritten_and_the_batch_leaves_nothing_behind(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN))})
+        va.write_png_atomically(self.folder / "b (copy).png", solid_tile(BLUE, 8))
+        project.selection = {(0, 0), (1, 0)}
+        with self.assertRaises(FileExistsError):
+            project.duplicate_selection((1, 0), (1, 3))
+        self.assertEqual(va.read_image_size(self.folder / "b (copy).png"), (8, 8))
+        self.assertFalse((self.folder / "a (copy).png").exists())
+        self.assertEqual(len(project.tiles), 2)
+
+
+class PurgeDialogTests(ProjectFixture):
+    def test_the_warning_is_short_and_says_the_file_and_the_entries_go_and_that_it_cannot_be_undone(self):
+        project = self.make_project({(0, 0): ("stone.png", solid_tile(RED))})
+        dialog = va.PurgeDialog(project, [(0, 0)])
+        self.assertEqual(dialog.title, "Purge stone.png?")
+        self.assertIn("file", dialog.message)
+        self.assertIn("atlas.json", dialog.message)
+        self.assertIn("cannot be undone", dialog.message)
+        self.assertNotIn("unsaved", dialog.message)
+        self.assertLess(len(dialog.message), 120, "concise")
+
+    def test_the_warning_mentions_unsaved_changes_only_for_a_tile_that_has_them(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(BLUE)), (1, 0): ("n.png", None)}, data={(1, 0): va.encode_tile_data(solid_tile(RED))})
+        record = project.tiles[(0, 0)]
+        layout = va.compose_canvas({(0, 0): record.pixels}, self.tile_size)
+        canvas = layout.pixels.copy()
+        canvas[0, 0] = RED
+        project.apply_canvas_edit(layout, canvas)
+        self.assertIn("unsaved", va.PurgeDialog(project, [(0, 0)]).message)
+        message = va.PurgeDialog(project, [(1, 0)]).message
+        self.assertIn("unsaved", message)
+        self.assertNotIn("the file", message, "a tile with no file has none to delete")
+
+    def test_the_warning_for_several_tiles_counts_them_and_stays_short(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN)), (2, 0): ("c.png", solid_tile(BLUE))})
+        dialog = va.PurgeDialog(project, [(2, 0), (0, 0), (1, 0)])
+        self.assertEqual(dialog.title, "Purge 3 tiles?")
+        self.assertEqual(dialog.coordinates, [(0, 0), (1, 0), (2, 0)], "in reading order")
+        self.assertIn("files", dialog.message)
+        self.assertIn("atlas.json", dialog.message)
+        self.assertIn("cannot be undone", dialog.message)
+        self.assertNotIn("unsaved", dialog.message)
+        self.assertLess(len(dialog.message), 120)
+        self.assertEqual(dialog.done_message, "Purged 3 tiles.")
+
+    def test_the_warning_for_several_tiles_mentions_unsaved_changes_and_missing_files_when_they_apply(self):
+        project = self.make_project(
+            {(0, 0): ("n.png", None), (1, 0): ("m.png", None)},
+            data={(0, 0): va.encode_tile_data(solid_tile(RED)), (1, 0): va.encode_tile_data(solid_tile(RED))},
+        )
+        message = va.PurgeDialog(project, [(0, 0), (1, 0)]).message
+        self.assertIn("unsaved", message)
+        self.assertNotIn("files", message, "no tile has a file to delete")
+
+    def test_one_tile_keeps_its_own_title_and_done_message(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
+        dialog = va.PurgeDialog(project, [(0, 0)])
+        self.assertEqual((dialog.title, dialog.done_message), ("Purge a.png?", "Purged a.png."))
+
+    def test_confirming_purges_every_tile_at_once_and_a_disk_error_deletes_none(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN))})
+        dialog = va.PurgeDialog(project, [(0, 0), (1, 0)])
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            self.assertEqual(dialog.confirm(), "ask")
+        self.assertIn("disk full", dialog.error)
+        self.assertTrue((self.folder / "a.png").exists() and (self.folder / "b.png").exists())
+        self.assertEqual(dialog.confirm(), "done")
+        self.assertTrue(project.is_empty)
+        self.assertFalse((self.folder / "a.png").exists() or (self.folder / "b.png").exists())
+
+    def test_confirming_purges_and_reports_done(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
+        dialog = va.PurgeDialog(project, [(0, 0)])
+        self.assertEqual(dialog.confirm(), "done")
+        self.assertTrue(project.is_empty)
+        self.assertFalse((self.folder / "a.png").exists())
+
+    def test_cancelling_changes_nothing(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
+        dialog = va.PurgeDialog(project, [(0, 0)])
+        self.assertEqual(dialog.cancel(), "cancel")
+        self.assertTrue((self.folder / "a.png").exists())
+        self.assertIn((0, 0), project.tiles)
+
+    def test_a_disk_error_keeps_the_dialog_open_with_the_reason(self):
+        project = self.make_project({(0, 0): ("a.png", solid_tile(RED))})
+        dialog = va.PurgeDialog(project, [(0, 0)])
+        with mock.patch.object(va.os, "rename", side_effect=PermissionError("in use")):
+            self.assertEqual(dialog.confirm(), "ask")
+        self.assertIn("a.png", dialog.error)
+        self.assertIn("in use", dialog.error)
+        self.assertTrue((self.folder / "a.png").exists())
+        self.assertEqual(dialog.confirm(), "done", "it can be tried again")
 
 
 class UnsavedTilesTests(ProjectFixture):
@@ -3431,8 +4386,8 @@ class ImportWindowTests(ProjectFixture):
         self.assertNotIn("not built", self.application.hover_text())
 
 
-class EditorTests(ProjectFixture):
-    """Drives the editor with mouse and key events the way a user would, and checks the tiles."""
+class EditorDriver(ProjectFixture):
+    """Drives the editor with mouse and key events the way a user would; the tests are in the classes below."""
 
     @classmethod
     def setUpClass(cls):
@@ -3476,6 +4431,10 @@ class EditorTests(ProjectFixture):
 
     def pixel(self, coordinate, column, row):
         return tuple(int(v) for v in self.project.tiles[coordinate].pixels[row, column])
+
+
+class EditorTests(EditorDriver):
+    """Checks the editor through mouse and key events."""
 
     def test_the_canvas_shows_the_selected_tiles_and_the_name_above_it(self):
         self.select((0, 0))
@@ -4646,6 +5605,821 @@ class EditorTests(ProjectFixture):
         application = va.Application(project, va.pygame.Surface((700, 520)))
         application.handle_event(va.pygame.event.Event(va.pygame.QUIT))
         application.draw()
+
+
+class PurgeWindowTests(ProjectFixture):
+    """Right-clicking a tile in the atlas offers to purge it, after a warning."""
+
+    @classmethod
+    def setUpClass(cls):
+        va.pygame.init()
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.make_project(
+            {(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN))},
+            unplaced=[("loose.png", solid_tile(BLUE))],
+        )
+        self.application = va.Application(self.project, va.pygame.Surface((1280, 800)))
+
+    def send(self, kind, position, button=1):
+        event_type = {"down": va.pygame.MOUSEBUTTONDOWN, "up": va.pygame.MOUSEBUTTONUP}[kind]
+        return self.application.handle_event(va.pygame.event.Event(event_type, pos=position, button=button))
+
+    def click(self, position, button=1):
+        self.send("down", position, button)
+        self.send("up", position, button)
+
+    def key(self, key):
+        return self.application.handle_event(va.pygame.event.Event(va.pygame.KEYDOWN, key=key, mod=0, unicode="", scancode=0))
+
+    def tile_position(self, coordinate):
+        return self.application.atlas_panel.tile_screen_rect(coordinate).center
+
+    def open_menu(self, coordinate=(0, 0)):
+        self.click(self.tile_position(coordinate), button=3)
+
+    def open_dialog(self, coordinate=(0, 0)):
+        self.open_menu(coordinate)
+        self.click(self.application.context_menu_area().center)
+
+    def press_dialog(self, name):
+        self.click(self.application.purge_dialog_areas()[name].center)
+
+    def test_right_clicking_a_tile_opens_a_menu_for_it_without_changing_the_selection(self):
+        self.project.select_only((1, 0))
+        self.open_menu((0, 0))
+        self.assertEqual(self.application.context_menu.coordinate, (0, 0))
+        self.assertEqual(self.project.selection, {(1, 0)})
+        self.assertIsNone(self.application.purge_dialog)
+        self.application.draw()
+
+    def test_right_clicking_an_unplaced_tile_opens_no_menu(self):
+        self.click(self.application.unplaced_panel.tile_screen_rect((0, 0)).center, button=3)
+        self.assertIsNone(self.application.context_menu)
+
+    def test_the_menu_of_a_tile_offers_to_purge_it_and_names_how_many(self):
+        self.open_menu((0, 0))
+        self.assertEqual(self.application.context_menu.purges, ((0, 0),))
+        self.assertEqual(self.application.context_menu.label, "Purge tile...")
+        self.application.context_menu = None
+        self.project.selection = {(0, 0), (1, 0)}
+        self.open_menu((1, 0))
+        self.assertEqual(self.application.context_menu.purges, ((0, 0), (1, 0)), "all the selected tiles, in reading order")
+        self.assertEqual(self.application.context_menu.label, "Purge 2 tiles...")
+
+    def test_right_clicking_a_tile_that_is_not_selected_purges_only_that_tile_even_when_others_are_selected(self):
+        self.project.selection = {(0, 0)}
+        self.open_menu((1, 0))
+        self.assertEqual(self.application.context_menu.purges, ((1, 0),))
+
+    def test_right_clicking_an_empty_place_offers_a_new_tile_there(self):
+        self.open_menu((5, 3))
+        menu = self.application.context_menu
+        self.assertEqual((menu.coordinate, menu.purges, menu.label), ((5, 3), (), "New tile"))
+        self.application.draw()
+        rectangle = self.application.atlas_panel.tile_screen_rect((5, 3)).inflate(6, 6)
+        self.assertEqual(tuple(self.application.surface.get_at(rectangle.topleft))[:3], (255, 255, 255), "the place is outlined")
+
+    def test_right_clicking_where_a_tile_cannot_be_made_opens_no_menu(self):
+        rectangle = self.application.atlas_panel.rect
+        self.click((rectangle.x + 1, rectangle.y + 1), button=3)
+        self.assertIsNone(self.application.context_menu, "that is left of the first column and above the first row")
+        tile = self.application.atlas_panel.tile_screen_rect((0, 0))
+        self.click((tile.right + 1, tile.centery), button=3)
+        self.assertIsNone(self.application.context_menu, "the gap beside a tile belongs to that tile's place")
+
+    def test_choosing_new_tile_makes_it_at_once_selects_it_and_says_it_is_not_a_file_yet(self):
+        self.open_menu((5, 3))
+        self.click(self.application.context_menu_area().center)
+        self.assertIsNone(self.application.context_menu)
+        self.assertIsNone(self.application.purge_dialog)
+        record = self.project.tiles[(5, 3)]
+        self.assertEqual((record.name, record.is_new), ("new_tile.png", True))
+        self.assertFalse((self.folder / "new_tile.png").exists())
+        self.assertEqual(self.saved().coordinates_to_names[(5, 3)], "new_tile.png")
+        self.assertEqual(self.project.selection, {(5, 3)})
+        self.assertIn("Created new_tile.png", self.application.message)
+        self.application.draw()
+        self.assertIsNotNone(self.application.editor.layout, "the editor shows the new tile")
+
+    def test_escape_or_a_click_elsewhere_makes_no_tile(self):
+        self.open_menu((5, 3))
+        self.key(va.pygame.K_ESCAPE)
+        self.open_menu((5, 3))
+        self.click((5, 5))
+        self.assertNotIn((5, 3), self.project.tiles)
+
+    def test_when_atlas_json_cannot_be_written_no_tile_is_made_and_the_status_says_so(self):
+        self.open_menu((5, 3))
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            self.click(self.application.context_menu_area().center)
+        self.assertNotIn((5, 3), self.project.tiles)
+        self.assertIn("Could not save", self.application.message)
+        self.assertIn("disk full", self.application.message)
+        self.assertIsNone(self.application.context_menu)
+
+    def test_in_an_empty_atlas_a_new_tile_can_be_made_too(self):
+        for entry in self.folder.iterdir():
+            entry.unlink()
+        project = self.make_project({}, write_atlas=False)
+        self.assertTrue(project.is_empty)
+        application = va.Application(project, va.pygame.Surface((1280, 800)))
+        place = application.atlas_panel.tile_screen_rect((0, 0)).center
+        application.handle_event(va.pygame.event.Event(va.pygame.MOUSEBUTTONDOWN, pos=place, button=3))
+        application.handle_event(va.pygame.event.Event(va.pygame.MOUSEBUTTONUP, pos=place, button=3))
+        self.assertEqual(application.context_menu.coordinate, (0, 0))
+        application.handle_event(va.pygame.event.Event(va.pygame.MOUSEBUTTONDOWN, pos=application.context_menu_area().center, button=1))
+        self.assertEqual(list(project.tiles), [(0, 0)])
+        self.assertTrue((self.folder / "atlas.json").exists())
+        application.draw()
+
+    def test_purging_with_several_tiles_selected_asks_once_and_deletes_them_all(self):
+        self.project.selection = {(0, 0), (1, 0)}
+        self.open_menu((1, 0))
+        self.application.draw()
+        for coordinate in [(0, 0), (1, 0)]:
+            rectangle = self.application.atlas_panel.tile_screen_rect(coordinate)
+            self.assertEqual(tuple(self.application.surface.get_at((rectangle.centerx, rectangle.y - 3)))[:3], va.Theme.INVALID, "both are outlined")
+        self.click(self.application.context_menu_area().center)
+        self.assertEqual(self.application.purge_dialog.title, "Purge 2 tiles?")
+        self.application.draw()
+        self.assertTrue((self.folder / "a.png").exists())
+        self.press_dialog("purge")
+        self.assertIsNone(self.application.purge_dialog)
+        self.assertEqual([(self.folder / name).exists() for name in ("a.png", "b.png", "loose.png")], [False, False, True])
+        self.assertEqual(self.saved().coordinates_to_names, {})
+        self.assertEqual(self.project.selection, set())
+        self.assertIn("Purged 2 tiles", self.application.message)
+        self.application.draw()
+
+    def test_the_menu_stays_inside_the_window_when_opened_near_the_edge(self):
+        self.application.context_menu = va.ContextMenu((0, 0), (1279, 799))
+        area = self.application.context_menu_area()
+        self.assertTrue(self.application.surface.get_rect().contains(area))
+
+    def test_choosing_the_menu_item_asks_first_and_deletes_nothing_yet(self):
+        self.open_dialog()
+        self.assertIsNone(self.application.context_menu)
+        self.assertEqual(self.application.purge_dialog.title, "Purge a.png?")
+        self.assertTrue((self.folder / "a.png").exists())
+        self.assertIn((0, 0), self.saved().coordinates_to_names)
+        self.application.draw()
+
+    def test_confirming_deletes_the_file_and_the_entries_and_says_so(self):
+        self.project.select_only((0, 0))
+        self.application.draw()
+        self.open_dialog()
+        self.press_dialog("purge")
+        self.assertIsNone(self.application.purge_dialog)
+        self.assertFalse((self.folder / "a.png").exists())
+        self.assertEqual(self.saved().coordinates_to_names, {(1, 0): "b.png"})
+        self.assertEqual(self.project.selection, set())
+        self.assertIn("Purged a.png", self.application.message)
+        self.application.draw()
+        self.assertIsNone(self.application.editor.layout, "the editor no longer shows the purged tile")
+
+    def test_cancel_and_escape_and_the_menu_closing_delete_nothing(self):
+        self.open_dialog()
+        self.press_dialog("cancel")
+        self.assertIsNone(self.application.purge_dialog)
+        self.open_dialog()
+        self.key(va.pygame.K_ESCAPE)
+        self.assertIsNone(self.application.purge_dialog)
+        self.open_menu()
+        self.click((5, 5))
+        self.assertIsNone(self.application.context_menu)
+        self.open_menu()
+        self.key(va.pygame.K_ESCAPE)
+        self.assertIsNone(self.application.context_menu)
+        self.assertIsNone(self.application.purge_dialog)
+        self.assertTrue((self.folder / "a.png").exists())
+        self.assertEqual(sorted(self.saved().coordinates_to_names), [(0, 0), (1, 0)])
+
+    def test_enter_does_not_confirm_a_deletion(self):
+        self.open_dialog()
+        self.key(va.pygame.K_RETURN)
+        self.assertIsNotNone(self.application.purge_dialog)
+        self.assertTrue((self.folder / "a.png").exists())
+
+    def test_clicking_outside_the_dialog_does_nothing_and_the_window_behind_it_is_idle(self):
+        self.open_dialog()
+        self.click(self.tile_position((1, 0)))
+        self.assertEqual(self.project.selection, set())
+        self.assertIsNotNone(self.application.purge_dialog)
+
+    def test_a_click_outside_the_menu_closes_it_and_does_not_select_what_is_under_it(self):
+        self.open_menu()
+        self.click(self.tile_position((1, 0)))
+        self.assertIsNone(self.application.context_menu)
+        self.assertEqual(self.project.selection, set())
+
+    def test_releasing_the_right_button_over_the_menu_does_not_choose_the_item(self):
+        self.open_menu()
+        self.send("up", self.application.context_menu_area().center, button=3)
+        self.assertIsNotNone(self.application.context_menu)
+        self.assertIsNone(self.application.purge_dialog)
+
+    def test_a_disk_error_keeps_the_dialog_open_and_shows_why(self):
+        self.open_dialog()
+        with mock.patch.object(va.os, "replace", side_effect=OSError("disk full")):
+            self.press_dialog("purge")
+        self.assertIsNotNone(self.application.purge_dialog)
+        self.assertIn("disk full", self.application.purge_dialog.error)
+        self.assertTrue((self.folder / "a.png").exists())
+        self.application.draw()
+        self.press_dialog("purge")
+        self.assertFalse((self.folder / "a.png").exists())
+
+    def test_the_menu_and_dialog_draw_in_a_small_window(self):
+        application = va.Application(self.project, va.pygame.Surface((600, 420)))
+        application.context_menu = va.ContextMenu((0, 0), (590, 410), ((0, 0), (1, 0)))
+        application.draw()
+        application.context_menu = va.ContextMenu((5, 5), (590, 410))
+        application.draw()
+        application.context_menu = None
+        application.purge_dialog = va.PurgeDialog(self.project, [(0, 0)])
+        application.draw()
+
+    def test_the_tile_the_menu_is_for_is_outlined_so_it_is_clear_which_one_is_meant(self):
+        self.open_menu((1, 0))
+        self.application.draw()
+        rectangle = self.application.atlas_panel.tile_screen_rect((1, 0))
+        outline = tuple(self.application.surface.get_at((rectangle.centerx, rectangle.y - 2)))[:3]
+        self.assertEqual(outline, va.Theme.INVALID)
+
+    def test_right_clicks_in_the_editor_still_go_to_the_editor(self):
+        self.project.select_only((0, 0))
+        self.application.draw()
+        self.click(self.application.editor.areas.canvas.center, button=3)
+        self.assertIsNone(self.application.context_menu)
+
+    def test_the_program_with_a_menu_open_closes_on_quit_like_before(self):
+        self.open_menu()
+        self.assertFalse(self.application.handle_event(va.pygame.event.Event(va.pygame.QUIT)))
+
+
+class CopyWindowTests(ProjectFixture):
+    """Ctrl+dragging tiles in the atlas copies them, through the window's mouse events."""
+
+    @classmethod
+    def setUpClass(cls):
+        va.pygame.init()
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.make_project({(0, 0): ("a.png", solid_tile(RED)), (1, 0): ("b.png", solid_tile(GREEN))})
+        self.application = va.Application(self.project, va.pygame.Surface((1280, 800)))
+
+    def center(self, coordinate):
+        return self.application.atlas_panel.tile_screen_rect(coordinate).center
+
+    def send(self, kind, position):
+        event_type = {"down": va.pygame.MOUSEBUTTONDOWN, "up": va.pygame.MOUSEBUTTONUP}[kind]
+        self.application.handle_event(va.pygame.event.Event(event_type, pos=position, button=1))
+
+    def drag(self, start, end, control=True):
+        modifiers = va.pygame.KMOD_CTRL if control else 0
+        with mock.patch.object(va.pygame.key, "get_mods", return_value=modifiers):
+            self.send("down", start)
+            self.application.handle_event(va.pygame.event.Event(va.pygame.MOUSEMOTION, pos=end, rel=(0, 0), buttons=(1, 0, 0)))
+            self.application.draw()
+            self.send("up", end)
+
+    def test_control_dragging_a_tile_copies_it_and_the_status_line_says_so(self):
+        self.drag(self.center((0, 0)), self.center((3, 2)))
+        self.assertEqual(self.project.tiles[(3, 2)].name, "a (copy).png")
+        self.assertTrue((self.folder / "a (copy).png").exists())
+        self.assertEqual(self.project.tiles[(0, 0)].name, "a.png", "the original stays")
+        self.assertEqual(self.application.message, "Copied to a (copy).png.")
+        self.application.draw()
+        self.assertIsNotNone(self.application.editor.layout, "the copy is selected, so the editor shows it")
+
+    def test_the_copy_feedback_shows_valid_and_invalid_drops(self):
+        start = self.center((0, 0))
+        with mock.patch.object(va.pygame.key, "get_mods", return_value=va.pygame.KMOD_CTRL):
+            self.send("down", start)
+            self.application.handle_event(va.pygame.event.Event(va.pygame.MOUSEMOTION, pos=self.center((4, 3)), rel=(0, 0), buttons=(1, 0, 0)))
+            self.application.draw()
+            rectangle = self.application.atlas_panel.tile_screen_rect((4, 3)).inflate(6, 6)
+            self.assertEqual(tuple(self.application.surface.get_at((rectangle.centerx, rectangle.y)))[:3], va.Theme.VALID)
+            self.application.handle_event(va.pygame.event.Event(va.pygame.MOUSEMOTION, pos=self.center((1, 0)), rel=(0, 0), buttons=(1, 0, 0)))
+            self.application.draw()
+            rectangle = self.application.atlas_panel.tile_screen_rect((1, 0)).inflate(6, 6)
+            self.assertEqual(tuple(self.application.surface.get_at((rectangle.centerx, rectangle.y)))[:3], va.Theme.INVALID)
+            self.send("up", self.center((1, 0)))
+        self.assertEqual(len(self.project.tiles), 2)
+        self.assertEqual(self.application.message, "")
+
+    def test_when_a_file_cannot_be_written_nothing_is_copied_and_the_status_says_so(self):
+        with mock.patch.object(va, "write_atlas_file", side_effect=OSError("disk full")):
+            self.drag(self.center((0, 0)), self.center((3, 2)))
+        self.assertEqual(len(self.project.tiles), 2)
+        self.assertFalse((self.folder / "a (copy).png").exists())
+        self.assertIn("Could not save", self.application.message)
+        self.assertIn("disk full", self.application.message)
+
+    def test_dragging_without_control_moves_the_tile_and_makes_no_file(self):
+        self.drag(self.center((0, 0)), self.center((3, 2)), control=False)
+        self.assertEqual(self.project.tiles[(3, 2)].name, "a.png")
+        self.assertNotIn((0, 0), self.project.tiles)
+        self.assertFalse((self.folder / "a (copy).png").exists())
+
+    def test_a_copy_that_cannot_be_named_is_reported_in_the_status_line(self):
+        project = self.make_project({(0, 0): ("a" * 250 + ".png", None)}, data={(0, 0): va.encode_tile_data(solid_tile(RED))})
+        self.application = va.Application(project, va.pygame.Surface((1280, 800)))
+        self.drag(self.center((0, 0)), self.center((3, 2)))
+        self.assertIn("Could not copy", self.application.message)
+        self.assertEqual(list(project.tiles), [(0, 0)])
+
+
+class RotateToolEditorTests(EditorDriver):
+    """The rotate tool, used through mouse events: drag a pixel to rotate its row or its column."""
+
+    def setUp(self):
+        super().setUp()
+        self.select((0, 0))
+        record = self.project.tiles[(0, 0)]
+        self.project.apply_canvas_edit(va.compose_canvas({(0, 0): record.pixels}, 8), random_tile(5, 8))
+        self.before = record.pixels.copy()
+        self.click_tool("rotate")
+
+    def test_the_tool_has_a_button_and_a_name_and_a_hint(self):
+        self.assertIn("rotate", va.TOOL_LABELS)
+        self.assertIn("rotate", self.editor.areas.tool_buttons)
+        self.assertEqual(self.editor.tool, "rotate")
+        self.assertEqual(self.editor.tool_at(self.editor.areas.tool_buttons["rotate"].center), "rotate")
+        self.assertIn("row", self.editor.options_text())
+        self.assertIn("column", self.editor.options_text())
+        self.application.draw()
+
+    def test_dragging_a_pixel_sideways_rotates_its_row_in_the_tile_and_marks_it_unsaved(self):
+        self.drag(self.position(2, 3), self.position(5, 3))
+        expected = self.before.copy()
+        expected[3] = numpy.roll(self.before[3], 3, axis=0)
+        self.assertTrue(numpy.array_equal(self.project.tiles[(0, 0)].pixels, expected))
+        self.assertTrue(self.project.tiles[(0, 0)].is_modified)
+
+    def test_dragging_a_pixel_up_or_down_rotates_its_column(self):
+        self.drag(self.position(6, 5), self.position(6, 1))
+        expected = self.before.copy()
+        expected[:, 6] = numpy.roll(self.before[:, 6], -4, axis=0)
+        self.assertTrue(numpy.array_equal(self.project.tiles[(0, 0)].pixels, expected))
+
+    def test_the_canvas_shows_the_row_moving_while_the_button_is_down(self):
+        self.send("down", self.position(2, 3))
+        self.move(self.position(4, 3))
+        self.application.draw()
+        self.assertEqual(self.editor.session.pixels[3, 4].tolist(), self.before[3, 2].tolist(), "the canvas shows the preview")
+        self.assertTrue(numpy.array_equal(self.project.tiles[(0, 0)].pixels, self.before), "nothing is changed until the button is released")
+        self.send("up", self.position(4, 3))
+        self.assertEqual(self.project.tiles[(0, 0)].pixels[3, 4].tolist(), self.before[3, 2].tolist())
+
+    def test_one_drag_is_one_undo_step_and_the_color_history_is_left_alone(self):
+        self.drag(self.position(2, 3), self.position(5, 3))
+        self.assertEqual(self.editor.colors.history, [], "the tool paints with no color")
+        self.key(va.pygame.K_z, va.pygame.KMOD_CTRL)
+        self.assertTrue(numpy.array_equal(self.project.tiles[(0, 0)].pixels, self.before))
+        self.key(va.pygame.K_y, va.pygame.KMOD_CTRL)
+        self.assertEqual(self.project.tiles[(0, 0)].pixels[3, 5].tolist(), self.before[3, 2].tolist())
+
+    def test_a_click_without_dragging_changes_nothing_and_adds_no_history(self):
+        self.drag(self.position(2, 3), self.position(2, 3))
+        self.assertTrue(numpy.array_equal(self.project.tiles[(0, 0)].pixels, self.before))
+        self.key(va.pygame.K_z, va.pygame.KMOD_CTRL)
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified, "that undid the random painting made in the set up, not a rotation")
+
+    def test_with_wrap_assist_it_can_be_used_in_any_copy(self):
+        self.send("down", self.editor.areas.sidebar_buttons["wrap"].center)
+        self.send("up", self.editor.areas.sidebar_buttons["wrap"].center)
+        self.drag(self.position(8 + 2, 8 + 3), self.position(8 + 5, 8 + 3))
+        self.assertEqual(self.project.tiles[(0, 0)].pixels[3, 5].tolist(), self.before[3, 2].tolist())
+
+
+class GridButtonTests(EditorDriver):
+    """The sidebar's checkbox buttons Pg (pixel grid lines) and Tg (tile grid lines)."""
+
+    def pixel_grid_sample(self):
+        """A pixel on the line between pixel columns 3 and 4, on a row of pixels (the tile is solid blue)."""
+        view = self.editor.view
+        return (view.pixel_rectangle(3, 0).right, view.pixel_rectangle(0, 3).centery)
+
+    def tile_edge_sample(self):
+        view = self.editor.view
+        return (view.pixel_rectangle(0, 0).x, view.pixel_rectangle(0, 3).centery)
+
+    def color_at(self, position):
+        return tuple(self.application.surface.get_at(position))[:3]
+
+    def button(self, name):
+        return self.editor.areas.sidebar_buttons[name]
+
+    def click_button(self, name):
+        self.send("down", self.button(name).center)
+        self.send("up", self.button(name).center)
+
+    def draw_with_the_pointer_away(self):
+        self.application.pointer = self.editor.pointer = (5, 5)
+        self.application.draw()
+
+    def corner(self, name):
+        return (self.button(name).x + 4, self.button(name).y + 4)
+
+    def test_the_sidebar_has_a_button_each_for_wrap_assist_the_pixel_grid_and_the_tile_grid(self):
+        self.assertEqual(va.SIDEBAR_BUTTONS, {"wrap": "W", "pixel_grid": "Pg", "tile_grid": "Tg"})
+        self.assertEqual(list(self.editor.areas.sidebar_buttons), ["wrap", "pixel_grid", "tile_grid"])
+        for name in ("pixel_grid", "tile_grid"):
+            self.assertIn("grid", va.SIDEBAR_BUTTON_HINTS[name].lower())
+            self.application.pointer = self.button(name).center
+            self.assertEqual(self.application.hover_text(), va.SIDEBAR_BUTTON_HINTS[name])
+
+    def test_both_grids_start_on_as_the_canvas_has_always_shown_them(self):
+        self.select((0, 0))
+        self.assertTrue(self.editor.pixel_grid)
+        self.assertTrue(self.editor.tile_grid)
+        self.draw_with_the_pointer_away()
+        self.assertEqual(self.color_at(self.corner("pixel_grid")), va.Theme.ACCENT)
+        self.assertEqual(self.color_at(self.corner("tile_grid")), va.Theme.ACCENT)
+        self.assertNotEqual(self.color_at(self.pixel_grid_sample()), BLUE[:3])
+        self.assertNotEqual(self.color_at(self.tile_edge_sample()), BLUE[:3])
+
+    def test_the_pixel_grid_button_turns_the_lines_between_pixels_off_and_on(self):
+        self.select((0, 0))
+        self.click_button("pixel_grid")
+        self.assertFalse(self.editor.pixel_grid)
+        self.draw_with_the_pointer_away()
+        self.assertEqual(self.color_at(self.pixel_grid_sample()), BLUE[:3], "no line between pixels")
+        self.assertEqual(self.color_at(self.corner("pixel_grid")), va.Theme.PANEL, "the button is empty")
+        self.assertNotEqual(self.color_at(self.tile_edge_sample()), BLUE[:3], "the tile grid is a separate setting")
+        self.click_button("pixel_grid")
+        self.draw_with_the_pointer_away()
+        self.assertNotEqual(self.color_at(self.pixel_grid_sample()), BLUE[:3])
+        self.assertEqual(self.color_at(self.corner("pixel_grid")), va.Theme.ACCENT)
+
+    def test_the_tile_grid_button_turns_the_lines_around_tiles_off_and_on(self):
+        self.select((0, 0))
+        self.click_button("pixel_grid")  # off, so that only the tile's own outline can be at its edge
+        self.click_button("tile_grid")
+        self.assertFalse(self.editor.tile_grid)
+        self.draw_with_the_pointer_away()
+        self.assertEqual(self.color_at(self.tile_edge_sample()), BLUE[:3], "no outline around the tile")
+        self.assertEqual(self.color_at(self.corner("tile_grid")), va.Theme.PANEL)
+        self.click_button("tile_grid")
+        self.draw_with_the_pointer_away()
+        self.assertNotEqual(self.color_at(self.tile_edge_sample()), BLUE[:3])
+        self.assertEqual(self.color_at(self.corner("tile_grid")), va.Theme.ACCENT)
+
+    def test_the_tile_grid_also_marks_the_boundaries_between_shown_tiles(self):
+        self.select((0, 0), (1, 0))
+        self.click_button("pixel_grid")
+        view = self.editor.view
+        between = (view.pixel_rectangle(8, 0).x, view.pixel_rectangle(0, 3).centery)
+        self.draw_with_the_pointer_away()
+        self.assertNotEqual(self.color_at(between), GREEN[:3])
+        self.assertNotEqual(self.color_at(between), BLUE[:3])
+        self.click_button("tile_grid")
+        self.draw_with_the_pointer_away()
+        self.assertEqual(self.color_at(between), GREEN[:3], "the first pixel of the second tile, with nothing drawn over it")
+
+    def wrap_edge_samples(self, columns):
+        """Pixels on the left edge of the given pixel columns of the wrapped canvas, on a row of pixels."""
+        view, area = self.editor.view, self.editor.areas.canvas
+        samples = [(view.pixel_rectangle(column, 0).x, view.pixel_rectangle(0, 3).centery) for column in columns]
+        for sample in samples:
+            self.assertTrue(area.collidepoint(sample), f"{sample} is outside the canvas area {area}")
+        return samples
+
+    def test_wrap_assist_starts_without_tile_lines_and_the_tile_grid_button_shows_that(self):
+        self.select((0, 0))
+        self.click_button("pixel_grid")  # off, so that only tile lines could be at a tile's edge
+        self.click_button("wrap")
+        self.draw_with_the_pointer_away()
+        self.assertFalse(self.editor.sidebar_button_checked("tile_grid"))
+        self.assertEqual(self.color_at(self.corner("tile_grid")), va.Theme.PANEL, "the button is empty")
+        for sample in self.wrap_edge_samples([0, 8, 16]):
+            self.assertEqual(self.color_at(sample), BLUE[:3], "the copies run into each other")
+
+    def test_the_tile_grid_button_turns_tile_lines_on_in_wrap_assist_at_every_tile_edge_of_every_copy(self):
+        self.select((0, 0))
+        self.click_button("pixel_grid")
+        self.click_button("wrap")
+        self.click_button("tile_grid")
+        self.draw_with_the_pointer_away()
+        self.assertTrue(self.editor.sidebar_button_checked("tile_grid"))
+        self.assertEqual(self.color_at(self.corner("tile_grid")), va.Theme.ACCENT, "solid blue, never dimmed")
+        for sample in self.wrap_edge_samples([0, 8, 16]):
+            self.assertNotEqual(self.color_at(sample), BLUE[:3])
+        self.assertEqual(self.color_at(self.wrap_edge_samples([4])[0]), BLUE[:3], "inside the tile there is no line")
+        self.click_button("tile_grid")
+        self.draw_with_the_pointer_away()
+        for sample in self.wrap_edge_samples([0, 8, 16]):
+            self.assertEqual(self.color_at(sample), BLUE[:3])
+
+    def test_with_several_tiles_the_lines_mark_every_tile_not_only_the_repeat_of_the_whole_canvas(self):
+        self.select((0, 0), (1, 0))
+        self.click_button("pixel_grid")
+        self.click_button("wrap")
+        self.click_button("tile_grid")
+        self.draw_with_the_pointer_away()
+        for sample in self.wrap_edge_samples([8, 16, 24]):
+            self.assertNotEqual(self.color_at(sample), BLUE[:3])
+            self.assertNotEqual(self.color_at(sample), GREEN[:3])
+        self.assertIn(self.color_at(self.wrap_edge_samples([12])[0]), (BLUE[:3], GREEN[:3]), "inside a tile there is no line")
+
+    def test_wrap_assist_and_normal_view_each_remember_their_own_tile_grid_setting(self):
+        self.select((0, 0))
+        self.click_button("pixel_grid")
+        self.assertTrue(self.editor.tile_grid)
+        self.click_button("wrap")
+        self.click_button("tile_grid")
+        self.assertTrue(self.editor.sidebar_button_checked("tile_grid"))
+        self.click_button("wrap")
+        self.draw_with_the_pointer_away()
+        self.assertTrue(self.editor.sidebar_button_checked("tile_grid"), "the normal view's own setting: still on")
+        self.assertNotEqual(self.color_at(self.tile_edge_sample()), BLUE[:3])
+        self.click_button("tile_grid")
+        self.click_button("wrap")
+        self.assertTrue(self.editor.sidebar_button_checked("tile_grid"), "the setting made inside wrap-assist is kept")
+        self.draw_with_the_pointer_away()
+        self.assertNotEqual(self.color_at(self.wrap_edge_samples([8])[0]), BLUE[:3])
+        self.click_button("wrap")
+        self.draw_with_the_pointer_away()
+        self.assertFalse(self.editor.sidebar_button_checked("tile_grid"), "turned off in the normal view")
+        self.assertEqual(self.color_at(self.tile_edge_sample()), BLUE[:3])
+
+    def test_the_pixel_grid_button_works_with_wrap_assist_too(self):
+        self.select((0, 0))
+        self.click_button("wrap")
+        self.draw_with_the_pointer_away()
+        view = self.editor.view
+        sample = (view.pixel_rectangle(3, 0).right, view.pixel_rectangle(0, 3).centery)
+        self.assertGreaterEqual(view.zoom, 6)
+        self.assertNotEqual(self.color_at(sample), BLUE[:3])
+        self.click_button("pixel_grid")
+        self.draw_with_the_pointer_away()
+        self.assertEqual(self.color_at(sample), BLUE[:3])
+
+    def test_clicking_the_buttons_does_not_draw_or_change_the_selection_or_the_zoom(self):
+        self.select((0, 0))
+        zoom = self.editor.view.zoom
+        self.click_button("pixel_grid")
+        self.click_button("tile_grid")
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified)
+        self.assertEqual(self.project.selection, {(0, 0)})
+        self.assertEqual(self.editor.view.zoom, zoom)
+
+    def test_the_buttons_have_no_hover_fill_so_a_button_that_was_just_unchecked_is_empty(self):
+        self.select((0, 0))
+        self.click_button("pixel_grid")
+        self.application.draw()
+        self.assertEqual(self.application.pointer, self.button("pixel_grid").center)
+        self.assertEqual(self.color_at(self.corner("pixel_grid")), va.Theme.PANEL)
+
+
+class WrapAssistEditorTests(EditorDriver):
+    """The W button in the sidebar and what wrap-assist does to the canvas: a tile shown as a repeating grid."""
+
+    def paint(self, coordinate, column, row, color):
+        record = self.project.tiles[coordinate]
+        layout = va.compose_canvas({coordinate: record.pixels}, 8)
+        canvas = layout.pixels.copy()
+        canvas[row, column] = color
+        self.project.apply_canvas_edit(layout, canvas)
+
+    def wrap_button(self):
+        return self.editor.areas.sidebar_buttons["wrap"]
+
+    def click_wrap_button(self):
+        self.send("down", self.wrap_button().center)
+        self.send("up", self.wrap_button().center)
+
+    def color_at(self, position):
+        return tuple(self.application.surface.get_at(position))[:3]
+
+    def copies_in_view(self, column, row, size=8):
+        """The positions of a canvas pixel in every copy of the canvas whose center is in the canvas area."""
+        found = []
+        for copy_column in range(-6, 9):
+            for copy_row in range(-6, 9):
+                center = self.editor.view.pixel_rectangle(column + copy_column * size, row + copy_row * size).center
+                if self.editor.areas.canvas.collidepoint(center):
+                    found.append(((copy_column, copy_row), center))
+        return found
+
+    def test_wrap_assist_starts_off_and_the_button_toggles_it(self):
+        self.select((0, 0))
+        self.assertFalse(self.editor.wrap_assist)
+        self.click_wrap_button()
+        self.assertTrue(self.editor.wrap_assist)
+        self.click_wrap_button()
+        self.assertFalse(self.editor.wrap_assist)
+
+    def test_clicking_the_button_does_not_draw_or_change_the_selection(self):
+        self.select((0, 0))
+        self.click_wrap_button()
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified)
+        self.assertEqual(self.project.selection, {(0, 0)})
+
+    def test_the_button_says_w_and_is_empty_when_unchecked_and_all_blue_when_checked(self):
+        self.select((0, 0))
+        self.application.draw()
+        corner = (self.wrap_button().x + 4, self.wrap_button().y + 4)
+        self.assertEqual(self.color_at(corner), va.Theme.PANEL, "empty: it shows the panel behind it")
+        self.click_wrap_button()
+        self.application.draw()
+        self.assertEqual(self.color_at(corner), va.Theme.ACCENT)
+        self.assertEqual(self.color_at((self.wrap_button().right - 5, self.wrap_button().bottom - 5)), va.Theme.ACCENT)
+        self.click_wrap_button()
+        self.application.draw()
+        self.assertEqual(self.color_at(corner), va.Theme.PANEL)
+
+    def test_the_button_has_a_name_when_the_pointer_rests_on_it(self):
+        self.application.pointer = self.wrap_button().center
+        self.assertIn("Wrap", self.application.hover_text())
+
+    def test_the_tile_is_shown_as_a_repeating_grid_only_while_wrap_assist_is_on(self):
+        self.select((0, 0))
+        self.paint((0, 0), 2, 3, RED)
+        self.editor.view.zoom = 4  # small enough that there is room beside the tile
+        self.application.draw()
+        beyond = self.editor.view.pixel_rectangle(2 + 8, 3).center
+        self.assertTrue(self.editor.areas.canvas.collidepoint(beyond))
+        self.assertNotEqual(self.color_at(beyond), RED[:3], "one tile, and nothing beside it")
+        self.click_wrap_button()
+        self.park_the_pointer()
+        self.application.draw()
+        copies = self.copies_in_view(2, 3)
+        self.assertGreaterEqual(len(copies), 9)
+        beside = 0
+        for copy, center in copies:
+            self.assertEqual(self.color_at(center), RED[:3], copy)
+            neighbour = (center[0] + self.editor.view.zoom, center[1])
+            if self.editor.areas.canvas.collidepoint(neighbour):
+                self.assertEqual(self.color_at(neighbour), BLUE[:3], copy)
+                beside += 1
+        self.assertGreaterEqual(beside, 6)
+
+    def test_the_whole_canvas_repeats_when_several_tiles_are_shown(self):
+        self.select((0, 0), (1, 0))
+        self.paint((1, 0), 7, 0, RED)
+        self.click_wrap_button()
+        self.park_the_pointer()
+        self.application.draw()
+        for copy, center in self.copies_in_view(15, 0, size=16):
+            self.assertEqual(self.color_at(center), RED[:3], copy)
+
+    def park_the_pointer(self):
+        """Away from the canvas and the button, so that no tooltip or brush guide is drawn over what is sampled."""
+        self.application.pointer = self.editor.pointer = (5, 5)
+
+    def test_no_line_marks_where_a_copy_of_the_tile_ends_and_the_next_begins(self):
+        self.select((0, 0))
+        self.park_the_pointer()
+        self.application.draw()
+        left_edge = self.editor.view.pixel_rectangle(0, 0).x
+        row = self.editor.view.pixel_rectangle(0, 3).centery
+        self.assertNotEqual(self.color_at((left_edge, row)), BLUE[:3], "without wrap-assist the tile's edge is outlined")
+        self.click_wrap_button()
+        self.park_the_pointer()
+        self.editor.view.zoom = 2
+        self.application.draw()
+        area = self.editor.areas.canvas
+        for x in range(area.x + 2, area.right - 2):
+            self.assertEqual(self.color_at((x, area.centery)), BLUE[:3], x)
+        for y in range(area.y + 2, area.bottom - 2):
+            self.assertEqual(self.color_at((area.centerx, y)), BLUE[:3], y)
+
+    def test_the_brush_guide_is_drawn_once_for_each_copy_of_the_tile(self):
+        self.select((0, 0))
+        self.click_wrap_button()
+        self.move(self.position(3, 2))
+        self.application.draw()
+        copies = self.copies_in_view(3, 2)
+        self.assertGreaterEqual(len(copies), 9)
+        for copy, _ in copies:
+            rectangle = self.editor.view.pixel_rectangle(3 + copy[0] * 8, 2 + copy[1] * 8)
+            self.assertEqual(self.color_at(rectangle.topleft), (255, 255, 255), copy)
+        stray = self.editor.view.pixel_rectangle(4, 2)
+        self.assertNotEqual(self.color_at(stray.topleft), (255, 255, 255), "no guide on a pixel that is not under the brush")
+
+    def test_without_wrap_assist_there_is_one_brush_guide(self):
+        self.select((0, 0))
+        self.move(self.position(3, 2))
+        self.application.draw()
+        rectangle = self.editor.view.pixel_rectangle(3, 2)
+        self.assertEqual(self.color_at(rectangle.topleft), (255, 255, 255))
+        self.assertEqual(len([1 for _, center in self.copies_in_view(3, 2) if self.color_at(center) == (255, 255, 255)]), 0)
+
+    def test_a_bigger_brush_has_a_bigger_guide_in_every_copy(self):
+        self.select((0, 0))
+        self.click_wrap_button()
+        self.editor.settings.brush_sizes["pencil"] = (3, 2)
+        self.move(self.position(7, 7))
+        self.application.draw()
+        for copy_column, copy_row in [(0, 0), (1, 0), (0, 1), (1, 1), (-1, -1)]:
+            rectangle = self.editor.view.pixel_rectangle(6 + copy_column * 8, 6 + copy_row * 8, 3, 2)
+            if self.editor.areas.canvas.contains(rectangle):
+                self.assertEqual(self.color_at(rectangle.topleft), (255, 255, 255), (copy_column, copy_row))
+                self.assertEqual(self.color_at((rectangle.right - 1, rectangle.bottom - 1)), (255, 255, 255))
+
+    def test_drawing_wraps_around_the_tile_and_is_one_undo_step(self):
+        self.select((0, 0))
+        self.click_wrap_button()
+        self.editor.colors.set_color(RED, "primary")
+        self.drag(self.position(6, 1), self.position(10, 1))
+        for column in (6, 7, 0, 1, 2):
+            self.assertEqual(self.pixel((0, 0), column, 1), RED, column)
+        for column in (3, 4, 5):
+            self.assertEqual(self.pixel((0, 0), column, 1), BLUE, column)
+        self.key(va.pygame.K_z, va.pygame.KMOD_CTRL)
+        self.assertFalse(self.project.tiles[(0, 0)].is_modified, "the whole stroke went in one step")
+
+    def test_drawing_in_any_copy_changes_the_tile(self):
+        self.select((0, 0))
+        self.click_wrap_button()
+        self.editor.colors.set_color(RED, "primary")
+        self.drag(self.position(8 + 4, 16 + 5), self.position(8 + 4, 16 + 5))
+        self.assertEqual(self.pixel((0, 0), 4, 5), RED)
+
+    def test_without_wrap_assist_the_same_stroke_stops_at_the_edge(self):
+        self.select((0, 0))
+        self.editor.colors.set_color(RED, "primary")
+        self.drag(self.position(6, 1), self.position(10, 1))
+        self.assertEqual(self.pixel((0, 0), 7, 1), RED)
+        self.assertEqual(self.pixel((0, 0), 0, 1), BLUE)
+
+    def test_with_several_tiles_shown_a_stroke_wraps_around_all_of_them(self):
+        self.select((0, 0), (1, 0))
+        self.click_wrap_button()
+        self.editor.colors.set_color(RED, "primary")
+        self.drag(self.position(14, 2), self.position(18, 2))
+        self.assertEqual([self.pixel((1, 0), column, 2) for column in (5, 6, 7)], [GREEN, RED, RED])
+        self.assertEqual([self.pixel((0, 0), column, 2) for column in (0, 1, 2, 3)], [RED, RED, RED, BLUE])
+
+    def test_the_eye_dropper_picks_from_any_copy(self):
+        self.select((0, 0))
+        self.paint((0, 0), 2, 3, GREEN)
+        self.click_wrap_button()
+        self.click_tool("eyedropper")
+        self.send("down", self.position(2 + 8, 3 + 16))
+        self.send("up", self.position(2 + 8, 3 + 16))
+        self.assertEqual(self.editor.colors.get("primary"), GREEN)
+
+    def test_the_fill_bucket_works_from_any_copy(self):
+        self.select((0, 0))
+        self.paint((0, 0), 2, 3, GREEN)
+        self.click_wrap_button()
+        self.click_tool("fill")
+        self.editor.colors.set_color(RED, "primary")
+        self.send("down", self.position(5 + 8, 5 + 8))
+        self.send("up", self.position(5 + 8, 5 + 8))
+        self.assertEqual(self.pixel((0, 0), 2, 3), GREEN, "the green pixel is a different color and stays")
+        self.assertEqual(self.pixel((0, 0), 0, 0), RED)
+        self.assertEqual(self.pixel((0, 0), 7, 7), RED)
+
+    def test_the_select_tool_works_on_the_tile_whichever_copy_it_is_used_in(self):
+        self.select((0, 0))
+        self.click_wrap_button()
+        self.click_tool("select")
+        self.drag(self.position(8 + 1, 8 + 1), self.position(8 + 3, 8 + 3))
+        self.assertEqual(self.editor.selection_rectangle, (1, 1, 4, 4))
+
+    def test_a_pasted_picture_starts_at_the_tile_even_when_the_view_has_moved_away(self):
+        self.select((0, 0))
+        self.click_wrap_button()
+        self.editor.internal_image = solid_tile(RED, 2)
+        self.editor.internal_is_newer = True
+        self.editor.view.pan_by(120, 90)
+        self.editor.paste()
+        self.assertEqual((self.editor.floating.column, self.editor.floating.row), (0, 0))
+
+    def test_turning_it_on_shows_several_copies_and_turning_it_off_shows_the_one_tile_as_big_as_before(self):
+        self.select((0, 0))
+        before = self.editor.view.zoom
+        self.click_wrap_button()
+        self.assertLess(self.editor.view.zoom, before)
+        self.assertGreaterEqual(self.editor.view.zoom * 8 * 3, 1)
+        area = self.editor.areas.canvas
+        self.assertLessEqual(self.editor.view.zoom * 8 * 3, min(area.size))
+        self.click_wrap_button()
+        self.assertEqual(self.editor.view.zoom, before)
+
+    def test_wrap_assist_stays_on_when_another_tile_is_selected(self):
+        self.select((0, 0))
+        self.click_wrap_button()
+        self.select((1, 0))
+        self.assertTrue(self.editor.wrap_assist)
+        self.application.draw()
+
+    def test_it_can_be_turned_on_with_nothing_shown_and_the_window_draws_in_a_small_window(self):
+        self.click_wrap_button()
+        self.application.draw()
+        small = va.Application(self.project, va.pygame.Surface((700, 520)))
+        small.editor.wrap_assist = True
+        self.project.selection = {(0, 0)}
+        small.editor.sync()
+        small.handle_event(va.pygame.event.Event(va.pygame.MOUSEMOTION, pos=small.editor.areas.canvas.center, rel=(0, 0), buttons=(0, 0, 0)))
+        small.draw()
 
 
 if __name__ == "__main__":

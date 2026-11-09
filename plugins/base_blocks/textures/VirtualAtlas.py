@@ -58,6 +58,8 @@ MAXIMUM_TILE_SIZE = 1024
 TILE_FILE_EXTENSION = ".png"
 TEMPORARY_FILE_PREFIX = ".virtualatlas-"
 TEMPORARY_FILE_SUFFIX = ".tmp"
+# The name given to a tile made with the atlas's right-click menu (made different from every other name).
+NEW_TILE_NAME = "new_tile.png"
 HISTORY_DEPTH = 100
 # A picture that would be cut into more tiles than this is refused: a tile size of 1 would make millions.
 MAXIMUM_IMPORT_TILES = 2048
@@ -139,6 +141,22 @@ def make_unique_name(name: str, taken_names: Iterable[str]) -> str:
     stem, extension = name[: -len(TILE_FILE_EXTENSION)], name[-len(TILE_FILE_EXTENSION):]
     for suffix_number in itertools.count(2):
         candidate = f"{stem}_{suffix_number}{extension}"
+        if candidate.casefold() not in taken:
+            return candidate
+    raise AssertionError("unreachable")
+
+
+def copy_name(name: str, taken_names: Iterable[str]) -> str:
+    """`name` with " (copy)" before the extension: "grass.png" becomes "grass (copy).png". If that is in
+    `taken_names` (compared ignoring case) the copy is numbered: "grass (copy 2).png", "grass (copy 3).png", ...
+    Raises ValueError if the copy's name would not be allowed, for example because it is too long."""
+    taken = {taken_name.casefold() for taken_name in taken_names}
+    stem, extension = name[: -len(TILE_FILE_EXTENSION)], name[-len(TILE_FILE_EXTENSION):]
+    for number in itertools.count(1):
+        candidate = f"{stem} (copy){extension}" if number == 1 else f"{stem} (copy {number}){extension}"
+        problem = validate_tile_name(candidate)
+        if problem is not None:
+            raise ValueError(f"{name} cannot be copied: {problem}")
         if candidate.casefold() not in taken:
             return candidate
     raise AssertionError("unreachable")
@@ -554,6 +572,31 @@ def move_keys(dictionary: dict[Coordinate, object], moves: dict[Coordinate, Coor
     return {moves.get(coordinate, coordinate): value for coordinate, value in dictionary.items()}
 
 
+def plan_copy(
+    occupied: Iterable[Coordinate],
+    selected: Iterable[Coordinate],
+    grabbed: Coordinate,
+    drop: Coordinate,
+) -> Optional[dict[Coordinate, Coordinate]]:
+    """Where the copies go when the selected tiles are copied by dragging them by `grabbed` and letting go over `drop`.
+
+    Every selected tile is copied by the same offset (drop - grabbed). Returns {original: place of its copy}, or
+    None when a copy would have a negative coordinate or land on a place that has a tile: a copy never replaces
+    or moves a tile, so the places of the selected tiles themselves (and the place dragged from) are refused too.
+    """
+    occupied_set = set(occupied)
+    selected_set = set(selected)
+    if grabbed not in selected_set:
+        raise ValueError("the grabbed tile must be selected")
+    if not selected_set <= occupied_set:
+        raise ValueError("every selected coordinate must hold a tile")
+    offset_column, offset_row = drop[0] - grabbed[0], drop[1] - grabbed[1]
+    copies = {(column, row): (column + offset_column, row + offset_row) for column, row in selected_set}
+    if any(column < 0 or row < 0 or (column, row) in occupied_set for column, row in copies.values()):
+        return None
+    return copies
+
+
 def can_place_unplaced_tile(occupied: Iterable[Coordinate], target: Coordinate) -> bool:
     """An unplaced tile may only be dropped on an empty place."""
     return target[0] >= 0 and target[1] >= 0 and target not in set(occupied)
@@ -783,6 +826,18 @@ def thick_line_mask(canvas_shape: tuple[int, int], start: Coordinate, end: Coord
     return mask
 
 
+def one_pixel_line_mask(canvas_shape: tuple[int, int], pixel: Coordinate, width: int, horizontal: bool) -> numpy.ndarray:
+    """A horizontal or vertical line that is one pixel long: one pixel of its length, `width` pixels thick.
+
+    A horizontal line is one column wide and `width` rows tall, a vertical line one row tall and `width` columns
+    wide, which is what the first pixel of a longer line of that width looks like (thick_line_mask can only make a
+    square of `width` pixels for a line with no length, because it cannot tell which way the line goes).
+    """
+    mask = numpy.zeros(canvas_shape, dtype=bool)
+    stamp_rectangle(mask, pixel[0], pixel[1], 1 if horizontal else width, width if horizontal else 1)
+    return mask
+
+
 def horizontal_parallelogram_mask(
     canvas_shape: tuple[int, int], start: Coordinate, end: Coordinate, width: int
 ) -> numpy.ndarray:
@@ -819,12 +874,43 @@ def vertical_parallelogram_mask(
     ).T
 
 
+# Wrap-assist: the canvas repeats in every direction, so a position can be in any copy of it. Strokes are made
+# of positions in that endless canvas and every copy of the canvas is changed alike.
+
+
+def wrap_pixel(pixel: Coordinate, canvas_shape: tuple[int, int]) -> Coordinate:
+    """The pixel of the canvas that the position `pixel` of the repeating canvas is a copy of."""
+    height, width = canvas_shape
+    return (pixel[0] % width, pixel[1] % height)
+
+
+def fold_mask(mask: numpy.ndarray, left: int, top: int, canvas_shape: tuple[int, int]) -> numpy.ndarray:
+    """Fold a mask made over a window of the repeating canvas into one canvas-shaped mask.
+
+    The window's top left pixel is at (left, top) of the repeating canvas. A pixel of the result is set when any
+    pixel of the window that is a copy of it is set.
+    """
+    height, width = canvas_shape
+    offset_row, offset_column = top % height, left % width
+    rows = -(-(offset_row + mask.shape[0]) // height) * height
+    columns = -(-(offset_column + mask.shape[1]) // width) * width
+    padded = numpy.zeros((rows, columns), dtype=bool)
+    padded[offset_row : offset_row + mask.shape[0], offset_column : offset_column + mask.shape[1]] = mask
+    return padded.reshape(rows // height, height, columns // width, width).any(axis=(0, 2))
+
+
 def flood_fill_mask(
-    pixels: numpy.ndarray, column: int, row: int, editable_mask: Optional[numpy.ndarray] = None
+    pixels: numpy.ndarray, column: int, row: int, editable_mask: Optional[numpy.ndarray] = None, wrap: bool = False
 ) -> numpy.ndarray:
-    """The pixels reachable from (column, row) through side-by-side pixels that are exactly the same RGBA."""
+    """The pixels reachable from (column, row) through side-by-side pixels that are exactly the same RGBA.
+
+    With `wrap` the canvas repeats: the left edge is beside the right edge and the top beside the bottom, and the
+    starting position may be in any copy of the canvas.
+    """
     height, width = pixels.shape[:2]
     result = numpy.zeros((height, width), dtype=bool)
+    if wrap:
+        column, row = wrap_pixel((column, row), (height, width))
     if not (0 <= column < width and 0 <= row < height):
         return result
     if editable_mask is not None and not editable_mask[row, column]:
@@ -842,12 +928,11 @@ def flood_fill_mask(
             (current_column, current_row - 1),
             (current_column, current_row + 1),
         ):
-            if (
-                0 <= next_column < width
-                and 0 <= next_row < height
-                and matching[next_row, next_column]
-                and not result[next_row, next_column]
-            ):
+            if wrap:
+                next_column, next_row = next_column % width, next_row % height
+            elif not (0 <= next_column < width and 0 <= next_row < height):
+                continue
+            if matching[next_row, next_column] and not result[next_row, next_column]:
                 result[next_row, next_column] = True
                 pending.append((next_column, next_row))
     return result
@@ -997,18 +1082,22 @@ def noise_stamp(
     opacity: float,
     random_source: "RandomSource",
     editable_mask: Optional[numpy.ndarray] = None,
+    wrap: bool = False,
 ) -> None:
     """One stamp of the noise brush, applied in place.
 
     Each pixel of the brush area becomes `color` with probability `density`, rolled separately for every stamp,
     so pixels rolled true by several stamps of one stroke build up. At opacity 1 the color is written exactly;
-    below it, the color is composited over the pixel with its alpha times `opacity`.
+    below it, the color is composited over the pixel with its alpha times `opacity`. With `wrap` a pixel of the
+    brush area past one edge of the canvas is a pixel at the opposite edge (the rolls are the same either way).
     """
     height, width = pixels.shape[:2]
     hit = numpy.zeros((height, width), dtype=bool)
     for footprint_pixel in brush_footprint(diameter, shape):
         rolled_true = random_source.random() < density
         target_column, target_row = column + footprint_pixel.column_offset, row + footprint_pixel.row_offset
+        if wrap:
+            target_column, target_row = wrap_pixel((target_column, target_row), (height, width))
         if rolled_true and 0 <= target_column < width and 0 <= target_row < height:
             hit[target_row, target_column] = True
     if editable_mask is not None:
@@ -1036,12 +1125,14 @@ class AirbrushStroke:
         hardness: float,
         opacity: float,
         editable_mask: Optional[numpy.ndarray] = None,
+        wrap: bool = False,
     ):
         self.pixels_before_stroke = pixels_before_stroke.copy()
         self.color = color
         self.hardness = hardness
         self.opacity = opacity
         self.editable_mask = editable_mask
+        self.wrap = wrap
         self.footprint = brush_footprint(diameter, "circle")
         self.coverage = numpy.zeros(pixels_before_stroke.shape[:2], dtype=numpy.float64)
 
@@ -1055,6 +1146,8 @@ class AirbrushStroke:
         height, width = self.coverage.shape
         for footprint_pixel in self.footprint:
             target_column, target_row = column + footprint_pixel.column_offset, row + footprint_pixel.row_offset
+            if self.wrap:
+                target_column, target_row = wrap_pixel((target_column, target_row), (height, width))
             if not (0 <= target_column < width and 0 <= target_row < height):
                 continue
             if self.editable_mask is not None and not self.editable_mask[target_row, target_column]:
@@ -1486,6 +1579,140 @@ class AtlasProject:
             self.history.forget(record)
         return True
 
+    def _find_tile_file(self, name: str) -> Optional[Path]:
+        """The PNG file a tile's name stands for: the exact name, or the one file that differs only in letter case."""
+        path = self.folder / name
+        if path.is_file():
+            return path
+        for entry in os.scandir(self.folder):
+            if entry.is_file() and entry.name.casefold() == name.casefold():
+                return Path(entry.path)
+        return None
+
+    def purge_tile(self, coordinate: Coordinate) -> None:
+        self.purge_tiles([coordinate])
+
+    def purge_tiles(self, coordinates: Iterable[Coordinate]) -> None:
+        """Delete tiles for good: their PNG files, those that have one, and every entry about them in atlas.json
+        (their places, names and any pixels stored there), written at once. Unsaved changes and the tiles' edit
+        histories go with them, and the tiles do not become unplaced ones. Works for error tiles too.
+
+        All or none: raises KeyError if a place has no tile, and OSError if the disk refuses; then nothing has
+        changed. The files are first moved aside under temporary names, so that they can come back if one cannot
+        be moved or atlas.json cannot be written, and are deleted only once atlas.json no longer lists them.
+        """
+        coordinates = list(dict.fromkeys(coordinates))
+        records = [self.tiles[coordinate] for coordinate in coordinates]
+        if not records:
+            return
+        held_aside: list[tuple[Path, Path]] = []
+
+        def change() -> None:
+            for coordinate in coordinates:
+                del self.tiles[coordinate]
+                self.selection.discard(coordinate)
+
+        try:
+            for record in records:
+                path = self._find_tile_file(record.name)
+                if path is not None:
+                    held = path.with_name(f"{TEMPORARY_FILE_PREFIX}{os.urandom(6).hex()}{TEMPORARY_FILE_SUFFIX}")
+                    os.rename(path, held)
+                    held_aside.append((path, held))
+            self._commit(change)
+        except BaseException:
+            for path, held in reversed(held_aside):
+                try:
+                    os.rename(held, path)
+                except OSError:
+                    logger.warning("could not give %s back its name %s", held.name, path.name)
+            raise
+        for record in records:
+            self.history.forget(record)
+            self.existing_names.discard(record.name.casefold())
+        for path, held in held_aside:
+            try:
+                os.unlink(held)
+            except OSError as error:
+                # atlas.json no longer lists the tile, and the leftover is not a tile image, so nothing depends on it.
+                logger.warning("%s was purged but its leftover %s could not be deleted: %s", path.name, held.name, error)
+
+    def _taken_names(self) -> set[str]:
+        """Lower-cased names a new tile cannot have: every PNG file in the folder and the name of every tile."""
+        return set(self.existing_names) | {record.name.casefold() for record in self.tiles.values()}
+
+    def create_tile(self, coordinate: Coordinate) -> str:
+        """Add an empty (fully transparent) tile at an empty place and select it. It has no file yet: its pixels are
+        kept in atlas.json until it is saved. Returns its name (NEW_TILE_NAME, numbered if that is taken).
+
+        Raises ValueError for a negative place or one that has a tile, and OSError (nothing changes) if atlas.json
+        cannot be written.
+        """
+        if coordinate[0] < 0 or coordinate[1] < 0:
+            raise ValueError("a tile cannot be at a negative place")
+        if coordinate in self.tiles:
+            raise ValueError(f"there is a tile at {format_coordinate(coordinate)} already")
+        name = make_unique_name(NEW_TILE_NAME, self._taken_names())
+
+        def change() -> None:
+            self.tiles[coordinate] = TileRecord(name, numpy.zeros((self.tile_size, self.tile_size, 4), dtype=numpy.uint8), None)
+            self.selection = {coordinate}
+
+        self._commit(change)
+        return name
+
+    def plan_duplicate(self, grabbed: Coordinate, drop: Coordinate) -> Optional[dict[Coordinate, Coordinate]]:
+        """Where the copies of the selected tiles would go (see plan_copy), or None if they cannot be made there:
+        a copy would land on a tile or at a negative place, or a selected tile is an error tile and has no pixels."""
+        places = plan_copy(self.tiles, self.selection, grabbed, drop)
+        if places is None or any(self.tiles[original].error is not None for original in places):
+            return None
+        return places
+
+    def duplicate_selection(self, grabbed: Coordinate, drop: Coordinate) -> bool:
+        """Copy the selected tiles by dragging them by `grabbed` and letting go over `drop` (see plan_copy). False if
+        that is refused: a copy would land on a tile or at a negative place, or a selected tile is an error tile.
+
+        Each copy is named "<name> (copy).png" (see copy_name), is saved as a file at once with the pixels its tile
+        shows now (unsaved edits included), and is selected afterwards; the originals are left as they were.
+        Raises ValueError if a copy's name would not be allowed, FileExistsError if a file with a copy's name
+        appeared in the folder since it was read, and OSError if a file or atlas.json cannot be written; then
+        nothing has changed (the files already written are deleted again).
+        """
+        places = self.plan_duplicate(grabbed, drop)
+        if places is None:
+            return False
+        taken = self._taken_names()
+        copies: dict[Coordinate, TileRecord] = {}
+        for original in sorted(places, key=reading_order_key):
+            source = self.tiles[original]
+            name = copy_name(source.name, taken)
+            taken.add(name.casefold())
+            copies[places[original]] = TileRecord(name, source.pixels.copy(), source.pixels.copy())
+
+        def change() -> None:
+            self.tiles.update(copies)
+            self.selection = set(copies)
+
+        written: list[Path] = []
+        try:
+            for record in copies.values():
+                path = self.folder / record.name
+                if path.exists():
+                    raise FileExistsError(f"{record.name} already exists in the folder")
+                write_png_atomically(path, record.pixels)
+                written.append(path)
+            self._commit(change)
+        except BaseException:
+            for path in written:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    logger.warning("could not delete %s, which was written for a copy that failed", path.name)
+            raise
+        self.existing_names |= {record.name.casefold() for record in copies.values()}
+        return True
+
 
 class QuitDialog:
     """What to do with each tile that has unsaved changes when the window is closed, one tile at a time.
@@ -1544,6 +1771,105 @@ class QuitDialog:
 
     def cancel(self) -> str:
         return "cancel"
+
+
+@dataclasses.dataclass(frozen=True)
+class ContextMenu:
+    """The menu opened by right-clicking the atlas at `position`; it has one item.
+
+    Over a tile the item purges `purges` (the selected tiles when the tile is one of them, else just that tile).
+    Over an empty place (`coordinate`, with nothing in `purges`) it makes a new tile there.
+    """
+
+    coordinate: Coordinate
+    position: tuple[int, int]
+    purges: tuple[Coordinate, ...] = ()
+
+    @property
+    def label(self) -> str:
+        if not self.purges:
+            return "New tile"
+        return "Purge tile..." if len(self.purges) == 1 else f"Purge {len(self.purges)} tiles..."
+
+
+def context_menu_area(menu: ContextMenu, window_size: tuple[int, int]) -> pygame.Rect:
+    """Where the menu's item is: at the pointer, moved back inside the window if it would stick out."""
+    area = pygame.Rect(menu.position, (scaled(150), scaled(30)))
+    area.right = min(area.right, window_size[0])
+    area.bottom = min(area.bottom, window_size[1])
+    area.x, area.y = max(area.x, 0), max(area.y, 0)
+    return area
+
+
+class PurgeDialog:
+    """The warning before tiles are purged (see AtlasProject.purge_tiles). confirm() and cancel() return "done",
+    "ask" (the disk refused: the dialog stays, showing `error`) or "cancel"."""
+
+    def __init__(self, project: AtlasProject, coordinates: Iterable[Coordinate]):
+        self.project = project
+        self.coordinates = sorted(coordinates, key=reading_order_key)
+        self.records = [project.tiles[coordinate] for coordinate in self.coordinates]
+        self.error = ""
+
+    @property
+    def subject(self) -> str:
+        """The tile's name, or how many tiles there are."""
+        return self.records[0].name if len(self.records) == 1 else f"{len(self.records)} tiles"
+
+    @property
+    def title(self) -> str:
+        return f"Purge {self.subject}?"
+
+    @property
+    def done_message(self) -> str:
+        return f"Purged {self.subject}."
+
+    @property
+    def message(self) -> str:
+        if len(self.records) > 1:
+            has_files = any(not record.is_new for record in self.records)
+            deleted = "Deletes their files and their entries in atlas.json" if has_files else "Deletes their entries in atlas.json"
+            deleted += ", and the unsaved changes." if any(record.is_modified for record in self.records) else "."
+            return f"{deleted} This cannot be undone."
+        record = self.records[0]
+        if record.is_new:
+            deleted = "Deletes its entries in atlas.json, with its unsaved pixels."
+        elif record.error is not None:
+            deleted = "Deletes the file, if there is one, and its entries in atlas.json."
+        elif record.is_modified:
+            deleted = "Deletes the file and its entries in atlas.json, and the unsaved changes."
+        else:
+            deleted = "Deletes the file and its entries in atlas.json."
+        return f"{deleted} This cannot be undone."
+
+    def confirm(self) -> str:
+        try:
+            self.project.purge_tiles(self.coordinates)
+        except OSError as error:
+            self.error = f"Could not purge {self.subject}: {error}"
+            return "ask"
+        return "done"
+
+    def cancel(self) -> str:
+        return "cancel"
+
+
+def purge_dialog_areas(window_size: tuple[int, int]) -> dict[str, pygame.Rect]:
+    """Where the parts of the purge dialog are: the panel, the lines of text, the row for an error and the buttons."""
+    width = min(scaled(480), window_size[0] - scaled(40))
+    height = min(scaled(190), window_size[1] - scaled(40))
+    panel = pygame.Rect(0, 0, width, height)
+    panel.center = (window_size[0] // 2, window_size[1] // 2)
+    margin, gap = scaled(20), scaled(12)
+    button_height, button_width = scaled(34), scaled(120)
+    buttons_top = panel.bottom - margin - button_height
+    return {
+        "panel": panel,
+        "message": pygame.Rect(panel.x + margin, panel.y + scaled(54), panel.width - 2 * margin, scaled(48)),
+        "error": pygame.Rect(panel.x + margin, buttons_top - gap - scaled(20), panel.width - 2 * margin, scaled(20)),
+        "purge": pygame.Rect(panel.right - margin - 2 * button_width - gap, buttons_top, button_width, button_height),
+        "cancel": pygame.Rect(panel.right - margin - button_width, buttons_top, button_width, button_height),
+    }
 
 
 class ImportDialog:
@@ -1707,12 +2033,15 @@ TOOL_LABELS = {
     "select": "Select",
     "eyedropper": "Eye dropper",
     "fill": "Fill bucket",
+    "rotate": "Rotate row/column",
 }
 BRUSH_TOOLS = ("pencil", "eraser")
 LINE_TOOLS = ("line", "horizontal_line", "vertical_line", "horizontal_parallelogram", "vertical_parallelogram")
 # The noise brush and the air brush have one diameter each, changed with the bracket keys.
 DIAMETER_TOOLS = ("noise_brush", "airbrush")
-STROKE_TOOLS = BRUSH_TOOLS + LINE_TOOLS + DIAMETER_TOOLS + ("fill",)
+# The tools whose press, drag and release is a CanvasSession. The eraser and the rotate tool do not paint a color.
+STROKE_TOOLS = BRUSH_TOOLS + LINE_TOOLS + DIAMETER_TOOLS + ("fill", "rotate")
+COLORLESS_TOOLS = ("eraser", "rotate")
 BRUSH_SHAPES = ("circle", "square")
 # The sliders each brush shows: (name of the setting in ToolSettings.fractions, label).
 SLIDERS = {
@@ -1789,6 +2118,10 @@ class CanvasSession:
 
     `pixels` is what the canvas should look like now; the layout's own pixels are not touched, so the stroke
     can be shown as a preview and thrown away.
+
+    With `wrap` (wrap-assist) the canvas repeats in every direction: the positions given are positions in that
+    endless canvas, and a stroke changes the same pixels of every copy, so it can leave the canvas on one side and
+    come back in on the other.
     """
 
     def __init__(
@@ -1799,11 +2132,14 @@ class CanvasSession:
         color: Color,
         start: Coordinate,
         random_source: Optional[RandomSource] = None,
+        wrap: bool = False,
     ):
         if tool not in STROKE_TOOLS:
             raise ValueError(f"{tool!r} does not draw")
+        self.wrap = wrap
         self.layout = layout
         self.tool = tool
+        self.uses_color = tool not in COLORLESS_TOOLS
         self.color = TRANSPARENT if tool == "eraser" else color
         self.base = layout.pixels
         self.pixels = layout.pixels.copy()
@@ -1816,7 +2152,7 @@ class CanvasSession:
         self.random_source = random_source if random_source is not None else random.Random()
         self.airbrush: Optional[AirbrushStroke] = None
         if tool in BRUSH_TOOLS:
-            self._paint(swept_rectangle_brush_mask(self.shape, start, start, self.brush_width, self.brush_height))
+            self._paint(self._brush_mask(start, start))
         elif tool == "noise_brush":
             self._stamp_noise(start)
         elif tool == "airbrush":
@@ -1827,15 +2163,77 @@ class CanvasSession:
                 settings.fractions["airbrush_hardness"],
                 settings.fractions["airbrush_opacity"],
                 layout.editable_mask,
+                wrap,
             )
             self._stamp_air_path(start, start)
         elif tool == "fill":
-            self._paint(flood_fill_mask(self.base, start[0], start[1], layout.editable_mask))
+            self._paint(flood_fill_mask(self.base, start[0], start[1], layout.editable_mask, wrap))
+        elif tool == "rotate":
+            self._find_rotation_line()
+            self._preview_rotation(start)
         else:
             self._preview_shape(start)
 
+    def _find_rotation_line(self) -> None:
+        """Find the tile of the pressed pixel: the row and the column that can rotate lie inside it, whichever other
+        tiles are shown. `_rotated_pixel` is the pressed pixel in the canvas and `_tile_left_top` the tile's corner;
+        both are None when the press is outside the canvas (without wrap-assist) or over an empty place."""
+        height, width = self.shape
+        column, row = wrap_pixel(self.start, self.shape) if self.wrap else self.start
+        self._rotated_pixel: Optional[Coordinate] = None
+        self._tile_left_top = (0, 0)
+        if 0 <= column < width and 0 <= row < height and self.layout.editable_mask[row, column]:
+            size = self.layout.tile_size
+            self._rotated_pixel = (column, row)
+            self._tile_left_top = (column // size * size, row // size * size)
+
+    def _preview_rotation(self, pixel: Coordinate) -> None:
+        """Rotate the row of the pressed pixel if the pointer is further from it sideways than up or down (also
+        when equally far), else its column, by as many pixels as the pointer is away. Always worked out from the
+        pixels as they were, so moving back undoes it."""
+        self.pixels = self.base.copy()
+        if self._rotated_pixel is None:
+            return
+        column, row = self._rotated_pixel
+        left, top = self._tile_left_top
+        size = self.layout.tile_size
+        delta_column, delta_row = pixel[0] - self.start[0], pixel[1] - self.start[1]
+        if abs(delta_column) >= abs(delta_row):
+            self.pixels[row, left : left + size] = numpy.roll(self.base[row, left : left + size], delta_column, axis=0)
+        else:
+            self.pixels[top : top + size, column] = numpy.roll(self.base[top : top + size, column], delta_row, axis=0)
+
     def _paint(self, mask: numpy.ndarray) -> None:
         apply_color_to_mask(self.pixels, mask & self.layout.editable_mask, self.color)
+
+    def _mask_between(
+        self,
+        start: Coordinate,
+        end: Coordinate,
+        build: Callable[[tuple[int, int], Coordinate, Coordinate], numpy.ndarray],
+    ) -> numpy.ndarray:
+        """The canvas-shaped mask that `build(shape, start, end)` makes for a stroke from start to end.
+
+        With wrap-assist the stroke is made over a window of the repeating canvas that holds both ends and the
+        reach of the brush, and the window is then folded into the canvas.
+        """
+        if not self.wrap:
+            return build(self.shape, start, end)
+        reach = max(self.brush_width, self.brush_height, self.line_width) + 1
+        left = min(start[0], end[0]) - reach
+        top = min(start[1], end[1]) - reach
+        window = (max(start[1], end[1]) + reach + 1 - top, max(start[0], end[0]) + reach + 1 - left)
+        mask = build(window, (start[0] - left, start[1] - top), (end[0] - left, end[1] - top))
+        return fold_mask(mask, left, top, self.shape)
+
+    def _brush_mask(self, start: Coordinate, end: Coordinate) -> numpy.ndarray:
+        return self._mask_between(
+            start,
+            end,
+            lambda shape, from_pixel, to_pixel: swept_rectangle_brush_mask(
+                shape, from_pixel, to_pixel, self.brush_width, self.brush_height
+            ),
+        )
 
     def _stamp_noise(self, pixel: Coordinate) -> None:
         settings = self.settings
@@ -1850,6 +2248,7 @@ class CanvasSession:
             settings.fractions["noise_opacity"],
             self.random_source,
             self.layout.editable_mask,
+            self.wrap,
         )
 
     def _stamp_air_path(self, start: Coordinate, end: Coordinate) -> None:
@@ -1858,15 +2257,22 @@ class CanvasSession:
         self.pixels = self.airbrush.result()
 
     def _shape_mask(self, pixel: Coordinate) -> numpy.ndarray:
-        if self.tool == "line":
-            return thick_line_mask(self.shape, self.start, pixel, self.line_width)
-        if self.tool == "horizontal_line":
-            return thick_line_mask(self.shape, self.start, (pixel[0], self.start[1]), self.line_width)
-        if self.tool == "vertical_line":
-            return thick_line_mask(self.shape, self.start, (self.start[0], pixel[1]), self.line_width)
-        if self.tool == "horizontal_parallelogram":
-            return horizontal_parallelogram_mask(self.shape, self.start, pixel, self.line_width)
-        return vertical_parallelogram_mask(self.shape, self.start, pixel, self.line_width)
+        def build(shape: tuple[int, int], start: Coordinate, end: Coordinate) -> numpy.ndarray:
+            if self.tool == "line":
+                return thick_line_mask(shape, start, end, self.line_width)
+            if self.tool == "horizontal_line":
+                if end[0] == start[0]:
+                    return one_pixel_line_mask(shape, start, self.line_width, horizontal=True)
+                return thick_line_mask(shape, start, (end[0], start[1]), self.line_width)
+            if self.tool == "vertical_line":
+                if end[1] == start[1]:
+                    return one_pixel_line_mask(shape, start, self.line_width, horizontal=False)
+                return thick_line_mask(shape, start, (start[0], end[1]), self.line_width)
+            if self.tool == "horizontal_parallelogram":
+                return horizontal_parallelogram_mask(shape, start, end, self.line_width)
+            return vertical_parallelogram_mask(shape, start, end, self.line_width)
+
+        return self._mask_between(self.start, pixel, build)
 
     def _preview_shape(self, pixel: Coordinate) -> None:
         self.pixels = self.base.copy()
@@ -1876,7 +2282,7 @@ class CanvasSession:
         if pixel == self.last:
             return
         if self.tool in BRUSH_TOOLS:
-            self._paint(swept_rectangle_brush_mask(self.shape, self.last, pixel, self.brush_width, self.brush_height))
+            self._paint(self._brush_mask(self.last, pixel))
         elif self.tool == "noise_brush":
             # One stamp for each pixel the pointer moved over; the pixel it started on was stamped already.
             for stamp_pixel in line_pixels(self.last, pixel)[1:]:
@@ -1885,6 +2291,8 @@ class CanvasSession:
             self._stamp_air_path(self.last, pixel)
         elif self.tool in LINE_TOOLS:
             self._preview_shape(pixel)
+        elif self.tool == "rotate":
+            self._preview_rotation(pixel)
         self.last = pixel
 
     @property
@@ -1892,10 +2300,11 @@ class CanvasSession:
         return not numpy.array_equal(self.pixels, self.base)
 
 
-def pick_color(layout: CanvasLayout, pixel: Coordinate) -> Optional[Color]:
-    """The color of a canvas pixel, or None outside the canvas or over an empty place."""
-    column, row = pixel
+def pick_color(layout: CanvasLayout, pixel: Coordinate, wrap: bool = False) -> Optional[Color]:
+    """The color of a canvas pixel, or None outside the canvas or over an empty place. With `wrap` the canvas
+    repeats, so `pixel` may be in any copy of it."""
     height, width = layout.pixels.shape[:2]
+    column, row = wrap_pixel(pixel, (height, width)) if wrap else pixel
     if not (0 <= column < width and 0 <= row < height) or not layout.editable_mask[row, column]:
         return None
     red, green, blue, alpha = (int(value) for value in layout.pixels[row, column])
@@ -2033,13 +2442,19 @@ class CanvasView:
         self.origin_x += delta_x
         self.origin_y += delta_y
 
-    def visible_pixels(self, width: int, height: int) -> tuple[int, int, int, int]:
-        """(first column, first row, past-last column, past-last row) of the canvas pixels in the area."""
-        first_column = max(0, (self.rect.x - self.origin_x) // self.zoom)
-        first_row = max(0, (self.rect.y - self.origin_y) // self.zoom)
-        last_column = min(width, -(-(self.rect.right - self.origin_x) // self.zoom))
-        last_row = min(height, -(-(self.rect.bottom - self.origin_y) // self.zoom))
-        return (first_column, first_row, last_column, last_row)
+    def visible_pixels(self, width: int, height: int, wrap: bool = False) -> tuple[int, int, int, int]:
+        """(first column, first row, past-last column, past-last row) of the canvas pixels in the area.
+
+        With `wrap` the canvas repeats without end, so these are the positions in the repeating canvas that the area
+        shows, which can be negative or past the canvas size.
+        """
+        first_column = (self.rect.x - self.origin_x) // self.zoom
+        first_row = (self.rect.y - self.origin_y) // self.zoom
+        last_column = -(-(self.rect.right - self.origin_x) // self.zoom)
+        last_row = -(-(self.rect.bottom - self.origin_y) // self.zoom)
+        if wrap:
+            return (first_column, first_row, last_column, last_row)
+        return (max(0, first_column), max(0, first_row), min(width, last_column), min(height, last_row))
 
 
 # ----------------------------------------------------------------------------------------------------------
@@ -2544,6 +2959,14 @@ def draw_tool_icon(surface: pygame.Surface, tool: str, rectangle: pygame.Rect, c
         polygon([(3, 12), (10, 19), (11, 20), (6, 15)])
         polygon([(21, 13), (23, 17), (19, 17)])
         dot(21, 18, 2)
+    elif tool == "rotate":
+        # Arrows to the four sides: a row or a column can be dragged.
+        line((5, 12), (19, 12))
+        line((12, 5), (12, 19))
+        polygon([(2, 12), (7, 8), (7, 16)])
+        polygon([(22, 12), (17, 8), (17, 16)])
+        polygon([(12, 2), (8, 7), (16, 7)])
+        polygon([(12, 22), (8, 17), (16, 17)])
 
 
 def draw_slider(surface: pygame.Surface, rectangle: pygame.Rect, label: str, fraction: float, font: pygame.font.Font) -> None:
@@ -2751,12 +3174,16 @@ class Drag:
     drop_coordinate: Optional[Coordinate] = None
     drops_on_unplaced: bool = False
     drop_is_valid: bool = False
+    # Dragged with Ctrl held down: the selected tiles are copied to the drop place instead of moved.
+    duplicates: bool = False
 
 
 class AtlasInteraction:
-    """Mouse handling for the atlas and the unplaced section: selecting, and dragging tiles to rearrange them.
+    """Mouse handling for the atlas and the unplaced section: selecting, and dragging tiles to rearrange them
+    (or, with Ctrl held down, to copy them).
 
     It knows nothing about drawing; the window passes in mouse positions and reads `drag` to draw feedback.
+    `notice` is what the last copy did or why it could not be made, for the status line; the window clears it.
     """
 
     def __init__(self, project: AtlasProject, atlas_panel: AtlasPanel, unplaced_panel: UnplacedPanel):
@@ -2764,6 +3191,7 @@ class AtlasInteraction:
         self.atlas_panel = atlas_panel
         self.unplaced_panel = unplaced_panel
         self.drag: Optional[Drag] = None
+        self.notice = ""
 
     @property
     def dragging(self) -> bool:
@@ -2786,7 +3214,7 @@ class AtlasInteraction:
                 click_action = "select_only"
             else:
                 self.project.select_only(coordinate)
-            self.drag = Drag("atlas", position, grabbed_coordinate=coordinate, click_action=click_action)
+            self.drag = Drag("atlas", position, grabbed_coordinate=coordinate, click_action=click_action, duplicates=control_held)
         elif self.unplaced_panel.rect.collidepoint(position):
             index = self.unplaced_panel.tile_at(position)
             if index is not None:
@@ -2809,13 +3237,16 @@ class AtlasInteraction:
         if drag.source == "atlas":
             if self.unplaced_panel.rect.collidepoint(position):
                 drag.drops_on_unplaced = True
-                drag.drop_is_valid = self.project.can_return_to_unplaced(self.project.selection)
+                drag.drop_is_valid = not drag.duplicates and self.project.can_return_to_unplaced(self.project.selection)
             elif self.atlas_panel.rect.collidepoint(position):
                 drag.drop_coordinate = self.atlas_panel.drop_coordinate(position)
-                moves = plan_group_move(
-                    self.project.tiles, self.project.selection, drag.grabbed_coordinate, drag.drop_coordinate
-                )
-                drag.drop_is_valid = moves is not None
+                if drag.duplicates:
+                    drag.drop_is_valid = self.project.plan_duplicate(drag.grabbed_coordinate, drag.drop_coordinate) is not None
+                else:
+                    moves = plan_group_move(
+                        self.project.tiles, self.project.selection, drag.grabbed_coordinate, drag.drop_coordinate
+                    )
+                    drag.drop_is_valid = moves is not None
         elif self.atlas_panel.rect.collidepoint(position):
             drag.drop_coordinate = self.atlas_panel.drop_coordinate(position)
             drag.drop_is_valid = can_place_unplaced_tile(self.project.tiles, drag.drop_coordinate)
@@ -2834,6 +3265,8 @@ class AtlasInteraction:
             if drag.source == "atlas":
                 if drag.drops_on_unplaced:
                     self.project.return_to_unplaced(self.project.selection)
+                elif drag.duplicates:
+                    self._duplicate(drag)
                 else:
                     self.project.move_selection(drag.grabbed_coordinate, drag.drop_coordinate)
             else:
@@ -2846,6 +3279,18 @@ class AtlasInteraction:
         elif drag.click_action == "clear":
             self.project.clear_selection()
 
+    def _duplicate(self, drag: Drag) -> None:
+        """Copy the selected tiles to the drop place. Raises OSError if a file or atlas.json could not be written
+        (nothing has changed)."""
+        try:
+            copied = self.project.duplicate_selection(drag.grabbed_coordinate, drag.drop_coordinate)
+        except ValueError as error:
+            self.notice = f"Could not copy: {error}"
+            return
+        if copied:
+            names = [self.project.tiles[coordinate].name for coordinate in self.project.selection]
+            self.notice = f"Copied to {names[0]}." if len(names) == 1 else f"Copied {len(names)} tiles."
+
     def cancel(self) -> None:
         self.drag = None
 
@@ -2855,10 +3300,25 @@ class AtlasInteraction:
 # ----------------------------------------------------------------------------------------------------------
 
 
+# The checkbox buttons in the thin sidebar right of the canvas: their names and what they show on the button.
+SIDEBAR_BUTTONS = {"wrap": "W", "pixel_grid": "Pg", "tile_grid": "Tg"}
+SIDEBAR_BUTTON_HINTS = {
+    "wrap": "Wrap assist: show the tile as a repeating grid, and let strokes wrap around its edges",
+    "pixel_grid": "Pixel grid: lines between the pixels (shown when zoomed in far enough)",
+    "tile_grid": "Tile grid: lines around the tiles (wrap assist keeps its own setting, off at first)",
+}
+# The pixel grid is drawn when the canvas is zoomed in at least this far (screen pixels per canvas pixel).
+PIXEL_GRID_MINIMUM_ZOOM = 6
+# With wrap-assist on, the canvas is zoomed to fit this many copies of itself across and down.
+WRAP_PREVIEW_COPIES = 3
+
+
 @dataclasses.dataclass
 class EditorAreas:
     header: pygame.Rect
     canvas: pygame.Rect
+    sidebar: pygame.Rect
+    sidebar_buttons: dict[str, pygame.Rect]
     tool_buttons: dict[str, pygame.Rect]
     options: pygame.Rect
     controls: pygame.Rect
@@ -2890,7 +3350,16 @@ def compute_editor_areas(rect: pygame.Rect, tools: list[str]) -> EditorAreas:
         for index, tool in enumerate(tools)
     }
     canvas_top = header.bottom + gap
-    canvas = pygame.Rect(rect.x + margin, canvas_top, width, max(scaled(60), tools_top - scaled(8) - canvas_top))
+    canvas_height = max(scaled(60), tools_top - scaled(8) - canvas_top)
+    # The thin sidebar of buttons is right of the canvas, as tall as it.
+    sidebar_width, button_inset = scaled(40), scaled(3)
+    sidebar = pygame.Rect(rect.right - margin - sidebar_width, canvas_top, sidebar_width, canvas_height)
+    canvas = pygame.Rect(rect.x + margin, canvas_top, sidebar.x - gap - (rect.x + margin), canvas_height)
+    button_size = sidebar_width - 2 * button_inset
+    sidebar_buttons = {
+        name: pygame.Rect(sidebar.x + button_inset, sidebar.y + button_inset + index * (button_size + button_inset), button_size, button_size)
+        for index, name in enumerate(SIDEBAR_BUTTONS)
+    }
     left = rect.x + margin
     square = pygame.Rect(left, color_top, square_size, square_size)
     hue_bar = pygame.Rect(square.right + gap, color_top, scaled(16), square_size)
@@ -2909,7 +3378,7 @@ def compute_editor_areas(rect: pygame.Rect, tools: list[str]) -> EditorAreas:
         if (row + 1) * (history_swatch + 4) > square_size:
             break
         history.append(pygame.Rect(history_left + column * (history_swatch + 4), color_top + row * (history_swatch + 4), history_swatch, history_swatch))
-    return EditorAreas(header, canvas, tool_buttons, options, controls, square, hue_bar, alpha_bar, primary_swatch, secondary_swatch, hex_field, history)
+    return EditorAreas(header, canvas, sidebar, sidebar_buttons, tool_buttons, options, controls, square, hue_bar, alpha_bar, primary_swatch, secondary_swatch, hex_field, history)
 
 
 def saturation_value_square(hue: float, size: int) -> pygame.Surface:
@@ -2971,6 +3440,16 @@ class EditorPanel:
         self.floating_drag: Optional[tuple[Coordinate, int, int]] = None
         self.shape_dropdown_open = False
         self.slider_drag: Optional[str] = None
+        # Wrap-assist: the canvas is shown as a grid of copies of itself, and strokes wrap around its edges.
+        self.wrap_assist = False
+        # The lines between pixels and the lines around tiles, each on or off. The tile lines are set separately
+        # for wrap-assist (where nothing marks the tiles until asked) and for the normal view.
+        self.pixel_grid = True
+        self.tile_grid = True
+        self.wrap_tile_grid = False
+        # While the select tool is used with wrap-assist, positions are counted from the copy of the canvas where the
+        # press was, so that a rectangle can be dragged inside any copy.
+        self._copy_offset = (0, 0)
         self.rect = pygame.Rect(0, 0, 100, 100)
         self.areas = compute_editor_areas(self.rect, list(TOOL_LABELS))
         self.hex_field = TextField("", lambda character: character in "#0123456789abcdefABCDEF", 9)
@@ -3003,8 +3482,39 @@ class EditorPanel:
         self.areas = compute_editor_areas(rect, list(TOOL_LABELS))
         self.view.rect = self.areas.canvas
         self._checker = None
-        if self.layout is not None:
-            self.view.fit(self.layout.pixels.shape[1], self.layout.pixels.shape[0])
+        self._fit_view()
+
+    def _fit_view(self) -> None:
+        """Zoom and center the canvas to fit its area; with wrap-assist, to fit a few copies of it."""
+        if self.layout is None:
+            return
+        copies = WRAP_PREVIEW_COPIES if self.wrap_assist else 1
+        self.view.fit(self.layout.pixels.shape[1] * copies, self.layout.pixels.shape[0] * copies)
+
+    def toggle_wrap_assist(self) -> None:
+        self.wrap_assist = not self.wrap_assist
+        self._fit_view()
+
+    def sidebar_button_at(self, position: tuple[int, int]) -> Optional[str]:
+        for name, rectangle in self.areas.sidebar_buttons.items():
+            if rectangle.collidepoint(position):
+                return name
+        return None
+
+    def toggle_sidebar_button(self, name: str) -> None:
+        if name == "wrap":
+            self.toggle_wrap_assist()
+        elif name == "pixel_grid":
+            self.pixel_grid = not self.pixel_grid
+        elif name == "tile_grid":
+            if self.wrap_assist:
+                self.wrap_tile_grid = not self.wrap_tile_grid
+            else:
+                self.tile_grid = not self.tile_grid
+
+    def sidebar_button_checked(self, name: str) -> bool:
+        tile_grid = self.wrap_tile_grid if self.wrap_assist else self.tile_grid
+        return {"wrap": self.wrap_assist, "pixel_grid": self.pixel_grid, "tile_grid": tile_grid}[name]
 
     def sync(self) -> None:
         """Rebuild the canvas when the selection or the pixels of the selected tiles have changed."""
@@ -3030,7 +3540,7 @@ class EditorPanel:
             self._coordinate_signature = coordinate_signature
             self._forget_selection()
             self.view.rect = self.areas.canvas
-            self.view.fit(self.layout.pixels.shape[1], self.layout.pixels.shape[0])
+            self._fit_view()
 
     def contains(self, position: tuple[int, int]) -> bool:
         return self.rect.collidepoint(position)
@@ -3183,6 +3693,10 @@ class EditorPanel:
             if areas.hex_field.collidepoint(position):
                 self.hex_focused = True
                 return
+            sidebar_button = self.sidebar_button_at(position)
+            if sidebar_button is not None:
+                self.toggle_sidebar_button(sidebar_button)
+                return
             for tool, rectangle in areas.tool_buttons.items():
                 if rectangle.collidepoint(position):
                     self.choose_tool(tool)
@@ -3226,18 +3740,31 @@ class EditorPanel:
         slot = "primary" if button == 1 else "secondary"
         pixel = self.view.pixel_at(position)
         if self.tool == "eyedropper":
-            color = pick_color(self.layout, pixel)
+            color = pick_color(self.layout, pixel, self.wrap_assist)
             if color is not None:
                 self.colors.set_color(color, slot)
             self.color_drag = f"dropper_{slot}"
             return
         if self.tool == "select":
             if button == 1:
-                self._press_select(pixel)
+                self._copy_offset = self._offset_of_copy(pixel)
+                self._press_select(self._selection_pixel(position))
             return
         self.session = CanvasSession(
-            self.layout, self.tool, self.settings, self.colors.get(slot), pixel, self.random_source
+            self.layout, self.tool, self.settings, self.colors.get(slot), pixel, self.random_source, self.wrap_assist
         )
+
+    def _offset_of_copy(self, pixel: Coordinate) -> tuple[int, int]:
+        """How far the copy of the canvas that holds `pixel` is from the canvas itself (0, 0 without wrap-assist)."""
+        if not self.wrap_assist or self.layout is None:
+            return (0, 0)
+        wrapped = wrap_pixel(pixel, self.canvas_shape())
+        return (pixel[0] - wrapped[0], pixel[1] - wrapped[1])
+
+    def _selection_pixel(self, position: tuple[int, int]) -> Coordinate:
+        """The pixel of the canvas for the select tool: with wrap-assist, counted from the copy that was pressed."""
+        pixel = self.view.pixel_at(position)
+        return (pixel[0] - self._copy_offset[0], pixel[1] - self._copy_offset[1])
 
     def _press_select(self, pixel: Coordinate) -> None:
         if self.floating is not None:
@@ -3258,7 +3785,7 @@ class EditorPanel:
         self.pointer = position
         if self.color_drag is not None:
             if self.color_drag.startswith("dropper_") and self.layout is not None:
-                color = pick_color(self.layout, self.view.pixel_at(position))
+                color = pick_color(self.layout, self.view.pixel_at(position), self.wrap_assist)
                 if color is not None:
                     self.colors.set_color(color, self.color_drag.removeprefix("dropper_"))
             else:
@@ -3272,11 +3799,11 @@ class EditorPanel:
             self.panning_from = position
         elif self.floating_drag is not None and self.floating is not None:
             pressed, column, row = self.floating_drag
-            pixel = self.view.pixel_at(position)
+            pixel = self._selection_pixel(position)
             self.floating.column = column + pixel[0] - pressed[0]
             self.floating.row = row + pixel[1] - pressed[1]
         elif self.selecting_from is not None:
-            pixel = self.view.pixel_at(position)
+            pixel = self._selection_pixel(position)
             self.selection_moved = self.selection_moved or pixel != self.selecting_from
             self._set_selection(self.selecting_from, pixel)
         elif self.session is not None:
@@ -3292,7 +3819,7 @@ class EditorPanel:
             self.slider_drag = None
             self.floating_drag = None
             if self.selecting_from is not None:
-                pixel = self.view.pixel_at(position)
+                pixel = self._selection_pixel(position)
                 self.selection_moved = self.selection_moved or pixel != self.selecting_from
                 self._set_selection(self.selecting_from, pixel)
                 if not self.selection_moved:
@@ -3311,7 +3838,7 @@ class EditorPanel:
         except OSError as error:
             self.message = f"Could not save {ATLAS_FILE_NAME}: {error}"
             return
-        if session.tool != "eraser":
+        if session.uses_color:
             self.colors.remember(session.color)
         self.sync()
 
@@ -3409,6 +3936,8 @@ class EditorPanel:
         self.choose_tool("select")
         if self.selection_rectangle is not None:
             column, row = self.selection_rectangle[:2]
+        elif self.wrap_assist:
+            column, row = 0, 0  # every part of the repeating canvas is visible; the tile's corner is as good as any
         else:
             height, width = self.layout.pixels.shape[:2]
             column, row = self.view.visible_pixels(width, height)[:2]
@@ -3537,6 +4066,7 @@ class EditorPanel:
                 pygame.draw.rect(surface, Theme.PANEL_BORDER, self.areas.header, width=1, border_radius=3)
             draw_text(surface, self.fonts.large, header, Theme.TEXT, self.areas.header.move(scaled(6), 0).midleft, "midleft")
         self.draw_canvas(surface)
+        self.draw_sidebar(surface)
         self.draw_tools(surface)
         self.draw_colors(surface, caret_visible)
         self.draw_shape_menu(surface)
@@ -3564,27 +4094,39 @@ class EditorPanel:
             pixels = paste_pixels(pixels, paste.pixels, paste.column, paste.row, layout.editable_mask)
         height, width = pixels.shape[:2]
         surface.set_clip(area)
-        image_rectangle = view.pixel_rectangle(0, 0, width, height)
+        # With wrap-assist the canvas fills the whole area, as copies of itself.
+        image_rectangle = area if self.wrap_assist else view.pixel_rectangle(0, 0, width, height)
         visible = image_rectangle.clip(area)
         if self._checker is None or self._checker.get_width() < area.width or self._checker.get_height() < area.height:
             self._checker = checkerboard(max(area.width, area.height) + 16)
         surface.blit(self._checker, visible, pygame.Rect(0, 0, visible.width, visible.height))
-        first_column, first_row, last_column, last_row = view.visible_pixels(width, height)
+        first_column, first_row, last_column, last_row = visible_pixels = view.visible_pixels(width, height, self.wrap_assist)
         if last_column > first_column and last_row > first_row:
-            crop = numpy.ascontiguousarray(pixels[first_row:last_row, first_column:last_column])
+            if self.wrap_assist:
+                rows = numpy.arange(first_row, last_row) % height
+                columns = numpy.arange(first_column, last_column) % width
+                crop = numpy.ascontiguousarray(pixels[rows[:, None], columns[None, :]])
+            else:
+                crop = numpy.ascontiguousarray(pixels[first_row:last_row, first_column:last_column])
             picture = pygame.image.frombuffer(crop.tobytes(), (crop.shape[1], crop.shape[0]), "RGBA")
             picture = pygame.transform.scale(picture, (crop.shape[1] * view.zoom, crop.shape[0] * view.zoom))
             surface.blit(picture, view.pixel_rectangle(first_column, first_row).topleft)
-        self.draw_empty_places(surface, layout)
-        self.draw_overlay(surface, layout, width, height, (first_column, first_row, last_column, last_row))
+        self.draw_empty_places(surface, layout, visible_pixels)
+        self.draw_overlay(surface, layout, width, height, visible_pixels)
         surface.set_clip(None)
 
-    def draw_empty_places(self, surface: pygame.Surface, layout: CanvasLayout) -> None:
+    def draw_empty_places(self, surface: pygame.Surface, layout: CanvasLayout, visible: tuple[int, int, int, int]) -> None:
         size = layout.tile_size
         cell_columns, cell_rows = layout.pixels.shape[1] // size, layout.pixels.shape[0] // size
-        for cell_row in range(cell_rows):
-            for cell_column in range(cell_columns):
-                if (layout.first_column + cell_column, layout.first_row + cell_row) in layout.tile_coordinates:
+        if self.wrap_assist:
+            first_column, first_row, last_column, last_row = visible
+            columns = range(first_column // size, -(-last_column // size))
+            rows = range(first_row // size, -(-last_row // size))
+        else:
+            columns, rows = range(cell_columns), range(cell_rows)
+        for cell_row in rows:
+            for cell_column in columns:
+                if (layout.first_column + cell_column % cell_columns, layout.first_row + cell_row % cell_rows) in layout.tile_coordinates:
                     continue
                 rectangle = self.view.pixel_rectangle(cell_column * size, cell_row * size, size, size)
                 if rectangle.colliderect(self.areas.canvas):
@@ -3596,7 +4138,7 @@ class EditorPanel:
     def draw_overlay(self, surface: pygame.Surface, layout: CanvasLayout, width: int, height: int, visible: tuple[int, int, int, int]) -> None:
         view, area = self.view, self.areas.canvas
         overlay = pygame.Surface(area.size, pygame.SRCALPHA)
-        image = view.pixel_rectangle(0, 0, width, height).move(-area.x, -area.y)
+        image = pygame.Rect(0, 0, *area.size) if self.wrap_assist else view.pixel_rectangle(0, 0, width, height).move(-area.x, -area.y)
         first_column, first_row, last_column, last_row = visible
 
         def vertical_line(column: int, color: tuple[int, int, int, int]) -> None:
@@ -3607,23 +4149,43 @@ class EditorPanel:
             y = view.pixel_rectangle(0, row).y - area.y
             pygame.draw.line(overlay, color, (image.left, y), (image.right, y))
 
-        if view.zoom >= 6:
+        if self.pixel_grid and view.zoom >= PIXEL_GRID_MINIMUM_ZOOM:
             for column in range(first_column, last_column + 1):
                 vertical_line(column, (150, 156, 168, 46))
             for row in range(first_row, last_row + 1):
                 horizontal_line(row, (150, 156, 168, 46))
-        size = layout.tile_size
-        for column in range(0, width + 1, size):
-            vertical_line(column, (90, 170, 255, 150))
-        for row in range(0, height + 1, size):
-            horizontal_line(row, (90, 170, 255, 150))
+        if self.sidebar_button_checked("tile_grid"):
+            size = layout.tile_size
+            if self.wrap_assist:
+                # The lines of every copy of the canvas that is shown.
+                columns = range(-(-first_column // size) * size, last_column + 1, size)
+                rows = range(-(-first_row // size) * size, last_row + 1, size)
+            else:
+                columns, rows = range(0, width + 1, size), range(0, height + 1, size)
+            for column in columns:
+                vertical_line(column, (90, 170, 255, 150))
+            for row in rows:
+                horizontal_line(row, (90, 170, 255, 150))
         surface.blit(overlay, area.topleft)
         marked = self.floating.rectangle if self.floating is not None else self.selection_rectangle
         if marked is not None:
             left, top, right, bottom = marked
-            draw_dashed_outline(surface, view.pixel_rectangle(left, top, right - left, bottom - top))
+            for offset_column, offset_row in self.copy_offsets(marked):
+                draw_dashed_outline(surface, view.pixel_rectangle(left + offset_column, top + offset_row, right - left, bottom - top))
         if self.tool_uses_outline() and area.collidepoint(self.pointer) and self.session is None:
             self.draw_footprint_outline(surface)
+
+    def copy_offsets(self, rectangle: tuple[int, int, int, int]) -> list[tuple[int, int]]:
+        """How far to move `rectangle` (left, top, right, bottom, in canvas pixels) to find it in each copy of the
+        canvas that shows it. Without wrap-assist there is one canvas: (0, 0)."""
+        if not self.wrap_assist or self.layout is None:
+            return [(0, 0)]
+        height, width = self.canvas_shape()
+        first_column, first_row, last_column, last_row = self.view.visible_pixels(width, height, True)
+        left, top, right, bottom = rectangle
+        columns = range((first_column - right) // width + 1, -(-(last_column - left) // width))
+        rows = range((first_row - bottom) // height + 1, -(-(last_row - top) // height))
+        return [(column * width, row * height) for row in rows for column in columns]
 
     def tool_uses_outline(self) -> bool:
         return (
@@ -3637,11 +4199,25 @@ class EditorPanel:
     def draw_footprint_outline(self, surface: pygame.Surface) -> None:
         column, row = self.view.pixel_at(self.pointer)
         width, height = self.settings.footprint_size(self.tool)
-        rectangle = self.view.pixel_rectangle(column - width // 2, row - height // 2, width, height)
+        left, top = column - width // 2, row - height // 2
         is_round = self.tool == "airbrush" or (self.tool == "noise_brush" and self.settings.noise_shape == "circle")
         draw_outline = pygame.draw.ellipse if is_round and width > 2 else pygame.draw.rect
-        draw_outline(surface, (0, 0, 0), rectangle.inflate(2, 2), width=1)
-        draw_outline(surface, (255, 255, 255), rectangle, width=1)
+        # With wrap-assist the brush is in every copy of the canvas at once, so it has a guide in each.
+        for offset_column, offset_row in self.copy_offsets((left, top, left + width, top + height)):
+            rectangle = self.view.pixel_rectangle(left + offset_column, top + offset_row, width, height)
+            draw_outline(surface, (0, 0, 0), rectangle.inflate(2, 2), width=1)
+            draw_outline(surface, (255, 255, 255), rectangle, width=1)
+
+    def draw_sidebar(self, surface: pygame.Surface) -> None:
+        pygame.draw.rect(surface, Theme.PANEL_BORDER, self.areas.sidebar, width=1, border_radius=4)
+        for name, rectangle in self.areas.sidebar_buttons.items():
+            # Checked: the whole button is blue. Unchecked: it is empty, with only its outline (lit while the pointer is on it).
+            checked = self.sidebar_button_checked(name)
+            if checked:
+                pygame.draw.rect(surface, Theme.ACCENT, rectangle, border_radius=4)
+            outline = Theme.ACCENT if checked else Theme.TEXT_DIMMED if rectangle.collidepoint(self.pointer) else Theme.PANEL_BORDER
+            pygame.draw.rect(surface, outline, rectangle, width=1, border_radius=4)
+            draw_text(surface, self.fonts.large, SIDEBAR_BUTTONS[name], Theme.BACKGROUND if checked else Theme.TEXT, rectangle.center, "center")
 
     def options_text(self) -> str:
         if self.tool in DIAMETER_TOOLS:
@@ -3655,6 +4231,8 @@ class EditorPanel:
             return f"Size {width} x {height}     [ ] both    Shift+[ ] width    Alt+[ ] height"
         if self.tool in LINE_TOOLS:
             return f"Width {self.settings.line_width}     [ ] change"
+        if self.tool == "rotate":
+            return "Drag a pixel sideways to rotate its row, up or down to rotate its column"
         return ""
 
     def tool_at(self, position: tuple[int, int]) -> Optional[str]:
@@ -3837,6 +4415,8 @@ class Application:
         self._last_caret_visible = True
         self.quit_dialog: Optional[QuitDialog] = None
         self.import_dialog: Optional[ImportDialog] = None
+        self.context_menu: Optional[ContextMenu] = None
+        self.purge_dialog: Optional[PurgeDialog] = None
         self.file_picker = SystemFilePicker()
         self.closing = False
         self.layout = compute_layout(surface.get_size())
@@ -3875,7 +4455,8 @@ class Application:
     def handle_event(self, event: pygame.event.Event) -> bool:
         """Deal with one event. Returns False when the program should close."""
         if event.type == pygame.QUIT:
-            self.import_dialog = None  # closing the window gives up an import that has not started
+            # Closing the window gives up an import that has not started, and a purge that has not been confirmed.
+            self.import_dialog = self.context_menu = self.purge_dialog = None
             if self.quit_dialog is None:
                 if not self.project.unsaved_tiles():
                     return False
@@ -3885,8 +4466,12 @@ class Application:
         try:
             if self.quit_dialog is not None:
                 self._handle_dialog_event(event)
+            elif self.purge_dialog is not None:
+                self._handle_purge_event(event)
             elif self.import_dialog is not None:
                 self._handle_import_event(event)
+            elif self.context_menu is not None:
+                self._handle_menu_event(event)
             else:
                 self._handle_event(event)
         except OSError as error:
@@ -3907,6 +4492,83 @@ class Application:
 
     def import_dialog_areas(self) -> dict[str, pygame.Rect]:
         return import_dialog_areas(self.surface.get_size())
+
+    def purge_dialog_areas(self) -> dict[str, pygame.Rect]:
+        return purge_dialog_areas(self.surface.get_size())
+
+    def context_menu_area(self) -> pygame.Rect:
+        assert self.context_menu is not None
+        return context_menu_area(self.context_menu, self.surface.get_size())
+
+    def _open_context_menu(self, position: tuple[int, int]) -> None:
+        """Right-click in the atlas. Over a tile the menu offers to purge it, or all the selected tiles when it is one
+        of them. Over an empty place it offers a new tile there. Nothing else opens a menu."""
+        if not self.atlas_panel.rect.collidepoint(position):
+            return
+        coordinate = self.atlas_panel.tile_at(position)
+        purges: tuple[Coordinate, ...] = ()
+        if coordinate is not None:
+            selection = self.project.selection
+            purges = tuple(sorted(selection, key=reading_order_key)) if coordinate in selection else (coordinate,)
+        else:
+            # A place owns half of the gap around it, so the gap beside a tile is not an empty place.
+            coordinate = self.atlas_panel.drop_coordinate(position)
+            if coordinate[0] < 0 or coordinate[1] < 0 or coordinate in self.project.tiles:
+                return
+        self.message = ""
+        self.editor.lose_focus()
+        self._leave_tile_size_field()
+        # As for a left click: a pasted picture is placed while its tiles are still the ones shown.
+        self.editor.finish_selection()
+        self.interaction.cancel()
+        self.context_menu = ContextMenu(coordinate, position, purges)
+
+    def _handle_menu_event(self, event: pygame.event.Event) -> None:
+        """While the menu is open it gets every event; any click but one on its item, or Esc, closes it."""
+        menu = self.context_menu
+        assert menu is not None
+        if event.type in (pygame.VIDEORESIZE, pygame.WINDOWSIZECHANGED):
+            self.surface = pygame.display.get_surface() or self.surface
+            self.update_layout()
+            self.context_menu = None
+        elif event.type == pygame.MOUSEMOTION:
+            self.pointer = event.pos
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            self.pointer = event.pos
+            chosen = event.button == 1 and self.context_menu_area().collidepoint(event.pos)
+            self.context_menu = None
+            if chosen and menu.purges:
+                self.purge_dialog = PurgeDialog(self.project, menu.purges)
+            elif chosen:
+                name = self.project.create_tile(menu.coordinate)
+                self.message = f"Created {name}. It is not saved as a file yet (Ctrl+S)."
+        elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            self.context_menu = None
+
+    def _handle_purge_event(self, event: pygame.event.Event) -> None:
+        """While the purge dialog is open it gets every event; the window behind it does nothing. Enter does not
+        confirm: a deletion needs a click on the button."""
+        dialog = self.purge_dialog
+        assert dialog is not None
+        outcome = "ask"
+        if event.type in (pygame.VIDEORESIZE, pygame.WINDOWSIZECHANGED):
+            self.surface = pygame.display.get_surface() or self.surface
+            self.update_layout()
+        elif event.type == pygame.MOUSEMOTION:
+            self.pointer = event.pos
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            self.pointer = event.pos
+            areas = self.purge_dialog_areas()
+            if areas["purge"].collidepoint(event.pos):
+                outcome = dialog.confirm()
+            elif areas["cancel"].collidepoint(event.pos):
+                outcome = dialog.cancel()
+        elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            outcome = dialog.cancel()
+        if outcome == "done":
+            self.message = dialog.done_message
+        if outcome != "ask":
+            self.purge_dialog = None
 
     def start_import(self) -> None:
         """Ask for a picture and, if it can be read, show what will be made of it."""
@@ -4022,11 +4684,15 @@ class Application:
             elif event.button == 1:
                 self.editor.lose_focus()
                 self._handle_press(event.pos)
+            elif event.button == 3:
+                self._open_context_menu(event.pos)
         elif event.type == pygame.MOUSEBUTTONUP and event.button in (1, 2, 3):
             self.pointer = event.pos
             self.editor.mouse_up(event.button, event.pos)
             if event.button == 1:
                 self.interaction.mouse_up(event.pos)
+                if self.interaction.notice:
+                    self.message, self.interaction.notice = self.interaction.notice, ""
         elif event.type == pygame.MOUSEWHEEL:
             if self.editor.contains(self.pointer):
                 self.editor.wheel(event.y, self.pointer)
@@ -4155,11 +4821,40 @@ class Application:
         self.draw_status()
         if self.quit_dialog is not None:
             self.draw_quit_dialog(self.quit_dialog)
+        elif self.purge_dialog is not None:
+            self.draw_purge_dialog(self.purge_dialog)
         elif self.import_dialog is not None:
             self.draw_import_dialog(self.import_dialog)
+        elif self.context_menu is not None:
+            self.draw_context_menu()
         else:
             self.draw_tooltip()
         self.needs_redraw = False
+
+    def draw_context_menu(self) -> None:
+        area = self.context_menu_area()
+        hovered = area.collidepoint(self.pointer)
+        pygame.draw.rect(self.surface, Theme.BUTTON_HOVERED if hovered else Theme.TOOLTIP_BACKGROUND, area, border_radius=3)
+        pygame.draw.rect(self.surface, Theme.PANEL_BORDER, area, width=1, border_radius=3)
+        draw_text(self.surface, self.fonts.normal, self.context_menu.label, Theme.TEXT, (area.x + scaled(10), area.centery), "midleft")
+
+    def draw_purge_dialog(self, dialog: PurgeDialog) -> None:
+        surface = self.surface
+        dimming = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        dimming.fill((0, 0, 0, 170))
+        surface.blit(dimming, (0, 0))
+        areas = self.purge_dialog_areas()
+        panel = areas["panel"]
+        pygame.draw.rect(surface, Theme.PANEL, panel, border_radius=6)
+        pygame.draw.rect(surface, Theme.INVALID, panel, width=1, border_radius=6)
+        draw_text(surface, self.fonts.large, dialog.title, Theme.TEXT, (panel.x + scaled(20), panel.y + scaled(16)))
+        line_height = self.fonts.normal.get_linesize()
+        for number, line in enumerate(wrap_text(self.fonts.normal, dialog.message, areas["message"].width)):
+            draw_text(surface, self.fonts.normal, line, Theme.TEXT_DIMMED, (areas["message"].x, areas["message"].y + number * line_height))
+        if dialog.error:
+            draw_text(surface, self.fonts.small, dialog.error, Theme.ERROR, areas["error"].midleft, "midleft")
+        for name, label in (("purge", "Purge"), ("cancel", "Cancel")):
+            draw_button(surface, areas[name], label, self.fonts.normal, areas[name].collidepoint(self.pointer))
 
     def draw_import_preview(self, box: pygame.Rect, dialog: ImportDialog) -> None:
         """The picture with the tile grid on it, as it will be cut."""
@@ -4313,6 +5008,12 @@ class Application:
 
     def draw_atlas(self) -> None:
         panel = self.atlas_panel
+        # The tiles a menu or a purge warning is about.
+        purge_targets = (
+            self.context_menu.purges if self.context_menu is not None
+            else tuple(self.purge_dialog.coordinates) if self.purge_dialog is not None
+            else ()
+        )
         self.draw_panel_frame(panel.rect)
         self.surface.set_clip(panel.rect)
         for coordinate in panel.visible_coordinates():
@@ -4323,6 +5024,11 @@ class Application:
             self.draw_tile(rectangle, record, record.pixels, (id(record), record.revision))
             if coordinate in self.project.selection:
                 pygame.draw.rect(self.surface, Theme.ACCENT, rectangle.inflate(6, 6), width=2)
+            if coordinate in purge_targets:
+                pygame.draw.rect(self.surface, Theme.INVALID, rectangle.inflate(6, 6), width=2)
+        if self.context_menu is not None and not self.context_menu.purges:
+            # The empty place where the menu's new tile would be made.
+            draw_dashed_outline(self.surface, panel.tile_screen_rect(self.context_menu.coordinate).inflate(6, 6))
         if self.project.is_empty:
             self.draw_empty_state()
         self.surface.set_clip(None)
@@ -4422,6 +5128,9 @@ class Application:
             tool = self.editor.tool_at(self.pointer)
             if tool is not None:
                 return TOOL_LABELS[tool]
+            button = self.editor.sidebar_button_at(self.pointer)
+            if button is not None:
+                return SIDEBAR_BUTTON_HINTS[button]
         return None
 
     def draw_tooltip(self) -> None:

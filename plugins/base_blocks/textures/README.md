@@ -32,10 +32,26 @@ phases; what works so far:
   arrangement (empty places are hatched and cannot be drawn on), and a stroke can cross from tile to tile.
   Mouse wheel zooms, middle-drag pans, a grid shows when zoomed in. The left button draws with the primary color,
   the right button with the secondary color.
+- A thin sidebar of buttons is right of the canvas. Its checkbox button "W" turns wrap-assist on (the whole button is
+  blue) or off (empty). Wrap-assist shows the canvas as a repeating grid of itself, with nothing drawn at the edges, and
+  drawing is as if on every copy at once: the brush guide appears once per copy, and a stroke that leaves one side of
+  the tile comes back in on the other (every stroke tool, the fill bucket, which fills around the edges, and the eye
+  dropper, which picks from any copy). With several tiles shown, the whole canvas is what repeats. The select tool and a
+  pasted picture work on the real canvas, counted from the copy you press in. Turning it on or off zooms to fit; it is
+  not saved with the atlas. The buttons "Pg" and "Tg" below it are checkboxes too: Pg turns the lines between pixels
+  on or off (they are drawn when the canvas is zoomed in at least 6 times), Tg the blue lines around the tiles (in
+  wrap-assist, around every tile of every copy). Both start on, except that wrap-assist keeps its own Tg setting, off
+  at first because nothing marks the tile edges there until you ask: Tg shows the setting of the view you are in, and
+  turning wrap-assist on or off does not change the other view's setting.
 - Tools (icons in one row; rest the pointer on one to see its name): pencil, eraser, line, horizontal line, vertical line, horizontal and vertical parallelogram, noise
-  brush, air brush, select, eye dropper, fill bucket (exact color match, side by side pixels only). `[` and `]`
-  resize: both axes together, Shift for the width, Alt for the height; the lines and parallelograms have one
-  width, and the noise brush and air brush have one diameter.
+  brush, air brush, select, eye dropper, fill bucket (exact color match, side by side pixels only), rotate row/column.
+  `[` and `]` resize: both axes together, Shift for the width, Alt for the height; the lines and parallelograms have
+  one width, and the noise brush and air brush have one diameter. A horizontal or vertical line can be one pixel long
+  (click without dragging): one pixel of its length, as thick as its width.
+- Rotate row/column: press a pixel and drag it. Dragging further sideways than up or down (or equally far) rotates
+  the pixel's row, else its column, by as many pixels as the pointer moved; the pressed pixel follows the pointer
+  and what leaves one edge of the tile comes back at the other. Only the tile that was pressed rotates, even with
+  several tiles shown, and nothing happens over an empty place. Dragging back undoes it, and it is one Ctrl+Z step.
 - Noise brush: every pixel of the round or square brush area becomes the color with the chance set by the Density
   slider, rolled again for every pixel the pointer moves over; Opacity below 100% blends each hit over what is
   there, so pixels hit several times in one stroke build up. Air brush: a soft round brush; Hardness is how far
@@ -59,6 +75,20 @@ phases; what works so far:
   `atlas.json`); Esc gives up; clicking elsewhere applies a name that is allowed and drops one that is not (the
   status line says why). A name is refused if it is not a valid file name or if any PNG file in the folder already
   has it, even one the program ignores; a file is never replaced. Renaming is not part of Ctrl+Z.
+- New tile: right-click an empty place in the atlas and choose "New tile" (the place is outlined). It makes a fully
+  transparent tile there named `new_tile.png` (numbered if that name is taken), selects it, and keeps its pixels in
+  `atlas.json`: it has no PNG file until you save it (Ctrl+S).
+- Copying: Ctrl+drag a tile, or the selected tiles, to an empty place. Each copy is named `<name> (copy).png`
+  (`(copy 2)`, `(copy 3)` if that is taken), is saved as a PNG file at once with the pixels its tile shows now, and is
+  selected afterwards; the originals stay. A copy cannot land on a tile (the places the dragged tiles are on count), at
+  a negative place or in the unplaced section, and a group with an error tile cannot be copied. A tile you Ctrl+press
+  that was not selected joins the group, as with Ctrl+click.
+- Purging: right-click a tile in the atlas and choose "Purge tile..." - or "Purge N tiles..." when the tile is one of
+  the selected ones, which purges all of them (the tiles are outlined in red). After a short warning, Purge deletes the
+  PNG files and the entries in `atlas.json` (places, names and any pixels stored there), including unsaved changes;
+  it cannot be undone and is not part of Ctrl+Z. It works on error tiles too (a missing file is fine), and the tiles
+  do not become unplaced ones. Enter does not confirm; Esc or Cancel gives up. If a file cannot be moved or
+  `atlas.json` cannot be written, every file comes back and nothing changes.
 - Closing the window with unsaved tiles (including tiles that have no file yet) asks about each one: Save, Don't
   save or Cancel (Esc), with the current picture next to the one on disk. The box "Do this for all" gives the
   same answer to the tiles still to come. Enter saves. A tile with no file that is not saved stays in `atlas.json`.
