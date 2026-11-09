@@ -1,0 +1,6 @@
+{
+  "texture": "glass",
+  "sight_through": true,
+  "light_through": true,
+  "transparency": "glass"
+}

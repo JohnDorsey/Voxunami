@@ -279,7 +279,24 @@ impl<'a> MeshedBrick<'a> {
         }
     }
 
-    /// Detailed quads for the blocks that are not whole cubes: a slab, a stair, glass.
+    /// Whether the voxel in front of a rectangle of a face draws a sheet over all of it that looks back at us from the other side of the same plane: a see-through
+    /// block next to this one (that is not hidden by it) draws its own face there, so ours seen from behind would be a second sheet on the plane.
+    fn front_draws_the_sheet_from_behind(
+        &self,
+        front: Option<ModelId>,
+        face: FaceDirection,
+        wanted: u64,
+    ) -> bool {
+        front.is_some_and(|neighbour| {
+            self.table.is_solid(neighbour)
+                && self.table.is_sight_through(neighbour)
+                && self.table.shape(neighbour).face_cover(face.opposite()) & wanted == wanted
+        })
+    }
+
+    /// Detailed quads for the blocks that are not whole cubes: a slab, a stair, glass. A block that shows its back faces (`engine:back_faces`) also gets each quad
+    /// again on the same plane looking the other way, lit by its own voxel, so that it is drawn to someone inside the voxel, whom the faces looking out would not
+    /// show (the far side of a leaf block, seen through a hole in the near side).
     fn mesh_partial_blocks(&self, detailed: &mut Vec<DetailedQuad>) {
         let eighths = SUBDIVISIONS as u16;
         for z in 0..EDGE {
@@ -322,6 +339,23 @@ impl<'a> MeshedBrick<'a> {
                                 material: self.material_of_face(index, face),
                                 light,
                             });
+                            if self.table.shows_back_faces(model)
+                                && !(rectangle.on_boundary(face)
+                                    && self.front_draws_the_sheet_from_behind(
+                                        front,
+                                        face,
+                                        rectangle.mask(),
+                                    ))
+                            {
+                                detailed.push(DetailedQuad {
+                                    origin,
+                                    width: u16::from(rectangle.width),
+                                    height: u16::from(rectangle.height),
+                                    face: face.opposite(),
+                                    material: self.material_of_face(index, face.opposite()),
+                                    light: self.light[index],
+                                });
+                            }
                         }
                     }
                 }
@@ -386,7 +420,9 @@ pub(crate) fn merge_slice(
 mod tests {
     use std::collections::HashMap;
 
-    use block_models::{BlockDefinition, Shape};
+    use std::collections::HashSet;
+
+    use block_models::{BlockDefinition, Shape, Transparency};
     use proptest::prelude::*;
     use voxel_space::BRICK_VOXEL_COUNT;
 
@@ -401,6 +437,10 @@ mod tests {
     const GLASS: u32 = 5;
     /// A whole cube drawn in one of three colours by its state, which any number can be.
     const NUMBERED: u32 = 6;
+    /// A sight-through whole cube in the `leaves` mode: it shows the faces between its voxels and its faces from behind.
+    const LEAVES: u32 = 7;
+    /// A sight-through whole cube in the `glass` mode: it shows its faces from behind and hides the faces between its voxels.
+    const BACKS_ONLY: u32 = 8;
 
     fn table() -> BlockTable {
         let air = BlockDefinition::air();
@@ -411,7 +451,7 @@ mod tests {
             Shape::half(FaceDirection::PositiveY),
             Shape::stair(FaceDirection::PositiveX),
         ]);
-        let glass = BlockDefinition::cube([0.7; 3]).with_see_through(true);
+        let glass = BlockDefinition::cube([0.7; 3]).with_sight_through(true);
         let numbered =
             BlockDefinition::cube([0.3; 3]).with_state_colors(vec![[0.1; 3], [0.2; 3], [0.3; 3]]);
         BlockTable::from_definitions(&[
@@ -423,6 +463,46 @@ mod tests {
             Some(&glass),
             Some(&numbered),
         ])
+    }
+
+    /// The blocks of [`table`] and two more after them (the colours of the states of `NUMBERED` come after all the blocks, so these are a table of their own and
+    /// the numbers of those colours in the tests above stay what they are).
+    fn leaf_table() -> BlockTable {
+        let air = BlockDefinition::air();
+        let cube = BlockDefinition::cube([0.5; 3]);
+        let glass = BlockDefinition::cube([0.7; 3]).with_sight_through(true);
+        let leaves = BlockDefinition::cube([0.1, 0.5, 0.2])
+            .with_sight_through(true)
+            .with_transparency(Transparency::Leaves);
+        let backs_only = BlockDefinition::cube([0.6; 3])
+            .with_sight_through(true)
+            .with_transparency(Transparency::Glass);
+        BlockTable::from_definitions(&[
+            Some(&air),
+            Some(&cube),
+            Some(&cube),
+            Some(&cube),
+            Some(&cube),
+            Some(&glass),
+            Some(&cube),
+            Some(&leaves),
+            Some(&backs_only),
+        ])
+    }
+
+    fn leafy_mesh(blocks: &ChannelStorage, light: Option<&ChannelStorage>) -> BrickMesh {
+        mesh_brick(
+            &BrickNeighbourhood {
+                center: BrickChannels {
+                    blocks,
+                    states: None,
+                    orientations: None,
+                    light,
+                },
+                neighbours: [None; 6],
+            },
+            &leaf_table(),
+        )
     }
 
     fn brick_from(fill: impl Fn(usize, usize, usize) -> u32) -> ChannelStorage {
@@ -987,6 +1067,191 @@ mod tests {
         );
     }
 
+    // ----- Faces that are shown from every side (leaves) -----
+
+    /// The detailed quad of a whole voxel's face: the sheet on the plane of the voxel's `plane_of` face, looking `looks`. (A face that looks the way it is on
+    /// is the voxel's face; one that looks the other way is the same sheet seen from inside the voxel.)
+    fn sheet(
+        voxel: [usize; 3],
+        plane_of: FaceDirection,
+        looks: FaceDirection,
+        material: u32,
+        light: u8,
+    ) -> DetailedQuad {
+        let mut origin = voxel.map(|coordinate| coordinate as u16 * 8);
+        origin[plane_of.axis()] += 8 * u16::from(plane_of.is_positive());
+        DetailedQuad {
+            origin,
+            width: 8,
+            height: 8,
+            face: looks,
+            material,
+            light,
+        }
+    }
+
+    /// Whether a quad is on the plane between voxels 5 and 6 along x (x = 48 eighths), whichever way it looks: a face of x, not the top of a voxel that starts there.
+    fn on_the_plane_between(quad: &DetailedQuad) -> bool {
+        quad.face.axis() == 0 && quad.origin[0] == 48
+    }
+
+    /// The sheets of `mesh` as a set, and whether any was there twice.
+    fn sheets_of(mesh: &BrickMesh) -> (HashSet<DetailedQuad>, bool) {
+        let set: HashSet<DetailedQuad> = mesh.detailed.iter().copied().collect();
+        let repeated = set.len() != mesh.detailed.len();
+        (set, repeated)
+    }
+
+    #[test]
+    fn a_lone_leaf_block_shows_each_of_its_faces_to_both_sides_of_the_plane() {
+        let blocks = brick_from(|x, y, z| if (x, y, z) == (5, 6, 7) { LEAVES } else { AIR });
+        let mesh = leafy_mesh(&blocks, None);
+        assert!(mesh.quads.is_empty());
+        let mut expected = HashSet::new();
+        for face in FaceDirection::ALL {
+            expected.insert(sheet([5, 6, 7], face, face, LEAVES, FULL_LIGHT));
+            expected.insert(sheet([5, 6, 7], face, face.opposite(), LEAVES, FULL_LIGHT));
+        }
+        assert_eq!(expected.len(), 12);
+        assert_eq!(sheets_of(&mesh), (expected, false));
+    }
+
+    #[test]
+    fn a_sheet_seen_from_inside_is_as_bright_as_the_voxel_it_is_in_and_one_seen_from_outside_as_the_voxel_it_looks_at()
+     {
+        let blocks = brick_from(|x, y, z| if (x, y, z) == (5, 6, 7) { LEAVES } else { AIR });
+        let light = brick_from(|x, y, z| if (x, y, z) == (5, 6, 7) { 200 } else { 50 });
+        let mesh = leafy_mesh(&blocks, Some(&light));
+        let (sheets, _) = sheets_of(&mesh);
+        for face in FaceDirection::ALL {
+            assert!(
+                sheets.contains(&sheet([5, 6, 7], face, face, LEAVES, 50)),
+                "{face:?} seen from outside"
+            );
+            assert!(
+                sheets.contains(&sheet([5, 6, 7], face, face.opposite(), LEAVES, 200)),
+                "{face:?} seen from inside"
+            );
+        }
+        assert_eq!(mesh.detailed.len(), 12);
+    }
+
+    #[test]
+    fn leaves_side_by_side_show_both_faces_of_the_plane_between_them_once_and_not_the_sheet_from_behind_twice()
+     {
+        let blocks = brick_from(|x, y, z| match (x, y, z) {
+            (5, 6, 7) | (6, 6, 7) => LEAVES,
+            _ => AIR,
+        });
+        let mesh = leafy_mesh(&blocks, None);
+        let (sheets, repeated) = sheets_of(&mesh);
+        assert!(!repeated, "a sheet is in the mesh twice");
+        let (west, east) = ([5, 6, 7], [6, 6, 7]);
+        let (positive_x, negative_x) = (FaceDirection::PositiveX, FaceDirection::NegativeX);
+        // The plane between them: the west block's face looks east and the east block's looks west, and that is all there is on it, since each one's sheet from
+        // behind would be the other's face.
+        let between: HashSet<DetailedQuad> = sheets
+            .iter()
+            .copied()
+            .filter(on_the_plane_between)
+            .collect();
+        assert_eq!(
+            between,
+            HashSet::from([
+                sheet(west, positive_x, positive_x, LEAVES, FULL_LIGHT),
+                sheet(east, negative_x, negative_x, LEAVES, FULL_LIGHT),
+            ])
+        );
+        // The ten other faces of the pair, each seen from both sides.
+        assert_eq!(sheets.len(), 2 + 2 * 10);
+    }
+
+    #[test]
+    fn leaves_against_stone_lose_the_face_the_stone_hides_and_its_sheet_from_behind_too() {
+        let blocks = brick_from(|x, y, z| match (x, y, z) {
+            (5, 6, 7) => LEAVES,
+            (6, 6, 7) => STONE,
+            _ => AIR,
+        });
+        let mesh = leafy_mesh(&blocks, None);
+        let (sheets, repeated) = sheets_of(&mesh);
+        assert!(!repeated);
+        // Five faces seen from both sides; the stone's own face towards the leaves is a whole quad and not the leaves' to draw.
+        assert_eq!(sheets.len(), 10);
+        assert!(sheets.iter().all(|quad| !on_the_plane_between(quad)));
+        assert!(
+            mesh.quads
+                .contains(&quad([6, 6, 7], 1, 1, FaceDirection::NegativeX, STONE))
+        );
+    }
+
+    #[test]
+    fn a_block_that_shows_only_its_back_faces_still_hides_the_faces_between_its_voxels() {
+        let blocks = brick_from(|x, y, z| match (x, y, z) {
+            (5, 6, 7) | (6, 6, 7) => BACKS_ONLY,
+            _ => AIR,
+        });
+        let mesh = leafy_mesh(&blocks, None);
+        let (sheets, repeated) = sheets_of(&mesh);
+        assert!(!repeated);
+        // Five faces of each, seen from both sides, and nothing on the plane between them.
+        assert_eq!(sheets.len(), 2 * 5 * 2);
+        assert!(sheets.iter().all(|quad| !on_the_plane_between(quad)));
+    }
+
+    #[test]
+    fn two_different_blocks_that_show_their_back_faces_draw_one_sheet_each_on_the_plane_between_them_and_none_from_behind()
+     {
+        let blocks = brick_from(|x, y, z| match (x, y, z) {
+            (5, 6, 7) => LEAVES,
+            (6, 6, 7) => BACKS_ONLY,
+            _ => AIR,
+        });
+        let mesh = leafy_mesh(&blocks, None);
+        let (sheets, repeated) = sheets_of(&mesh);
+        assert!(!repeated);
+        let between: HashSet<DetailedQuad> = sheets
+            .iter()
+            .copied()
+            .filter(on_the_plane_between)
+            .collect();
+        // (If each also drew its sheet from behind, two sheets would look the same way on one plane, and fight over it.)
+        assert_eq!(
+            between,
+            HashSet::from([
+                sheet(
+                    [5, 6, 7],
+                    FaceDirection::PositiveX,
+                    FaceDirection::PositiveX,
+                    LEAVES,
+                    FULL_LIGHT
+                ),
+                sheet(
+                    [6, 6, 7],
+                    FaceDirection::NegativeX,
+                    FaceDirection::NegativeX,
+                    BACKS_ONLY,
+                    FULL_LIGHT
+                ),
+            ])
+        );
+        assert_eq!(sheets.len(), 2 + 2 * 10);
+    }
+
+    #[test]
+    fn a_block_without_back_faces_is_meshed_as_it_was() {
+        // Glass in this table shows nothing extra: six faces, none from behind.
+        let blocks = brick_from(|x, y, z| if (x, y, z) == (5, 6, 7) { GLASS } else { AIR });
+        let mesh = leafy_mesh(&blocks, None);
+        assert_eq!(mesh.detailed.len(), 6);
+        for face in FaceDirection::ALL {
+            assert!(
+                mesh.detailed
+                    .contains(&sheet([5, 6, 7], face, face, GLASS, FULL_LIGHT))
+            );
+        }
+    }
+
     #[test]
     fn a_brick_of_one_slab_state_is_not_taken_for_a_buried_cube() {
         let blocks = ChannelStorage::uniform(ROCK);
@@ -1466,6 +1731,54 @@ mod tests {
             prop_assert_eq!(total, covered.len(), "something is covered twice");
             prop_assert_eq!(covered.len(), expected.len());
             prop_assert!(covered == expected, "what the mesh covers is not what shows");
+        }
+
+        /// In any mix of stone, leaves and the block that shows only its back faces, no two sheets are the same face of the same place: two on one plane
+        /// looking one way would fight over the pixels, and every leaf block with air beside it is drawn to both sides of each of its faces.
+        #[test]
+        fn no_two_sheets_look_the_same_way_from_one_place_and_every_open_face_of_a_leaf_is_drawn_both_ways(
+            seed in any::<u64>(),
+            density in prop_oneof![Just(30u64), Just(300), Just(700)],
+        ) {
+            let kinds = [STONE, LEAVES, BACKS_ONLY];
+            let blocks: Vec<u32> = random_brick(seed, density, 3)
+                .into_iter()
+                .map(|value| if value == AIR { AIR } else { kinds[value as usize - 1] })
+                .collect();
+            let storage = ChannelStorage::from_values(&blocks);
+            let mesh = leafy_mesh(&storage, None);
+            let mut seen = HashSet::new();
+            for quad in &mesh.detailed {
+                prop_assert!(seen.insert((quad.origin, quad.face)), "{quad:?} is there twice");
+            }
+            // Every face of a leaf that looks at air has its sheet from both sides.
+            for z in 0..EDGE {
+                for y in 0..EDGE {
+                    for x in 0..EDGE {
+                        let block = blocks[local([x, y, z]).index()];
+                        if block != LEAVES {
+                            continue;
+                        }
+                        for face in FaceDirection::ALL {
+                            let [dx, dy, dz] = face.offset();
+                            let at = [x as i128 + dx, y as i128 + dy, z as i128 + dz];
+                            let inside = at.iter().all(|&c| (0..EDGE as i128).contains(&c));
+                            let in_front = if inside {
+                                blocks[local([at[0] as usize, at[1] as usize, at[2] as usize]).index()]
+                            } else {
+                                AIR
+                            };
+                            if in_front != AIR {
+                                continue;
+                            }
+                            let outside = sheet([x, y, z], face, face, LEAVES, FULL_LIGHT);
+                            let from_behind = sheet([x, y, z], face, face.opposite(), LEAVES, FULL_LIGHT);
+                            prop_assert!(mesh.detailed.contains(&outside), "{outside:?}");
+                            prop_assert!(mesh.detailed.contains(&from_behind), "{from_behind:?}");
+                        }
+                    }
+                }
+            }
         }
 
         #[test]

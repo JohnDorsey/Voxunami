@@ -1,6 +1,7 @@
 use crate::property::engine::{self, face_code};
 use crate::property::{PropertyKey, PropertyType, SetProperties, key_id};
 use crate::shape::Shape;
+use crate::transparency::Transparency;
 use namespaced_id::NamespacedId;
 use voxel_space::FaceDirection;
 
@@ -16,9 +17,11 @@ use voxel_space::FaceDirection;
 pub struct BlockDefinition {
     /// sRGB colour.
     pub color: [f32; 3],
-    /// Whether the block lets what is behind it be seen and light through, so it hides nothing and
-    /// holds light itself (like glass, and like air).
-    pub see_through: bool,
+    /// Whether the block lets what is behind it be seen, so it hides nothing (like glass, and like air). Whether light passes is [`BlockDefinition::light_through`].
+    pub sight_through: bool,
+    /// Whether light passes through the block and the voxel holds light itself (like glass, and like air).
+    pub light_through: bool,
+    transparency: Transparency,
     shapes: Vec<Shape>,
     state_colors: Vec<[f32; 3]>,
     /// The flat colour of each face of the block as it is made (indexed by [`FaceDirection::index`]), for the faces that differ from `color`.
@@ -80,7 +83,9 @@ pub struct FacePictures {
 /// Everything a definition is made of, for the decoder that has read it all.
 pub(crate) struct Parts {
     pub color: [f32; 3],
-    pub see_through: bool,
+    pub sight_through: bool,
+    pub light_through: bool,
+    pub transparency: Transparency,
     pub shapes: Vec<Shape>,
     pub state_colors: Vec<[f32; 3]>,
     pub face_colors: [Option<[f32; 3]>; 6],
@@ -95,7 +100,9 @@ impl BlockDefinition {
     pub fn cube(color: [f32; 3]) -> Self {
         Self {
             color,
-            see_through: false,
+            sight_through: false,
+            light_through: false,
+            transparency: Transparency::Opaque,
             shapes: vec![Shape::full()],
             state_colors: Vec::new(),
             face_colors: [None; 6],
@@ -110,7 +117,9 @@ impl BlockDefinition {
     pub fn air() -> Self {
         Self {
             color: [0.0; 3],
-            see_through: true,
+            sight_through: true,
+            light_through: true,
+            transparency: Transparency::Opaque,
             shapes: vec![Shape::empty()],
             state_colors: Vec::new(),
             face_colors: [None; 6],
@@ -220,7 +229,9 @@ impl BlockDefinition {
     pub(crate) fn from_parts(parts: Parts) -> Self {
         Self {
             color: parts.color,
-            see_through: parts.see_through,
+            sight_through: parts.sight_through,
+            light_through: parts.light_through,
+            transparency: parts.transparency,
             shapes: parts.shapes,
             state_colors: parts.state_colors,
             face_colors: parts.face_colors,
@@ -349,9 +360,30 @@ impl BlockDefinition {
         &self.properties
     }
 
-    pub fn with_see_through(mut self, see_through: bool) -> Self {
-        self.see_through = see_through;
+    pub fn with_sight_through(mut self, sight_through: bool) -> Self {
+        self.sight_through = sight_through;
         self
+    }
+
+    pub fn with_light_through(mut self, light_through: bool) -> Self {
+        self.light_through = light_through;
+        self
+    }
+
+    /// The same block drawn in this mode (see [`Transparency`]). A mode other than the opaque one is for a block that is `sight_through`: a pack that says otherwise is refused.
+    pub fn with_transparency(mut self, transparency: Transparency) -> Self {
+        self.transparency = transparency;
+        self
+    }
+
+    /// Sets how the block shows its faces and its pictures' clear pixels.
+    pub fn set_transparency(&mut self, transparency: Transparency) {
+        self.transparency = transparency;
+    }
+
+    /// How the block shows its faces and its pictures' clear pixels.
+    pub fn transparency(&self) -> Transparency {
+        self.transparency
     }
 
     /// The shape of each state.
@@ -401,14 +433,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_cube_is_opaque_whole_and_has_one_state_and_air_is_empty_and_see_through() {
+    fn a_cube_is_opaque_whole_and_has_one_state_and_air_is_empty_and_sight_through() {
         let cube = BlockDefinition::cube([0.2, 0.3, 0.4]);
-        assert!(!cube.see_through);
+        assert!(!cube.sight_through && !cube.light_through);
+        assert_eq!(cube.transparency(), Transparency::Opaque);
         assert_eq!(cube.state_count(), 1);
         assert!(cube.shapes()[0].is_full());
         let air = BlockDefinition::air();
-        assert!(air.see_through && air.shapes()[0].is_empty());
+        assert!(air.sight_through && air.light_through && air.shapes()[0].is_empty());
+        assert_eq!(air.transparency(), Transparency::Opaque);
         assert_eq!(air.state_count(), 1);
+    }
+
+    #[test]
+    fn seeing_through_a_block_and_light_passing_through_it_are_separate_and_so_is_the_mode() {
+        let tinted_glass = BlockDefinition::cube([0.5; 3]).with_sight_through(true);
+        assert!(tinted_glass.sight_through && !tinted_glass.light_through);
+        let dark_window = BlockDefinition::cube([0.5; 3]).with_light_through(true);
+        assert!(!dark_window.sight_through && dark_window.light_through);
+        let mut leaves = BlockDefinition::cube([0.1, 0.5, 0.2])
+            .with_sight_through(true)
+            .with_light_through(true)
+            .with_transparency(Transparency::Leaves);
+        assert_eq!(leaves.transparency(), Transparency::Leaves);
+        leaves.set_transparency(Transparency::Glass);
+        assert_eq!(leaves.transparency(), Transparency::Glass);
     }
 
     #[test]
@@ -419,10 +468,10 @@ mod tests {
                 Shape::half(FaceDirection::NegativeY),
                 Shape::half(FaceDirection::PositiveY),
             ])
-            .with_see_through(true);
+            .with_sight_through(true);
         assert_eq!(slabs.state_count(), 3);
         assert!(slabs.shapes()[1].covers_face(FaceDirection::NegativeY));
-        assert!(slabs.see_through);
+        assert!(slabs.sight_through);
     }
 
     #[test]

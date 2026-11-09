@@ -404,6 +404,16 @@ fn apply_patch(
             Err(Failure::Other { path, message }) => errors.push(error(file, path, message)),
         }
     }
+    if errors.is_empty()
+        && edited.transparency() != block_models::Transparency::Opaque
+        && !edited.sight_through
+    {
+        errors.push(error(
+            file,
+            "/operations".to_owned(),
+            crate::block::MODE_NEEDS_SIGHT,
+        ));
+    }
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -479,17 +489,42 @@ fn apply_operation(
                 )),
                 _ => unreachable!("the reader gives a colour for a colour"),
             },
-            Place::SeeThrough => match value {
-                PatchValue::Flag(wanted) if block.see_through == *wanted => Ok(()),
+            Place::SightThrough => match value {
+                PatchValue::Flag(wanted) if block.sight_through == *wanted => Ok(()),
                 PatchValue::Flag(wanted) => Err(other(
                     path,
                     "",
                     format!(
-                        "the test failed: see_through is {}, not {wanted}",
-                        block.see_through
+                        "the test failed: sight_through is {}, not {wanted}",
+                        block.sight_through
                     ),
                 )),
                 _ => unreachable!("the reader gives a flag for a flag"),
+            },
+            Place::LightThrough => match value {
+                PatchValue::Flag(wanted) if block.light_through == *wanted => Ok(()),
+                PatchValue::Flag(wanted) => Err(other(
+                    path,
+                    "",
+                    format!(
+                        "the test failed: light_through is {}, not {wanted}",
+                        block.light_through
+                    ),
+                )),
+                _ => unreachable!("the reader gives a flag for a flag"),
+            },
+            Place::Transparency => match value {
+                PatchValue::Mode(wanted) if block.transparency() == *wanted => Ok(()),
+                PatchValue::Mode(wanted) => Err(other(
+                    path,
+                    "",
+                    format!(
+                        "the test failed: transparency is {}, not {}",
+                        block.transparency().word(),
+                        wanted.word()
+                    ),
+                )),
+                _ => unreachable!("the reader gives a mode for a mode"),
             },
             Place::Texture => match value {
                 PatchValue::Texture(wanted) if block.texture() == Some(wanted) => Ok(()),
@@ -548,9 +583,21 @@ fn apply_operation(
                 }
                 Ok(())
             }
-            Place::SeeThrough => {
+            Place::SightThrough => {
                 if let PatchValue::Flag(flag) = value {
-                    block.see_through = *flag;
+                    block.sight_through = *flag;
+                }
+                Ok(())
+            }
+            Place::LightThrough => {
+                if let PatchValue::Flag(flag) = value {
+                    block.light_through = *flag;
+                }
+                Ok(())
+            }
+            Place::Transparency => {
+                if let PatchValue::Mode(mode) = value {
+                    block.set_transparency(*mode);
                 }
                 Ok(())
             }
@@ -623,7 +670,18 @@ fn apply_operation(
                 block.set_face_colors([None; 6]);
                 Ok(())
             }
-            Place::Color | Place::SeeThrough => {
+            Place::Transparency => {
+                if block.transparency() == block_models::Transparency::Opaque {
+                    return Err(other(
+                        path,
+                        "",
+                        "this block has no transparency mode, so there is nothing to remove",
+                    ));
+                }
+                block.set_transparency(block_models::Transparency::Opaque);
+                Ok(())
+            }
+            Place::Color | Place::SightThrough | Place::LightThrough => {
                 unreachable!("the reader refuses to remove what a block always has")
             }
         },

@@ -54,6 +54,11 @@ How a game's content reaches a server (data packs) and a client (the package in 
   the plain one. The picture shader costs about 10 percent (0.84 ms of 8.1 at 1280 by 720) on that GPU and nothing measurable on the discrete one. A version that works the picture's coordinates out in the fragment shader costs 0.63 and was built and **not kept** (the shader is going to be reworked for shadows, global illumination, MSAA and waving vegetation, which moves vertices and so would make a picture swim); it is in `block-textures-spec.md`, step 4, "Where the cost goes", for an optimisation pass.
 - **Built 2026-11-08 (step 5 of `block-textures-spec.md`, the docking port only; owner):** a block with both `engine:front_face` and `engine:axis_face` has its axis go away from the face that was clicked, as a log's does, and its front turned to the player's side across it. The dev docking port has both. The rest of step 5 (grass with an axis, the generator writing orientations) is **skipped until something can show it** (a grass top picture, trees).
 
+- **Leaves and glass (2026-11-08; owner):** the first blocks with clear pixels, in `base_blocks` as numbers 8 and 9 (the dev blocks moved to 10 to 12). **Transparency is a named mode in block data** (`"transparency": "opaque" | "leaves" | "glass"`), the owner's
+  choice over two loose switches (first built as `engine:inner_faces` and `engine:back_faces`, then replaced): a mode is a fixed answer to "are the clear pixels of its pictures holes, are the faces between its voxels drawn, are its faces drawn from behind", leaves
+  yes, yes, yes and glass yes, no, yes, and an opaque block ignores the alpha of its pictures. **`see_through` is split into `sight_through` and `light_through`** (the owner's names): seeing through a block and light passing through it are separate, and a mode needs `sight_through`. Clear pixels are
+  holes by a shader `discard` at alpha under a half, with no blending. Sun shadows from them: see `block-textures-spec.md`, "Leaves and glass".
+
 ## Decided (the content package at the handshake; built in Phase 28)
 
 - **The server says what the world looks like.** `Welcome` carries the game's *package data* (`game_shell::PackageData`): the property schema, every

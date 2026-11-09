@@ -251,11 +251,41 @@ fn corpus() -> Vec<Case> {
         ok(
             Block,
             "everything",
-            r#"{ "color": [1,1,1], "see_through": true,
+            r#"{ "color": [1,1,1], "sight_through": true,
             "states": ["full", "empty", "half:positive_z", "stair:negative_x", { "boxes": [[0,0,0,8,4,8]] }],
             "state_colors": [[0,0,0]], "properties": { "test:glow": 255, "test:sticky": false },
             "face_colors": { "top": [1,0,0], "side": [0,1,0], "bottom": [0,0,1], "positive_x": [1,1,1] },
             "state_properties": { "0": { "test:glow": 0 }, "4": { "test:sticky": true } } }"#,
+        ),
+        ok(
+            Block,
+            "sight and light and a mode",
+            r#"{ "color": [1,1,1], "sight_through": true, "light_through": true, "transparency": "leaves" }"#,
+        ),
+        ok(
+            Block,
+            "the opaque mode on a block that cannot be seen through",
+            r#"{ "color": [1,1,1], "transparency": "opaque" }"#,
+        ),
+        bad(
+            Block,
+            "a mode that is not one",
+            r#"{ "color": [1,1,1], "sight_through": true, "transparency": "frosted" }"#,
+        ),
+        bad(
+            Block,
+            "a mode on a block with no sight_through",
+            r#"{ "color": [1,1,1], "transparency": "glass" }"#,
+        ),
+        bad(
+            Block,
+            "a mode on a block that is not sight_through",
+            r#"{ "color": [1,1,1], "sight_through": false, "transparency": "glass" }"#,
+        ),
+        bad(
+            Block,
+            "light_through that is text",
+            r#"{ "color": [1,1,1], "light_through": "yes" }"#,
         ),
         ok(
             Block,
@@ -297,7 +327,7 @@ fn corpus() -> Vec<Case> {
         bad(
             Block,
             "neither a colour nor a texture",
-            r#"{ "see_through": true }"#,
+            r#"{ "sight_through": true }"#,
         ),
         bad(Block, "a texture that is a number", r#"{ "texture": 5 }"#),
         bad(
@@ -364,7 +394,7 @@ fn corpus() -> Vec<Case> {
         bad(
             Block,
             "see-through as text",
-            r#"{ "color": [0,0,0], "see_through": "yes" }"#,
+            r#"{ "color": [0,0,0], "sight_through": "yes" }"#,
         ),
         bad(Block, "no states", r#"{ "color": [0,0,0], "states": [] }"#),
         bad(
@@ -505,7 +535,7 @@ fn corpus() -> Vec<Case> {
             { "op": "remove", "property": "x:y" },
             { "op": "remove", "property": "x:y", "state": 0 },
             { "op": "set", "path": "color", "value": [0, 1, 0] },
-            { "op": "test", "path": "see_through", "value": false },
+            { "op": "test", "path": "sight_through", "value": false },
             { "op": "set", "path": "state_colors", "value": [[0,0,0]] },
             { "op": "remove", "path": "state_colors" },
             { "op": "set", "path": "face_colors", "value": { "top": [1,0,0], "negative_x": [0,0,1] } },
@@ -620,7 +650,7 @@ fn corpus() -> Vec<Case> {
         bad(
             Patch,
             "see-through given a number",
-            r#"{ "target": "a:b", "operations": [{ "op": "set", "path": "see_through", "value": 1 }] }"#,
+            r#"{ "target": "a:b", "operations": [{ "op": "set", "path": "sight_through", "value": 1 }] }"#,
         ),
         ok(
             Patch,
@@ -982,7 +1012,7 @@ fn a_game_with_another_property_gets_a_schema_with_that_property() {
 
 // ---- the same, on files made by damaging good ones ----
 
-const GOOD_BLOCK: &str = r#"{ "color": [0.5, 0.5, 0.5], "see_through": false,
+const GOOD_BLOCK: &str = r#"{ "color": [0.5, 0.5, 0.5], "sight_through": false,
     "states": ["full", "half:negative_y", "stair:positive_x", { "boxes": [[0,0,0,8,8,8], [0,0,0,4,4,4]] }],
     "state_colors": [[0,0,0], [1,1,1]], "properties": { "test:glow": 3, "test:sticky": true },
     "face_colors": { "top": [1, 0, 0], "positive_x": [0, 1, 0] },
@@ -1003,7 +1033,7 @@ const GOOD_PATCH: &str = r#"{ "target": "base_blocks:lamp", "optional": true, "o
     { "op": "remove", "path": "state_colors" },
     { "op": "set", "path": "face_colors", "value": { "side": [0, 1, 0], "top": [1, 0, 0] } },
     { "op": "add", "shape": "half:positive_y" },
-    { "op": "test", "path": "see_through", "value": false } ] }"#;
+    { "op": "test", "path": "sight_through", "value": false } ] }"#;
 
 /// Every place in a value that can be replaced, as a JSON pointer.
 fn places(value: &Value, here: String, found: &mut Vec<String>) {

@@ -375,8 +375,12 @@ fn the_order_the_plugins_are_listed_in_changes_nothing() {
 /// exhaust another), and the stream is 396 bytes longer, 7,214,895 to 7,215,291. **The saved world's hash, 17_018_755_794_665_956_377, is the one the branch that made the seat and the engine pinned for the same script**: the saved world
 /// names the blocks and not their colours, so the two ways of colouring them give the same world. These numbers were measured, not predicted. *Believed, not checked:* the 63 bytes of the stream that are not the package are the
 /// declaration of the flight readout's message that branch added to the welcome.
+/// Leaves and glass (2026-11-08): two blocks of the base blocks, numbered 8 and 9 (the dev blocks became 10 to 12), two placeable items, two more bytes in each of the 13 definitions (whether light passes, and the transparency mode) and the two pictures (16 by 16, 1,024 bytes each of
+/// pixels) in the package, which is 12,399 bytes before and 14,669 now (+2,270, measured by `block_golden.rs`, which also pins the table), and the stream is 2,307 bytes longer, 7,215,291 to 7,217,598. *Believed, not checked:* the 37 bytes of the stream that are not the package are the two
+/// items. **The saved world's hash moved** (17_018_755_794_665_956_377 to 14_691_099_892_887_363_969), because the world names the blocks it knows and the registry has two more; the script does not place a leaf or a pane. (The stream hash
+/// had also moved before this, with the pictures edited since 2026-11-07: a baseline run at the commit before leaves and glass failed `block_golden.rs` too, so the stream was most likely stale, and was not run separately.)
 const PINNED: (u64, usize, u64) = (
-    3_560_450_734_653_215_519,
-    7_215_291,
-    17_018_755_794_665_956_377,
+    14_888_054_962_778_108_205,
+    7_217_598,
+    14_691_099_892_887_363_969,
 );

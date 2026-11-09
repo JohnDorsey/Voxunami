@@ -813,7 +813,9 @@ mod tests {
     fn table() -> BlockTable {
         let air = BlockDefinition::air();
         let stone = BlockDefinition::cube([0.5; 3]);
-        let glass = BlockDefinition::cube([0.7; 3]).with_see_through(true);
+        let glass = BlockDefinition::cube([0.7; 3])
+            .with_sight_through(true)
+            .with_light_through(true);
         let lamp = BlockDefinition::cube([1.0; 3]).with_property(&base_blocks::EMISSION, 64);
         let candle = BlockDefinition::cube([1.0; 3]).with_property(&base_blocks::EMISSION, 16);
         block_properties::test_table(&[

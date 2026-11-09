@@ -56,14 +56,15 @@ const PINNED_NAMES: &[&str] = &[
     "voxunami_eels:head",
 ];
 
-/// (the length, the hash) of `PackageData::encode` as it was on 2026-11-07.
-const PINNED_PACKAGE: (usize, u64) = (1205, 14_056_661_403_236_959_343);
+/// (the length, the hash) of `PackageData::encode` as it was on 2026-11-08: 10 bytes longer than on 2026-11-07, the two bytes each of its 5 definitions gained (whether light passes
+/// through the block, and its transparency mode).
+const PINNED_PACKAGE: (usize, u64) = (1215, 11_721_676_500_271_260_102);
 
 const PINNED_TABLE: &[&str] = &[
-    " 0 voxunami_eels:air: colour #000000, 1 states, state 0 faces [0 0 0 0 0 0], front none, axis none, docking none, placement Fixed, behaviour a28133c087488ace",
-    " 1 voxunami_eels:wall: colour #1a1f38, 1 states, state 0 faces [1 1 1 1 1 1], front none, axis none, docking none, placement Fixed, behaviour e91641d7bf20e52d",
-    " 2 voxunami_eels:wall_line: colour #40bff2, 1 states, state 0 faces [2 2 2 2 2 2], front none, axis none, docking none, placement Fixed, behaviour a9f1d93133ad6db6",
-    " 3 voxunami_eels:trail: colour #e63333, 1 states, state 0 faces [5 5 5 5 5 5], front none, axis none, docking none, placement Fixed, behaviour 34ef6b226aa9b8e1",
-    " 4 voxunami_eels:head: colour #f4a3a3, 1 states, state 0 faces [13 13 13 13 13 13], front none, axis none, docking none, placement Fixed, behaviour a1e826fc3fb71fd6",
+    " 0 voxunami_eels:air: colour #000000, 1 states, state 0 faces [0 0 0 0 0 0], front none, axis none, docking none, placement Fixed, behaviour 8375d9cf84a8c372",
+    " 1 voxunami_eels:wall: colour #1a1f38, 1 states, state 0 faces [1 1 1 1 1 1], front none, axis none, docking none, placement Fixed, behaviour 1cf3093a212b228d",
+    " 2 voxunami_eels:wall_line: colour #40bff2, 1 states, state 0 faces [2 2 2 2 2 2], front none, axis none, docking none, placement Fixed, behaviour 8c1ae6c38fa5577a",
+    " 3 voxunami_eels:trail: colour #e63333, 1 states, state 0 faces [5 5 5 5 5 5], front none, axis none, docking none, placement Fixed, behaviour 6970ac3ab2611159",
+    " 4 voxunami_eels:head: colour #f4a3a3, 1 states, state 0 faces [13 13 13 13 13 13], front none, axis none, docking none, placement Fixed, behaviour 19d9beaf9d892fba",
     "palette: 21 colours, digest dfb345c9ae2453ee, pictures 0 on it, digest 6975f1271857fe35",
 ];

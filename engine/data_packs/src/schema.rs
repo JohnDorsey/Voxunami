@@ -9,6 +9,7 @@
 use block_models::{PropertyKind, PropertySchema, engine};
 use serde_json::{Value, json};
 
+use crate::block::transparency_words;
 use crate::body::{
     BodyContext, GREATEST_EXTENT_BRICKS, GREATEST_MASS, POSITION_LIMIT, SMALLEST_ORBIT_RATIO,
 };
@@ -190,6 +191,14 @@ fn block(schema: &PropertySchema) -> Value {
         "description": "one block of a pack; its name is the file's name",
         "type": "object",
         "anyOf": [{ "required": ["color"] }, { "required": ["texture"] }],
+        "if": {
+            "required": ["transparency"],
+            "properties": { "transparency": { "enum": ["leaves", "glass"] } }
+        },
+        "then": {
+            "required": ["sight_through"],
+            "properties": { "sight_through": { "const": true } }
+        },
         "additionalProperties": false,
         "$defs": { "color": color(), "shape": shape(), "face_colors": face_colors() },
         "properties": {
@@ -200,7 +209,21 @@ fn block(schema: &PropertySchema) -> Value {
                 "pattern": format!("^({PART}:)?{PART}$"),
                 "description": "the base name of the block's pictures: `oak` is a picture of this pack, `other_pack:stone` of another; `oak_top`, `oak_side`, `oak_bottom` or `oak` in the `textures` folder say what each face looks like. `color` may be left out: it is then the average of the pictures"
             },
-            "see_through": { "type": "boolean", "default": false },
+            "sight_through": {
+                "type": "boolean",
+                "default": false,
+                "description": "whether the block hides nothing behind it (glass, leaves, air)"
+            },
+            "light_through": {
+                "type": "boolean",
+                "default": false,
+                "description": "whether light passes through the block and the voxel holds light itself (glass, leaves, air)"
+            },
+            "transparency": {
+                "enum": transparency_words(),
+                "default": "opaque",
+                "description": "how a block that is `sight_through` draws its pictures and faces: `opaque` draws a picture whole and no faces but the outside of a body of the block; `leaves` cuts holes where the picture is clear and draws the faces between its voxels and from behind; `glass` cuts holes and draws faces from behind but not between its voxels. A mode other than `opaque` needs `sight_through`"
+            },
             "states": {
                 "type": "array",
                 "minItems": 1,
@@ -411,9 +434,23 @@ fn patch() -> Value {
                     }), &["op", "path", "value"]),
                     operation(json!({
                         "op": { "enum": ["test", "set"] },
-                        "path": { "const": "see_through" },
+                        "path": { "const": "sight_through" },
                         "value": { "type": "boolean" }
                     }), &["op", "path", "value"]),
+                    operation(json!({
+                        "op": { "enum": ["test", "set"] },
+                        "path": { "const": "light_through" },
+                        "value": { "type": "boolean" }
+                    }), &["op", "path", "value"]),
+                    operation(json!({
+                        "op": { "enum": ["test", "set"] },
+                        "path": { "const": "transparency" },
+                        "value": { "enum": transparency_words() }
+                    }), &["op", "path", "value"]),
+                    operation(json!({
+                        "op": { "const": "remove" },
+                        "path": { "const": "transparency" }
+                    }), &["op", "path"]),
                     operation(json!({
                         "op": { "enum": ["test", "set"] },
                         "path": { "const": "state_colors" },

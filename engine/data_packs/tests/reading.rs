@@ -2,6 +2,7 @@
 
 use block_models::{
     BlockDefinition, PropertyDeclaration, PropertyKind, PropertySchema, Shape, ShapeBox,
+    Transparency,
 };
 use data_packs::{
     Operation, Patch, PatchValue, Place, PropertyValue, read_block, read_manifest, read_patch,
@@ -172,7 +173,9 @@ fn the_smallest_block_is_a_colour_and_is_one_whole_state() {
 fn a_block_with_everything_is_what_the_same_calls_make() {
     let text = r#"{
         "color": [0.9, 0.9, 0.95],
-        "see_through": true,
+        "sight_through": true,
+        "light_through": true,
+        "transparency": "leaves",
         "states": [ "full", "half:negative_y", "stair:positive_x", "empty",
                     { "boxes": [[0,0,0, 8,4,8], [2,4,2, 6,8,6]] } ],
         "state_colors": [[0.9, 0.9, 0.95], [0.8, 0.8, 0.9]],
@@ -182,7 +185,9 @@ fn a_block_with_everything_is_what_the_same_calls_make() {
     }"#;
     let (_, definition) = block(text).unwrap();
     let expected = BlockDefinition::cube([0.9, 0.9, 0.95])
-        .with_see_through(true)
+        .with_sight_through(true)
+        .with_light_through(true)
+        .with_transparency(Transparency::Leaves)
         .with_shapes(vec![
             Shape::full(),
             Shape::half(FaceDirection::NegativeY),
@@ -358,6 +363,46 @@ fn a_texture_is_a_base_name_in_the_packs_own_namespace_or_a_name_with_the_namesp
 }
 
 #[test]
+fn sight_and_light_are_separate_flags_and_the_transparency_mode_is_a_word_for_a_block_that_can_be_seen_through()
+ {
+    let (_, definition) =
+        block(r#"{ "color": [0, 0, 0], "sight_through": true, "transparency": "glass" }"#).unwrap();
+    assert!(definition.sight_through && !definition.light_through);
+    assert_eq!(definition.transparency(), Transparency::Glass);
+    let (_, definition) = block(r#"{ "color": [0, 0, 0], "light_through": true }"#).unwrap();
+    assert!(!definition.sight_through && definition.light_through);
+    assert_eq!(definition.transparency(), Transparency::Opaque);
+    // "opaque" may be written, and is what no word means.
+    let (_, written) = block(r#"{ "color": [0, 0, 0], "transparency": "opaque" }"#).unwrap();
+    assert_eq!(written, BlockDefinition::cube([0.0; 3]));
+    // A word that is no mode is corrected, and every mode is named.
+    assert_eq!(
+        block_errors(r#"{ "color": [0, 0, 0], "sight_through": true, "transparency": "leeves" }"#),
+        [format!(
+            "{FILE}: /transparency: \"leeves\" is not a transparency mode (did you mean \"leaves\"?); the modes are \"opaque\", \"leaves\", \"glass\""
+        )]
+    );
+    assert_eq!(
+        block_errors(r#"{ "color": [0, 0, 0], "transparency": 3 }"#),
+        [format!(
+            "{FILE}: /transparency: expected text, found a number"
+        )]
+    );
+    // A mode is for a block that can be seen through: the holes would show nothing.
+    for mode in ["leaves", "glass"] {
+        assert_eq!(
+            block_errors(&format!(
+                r#"{{ "color": [0, 0, 0], "light_through": true, "transparency": "{mode}" }}"#
+            )),
+            [format!(
+                "{FILE}: /transparency: a transparency mode needs \"sight_through\": true, or nothing shows through the block"
+            )],
+            "{mode}"
+        );
+    }
+}
+
+#[test]
 fn the_colour_may_be_left_out_of_a_block_with_a_texture_and_then_it_follows_the_pictures() {
     let (_, definition) = block(r#"{ "texture": "oak" }"#).unwrap();
     assert_eq!(definition.texture(), Some(&id("my_pack:oak")));
@@ -366,7 +411,7 @@ fn the_colour_may_be_left_out_of_a_block_with_a_texture_and_then_it_follows_the_
     assert_eq!(definition.color, [0.0; 3]);
     // Without a texture there is nothing to follow, and the colour is still required.
     assert_eq!(
-        block_errors(r#"{ "see_through": true }"#),
+        block_errors(r#"{ "sight_through": true }"#),
         [format!("{FILE}: missing \"color\"")]
     );
 }
@@ -478,7 +523,7 @@ fn face_colours_that_are_wrong_say_what_and_where() {
 
 #[test]
 fn an_unknown_key_is_refused_and_a_near_miss_is_corrected() {
-    let keys = "\"color\", \"see_through\", \"states\", \"state_colors\", \"face_colors\", \"texture\", \"properties\", \"state_properties\"";
+    let keys = "\"color\", \"sight_through\", \"light_through\", \"transparency\", \"states\", \"state_colors\", \"face_colors\", \"texture\", \"properties\", \"state_properties\"";
     assert_eq!(
         block_errors(r#"{ "colour": [0, 0, 0] }"#),
         [
@@ -651,12 +696,12 @@ fn state_colours_need_at_least_one_colour_each_inside_0_to_1() {
 #[test]
 fn every_problem_in_a_file_is_reported_not_just_the_first() {
     let errors = block_errors(
-        r#"{ "color": [9, 0, 0], "see_through": "yes", "states": ["slab"],
+        r#"{ "color": [9, 0, 0], "sight_through": "yes", "states": ["slab"],
             "properties": { "test:glow": -1 } }"#,
     );
     assert_eq!(errors.len(), 4, "{errors:#?}");
     assert!(errors[0].contains("/color/0: 9 is outside 0 to 1"));
-    assert!(errors[1].contains("/see_through: expected true or false, found text"));
+    assert!(errors[1].contains("/sight_through: expected true or false, found text"));
     assert!(errors[2].contains("/states/0: \"slab\" is not a shape"));
     assert!(errors[3].contains("/properties/test:glow: -1 is outside 0 to 255"));
 }
@@ -674,6 +719,65 @@ fn patch_errors(text: &str) -> Vec<String> {
 }
 
 #[test]
+fn a_patch_may_set_light_through_and_the_mode_and_test_them_and_take_the_mode_away_but_not_the_flags()
+ {
+    let patch = patch(
+        r#"{ "target": "base_blocks:lamp", "operations": [
+            { "op": "set", "path": "light_through", "value": true },
+            { "op": "test", "path": "light_through", "value": false },
+            { "op": "set", "path": "transparency", "value": "glass" },
+            { "op": "test", "path": "transparency", "value": "opaque" },
+            { "op": "remove", "path": "transparency" } ] }"#,
+    )
+    .unwrap();
+    let places: Vec<(&str, Place)> = patch
+        .operations
+        .iter()
+        .map(|operation| match operation {
+            Operation::Set { place, .. } => ("set", place.clone()),
+            Operation::Test { place, .. } => ("test", place.clone()),
+            Operation::Remove { place } => ("remove", place.clone()),
+            Operation::AddState { .. } => ("add", Place::Color),
+        })
+        .collect();
+    assert_eq!(
+        places,
+        [
+            ("set", Place::LightThrough),
+            ("test", Place::LightThrough),
+            ("set", Place::Transparency),
+            ("test", Place::Transparency),
+            ("remove", Place::Transparency),
+        ]
+    );
+    assert!(matches!(
+        &patch.operations[2],
+        Operation::Set {
+            value: PatchValue::Mode(Transparency::Glass),
+            ..
+        }
+    ));
+    for flag in ["sight_through", "light_through"] {
+        assert_eq!(
+            patch_errors(&format!(
+                r#"{{ "target": "a:b", "operations": [{{ "op": "remove", "path": "{flag}" }}] }}"#
+            )),
+            [format!(
+                "{PATCH_FILE}: /operations/0/path: a block always has its colour and its sight-through and light-through flags, so they cannot be removed (use \"set\")"
+            )]
+        );
+    }
+    assert_eq!(
+        patch_errors(
+            r#"{ "target": "a:b", "operations": [{ "op": "set", "path": "transparency", "value": "frosted" }] }"#
+        ),
+        [format!(
+            "{PATCH_FILE}: /operations/0/value: \"frosted\" is not a transparency mode; the modes are \"opaque\", \"leaves\", \"glass\""
+        )]
+    );
+}
+
+#[test]
 fn a_patch_is_a_target_and_operations_that_say_what_they_change() {
     let patch = patch(
         r#"{ "target": "base_blocks:lamp", "optional": true, "operations": [
@@ -683,7 +787,7 @@ fn a_patch_is_a_target_and_operations_that_say_what_they_change() {
             { "op": "set",  "property": "engine:axis_face", "value": "up" },
             { "op": "remove", "property": "base_blocks:flammability" },
             { "op": "set",  "path": "color", "value": [1.0, 0.5, 0.25] },
-            { "op": "test", "path": "see_through", "value": false },
+            { "op": "test", "path": "sight_through", "value": false },
             { "op": "set",  "path": "state_colors", "value": [[0, 0, 0], [1, 1, 1]] },
             { "op": "remove", "path": "state_colors" },
             { "op": "set",  "path": "face_colors", "value": { "side": [0, 1, 0], "top": [1, 0, 0] } },
@@ -728,7 +832,7 @@ fn a_patch_is_a_target_and_operations_that_say_what_they_change() {
                 value: PatchValue::Color([1.0, 0.5, 0.25])
             },
             Operation::Test {
-                place: Place::SeeThrough,
+                place: Place::SightThrough,
                 value: PatchValue::Flag(false)
             },
             Operation::Set {
@@ -852,13 +956,13 @@ fn a_patch_that_is_wrong_says_what_and_where() {
             r#"{ "op": "set", "path": "colour", "value": [0,0,0] }"#
         )),
         [format!(
-            "{f}: /operations/0/path: \"colour\" is not a field of a block (did you mean \"color\"?); the fields are \"color\", \"see_through\", \"state_colors\", \"face_colors\", \"texture\""
+            "{f}: /operations/0/path: \"colour\" is not a field of a block (did you mean \"color\"?); the fields are \"color\", \"sight_through\", \"light_through\", \"transparency\", \"state_colors\", \"face_colors\", \"texture\""
         )]
     );
     assert_eq!(
         patch_errors(&wrap(r#"{ "op": "remove", "path": "color" }"#)),
         [format!(
-            "{f}: /operations/0/path: a block always has its colour and its see-through flag, so they cannot be removed (use \"set\")"
+            "{f}: /operations/0/path: a block always has its colour and its sight-through and light-through flags, so they cannot be removed (use \"set\")"
         )]
     );
     assert_eq!(

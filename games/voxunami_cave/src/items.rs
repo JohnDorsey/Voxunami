@@ -52,13 +52,15 @@ pub const CREATIVE_ONLY: PropertyKey<bool> = PropertyKey::new(
 );
 
 /// The blocks Cave itself says a player can place: it sets [`PLACEABLE`] on these when it makes its content.
-pub const PLACEABLE_BY_DEFAULT: [&str; 9] = [
+pub const PLACEABLE_BY_DEFAULT: [&str; 11] = [
     "base_blocks:stone",
     "base_blocks:dirt",
     "base_blocks:grass",
     "base_blocks:lamp",
     "base_blocks:wood",
     "base_blocks:fire",
+    "base_blocks:leaves",
+    "base_blocks:glass",
     "voxunami_cave:dev_docking_port",
     "voxunami_cave:dev_command_seat",
     "voxunami_cave:dev_rocket_engine",

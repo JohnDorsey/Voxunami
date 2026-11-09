@@ -1824,3 +1824,16 @@ M1 step 1 (2026-10-30; `architecture-review.md` 7.1): is an orbit stable? `games
   fourth power (volume of the cube times the number of rings). It is paid by a ship that only coasts, and by two ships twice.
 - Tests: two that pass (it goes round near its circle, 36 degrees in a tenth of a lap; what is wrong today, with bounds around what was measured) and one criterion (`#[ignore]`: energy and angular momentum
   change by less than 1e-5 in a tenth of a lap) that fails by a factor of about 35 at the tenth. The three run on one measurement of 1,050 ticks (11 seconds). A hundred laps would take three hours.
+
+## Leaves and glass (2026-11-08)
+
+The first blocks with clear pixels (`base_blocks:leaves` 8 and `base_blocks:glass` 9; the dev blocks are 10 to 12), at the owner's request, in several steps that each ended with the tests passing:
+
+- **Data:** `Transparency` (`opaque`, `leaves`, `glass`) in block data, a fixed answer to "clear pixels are holes / faces between voxels of the block / faces from behind" (leaves yes, yes, yes; glass yes, no, yes; opaque no, no, no). `see_through` became `sight_through` and `light_through` (the owner's names; both
+  in air, leaves and glass, and `BlockTable::connections` follows `light_through`). A mode needs `sight_through`: the loader, a patch's result and the block schema (`if`/`then`) refuse it otherwise. Built first as two engine properties and replaced the same day, when the owner chose named modes.
+- **Mesher:** a block that shows back faces gets each detailed quad again on the same plane looking the other way, lit by its own voxel, except where a solid sight-through block in front draws its own face on that plane (`front_draws_the_sheet_from_behind`). Tests: hand-written planes, a property test that no
+  two sheets look the same way from one place and every open face of a leaf has both, and a mutation (the rule off) that two tests catch.
+- **Renderer:** the picture word has a bit for holes (17); the fragment shader `discard`s a pixel under half alpha where it is set, so an opaque block with clear pixels draws them as the colour stored there. Mips weight by opacity (the black stored in clear pixels would darken edges). GPU tests on every adapter: holes show what is behind,
+  the far face is seen through a hole, a block seen from inside draws its faces only in the modes that show back faces.
+- **Not done:** cut-out shadows (the shadow pass has no fragment stage), cost of leaves (every face of every voxel is a 16-byte detailed quad: a solid 32-voxel cube is 196,608 quads, not measured), dimming light, dithered far leaves (`future-goals.md`).
+- **Pins:** the golden pins of `block_golden.rs` and Cave's golden stream were already stale at the commit before (checked): the pictures had been redrawn since 2026-11-07. All were pinned again; the stream grew by exactly what the package did (+8, +10, +2,307 bytes).

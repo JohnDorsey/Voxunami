@@ -424,7 +424,13 @@ fn sky_openness(position: vec3<f32>, normal: vec3<f32>, distance: f32) -> f32 {
 fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // The colour of the face: its own, or where it has a picture the picture's (`picture_albedo` is in `pictures_off.wgsl` or `pictures_on.wgsl`, whichever the
     // renderer's pipeline is made with).
-    let albedo = picture_albedo(in);
+    let picture = picture_albedo(in);
+    // A pixel where the picture of a block that cuts holes is clear (a hole in leaves, in a pane of glass) is not drawn: what is behind it shows. (The shadow maps
+    // do not know yet, see `docs/specs/block-textures-spec.md`.)
+    if (picture.a < 0.5) {
+        discard;
+    }
+    let albedo = picture.rgb;
     let lamp = in.lamp_and_side.x;
     let side = in.lamp_and_side.y;
     var shaded = side * lamp;

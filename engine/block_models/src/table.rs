@@ -10,6 +10,7 @@ use crate::property::{
     key_id,
 };
 use crate::shape::{FaceConnections, Shape, ShapeBox};
+use crate::transparency::Transparency;
 
 /// The colour of a block this program has no definition for (content from a plugin that is not
 /// loaded): magenta, so that unknown content is seen rather than vanishing.
@@ -60,27 +61,32 @@ pub struct FacePicture {
     pub tile: TileRef,
     pub across: FaceDirection,
     pub up: FaceDirection,
+    /// Whether the clear pixels of the picture are holes (the block's [`Transparency`] is not the opaque one); an opaque block draws its picture whole.
+    pub cut_out: bool,
 }
 
 impl FacePicture {
-    /// The picture as one number of 17 bits that a palette entry holds for the GPU: bit 0 is set (a palette entry with none has 0), bits 1 and 2 the number of the
-    /// tile's size, 3 to 10 its place among those of that size, 11 to 13 the index of `across` and 14 to 16 the index of `up` (see [`FaceDirection::index`]).
+    /// The picture as one number of 18 bits that a palette entry holds for the GPU: bit 0 is set (a palette entry with none has 0), bits 1 and 2 the number of the
+    /// tile's size, 3 to 10 its place among those of that size, 11 to 13 the index of `across`, 14 to 16 the index of `up` (see [`FaceDirection::index`]), and bit 17
+    /// is set if the clear pixels are holes.
     pub fn word(self) -> u32 {
         1 | (self.tile.class() as u32) << 1
             | (self.tile.layer() as u32) << 3
             | u32::from(self.across.index()) << 11
             | u32::from(self.up.index()) << 14
+            | u32::from(self.cut_out) << 17
     }
 
     /// The picture a word names; `None` for 0 (no picture) and for a number that is not a word of this kind.
     pub fn from_word(word: u32) -> Option<Self> {
-        if word & 1 == 0 || word >> 17 != 0 {
+        if word & 1 == 0 || word >> 18 != 0 {
             return None;
         }
         Some(Self {
             tile: TileRef::new((word >> 1 & 3) as usize, (word >> 3 & 255) as usize)?,
             across: FaceDirection::from_index((word >> 11 & 7) as u8)?,
             up: FaceDirection::from_index((word >> 14 & 7) as u8)?,
+            cut_out: word >> 17 & 1 == 1,
         })
     }
 }
@@ -127,9 +133,11 @@ struct Model {
     /// The shape, in the pool of the table.
     shape: u32,
     block: u32,
-    see_through: bool,
+    sight_through: bool,
+    light_through: bool,
+    transparency: Transparency,
     /// The sub-faces on the voxel's boundary that hide what is behind them: the shape's, unless the
-    /// block is see-through.
+    /// block is sight-through.
     hides: [u64; 6],
     opaque_cube: bool,
     /// What each face of the voxel is drawn as (indexed by [`FaceDirection::index`]), for a block that colours faces; `None` if every face is the voxel's.
@@ -181,7 +189,9 @@ impl BlockTable {
             shape: &'a Shape,
             block: u32,
             state: u32,
-            see_through: bool,
+            sight_through: bool,
+            light_through: bool,
+            transparency: Transparency,
         }
         let unknown_shape = Shape::full();
         let mut bases: Vec<Base<'_>> = Vec::new();
@@ -204,7 +214,9 @@ impl BlockTable {
                     shape,
                     block: block as u32,
                     state: state as u32,
-                    see_through: definition.see_through,
+                    sight_through: definition.sight_through,
+                    light_through: definition.light_through,
+                    transparency: definition.transparency(),
                 });
             }
             entries.push(Entry {
@@ -222,7 +234,9 @@ impl BlockTable {
             shape: &unknown_shape,
             block: u32::MAX,
             state: 0,
-            see_through: false,
+            sight_through: false,
+            light_through: false,
+            transparency: Transparency::Opaque,
         });
         for entry in &mut entries {
             if entry.first_base == u32::MAX {
@@ -372,6 +386,7 @@ impl BlockTable {
                                     tile,
                                     across: rotation.apply_face(across),
                                     up: rotation.apply_face(up),
+                                    cut_out: details.transparency.cuts_holes(),
                                 }
                                 .word();
                                 let colour = colour_of_material(flat);
@@ -390,8 +405,9 @@ impl BlockTable {
                 models.push(make_model(
                     &shapes[shape as usize],
                     shape,
-                    details.see_through,
+                    (details.sight_through, details.light_through),
                     details.block,
+                    details.transparency,
                     face_materials,
                 ));
             }
@@ -580,8 +596,14 @@ impl BlockTable {
         self.models[model.0 as usize].opaque_cube
     }
 
-    pub fn is_see_through(&self, model: ModelId) -> bool {
-        self.models[model.0 as usize].see_through
+    /// Whether the block hides nothing behind it (glass, leaves, air).
+    pub fn is_sight_through(&self, model: ModelId) -> bool {
+        self.models[model.0 as usize].sight_through
+    }
+
+    /// Whether light passes through the block and the voxel holds light itself.
+    pub fn is_light_through(&self, model: ModelId) -> bool {
+        self.models[model.0 as usize].light_through
     }
 
     /// The sub-faces of `face` that the model hides what is behind (the shape's covered sub-faces,
@@ -593,6 +615,21 @@ impl BlockTable {
     /// Whether the model hides everything behind its `face`.
     pub fn hides_fully(&self, model: ModelId, face: FaceDirection) -> bool {
         self.hides(model, face) == u64::MAX
+    }
+
+    /// How the model's block shows its faces and the clear pixels of its pictures.
+    pub fn transparency(&self, model: ModelId) -> Transparency {
+        self.models[model.0 as usize].transparency
+    }
+
+    /// Whether the faces between two voxels of the model's block are drawn, though the block is sight-through ([`Transparency::shows_inner_faces`]).
+    pub fn shows_inner_faces(&self, model: ModelId) -> bool {
+        self.transparency(model).shows_inner_faces()
+    }
+
+    /// Whether the model's faces are drawn also to someone behind them, inside the voxel ([`Transparency::shows_back_faces`]).
+    pub fn shows_back_faces(&self, model: ModelId) -> bool {
+        self.transparency(model).shows_back_faces()
     }
 
     /// Which sub-faces of `model`'s boundary `face` are hidden by `neighbour`, the model of the voxel
@@ -607,19 +644,23 @@ impl BlockTable {
     ) -> u64 {
         let own = &self.models[model.0 as usize];
         let other = &self.models[neighbour.0 as usize];
-        if !other.see_through {
+        if !other.sight_through {
             other.hides[usize::from(face.opposite().index())]
-        } else if own.see_through && own.block == other.block {
-            self.shape(neighbour).face_cover(face.opposite())
+        } else if own.sight_through && own.block == other.block {
+            if own.transparency.shows_inner_faces() {
+                0
+            } else {
+                self.shape(neighbour).face_cover(face.opposite())
+            }
         } else {
             0
         }
     }
 
     /// The faces light and other fills can pass between through the model: all of them for a
-    /// see-through block, else the ones its empty part joins.
+    /// light-through block, else the ones its empty part joins.
     pub fn connections(&self, model: ModelId) -> FaceConnections {
-        if self.models[model.0 as usize].see_through {
+        if self.models[model.0 as usize].light_through {
             FaceConnections::all()
         } else {
             self.shape(model).connections()
@@ -662,12 +703,13 @@ fn position_of(columns: &[Column], key: &'static str) -> Option<usize> {
 fn make_model(
     shape: &Shape,
     index: u32,
-    see_through: bool,
+    (sight_through, light_through): (bool, bool),
     block: u32,
+    transparency: Transparency,
     face_materials: Option<[u32; 6]>,
 ) -> Model {
     let hides = std::array::from_fn(|face| {
-        if see_through {
+        if sight_through {
             0
         } else {
             FaceDirection::from_index(face as u8).map_or(0, |face| shape.face_cover(face))
@@ -676,9 +718,11 @@ fn make_model(
     Model {
         shape: index,
         block,
-        see_through,
+        sight_through,
+        light_through,
+        transparency,
         hides,
-        opaque_cube: shape.is_full() && !see_through,
+        opaque_cube: shape.is_full() && !sight_through,
         face_materials,
     }
 }
@@ -699,7 +743,9 @@ mod tests {
             Shape::half(DOWN),
             Shape::half(UP),
         ]);
-        let glass = BlockDefinition::cube([0.7, 0.9, 1.0]).with_see_through(true);
+        let glass = BlockDefinition::cube([0.7, 0.9, 1.0])
+            .with_sight_through(true)
+            .with_light_through(true);
         BlockTable::from_definitions(&[Some(&air), Some(&stone), Some(&glass), None])
     }
 
@@ -716,7 +762,7 @@ mod tests {
             (1, 3, 1)
         );
         let air = table.model_of(0, 0, 0);
-        assert!(!table.is_solid(air) && table.is_see_through(air));
+        assert!(!table.is_solid(air) && table.is_sight_through(air));
         let cube = table.model_of(1, 0, 0);
         assert!(table.is_solid(cube) && table.is_opaque_cube(cube));
         let bottom_slab = table.model_of(1, 1, 0);
@@ -726,7 +772,7 @@ mod tests {
     }
 
     #[test]
-    fn what_hides_what_is_behind_it_follows_the_shape_and_see_through_blocks_hide_nothing() {
+    fn what_hides_what_is_behind_it_follows_the_shape_and_sight_through_blocks_hide_nothing() {
         let table = table();
         let cube = table.model_of(1, 0, 0);
         assert!(
@@ -752,7 +798,7 @@ mod tests {
     }
 
     #[test]
-    fn light_passes_through_see_through_blocks_and_the_empty_parts_of_shapes() {
+    fn light_passes_through_sight_through_blocks_and_the_empty_parts_of_shapes() {
         let table = table();
         assert_eq!(
             table.connections(table.model_of(0, 0, 0)),
@@ -833,6 +879,116 @@ mod tests {
     }
 
     #[test]
+    fn the_faces_a_block_shows_are_what_its_mode_says_and_only_a_sight_through_block_of_the_same_kind_is_changed_by_it()
+     {
+        let sight_through = || BlockDefinition::cube([0.7; 3]).with_sight_through(true);
+        let leaves = sight_through().with_transparency(Transparency::Leaves);
+        let glass = sight_through().with_transparency(Transparency::Glass);
+        let plain_glass = sight_through();
+        let stone = BlockDefinition::cube([0.5; 3]);
+        let table = BlockTable::from_definitions(&[
+            Some(&leaves),
+            Some(&glass),
+            Some(&plain_glass),
+            Some(&stone),
+            None,
+        ]);
+        let east = FaceDirection::PositiveX;
+        let model = |block| table.model_of(block, 0, 0);
+        let shown: Vec<(Transparency, bool, bool)> = (0..5)
+            .map(|block| {
+                (
+                    table.transparency(model(block)),
+                    table.shows_inner_faces(model(block)),
+                    table.shows_back_faces(model(block)),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (Transparency::Leaves, true, true),
+                (Transparency::Glass, false, true),
+                (Transparency::Opaque, false, false),
+                (Transparency::Opaque, false, false),
+                (Transparency::Opaque, false, false),
+            ]
+        );
+        // Leaves beside leaves hide nothing of each other; glass beside glass still does (its back faces do not change that), and so does a block with no mode.
+        assert_eq!(table.hidden_by_neighbour(model(0), east, model(0)), 0);
+        assert_eq!(
+            table.hidden_by_neighbour(model(1), east, model(1)),
+            u64::MAX
+        );
+        assert_eq!(
+            table.hidden_by_neighbour(model(2), east, model(2)),
+            u64::MAX
+        );
+        // Showing inner faces does not make an opaque neighbour sight-through, and does not let the leaves be seen where stone hides them.
+        assert_eq!(
+            table.hidden_by_neighbour(model(0), east, model(3)),
+            u64::MAX
+        );
+        assert_eq!(table.hidden_by_neighbour(model(3), east, model(0)), 0);
+        // The mode is the same in every orientation.
+        for orientation in 0..24 {
+            assert_eq!(
+                table.transparency(table.model_of(0, 0, orientation)),
+                Transparency::Leaves
+            );
+        }
+    }
+
+    #[test]
+    fn light_passing_is_its_own_flag_and_does_not_follow_sight() {
+        let air = BlockDefinition::air();
+        let stone = BlockDefinition::cube([0.5; 3]);
+        let tinted_glass = BlockDefinition::cube([0.5; 3]).with_sight_through(true);
+        let dark_window = BlockDefinition::cube([0.5; 3]).with_light_through(true);
+        let clear = BlockDefinition::cube([0.5; 3])
+            .with_sight_through(true)
+            .with_light_through(true);
+        let table = BlockTable::from_definitions(&[
+            Some(&air),
+            Some(&stone),
+            Some(&tinted_glass),
+            Some(&dark_window),
+            Some(&clear),
+        ]);
+        let model = |block| table.model_of(block, 0, 0);
+        let flags: Vec<(bool, bool)> = (0..5)
+            .map(|block| {
+                (
+                    table.is_sight_through(model(block)),
+                    table.is_light_through(model(block)),
+                )
+            })
+            .collect();
+        assert_eq!(
+            flags,
+            [
+                (true, true),
+                (false, false),
+                (true, false),
+                (false, true),
+                (true, true)
+            ]
+        );
+        // Light passes between all the faces of a light-through block and none of a whole cube that is not.
+        let passes: Vec<bool> = (0..5)
+            .map(|block| table.connections(model(block)) == FaceConnections::all())
+            .collect();
+        assert_eq!(passes, [true, false, false, true, true]);
+        // Sight decides what hides what, light does not.
+        let east = FaceDirection::PositiveX;
+        assert_eq!(
+            table.hidden_by_neighbour(model(1), east, model(3)),
+            u64::MAX
+        );
+        assert_eq!(table.hidden_by_neighbour(model(1), east, model(2)), 0);
+    }
+
+    #[test]
     fn an_unknown_block_is_drawn_as_its_own_id() {
         let table = table();
         for block in [3, 4, 9999] {
@@ -841,14 +997,14 @@ mod tests {
     }
 
     #[test]
-    fn a_neighbour_hides_what_it_covers_and_see_through_neighbours_only_hide_their_own_block() {
+    fn a_neighbour_hides_what_it_covers_and_sight_through_neighbours_only_hide_their_own_block() {
         let air = BlockDefinition::air();
         let stone =
             BlockDefinition::cube([0.5; 3]).with_shapes(vec![Shape::full(), Shape::half(DOWN)]);
         let glass = BlockDefinition::cube([0.7; 3])
-            .with_see_through(true)
+            .with_sight_through(true)
             .with_shapes(vec![Shape::full(), Shape::half(DOWN)]);
-        let other_glass = BlockDefinition::cube([0.9; 3]).with_see_through(true);
+        let other_glass = BlockDefinition::cube([0.9; 3]).with_sight_through(true);
         let table = BlockTable::from_definitions(&[
             Some(&air),
             Some(&stone),
@@ -1185,11 +1341,19 @@ mod tests {
             tile: place(2, 200),
             across: FaceDirection::NegativeZ,
             up: FaceDirection::PositiveY,
+            cut_out: false,
         };
         // 1 | class 2 << 1 | layer 200 << 3 | across 4 << 11 | up 3 << 14.
         assert_eq!(picture.word(), 1 + 4 + 1_600 + 8_192 + 49_152);
         assert_eq!(FacePicture::from_word(picture.word()), Some(picture));
-        for word in [0, 2, 1 << 17 | 1, 7 << 11 | 1, 6 << 14 | 1] {
+        // Holes are bit 17, and nothing else moves.
+        let with_holes = FacePicture {
+            cut_out: true,
+            ..picture
+        };
+        assert_eq!(with_holes.word(), picture.word() + (1 << 17));
+        assert_eq!(FacePicture::from_word(with_holes.word()), Some(with_holes));
+        for word in [0, 2, 1 << 18 | 1, 7 << 11 | 1, 6 << 14 | 1] {
             assert_eq!(FacePicture::from_word(word), None, "{word:#x}");
         }
         // Every place and every pair of directions comes back.
@@ -1200,9 +1364,10 @@ mod tests {
                         tile: place(class, layer),
                         across,
                         up: FaceDirection::PositiveY,
+                        cut_out: layer == 128,
                     };
                     assert_eq!(FacePicture::from_word(picture.word()), Some(picture));
-                    assert!(picture.word() < 1 << 17);
+                    assert!(picture.word() < 1 << 18);
                 }
             }
         }
@@ -1224,7 +1389,12 @@ mod tests {
         for (face, tile, across, up) in wanted {
             assert_eq!(
                 picture_on(&table, 0, 0, face),
-                FacePicture { tile, across, up },
+                FacePicture {
+                    tile,
+                    across,
+                    up,
+                    cut_out: false
+                },
                 "{face:?}"
             );
         }

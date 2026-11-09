@@ -41,10 +41,12 @@ pub fn explain_block(table: &BlockTable, block: u32) -> String {
             let shape = table.shape(model);
             write!(
                 text,
-                "o{orientation} solid {} opaque {} see_through {} boxes {} front {} axis {} docking {}",
+                "o{orientation} solid {} opaque {} sight_through {} light_through {} transparency {} boxes {} front {} axis {} docking {}",
                 table.is_solid(model),
                 table.is_opaque_cube(model),
-                table.is_see_through(model),
+                table.is_sight_through(model),
+                table.is_light_through(model),
+                table.transparency(model).word(),
                 shape.boxes().len(),
                 face_name(table.front_face(block, state, orientation)),
                 face_name(table.axis_face(block, state, orientation)),

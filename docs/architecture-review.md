@@ -143,7 +143,7 @@ I wrote a pack of two blocks and one patch (4 files, 17 lines) and ran `voxunami
 - The patch example in `pack-format.md` fails against `base_blocks:lamp` ("flammability is not set on this block, so there is
   nothing to remove"). The document's own rule forbids what its example does.
 - `pack.json` rejects `format` and `version` as unknown keys: a pack cannot name its own format or version.
-- Everything a pack may set on a block is `color`, `see_through`, `states`, `state_colors`, `properties`, `state_properties`, and the
+- Everything a pack may set on a block is `color`, `sight_through`, `light_through`, `transparency`, `states`, `state_colors`, `properties`, `state_properties`, and the
   properties are the 13 the game declares: `base_blocks:emission`, `flammability`, `passable`; `engine:density`, `axis_face`,
   `front_face`, `docking_face`, `marked_face`, `mark_color`, `mark_both_ends`, `placeable_on_moving_grids`;
   `voxunami_cave:placeable`, `creative_only`. A pack cannot declare a property of its own.

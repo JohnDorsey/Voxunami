@@ -55,13 +55,14 @@ const PINNED_NAMES: &[&str] = &[
     "voxunami_2048:spring_ice",
 ];
 
-/// (the length, the hash) of `PackageData::encode` as it was on 2026-11-07.
-const PINNED_PACKAGE: (usize, u64) = (3164, 17_095_240_835_168_866_049);
+/// (the length, the hash) of `PackageData::encode` as it was on 2026-11-08: 8 bytes longer than on 2026-11-07, the two bytes each of its 4 definitions gained (whether light passes
+/// through the block, and its transparency mode).
+const PINNED_PACKAGE: (usize, u64) = (3172, 5_571_293_878_941_785_938);
 
 const PINNED_TABLE: &[&str] = &[
-    " 0 voxunami_2048:air: colour #000000, 1 states, state 0 faces [0 0 0 0 0 0], front none, axis none, docking none, placement Fixed, behaviour a28133c087488ace",
-    " 1 voxunami_2048:stone: colour #b3b3b3, 1 states, state 0 faces [4 4 4 4 4 4], front none, axis none, docking none, placement Fixed, behaviour 95be8fd8fb01184c",
-    " 2 voxunami_2048:ice: colour #c6d2d9, 1 states, state 0 faces [65 65 65 65 65 65], front none, axis none, docking none, placement Fixed, behaviour fdd6a803171af385",
-    " 3 voxunami_2048:spring_ice: colour #d9cfac, 1 states, state 0 faces [126 126 126 126 126 126], front none, axis none, docking none, placement Fixed, behaviour fa9e3c96a8d6c6d5",
+    " 0 voxunami_2048:air: colour #000000, 1 states, state 0 faces [0 0 0 0 0 0], front none, axis none, docking none, placement Fixed, behaviour 8375d9cf84a8c372",
+    " 1 voxunami_2048:stone: colour #b3b3b3, 1 states, state 0 faces [4 4 4 4 4 4], front none, axis none, docking none, placement Fixed, behaviour ac89a6dda29bc088",
+    " 2 voxunami_2048:ice: colour #c6d2d9, 1 states, state 0 faces [65 65 65 65 65 65], front none, axis none, docking none, placement Fixed, behaviour c577bf085d4d30ad",
+    " 3 voxunami_2048:spring_ice: colour #d9cfac, 1 states, state 0 faces [126 126 126 126 126 126], front none, axis none, docking none, placement Fixed, behaviour a5ed506ab4fb4ddd",
     "palette: 187 colours, digest 42a4a72f5966cadc, pictures 0 on it, digest 3d334905d0001615",
 ];

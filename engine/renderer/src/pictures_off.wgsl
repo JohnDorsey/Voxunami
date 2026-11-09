@@ -2,6 +2,6 @@
 // (This is a separate shader, and not a branch that is never taken, because a shader that merely uses the pictures' bindings made the first pictures of a fresh renderer
 // on the integrated AMD GPU go wrong in tests that never draw a picture; see `docs/test-flakes.md`.)
 
-fn picture_albedo(in: VertexOutput) -> vec3<f32> {
-    return in.albedo;
+fn picture_albedo(in: VertexOutput) -> vec4<f32> {
+    return vec4<f32>(in.albedo, 1.0);
 }

@@ -18,6 +18,7 @@ mod shape;
 #[cfg(feature = "test-support")]
 pub mod snapshot;
 mod table;
+mod transparency;
 
 pub use definition::{
     BlockDefinition, FacePictures, MOST_TILE_BYTES, MOST_TILE_SIZES, MOST_TILES_OF_A_SIZE, TileRef,
@@ -31,3 +32,4 @@ pub use shape::{FaceConnections, SUBDIVISIONS, Shape, ShapeBox, SubRect, face_ax
 pub use table::{
     BlockTable, FacePicture, MISSING_BLOCK_COLOR, ModelId, ORIENTATION_COUNT, Placement,
 };
+pub use transparency::Transparency;

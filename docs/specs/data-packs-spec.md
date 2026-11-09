@@ -41,7 +41,7 @@ A block file (every key but `color` optional; unknown keys are errors):
 ```json
 {
   "color": [0.9, 0.9, 0.95],
-  "see_through": false,
+  "sight_through": false,
   "states": [ "full", "half:negative_y", { "boxes": [[0,0,0, 8,4,8]] } ],
   "state_colors": [[0.9,0.9,0.95], [0.8,0.8,0.9]],
   "properties": { "base_blocks:emission": 3, "base_blocks:passable": false },
@@ -61,7 +61,7 @@ A patch file changes blocks that already exist (this pack's, a dependency's, or 
     { "op": "set",  "path": "color", "value": [1.0, 0.8, 0.5] } ] }
 ```
 
-Operations are `set` and `remove` on a property or on a top-level field (`color`, `see_through`, `state_colors`), `add` for a state (appends a shape),
+Operations are `set` and `remove` on a property or on a top-level field (`color`, `sight_through`, `light_through`, `transparency`, `state_colors`), `add` for a state (appends a shape),
 and `test` (the patch is refused unless the value is as stated: how a mod says "I was written against this"). Tags (bool properties) merge by
 union: two packs that both set a tag to true agree, and `remove` is how one takes it away.
 

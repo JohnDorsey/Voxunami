@@ -16,6 +16,7 @@ use crate::property::{
     PropertyDeclaration, PropertyKind, PropertySchema, SetProperties, SetValues, check_value,
 };
 use crate::shape::{SUBDIVISIONS, Shape, ShapeBox};
+use crate::transparency::Transparency;
 
 const KIND_BOOL: u8 = 0;
 const KIND_INTEGER: u8 = 1;
@@ -125,13 +126,15 @@ impl PropertySchema {
 }
 
 impl BlockDefinition {
-    /// Writes the definition: colour, see-through, the boxes of every state's shape, the colours of
+    /// Writes the definition: colour, whether it is sight-through, whether it is light-through, its transparency mode (its code), the boxes of every state's shape, the colours of
     /// states, the colours of faces (each as its face's index, then the colour, in the order of the
     /// faces), the base name of its pictures (a flag, then the name) and whether its colour follows
     /// them, and the properties it sets.
     pub fn encode(&self, writer: &mut ByteWriter) {
         write_color(writer, self.color);
-        writer.write_u8(u8::from(self.see_through));
+        writer.write_u8(u8::from(self.sight_through));
+        writer.write_u8(u8::from(self.light_through));
+        writer.write_u8(self.transparency().code());
         writer.write_varint(self.shapes().len() as u64);
         for shape in self.shapes() {
             writer.write_varint(shape.boxes().len() as u64);
@@ -193,11 +196,18 @@ impl BlockDefinition {
     /// for the table that is built from it to say.
     pub fn decode(reader: &mut ByteReader<'_>) -> Result<Self, DecodeError> {
         let color = read_color(reader)?;
-        let see_through = match reader.read_u8()? {
+        let sight_through = match reader.read_u8()? {
             0 => false,
             1 => true,
-            _ => return Err(DecodeError::Invalid("see-through is neither 0 nor 1")),
+            _ => return Err(DecodeError::Invalid("sight-through is neither 0 nor 1")),
         };
+        let light_through = match reader.read_u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(DecodeError::Invalid("light-through is neither 0 nor 1")),
+        };
+        let transparency = Transparency::from_code(reader.read_u8()?)
+            .ok_or(DecodeError::Invalid("a transparency mode is not known"))?;
         let state_count = reader.read_count(1)?;
         if state_count == 0 {
             return Err(DecodeError::Invalid("a block has no states"));
@@ -326,7 +336,9 @@ impl BlockDefinition {
         }
         Ok(Self::from_parts(Parts {
             color,
-            see_through,
+            sight_through,
+            light_through,
+            transparency,
             shapes,
             state_colors,
             face_colors,
@@ -385,7 +397,7 @@ mod tests {
                 Shape::stair(FaceDirection::PositiveX),
                 Shape::empty(),
             ])
-            .with_see_through(true)
+            .with_sight_through(true)
             .with_state_colors(vec![[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]])
             .with_face_colors(&[
                 (FaceDirection::PositiveY, [0.7, 0.8, 0.9]),
@@ -469,12 +481,29 @@ mod tests {
 
     /// The bytes of a definition written by hand: one state with these boxes and no state colours, then
     /// `properties` as they are written.
-    fn handmade(color: [f32; 3], see_through: u8, boxes: &[[u8; 6]], properties: &[u8]) -> Vec<u8> {
+    fn handmade(
+        color: [f32; 3],
+        sight_through: u8,
+        boxes: &[[u8; 6]],
+        properties: &[u8],
+    ) -> Vec<u8> {
+        handmade_with(color, [sight_through, 0, 0], boxes, properties)
+    }
+
+    /// As `handmade`, with the three bytes after the colour: sight-through, light-through and the transparency mode.
+    fn handmade_with(
+        color: [f32; 3],
+        flags: [u8; 3],
+        boxes: &[[u8; 6]],
+        properties: &[u8],
+    ) -> Vec<u8> {
         let mut writer = ByteWriter::new();
         for component in color {
             writer.write_u32(component.to_bits());
         }
-        writer.write_u8(see_through);
+        for flag in flags {
+            writer.write_u8(flag);
+        }
         writer.write_varint(1);
         writer.write_varint(boxes.len() as u64);
         for corners in boxes {
@@ -524,7 +553,19 @@ mod tests {
             ),
             (
                 handmade([0.0; 3], 2, &[WHOLE], NO_PROPERTIES),
-                "see-through is neither 0 nor 1",
+                "sight-through is neither 0 nor 1",
+            ),
+            (
+                handmade_with([0.0; 3], [0, 2, 0], &[WHOLE], NO_PROPERTIES),
+                "light-through is neither 0 nor 1",
+            ),
+            (
+                handmade_with([0.0; 3], [1, 1, 3], &[WHOLE], NO_PROPERTIES),
+                "a transparency mode is not known",
+            ),
+            (
+                handmade_with([0.0; 3], [1, 1, 255], &[WHOLE], NO_PROPERTIES),
+                "a transparency mode is not known",
             ),
             (
                 handmade([0.0; 3], 0, &[[0, 0, 0, 0, 8, 8]], NO_PROPERTIES),
@@ -550,6 +591,8 @@ mod tests {
         for component in [0.5f32; 3] {
             writer.write_u32(component.to_bits());
         }
+        writer.write_u8(0);
+        writer.write_u8(0);
         writer.write_u8(0);
         writer.write_varint(1);
         writer.write_varint(1);
@@ -607,6 +650,8 @@ mod tests {
         for component in [0.5f32; 3] {
             writer.write_u32(component.to_bits());
         }
+        writer.write_u8(0);
+        writer.write_u8(0);
         writer.write_u8(0);
         writer.write_varint(1);
         writer.write_varint(1);
@@ -668,6 +713,8 @@ mod tests {
         for component in [0.5f32; 3] {
             writer.write_u32(component.to_bits());
         }
+        writer.write_u8(0);
+        writer.write_u8(0);
         writer.write_u8(0);
         writer.write_varint(1);
         writer.write_varint(1);
@@ -740,6 +787,8 @@ mod tests {
         for _ in 0..3 {
             writer.write_u32(0f32.to_bits());
         }
+        writer.write_u8(0);
+        writer.write_u8(0);
         writer.write_u8(0);
         writer.write_varint(0);
         writer.write_varint(0);
@@ -889,7 +938,7 @@ mod tests {
         let color = || [0.0f32..=1.0, 0.0f32..=1.0, 0.0f32..=1.0];
         (
             color(),
-            any::<bool>(),
+            (any::<bool>(), any::<bool>(), 0u8..3),
             prop::collection::vec(prop::collection::vec(arbitrary_box(), 0..4), 1..5),
             prop::collection::vec(color(), 0..4),
             prop::collection::vec((0u8..6, color()), 0..4),
@@ -901,7 +950,16 @@ mod tests {
             prop::collection::vec((0u32..6, any::<bool>()), 0..4),
         )
             .prop_map(
-                |(color, see_through, shapes, state_colors, faces, pictures, density, by_state)| {
+                |(
+                    color,
+                    (sight_through, light_through, mode),
+                    shapes,
+                    state_colors,
+                    faces,
+                    pictures,
+                    density,
+                    by_state,
+                )| {
                     let mut definition = BlockDefinition::cube(color)
                         .with_shapes(
                             shapes
@@ -909,7 +967,11 @@ mod tests {
                                 .map(|boxes| Shape::from_boxes(boxes))
                                 .collect(),
                         )
-                        .with_see_through(see_through);
+                        .with_sight_through(sight_through)
+                        .with_light_through(light_through)
+                        .with_transparency(
+                            crate::Transparency::from_code(mode).expect("a mode of the three"),
+                        );
                     if !state_colors.is_empty() {
                         definition = definition.with_state_colors(state_colors);
                     }

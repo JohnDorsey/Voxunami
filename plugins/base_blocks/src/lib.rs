@@ -1,4 +1,4 @@
-//! The first blocks (air, stone, dirt, grass, lamp, wood, fire, great river water) and the properties they carry.
+//! The first blocks (air, stone, dirt, grass, lamp, wood, fire, great river water, leaves, glass) and the properties they carry.
 //!
 //! The blocks are data: one JSON file each in `data/blocks`, in the format of a data pack (`docs/reference/pack-format.md`), read by the reader packs use and
 //! registered in a fixed order, because their numbers are fixed. A modder can copy any of them.
@@ -118,7 +118,7 @@ pub fn shape_name(state: u32) -> &'static str {
 
 /// The blocks in the order of their numbers, each with the text of the file in `data/blocks` that defines it. The numbers are fixed (air is 0, so a
 /// world whose voxels are all zero is sky), so the order is written here and not left to the order of the files' names.
-const BLOCK_FILES: [(&str, &str); 8] = [
+const BLOCK_FILES: [(&str, &str); 10] = [
     ("air", include_str!("../data/blocks/air.json")),
     ("stone", include_str!("../data/blocks/stone.json")),
     ("dirt", include_str!("../data/blocks/dirt.json")),
@@ -130,17 +130,21 @@ const BLOCK_FILES: [(&str, &str); 8] = [
         "great_river_water",
         include_str!("../data/blocks/great_river_water.json"),
     ),
+    ("leaves", include_str!("../data/blocks/leaves.json")),
+    ("glass", include_str!("../data/blocks/glass.json")),
 ];
 
 /// The pictures of the blocks, each with the name its file has in `textures` (`log_top.png` is `base_blocks:log_top`). The folder holds more pictures than
 /// these, which no block uses yet; a test keeps this list equal to the pictures the blocks name.
-const TEXTURE_FILES: [(&str, &[u8]); 9] = [
+const TEXTURE_FILES: [(&str, &[u8]); 11] = [
     ("grass", include_bytes!("../textures/grass.png")),
     ("dirt", include_bytes!("../textures/dirt.png")),
     ("stone", include_bytes!("../textures/stone.png")),
     ("still_water", include_bytes!("../textures/still_water.png")),
     ("log_top", include_bytes!("../textures/log_top.png")),
     ("log_side", include_bytes!("../textures/log_side.png")),
+    ("leaves", include_bytes!("../textures/leaves.png")),
+    ("glass", include_bytes!("../textures/glass.png")),
     (
         "dev_docking_port_top",
         include_bytes!("../textures/dev_docking_port_top.png"),
@@ -186,6 +190,10 @@ pub struct BaseBlockIds {
     pub fire: u32,
     /// The water of the great rivers: a block that never flows, which bodies move through (Cave's great rivers, `voxunami_cave::generators::great_rivers`).
     pub great_river_water: u32,
+    /// A cube you see and light pass through, whose picture has holes in it (`transparency` `leaves`): it shows the faces between its voxels and its faces from behind.
+    pub leaves: u32,
+    /// A cube you see and light pass through, with a frame and clear panes (`transparency` `glass`): it shows its faces from behind, and not those between its voxels.
+    pub glass: u32,
 }
 
 impl BaseBlockIds {
@@ -259,8 +267,20 @@ impl BaseBlocks {
             })
             .collect();
         // (The order of `BLOCK_FILES`, which a test keeps equal to the order of the fields.)
-        let [air, stone, dirt, grass, lamp, wood, fire, great_river_water] = ids[..] else {
-            unreachable!("there is a file for each of the eight blocks");
+        let [
+            air,
+            stone,
+            dirt,
+            grass,
+            lamp,
+            wood,
+            fire,
+            great_river_water,
+            leaves,
+            glass,
+        ] = ids[..]
+        else {
+            unreachable!("there is a file for each of the ten blocks");
         };
         Self {
             blocks,
@@ -273,6 +293,8 @@ impl BaseBlocks {
                 wood,
                 fire,
                 great_river_water,
+                leaves,
+                glass,
             },
             pictures,
         }
@@ -350,8 +372,10 @@ mod tests {
             blocks.wood,
             blocks.fire,
             blocks.great_river_water,
+            blocks.leaves,
+            blocks.glass,
         ];
-        assert_eq!(numbers, [0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(numbers, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
         for ((name, _), number) in BLOCK_FILES.iter().zip(numbers) {
             let wanted = identifier(&format!("base_blocks:{name}"));
             assert_eq!(
@@ -386,6 +410,8 @@ mod tests {
             blocks.lamp,
             blocks.fire,
             blocks.great_river_water,
+            blocks.leaves,
+            blocks.glass,
         ] {
             let (_, entry) = blocks.blocks.iter().nth(single as usize).unwrap();
             assert_eq!(entry.content().unwrap().state_count(), 1, "block {single}");
@@ -402,6 +428,8 @@ mod tests {
             ("grass", blocks.grass),
             ("wood", blocks.wood),
             ("great_river_water", blocks.great_river_water),
+            ("leaves", blocks.leaves),
+            ("glass", blocks.glass),
         ];
         let tiles = &blocks.pictures().tiles;
         for (name, number) in textured {
@@ -492,11 +520,13 @@ mod tests {
                 blocks.lamp,
                 blocks.wood,
                 blocks.fire,
-                blocks.great_river_water
+                blocks.great_river_water,
+                blocks.leaves,
+                blocks.glass
             ),
-            (0, 1, 2, 3, 4, 5, 6, 7)
+            (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
         );
-        let names: Vec<String> = (0..8)
+        let names: Vec<String> = (0..10)
             .map(|raw| blocks.blocks.identifier_of_raw(raw).unwrap().to_string())
             .collect();
         assert_eq!(
@@ -509,7 +539,9 @@ mod tests {
                 "base_blocks:lamp",
                 "base_blocks:wood",
                 "base_blocks:fire",
-                "base_blocks:great_river_water"
+                "base_blocks:great_river_water",
+                "base_blocks:leaves",
+                "base_blocks:glass"
             ]
         );
         assert_eq!(blocks.light_channel().default_value, 0);
@@ -585,7 +617,8 @@ mod tests {
     }
 
     #[test]
-    fn the_table_has_the_blocks_colours_air_is_see_through_and_missing_blocks_are_magenta_cubes() {
+    fn the_table_has_the_blocks_colours_air_is_sight_through_and_missing_blocks_are_magenta_cubes()
+    {
         let mut blocks = BaseBlocks::new();
         let table = blocks.block_table();
         // The flat colours are the blocks, then the colours a fire is drawn in as it ages, then the colour of the ends of a log; after them come the colours with a
@@ -597,7 +630,7 @@ mod tests {
             .count();
         assert_eq!(
             table.palette().len() - with_pictures,
-            8 + FIRE_LIFETIME as usize + 1
+            10 + FIRE_LIFETIME as usize + 1
         );
         assert!(with_pictures > 0);
         assert_eq!(
@@ -611,35 +644,112 @@ mod tests {
         let flammability = table.handle(&FLAMMABILITY).unwrap();
         let passable = table.handle(&PASSABLE).unwrap();
         assert_eq!(
-            (0..8)
+            (0..10)
                 .map(|block| table.get_of(emission, block, 0))
                 .collect::<Vec<_>>(),
-            [0, 0, 0, 0, LAMP_EMISSION, 0, FIRE_EMISSION, 0]
+            [0, 0, 0, 0, LAMP_EMISSION, 0, FIRE_EMISSION, 0, 0, 0]
         );
         assert_eq!(
-            (0..8)
+            (0..10)
                 .map(|block| table.get_of(flammability, block, 0))
                 .collect::<Vec<_>>(),
-            [0, 0, 0, 100, 0, 40, 0, 0],
+            [0, 0, 0, 100, 0, 40, 0, 0, 0, 0],
             "grass and wood burn, and fire and water do not burn"
         );
         // The lamp is a whole opaque block.
         assert!(table.is_opaque_cube(table.model_of(4, 0, 0)));
         assert_eq!(
-            (0..8)
+            (0..10)
                 .map(|block| table.get_of(passable, block, 0))
                 .collect::<Vec<_>>(),
-            [false, false, false, false, false, false, true, true]
+            [
+                false, false, false, false, false, false, true, true, false, false
+            ]
         );
         assert!(!table.is_solid(table.model_of(0, 0, 0)));
-        assert!(table.is_see_through(table.model_of(0, 0, 0)));
+        assert!(table.is_sight_through(table.model_of(0, 0, 0)));
         let missing = blocks
             .blocks
             .register_missing(identifier("elsewhere:marble"));
-        assert_eq!(missing.raw(), 8);
+        assert_eq!(missing.raw(), 10);
         let table = blocks.block_table();
-        assert_eq!(table.palette()[8], MISSING_BLOCK_COLOR);
-        assert!(table.is_opaque_cube(table.model_of(8, 0, 0)));
+        assert_eq!(table.palette()[10], MISSING_BLOCK_COLOR);
+        assert!(table.is_opaque_cube(table.model_of(10, 0, 0)));
+    }
+
+    #[test]
+    fn leaves_and_glass_are_solid_cubes_that_are_seen_and_lit_through_in_their_own_modes_and_no_other_block_has_a_mode()
+     {
+        use block_models::Transparency;
+        let blocks = BaseBlocks::new();
+        let table = blocks.block_table();
+        // (block, mode, faces between its voxels drawn, faces from behind drawn)
+        let wanted = [
+            (blocks.leaves, Transparency::Leaves, true, true),
+            (blocks.glass, Transparency::Glass, false, true),
+        ];
+        for (block, mode, inner, back) in wanted {
+            let model = table.model_of(block, 0, 0);
+            assert!(table.is_solid(model), "{block}");
+            assert!(table.shape(model).is_full(), "{block}");
+            assert!(table.is_sight_through(model), "{block}");
+            assert!(table.is_light_through(model), "{block}");
+            assert!(!table.is_opaque_cube(model), "{block}");
+            assert_eq!(table.transparency(model), mode, "{block}");
+            assert_eq!(table.shows_inner_faces(model), inner, "{block}");
+            assert_eq!(table.shows_back_faces(model), back, "{block}");
+            // Beside a voxel of itself a block hides nothing of it only if it shows inner faces.
+            assert_eq!(
+                table.hidden_by_neighbour(model, FaceDirection::PositiveX, model) == 0,
+                inner,
+                "{block}"
+            );
+            // Bodies cannot walk through them, and they are placed the same whichever way the player faces.
+            assert!(!table.get_of(table.handle(&PASSABLE).unwrap(), block, 0));
+            assert_eq!(table.placement(block, 0), block_models::Placement::Fixed);
+            // Their pictures cut holes, and only theirs.
+            let picture = table
+                .face_materials(block, 0, 0)
+                .map(|materials| table.palette_pictures()[materials[0] as usize])
+                .and_then(block_models::FacePicture::from_word)
+                .expect("the block has a picture");
+            assert!(picture.cut_out, "{block}");
+        }
+        for block in [
+            blocks.air,
+            blocks.stone,
+            blocks.dirt,
+            blocks.grass,
+            blocks.lamp,
+            blocks.wood,
+            blocks.fire,
+            blocks.great_river_water,
+        ] {
+            let model = table.model_of(block, 0, 0);
+            assert_eq!(table.transparency(model), Transparency::Opaque, "{block}");
+            if let Some(materials) = table.face_materials(block, 0, 0) {
+                for material in materials {
+                    if let Some(picture) = block_models::FacePicture::from_word(
+                        table.palette_pictures()[material as usize],
+                    ) {
+                        assert!(
+                            !picture.cut_out,
+                            "{block}: an opaque block draws its picture whole"
+                        );
+                    }
+                }
+            }
+        }
+        // Light passes through air, leaves and glass, and nothing else of the blocks.
+        let passes: Vec<bool> = (0..10)
+            .map(|block| table.is_light_through(table.model_of(block, 0, 0)))
+            .collect();
+        assert_eq!(
+            passes,
+            [
+                true, false, false, false, false, false, false, false, true, true
+            ]
+        );
     }
 
     #[test]

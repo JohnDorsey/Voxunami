@@ -40,9 +40,9 @@ fn both_blocks_can_be_placed_but_only_in_creative_and_come_after_the_docking_por
     let placeable = placeable_blocks(&package);
     let seat = dev_command_seat_id();
     let engine = dev_rocket_engine_id();
-    // (The hotbar is in the order of the blocks: the seventh is the docking port, then these.)
-    assert_eq!(placeable[7], seat);
-    assert_eq!(placeable[8], engine);
+    // (The hotbar is in the order of the blocks: the ninth is the docking port, then these.)
+    assert_eq!(placeable[9], seat);
+    assert_eq!(placeable[10], engine);
     let creative = creative_only_blocks(&package);
     assert!(creative.contains(&seat) && creative.contains(&engine));
 }

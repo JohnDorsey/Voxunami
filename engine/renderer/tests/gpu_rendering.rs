@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use block_models::{BlockDefinition, BlockTable, Shape, ShapeBox};
+use block_models::{BlockDefinition, BlockTable, Shape, ShapeBox, Transparency};
 use glam::Vec3;
 use renderer::{
     Atmosphere, Avatar, Camera, EntityBox, GraphicsContext, OverlayRect, PictureSize,
@@ -5108,5 +5108,175 @@ fn a_picture_on_a_block_of_a_turned_ship_reads_the_same_from_outside_as_on_the_g
             [Some(0), Some(1), Some(2), Some(3)],
             "{name}"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Cut-outs: the clear pixels of a picture are holes (leaves and glass), and a block that shows its faces from behind is seen from inside.
+
+/// A picture 8 pixels across whose left half is opaque red and whose right half is clear.
+fn half_clear_picture() -> Vec<u8> {
+    (0..8)
+        .flat_map(|_| {
+            (0..8).flat_map(|x| {
+                if x < 4 {
+                    [255, 0, 0, 255]
+                } else {
+                    [0, 0, 0, 0]
+                }
+            })
+        })
+        .collect()
+}
+
+/// Block 1 has the half-clear picture on every face and a grey for the distance; it is a plain cube (`Transparency::Opaque`, which draws the picture whole), or a block in
+/// another mode, which is sight-through. Block 2 is a plain green cube.
+fn half_clear_table(mode: Transparency) -> BlockTable {
+    let tile = block_models::TileRef::new(0, 0).expect("a place for the picture");
+    let half_clear = BlockDefinition::cube([0.5, 0.5, 0.5])
+        .with_texture(namespaced_id::NamespacedId::new("test", "picture").unwrap())
+        .with_pictures(block_models::FacePictures {
+            top: tile,
+            side: tile,
+            bottom: tile,
+        })
+        .with_sight_through(mode != Transparency::Opaque)
+        .with_transparency(mode);
+    let air = BlockDefinition::air();
+    let green = BlockDefinition::cube([0.0, 1.0, 0.0]);
+    BlockTable::from_definitions(&[Some(&air), Some(&half_clear), Some(&green)])
+}
+
+fn renderer_with_half_clear(context: &GraphicsContext, table: &BlockTable) -> VoxelRenderer {
+    let mut renderer = new_renderer(context);
+    let picture = half_clear_picture();
+    renderer.set_palette_with_pictures(
+        &table.palette(),
+        &table.palette_pictures(),
+        &[PictureSize {
+            size: 8,
+            tiles: vec![&picture],
+        }],
+    );
+    renderer.set_picture_distance(100.0);
+    renderer
+}
+
+/// The pixel at the middle of a narrow view that looks straight along -z at the block of mode `mode` that has the half-clear picture, at `x` across it (16 to 17: the
+/// picture is red up to 16.5 and clear after), with a wall of green blocks a voxel behind it (not touching it, which would hide the wall's face). The line of sight
+/// crosses the near face and the far face of the block and no other, which is what is asked of it.
+fn pixel_straight_through(context: &GraphicsContext, mode: Transparency, x: f64) -> [u8; 4] {
+    let table = half_clear_table(mode);
+    let mut renderer = renderer_with_half_clear(context, &table);
+    let mut blocks = vec![([16, 16, 16], 1, 0)];
+    for wall_x in 12..21 {
+        for y in 12..21 {
+            blocks.push(([wall_x, y, 14], 2, 0));
+        }
+    }
+    place_blocks_in(&mut renderer, &table, ORIGIN_BRICK, &blocks, None);
+    let camera = camera_aimed_at([x, 16.5, 30.0], [x, 16.5, 17.0]);
+    let image = settled(&mut renderer, &camera);
+    save_image(
+        &format!("cut_out_straight_{}", mode.word()),
+        &adapter_name(context),
+        &image,
+    );
+    pixel(&image, SIZE / 2, SIZE / 2)
+}
+
+#[test]
+fn in_the_modes_that_cut_holes_the_clear_pixels_show_what_is_behind_and_an_opaque_block_draws_its_picture_whole()
+ {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        for mode in [Transparency::Leaves, Transparency::Glass] {
+            let at_left = pixel_straight_through(&context, mode, 16.25);
+            assert!(
+                is_red(at_left),
+                "{name} {mode:?}: the opaque half is {at_left:?}"
+            );
+            let at_right = pixel_straight_through(&context, mode, 16.75);
+            assert!(
+                is_green(at_right),
+                "{name} {mode:?}: the clear half shows the green wall behind: {at_right:?}"
+            );
+        }
+        // The same picture on an opaque block: its clear half is drawn, as the black it is stored as, and the wall behind is not seen.
+        let at_left = pixel_straight_through(&context, Transparency::Opaque, 16.25);
+        assert!(
+            is_red(at_left),
+            "{name}: opaque, the opaque half is {at_left:?}"
+        );
+        let at_right = pixel_straight_through(&context, Transparency::Opaque, 16.75);
+        assert!(
+            !is_sky(at_right) && !is_green(at_right) && at_right[..3].iter().all(|&part| part < 40),
+            "{name}: an opaque block has no holes: {at_right:?}"
+        );
+    }
+}
+
+/// The picture from inside the voxel of a block of mode `mode` that has the half-clear picture.
+fn seen_from_inside(context: &GraphicsContext, mode: Transparency) -> Vec<u8> {
+    let table = half_clear_table(mode);
+    let mut renderer = renderer_with_half_clear(context, &table);
+    place_blocks_in(
+        &mut renderer,
+        &table,
+        ORIGIN_BRICK,
+        &[([16, 16, 16], 1, 0)],
+        None,
+    );
+    settled(&mut renderer, &camera_at(ORIGIN_BRICK, [16.5, 16.5, 16.5]))
+}
+
+#[test]
+fn inside_a_block_in_a_mode_that_shows_back_faces_the_faces_are_drawn_and_in_the_opaque_mode_they_are_culled()
+ {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        for mode in [Transparency::Leaves, Transparency::Glass] {
+            let image = seen_from_inside(&context, mode);
+            save_image(
+                &format!("cut_out_from_inside_{}", mode.word()),
+                &name,
+                &image,
+            );
+            // The wall in front is the face on the -z side seen from behind: its opaque half is red, its clear half shows the sky.
+            assert!(
+                red_pixels(&image) > 100,
+                "{name} {mode:?}: {} red pixels",
+                red_pixels(&image)
+            );
+        }
+        let opaque = seen_from_inside(&context, Transparency::Opaque);
+        assert_eq!(
+            pixels_where(&opaque, |pixel| !is_sky(pixel)),
+            0,
+            "{name}: an opaque block draws nothing from inside"
+        );
+    }
+}
+
+#[test]
+fn through_a_hole_in_the_near_face_the_far_face_of_leaves_and_of_glass_is_seen() {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        for mode in [Transparency::Leaves, Transparency::Glass] {
+            let table = half_clear_table(mode);
+            let mut renderer = renderer_with_half_clear(&context, &table);
+            place_blocks_in(
+                &mut renderer,
+                &table,
+                ORIGIN_BRICK,
+                &[([16, 16, 16], 1, 0)],
+                None,
+            );
+            // From in front and to the right, at the clear half of the near face (x = 16.75): the line goes on to the far face at x = 16.32, where the picture is opaque.
+            let camera = camera_aimed_at([17.4, 16.5, 18.5], [16.75, 16.5, 17.0]);
+            let image = settled(&mut renderer, &camera);
+            let centre = pixel(&image, SIZE / 2, SIZE / 2);
+            assert!(is_red(centre), "{name} {mode:?}: {centre:?}");
+        }
     }
 }

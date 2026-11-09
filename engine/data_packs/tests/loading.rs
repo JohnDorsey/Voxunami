@@ -1,6 +1,8 @@
 //! Loading packs on top of a game's blocks: order, adding, patching, and what is refused.
 
-use block_models::{BlockDefinition, PropertyDeclaration, PropertyKind, PropertySchema, Shape};
+use block_models::{
+    BlockDefinition, PropertyDeclaration, PropertyKind, PropertySchema, Shape, Transparency,
+};
 mod common;
 
 use data_packs::{BodyContext, GameTexture, Loaded, RawFile, RawPack, RawTexture, load_packs};
@@ -604,7 +606,7 @@ fn patches_change_properties_fields_and_states_and_nothing_else() {
         { "op": "set", "property": "test:glow", "value": 9 },
         { "op": "set", "property": "test:sticky", "value": true },
         { "op": "set", "path": "color", "value": [0.1, 0.2, 0.3] },
-        { "op": "set", "path": "see_through", "value": true },
+        { "op": "set", "path": "sight_through", "value": true },
         { "op": "set", "path": "state_colors", "value": [[0, 0, 0], [1, 1, 1]] },
         { "op": "add", "shape": "half:negative_y" },
         { "op": "set", "property": "test:glow", "state": 1, "value": 77 }"#;
@@ -614,7 +616,7 @@ fn patches_change_properties_fields_and_states_and_nothing_else() {
     ))
     .unwrap();
     let expected = BlockDefinition::cube([0.1, 0.2, 0.3])
-        .with_see_through(true)
+        .with_sight_through(true)
         .with_shapes(vec![Shape::full(), Shape::half(FaceDirection::NegativeY)])
         .with_state_colors(vec![[0.0; 3], [1.0; 3]])
         .with_property_value(id("test:glow"), 9)
@@ -623,6 +625,82 @@ fn patches_change_properties_fields_and_states_and_nothing_else() {
     assert_eq!(definition(&loaded, "base:lamp"), &expected);
     assert_eq!(definition(&loaded, "base:stone"), &base()[0].1);
     assert!(loaded.warnings.is_empty());
+}
+
+#[test]
+fn a_patch_can_make_a_block_leaves_by_giving_it_sight_and_a_mode_and_a_mode_without_sight_is_refused()
+ {
+    // The lamp becomes leaves: the mode is set before the flag it needs, which is fine, since the block is looked at when the patch is done.
+    let operations = r#"
+        { "op": "set", "path": "transparency", "value": "leaves" },
+        { "op": "set", "path": "sight_through", "value": true },
+        { "op": "set", "path": "light_through", "value": true }"#;
+    let loaded = load(&one_patch(
+        &["base"],
+        &patch_of("base:lamp", false, operations),
+    ))
+    .unwrap();
+    let leaves = definition(&loaded, "base:lamp");
+    assert!(leaves.sight_through && leaves.light_through);
+    assert_eq!(leaves.transparency(), Transparency::Leaves);
+    // And back: the mode can be taken away, once.
+    let there_and_back = format!(
+        r#"{operations},
+        {{ "op": "remove", "path": "transparency" }}"#
+    );
+    let loaded = load(&one_patch(
+        &["base"],
+        &patch_of("base:lamp", false, &there_and_back),
+    ))
+    .unwrap();
+    assert_eq!(
+        definition(&loaded, "base:lamp").transparency(),
+        Transparency::Opaque
+    );
+    // A mode on a block that cannot be seen through is refused, and nothing changes.
+    let errors = refusal(&one_patch(
+        &["base"],
+        &patch_of(
+            "base:lamp",
+            false,
+            r#"{ "op": "set", "path": "transparency", "value": "glass" }"#,
+        ),
+    ));
+    assert_eq!(
+        errors,
+        [
+            "my_pack/patches/change.json: /operations: a transparency mode needs \"sight_through\": true, or nothing shows through the block"
+        ]
+    );
+    // Taking the sight away from leaves is refused for the same reason.
+    let errors = refusal(&one_patch(
+        &["base"],
+        &patch_of(
+            "base:lamp",
+            false,
+            r#"{ "op": "set", "path": "sight_through", "value": true },
+               { "op": "set", "path": "transparency", "value": "glass" },
+               { "op": "set", "path": "sight_through", "value": false }"#,
+        ),
+    ));
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    // A mode that is not there cannot be removed, and a test says what the mode is.
+    let errors = refusal(&one_patch(
+        &["base"],
+        &patch_of(
+            "base:lamp",
+            false,
+            r#"{ "op": "remove", "path": "transparency" },
+               { "op": "test", "path": "transparency", "value": "glass" },
+               { "op": "test", "path": "light_through", "value": true }"#,
+        ),
+    ));
+    assert_eq!(errors.len(), 3, "{errors:#?}");
+    assert!(
+        errors[0].ends_with("this block has no transparency mode, so there is nothing to remove")
+    );
+    assert!(errors[1].ends_with("the test failed: transparency is opaque, not glass"));
+    assert!(errors[2].ends_with("the test failed: light_through is false, not true"));
 }
 
 #[test]
@@ -899,13 +977,13 @@ fn a_test_that_fails_refuses_the_patch_even_if_it_is_optional() {
         &patch_of(
             "base:lamp",
             false,
-            r#"{ "op": "test", "path": "see_through", "value": true },
+            r#"{ "op": "test", "path": "sight_through", "value": true },
                { "op": "test", "path": "color", "value": [0, 0, 0] },
                { "op": "test", "path": "state_colors", "value": [[0, 0, 0]] }"#,
         ),
     ));
     assert_eq!(errors.len(), 3, "{errors:#?}");
-    assert!(errors[0].ends_with("the test failed: see_through is false, not true"));
+    assert!(errors[0].ends_with("the test failed: sight_through is false, not true"));
     assert!(errors[1].contains("the test failed: the colour is"));
     assert!(errors[2].contains("the test failed: the state colours are []"));
 }

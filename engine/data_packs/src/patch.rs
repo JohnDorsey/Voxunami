@@ -14,9 +14,11 @@ use crate::shape::read_shape;
 use crate::walk::{Path, Walk, nearest, quoted};
 
 const OPERATIONS: [&str; 4] = ["test", "set", "remove", "add"];
-const FIELDS: [&str; 5] = [
+const FIELDS: [&str; 7] = [
     "color",
-    "see_through",
+    "sight_through",
+    "light_through",
+    "transparency",
     "state_colors",
     "face_colors",
     "texture",
@@ -40,7 +42,9 @@ pub enum Place {
         state: Option<u32>,
     },
     Color,
-    SeeThrough,
+    SightThrough,
+    LightThrough,
+    Transparency,
     StateColors,
     FaceColors,
     Texture,
@@ -52,6 +56,8 @@ pub enum PatchValue {
     Property(PropertyValue),
     Color([f32; 3]),
     Flag(bool),
+    /// A transparency mode.
+    Mode(block_models::Transparency),
     Colors(Vec<[f32; 3]>),
     /// The colour of each face as the block is made (indexed by `FaceDirection::index`); `None` for a face that has the block's own.
     FaceColors([Option<[f32; 3]>; 6]),
@@ -185,10 +191,10 @@ fn read_operation(walk: &mut Walk, value: &Value, path: &Path) -> Option<Operati
     let place = read_place(walk, object, path)?;
     match name {
         "remove" => match place {
-            Place::Color | Place::SeeThrough => {
+            Place::Color | Place::SightThrough | Place::LightThrough => {
                 walk.fail(
                     &path.key("path"),
-                    "a block always has its colour and its see-through flag, so they cannot be removed (use \"set\")",
+                    "a block always has its colour and its sight-through and light-through flags, so they cannot be removed (use \"set\")",
                 );
                 None
             }
@@ -252,7 +258,9 @@ fn read_place(walk: &mut Walk, object: &Map<String, Value>, path: &Path) -> Opti
             }
             match text {
                 "color" => Some(Place::Color),
-                "see_through" => Some(Place::SeeThrough),
+                "sight_through" => Some(Place::SightThrough),
+                "light_through" => Some(Place::LightThrough),
+                "transparency" => Some(Place::Transparency),
                 "state_colors" => Some(Place::StateColors),
                 "face_colors" => Some(Place::FaceColors),
                 "texture" => Some(Place::Texture),
@@ -294,7 +302,12 @@ fn read_value(walk: &mut Walk, value: &Value, path: &Path, place: &Place) -> Opt
             }
         },
         Place::Color => walk.color(value, path).map(PatchValue::Color),
-        Place::SeeThrough => walk.boolean(value, path).map(PatchValue::Flag),
+        Place::SightThrough | Place::LightThrough => {
+            walk.boolean(value, path).map(PatchValue::Flag)
+        }
+        Place::Transparency => {
+            crate::block::read_transparency(walk, value, path).map(PatchValue::Mode)
+        }
         Place::FaceColors => {
             let colors: Option<FaceColors> = read_face_colors(walk, value, path);
             colors.map(PatchValue::FaceColors)

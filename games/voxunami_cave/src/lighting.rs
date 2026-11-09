@@ -214,7 +214,9 @@ mod tests {
     fn table() -> BlockTable {
         let air = BlockDefinition::air();
         let stone = BlockDefinition::cube([0.5; 3]);
-        let glass = BlockDefinition::cube([0.7; 3]).with_see_through(true);
+        let glass = BlockDefinition::cube([0.7; 3])
+            .with_sight_through(true)
+            .with_light_through(true);
         let rock = BlockDefinition::cube([0.4; 3]).with_shapes(vec![
             Shape::full(),
             Shape::half(FaceDirection::NegativeY),
@@ -223,7 +225,8 @@ mod tests {
         ]);
         let lamp = BlockDefinition::cube([1.0; 3]).with_property(&base_blocks::EMISSION, 20);
         let glass_lamp = BlockDefinition::cube([1.0; 3])
-            .with_see_through(true)
+            .with_sight_through(true)
+            .with_light_through(true)
             .with_property(&base_blocks::EMISSION, 12);
         let brightest_lamp =
             BlockDefinition::cube([1.0; 3]).with_property(&base_blocks::EMISSION, 255);
@@ -554,7 +557,7 @@ mod tests {
     }
 
     #[test]
-    fn a_lamp_that_is_see_through_holds_its_own_light() {
+    fn a_lamp_that_light_passes_through_holds_its_own_light() {
         let mut lighting = Lighting::new(table());
         let mut world = Box3::default();
         world.place(at(4, 4, 4), GLASS_LAMP, 0, &mut lighting);

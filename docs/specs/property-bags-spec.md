@@ -7,7 +7,7 @@ section 2.1 (what property bags are and how they are built).
 ## 1. The problem, as it is in the code
 
 [code, read 2026-10-18] `BlockDefinition` has fixed fields `emission`, `flammability` and `passable` next to the ones the engine reads for itself
-(`color`, `see_through`, the shapes, the state colours). `BlockTable` copies them into `Entry` and answers `emission(block)`, `flammability(block)` and
+(`color`, `sight_through`, `light_through`, `transparency`, the shapes, the state colours). `BlockTable` copies them into `Entry` and answers `emission(block)`, `flammability(block)` and
 `is_passable(block)`. Only Cave's rules ask: the light (`lighting.rs`, `multiscale_light.rs`, the light plugin's scan of edited bricks), fire
 (`fire.rs`) and movement (`movement.rs`). The engine crate therefore carries three game concepts, and a rule that wants a fourth (conductivity, hardness)
 means editing it.

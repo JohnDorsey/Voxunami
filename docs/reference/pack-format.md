@@ -40,7 +40,9 @@ names, so the result never depends on how the folder happens to be listed.
 ```json
 {
   "color": [0.9, 0.9, 0.95],
-  "see_through": false,
+  "sight_through": false,
+  "light_through": false,
+  "transparency": "opaque",
   "states": ["full", "half:negative_y", "stair:positive_x", { "boxes": [[0,0,0, 8,4,8], [2,4,2, 6,8,6]] }],
   "state_colors": [[0.9, 0.9, 0.95], [0.8, 0.8, 0.9]],
   "face_colors": { "top": [0.75, 0.58, 0.36], "bottom": [0.75, 0.58, 0.36], "positive_x": [1, 0.85, 0] },
@@ -53,7 +55,19 @@ Only `color` is needed, or a `texture` (see "Pictures"). A block is one whole cu
 `plugins/base_blocks/data/blocks` (a log with lighter ends, a fire with a colour for each age, slabs and stairs) and `games/voxunami_cave/data/blocks` (a block with a front and a face that docks).
 
 - **`color`**: red, green, blue, each 0 to 1.
-- **`see_through`**: whether it lets you see and light through (glass). Default false.
+- **`sight_through`**: whether you can see through it, so that it hides nothing behind it (glass, leaves, air): the faces of what is behind it are drawn. Default false.
+- **`light_through`**: whether light passes through it and the voxel holds light itself (glass, leaves, air). It is separate from `sight_through`: a block you see through
+  may stop light, and one you cannot see through may pass it. Default false.
+- **`transparency`**: how a block that is `sight_through` draws its pictures and its faces, as one of three words (default `"opaque"`). A mode other than `opaque` needs
+  `"sight_through": true`, or the block is refused. In every mode the faces that look at the player are drawn.
+
+  | mode | clear pixels of its pictures | faces between two voxels of the block | faces seen from behind |
+  |---|---|---|---|
+  | `opaque` | drawn (as the colour stored there; alpha is ignored) | not drawn | not drawn |
+  | `leaves` | holes: what is behind shows | drawn | drawn |
+  | `glass` | holes | not drawn | drawn |
+
+  "Seen from behind" is a face drawn to someone inside the voxel, as the far side of a leaf block is seen through a hole in its near side.
 - **`states`**: the shape of each state, state 0 first. A name (`full`, `empty`, `half:SIDE`, `stair:SIDE`, with SIDE one of
   `negative_x`, `positive_x`, `negative_y`, `positive_y`, `negative_z`, `positive_z`) or `{"boxes": [...]}`: boxes of six
   whole numbers from 0 to 8 (eighths of a voxel): min x, y, z, then max x, y, z, each min below its max.
@@ -91,6 +105,10 @@ So adding `marble_bottom.png` changes the block with no change to its file. A te
 
 - **Size and format.** A picture is square, a power of two from 8 to 256 pixels on a side, 8-bit RGB or RGBA (a file of another kind is refused, not converted). All the
   pictures that blocks use must be of at most 4 different sizes, and at most 256 of a size.
+- **Clear pixels are holes, in the blocks that say so.** In a block whose `transparency` is `leaves` or `glass`, a pixel of a picture that is at least half clear (alpha
+  under 128) is not drawn: what is behind it shows. In an `opaque` block the alpha of a picture is ignored and the picture is drawn whole. There is no blending of partly
+  clear pixels, so such a picture is made of pixels that are there and pixels that are not. Beyond the texture distance and in the coarse levels of detail a face is one flat
+  colour with no holes.
 - **The colour.** A block with a texture and no `color` has the average of its pictures: the top counted once and each of the four sides once, the bottom not at all,
   clear pixels not at all, worked out in linear light. A `color` that is written always wins (and it is what far views and the hotbar use). The colour follows the
   pictures: if a later pack replaces one, the block's colour follows, unless it was written.
@@ -114,7 +132,9 @@ So adding `marble_bottom.png` changes the block with no change to its file. A te
     { "op": "set",    "property": "base_blocks:passable", "state": 0, "value": false },
     { "op": "set",    "property": "base_blocks:flammability", "value": 40 },
     { "op": "set",    "path": "color", "value": [1.0, 0.8, 0.5] },
-    { "op": "set",    "path": "see_through", "value": false },
+    { "op": "set",    "path": "sight_through", "value": true },
+    { "op": "set",    "path": "light_through", "value": true },
+    { "op": "set",    "path": "transparency", "value": "glass" },
     { "op": "set",    "path": "state_colors", "value": [[0,0,0], [1,1,1]] },
     { "op": "remove", "path": "state_colors" },
     { "op": "set",    "path": "face_colors", "value": { "side": [0.4, 0.4, 0.4], "top": [1, 0.8, 0.5] } },
@@ -128,10 +148,10 @@ So adding `marble_bottom.png` changes the block with no change to its file. A te
 - **`test`** says "I was written against this": the whole patch is refused unless the value is as stated. Use it before
   `set` when you depend on what the block was. A failed `test` is an error even in an optional patch.
 - **`set`** changes a property (in every state, or in one with `"state": N`; setting for every state leaves a state's own
-  value alone) or one of the fields `color`, `see_through`, `state_colors`, `face_colors` (which replaces all the face colours, as the state colours are
+  value alone) or one of the fields `color`, `sight_through`, `light_through`, `transparency`, `state_colors`, `face_colors` (which replaces all the face colours, as the state colours are
   replaced as a whole) or `texture`.
 - **`remove`** takes a property back to the game's default (for every state, or one state), or removes the state colours or the face colours. It is an
-  error to remove what is not set (a lamp has no flammability, so removing it fails; the example removes `state_colors` after setting them). `color` and `see_through` cannot be removed (set them).
+  error to remove what is not set (a lamp has no flammability, so removing it fails; the example removes `state_colors` after setting them). `transparency` can be removed (it is then `opaque`), but `color`, `sight_through` and `light_through` cannot be removed (set them).
 - **`add`** appends a state with this shape. Later operations in the same patch may use it.
 - A patch is applied as a whole or not at all: if one operation fails, none of it happened.
 - Two packs that both set a tag (a true/false property) to true agree; a pack that wants it off sets it false or removes it.

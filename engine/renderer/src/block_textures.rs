@@ -117,7 +117,8 @@ fn array_of(
 }
 
 /// The picture and the smaller ones under it, down to one pixel: each pixel of a smaller one is the average of the four it stands for, worked out in linear light (the
-/// way the screen blends), and the opacity averaged as it is.
+/// way the screen blends) with each pixel counting as much as it is opaque (so the black that clear pixels are stored as does not darken what is beside them), and the
+/// opacity averaged as it is. (Four clear pixels have nothing to weigh by, and give the plain average of their colours.)
 pub(crate) fn mip_chain(size: u32, rgba: &[u8]) -> Vec<Vec<u8>> {
     let linear_of: Vec<f32> = (0..=255u32)
         .map(|byte| {
@@ -146,16 +147,26 @@ pub(crate) fn mip_chain(size: u32, rgba: &[u8]) -> Vec<Vec<u8>> {
         let mut next = Vec::with_capacity(next_side * next_side * 4);
         for y in 0..next_side {
             for x in 0..next_side {
-                let mut linear = [0.0f32; 3];
+                let mut weighted = [0.0f32; 3];
+                let mut plain = [0.0f32; 3];
+                let mut weight = 0.0f32;
                 let mut opacity = 0.0f32;
                 for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
                     let at = ((2 * y + dy) * side + 2 * x + dx) * 4;
-                    for (channel, sum) in linear.iter_mut().enumerate() {
-                        *sum += linear_of[usize::from(previous[at + channel])];
+                    let alpha = f32::from(previous[at + 3]) / 255.0;
+                    for channel in 0..3 {
+                        let linear = linear_of[usize::from(previous[at + channel])];
+                        weighted[channel] += linear * alpha;
+                        plain[channel] += linear;
                     }
+                    weight += alpha;
                     opacity += f32::from(previous[at + 3]);
                 }
-                next.extend(linear.map(|sum| srgb_byte(sum / 4.0)));
+                if weight > 0.0 {
+                    next.extend(weighted.map(|sum| srgb_byte(sum / weight)));
+                } else {
+                    next.extend(plain.map(|sum| srgb_byte(sum / 4.0)));
+                }
                 next.push((opacity / 4.0).round() as u8);
             }
         }
@@ -230,7 +241,7 @@ mod tests {
 
     #[test]
     fn each_pixel_of_a_smaller_level_is_the_four_it_stands_for_and_opacity_is_averaged_as_it_is() {
-        // Four pixels: opacities 255, 255, 0, 0 average to 128 (127.5 rounded); the colours of the two clear ones count like any.
+        // Four pixels: opacities 255, 255, 0, 0 average to 128 (127.5 rounded).
         let mut picture = Vec::new();
         for pixel in 0..4 {
             picture.extend_from_slice(&[10, 20, 30, if pixel < 2 { 255 } else { 0 }]);
@@ -247,5 +258,41 @@ mod tests {
         assert_eq!(&level[4..8], [0, 0, 0, 255]);
         assert_eq!(&level[8..12], [0, 0, 0, 255]);
         assert_eq!(&level[12..16], [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn the_colour_of_a_clear_pixel_does_not_tint_the_pixels_around_it_in_a_smaller_level() {
+        // The pictures of leaves and glass store black in their clear pixels. One opaque red pixel and three clear black ones: the smaller pixel is a quarter as opaque, and
+        // is still red, not a dark red.
+        let mut picture = vec![255, 0, 0, 255];
+        for _ in 0..3 {
+            picture.extend_from_slice(&[0, 0, 0, 0]);
+        }
+        assert_eq!(mip_chain(2, &picture)[1], [255, 0, 0, 64]);
+        // The same with the opaque pixel in each of the four places.
+        for place in 0..4 {
+            let mut moved = vec![0u8; 16];
+            moved[place * 4..place * 4 + 4].copy_from_slice(&[255, 0, 0, 255]);
+            assert_eq!(mip_chain(2, &moved)[1], [255, 0, 0, 64], "{place}");
+        }
+    }
+
+    #[test]
+    fn a_pixel_counts_in_proportion_to_its_opacity_in_the_colour_of_a_smaller_level() {
+        // White, fully opaque, and black at opacity 128 (and two clear ones): in linear light white weighs 255 and black 128, so the colour is 255 / 383 = 0.666 of white,
+        // which is the sRGB byte 213.
+        let picture = [255, 255, 255, 255, 0, 0, 0, 128, 99, 99, 99, 0, 7, 7, 7, 0];
+        let level = mip_chain(2, &picture)[1].clone();
+        for channel in 0..3 {
+            assert!(level[channel].abs_diff(213) <= 1, "{level:?}");
+        }
+        assert_eq!(level[3], 96);
+    }
+
+    #[test]
+    fn four_clear_pixels_give_a_clear_pixel_of_their_plain_average_colour() {
+        // There is nothing to weigh by, so the colours count alike (and the result is clear whatever it is).
+        let picture = [10, 20, 30, 0, 10, 20, 30, 0, 10, 20, 30, 0, 10, 20, 30, 0];
+        assert_eq!(mip_chain(2, &picture)[1], [10, 20, 30, 0]);
     }
 }

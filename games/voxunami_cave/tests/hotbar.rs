@@ -99,6 +99,8 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
         table.color(ids.lamp),
         table.color(ids.wood),
         table.color(ids.fire),
+        table.color(ids.leaves),
+        table.color(ids.glass),
         table.color(port),
         table.color(seat),
         table.color(engine),
@@ -107,9 +109,9 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
     assert_eq!(expected_colors[3], [1.0, 0.92, 0.65]);
     assert_eq!(expected_colors[5], [0.95, 0.5, 0.1]);
     // (The seat and the engine are gunmetal gray, and their brown and red faces are not their colour.)
-    assert_eq!(expected_colors[7], [0.17, 0.21, 0.22]);
-    assert_eq!(expected_colors[8], [0.17, 0.21, 0.22]);
-    assert_eq!(shown.len(), 9);
+    assert_eq!(expected_colors[9], [0.17, 0.21, 0.22]);
+    assert_eq!(expected_colors[10], [0.17, 0.21, 0.22]);
+    assert_eq!(shown.len(), 11);
     for (index, ((color, count, selected), expected)) in
         shown.iter().zip(expected_colors).enumerate()
     {
@@ -127,9 +129,12 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
         .collect();
     assert_eq!(
         chosen,
-        [false, false, false, true, false, false, false, false, false]
+        [
+            false, false, false, true, false, false, false, false, false, false, false
+        ]
     );
-    // The ninth key chooses the ninth block, the dev rocket engine; the right square bracket goes on round to the first, and the left one back to the last.
+    // The ninth key chooses the ninth block, the dev docking port; the right square bracket goes on to the seat and the engine and then round to the first, and the left
+    // one back to the last.
     let chosen_index = |player: &mut Player| -> usize {
         let panels = overlays(player);
         let chosen: Vec<bool> = swatches(&panels[0].1.root)
@@ -146,11 +151,15 @@ fn the_hotbar_is_a_swatch_for_each_block_that_can_be_placed_in_its_colour_with_t
     player.key_pressed(KeyCode::Digit9);
     assert_eq!(chosen_index(&mut player), 8);
     player.key_pressed(KeyCode::BracketRight);
+    assert_eq!(chosen_index(&mut player), 9);
+    player.key_pressed(KeyCode::BracketRight);
+    assert_eq!(chosen_index(&mut player), 10);
+    player.key_pressed(KeyCode::BracketRight);
     assert_eq!(chosen_index(&mut player), 0);
     player.key_pressed(KeyCode::BracketLeft);
-    assert_eq!(chosen_index(&mut player), 8);
+    assert_eq!(chosen_index(&mut player), 10);
     player.key_pressed(KeyCode::BracketLeft);
-    assert_eq!(chosen_index(&mut player), 7);
+    assert_eq!(chosen_index(&mut player), 9);
 }
 
 #[test]

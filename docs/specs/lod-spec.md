@@ -75,7 +75,7 @@ namespaced ids" rule is untouched.
 
 - **fill**: the sum of the eight children's fill divided by 8, rounded up whenever any child has fill (a speck is not lost).
 - **exposure**: the area of the cell's surface that touches air, in units of the cell's own face area. At detail level 0, a voxel's exposure is the
-  number of its faces that the mesher would draw (a face next to a see-through block) (`BlockTable::is_see_through`); a parent's exposure is the sum of
+  number of its faces that the mesher would draw (a face next to a see-through block) (`BlockTable::is_sight_through`); a parent's exposure is the sum of
   its children's divided by 4 (a child's face is a quarter of the parent's), in integer fixed point, saturating. A flat ground one voxel deep has
   exposure about 1 at every level.
 - **block**: the block whose children together have the most exposure (the exposure of the children that have that block is added up, so four children of grass with a little surface each can outweigh one of stone with more). Ties go to the block of the lowest octant index, which does not depend on how a game numbers its blocks. If no child has any surface, the block with the most fill.

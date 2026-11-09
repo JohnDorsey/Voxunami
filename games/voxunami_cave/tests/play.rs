@@ -781,8 +781,8 @@ fn the_dev_docking_port_is_chosen_with_its_number_has_one_state_and_is_placed_wi
     let mut rig = Rig::new();
     let mut player = player_above_ground(&mut rig);
     let hit = player.target().unwrap();
-    // The seventh block there is to place.
-    player.key_pressed(KeyCode::Digit7);
+    // The ninth block there is to place.
+    player.key_pressed(KeyCode::Digit9);
     assert_eq!(player.hud_text(), "placing dev_docking_port (whole)");
     // It has one state: the shape key leaves it as it is (how it is turned is the orientation, which comes from the face the player clicked and where they are).
     player.key_pressed(KeyCode::KeyR);

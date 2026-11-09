@@ -1,5 +1,6 @@
 {
   "color": [0, 0, 0],
-  "see_through": true,
+  "sight_through": true,
+  "light_through": true,
   "states": ["empty"]
 }

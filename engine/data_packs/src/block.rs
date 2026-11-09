@@ -1,7 +1,7 @@
 //! A block file: one block of a pack, named by the file.
 
 use block_models::{
-    BlockDefinition, PropertyDeclaration, PropertyKind, PropertySchema, Shape, engine,
+    BlockDefinition, PropertyDeclaration, PropertyKind, PropertySchema, Shape, Transparency, engine,
 };
 use namespaced_id::NamespacedId;
 use serde_json::Value;
@@ -11,9 +11,11 @@ use crate::face_colors::read_face_colors;
 use crate::shape::read_shape;
 use crate::walk::{Path, Walk, nearest};
 
-const KEYS: [&str; 8] = [
+const KEYS: [&str; 10] = [
     "color",
-    "see_through",
+    "sight_through",
+    "light_through",
+    "transparency",
     "states",
     "state_colors",
     "face_colors",
@@ -21,6 +23,41 @@ const KEYS: [&str; 8] = [
     "properties",
     "state_properties",
 ];
+
+/// Why a block with a transparency mode must be sight-through: the mode is what shows through the holes of its pictures and what is drawn of its faces.
+pub(crate) const MODE_NEEDS_SIGHT: &str =
+    "a transparency mode needs \"sight_through\": true, or nothing shows through the block";
+
+/// The words of the transparency modes, as an author writes them.
+pub(crate) fn transparency_words() -> Vec<&'static str> {
+    Transparency::ALL.iter().map(|mode| mode.word()).collect()
+}
+
+/// A transparency mode written as a word.
+pub(crate) fn read_transparency(
+    walk: &mut Walk,
+    value: &Value,
+    path: &Path,
+) -> Option<Transparency> {
+    let word = walk.string(value, path)?;
+    match Transparency::from_word(word) {
+        Some(mode) => Some(mode),
+        None => {
+            let words = transparency_words();
+            let hint = nearest(word, &words)
+                .map(|near| format!(" (did you mean \"{near}\"?)"))
+                .unwrap_or_default();
+            walk.fail(
+                path,
+                format!(
+                    "\"{word}\" is not a transparency mode{hint}; the modes are {}",
+                    crate::walk::quoted(&words)
+                ),
+            );
+            None
+        }
+    }
+}
 
 /// The block a file describes: its identifier is the pack's name and the file's, such as `my_pack:marble` for
 /// `my_pack/blocks/marble.json`.
@@ -87,9 +124,17 @@ fn read_definition(
             None
         }
     };
-    let see_through = match object.get("see_through") {
-        Some(value) => walk.boolean(value, &path.key("see_through")),
+    let sight_through = match object.get("sight_through") {
+        Some(value) => walk.boolean(value, &path.key("sight_through")),
         None => Some(false),
+    };
+    let light_through = match object.get("light_through") {
+        Some(value) => walk.boolean(value, &path.key("light_through")),
+        None => Some(false),
+    };
+    let transparency = match object.get("transparency") {
+        Some(value) => read_transparency(walk, value, &path.key("transparency")),
+        None => Some(Transparency::Opaque),
     };
     let shapes = match object.get("states") {
         Some(states) => read_states(walk, states, &path.key("states")),
@@ -121,7 +166,9 @@ fn read_definition(
     let (
         (color, color_from_pictures),
         texture,
-        see_through,
+        sight_through,
+        light_through,
+        transparency,
         shapes,
         state_colors,
         face_colors,
@@ -130,7 +177,9 @@ fn read_definition(
     ) = (
         color?,
         texture?,
-        see_through?,
+        sight_through?,
+        light_through?,
+        transparency?,
         shapes?,
         state_colors?,
         face_colors?,
@@ -138,9 +187,15 @@ fn read_definition(
         state_properties?,
     );
 
+    if transparency != Transparency::Opaque && !sight_through {
+        walk.fail(&path.key("transparency"), MODE_NEEDS_SIGHT);
+        return None;
+    }
     let mut definition = BlockDefinition::cube(color)
         .with_shapes(shapes)
-        .with_see_through(see_through);
+        .with_sight_through(sight_through)
+        .with_light_through(light_through)
+        .with_transparency(transparency);
     if let Some(texture) = texture {
         definition = definition.with_texture(texture);
         if color_from_pictures {

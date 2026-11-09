@@ -106,7 +106,7 @@ is a number I chose so that this holds; it must be tried on the four adapters of
 layers in a texture array is also a cap on tiles per size, and it is treated as one (an error naming it when hit).*
 
 Alpha: the six pictures are opaque **[disk]**. A picture with clear pixels is accepted (the plants will have them) but this step draws blocks opaque;
-translucency and cut-outs are a later step. The flag `see_through` is unchanged.
+translucency and cut-outs are a later step. The flag `sight_through` is unchanged. *(Cut-outs are built, 2026-11-08: see "As built", "Leaves and glass".)*
 
 ### 4.3 Overriding (D6)
 
@@ -248,7 +248,7 @@ than a set distance from the average of the pictures (only to remind the modder,
 
 ## 11. Not in this version
 
-Per-state pictures (D13); animated pictures (flowing water); translucent and cut-out pictures (plants); tints by climate; the other textures on disk;
+Per-state pictures (D13); animated pictures (flowing water); translucent (blended) pictures, as against the cut-outs of "Leaves and glass"; tints by climate; the other textures on disk;
 procedural block types, which the species of trees will use through *roles* (trunk, bark, leaf), not block ids; pictures on blocks larger than a metre
 (`future-goals.md`); texture packs before step 6. Sub-voxel models, which `architecture-review.md` preferred, are not ruled out for things that are not cubes.
 
@@ -353,3 +353,25 @@ and no generator version was added) and to **change how the dev docking port is 
   the table says which placement a block has (both). The test that places the port in the real game now says its top is up (the front is one of the four sides). **Eight mutations** (the player on the other side, a tie kept by the last, the top down when not told, any turn and not only those that carry the line, the side
   that least agrees, the front rule winning, the line rule winning, the wrong face as the front) **are all caught**; a ninth, working out the player's side without the part of their look along the line, changed nothing and is an equivalent mutant (every side of the line is across it), so the code does not do it.
 - **A consequence the owner may not have meant:** a port can no longer be put with its yellow face up or down against the floor or ceiling (the front is always across the top), so two ports cannot be stacked yellow to yellow by putting them on the floor; put against a wall the yellow face can be up or down, by looking down or up at the wall.
+
+**Leaves and glass (2026-11-08, owner's request; the first blocks with clear pixels).**
+- **Transparency modes in block data (the owner's decisions, 2026-11-08).** A block says `"transparency": "opaque" | "leaves" | "glass"` (default opaque), and the mode is a fixed answer to three questions
+  (`block_models::Transparency`, tabled in `pack-format.md`): whether the clear pixels of its pictures are holes, whether the faces between two voxels of the block are drawn, and whether its faces are drawn from behind.
+  Leaves: yes, yes, yes. Glass: yes, no, yes. Opaque: no, no, no (so the alpha of a picture on an opaque block is ignored, and a stray alpha channel makes no holes). All draw the faces that look at the player.
+  *Built first as two engine properties, `engine:inner_faces` and `engine:back_faces`, and replaced the same day, by the owner's choice of named modes.*
+- **`see_through` is now two flags**, `sight_through` (hides nothing behind it) and `light_through` (light passes and the voxel holds light itself; `BlockTable::connections`), the owner's names. They were one flag with both meanings; air, leaves and
+  glass have both. A mode other than opaque needs `sight_through` (the loader refuses it, and so does a patch whose result lacks it; the block schema says so with `if`/`then`).
+- **Cut-outs.** The picture word of a palette entry has a bit for them (bit 17, `FacePicture::cut_out`, set when the block's mode is not opaque). The fragment shader reads the picture's alpha and does not draw a pixel under one half (`discard`) where that bit is set;
+  the alpha is faded with the picture over the fade band, so beyond the texture distance a face is whole (as it is in the coarse levels). Both pictures on disk have only alpha 0 and 255 **[measured]**. The mips are
+  made weighting each pixel by its opacity, as the black the clear pixels are stored as would darken the edges at a distance (`mip_chain`; four clear pixels give the plain average).
+- **A sheet from behind is a quad on the same plane looking the other way** (`mesh_partial_blocks`): no pipeline change, since a face looking at the camera passes both the per-brick choice of face directions and the
+  GPU's culling, and a detailed quad already says where its plane is whichever way it looks. It is lit by its own voxel (a face outward is lit by the voxel it looks at, so a block that is not `light_through` is dark from inside). It is **not** drawn where the voxel in front is a solid
+  sight-through block that covers the whole rectangle (that block draws its own face on the plane, looking the same way, and two sheets there would fight for the pixels). The picture on a sheet from behind is read
+  as the face it looks as (not mirrored), so every plane of a mass of leaves has the same holes in the same places and one sees straight down a column of them.
+- **Cost, not measured:** these blocks are detailed quads (16 bytes), not greedy-merged: a lone leaf block is 12 quads, a solid 32-voxel cube of leaves (every face of every voxel) is 196,608 quads, 3 MB. Routing
+  sight-through whole cubes through the merged path would need a flag on the quad for the sheet from behind; not done.
+- **Not done:** cut-out shadows (the shadow pass has no fragment stage), blending, a different texture on the back of a face, a per-face turn of the picture so that a mass of leaves does not show columns, a dithered far view (owner's
+  unscheduled list, `future-goals.md`), and a light that leaves dim (light is passed whole or not at all).
+- **Pins moved, once:** every game's package changes (the definitions carry two more bytes each, and `sight_through` is named in the table lines); Cave's gains the two blocks (numbers 8 and 9; the dev blocks are 10 to 12), and its saved world's hash moved because the registry has two more blocks.
+  **The pins of `block_golden.rs` and the golden stream of Cave were already stale** (the grass, the log and others had been redrawn since 2026-11-07; checked at the commit before this one), so their colours
+  and digests moved for that reason too and were pinned again here.
