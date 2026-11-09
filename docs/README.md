@@ -41,7 +41,7 @@ every such name and every `docs/...` path in the code and the documents is a rea
 Plugins and content: `plugin-api-spec.md`, `property-bags-spec.md`, `messages-and-commands-spec.md`, `client-interface-spec.md`,
 `entities-spec.md`, `content-package-spec.md`, `data-packs-spec.md`, `block-textures-spec.md` (textures, and the game's own blocks as JSON; **not built**), `ui-spec.md`. The game Voxunami 2048: `2048-spec.md`.
 The world and the sky: `lod-spec.md` (levels of detail), `planet-spec.md`, `rails-and-recipes-spec.md` (orbits, planets from data),
-`great-rivers-spec.md`, `places-spec.md` (`/tp`), `sun-spec.md`, `shadow-spec.md`, `contact-trace-spec.md` (**a design, not built**: the sun's exact short ray through the voxels that removes the lit strip at the foot of a wall). Ships: `moving-grids-spec.md`.
+`great-rivers-spec.md`, `places-spec.md` (`/tp`), `sun-spec.md`, `shadow-spec.md`, `contact-trace-spec.md` (**a design; phases 0 and 1, the CPU side, are built**: the sun's exact short ray through the voxels that removes the lit strip at the foot of a wall). Ships: `moving-grids-spec.md`.
 
 ## History
 
@@ -50,7 +50,7 @@ The world and the sky: `lod-spec.md` (levels of detail), `planet-spec.md`, `rail
 - `plugin-architecture-review.md`: the 2026-10-17 reasoning behind the plugin shape.
 - `joint-probe.md` (2026-11-01: do Rapier joints hold when over-constrained, with its program in `spikes/joints/`).
 - `loop-probe.md` (2026-11-06: loops of cars on multibody or impulse joints, phantom momentum and free energy, cost against the number of cars, overlapping colliders, spin, and the accuracy of `BodyWorld` collisions; programs in `spikes/loops/`).
-- `contact-shadow-spike.md` (2026-11-09: the lit strip at the foot of a wall measured at every sun and cascade, its cause in the map's depth bias, and a prototype that walks the sun's ray through a voxel volume to remove it, with its cost on the integrated GPU; the code is on the branch `worktree-shaders`).
+- `contact-shadow-spike.md` (2026-11-09: the lit strip at the foot of a wall measured at every sun and cascade, its cause in the map's depth bias, and a prototype that walks the sun's ray through a voxel volume to remove it, with its cost on the integrated GPU; the code is in commits `3f6ffb1` and `e166faf` of the branch `worktree-shaders`, and out of the tree: see the document).
 - `light-spike.md`, `lod-spike.md`, `physics-spike.md`, with their programs in `spikes/` and pictures in `multiscale-modes/`.
   The programs were written against the code of their day and are **not kept compiling**; to run one, check out the commit it names.
 

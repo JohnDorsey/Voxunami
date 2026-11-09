@@ -85,6 +85,11 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
         session.fog_radius_bricks(),
     );
 
+    // (A measurement for `docs/specs/contact-trace-spec.md`, phase 0: how many bricks of each kind the sun's ray would be told of.)
+    let reports_occupancy = std::env::var_os(REPORT_OCCUPANCY).is_some();
+    if reports_occupancy {
+        session.enable_occupancy();
+    }
     session.set_viewport_height(options.view.height);
     let started = Instant::now();
     session.send_pose();
@@ -100,6 +105,9 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
         renderer.brick_count(),
         renderer.total_quad_count(),
     );
+    if reports_occupancy {
+        report_occupancy(&mut session);
+    }
 
     render_outputs(
         &mut renderer,
@@ -182,6 +190,30 @@ pub fn replay<G: GameDefinition>(options: &ReplayOptions) -> Result<(), String> 
     let updates = session.settle(|| {}).map_err(|error| error.to_string())?;
     apply_updates(&mut renderer, updates);
     render_outputs(&mut renderer, &mut session, view, false)
+}
+
+/// The environment variable that makes a screenshot run count the bricks by what the sun's ray would be told of them (empty, full, mixed), and say what that costs.
+const REPORT_OCCUPANCY: &str = "VOX_REPORT_OCCUPANCY";
+
+fn report_occupancy<C: Connection, G: GameDefinition>(session: &mut Session<C, G>) {
+    /// What a mixed brick costs on the GPU: a bit for each of its 32 by 32 by 32 voxels.
+    const MIXED_BRICK_BYTES: usize = 4096;
+    let _ = session.take_occupancy_updates();
+    let report = session.occupancy_statistics();
+    let line = |label: String, counts: world_view::OccupancyStatistics| {
+        println!(
+            "occupancy of {label}: {} empty, {} full, {} mixed ({:.1} MB for the mixed)",
+            counts.empty,
+            counts.full,
+            counts.mixed,
+            (counts.mixed * MIXED_BRICK_BYTES) as f64 / 1.0e6
+        );
+    };
+    line("the terrain of the level".to_owned(), report.terrain);
+    for (id, counts) in report.planets {
+        line(format!("planet {}", id.get()), counts);
+    }
+    line("the ships".to_owned(), report.ships);
 }
 
 /// Writes the screenshot and runs the benchmark, as asked.

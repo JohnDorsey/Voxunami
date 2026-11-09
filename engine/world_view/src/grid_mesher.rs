@@ -10,10 +10,11 @@ use std::sync::Arc;
 
 use block_models::BlockTable;
 use voxel_grid::{Brick, ChannelStorage, Grid};
-use voxel_meshing::{BrickNeighbourhood, mesh_brick};
+use voxel_meshing::{BrickNeighbourhood, BrickOccupancy, mesh_brick};
 use voxel_space::{BrickCoordinate, FaceDirection, GridId};
 
 use crate::mesher::{MeshUpdate, ViewChannels, brick_channels};
+use crate::occupancy::{OccupancyChange, OccupancyLog, OccupancyStatistics};
 
 pub struct GridMesher {
     table: Arc<BlockTable>,
@@ -22,6 +23,8 @@ pub struct GridMesher {
     dirty: BTreeSet<(GridId, BrickCoordinate)>,
     /// The bricks the renderer holds a mesh for.
     displayed: BTreeSet<(GridId, BrickCoordinate)>,
+    /// Which voxels of the bricks block the sun, as far as the renderer has been told (off until asked for).
+    occupancy: OccupancyLog<(GridId, BrickCoordinate)>,
 }
 
 impl std::fmt::Debug for GridMesher {
@@ -41,7 +44,26 @@ impl GridMesher {
             channels,
             dirty: BTreeSet::new(),
             displayed: BTreeSet::new(),
+            occupancy: OccupancyLog::new(),
         }
+    }
+
+    /// Makes the mesher say which voxels of each brick of a ship block the sun, for every brick it meshes (see [`GridMesher::take_occupancy_updates`]). Call it before the
+    /// first update.
+    pub fn enable_occupancy(&mut self) {
+        self.occupancy.enable();
+    }
+
+    /// What has changed in the occupancy of the bricks of ships since the last call, in order (nothing unless [`GridMesher::enable_occupancy`] was called). A brick is told
+    /// of when it is meshed and again only when its occupancy changes; a brick that turns out not to be there is cleared if it was told of. Nothing is said of a ship that
+    /// is forgotten ([`GridMesher::forget_grid`]).
+    pub fn take_occupancy_updates(&mut self) -> Vec<((GridId, BrickCoordinate), OccupancyChange)> {
+        self.occupancy.take()
+    }
+
+    /// How many of the bricks that were told of are empty, full and mixed.
+    pub fn occupancy_statistics(&self) -> OccupancyStatistics {
+        self.occupancy.statistics()
     }
 
     /// Bricks waiting to be meshed.
@@ -63,6 +85,7 @@ impl GridMesher {
     pub fn forget_grid(&mut self, grid: GridId) {
         self.dirty.retain(|(held, _)| *held != grid);
         self.displayed.retain(|(held, _)| *held != grid);
+        self.occupancy.forget_where(|(held, _)| *held == grid);
     }
 
     /// Changes what is drawn from (as when a game changes the scales of its light): every brick shown is meshed again.
@@ -88,12 +111,25 @@ impl GridMesher {
                 break;
             };
             // Only meshing a brick that is there counts against the budget: noticing that one is not is free.
-            let mesh = grids(grid)
-                .and_then(|voxels| voxels.brick(coordinate).map(|brick| (voxels, brick)))
-                .map(|(voxels, brick)| {
+            let found = grids(grid)
+                .and_then(|voxels| voxels.brick(coordinate).map(|brick| (voxels, brick)));
+            let mesh = match found {
+                Some((voxels, brick)) => {
                     meshed += 1;
-                    self.mesh(voxels, brick, coordinate)
-                });
+                    if self.occupancy.is_enabled() {
+                        let occupancy = BrickOccupancy::of(
+                            &brick_channels(brick, None, &self.channels),
+                            &self.table,
+                        );
+                        self.occupancy.set((grid, coordinate), occupancy);
+                    }
+                    Some(self.mesh(voxels, brick, coordinate))
+                }
+                None => {
+                    self.occupancy.clear((grid, coordinate));
+                    None
+                }
+            };
             match mesh {
                 Some(mesh) if !mesh.is_empty() => {
                     self.displayed.insert((grid, coordinate));
@@ -351,5 +387,100 @@ mod tests {
         ));
         let again = uploaded(&fixture.update(100));
         assert_eq!(again.len(), 2);
+    }
+
+    fn occupancy_changes(
+        fixture: &mut Fixture,
+    ) -> Vec<((GridId, BrickCoordinate), OccupancyChange)> {
+        fixture.mesher.take_occupancy_updates()
+    }
+
+    #[test]
+    fn nothing_is_said_of_the_occupancy_of_a_ship_unless_it_was_asked_for() {
+        let mut fixture = fixture();
+        fixture.set([1, 2, 3], 1);
+        fixture.update(100);
+        assert!(occupancy_changes(&mut fixture).is_empty());
+        assert_eq!(
+            fixture.mesher.occupancy_statistics(),
+            OccupancyStatistics::default()
+        );
+    }
+
+    #[test]
+    fn a_brick_of_a_ship_is_told_of_when_it_is_meshed_and_again_only_when_it_changes() {
+        let mut fixture = fixture();
+        fixture.mesher.enable_occupancy();
+        fixture.set([1, 2, 3], 1);
+        fixture.update(100);
+        let changes = occupancy_changes(&mut fixture);
+        // Only the brick that is in the ship: its neighbours are not there, and were not told of.
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        let ((grid, coordinate), OccupancyChange::Set(occupancy)) = &changes[0] else {
+            panic!("{changes:?}");
+        };
+        assert_eq!((*grid, *coordinate), (SHIP, BrickCoordinate::ORIGIN));
+        let words = occupancy.words().expect("one voxel is a mixed brick");
+        let index = voxel_space::LocalVoxelIndex::new(1, 2, 3).index();
+        for (word, &bits) in words.iter().enumerate() {
+            assert_eq!(
+                bits,
+                if word == index / 32 {
+                    1 << (index % 32)
+                } else {
+                    0
+                }
+            );
+        }
+        assert_eq!(
+            fixture.mesher.occupancy_statistics(),
+            OccupancyStatistics {
+                empty: 0,
+                full: 0,
+                mixed: 1
+            }
+        );
+
+        // Meshed again, to the same occupancy: nothing to say.
+        fixture.mesher.brick_changed(SHIP, BrickCoordinate::ORIGIN);
+        fixture.update(100);
+        assert!(occupancy_changes(&mut fixture).is_empty());
+
+        // The only block taken away: the brick is what it was not.
+        fixture.set([1, 2, 3], 0);
+        fixture.update(100);
+        let changes = occupancy_changes(&mut fixture);
+        assert_eq!(
+            changes,
+            [(
+                (SHIP, BrickCoordinate::ORIGIN),
+                OccupancyChange::Set(BrickOccupancy::Empty)
+            )]
+        );
+    }
+
+    #[test]
+    fn a_brick_that_is_no_longer_in_the_ship_is_cleared_and_a_forgotten_ship_is_not_told_of() {
+        let mut fixture = fixture();
+        fixture.mesher.enable_occupancy();
+        fixture.set([1, 2, 3], 1);
+        fixture.update(100);
+        occupancy_changes(&mut fixture);
+        // The ship is gone from where the grids are looked for: its brick is cleared.
+        fixture.mesher.brick_changed(SHIP, BrickCoordinate::ORIGIN);
+        fixture.mesher.update(|_| None, 100);
+        assert_eq!(
+            occupancy_changes(&mut fixture),
+            [((SHIP, BrickCoordinate::ORIGIN), OccupancyChange::Clear)]
+        );
+        // A ship that is forgotten whole says nothing brick by brick, and what it held is not counted any more.
+        fixture.set([1, 2, 3], 1);
+        fixture.update(100);
+        fixture.mesher.forget_grid(SHIP);
+        assert!(occupancy_changes(&mut fixture).is_empty());
+        assert_eq!(
+            fixture.mesher.occupancy_statistics(),
+            OccupancyStatistics::default()
+        );
     }
 }

@@ -25,8 +25,9 @@ use voxel_space::{
 };
 use winit::keyboard::KeyCode;
 use world_view::{
-    GridMesher, LodConfig, LodSettings, LodView, MeshUpdate, RayHit, ShipTerrainMesher,
-    ShipTerrainSource, ViewChannels, ViewSettings, WorldMesher, cast_ray,
+    GridMesher, LodConfig, LodSettings, LodView, MeshUpdate, OccupancyChange, OccupancyStatistics,
+    RayHit, ShipTerrainMesher, ShipTerrainSource, ViewChannels, ViewSettings, WorldMesher,
+    cast_ray,
 };
 
 use crate::client_commands::ClientSettings;
@@ -68,6 +69,17 @@ enum TerrainView {
     Bricks(Box<WorldMesher>),
     /// Bricks near and coarse nodes beyond, as the game asks.
     Coarse(Box<CoarseTerrain>),
+}
+
+/// How many bricks of each kind the renderer has been told of (empty, full and mixed, as `world_view::OccupancyStatistics` counts them), by where they are.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OccupancyReport {
+    /// The terrain of the level watched.
+    pub terrain: OccupancyStatistics,
+    /// Each planet.
+    pub planets: Vec<(GridId, OccupancyStatistics)>,
+    /// The ships, all together.
+    pub ships: OccupancyStatistics,
 }
 
 #[derive(Debug)]
@@ -142,6 +154,8 @@ pub struct Session<C: Connection, G: GameDefinition> {
     planets: BTreeMap<GridId, ShipTerrainMesher>,
     /// How far, and how fine, the terrain of a planet is drawn beyond its bricks, if the game says.
     grid_detail: Option<CoarseDetail>,
+    /// Whether the meshers say which voxels of their bricks block the sun (`Session::enable_occupancy`).
+    occupancy_wanted: bool,
     /// Whether the terrain follows what the game says for each level (`GameDefinition::level_detail`): coarse nodes in a level it draws so, bricks only in another.
     follows_level_detail: bool,
     sent_poses: BTreeMap<GridId, GridPose>,
@@ -254,6 +268,7 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             grid_mesher,
             planets: BTreeMap::new(),
             grid_detail: None,
+            occupancy_wanted: false,
             follows_level_detail: false,
             sent_poses: BTreeMap::new(),
             camera: start,
@@ -335,6 +350,57 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         self.terrain.mesher()
     }
 
+    /// Makes the meshers of the terrain, of the planets and of the ships say which voxels of each brick block the sun (`docs/specs/contact-trace-spec.md`), for
+    /// [`Session::take_occupancy_updates`]. Done before anything is drawn: the planets that are already made are made again.
+    pub fn enable_occupancy(&mut self) {
+        self.occupancy_wanted = true;
+        self.terrain.mesher_mut().enable_occupancy();
+        self.grid_mesher.enable_occupancy();
+        self.planets.clear();
+    }
+
+    /// What has changed in the occupancy of the bricks since the last call: the terrain of the level watched (the root grid of the level), the planets and the
+    /// ships, each brick in the coordinates of its grid. Nothing unless [`Session::enable_occupancy`] was called.
+    pub fn take_occupancy_updates(&mut self) -> Vec<(GridId, BrickCoordinate, OccupancyChange)> {
+        let root = GridId::root(self.level);
+        let mut changes: Vec<_> = self
+            .terrain
+            .mesher_mut()
+            .take_occupancy_updates()
+            .into_iter()
+            .map(|(coordinate, change)| (root, coordinate, change))
+            .collect();
+        for (&id, planet) in &mut self.planets {
+            changes.extend(
+                planet
+                    .take_occupancy_updates()
+                    .into_iter()
+                    .map(|(coordinate, change)| (id, coordinate, change)),
+            );
+        }
+        changes.extend(
+            self.grid_mesher
+                .take_occupancy_updates()
+                .into_iter()
+                .map(|((grid, coordinate), change)| (grid, coordinate, change)),
+        );
+        changes
+    }
+
+    /// How many bricks of each kind the renderer has been told of (see [`Session::take_occupancy_updates`]), for the terrain of the level, for each planet and for
+    /// the ships together.
+    pub fn occupancy_statistics(&self) -> OccupancyReport {
+        OccupancyReport {
+            terrain: self.terrain.mesher().occupancy_statistics(),
+            planets: self
+                .planets
+                .iter()
+                .map(|(&id, planet)| (id, planet.occupancy_statistics()))
+                .collect(),
+            ships: self.grid_mesher.occupancy_statistics(),
+        }
+    }
+
     /// Makes the session draw terrain beyond the bricks round the camera, as coarse nodes (`docs/specs/lod-spec.md`), and ask the server for the ones it must
     /// correct. Done before anything is drawn, or what has been is made again.
     pub fn enable_coarse_detail(&mut self, detail: CoarseDetail) {
@@ -372,11 +438,14 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         // (The server is told the radius as a byte.)
         self.view_radius_bricks = self.view_radius_bricks.min(i128::from(u8::MAX));
         self.view_settings.view_radius_bricks = self.view_radius_bricks;
-        let mesher = WorldMesher::new(
+        let mut mesher = WorldMesher::new(
             self.view_settings,
             self.client_host.view(self.view_channels.clone()),
             Arc::clone(&self.block_table),
         );
+        if self.occupancy_wanted {
+            mesher.enable_occupancy();
+        }
         TerrainView::Coarse(Box::new(CoarseTerrain {
             view: LodView::new(
                 mesher,
@@ -409,11 +478,17 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         let taken_down = self.terrain.reset();
         self.terrain = match wanted {
             Some(detail) => self.coarse_terrain(detail),
-            None => TerrainView::Bricks(Box::new(WorldMesher::new(
-                self.view_settings,
-                self.view_channels.clone(),
-                Arc::clone(&self.block_table),
-            ))),
+            None => {
+                let mut mesher = WorldMesher::new(
+                    self.view_settings,
+                    self.view_channels.clone(),
+                    Arc::clone(&self.block_table),
+                );
+                if self.occupancy_wanted {
+                    mesher.enable_occupancy();
+                }
+                TerrainView::Bricks(Box::new(mesher))
+            }
         };
         self.watched_center = None;
         self.meshed_level = None;
@@ -811,24 +886,31 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
             let Some(local) = ship.pose.world_to_local(self.camera.position) else {
                 continue;
             };
-            let planet = self.planets.entry(id).or_insert_with(|| match detail {
-                Some((detail, settings)) => ShipTerrainMesher::with_detail(
-                    id,
-                    self.view_settings,
-                    self.view_channels.clone(),
-                    Arc::clone(&self.block_table),
-                    LodConfig {
-                        unlit: detail.unlit,
-                        worker_count: self.view_settings.worker_count,
-                    },
-                    settings,
-                ),
-                None => ShipTerrainMesher::new(
-                    id,
-                    self.view_settings,
-                    self.view_channels.clone(),
-                    Arc::clone(&self.block_table),
-                ),
+            let planet = self.planets.entry(id).or_insert_with(|| {
+                let mesher = match detail {
+                    Some((detail, settings)) => ShipTerrainMesher::with_detail(
+                        id,
+                        self.view_settings,
+                        self.view_channels.clone(),
+                        Arc::clone(&self.block_table),
+                        LodConfig {
+                            unlit: detail.unlit,
+                            worker_count: self.view_settings.worker_count,
+                        },
+                        settings,
+                    ),
+                    None => ShipTerrainMesher::new(
+                        id,
+                        self.view_settings,
+                        self.view_channels.clone(),
+                        Arc::clone(&self.block_table),
+                    ),
+                };
+                if self.occupancy_wanted {
+                    mesher.with_occupancy()
+                } else {
+                    mesher
+                }
             });
             if let Some((_, settings)) = detail {
                 planet.set_detail(settings);
