@@ -11,8 +11,10 @@
 
 mod block_textures;
 mod camera;
+mod contact_volume;
 mod crosshair;
 mod graphics_context;
+mod occupancy_volume;
 mod overlay;
 mod shadow;
 mod shadow_maps;
@@ -25,6 +27,7 @@ pub use camera::{Camera, Frustum};
 pub use graphics_context::{
     AdapterPreference, GraphicsContext, GraphicsError, describe, new_instance,
 };
+pub use occupancy_volume::VolumeStatistics;
 pub use overlay::OverlayRect;
 pub use shadow::{
     BLEND_FROM, CASCADE_RESOLUTION, Cascade, DEPTH_BIAS_TEXELS, EDGE_TEXELS, FACING_FULL_FROM,
@@ -42,6 +45,6 @@ pub use sun::{
     sun_visibility, sunlight, zenith,
 };
 pub use voxel_renderer::{
-    AVATAR_COLOR_COUNT, Atmosphere, Avatar, DEFAULT_PICTURE_DISTANCE, EntityBox,
+    AVATAR_COLOR_COUNT, Atmosphere, Avatar, ContactDebug, DEFAULT_PICTURE_DISTANCE, EntityBox,
     MAXIMUM_GAME_MATERIALS, RenderStatistics, VoxelRenderer,
 };

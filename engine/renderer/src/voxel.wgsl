@@ -63,6 +63,8 @@ struct Placement {
     // How the grid the brick is in is turned (the identity for terrain): a position in the brick, turned, plus the offset, is where
     // it is relative to the camera.
     rotation: mat3x3<f32>,
+    // x: the number of the window of voxels that block the sun that the brick's faces are traced in (see `contact_on.wgsl`): 1 and up, 0 for none. The rest is not used.
+    volume: vec4<u32>,
 }
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -104,6 +106,8 @@ struct VertexOutput {
     @location(5) uv: vec2<f32>,
     // The picture on the face (bits of `FacePicture::word`), 0 for none.
     @location(6) @interpolate(flat) picture: u32,
+    // The window of voxels that block the sun that the face is traced in (`Placement::volume`).
+    @location(7) @interpolate(flat) volume: u32,
 }
 
 // How wide, in radians, the soft edge of a shadow is: the sun's disc, and the twilight of the air for a place at the ground of a ball. The same numbers as `sun.rs`.
@@ -247,6 +251,7 @@ fn finish(relative: vec3<f32>, local: vec3<f32>, face: u32, material: u32, light
 
     var out: VertexOutput;
     out.picture = picture;
+    out.volume = placement.volume.x;
     out.uv = vec2<f32>(0.0);
     if (picture != 0u) {
         // The picture runs across the face along `across` and up it along `up`; the image's own rows go downward.
@@ -430,6 +435,11 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (picture.a < 0.5) {
         discard;
     }
+    // What the walk of the sun's ray finds, alone, when it is asked to be shown (`contact_debug` is in `contact_off.wgsl` or `contact_on.wgsl`, whichever the pipeline is made with).
+    let debug = contact_debug(in);
+    if (debug.a > 0.5) {
+        return vec4<f32>(debug.rgb, 1.0);
+    }
     let albedo = picture.rgb;
     let lamp = in.lamp_and_side.x;
     let side = in.lamp_and_side.y;
@@ -452,7 +462,12 @@ fn fragment_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let cosine = dot(light.normal, frame.sun_direction.xyz);
             var terrain = 0.0;
             if (cosine > 0.0) {
+                // The map's answer, and the walk of the sun's ray through the voxels for the first few cells, where the map is not exact (`contact_light` is 1 unless the
+                // renderer holds the voxels that block the sun: it is in `contact_off.wgsl` or `contact_on.wgsl`).
                 terrain = terrain_light(in.relative, distance);
+                if (terrain > 0.0) {
+                    terrain = terrain * contact_light(in, distance);
+                }
             }
             sun_visible = sun_visible * terrain;
             sky_visible = sky_visible * mix(frame.shadow.y, 1.0, terrain * smoothstep(0.0, FACING_FULL_FROM, cosine));

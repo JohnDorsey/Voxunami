@@ -23,6 +23,8 @@ wgpu = "30.0.1"
 coarse_cells.workspace = true
 namespaced_id.workspace = true
 png = "0.18.1"
+proptest.workspace = true
+world_view.workspace = true
 
 [lints]
 workspace = true

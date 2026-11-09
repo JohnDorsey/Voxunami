@@ -10,15 +10,22 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use block_models::{BlockDefinition, BlockTable, Shape, ShapeBox, Transparency};
 use glam::Vec3;
 use renderer::{
-    Atmosphere, Avatar, Camera, EntityBox, GraphicsContext, OverlayRect, PictureSize,
+    Atmosphere, Avatar, Camera, ContactDebug, EntityBox, GraphicsContext, OverlayRect, PictureSize,
     RenderStatistics, SunOccluder, VoxelRenderer,
 };
 use voxel_grid::ChannelStorage;
-use voxel_meshing::{BrickChannels, BrickNeighbourhood, FULL_LIGHT, mesh_brick};
+use voxel_meshing::{
+    BrickChannels, BrickNeighbourhood, BrickOccupancy, FULL_LIGHT, OCCUPANCY_WORDS, mesh_brick,
+};
 use voxel_space::{
     BRICK_VOXEL_COUNT, BrickCoordinate, FaceDirection, GridId, GridPose, LocalVoxelIndex,
-    Orientation, WorldPosition,
+    Orientation, VoxelCoordinate, WorldPosition,
 };
+use world_view::sun_blocked;
+
+// (The sun's exact short ray: `docs/specs/contact-trace-spec.md`. A module of its own, which uses what is in this file.)
+#[path = "gpu_rendering/contact_trace.rs"]
+mod contact_trace;
 
 const SIZE: u32 = 64;
 const SKY: [f32; 3] = [0.2, 0.4, 0.8];
@@ -1102,6 +1109,15 @@ fn place_blocks_in(
     blocks: &[([u8; 3], u32, u32)],
     light: Option<u32>,
 ) {
+    renderer.upload_brick(brick, &mesh_of_blocks(table, blocks, light));
+}
+
+/// The mesh of a brick holding the given blocks (local position, block, state) with `light` in every voxel, if given, against `table`.
+fn mesh_of_blocks(
+    table: &BlockTable,
+    blocks: &[([u8; 3], u32, u32)],
+    light: Option<u32>,
+) -> voxel_meshing::PackedBrickMesh {
     let mut block_values = vec![0u32; BRICK_VOXEL_COUNT];
     let mut state_values = vec![0u32; BRICK_VOXEL_COUNT];
     for &([x, y, z], block, state) in blocks {
@@ -1126,7 +1142,7 @@ fn place_blocks_in(
         },
         table,
     );
-    renderer.upload_brick(brick, &mesh.pack());
+    mesh.pack()
 }
 
 #[test]
@@ -2653,6 +2669,11 @@ fn camera_in_cells(level: u8, cells: [i128; 3], yaw: f64, pitch: f64) -> Camera 
 
 /// The pixel that a place lands on, given relative to the camera in voxels, if it is in the picture.
 fn pixel_of(camera: &Camera, relative: [f64; 3]) -> Option<(u32, u32)> {
+    pixel_of_sized(camera, relative, SIZE)
+}
+
+/// As `pixel_of`, in a picture `size` pixels across and high.
+fn pixel_of_sized(camera: &Camera, relative: [f64; 3], size: u32) -> Option<(u32, u32)> {
     let clip = camera.view_projection(1.0)
         * glam::Vec4::new(
             relative[0] as f32,
@@ -2668,8 +2689,8 @@ fn pixel_of(camera: &Camera, relative: [f64; 3]) -> Option<(u32, u32)> {
         return None;
     }
     Some((
-        ((x * 0.5 + 0.5) * SIZE as f32) as u32,
-        ((0.5 - y * 0.5) * SIZE as f32) as u32,
+        ((x * 0.5 + 0.5) * size as f32) as u32,
+        ((0.5 - y * 0.5) * size as f32) as u32,
     ))
 }
 

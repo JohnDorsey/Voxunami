@@ -30,8 +30,8 @@ use crate::options::{PlayOptions, ReplayOptions, ViewOptions};
 use crate::screen::{Screen, ScreenKey, ScreenText, Source};
 use crate::session::{Mode, Session};
 use crate::view::{
-    apply_updates, camera_at, configure_renderer, hexadecimal_voxel_coordinates, light_the_scene,
-    show_entity_boxes, show_screen,
+    apply_occupancy, apply_updates, camera_at, configure_renderer, hexadecimal_voxel_coordinates,
+    light_the_scene, show_entity_boxes, show_screen,
 };
 
 const MOVEMENT_SPEED: f64 = 24.0; // voxels per second
@@ -90,6 +90,7 @@ pub fn play<G: GameDefinition>(options: PlayOptions) -> Result<(), String> {
     )
     .map_err(|error| error.to_string())?;
     session.enable_level_detail();
+    session.enable_occupancy();
     session.pin_time(view.time);
     session.set_shadows(view.shadows);
     if let Some(detail) = G::grid_detail() {
@@ -134,6 +135,7 @@ pub fn replay<G: GameDefinition>(options: ReplayOptions) -> Result<(), String> {
     )
     .map_err(|error| error.to_string())?;
     session.enable_level_detail();
+    session.enable_occupancy();
     session.pin_time(view.time);
     session.set_shadows(view.shadows);
     if let Some(detail) = G::grid_detail() {
@@ -592,6 +594,7 @@ impl<G: GameDefinition> Viewer<G> {
         }
         let updates = self.session.update_view();
         apply_updates(&mut self.renderer, updates);
+        apply_occupancy(&mut self.renderer, &mut self.session);
         self.carry_ships_on(now);
         // The light of the picture: the terrain of the level the player is in may be drawn farther than the last one (the level of space is drawn out past the universe), so
         // the fog moves; the sun moves with the clock of the world, and the sky is a colour for where the camera is.

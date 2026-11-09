@@ -2700,12 +2700,14 @@ dependencies = [
  "namespaced_id",
  "png",
  "pollster",
+ "proptest",
  "region_octree",
  "thiserror 2.0.21",
  "voxel_grid",
  "voxel_meshing",
  "voxel_space",
  "wgpu",
+ "world_view",
 ]
 
 [[package]]

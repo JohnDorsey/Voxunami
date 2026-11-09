@@ -387,6 +387,16 @@ impl<C: Connection, G: GameDefinition> Session<C, G> {
         changes
     }
 
+    /// The grid that is the terrain of the level watched: its root grid, which [`Session::take_occupancy_updates`] names it by.
+    pub fn terrain_grid(&self) -> GridId {
+        GridId::root(self.level)
+    }
+
+    /// Whether the grid is a planet that the session draws the terrain of.
+    pub fn is_planet(&self, grid: GridId) -> bool {
+        self.planets.contains_key(&grid)
+    }
+
     /// How many bricks of each kind the renderer has been told of (see [`Session::take_occupancy_updates`]), for the terrain of the level, for each planet and for
     /// the ships together.
     pub fn occupancy_statistics(&self) -> OccupancyReport {

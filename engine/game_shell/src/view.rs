@@ -5,7 +5,7 @@ use data_packs::Tile;
 use renderer::{Atmosphere, Avatar, Camera, OverlayRect, PictureSize, VoxelRenderer};
 use transport::Connection;
 use voxel_space::WorldPosition;
-use world_view::MeshUpdate;
+use world_view::{MeshUpdate, OccupancyChange};
 
 use crate::definition::GameDefinition;
 use crate::package_data::PackageData;
@@ -140,6 +140,31 @@ pub fn apply_updates(renderer: &mut VoxelRenderer, updates: Vec<MeshUpdate>) {
             }
             MeshUpdate::RemoveGridCoarse { grid, cube } => {
                 renderer.remove_grid_coarse_node(grid, cube);
+            }
+        }
+    }
+}
+
+/// Tells the renderer which voxels block the sun, for the walk of the sun's ray through them (`docs/specs/contact-trace-spec.md`): what the session's meshers have said of
+/// their bricks since the last call, for the terrain of the level and for the planets. Done after [`apply_updates`], so that a brick's occupancy arrives with its mesh or later,
+/// and before a picture is drawn. (Ships are not traced yet: their bricks are told of by the session, and are left out here.)
+pub fn apply_occupancy<C: Connection, G: GameDefinition>(
+    renderer: &mut VoxelRenderer,
+    session: &mut Session<C, G>,
+) {
+    let terrain = session.terrain_grid();
+    for (grid, coordinate, change) in session.take_occupancy_updates() {
+        if grid == terrain {
+            match change {
+                OccupancyChange::Set(occupancy) => renderer.set_occupancy(coordinate, &occupancy),
+                OccupancyChange::Clear => renderer.clear_occupancy(coordinate),
+            }
+        } else if session.is_planet(grid) {
+            match change {
+                OccupancyChange::Set(occupancy) => {
+                    renderer.set_grid_occupancy(grid, coordinate, &occupancy);
+                }
+                OccupancyChange::Clear => renderer.clear_grid_occupancy(grid, coordinate),
             }
         }
     }

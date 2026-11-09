@@ -15,8 +15,8 @@ use crate::options::{PlayOptions, ReplayOptions};
 use crate::screen::ScreenText;
 use crate::session::{Mode, Session};
 use crate::view::{
-    apply_updates, camera_at, configure_renderer, light_the_scene, show_entity_boxes,
-    show_other_players, show_screen,
+    apply_occupancy, apply_updates, camera_at, configure_renderer, light_the_scene,
+    show_entity_boxes, show_other_players, show_screen,
 };
 use world_storage::{DirectoryShipFiles, MemoryShipFiles, ShipFiles};
 
@@ -71,6 +71,7 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
     )
     .map_err(|error| error.to_string())?;
     session.enable_level_detail();
+    enable_sun_ray(&mut session);
     session.pin_time(view.time);
     session.set_shadows(view.shadows);
     if let Some(detail) = G::grid_detail() {
@@ -85,11 +86,8 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
         session.fog_radius_bricks(),
     );
 
-    // (A measurement for `docs/specs/contact-trace-spec.md`, phase 0: how many bricks of each kind the sun's ray would be told of.)
+    // (A measurement for `docs/specs/contact-trace-spec.md`, phase 0: how many bricks of each kind the sun's ray is told of.)
     let reports_occupancy = std::env::var_os(REPORT_OCCUPANCY).is_some();
-    if reports_occupancy {
-        session.enable_occupancy();
-    }
     session.set_viewport_height(options.view.height);
     let started = Instant::now();
     session.send_pose();
@@ -97,6 +95,7 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
         .settle(&mut step_server)
         .map_err(|error| error.to_string())?;
     apply_updates(&mut renderer, updates);
+    apply_occupancy(&mut renderer, &mut session);
     println!(
         "loaded radius {} in {:.2} s: {} bricks held, {} meshes with {} quads",
         view.view_radius,
@@ -106,7 +105,7 @@ pub fn play<G: GameDefinition>(options: &PlayOptions) -> Result<(), String> {
         renderer.total_quad_count(),
     );
     if reports_occupancy {
-        report_occupancy(&mut session);
+        report_occupancy(&renderer, &session);
     }
 
     render_outputs(
@@ -147,6 +146,7 @@ pub fn replay<G: GameDefinition>(options: &ReplayOptions) -> Result<(), String> 
     )
     .map_err(|error| error.to_string())?;
     session.enable_level_detail();
+    enable_sun_ray(&mut session);
     session.pin_time(view.time);
     session.set_shadows(view.shadows);
     if let Some(detail) = G::grid_detail() {
@@ -189,16 +189,35 @@ pub fn replay<G: GameDefinition>(options: &ReplayOptions) -> Result<(), String> 
     session.set_viewport_height(view.height);
     let updates = session.settle(|| {}).map_err(|error| error.to_string())?;
     apply_updates(&mut renderer, updates);
+    apply_occupancy(&mut renderer, &mut session);
     render_outputs(&mut renderer, &mut session, view, false)
 }
 
-/// The environment variable that makes a screenshot run count the bricks by what the sun's ray would be told of them (empty, full, mixed), and say what that costs.
+/// The environment variable that makes a screenshot run count the bricks by what the sun's ray is told of them (empty, full, mixed), and say what that costs.
 const REPORT_OCCUPANCY: &str = "VOX_REPORT_OCCUPANCY";
 
-fn report_occupancy<C: Connection, G: GameDefinition>(session: &mut Session<C, G>) {
+/// The environment variable that makes a screenshot or a benchmark run without the walk of the sun's ray through the voxels (`docs/specs/contact-trace-spec.md`): the shadows
+/// are the map's alone, with the lit strip it leaves at the foot of a wall. For comparing pictures and times.
+const WITHOUT_SUN_RAY: &str = "VOX_WITHOUT_SUN_RAY";
+
+/// Makes the session tell the renderer which voxels block the sun, unless the run is asked to be without the walk.
+fn enable_sun_ray<C: Connection, G: GameDefinition>(session: &mut Session<C, G>) {
+    if std::env::var_os(WITHOUT_SUN_RAY).is_none() {
+        session.enable_occupancy();
+    }
+}
+
+fn report_occupancy<C: Connection, G: GameDefinition>(
+    renderer: &VoxelRenderer,
+    session: &Session<C, G>,
+) {
     /// What a mixed brick costs on the GPU: a bit for each of its 32 by 32 by 32 voxels.
     const MIXED_BRICK_BYTES: usize = 4096;
-    let _ = session.take_occupancy_updates();
+    let held = renderer.occupancy_statistics();
+    println!(
+        "the renderer holds {} windows of voxels that block the sun: {} empty, {} full and {} mixed bricks, {} slots of the pool reached, {} bricks refused",
+        held.windows, held.empty, held.full, held.mixed, held.slots_reached, held.rejected
+    );
     let report = session.occupancy_statistics();
     let line = |label: String, counts: world_view::OccupancyStatistics| {
         println!(
