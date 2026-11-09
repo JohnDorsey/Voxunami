@@ -1,4 +1,4 @@
-# Joints and cars: what was decided (owner, 2026-11-01; nothing is built yet)
+# Joints and cars: what was decided (owner, 2026-11-01; the solver changed 2026-11-09; being built on the branch `worktree-dev-ball-joint`)
 
 A joint lets one ship have parts that move against each other. The first one is a prototype, the **dev ball joint**, a block that couples two cars like a ball hitch.
 This file records the talk that came before any code; the measurements behind the physics choices are in `joint-probe.md`. Status key as in `design-decisions.md`.
@@ -34,10 +34,15 @@ This file records the talk that came before any code; the measurements behind th
 ## Physics (decided for the prototype; the reasoning is in `joint-probe.md`)
 - **Rapier works in f64** (done 2026-11-01, before any joint was built): the joint error floor was f32 rounding of the distance from the frame's origin (about 1 mm at the frame's edge), and it is now rounding of an `f64`.
   The measurements above were taken in `f32` and are to be repeated in `f64` when the joint is built.
-- **A tree of cars on Rapier multibody joints, one coupling per pair of cars.** A second coupling on the same pair, and a coupling that would close a loop, are refused with a message
-  (Rapier's multibody set refuses them itself: `insert` returns `None`). The root car of a coupled group is **the heaviest car**. An immobilized joint is a fixed multibody joint.
-- Impulse joints are the fallback if loops cannot be done another way; then at least 16 substeps (`num_solver_iterations`), not more (see `joint-probe.md`).
-- To keep loops possible later: the physics layer is given a **coupling = two cars and a list of pivot pairs**, never one joint per block, so the choice of solver is inside one box.
+- **Decided by the owner, 2026-11-09: the first solver is Rapier's impulse joints, one spherical joint for each pivot pair of a coupling.** This replaces the multibody tree this file first chose (2026-11-01):
+  `loop-probe.md` found impulse joints conserve momentum to rounding and cost about linearly in the cars, and a multibody neither. So a second coupling on the same pair and a coupling that closes a loop
+  are not refused by the solver (the integer consistency rule below still applies to a second coupling of one pair), the root car and the heaviest-car rule are gone, and an immobilized joint is not a
+  fixed multibody joint (how to immobilize is decided when it is built). The substeps are no longer fixed at 16 (that was measured in f32, `joint-probe.md`): the joint gap at the game's settings is 0.85 mm
+  and falls about four times for each doubling of the substeps (`loop-probe.md`, section 14), so the substeps and passes are dials (Rapier keeps them per body: `additional_solver_iterations`,
+  `additional_pgs_iterations`).
+- **Planned, not built: the owner will set the kind of joint per ship with commands.** The options named (2026-11-09): impulse joints for everything (the first, above); a multibody with impulse joints for
+  the loops; a multibody with an MLCP solver for the loops. This is why the physics layer is given a **coupling = two cars and a list of pivot pairs**, never one joint per block: the choice of solver is
+  inside that one box, and nothing outside it (the blocks, the coupling logic, the commands) may know which kind it is.
 - The **integer consistency rule** applies when a second joint couples the same two cars: the squared distance between the pivots must be equal in both cars' grids, in half-voxel integers
   (and, from four joints, the handedness). Without it the cars are permanently strained by the mismatch (measured: 1.44 times it). It does not apply to the closing link of a loop of
   three or more cars; that depends on the pose.
@@ -49,7 +54,7 @@ This file records the talk that came before any code; the measurements behind th
 - A coupled group **freezes and is parked together**, by the nearest of its cars, so that a joint never anchors an active car to a frozen one.
 - Later, a joint between a planet and a car: lock and unlock to a planet reuse `dock_into_planet` and `undock_from_planet`; the open problems are in `future-goals.md`.
 
-## Under review (2026-11-06; **nothing here is decided**): what measuring the plan above found
+## Under review (2026-11-06; **still open except the choice of solver, decided 2026-11-09 above**): what measuring the plan above found
 `loop-probe.md` ran the plan in Rapier 0.36.1 (f64) and `BodyWorld`. The owner wants to keep both ways of closing a loop open and to **choose per ship**, with the solver's dials (Rapier has them per body:
 `additional_solver_iterations`, `additional_pgs_iterations`) as ship data. Numbers are in that document; in short:
 - Rapier's multibody costs about the cube of the cars: 24 cars 8.4 ms of a 50 ms tick, 56 cars 71 ms; impulse joints grow about linearly (86 and 175 us).

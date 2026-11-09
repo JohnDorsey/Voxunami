@@ -10,6 +10,11 @@ use crate::real::{array, matrix, vector, world_position};
 use crate::sweep::{SweptBricks, swept_bricks};
 use crate::terrain::{BrickHint, Collision, CollisionSource, build_brick};
 
+mod couplings;
+
+use couplings::Coupling;
+pub use couplings::{CouplingError, CouplingId, CouplingOptions, PivotPair, SolverDials};
+
 const EDGE: usize = BRICK_EDGE_LENGTH;
 
 /// Which body: a number the caller chooses (for a ship, its grid's number).
@@ -126,6 +131,8 @@ pub struct BodyWorld {
     by_id: BTreeMap<BodyId, Body>,
     /// The collider of each brick of terrain that has any.
     terrain: HashMap<BrickCoordinate, ColliderHandle>,
+    /// The bodies held together at pivots, in order of number (see `couplings.rs`).
+    couplings: BTreeMap<CouplingId, Coupling>,
 }
 
 impl std::fmt::Debug for BodyWorld {
@@ -165,6 +172,7 @@ impl BodyWorld {
             ccd: CCDSolver::new(),
             by_id: BTreeMap::new(),
             terrain: HashMap::new(),
+            couplings: BTreeMap::new(),
         }
     }
 
@@ -243,6 +251,9 @@ impl BodyWorld {
     /// Removes a body and all its colliders.
     pub fn remove_body(&mut self, id: BodyId) -> Result<(), BodyError> {
         let body = self.by_id.remove(&id).ok_or(BodyError::UnknownBody(id))?;
+        // (Rapier takes the joints of the body away with it; the couplings that held them go too, and the partner is free.)
+        self.couplings
+            .retain(|_, coupling| coupling.first != id && coupling.second != id);
         self.bodies.remove(
             body.handle,
             &mut self.islands,
