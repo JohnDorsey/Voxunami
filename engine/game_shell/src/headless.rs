@@ -206,9 +206,16 @@ const WITHOUT_SUN_RAY: &str = "VOX_WITHOUT_SUN_RAY";
 /// camera. The pictures are the same; for comparing times.
 const WITH_EVERY_FACE: &str = "VOX_WITH_EVERY_FACE";
 
+/// The environment variable that makes a screenshot or a benchmark run leave the boxes of other players and items out of the walk of the sun's ray (section 16 of the spec):
+/// their shadows are the map's alone, with the lit strip it leaves at their feet. For comparing pictures and times.
+const WITHOUT_ENTITY_RAY: &str = "VOX_WITHOUT_ENTITY_RAY";
+
 fn apply_face_switch(renderer: &mut VoxelRenderer) {
     if std::env::var_os(WITH_EVERY_FACE).is_some() {
         renderer.set_skip_faces_looking_away(false);
+    }
+    if std::env::var_os(WITHOUT_ENTITY_RAY).is_some() {
+        renderer.set_entities_in_the_sun_walk(false);
     }
 }
 
