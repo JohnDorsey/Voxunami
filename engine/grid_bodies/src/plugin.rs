@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use block_models::{BlockTable, PropertyHandle};
 use namespaced_id::NamespacedId;
-use physics::{BodyId, BodyKind, BodyMotion, BodySettings, BodyState, BodyWorld, MassMoments};
+use physics::{
+    BodyColliders, BodyId, BodyKind, BodyMotion, BodySettings, BodyState, BodyWorld, MassMoments,
+};
 use plugin_host::{HandlerSpec, Phase, Plugin, Registrar, SystemSpec};
 use server::{MergePlan, ServerWorld, SplitPart};
 use voxel_grid::ChannelIndex;
@@ -117,6 +119,11 @@ pub struct BodiesReport {
     pub couplings_moved: u64,
     /// How many frames there are now: places in levels that have ships in them, each simulated in a frame of its own.
     pub frames: u64,
+    /// Bricks of ships whose colliders and mass were worked out from their voxels (the 32,768 places of each looked at), in all: the first time a ship has a body, and each
+    /// brick an edit changes.
+    pub ship_bricks_made: u64,
+    /// Bricks of ships that went with the ship from the frame it left to the one it entered, with no voxel looked at (see [`BodyWorld::take_colliders`]), in all.
+    pub ship_bricks_carried: u64,
 }
 
 impl GridBodiesPlugin {
@@ -411,9 +418,20 @@ struct Bodies {
     couplings: BTreeMap<CouplingKey, Coupled>,
     /// The number the next coupling is given.
     next_coupling: u64,
+    /// What the ships that left a frame in this step take to the frame they enter in the same step, by ship (empty again at the end of the step).
+    carried: BTreeMap<GridId, Carried>,
     /// Which tick this is, counting the steps of the bodies.
     tick: u64,
     report: Arc<Mutex<BodiesReport>>,
+}
+
+/// What a ship takes from the frame it leaves to the one it enters: the colliders of its bricks and what was worked out of each (the mass, the docking ports, the ends of
+/// joints), so that no brick has its 32,768 voxels looked at again. The body is made again (it has a place, a speed and a kind of the new frame); these are what the body is made of.
+struct Carried {
+    colliders: BodyColliders,
+    moments: BTreeMap<BrickCoordinate, MassMoments>,
+    ports: BTreeMap<BrickCoordinate, Vec<BlockFace>>,
+    joint_ends: BTreeMap<BrickCoordinate, Vec<BlockFace>>,
 }
 
 /// A ship that is being looked at to see whether it is still in one piece.
@@ -459,6 +477,7 @@ impl Bodies {
             refused: BTreeMap::new(),
             couplings: BTreeMap::new(),
             next_coupling: 0,
+            carried: BTreeMap::new(),
             tick: 0,
             report,
         }
@@ -496,6 +515,7 @@ impl Bodies {
         brick: BrickCoordinate,
         ship: &MovingGrid,
     ) {
+        self.count(|report| report.ship_bricks_made += 1);
         // (The table the faces are read by: the game's docking has one, and a game with joints and no docking uses the game's own.)
         let faces_by = match &self.config.docking {
             Some(docking) => Some(docking.table()),
@@ -539,6 +559,56 @@ impl Bodies {
             } else {
                 record.joint_ends.insert(brick, joint_ends);
             }
+        }
+    }
+
+    /// Gives a ship that has come into a frame what it took from the one it left, and makes again only the bricks that were changed in this step (the ones it was not looked at
+    /// again for are as they were: its voxels do not change when it goes from one frame to another, only the body's place, speed and kind). `bricks` are all its stored bricks.
+    fn take_over(
+        &mut self,
+        frame: FrameKey,
+        id: GridId,
+        ship: &MovingGrid,
+        carried: Carried,
+        bricks: &[BrickCoordinate],
+        changed: &BTreeSet<(GridId, BrickCoordinate)>,
+    ) {
+        let Carried {
+            colliders,
+            moments,
+            ports,
+            joint_ends,
+        } = carried;
+        let given = self.frames.get_mut(&frame).is_some_and(|bodies| {
+            bodies
+                .bodies
+                .give_colliders(BodyId(id.get()), colliders)
+                .is_ok()
+        });
+        if !given {
+            for brick in bricks {
+                self.remake_brick(frame, id, *brick, ship);
+            }
+            return;
+        }
+        if let Some(record) = self
+            .frames
+            .get_mut(&frame)
+            .and_then(|bodies| bodies.ships.get_mut(&id))
+        {
+            record.moments = moments;
+            record.ports = ports;
+            record.joint_ends = joint_ends;
+        }
+        let carried_count = bricks.len() as u64;
+        self.count(|report| report.ship_bricks_carried += carried_count);
+        let edited: Vec<BrickCoordinate> = changed
+            .iter()
+            .filter(|(grid, _)| *grid == id)
+            .map(|(_, brick)| *brick)
+            .collect();
+        for brick in edited {
+            self.remake_brick(frame, id, brick, ship);
         }
     }
 
@@ -714,8 +784,23 @@ impl Bodies {
                 .copied()
                 .collect();
             for id in gone {
-                frame.ships.remove(&id);
+                let record = frame.ships.remove(&id);
+                // A ship that is still in the world goes to another frame, and takes what was made of its bricks with it (one that is gone altogether takes nothing).
+                let colliders = frame.bodies.take_colliders(BodyId(id.get())).ok();
                 let _ = frame.bodies.remove_body(BodyId(id.get()));
+                if let (Some(record), Some(colliders)) = (record, colliders)
+                    && present.iter().any(|(held, _)| *held == id)
+                {
+                    self.carried.insert(
+                        id,
+                        Carried {
+                            colliders,
+                            moments: record.moments,
+                            ports: record.ports,
+                            joint_ends: record.joint_ends,
+                        },
+                    );
+                }
             }
         }
         self.frames.retain(|_, frame| !frame.ships.is_empty());
@@ -723,6 +808,8 @@ impl Bodies {
         for (id, level_index) in present {
             self.sync_ship(world, id, level_index, &changed_ships);
         }
+        // (What was not given to a body in this step, a ship that could not be made one, is made again from its voxels in the next.)
+        self.carried.clear();
         self.sync_planets(world);
         self.scan_planets_for_ports(world, &changed_ships);
         self.keep_terrain(world, &changed_terrain, &changed_ships);
@@ -867,8 +954,13 @@ impl Bodies {
                 },
             );
             let bricks: Vec<BrickCoordinate> = ship.voxels.sorted_brick_coordinates();
-            for brick in bricks {
-                self.remake_brick(key, id, brick, ship);
+            match self.carried.remove(&id) {
+                Some(carried) => self.take_over(key, id, ship, carried, &bricks, changed),
+                None => {
+                    for brick in bricks {
+                        self.remake_brick(key, id, brick, ship);
+                    }
+                }
             }
             self.set_mass(key, id);
             return;

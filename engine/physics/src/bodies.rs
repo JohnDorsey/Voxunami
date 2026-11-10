@@ -107,6 +107,30 @@ struct Body {
     partial: HashMap<BrickCoordinate, ColliderHandle>,
 }
 
+/// The colliders of a body, taken out of its world with [`BodyWorld::take_colliders`] to be given to the same body in another with [`BodyWorld::give_colliders`]: what a ship
+/// needs when it goes from one frame of the solver to the next, so that the 32,768 voxels of each of its bricks are not looked at again. A body that is given them acts, and is edited,
+/// as one whose bricks were made again from the same voxels. (The shapes are reference-counted ones that are moved, not copied.)
+#[derive(Default)]
+pub struct BodyColliders {
+    /// The body's one voxel collider, if it has one.
+    voxels: Option<SharedShape>,
+    /// The bits set in `voxels`, by brick.
+    filled: HashMap<BrickCoordinate, Rows>,
+    /// The compound of boxes of each brick that has one, in order of brick (the order they are given back in).
+    partial: BTreeMap<BrickCoordinate, SharedShape>,
+}
+
+impl std::fmt::Debug for BodyColliders {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BodyColliders")
+            .field("has_voxel_collider", &self.voxels.is_some())
+            .field("bricks_of_voxels", &self.filled.len())
+            .field("bricks_of_boxes", &self.partial.len())
+            .finish()
+    }
+}
+
 /// Rigid bodies made of voxels, and the terrain they hit, in one Rapier world.
 ///
 /// Everything is in a *local frame*: a brick of the level is the origin of it, which keeps the numbers small and the positions exact to a part in 10^16 of their distance
@@ -503,6 +527,94 @@ impl BodyWorld {
     /// Takes the colliders of one brick (in the body's own coordinates) from a body: it has nothing there any more.
     pub fn remove_brick(&mut self, id: BodyId, brick: BrickCoordinate) -> Result<(), BodyError> {
         self.set_brick(id, brick, &mut Nothing)
+    }
+
+    /// Takes all the colliders (the voxels and the boxes of every brick) out of a body and out of this world, and gives them back to be put on a body in another with
+    /// [`BodyWorld::give_colliders`]. The body stays, with none.
+    pub fn take_colliders(&mut self, id: BodyId) -> Result<BodyColliders, BodyError> {
+        let body = self.by_id.get_mut(&id).ok_or(BodyError::UnknownBody(id))?;
+        let (voxels, partial) = (body.voxels.take(), std::mem::take(&mut body.partial));
+        let mut taken = BodyColliders {
+            filled: std::mem::take(&mut body.filled),
+            ..BodyColliders::default()
+        };
+        taken.voxels = voxels.and_then(|handle| self.remove_collider(handle));
+        // In order of brick: the order in which colliders are removed is the order in which Rapier hands their places out again, which later colliders of this world are given,
+        // and a `HashMap` is in another order in each run of the program.
+        let mut partial: Vec<(BrickCoordinate, ColliderHandle)> = partial.into_iter().collect();
+        partial.sort_by_key(|(brick, _)| *brick);
+        for (brick, handle) in partial {
+            if let Some(shape) = self.remove_collider(handle) {
+                taken.partial.insert(brick, shape);
+            }
+        }
+        Ok(taken)
+    }
+
+    /// Puts colliders taken from a body with [`BodyWorld::take_colliders`] on a body of this world, whatever it had before being gone. The body then acts, and is edited with
+    /// [`BodyWorld::set_brick`], as one whose bricks had been made from the same voxels, and its colliders are put in the world in the order in which that would have made them
+    /// (by brick, the voxel collider at the first brick that has a voxel), so the order inside the solver does not depend on how the body came to be here.
+    pub fn give_colliders(
+        &mut self,
+        id: BodyId,
+        colliders: BodyColliders,
+    ) -> Result<(), BodyError> {
+        self.take_colliders(id)?;
+        let BodyColliders {
+            voxels,
+            filled,
+            partial,
+        } = colliders;
+        let body = self.by_id.get_mut(&id).ok_or(BodyError::UnknownBody(id))?;
+        let mut bricks: Vec<BrickCoordinate> =
+            filled.keys().chain(partial.keys()).copied().collect();
+        bricks.sort();
+        bricks.dedup();
+        let mut voxels = voxels;
+        let mut partial = partial;
+        for brick in bricks {
+            if filled.contains_key(&brick)
+                && let Some(shape) = voxels.take()
+            {
+                let collider = ColliderBuilder::new(shape).density(0.0).friction(0.6);
+                body.voxels = Some(self.colliders.insert_with_parent(
+                    collider,
+                    body.handle,
+                    &mut self.bodies,
+                ));
+            }
+            if let Some(shape) = partial.remove(&brick) {
+                let first = brick.origin();
+                let collider = ColliderBuilder::new(shape)
+                    .translation(Vector::new(
+                        first.x() as Real,
+                        first.y() as Real,
+                        first.z() as Real,
+                    ))
+                    .density(0.0)
+                    .friction(0.6);
+                body.partial.insert(
+                    brick,
+                    self.colliders
+                        .insert_with_parent(collider, body.handle, &mut self.bodies),
+                );
+            }
+        }
+        body.filled = filled;
+        Ok(())
+    }
+
+    /// Takes a collider out of the world, and its shape.
+    fn remove_collider(&mut self, handle: ColliderHandle) -> Option<SharedShape> {
+        self.colliders
+            .remove(
+                handle,
+                &mut self.islands,
+                &mut self.bodies,
+                &mut self.soft_bodies,
+                true,
+            )
+            .map(|collider| collider.shared_shape().clone())
     }
 
     /// Makes the collider of one brick of the terrain (in the frame's coordinates) from what `source` says of it, replacing the one it had.

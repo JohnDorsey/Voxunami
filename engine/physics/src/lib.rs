@@ -26,8 +26,8 @@ mod sweep;
 mod terrain;
 
 pub use bodies::{
-    BodyError, BodyId, BodyKind, BodySettings, BodyState, BodyWorld, CouplingError, CouplingId,
-    CouplingOptions, PivotPair, SolverDials,
+    BodyColliders, BodyError, BodyId, BodyKind, BodySettings, BodyState, BodyWorld, CouplingError,
+    CouplingId, CouplingOptions, PivotPair, SolverDials,
 };
 pub use character::{CharacterBody, CharacterSettings, ForeignGrid, MoveInput};
 pub use mass::{BodyMass, MassMoments};
