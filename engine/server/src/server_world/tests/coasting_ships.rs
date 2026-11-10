@@ -465,6 +465,46 @@ fn a_ship_on_a_rail_that_is_held_or_that_turns_or_is_in_a_level_with_a_ground_co
     }
 }
 
+/// Pinned in step 4c-0 as it is today, to be replaced on purpose by step 4c-2 (the owner's answer 6 of the ship audit: rotation never keeps a ship off a rail, the rail
+/// holds the centre of mass and the turn is the frame's): a rail with no spin sets the ship's turn to nothing every time it places the ship, and leaves its orientation as it found
+/// it. Until the world stops doing that, no ship that turns can ride a rail, which is why `coasting_candidate` refuses one.
+#[test]
+fn a_rail_with_no_spin_takes_the_turn_of_a_ship_and_keeps_the_way_it_faces() {
+    let (mut world, _planet) = space();
+    let ship = ship_in_a_circle(&mut world, 10_000.0);
+    let rail = world.coasting_rail(ship, time(0)).unwrap();
+    assert_eq!(rail.spin, None);
+    let facing = Orientation::from_yaw_pitch(0.7, 0.2);
+    let position = world.data().grids().get(ship).unwrap().pose.position;
+    let speed = world.data().grids().get(ship).unwrap().linear_velocity;
+    // (Turned and set turning first, and put on its rail last: moving or speeding a ship takes a coasting rail from it, `ServerWorld::disturb`.)
+    world
+        .set_grid_pose(ship, GridPose::new(position, facing))
+        .unwrap();
+    world
+        .set_grid_velocity(ship, speed, [0.0, 0.3, 0.1])
+        .unwrap();
+    world.set_grid_rail(ship, Some(rail)).unwrap();
+    assert_eq!(
+        world.data().grids().get(ship).unwrap().angular_velocity,
+        [0.0, 0.3, 0.1],
+        "the ship turns before the rail places it"
+    );
+    for tick in 1..=3 {
+        world.apply_rails(TICKS);
+        let placed = world.data().grids().get(ship).unwrap();
+        assert_eq!(
+            placed.angular_velocity, [0.0; 3],
+            "tick {tick}: the rail has no spin, so the ship's turn is taken"
+        );
+        assert_eq!(
+            placed.pose.orientation, facing,
+            "tick {tick}: and the way it faces is left as it was"
+        );
+        world.data_mut().advance_clock(1);
+    }
+}
+
 #[test]
 fn rails_that_are_not_an_orbit_round_a_planet_are_left_alone_and_so_are_planets() {
     let (mut world, planet) = space();
