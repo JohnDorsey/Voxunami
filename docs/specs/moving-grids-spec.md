@@ -407,7 +407,11 @@ adds works on board any ship with no effort from its author. It holds by constru
   A ship in memory and awake is frozen when no player of its level is within a tenth more than the simulation distance of its nearest brick; a frozen ship is let go
   when one is within the simulation distance, and put in a file when none is within a tenth more than the unload distance; a ship in a file is brought in when one
   is within the simulation distance, unless it went away with whoever was aboard it. Distances are compared as squares, so nothing takes a square root. A
-  ship that cannot be written or read is left as it is and tried again after 200 ticks, not every tick; the plugin's report says why.
+  ship that cannot be written or read is left as it is and tried again after 200 ticks, not every tick; the plugin's report says why. **A planet and a ship on a rail are
+  never put in a file by distance, and one that is in a file is brought in whatever the distance** (2026-11-09, `ParkedGrid::on_a_rail`): the place of a ship on a rail is a
+  function of the clock, so the place a file keeps (where it was put away) says nothing of where it is, and a player could neither find it nor be told it is near. It is frozen
+  and its rail goes on putting it where the clock says. (It costs the memory of its voxels, which is what a planet costs; the alternative, a rail in the record of a ship in a
+  file evaluated every tick, costs the same time for the same ships.)
 - *Frozen* is `MovingGrid::frozen` (not saved), set by `ServerWorld::set_grid_frozen`, which also takes its speed away. The bodies hold a frozen ship as they hold a
   held one, and the rules wait: `ActiveVoxels::take_simulated` leaves the voxels of a grid that waits pending, both light rules use it (`LightWorld::is_simulated`
   and `ScaledLightWorld::is_simulated`, which Cave answers with `ServerWorld::grid_is_simulated`), and the light of a ship is made when the ship is let go. Fire

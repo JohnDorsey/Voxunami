@@ -893,7 +893,11 @@ impl Bodies {
         let Some(record) = frame.ships.get_mut(&id) else {
             return;
         };
-        if record.kind != kind {
+        // A ship that changes what it is to the solver gets its state from the world: a fixed body has no speed (a ship on a rail has the speed its rail gives it, in the
+        // world's data and nowhere else), so a ship taken off its rail (by a ship that came near: nothing was written for it, the rail's pose is the last one the body was
+        // given) would go on from rest.
+        let kind_changed = record.kind != kind;
+        if kind_changed {
             record.kind = kind;
             let _ = frame.bodies.set_kind(BodyId(id.get()), kind);
         }
@@ -901,21 +905,22 @@ impl Bodies {
         // planet, which is not where it was in the world, so its place is compared in the frame.)
         let follow = frame.follow;
         let written = record.written;
-        let moved = match follow {
-            None => written != (ship.pose, ship.linear_velocity, ship.angular_velocity),
-            Some(_) => {
-                written.0.orientation != ship.pose.orientation
-                    || written.1 != ship.linear_velocity
-                    || written.2 != ship.angular_velocity
-                    || match (
-                        local_in(follow, ship.pose.position),
-                        frame.bodies.state(BodyId(id.get())),
-                    ) {
-                        (Some(place), Some(body)) => !same_place(place, body.position),
-                        _ => true,
-                    }
-            }
-        };
+        let moved = kind_changed
+            || match follow {
+                None => written != (ship.pose, ship.linear_velocity, ship.angular_velocity),
+                Some(_) => {
+                    written.0.orientation != ship.pose.orientation
+                        || written.1 != ship.linear_velocity
+                        || written.2 != ship.angular_velocity
+                        || match (
+                            local_in(follow, ship.pose.position),
+                            frame.bodies.state(BodyId(id.get())),
+                        ) {
+                            (Some(place), Some(body)) => !same_place(place, body.position),
+                            _ => true,
+                        }
+                }
+            };
         if moved {
             if let Some(state) = ship_state_in(
                 follow,

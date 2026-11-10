@@ -731,6 +731,7 @@ fn sample_record() -> GridsRecord {
         checksum: 0xdead_beef,
         waits_for_those_aboard: raw.is_multiple_of(2),
         has_terrain: raw.is_multiple_of(3),
+        on_a_rail: raw.is_multiple_of(5),
     };
     GridsRecord {
         next: FIRST + 9,
@@ -866,6 +867,7 @@ proptest! {
                 checksum,
                 waits_for_those_aboard: waits,
                 has_terrain: number % 3 == 1,
+                on_a_rail: number % 2 == 0,
             }).collect(),
             tombstones: (0..retired as u64).map(|number| (
                 GridId::new(FIRST + number),
@@ -890,6 +892,7 @@ fn a_parked_record_is_what_a_world_needs_to_find_a_ship_without_its_file() {
         checksum: 0,
         waits_for_those_aboard: false,
         has_terrain: false,
+        on_a_rail: false,
     };
     let taken = world.grids_mut().park(first, record.clone()).unwrap();
     assert_eq!(taken, ship);
@@ -900,9 +903,9 @@ fn a_parked_record_is_what_a_world_needs_to_find_a_ship_without_its_file() {
 }
 
 #[test]
-fn the_flags_of_a_ship_in_the_world_file_are_one_byte_whose_first_bit_is_the_old_flag_and_whose_second_is_that_it_has_terrain()
+fn the_flags_of_a_ship_in_the_world_file_are_one_byte_of_three_bits_the_old_flag_then_terrain_then_a_rail()
  {
-    let record = |waits, terrain| GridsRecord {
+    let record = |waits, terrain, rail| GridsRecord {
         next: FIRST + 2,
         next_serial: 5,
         ships: vec![GridRecord {
@@ -914,31 +917,59 @@ fn the_flags_of_a_ship_in_the_world_file_are_one_byte_whose_first_bit_is_the_old
             checksum: 7,
             waits_for_those_aboard: waits,
             has_terrain: terrain,
+            on_a_rail: rail,
         }],
         tombstones: Vec::new(),
     };
     // (The byte is the last but the count of the retired ids, which is none.)
-    let flags_of = |waits, terrain| {
-        let bytes = encode_grids(&record(waits, terrain));
+    let flags_of = |waits, terrain, rail| {
+        let bytes = encode_grids(&record(waits, terrain, rail));
         assert_eq!(bytes[bytes.len() - 1], 0);
         bytes[bytes.len() - 2]
     };
-    // A ship that is not a planet is written as it always was: the flag is 0 or 1.
-    assert_eq!(flags_of(false, false), 0);
-    assert_eq!(flags_of(true, false), 1);
-    assert_eq!(flags_of(false, true), 2);
-    assert_eq!(flags_of(true, true), 3);
-    for (waits, terrain) in [(false, false), (true, false), (false, true), (true, true)] {
-        assert_eq!(
-            decode_grids(&encode_grids(&record(waits, terrain))).unwrap(),
-            record(waits, terrain)
-        );
+    // A ship that is not on a rail is written as it always was: the flag is 0 to 3, so a world file from before the third bit reads as it is.
+    assert_eq!(flags_of(false, false, false), 0);
+    assert_eq!(flags_of(true, false, false), 1);
+    assert_eq!(flags_of(false, true, false), 2);
+    assert_eq!(flags_of(true, true, false), 3);
+    assert_eq!(flags_of(false, false, true), 4);
+    assert_eq!(flags_of(true, true, true), 7);
+    for waits in [false, true] {
+        for terrain in [false, true] {
+            for rail in [false, true] {
+                assert_eq!(
+                    decode_grids(&encode_grids(&record(waits, terrain, rail))).unwrap(),
+                    record(waits, terrain, rail)
+                );
+            }
+        }
     }
     // A byte with another bit set is refused.
-    let mut bytes = encode_grids(&record(true, true));
+    let mut bytes = encode_grids(&record(true, true, true));
     let at = bytes.len() - 2;
-    bytes[at] = 4;
+    bytes[at] = 8;
     assert!(decode_grids(&bytes).is_err());
     bytes[at] = 0xFF;
     assert!(decode_grids(&bytes).is_err());
+}
+
+#[test]
+fn a_ship_put_away_on_a_rail_is_a_parked_ship_on_a_rail_and_one_that_was_not_is_not() {
+    let game = Game::new(&ALL_PLUGINS);
+    let (mut world, first, _) = world_with_ships(&game);
+    let format = game.ship_format(&world);
+    let mut files = MemoryShipFiles::new();
+    world.park_ship(first, false, &mut files, &format).unwrap();
+    assert!(!world.grids().get_parked(first).unwrap().on_a_rail);
+    let second = GridId::new(FIRST + 1);
+    world.grids_mut().get_mut(second).unwrap().rail = Some(world_storage::rail::Rail {
+        spin: Some(world_storage::rail::Spin {
+            axis: [0.0, 1.0, 0.0],
+            period: 60.0,
+            angle: 0.0,
+        }),
+        orbit: None,
+    });
+    world.park_ship(second, false, &mut files, &format).unwrap();
+    assert!(world.grids().get_parked(second).unwrap().on_a_rail);
 }

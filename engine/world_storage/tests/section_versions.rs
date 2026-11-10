@@ -103,6 +103,7 @@ fn a_turn_that_is_not_a_number_of_f32_is_read_back_bit_for_bit() {
             checksum: 0xDEAD_BEEF,
             waits_for_those_aboard: true,
             has_terrain: true,
+            on_a_rail: false,
         }],
         tombstones: Vec::new(),
     };
@@ -153,6 +154,7 @@ fn a_coordinate_at_the_ends_of_the_range_survives_the_section_of_entities_and_th
             checksum: 1,
             waits_for_those_aboard: false,
             has_terrain: false,
+            on_a_rail: false,
         }],
         tombstones: vec![(
             GridId::new(GridId::FIRST_ALLOCATED),

@@ -623,8 +623,10 @@ fn update(world: &mut ServerWorld, presence: &SharedPresence, state: &Mutex<Stat
             }
         } else if away <= simulate {
             actions.push((id, Action::Thaw));
-        } else if away > keep && ship.terrain.is_none() {
-            // (A planet is asleep when no one is near, and is never put away: a client draws it from as far as there is anything to see of it.)
+        } else if away > keep && ship.terrain.is_none() && ship.rail.is_none() {
+            // (A planet is asleep when no one is near, and is never put away: a client draws it from as far as there is anything to see of it. Neither is a ship on a rail: its
+            // place is where its rail puts it at the clock, which the world does not know of a ship in a file, so nothing could say how near a player is to it. It is asleep,
+            // and its rail goes on. The ship audit of 2026-11-09, LIFE-1.)
             actions.push((id, Action::Park));
         }
     }
@@ -633,8 +635,9 @@ fn update(world: &mut ServerWorld, presence: &SharedPresence, state: &Mutex<Stat
         if parked.waits_for_those_aboard {
             continue;
         }
-        // (A planet is brought back whatever the distance: a client draws it from as far as there is anything to see of it.)
-        if groups.squared_away(id, own_away) <= simulate || parked.has_terrain {
+        // (A planet is brought back whatever the distance: a client draws it from as far as there is anything to see of it. So is a ship that was on a rail, whose place the
+        // file does not say: a world that was saved and loaded has all its ships in files.)
+        if groups.squared_away(id, own_away) <= simulate || parked.has_terrain || parked.on_a_rail {
             actions.push((id, Action::BringIn));
         }
     }

@@ -171,6 +171,9 @@ pub struct ParkedGrid {
     /// It has terrain: it is a planet, which a client draws from as far as there is anything to see of it, so it is not put in a file for good and is brought back
     /// whatever the distance.
     pub has_terrain: bool,
+    /// It was on a rail when it was put away. Its place is a function of the world's clock (`crate::rail`), so `pose` is where it was and not where it is, and nothing can
+    /// say how near a player is to it without its rail: it is brought back whatever the distance, as a planet is, and a ship on a rail is not put away by distance.
+    pub on_a_rail: bool,
 }
 
 /// The grids that are not the root grids of levels, and the ids they had before they were split or merged.

@@ -7,6 +7,10 @@
 //! of where it is, or when a player who was aboard it joins. Distances are to the nearest brick of the ship, and each limit has a tenth
 //! more to leave it by than to come to it, so that a ship at the edge does not change state every tick.
 //!
+//! **A planet and a ship on a rail are never parked** (and are brought back from a file whatever the distance): a planet is drawn from as far as there is anything to see of it, and
+//! the place of a ship on a rail is a function of the clock, so the world has no place to say how near a player is to it in a file (2026-11-09, `docs/decisions/joints-and-cars.md`).
+//! It is frozen when no one is near, and its rail goes on.
+//!
 //! A ship can also be put in a file by a game, to wait for those aboard it (a pilot's ship that goes away with them): it is not brought back
 //! for a player who comes near, only for one who was aboard. When that player joins, the plugin looks at where the ship was left (the
 //! [`arrival`] module: its hull, the terrain and the other ships) and, if something is there, asks the player what to do. A ship whose file
