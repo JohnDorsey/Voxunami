@@ -23,4 +23,4 @@ pub use mesher::{
 pub use occupancy::{OccupancyChange, OccupancyStatistics};
 pub use ray::{RayHit, cast_ray};
 pub use ship_terrain_mesher::{ShipTerrainMesher, ShipTerrainSource};
-pub use sun_ray::{SunCell, sun_blocked, sun_blocked_by_shapes};
+pub use sun_ray::{SunCell, sun_blocked, sun_blocked_by_shapes, sun_blocked_from_point};

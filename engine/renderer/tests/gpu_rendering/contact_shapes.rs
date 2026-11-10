@@ -15,7 +15,7 @@ use super::contact_trace::{Random, SUNS, set_sun_for_the_walk, settled_at};
 use super::*;
 
 /// Air, a red cube, and a green block with the states: whole, bottom slab, top slab, a stair rising toward +x, a post in the middle.
-fn shaped_blocks() -> BlockTable {
+pub(super) fn shaped_blocks() -> BlockTable {
     let air = BlockDefinition::air();
     let cube = BlockDefinition::cube([0.9, 0.1, 0.1]);
     let post = Shape::from_boxes(&[ShapeBox {
@@ -49,12 +49,12 @@ const SHELF: u32 = 5;
 type Voxel = (u32, u32);
 
 /// A brick of random voxels, in its inner part (2 to 29 along each axis): air, cubes, and the shapes of `ROCK`.
-struct ShapedSoup {
-    voxels: Vec<Voxel>,
+pub(super) struct ShapedSoup {
+    pub(super) voxels: Vec<Voxel>,
 }
 
 impl ShapedSoup {
-    fn new(random: &mut Random, cubes: f64, shapes: f64) -> Self {
+    pub(super) fn new(random: &mut Random, cubes: f64, shapes: f64) -> Self {
         let mut voxels = vec![(0, 0); 32 * 32 * 32];
         for z in 2..30usize {
             for y in 2..30usize {
@@ -87,7 +87,7 @@ impl ShapedSoup {
     }
 
     /// What the walk finds in a voxel, from the shapes of the table and not from the occupancy the renderer was given: `None` outside the brick (not known).
-    fn cell(&self, table: &BlockTable, voxel: [i128; 3]) -> Option<SunCell> {
+    pub(super) fn cell(&self, table: &BlockTable, voxel: [i128; 3]) -> Option<SunCell> {
         let (block, state) = self.at(voxel)?;
         let model = table.model_of(block, state, 0);
         Some(if table.is_opaque_cube(model) {
@@ -119,7 +119,7 @@ impl ShapedSoup {
     }
 
     /// The occupancy as a mesher makes it, from the channels of the brick and the table.
-    fn occupancy(&self, table: &BlockTable) -> BrickOccupancy {
+    pub(super) fn occupancy(&self, table: &BlockTable) -> BrickOccupancy {
         let blocks: Vec<u32> = self.voxels.iter().map(|&(block, _)| block).collect();
         let states: Vec<u32> = self.voxels.iter().map(|&(_, state)| state).collect();
         let (blocks, states) = (

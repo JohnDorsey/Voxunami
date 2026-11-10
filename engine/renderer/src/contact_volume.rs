@@ -17,12 +17,15 @@ use crate::voxel_renderer::{SunWalk, voxel_pipelines, voxel_shader};
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(crate) struct WindowUniform {
-    /// Where the window's origin is relative to the camera, in voxels.
+    /// Where the window's origin is relative to the camera, in voxels; and in the fourth place 1 if the window is traced and 0 if it is not.
     pub origin: [f32; 4],
     /// The columns of the matrix from the world's axes to the grid's.
     pub to_local: [[f32; 4]; 3],
     /// The brick coordinates of the origin brick modulo the width of a window (xyz), and where the window's table begins, in entries.
     pub brick: [u32; 4],
+    /// The lowest and the highest corner of the box that holds the window's bricks that block the sun, in voxels from the window's origin, in the grid's own axes.
+    pub bounds_low: [f32; 4],
+    pub bounds_high: [f32; 4],
 }
 
 /// The windows, and what to draw of the walk (`Windows` in `contact_on.wgsl`).
@@ -56,10 +59,10 @@ pub(crate) struct ContactGpu {
     /// The cells of the shapes of the block table that stop the sun in part, 16 words each (`BlockTable::shape_cells`).
     shapes: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
-    /// The voxel shader with the walk, with and without the pictures and with and without the walk through shapes, and the pipelines made with each (the number of the kind
-    /// is `usize::from(with_pictures) + 2 * usize::from(with_shapes)`): made when they are first wanted.
-    shaders: [Option<wgpu::ShaderModule>; 4],
-    pipelines: [Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>; 4],
+    /// The voxel shader with the walk, with and without the pictures, the walk through shapes and the walk through the windows of other grids, and the pipelines made with each
+    /// (the number of the kind is `usize::from(with_pictures) + 2 * usize::from(with_shapes) + 4 * usize::from(with_other_windows)`): made when they are first wanted.
+    shaders: [Option<wgpu::ShaderModule>; 8],
+    pipelines: [Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>; 8],
 }
 
 fn storage_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -142,8 +145,8 @@ impl ContactGpu {
             maximum_partial_slots,
             shapes,
             bind_group,
-            shaders: [None, None, None, None],
-            pipelines: [None, None, None, None],
+            shaders: std::array::from_fn(|_| None),
+            pipelines: std::array::from_fn(|_| None),
         }
     }
 
@@ -329,17 +332,12 @@ impl ContactGpu {
         device: &wgpu::Device,
         color_format: wgpu::TextureFormat,
         with_pictures: bool,
-        with_shapes: bool,
+        walk: SunWalk,
     ) {
-        let index = usize::from(with_pictures) + 2 * usize::from(with_shapes);
+        let index = Self::kind(with_pictures, walk);
         if self.pipelines[index].is_some() {
             return;
         }
-        let walk = if with_shapes {
-            SunWalk::VoxelsAndShapes
-        } else {
-            SunWalk::Voxels
-        };
         let shader =
             self.shaders[index].get_or_insert_with(|| voxel_shader(device, with_pictures, walk));
         self.pipelines[index] = Some(voxel_pipelines(
@@ -350,13 +348,25 @@ impl ContactGpu {
         ));
     }
 
+    /// The number of the kind of shader: with the pictures or without, and what of the walk it has.
+    fn kind(with_pictures: bool, walk: SunWalk) -> usize {
+        let SunWalk::Voxels {
+            shapes,
+            other_windows,
+        } = walk
+        else {
+            panic!("a variant with the walk has a walk");
+        };
+        usize::from(with_pictures) + 2 * usize::from(shapes) + 4 * usize::from(other_windows)
+    }
+
     /// The pipelines of the variant with the walk; `ensure_pipelines` has made them.
     pub(crate) fn pipelines(
         &self,
         with_pictures: bool,
-        with_shapes: bool,
+        walk: SunWalk,
     ) -> &(wgpu::RenderPipeline, wgpu::RenderPipeline) {
-        self.pipelines[usize::from(with_pictures) + 2 * usize::from(with_shapes)]
+        self.pipelines[Self::kind(with_pictures, walk)]
             .as_ref()
             .expect("the pipelines of the walk were made before they are used")
     }

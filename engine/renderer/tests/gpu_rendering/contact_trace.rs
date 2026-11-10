@@ -92,7 +92,7 @@ pub(super) fn elevation_tangent(elevation: f64) -> f64 {
 /// above at `height` voxels over the floor with the sun at `elevation` degrees over the +x horizon, and how many pixels of the strip there were. The strip is from the foot to
 /// `margin` short of where the shadow truly ends: a ray from a floor point at distance `d` from the foot reaches the wall's plane at `d tan(elevation)` over the floor, and
 /// the wall is 4 high. A pixel is lit if it has at least half the light it has with the shadows off.
-fn strip_holes(
+pub(super) fn strip_holes(
     renderer: &mut VoxelRenderer,
     elevation: f64,
     height: i128,
@@ -442,14 +442,14 @@ impl Random {
 
 /// A brick of random voxels that block the sun, with a brick that is full to its +x, an empty one to its -x and none known anywhere else: all three kinds of entry of a table,
 /// and a brick that is not known.
-struct Soup {
+pub(super) struct Soup {
     /// The brick the soup is in, in the grid it is mounted in.
-    brick: [i128; 3],
-    solid: Vec<bool>,
+    pub(super) brick: [i128; 3],
+    pub(super) solid: Vec<bool>,
 }
 
 impl Soup {
-    fn new(random: &mut Random, density: f64) -> Self {
+    pub(super) fn new(random: &mut Random, density: f64) -> Self {
         let mut solid = vec![false; 32 * 32 * 32];
         for z in 2..30usize {
             for y in 2..30usize {
@@ -465,12 +465,12 @@ impl Soup {
     }
 
     /// The same soup in another brick (and the full and empty bricks beside it with it).
-    fn in_brick(mut self, brick: [i128; 3]) -> Self {
+    pub(super) fn in_brick(mut self, brick: [i128; 3]) -> Self {
         self.brick = brick;
         self
     }
 
-    fn brick_coordinate(&self, offset: [i128; 3]) -> BrickCoordinate {
+    pub(super) fn brick_coordinate(&self, offset: [i128; 3]) -> BrickCoordinate {
         BrickCoordinate::new(
             self.brick[0] + offset[0],
             self.brick[1] + offset[1],
@@ -478,12 +478,12 @@ impl Soup {
         )
     }
 
-    fn at(&self, x: usize, y: usize, z: usize) -> bool {
+    pub(super) fn at(&self, x: usize, y: usize, z: usize) -> bool {
         self.solid[(z * 32 + y) * 32 + x]
     }
 
     /// Whether a voxel (in the brick's grid) blocks the sun, or `None` where nothing is known.
-    fn blocks(&self, voxel: [i128; 3]) -> Option<bool> {
+    pub(super) fn blocks(&self, voxel: [i128; 3]) -> Option<bool> {
         let relative: [i128; 3] =
             std::array::from_fn(|axis| voxel[axis].div_euclid(32) - self.brick[axis]);
         let inside = |axis: usize| voxel[axis].rem_euclid(32) as usize;
@@ -495,7 +495,7 @@ impl Soup {
         }
     }
 
-    fn occupancy(&self) -> BrickOccupancy {
+    pub(super) fn occupancy(&self) -> BrickOccupancy {
         occupancy_where(|x, y, z| self.at(x, y, z))
     }
 
@@ -516,14 +516,14 @@ impl Soup {
 
 /// Where the soup stands: in the terrain, or in a grid that is turned.
 #[derive(Clone, Copy)]
-enum Mount {
+pub(super) enum Mount {
     Terrain,
     Grid(Orientation),
 }
 
 impl Mount {
     /// The turn from the soup's axes to the world's, `[row][column]`.
-    fn rotation(self) -> [[f64; 3]; 3] {
+    pub(super) fn rotation(self) -> [[f64; 3]; 3] {
         match self {
             Mount::Terrain => [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             Mount::Grid(orientation) => {
@@ -533,7 +533,7 @@ impl Mount {
         }
     }
 
-    fn to_world(self, vector: [f64; 3]) -> [f64; 3] {
+    pub(super) fn to_world(self, vector: [f64; 3]) -> [f64; 3] {
         let matrix = self.rotation();
         std::array::from_fn(|row| {
             (0..3)
@@ -542,7 +542,7 @@ impl Mount {
         })
     }
 
-    fn to_local(self, vector: [f64; 3]) -> [f64; 3] {
+    pub(super) fn to_local(self, vector: [f64; 3]) -> [f64; 3] {
         let matrix = self.rotation();
         std::array::from_fn(|column| (0..3).map(|row| matrix[row][column] * vector[row]).sum())
     }
@@ -558,7 +558,7 @@ impl Mount {
     }
 
     /// Puts a soup, with the full brick to its +x and the empty one to its -x, into a renderer.
-    fn add(self, renderer: &mut VoxelRenderer, soup: &Soup) {
+    pub(super) fn add(self, renderer: &mut VoxelRenderer, soup: &Soup) {
         let mesh = mesh_of(&soup.voxels());
         let (here, full, empty) = (
             soup.brick_coordinate([0, 0, 0]),
@@ -583,19 +583,19 @@ impl Mount {
 }
 
 /// A place on a face of the soup, and the camera that looks at it.
-struct Probe {
+pub(super) struct Probe {
     /// The cell in front of the face, in the soup's axes, and where the place is in it (0 to 1 along each axis; on the face, so 0 or 1 along the face's own).
-    front: [i128; 3],
-    fraction: [f64; 3],
+    pub(super) front: [i128; 3],
+    pub(super) fraction: [f64; 3],
     /// The two axes along the face.
-    across: [usize; 2],
-    eye: [f64; 3],
-    target: [f64; 3],
+    pub(super) across: [usize; 2],
+    pub(super) eye: [f64; 3],
+    pub(super) target: [f64; 3],
 }
 
 /// A random probe: a face of a voxel of the soup that looks toward the sun (`toward_sun`, in the soup's axes), in the open (nothing within four cells in front of it), at a place
 /// well inside it.
-fn random_probe(random: &mut Random, soup: &Soup, toward_sun: [f64; 3]) -> Probe {
+pub(super) fn random_probe(random: &mut Random, soup: &Soup, toward_sun: [f64; 3]) -> Probe {
     loop {
         let voxel = [
             2 + random.below(28),
@@ -695,7 +695,7 @@ pub(super) const SUNS: [[f32; 3]; 12] = [
 ];
 
 /// What the walk of the shader finds for the probe: whether the sun is blocked, as `ContactDebug::Answer` draws it (white: not; black: blocked).
-fn shader_answer(renderer: &mut VoxelRenderer, probe: &Probe, mount: Mount) -> bool {
+pub(super) fn shader_answer(renderer: &mut VoxelRenderer, probe: &Probe, mount: Mount) -> bool {
     let eye = mount.to_world(probe.eye);
     let target = mount.to_world(probe.target);
     let camera = camera_aimed_at(eye, target);
@@ -1127,10 +1127,22 @@ fn cost_of_the_walk_on_a_scene_of_many_contact_edges() {
                 ));
             }
         }
-        for told in [false, true] {
-            if told {
+        // The walk off; on, with one window; on, with a window of another grid far from everything (the shader that walks other windows, its bricks too far to be walked); on,
+        // with a window of another grid whose bricks are the same as the terrain's and stand where the terrain's do (every pixel walks both: the worst case).
+        for mode in 0..4 {
+            if mode == 1 {
                 for (brick, occupancy) in &occupancies {
                     renderer.set_occupancy(*brick, occupancy);
+                }
+            }
+            if mode >= 2 {
+                let far = if mode == 2 { 400 } else { 0 };
+                renderer.set_grid_pose(
+                    a_ship(),
+                    pose([far, 0, far], [0.0; 3], Orientation::IDENTITY),
+                );
+                for (brick, occupancy) in &occupancies {
+                    renderer.set_grid_occupancy(a_ship(), *brick, occupancy);
                 }
             }
             let mut camera = camera_at(BrickCoordinate::new(1, 0, 2), [16.0, 12.0, 28.0]);
@@ -1155,7 +1167,12 @@ fn cost_of_the_walk_on_a_scene_of_many_contact_edges() {
             let mean = times.iter().sum::<f64>() / times.len() as f64;
             println!(
                 "COST {name} | the walk {} (windows traced {traced}) | mean {mean:.2} ms, median {:.2}, p95 {:.2}",
-                if told { "on" } else { "off" },
+                [
+                    "off",
+                    "on",
+                    "on, a far window of another grid",
+                    "on, a window of another grid on the same bricks"
+                ][mode],
                 times[times.len() / 2],
                 times[(times.len() - 1) * 95 / 100]
             );

@@ -31,7 +31,7 @@ pub fn sun_blocked(
     cells: u32,
     mut blocks: impl FnMut(VoxelCoordinate) -> Option<bool>,
 ) -> bool {
-    walk(front, fraction, [0; 3], toward_sun, cells, |at| {
+    walk(front, fraction, [0; 3], false, toward_sun, cells, |at| {
         blocks(at).map(|blocks| {
             if blocks {
                 SunCell::Blocks
@@ -64,7 +64,24 @@ pub fn sun_blocked_by_shapes(
         }
         start[axis] = (at.floor() as i64).clamp(0, 7) as usize;
     }
-    walk(front, fraction, start, toward_sun, cells, blocks)
+    walk(front, fraction, start, false, toward_sun, cells, blocks)
+}
+
+/// As [`sun_blocked_by_shapes`], for a ray from a point in the lattice that is on no face of it: the point of a face of another grid, in this one's axes and a sixteenth of a
+/// voxel out of that face. Nothing is left out: the voxel the point is in and the eighth of it are tested, since the lattice's own voxels are nowhere near the face the place is
+/// on, and a place inside a voxel of this grid is in shade. The walk then enters `cells` voxels, as the others do. A voxel that is not known (`None`) is vacuum, and the walk goes on
+/// through it: a grid has bricks only where it has something, and a ray from beside it crosses the bricks it has not to come to the ones it has.
+pub fn sun_blocked_from_point(
+    point: [f64; 3],
+    toward_sun: [f64; 3],
+    cells: u32,
+    blocks: impl FnMut(VoxelCoordinate) -> Option<SunCell>,
+) -> bool {
+    let floor = point.map(f64::floor);
+    let front = VoxelCoordinate::new(floor[0] as i128, floor[1] as i128, floor[2] as i128);
+    let fraction: [f64; 3] = std::array::from_fn(|axis| point[axis] - floor[axis]);
+    let start = fraction.map(|part| ((part * 8.0).floor() as i64).clamp(0, 7) as usize);
+    walk(front, fraction, start, true, toward_sun, cells, blocks)
 }
 
 /// Whether the ray from `position` (in voxels from the lowest corner of a voxel), which starts in its eighth `sub`, meets a filled eighth of `mask` before it leaves the voxel.
@@ -122,15 +139,23 @@ fn walk(
     front: VoxelCoordinate,
     fraction: [f64; 3],
     start_sub: [usize; 3],
+    foreign: bool,
     toward_sun: [f64; 3],
     cells: u32,
     mut blocks: impl FnMut(VoxelCoordinate) -> Option<SunCell>,
 ) -> bool {
-    if cells > 0
-        && let Some(SunCell::Partial(mask)) = blocks(front)
-        && blocked_within_voxel(&mask, fraction, toward_sun, start_sub, false)
-    {
-        return true;
+    // The start voxel: a face's is never tested (a voxel the place is in is not between it and the sun) and, if it blocks in part, is walked from the eighth the place is in
+    // without testing that one; a point's (`foreign`) is tested, whole or by the eighth the point is in.
+    if foreign || cells > 0 {
+        match blocks(front) {
+            Some(SunCell::Blocks) if foreign => return true,
+            Some(SunCell::Partial(mask))
+                if blocked_within_voxel(&mask, fraction, toward_sun, start_sub, foreign) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
     }
     let mut cell = [front.x(), front.y(), front.z()];
     let mut step = [0i128; 3];
@@ -171,6 +196,9 @@ fn walk(
         match blocks(entered) {
             Some(SunCell::Blocks) => return true,
             Some(SunCell::Clear) => {}
+            // (A voxel nothing is known of ends the walk of a face's own grid, whose bricks are all the bricks there are about it; for another's it is vacuum: its bricks are
+            // only where it has them.)
+            None if foreign => {}
             Some(SunCell::Partial(mask)) => {
                 // The place of the ray at the boundary, in voxels from the entered voxel's corner; the axis it came across is exactly 0 or 1.
                 let start = [front.x(), front.y(), front.z()];
@@ -638,7 +666,6 @@ mod tests {
         direction: [f64; 3],
         cells: u32,
     ) -> bool {
-        let cell_at = |cell: [i128; 3]| world.get(&cell).copied().unwrap_or(SunCell::Clear);
         let mut start_sub = [0usize; 3];
         for axis in 0..3 {
             let mut at = fraction[axis];
@@ -651,6 +678,20 @@ mod tests {
             }
             start_sub[axis] = ((at * 8.0).floor() as i64).clamp(0, 7) as usize;
         }
+        blocked_by_boxes_from(world, fraction, start_sub, false, direction, cells)
+    }
+
+    /// The same for a ray that starts in the eighth `start_sub` of the voxel 0, 0, 0 and, if `start_tested`, finds what is in that voxel and that eighth too (a ray from a
+    /// point in free space, and not from a face).
+    fn blocked_by_boxes_from(
+        world: &std::collections::HashMap<[i128; 3], SunCell>,
+        fraction: [f64; 3],
+        start_sub: [usize; 3],
+        start_tested: bool,
+        direction: [f64; 3],
+        cells: u32,
+    ) -> bool {
+        let cell_at = |cell: [i128; 3]| world.get(&cell).copied().unwrap_or(SunCell::Clear);
         let mut voxels: Vec<([i128; 3], bool)> = vec![([0; 3], true)];
         for (cell, _) in cells_entered_by_slabs([0; 3], fraction, direction, 9)
             .into_iter()
@@ -658,7 +699,7 @@ mod tests {
         {
             voxels.push((cell, false));
         }
-        if cells == 0 {
+        if cells == 0 && !start_tested {
             voxels.clear();
         }
         for (cell, is_start) in voxels {
@@ -666,7 +707,7 @@ mod tests {
             match cell_at(cell) {
                 SunCell::Clear => {}
                 SunCell::Blocks => {
-                    if !is_start
+                    if (start_tested || !is_start)
                         && ray_goes_through_box(
                             fraction,
                             direction,
@@ -682,7 +723,7 @@ mod tests {
                         for y in 0..8 {
                             for x in 0..8 {
                                 if layer >> (y * 8 + x) & 1 == 0
-                                    || (is_start && [x, y, z] == start_sub)
+                                    || (is_start && !start_tested && [x, y, z] == start_sub)
                                 {
                                     continue;
                                 }
@@ -767,6 +808,99 @@ mod tests {
                 |at| Some(world.get(&[at.x(), at.y(), at.z()]).copied().unwrap_or(SunCell::Clear)),
             );
             let by_boxes = blocked_by_boxes(&world, fraction, face, direction, cells);
+            prop_assert_eq!(by_walk, by_boxes);
+        }
+    }
+
+    #[test]
+    fn a_ray_from_a_point_in_free_space_finds_what_is_at_the_point_and_what_is_ahead() {
+        let from = |point: [f64; 3], sun: [f64; 3], world: &[([i128; 3], SunCell)]| {
+            sun_blocked_from_point(point, sun, 4, shaped_world(world))
+        };
+        let cube = [([0, 0, 0], SunCell::Blocks)];
+        // A point inside a cube is blocked at once (a face's start cell is never tested; the start of a foreign lattice's walk is).
+        assert!(from([0.5, 0.5, 0.5], [0.0, 1.0, 0.0], &cube));
+        assert!(!from([1.5, 0.5, 0.5], [0.0, 1.0, 0.0], &cube));
+        // Beside the cube, toward it: blocked; away from it: not.
+        assert!(from([-0.5, 0.5, 0.5], [1.0, 0.0, 0.0], &cube));
+        assert!(!from([-0.5, 0.5, 0.5], [-1.0, 0.0, 0.0], &cube));
+        // Inside a bottom slab: in its lower half the point is inside it, in its upper half it is over it, and a ray that rises has left.
+        let slab = [([0, 0, 0], SunCell::Partial(BOTTOM_SLAB))];
+        assert!(from([0.5, 0.25, 0.5], [0.0, 1.0, 0.0], &slab));
+        assert!(!from([0.5, 0.75, 0.5], [0.0, 1.0, 0.0], &slab));
+        // Over the slab, a ray that goes down into it is blocked and one that goes along over it is not.
+        assert!(from([0.5, 0.75, 0.5], [0.3, -1.0, 0.0], &slab));
+        assert!(!from([0.5, 0.75, 0.5], [1.0, 0.0, 0.0], &slab));
+        // A voxel that is not known is vacuum to it, at the start too, and the walk goes on through it: another grid's bricks are only where it has them, and a ray from beside
+        // the grid has to cross the bricks it does not have to get to the ones it does.
+        let known_from_the_third = |at: VoxelCoordinate| {
+            (at.x() >= 3).then(|| {
+                if at.x() == 3 {
+                    SunCell::Blocks
+                } else {
+                    SunCell::Clear
+                }
+            })
+        };
+        assert!(sun_blocked_from_point(
+            [0.5, 0.5, 0.5],
+            [1.0, 0.0, 0.0],
+            4,
+            known_from_the_third
+        ));
+        // ... but only as far as the cells go: three cells reach x = 3 from x = 0, two do not.
+        assert!(!sun_blocked_from_point(
+            [0.5, 0.5, 0.5],
+            [1.0, 0.0, 0.0],
+            2,
+            known_from_the_third
+        ));
+        assert!(!sun_blocked_from_point(
+            [0.5, 0.5, 0.5],
+            [1.0, 0.0, 0.0],
+            4,
+            |_| None
+        ));
+    }
+
+    proptest! {
+        /// For random voxels and a random point in the voxel 0, 0, 0 (in free space: no face, so nothing is left out), the walk blocks exactly when the ray goes through a filled
+        /// eighth, or a whole voxel, of the start voxel or of the voxels it enters, found for every eighth alone.
+        #[test]
+        fn a_walk_from_a_point_blocks_exactly_when_the_ray_goes_through_something_filled(
+            fraction in proptest::array::uniform3(0.001f64..0.999),
+            direction in proptest::array::uniform3(-1.0f64..1.0),
+            zeroed in proptest::collection::vec(proptest::bool::ANY, 3),
+            cells in 0u32..9,
+            kinds in proptest::collection::hash_map(
+                proptest::array::uniform3(-5i128..6),
+                (0u8..10, any::<[u64; 8]>(), any::<[u64; 8]>(), any::<[u64; 8]>()),
+                0..400,
+            ),
+        ) {
+            let mut direction = direction;
+            for axis in 0..3 {
+                if zeroed[axis] {
+                    direction[axis] = 0.0;
+                }
+            }
+            prop_assume!(direction.iter().any(|component| component.abs() > 1e-3));
+            let world: std::collections::HashMap<[i128; 3], SunCell> = kinds
+                .into_iter()
+                .map(|(cell, (kind, a, b, c))| {
+                    let found = match kind {
+                        0..=4 => SunCell::Clear,
+                        5 => SunCell::Blocks,
+                        _ => SunCell::Partial(sparse_mask(a, b, c)),
+                    };
+                    (cell, found)
+                })
+                .collect();
+            let by_walk = sun_blocked_from_point(fraction, direction, cells, |at| {
+                Some(world.get(&[at.x(), at.y(), at.z()]).copied().unwrap_or(SunCell::Clear))
+            });
+            let start_sub = fraction.map(|part| ((part * 8.0).floor() as i64).clamp(0, 7) as usize);
+            let by_boxes = blocked_by_boxes_from(&world, fraction, start_sub, true, direction, cells);
             prop_assert_eq!(by_walk, by_boxes);
         }
     }

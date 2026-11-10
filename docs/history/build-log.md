@@ -1894,3 +1894,14 @@ Slabs, stairs and posts are walked through their eighths (`contact-trace-spec.md
 - **A bug found by the first run of a property test:** the distance to the lower boundary of an eighth had the wrong sign for a ray that goes down an axis. **Two mistakes of mine in tests:** a face probed at a plane that is not a multiple of an eighth (not a face that can exist); and a scene meshed with light `None` (full light), in which nothing was in shadow, even the control of cubes.
 - **Mutants:** 29; 6 survived the first run (3 gaps in my tests, now closed; 1 dead code, removed; 2 equivalent); the rest killed.
 - **Not done:** leaves and glass (cut-outs), a test of shapes in a turned grid, the meshers on a world with slabs, the cost on a scene of many slabs, a list of partial voxels in place of the 64 KB slot.
+
+## The sun's exact short ray: phase 4, ships and the windows of other grids (2026-11-09)
+
+Ships have windows, and a face walks the windows of the other grids too (`contact-trace-spec.md`, section 14 has the design, the tests and the mutation results). Boxes are not done.
+
+- **Built:** `sun_blocked_from_point`; `Volume::solid_bounds`; the walk in one function for a window (`walk_window`, `own` or not) and `windows_on.wgsl` / `windows_off.wgsl`; the box of each window in the uniform; eight kinds of pipelines; `RenderStatistics::walked_other_windows`; the shell passes ships' occupancy.
+- **A design mistake, caught by a surviving mutant:** an unknown brick ended every walk, so a ship's window, which holds only the bricks the ship has, was never reached from the bricks beside it. The first tests overlapped the two grids and could not see it. Another grid's unknown bricks are vacuum.
+- **Measured:** real Cave 17.14 ms (one window; unchanged). The scene of many contact edges on the integrated GPU, Vulkan / DX12: the walk 1.63 / 2.07 ms; with the shader that walks other windows and none to walk +0.2; with every pixel walking both grids +0.9 / +1.2.
+- **Mutants:** 21; 18 killed; 3 survive, near-equivalent (the culling box, which is an optimisation; two starts that move a ray by at most a sixteenth of a voxel).
+- **Mistakes of mine in tests:** a soup count taken twice through an `Rc` that could not be unwrapped; thresholds for "decided by the other grid" set before measuring (9 to 17 per orientation at three probes, so eight probes and twelve).
+- **Not done:** entity boxes, a priority among the four windows, a real ship in a real Cave view.

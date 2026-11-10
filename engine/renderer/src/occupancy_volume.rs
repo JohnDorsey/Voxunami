@@ -442,6 +442,27 @@ impl Volume {
         (self.windows[index].as_ref()?.solid > 0).then_some(index)
     }
 
+    /// The lowest and the highest brick coordinates (both included) of the bricks of the grid's window that hold something that blocks the sun, if there are any: a ray that
+    /// starts farther than its length from this box cannot meet anything of the grid.
+    pub(crate) fn solid_bounds(&self, key: VolumeKey) -> Option<[[i128; 3]; 2]> {
+        let window = self.windows[self.index_of(key)?].as_ref()?;
+        let mut bounds: Option<[[i128; 3]; 2]> = None;
+        for (coordinate, held) in &window.bricks {
+            if !held.blocks_something() {
+                continue;
+            }
+            let at = [coordinate.x(), coordinate.y(), coordinate.z()];
+            bounds = Some(match bounds {
+                None => [at, at],
+                Some([low, high]) => [
+                    std::array::from_fn(|axis| low[axis].min(at[axis])),
+                    std::array::from_fn(|axis| high[axis].max(at[axis])),
+                ],
+            });
+        }
+        bounds
+    }
+
     /// Whose bricks each window holds, by window (none for a window not in use).
     pub(crate) fn window_keys(&self) -> [Option<VolumeKey>; MAXIMUM_WINDOWS] {
         std::array::from_fn(|index| self.windows[index].as_ref().map(|window| window.key))

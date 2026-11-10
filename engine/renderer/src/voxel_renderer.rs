@@ -383,6 +383,9 @@ pub struct RenderStatistics {
     pub traced_windows: usize,
     /// Whether the walk was the one that goes through the eighths of voxels that block the sun in part (some brick has such voxels), which is a shader of its own and slower.
     pub walked_shapes: bool,
+    /// Whether the walk was the one that also goes through the windows of the grids other than the face's own (two or more windows are traced), which is a shader of its own and
+    /// slower.
+    pub walked_other_windows: bool,
 }
 
 /// What the shader that walks the sun's ray through the voxels draws instead of the picture, to look at the walk alone (a tool for the tests of the walk, and for whoever
@@ -1843,8 +1846,22 @@ impl VoxelRenderer {
                 }
             };
             let wrapped = |component: i128| component.rem_euclid(WINDOW_BRICKS as i128) as u32;
+            // The box of the window's bricks that block the sun, in voxels from the window's origin.
+            let bounds = self
+                .volume
+                .solid_bounds(key)
+                .map_or([[0.0; 4]; 2], |[low, high]| {
+                    let from_origin = |bricks: [i128; 3], edge: i128| {
+                        let place = |axis: usize| {
+                            ((bricks[axis] + edge - [brick.x(), brick.y(), brick.z()][axis]) * 32)
+                                as f32
+                        };
+                        [place(0), place(1), place(2), 0.0]
+                    };
+                    [from_origin(low, 0), from_origin(high, 1)]
+                });
             frame.uniform.windows[index] = WindowUniform {
-                origin: [origin.x, origin.y, origin.z, 0.0],
+                origin: [origin.x, origin.y, origin.z, 1.0],
                 // (The matrix from the world's axes to the grid's is the turn's transpose: its columns are the rows of the turn.)
                 to_local: std::array::from_fn(|column| {
                     [
@@ -1860,6 +1877,8 @@ impl VoxelRenderer {
                     wrapped(brick.z()),
                     (index * WINDOW_ENTRIES) as u32,
                 ],
+                bounds_low: bounds[0],
+                bounds_high: bounds[1],
             };
             frame.numbers[index] = index as u32 + 1;
         }
@@ -2334,8 +2353,14 @@ impl VoxelRenderer {
         // The walk goes through the eighths of voxels that block the sun in part only while some brick has such voxels: the code for it makes the shader slower even where there
         // are none.
         let with_shapes = self.volume.has_partials();
+        // And through the windows of the other grids only while there are two or more windows to walk: with one, a face has nothing but its own grid's voxels to meet.
+        let with_other_windows = traced_windows >= 2;
+        let walk = SunWalk::Voxels {
+            shapes: with_shapes,
+            other_windows: with_other_windows,
+        };
         if tracing && let Some(contact) = &mut self.contact {
-            contact.ensure_pipelines(&self.device, self.color_format, with_pictures, with_shapes);
+            contact.ensure_pipelines(&self.device, self.color_format, with_pictures, walk);
         }
 
         // Each thing drawn has a place in the buffer of placements: the pictures' first (bricks, then avatars, then boxes), then what only the shadow maps draw.
@@ -2372,6 +2397,7 @@ impl VoxelRenderer {
             bricks_culled: pieces - visible.len(),
             traced_windows: if tracing { traced_windows } else { 0 },
             walked_shapes: tracing && with_shapes,
+            walked_other_windows: tracing && with_other_windows,
             quads_drawn: visible
                 .iter()
                 .map(|&index| self.mesh(drawables[index].mesh).quad_total())
@@ -2566,7 +2592,7 @@ impl VoxelRenderer {
             let (whole_pipeline, detailed_pipeline) = match (&self.contact, tracing) {
                 (Some(contact), true) => {
                     pass.set_bind_group(2, contact.bind_group_ref(), &[]);
-                    let (whole, detailed) = contact.pipelines(with_pictures, with_shapes);
+                    let (whole, detailed) = contact.pipelines(with_pictures, walk);
                     (whole, detailed)
                 }
                 _ => match &self.picture_pipelines {
@@ -2988,13 +3014,12 @@ impl VoxelRenderer {
 /// The voxel shader: `voxel.wgsl` and, for what a face looks like where it may have a picture, either `pictures_on.wgsl` (the pictures are read from their textures) or
 /// `pictures_off.wgsl` (they are not, and the shader uses no texture at all); and for the walk of the sun's ray through the voxels that block it, either `contact_on.wgsl` (it is
 /// walked, in the buffers of the third bind group) or `contact_off.wgsl` (it is not, and the shader uses no buffer for it).
-/// How much of the walk of the sun's ray the fragment shader has: none, the walk through voxels that block the sun whole, or that and the walk through the eighths of those that block
-/// it in part.
+/// How much of the walk of the sun's ray the fragment shader has: none, or the walk through voxels that block the sun whole, with, as each is wanted, the walk through the eighths
+/// of those that block it in part, and the walk through the windows of other grids than the face's own. Each is code the shader is slower for, even where it has nothing to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SunWalk {
     None,
-    Voxels,
-    VoxelsAndShapes,
+    Voxels { shapes: bool, other_windows: bool },
 }
 
 pub(crate) fn voxel_shader(
@@ -3007,34 +3032,54 @@ pub(crate) fn voxel_shader(
     } else {
         include_str!("pictures_off.wgsl")
     };
-    let (contact, shapes) = match walk {
-        SunWalk::None => (include_str!("contact_off.wgsl"), ""),
-        SunWalk::Voxels => (
+    let (contact, shapes, windows) = match walk {
+        SunWalk::None => (include_str!("contact_off.wgsl"), "", ""),
+        SunWalk::Voxels {
+            shapes,
+            other_windows,
+        } => (
             include_str!("contact_on.wgsl"),
-            include_str!("shapes_off.wgsl"),
-        ),
-        SunWalk::VoxelsAndShapes => (
-            include_str!("contact_on.wgsl"),
-            include_str!("shapes_on.wgsl"),
+            if shapes {
+                include_str!("shapes_on.wgsl")
+            } else {
+                include_str!("shapes_off.wgsl")
+            },
+            if other_windows {
+                include_str!("windows_on.wgsl")
+            } else {
+                include_str!("windows_off.wgsl")
+            },
         ),
     };
+    let label = format!(
+        "voxel shader{}{}{}",
+        if with_pictures { " with pictures" } else { "" },
+        match walk {
+            SunWalk::None => "",
+            SunWalk::Voxels { .. } => " and the sun's ray",
+        },
+        match walk {
+            SunWalk::Voxels {
+                shapes: true,
+                other_windows: true,
+            } => " through shapes and other grids",
+            SunWalk::Voxels { shapes: true, .. } => " through shapes",
+            SunWalk::Voxels {
+                other_windows: true,
+                ..
+            } => " through other grids",
+            _ => "",
+        }
+    );
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(match (with_pictures, walk) {
-            (false, SunWalk::None) => "voxel shader",
-            (true, SunWalk::None) => "voxel shader with pictures",
-            (false, SunWalk::Voxels) => "voxel shader with the sun's ray",
-            (true, SunWalk::Voxels) => "voxel shader with pictures and the sun's ray",
-            (false, SunWalk::VoxelsAndShapes) => "voxel shader with the sun's ray and shapes",
-            (true, SunWalk::VoxelsAndShapes) => {
-                "voxel shader with pictures and the sun's ray and shapes"
-            }
-        }),
+        label: Some(&label),
         source: wgpu::ShaderSource::Wgsl(
             format!(
                 "{}
 {pictures}
 {contact}
-{shapes}",
+{shapes}
+{windows}",
                 include_str!("voxel.wgsl")
             )
             .into(),
@@ -3625,6 +3670,14 @@ mod tests {
                 voxel_meshing::OCCUPANCY_WORDS
             ),
             format!("windows: array<Window, {MAXIMUM_WINDOWS}>,"),
+            format!(
+                "const BITS_ENTRY_MASK: u32 = {:#X}u;",
+                crate::occupancy_volume::BITS_ENTRY_MASK
+            ),
+            format!(
+                "const PARTIAL_ENTRY_SHIFT: u32 = {}u;",
+                crate::occupancy_volume::PARTIAL_ENTRY_SHIFT
+            ),
             format!(
                 "const CASTER_SLOPE_BIAS: f32 = {:?};",
                 crate::shadow::CASTER_SLOPE_BIAS

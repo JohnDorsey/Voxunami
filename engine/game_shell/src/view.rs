@@ -148,8 +148,8 @@ pub fn apply_updates(renderer: &mut VoxelRenderer, updates: Vec<MeshUpdate>) {
 }
 
 /// Tells the renderer which voxels block the sun, for the walk of the sun's ray through them (`docs/specs/contact-trace-spec.md`): what the session's meshers have said of
-/// their bricks since the last call, for the terrain of the level and for the planets. Done after [`apply_updates`], so that a brick's occupancy arrives with its mesh or later,
-/// and before a picture is drawn. (Ships are not traced yet: their bricks are told of by the session, and are left out here.)
+/// their bricks since the last call, for the terrain of the level, for the planets and for the ships. Done after [`apply_updates`], so that a brick's occupancy arrives with its mesh
+/// or later, and before a picture is drawn.
 pub fn apply_occupancy<C: Connection, G: GameDefinition>(
     renderer: &mut VoxelRenderer,
     session: &mut Session<C, G>,
@@ -161,7 +161,8 @@ pub fn apply_occupancy<C: Connection, G: GameDefinition>(
                 OccupancyChange::Set(occupancy) => renderer.set_occupancy(coordinate, &occupancy),
                 OccupancyChange::Clear => renderer.clear_occupancy(coordinate),
             }
-        } else if session.is_planet(grid) {
+        } else {
+            // A planet or a ship: each grid has a window of its own, and a face is walked in the windows of the others too (`docs/specs/contact-trace-spec.md`, section 14).
             match change {
                 OccupancyChange::Set(occupancy) => {
                     renderer.set_grid_occupancy(grid, coordinate, &occupancy);

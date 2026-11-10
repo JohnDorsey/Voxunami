@@ -40,12 +40,16 @@ const LEAST_SINE: f32 = 1.0e-3;
 const CASTER_SLOPE_BIAS: f32 = 1.5;
 
 struct Window {
-    // Where the window's origin (the lowest corner of its first brick) is relative to the camera, in voxels (xyz).
+    // Where the window's origin (the lowest corner of its first brick) is relative to the camera, in voxels (xyz); w: 1 if the window is traced, 0 if it is not (a window not in
+    // use, or one that holds nothing that blocks the sun, or whose grid has no pose).
     origin: vec4<f32>,
     // From a vector in the world to the same in the grid's own axes: the turn of the grid, undone.
     to_local: mat3x3<f32>,
     // x, y, z: the brick coordinates of the first brick modulo the width of a window; w: where the window's table begins in `tables`.
     brick: vec4<u32>,
+    // The lowest and the highest corner of the box that holds the window's bricks that block the sun, in voxels from the window's origin and in the grid's own axes (xyz).
+    bounds_low: vec4<f32>,
+    bounds_high: vec4<f32>,
 }
 
 struct Windows {
@@ -132,26 +136,14 @@ fn contact_cells(distance: f32, sine: f32) -> u32 {
     return min(u32(min(ceil(steps), 64.0)) + 2u, MOST_CELLS);
 }
 
-// 0 if the sun's ray from the place on this face meets a voxel that blocks the sun in the first `forced_cells` cells (or the number the rule gives, if that is 0), 1 if not, which
-// says nothing of what is farther: that is the shadow map's business. The ray starts in the cell in front of the face, so nothing is eased toward or away from anything: a wall
-// beside the place is in the way or it is not, which is a fact about the lattice and not about rounding. Cells whose brick nothing is known of end the walk, clear.
-fn contact_walk(in: VertexOutput, distance: f32, forced_cells: u32) -> f32 {
-    if (in.volume == 0u) {
-        return 1.0;
-    }
-    let window = contact_windows.windows[in.volume - 1u];
-    let sun = frame.sun_direction.xyz;
-    let sine = dot(in.normal, sun);
-    if (sine <= LEAST_SINE) {
-        return 1.0;
-    }
-    var cells = min(forced_cells, MOST_ASKED_CELLS);
-    if (cells == 0u) {
-        cells = contact_cells(distance, sine);
-        if (cells == 0u) {
-            return 1.0;
-        }
-    }
+// Whether the sun's ray from the place on this face meets a voxel that blocks the sun in the first `cells` cells, in the voxels of this window. The ray starts in the cell in front
+// of the face, so nothing is eased toward or away from anything: a wall beside the place is in the way or it is not, which is a fact about the lattice and not about rounding. Cells
+// whose brick nothing is known of end the walk, clear.
+//
+// `own` is for the window of the grid the face is of: the face is in a plane of this lattice, and the cell in front of it, which is never tested, is where the walk starts. For any
+// other window (a ship's, when the face is the ground's) the face is in no plane of the lattice: the walk starts in the cell the place is in, a sixteenth of a voxel out of the
+// face, and tests it: a place inside a voxel of another grid is in the shade of it.
+fn walk_window(window: Window, in: VertexOutput, sun: vec3<f32>, cells: u32, own: bool) -> bool {
     let toward_sun = window.to_local * sun;
     let normal = window.to_local * in.normal;
     let place = window.to_local * (in.relative - window.origin.xyz);
@@ -165,10 +157,12 @@ fn contact_walk(in: VertexOutput, distance: f32, forced_cells: u32) -> f32 {
     }
     let on_axis = axis_unit(axis);
     let looks = select(-1.0, 1.0, dot(normal, on_axis) > 0.0);
-    // The cell the ray starts in: the one the place is in, moved by a sixteenth of a voxel out of the face. A face is in a plane that is a multiple of an eighth of a voxel (the
-    // finest a quad goes), and such a plane is never within a sixteenth of a boundary of cells but on the face's own, and there this is the cell in front of it: the cell does not
-    // depend on a rounding error in the place, however far from the origin the grid is turned.
-    var cell = vec3<i32>(floor(place + looks * 0.0625 * on_axis));
+    // Where the ray starts (a face of this grid: at the place, on the face; another's: a sixteenth of a voxel out of the face along its normal), and the cell it starts in: for a face
+    // of this grid the cell the place is in, moved by a sixteenth of a voxel out of the face. A face is in a plane that is a multiple of an eighth of a voxel (the finest a quad
+    // goes), and such a plane is never within a sixteenth of a boundary of cells but on the face's own, and there this is the cell in front of it: the cell does not depend on a
+    // rounding error in the place, however far from the origin the grid is turned.
+    let origin = select(place + normal * 0.0625, place, own);
+    var cell = vec3<i32>(floor(select(origin, place + looks * 0.0625 * on_axis, own)));
     let positive = toward_sun > vec3<f32>(0.0);
     let direction = select(vec3<i32>(-1), vec3<i32>(1), positive);
     let huge = 1.0e30;
@@ -178,7 +172,7 @@ fn contact_walk(in: VertexOutput, distance: f32, forced_cells: u32) -> f32 {
     // How far along the ray the next boundary of a cell is, on each axis; and how much farther the one after it.
     var boundary = select(
         vec3<f32>(huge),
-        (vec3<f32>(cell) + select(vec3<f32>(0.0), vec3<f32>(1.0), positive) - place) * inverse,
+        (vec3<f32>(cell) + select(vec3<f32>(0.0), vec3<f32>(1.0), positive) - origin) * inverse,
         moves,
     );
     let next = abs(inverse);
@@ -187,14 +181,20 @@ fn contact_walk(in: VertexOutput, distance: f32, forced_cells: u32) -> f32 {
     var entry = brick_entry(window, brick);
     // (Whether the brick has voxels that block the sun in part: asked once for each brick the ray is in, and not for each voxel.)
     var has_partials = (entry >> PARTIAL_ENTRY_SHIFT) != 0u;
+    // The cell the ray starts in, if it is another grid's walk: it is tested, whole or in part. (A brick the grid has nothing of is vacuum to a face of another grid: a ship has
+    // bricks only where it has something, and the ground beside it is in bricks it has not; the walk goes on through them. For a face of the grid's own the bricks that are not
+    // known end it, clear: they are the edge of what is loaded.)
+    if (!own && cell_state(entry, cell) == CELL_BLOCKS) {
+        return true;
+    }
     // The voxel the ray starts in, if it blocks the sun in part (the top of a slab is in the middle of its voxel): the eighths of it that the ray crosses before it leaves, from
-    // the one a sixteenth of a voxel out of the face, which is not tested, as the start cell is not.
+    // the one a sixteenth of a voxel out of the face, which for a face of this grid is not tested, as the start cell is not, and for another grid's is the one the point is in, and is.
     let start_number = select(0u, partial_number(entry, cell), has_partials);
     if (start_number != 0u) {
-        let local = place - vec3<f32>(cell);
-        let start_sub = clamp(vec3<i32>(floor(local * 8.0 + looks * 0.5 * on_axis)), vec3<i32>(0), vec3<i32>(7));
-        if (partial_blocks(start_number - 1u, local, toward_sun, start_sub, false)) {
-            return 0.0;
+        let local = origin - vec3<f32>(cell);
+        let start_sub = clamp(vec3<i32>(floor(local * 8.0 + select(vec3<f32>(0.0), looks * 0.5 * on_axis, own))), vec3<i32>(0), vec3<i32>(7));
+        if (partial_blocks(start_number - 1u, local, toward_sun, start_sub, !own)) {
+            return true;
         }
     }
     for (var step = 0u; step < cells; step = step + 1u) {
@@ -210,10 +210,13 @@ fn contact_walk(in: VertexOutput, distance: f32, forced_cells: u32) -> f32 {
         }
         let state = cell_state(entry, cell);
         if (state == CELL_BLOCKS) {
-            return 0.0;
+            return true;
         }
         if (state == CELL_UNKNOWN) {
-            return 1.0;
+            if (own) {
+                return false;
+            }
+            continue;
         }
         if (has_partials) {
             let number = partial_number(entry, cell);
@@ -221,7 +224,7 @@ fn contact_walk(in: VertexOutput, distance: f32, forced_cells: u32) -> f32 {
                 // The ray at the boundary it came across, in voxels from the corner of the voxel it enters: the part along that boundary's axis is exactly its near side.
                 let crossed = cell != previous;
                 let at = clamp(
-                    select(place + toward_sun * entered_at - vec3<f32>(cell), select(vec3<f32>(1.0), vec3<f32>(0.0), positive), crossed),
+                    select(origin + toward_sun * entered_at - vec3<f32>(cell), select(vec3<f32>(1.0), vec3<f32>(0.0), positive), crossed),
                     vec3<f32>(0.0),
                     vec3<f32>(1.0),
                 );
@@ -231,10 +234,37 @@ fn contact_walk(in: VertexOutput, distance: f32, forced_cells: u32) -> f32 {
                     crossed,
                 );
                 if (partial_blocks(number - 1u, at, toward_sun, first, true)) {
-                    return 0.0;
+                    return true;
                 }
             }
         }
+    }
+    return false;
+}
+
+// 0 if the sun's ray from the place on this face meets a voxel that blocks the sun in the first `forced_cells` cells (or the number the rule gives, if that is 0) of the window of the
+// face's own grid, or of another grid's (`other_windows_block`), 1 if not, which says nothing of what is farther: that is the shadow map's business.
+fn contact_walk(in: VertexOutput, distance: f32, forced_cells: u32) -> f32 {
+    if (in.volume == 0u) {
+        return 1.0;
+    }
+    let sun = frame.sun_direction.xyz;
+    let sine = dot(in.normal, sun);
+    if (sine <= LEAST_SINE) {
+        return 1.0;
+    }
+    var cells = min(forced_cells, MOST_ASKED_CELLS);
+    if (cells == 0u) {
+        cells = contact_cells(distance, sine);
+        if (cells == 0u) {
+            return 1.0;
+        }
+    }
+    if (walk_window(contact_windows.windows[in.volume - 1u], in, sun, cells, true)) {
+        return 0.0;
+    }
+    if (other_windows_block(in, sun, cells)) {
+        return 0.0;
     }
     return 1.0;
 }

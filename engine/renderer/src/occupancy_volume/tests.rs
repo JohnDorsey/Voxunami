@@ -622,6 +622,48 @@ fn when_there_are_no_partial_slots_left_the_brick_is_traced_by_its_bits_and_coun
     assert_eq!(memory.partial_shape(window, [32 + 5, 0, 0]), Some(1));
 }
 
+#[test]
+fn the_bounds_of_a_window_are_those_of_the_bricks_that_hold_something_that_blocks_the_sun() {
+    let mut volume = Volume::new(64);
+    assert_eq!(volume.solid_bounds(VolumeKey::Terrain), None);
+    // Empty bricks do not count: there is nothing in them for a ray from another grid to meet.
+    volume.set(VolumeKey::Terrain, brick(9, 9, 9), &BrickOccupancy::Empty);
+    assert_eq!(volume.solid_bounds(VolumeKey::Terrain), None);
+    volume.set(VolumeKey::Terrain, brick(-2, 5, 0), &BrickOccupancy::Full);
+    assert_eq!(
+        volume.solid_bounds(VolumeKey::Terrain),
+        Some([[-2, 5, 0], [-2, 5, 0]])
+    );
+    volume.set(
+        VolumeKey::Terrain,
+        brick(3, 1, 7),
+        &mixed_with(&[[1, 1, 1]]),
+    );
+    volume.set(VolumeKey::Terrain, brick(0, 8, -4), &shaped_with(&[(3, 1)]));
+    assert_eq!(
+        volume.solid_bounds(VolumeKey::Terrain),
+        Some([[-2, 1, -4], [3, 8, 7]])
+    );
+    // The bounds shrink when the brick that made them goes, or becomes air.
+    volume.clear(VolumeKey::Terrain, brick(3, 1, 7));
+    volume.set(VolumeKey::Terrain, brick(0, 8, -4), &BrickOccupancy::Empty);
+    assert_eq!(
+        volume.solid_bounds(VolumeKey::Terrain),
+        Some([[-2, 5, 0], [-2, 5, 0]])
+    );
+    // Each grid has its own, and a grid with no window has none.
+    volume.set(
+        VolumeKey::Grid(GRID_A),
+        brick(40, 40, 40),
+        &BrickOccupancy::Full,
+    );
+    assert_eq!(
+        volume.solid_bounds(VolumeKey::Grid(GRID_A)),
+        Some([[40, 40, 40], [40, 40, 40]])
+    );
+    assert_eq!(volume.solid_bounds(VolumeKey::Grid(GRID_B)), None);
+}
+
 /// One thing done to a volume.
 #[derive(Clone, Debug)]
 enum Operation {
@@ -763,5 +805,23 @@ proptest! {
             .filter(|(_, occupancy)| matches!(occupancy, BrickOccupancy::Shaped { .. }))
             .count();
         prop_assert_eq!(volume.statistics().partial_slots_in_use, shaped);
+        // And the bounds of each window are those of the solid bricks that stand in it.
+        for grid in 0u8..3 {
+            let mut expected: Option<[[i128; 3]; 2]> = None;
+            for ((held_grid, _), (coordinate, occupancy)) in &model {
+                if *held_grid != grid || *occupancy == BrickOccupancy::Empty {
+                    continue;
+                }
+                let at = [coordinate.x(), coordinate.y(), coordinate.z()];
+                expected = Some(match expected {
+                    None => [at, at],
+                    Some([low, high]) => [
+                        std::array::from_fn(|axis| low[axis].min(at[axis])),
+                        std::array::from_fn(|axis| high[axis].max(at[axis])),
+                    ],
+                });
+            }
+            prop_assert_eq!(volume.solid_bounds(key_of(grid)), expected, "grid {}", grid);
+        }
     }
 }
