@@ -1905,3 +1905,13 @@ Ships have windows, and a face walks the windows of the other grids too (`contac
 - **Mutants:** 21; 18 killed; 3 survive, near-equivalent (the culling box, which is an optimisation; two starts that move a ray by at most a sixteenth of a voxel).
 - **Mistakes of mine in tests:** a soup count taken twice through an `Rc` that could not be unwrapped; thresholds for "decided by the other grid" set before measuring (9 to 17 per orientation at three probes, so eight probes and twelve).
 - **Not done:** entity boxes, a priority among the four windows, a real ship in a real Cave view.
+
+## The sun's exact short ray: which grids have the four windows (2026-11-10)
+
+The books keep every grid; the windows of the graphics card's go to the nearest (`contact-trace-spec.md`, section 15 has the design, the tests and the mutation results).
+
+- **Built:** `Volume::grids` / `holders` / `rebalance`; `VoxelRenderer::windowed_grids`; the renderer's distance of each grid from the camera, every frame; the bounds of a grid's solid bricks kept as bricks come and go.
+- **Why:** the first four grids told of had the four windows, however far.
+- **Mutants:** 11; 3 survived the first run (two gaps in my tests, closed; one a brick of distance, unseen).
+- **A measurement I could not settle:** Cave was 2 ms slower today in every mode, with the rebalance taken out as well, so the machine and not the change; no side-by-side with the old code.
+- **Not done:** Cave with ships in view.

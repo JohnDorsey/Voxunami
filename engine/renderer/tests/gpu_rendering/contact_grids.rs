@@ -353,7 +353,11 @@ fn the_ground_meets_the_shade_of_a_ship_of_slabs_stairs_and_posts_too() {
 /// The floor of cubes of the terrain, one voxel thick (its top at y = 1), and a ship, not turned, whose brick holds a wall of four by four voxels and four high at x 14 to 17 and z
 /// 14 to 17 standing on it: the scene of the first test of the walk, in two grids.
 fn ship_on_a_floor(context: &GraphicsContext) -> VoxelRenderer {
-    let mut renderer = new_renderer(context);
+    put_a_ship_on_a_floor(new_renderer(context))
+}
+
+/// As [`ship_on_a_floor`], in a renderer that is already told of other things.
+fn put_a_ship_on_a_floor(mut renderer: VoxelRenderer) -> VoxelRenderer {
     upload_shadow_scene(&mut renderer, ShadowScene::Block, 0);
     // (The terrain keeps its floor and loses the block: the block is the ship's.)
     let floor = super::contact_trace::occupancy_where(|_, y, _| y == 0);
@@ -425,5 +429,98 @@ fn the_floor_is_dark_from_the_very_foot_of_a_wall_that_belongs_to_a_ship_standin
             walked_others,
             "{name}: the walk through other grids was not the one drawn"
         );
+    }
+}
+
+/// Ship number `number` of a row of ships 128 voxels apart along x (its brick 0 at the world brick `4 * number`), each a solid brick that nobody draws.
+fn row_of_ships(renderer: &mut VoxelRenderer, order: &[u64]) {
+    for &number in order {
+        let grid = GridId::new(GridId::FIRST_ALLOCATED + number);
+        renderer.set_grid_pose(
+            grid,
+            pose([4 * number as i128, 0, 0], [0.0; 3], Orientation::IDENTITY),
+        );
+        renderer.set_grid_occupancy(grid, ORIGIN_BRICK, &BrickOccupancy::Full);
+    }
+}
+
+fn windowed_numbers(renderer: &VoxelRenderer) -> Vec<u64> {
+    let mut numbers: Vec<u64> = renderer
+        .windowed_grids()
+        .iter()
+        .map(|grid| grid.get() - GridId::FIRST_ALLOCATED)
+        .collect();
+    numbers.sort_unstable();
+    numbers
+}
+
+#[test]
+fn the_windows_go_to_the_ships_nearest_the_camera_whichever_was_told_of_first_and_follow_it_as_it_moves()
+ {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        let mut renderer = new_renderer(&context);
+        // Six ships, told of from the farthest (from the first camera) to the nearest: the first four told of take the four windows.
+        row_of_ships(&mut renderer, &[5, 4, 3, 2, 1, 0]);
+        assert_eq!(renderer.occupancy_statistics().grids, 6, "{name}");
+        assert_eq!(
+            windowed_numbers(&renderer),
+            [2, 3, 4, 5],
+            "{name}: first come"
+        );
+        // Seen from ship 0 the nearest four have the windows after one picture.
+        let near_the_first = camera_at(BrickCoordinate::new(0, 0, 0), [16.0, 16.0, 16.0]);
+        renderer.render_to_rgba(&near_the_first, SIZE, SIZE);
+        assert_eq!(
+            windowed_numbers(&renderer),
+            [0, 1, 2, 3],
+            "{name}: near ship 0"
+        );
+        // And from ship 5, the other four.
+        let near_the_last = camera_at(BrickCoordinate::new(20, 0, 0), [16.0, 16.0, 16.0]);
+        renderer.render_to_rgba(&near_the_last, SIZE, SIZE);
+        assert_eq!(
+            windowed_numbers(&renderer),
+            [2, 3, 4, 5],
+            "{name}: near ship 5"
+        );
+        // A picture from where it was does not trade them again.
+        renderer.render_to_rgba(&near_the_last, SIZE, SIZE);
+        assert_eq!(
+            windowed_numbers(&renderer),
+            [2, 3, 4, 5],
+            "{name}: nothing to trade"
+        );
+    }
+}
+
+#[test]
+fn the_floor_is_dark_at_the_foot_of_the_ships_wall_from_the_first_picture_though_four_ships_far_off_were_told_of_first()
+ {
+    for context in contexts() {
+        let name = adapter_name(&context);
+        // Four ships a kilometre off (and more) that were told of before the ground and the ship that stands on it: they have the four windows until the first picture, and then
+        // the nearest have them.
+        let mut renderer = new_renderer(&context);
+        for number in 10..14u64 {
+            let grid = GridId::new(GridId::FIRST_ALLOCATED + number);
+            renderer.set_grid_pose(
+                grid,
+                pose([40 * number as i128, 0, 0], [0.0; 3], Orientation::IDENTITY),
+            );
+            renderer.set_grid_occupancy(grid, ORIGIN_BRICK, &BrickOccupancy::Full);
+        }
+        let mut renderer = put_a_ship_on_a_floor(renderer);
+        assert_eq!(renderer.occupancy_statistics().grids, 6, "{name}");
+        assert_eq!(renderer.windowed_grids().len(), 4, "{name}");
+        let (holes, counted) =
+            super::contact_trace::strip_holes(&mut renderer, 30.0, 20, 16.0, 0.05);
+        assert!(counted >= 4, "{name}: {counted}");
+        assert_eq!(
+            holes, 0,
+            "{name}: {holes} of {counted} pixels at the foot of the ship's wall are lit"
+        );
+        // The ship that stands on the ground has a window and the ones far off do not all have one.
+        assert!(renderer.windowed_grids().contains(&a_ship()), "{name}");
     }
 }

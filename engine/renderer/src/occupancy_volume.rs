@@ -1,7 +1,7 @@
 //! The voxels that block the sun, in the form the shader walks them (`docs/specs/contact-trace-spec.md`, section 3.2). This is the memory's bookkeeping, on the CPU; the buffers
 //! it describes are the renderer's.
 //!
-//! Each grid that has bricks in view has a **window**: a table of 64 by 64 by 64 entries that holds one entry for each brick, at the place of the brick's coordinates modulo 64.
+//! Each grid that has bricks in view has its bricks kept here, and the nearest few (at most [`MAXIMUM_WINDOWS`]) have a **window**, which the graphics card has: a table of 64 by 64 by 64 entries that holds one entry for each brick, at the place of the brick's coordinates modulo 64.
 //! An entry says that nothing is known of the brick (the walk ends there, clear), that no voxel of it blocks the sun, that every voxel does, or which **slot** of the pool holds
 //! its bits (4 KB, one bit for each voxel, [`voxel_meshing::BrickOccupancy`]'s layout). A brick that has voxels that block the sun in part (a slab, a stair) has also a **partial
 //! slot** (64 KB: a 16-bit number for each voxel, the shape of the voxel plus one, or 0 for a voxel that is not partial), whose number plus one is in the entry's upper half.
@@ -43,7 +43,7 @@ pub(crate) const ENTRY_FULL: u32 = 2;
 pub(crate) const FIRST_SLOT_ENTRY: u32 = 3;
 
 /// Whose bricks a window holds: the terrain of the level that is watched, or the grid of a ship or planet.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum VolumeKey {
     Terrain,
     Grid(GridId),
@@ -82,8 +82,10 @@ pub(crate) fn table_index(coordinate: BrickCoordinate) -> usize {
 /// How much the volume holds, for tests and for a look at what a scene costs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VolumeStatistics {
-    /// Windows in use: grids that have bricks told of.
+    /// Windows in use: grids that have a window of the graphics card's, and so are traced when they hold something that blocks the sun.
     pub windows: usize,
+    /// Grids that have bricks told of, with a window or without: the ones without are kept to be given one when they are nearer than another.
+    pub grids: usize,
     /// Bricks told of, by kind.
     pub empty: usize,
     pub full: usize,
@@ -148,34 +150,118 @@ fn pack_partials(partials: &[PartialVoxel]) -> PartialBits {
 
 struct Window {
     key: VolumeKey,
+    /// The window of the graphics card's this grid has, if it has one: the books of a grid that has none are kept, and its table is not (it is made when it is given one).
+    slot: Option<usize>,
     bricks: HashMap<BrickCoordinate, Held>,
     /// Which brick stands at a place of the table.
     places: HashMap<usize, BrickCoordinate>,
     /// The partial slot of each brick that has one.
     partials: HashMap<BrickCoordinate, u32>,
-    /// The table as the graphics card should have it.
+    /// The table as the graphics card should have it: empty while the grid has no window.
     table: Vec<u32>,
     /// The rows (of [`WINDOW_BRICKS`] entries) that differ from what was last handed over.
     dirty_rows: BTreeSet<usize>,
     /// How many bricks hold something that blocks the sun.
     solid: usize,
+    /// The box of those bricks, kept as bricks come and go (it is asked for every frame, and the bricks are many): `None` where it is not known and is to be found by looking at
+    /// them all, the inner `None` for no brick at all.
+    bounds: std::cell::Cell<Option<Option<[[i128; 3]; 2]>>>,
 }
 
 impl Window {
     fn new(key: VolumeKey) -> Self {
         Self {
             key,
+            slot: None,
             bricks: HashMap::new(),
             places: HashMap::new(),
             partials: HashMap::new(),
-            table: vec![ENTRY_UNKNOWN; WINDOW_ENTRIES],
-            // (A window is written whole when it is made: what the graphics card has at its place may be what an earlier grid left.)
-            dirty_rows: (0..WINDOW_ENTRIES / WINDOW_BRICKS).collect(),
+            table: Vec::new(),
+            dirty_rows: BTreeSet::new(),
             solid: 0,
+            bounds: std::cell::Cell::new(Some(None)),
         }
     }
 
+    /// Notes that the brick at `coordinate` came to hold something that blocks the sun.
+    fn solid_added(&self, coordinate: BrickCoordinate) {
+        if let Some(known) = self.bounds.get() {
+            let at = [coordinate.x(), coordinate.y(), coordinate.z()];
+            self.bounds.set(Some(Some(match known {
+                None => [at, at],
+                Some([low, high]) => [
+                    std::array::from_fn(|axis| low[axis].min(at[axis])),
+                    std::array::from_fn(|axis| high[axis].max(at[axis])),
+                ],
+            })));
+        }
+    }
+
+    /// Notes that the brick at `coordinate` held something that blocks the sun and does not: the box is not known any more if the brick was on its edge.
+    fn solid_removed(&self, coordinate: BrickCoordinate) {
+        if let Some(Some([low, high])) = self.bounds.get() {
+            let at = [coordinate.x(), coordinate.y(), coordinate.z()];
+            if (0..3).any(|axis| at[axis] == low[axis] || at[axis] == high[axis]) {
+                self.bounds.set(None);
+            }
+        }
+    }
+
+    /// The lowest and the highest brick that hold something that blocks the sun, if there are any.
+    fn solid_bounds(&self) -> Option<[[i128; 3]; 2]> {
+        if let Some(known) = self.bounds.get() {
+            return known;
+        }
+        let mut bounds: Option<[[i128; 3]; 2]> = None;
+        for (coordinate, held) in &self.bricks {
+            if !held.blocks_something() {
+                continue;
+            }
+            let at = [coordinate.x(), coordinate.y(), coordinate.z()];
+            bounds = Some(match bounds {
+                None => [at, at],
+                Some([low, high]) => [
+                    std::array::from_fn(|axis| low[axis].min(at[axis])),
+                    std::array::from_fn(|axis| high[axis].max(at[axis])),
+                ],
+            });
+        }
+        self.bounds.set(Some(bounds));
+        bounds
+    }
+
+    /// What the table says of a brick that is held.
+    fn entry_of(&self, coordinate: BrickCoordinate, held: Held) -> u32 {
+        held.entry()
+            | self
+                .partials
+                .get(&coordinate)
+                .map_or(0, |slot| (slot + 1) << PARTIAL_ENTRY_SHIFT)
+    }
+
+    /// Gives the grid the window of the graphics card's of this number: its table is made from its bricks and all of it is to be written (what the graphics card has at that
+    /// place is what the grid before it left).
+    fn give_slot(&mut self, slot: usize) {
+        self.slot = Some(slot);
+        let mut table = vec![ENTRY_UNKNOWN; WINDOW_ENTRIES];
+        for (&coordinate, &held) in &self.bricks {
+            table[table_index(coordinate)] = self.entry_of(coordinate, held);
+        }
+        self.table = table;
+        self.dirty_rows = (0..WINDOW_ENTRIES / WINDOW_BRICKS).collect();
+    }
+
+    /// Takes the grid's window away (its bricks are kept) and says which it was.
+    fn take_slot(&mut self) -> Option<usize> {
+        self.table = Vec::new();
+        self.dirty_rows.clear();
+        self.slot.take()
+    }
+
     fn write_entry(&mut self, place: usize, entry: u32) {
+        if self.slot.is_none() {
+            return;
+        }
         if self.table[place] != entry {
             self.table[place] = entry;
             self.dirty_rows.insert(place / WINDOW_BRICKS);
@@ -207,6 +293,7 @@ impl Window {
         }
         if held.blocks_something() {
             self.solid -= 1;
+            self.solid_removed(coordinate);
         }
         self.write_entry(place, ENTRY_UNKNOWN);
     }
@@ -240,9 +327,12 @@ pub(crate) struct Changes {
     pub partial_slots: Vec<PartialWrite>,
 }
 
-/// The windows and the pool.
+/// The grids' bricks, the windows of the graphics card's and the pool.
 pub(crate) struct Volume {
-    windows: [Option<Window>; MAXIMUM_WINDOWS],
+    /// Every grid that has bricks told of, with the books of them.
+    grids: HashMap<VolumeKey, Window>,
+    /// Whose bricks each window of the graphics card's holds: a grid that is held here has its table written there.
+    holders: [Option<VolumeKey>; MAXIMUM_WINDOWS],
     slots: Slots,
     /// The slots whose bits were set since they were last handed over.
     pending: HashMap<u32, SlotBits>,
@@ -252,11 +342,16 @@ pub(crate) struct Volume {
     rejected: usize,
 }
 
+/// A grid that has no window takes the window of one that has only if it is nearer than half its distance, less this many voxels: so that two grids that are about as near do not
+/// take it from each other, and every time, and have the whole of a table written each time.
+const NEARER_BY_MORE_THAN_HALF_LESS: f64 = 64.0;
+
 impl Volume {
     /// A volume whose pool has room for `maximum_slots` mixed bricks (and the partial pool, for as much memory, a sixteenth as many bricks that have partial voxels).
     pub(crate) fn new(maximum_slots: usize) -> Self {
         Self {
-            windows: std::array::from_fn(|_| None),
+            grids: HashMap::new(),
+            holders: [None; MAXIMUM_WINDOWS],
             slots: Slots {
                 free: Vec::new(),
                 next: 0,
@@ -275,45 +370,55 @@ impl Volume {
         }
     }
 
-    fn index_of(&self, key: VolumeKey) -> Option<usize> {
-        self.windows
-            .iter()
-            .position(|window| window.as_ref().is_some_and(|window| window.key == key))
+    /// A window of the graphics card's that nothing holds.
+    fn free_window(&self) -> Option<usize> {
+        self.holders.iter().position(Option::is_none)
     }
 
-    /// The window of the grid, made if the grid has none and there is a window to spare.
-    fn window_for(&mut self, key: VolumeKey) -> Option<usize> {
-        if let Some(index) = self.index_of(key) {
-            return Some(index);
-        }
-        let index = self.windows.iter().position(Option::is_none)?;
-        self.windows[index] = Some(Window::new(key));
-        Some(index)
+    /// Gives the grid the window, which it takes from no one (the one it takes from has lost it already).
+    fn hand_over(&mut self, key: VolumeKey, slot: usize) {
+        self.holders[slot] = Some(key);
+        self.grids
+            .get_mut(&key)
+            .expect("the grid is there")
+            .give_slot(slot);
     }
 
-    fn free_if_empty(&mut self, index: usize) {
-        if self.windows[index]
-            .as_ref()
+    /// Forgets a grid that holds no brick any more, and frees its window.
+    fn free_if_empty(&mut self, key: VolumeKey) {
+        if self
+            .grids
+            .get(&key)
             .is_some_and(|window| window.bricks.is_empty())
         {
-            self.windows[index] = None;
+            self.forget(key);
         }
     }
 
-    /// Tells that the brick of a grid is as `occupancy` says. A brick that stood at the same place of the table a window away is forgotten.
+    fn forget(&mut self, key: VolumeKey) {
+        self.grids.remove(&key);
+        for holder in &mut self.holders {
+            if *holder == Some(key) {
+                *holder = None;
+            }
+        }
+    }
+
+    /// Tells that the brick of a grid is as `occupancy` says. A brick that stood at the same place of the table a window away is forgotten. A grid that is told of for the first
+    /// time has a window if there is one that nothing holds; if there is not, it is kept without one until [`Volume::rebalance`] gives it one.
     pub(crate) fn set(
         &mut self,
         key: VolumeKey,
         coordinate: BrickCoordinate,
         occupancy: &BrickOccupancy,
     ) {
-        let Some(index) = self.window_for(key) else {
-            self.rejected += 1;
-            return;
-        };
-        let window = self.windows[index]
-            .as_mut()
-            .expect("the window was just found");
+        if let std::collections::hash_map::Entry::Vacant(vacant) = self.grids.entry(key) {
+            vacant.insert(Window::new(key));
+            if let Some(slot) = self.free_window() {
+                self.hand_over(key, slot);
+            }
+        }
+        let window = self.grids.get_mut(&key).expect("the grid was just made");
         let place = table_index(coordinate);
         if let Some(&other) = window.places.get(&place)
             && other != coordinate
@@ -349,7 +454,7 @@ impl Volume {
                             &mut self.partial_slots,
                             &mut self.pending_partials,
                         );
-                        self.free_if_empty(index);
+                        self.free_if_empty(key);
                         return;
                     }
                 }
@@ -393,21 +498,22 @@ impl Volume {
         // (A brick with partial voxels is `Held::Slot` whatever its bits are, so it blocks something and is counted with the others.)
         if previous.is_some_and(Held::blocks_something) {
             window.solid -= 1;
+            window.solid_removed(coordinate);
         }
         if held.blocks_something() {
             window.solid += 1;
+            window.solid_added(coordinate);
         }
         window.places.insert(place, coordinate);
-        let entry = held.entry() | partial.map_or(0, |slot| (slot + 1) << PARTIAL_ENTRY_SHIFT);
+        let entry = window.entry_of(coordinate, held);
         window.write_entry(place, entry);
     }
 
     /// Tells that the brick of a grid is gone. Nothing if it was not told of, or was forgotten for one a window away.
     pub(crate) fn clear(&mut self, key: VolumeKey, coordinate: BrickCoordinate) {
-        let Some(index) = self.index_of(key) else {
+        let Some(window) = self.grids.get_mut(&key) else {
             return;
         };
-        let window = self.windows[index].as_mut().expect("the window was found");
         window.remove(
             coordinate,
             &mut self.slots,
@@ -415,15 +521,14 @@ impl Volume {
             &mut self.partial_slots,
             &mut self.pending_partials,
         );
-        self.free_if_empty(index);
+        self.free_if_empty(key);
     }
 
     /// Forgets a whole grid: its bricks, its slots and its window.
     pub(crate) fn clear_grid(&mut self, key: VolumeKey) {
-        let Some(index) = self.index_of(key) else {
+        let Some(mut window) = self.grids.remove(&key) else {
             return;
         };
-        let mut window = self.windows[index].take().expect("the window was found");
         let coordinates: Vec<BrickCoordinate> = window.bricks.keys().copied().collect();
         for coordinate in coordinates {
             window.remove(
@@ -434,38 +539,80 @@ impl Volume {
                 &mut self.pending_partials,
             );
         }
+        self.forget(key);
     }
 
-    /// The number of the grid's window, if it has one that holds something that blocks the sun (a grid of only empty bricks is not traced: there is nothing to find).
-    pub(crate) fn window_of(&self, key: VolumeKey) -> Option<usize> {
-        let index = self.index_of(key)?;
-        (self.windows[index].as_ref()?.solid > 0).then_some(index)
-    }
-
-    /// The lowest and the highest brick coordinates (both included) of the bricks of the grid's window that hold something that blocks the sun, if there are any: a ray that
-    /// starts farther than its length from this box cannot meet anything of the grid.
-    pub(crate) fn solid_bounds(&self, key: VolumeKey) -> Option<[[i128; 3]; 2]> {
-        let window = self.windows[self.index_of(key)?].as_ref()?;
-        let mut bounds: Option<[[i128; 3]; 2]> = None;
-        for (coordinate, held) in &window.bricks {
-            if !held.blocks_something() {
+    /// Gives the windows that the graphics card has to the grids that are nearest, by what `distance` says of each (in voxels, from the camera to the nearest of the grid's
+    /// bricks that block the sun): a grid that holds something that blocks the sun and has no window takes a free one; if there is none, the window of the grid that is
+    /// farthest of those that have one (a grid that holds nothing that blocks the sun is at an infinite distance), if the grid that waits is nearer than half of that distance less
+    /// [`NEARER_BY_MORE_THAN_HALF_LESS`] voxels. What a grid that loses its window held is kept, and the grid has a window again when it is the nearer. A window that is given is
+    /// written whole.
+    pub(crate) fn rebalance(&mut self, distance: &dyn Fn(VolumeKey) -> f64) {
+        let mut waiting: Vec<(f64, VolumeKey)> = self
+            .grids
+            .values()
+            .filter(|window| window.slot.is_none() && window.solid > 0)
+            .map(|window| (distance(window.key), window.key))
+            .collect();
+        waiting.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        for (wanted_distance, key) in waiting {
+            if let Some(slot) = self.free_window() {
+                self.hand_over(key, slot);
                 continue;
             }
-            let at = [coordinate.x(), coordinate.y(), coordinate.z()];
-            bounds = Some(match bounds {
-                None => [at, at],
-                Some([low, high]) => [
-                    std::array::from_fn(|axis| low[axis].min(at[axis])),
-                    std::array::from_fn(|axis| high[axis].max(at[axis])),
-                ],
-            });
+            // The holder that is farthest.
+            let farthest = self
+                .holders
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, holder)| {
+                    let window = &self.grids[&(*holder)?];
+                    let held_distance = if window.solid == 0 {
+                        f64::INFINITY
+                    } else {
+                        distance(window.key)
+                    };
+                    Some((held_distance, slot))
+                })
+                .max_by(|a, b| a.0.total_cmp(&b.0).then(b.1.cmp(&a.1)));
+            let Some((held_distance, slot)) = farthest else {
+                break;
+            };
+            if wanted_distance * 2.0 + NEARER_BY_MORE_THAN_HALF_LESS >= held_distance {
+                // (The grids that wait are in order of distance: the ones after this are not nearer.)
+                break;
+            }
+            let loser = self.holders[slot].expect("the window is held");
+            self.grids
+                .get_mut(&loser)
+                .expect("the grid is there")
+                .take_slot();
+            self.hand_over(key, slot);
         }
-        bounds
+    }
+
+    /// The number of the grid's window, if it has one and it holds something that blocks the sun (a grid of only empty bricks is not traced: there is nothing to find).
+    pub(crate) fn window_of(&self, key: VolumeKey) -> Option<usize> {
+        let window = self.grids.get(&key)?;
+        (window.solid > 0).then_some(window.slot?)
+    }
+
+    /// The lowest and the highest brick coordinates (both included) of the bricks of the grid that hold something that blocks the sun, if there are any, whether or not the grid
+    /// has a window: a ray that starts farther than its length from this box cannot meet anything of the grid.
+    pub(crate) fn solid_bounds(&self, key: VolumeKey) -> Option<[[i128; 3]; 2]> {
+        self.grids.get(&key)?.solid_bounds()
+    }
+
+    /// Every grid that has bricks told of, with or without a window.
+    pub(crate) fn grid_keys(&self) -> Vec<VolumeKey> {
+        let mut keys: Vec<VolumeKey> = self.grids.keys().copied().collect();
+        keys.sort();
+        keys
     }
 
     /// Whose bricks each window holds, by window (none for a window not in use).
     pub(crate) fn window_keys(&self) -> [Option<VolumeKey>; MAXIMUM_WINDOWS] {
-        std::array::from_fn(|index| self.windows[index].as_ref().map(|window| window.key))
+        self.holders
     }
 
     /// How many slots the pool may have.
@@ -473,24 +620,26 @@ impl Volume {
         self.slots.maximum
     }
 
-    /// Whether any brick of any window has voxels that block the sun in part.
+    /// Whether any brick of any grid that has a window has voxels that block the sun in part.
     pub(crate) fn has_partials(&self) -> bool {
-        self.windows
+        self.holders
             .iter()
             .flatten()
-            .any(|window| !window.partials.is_empty())
+            .any(|key| !self.grids[key].partials.is_empty())
     }
 
-    /// Whether any window holds something that blocks the sun.
+    /// Whether any grid that has a window holds something that blocks the sun.
     pub(crate) fn is_active(&self) -> bool {
-        self.windows.iter().flatten().any(|window| window.solid > 0)
+        self.holders
+            .iter()
+            .flatten()
+            .any(|key| self.grids[key].solid > 0)
     }
 
     /// What is known of a brick of a grid.
     #[cfg(test)]
     pub(crate) fn held(&self, key: VolumeKey, coordinate: BrickCoordinate) -> Option<Held> {
-        let window = self.windows[self.index_of(key)?].as_ref()?;
-        window.bricks.get(&coordinate).copied()
+        self.grids.get(&key)?.bricks.get(&coordinate).copied()
     }
 
     /// How many slots the pool has to have, at least: the most it has had in use at once, so it only grows.
@@ -509,6 +658,8 @@ impl Volume {
 
     pub(crate) fn statistics(&self) -> VolumeStatistics {
         let mut statistics = VolumeStatistics {
+            windows: self.holders.iter().flatten().count(),
+            grids: self.grids.len(),
             slots_in_use: self.slots.in_use,
             slots_reached: self.slots.next as usize,
             partial_slots_in_use: self.partial_slots.in_use,
@@ -516,8 +667,7 @@ impl Volume {
             rejected: self.rejected,
             ..VolumeStatistics::default()
         };
-        for window in self.windows.iter().flatten() {
-            statistics.windows += 1;
+        for window in self.grids.values() {
             statistics.shaped += window.partials.len();
             for held in window.bricks.values() {
                 match held {
@@ -530,13 +680,14 @@ impl Volume {
         statistics
     }
 
-    /// What changed since the last call: the rows of the tables that differ (neighbouring rows in one run) and the bits of the slots that were set.
+    /// What changed since the last call: the rows of the tables of the windows that are held that differ (neighbouring rows in one run) and the bits of the slots that were set.
     pub(crate) fn drain(&mut self) -> Changes {
         let mut changes = Changes::default();
-        for (index, window) in self.windows.iter_mut().enumerate() {
-            let Some(window) = window else {
+        for (index, holder) in self.holders.iter().enumerate() {
+            let Some(key) = holder else {
                 continue;
             };
+            let window = self.grids.get_mut(key).expect("the grid is there");
             let rows = std::mem::take(&mut window.dirty_rows);
             let mut rows = rows.into_iter().peekable();
             while let Some(first) = rows.next() {

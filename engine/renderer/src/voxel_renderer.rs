@@ -1743,6 +1743,21 @@ impl VoxelRenderer {
         self.volume.statistics()
     }
 
+    /// The grids of ships and planets that have a window just now, which are the ones whose faces are walked and that the faces of others are walked against (there are at most
+    /// four windows, and they go to the grids nearest the camera that hold something that blocks the sun, as of the last picture; the terrain of the level, which has a window of
+    /// its own, is not among them).
+    pub fn windowed_grids(&self) -> Vec<GridId> {
+        self.volume
+            .window_keys()
+            .into_iter()
+            .flatten()
+            .filter_map(|key| match key {
+                VolumeKey::Grid(grid) => Some(grid),
+                VolumeKey::Terrain => None,
+            })
+            .collect()
+    }
+
     /// Chooses what is drawn of the walk of the sun's ray: the picture, or its answer alone (see [`ContactDebug`]).
     pub fn set_contact_debug(&mut self, debug: ContactDebug) {
         self.contact_debug = debug;
@@ -1763,8 +1778,45 @@ impl VoxelRenderer {
         }
     }
 
-    /// Makes the graphics card's side of the volume when the first voxel that blocks the sun is told of, and writes what changed since the last picture into it.
-    fn prepare_volume(&mut self) {
+    /// How far each grid that has bricks told of is from the camera, in voxels: to the nearest point of the box that holds the bricks of it that block the sun (0 when the camera
+    /// is in it), and infinite for a grid that has none, or that has no pose.
+    fn grid_distances(&self, camera: &Camera) -> HashMap<VolumeKey, f64> {
+        let mut distances = HashMap::new();
+        for key in self.volume.grid_keys() {
+            let place = match key {
+                VolumeKey::Terrain => Some(camera.position),
+                VolumeKey::Grid(grid) => self
+                    .ship_poses
+                    .get(&grid)
+                    .and_then(|pose| pose.world_to_local(camera.position)),
+            };
+            let distance = match (place, self.volume.solid_bounds(key)) {
+                (Some(place), Some([low, high])) => {
+                    let (brick, offset) = (place.brick(), place.offset());
+                    let at = [brick.x(), brick.y(), brick.z()];
+                    let mut squared = 0.0;
+                    for axis in 0..3 {
+                        let position = at[axis] as f64 * 32.0 + offset[axis];
+                        let (lowest, highest) =
+                            (low[axis] as f64 * 32.0, (high[axis] + 1) as f64 * 32.0);
+                        let outside = (lowest - position).max(position - highest).max(0.0);
+                        squared += outside * outside;
+                    }
+                    squared.sqrt()
+                }
+                _ => f64::INFINITY,
+            };
+            distances.insert(key, distance);
+        }
+        distances
+    }
+
+    /// Gives the windows to the nearest grids (see [`Volume::rebalance`]), makes the graphics card's side of the volume when the first voxel that blocks the sun is told of, and
+    /// writes what changed since the last picture into it.
+    fn prepare_volume(&mut self, camera: &Camera) {
+        let distances = self.grid_distances(camera);
+        self.volume
+            .rebalance(&|key| distances.get(&key).copied().unwrap_or(f64::INFINITY));
         if self.contact.is_none() {
             if !self.volume.is_active() {
                 return;
@@ -1907,10 +1959,22 @@ impl VoxelRenderer {
     fn gather(&self, camera: &Camera, traced: &[u32; MAXIMUM_WINDOWS]) -> Gathered {
         let mut drawables: Vec<Drawable> = Vec::new();
         // (The number of the window a grid's faces are traced in: 0 for a grid with none.)
+        // (Found once for the frame: there are a few windows, and this is asked for every brick of every ship and planet.)
+        let windows: Vec<(VolumeKey, u32)> = self
+            .volume
+            .window_keys()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(slot, key)| {
+                let key = key?;
+                self.volume.window_of(key).map(|_| (key, traced[slot]))
+            })
+            .collect();
         let window_of = |key: VolumeKey| {
-            self.volume
-                .window_of(key)
-                .map_or(0, |window| traced[window])
+            windows
+                .iter()
+                .find(|(held, _)| *held == key)
+                .map_or(0, |&(_, number)| number)
         };
         let terrain_window = window_of(VolumeKey::Terrain);
         for &coordinate in self.bricks.keys() {
@@ -2302,7 +2366,7 @@ impl VoxelRenderer {
         let view_projection = camera.view_projection(aspect_ratio);
         let frustum = Frustum::from_view_projection(view_projection);
 
-        self.prepare_volume();
+        self.prepare_volume(camera);
         let volume_frame = self.volume_frame(camera);
         let Gathered {
             drawables,

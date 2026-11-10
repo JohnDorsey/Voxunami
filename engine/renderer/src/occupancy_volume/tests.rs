@@ -385,24 +385,177 @@ fn a_grid_taken_whole_frees_its_slots_and_its_window() {
     assert_eq!(volume.statistics().windows, 1);
 }
 
+fn grid(number: u64) -> VolumeKey {
+    VolumeKey::Grid(GridId::new(GridId::FIRST_ALLOCATED + number))
+}
+
 #[test]
-fn more_grids_than_windows_leave_the_extra_ones_untraced_and_counted() {
+fn more_grids_than_windows_are_all_kept_and_only_some_have_a_window() {
     let mut volume = Volume::new(100);
-    for grid in 0..MAXIMUM_WINDOWS as u64 + 2 {
-        volume.set(
-            VolumeKey::Grid(GridId::new(GridId::FIRST_ALLOCATED + grid)),
-            brick(0, 0, 0),
-            &BrickOccupancy::Full,
-        );
+    for number in 0..MAXIMUM_WINDOWS as u64 + 2 {
+        volume.set(grid(number), brick(0, 0, 0), &BrickOccupancy::Full);
     }
     let statistics = volume.statistics();
     assert_eq!(statistics.windows, MAXIMUM_WINDOWS);
-    assert_eq!(statistics.rejected, 2);
-    let last = GridId::new(GridId::FIRST_ALLOCATED + MAXIMUM_WINDOWS as u64 + 1);
-    assert_eq!(volume.window_of(VolumeKey::Grid(last)), None);
-    // Clearing a brick of a grid that has no window is nothing.
-    volume.clear(VolumeKey::Grid(last), brick(0, 0, 0));
+    assert_eq!(statistics.grids, MAXIMUM_WINDOWS + 2);
+    assert_eq!(
+        statistics.rejected, 0,
+        "no brick is refused for want of a window"
+    );
+    let last = grid(MAXIMUM_WINDOWS as u64 + 1);
+    assert_eq!(volume.window_of(last), None);
+    // What it was told is kept, to be given a window later.
+    assert_eq!(volume.held(last, brick(0, 0, 0)), Some(Held::Full));
+    // Clearing its brick takes the grid, and no window with it.
+    volume.clear(last, brick(0, 0, 0));
+    let statistics = volume.statistics();
+    assert_eq!(
+        (statistics.windows, statistics.grids),
+        (MAXIMUM_WINDOWS, MAXIMUM_WINDOWS + 1)
+    );
+}
+
+/// The distances `distances[grid number]` as a function of the grids.
+fn distances_of(distances: &[f64]) -> impl Fn(VolumeKey) -> f64 + '_ {
+    move |key| match key {
+        VolumeKey::Terrain => 0.0,
+        VolumeKey::Grid(grid) => distances[(grid.get() - GridId::FIRST_ALLOCATED) as usize],
+    }
+}
+
+/// A volume with `MAXIMUM_WINDOWS` grids that have windows (each with a stone voxel of its own, at `(number, 0, 0)` in its brick 0) and one more that has none, written to memory.
+fn full_house() -> (Volume, Memory) {
+    let mut volume = Volume::new(100);
+    let mut memory = Memory::new();
+    for number in 0..=MAXIMUM_WINDOWS as u64 {
+        volume.set(
+            grid(number),
+            brick(0, 0, 0),
+            &mixed_with(&[[number as usize, 0, 0]]),
+        );
+    }
+    drained(&mut volume, &mut memory);
+    (volume, memory)
+}
+
+#[test]
+fn a_grid_much_nearer_than_the_farthest_that_has_a_window_takes_it_and_its_table_is_written_whole()
+{
+    let (mut volume, mut memory) = full_house();
+    let waiting = MAXIMUM_WINDOWS as u64;
+    let far = (MAXIMUM_WINDOWS - 1) as u64;
+    let far_window = volume.window_of(grid(far)).expect("a window");
+    assert_eq!(volume.window_of(grid(waiting)), None);
+    // Windows by distance: 100, 200, 300, 400 (the last is the farthest), and the one that waits is at 10.
+    let distances = [100.0, 200.0, 300.0, 400.0, 10.0];
+    volume.rebalance(&distances_of(&distances));
+    drained(&mut volume, &mut memory);
+    assert_eq!(volume.window_of(grid(waiting)), Some(far_window));
+    assert_eq!(volume.window_of(grid(far)), None);
+    // The new holder's table says what it holds and nothing of the one it took the window from (the whole table was written).
+    assert_eq!(
+        memory.blocks(far_window, [waiting as i128, 0, 0]),
+        Some(true)
+    );
+    assert_eq!(memory.blocks(far_window, [far as i128, 0, 0]), Some(false));
+    // The others are as they were.
+    for number in 0..far {
+        let window = volume.window_of(grid(number)).expect("a window");
+        assert_eq!(memory.blocks(window, [number as i128, 0, 0]), Some(true));
+    }
+    // What the grid that lost its window held is kept, and it gets one again when it is the nearer.
+    assert_eq!(
+        volume
+            .held(grid(far), brick(0, 0, 0))
+            .map(|held| matches!(held, Held::Slot(_))),
+        Some(true)
+    );
+    let distances = [100.0, 200.0, 300.0, 5.0, 900.0];
+    volume.rebalance(&distances_of(&distances));
+    drained(&mut volume, &mut memory);
+    assert_eq!(volume.window_of(grid(far)), Some(far_window));
+    assert_eq!(volume.window_of(grid(waiting)), None);
+    assert_eq!(memory.blocks(far_window, [far as i128, 0, 0]), Some(true));
+    assert_eq!(
+        memory.blocks(far_window, [waiting as i128, 0, 0]),
+        Some(false)
+    );
+}
+
+#[test]
+fn a_grid_that_is_given_a_window_has_the_shapes_of_its_bricks_in_it_too() {
+    let mut volume = Volume::new(100);
+    let mut memory = Memory::new();
+    for number in 0..=MAXIMUM_WINDOWS as u64 {
+        volume.set(grid(number), brick(0, 0, 0), &shaped_with(&[(7, 3)]));
+    }
+    drained(&mut volume, &mut memory);
+    let waiting = MAXIMUM_WINDOWS as u64;
+    assert_eq!(volume.window_of(grid(waiting)), None);
+    let distances = [100.0, 200.0, 300.0, 400.0, 10.0];
+    volume.rebalance(&distances_of(&distances));
+    drained(&mut volume, &mut memory);
+    let window = volume.window_of(grid(waiting)).expect("a window");
+    assert_eq!(memory.partial_shape(window, [7, 0, 0]), Some(3));
+    assert_eq!(memory.partial_shape(window, [8, 0, 0]), None);
+}
+
+#[test]
+fn a_grid_only_a_little_nearer_does_not_take_a_window_so_that_two_do_not_trade_every_frame() {
+    let (mut volume, _) = full_house();
+    let waiting = MAXIMUM_WINDOWS as u64;
+    let held_by_the_farthest = volume.window_of(grid(MAXIMUM_WINDOWS as u64 - 1));
+    // (It has to be at less than half the distance, less a margin.)
+    let distances = [100.0, 200.0, 300.0, 400.0, 340.0];
+    volume.rebalance(&distances_of(&distances));
+    assert_eq!(volume.window_of(grid(waiting)), None);
+    assert_eq!(
+        volume.window_of(grid(MAXIMUM_WINDOWS as u64 - 1)),
+        held_by_the_farthest
+    );
+    let distances = [100.0, 200.0, 300.0, 400.0, 150.0];
+    volume.rebalance(&distances_of(&distances));
+    assert!(volume.window_of(grid(waiting)).is_some());
+}
+
+#[test]
+fn a_grid_that_holds_nothing_that_blocks_the_sun_gives_up_its_window_to_any_that_does() {
+    let mut volume = Volume::new(100);
+    // The first has only air, and so has a window and no use for it; three others hold stone; a fifth waits, however far.
+    volume.set(grid(0), brick(0, 0, 0), &BrickOccupancy::Empty);
+    for number in 1..MAXIMUM_WINDOWS as u64 {
+        volume.set(grid(number), brick(0, 0, 0), &BrickOccupancy::Full);
+    }
+    volume.set(
+        grid(MAXIMUM_WINDOWS as u64),
+        brick(0, 0, 0),
+        &BrickOccupancy::Full,
+    );
+    assert_eq!(volume.window_of(grid(MAXIMUM_WINDOWS as u64)), None);
+    let distances = [1.0, 1.0, 1.0, 1.0, 1.0e9];
+    volume.rebalance(&distances_of(&distances));
+    assert!(volume.window_of(grid(MAXIMUM_WINDOWS as u64)).is_some());
+    assert_eq!(volume.window_of(grid(0)), None);
+    // And a grid of only air does not take a window from one that has stone.
+    let mut volume = Volume::new(100);
+    for number in 0..MAXIMUM_WINDOWS as u64 {
+        volume.set(grid(number), brick(0, 0, 0), &BrickOccupancy::Full);
+    }
+    volume.set(
+        grid(MAXIMUM_WINDOWS as u64),
+        brick(0, 0, 0),
+        &BrickOccupancy::Empty,
+    );
+    // (Nearer than all the others, and still no use: it holds nothing that blocks the sun.)
+    let mut distances = [1.0e6; MAXIMUM_WINDOWS + 1];
+    distances[MAXIMUM_WINDOWS] = 0.0;
+    volume.rebalance(&distances_of(&distances));
+    assert_eq!(volume.window_of(grid(MAXIMUM_WINDOWS as u64)), None);
     assert_eq!(volume.statistics().windows, MAXIMUM_WINDOWS);
+    // (It has none, and the ones that have stone still have theirs.)
+    for number in 0..MAXIMUM_WINDOWS as u64 {
+        assert!(volume.window_of(grid(number)).is_some(), "grid {number}");
+    }
 }
 
 #[test]
@@ -670,6 +823,8 @@ enum Operation {
     Set(u8, BrickCoordinate, BrickOccupancy),
     Clear(u8, BrickCoordinate),
     ClearGrid(u8),
+    /// Windows go to the nearest, by these distances (of the six grids).
+    Rebalance([u16; 6]),
 }
 
 fn key_of(grid: u8) -> VolumeKey {
@@ -716,10 +871,11 @@ fn arbitrary_operation() -> impl Strategy<Value = Operation> {
     let span = -(WINDOW_BRICKS as i128)..(WINDOW_BRICKS as i128);
     let coordinate = (span.clone(), -2i128..3, span).prop_map(|(x, y, z)| brick(x, y, z));
     prop_oneof![
-        8 => (0u8..3, coordinate.clone(), arbitrary_occupancy())
+        8 => (0u8..6, coordinate.clone(), arbitrary_occupancy())
             .prop_map(|(grid, coordinate, occupancy)| Operation::Set(grid, coordinate, occupancy)),
-        4 => (0u8..3, coordinate).prop_map(|(grid, coordinate)| Operation::Clear(grid, coordinate)),
-        1 => (0u8..3).prop_map(Operation::ClearGrid),
+        4 => (0u8..6, coordinate).prop_map(|(grid, coordinate)| Operation::Clear(grid, coordinate)),
+        1 => (0u8..6).prop_map(Operation::ClearGrid),
+        2 => proptest::array::uniform6(0u16..2000).prop_map(Operation::Rebalance),
     ]
 }
 
@@ -732,7 +888,7 @@ proptest! {
     fn the_memory_the_shader_reads_is_what_a_plain_map_of_bricks_says(
         operations in proptest::collection::vec(arbitrary_operation(), 1..120),
         drain_every in 1usize..40,
-        probes in proptest::collection::vec((0u8..3, -2100i128..2100, -70i128..100, -2100i128..2100), 40),
+        probes in proptest::collection::vec((0u8..6, -2100i128..2100, -70i128..100, -2100i128..2100), 40),
     ) {
         let mut volume = Volume::new(100_000);
         let mut memory = Memory::new();
@@ -755,11 +911,22 @@ proptest! {
                     volume.clear_grid(key_of(*grid));
                     model.retain(|(held_grid, _), _| held_grid != grid);
                 }
+                Operation::Rebalance(distances) => {
+                    let distances: Vec<f64> = distances.iter().map(|&d| f64::from(d)).collect();
+                    volume.rebalance(&|key| match key {
+                        VolumeKey::Terrain => distances[0],
+                        VolumeKey::Grid(grid) => {
+                            distances[(grid.get() - GridId::FIRST_ALLOCATED) as usize]
+                        }
+                    });
+                }
             }
             if (count + 1) % drain_every == 0 {
                 drained(&mut volume, &mut memory);
             }
         }
+        // (Windows that are free go to the grids that wait for one.)
+        volume.rebalance(&|_| 0.0);
         drained(&mut volume, &mut memory);
         for &(grid, x, y, z) in &probes {
             let voxel = [x, y, z];
@@ -777,7 +944,15 @@ proptest! {
             let solid_somewhere = model.iter().any(|((held_grid, _), (_, occupancy))| {
                 *held_grid == grid && *occupancy != BrickOccupancy::Empty
             });
-            prop_assert_eq!(window.is_some(), solid_somewhere, "grid {} is active only while it holds something solid", grid);
+            prop_assert!(!window.is_some() || solid_somewhere, "grid {} has a traced window only while it holds something solid", grid);
+            if solid_somewhere && window.is_none() {
+                prop_assert_eq!(
+                    volume.statistics().windows,
+                    MAXIMUM_WINDOWS,
+                    "grid {} holds something solid and has no window, while a window is free",
+                    grid
+                );
+            }
             // (A window with nothing solid is not given to the shader, so only an active one is read.)
             if let Some(window) = window {
                 prop_assert_eq!(memory.blocks(window, voxel), expected, "grid {} voxel {:?}", grid, voxel);
@@ -806,7 +981,7 @@ proptest! {
             .count();
         prop_assert_eq!(volume.statistics().partial_slots_in_use, shaped);
         // And the bounds of each window are those of the solid bricks that stand in it.
-        for grid in 0u8..3 {
+        for grid in 0u8..6 {
             let mut expected: Option<[[i128; 3]; 2]> = None;
             for ((held_grid, _), (coordinate, occupancy)) in &model {
                 if *held_grid != grid || *occupancy == BrickOccupancy::Empty {
