@@ -4,6 +4,11 @@
 // (and a leak of the sun into a closed cave). So a face is first asked a question the lattice can answer exactly: starting in the cell in front of the face, does the sun's ray enter
 // a voxel that blocks the sun whole within the next few cells? If it does the place is in shadow; if it does not, the shadow map speaks for what is farther.
 //
+// A voxel may block the sun in part (a slab, a stair, a post; the walk through the eighths of such a voxel is in `shapes_on.wgsl`, which is used only while some brick has such
+// voxels, and `shapes_off.wgsl` stands in for it otherwise: it is a good deal of code, and a fragment shader that has it costs a quarter more on an integrated GPU even where there is
+// none to walk). A brick that has such voxels has a partial slot too, 16 bits for each voxel, the number of its shape plus one (0:
+// none), and the shapes are 512 bits each, one for each eighth of a voxel, in a list. The walk goes through the eighths a ray crosses in such a voxel as it goes through voxels.
+//
 // The voxels are in windows, one for each grid with bricks in view (the terrain of the level, a planet, a ship): a table of 64 by 64 by 64 entries, one for each brick, indexed by
 // the brick's coordinates modulo 64, and a pool of slots of one bit for each voxel of a brick (see `occupancy_volume.rs`, the same numbers). A face is traced in the window of its own
 // grid, in the grid's own axes, so a planet that turns is walked in its own lattice.
@@ -14,6 +19,10 @@ const ENTRY_UNKNOWN: u32 = 0u;
 const ENTRY_EMPTY: u32 = 1u;
 const ENTRY_FULL: u32 = 2u;
 const FIRST_SLOT_ENTRY: u32 = 3u;
+// An entry's lower half says what it says of the bits, its upper half is the number of the brick's partial slot plus one (0: it has none).
+const BITS_ENTRY_MASK: u32 = 0xFFFFu;
+const PARTIAL_ENTRY_SHIFT: u32 = 16u;
+
 // The words of a slot: 32 voxels each, x along the bits, then y, then z along the words.
 const SLOT_WORDS: u32 = 1024u;
 
@@ -62,17 +71,18 @@ fn brick_entry(window: Window, brick: vec3<i32>) -> u32 {
 
 // What the voxel at `cell` (voxels from the window's origin) says about the sun, given the entry of the brick it is in: it blocks it, it does not, or nothing is known of its brick.
 fn cell_state(entry: u32, cell: vec3<i32>) -> u32 {
-    if (entry == ENTRY_EMPTY) {
+    let bits = entry & BITS_ENTRY_MASK;
+    if (bits == ENTRY_EMPTY) {
         return CELL_CLEAR;
     }
-    if (entry == ENTRY_FULL) {
+    if (bits == ENTRY_FULL) {
         return CELL_BLOCKS;
     }
-    if (entry == ENTRY_UNKNOWN) {
+    if (bits == ENTRY_UNKNOWN) {
         return CELL_UNKNOWN;
     }
     let inside = vec3<u32>(cell & vec3<i32>(31));
-    let word = pool[(entry - FIRST_SLOT_ENTRY) * SLOT_WORDS + inside.z * 32u + inside.y];
+    let word = pool[(bits - FIRST_SLOT_ENTRY) * SLOT_WORDS + inside.z * 32u + inside.y];
     return (word >> inside.x) & 1u;
 }
 
@@ -175,12 +185,28 @@ fn contact_walk(in: VertexOutput, distance: f32, forced_cells: u32) -> f32 {
     // The brick the ray is in, and what the table says of it: asked again only when the ray crosses into another (most steps stay in the brick).
     var brick = cell >> vec3<u32>(5u);
     var entry = brick_entry(window, brick);
+    // (Whether the brick has voxels that block the sun in part: asked once for each brick the ray is in, and not for each voxel.)
+    var has_partials = (entry >> PARTIAL_ENTRY_SHIFT) != 0u;
+    // The voxel the ray starts in, if it blocks the sun in part (the top of a slab is in the middle of its voxel): the eighths of it that the ray crosses before it leaves, from
+    // the one a sixteenth of a voxel out of the face, which is not tested, as the start cell is not.
+    let start_number = select(0u, partial_number(entry, cell), has_partials);
+    if (start_number != 0u) {
+        let local = place - vec3<f32>(cell);
+        let start_sub = clamp(vec3<i32>(floor(local * 8.0 + looks * 0.5 * on_axis)), vec3<i32>(0), vec3<i32>(7));
+        if (partial_blocks(start_number - 1u, local, toward_sun, start_sub, false)) {
+            return 0.0;
+        }
+    }
     for (var step = 0u; step < cells; step = step + 1u) {
+        let previous = cell;
+        // Where along the ray the next voxel is entered.
+        let entered_at = min(boundary.x, min(boundary.y, boundary.z));
         advance(&cell, &boundary, direction, next);
         let entered = cell >> vec3<u32>(5u);
         if (any(entered != brick)) {
             brick = entered;
             entry = brick_entry(window, brick);
+            has_partials = (entry >> PARTIAL_ENTRY_SHIFT) != 0u;
         }
         let state = cell_state(entry, cell);
         if (state == CELL_BLOCKS) {
@@ -188,6 +214,26 @@ fn contact_walk(in: VertexOutput, distance: f32, forced_cells: u32) -> f32 {
         }
         if (state == CELL_UNKNOWN) {
             return 1.0;
+        }
+        if (has_partials) {
+            let number = partial_number(entry, cell);
+            if (number != 0u) {
+                // The ray at the boundary it came across, in voxels from the corner of the voxel it enters: the part along that boundary's axis is exactly its near side.
+                let crossed = cell != previous;
+                let at = clamp(
+                    select(place + toward_sun * entered_at - vec3<f32>(cell), select(vec3<f32>(1.0), vec3<f32>(0.0), positive), crossed),
+                    vec3<f32>(0.0),
+                    vec3<f32>(1.0),
+                );
+                let first = select(
+                    clamp(vec3<i32>(floor(at * 8.0)), vec3<i32>(0), vec3<i32>(7)),
+                    select(vec3<i32>(7), vec3<i32>(0), positive),
+                    crossed,
+                );
+                if (partial_blocks(number - 1u, at, toward_sun, first, true)) {
+                    return 0.0;
+                }
+            }
         }
     }
     return 1.0;

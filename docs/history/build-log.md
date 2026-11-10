@@ -1884,3 +1884,13 @@ Built the proposal of the previous section (`contact-trace-spec.md`, section 12,
 - **Tests:** 4 unit tests (one a property test against a brute force in the world) and 4 GPU tests on every adapter (terrain with slabs; ships under five turns; coarse nodes of three levels; exact counts); 11 of 11 mutants killed. The gate: clippy, rustfmt, `cargo doc`, and 3,158 tests of the workspace with `VOX_REQUIRE_GPU=1`, none failed. No shader changed, so the flake check of the binding rule was not needed.
 - **Tool trap:** a test wanted a one-voxel cube 170 voxels away to be red in the middle of a 64-pixel picture; it is a third of a pixel. The test was wrong, not the code (a box of 20 voxels, and the counts as ratios of the quads per face).
 - **Not verified:** a discrete GPU's time, a ship in view in real Cave, the CPU cost of the extra draws.
+
+## The sun's exact short ray: phase 3a, voxels that block the sun in part (2026-11-09)
+
+Slabs, stairs and posts are walked through their eighths (`contact-trace-spec.md`, section 13 has the design, the tests and the mutation results).
+
+- **Built:** `BlockTable::partial_sun_shape` / `shape_cells`; `BrickOccupancy::Shaped`; the reference `sun_blocked_by_shapes`; a partial pool (64 KB slots) and the upper half of a table entry; `set_sun_shapes`; the shader in two parts, `shapes_on.wgsl` and `shapes_off.wgsl`; `RenderStatistics::walked_shapes`.
+- **Measured, real Cave, integrated GPU, 1280 by 720, pitch -35, walk on:** 17.04 ms before; **19.77 with the shape code in the walk's shader and no slab anywhere**; 17.26 with the code compiled out; **17.16 with the code in a variant of its own that is used only while a brick has partial voxels.** The cost of the code, not of the data: a per-brick branch did not help. A world with slabs pays about 2.5 ms (by that proxy).
+- **A bug found by the first run of a property test:** the distance to the lower boundary of an eighth had the wrong sign for a ray that goes down an axis. **Two mistakes of mine in tests:** a face probed at a plane that is not a multiple of an eighth (not a face that can exist); and a scene meshed with light `None` (full light), in which nothing was in shadow, even the control of cubes.
+- **Mutants:** 29; 6 survived the first run (3 gaps in my tests, now closed; 1 dead code, removed; 2 equivalent); the rest killed.
+- **Not done:** leaves and glass (cut-outs), a test of shapes in a turned grid, the meshers on a world with slabs, the cost on a scene of many slabs, a list of partial voxels in place of the 64 KB slot.

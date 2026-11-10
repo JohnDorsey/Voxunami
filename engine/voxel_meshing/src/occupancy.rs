@@ -11,10 +11,20 @@ use crate::mesher::{BrickChannels, uniform_model};
 /// The words of a brick's bits: 32 voxels each.
 pub const OCCUPANCY_WORDS: usize = BRICK_VOXEL_COUNT / 32;
 
-/// Which voxels of a brick block the sun whole: those whose model is a cube that hides what is behind it ([`BlockTable::is_opaque_cube`]). Every other voxel counts as clear
-/// for now: a slab, a stair, leaves and glass are not traced, and the shadow map alone speaks for them.
+/// A voxel that blocks the sun in part (a slab, a stair, a post: [`BlockTable::partial_sun_shape`]), and the shape that says which eighths of it are filled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PartialVoxel {
+    /// The voxel's [`LocalVoxelIndex::index`].
+    pub voxel: u16,
+    /// The shape's place in the pool of [`BlockTable::shape_cells`].
+    pub shape: u16,
+}
+
+/// Which voxels of a brick block the sun whole: those whose model is a cube that hides what is behind it ([`BlockTable::is_opaque_cube`]); and which block it in part, with
+/// the shapes that say how. Every other voxel counts as clear for now: leaves and glass are not traced, and the shadow map alone speaks for them.
 ///
-/// A brick is `Empty` or `Full` whenever no voxel or every voxel does, so two bricks that block alike are equal; `Mixed` never holds all zeros or all ones.
+/// A brick is `Empty` or `Full` whenever no voxel or every voxel blocks whole, so two bricks that block alike are equal; `Mixed` never holds all zeros or all ones; `Shaped` is
+/// a brick with at least one voxel that blocks in part, and only that.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum BrickOccupancy {
     /// No voxel blocks the sun.
@@ -23,17 +33,23 @@ pub enum BrickOccupancy {
     Full,
     /// Bit `i % 32` of word `i / 32` is whether the voxel of [`LocalVoxelIndex::index`] `i` does (so x runs along the bits, then y, then z along the words).
     Mixed(Box<[u32; OCCUPANCY_WORDS]>),
+    /// As `Mixed` (the bits are those of the voxels that block whole, and may be any), and these voxels block in part, in the order of their indexes. Never empty.
+    Shaped {
+        words: Box<[u32; OCCUPANCY_WORDS]>,
+        partials: Box<[PartialVoxel]>,
+    },
 }
 
 impl BrickOccupancy {
     /// What the brick whose channels these are blocks, by the models `table` gives its blocks, states and orientations.
     pub fn of(channels: &BrickChannels<'_>, table: &BlockTable) -> Self {
         if let Some(model) = uniform_model(channels, table) {
-            return if table.is_opaque_cube(model) {
-                Self::Full
-            } else {
-                Self::Empty
-            };
+            if table.is_opaque_cube(model) {
+                return Self::Full;
+            }
+            if table.partial_sun_shape(model).is_none() {
+                return Self::Empty;
+            }
         }
         let blocks: Vec<u32> = channels.blocks.iter().collect();
         let states: Option<Vec<u32>> = channels.states.map(|states| states.iter().collect());
@@ -41,16 +57,35 @@ impl BrickOccupancy {
             .orientations
             .map(|orientations| orientations.iter().collect());
         let mut words = Box::new([0u32; OCCUPANCY_WORDS]);
+        let mut partials = Vec::new();
         for (index, &block) in blocks.iter().enumerate() {
             let state = states.as_ref().map_or(0, |states| states[index]);
             let orientation = orientations
                 .as_ref()
                 .map_or(0, |orientations| orientations[index]);
-            if table.is_opaque_cube(table.model_of(block, state, orientation)) {
+            let model = table.model_of(block, state, orientation);
+            if table.is_opaque_cube(model) {
                 words[index / 32] |= 1 << (index % 32);
+            } else if let Some(shape) = table.partial_sun_shape(model) {
+                partials.push(PartialVoxel {
+                    voxel: index as u16,
+                    shape: shape as u16,
+                });
             }
         }
-        Self::from_words(words)
+        Self::from_parts(words, partials)
+    }
+
+    /// The occupancy with these bits and these voxels that block in part (in the order of their indexes): `Shaped` if there are any, and else as [`Self::from_words`].
+    pub fn from_parts(words: Box<[u32; OCCUPANCY_WORDS]>, partials: Vec<PartialVoxel>) -> Self {
+        if partials.is_empty() {
+            Self::from_words(words)
+        } else {
+            Self::Shaped {
+                words,
+                partials: partials.into_boxed_slice(),
+            }
+        }
     }
 
     /// The occupancy with these bits, `Empty` or `Full` if they are all alike.
@@ -64,23 +99,41 @@ impl BrickOccupancy {
         }
     }
 
-    /// Whether the voxel blocks the sun.
+    /// Whether the voxel blocks the sun whole.
     pub fn blocks(&self, voxel: LocalVoxelIndex) -> bool {
         match self {
             Self::Empty => false,
             Self::Full => true,
-            Self::Mixed(words) => {
+            Self::Mixed(words) | Self::Shaped { words, .. } => {
                 let index = voxel.index();
                 words[index / 32] >> (index % 32) & 1 == 1
             }
         }
     }
 
-    /// The bits of a `Mixed` brick.
+    /// The shape (the place in the pool of [`BlockTable::shape_cells`]) of the voxel if it blocks the sun in part.
+    pub fn partial_shape(&self, voxel: LocalVoxelIndex) -> Option<u16> {
+        let partials = self.partials();
+        let index = voxel.index() as u16;
+        partials
+            .binary_search_by_key(&index, |partial| partial.voxel)
+            .ok()
+            .map(|found| partials[found].shape)
+    }
+
+    /// The bits of a `Mixed` or `Shaped` brick.
     pub fn words(&self) -> Option<&[u32; OCCUPANCY_WORDS]> {
         match self {
-            Self::Mixed(words) => Some(words),
+            Self::Mixed(words) | Self::Shaped { words, .. } => Some(words),
             Self::Empty | Self::Full => None,
+        }
+    }
+
+    /// The voxels that block the sun in part, in the order of their indexes (none unless the brick is `Shaped`).
+    pub fn partials(&self) -> &[PartialVoxel] {
+        match self {
+            Self::Shaped { partials, .. } => partials,
+            Self::Empty | Self::Full | Self::Mixed(_) => &[],
         }
     }
 }
@@ -151,9 +204,7 @@ mod tests {
             (AIR, 0, BrickOccupancy::Empty),
             (STONE, 0, BrickOccupancy::Full),
             (ROCK, 0, BrickOccupancy::Full),
-            // A bottom slab, a top slab, glass and leaves are not whole opaque cubes: the shadow map speaks for them.
-            (ROCK, 1, BrickOccupancy::Empty),
-            (ROCK, 2, BrickOccupancy::Empty),
+            // Glass and leaves are not whole opaque cubes, nor do they stop the sun in part: the shadow map speaks for them.
             (GLASS, 0, BrickOccupancy::Empty),
             (LEAVES, 0, BrickOccupancy::Empty),
         ] {
@@ -163,6 +214,72 @@ mod tests {
             );
             assert_eq!(found, expected, "block {block} state {state}");
         }
+    }
+
+    /// The shape numbers the table gives the bottom and the top slab of `ROCK`.
+    fn slab_shapes() -> (u16, u16) {
+        let table = table();
+        let shape = |state| {
+            table
+                .partial_sun_shape(table.model_of(ROCK, state, 0))
+                .unwrap() as u16
+        };
+        (shape(1), shape(2))
+    }
+
+    #[test]
+    fn a_brick_of_slabs_is_shaped_with_every_voxel_a_partial_of_the_shape_of_its_slab_and_no_bit_set()
+     {
+        let (bottom, top) = slab_shapes();
+        assert_ne!(bottom, top);
+        for (state, shape) in [(1, bottom), (2, top)] {
+            let found = occupancy_of_values(
+                &vec![ROCK; BRICK_VOXEL_COUNT],
+                Some(&vec![state; BRICK_VOXEL_COUNT]),
+            );
+            assert_eq!(found.partials().len(), BRICK_VOXEL_COUNT);
+            assert!(
+                found
+                    .partials()
+                    .iter()
+                    .enumerate()
+                    .all(|(index, partial)| usize::from(partial.voxel) == index
+                        && partial.shape == shape)
+            );
+            assert_eq!(found.words().unwrap(), &[0u32; OCCUPANCY_WORDS]);
+        }
+    }
+
+    #[test]
+    fn one_slab_in_air_is_a_shaped_brick_that_blocks_nothing_whole_and_one_partial_voxel() {
+        let (bottom, _) = slab_shapes();
+        let mut blocks = vec![AIR; BRICK_VOXEL_COUNT];
+        let mut states = vec![0; BRICK_VOXEL_COUNT];
+        let at = LocalVoxelIndex::new(7, 9, 11);
+        blocks[at.index()] = ROCK;
+        states[at.index()] = 1;
+        let found = occupancy_of_values(&blocks, Some(&states));
+        assert!(matches!(found, BrickOccupancy::Shaped { .. }));
+        assert!(!found.blocks(at));
+        assert_eq!(found.partial_shape(at), Some(bottom));
+        assert_eq!(found.partial_shape(LocalVoxelIndex::new(8, 9, 11)), None);
+        assert_eq!(
+            found.partials(),
+            [PartialVoxel {
+                voxel: at.index() as u16,
+                shape: bottom
+            }]
+        );
+        // A stone beside it sets a bit and leaves the partial as it was; a whole rock block in the slab's place is a whole block and no partial.
+        blocks[LocalVoxelIndex::new(8, 9, 11).index()] = STONE;
+        let with_stone = occupancy_of_values(&blocks, Some(&states));
+        assert!(with_stone.blocks(LocalVoxelIndex::new(8, 9, 11)));
+        assert_eq!(with_stone.partials(), found.partials());
+        states[at.index()] = 0;
+        let whole = occupancy_of_values(&blocks, Some(&states));
+        assert!(matches!(whole, BrickOccupancy::Mixed(_)));
+        assert!(whole.blocks(at));
+        assert_eq!(whole.partial_shape(at), None);
     }
 
     #[test]
@@ -304,16 +421,43 @@ mod tests {
                 .zip(&states)
                 .map(|(&block, &state)| blocks_by_the_table(&table, block, state))
                 .collect();
+            let partial_expected: Vec<Option<u16>> = blocks
+                .iter()
+                .zip(&states)
+                .map(|(&block, &state)| {
+                    table
+                        .partial_sun_shape(table.model_of(block, state, 0))
+                        .map(|shape| shape as u16)
+                })
+                .collect();
             for (index, &expected) in expected.iter().enumerate() {
                 let voxel = LocalVoxelIndex::from_index(index).unwrap();
                 prop_assert_eq!(found.blocks(voxel), expected, "voxel {}", index);
+                prop_assert_eq!(found.partial_shape(voxel), partial_expected[index], "voxel {}", index);
             }
+            // The partials are exactly the voxels the table gives a shape, in order.
+            let listed: Vec<u16> = found.partials().iter().map(|partial| partial.voxel).collect();
+            let wanted: Vec<u16> = (0..BRICK_VOXEL_COUNT)
+                .filter(|&index| partial_expected[index].is_some())
+                .map(|index| index as u16)
+                .collect();
+            prop_assert_eq!(listed, wanted);
             match &found {
-                BrickOccupancy::Empty => prop_assert!(expected.iter().all(|&blocks| !blocks)),
+                BrickOccupancy::Empty => {
+                    prop_assert!(expected.iter().all(|&blocks| !blocks));
+                    prop_assert!(partial_expected.iter().all(Option::is_none));
+                }
                 BrickOccupancy::Full => prop_assert!(expected.iter().all(|&blocks| blocks)),
                 BrickOccupancy::Mixed(words) => {
                     prop_assert!(expected.iter().any(|&blocks| blocks));
                     prop_assert!(expected.iter().any(|&blocks| !blocks));
+                    prop_assert!(partial_expected.iter().all(Option::is_none));
+                    for (index, &expected) in expected.iter().enumerate() {
+                        prop_assert_eq!((words[index / 32] >> (index % 32)) & 1 == 1, expected);
+                    }
+                }
+                BrickOccupancy::Shaped { words, partials } => {
+                    prop_assert!(!partials.is_empty());
                     for (index, &expected) in expected.iter().enumerate() {
                         prop_assert_eq!((words[index / 32] >> (index % 32)) & 1 == 1, expected);
                     }

@@ -381,6 +381,8 @@ pub struct RenderStatistics {
     /// How many windows of voxels that block the sun the faces were traced in this frame (0: the picture was drawn with the shader that has no walk of the sun's ray, which is
     /// the case while no voxel that blocks the sun was told of, and while there are no shadows).
     pub traced_windows: usize,
+    /// Whether the walk was the one that goes through the eighths of voxels that block the sun in part (some brick has such voxels), which is a shader of its own and slower.
+    pub walked_shapes: bool,
 }
 
 /// What the shader that walks the sun's ray through the voxels draws instead of the picture, to look at the walk alone (a tool for the tests of the walk, and for whoever
@@ -904,6 +906,9 @@ pub struct VoxelRenderer {
     contact_debug: ContactDebug,
     /// Whether the picture draws only the faces of a brick that can look at the camera (see [`GpuBrick::each_range_facing_camera`]); on unless a test turns it off.
     skip_faces_looking_away: bool,
+    /// The cells of the shapes of the block table that stop the sun in part (`BlockTable::shape_cells`), and whether the graphics card has them yet.
+    sun_shapes: Vec<[u64; 8]>,
+    sun_shapes_written: bool,
     bricks: HashMap<BrickCoordinate, GpuBrick>,
     /// The bricks of ships, in the ships' own coordinates, and where each ship is. A ship without a pose is not drawn.
     ship_bricks: HashMap<(GridId, BrickCoordinate), GpuBrick>,
@@ -1058,7 +1063,7 @@ impl VoxelRenderer {
             immediate_size: 0,
         });
 
-        let shader = voxel_shader(&device, false, false);
+        let shader = voxel_shader(&device, false, SunWalk::None);
         let (pipeline, detailed_pipeline) =
             voxel_pipelines(&device, &pipeline_layout, &shader, color_format);
 
@@ -1208,6 +1213,8 @@ impl VoxelRenderer {
             contact: None,
             contact_debug: ContactDebug::Off,
             skip_faces_looking_away: true,
+            sun_shapes: Vec::new(),
+            sun_shapes_written: false,
             bricks: HashMap::new(),
             ship_bricks: HashMap::new(),
             coarse_nodes: HashMap::new(),
@@ -1414,7 +1421,7 @@ impl VoxelRenderer {
         // (Bit 17 of a picture's word says the block cuts holes: see `FacePicture::word`.)
         self.cutouts_in_use = words.iter().any(|&word| word & (1 << 17) != 0);
         if self.pictures_in_use && self.picture_shader.is_none() {
-            self.picture_shader = Some(voxel_shader(&self.device, true, false));
+            self.picture_shader = Some(voxel_shader(&self.device, true, SunWalk::None));
         }
         if let Some(shader) = &self.picture_shader {
             if self.pictures_in_use && self.picture_pipelines.is_none() {
@@ -1744,6 +1751,15 @@ impl VoxelRenderer {
         self.skip_faces_looking_away = enabled;
     }
 
+    /// Tells the renderer the cells of the shapes of the block table (`BlockTable::shape_cells`), which the voxels that block the sun in part
+    /// ([`voxel_meshing::BrickOccupancy::Shaped`]) refer to by their places in the list. Without them such a voxel is taken to be clear.
+    pub fn set_sun_shapes(&mut self, shapes: &[[u64; 8]]) {
+        if self.sun_shapes != shapes {
+            self.sun_shapes = shapes.to_vec();
+            self.sun_shapes_written = false;
+        }
+    }
+
     /// Makes the graphics card's side of the volume when the first voxel that blocks the sun is told of, and writes what changed since the last picture into it.
     fn prepare_volume(&mut self) {
         if self.contact.is_none() {
@@ -1755,16 +1771,25 @@ impl VoxelRenderer {
                 &self.frame_layout,
                 &self.placement_layout,
                 self.volume.maximum_slots(),
+                self.volume.maximum_partial_slots(),
             ));
+            self.sun_shapes_written = false;
         }
         if let Some(contact) = &mut self.contact {
-            let changes = self.volume.drain();
+            if !self.sun_shapes_written {
+                contact.set_shapes(&self.device, &self.queue, &self.sun_shapes);
+                self.sun_shapes_written = true;
+            }
+            let mut changes = self.volume.drain();
+            let partial_slots = std::mem::take(&mut changes.partial_slots);
             contact.write(
                 &self.device,
                 &self.queue,
                 changes,
                 self.volume.slots_wanted(),
+                self.volume.partial_slots_wanted(),
             );
+            contact.write_partial_slots(&self.queue, partial_slots);
         }
     }
 
@@ -2306,8 +2331,11 @@ impl VoxelRenderer {
             && traced_windows > 0
             && (shadows.is_some() || self.contact_debug != ContactDebug::Off);
         let with_pictures = self.pictures_in_use && self.picture_distance > 0.0;
+        // The walk goes through the eighths of voxels that block the sun in part only while some brick has such voxels: the code for it makes the shader slower even where there
+        // are none.
+        let with_shapes = self.volume.has_partials();
         if tracing && let Some(contact) = &mut self.contact {
-            contact.ensure_pipelines(&self.device, self.color_format, with_pictures);
+            contact.ensure_pipelines(&self.device, self.color_format, with_pictures, with_shapes);
         }
 
         // Each thing drawn has a place in the buffer of placements: the pictures' first (bricks, then avatars, then boxes), then what only the shadow maps draw.
@@ -2343,6 +2371,7 @@ impl VoxelRenderer {
                 .count(),
             bricks_culled: pieces - visible.len(),
             traced_windows: if tracing { traced_windows } else { 0 },
+            walked_shapes: tracing && with_shapes,
             quads_drawn: visible
                 .iter()
                 .map(|&index| self.mesh(drawables[index].mesh).quad_total())
@@ -2537,7 +2566,7 @@ impl VoxelRenderer {
             let (whole_pipeline, detailed_pipeline) = match (&self.contact, tracing) {
                 (Some(contact), true) => {
                     pass.set_bind_group(2, contact.bind_group_ref(), &[]);
-                    let (whole, detailed) = contact.pipelines(with_pictures);
+                    let (whole, detailed) = contact.pipelines(with_pictures, with_shapes);
                     (whole, detailed)
                 }
                 _ => match &self.picture_pipelines {
@@ -2959,33 +2988,53 @@ impl VoxelRenderer {
 /// The voxel shader: `voxel.wgsl` and, for what a face looks like where it may have a picture, either `pictures_on.wgsl` (the pictures are read from their textures) or
 /// `pictures_off.wgsl` (they are not, and the shader uses no texture at all); and for the walk of the sun's ray through the voxels that block it, either `contact_on.wgsl` (it is
 /// walked, in the buffers of the third bind group) or `contact_off.wgsl` (it is not, and the shader uses no buffer for it).
+/// How much of the walk of the sun's ray the fragment shader has: none, the walk through voxels that block the sun whole, or that and the walk through the eighths of those that block
+/// it in part.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SunWalk {
+    None,
+    Voxels,
+    VoxelsAndShapes,
+}
+
 pub(crate) fn voxel_shader(
     device: &wgpu::Device,
     with_pictures: bool,
-    with_contact: bool,
+    walk: SunWalk,
 ) -> wgpu::ShaderModule {
     let pictures = if with_pictures {
         include_str!("pictures_on.wgsl")
     } else {
         include_str!("pictures_off.wgsl")
     };
-    let contact = if with_contact {
-        include_str!("contact_on.wgsl")
-    } else {
-        include_str!("contact_off.wgsl")
+    let (contact, shapes) = match walk {
+        SunWalk::None => (include_str!("contact_off.wgsl"), ""),
+        SunWalk::Voxels => (
+            include_str!("contact_on.wgsl"),
+            include_str!("shapes_off.wgsl"),
+        ),
+        SunWalk::VoxelsAndShapes => (
+            include_str!("contact_on.wgsl"),
+            include_str!("shapes_on.wgsl"),
+        ),
     };
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(match (with_pictures, with_contact) {
-            (false, false) => "voxel shader",
-            (true, false) => "voxel shader with pictures",
-            (false, true) => "voxel shader with the sun's ray",
-            (true, true) => "voxel shader with pictures and the sun's ray",
+        label: Some(match (with_pictures, walk) {
+            (false, SunWalk::None) => "voxel shader",
+            (true, SunWalk::None) => "voxel shader with pictures",
+            (false, SunWalk::Voxels) => "voxel shader with the sun's ray",
+            (true, SunWalk::Voxels) => "voxel shader with pictures and the sun's ray",
+            (false, SunWalk::VoxelsAndShapes) => "voxel shader with the sun's ray and shapes",
+            (true, SunWalk::VoxelsAndShapes) => {
+                "voxel shader with pictures and the sun's ray and shapes"
+            }
         }),
         source: wgpu::ShaderSource::Wgsl(
             format!(
                 "{}
 {pictures}
-{contact}",
+{contact}
+{shapes}",
                 include_str!("voxel.wgsl")
             )
             .into(),

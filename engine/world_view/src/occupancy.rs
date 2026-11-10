@@ -26,6 +26,8 @@ pub struct OccupancyStatistics {
     pub empty: usize,
     pub full: usize,
     pub mixed: usize,
+    /// Bricks with a voxel that blocks the sun in part (a slab, a stair), and so a list of shapes.
+    pub shaped: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +35,7 @@ enum Class {
     Empty,
     Full,
     Mixed,
+    Shaped,
 }
 
 /// The changes to the occupancy of the bricks of a mesher (keyed by brick, or by ship and brick), and what the renderer has been told, so that only a change is sent: a brick
@@ -76,6 +79,7 @@ impl<K: Copy + Eq + Hash + Ord> OccupancyLog<K> {
             BrickOccupancy::Empty => Class::Empty,
             BrickOccupancy::Full => Class::Full,
             BrickOccupancy::Mixed(_) => Class::Mixed,
+            BrickOccupancy::Shaped { .. } => Class::Shaped,
         };
         if self.sent.get(&key) == Some(&(digest, class)) {
             return;
@@ -117,6 +121,7 @@ impl<K: Copy + Eq + Hash + Ord> OccupancyLog<K> {
                 Class::Empty => statistics.empty += 1,
                 Class::Full => statistics.full += 1,
                 Class::Mixed => statistics.mixed += 1,
+                Class::Shaped => statistics.shaped += 1,
             }
         }
         statistics
@@ -133,6 +138,17 @@ mod tests {
         let mut words = Box::new([0u32; OCCUPANCY_WORDS]);
         words[bit / 32] |= 1 << (bit % 32);
         BrickOccupancy::from_words(words)
+    }
+
+    fn shaped(voxel: u16, shape: u16) -> BrickOccupancy {
+        BrickOccupancy::from_parts(
+            Box::new([0u32; OCCUPANCY_WORDS]),
+            vec![voxel_partial(voxel, shape)],
+        )
+    }
+
+    fn voxel_partial(voxel: u16, shape: u16) -> voxel_meshing::PartialVoxel {
+        voxel_meshing::PartialVoxel { voxel, shape }
     }
 
     fn log() -> OccupancyLog<u32> {
@@ -191,6 +207,34 @@ mod tests {
     }
 
     #[test]
+    fn a_brick_with_a_partial_voxel_is_sent_and_sent_again_when_its_shape_or_its_place_changes_and_not_when_it_does_not()
+     {
+        let mut log = log();
+        log.set(1, shaped(5, 3));
+        log.set(1, shaped(5, 3));
+        assert_eq!(log.take(), [(1, OccupancyChange::Set(shaped(5, 3)))]);
+        // The same bits and another shape, or the same shape in another voxel, is a change.
+        log.set(1, shaped(5, 4));
+        log.set(1, shaped(6, 4));
+        assert_eq!(
+            log.take(),
+            [
+                (1, OccupancyChange::Set(shaped(5, 4))),
+                (1, OccupancyChange::Set(shaped(6, 4)))
+            ]
+        );
+        // A brick of nothing that blocks and one that has a slab in it are not the same brick.
+        log.set(1, BrickOccupancy::Empty);
+        assert_eq!(
+            log.take(),
+            [(1, OccupancyChange::Set(BrickOccupancy::Empty))]
+        );
+        assert_eq!(log.statistics().empty, 1);
+        log.set(2, shaped(0, 1));
+        assert_eq!(log.statistics().shaped, 1);
+    }
+
+    #[test]
     fn clearing_all_clears_each_brick_that_was_sent_in_order_and_forgetting_sends_nothing() {
         let mut log = log();
         for key in [5, 3, 9, 1] {
@@ -232,7 +276,8 @@ mod tests {
             OccupancyStatistics {
                 empty: 1,
                 full: 2,
-                mixed: 1
+                mixed: 1,
+                shaped: 0
             }
         );
     }

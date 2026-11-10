@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use proptest::prelude::*;
-use voxel_meshing::{BrickOccupancy, OCCUPANCY_WORDS};
+use voxel_meshing::{BrickOccupancy, OCCUPANCY_WORDS, PartialVoxel};
 use voxel_space::{BrickCoordinate, GridId};
 
 use super::*;
@@ -26,6 +26,7 @@ fn mixed_with(voxels: &[[usize; 3]]) -> BrickOccupancy {
 struct Memory {
     tables: Vec<Vec<u32>>,
     pool: Vec<u32>,
+    partial_pool: Vec<u32>,
 }
 
 impl Memory {
@@ -33,6 +34,7 @@ impl Memory {
         Self {
             tables: vec![vec![0; WINDOW_ENTRIES]; MAXIMUM_WINDOWS],
             pool: Vec::new(),
+            partial_pool: Vec::new(),
         }
     }
 
@@ -48,6 +50,33 @@ impl Memory {
             }
             self.pool[first..first + OCCUPANCY_WORDS].copy_from_slice(&write.words[..]);
         }
+        for write in changes.partial_slots {
+            let first = write.slot as usize * PARTIAL_SLOT_WORDS;
+            if self.partial_pool.len() < first + PARTIAL_SLOT_WORDS {
+                self.partial_pool.resize(first + PARTIAL_SLOT_WORDS, 0);
+            }
+            self.partial_pool[first..first + PARTIAL_SLOT_WORDS].copy_from_slice(&write.words[..]);
+        }
+    }
+
+    /// What the walk of the shader reads of the shape of a voxel: the shape of a voxel that blocks the sun in part (`partial_shape` in `contact_on.wgsl`).
+    fn partial_shape(&self, window: usize, voxel: [i128; 3]) -> Option<u16> {
+        let coordinate = brick(
+            voxel[0].div_euclid(32),
+            voxel[1].div_euclid(32),
+            voxel[2].div_euclid(32),
+        );
+        let entry = self.tables[window][table_index(coordinate)];
+        let slot = (entry >> PARTIAL_ENTRY_SHIFT) as usize;
+        if slot == 0 {
+            return None;
+        }
+        let index = (voxel[2].rem_euclid(32) * 1024
+            + voxel[1].rem_euclid(32) * 32
+            + voxel[0].rem_euclid(32)) as usize;
+        let word = self.partial_pool[(slot - 1) * PARTIAL_SLOT_WORDS + index / 2];
+        let number = (word >> (16 * (index % 2))) & 0xFFFF;
+        number.checked_sub(1).map(|shape| shape as u16)
     }
 
     /// What the walk of the shader reads for a voxel of the grid of `window`: `None` where nothing is known, else whether it blocks the sun. (The same lookup as
@@ -58,7 +87,7 @@ impl Memory {
             voxel[1].div_euclid(32),
             voxel[2].div_euclid(32),
         );
-        match self.tables[window][table_index(coordinate)] {
+        match self.tables[window][table_index(coordinate)] & BITS_ENTRY_MASK {
             ENTRY_UNKNOWN => None,
             ENTRY_EMPTY => Some(false),
             ENTRY_FULL => Some(true),
@@ -463,6 +492,136 @@ fn the_slots_wanted_follow_the_highest_slot_ever_used_so_that_the_pool_only_grow
     assert_eq!(volume.slots_wanted(), 10);
 }
 
+/// A brick with these voxels blocking the sun in part, each of the shape given, and no bits set.
+fn shaped_with(partials: &[(usize, u16)]) -> BrickOccupancy {
+    BrickOccupancy::from_parts(
+        Box::new([0u32; OCCUPANCY_WORDS]),
+        partials
+            .iter()
+            .map(|&(voxel, shape)| PartialVoxel {
+                voxel: voxel as u16,
+                shape,
+            })
+            .collect(),
+    )
+}
+
+#[test]
+fn a_brick_with_partial_voxels_has_a_partial_slot_whose_number_is_in_the_upper_half_of_its_entry_and_that_is_all_the_shader_needs()
+ {
+    let mut volume = Volume::new(64);
+    let mut memory = Memory::new();
+    // A slab (shape 0, which must not be mistaken for none) at the voxel (3, 4, 5), and a stair (shape 41) at (31, 31, 31), the last voxel of the last word.
+    let at = |x: usize, y: usize, z: usize| z * 1024 + y * 32 + x;
+    volume.set(
+        VolumeKey::Terrain,
+        brick(2, 0, 0),
+        &shaped_with(&[(at(3, 4, 5), 0), (at(31, 31, 31), 41)]),
+    );
+    drained(&mut volume, &mut memory);
+    let window = volume
+        .window_of(VolumeKey::Terrain)
+        .expect("slabs are something that blocks the sun");
+    let voxel = |x: i128, y: i128, z: i128| [64 + x, y, z];
+    assert_eq!(memory.partial_shape(window, voxel(3, 4, 5)), Some(0));
+    assert_eq!(memory.partial_shape(window, voxel(31, 31, 31)), Some(41));
+    assert_eq!(memory.partial_shape(window, voxel(3, 4, 6)), None);
+    assert_eq!(memory.partial_shape(window, voxel(2, 4, 5)), None);
+    // Its bits say nothing blocks whole, and its entry is the slot of the bits.
+    assert_eq!(memory.blocks(window, voxel(3, 4, 5)), Some(false));
+    let statistics = volume.statistics();
+    assert_eq!((statistics.shaped, statistics.partial_slots_in_use), (1, 1));
+    // A brick with no partial voxel has no upper half to its entry.
+    volume.set(
+        VolumeKey::Terrain,
+        brick(3, 0, 0),
+        &mixed_with(&[[1, 1, 1]]),
+    );
+    drained(&mut volume, &mut memory);
+    assert_eq!(
+        memory.tables[window][table_index(brick(3, 0, 0))] >> PARTIAL_ENTRY_SHIFT,
+        0
+    );
+}
+
+#[test]
+fn a_window_that_holds_only_slabs_is_active_and_goes_inactive_when_the_slabs_do() {
+    let mut volume = Volume::new(64);
+    volume.set(VolumeKey::Terrain, brick(0, 0, 0), &shaped_with(&[(7, 3)]));
+    assert!(volume.is_active());
+    assert!(volume.window_of(VolumeKey::Terrain).is_some());
+    // Told again as air: the slot is given back and nothing blocks the sun.
+    volume.set(VolumeKey::Terrain, brick(0, 0, 0), &BrickOccupancy::Empty);
+    assert!(!volume.is_active());
+    assert_eq!(volume.statistics().partial_slots_in_use, 0);
+    // Told as slabs again, then cleared: also given back, once.
+    volume.set(VolumeKey::Terrain, brick(0, 0, 0), &shaped_with(&[(7, 3)]));
+    volume.clear(VolumeKey::Terrain, brick(0, 0, 0));
+    assert_eq!(volume.statistics().partial_slots_in_use, 0);
+    assert!(!volume.is_active());
+}
+
+#[test]
+fn a_brick_keeps_its_partial_slot_while_it_has_partial_voxels_and_a_change_of_shape_is_written() {
+    let mut volume = Volume::new(64);
+    let mut memory = Memory::new();
+    volume.set(VolumeKey::Terrain, brick(0, 0, 0), &shaped_with(&[(10, 2)]));
+    drained(&mut volume, &mut memory);
+    volume.set(
+        VolumeKey::Terrain,
+        brick(0, 0, 0),
+        &shaped_with(&[(10, 5), (11, 6)]),
+    );
+    assert_eq!(volume.partial_slots_wanted(), 1, "the brick kept its slot");
+    drained(&mut volume, &mut memory);
+    let window = volume.window_of(VolumeKey::Terrain).unwrap();
+    assert_eq!(memory.partial_shape(window, [10, 0, 0]), Some(5));
+    assert_eq!(memory.partial_shape(window, [11, 0, 0]), Some(6));
+    // A brick of bits and slabs together: both are held, in slots of their own.
+    let mut words = Box::new([0u32; OCCUPANCY_WORDS]);
+    words[0] = 1;
+    volume.set(
+        VolumeKey::Terrain,
+        brick(1, 0, 0),
+        &BrickOccupancy::from_parts(words, vec![PartialVoxel { voxel: 5, shape: 1 }]),
+    );
+    drained(&mut volume, &mut memory);
+    assert_eq!(memory.blocks(window, [32, 0, 0]), Some(true));
+    assert_eq!(memory.partial_shape(window, [32 + 5, 0, 0]), Some(1));
+}
+
+#[test]
+fn when_there_are_no_partial_slots_left_the_brick_is_traced_by_its_bits_and_counted_and_a_slot_given_back_is_used()
+ {
+    // A pool for 16 mixed bricks has room for one partial brick.
+    let mut volume = Volume::new(SLOTS_PER_PARTIAL_SLOT);
+    let mut memory = Memory::new();
+    volume.set(VolumeKey::Terrain, brick(0, 0, 0), &shaped_with(&[(1, 1)]));
+    let mut words = Box::new([0u32; OCCUPANCY_WORDS]);
+    words[0] = 0b100;
+    volume.set(
+        VolumeKey::Terrain,
+        brick(1, 0, 0),
+        &BrickOccupancy::from_parts(words, vec![PartialVoxel { voxel: 5, shape: 1 }]),
+    );
+    assert_eq!(volume.statistics().rejected, 1);
+    drained(&mut volume, &mut memory);
+    let window = volume.window_of(VolumeKey::Terrain).unwrap();
+    // (The second brick's bits are known; its partial voxel is not.)
+    assert_eq!(memory.blocks(window, [32 + 2, 0, 0]), Some(true));
+    assert_eq!(memory.partial_shape(window, [32 + 5, 0, 0]), None);
+    volume.clear(VolumeKey::Terrain, brick(0, 0, 0));
+    let mut words = Box::new([0u32; OCCUPANCY_WORDS]);
+    words[0] = 0b100;
+    volume.set(
+        VolumeKey::Terrain,
+        brick(1, 0, 0),
+        &BrickOccupancy::from_parts(words, vec![PartialVoxel { voxel: 5, shape: 1 }]),
+    );
+    drained(&mut volume, &mut memory);
+    assert_eq!(memory.partial_shape(window, [32 + 5, 0, 0]), Some(1));
+}
+
 /// One thing done to a volume.
 #[derive(Clone, Debug)]
 enum Operation {
@@ -482,6 +641,24 @@ fn arbitrary_occupancy() -> impl Strategy<Value = BrickOccupancy> {
     prop_oneof![
         2 => Just(BrickOccupancy::Empty),
         2 => Just(BrickOccupancy::Full),
+        2 => (
+            proptest::collection::btree_map(0u16..32 * 32 * 32, 0u16..300, 1..30),
+            proptest::collection::vec(0u32..32 * 32 * 32, 0..10),
+        )
+            .prop_map(|(partials, wholes)| {
+                // (A voxel is partial or whole, not both.)
+                let mut words = Box::new([0u32; OCCUPANCY_WORDS]);
+                for voxel in wholes {
+                    if !partials.contains_key(&(voxel as u16)) {
+                        words[voxel as usize / 32] |= 1 << (voxel % 32);
+                    }
+                }
+                let partials = partials
+                    .into_iter()
+                    .map(|(voxel, shape)| PartialVoxel { voxel, shape })
+                    .collect();
+                BrickOccupancy::from_parts(words, partials)
+            }),
         3 => proptest::collection::vec(0u32..32 * 32 * 32, 1..40).prop_map(|voxels| {
             let mut words = Box::new([0u32; OCCUPANCY_WORDS]);
             for voxel in voxels {
@@ -562,10 +739,29 @@ proptest! {
             // (A window with nothing solid is not given to the shader, so only an active one is read.)
             if let Some(window) = window {
                 prop_assert_eq!(memory.blocks(window, voxel), expected, "grid {} voxel {:?}", grid, voxel);
+                let expected_shape = model
+                    .get(&(grid, table_index(coordinate)))
+                    .and_then(|(_, occupancy)| {
+                        occupancy.partial_shape(voxel_space::LocalVoxelIndex::new(
+                            x.rem_euclid(32) as u8,
+                            y.rem_euclid(32) as u8,
+                            z.rem_euclid(32) as u8,
+                        ))
+                    });
+                prop_assert_eq!(memory.partial_shape(window, voxel), expected_shape, "grid {} voxel {:?}", grid, voxel);
             }
         }
         // Every slot in use is some mixed brick's, once.
-        let mixed = model.values().filter(|(_, occupancy)| matches!(occupancy, BrickOccupancy::Mixed(_))).count();
+        let mixed = model
+            .values()
+            .filter(|(_, occupancy)| matches!(occupancy, BrickOccupancy::Mixed(_) | BrickOccupancy::Shaped { .. }))
+            .count();
         prop_assert_eq!(volume.statistics().slots_in_use, mixed);
+        // And every partial slot in use is some shaped brick's, once.
+        let shaped = model
+            .values()
+            .filter(|(_, occupancy)| matches!(occupancy, BrickOccupancy::Shaped { .. }))
+            .count();
+        prop_assert_eq!(volume.statistics().partial_slots_in_use, shaped);
     }
 }

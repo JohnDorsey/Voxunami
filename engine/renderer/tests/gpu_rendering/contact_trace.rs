@@ -11,10 +11,10 @@
 
 use super::*;
 
-const BIG: u32 = 256;
+pub(super) const BIG: u32 = 256;
 
 /// The occupancy of a brick whose voxels `blocks` says block the sun.
-fn occupancy_where(blocks: impl Fn(usize, usize, usize) -> bool) -> BrickOccupancy {
+pub(super) fn occupancy_where(blocks: impl Fn(usize, usize, usize) -> bool) -> BrickOccupancy {
     let mut words = Box::new([0u32; OCCUPANCY_WORDS]);
     for z in 0..32usize {
         for y in 0..32usize {
@@ -40,7 +40,7 @@ fn block_scene_renderer(context: &GraphicsContext) -> VoxelRenderer {
 }
 
 /// A picture `size` pixels across, once a frame after it repeats it exactly (see `settled`).
-fn settled_at(renderer: &mut VoxelRenderer, camera: &Camera, size: u32) -> Vec<u8> {
+pub(super) fn settled_at(renderer: &mut VoxelRenderer, camera: &Camera, size: u32) -> Vec<u8> {
     let mut previous = renderer.render_to_rgba(camera, size, size).0;
     for _ in 0..30 {
         let next = renderer.render_to_rgba(camera, size, size).0;
@@ -77,14 +77,14 @@ fn big_brightness(image: &[u8], x: u32, y: u32) -> f64 {
 
 /// The direction to a sun this many degrees over the +x horizon.
 #[allow(clippy::disallowed_methods)] // a test of cosmetics, not simulation
-fn sun_at(elevation: f64) -> [f32; 3] {
+pub(super) fn sun_at(elevation: f64) -> [f32; 3] {
     let radians = elevation.to_radians();
     [radians.cos() as f32, radians.sin() as f32, 0.0]
 }
 
 /// The tangent of an elevation in degrees.
 #[allow(clippy::disallowed_methods)] // a test of cosmetics, not simulation
-fn elevation_tangent(elevation: f64) -> f64 {
+pub(super) fn elevation_tangent(elevation: f64) -> f64 {
     elevation.to_radians().tan()
 }
 
@@ -99,6 +99,28 @@ fn strip_holes(
     z: f64,
     margin: f64,
 ) -> (usize, usize) {
+    let true_end = 4.0 / elevation_tangent(elevation);
+    floor_row(
+        renderer,
+        elevation,
+        height,
+        z,
+        0.004,
+        (true_end - margin).min(1.5),
+    )
+}
+
+/// How many pixels of the floor in front of the west foot of a wall (x = 14, along the row `z`) are lit, and how many there were, from `from` to `to` voxels from the foot:
+/// seen from straight above at `height` voxels over the floor with the sun at `elevation` degrees over the +x horizon. A pixel is lit if it has at least half the light it has with
+/// the shadows off. Returns (lit, counted).
+pub(super) fn floor_row(
+    renderer: &mut VoxelRenderer,
+    elevation: f64,
+    height: i128,
+    z: f64,
+    from: f64,
+    to: f64,
+) -> (usize, usize) {
     let sun = sun_at(elevation);
     // Looking down as far as a camera can (a degree short of straight down): the camera is moved back so that the foot is where it looks, however high it is.
     let behind = height as f64 * elevation_tangent(90.0 - Camera::MAXIMUM_PITCH.to_degrees());
@@ -107,13 +129,15 @@ fn strip_holes(
     camera.pitch = -Camera::MAXIMUM_PITCH;
     camera.vertical_field_of_view = (0.17 * 20.0 / height as f64) as f32;
     let (on, off) = shadows_on_and_off(renderer, sun, &camera);
-    let true_end = 4.0 / elevation_tangent(elevation);
-    let (mut holes, mut counted) = (0, 0);
+    let (mut lit, mut counted) = (0, 0);
     let mut last = None;
     for step in 1..=400 {
         let distance = f64::from(step) * 0.004;
-        if distance > true_end - margin || distance > 1.5 {
+        if distance > to {
             break;
+        }
+        if distance < from {
+            continue;
         }
         let Some((x, y)) = pixel_of_sized(&camera, [-distance, -height as f64, -behind], BIG)
         else {
@@ -125,10 +149,10 @@ fn strip_holes(
         last = Some((x, y));
         counted += 1;
         if big_brightness(&on, x, y) / big_brightness(&off, x, y) >= 0.5 {
-            holes += 1;
+            lit += 1;
         }
     }
-    (holes, counted)
+    (lit, counted)
 }
 
 const ELEVATIONS: [f64; 9] = [5.0, 15.0, 30.0, 53.0, 60.0, 75.0, 80.0, 85.0, 88.0];
@@ -655,7 +679,7 @@ fn exact_answer(soup: &Soup, probe: &Probe, toward_sun: [f64; 3], cells: u32) ->
 
 /// The suns (toward the sun, in the world) the walk is tried with: some with a part of exactly zero (a ray along a lattice plane, or along an axis: the case a first
 /// version of the shader got wrong), some through a diagonal, some neither.
-const SUNS: [[f32; 3]; 12] = [
+pub(super) const SUNS: [[f32; 3]; 12] = [
     [0.6, 0.8, 0.0],
     [0.0, 1.0, 0.0],
     [1.0, 1.0, 0.0],
@@ -685,7 +709,7 @@ fn shader_answer(renderer: &mut VoxelRenderer, probe: &Probe, mount: Mount) -> b
 }
 
 /// Lights the renderer's scene with the sun in this direction, for the walk's answer to be looked at.
-fn set_sun_for_the_walk(renderer: &mut VoxelRenderer, sun: [f32; 3]) {
+pub(super) fn set_sun_for_the_walk(renderer: &mut VoxelRenderer, sun: [f32; 3]) {
     renderer.set_atmosphere(Atmosphere {
         sky_color: SKY,
         fog_start: 1000.0,

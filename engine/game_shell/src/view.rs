@@ -24,6 +24,8 @@ pub fn configure_renderer(
         &picture_sizes(&package.tile_classes),
     );
     renderer.set_atmosphere(atmosphere(view_radius_bricks, package.ambient_light));
+    // (The shapes the voxels that block the sun in part refer to: `docs/specs/contact-trace-spec.md`, section 13.)
+    renderer.set_sun_shapes(&block_table.shape_cells());
 }
 
 /// The pictures of a game's blocks as the renderer takes them: a size at a time, smallest first, which is the order the table's picture words count the sizes in.

@@ -122,7 +122,12 @@ fn every_brick_that_is_meshed_is_told_of_the_buried_and_the_sky_ones_too_and_a_m
     }
     assert_eq!(
         mesher.occupancy_statistics(),
-        OccupancyStatistics { empty, full, mixed }
+        OccupancyStatistics {
+            empty,
+            full,
+            mixed,
+            shaped: 0,
+        }
     );
     assert_eq!((mixed, full + empty), (29, expected.len() - 29));
 

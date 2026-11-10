@@ -233,11 +233,12 @@ fn report_occupancy<C: Connection, G: GameDefinition>(
     let report = session.occupancy_statistics();
     let line = |label: String, counts: world_view::OccupancyStatistics| {
         println!(
-            "occupancy of {label}: {} empty, {} full, {} mixed ({:.1} MB for the mixed)",
+            "occupancy of {label}: {} empty, {} full, {} mixed, {} shaped ({:.1} MB for the mixed and shaped)",
             counts.empty,
             counts.full,
             counts.mixed,
-            (counts.mixed * MIXED_BRICK_BYTES) as f64 / 1.0e6
+            counts.shaped,
+            ((counts.mixed + counts.shaped) * MIXED_BRICK_BYTES) as f64 / 1.0e6
         );
     };
     line("the terrain of the level".to_owned(), report.terrain);

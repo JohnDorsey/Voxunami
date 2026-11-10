@@ -437,7 +437,8 @@ mod tests {
             OccupancyStatistics {
                 empty: 0,
                 full: 0,
-                mixed: 1
+                mixed: 1,
+                shaped: 0
             }
         );
 

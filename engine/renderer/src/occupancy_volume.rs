@@ -3,14 +3,16 @@
 //!
 //! Each grid that has bricks in view has a **window**: a table of 64 by 64 by 64 entries that holds one entry for each brick, at the place of the brick's coordinates modulo 64.
 //! An entry says that nothing is known of the brick (the walk ends there, clear), that no voxel of it blocks the sun, that every voxel does, or which **slot** of the pool holds
-//! its bits (4 KB, one bit for each voxel, [`voxel_meshing::BrickOccupancy`]'s layout). Two bricks that are a window apart share a place in the table, and the one told of last
+//! its bits (4 KB, one bit for each voxel, [`voxel_meshing::BrickOccupancy`]'s layout). A brick that has voxels that block the sun in part (a slab, a stair) has also a **partial
+//! slot** (64 KB: a 16-bit number for each voxel, the shape of the voxel plus one, or 0 for a voxel that is not partial), whose number plus one is in the entry's upper half.
+//! Two bricks that are a window apart share a place in the table, and the one told of last
 //! wins: the older is forgotten, so the table never answers for a brick other than the one asked about, which is an unknown brick and so clear.
 //!
 //! The changes are collected here and handed over by [`Volume::drain`], to be written into the buffers in one go before a picture is drawn.
 
 use std::collections::{BTreeSet, HashMap};
 
-use voxel_meshing::{BrickOccupancy, OCCUPANCY_WORDS};
+use voxel_meshing::{BrickOccupancy, OCCUPANCY_WORDS, PartialVoxel};
 use voxel_space::{BrickCoordinate, GridId};
 
 /// How many bricks a window is across, along each axis. A power of two, and more than the bricks of the widest view (33 for a radius of 16).
@@ -21,6 +23,15 @@ pub(crate) const WINDOW_ENTRIES: usize = WINDOW_BRICKS * WINDOW_BRICKS * WINDOW_
 pub(crate) const MAXIMUM_WINDOWS: usize = 4;
 /// The bytes of a slot of the pool.
 pub(crate) const SLOT_BYTES: usize = OCCUPANCY_WORDS * 4;
+/// The words of a partial slot: two voxels (16 bits each) to a word.
+pub(crate) const PARTIAL_SLOT_WORDS: usize = 32 * 32 * 32 / 2;
+/// The bytes of a partial slot, which is as much memory as this many slots of the pool: the partial pool may have a sixteenth as many.
+pub(crate) const PARTIAL_SLOT_BYTES: usize = PARTIAL_SLOT_WORDS * 4;
+pub(crate) const SLOTS_PER_PARTIAL_SLOT: usize = PARTIAL_SLOT_BYTES / SLOT_BYTES;
+/// Where the partial slot's number plus one is in an entry; the lower half is what the entry says of the bits.
+pub(crate) const PARTIAL_ENTRY_SHIFT: u32 = 16;
+#[cfg(test)]
+pub(crate) const BITS_ENTRY_MASK: u32 = (1 << PARTIAL_ENTRY_SHIFT) - 1;
 
 /// What a table entry says (the same numbers as `ENTRY_*` in `contact_on.wgsl`): nothing is known of the brick,
 pub(crate) const ENTRY_UNKNOWN: u32 = 0;
@@ -77,9 +88,14 @@ pub struct VolumeStatistics {
     pub empty: usize,
     pub full: usize,
     pub mixed: usize,
+    /// Bricks that have voxels that block the sun in part (they are also counted above, by their bits).
+    pub shaped: usize,
     /// Slots of the pool that hold a mixed brick's bits, and slots the pool has had to have at once.
     pub slots_in_use: usize,
     pub slots_reached: usize,
+    /// The same of the partial pool.
+    pub partial_slots_in_use: usize,
+    pub partial_slots_reached: usize,
     /// Bricks that were not taken, and so are not traced: a grid when all the windows were in use, a mixed brick when the pool was full.
     pub rejected: usize,
 }
@@ -116,11 +132,27 @@ impl Slots {
 /// The bits to write into a slot that was filled or changed.
 type SlotBits = Box<[u32; OCCUPANCY_WORDS]>;
 
+/// The shape numbers (plus one) to write into a partial slot.
+type PartialBits = Box<[u32; PARTIAL_SLOT_WORDS]>;
+
+/// The words of a partial slot that say these voxels are of these shapes.
+fn pack_partials(partials: &[PartialVoxel]) -> PartialBits {
+    let mut words = PartialBits::try_from(vec![0u32; PARTIAL_SLOT_WORDS].into_boxed_slice())
+        .expect("a partial slot has this many words");
+    for partial in partials {
+        let voxel = usize::from(partial.voxel);
+        words[voxel / 2] |= (u32::from(partial.shape) + 1) << (16 * (voxel % 2));
+    }
+    words
+}
+
 struct Window {
     key: VolumeKey,
     bricks: HashMap<BrickCoordinate, Held>,
     /// Which brick stands at a place of the table.
     places: HashMap<usize, BrickCoordinate>,
+    /// The partial slot of each brick that has one.
+    partials: HashMap<BrickCoordinate, u32>,
     /// The table as the graphics card should have it.
     table: Vec<u32>,
     /// The rows (of [`WINDOW_BRICKS`] entries) that differ from what was last handed over.
@@ -135,6 +167,7 @@ impl Window {
             key,
             bricks: HashMap::new(),
             places: HashMap::new(),
+            partials: HashMap::new(),
             table: vec![ENTRY_UNKNOWN; WINDOW_ENTRIES],
             // (A window is written whole when it is made: what the graphics card has at its place may be what an earlier grid left.)
             dirty_rows: (0..WINDOW_ENTRIES / WINDOW_BRICKS).collect(),
@@ -155,6 +188,8 @@ impl Window {
         coordinate: BrickCoordinate,
         slots: &mut Slots,
         pending: &mut HashMap<u32, SlotBits>,
+        partial_slots: &mut Slots,
+        pending_partials: &mut HashMap<u32, PartialBits>,
     ) {
         let Some(held) = self.bricks.remove(&coordinate) else {
             return;
@@ -164,6 +199,11 @@ impl Window {
         if let Held::Slot(slot) = held {
             slots.give(slot);
             pending.remove(&slot);
+        }
+        let partial = self.partials.remove(&coordinate);
+        if let Some(slot) = partial {
+            partial_slots.give(slot);
+            pending_partials.remove(&slot);
         }
         if held.blocks_something() {
             self.solid -= 1;
@@ -185,12 +225,19 @@ pub(crate) struct SlotWrite {
     pub words: SlotBits,
 }
 
+/// The shape numbers of a partial slot to write.
+pub(crate) struct PartialWrite {
+    pub slot: u32,
+    pub words: PartialBits,
+}
+
 /// What changed since the last time, to be written into the buffers.
 #[derive(Default)]
 pub(crate) struct Changes {
     pub tables: Vec<TableWrite>,
     /// By slot, lowest first.
     pub slots: Vec<SlotWrite>,
+    pub partial_slots: Vec<PartialWrite>,
 }
 
 /// The windows and the pool.
@@ -199,11 +246,14 @@ pub(crate) struct Volume {
     slots: Slots,
     /// The slots whose bits were set since they were last handed over.
     pending: HashMap<u32, SlotBits>,
+    /// The partial slots, and those whose numbers were set since they were last handed over.
+    partial_slots: Slots,
+    pending_partials: HashMap<u32, PartialBits>,
     rejected: usize,
 }
 
 impl Volume {
-    /// A volume whose pool has room for `maximum_slots` mixed bricks.
+    /// A volume whose pool has room for `maximum_slots` mixed bricks (and the partial pool, for as much memory, a sixteenth as many bricks that have partial voxels).
     pub(crate) fn new(maximum_slots: usize) -> Self {
         Self {
             windows: std::array::from_fn(|_| None),
@@ -214,6 +264,13 @@ impl Volume {
                 in_use: 0,
             },
             pending: HashMap::new(),
+            partial_slots: Slots {
+                free: Vec::new(),
+                next: 0,
+                maximum: maximum_slots / SLOTS_PER_PARTIAL_SLOT,
+                in_use: 0,
+            },
+            pending_partials: HashMap::new(),
             rejected: 0,
         }
     }
@@ -261,12 +318,18 @@ impl Volume {
         if let Some(&other) = window.places.get(&place)
             && other != coordinate
         {
-            window.remove(other, &mut self.slots, &mut self.pending);
+            window.remove(
+                other,
+                &mut self.slots,
+                &mut self.pending,
+                &mut self.partial_slots,
+                &mut self.pending_partials,
+            );
         }
         let held = match occupancy {
             BrickOccupancy::Empty => Held::Empty,
             BrickOccupancy::Full => Held::Full,
-            BrickOccupancy::Mixed(words) => {
+            BrickOccupancy::Mixed(words) | BrickOccupancy::Shaped { words, .. } => {
                 let own = match window.bricks.get(&coordinate) {
                     Some(&Held::Slot(slot)) => Some(slot),
                     _ => None,
@@ -279,13 +342,46 @@ impl Volume {
                     None => {
                         // No room for its bits: it is not known, and so not traced, rather than traced wrongly.
                         self.rejected += 1;
-                        window.remove(coordinate, &mut self.slots, &mut self.pending);
+                        window.remove(
+                            coordinate,
+                            &mut self.slots,
+                            &mut self.pending,
+                            &mut self.partial_slots,
+                            &mut self.pending_partials,
+                        );
                         self.free_if_empty(index);
                         return;
                     }
                 }
             }
         };
+        // The partial slot: the brick keeps its own while it has partial voxels, takes one when it gets them and gives it back when it loses them. With no room for one the
+        // brick is traced as its bits say, and its partial voxels are counted as not told of.
+        let had_partial = window.partials.get(&coordinate).copied();
+        let partial = match occupancy.partials() {
+            [] => None,
+            partials => match had_partial.or_else(|| self.partial_slots.take()) {
+                Some(slot) => {
+                    self.pending_partials.insert(slot, pack_partials(partials));
+                    Some(slot)
+                }
+                None => {
+                    self.rejected += 1;
+                    None
+                }
+            },
+        };
+        match (had_partial, partial) {
+            (Some(old), None) => {
+                self.partial_slots.give(old);
+                self.pending_partials.remove(&old);
+                window.partials.remove(&coordinate);
+            }
+            (_, Some(slot)) => {
+                window.partials.insert(coordinate, slot);
+            }
+            (None, None) => {}
+        }
         let previous = window.bricks.insert(coordinate, held);
         match previous {
             Some(Held::Slot(old)) if held != Held::Slot(old) => {
@@ -294,6 +390,7 @@ impl Volume {
             }
             _ => {}
         }
+        // (A brick with partial voxels is `Held::Slot` whatever its bits are, so it blocks something and is counted with the others.)
         if previous.is_some_and(Held::blocks_something) {
             window.solid -= 1;
         }
@@ -301,7 +398,8 @@ impl Volume {
             window.solid += 1;
         }
         window.places.insert(place, coordinate);
-        window.write_entry(place, held.entry());
+        let entry = held.entry() | partial.map_or(0, |slot| (slot + 1) << PARTIAL_ENTRY_SHIFT);
+        window.write_entry(place, entry);
     }
 
     /// Tells that the brick of a grid is gone. Nothing if it was not told of, or was forgotten for one a window away.
@@ -310,7 +408,13 @@ impl Volume {
             return;
         };
         let window = self.windows[index].as_mut().expect("the window was found");
-        window.remove(coordinate, &mut self.slots, &mut self.pending);
+        window.remove(
+            coordinate,
+            &mut self.slots,
+            &mut self.pending,
+            &mut self.partial_slots,
+            &mut self.pending_partials,
+        );
         self.free_if_empty(index);
     }
 
@@ -322,7 +426,13 @@ impl Volume {
         let mut window = self.windows[index].take().expect("the window was found");
         let coordinates: Vec<BrickCoordinate> = window.bricks.keys().copied().collect();
         for coordinate in coordinates {
-            window.remove(coordinate, &mut self.slots, &mut self.pending);
+            window.remove(
+                coordinate,
+                &mut self.slots,
+                &mut self.pending,
+                &mut self.partial_slots,
+                &mut self.pending_partials,
+            );
         }
     }
 
@@ -342,6 +452,14 @@ impl Volume {
         self.slots.maximum
     }
 
+    /// Whether any brick of any window has voxels that block the sun in part.
+    pub(crate) fn has_partials(&self) -> bool {
+        self.windows
+            .iter()
+            .flatten()
+            .any(|window| !window.partials.is_empty())
+    }
+
     /// Whether any window holds something that blocks the sun.
     pub(crate) fn is_active(&self) -> bool {
         self.windows.iter().flatten().any(|window| window.solid > 0)
@@ -359,15 +477,27 @@ impl Volume {
         self.slots.next as usize
     }
 
+    /// The same of the partial pool, and how many slots it may have.
+    pub(crate) fn partial_slots_wanted(&self) -> usize {
+        self.partial_slots.next as usize
+    }
+
+    pub(crate) fn maximum_partial_slots(&self) -> usize {
+        self.partial_slots.maximum
+    }
+
     pub(crate) fn statistics(&self) -> VolumeStatistics {
         let mut statistics = VolumeStatistics {
             slots_in_use: self.slots.in_use,
             slots_reached: self.slots.next as usize,
+            partial_slots_in_use: self.partial_slots.in_use,
+            partial_slots_reached: self.partial_slots.next as usize,
             rejected: self.rejected,
             ..VolumeStatistics::default()
         };
         for window in self.windows.iter().flatten() {
             statistics.windows += 1;
+            statistics.shaped += window.partials.len();
             for held in window.bricks.values() {
                 match held {
                     Held::Empty => statistics.empty += 1,
@@ -408,6 +538,13 @@ impl Volume {
             .collect();
         slots.sort_by_key(|write| write.slot);
         changes.slots = slots;
+        let mut partial_slots: Vec<PartialWrite> = self
+            .pending_partials
+            .drain()
+            .map(|(slot, words)| PartialWrite { slot, words })
+            .collect();
+        partial_slots.sort_by_key(|write| write.slot);
+        changes.partial_slots = partial_slots;
         changes
     }
 }
