@@ -1925,3 +1925,12 @@ An avatar or an item on the ground now shades the floor from the very foot of it
 - **Mutants:** 29; 27 killed, 1 a gap in my tests (closed), 1 near-equivalent.
 - **Cost:** +0.64 ms (Vulkan) and +0.85 ms (DX12) on the integrated AMD GPU at worst (16 avatars, every face tests all of them).
 - **Not done:** a turned box for an entity on a ship; Cave with other players in view.
+
+## The sun's exact short ray: leaves and glass (2026-11-10): built, measured to fix nothing, set aside
+
+The owner asked for "grass and leaves" (grass is an opaque cube with halves and stairs, already walked). The walk through the sheets of leaves and glass was built and agrees with its reference on all four adapters, and then the control of the first picture test found nothing to fix: with the map alone the floor at the foot of a wall of cubes has 189 lit pixels of 1,058 and a wall of leaves or glass has 1; a closed room of cubes leaks 30 and one of leaves or glass 0. The cut-out casters have no bias pushed on them. `contact-trace-spec.md`, section 17 has the numbers, the reason and what was built.
+
+- **Kept in this branch:** the guard tests (`contact_cutouts.rs`) and the section; nothing of the walk.
+- **Parked:** the work, on the branch `cutouts-walk-parked` (`95bbc0e`).
+- **A mistake of mine, corrected:** section 5.3 of the spec said that leaves and glass keep the strip; I had not measured it.
+- **A lesson:** write the control (the picture without the walk) before the walk, not after.

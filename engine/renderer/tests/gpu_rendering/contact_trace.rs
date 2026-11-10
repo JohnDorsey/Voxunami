@@ -240,13 +240,13 @@ fn the_floor_is_dark_at_the_foot_along_the_edge_rows_of_the_block_too() {
 }
 
 /// Solid rock with a closed room of x 8 to 23, y 4 to 9, z 8 to 23 carved out (its floor top is at y = 4, its east wall at x = 24).
-fn room_cell(x: usize, y: usize, z: usize) -> Option<u32> {
+pub(super) fn room_cell(x: usize, y: usize, z: usize) -> Option<u32> {
     let inside = (8..24).contains(&x) && (4..10).contains(&y) && (8..24).contains(&z);
     (!inside).then_some(RED)
 }
 
 /// How many pixels of the floor of the room at the east wall's foot are lit with the volume `told` of the room, for the sun at `elevation`, and how many were looked at.
-fn room_leaks(renderer: &mut VoxelRenderer, elevation: f64) -> (usize, usize) {
+pub(super) fn room_leaks(renderer: &mut VoxelRenderer, elevation: f64) -> (usize, usize) {
     let sun = sun_at(elevation);
     // Over the east wall's foot, looking straight down at the floor 4 voxels below.
     let height = 4i128;

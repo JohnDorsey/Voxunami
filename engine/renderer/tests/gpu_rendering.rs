@@ -24,6 +24,8 @@ use voxel_space::{
 use world_view::sun_blocked;
 
 // (The sun's exact short ray: `docs/specs/contact-trace-spec.md`. A module of its own, which uses what is in this file.)
+#[path = "gpu_rendering/contact_cutouts.rs"]
+mod contact_cutouts;
 #[path = "gpu_rendering/contact_entities.rs"]
 mod contact_entities;
 #[path = "gpu_rendering/contact_grids.rs"]
