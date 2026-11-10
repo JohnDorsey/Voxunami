@@ -340,6 +340,7 @@ then what it needs and what I found in the code.
 
 ## Unscheduled (owner, 2026-10-27)
 
+- **A ship that does not step when a block is placed or broken** (owner, 2026-11-10; **the present behaviour stays for now**). Today a ship on a rail is placed by its centre of mass and the rail does not change, so an edit that moves the centre by `d` moves every block of the ship by `d` in one tick. Three possible enhancements, with what was run and what was read, the worst cases, the traps and my opinion (fit the rail again at the edit): fitting at the edit, deferring the fit with a saved offset, and ramping the mass of blocks under construction: `ship-centre-of-mass-edit-options.md`.
 - **Cheaper leaves and glass** (2026-11-09). Leaves cost 2.6 ms over an opaque block on the integrated GPU in a dense test stand (nothing on a discrete GPU), because they are unmerged 16-byte quads. Options (merging them into the greedy path, drawing fewer inner sheets, doing nothing), a cheap experiment to run first, and a correction of my earlier claim that merging would fix the cost: `leaf-cost-options.md`.
 - **Dither far leaves and glass** (owner, 2026-11-08). Past the texture distance (and in the coarse levels) a face is one flat colour, so far leaves and glass are solid cubes of the alpha-weighted average of their picture
   (accepted for now). The idea: beyond the fade band drop each pixel at random with the chance of one minus the picture's average alpha, so far foliage stays see-through. *Needs:* a screen-door or hash pattern in the shader that is
