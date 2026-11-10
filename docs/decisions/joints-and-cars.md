@@ -162,3 +162,50 @@ The owner's words, condensed:
 4. Bodies can sleep: a body alone in space slower than about 0.09 m/s slept after 0.5 s and stopped dead in the probe (`loop-probe.md`, not measured again through `BodyWorld`), which would stop a slow mechanism.
 5. A ship far from every player is frozen (`ServerWorld::set_grid_frozen`, `ShipSettings::simulation_distance`, 256 voxels then, 1,024 since 2026-11-09), so a mechanism stops when no player is near.
 6. Positions in a frame are `f64` from the frame's origin, so a mechanism's numbers differ in the last bits with where in the frame it is (the rounding floor of an `f64` is about 5e-13 m at 4 km, as worked out in `loop-probe.md`; a joint's actual gap is millions of times that).
+
+## Step 4c plan: a frame that goes with a ship's centre of mass (2026-11-09; **a plan, nothing built; the questions at the end wait for the owner**)
+**What was read (the source, not run).** `Follow` (`grid_bodies/src/plugin.rs`) is already a frame that goes with a *planet on a rail*: places in it are the world's less how far the planet has gone, velocities are
+the world's less the planet's, the ships in it are ordinary dynamic bodies, and `write_back` puts them in the world through `follow.world(..)` and `velocity_from(..)`. So a ship that rests on a planet, or orbits it,
+is worked out as if the planet stood still. 4c is that mechanism with *a ship's centre of mass on a rail* in the planet's place. On the world's side `put_ships_on_their_rails` already places the **centre of mass** (the origin is put
+at the rail's place less the centre of mass turned as the ship is), and `has_to_leave_its_rail`/`coasting_candidate` refuse a turning ship. Two things stop a turning ship on a rail today, and both have to change together:
+1. a rail with no `spin` **overwrites** `ship.angular_velocity` with zero on every tick (`world.rs`, end of `put_ships_on_their_rails_remembering`) and keeps the orientation it finds, so the turn would be lost;
+2. a ship on a rail is a `BodyKind::Fixed` body (`body_kind`), which Rapier does not turn.
+The existing `Spin` of a rail is a steady turn of a *planet* about an axis (its +y is carried onto the axis); a torque-free ship is not that (it precesses unless it turns about a principal axis), so the rail is not given the ship's turn:
+**the rail holds the centre of mass and nothing else, and the turn is the bodies' work in the frame**, as answer 3 says ("its turning is worked out in the frame"). Rapier turns a free body with its own gyroscopic step (kept
+angular momentum, explicit; `loop-probe.md`, section 8 has its drift: an exact torque-free rotor step is an open question there, not asked again here).
+
+**The design.**
+- **A rail frame**: a frame whose `Follow` is not a planet but a *rail point* (the centre of mass of a ship or group, `rail.state(time)` of the carrier's rail). Its origin is made at the point; the ship is a **dynamic**
+  body in it, at rest at the origin, with gravity zero (free fall; the owner's answer 2). Because its numbers are the ship's own, small and relative, they are the same bits at the origin, a long way off and at speed
+  (answer 1): the speed of the frame does not enter, and neither does `steps_for_this_tick`, which counts the fastest body of the frame (a rail frame has only the ship).
+- **Each tick, before the bodies step**, the ship's world pose is moved by the rail's displacement (as `apply_rails` moves a ship carried by a planet, and `Follow.shift` follows it). **After the step**, the centre of
+  mass in the frame is put back on the frame's point and its velocity back to zero (re-centring: the drift is rounding, because joints and the turn keep momentum to rounding; a real blow takes the ship off its rail first).
+  The rail is the authority for the place: nothing the bodies do moves it. That is promise (b).
+- **Who carries the rail.** One ship (the anchor) holds the rail, as now. For a single ship the anchor is the ship. For a **group** the rail is the group's centre of mass (total mass, centre of mass of the cars), kept on the
+  car that names the group (lowest id); the other cars carry no rail but are listed as riders by the pairs the server already holds (`ServerWorld::coupled_ships`).
+- **Frame and rail are separate.** A frame centred on the group is wanted for every jointed group, on a rail or off it (promise (a): a mechanism must not change because a ship is near and the group came off its rail).
+  Off a rail, the frame's point is the group's own centre of mass, re-anchored every tick from the bodies (the same re-centring, with the velocity taken from the group). The rail decides only whether the *path* is exact.
+- **What does not change.** A ship that does not turn and has no joint stays a fixed body on a rail in an ordinary frame, as today (no frame per ship; the cost of one `BodyWorld` per coasting ship near a player is unmeasured).
+  The near rule (`NEAR_MARGIN`) and every push still take a ship off its rail, and the ship then keeps its frame; the temporary shared frame of two railed ships (answer 6) and the kick of a blow (answer 5) are later.
+
+**Phases (each ends with tests, clippy, fmt, doc, and a commit).**
+- **4c-0 Tests first.** Pin today: a turning ship is refused a rail; a rail with no spin gives zero spin and keeps the orientation; a ship carried by a planet is simulated in a frame with the planet's speed taken off
+  (the numbers of `Follow` for a planet must not move). Then the new tests below, red first.
+- **4c-1 Generalise `Follow`** from "a planet" to "a rail point" with the planet case unchanged (the pins above are the proof). No behaviour change.
+- **4c-2 One turning ship rides a rail**: the world stops overwriting the turn for a rail that has no spin and a ship that a frame carries; the candidate rule lets a turning ship be quiet; the bodies make its rail frame,
+  re-centre it, and write the turn back. Tests: the path equals the unspun ship's path to the bit while the ship turns (a rail against a rail); the turn is Rapier's (angular momentum kept to the loop-probe's figure); the
+  numbers of the ship in its frame are the same at the origin, 1e9 voxels away, and at 6 km/s; a push takes it off and the turn goes on; save and load on a rail keep the place to the bit.
+- **4c-3 A group rides a rail** (needs the pairs saved; see question 1): the group's centre of mass on the anchor's rail, the cars as riders, joint motion changes nothing of the rail (a test that swings a 3-car chain for a
+  simulated hour and compares the rail to the unswung one), the 4a/4b rules (one frame, frozen and parked together) work with the rail frame, a car pushed off its rail takes the group off.
+- **4c-4 Frame off a rail**: the centred frame for a group that is not on a rail (promise (a) while a ship is near).
+
+**Measured before anything is built (to do in 4c-0, not done):** the cost of a `BodyWorld` per rail ship (the memory of an empty world; how many ships are near a player at once in a busy game), and the gyroscopic drift of a
+spinning ship over a coast of an hour at the frame's step (the loop-probe number was for a free car at 1 ms).
+
+**Questions for the owner (nothing is built that depends on them):**
+1. *Order.* A group's rail is on its anchor car and means "the group's centre of mass"; a loaded world forgets the pairs (4d), so the anchor alone would claim the rail as its own centre of mass and be put in the wrong place.
+   I would build **4c-1 and 4c-2 (single turning ships) first, then save the pairs, then 4c-3**. Agreed?
+2. *Frame off a rail.* Is it right that a jointed group keeps its centred frame when it comes off its rail (4c-4), so a mechanism never changes because a ship came near? (My opinion: yes; it is what promise (a) asks for.)
+3. *A ship that is not turning and has no joint* stays a fixed body on a rail as now. Right, or should every coasting ship have a frame of its own (simpler to say, and one `BodyWorld` more per ship near a player)?
+4. *A frozen or parked turning ship* stops turning (freezing zeroes its speeds as today) but its place stays on the rail; it comes back not turning. Is that what is wanted for a ship with no player near?
+5. *Gyroscopic drift.* Rapier's explicit step loses or gains a little spin over hours. Leave it, and measure in 4c-0, or write the exact torque-free rotor step now?
